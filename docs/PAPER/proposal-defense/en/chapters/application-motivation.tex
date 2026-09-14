@@ -7,6 +7,8 @@ The discovery descriptor contains the information needed for a participation dec
 
 NDNSF-UAV and NDNSF-DI expose complementary demands. The former combines device-specific operations, changing observations, live data, and physical actions. The latter combines compute selection, model preparation, large artifacts, intermediate tensors, and incremental outputs. Both require authorization and bounded request lifetimes. Their differences test whether a common invocation and named-object interface remains useful beyond one workload. Reusability is an engineering objective to be evaluated through shared mechanisms and application-specific code, rather than assumed from implementing two demonstrations.
 
+The scope is organized around an invocation's lifecycle: deciding who may participate, deciding which work may start, and obtaining an interpretable outcome before the operation closes. These questions connect the application cases to prior invocation mechanisms~\cite{rice,nsc} and command authorization~\cite{dnmp}. Table~\ref{tab:framework-needs} groups the resulting requirements. It is a bounded scope for the workflows studied here, not an exhaustive inventory of every possible service framework. For example, billing and hard real-time flight control require additional application mechanisms. RQ1 examines participation and permission decisions, RQ2 examines dependencies when work spans Providers, and RQ3 examines observed outcomes and costs.
+
 \begin{table}[htbp]\centering\small
 \caption{Framework requirements and their relationship to the research questions.}
 \label{tab:framework-needs}

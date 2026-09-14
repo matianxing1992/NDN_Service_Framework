@@ -5,6 +5,10 @@
 
 ## Execution Progress
 
+### Documentation Checkpoint — 2026-09-14
+
+Proposal／slides 批注修订完成：英文50页、中文38页、slides49页；八入口构建与镜像检查、49页PPTX回读、1,006/1,006可编辑文字spans、notes parser 2/2通过。19条PDF／26条PPTX批注逐项记录；研究证据仍开放。本项不变更Spec185源码、API、任务勾选或native qualification。详见 [documentation evidence](evidence/proposal-advisor-review-20260914.md)。
+
 **Progress Timestamp**: `YYYY-MM-DD HH:mm ±HH:MM`，项目时区`America/Chicago`；Updated为该行最后修订时间，不是完成时间。
 本表于`2026-09-12 16:24 -05:00`升级时间格式，原18行仅记录`2026-09-12`，精确历史事件时间UNKNOWN；本次统一时间仅表示格式迁移。后续只更新状态、依赖、证据或剩余项实际变化的行，规则见[task progress](../../skills/speckit-code-design/references/task-progress.md#progress-timestamp)。
 

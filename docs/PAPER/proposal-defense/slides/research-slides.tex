@@ -7,14 +7,14 @@
 \begin{itemize}
 \item The User knows the required service.
 \item Reachability, capability and willingness may change.
-\item Eligible Providers return ACK Data.
-\item The User selects one Provider to execute.
+\item Providers evaluate valid Requests and return positive or negative ACK Data.
+\item The User selects one eligible positive-ACK Provider.
 \end{itemize}
 \column{.51\linewidth}
 \begin{tikzpicture}[node distance=8mm,box/.style={draw=MemphisBlue,rounded corners,fill=LightBand,align=center,font=\small,text width=26mm,minimum height=10mm},>=Stealth]
 \node[box,text width=40mm] (a) {Candidate Providers\\A, B, C};
-\node[box,text width=40mm,below=of a] (b) {User selects B};
-\node[box,text width=40mm,below=of b] (c) {B executes the service};
+\node[box,text width=40mm,below=of a] (b) {User selects A};
+\node[box,text width=40mm,below=of b] (c) {A executes the service};
 \draw[->,thick] (a)--(b);\draw[->,thick] (b)--(c);
 \end{tikzpicture}
 \end{columns}
@@ -31,17 +31,28 @@ Some tasks need several Providers with different responsibilities. Separate call
 \vspace{3mm}\bluebox{Evaluate the invocation foundation; develop and validate the collaboration extension. Existing invocation results do not establish collaboration correctness.}
 \end{frame}
 
-\begin{frame}{What NDN Provides---and What It Does Not}
+\begin{frame}{NDN Primitives and Service-Level Decisions}
 \small
 \begin{tabularx}{\linewidth}{p{.39\linewidth}X}
 \toprule NDN building block & Remaining application responsibility\\\midrule
-Named Data and signatures [1] & Validate signatures under application trust policies, expressible through a Trust Schema [16]\\\midrule
-Interest retrieval and caching [1,26] & Enforce task identity, dependencies, and deadlines; caching is not persistent storage\\\midrule
-Dataset synchronization / SVS [2,3] & Discover new names, then retrieve Data; define service-message state transitions\\\midrule
-NAC [4] / enhanced NAC-ABE [19] & Use content encryption for read access; separately check service-invocation permissions and state\\\bottomrule
+Named Data and signatures [1] & Names support identity and forwarding; a Trust Schema [16] constrains signing keys\\\midrule
+Interest retrieval and caching [1,26] & Check task identity, dependencies and deadlines; caches do not guarantee storage\\\midrule
+Dataset synchronization / SVS [2,3] & Discover names; define service-message transitions\\\midrule
+NAC [4] / enhanced NAC-ABE [19] & Encrypt Content for read access; check invocation permission separately\\\bottomrule
 \end{tabularx}
 \vspace{2mm}\scriptsize NAC: Name-based Access Control; ABE: attribute-based encryption; SVS: State Vector Sync.
-\vspace{2mm}\bluebox{\small NDNSF builds on these mechanisms; it does not invent them.}
+\vspace{2mm}\bluebox{\small NDN supplies data-centric communication. NDNSF defines how validated service messages authorize and advance an invocation.}
+\end{frame}
+
+\begin{frame}{Application Needs Determine the Research Scope}
+\small
+\begin{tabularx}{\linewidth}{p{.34\linewidth}X}
+\toprule Application need & Framework question\\\midrule
+Find a camera covering an area, or compute capacity for a model & Who is permitted, reachable and willing now?\\\midrule
+Analyze images from several cameras, or execute dependent model fragments & Which Provider performs each role, and which inputs may it use?\\\midrule
+Obtain useful output before a deadline, despite loss or outages & What completes, what fails, and what does recovery cost?\\\bottomrule
+\end{tabularx}
+\vspace{3mm}\bluebox{These needs lead to RQ1--RQ3. Invocation [9,10] and command authorization [12] provide precedents. This is a bounded framework scope, not a claim to cover every application requirement.}
 \end{frame}
 
 \begin{frame}{Three Research Questions}
@@ -53,7 +64,7 @@ NAC [4] / enhanced NAC-ABE [19] & Use content encryption for read access; separa
 \vspace{3mm}\bluebox{RQ1 evaluates the invocation foundation; RQ2 studies its collaboration extension; RQ3 measures both scopes separately.}
 \end{frame}
 
-\begin{frame}{Related Work Already Provides Important Pieces}
+\begin{frame}{Related Work and the Remaining Questions}
 \small
 \begin{tabularx}{\linewidth}{p{.27\linewidth}X}
 \toprule Prior work & What the comparison must acknowledge\\\midrule
@@ -66,12 +77,12 @@ gRPC [17,27] & Complete configurations can include discovery/resolver integratio
 \vspace{2mm}\bluebox{Collaboration research: make runtime assignments constrain intermediate Data use. Discovery and authorization are evaluated separately.}
 \end{frame}
 
-\begin{frame}{Contributions and Evidence Are Different Things}
+\begin{frame}{Research Contributions and Current Evidence}
 \small
 \begin{tabularx}{\linewidth}{p{.38\linewidth}X}
 \toprule Intended contribution & Current evidence boundary\\\midrule
 Discovery / authorization design and tradeoffs & Invocation implementation and bounded experiments exist; full alternative lifecycle-cost comparison remains open\\\midrule
-ACK-derived plan and local dependency checks & Design and implementation work; direct/cache and failure validation remains incomplete\\\midrule
+ACK-derived plan and local input checks & Design and implementation work; direct/cache and failure validation remains incomplete\\\midrule
 Cross-case empirical findings & Existing mobility/work-efficiency and small-model results support limited configurations, not all new collaboration claims\\\bottomrule
 \end{tabularx}
 \vspace{3mm}\bluebox{Proposal status, September 2026: implemented, locally tested, measured, and fully qualified are not interchangeable. [28]}
@@ -85,6 +96,25 @@ Cross-case empirical findings & Existing mobility/work-efficiency and small-mode
 \item Participants use provisioned trust anchors and validation rules for certificates and Controller material.
 \end{itemize}
 \vspace{3mm}\bluebox{Unknown runtime candidates are not unregistered authorization identities. The User discovers current participation; the Controller does not choose this task's Providers.}
+\end{frame}
+
+\begin{frame}{Invocation Overview: Request a Timely Aerial Image}
+\small An operator requests an aerial image. Authorized camera Providers A and B consider the task.
+\vspace{2mm}
+\begin{center}
+\begin{tikzpicture}[box/.style={draw=MemphisBlue,fill=LightBand,rounded corners,text width=27mm,minimum height=13mm,align=center,font=\small},>=Stealth]
+\node[box] (r) {User\\Request Data};
+\node[box,right=7mm of r] (a) {Candidates\\ACK Data};
+\node[box,right=7mm of a] (s) {User\\Selection Data};
+\node[box,right=7mm of s] (o) {Selected Provider\\Response Data};
+\draw[->,thick] (r)--(a);\draw[->,thick] (a)--(s);\draw[->,thick] (s)--(o);
+\end{tikzpicture}
+\end{center}
+\begin{itemize}
+\item A returns a positive ACK; B is busy and returns a negative ACK.
+\item The User selects A; A checks Selection before capturing the image.
+\end{itemize}
+\bluebox{Arrows show application order. Data is retrieved with Interests; neither an ACK nor a network delivery alone authorizes execution.}
 \end{frame}
 
 \begin{frame}{Single-Provider Invocation: Four Named Data Types}
@@ -116,7 +146,7 @@ Input and results use request-scoped symmetric keys. Selection delivers key mate
 
 \begin{frame}{Three Security Requirements; One Additional Benefit}
 \begin{enumerate}
-\item Keep discovery descriptors non-public before participating Providers are identified.
+\item Keep discovery descriptors confidential from unauthorized readers before selecting a Provider.
 \item Authenticate participants, verify service permissions, and reject replayed invocation messages.
 \item Grant and withdraw service permissions during operation.
 \end{enumerate}
@@ -210,7 +240,7 @@ NDNSF ABE-backed & Check signatures, RequestNonce, ProviderChallenge, current pe
 
 \begin{frame}{Discovering Updates Does Not Make Revocation Instantaneous}
 \begin{enumerate}
-\item Revised design: publish new public parameters as signed Named Data; Sync announces availability.
+\item Revised design: the Controller publishes new public parameters as signed Data; Sync announces availability.
 \item Participants retrieve and validate parameters and permission status, then refresh DKEYs as required.
 \item Grants also require status discovery, even when public parameters do not change.
 \end{enumerate}
@@ -264,7 +294,7 @@ Does not alone describe key scope & Associates permitted objects, execution iden
 \begin{tabularx}{\linewidth}{p{.3\linewidth}X}
 \toprule Event & Required behavior\\\midrule
 Late ACK & Do not silently change the committed plan\\\midrule
-Duplicate Selection & Follow recorded one-time state; do not implicitly repeat a side effect\\\midrule
+Duplicate Selection & Check whether execution was already authorized; do not repeat a side effect\\\midrule
 Incomplete dependency & Wait within policy/deadline, recover, or fail; do not execute on partial data\\\midrule
 Provider replacement & Authorize a new assignment; reject old execution actions and specify permitted result reuse\\\midrule
 Cancellation & Prevent late messages from reauthorizing cancelled work\\\bottomrule
@@ -286,7 +316,7 @@ Detection and multi-view tasks & Service provision/consumption, role assignments
 \begin{frame}{UAV Collaboration Example: Capture, Analyze and Return}
 \small An operator requests ground-area views from nearby UAVs, followed by analysis.
 \begin{enumerate}
-\item Sensing UAVs sign encrypted ViewImage Data under their authorized namespaces.
+\item After Selection, assigned UAVs capture views and sign encrypted ViewImage Data under their authorized namespaces.
 \item The compute Provider retrieves images over assigned edges and publishes Annotation Data.
 \item Its encrypted result gives the requester original image names and permitted image keys.
 \item The requester retrieves the original images and displays the annotations.
@@ -294,7 +324,7 @@ Detection and multi-view tasks & Service provision/consumption, role assignments
 \vspace{2mm}\bluebox{Original image Data remains under its producer's name. GPS alone does not establish camera visibility.}
 \end{frame}
 
-\begin{frame}{What the Multi-View Workflow Must Demonstrate}
+\begin{frame}{UAV Evaluation: Completion and Correct Input Use}
 \begin{itemize}
 \item A complete authorized collection--processing--return task before the deadline.
 \item Correct handling of unavailable views, delayed images and a failed processing Provider.
@@ -343,13 +373,13 @@ Multi-Provider inference & Assignments, dependencies, recovery\\\bottomrule
 \vspace{3mm}\bluebox{Earlier small-model measurements do not validate the newer distributed inference and recovery paths. [28]}
 \end{frame}
 
-\begin{frame}{Map Application Functions to Framework Evidence}
+\begin{frame}{Application Coverage and Observable Outcomes}
 \begin{enumerate}
 \item Name the application function and the production NDNSF API path it uses.
 \item Specify the input, expected result, failure condition, and tested configuration.
 \item Record evidence separately: implementation, focused test, multi-process test, measured outcome.
 \end{enumerate}
-\vspace{3mm}\bluebox{UAV and DI cover discovery, authorization, data delivery, lifecycle, and collaboration. Local calls do not prove remote behavior. Representative workflows cover claimed mechanisms; optional application features need not become separate dissertation gates.}
+\vspace{3mm}\bluebox{UAV and DI cover discovery, authorization, data delivery, lifecycle, and collaboration. Local calls do not prove remote behavior. Representative workflows cover claimed mechanisms; optional application features need not become separate dissertation requirements.}
 \end{frame}
 
 \begin{frame}{RQ3: Define the Baselines Before Comparing}
@@ -498,7 +528,7 @@ Pre-registered baseline variants & 357 / 357\\\bottomrule
 \refentry{7}{M. Krol and I. Psaras, ``NFaaS: Named Function as a Service,'' ACM ICN, 2017.}
 \refentry{9}{M. Krol et al., ``RICE: Remote Method Invocation in ICN,'' ACM ICN, 2018.}
 \refentry{10}{D. Meirovitch and L. Zhang, ``NSC---Named Service Calls, or a Remote Procedure Call for NDN,'' NDN-0074, rev. 1, 2021.}
-\refentry{15}{CaSCON, SMARTCOMP 2025. Primary publication record: RIT, ``Barrios presents at IEEE SmartComp.'' Full feature-level comparison remains a research obligation.}
+\refentry{15}{C. Barrios, E. Alker and M. Kumar, ``CaSCON: Cache-Assisted Service Composition Orchestration Leveraging NDN,'' IEEE SMARTCOMP, pp. 122--129, 2025. DOI: 10.1109/SMARTCOMP65954.2025.00061.}
 \refentry{17}{gRPC Authors, ``Core Concepts, Architecture and Lifecycle,'' gRPC documentation.}
 \refentry{27}{gRPC Authors, ``Custom Name Resolution,'' grpc.io/docs/guides/custom-name-resolution/ (accessed Sept. 2026).}
 \end{frame}
@@ -509,8 +539,8 @@ Pre-registered baseline variants & 357 / 357\\\bottomrule
 \refentry{23}{PX4, ``Software-in-the-Loop Simulation,'' PX4 User Guide.}
 \refentry{24}{NDN Project, ``Repo Protocol Specification,'' repo-ng documentation.}
 \refentry{25}{ONNX, ``Open Neural Network Exchange Intermediate Representation Specification.''}
-\refentry{28}{NDNSF, research-revision-audit.md, companion claim/evidence ledger, September 9, 2026. Contains campaign paths and unresolved acceptance gates.}
+\refentry{28}{NDNSF, research-revision-audit.md, companion claim/evidence ledger, September 9, 2026. Contains campaign paths and required validation.}
 \refentry{29}{University of Memphis CS, ``Information for Computer Science Ph.D. Students,'' forms\_grad\_phd\_programinfo.pdf (accessed September 9, 2026).}
-\refentry{30}{University of Memphis Graduate School, ``Graduation Information,'' Spring 2027 calendar (accessed September 9, 2026).}
+\refentry{30}{University of Memphis Graduate School, ``Graduate School Calendar,'' Spring 2027. memphis.edu/gradschool/news-events/calendar.php (checked September 14, 2026).}
 \refentry{31}{ONNX Runtime, ``How to configure the past present share buffer,'' GenAI documentation (accessed September 11, 2026).}
 \end{frame}

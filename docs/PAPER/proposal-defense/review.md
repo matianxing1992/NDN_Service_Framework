@@ -1,5 +1,7 @@
 # NDNSF 论文与 slides 审查：老师批注及 Final Defense 标准
 
+最新处理记录：[2026-09-14 逐句修订与批注追踪](advisor-review-20260914.md)。该记录区分已落实的文字修改与仍待研究验证的问题；下文原始批注和早期计划保持历史含义。
+
 原始审查日期：2026-09-09。本文件保留当时的分析与修订建议，不表示后续仍未修改。
 2026-09-10 的全文措辞修订及当前页号见 [language review](language-review-20260910.md)，
 交付与检查见 [validation](research-revision-validation.json)。历史页号和未完成研究要求仍按下文保留。
@@ -509,3 +511,7 @@ FD17 的正式合著声明要求具有适用条件；即使不采用文章分章
 正文移除笼统的“NDN 没有服务框架”“host/channel 本身就是缺陷”与未经支持的因果结论。主讲不再以 API／配置清单组织。授权比较承认 DNMP 角色规则及 schema＋加密替代设计；保护对象、获准但未选中的 Provider、密钥更新和状态传播限制均明确。request ID 已有保护、同请求错误角色／边、合法缓存复用及新执行权限分开描述。
 
 **完成的是文档修订，不是研究验收。** C12 的最近工作逐特性比较、C22 的实测完整多 UAV 轨迹、最终授权成本／扩展性及原生协作资格仍保留 OPEN/PARTIAL。历史小模型原始 run provenance 本轮未重建，不能计为新 V3 证据；本人／合作者贡献归属也需确认。不得据本轮“已修订”推导已具备 final-defense 准备度。
+
+## 22. Current Reconciliation — September 14, 2026
+
+本轮逐句修订及老师批注的对应处理见 [advisor-review-20260914.md](advisor-review-20260914.md)，机器检查见 `advisor-review-validation-20260914.json`。以上原始批注、分析与早期计划保留为历史依据；它们不是最新文件页数或完成状态。文字问题已落实与研究证据仍开放分别记录，不将前者等同于导师认可或 final-defense 验收。

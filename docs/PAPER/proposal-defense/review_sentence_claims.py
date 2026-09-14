@@ -6,12 +6,18 @@ Table rows and diagram labels are claim units, not grammatical sentences. Eviden
 families route to the companion manual report; they are not per-unit proof results.
 """
 from pathlib import Path
+import argparse
 import hashlib
 import json
 import re
 from collections import Counter
 
 BASE = Path(__file__).resolve().parent
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--date', default='2026-09-11')
+parser.add_argument('--output', default='sentence-claim-ledger-20260911.json')
+parser.add_argument('--review-report')
+args = parser.parse_args()
 FILES = ["main.tex", "en/main.tex", "main_ch.tex", "ch/main.tex",
          "en/chapters/research-revision.tex", "en/chapters/authorization-rationale.tex",
          "ch/chapters/research-revision.tex", "ch/chapters/authorization-rationale.tex",
@@ -107,19 +113,20 @@ for name in FILES:
                           "slide": frame or None, "latex": part,
                           "kind": "claim-row-or-label" if structural else "prose-sentence",
                           "evidence_family": family(part, context),
-                          "review": "WORDING_PLACEMENT_SCOPE_REVIEWED",
-                          "evidence_detail": ("origin-coverage-review.md#evidence-and-wording-review"
+                          "review": "SEE_MANUAL_REPORT" if args.review_report else "WORDING_PLACEMENT_SCOPE_REVIEWED",
+                          "evidence_detail": args.review_report or ("origin-coverage-review.md#evidence-and-wording-review"
                                               if Path(name).stem in {
                                                   "application-motivation", "ndn-background",
                                                   "framework-architecture", "invocation-data-services",
                                                   "uav-workflows", "di-workflows", "evaluation-methods"}
                                               else "sentence-review-20260911.md#evidence-boundaries")})
 
-report = {"date": "2026-09-11", "scope": FILES,
-          "method": "Manual reading of all listed sources; deterministic navigation inventory afterwards. Sentence splitting is approximate. No per-sentence formal proof or fresh experiment certification.",
+report = {"date": args.date, "scope": FILES,
+          "method": ("Review scope and findings are defined in " + args.review_report + "; this is a deterministic navigation inventory, not a per-unit evidence verdict. Sentence splitting is approximate."
+                     if args.review_report else "Manual reading of all listed sources; deterministic navigation inventory afterwards. Sentence splitting is approximate. No per-sentence formal proof or fresh experiment certification."),
           "source_sha256": {n: hashlib.sha256((BASE/n).read_bytes()).hexdigest() for n in FILES},
           "counts": dict(Counter(u['kind'] for u in units)),
           "evidence_families": dict(Counter(u['evidence_family'] for u in units)),
           "units": units}
-(BASE / "sentence-claim-ledger-20260911.json").write_text(json.dumps(report, ensure_ascii=False, indent=2)+"\n")
+(BASE / args.output).write_text(json.dumps(report, ensure_ascii=False, indent=2)+"\n")
 print(json.dumps({"units": len(units), "counts": report['counts'], "files": len(FILES)}))

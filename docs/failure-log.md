@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-14 — Proposal document layout/export boundaries (RESOLVED)
+
+The advisor-comment revision first produced a 24.76523pt overfull slide and then
+hit the PPTX exporter's approved-build-root guard. A compact four-message figure
+and an isolated directory under `slides/build/` resolved those document-tool
+boundaries; no exporter guard was bypassed. The first layout log was superseded
+by an incremental build, so only its exact tool-reported first error is retained;
+the failed exporter log and final r3/r4 build logs remain separate. This is not a
+native/runtime/protocol result. See
+[documentation checkpoint](../specs/185-prepared-model-runtime/evidence/proposal-advisor-review-20260914.md)
+and [final document checks](PAPER/proposal-defense/advisor-review-validation-20260914.json).
+
 ## 2026-09-14 — Spec185 B6 T011 requester PIB/TPM identity boundary
 
 The first post-readiness-repair C++ unary attempt (`unary-v4`) reached the

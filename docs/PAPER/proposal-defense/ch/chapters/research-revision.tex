@@ -2,9 +2,11 @@
 \chapter{引言}
 \label{chap:introduction}
 \section{服务发现与获准调用}
-命名数据网络（NDN）支持按名获取 Data 和以数据为中心的安全机制~\cite{ndn,ndnpacket}。应用可用 trust schema 规定哪些签名密钥有权签署哪些 Data，并指导 Data 验证~\cite{trustschema}。Sync 通告数据集变化以辅助获取~\cite{li2018brief,moll2022sok}。这些机制不自动选择执行者或保证按时完成；调用授权需应用定义规则与检查。
+请求者可能知道所需服务，却不知道哪些获准 Provider 当前可达、有能力且愿意执行。例如，操作员需要及时取得空中观测，必须找到合适的相机 Provider，而不只是相机服务曾经可用的地址。建立通信不等于确认当前意愿、权限或任务完成。问题在于这些仍需解决的应用决策，而不是主机通信本身。
 
-请求者知道服务，却未必知道哪些获准 Provider 可达、有能力且愿意执行。NFN、NFaaS、RICE 和 NSC 支持命名计算或调用~\cite{nfn,nfaas,rice,nsc}。Distributed Network Measurement Protocol（DNMP）提供 Trust Schema 命令授权实例~\cite{dnmp}。这些 NDN 系统提供计算、调用与授权先例，作为本 Proposal 分析 NDNSF 设计选择的参照。
+命名数据网络（NDN）支持按名获取 Data 和以数据为中心的安全机制~\cite{ndn,ndnpacket}。名称标识 Data、指导 Interest 转发并参与信任规则；应用可用 trust schema 约束可接受的签名密钥并指导 Data 验证~\cite{trustschema}。Sync 支持发现数据集变化，以便应用获取可用 Data~\cite{li2018brief,moll2022sok}。NDNSF 用这些基础机制构建服务级决策，详细网络背景在下一章展开。
+
+即使一个 Provider 足以执行任务，应用仍需发现候选、检查权限、选定执行者并取得结果。NFN、NFaaS、RICE 和 NSC 支持命名计算或调用~\cite{nfn,nfaas,rice,nsc}。Distributed Network Measurement Protocol（DNMP）提供 Trust Schema 命令授权实例~\cite{dnmp}。这些 NDN 系统提供计算、调用与授权先例，作为本 Proposal 分析 NDNSF 设计选择的参照。
 
 \section{初版 NDNSF 的调用基础}
 初版 NDNSF 从多个候选中选定一个 Provider。User 发布 Request Data、收集应答（ACK）Data，再发布 Selection Data；选定 Provider 执行并发布 Response Data。候选是同一次调用的替代执行者，不承担不同的相互依赖角色。
@@ -16,7 +18,7 @@
 \section{从单 Provider 调用扩展到多 Provider 协作}
 部分任务需要不同 Provider 提供互补服务。分别调用各服务，并不会自动规定哪个 Provider 担任哪个角色，以及依赖服务可以接受哪些中间对象。本 Proposal 研究在保留调用基础的同时，通过扩展明确这些分工与依赖。
 
-例如，附近无人机（UAV）从不同角度采集地面区域图像，交给计算 Provider 分析。扩展分配采集和处理角色，并按声明依赖检查每张图像。判断可行性所需的区域与期限可能要在 ACK 前提供；处理图像可通过 Selection 披露。descriptor 加密限制读取者为获准候选，但不隐藏名称或流量模式。此例说明扩展需求；识别算法仍由应用选择。
+例如，附近无人机（UAV）从不同角度采集地面区域图像，交给计算 Provider 分析。扩展分配采集和处理角色，并按声明依赖检查每张图像。判断可行性所需的区域与期限可能要在 ACK 前提供。Selection 授权采集任务后，无人机才生成供指定计算 Provider 使用的图像；Selection 提供执行详情及所需访问信息，而不是尚未拍摄的图像。descriptor 加密限制读取者为获准候选，但不隐藏名称或流量模式。此例说明扩展需求；识别算法仍由应用选择。
 
 \section{论点与研究问题}
 拟验证的论点是：命名且可验证的对象能够支持运行时服务发现和获准的单 Provider 调用，而明确的角色与依赖规则能够将这一基础扩展到多 Provider 任务。研究分别评估发现／授权设计和协作扩展。收益必须在所测条件下足以说明发现、验证、通信与密钥管理成本的合理性。

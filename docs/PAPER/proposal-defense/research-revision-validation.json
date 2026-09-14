@@ -1,9 +1,9 @@
 {
   "date": "2026-09-11",
-  "scope": "Broaden Chapter 4 and slides to full UAV/DI application validation platforms with framework-path coverage and bounded representative workflows",
-  "verdict": "DOCUMENT_CHECKS_PASS",
+  "scope": "2026-09-14 advisor-comment reconciliation; see advisor-review-validation-20260914.json for current authority",
+  "verdict": "DOCUMENT_CHECKS_PASS_RESEARCH_GAPS_REMAIN",
   "observed_repository_head": "f0c8732b45d3925029fd2b9744ca21686cadc78b",
-  "raw_evidence_root": ".codex-tmp/proposal-app-validation-20260911",
+  "raw_evidence_root": ".codex-tmp/proposal-advisor-review-20260914",
   "research_limits": [
     "Nearest-work feature-level novelty comparison remains open",
     "Qualified multi-UAV/DI role-edge and recovery evidence remains open",
@@ -13,62 +13,89 @@
   ],
   "implementation_source_check_scope": "Literature/document-only revision; no new current or historical implementation claim verified.",
   "checks": {
-    "eight_latex_entries": true,
-    "terminology": true,
+    "preservation": [
+      {
+        "language": "en",
+        "all_headings_and_seven_modules_retained": true,
+        "six_unchanged_modules_byte_equal": true,
+        "evaluation_timeline_conclusion_byte_equal": true
+      },
+      {
+        "language": "ch",
+        "all_headings_and_seven_modules_retained": true,
+        "six_unchanged_modules_byte_equal": true,
+        "evaluation_timeline_conclusion_byte_equal": true
+      }
+    ],
+    "experiment_slides_byte_equal": [
+      "Mobility: Completion under Different Coverage Conditions",
+      "Mobility: Lower Tail Latency in a Defined Subset",
+      "Fewer Execution Starts than the Parallel Baseline",
+      "A Useful Negative Result: Splitting Can Be Slower",
+      "Backup: Discovery Configuration Is Not Framework Capability",
+      "Backup: Historical Loss Evidence Is Not a New Matched Test"
+    ],
     "mirror_text_equality": true,
-    "pdf_bounds": true,
-    "pptx_bounds_and_notes": true,
-    "unchanged_experiment_slides": true,
-    "content_slides_at_most_100_words": true,
-    "libreoffice_roundtrip": true
+    "abstract_keywords_one_page": true,
+    "latex_logs_no_errors_overfull_missing_glyphs_undefined": true,
+    "claim_inventory_units": 1758,
+    "pptx_notes_count": 49,
+    "libreoffice_pages": 49
   },
   "pdfs": {
     "main.pdf": {
-      "pages": 30,
+      "pages": 50,
+      "sha256": "18de24fd21e9a630d541e28e577f73dbced6176af423dc4c0c1cf2a88564be90",
       "text_outside_page": []
     },
     "en/main.pdf": {
-      "pages": 30,
+      "pages": 50,
+      "sha256": "93ecba15634fadafed019c90f01ff4048d556e36ef2acf5e3261ffc258a71f60",
       "text_outside_page": []
     },
     "main_ch.pdf": {
-      "pages": 23,
+      "pages": 38,
+      "sha256": "fb875112cb2abda6e3b78648450aa0e2fe5c634c47324bd42054ad2119690e87",
       "text_outside_page": []
     },
     "ch/main.pdf": {
-      "pages": 23,
+      "pages": 38,
+      "sha256": "b6fdaa162d74cdfa7d8790b030b06570c54b2b31804e160fa5580850390b45d7",
       "text_outside_page": []
     },
     "slides/main.pdf": {
-      "pages": 40,
+      "pages": 49,
+      "sha256": "5cddb762610533316db68fb4d7166fa4a798d00fb8fb2e28d7fed0057eec13f9",
       "text_outside_page": []
     },
     "slides/main_35min.pdf": {
-      "pages": 40,
+      "pages": 49,
+      "sha256": "0ff1fef575cbcc86abffcb79233e1175c4149dda1a4a3776f76781a54e2d9053",
       "text_outside_page": []
     },
     "slides/speaker_notes.pdf": {
-      "pages": 8,
+      "pages": 10,
+      "sha256": "757bce0e138483c6d4cf4a532cfe38316576a24896a71fc044aeb0ba407bb225",
       "text_outside_page": []
     },
     "slides/speaker_notes_35min.pdf": {
-      "pages": 8,
+      "pages": 10,
+      "sha256": "4262f6f1cd161b80e1e51d72f3c9d15b675a9b36d54e93ccf4a73cafe44f70d8",
       "text_outside_page": []
     }
   },
   "pptx": {
-    "source_span_count": 828,
-    "assigned_once_count": 828,
-    "adjacent_pairs_grouped": 207,
-    "multi_span_textboxes": 168,
+    "source_span_count": 1006,
+    "assigned_once_count": 1006,
+    "adjacent_pairs_grouped": 262,
+    "multi_span_textboxes": 199,
     "svs_citation_textboxes": 0,
     "background_extractable_text_characters": 0,
     "independent_visual_region_count": 0,
-    "editable_textboxes": 574,
-    "native_triangle_bullets": 47,
-    "notes_pages": 40
+    "editable_textboxes": 692,
+    "notes_pages": 49
   },
-  "visual_review": "See application-validation audit for rendered-page inspection and limits.",
+  "visual_review": "All English-paper and slide PDF contact sheets; all LibreOffice slide contact sheets; changed opening/layout enlarged. Chinese changed pages aligned, unchanged modules retain prior review.",
   "text_preflight": "All ordinary LaTeX slide pages <=100 words; reference pages exempt. LibreOffice tokenization differs.",
   "historical_checks": {
     "two_design_revision": {
@@ -407,55 +434,186 @@
         "notes_pages": 40
       },
       "visual_review": "Final PDF and LibreOffice contact sheets plus enlarged affected pages; fixed figure inherited double-spacing overlap."
+    },
+    "before_advisor_review_20260914": {
+      "scope": "Broaden Chapter 4 and slides to full UAV/DI application validation platforms with framework-path coverage and bounded representative workflows",
+      "verdict": "DOCUMENT_CHECKS_PASS",
+      "checks": {
+        "eight_latex_entries": true,
+        "terminology": true,
+        "mirror_text_equality": true,
+        "pdf_bounds": true,
+        "pptx_bounds_and_notes": true,
+        "unchanged_experiment_slides": true,
+        "content_slides_at_most_100_words": true,
+        "libreoffice_roundtrip": true
+      },
+      "pdfs": {
+        "main.pdf": {
+          "pages": 30,
+          "text_outside_page": []
+        },
+        "en/main.pdf": {
+          "pages": 30,
+          "text_outside_page": []
+        },
+        "main_ch.pdf": {
+          "pages": 23,
+          "text_outside_page": []
+        },
+        "ch/main.pdf": {
+          "pages": 23,
+          "text_outside_page": []
+        },
+        "slides/main.pdf": {
+          "pages": 40,
+          "text_outside_page": []
+        },
+        "slides/main_35min.pdf": {
+          "pages": 40,
+          "text_outside_page": []
+        },
+        "slides/speaker_notes.pdf": {
+          "pages": 8,
+          "text_outside_page": []
+        },
+        "slides/speaker_notes_35min.pdf": {
+          "pages": 8,
+          "text_outside_page": []
+        }
+      },
+      "pptx": {
+        "source_span_count": 828,
+        "assigned_once_count": 828,
+        "adjacent_pairs_grouped": 207,
+        "multi_span_textboxes": 168,
+        "svs_citation_textboxes": 0,
+        "background_extractable_text_characters": 0,
+        "independent_visual_region_count": 0,
+        "editable_textboxes": 574,
+        "native_triangle_bullets": 47,
+        "notes_pages": 40
+      },
+      "files": {
+        "BUILD-RESEARCH.md": "70e1835bdef071a8b650ae592dcbf90ae884568d55efbfc92ac5cdde1333e026",
+        "authorization-revision.md": "f6a37f2755ce3d2182409fc61bbc258658e5d1828be7e9d81e5e7a8ec99296f1",
+        "bibstyle.bst": "694645ce80313afbe1aa9d14f2990bc080cf5c2b1669449df840ef08080ee3ad",
+        "ch/chapters/authorization-rationale.tex": "f03602705cb078e9bb2a196ff7fc324a2ed8ab117fd77b626e9dd4576701116b",
+        "ch/chapters/research-revision.tex": "92907a3982ffe38b1a7cb37bbb2a46b72d937b6d36de03a1ed32a24299bbbcbe",
+        "ch/main.pdf": "6be01f97e3036d33aac146628e51647d165eced26edffe2abeb5a9c7ebf99c75",
+        "ch/main.tex": "829fc7e75c0e941b2a698e1cfe68504596e4285dcdb322b729d175018b262a84",
+        "ch/ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
+        "ch/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
+        "dnmp-comparison-review-20260910.md": "05749502c25890bc0f4c88dd867c2410ec6e994ec9d4e1d4319b1996eb2185ab",
+        "dnmp-throughline-review-20260911.md": "c2ee47667cb6c58c40b9783e46049f2276e2073d146cc6eed97f44990503dd7c",
+        "en/chapters/authorization-rationale.tex": "cdaf333bf337be120a08c0bdf9cb3b7db31fb247f608363fdcf582b629f66aad",
+        "en/chapters/research-revision.tex": "8fcd43d278f0b17dc926e0724345f2f77f37334cbffc09ab8c1341f1eed87983",
+        "en/main.pdf": "01fb1c56bb13f3cf9d063a4560ae4b5122b5d77e4835893726e3bf7498543284",
+        "en/main.tex": "38786942503ddd6468e111e93a51c76b81764b377e78748d0feec58fd7e085e8",
+        "en/ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
+        "en/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
+        "invocation-scope-review-20260911.md": "d68c3469fe4e58b3348869beecf76cf6e0471a4aa55cca41831ac224d34c5159",
+        "language-review-20260910.md": "d86ff03fc119c2123514f43bffef3ff87e3e8755bb25e5f357ac40d28db68107",
+        "main.pdf": "7c3a4e1a82d2ba07036079c8ad15985d941b2bea9a32eb3570c34419de5ae37f",
+        "main.tex": "32779d10353b9f69047245399f7c19b62e5b3ec6cd0d1e648b6704bf51155c4c",
+        "main_ch.pdf": "019bf809eb596b79452337bf134412412be8cab66f9672d5a0089edd32654513",
+        "main_ch.tex": "44fca40005a770ea92d99e265874ea8624b25ca63202984a1dc94a0208746032",
+        "protocol-overview.tex": "4c3afde9b456c7b5c4d4c9efaa0f21da4d4430aeb403f311cb1919df3cf26480",
+        "ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
+        "research-references.bib": "80003353425fbd3c0ab73dff585061b00ffe6f977a0211434748f24930b10315",
+        "research-revision-audit.md": "b31399fa5eddb31fcb10bbd913d208a9f0b3f47e6af9043854c2a4b4a139b72e",
+        "review.md": "fea8b49c9f60a6bf8bb064702f7c8617d1d10bc9a88369efd3d32222ec966613",
+        "review_rendered.py": "e24daf06bf78f06cc72c7169a4c1cba3ecb7b04e12f9999921772f6bcb14d26f",
+        "review_sentence_claims.py": "a62144264ed0ac46d3ec902e820d5a99271a0a89772fa3554c0124ce93b3ed17",
+        "sentence-claim-ledger-20260911.json": "f911f8fa687e27fc508778a0ae006a69b9a14029df9afcb23258c6d3859d6bb4",
+        "sentence-review-20260911.md": "c93633313fbad75879a69bd46d76f17b7baccba6c475c0ae7e259f08f41adc58",
+        "slides/NDNSF_proposal_hybrid_editable.pptx": "035c4bb22b0b02b0059a386d110d1789c5dcc1bd0a9bc2dc4cb1de157a983437",
+        "slides/add_speaker_notes_to_pptx.py": "e05f024861008aa94dccaa80bbcb7e3ea584678895d5287e6b27da9b96d9bb5e",
+        "slides/generate_hybrid_editable_pptx.py": "7943cbd16bcdce110f141d74f56f466e59a82ad8a3d5e29ba8975c2f2a2447d7",
+        "slides/main.pdf": "81be8202a89c52d74e4239ea3329d4a0a63cdea6f2f46a1a76be64331a73f657",
+        "slides/main.tex": "4356eb5b22f67bff9d615f722a07cf324ee765e345bac07f0d2a62f3c284e296",
+        "slides/main_35min.pdf": "f7944256c684d9962642e4c1031dd89b7b4066ae24a002956114617cf4864999",
+        "slides/main_35min.tex": "fdc2fbeee6a689114c392f6a404e5f2b44f69710351d7edb5efa7cd3983cedba",
+        "slides/research-slides.tex": "67b2707db5fa1d795f80d3980ba73cedbf10291eed73e18a04aceef5720863e3",
+        "slides/speaker_notes.pdf": "ef4c0da4f224492c1a6fc0547acb565c7a1f7bd89c58e91c65e8398587d36e80",
+        "slides/speaker_notes.tex": "ac6f1a355e9840ade51636656d9634f37b775d16092257e5e23f04c3c1286184",
+        "slides/speaker_notes_35min.pdf": "387210e4fcedb494cc4c923a6f0c797bb12a42069a0d92e5e19221d68abef892",
+        "slides/speaker_notes_35min.tex": "ac6f1a355e9840ade51636656d9634f37b775d16092257e5e23f04c3c1286184",
+        "slides/test_notes_parsing.py": "1ac86242fc969e65d5b01fb65b3b589cecb27176b9d0fa376636b63177d019a4",
+        "uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
+        "validate_dnmp_throughline.py": "419f9c8df180d81da4f915a9fa8dedd451ef632f47baaac5150d56e41c99ef72",
+        "validate_invocation_scope.py": "270321c0b93bbce3c60e681df7393864e1dc3ff5ec3453a7a0ca599fb78a03c5",
+        "validate_sentence_review.py": "86d5db2ff541678fa0ec80cceba50422084dd24be64bb2e3ca00da12acc9051f"
+      },
+      "visual_review": "See application-validation audit for rendered-page inspection and limits.",
+      "raw_evidence_root": ".codex-tmp/proposal-app-validation-20260911"
     }
   },
   "files": {
     "BUILD-RESEARCH.md": "70e1835bdef071a8b650ae592dcbf90ae884568d55efbfc92ac5cdde1333e026",
+    "advisor-review-20260914.md": "046d17b8edca67f9c173b1befe6886a1a43877ee2ee8fc633a252a2a57903d57",
+    "advisor-review-validation-20260914.json": "1335e78859976e78afe3203a25448df2b57e4d0a4a9bb05687fd59a357ee5b8d",
     "authorization-revision.md": "f6a37f2755ce3d2182409fc61bbc258658e5d1828be7e9d81e5e7a8ec99296f1",
     "bibstyle.bst": "694645ce80313afbe1aa9d14f2990bc080cf5c2b1669449df840ef08080ee3ad",
+    "ch/chapters/application-motivation.tex": "c5c3a0a0d2fad96b0b51f3aee45964e896cea9fc18bb96a1e65dde1c2a6be2d3",
     "ch/chapters/authorization-rationale.tex": "f03602705cb078e9bb2a196ff7fc324a2ed8ab117fd77b626e9dd4576701116b",
-    "ch/chapters/research-revision.tex": "92907a3982ffe38b1a7cb37bbb2a46b72d937b6d36de03a1ed32a24299bbbcbe",
-    "ch/main.pdf": "6be01f97e3036d33aac146628e51647d165eced26edffe2abeb5a9c7ebf99c75",
-    "ch/main.tex": "829fc7e75c0e941b2a698e1cfe68504596e4285dcdb322b729d175018b262a84",
-    "ch/ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
+    "ch/chapters/di-workflows.tex": "cfc601a04417ae5ad2df301795a219d9209e7cd8b85c93a7bdb16bbf8c7b9583",
+    "ch/chapters/evaluation-methods.tex": "64aa410da231b3619a607b5c23b825d411f774c6d8245b4e6dc48ef13719e0d1",
+    "ch/chapters/framework-architecture.tex": "06ce34f4a8be07b81c2e9721d7adee26f7c5f8a32ffadc3e7826dbdbea81031b",
+    "ch/chapters/invocation-data-services.tex": "bd21b7796200012e27993b1b786ed48c0a821d55d3576cc395becee3607ee9c7",
+    "ch/chapters/ndn-background.tex": "932a6d89fbc3f957750f94830ecf84a3868729f291c2ab5df2133f122b826002",
+    "ch/chapters/research-revision.tex": "0005ff9533835113caffd5751b465d63e6bfb62eb0c7d0dacf533c278c617e48",
+    "ch/chapters/uav-workflows.tex": "cd5267fa70ca23e86647714ef99310e07c3a0b39aea083d2fc2e55aef2e4e9a9",
+    "ch/main.pdf": "b6fdaa162d74cdfa7d8790b030b06570c54b2b31804e160fa5580850390b45d7",
+    "ch/main.tex": "cd066e797bc30e951af15cbf5d14dc440fb8536999e7c3a977b6491f836a5ce9",
+    "ch/ref.bib": "924dadc1d8ea764497c2dcb984b14f62f37de3d6fd314e6cedb62a3237c6fdc4",
     "ch/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
     "dnmp-comparison-review-20260910.md": "05749502c25890bc0f4c88dd867c2410ec6e994ec9d4e1d4319b1996eb2185ab",
     "dnmp-throughline-review-20260911.md": "c2ee47667cb6c58c40b9783e46049f2276e2073d146cc6eed97f44990503dd7c",
+    "en/chapters/application-motivation.tex": "9b447da19bf3a1afed03f2ce37a43591daad34d3114ac3ea4d0065534cd2854e",
     "en/chapters/authorization-rationale.tex": "cdaf333bf337be120a08c0bdf9cb3b7db31fb247f608363fdcf582b629f66aad",
-    "en/chapters/research-revision.tex": "8fcd43d278f0b17dc926e0724345f2f77f37334cbffc09ab8c1341f1eed87983",
-    "en/main.pdf": "01fb1c56bb13f3cf9d063a4560ae4b5122b5d77e4835893726e3bf7498543284",
-    "en/main.tex": "38786942503ddd6468e111e93a51c76b81764b377e78748d0feec58fd7e085e8",
-    "en/ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
+    "en/chapters/di-workflows.tex": "7eb7ffbb0f08e5a04da9d2c3e8c152ce69d7027366f3133cd791fc87a89bf182",
+    "en/chapters/evaluation-methods.tex": "6306371184420000624dda47e0714a85816d691ffb7b5a1c93a5b0bdc1a380cf",
+    "en/chapters/framework-architecture.tex": "c67a089d8289f5ec56df48b0445b72eacb10a9a0c3245a464b68b6c31568faff",
+    "en/chapters/invocation-data-services.tex": "2a734ab63bf3545652dea1f0849b3a567bf687879cf7192f82feb15fa04d1ca4",
+    "en/chapters/ndn-background.tex": "55d5013f04b41fc78bd159bb82a29c6774cdaae3640dce3cbd2366ce3ef7e1ea",
+    "en/chapters/research-revision.tex": "e17ecdb453166397bb2cd903f2a07766be669fc13f9f11a2e57d850810aa04d4",
+    "en/chapters/uav-workflows.tex": "1e40b003af590802a9ace02b0cc3d7d8c060bddc3606d6166e671a0cc6714ce2",
+    "en/main.pdf": "93ecba15634fadafed019c90f01ff4048d556e36ef2acf5e3261ffc258a71f60",
+    "en/main.tex": "7c33b0de3676b6fa7e188e6101f5e98874a57326479c4c1cd2d1955d6395a900",
+    "en/ref.bib": "924dadc1d8ea764497c2dcb984b14f62f37de3d6fd314e6cedb62a3237c6fdc4",
     "en/uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
     "invocation-scope-review-20260911.md": "d68c3469fe4e58b3348869beecf76cf6e0471a4aa55cca41831ac224d34c5159",
     "language-review-20260910.md": "d86ff03fc119c2123514f43bffef3ff87e3e8755bb25e5f357ac40d28db68107",
-    "main.pdf": "7c3a4e1a82d2ba07036079c8ad15985d941b2bea9a32eb3570c34419de5ae37f",
-    "main.tex": "32779d10353b9f69047245399f7c19b62e5b3ec6cd0d1e648b6704bf51155c4c",
-    "main_ch.pdf": "019bf809eb596b79452337bf134412412be8cab66f9672d5a0089edd32654513",
-    "main_ch.tex": "44fca40005a770ea92d99e265874ea8624b25ca63202984a1dc94a0208746032",
+    "main.pdf": "18de24fd21e9a630d541e28e577f73dbced6176af423dc4c0c1cf2a88564be90",
+    "main.tex": "a8b1ee757366cbc4d5d276ee9e2e71d831e1f695d4fbac6703160603a5ab2ec1",
+    "main_ch.pdf": "fb875112cb2abda6e3b78648450aa0e2fe5c634c47324bd42054ad2119690e87",
+    "main_ch.tex": "6cd14ab4b2f5da35eadcc4163f3df1951bc63b09b4d0d451c515072a9453c8ee",
     "protocol-overview.tex": "4c3afde9b456c7b5c4d4c9efaa0f21da4d4430aeb403f311cb1919df3cf26480",
-    "ref.bib": "d427803c1ed0c8fa5233b81a69b404c95e5f63fa629f1428f187f845a8c05c6e",
-    "research-references.bib": "80003353425fbd3c0ab73dff585061b00ffe6f977a0211434748f24930b10315",
-    "research-revision-audit.md": "b31399fa5eddb31fcb10bbd913d208a9f0b3f47e6af9043854c2a4b4a139b72e",
-    "review.md": "fea8b49c9f60a6bf8bb064702f7c8617d1d10bc9a88369efd3d32222ec966613",
+    "ref.bib": "924dadc1d8ea764497c2dcb984b14f62f37de3d6fd314e6cedb62a3237c6fdc4",
+    "research-references.bib": "8a75c7bef193e75eb58a94b52916892e710ab6d0cc5842c6f8193611977e2fd1",
+    "research-revision-audit.md": "ab2bf1f88c32be3a198e3f13df00a694d6408975b2cc8800f3131a423090b905",
+    "review.md": "298ba1bdfb749f8f45b91980393f16e12ac70465297c229ced6f85d86d842b9f",
     "review_rendered.py": "e24daf06bf78f06cc72c7169a4c1cba3ecb7b04e12f9999921772f6bcb14d26f",
-    "review_sentence_claims.py": "a62144264ed0ac46d3ec902e820d5a99271a0a89772fa3554c0124ce93b3ed17",
-    "sentence-claim-ledger-20260911.json": "f911f8fa687e27fc508778a0ae006a69b9a14029df9afcb23258c6d3859d6bb4",
+    "review_sentence_claims.py": "e641af930fd656879c61376d5f9aefa520e0fd4b332c2b1cf0d46b1381a45314",
+    "sentence-claim-ledger-20260911.json": "a7eeb2f76f75d2a65dc796b1269b04da376013bd013e7b2a15db6c708f7f8b84",
+    "sentence-claim-ledger-20260914.json": "b7ed8d7c4a0f405fb6b64a6b7e8dcd0cd64b519a54a48122b51ad36af5c8b249",
     "sentence-review-20260911.md": "c93633313fbad75879a69bd46d76f17b7baccba6c475c0ae7e259f08f41adc58",
-    "slides/NDNSF_proposal_hybrid_editable.pptx": "035c4bb22b0b02b0059a386d110d1789c5dcc1bd0a9bc2dc4cb1de157a983437",
+    "slides/NDNSF_proposal_hybrid_editable.pptx": "132aa00107276f75d686e30237e2193a0cbb70ce85702016cce0c4968e017fc3",
     "slides/add_speaker_notes_to_pptx.py": "e05f024861008aa94dccaa80bbcb7e3ea584678895d5287e6b27da9b96d9bb5e",
     "slides/generate_hybrid_editable_pptx.py": "7943cbd16bcdce110f141d74f56f466e59a82ad8a3d5e29ba8975c2f2a2447d7",
-    "slides/main.pdf": "81be8202a89c52d74e4239ea3329d4a0a63cdea6f2f46a1a76be64331a73f657",
+    "slides/main.pdf": "5cddb762610533316db68fb4d7166fa4a798d00fb8fb2e28d7fed0057eec13f9",
     "slides/main.tex": "4356eb5b22f67bff9d615f722a07cf324ee765e345bac07f0d2a62f3c284e296",
-    "slides/main_35min.pdf": "f7944256c684d9962642e4c1031dd89b7b4066ae24a002956114617cf4864999",
+    "slides/main_35min.pdf": "0ff1fef575cbcc86abffcb79233e1175c4149dda1a4a3776f76781a54e2d9053",
     "slides/main_35min.tex": "fdc2fbeee6a689114c392f6a404e5f2b44f69710351d7edb5efa7cd3983cedba",
-    "slides/research-slides.tex": "67b2707db5fa1d795f80d3980ba73cedbf10291eed73e18a04aceef5720863e3",
-    "slides/speaker_notes.pdf": "ef4c0da4f224492c1a6fc0547acb565c7a1f7bd89c58e91c65e8398587d36e80",
-    "slides/speaker_notes.tex": "ac6f1a355e9840ade51636656d9634f37b775d16092257e5e23f04c3c1286184",
-    "slides/speaker_notes_35min.pdf": "387210e4fcedb494cc4c923a6f0c797bb12a42069a0d92e5e19221d68abef892",
-    "slides/speaker_notes_35min.tex": "ac6f1a355e9840ade51636656d9634f37b775d16092257e5e23f04c3c1286184",
+    "slides/research-slides.tex": "a665a9f450a9057931552fdadc1445fa1aaf38a16713473cfd21cce8e632defc",
+    "slides/speaker_notes.pdf": "757bce0e138483c6d4cf4a532cfe38316576a24896a71fc044aeb0ba407bb225",
+    "slides/speaker_notes.tex": "9f6586b1d40a503f2722460f32d2698e438f8c61a07050f3aa32b5f890515c83",
+    "slides/speaker_notes_35min.pdf": "4262f6f1cd161b80e1e51d72f3c9d15b675a9b36d54e93ccf4a73cafe44f70d8",
+    "slides/speaker_notes_35min.tex": "9f6586b1d40a503f2722460f32d2698e438f8c61a07050f3aa32b5f890515c83",
     "slides/test_notes_parsing.py": "1ac86242fc969e65d5b01fb65b3b589cecb27176b9d0fa376636b63177d019a4",
     "uofm.cls": "85d127e17c01d48088c9d2828498577e0a5bf4e537490371e357945840d2f563",
+    "validate_advisor_review.py": "538bc51bb789f8683736826fd67e4f0621639ad7279cf4be837604717258a85d",
     "validate_dnmp_throughline.py": "419f9c8df180d81da4f915a9fa8dedd451ef632f47baaac5150d56e41c99ef72",
     "validate_invocation_scope.py": "270321c0b93bbce3c60e681df7393864e1dc3ff5ec3453a7a0ca599fb78a03c5",
     "validate_sentence_review.py": "86d5db2ff541678fa0ec80cceba50422084dd24be64bb2e3ca00da12acc9051f"
@@ -1025,5 +1183,6 @@
       "ch/main.pdf": 38
     },
     "prior_fields": "historical checks, not recertified by this paper-only revision"
-  }
+  },
+  "current_validation_file": "advisor-review-validation-20260914.json"
 }

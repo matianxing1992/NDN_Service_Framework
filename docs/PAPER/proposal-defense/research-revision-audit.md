@@ -1,5 +1,9 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-14 Advisor Comment Reconciliation
+
+最新逐句修订及19条PDF／26条PPTX批注的处置见 [advisor review](advisor-review-20260914.md)，检查见 [current validation](advisor-review-validation-20260914.json)。英文50页、中文38页、slides49页；保留全部原版重要范围和既有实验数字。以下各日期记录保持历史含义；文稿已修订不等于研究证据或导师验收已完成。
+
 ## 2026-09-11 Origin Coverage Restoration
 
 完整 Origin 对照与新增内容依据见 [coverage review](origin-coverage-review.md)，本轮机器检查见 [validation](origin-expansion-validation.json)。恢复框架、API、对象交付和完整应用流程；以下原检查保留为历史，不将它们的旧页数作为本轮结果。

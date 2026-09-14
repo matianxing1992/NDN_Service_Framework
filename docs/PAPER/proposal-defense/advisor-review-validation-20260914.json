@@ -1,0 +1,609 @@
+{
+  "date": "2026-09-14",
+  "verdict": "DOCUMENT_CHECKS_PASS_RESEARCH_GAPS_REMAIN",
+  "base_ref": "5ac2de15",
+  "raw_root": ".codex-tmp/proposal-advisor-review-20260914",
+  "manual_report": "advisor-review-20260914.md",
+  "review_scope": "English complete active prose and slide claim units; changed Chinese passages aligned; unchanged Chinese modules retain prior review.",
+  "teacher_originals": {
+    "reference-pdfs/proposal 2.pdf": "902f887b0f144a6d6cee7350488401b9128d0743ab63429b5532e2798b38cd66",
+    "NDNSF_proposal_reviewed.pptx": "4ad24327ff53ad43c4ee00e56a4246ea413e0b5eb1feb9dbd1694e812439a8f8"
+  },
+  "pdf_comments": [
+    {
+      "id": "P01",
+      "page": 2,
+      "text": "Which includes"
+    },
+    {
+      "id": "P02",
+      "page": 2,
+      "text": "are there non-service oriented apps?"
+    },
+    {
+      "id": "P03",
+      "page": 2,
+      "text": "these are the facts, not the problems themselves"
+    },
+    {
+      "id": "P04",
+      "page": 2,
+      "text": "this statement is not reflected in intro chapter"
+    },
+    {
+      "id": "P05",
+      "page": 2,
+      "text": "\"lack\" is not the right words. NDN libraries provide primitives, not higer level functions, someone needs to do it"
+    },
+    {
+      "id": "P06",
+      "page": 2,
+      "text": "these 2 paragraphs have glitches in between."
+    },
+    {
+      "id": "P07",
+      "page": 2,
+      "text": "not sure what kinds of providers you refer here, spell out"
+    },
+    {
+      "id": "P08",
+      "page": 3,
+      "text": "again, intro didn't mention any issue with complexity"
+    },
+    {
+      "id": "P09",
+      "page": 3,
+      "text": "these very different issues need a better way to structure them"
+    },
+    {
+      "id": "P10",
+      "page": 6,
+      "text": "services?"
+    },
+    {
+      "id": "P11",
+      "page": 6,
+      "text": "this is the most insightful sentence so far, but you fall short on explain why."
+    },
+    {
+      "id": "P12",
+      "page": 7,
+      "text": "this whole sentence is problematic:the issue is not host-centirc, but the mismatch between tcp/ip and app needs"
+    },
+    {
+      "id": "P13",
+      "page": 7,
+      "text": "replace this by data-centric"
+    },
+    {
+      "id": "P14",
+      "page": 7,
+      "text": "this simple example is not service invocation?"
+    },
+    {
+      "id": "P15",
+      "page": 7,
+      "text": "not sure whether background beloings to introduction. I'm also surprised that you do not have any dedicated paragraph  talking about NDN's semantic naming (which plays 3 roles: identify data, used for security, and routing/ forwarding"
+    },
+    {
+      "id": "P16",
+      "page": 7,
+      "text": "NDN is a data-centric architecture, which reflected in multiple places, not \"also adopt\""
+    },
+    {
+      "id": "P17",
+      "page": 11,
+      "text": "as I sad already, primitives are used to build higher level functions. Remove the negativity here"
+    },
+    {
+      "id": "P18",
+      "page": 11,
+      "text": "this is an enumeration of issues at different levels, you need to put them into a systematically built structure."
+    },
+    {
+      "id": "P19",
+      "page": 11,
+      "text": "otherwise, how can you know you have not missed something?!"
+    }
+  ],
+  "pptx_comments": [
+    {
+      "id": "C01",
+      "page": 3,
+      "text": "These are not issues on their own; it is the implication of doing this way"
+    },
+    {
+      "id": "C02",
+      "page": 3,
+      "text": "You have not shown this"
+    },
+    {
+      "id": "C03",
+      "page": 3,
+      "text": "Need an example"
+    },
+    {
+      "id": "C04",
+      "page": 4,
+      "text": "???"
+    },
+    {
+      "id": "C05",
+      "page": 4,
+      "text": "A missing point: how/where did you identify all the major functions needed from a general “service framework”, before you claim NDNSF offers them? Identified from UAV and distributed inference only?"
+    },
+    {
+      "id": "C06",
+      "page": 5,
+      "text": "There is a question of trust anchor"
+    },
+    {
+      "id": "C07",
+      "page": 7,
+      "text": "Unsure about the pointer made on this slide"
+    },
+    {
+      "id": "C08",
+      "page": 8,
+      "text": "Shouldn’t this one directly follow slide-5?"
+    },
+    {
+      "id": "C09",
+      "page": 9,
+      "text": "shared"
+    },
+    {
+      "id": "C10",
+      "page": 10,
+      "text": "State the purpose of attribute-based"
+    },
+    {
+      "id": "C11",
+      "page": 11,
+      "text": "Multiple service providers?"
+    },
+    {
+      "id": "C12",
+      "page": 12,
+      "text": "How are these related to “service framework”?"
+    },
+    {
+      "id": "C13",
+      "page": 12,
+      "text": "Authorization of access to content"
+    },
+    {
+      "id": "C14",
+      "page": 13,
+      "text": "Reliability of what?"
+    },
+    {
+      "id": "C15",
+      "page": 13,
+      "text": "How do you know this list covers all major functions needed by apps?"
+    },
+    {
+      "id": "C16",
+      "page": 14,
+      "text": "Not sure what this claim means...."
+    },
+    {
+      "id": "C17",
+      "page": 15,
+      "text": "I feel uncertain about this set of question... Seems you know what you want to do first, then retrospectively generated the questions, instead of the questions being collected from actual app cases.  Also, if you already decided to work with NDN, some questions go away (e.g. mobility)"
+    },
+    {
+      "id": "C18",
+      "page": 17,
+      "text": "Define?"
+    },
+    {
+      "id": "C19",
+      "page": 17,
+      "text": "By whom? Controller?  How did it get to know providers?"
+    },
+    {
+      "id": "C20",
+      "page": 17,
+      "text": "Meta comment: need an overall picture of how NDNSF work first. The following is a collection of specific mechanism description"
+    },
+    {
+      "id": "C21",
+      "page": 18,
+      "text": "What are these?"
+    },
+    {
+      "id": "C22",
+      "page": 18,
+      "text": "Using a specific example could help explain what is going on"
+    },
+    {
+      "id": "C23",
+      "page": 18,
+      "text": "I have no clue what this means/implies"
+    },
+    {
+      "id": "C24",
+      "page": 19,
+      "text": "This is manual/spec, not dissertation writing"
+    },
+    {
+      "id": "C25",
+      "page": 20,
+      "text": "Who authorizes whom and when?"
+    },
+    {
+      "id": "C26",
+      "page": 21,
+      "text": "Why do we need tokens???  That is the result of policy decision.  NDN distribute policies (trust schema)"
+    }
+  ],
+  "preservation": [
+    {
+      "language": "en",
+      "all_headings_and_seven_modules_retained": true,
+      "six_unchanged_modules_byte_equal": true,
+      "evaluation_timeline_conclusion_byte_equal": true
+    },
+    {
+      "language": "ch",
+      "all_headings_and_seven_modules_retained": true,
+      "six_unchanged_modules_byte_equal": true,
+      "evaluation_timeline_conclusion_byte_equal": true
+    }
+  ],
+  "experiment_slides_byte_equal": [
+    "Mobility: Completion under Different Coverage Conditions",
+    "Mobility: Lower Tail Latency in a Defined Subset",
+    "Fewer Execution Starts than the Parallel Baseline",
+    "A Useful Negative Result: Splitting Can Be Slower",
+    "Backup: Discovery Configuration Is Not Framework Capability",
+    "Backup: Historical Loss Evidence Is Not a New Matched Test"
+  ],
+  "pages": {
+    "main.pdf": 50,
+    "en/main.pdf": 50,
+    "main_ch.pdf": 38,
+    "ch/main.pdf": 38,
+    "slides/main.pdf": 49,
+    "slides/main_35min.pdf": 49,
+    "slides/speaker_notes.pdf": 10,
+    "slides/speaker_notes_35min.pdf": 10
+  },
+  "mirror_text_equality": true,
+  "abstract_keywords_one_page": true,
+  "latex_logs_no_errors_overfull_missing_glyphs_undefined": true,
+  "text_outside_page": {
+    "main.pdf": [],
+    "en/main.pdf": [],
+    "main_ch.pdf": [],
+    "ch/main.pdf": [],
+    "slides/main.pdf": [],
+    "slides/main_35min.pdf": [],
+    "slides/speaker_notes.pdf": [],
+    "slides/speaker_notes_35min.pdf": []
+  },
+  "slide_pages": [
+    {
+      "page": 1,
+      "title": "NDNSF: A Data-Centric Service Framework for",
+      "words": 30
+    },
+    {
+      "page": 2,
+      "title": "Service Discovery: Several Candidates, One Executor",
+      "words": 67
+    },
+    {
+      "page": 3,
+      "title": "From Invocation to Collaboration: Two Research Scopes",
+      "words": 73
+    },
+    {
+      "page": 4,
+      "title": "NDN Primitives and Service-Level Decisions",
+      "words": 95
+    },
+    {
+      "page": 5,
+      "title": "Application Needs Determine the Research Scope",
+      "words": 96
+    },
+    {
+      "page": 6,
+      "title": "Three Research Questions",
+      "words": 81
+    },
+    {
+      "page": 7,
+      "title": "Related Work and the Remaining Questions",
+      "words": 86
+    },
+    {
+      "page": 8,
+      "title": "Research Contributions and Current Evidence",
+      "words": 75
+    },
+    {
+      "page": 9,
+      "title": "Participants and Trust Bootstrap",
+      "words": 74
+    },
+    {
+      "page": 10,
+      "title": "Invocation Overview: Request a Timely Aerial Image",
+      "words": 78
+    },
+    {
+      "page": 11,
+      "title": "Single-Provider Invocation: Four Named Data Types",
+      "words": 84
+    },
+    {
+      "page": 12,
+      "title": "Request: Discovery Descriptor; Selection: Task Input",
+      "words": 81
+    },
+    {
+      "page": 13,
+      "title": "Three Security Requirements; One Additional Beneﬁt",
+      "words": 60
+    },
+    {
+      "page": 14,
+      "title": "Reason 1: Conﬁdential Discovery Before Selection",
+      "words": 71
+    },
+    {
+      "page": 15,
+      "title": "Reason 2: Reuse Service-Permission Management",
+      "words": 69
+    },
+    {
+      "page": 16,
+      "title": "How NDNSF Checks Service Permissions",
+      "words": 73
+    },
+    {
+      "page": 17,
+      "title": "Identity and Replay Checks Have Diﬀerent Jobs",
+      "words": 77
+    },
+    {
+      "page": 18,
+      "title": "Additional Beneﬁt: Aggregate Service Permissions",
+      "words": 74
+    },
+    {
+      "page": 19,
+      "title": "DNMP: Trust-Schema Command Authorization",
+      "words": 89
+    },
+    {
+      "page": 20,
+      "title": "DNMP-inspired Authorization versus NDNSF",
+      "words": 81
+    },
+    {
+      "page": 21,
+      "title": "When Another Authorization Design May Be Better",
+      "words": 74
+    },
+    {
+      "page": 22,
+      "title": "Runtime Permission Grants and Withdrawals",
+      "words": 71
+    },
+    {
+      "page": 23,
+      "title": "Discovering Updates Does Not Make Revocation Instantaneous",
+      "words": 81
+    },
+    {
+      "page": 24,
+      "title": "Threat Model: What Is Trusted?",
+      "words": 71
+    },
+    {
+      "page": 25,
+      "title": "RQ2 Extension: From Positive ACKs to a Role Plan",
+      "words": 86
+    },
+    {
+      "page": 26,
+      "title": "A Plan Is More Than a Request ID",
+      "words": 78
+    },
+    {
+      "page": 27,
+      "title": "Plan-to-Data Enforcement: Check Before Advancing",
+      "words": 81
+    },
+    {
+      "page": 28,
+      "title": "Collaboration Recovery Needs Explicit State",
+      "words": 84
+    },
+    {
+      "page": 29,
+      "title": "NDNSF-UAV: Application-Level Validation",
+      "words": 72
+    },
+    {
+      "page": 30,
+      "title": "UAV Collaboration Example: Capture, Analyze and Return",
+      "words": 87
+    },
+    {
+      "page": 31,
+      "title": "UAV Evaluation: Completion and Correct Input Use",
+      "words": 72
+    },
+    {
+      "page": 32,
+      "title": "NDNSF-DI: Application-Level Validation",
+      "words": 63
+    },
+    {
+      "page": 33,
+      "title": "DI Collaboration Example: Named Computation Dependencies",
+      "words": 67
+    },
+    {
+      "page": 34,
+      "title": "DI State and Evidence Boundaries",
+      "words": 80
+    },
+    {
+      "page": 35,
+      "title": "Application Coverage and Observable Outcomes",
+      "words": 72
+    },
+    {
+      "page": 36,
+      "title": "RQ3: Deﬁne the Baselines Before Comparing",
+      "words": 66
+    },
+    {
+      "page": 37,
+      "title": "Mobility: Completion under Diﬀerent Coverage Conditions",
+      "words": 60
+    },
+    {
+      "page": 38,
+      "title": "Mobility: Lower Tail Latency in a Deﬁned Subset",
+      "words": 73
+    },
+    {
+      "page": 39,
+      "title": "Fewer Execution Starts than the Parallel Baseline",
+      "words": 68
+    },
+    {
+      "page": 40,
+      "title": "A Useful Negative Result: Splitting Can Be Slower",
+      "words": 74
+    },
+    {
+      "page": 41,
+      "title": "Remaining Experiments Follow the Claims",
+      "words": 93
+    },
+    {
+      "page": 42,
+      "title": "A Bounded Path to Spring 2027",
+      "words": 89
+    },
+    {
+      "page": 43,
+      "title": "Expected Research Outcomes",
+      "words": 76
+    },
+    {
+      "page": 44,
+      "title": "Discussion: Is This Scope Suﬃcient and Feasible?",
+      "words": 69
+    },
+    {
+      "page": 45,
+      "title": "Backup: Discovery Conﬁguration Is Not Framework Capability",
+      "words": 53
+    },
+    {
+      "page": 46,
+      "title": "Backup: Historical Loss Evidence Is Not a New Matched Test",
+      "words": 72
+    },
+    {
+      "page": 47,
+      "title": "References: NDN and Authorization",
+      "words": 124
+    },
+    {
+      "page": 48,
+      "title": "References: Invocation and Composition",
+      "words": 109
+    },
+    {
+      "page": 49,
+      "title": "References: Tools, Evidence and Degree Planning",
+      "words": 99
+    }
+  ],
+  "slide_citation_ids": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "6",
+    "7",
+    "9",
+    "10",
+    "12",
+    "15",
+    "16",
+    "17",
+    "19",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "29",
+    "30",
+    "31"
+  ],
+  "editable_text": {
+    "source_span_count": 1006,
+    "assigned_once_count": 1006,
+    "adjacent_pairs_grouped": 262,
+    "multi_span_textboxes": 199,
+    "svs_citation_textboxes": 0,
+    "background_extractable_text_characters": 0,
+    "independent_visual_region_count": 0
+  },
+  "pptx_notes_count": 49,
+  "libreoffice_pages": 49,
+  "claim_inventory_units": 1758,
+  "source_sha256": {
+    "main.tex": "a8b1ee757366cbc4d5d276ee9e2e71d831e1f695d4fbac6703160603a5ab2ec1",
+    "en/main.tex": "7c33b0de3676b6fa7e188e6101f5e98874a57326479c4c1cd2d1955d6395a900",
+    "main_ch.tex": "6cd14ab4b2f5da35eadcc4163f3df1951bc63b09b4d0d451c515072a9453c8ee",
+    "ch/main.tex": "cd066e797bc30e951af15cbf5d14dc440fb8536999e7c3a977b6491f836a5ce9",
+    "en/chapters/research-revision.tex": "e17ecdb453166397bb2cd903f2a07766be669fc13f9f11a2e57d850810aa04d4",
+    "en/chapters/authorization-rationale.tex": "cdaf333bf337be120a08c0bdf9cb3b7db31fb247f608363fdcf582b629f66aad",
+    "ch/chapters/research-revision.tex": "0005ff9533835113caffd5751b465d63e6bfb62eb0c7d0dacf533c278c617e48",
+    "ch/chapters/authorization-rationale.tex": "f03602705cb078e9bb2a196ff7fc324a2ed8ab117fd77b626e9dd4576701116b",
+    "slides/research-slides.tex": "a665a9f450a9057931552fdadc1445fa1aaf38a16713473cfd21cce8e632defc",
+    "protocol-overview.tex": "4c3afde9b456c7b5c4d4c9efaa0f21da4d4430aeb403f311cb1919df3cf26480",
+    "en/chapters/application-motivation.tex": "9b447da19bf3a1afed03f2ce37a43591daad34d3114ac3ea4d0065534cd2854e",
+    "en/chapters/di-workflows.tex": "7eb7ffbb0f08e5a04da9d2c3e8c152ce69d7027366f3133cd791fc87a89bf182",
+    "en/chapters/evaluation-methods.tex": "6306371184420000624dda47e0714a85816d691ffb7b5a1c93a5b0bdc1a380cf",
+    "en/chapters/framework-architecture.tex": "c67a089d8289f5ec56df48b0445b72eacb10a9a0c3245a464b68b6c31568faff",
+    "en/chapters/invocation-data-services.tex": "2a734ab63bf3545652dea1f0849b3a567bf687879cf7192f82feb15fa04d1ca4",
+    "en/chapters/ndn-background.tex": "55d5013f04b41fc78bd159bb82a29c6774cdaae3640dce3cbd2366ce3ef7e1ea",
+    "en/chapters/uav-workflows.tex": "1e40b003af590802a9ace02b0cc3d7d8c060bddc3606d6166e671a0cc6714ce2",
+    "ch/chapters/application-motivation.tex": "c5c3a0a0d2fad96b0b51f3aee45964e896cea9fc18bb96a1e65dde1c2a6be2d3",
+    "ch/chapters/di-workflows.tex": "cfc601a04417ae5ad2df301795a219d9209e7cd8b85c93a7bdb16bbf8c7b9583",
+    "ch/chapters/evaluation-methods.tex": "64aa410da231b3619a607b5c23b825d411f774c6d8245b4e6dc48ef13719e0d1",
+    "ch/chapters/framework-architecture.tex": "06ce34f4a8be07b81c2e9721d7adee26f7c5f8a32ffadc3e7826dbdbea81031b",
+    "ch/chapters/invocation-data-services.tex": "bd21b7796200012e27993b1b786ed48c0a821d55d3576cc395becee3607ee9c7",
+    "ch/chapters/ndn-background.tex": "932a6d89fbc3f957750f94830ecf84a3868729f291c2ab5df2133f122b826002",
+    "ch/chapters/uav-workflows.tex": "cd5267fa70ca23e86647714ef99310e07c3a0b39aea083d2fc2e55aef2e4e9a9"
+  },
+  "artifact_sha256": {
+    "main.pdf": "18de24fd21e9a630d541e28e577f73dbced6176af423dc4c0c1cf2a88564be90",
+    "en/main.pdf": "93ecba15634fadafed019c90f01ff4048d556e36ef2acf5e3261ffc258a71f60",
+    "main_ch.pdf": "fb875112cb2abda6e3b78648450aa0e2fe5c634c47324bd42054ad2119690e87",
+    "ch/main.pdf": "b6fdaa162d74cdfa7d8790b030b06570c54b2b31804e160fa5580850390b45d7",
+    "slides/main.pdf": "5cddb762610533316db68fb4d7166fa4a798d00fb8fb2e28d7fed0057eec13f9",
+    "slides/main_35min.pdf": "0ff1fef575cbcc86abffcb79233e1175c4149dda1a4a3776f76781a54e2d9053",
+    "slides/speaker_notes.pdf": "757bce0e138483c6d4cf4a532cfe38316576a24896a71fc044aeb0ba407bb225",
+    "slides/speaker_notes_35min.pdf": "4262f6f1cd161b80e1e51d72f3c9d15b675a9b36d54e93ccf4a73cafe44f70d8",
+    "slides/NDNSF_proposal_hybrid_editable.pptx": "132aa00107276f75d686e30237e2193a0cbb70ce85702016cce0c4968e017fc3"
+  },
+  "client_limit": "LibreOffice export and screenshots; Microsoft PowerPoint and Google Slides clients not run.",
+  "research_status": "No new experiments; literature novelty, full alternatives, collaboration qualification and historical DI provenance remain open."
+}
