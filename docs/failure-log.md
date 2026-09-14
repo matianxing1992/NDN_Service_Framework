@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-14 — Proposal comparison guide pagination (RESOLVED)
+
+首轮PDF对比稿说明页排成两页，说明中的固定页码偏移一页；候选未晋升。保留 `r1/` 全部产物，新增单页说明门禁后修复；最终 `r3/` 110页渲染、109页源内容保留和页码检查通过。不属于协议或实验结果。见[comparison evidence](../specs/185-prepared-model-runtime/evidence/proposal-pdf-comparison-20260914.md)。
+
 ## 2026-09-14 — Proposal timeline wording overflow (RESOLVED)
 
 Proposal定位修订首轮slides时间线页出现6.76622pt的vbox溢出；失败PDF未晋升。压缩February 2027行后，独立`latex-r2/`目录八入口构建及49页PPTX回读通过，原始日志保留；不属于产品或实验结果。详见[document evidence](../specs/185-prepared-model-runtime/evidence/proposal-structure-20260914.md)。

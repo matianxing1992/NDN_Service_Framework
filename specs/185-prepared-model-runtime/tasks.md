@@ -5,6 +5,10 @@
 
 ## Execution Progress
 
+### Proposal PDF Comparison Checkpoint — 2026-09-14
+
+DOCUMENT_PASS：完整59页Origin与当前50页英文proposal的110页文字标记PDF完成；109页文字／图片数量／页面尺寸保留，输入哈希不变，110页渲染越界0页，6项匹配回归通过。仅比较副本，不改正文、slides或native任务勾选；见[comparison evidence](evidence/proposal-pdf-comparison-20260914.md)。
+
 ### Proposal Positioning Checkpoint — 2026-09-14
 
 DOCUMENT_PASS：dissertation proposal组织与口径修订完成，独立目录八入口构建、49页PPTX回读、1,006/1,006可编辑文字spans及notes parser 2/2通过；RQ、16个被包含模块及六张实验页正文保持。首轮时间线页溢出修复且原日志保留。仅文档工作，不改变native任务勾选或资格；见[document evidence](evidence/proposal-structure-20260914.md)。
