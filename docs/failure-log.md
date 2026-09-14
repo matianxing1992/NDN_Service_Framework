@@ -4565,3 +4565,19 @@ which differs from the Spec186 handoff seal
   final import checks.
 - **Lesson**: Python package presence and extension `ldd` closure are separate;
   wheel-private RPATH assets must be included in the immutable SIF composition.
+
+## 2026-09-14 — Spec186 r17-r18 py-repoclient wheel retries failed before closure
+
+- **Area**: T006 exact base-plus-application SIF Python extension packaging.
+- **Symptom**: both retries completed the 284/284 native build and ndnsf wheel,
+  then `py-repoclient` wheel construction exited nonzero before the builder
+  native closure/import checks.  The Apptainer stream truncated the inner pip
+  diagnostic, so no source-level error was observed.
+- **Root cause**: unresolved packaging-stage failure; it did not reproduce in
+  the earlier r13-r16 runs with the same source and toolchain, and no evidence
+  ties it to the NumPy payload change.
+- **Correction**: preserve both failed candidates as rejected, keep the exact
+  source-sealed recipe unchanged, and run a bounded identical retry before
+  changing packaging code.
+- **Lesson**: a wheel-stage red must retain the candidate boundary and must not
+  be converted into a code fix without the inner compiler diagnostic.
