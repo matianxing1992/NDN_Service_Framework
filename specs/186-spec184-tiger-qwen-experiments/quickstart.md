@@ -1,7 +1,13 @@
-# Spec186 Quickstart (Planned)
+# Spec186 Quickstart (Direct MiniNDN + TigerCluster path)
 
 The commands below describe the implementation contract. They are not evidence until a
 fresh Spec186 candidate and run ID produce retained receipts.
+
+The direct result is a real YOLO run in MiniNDN followed by the same base SIF plus
+read-only application bundle on TigerCluster (single-node GPU, two-node normal/negative,
+then independent reuse). `check` and `prepare`, static tests, and local loader probes
+are fail-closed prerequisites; they are not substitutes for those runtime rows. Qwen3-
+0.6B is an auxiliary CPU path and cannot close a missing YOLO result.
 
 ## 1. Resolve Baseline
 

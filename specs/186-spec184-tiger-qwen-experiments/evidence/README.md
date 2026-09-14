@@ -31,6 +31,7 @@ of the stopping point; it is not a qualification result.
 | `closure-handoff-20260913.md` | current implemented/wired/executed/measured reconciliation | r6 staged and 1.5.3 aligned; branch remains `IN_PROGRESS` at the repository route/base-SIF/model gates |
 | `static-wiring-audit-20260913.md` | static argv/env/bind/profile-to-runner audit and repairs | lifecycle, nested profile, terminal-evidence and run-root boundary defects fixed; YOLO canonical inputs remain fail-closed external prerequisites |
 | `static-experiment-cycle-20260913.md` | static review → executable pre-dispatch/scheduler experiment → repair → re-review | all eight checks fail closed with zero remote side effects; scheduler identity drift is rejected before run-root creation |
+| `direct-target-audit-20260913.md` | direct-objective and critical-path audit | MiniNDN + TigerCluster YOLO is the primary target; static/build/preflight are prerequisites and Qwen is conditional |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do

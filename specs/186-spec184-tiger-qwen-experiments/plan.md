@@ -1,7 +1,7 @@
 # Implementation Plan: Spec184 YOLO/Qwen Cross-Host Experiment Closure
 
 **Branch**: `SPEC184Experiments` | **Date**: 2026-09-12 | **Spec**: [spec.md](spec.md)
-**Status**: PLANNED
+**Status**: IN_PROGRESS (direct MiniNDN/Tiger qualification remains open)
 
 ## Summary
 
@@ -14,6 +14,27 @@ Qwen 先在本机 CPU 验证 Qwen3-0.6B。实际权重若与现有 ONNX CPU runn
 则停止在模型输入/后端边界并记录 `WAITING_EXTERNAL_INPUT`，不修改协议或静默换
 模型。Tiger 使用稳定基础库 SIF 加只读应用 bundle 的分层组合；只改变应用时不
 重建未变化的基础 SIF。
+
+## Direct Qualification Path
+
+本计划的主结果是 Spec184 YOLO 在真实 MiniNDN 和 TigerCluster 上完成可复核运行。
+依赖图中的静态审计、完整构建、ABI/SIF closure 和资源 preflight 是必要的门，
+不是替代实验的交付结果。唯一的主路径是：
+
+```text
+T005 convergence
+  → T006 native + exact base/app composition
+  → T007 MiniNDN YOLO Y-A/Y-B/Y-N
+  → T009 Tiger single-node GPU YOLO
+  → T010 Tiger two-node normal + dependency-negative YOLO
+  → T012 independent two-node reuse
+```
+
+T001–T005、T006.a/b 和 T013 提供可审计的前置或离线收口；T006.c 提供进入真实
+运行所需的 exact base+app composition。T008 和 T011 仅在 Qwen3-0.6B 的真实
+模型/backend/resource tuple 到位时作为辅助路径。任何静态
+`PASS`、fixture、READY、CUDA probe、transport receipt 或历史 Spec183 结果都不
+能跳过 T007、T009、T010 或 T012。
 
 ## Technical Context
 

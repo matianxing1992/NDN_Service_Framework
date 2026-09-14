@@ -2,7 +2,7 @@
 
 **Feature Branch**: `SPEC184Experiments`
 **Created**: 2026-09-12
-**Status**: Draft
+**Status**: IN_PROGRESS (direct runtime qualification path open)
 **Input**: User request to turn the Spec184/TigerCluster analysis into a new Spec186 experiment specification and detailed execution ledger.
 
 ## Scope And Evidence Boundary
@@ -22,6 +22,26 @@ MiniNDN 通过只证明本机多进程路径可运行。TigerCluster 还必须�
 库闭包、节点身份、NFD/TCP 路由、Slurm allocation、GPU 后端、只读应用 bundle、
 真实跨节点 Data 依赖和完整清理。失败必须按首次边界分类并保留，不能以启动、
 READY、CUDA probe 或部分日志代替最终推理结果。
+
+## Direct Experiment Objective
+
+Spec186 的直接交付目标是 **真实 MiniNDN + TigerCluster YOLO 实验**，而不是
+静态检查、组件测试、旧证据或占位模型。主资格路径固定为：
+
+1. 固定 candidate，并完成 native/build、base SIF、只读 application bundle 和
+   exact local composition 这些前置门；
+2. 用同一 candidate 在真实 MiniNDN 多进程执行 YOLO Y-A/Y-B 正例和 Y-N 负例；
+3. 将同一 base+app composition 交给 TigerCluster，先完成单节点 GPU YOLO，再完成
+   双节点 normal 和 dependency-negative YOLO；
+4. 在新 allocation 独立复跑双节点 normal，核对所有 candidate/profile/artifact
+   hash 和新的节点、GPU、身份。
+
+静态 schema、CodeGraph、unit/integration、ABI、preflight 和 `check/prepare` 只
+是上述路径的 fail-closed 前置条件；它们可以证明 wiring 或阻止错误提交，但不能
+关闭 MiniNDN 或 Tiger 的成功标准。Qwen3-0.6B CPU MiniNDN 及其条件式 Tiger
+实验是辅助验证，缺少模型时只能保持 `WAITING_EXTERNAL_INPUT`，不能替代 YOLO
+的 MiniNDN/Tiger 资格结果。任何未产生 terminal、numerical oracle、进程退出和
+cleanup 回执的运行都不得记为实验 PASS。
 
 ## User Scenarios & Testing
 

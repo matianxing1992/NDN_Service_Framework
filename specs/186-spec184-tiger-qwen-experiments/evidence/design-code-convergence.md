@@ -339,3 +339,15 @@ collector seals are unchanged. Focused Spec186 regressions pass (`44 passed`)
 and the complete TigerCluster suite passes (`106 passed`). The implementation
 verdict remains `PASS`; exact-SIF, model, MiniNDN, CUDA and Tiger runtime
 qualification remain `BLOCK`/`WAITING_EXTERNAL_INPUT`.
+
+## Checkpoint 21 — 2026-09-13 direct-target audit
+
+The static-to-experiment review found no executable detour in the maintained path, but
+the documents did not state strongly enough that MiniNDN + TigerCluster YOLO is the
+primary deliverable. `spec.md`, `plan.md`, `tasks.md`, `validation-matrix.md` and
+`quickstart.md` now share one direct chain:
+`T005 → T006 → T007 → T009 → T010 → T012` (MiniNDN YOLO, exact composition, Tiger
+single-node GPU, Tiger two-node normal/negative, independent reuse). Static/build/
+preflight evidence is explicitly prerequisite-only; Qwen3-0.6B is conditional. This is
+a documentation boundary repair, not a runtime qualification claim. See
+`evidence/direct-target-audit-20260913.md`.

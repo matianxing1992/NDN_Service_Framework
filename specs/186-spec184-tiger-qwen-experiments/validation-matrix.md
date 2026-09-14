@@ -1,5 +1,10 @@
 # Spec186 Validation Matrix
 
+V06/V07 (real MiniNDN YOLO), V09/V10/V11 (real TigerCluster YOLO) and V13
+(independent reuse) are the direct qualification target. V01–V05 and V14 are
+supporting or offline gates; V08/V12 are conditional Qwen3-0.6B checks. A supporting
+`VERIFIED` or implementation `PASS` never closes a direct runtime row.
+
 | ID | Gate / task | Positive or negative case | Required evidence | Status at 2026-09-13 |
 | --- | --- | --- | --- | --- |
 | V01 | T001 | Exact `575b43c` source and clean branch | `baseline-inventory.md`, parent/tree/SHA, clean status | VERIFIED |

@@ -14,6 +14,18 @@ T001 → T002/T003 → T004 → T005 → T006 → T007 → T009 → T010 → T01
                                       └→ T011 ─────────┘
 ```
 
+## Direct Qualification Path
+
+MiniNDN + TigerCluster YOLO 是本任务表的直接目标。按上图执行时，主资格链只有
+`T005 → T006 → T007 → T009 → T010 → T012`：先闭合 native/base+app 运行时，
+再做真实 MiniNDN，随后用相同 composition 做 Tiger 单节点 GPU、双节点 normal /
+negative，最后做独立复跑。T001–T005、T006.a/b 的静态/build/ABI 子项和 T013
+是保护与收口门；T006.c 的 exact base+app composition 是进入真实运行的必要前置，
+但这些门的 `VERIFIED`/`PASS` 仍不表示 MiniNDN 或 Tiger 已运行。
+T008/T011 是条件式 Qwen3-0.6B 辅助链，不能替代 YOLO 主链。没有 terminal、
+numerical oracle、退出码和 cleanup 回执的结果只能保持 `WAITING_EXTERNAL_INPUT`、
+`BLOCKED_AFTER_BOUNDARY` 或其他声明范围状态。
+
 ## Detailed Execution Progress
 
 维护日期与 candidate/run/evidence 基线：2026-09-13。T001 与 T002 已完成基线
@@ -79,7 +91,8 @@ digest、run ID、命令、节点/GPU、oracle、退出和 cleanup 证据。
 
 ## Execution Rules
 
-- T005 `PASS` is a hard prerequisite for T006–T013 qualification work.
+- T005 `PASS` is a hard prerequisite for the direct T006–T012 qualification path;
+  T013 only reconciles evidence and does not turn a preflight into a runtime result.
 - Every failed or uncertain run receives a new run ID; the original receipt is immutable.
 - App-only changes may reuse an unchanged base SIF only after application ABI and candidate closure pass; base ABI/toolchain changes force affected consumer rebuilds.
 - `LOCAL_CPU_PASS`, `SINGLE_NODE_GPU_PASS`, `EXPECTED_REJECTION_PASS`, `BLOCKED_AFTER_BOUNDARY` and `WAITING_EXTERNAL_INPUT` are scope-limited states, not synonyms for complete Spec186 qualification.
