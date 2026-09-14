@@ -25,6 +25,7 @@ LOCK_SCHEMA = "ndnsf-development-lock-v1"
 REPOSITORIES = ("ndnsf", "nacAbe", "ndnSvs", "ndnSd")
 REQUIRED_WHEELS = frozenset({
     "pybind11-2.13.6-py3-none-any.whl",
+    "numpy-1.26.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
     "python_ndn-0.3-py3-none-any.whl",
     "pygtrie-2.5.0-py3-none-any.whl",
     "aenum-3.1.17-py3-none-any.whl",

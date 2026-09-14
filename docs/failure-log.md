@@ -4630,3 +4630,19 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a clean Git status does not mean a recursive source walk contains
   only source-controlled files; source sealing must enforce tracked membership
   at selection time.
+
+## 2026-09-14 — Spec186 r22 handoff omitted the wheel required by its own template
+
+- **Area**: T006 source-sealed handoff and SIF input reproducibility.
+- **Symptom**: the regenerated r22 handoff reported `SOURCE_READY` but its
+  `wheels/` directory had no NumPy wheel; the strengthened preflight then
+  stopped with `SPEC186_PREFLIGHT_NUMPY_WHEEL_COUNT`.
+- **Root cause**: the handoff lock and `REQUIRED_WHEELS` set predated the
+  NumPy RPATH repair, while the definition already required the exact
+  `numpy-1.26.4` wheel for both builder and final stages.
+- **Correction**: make the hash-locked NumPy wheel a first-class handoff
+  dependency in the canonical lock and preparer, using the existing verified
+  wheel digest.
+- **Lesson**: every file consumed by a rendered definition must be declared by
+  the source lock; a successful handoff manifest is insufficient if its input
+  set is smaller than the recipe's runtime contract.
