@@ -64,9 +64,10 @@ The Qwen case is accepted only when the model descriptor identifies actual Qwen3
 weights and a compatible backend. A tiny fixture produces `SMOKE_ONLY`, not model PASS.
 
 For local SIF work, use the profile's explicit `/usr/local/bin/apptainer`
-1.5.3 runtime. Tiger profiles use `/usr/bin/apptainer` on allocated compute
-nodes reporting 1.5.3. The Tiger login node's 1.3.4 package is metadata only;
-it never executes a SIF and is not a fallback.
+1.5.3 runtime. Tiger profiles use the project-owned
+`/project/tma1/ndnsf-di/tools/spec186/apptainer-1.5.3` on allocated compute
+nodes. The Tiger login node's `/usr/bin/apptainer` is 1.3.4 and is metadata
+only; it never executes a SIF and is not a fallback.
 
 ## 4. TigerCluster
 
@@ -81,7 +82,7 @@ python3 Experiments/TigerCluster/jobs/spec184/submit.py collect \
 
 For Tiger, use `spec184-yolo-tiger-single-gpu.json` for Y-A, then the two-node
 normal/negative/reuse profiles. The rendered job wraps the replay harness in the
-declared compute-node Apptainer 1.5.3 image and mounts the same read-only
+declared compute-node Apptainer 1.5.3 executable and image and mounts the same read-only
 application bundle and case bundle.
 
 The submitter MUST verify the immutable candidate and effective profile before transport.

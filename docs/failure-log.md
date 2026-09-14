@@ -4760,3 +4760,18 @@ which differs from the Spec186 handoff seal
   regenerate the sealed definition, and rerun preflight before building.
 - **Lesson**: a successful compiler name/flag match is insufficient; the Waf
   toolchain-root boundary is part of the reusable build recipe.
+## 2026-09-14 — Spec186 Tiger profile retained login-node Apptainer path
+
+- **Area**: T009/T010 Tiger runtime-version boundary.
+- **Symptom**: the login host reported `/usr/bin/apptainer` 1.3.4, while the
+  Spec186 contract requires 1.5.3 on every compute-node SIF invocation. The
+  profile and two static tests still named `/usr/bin/apptainer` as the compute
+  executable.
+- **Root cause**: the earlier preflight receipt described a historical compute
+  path, but the current Tiger login environment exposes only the 1.3.4 system
+  package; the project-owned 1.5.3 executable had not yet been made explicit.
+- **Correction**: stage the verified 1.5.3 binary under the project storage
+  path and change Tiger profiles, runtime policy, quickstart, and tests to use
+  that path. Login remains SSH/Slurm metadata only.
+- **Lesson**: a version string in a receipt is insufficient; the candidate must
+  bind the executable path that the allocated compute node will actually run.

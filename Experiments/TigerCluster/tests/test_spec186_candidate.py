@@ -38,7 +38,7 @@ def test_all_profiles_pin_apptainer_153_and_local_path_is_executable():
             assert runtime["path"] == "/usr/local/bin/apptainer"
             assert Path(runtime["path"]).is_file()
         else:
-            assert runtime["path"] == "/usr/bin/apptainer"
+            assert runtime["path"] == "/project/tma1/ndnsf-di/tools/spec186/apptainer-1.5.3"
 
 
 def test_apptainer_134_profile_is_rejected(tmp_path):
@@ -428,7 +428,7 @@ def test_tiger_render_targets_apptainer_and_yolo_runner():
     effective = submit.render_effective(profile, manifest, "tiger-render", Path("/tmp/tiger-render"))
     assert effective["execution"]["mode"] == "slurm-apptainer"
     launcher = effective["execution"]["containerLauncher"]
-    assert launcher[:2] == ["/usr/bin/apptainer", "exec"]
+    assert launcher[:2] == ["/project/tma1/ndnsf-di/tools/spec186/apptainer-1.5.3", "exec"]
     assert "/opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py" in effective["argv"]
     assert effective["argv"][-2:] == ["--case", "Y-A"]
     assert effective["environment"]["SPEC180_RUNTIME_OUTER"] == "1"
