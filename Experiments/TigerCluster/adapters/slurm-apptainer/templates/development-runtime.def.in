@@ -195,6 +195,15 @@ Path('/opt/ndnsf-stage/manifest/container-configure-closure.json').write_text(
     json.dumps(body, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 PY
     cd /src/ndnsf
+    # Use the already qualified Clang 10/O0 native recipe up front.  The
+    # historical successful Tiger GPU candidate used this fallback after the
+    # host GCC9 ICE; selecting it before Waf avoids paying for a doomed GCC
+    # translation-unit pass and keeps the candidate compiler identity clear.
+    test -x /usr/bin/clang-10
+    test -x /usr/bin/clang++-10
+    export CC=/usr/bin/clang-10
+    export CXX=/usr/bin/clang++-10
+    export CXXFLAGS="-B/usr/bin -O0 -g0 -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES"
     ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --with-examples --disable-local-dependency-prefix \
       --onnx-prefix=/opt/onnx \
       --nac-abe-prefix=/opt/ndnsf-di/current \
@@ -204,23 +213,7 @@ PY
     # compiled concurrently; serialize the largest target set for stability.
     # Dependency builds above remain -j2 and all parallelism stays below the
     # repository-wide TigerCluster ceiling of -j4.
-    if ! ./waf -j1 -v --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-inference.pc,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider; then
-      # GCC 9 can still hit an internal compiler error in a large provider
-      # translation unit at -j1.  Retry the exact source/dependency input with
-      # the qualified Clang 10 fallback, starting from no GCC objects.
-      test -x /usr/bin/clang-10
-      test -x /usr/bin/clang++-10
-      rm -rf build
-      export CC=/usr/bin/clang-10
-      export CXX=/usr/bin/clang++-10
-      export CXXFLAGS="-B/usr/bin -O0 -g0 -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES"
-      ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --with-examples --disable-local-dependency-prefix \
-        --onnx-prefix=/opt/onnx \
-        --nac-abe-prefix=/opt/ndnsf-di/current \
-        --ndn-svs-source-tree=/src/ndn-svs --ndn-svs-build-tree=/src/ndn-svs/build \
-        --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
-      ./waf -j1 -v --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-inference.pc,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider
-    fi
+    ./waf -j1 -v --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-inference.pc,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider
 
     install -m 0755 build/libndn-service-framework.so /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0
     ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-stage/lib/libndn-service-framework.so

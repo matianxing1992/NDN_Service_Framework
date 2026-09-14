@@ -4708,3 +4708,20 @@ which differs from the Spec186 handoff seal
   the same sealed source and dependency inputs.
 - **Lesson**: adding a compiler fallback also requires checking the package
   manager state of the bootstrap image before consuming a full native build.
+## 2026-09-14 — Spec186 r27 build stopped to restore successful-template route
+
+- **Area**: T006 exact SIF build operator boundary.
+- **Symptom**: r27 passed preflight and reached the native Waf build, but the
+  user stopped it at 10/284 to prevent another long retry while the workflow
+  was being changed to reuse the historical successful Tiger GPU template.
+  No r27 SIF or build record was promoted.
+- **Root cause**: the current repair loop was still rebuilding from a newly
+  evolved definition instead of first comparing against the retained
+  Spec183 GPU-success tuple and making only active-Spec changes.
+- **Correction**: retain the partial run as non-qualification evidence, add a
+  mandatory successful-candidate template to `itiger-ndnsf-ops`, and keep a
+  repository copy under `Experiments/TigerCluster/docs/` for every future
+  Spec186/TigerCluster preparation.
+- **Lesson**: prior successful SIF/Tiger receipts are reusable design inputs;
+  consult them before starting an expensive build, while still revalidating
+  every changed source, ABI, SIF, app, model, and node plane.
