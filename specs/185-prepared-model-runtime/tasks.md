@@ -5,6 +5,10 @@
 
 ## Execution Progress
 
+### Proposal Side-by-Side Checkpoint — 2026-09-14
+
+DOCUMENT_PASS：依用户要求将密集标记稿替换为79页左右对照，19主题索引、130个1:1完整页面面板；59／50页源稿全部覆盖，文本精确保留、光栅容差与渲染检查通过。旧110页稿保留于ab9ee6f7。仅呈现变化，不改变正文或native任务；见[side-by-side evidence](evidence/proposal-side-by-side-20260914.md)。
+
 ### Proposal PDF Comparison Checkpoint — 2026-09-14
 
 DOCUMENT_PASS：完整59页Origin与当前50页英文proposal的110页文字标记PDF完成；109页文字／图片数量／页面尺寸保留，输入哈希不变，110页渲染越界0页，6项匹配回归通过。仅比较副本，不改正文、slides或native任务勾选；见[comparison evidence](evidence/proposal-pdf-comparison-20260914.md)。

@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-14 — Side-by-side comparison layout and raster checks (RESOLVED)
+
+首轮说明页标题的PyMuPDF textbox高度校验失败；r2/r3修复后，微小光栅字形差异与一级灰度取整触发像素门禁。保留三轮日志与候选；全量只读诊断后，r4的79页／130面板文本精确校验、显著光栅差异容差和全页渲染通过，不声明逐像素相等。见[side-by-side evidence](../specs/185-prepared-model-runtime/evidence/proposal-side-by-side-20260914.md)。
+
 ## 2026-09-14 — Proposal comparison guide pagination (RESOLVED)
 
 首轮PDF对比稿说明页排成两页，说明中的固定页码偏移一页；候选未晋升。保留 `r1/` 全部产物，新增单页说明门禁后修复；最终 `r3/` 110页渲染、109页源内容保留和页码检查通过。不属于协议或实验结果。见[comparison evidence](../specs/185-prepared-model-runtime/evidence/proposal-pdf-comparison-20260914.md)。

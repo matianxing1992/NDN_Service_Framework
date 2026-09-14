@@ -1,2829 +1,404 @@
 {
   "status": "DOCUMENT_PASS",
-  "method": "PDF word alignment; no semantic or image diff",
-  "input_sha256": {
-    "/home/tianxing/NDN/ndn-service-framework/docs/PAPER/reference-pdfs/Tianxing_Dissertation_Proposal_Origin.pdf": "3e1bd2e9ae323ad919917d64c0d6a003646ddc27e7a4ca137c7e9618c9bc6277",
-    "/home/tianxing/NDN/ndn-service-framework/docs/PAPER/proposal-defense/main.pdf": "f3b6d952ed723fa0b81b6b0600434f0c37d5230a92b2b5c60a13c6f3ca90fcae",
-    "/home/tianxing/NDN/ndn-service-framework/.codex-tmp/proposal-pdf-comparison-20260914/r3/comparison-guide.pdf": "71df7e61c9a9b474c5a825c0adc2d2ea6ab757a52606ada56958c0d5f7b84e71"
+  "method": "Topic-grouped full-page side-by-side; no difference overlays",
+  "comparison_pages": 79,
+  "source_pages": [
+    59,
+    50
+  ],
+  "source_sha256": {
+    "docs/PAPER/reference-pdfs/Tianxing_Dissertation_Proposal_Origin.pdf": "3e1bd2e9ae323ad919917d64c0d6a003646ddc27e7a4ca137c7e9618c9bc6277",
+    "docs/PAPER/proposal-defense/main.pdf": "f3b6d952ed723fa0b81b6b0600434f0c37d5230a92b2b5c60a13c6f3ca90fcae"
   },
-  "output_sha256": "46fe27c93ded2733dc3f8bdc9f2585d54c43837a342b4ee8e1f33345a50eb78e",
-  "original_pages": 59,
-  "current_pages": 50,
-  "comparison_pages": 110,
-  "current_starts_at": 2,
-  "original_starts_at": 52,
-  "excluded_from_text_matching": {
-    "original": [
-      1,
-      4,
-      5
-    ],
-    "current": [
-      1,
-      3,
-      4
-    ]
+  "output_sha256": "9c0884b78936c5a022c7ae399999289acfe8e23214d6e66fad25c2250e0cc7cb",
+  "page_size_points": [
+    1272,
+    880
+  ],
+  "source_scale": 1,
+  "all_source_pages_covered": true,
+  "text_identical_and_raster_checked_panels": 130,
+  "raster_tolerance": {
+    "channel_fraction_with_error_over_8_max": 0.001,
+    "mean_channel_error_max": 1
   },
-  "original_word_count": 12057,
-  "current_word_count": 12364,
-  "marked_original_words": 11422,
-  "marked_current_words": 11729,
-  "original_page_mark_groups": {
-    "2": 59,
-    "3": 14,
-    "6": 32,
-    "7": 33,
-    "8": 29,
-    "9": 71,
-    "10": 34,
-    "11": 40,
-    "12": 35,
-    "13": 34,
-    "14": 34,
-    "15": 28,
-    "16": 5,
-    "17": 24,
-    "18": 26,
-    "19": 29,
-    "20": 27,
-    "21": 27,
-    "22": 25,
-    "23": 29,
-    "24": 29,
-    "25": 33,
-    "26": 38,
-    "27": 30,
-    "28": 4,
-    "29": 29,
-    "30": 35,
-    "31": 35,
-    "32": 41,
-    "33": 9,
-    "34": 38,
-    "35": 50,
-    "36": 50,
-    "37": 35,
-    "38": 29,
-    "39": 20,
-    "40": 34,
-    "41": 42,
-    "42": 27,
-    "43": 33,
-    "44": 27,
-    "45": 33,
-    "46": 8,
-    "47": 31,
-    "48": 38,
-    "49": 30,
-    "50": 30,
-    "51": 27,
-    "52": 28,
-    "53": 33,
-    "54": 35,
-    "55": 76,
-    "56": 21,
-    "57": 25,
-    "58": 32,
-    "59": 9
-  },
-  "current_page_mark_groups": {
-    "2": 29,
-    "5": 34,
-    "6": 27,
-    "7": 30,
-    "8": 38,
-    "9": 30,
-    "10": 11,
-    "11": 27,
-    "12": 27,
-    "13": 30,
-    "14": 30,
-    "15": 53,
-    "16": 24,
-    "17": 32,
-    "18": 47,
-    "19": 27,
-    "20": 79,
-    "21": 28,
-    "22": 28,
-    "23": 30,
-    "24": 30,
-    "25": 32,
-    "26": 29,
-    "27": 29,
-    "28": 27,
-    "29": 27,
-    "30": 52,
-    "31": 21,
-    "32": 31,
-    "33": 36,
-    "34": 52,
-    "35": 28,
-    "36": 27,
-    "37": 28,
-    "38": 32,
-    "39": 29,
-    "40": 53,
-    "41": 57,
-    "42": 26,
-    "43": 66,
-    "44": 34,
-    "45": 20,
-    "46": 39,
-    "47": 8,
-    "48": 41,
-    "49": 24,
-    "50": 43
-  },
-  "source_pages_preserved": [
+  "raster_deltas": [
     {
-      "version": "CURRENT",
-      "source_page": 1,
-      "output_page": 2
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 2,
-      "output_page": 3
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 3,
-      "output_page": 4
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 4,
-      "output_page": 5
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 5,
-      "output_page": 6
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 6,
-      "output_page": 7
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 7,
-      "output_page": 8
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 8,
-      "output_page": 9
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 9,
-      "output_page": 10
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 10,
-      "output_page": 11
-    },
-    {
-      "version": "CURRENT",
+      "comparison_page": 14,
+      "side": 1,
       "source_page": 11,
-      "output_page": 12
+      "changed_channel_fraction": 3.91991813560441e-05,
+      "channel_fraction_with_error_over_8": 3.507295173961841e-05,
+      "mean_absolute_channel_error": 0.0016752492242688322,
+      "bbox": [
+        465,
+        288,
+        470,
+        296
+      ]
     },
     {
-      "version": "CURRENT",
+      "comparison_page": 15,
+      "side": 1,
       "source_page": 12,
-      "output_page": 13
+      "changed_channel_fraction": 6.808278867102397e-05,
+      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
+      "mean_absolute_channel_error": 0.002568577936224995,
+      "bbox": [
+        445,
+        317,
+        452,
+        323
+      ]
     },
     {
-      "version": "CURRENT",
-      "source_page": 13,
-      "output_page": 14
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 14,
-      "output_page": 15
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 15,
-      "output_page": 16
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 16,
-      "output_page": 17
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 17,
-      "output_page": 18
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 18,
-      "output_page": 19
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 19,
-      "output_page": 20
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 20,
-      "output_page": 21
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 21,
-      "output_page": 22
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 22,
-      "output_page": 23
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 23,
-      "output_page": 24
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 24,
-      "output_page": 25
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 25,
-      "output_page": 26
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 26,
-      "output_page": 27
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 27,
-      "output_page": 28
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 28,
-      "output_page": 29
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 29,
-      "output_page": 30
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 30,
-      "output_page": 31
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 31,
-      "output_page": 32
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 32,
-      "output_page": 33
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 33,
-      "output_page": 34
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 34,
-      "output_page": 35
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 35,
-      "output_page": 36
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 36,
-      "output_page": 37
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 37,
-      "output_page": 38
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 38,
-      "output_page": 39
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 39,
-      "output_page": 40
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 40,
-      "output_page": 41
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 41,
-      "output_page": 42
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 42,
-      "output_page": 43
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 43,
-      "output_page": 44
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 44,
-      "output_page": 45
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 45,
-      "output_page": 46
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 46,
-      "output_page": 47
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 47,
-      "output_page": 48
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 48,
-      "output_page": 49
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 49,
-      "output_page": 50
-    },
-    {
-      "version": "CURRENT",
-      "source_page": 50,
-      "output_page": 51
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 1,
-      "output_page": 52
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 2,
-      "output_page": 53
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 3,
-      "output_page": 54
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 4,
-      "output_page": 55
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 5,
-      "output_page": 56
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 6,
-      "output_page": 57
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 7,
-      "output_page": 58
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 8,
-      "output_page": 59
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 9,
-      "output_page": 60
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 10,
-      "output_page": 61
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 11,
-      "output_page": 62
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 19,
+      "side": 1,
       "source_page": 12,
-      "output_page": 63
+      "changed_channel_fraction": 6.808278867102397e-05,
+      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
+      "mean_absolute_channel_error": 0.002568577936224995,
+      "bbox": [
+        445,
+        317,
+        452,
+        323
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 13,
-      "output_page": 64
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 14,
-      "output_page": 65
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 22,
+      "side": 1,
       "source_page": 15,
-      "output_page": 66
+      "changed_channel_fraction": 4.3325410972469796e-05,
+      "channel_fraction_with_error_over_8": 2.8883607314979865e-05,
+      "mean_absolute_channel_error": 0.0015452729913514227,
+      "bbox": [
+        445,
+        149,
+        450,
+        157
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 16,
-      "output_page": 67
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 17,
-      "output_page": 68
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 18,
-      "output_page": 69
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 30,
+      "side": 1,
       "source_page": 19,
-      "output_page": 70
+      "changed_channel_fraction": 0.07168086089654717,
+      "channel_fraction_with_error_over_8": 0.0,
+      "mean_absolute_channel_error": 0.07268972403776325,
+      "bbox": [
+        72,
+        75,
+        540,
+        754
+      ]
     },
     {
-      "version": "ORIGINAL",
+      "comparison_page": 33,
+      "side": 1,
       "source_page": 20,
-      "output_page": 71
+      "changed_channel_fraction": 0.00013410246253383508,
+      "channel_fraction_with_error_over_8": 0.00011347131445170662,
+      "mean_absolute_channel_error": 0.0027790156466627053,
+      "bbox": [
+        172,
+        205,
+        437,
+        680
+      ]
     },
     {
-      "version": "ORIGINAL",
+      "comparison_page": 37,
+      "side": 1,
       "source_page": 21,
-      "output_page": 72
+      "changed_channel_fraction": 0.06703885257806827,
+      "channel_fraction_with_error_over_8": 0.0,
+      "mean_absolute_channel_error": 0.06784553046807949,
+      "bbox": [
+        72,
+        75,
+        534,
+        754
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 22,
-      "output_page": 73
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 39,
+      "side": 1,
       "source_page": 23,
-      "output_page": 74
+      "changed_channel_fraction": 6.808278867102397e-05,
+      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
+      "mean_absolute_channel_error": 0.002568577936224995,
+      "bbox": [
+        445,
+        526,
+        452,
+        532
+      ]
     },
     {
-      "version": "ORIGINAL",
+      "comparison_page": 40,
+      "side": 1,
       "source_page": 24,
-      "output_page": 75
+      "changed_channel_fraction": 6.808278867102397e-05,
+      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
+      "mean_absolute_channel_error": 0.002568577936224995,
+      "bbox": [
+        366,
+        78,
+        373,
+        84
+      ]
     },
     {
-      "version": "ORIGINAL",
+      "comparison_page": 41,
+      "side": 1,
       "source_page": 25,
-      "output_page": 76
+      "changed_channel_fraction": 0.00012378688849277084,
+      "channel_fraction_with_error_over_8": 0.00010109262560242952,
+      "mean_absolute_channel_error": 0.004388245197068727,
+      "bbox": [
+        327,
+        526,
+        334,
+        604
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 26,
-      "output_page": 77
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 27,
-      "output_page": 78
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 28,
-      "output_page": 79
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 46,
+      "side": 1,
       "source_page": 29,
-      "output_page": 80
+      "changed_channel_fraction": 0.00011347131445170662,
+      "channel_fraction_with_error_over_8": 0.00010109262560242952,
+      "mean_absolute_channel_error": 0.004448075526506899,
+      "bbox": [
+        426,
+        414,
+        447,
+        493
+      ]
     },
     {
-      "version": "ORIGINAL",
+      "comparison_page": 47,
+      "side": 1,
+      "source_page": 29,
+      "changed_channel_fraction": 0.00011347131445170662,
+      "channel_fraction_with_error_over_8": 0.00010109262560242952,
+      "mean_absolute_channel_error": 0.004448075526506899,
+      "bbox": [
+        426,
+        414,
+        447,
+        493
+      ]
+    },
+    {
+      "comparison_page": 48,
+      "side": 1,
       "source_page": 30,
-      "output_page": 81
+      "changed_channel_fraction": 0.00013822869215026078,
+      "channel_fraction_with_error_over_8": 0.00011759754406813231,
+      "mean_absolute_channel_error": 0.004875140291806959,
+      "bbox": [
+        121,
+        229,
+        373,
+        682
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 31,
-      "output_page": 82
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 50,
+      "side": 1,
       "source_page": 32,
-      "output_page": 83
+      "changed_channel_fraction": 8.665082194493959e-05,
+      "channel_fraction_with_error_over_8": 7.633524790387536e-05,
+      "mean_absolute_channel_error": 0.0032040172971545522,
+      "bbox": [
+        465,
+        265,
+        472,
+        274
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 33,
-      "output_page": 84
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 52,
+      "side": 1,
       "source_page": 34,
-      "output_page": 85
+      "changed_channel_fraction": 7.633524790387536e-05,
+      "channel_fraction_with_error_over_8": 7.014590347923682e-05,
+      "mean_absolute_channel_error": 0.002830593516868027,
+      "bbox": [
+        406,
+        476,
+        413,
+        485
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 35,
-      "output_page": 86
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 58,
+      "side": 1,
       "source_page": 36,
-      "output_page": 87
+      "changed_channel_fraction": 9.902951079421667e-05,
+      "channel_fraction_with_error_over_8": 7.220901828744967e-05,
+      "mean_absolute_channel_error": 0.0032267115600448934,
+      "bbox": [
+        426,
+        317,
+        448,
+        683
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 37,
-      "output_page": 88
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 60,
+      "side": 1,
       "source_page": 38,
-      "output_page": 89
+      "changed_channel_fraction": 8.046147752030105e-05,
+      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
+      "mean_absolute_channel_error": 0.0031049877863603354,
+      "bbox": [
+        386,
+        315,
+        393,
+        324
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 39,
-      "output_page": 90
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 40,
-      "output_page": 91
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 41,
-      "output_page": 92
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 42,
-      "output_page": 93
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 43,
-      "output_page": 94
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 44,
-      "output_page": 95
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 45,
-      "output_page": 96
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 72,
+      "side": 1,
       "source_page": 46,
-      "output_page": 97
+      "changed_channel_fraction": 3.91991813560441e-05,
+      "channel_fraction_with_error_over_8": 3.507295173961841e-05,
+      "mean_absolute_channel_error": 0.0015081369248035915,
+      "bbox": [
+        366,
+        639,
+        371,
+        645
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 47,
-      "output_page": 98
-    },
-    {
-      "version": "ORIGINAL",
+      "comparison_page": 76,
+      "side": 1,
       "source_page": 48,
-      "output_page": 99
+      "changed_channel_fraction": 0.00011347131445170662,
+      "channel_fraction_with_error_over_8": 9.696639598600383e-05,
+      "mean_absolute_channel_error": 0.003924044365220836,
+      "bbox": [
+        406,
+        161,
+        430,
+        383
+      ]
     },
     {
-      "version": "ORIGINAL",
-      "source_page": 49,
-      "output_page": 100
+      "comparison_page": 77,
+      "side": 1,
+      "source_page": 48,
+      "changed_channel_fraction": 0.00011347131445170662,
+      "channel_fraction_with_error_over_8": 9.696639598600383e-05,
+      "mean_absolute_channel_error": 0.003924044365220836,
+      "bbox": [
+        406,
+        161,
+        430,
+        383
+      ]
     },
     {
-      "version": "ORIGINAL",
+      "comparison_page": 79,
+      "side": 1,
       "source_page": 50,
-      "output_page": 101
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 51,
-      "output_page": 102
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 52,
-      "output_page": 103
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 53,
-      "output_page": 104
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 54,
-      "output_page": 105
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 55,
-      "output_page": 106
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 56,
-      "output_page": 107
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 57,
-      "output_page": 108
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 58,
-      "output_page": 109
-    },
-    {
-      "version": "ORIGINAL",
-      "source_page": 59,
-      "output_page": 110
+      "changed_channel_fraction": 4.126229616425695e-05,
+      "channel_fraction_with_error_over_8": 2.8883607314979865e-05,
+      "mean_absolute_channel_error": 0.0012770680662837525,
+      "bbox": [
+        431,
+        628,
+        437,
+        637
+      ]
     }
   ],
-  "operations": [
+  "groups": [
     {
-      "kind": "replace",
-      "original_words": [
-        1,
+      "topic": "Title",
+      "original": [
+        1
+      ],
+      "current": [
+        1
+      ],
+      "starts_at": 2
+    },
+    {
+      "topic": "Abstract",
+      "original": [
+        2,
         3
       ],
-      "current_words": [
-        1,
-        163
-      ],
-      "original_pdf_pages": [
+      "current": [
         2
       ],
-      "current_pdf_pages": [
-        2
-      ]
+      "starts_at": 3
     },
     {
-      "kind": "replace",
-      "original_words": [
+      "topic": "Contents",
+      "original": [
         4,
-        8
-      ],
-      "current_words": [
-        164,
-        186
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        2
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        9,
-        19
-      ],
-      "current_words": [
-        187,
-        199
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        2
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        20,
-        28
-      ],
-      "current_words": [
-        200,
-        230
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        2
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        29,
-        30
-      ],
-      "current_words": [
-        231,
-        252
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        2,
         5
-      ]
+      ],
+      "current": [
+        3,
+        4
+      ],
+      "starts_at": 5
     },
     {
-      "kind": "replace",
-      "original_words": [
-        31,
-        34
-      ],
-      "current_words": [
-        253,
-        261
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        35,
-        42
-      ],
-      "current_words": [
-        262,
-        271
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        43,
-        48
-      ],
-      "current_words": [
-        272,
-        313
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        51,
-        54
-      ],
-      "current_words": [
-        316,
-        316
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        55,
-        69
-      ],
-      "current_words": [
-        317,
-        320
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        71,
-        74
-      ],
-      "current_words": [
-        322,
-        325
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        78,
-        80
-      ],
-      "current_words": [
-        329,
-        333
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        81,
-        87
-      ],
-      "current_words": [
-        334,
-        343
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        89,
-        91
-      ],
-      "current_words": [
-        345,
-        435
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        92,
-        99
-      ],
-      "current_words": [
-        436,
-        560
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        5,
-        6
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        100,
-        100
-      ],
-      "current_words": [
-        561,
-        866
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
+      "topic": "Motivation, research gap and scope",
+      "original": [
         6,
-        7
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        101,
-        103
-      ],
-      "current_words": [
-        867,
-        928
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        7
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        105,
-        105
-      ],
-      "current_words": [
-        930,
-        947
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        7
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        106,
-        108
-      ],
-      "current_words": [
-        948,
-        1009
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        7
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        109,
-        110
-      ],
-      "current_words": [
-        1010,
-        1372
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        7,
-        8,
-        9
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        111,
-        111
-      ],
-      "current_words": [
-        1373,
-        2357
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        9,
-        10,
         11,
         12,
-        13
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        112,
-        115
-      ],
-      "current_words": [
-        2358,
-        2542
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        13
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        117,
-        122
-      ],
-      "current_words": [
-        2544,
-        2591
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        13
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        123,
-        123
-      ],
-      "current_words": [
-        2592,
-        2597
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        13,
-        14
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        124,
-        129
-      ],
-      "current_words": [
-        2598,
-        2614
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        14
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        130,
-        131
-      ],
-      "current_words": [
-        2615,
-        2703
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        14
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        132,
-        142
-      ],
-      "current_words": [
-        2704,
-        2731
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        14
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        144,
-        146
-      ],
-      "current_words": [
-        2733,
-        3141
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        14,
         15,
         16
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        147,
-        147
       ],
-      "current_words": [
-        3142,
-        3227
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        16
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        148,
-        148
-      ],
-      "current_words": [
-        3228,
-        3445
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        16,
-        17
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        149,
-        150
-      ],
-      "current_words": [
-        3446,
-        3464
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        17
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        151,
-        154
-      ],
-      "current_words": [
-        3465,
-        3501
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        17
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        155,
-        158
-      ],
-      "current_words": [
-        3502,
-        5516
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        17,
-        18,
-        19,
-        20,
-        21,
-        22,
-        23,
-        24,
-        25
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        159,
-        163
-      ],
-      "current_words": [
-        5517,
-        5530
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        25
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        164,
-        168
-      ],
-      "current_words": [
-        5531,
-        5570
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        25
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        169,
-        170
-      ],
-      "current_words": [
-        5571,
-        5834
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        25,
-        26
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        172,
-        173
-      ],
-      "current_words": [
-        5836,
-        6267
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        26,
-        27
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        174,
-        175
-      ],
-      "current_words": [
-        6268,
-        6895
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        27,
-        28,
-        29
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        176,
-        189
-      ],
-      "current_words": [
-        6896,
-        6905
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        29
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        190,
-        192
-      ],
-      "current_words": [
-        6906,
-        6969
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        29,
-        30
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        193,
-        199
-      ],
-      "current_words": [
-        6970,
-        7104
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        30
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        200,
-        209
-      ],
-      "current_words": [
-        7105,
-        7193
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        30
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        210,
-        216
-      ],
-      "current_words": [
-        7194,
-        7197
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        30
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        217,
-        228
-      ],
-      "current_words": [
-        7198,
-        7249
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        30,
-        31
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        231,
-        232
-      ],
-      "current_words": [
-        7252,
-        7656
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        31,
-        32
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        233,
-        233
-      ],
-      "current_words": [
-        7657,
-        7665
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        32
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        234,
-        235
-      ],
-      "current_words": [
-        7666,
-        7689
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        32
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        237,
-        242
-      ],
-      "current_words": [
-        7691,
-        7700
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        32,
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        243,
-        252
-      ],
-      "current_words": [
-        7701,
-        7709
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        253,
-        262
-      ],
-      "current_words": [
-        7710,
-        7731
-      ],
-      "original_pdf_pages": [
-        2
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        264,
-        290
-      ],
-      "current_words": [
-        7733,
-        7742
-      ],
-      "original_pdf_pages": [
-        2,
-        3
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        292,
-        294
-      ],
-      "current_words": [
-        7744,
-        7766
-      ],
-      "original_pdf_pages": [
-        3
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        295,
-        396
-      ],
-      "current_words": [
-        7767,
-        7774
-      ],
-      "original_pdf_pages": [
-        3,
-        6
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        398,
-        402
-      ],
-      "current_words": [
-        7776,
-        7826
-      ],
-      "original_pdf_pages": [
-        6
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        403,
-        448
-      ],
-      "current_words": [
-        7827,
-        7835
-      ],
-      "original_pdf_pages": [
-        6
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        450,
-        457
-      ],
-      "current_words": [
-        7837,
-        7867
-      ],
-      "original_pdf_pages": [
-        6
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        458,
-        459
-      ],
-      "current_words": [
-        7868,
-        7881
-      ],
-      "original_pdf_pages": [
-        6
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        460,
-        524
-      ],
-      "current_words": [
-        7882,
-        7889
-      ],
-      "original_pdf_pages": [
-        6
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        525,
-        560
-      ],
-      "current_words": [
-        7890,
-        7890
-      ],
-      "original_pdf_pages": [
-        6
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        562,
-        791
-      ],
-      "current_words": [
-        7892,
-        7895
-      ],
-      "original_pdf_pages": [
+      "current": [
+        5,
         6,
-        7
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        792,
-        929
-      ],
-      "current_words": [
-        7896,
-        7897
-      ],
-      "original_pdf_pages": [
-        7
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        932,
-        936
-      ],
-      "current_words": [
-        7900,
-        7929
-      ],
-      "original_pdf_pages": [
-        7
-      ],
-      "current_pdf_pages": [
-        33
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        937,
-        939
-      ],
-      "current_words": [
-        7930,
-        8174
-      ],
-      "original_pdf_pages": [
-        7
-      ],
-      "current_pdf_pages": [
-        33,
-        34
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        941,
-        949
-      ],
-      "current_words": [
-        8176,
-        8185
-      ],
-      "original_pdf_pages": [
-        7
-      ],
-      "current_pdf_pages": [
-        34
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        950,
-        959
-      ],
-      "current_words": [
-        8186,
-        8195
-      ],
-      "original_pdf_pages": [
-        7
-      ],
-      "current_pdf_pages": [
-        34
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        960,
-        972
-      ],
-      "current_words": [
-        8196,
-        8219
-      ],
-      "original_pdf_pages": [
-        7
-      ],
-      "current_pdf_pages": [
-        34
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        973,
-        981
-      ],
-      "current_words": [
-        8220,
-        8222
-      ],
-      "original_pdf_pages": [
-        7
-      ],
-      "current_pdf_pages": [
-        34
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        982,
-        1069
-      ],
-      "current_words": [
-        8223,
-        8225
-      ],
-      "original_pdf_pages": [
         7,
         8
       ],
-      "current_pdf_pages": [
-        34
-      ]
+      "starts_at": 7
     },
     {
-      "kind": "replace",
-      "original_words": [
-        1071,
-        1072
+      "topic": "Research questions and expected contributions",
+      "original": [
+        13,
+        14
       ],
-      "current_words": [
-        8227,
-        8242
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        34
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1073,
-        1076
-      ],
-      "current_words": [
-        8243,
-        8246
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        34
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1077,
-        1097
-      ],
-      "current_words": [
-        8247,
-        8257
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        34
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1098,
-        1103
-      ],
-      "current_words": [
-        8258,
-        8260
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        34
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1106,
-        1106
-      ],
-      "current_words": [
-        8263,
-        8830
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        34,
-        35,
-        36,
-        37
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1107,
-        1107
-      ],
-      "current_words": [
-        8831,
-        8920
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        37
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1108,
-        1109
-      ],
-      "current_words": [
-        8921,
-        8923
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        37
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1110,
-        1112
-      ],
-      "current_words": [
-        8924,
-        9052
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        37
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1113,
-        1116
-      ],
-      "current_words": [
-        9053,
-        9076
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        38
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1117,
-        1121
-      ],
-      "current_words": [
-        9077,
-        9160
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        38
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1122,
-        1124
-      ],
-      "current_words": [
-        9161,
-        9187
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        38
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1125,
-        1128
-      ],
-      "current_words": [
-        9188,
-        9352
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        38
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1129,
-        1129
-      ],
-      "current_words": [
-        9353,
-        9370
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        38
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1131,
-        1133
-      ],
-      "current_words": [
-        9372,
-        9530
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        38,
-        39
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1134,
-        1134
-      ],
-      "current_words": [
-        9531,
-        9556
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        39
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1135,
-        1137
-      ],
-      "current_words": [
-        9557,
-        10253
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        39,
-        40,
-        41,
-        42
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1138,
-        1140
-      ],
-      "current_words": [
-        10254,
-        10343
-      ],
-      "original_pdf_pages": [
-        8
-      ],
-      "current_pdf_pages": [
-        42
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1142,
-        1255
-      ],
-      "current_words": [
-        10345,
-        10346
-      ],
-      "original_pdf_pages": [
-        8,
-        9
-      ],
-      "current_pdf_pages": [
-        42
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1256,
-        1307
-      ],
-      "current_words": [
-        10347,
-        10360
-      ],
-      "original_pdf_pages": [
-        9
-      ],
-      "current_pdf_pages": [
-        42
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1308,
-        1397
-      ],
-      "current_words": [
-        10361,
-        10367
-      ],
-      "original_pdf_pages": [
+      "current": [
         9,
         10
       ],
-      "current_pdf_pages": [
-        42
-      ]
+      "starts_at": 12
     },
     {
-      "kind": "replace",
-      "original_words": [
-        1400,
-        1403
-      ],
-      "current_words": [
-        10370,
-        10588
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        42,
-        43
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1404,
-        1404
-      ],
-      "current_words": [
-        10589,
-        10622
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        43
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1405,
-        1405
-      ],
-      "current_words": [
-        10623,
-        10650
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        43
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1406,
-        1409
-      ],
-      "current_words": [
-        10651,
-        10667
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        43,
-        44
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1410,
-        1410
-      ],
-      "current_words": [
-        10668,
-        10718
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        44
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1411,
-        1411
-      ],
-      "current_words": [
-        10719,
-        10740
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        44
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1412,
-        1416
-      ],
-      "current_words": [
-        10741,
-        10780
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        44
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1417,
-        1427
-      ],
-      "current_words": [
-        10781,
-        10802
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        44
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1428,
-        1434
-      ],
-      "current_words": [
-        10803,
-        10807
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        44
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1435,
-        1469
-      ],
-      "current_words": [
-        10808,
-        10818
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        44
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1473,
-        1473
-      ],
-      "current_words": [
-        10822,
-        10912
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        44
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1474,
-        1483
-      ],
-      "current_words": [
-        10913,
-        10968
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        44,
-        45
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1484,
-        1494
-      ],
-      "current_words": [
-        10969,
-        10984
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        45
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1495,
-        1498
-      ],
-      "current_words": [
-        10985,
-        11000
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        45
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1500,
-        1509
-      ],
-      "current_words": [
-        11002,
-        11003
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        45
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1510,
-        1511
-      ],
-      "current_words": [
-        11004,
-        11009
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        45
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1512,
-        1514
-      ],
-      "current_words": [
-        11010,
-        11033
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        45
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1515,
-        1522
-      ],
-      "current_words": [
-        11034,
-        11500
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        45,
-        46,
-        47,
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1524,
-        1599
-      ],
-      "current_words": [
-        11502,
-        11505
-      ],
-      "original_pdf_pages": [
-        10
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        1600,
-        1694
-      ],
-      "current_words": [
-        11506,
-        11506
-      ],
-      "original_pdf_pages": [
+      "topic": "NDN background and naming",
+      "original": [
+        7,
+        8,
+        9,
         10,
         11
       ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1695,
-        1817
-      ],
-      "current_words": [
-        11507,
-        11509
-      ],
-      "original_pdf_pages": [
+      "current": [
         11,
         12
       ],
-      "current_pdf_pages": [
-        48
-      ]
+      "starts_at": 14
     },
     {
-      "kind": "insert",
-      "original_words": [
-        1820,
-        1820
-      ],
-      "current_words": [
-        11512,
-        11548
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        1821,
-        1824
-      ],
-      "current_words": [
-        11549,
-        11549
-      ],
-      "original_pdf_pages": [
-        12
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        1825,
-        1825
-      ],
-      "current_words": [
-        11550,
-        11558
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1826,
-        1828
-      ],
-      "current_words": [
-        11559,
-        11570
-      ],
-      "original_pdf_pages": [
-        12
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1829,
-        1837
-      ],
-      "current_words": [
-        11571,
-        11588
-      ],
-      "original_pdf_pages": [
-        12
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        1838,
-        2017
-      ],
-      "current_words": [
-        11589,
-        11590
-      ],
-      "original_pdf_pages": [
-        12
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        2018,
-        2184
-      ],
-      "current_words": [
-        11591,
-        11591
-      ],
-      "original_pdf_pages": [
-        12,
-        13
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        2186,
-        2215
-      ],
-      "current_words": [
-        11593,
-        11593
-      ],
-      "original_pdf_pages": [
-        13
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        2216,
-        2230
-      ],
-      "current_words": [
-        11594,
-        11601
-      ],
-      "original_pdf_pages": [
-        13
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        2231,
-        2273
-      ],
-      "current_words": [
-        11602,
-        11603
-      ],
-      "original_pdf_pages": [
-        13
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        2274,
-        2403
-      ],
-      "current_words": [
-        11604,
-        11606
-      ],
-      "original_pdf_pages": [
-        14
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        2405,
-        2410
-      ],
-      "current_words": [
-        11608,
-        11612
-      ],
-      "original_pdf_pages": [
-        14
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        2411,
-        2427
-      ],
-      "current_words": [
-        11613,
-        11618
-      ],
-      "original_pdf_pages": [
-        14
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        2428,
-        2492
-      ],
-      "current_words": [
-        11619,
-        11620
-      ],
-      "original_pdf_pages": [
-        14
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        2493,
-        2535
-      ],
-      "current_words": [
-        11621,
-        11627
-      ],
-      "original_pdf_pages": [
-        14,
-        15
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        2538,
-        2763
-      ],
-      "current_words": [
-        11630,
-        11630
-      ],
-      "original_pdf_pages": [
-        15
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        2764,
-        9213
-      ],
-      "current_words": [
-        11631,
-        11631
-      ],
-      "original_pdf_pages": [
-        15,
-        16,
+      "topic": "Related work and design alternatives",
+      "original": [
         17,
         18,
         19,
@@ -2832,21 +407,96 @@
         22,
         23,
         24,
-        25,
+        25
+      ],
+      "current": [
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "starts_at": 19
+    },
+    {
+      "topic": "Architecture, responsibilities and API",
+      "original": [
         26,
         27,
         28,
         29,
+        30
+      ],
+      "current": [
+        17,
+        18,
+        19
+      ],
+      "starts_at": 28
+    },
+    {
+      "topic": "Named messages and invocation workflow",
+      "original": [
         30,
         31,
+        32
+      ],
+      "current": [
+        20,
+        21
+      ],
+      "starts_at": 33
+    },
+    {
+      "topic": "Authorization, confidentiality and trust",
+      "original": [
         32,
         33,
-        34,
-        35,
-        36,
+        34
+      ],
+      "current": [
+        19,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26
+      ],
+      "starts_at": 36
+    },
+    {
+      "topic": "Invocation modes, streams and large objects",
+      "original": [
         37,
         38,
-        39,
+        39
+      ],
+      "current": [
+        26,
+        27,
+        28,
+        29
+      ],
+      "starts_at": 43
+    },
+    {
+      "topic": "Collaboration plan, dependencies and execution state",
+      "original": [
+        29,
+        36,
+        37
+      ],
+      "current": [
+        29,
+        30,
+        31
+      ],
+      "starts_at": 47
+    },
+    {
+      "topic": "UAV application and validation",
+      "original": [
         40,
         41,
         42,
@@ -2855,595 +505,1200 @@
         45,
         46
       ],
-      "current_pdf_pages": []
+      "current": [
+        32,
+        33,
+        34,
+        35
+      ],
+      "starts_at": 50
     },
     {
-      "kind": "delete",
-      "original_words": [
-        9214,
-        9426
-      ],
-      "current_words": [
-        11632,
-        11632
-      ],
-      "original_pdf_pages": [
-        46,
-        47
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        9427,
-        9482
-      ],
-      "current_words": [
-        11633,
-        11633
-      ],
-      "original_pdf_pages": [
-        47
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        9485,
-        9501
-      ],
-      "current_words": [
-        11636,
-        11639
-      ],
-      "original_pdf_pages": [
-        47
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        9502,
-        9768
-      ],
-      "current_words": [
-        11640,
-        11644
-      ],
-      "original_pdf_pages": [
+      "topic": "Distributed inference application and validation",
+      "original": [
         47,
         48,
-        49
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        9769,
-        9831
-      ],
-      "current_words": [
-        11645,
-        11645
-      ],
-      "original_pdf_pages": [
-        49
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        9833,
-        10650
-      ],
-      "current_words": [
-        11647,
-        11647
-      ],
-      "original_pdf_pages": [
         49,
         50,
         51,
-        52,
-        53
+        52
       ],
-      "current_pdf_pages": []
+      "current": [
+        35,
+        36,
+        37,
+        38,
+        39,
+        40
+      ],
+      "starts_at": 57
     },
     {
-      "kind": "replace",
-      "original_words": [
-        10651,
-        11421
+      "topic": "Existing evidence and its interpretation",
+      "original": [
+        34,
+        35,
+        36
       ],
-      "current_words": [
-        11648,
-        11651
+      "current": [
+        41,
+        42
       ],
-      "original_pdf_pages": [
+      "starts_at": 63
+    },
+    {
+      "topic": "Proposed evaluation and metrics",
+      "original": [
+        45,
+        46,
+        51,
+        52,
+        54,
+        55
+      ],
+      "current": [
+        43,
+        44,
+        45
+      ],
+      "starts_at": 66
+    },
+    {
+      "topic": "Research plan, timeline and risks",
+      "original": [
         53,
         54,
         55,
-        56,
+        56
+      ],
+      "current": [
+        46,
+        47
+      ],
+      "starts_at": 72
+    },
+    {
+      "topic": "Conclusion and expected outcomes",
+      "original": [
         57
       ],
-      "current_pdf_pages": [
+      "current": [
         48
-      ]
+      ],
+      "starts_at": 76
     },
     {
-      "kind": "replace",
-      "original_words": [
-        11454,
-        11456
-      ],
-      "current_words": [
-        11684,
-        11704
-      ],
-      "original_pdf_pages": [
-        57
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11458,
-        11464
-      ],
-      "current_words": [
-        11706,
-        11712
-      ],
-      "original_pdf_pages": [
-        57
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11466,
-        11479
-      ],
-      "current_words": [
-        11714,
-        11736
-      ],
-      "original_pdf_pages": [
-        57
-      ],
-      "current_pdf_pages": [
-        48
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11507,
-        11508
-      ],
-      "current_words": [
-        11764,
-        11765
-      ],
-      "original_pdf_pages": [
-        57
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11539,
-        11543
-      ],
-      "current_words": [
-        11796,
-        11885
-      ],
-      "original_pdf_pages": [
-        57
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        11544,
-        11548
-      ],
-      "current_words": [
-        11886,
-        11886
-      ],
-      "original_pdf_pages": [
-        57
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11549,
-        11583
-      ],
-      "current_words": [
-        11887,
-        11926
-      ],
-      "original_pdf_pages": [
+      "topic": "References",
+      "original": [
         57,
-        58
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11596,
-        11617
-      ],
-      "current_words": [
-        11939,
-        11940
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11646,
-        11647
-      ],
-      "current_words": [
-        11969,
-        11970
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11654,
-        11655
-      ],
-      "current_words": [
-        11977,
-        11978
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11669,
-        11672
-      ],
-      "current_words": [
-        11992,
-        11993
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11673,
-        11716
-      ],
-      "current_words": [
-        11994,
-        11997
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        11744,
-        11826
-      ],
-      "current_words": [
-        12025,
-        12025
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11842,
-        11843
-      ],
-      "current_words": [
-        12041,
-        12042
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        49
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11865,
-        11870
-      ],
-      "current_words": [
-        12064,
-        12099
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        49,
-        50
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11871,
-        11878
-      ],
-      "current_words": [
-        12100,
-        12110
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11880,
-        11892
-      ],
-      "current_words": [
-        12112,
-        12115
-      ],
-      "original_pdf_pages": [
-        58
-      ],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11893,
-        11899
-      ],
-      "current_words": [
-        12116,
-        12124
-      ],
-      "original_pdf_pages": [
         58,
         59
       ],
-      "current_pdf_pages": [
+      "current": [
+        48,
+        49,
         50
-      ]
-    },
+      ],
+      "starts_at": 77
+    }
+  ],
+  "pages": [
     {
-      "kind": "replace",
-      "original_words": [
-        11928,
-        11929
-      ],
-      "current_words": [
-        12153,
-        12154
-      ],
-      "original_pdf_pages": [
-        59
-      ],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        11937,
-        11937
-      ],
-      "current_words": [
-        12162,
-        12193
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        11938,
-        11938
-      ],
-      "current_words": [
-        12194,
-        12204
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        11982,
-        11983
-      ],
-      "current_words": [
-        12248,
-        12249
-      ],
-      "original_pdf_pages": [
-        59
-      ],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "kind": "delete",
-      "original_words": [
-        12017,
-        12047
-      ],
-      "current_words": [
-        12283,
-        12283
-      ],
-      "original_pdf_pages": [
-        59
-      ],
-      "current_pdf_pages": []
-    },
-    {
-      "kind": "replace",
-      "original_words": [
-        12048,
-        12054
-      ],
-      "current_words": [
-        12284,
-        12319
-      ],
-      "original_pdf_pages": [
-        59
-      ],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        12056,
-        12056
-      ],
-      "current_words": [
-        12321,
-        12323
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "kind": "insert",
-      "original_words": [
-        12057,
-        12057
-      ],
-      "current_words": [
-        12324,
-        12364
-      ],
-      "original_pdf_pages": [],
-      "current_pdf_pages": [
-        50
-      ]
-    },
-    {
-      "verbatim_runs_recovered_independent_of_order": [
+      "comparison_page": 2,
+      "topic": "Title",
+      "panels": [
         {
-          "original_start": 11744,
-          "current_start": 11844,
-          "word_count": 28
+          "version": "ORIGINAL",
+          "source_page": 1
         },
         {
-          "original_start": 11798,
-          "current_start": 11898,
-          "word_count": 26
+          "version": "CURRENT",
+          "source_page": 1
+        }
+      ]
+    },
+    {
+      "comparison_page": 3,
+      "topic": "Abstract",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 2
         },
         {
-          "original_start": 11692,
-          "current_start": 11819,
-          "word_count": 23
+          "version": "CURRENT",
+          "source_page": 2
+        }
+      ]
+    },
+    {
+      "comparison_page": 4,
+      "topic": "Abstract",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 3
         },
         {
-          "original_start": 11673,
-          "current_start": 11800,
-          "word_count": 18
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 5,
+      "topic": "Contents",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 4
         },
         {
-          "original_start": 11773,
-          "current_start": 11873,
-          "word_count": 12
+          "version": "CURRENT",
+          "source_page": 3
+        }
+      ]
+    },
+    {
+      "comparison_page": 6,
+      "topic": "Contents",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 5
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 4
+        }
+      ]
+    },
+    {
+      "comparison_page": 7,
+      "topic": "Motivation, research gap and scope",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 6
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 5
+        }
+      ]
+    },
+    {
+      "comparison_page": 8,
+      "topic": "Motivation, research gap and scope",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 11
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 6
+        }
+      ]
+    },
+    {
+      "comparison_page": 9,
+      "topic": "Motivation, research gap and scope",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 12
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 7
+        }
+      ]
+    },
+    {
+      "comparison_page": 10,
+      "topic": "Motivation, research gap and scope",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 15
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 8
+        }
+      ]
+    },
+    {
+      "comparison_page": 11,
+      "topic": "Motivation, research gap and scope",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 16
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 12,
+      "topic": "Research questions and expected contributions",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 13
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 9
+        }
+      ]
+    },
+    {
+      "comparison_page": 13,
+      "topic": "Research questions and expected contributions",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 14
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 10
+        }
+      ]
+    },
+    {
+      "comparison_page": 14,
+      "topic": "NDN background and naming",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 7
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 11
+        }
+      ]
+    },
+    {
+      "comparison_page": 15,
+      "topic": "NDN background and naming",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 8
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 12
+        }
+      ]
+    },
+    {
+      "comparison_page": 16,
+      "topic": "NDN background and naming",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 9
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 17,
+      "topic": "NDN background and naming",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 10
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 18,
+      "topic": "NDN background and naming",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 11
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 19,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 17
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 12
+        }
+      ]
+    },
+    {
+      "comparison_page": 20,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 18
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 13
+        }
+      ]
+    },
+    {
+      "comparison_page": 21,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 19
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 14
+        }
+      ]
+    },
+    {
+      "comparison_page": 22,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 20
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 15
+        }
+      ]
+    },
+    {
+      "comparison_page": 23,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 21
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 16
+        }
+      ]
+    },
+    {
+      "comparison_page": 24,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 22
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 25,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 23
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 26,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 24
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 27,
+      "topic": "Related work and design alternatives",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 25
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 28,
+      "topic": "Architecture, responsibilities and API",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 26
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 17
+        }
+      ]
+    },
+    {
+      "comparison_page": 29,
+      "topic": "Architecture, responsibilities and API",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 27
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 18
+        }
+      ]
+    },
+    {
+      "comparison_page": 30,
+      "topic": "Architecture, responsibilities and API",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 28
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 19
+        }
+      ]
+    },
+    {
+      "comparison_page": 31,
+      "topic": "Architecture, responsibilities and API",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 29
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 32,
+      "topic": "Architecture, responsibilities and API",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 30
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 33,
+      "topic": "Named messages and invocation workflow",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 30
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 20
+        }
+      ]
+    },
+    {
+      "comparison_page": 34,
+      "topic": "Named messages and invocation workflow",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 31
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 21
+        }
+      ]
+    },
+    {
+      "comparison_page": 35,
+      "topic": "Named messages and invocation workflow",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 32
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 36,
+      "topic": "Authorization, confidentiality and trust",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 32
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 19
+        }
+      ]
+    },
+    {
+      "comparison_page": 37,
+      "topic": "Authorization, confidentiality and trust",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 33
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 21
+        }
+      ]
+    },
+    {
+      "comparison_page": 38,
+      "topic": "Authorization, confidentiality and trust",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 34
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 22
+        }
+      ]
+    },
+    {
+      "comparison_page": 39,
+      "topic": "Authorization, confidentiality and trust",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": null
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 23
+        }
+      ]
+    },
+    {
+      "comparison_page": 40,
+      "topic": "Authorization, confidentiality and trust",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": null
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 24
+        }
+      ]
+    },
+    {
+      "comparison_page": 41,
+      "topic": "Authorization, confidentiality and trust",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": null
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 25
+        }
+      ]
+    },
+    {
+      "comparison_page": 42,
+      "topic": "Authorization, confidentiality and trust",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": null
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 26
+        }
+      ]
+    },
+    {
+      "comparison_page": 43,
+      "topic": "Invocation modes, streams and large objects",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 37
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 26
+        }
+      ]
+    },
+    {
+      "comparison_page": 44,
+      "topic": "Invocation modes, streams and large objects",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 38
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 27
+        }
+      ]
+    },
+    {
+      "comparison_page": 45,
+      "topic": "Invocation modes, streams and large objects",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 39
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 28
+        }
+      ]
+    },
+    {
+      "comparison_page": 46,
+      "topic": "Invocation modes, streams and large objects",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": null
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 29
+        }
+      ]
+    },
+    {
+      "comparison_page": 47,
+      "topic": "Collaboration plan, dependencies and execution state",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 29
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 29
+        }
+      ]
+    },
+    {
+      "comparison_page": 48,
+      "topic": "Collaboration plan, dependencies and execution state",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 36
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 30
+        }
+      ]
+    },
+    {
+      "comparison_page": 49,
+      "topic": "Collaboration plan, dependencies and execution state",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 37
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 31
+        }
+      ]
+    },
+    {
+      "comparison_page": 50,
+      "topic": "UAV application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 40
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 32
+        }
+      ]
+    },
+    {
+      "comparison_page": 51,
+      "topic": "UAV application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 41
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 33
+        }
+      ]
+    },
+    {
+      "comparison_page": 52,
+      "topic": "UAV application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 42
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 34
+        }
+      ]
+    },
+    {
+      "comparison_page": 53,
+      "topic": "UAV application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 43
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 35
+        }
+      ]
+    },
+    {
+      "comparison_page": 54,
+      "topic": "UAV application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 44
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 55,
+      "topic": "UAV application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 45
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 56,
+      "topic": "UAV application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 46
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 57,
+      "topic": "Distributed inference application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 47
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 35
+        }
+      ]
+    },
+    {
+      "comparison_page": 58,
+      "topic": "Distributed inference application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 48
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 36
+        }
+      ]
+    },
+    {
+      "comparison_page": 59,
+      "topic": "Distributed inference application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 49
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 37
+        }
+      ]
+    },
+    {
+      "comparison_page": 60,
+      "topic": "Distributed inference application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 50
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 38
+        }
+      ]
+    },
+    {
+      "comparison_page": 61,
+      "topic": "Distributed inference application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 51
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 39
+        }
+      ]
+    },
+    {
+      "comparison_page": 62,
+      "topic": "Distributed inference application and validation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 52
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 40
+        }
+      ]
+    },
+    {
+      "comparison_page": 63,
+      "topic": "Existing evidence and its interpretation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 34
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 41
+        }
+      ]
+    },
+    {
+      "comparison_page": 64,
+      "topic": "Existing evidence and its interpretation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 35
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 42
+        }
+      ]
+    },
+    {
+      "comparison_page": 65,
+      "topic": "Existing evidence and its interpretation",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 36
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 66,
+      "topic": "Proposed evaluation and metrics",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 45
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 43
+        }
+      ]
+    },
+    {
+      "comparison_page": 67,
+      "topic": "Proposed evaluation and metrics",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 46
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 44
+        }
+      ]
+    },
+    {
+      "comparison_page": 68,
+      "topic": "Proposed evaluation and metrics",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 51
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 45
+        }
+      ]
+    },
+    {
+      "comparison_page": 69,
+      "topic": "Proposed evaluation and metrics",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 52
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 70,
+      "topic": "Proposed evaluation and metrics",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 54
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 71,
+      "topic": "Proposed evaluation and metrics",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 55
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 72,
+      "topic": "Research plan, timeline and risks",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 53
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 46
+        }
+      ]
+    },
+    {
+      "comparison_page": 73,
+      "topic": "Research plan, timeline and risks",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 54
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 47
+        }
+      ]
+    },
+    {
+      "comparison_page": 74,
+      "topic": "Research plan, timeline and risks",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 55
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 75,
+      "topic": "Research plan, timeline and risks",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 56
+        },
+        {
+          "version": "CURRENT",
+          "source_page": null
+        }
+      ]
+    },
+    {
+      "comparison_page": 76,
+      "topic": "Conclusion and expected outcomes",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 57
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 48
+        }
+      ]
+    },
+    {
+      "comparison_page": 77,
+      "topic": "References",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 57
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 48
+        }
+      ]
+    },
+    {
+      "comparison_page": 78,
+      "topic": "References",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 58
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 49
+        }
+      ]
+    },
+    {
+      "comparison_page": 79,
+      "topic": "References",
+      "panels": [
+        {
+          "version": "ORIGINAL",
+          "source_page": 59
+        },
+        {
+          "version": "CURRENT",
+          "source_page": 50
         }
       ]
     }
   ],
-  "limitations": [
-    "Reordered text can appear as removed and added.",
-    "Figures and formatting preserved but not automatically compared.",
-    "Title, contents and page-number-only changes not highlighted.",
-    "PDF extraction / word alignment is not semantic change classification."
+  "limits": [
+    "Topic grouping is not sentence alignment.",
+    "Boundary pages deliberately repeat.",
+    "Embedded pages are unchanged; internal source-PDF links are not copied."
   ]
 }

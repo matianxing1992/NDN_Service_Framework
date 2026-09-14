@@ -1,5 +1,7 @@
 # Proposal PDF Comparison
 
+历史记录：本页110页文字标记稿对应提交 `ab9ee6f7`；用户随后要求改为左右对照，同名交付已由[79页对照稿](proposal-side-by-side-20260914.md)替代。旧产物仍在原始r3目录和该Git提交中保留。
+
 ## Scope
 
 仅制作完整原版 `Tianxing_Dissertation_Proposal_Origin.pdf`（59页）与当前英文proposal（50页）的PDF文字差异阅读副本。不是11页老师批注稿，也不采用旧 `revision-comparison/` 中另一份57页源码快照。不得改变正文、slides、模型或实验结果。
