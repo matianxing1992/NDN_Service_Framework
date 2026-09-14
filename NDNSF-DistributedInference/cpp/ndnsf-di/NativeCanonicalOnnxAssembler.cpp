@@ -450,6 +450,7 @@ prepareNativeCanonicalOnnxRole(
     auto finalModel = finalDir / "model.onnx";
     const auto finalManifest = finalDir / "manifest.json";
     const auto finalSignature = finalDir / "manifest.signature";
+    std::filesystem::path encryptedArtifactPath;
     if (protectedRole) {
       // Source and native assembly buffers are already owned by the staging-directory lease.
       // Ciphertext alone is retained in the final cache; ORT reads a fresh
@@ -464,6 +465,7 @@ prepareNativeCanonicalOnnxRole(
       });
       const auto cipherPath = finalDir / "model.onnx.cipher";
       writeFileAtomic(cipherPath, sealed);
+      encryptedArtifactPath = cipherPath;
       const auto stored = readFile(cipherPath, projection.assembly.maxAssembledBytes + MaxAssemblyMetadataBytes);
       std::vector<std::uint8_t> plaintext;
       NativePlaintextBufferGuard plaintextGuard{plaintext};
@@ -528,6 +530,8 @@ prepareNativeCanonicalOnnxRole(
       {"assemblySignature", signature},
       {"assembledFrom", "canonical-root-post-selection"},
     };
+    if (protectedRole)
+      spec.metadata["encryptedArtifactPath"] = encryptedArtifactPath.string();
     if (projection.dataflow.terminalResponseOwner) {
       // The V3 dataflow contract is the authority for terminal ownership.
       // Bind the assembled ONNX output to the same sealed scope consumed by

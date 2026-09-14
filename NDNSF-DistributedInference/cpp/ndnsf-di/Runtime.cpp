@@ -778,6 +778,12 @@ struct RuntimeState
   std::shared_ptr<NativeAuthenticatedGrantClient> grants;
   std::shared_ptr<const NativeOfferAdmission> offerAdmission;
   std::shared_ptr<NativeConversationCoordinator> conversations;
+  // Provider-only runtimes deliberately have no Core User or requester
+  // model directory.  The façade is an opaque shared owner returned by
+  // Runtime::provider(); User access remains rejected for that state.
+  std::shared_ptr<Provider> provider;
+  ProviderConfig providerConfig;
+  bool providerOnly = false;
   std::shared_ptr<NativePlacementStrategyRegistry> placementRegistry;
   // Shared only as an opaque identity token; it never contains request or
   // authorization state and is used to bind placement handles to this State.
@@ -1369,6 +1375,8 @@ Runtime::~Runtime() noexcept
 {
   if (!m_state) return;
   auto state = m_state;
+  if (state->providerOnly && state->provider)
+    state->provider->stop();
   {
     auto owner = state->coreOwner;
     std::unique_lock<std::mutex> ioGate;
@@ -1439,6 +1447,8 @@ void Runtime::close() noexcept
     return;
 
   auto state = m_state;
+  if (state->providerOnly && state->provider)
+    state->provider->stop();
   auto owner = state->coreOwner;
   {
     std::unique_lock<std::mutex> ioGate;
@@ -1468,6 +1478,20 @@ bool Runtime::drain(Milliseconds timeout) const
                   "Runtime drain timeout must not be negative");
   if (!m_state)
     throw DiError("RUNTIME_CLOSED", "local", "lifecycle", "Runtime has no state");
+
+  if (m_state->providerOnly) {
+    {
+      std::lock_guard<std::mutex> lock(m_state->mutex);
+      if (m_state->phase == detail::RuntimeState::Phase::Open)
+        m_state->phase = detail::RuntimeState::Phase::Closing;
+    }
+    const auto drained = m_state->provider ? m_state->provider->drain(timeout) : true;
+    if (!drained)
+      return false;
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    m_state->phase = detail::RuntimeState::Phase::Drained;
+    return true;
+  }
 
   auto state = m_state;
   const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -1553,6 +1577,28 @@ Subscription Runtime::drainAsync(
     throw DiError("RUNTIME_CLOSED", "local", "lifecycle", "Runtime has no state");
 
   auto state = m_state;
+  if (state->providerOnly) {
+    const auto provider = state->provider;
+    if (!provider)
+      throw DiError("RUNTIME_CLOSED", "local", "lifecycle",
+                    "Provider-only Runtime has no Provider");
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (state->phase == detail::RuntimeState::Phase::Open)
+        state->phase = detail::RuntimeState::Phase::Closing;
+    }
+    auto wrapped = [state, callback = std::move(callback)](
+      std::exception_ptr error, bool result) mutable {
+      if (!error && result) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->phase == detail::RuntimeState::Phase::Open ||
+            state->phase == detail::RuntimeState::Phase::Closing)
+          state->phase = detail::RuntimeState::Phase::Drained;
+      }
+      try { callback(std::move(error), result); } catch (...) {}
+    };
+    return provider->drainAsync(timeout, std::move(wrapped));
+  }
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   std::shared_ptr<detail::CoreRuntimeOwner> owner;
   bool closeCore = false;
@@ -1753,10 +1799,32 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   return std::shared_ptr<Runtime>(new Runtime(std::move(state)));
 }
 
+std::shared_ptr<Runtime> Runtime::open(const ProviderConfig& config)
+{
+  if (!config.valid())
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "configuration",
+                  "ProviderConfig is empty");
+  auto state = std::make_shared<detail::RuntimeState>();
+  state->providerOnly = true;
+  state->providerConfig = config;
+  try {
+    state->provider = std::make_shared<Provider>(Provider::fromConfig(config));
+  }
+  catch (const std::exception& error) {
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "provider",
+                  std::string("Provider cannot be opened: ") + error.what());
+  }
+  state->runtimeBinding = std::make_shared<std::uint8_t>(0);
+  return std::shared_ptr<Runtime>(new Runtime(std::move(state)));
+}
+
 User Runtime::user(UserConfig config)
 {
   if (!m_state)
     throw DiError("RUNTIME_CLOSED", "local", "lifecycle", "Runtime has no state");
+  if (m_state->providerOnly)
+    throw DiError("ROLE_UNAVAILABLE", "local", "user",
+                  "Provider-only Runtime has no User directory");
   if (!config.profileName.empty() && config.profileName != "default")
     throw DiError("UNSUPPORTED_CAPABILITY", "local", "profile",
                   "only the default Runtime profile is supported");
@@ -1781,6 +1849,49 @@ Runtime::placementStrategy(const std::string& id) const
                   "placement strategy is not registered: " + id);
   return std::shared_ptr<const PlacementStrategy>(
     new PlacementStrategy(strategy, m_state->runtimeBinding));
+}
+
+Provider Runtime::provider(const ProviderConfig& config)
+{
+  if (!m_state)
+    throw DiError("RUNTIME_CLOSED", "local", "provider", "Runtime has no state");
+  if (!config.valid())
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "provider",
+                  "ProviderConfig is empty");
+  std::lock_guard<std::mutex> lock(m_state->mutex);
+  if (m_state->phase != detail::RuntimeState::Phase::Open)
+    throw DiError("RUNTIME_CLOSED", "local", "provider", "Runtime is closed");
+  if (!m_state->providerOnly)
+    throw DiError("CONFIG_CONFLICT", "local", "provider",
+                  "requester Runtime cannot be converted to Provider-only Runtime");
+  if (m_state->providerConfig.valid() &&
+      !m_state->providerConfig.equivalent(config)) {
+    throw DiError("CONFIG_CONFLICT", "local", "provider",
+                  "ProviderConfig conflicts with the configured Provider");
+  }
+  if (!m_state->provider) {
+    try {
+      m_state->provider = std::make_shared<Provider>(Provider::fromConfig(config));
+    }
+    catch (const std::exception& error) {
+      throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "provider",
+                    std::string("Provider cannot be opened: ") + error.what());
+    }
+  }
+  return *m_state->provider;
+}
+
+Provider Runtime::provider()
+{
+  if (!m_state)
+    throw DiError("RUNTIME_CLOSED", "local", "provider", "Runtime has no state");
+  std::lock_guard<std::mutex> lock(m_state->mutex);
+  if (m_state->phase != detail::RuntimeState::Phase::Open)
+    throw DiError("RUNTIME_CLOSED", "local", "provider", "Runtime is closed");
+  if (!m_state->providerOnly || !m_state->provider)
+    throw DiError("ROLE_UNAVAILABLE", "local", "provider",
+                  "Runtime has no configured Provider");
+  return *m_state->provider;
 }
 
 } // namespace ndnsf::di

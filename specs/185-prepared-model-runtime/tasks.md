@@ -22,8 +22,8 @@
 | [T006 Handle Deadlines Events and Cancellation](#t006) | PASS | T005 static | B3 closed; [b3-request](evidence/b3-request.md) covers handle/deadline/event/cancel/drain cases, normal and ASan/UBSan C++ extension/request selectors (10/10 and 12/12 x 2 each) | 2026-09-13 07:50 -05:00 |
 | [T007 Prepared Conversations and Committed Checkpoints](#t007) | PASS | B3 exit | B4 closed; final composition `B4_COMPOSITION_PASS`, normal v26 and ASan/UBSan+LSan v19 builds, conversation r49/r50 and r40/r41, API r51/r52 and r42/r43 all `RC=0`; C++ two-turn, checkpoint, close/drain and unauthenticated rejection evidence in [b4-conversation](evidence/b4-conversation.md) | 2026-09-13 13:01 -05:00 |
 | [T008 Conversation Recovery Replacement and Export](#t008) | PASS | T007 static | B4 closed; final composition `B4_COMPOSITION_PASS`, normal v26 and ASan/UBSan+LSan v19 builds, conversation r49/r50 and r40/r41, API r51/r52 and r42/r43 all `RC=0`; C++ recovery, export/import and replacement isolation evidence in [b4-conversation](evidence/b4-conversation.md) | 2026-09-13 13:01 -05:00 |
-| [T009 Provider Facade and Authenticated Assembly](#t009) | NOT_STARTED | B4 exit | B5 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
-| [T010 Protected Artifact and Runner Template Reuse](#t010) | NOT_STARTED | T009 static | B5 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T009 Provider Facade and Authenticated Assembly](#t009) | PARTIAL | B4 exit | B5 T009 static v11, T010 v67 and composition v4 `PASS`; normal compile v22 and authenticated/full runtime v21-v23 `RC=0`; sanitizer compile v3 and full runtime v2-v3 `RC=0`; final composition/closure record pending; [b5-provider](evidence/b5-provider.md#b5-sanitizer-compile-runtime-pass-v3-v2-v3) | 2026-09-14 05:24 -05:00 |
+| [T010 Protected Artifact and Runner Template Reuse](#t010) | PARTIAL | T009 static | B5 T010 static v67 and composition v4 `PASS`; normal compile v22 and full runtime v21-v23 `RC=0`; sanitizer compile v3 and full runtime v2-v3 `RC=0`; final composition/closure record pending; [b5-provider](evidence/b5-provider.md#b5-sanitizer-compile-runtime-pass-v3-v2-v3) | 2026-09-14 05:24 -05:00 |
 | [T011 Native Caller Migration and Compatibility Registry](#t011) | NOT_STARTED | B5 exit | B6 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T013 Current Candidate Process Qualification](#t013) | NOT_STARTED | B6 exit | B7 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T012 Thin Python Prepared Model Facade](#t012) | NOT_STARTED | B7 C++ qualification exit | B8 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
@@ -31,12 +31,97 @@
 
 ## Current Checkpoint
 
+2026-09-13 22:32 -05:00 B5 closed：v67 修复候选通过官方最终 composition review v5（`B5_COMPOSITION_PASS`，无 P0/P1/P2/P3）；normal compile v22、focused/runtime v21-v23、独立 ASan/UBSan+LSan compile v3/runtime v2-v3 均真实 C++ `RC=0`，8/8 cases 且无 sanitizer 报告。T009/T010 的五 lane、生产调用链和 stop/drain/reaper 出口已闭合，现标为 `[x]`；下一批从依赖满足的 T011 开始。
+2026-09-14 05:24 -05:00 B5 dynamic validation：v67 静态修复候选 normal compile v22 通过，authenticated focused v21 及完整 selector v22/v23 各 8/8 通过；独立 ASan/UBSan+LSan compile v3、完整 selector v2/v3 各 8/8 通过且无 sanitizer 报告。v23 UAF 已由 dedicated provider Face worker 与 deferred bridge fixture 修复验证；B5 最终 composition/closure 尚待只读审查，T009/T010 保持 `PARTIAL`。
+
+2026-09-14 03:08 -05:00 B5 dynamic boundary：v63 静态门后 normal `spec185-provider-assembly` compile v21 通过；同一候选完整 selector v19/v20 在 authenticated Provider 用例分别以 `rc=134`/`rc=201` 发生内存破坏，gdb v22 首个信号位于主线程 SVS `ndn::Buffer` shared_ptr 路径，borrowed Face worker 同时泵共享 `io_context`。已写入 [b5-provider](evidence/b5-provider.md#b5-normal-runtime-boundaries-v19-v20) 与 `docs/failure-log.md`；T009/T010 保持 `PARTIAL`，先做 sanitizer/最小化 C++ 诊断。
+
+2026-09-13 21:42 -05:00 B5 T010 v59 repair review：v19 的 `finish(*target)` 编译边界已修正为 `finish(target)`；官方 `review-agent` 对快照 `.codex-tmp/spec185-b5-t010-static-v59` 返回 `STATIC_PASS / B5_COMPOSITION_PASS`，五 lane 无控制性缺陷。允许重建；T009/T010 仍为 `PARTIAL`。
+
+2026-09-13 21:35 -05:00 B5 composition v4：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-b5-composition-v4` 返回 `B5_COMPOSITION_PASS`，无 P0/P1/P2/P3；Provider ingress、protected preparation/cache/lease、runner/Response、ServeInvocation 与 stop/drain/reaper 及五 lane 静态闭合。完整生产 assembler 动态组合、compile-link、runtime-test、sanitizer 未新增观察；Batch decision=`STOP_GROWTH / CLOSED_FOR_VALIDATION`，T009/T010 保持 `PARTIAL`，开始批末验证。
+
+2026-09-13 21:27 -05:00 B5 T010 static v58：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-b5-t010-static-v58` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；reaper target 预分配、同步/异步非 Joined 终态、weak owner 及 owned/borrowed Face 生命周期通过五 lane 静态审查。compile-link/runtime/sanitizer 未新增观察；T009/T010 保持 `PARTIAL`，待最终 B5 组合门。
+
+2026-09-14 00:55 -05:00 B5 normal v18/v16/v17：v44 与 composition v3 后 normal 候选 `dbdd7117…` 以 `-j4` compile-link `RC=0`，完整 selector 连续两次 `RC=0`，每次 `Running 8 test cases`、`*** No errors detected`；C-04 normal repeat 已闭合，独立 sanitizer 重建/运行和批次收口待执行，T009/T010 保持 `PARTIAL`。
+2026-09-14 00:03 -05:00 B5 composition v3：官方 review-agent `B5_COMPOSITION_PASS`，无控制性缺陷；五 lane 覆盖，Batch growth=`STOP_GROWTH`、static closure=`CLOSED_FOR_VALIDATION`，待修复候选 normal/sanitizer compile-link/runtime，T009/T010 保持 `PARTIAL`。
+2026-09-14 00:03 -05:00 B5 T010 v44 repair review：官方 review-agent `STATIC_PASS`，无 P0/P1/P2/P3；ServeInvocation owning payload、self-thread/无线程 reaper release、锁序与幂等均闭合，待修复候选 normal/sanitizer compile-link/runtime，T009/T010 保持 `PARTIAL`。
+2026-09-14 00:03 -05:00 B5 T010 v43 static boundary：官方 review-agent 发现异步 Face 回调引用捕获 `definition/nativeConfig/this` 可能悬空（P1），self-thread reaper 未释放 owners（P2），`STATIC_FAIL`；未构建/运行，已改为共享 payload/统一 reaper release 并待 v44 复审，T009/T010 保持 `PARTIAL`。
+2026-09-14 00:03 -05:00 B5 T010 v42 static boundary：官方 review-agent 发现 `requestStopIo()` 的 `ioMutex`→`releaseStoppedResources()`→`serveMutex` 与并发 `serve()` 的 `serveMutex`→`ioMutex` 锁顺序反转，`STATIC_FAIL` P1；未构建/运行，已移出临界区并待 v43 复审，T009/T010 保持 `PARTIAL`。
+2026-09-14 00:03 -05:00 B5 T010 v41 static boundary：官方 review-agent 发现 `releaseStoppedResources()` 与 `serve/stop/drain` 的 shared_ptr 成员访问未统一同步，Provider copy/reaper 可能产生数据竞争或 UAF，`STATIC_FAIL` P1；未构建/运行，已修复并待 v42 复审，T009/T010 保持 `PARTIAL`。
+2026-09-14 00:03 -05:00 B5 sanitizer runtime r1：独立 ASan/UBSan 候选 `fef99152…` 的业务断言到 `*** No errors detected`，但严格 LSan 在 Provider-only teardown 报 27 个间接泄漏/4518 bytes，`RC=134`；T009/T010 保持 `PARTIAL`，已定位 stop 后 Face-bound owner 释放时序并待 v41 静态复审。
+2026-09-14 00:03 -05:00 B5 normal runtime v15：与 v14 使用完全相同的候选和 worker 第二次运行，`RC=0`，8/8 cases、106/106 assertions 通过；C-04 normal repeat 已闭合，仍需独立 sanitizer 和批次组合收口，T009/T010 保持 `PARTIAL`。
+2026-09-13 19:35 -05:00 B5 normal runtime v14：v17 候选首次修复后 `RC=0`，8/8 cases、106/106 assertions 通过，包含正向 assembly/runner/Response、三类拒绝及 stop→drain；按 C-04 尚需同候选第二次运行和独立 sanitizer，T009/T010 保持 `PARTIAL`。
+2026-09-13 19:25 -05:00 B5 normal compile v17：v40 静态复审通过后，以系统优先 PATH、`-j4` 在既有 build tree 仅构建 `spec185-provider-assembly`，`RC=0`，耗时 22.994s，候选 SHA256 `8683a0902628355bb261b6923bd091a9146a80c8cf31d58c29f50b11e779bde8`；compile-link PASS，runtime/sanitizer 未执行，T009/T010 保持 `PARTIAL`。
+2026-09-13 19:12 -05:00 B5 T010 v40 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v40` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；fixture 明确 `registration.close()` → `facade.stop()` → `facade.drain()`，生产 close/callback 语义不变，五 lane 全部 covered，尚未重新 compile-link/runtime/sanitizer，T009/T010 保持 `PARTIAL`。
+2026-09-13 19:02 -05:00 B5 normal runtime v13：v16 候选 `RC=201`，105/107 assertions 通过；正向计数、Response 和三类身份拒绝均通过，唯一失败是 `facade.drain(2000ms)` 返回 false 后 SIGABRT。T009/T010 保持 `PARTIAL`；下一步修正 stop/drain fixture 出口并复审。
+2026-09-13 18:55 -05:00 B5 normal compile v16：v39 静态复审通过后，以系统优先 PATH、`-j4` 在既有 build tree 仅构建 `spec185-provider-assembly`，`RC=0`，耗时 21.664s，候选 SHA256 `a111e193ef01c07793089e86c284e60611f2f236a01d5c96c6b2d699be20ae6e`；compile-link PASS，runtime/sanitizer 未执行，T009/T010 保持 `PARTIAL`。
+2026-09-13 18:49 -05:00 B5 T010 v39 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v39` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；test preparation seam 成功后递增 `ProviderMetrics::assemblies`，三个负向 request ID 改为单一 NDN component，v38 seam metadata、assembly identity 和 path validator 约束保持。五 lane 全部 covered，尚未 compile-link/runtime/sanitizer，T009/T010 保持 `PARTIAL`。
+2026-09-13 18:44 -05:00 B5 diagnostic runtime v13：TRACE 确认正向请求完整经过 ACK、Selection、Provider execution、Response publication、User 解密和 callback；唯一正向断言缺口是 test preparation seam 未更新 `assemblies` metrics。三个负向 ID `/spec185-provider-reject-/N` 被解析为 service 后缀并在 admission 处拒绝，未形成 Selection；原始证据见 [b5-provider](evidence/b5-provider.md#b5-diagnostic-runtime-boundary-v13)。已定位为 fixture/test seam 边界，T009/T010 保持 `PARTIAL`；下一步修正 seam 计数和单组件负向 ID，静态复审后重建运行。
+2026-09-13 20:18 -05:00 B5 normal runtime v12：v15 候选编译通过后完整 selector 返回 `RC=201`，7/8 用例通过；正向 ACK/Selection/Response 已形成但 `assemblies=0`，三个身份替换负向未见 Selection，`facade.drain` 失败并 SIGABRT，T009/T010 保持 `PARTIAL`。下一步以 TRACE 定位 assembly 失败。
+
+2026-09-13 20:02 -05:00 B5 T010 v38 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v38` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；fixture 恢复 runner factory 所需四项 seam metadata，并保留 `model.onnx` 与完整 assembly identity。compile-link/runtime 尚未执行，T009/T010 保持 `PARTIAL`。
+
+2026-09-13 19:42 -05:00 B5 T010 v37 static failure：官方 review-agent 发现 preparationFactory 删除了 fixture runner factory 通过 `metadata.at()` 读取的 `provider/boot/plan/artifact`，首个 `create()` 将抛 `std::out_of_range`；未构建/运行，T009/T010 保持 `PARTIAL`。已安排恢复四个 metadata 并重新静态审查。
+
+2026-09-13 19:18 -05:00 B5 diagnostic runtime v12：TRACE 诊断确认正向 REQUEST/ACK/Selection/Provider execution 已闭合；首个生产失败为 `DI_PROVIDER_ASSEMBLY_PATH_UNSAFE`，fixture 使用 `oracle.onnx` 且 assembly identity metadata 不完整，未发生 assembly/runner/Response，T009/T010 保持 `PARTIAL`。已修正 fixture runner spec，待 v37 静态复审。
+
+2026-09-13 18:49 -05:00 B5 normal runtime v11：v14 候选 `7f22f35a282f8e624f6a7630e992807a5333e812d636928c102110ec8ffd5f09` 编译通过后运行返回 `RC=201`，7/8 用例通过；bootstrap role grant 已安装但正向和负向请求均未形成 Selection，`facade.drain` 失败并 SIGABRT，T009/T010 保持 `PARTIAL`，继续定位 ACK/Selection 入口。
+
+2026-09-13 18:36 -05:00 B5 T010 v36 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v36` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；`providerRoles` 默认空，Spec185 role grant 纳入 bootstrap permission wave，避免 post-bootstrap 权限替换副作用。compile-link/runtime 尚未执行，T009/T010 保持 `PARTIAL`。
+
+2026-09-13 18:26 -05:00 B5 normal runtime v10：v35 候选 `b4af4a1c50d18a5f5ba9f008416d3501b53673293afafc8266e0c226f2219d2f` 编译通过后运行返回 `RC=201`；post-bootstrap `applyPermissionResponse` 的 role grant 替换触发刷新副作用，正向未形成 ACK/Selection/Response，负向未形成 Selection，T009/T010 保持 `PARTIAL`。下一步将 role grant 纳入 bootstrap permission wave，完成后重新静态审查。
+
+2026-09-13 18:18 -05:00 B5 T010 v35 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v35` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；fixture 保留服务级 Provider permission 并增加 `/Inference/Spec185ProviderOracle/ROLE/Backbone` role permission，修复 v9 已定位的生产 admission 授权边界。compile-link/runtime 尚未执行，T009/T010 保持 `PARTIAL`。
+
+2026-09-14 00:02 -05:00 B5 T010 v34 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v34` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；仅补充 mutex 保护下的同步 failure 文本诊断。compile-link/runtime 尚未执行，T009/T010 保持 `PARTIAL`。
+
+2026-09-13 23:46 -05:00 B5 normal runtime v8：v33 候选 selector 返回 `RC=201`，13 项断言失败；同源 key setup 后正向仍无 response/assembly/runner counters，负向无 Selection，末尾 `facade.drain` 失败。已保留原始日志，下一步仅增加同步 probe failure 诊断再定位，不计 T009/T010 完成。
+
+2026-09-13 23:38 -05:00 B5 normal compile v11：v33 静态复审后既有 build tree 以系统优先 PATH、`-j4` 仅构建 `spec185-provider-assembly` 成功，耗时约 19.738s，`rc=0`，候选 SHA256 `c280d8104d060959ffbf98c72653c3eab246fe47b326ed1b7d6b35f25bbad0fb`。compile-link PASS；下一步运行完整 C++ selector，T009/T010 仍为 `PARTIAL`。
+
+2026-09-13 23:25 -05:00 B5 T010 v33 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v33` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；Response 已回到生产 `OnResponse` 解密路径，ACK/RESPONSE/SELECTION 测试密钥边界已补齐。compile-link/runtime/sanitizer 尚未执行，T009/T010 保持 `PARTIAL`，现进入动态验证。
+
+2026-09-13 23:17 -05:00 B5 T010 static boundary v32：官方 review-agent 发现 fixture 将加密 SVS `HybridMessageEnvelope` 直接传给 `handleDecryptedResponseByName`，没有经过生产 `OnResponse` 解密入口；该测试 oracle 无效，未构建/运行，T010 保持 `PARTIAL`。下一步修正 response ingress 后重新静态复审。
+
+2026-09-13 22:59 -05:00 B5 normal runtime v7：v31 候选 selector 返回 `RC=201`，13 项断言失败；Response publication 未转发到 User `handleDecryptedResponseByName`，正向请求超时且 counters=0，负向循环未形成终态，最后 `facade.drain` 失败。原始记录见 [b5-provider](evidence/b5-provider.md#b5-normal-runtime-boundary-v7)。下一步修复 fixture ingress/联合等待，必须重新静态复审后再构建；T009/T010 保持 `PARTIAL`。
+
+2026-09-13 22:53 -05:00 B5 normal compile v10：v31 静态复审后既有 build tree 以系统优先 PATH、`-j4` 仅构建 `spec185-provider-assembly` 成功，耗时约 26.097s，`rc=0`，候选 SHA256 `4261653e2829172da85a5b1dd1983b8753327ac7a2e9d745d6764e8f0589a878`。compile-link PASS；下一步运行完整 C++ selector，T009/T010 仍为 `PARTIAL`。
+
+2026-09-13 22:49 -05:00 B5 T010 v31 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v31` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；每请求 probe 的同步、不可变请求捕获和 terminal 等待已闭合。v6 是 v31 之前的候选运行，因异步 Boost.Test 断言 SIGSEGV（RC=201）不计通过；现仅允许用 v31 快照重建并重跑 B5，T009/T010 保持 `PARTIAL`。
+
+2026-09-13 22:43 -05:00 B5 T010 static boundary v30：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v30` 返回 `STATIC_FAIL`；fixture 异步 response/failure 状态未统一同步，受控失败循环在 terminal callback 前返回并重置可变请求状态，存在跨线程数据竞争和旧回调污染风险。未构建/运行，T010 保持 `PARTIAL`，修复要求及快照身份见 [b5-provider](evidence/b5-provider.md#t010-static-boundary-v30)。
+
 2026-09-13 12:02 -05:00 B4 sanitizer repeat：ASan/UBSan conversation r24 单次通过全部 20 项，但紧邻重复 r25 在 atomic 并发断言处 `RC=134` stack-smash；未形成连续资格通过。现做受控隔离，将并发负例改为同线程直接捕获，待静态复审后重建和重复验证，T007/T008 保持 `PARTIAL`。
 2026-09-13 12:08 -05:00 B4 direct-exception static gate：受控同线程并发负例通过官方 `review-agent` 静态审查；不可变快照 `.codex-tmp/spec185-b4-after-direct-exception-static-v1` 的 base、DIFF SHA 和 PATHS SHA 已记录于 [b4-conversation](evidence/b4-conversation.md)。审查确认 active-turn 拒绝及生产 mutex/completion/close 生命周期不变；真实跨线程竞争仍是明确的未观测证据边界。待共享构建、normal 与严格 ASan/UBSan selector 重复运行，T007/T008 保持 `PARTIAL`。
 2026-09-13 12:32 -05:00 B4 direct-exception runtime：normal build v20（既有 `.lock-spec185-b0c-normal`、`-j4`）成功，耗时 `25.611s`；conversation r39/r40 连续通过全部 20 项。ASan/UBSan + LSan build v14 成功，耗时 `40.614s`；严格 conversation r26 为 `RC=134` stack-smash，r27 为 `RC=1` 嵌套 `AddressSanitizer: DEADLYSIGNAL`，均无生产 requester/coordinator 栈；独立 API r19/r20 连续通过。原始日志与元数据见 [b4-conversation](evidence/b4-conversation.md)。sanitizer 会话 lane 仍未形成资格通过，T007/T008 保持 `PARTIAL`，不得将 normal/API PASS 外推为 B4 完成。
 2026-09-13 13:26 -05:00 B4 deferred-bridge static gate：为隔离 ndn-svs/fixture 同步重入，新增默认关闭的 `BootstrapProfile::deferBridgeDelivery`，仅 Spec185 conversation profile 启用；repair-only 快照 `.codex-tmp/spec185-b4-after-deferred-bridge-static-v6` 经官方 `review-agent` `STATIC_PASS`，无 P0/P1/P2/P3，身份见 [b4-conversation](evidence/b4-conversation.md)。审查确认 packet 所有权、FIFO/fault 顺序、pump/drain 出口和默认兼容；queued handler 异常及 deferred fault/reorder 仍待运行验证。待 normal/ASan 共享构建和严格 selector 重复，T007/T008 保持 `PARTIAL`。
 2026-09-13 13:58 -05:00 B4 deferred-bridge runtime：normal build v21（`.lock-spec185-b0c-normal`、`-j4`）成功，耗时 `31.529s`；conversation r41/r42 连续通过全部 20 项。ASan/UBSan + LSan build v15（`.lock-spec185-b3-asan-ubsan-fast`、`-j4`）成功，耗时 `45.586s`，但严格 conversation r31 仍以 `RC=134` stack-smash 在 active-turn 断言处失败；无生产 requester/coordinator 栈。排队桥接未改变 sanitizer 边界；先做仅跳过该断言的诊断，不计资格 PASS，T007/T008 保持 `PARTIAL`。
 2026-09-13 14:20 -05:00 B4 exception-path diagnosis：诊断开关经静态审查后，normal build v22 和 ASan/UBSan build v16 成功；仅设置 `SPEC185_SKIP_CONVERSATION_BUSY_PROBE=1` 的严格 conversation r32 完成全部后续三轮/恢复/export/close/drain，`RC=0` 且无 sanitizer 错误。该开关已移除，真实 `CONVERSATION_TURN_IN_PROGRESS` 断言已恢复；诊断仅定位 sanitizer/dependency 异常展开边界，不计资格 PASS。T007/T008 保持 `PARTIAL`，等待外部栈回溯/fixture 边界修复后再验收。
+2026-09-13 13:19 -05:00 B5 T009 static failure：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t009-static-v2` 返回 `STATIC_FAIL`，发现 Provider 初始化/assembly/角色绑定/drain/config consistency 的 P1 及 parser/oracle P2；未构建未运行，T009 保持 `PARTIAL`，失败边界与修复要求见 [b5-provider](evidence/b5-provider.md)。
+
+2026-09-13 13:31 -05:00 B5 T009 repair review failure：官方 review-agent 对冻结修复快照 `.codex-tmp/spec185-b5-t009-static-v3` 复审返回 `STATIC_FAIL`；drain timeout/join、Runtime drain false、Controller permission/bootstrap、manifest binding、serve rollback 与 C++ oracle 仍有缺口，未构建未运行，T009 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 13:45 -05:00 B5 T009 repair review failure v4：官方 review-agent 对冻结修复快照 `.codex-tmp/spec185-b5-t009-static-v4` 复审返回 `STATIC_FAIL`；protected factory 接线、Provider drain/async、IO join 竞态、controller certificate 测试边界及 C++ authenticated oracle 仍有缺口。随后已修复前四项中的生产接线/生命周期实现，未构建未运行，T009 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 13:57 -05:00 B5 T009 repair review failure v5：官方 review-agent 对冻结修复快照 `.codex-tmp/spec185-b5-t009-static-v5` 复审返回 `STATIC_FAIL`；Provider serve 的 Face 线程亲和性、Runtime.close non-blocking、authenticated Selection/assembly/counter oracle 及 drainAsync Subscription 保持缺口，未构建未运行，T009 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 14:18 -05:00 B5 T009 repair review failure v6：官方 review-agent 对冻结修复快照 `.codex-tmp/spec185-b5-t009-static-v6` 复审返回 `STATIC_FAIL`；ProviderCounters API 错位、Face dispatch/stop 永久等待、registration cleanup barrier、start/stop admission race 及 authenticated 正向 oracle 仍有缺口，未构建未运行，T009 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 14:30 -05:00 B5 T009 repair review failure v7：官方 review-agent 对冻结修复快照 `.codex-tmp/spec185-b5-t009-static-v7` 复审返回 `STATIC_FAIL`；`serveMutex` 跨 Face 等待、serve/start/stop 稳定错误映射及 authenticated Selection/assembly/runner/Response 正向与拒绝 oracle 仍有缺口，未构建未运行，T009 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 19:55 -05:00 B5 T009 repair review failure v9：官方 review-agent 对冻结修复快照 `.codex-tmp/spec185-b5-t009-static-v9` 返回 `STATIC_FAIL`；ProtectedRuntime factory lambda 捕获、ProviderConfig pImpl 命名空间/访问控制、Provider ingress 负向身份 oracle 及 runner/protected factory 初始化异常映射仍有缺口，未构建未运行，T009 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 20:05 -05:00 B5 T009 repair review failure v10：官方 review-agent 对冻结修复快照 `.codex-tmp/spec185-b5-t009-static-v10` 返回 `STATIC_FAIL`；Provider-only Runtime drain 状态和真实 NativeCanonicalOnnxAssembler/source-fetch 正向 oracle 仍有缺口，未构建未运行，T009 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 20:20 -05:00 B5 T009 repair review pass v11：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t009-static-v11` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；Runtime provider-only drain 失败状态及生产 NativeCanonicalOnnxAssembler/source-fetch/OA02 正向 oracle 已覆盖。尚未构建/运行，等待 B5 组合审查，T009 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 20:40 -05:00 B5 T010 static failure v12：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v12` 返回 `STATIC_FAIL`；single-flight creator 取消误伤其他 waiter，cache 保存 request/grant projection 与 plaintext runner path，source identity/异常安全/生产 cold-hit oracle及内部 header exposure仍有缺口。未构建/运行，T010 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 16:10 -05:00 B5 T010 static failure v17：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v17` 返回 `STATIC_FAIL`；已取消 job 可被重新加入，admission 提前阻断可驱逐 LRU，命中未重验 assembled 上限，cache API 未校验 grant identity，另有 runner 字节溢出和 stop 异常边界。未构建/运行，T010 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 16:18 -05:00 B5 T010 static failure v18/v19：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v18`、`.codex-tmp/spec185-b5-t010-static-v19` 依次返回 `STATIC_FAIL`；v18 修复范围仍有 admission 异常原子性、cancelled flight generation barrier 和 stop 错误优先级缺口，v19 另确认 protected fixture 已纳入但上述三个 P1 仍未闭合。未构建/运行，T010 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 16:22 -05:00 B5 T010 static failure v20：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v20` 返回 `STATIC_FAIL`；cancelled generation barrier、stop 错误优先级、grant/epoch 和 protected cache oracle 已闭合，剩余唯一 P1 是 admission 部分驱逐后的异常回滚。未构建/运行，T010 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 16:24 -05:00 B5 T010 static failure v21：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v21` 返回 `STATIC_FAIL`；victim 两阶段异常原子性已闭合，剩余唯一 P1 是预选循环用总 chargedBytes 而非实际 required 回收量，混合 pinned/unpinned 场景会错误拒绝。未构建/运行，T010 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 16:26 -05:00 B5 T010 static pass v22：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v22` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；protected cache、取消代际、grant/epoch、预算和异常原子性静态闭合。mixed pinned/unpinned 反例、Provider 默认 protected 端到端及 compile-link/runtime/sanitizer 仍未观察，T010 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 16:37 -05:00 B5 composition pass：官方 review-agent 对 `.codex-tmp/spec185-b5-composition-v1` 返回 `B5_COMPOSITION_PASS`，无 P0/P1/P2/P3；`STOP_GROWTH`、`CLOSED_FOR_VALIDATION`，T009/T010 可进入共享 compile-link/runtime/sanitizer 验证，当前仍未将静态结果计为完成，详见 [b5-provider](evidence/b5-provider.md)。
+2026-09-13 15:55 -05:00 B5 T010 static failure v14：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v14` 返回 `STATIC_FAIL`；受保护 Provider 路径绕过 artifact cache，creator 唯一 waiter 取消不触发 last-waiter cancellation，publish 异常事务和 assembly 暂存/template 预算仍不闭合。未构建/运行，T010 保持 `PARTIAL`，详见 [b5-provider](evidence/b5-provider.md)。
+
+2026-09-13 17:19 -05:00 B5 normal runtime boundary v3：完整 `Spec185ProviderAssembly` selector 使用候选 `1792d5d2d212e0dbd43347cffe240546c7694584e395db1f199c5457676bf62a` 返回 `rc=201`，5/8 用例通过、3/8 失败；authenticated ACK candidate 集合为空，两个真实 assembler oracle 以 `DI_NATIVE_ONNX_RECIPE` 拒绝 recipe digest。原始日志见 `.codex-tmp/spec185-b5/normal-run-v3/output.log`，失败边界和后续静态复审要求见 [b5-provider](evidence/b5-provider.md#b5-normal-runtime-boundary-v3)。T009/T010 继续 `PARTIAL`。
+
+2026-09-13 17:22 -05:00 B5 T010 v28 静态复审通过：官方 review-agent 核对冻结快照 `.codex-tmp/spec185-b5-t010-static-v28` 返回 `T010_STATIC_PASS`，无 P0-P3；fixture 完成信号只来自 RequestService response callback，五 lane 无回退。随后 worker target `di-native-assembly-worker` 在既有 build tree 以 `-j4` 编译链接通过，但完整 selector v4 仍为 `rc=201`（7/8），authenticated fixture counters 与异步拒绝循环仍未形成资格通过。详见 [b5-provider](evidence/b5-provider.md#t010-repair-review-pass-v28)。
+
+2026-09-13 17:28 -05:00 B5 T010 v29 静态复审通过：官方 review-agent 核对冻结快照 `.codex-tmp/spec185-b5-t010-static-v29` 返回 `T010_STATIC_PASS`，无 P0-P3；fixture 改用生产 `canonicalOnnxSourceIdentity` 派生真实 graph/initializer digest。下一步只重建受影响 C++ selector 并重跑 B5；T009/T010 仍为 `PARTIAL`。
+
 2026-09-13 13:01 -05:00 B4 closed：最终组合快照 `.codex-tmp/spec185-b4-composition-v3` 经官方 `review-agent` 报告 `B4_COMPOSITION_PASS / STATIC_PASS`，无P0-P3；身份、五lane和未观测边界见 [b4-conversation](evidence/b4-conversation.md#final-b4-composition-and-qualification)。组合门后 normal build v26 与 ASan/UBSan+LSan build v19 均 `BUILD_RC=0`；normal conversation r49/r50、API r51/r52，以及严格 sanitizer conversation r40/r41、API r42/r43 全部 `RC=0`、无Boost.Test或sanitizer错误。T007/T008 完整验收通过并改为 `[x]`；仍未观测项不扩展为跨线程调度资格，Python、Provider及后续B5-B9尚未开始。
 
 2026-09-13 11:54 -05:00 B4 sanitizer boundary：atomic 并发异常探针经静态 PASS 后，normal build v19、conversation r37/r38、API r37/r38 通过；ASan/UBSan build v13 成功，但 conversation r23 仍在第二请求原子断言附近 `RC=134` stack-smash。移除 promise/future 未改变边界，未见生产 requester/coordinator 诊断；T007/T008 保持 `PARTIAL`，需继续缩小 fixture 并发探针。
@@ -99,6 +184,21 @@
 T016提供合作splitter，前移到B1后/T003前；实际顺序T015→T001/T002→T016→T003–T011→T013→T012→T014。
 本轮[证据](evidence/implementation-design-20260912.md)；设计/技能验证不计产品完成，生产源码及native构建测试未运行。
 下一实现单元T015；保持Spec184资格和既有Design 54文件漂移边界。
+
+2026-09-13 16:37 -05:00 B5 首次共享构建：组合门后使用 `build-spec185-b0c-normal`、`.lock-spec185-b0c-normal`、`-j4` 仅构建 `spec185-provider-assembly`，在 C++ fixture 两处临时 `ndn::Buffer` 绑定 `RequestMessage::setPayload(ndn::Buffer&, size_t)` 处返回 `rc=1`；生产 Provider/cache 尚未进入链接。原始日志见 [b5-provider](evidence/b5-provider.md#b5-normal-compile-boundary-v1)，已修复具名可变 Buffer，T009/T010 保持 `PARTIAL`，待 v23 静态复审后重建。
+2026-09-13 16:45 -05:00 B5 T010 v23 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v23` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；两处具名可变 Buffer 修复符合 `RequestMessage::setPayload(ndn::Buffer&, size_t)` 契约，五 lane 无控制性缺陷。compile-link/runtime-test/sanitizer 仍未观测，T009/T010 保持 `PARTIAL`，重试 B5 共享构建。
+2026-09-13 16:47 -05:00 B5 第二次共享构建：v23 复审后仍使用 `build-spec185-b0c-normal`、`.lock-spec185-b0c-normal`、`-j4` 仅构建 `spec185-provider-assembly`，生产源码编译返回 `rc=1`；`ProviderArtifactCache.cpp:166` 的匿名 lease helper 越过 private constructor，`Provider.cpp:1203` 缺少 `NativeRunnerPreparation.hpp` 声明。原始日志见 [b5-provider](evidence/b5-provider.md#b5-normal-compile-boundary-v2)，已将 helper 移入 cache 成员并补 include，T009/T010 保持 `PARTIAL`，待新静态复审。
+2026-09-13 16:49 -05:00 B5 T010 v24 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v24` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；lease helper 权限、runner preparation include 与 v23 fixture 修复均闭合，五 lane 无新增控制性缺陷。compile-link/runtime-test/sanitizer 仍未观测，T009/T010 保持 `PARTIAL`，重试 B5 共享构建。
+2026-09-13 16:51 -05:00 B5 normal compile：v24 复审后既有 `build-spec185-b0c-normal` 以系统优先 PATH、`-j4` 仅构建 `spec185-provider-assembly` 成功，耗时 `59.408s`，候选 SHA256 `c70c7855a8d506c6376b9b03ac3eeb78a9070935566aedeb77fefb79bf512c79`；日志见 [b5-provider](evidence/b5-provider.md#b5-normal-compile-pass-v3)。compile-link PASS，runtime-test/sanitizer 尚未执行，T009/T010 保持 `PARTIAL`。
+2026-09-13 16:52 -05:00 B5 selector harness：首次使用 `--list_content=tests` 返回 Boost.Test 参数错误 `rc=200`，无测试执行；原始日志见 [b5-provider](evidence/b5-provider.md#b5-selector-invocation-boundary-v1)。随后改用正确枚举命令，T009/T010 仍保持 `PARTIAL`。
+2026-09-13 16:53 -05:00 B5 normal runtime v1：候选 `spec185-provider-assembly` 完整 selector 返回 `rc=201`，3/8 用例通过、5/8 失败；authenticated projection 缺完整 execution/dataflow/device binding，assembler oracle 找不到同树 worker，cache pinned-entry 反例多启动一次 build（3 而非 2）。原始日志见 [b5-provider](evidence/b5-provider.md#b5-normal-runtime-boundary-v1)，T009/T010 保持 `PARTIAL`，已定位并修复上述边界后复审。
+2026-09-13 16:59 -05:00 B5 T010 v25 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v25` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；projection binding、worker 路径和 entry-admission 修复均闭合，五 lane 无新增控制性缺陷。compile-link/runtime-test/sanitizer 仍未观测，T009/T010 保持 `PARTIAL`，重试 B5 构建。
+2026-09-13 17:10 -05:00 B5 T010 v26 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v26` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；仅删除未使用局部变量，makeLease/锁/发布/reservation/异常/lease 生命周期无回退。runtime-test/sanitizer/压力并发仍未观测，T009/T010 保持 `PARTIAL`，重建后重跑 selector。
+2026-09-13 17:12 -05:00 B5 normal compile v5：v26 复审后 `spec185-provider-assembly` 以既有 `-j4` 成功，耗时 `9.594s`，候选 SHA256 `00b7cc48c9fa9830ab6755cf35cc4c23c32942f3ea8350a486488622444f36b9`，无新增 warning。compile-link PASS，runtime-test/sanitizer 待执行，T009/T010 保持 `PARTIAL`。
+2026-09-13 17:12 -05:00 B5 normal runtime v2：候选完整 selector 返回 `rc=201`，4/8 通过、4/8 失败（55/59 assertions）；cache pin/eviction、protected cache 已通过，剩余为 `onnxruntime` device binding 与 V3 校验不一致、OA02 fixture 伪 recipe digest 被正确拒绝。原始日志见 [b5-provider](evidence/b5-provider.md#b5-normal-runtime-boundary-v2)，已修复并待静态复审，T009/T010 保持 `PARTIAL`。
+2026-09-13 17:14 -05:00 B5 T010 v27 repair review：官方 review-agent 对冻结快照 `.codex-tmp/spec185-b5-t010-static-v27` 返回 `STATIC_PASS`，无 P0/P1/P2/P3；assembler/provider projection 的 adapterVersion、canonical recipe digest、SINGLE_DEVICE/cpu binding 修复闭合，五 lane 无回退。runtime-test/sanitizer/压力并发仍未观测，T009/T010 保持 `PARTIAL`，重建重跑。
+2026-09-13 17:18 -05:00 B5 normal compile v6：v27 复审后 `spec185-provider-assembly` 以既有 `-j4` 成功，耗时 `21.696s`，候选 SHA256 `1792d5d2d212e0dbd43347cffe240546c7694584e395db1f199c5457676bf62a`，无新增 warning。compile-link PASS，runtime-test/sanitizer 待执行，T009/T010 保持 `PARTIAL`。
+2026-09-13 17:08 -05:00 B5 normal compile v4：v25 复审后 `spec185-provider-assembly` 以 `-j4` 构建成功，耗时 `18.793s`，候选 SHA256 `91c92e422b4870c039bcc0416114c0d5a8847875a6d39ee776d127ec750758d6`；仅有 `ProviderArtifactCache.cpp:537` 未使用变量 warning，compile-link PASS、runtime-test/sanitizer 待执行。清理该 warning 后仍须静态复审，T009/T010 保持 `PARTIAL`。
 
 ## Shared Task Rules
 
@@ -313,7 +413,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t009"></a>
 
-- [ ] T009 [US3] Provider Facade and Authenticated Assembly — Provider.hpp/Provider.cpp; NativeInferenceProvider.cpp; examples/DI_NativeProviderExecutable.cpp; tests/integration-tests/di-prepared-provider.t.cpp
+- [x] T009 [US3] Provider Facade and Authenticated Assembly — Provider.hpp/Provider.cpp; NativeInferenceProvider.cpp; examples/DI_NativeProviderExecutable.cpp; tests/integration-tests/di-prepared-provider.t.cpp
 
   **Batch / Depends**: B5 / B4 exit。
 
@@ -327,11 +427,11 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Lifecycle completeness**: C-07重复serve拒绝；registration析构停新接收、Provider handle析构不stop；测试Runtime.close与已接收工作收敛。
 
-  **Exit / oracle**: 无Selection时fetch/assembly=0；有效Selection执行；wrong provider/epoch/grant拒绝；registration关闭及stop清理不悬空。
+  **Exit / oracle**: 无Selection时fetch/assembly=0；有效Selection执行；wrong provider/epoch/grant拒绝；registration关闭及stop清理不悬空。已由 B5 composition v5、normal v22/v21-v23 和 sanitizer v3/v2-v3 真实 C++ 证据闭合，详见 [b5-provider](evidence/b5-provider.md#b5-composition-review-pass-v5-and-closure)。
 
 <a id="t010"></a>
 
-- [ ] T010 [US3] Protected Artifact and Runner Template Reuse — Provider.cpp; NativeRunnerPreparation.cpp; NativeProtectedArtifactStore.cpp; tests/integration-tests/di-prepared-provider.t.cpp
+- [x] T010 [US3] Protected Artifact and Runner Template Reuse — Provider.cpp; NativeRunnerPreparation.cpp; NativeProtectedArtifactStore.cpp; tests/integration-tests/di-prepared-provider.t.cpp
 
   **Batch / Depends**: B5 / T009 static。
 
@@ -341,7 +441,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Implementation and review**: 增加受限artifact/template cache及backend支持矩阵；key绑定role/recipe/ABI/device/security；per-request mutable runner与plaintext lease；命中仍重验Selection/grant。
 
-  **Exit / oracle**: 相同artifact避免重复assembly；不同ABI/role/epoch不误命中；KV不串请求；撤销拒绝；drain后lease=0；ASan/UBSan两次。
+  **Exit / oracle**: 相同artifact避免重复assembly；不同ABI/role/epoch不误命中；KV不串请求；撤销拒绝；drain后lease=0；ASan/UBSan两次。已由 B5 composition v5、normal v22/v21-v23 和 sanitizer v3/v2-v3 真实 C++ 证据闭合，详见 [b5-provider](evidence/b5-provider.md#b5-composition-review-pass-v5-and-closure)。
 
 <a id="t011"></a>
 

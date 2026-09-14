@@ -65,6 +65,7 @@ pumpFaces(ndn::DummyClientFace& userFace,
           const std::vector<ndn::DummyClientFace*>& providerFaces,
           ndn::DummyClientFace& attributeAuthorityFace,
           bool pumpAttributeAuthority,
+          bool pumpProviderFaces,
           const std::function<bool()>& done)
 {
   for (int i = 0; i < 200 && !done(); ++i) {
@@ -75,15 +76,19 @@ pumpFaces(ndn::DummyClientFace& userFace,
       attributeAuthorityFace.processEvents(ndn::time::milliseconds(5));
     }
     userFace.processEvents(ndn::time::milliseconds(5));
-    for (auto* providerFace : providerFaces) {
-      providerFace->processEvents(ndn::time::milliseconds(5));
+    if (pumpProviderFaces) {
+      for (auto* providerFace : providerFaces) {
+        providerFace->processEvents(ndn::time::milliseconds(5));
+      }
     }
     userFace.getIoContext().restart();
     if (pumpAttributeAuthority) {
       attributeAuthorityFace.getIoContext().restart();
     }
-    for (auto* providerFace : providerFaces) {
-      providerFace->getIoContext().restart();
+    if (pumpProviderFaces) {
+      for (auto* providerFace : providerFaces) {
+        providerFace->getIoContext().restart();
+      }
     }
   }
 }
@@ -173,7 +178,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
       [this, isAttributeAuthorityPacket] (const ndn::Interest& interest) {
         if (isAttributeAuthorityPacket(interest.getName())) {
           ++m_attributeAuthorityPublicParameterInterests;
-          m_attributeAuthorityFace->receive(interest);
+          deliverInterest(*m_attributeAuthorityFace, interest);
         }
       });
   m_providerAttributeAuthorityInterestBridge = m_providerFace->onSendInterest.connect(
@@ -189,10 +194,10 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
           return;
         }
         ++m_attributeAuthorityPublicParameterData;
-        m_userFace->receive(data);
-        m_providerFace->receive(data);
+        deliverData(*m_userFace, data);
+        deliverData(*m_providerFace, data);
         for (auto& face : m_extraProviderFaces) {
-          face->receive(data);
+          deliverData(*face, data);
         }
       });
   m_user = std::make_unique<ServiceUser>(
@@ -229,7 +234,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
             [this, isAttributeAuthorityPacket] (const ndn::Interest& interest) {
               if (isAttributeAuthorityPacket(interest.getName())) {
                 ++m_attributeAuthorityPublicParameterInterests;
-                m_attributeAuthorityFace->receive(interest);
+                deliverInterest(*m_attributeAuthorityFace, interest);
               }
             }));
     m_attributeAuthority->addNewPolicy(
@@ -371,11 +376,27 @@ NdnsfIntegrationEnvironment::installPermissions()
     userEntry.setTtl(0);
     userEntry.setVersion(1);
     userPermissions.addEntry(userEntry);
-    providerRuntime.applyPermissionResponse(
-        makePermissionResponse(providerName,
-                               tlv::ProviderPermission,
-                               providerName,
-                               m_profile.serviceName));
+    auto providerPermissions = makePermissionResponse(
+        providerName, tlv::ProviderPermission, providerName,
+        m_profile.serviceName);
+    for (const auto& role : m_profile.providerRoles) {
+      PermissionEntry roleEntry;
+      roleEntry.setProviderName(providerName.toUri());
+      ndn::Name rolePermission(m_profile.serviceName);
+      rolePermission.append("ROLE");
+      if (!role.empty() && role.front() == '/') {
+        rolePermission.append(ndn::Name(role));
+      }
+      else {
+        rolePermission.append(role);
+      }
+      roleEntry.setServiceName(rolePermission.toUri());
+      roleEntry.setToken("");
+      roleEntry.setTtl(0);
+      roleEntry.setVersion(1);
+      providerPermissions.addEntry(roleEntry);
+    }
+    providerRuntime.applyPermissionResponse(providerPermissions);
   }
   m_user->applyPermissionResponse(userPermissions);
 }
@@ -447,7 +468,8 @@ NdnsfIntegrationEnvironment::bootstrap()
     for (size_t index = 0; index < providerCount(); ++index) {
       providerFaces.push_back(&providerFace(index));
     }
-    pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, true, [&] {
+    pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, true,
+              true, [&] {
       if (!delivered || m_attributeAuthorityPublicParameterData == 0 ||
           !m_user->isNacConsumerReadyForTest()) {
         return false;
@@ -509,7 +531,8 @@ NdnsfIntegrationEnvironment::pumpUntilWithAttributeAuthority(
   for (size_t index = 0; index < providerCount(); ++index) {
     providerFaces.push_back(&providerFace(index));
   }
-  pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, true, done);
+  pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, true,
+            !m_profile.providerFacesHaveDedicatedIoWorkers, done);
 }
 
 void
@@ -523,7 +546,8 @@ NdnsfIntegrationEnvironment::pumpUntil(const std::function<bool()>& done)
   // Public-parameter bootstrap is complete before READY. Keeping the AA face
   // in the request pump would add an unrelated 5 ms wait to every round and
   // perturb the stream timeout/replacement state machine under test.
-  pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, false, done);
+  pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, false,
+            !m_profile.providerFacesHaveDedicatedIoWorkers, done);
 }
 
 RequestScope
@@ -535,21 +559,29 @@ NdnsfIntegrationEnvironment::beginRequest(std::string requestId, FaultProfile fa
   if (requestId.empty()) {
     throw std::invalid_argument("Spec170 request ID must not be empty");
   }
-  if (m_activeRequestId.has_value()) {
-    throw std::logic_error("Spec170 environment already has an active request");
+  {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
+    if (m_activeRequestId.has_value()) {
+      throw std::logic_error("Spec170 environment already has an active request");
+    }
+    m_activeRequestId = requestId;
+    m_activeFaults = faults;
+    m_bridgeStats = {};
+    m_pendingUserInterest.reset();
+    m_pendingProviderInterest.reset();
+    m_pendingUserData.reset();
+    m_pendingProviderData.reset();
+    m_pendingStreamProviderData.reset();
+    m_status = EnvironmentStatus::RequestActive;
   }
-  m_activeRequestId = requestId;
-  m_activeFaults = faults;
-  m_bridgeStats = {};
-  clearReorderedPackets();
-  m_status = EnvironmentStatus::RequestActive;
-  return RequestScope{std::move(requestId), m_snapshot.digest, faults,
+  return RequestScope{std::move(requestId), m_snapshot.digest, std::move(faults),
                       RequestResidue{}, false, true};
 }
 
 void
 NdnsfIntegrationEnvironment::markRequestPublished(RequestScope& scope)
 {
+  std::lock_guard<std::mutex> lock(m_bridgeMutex);
   if (m_status != EnvironmentStatus::RequestActive ||
       !m_activeRequestId || *m_activeRequestId != scope.requestId || !scope.active) {
     throw std::logic_error("request publication does not belong to active scope");
@@ -563,6 +595,7 @@ void
 NdnsfIntegrationEnvironment::updateRequestResidue(RequestScope& scope,
                                                   RequestResidue residue)
 {
+  std::lock_guard<std::mutex> lock(m_bridgeMutex);
   if (m_status != EnvironmentStatus::RequestActive ||
       !m_activeRequestId || *m_activeRequestId != scope.requestId || !scope.active) {
     throw std::logic_error("request residue does not belong to active scope");
@@ -573,6 +606,7 @@ NdnsfIntegrationEnvironment::updateRequestResidue(RequestScope& scope,
 void
 NdnsfIntegrationEnvironment::resetRequest(RequestScope& scope)
 {
+  std::lock_guard<std::mutex> lock(m_bridgeMutex);
   if (m_status != EnvironmentStatus::RequestActive ||
       !m_activeRequestId || *m_activeRequestId != scope.requestId || !scope.active) {
     throw std::logic_error("request reset does not belong to active scope");
@@ -598,12 +632,28 @@ NdnsfIntegrationEnvironment::resetRequest(RequestScope& scope)
 void
 NdnsfIntegrationEnvironment::flushReorderedPackets()
 {
+  std::optional<ndn::Interest> pendingUserInterest;
+  std::optional<ndn::Interest> pendingProviderInterest;
+  std::optional<ndn::Data> pendingUserData;
+  std::optional<ndn::Data> pendingProviderData;
+  std::optional<ndn::Data> pendingStreamProviderData;
+  {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
+    pendingUserInterest = std::move(m_pendingUserInterest);
+    pendingProviderInterest = std::move(m_pendingProviderInterest);
+    pendingUserData = std::move(m_pendingUserData);
+    pendingProviderData = std::move(m_pendingProviderData);
+    pendingStreamProviderData = std::move(m_pendingStreamProviderData);
+  }
   auto flushInterest = [&] (auto& pending, ndn::DummyClientFace& destination) {
     if (!pending) {
       return;
     }
     deliverInterest(destination, *pending);
-    ++m_bridgeStats.forwardedInterests;
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      ++m_bridgeStats.forwardedInterests;
+    }
     pending.reset();
   };
   auto flushData = [&] (auto& pending, ndn::DummyClientFace& destination) {
@@ -611,14 +661,24 @@ NdnsfIntegrationEnvironment::flushReorderedPackets()
       return;
     }
     deliverData(destination, *pending);
-    ++m_bridgeStats.forwardedData;
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      ++m_bridgeStats.forwardedData;
+    }
     pending.reset();
   };
-  flushInterest(m_pendingUserInterest, *m_providerFace);
-  flushInterest(m_pendingProviderInterest, *m_userFace);
-  flushData(m_pendingUserData, *m_providerFace);
-  flushData(m_pendingProviderData, *m_userFace);
-  flushData(m_pendingStreamProviderData, *m_userFace);
+  flushInterest(pendingUserInterest, *m_providerFace);
+  flushInterest(pendingProviderInterest, *m_userFace);
+  flushData(pendingUserData, *m_providerFace);
+  flushData(pendingProviderData, *m_userFace);
+  flushData(pendingStreamProviderData, *m_userFace);
+}
+
+PacketBridgeStats
+NdnsfIntegrationEnvironment::bridgeStats() const
+{
+  std::lock_guard<std::mutex> lock(m_bridgeMutex);
+  return m_bridgeStats;
 }
 
 void
@@ -652,6 +712,7 @@ NdnsfIntegrationEnvironment::deliverData(ndn::DummyClientFace& destination,
 void
 NdnsfIntegrationEnvironment::clearReorderedPackets()
 {
+  std::lock_guard<std::mutex> lock(m_bridgeMutex);
   m_pendingUserInterest.reset();
   m_pendingProviderInterest.reset();
   m_pendingUserData.reset();
@@ -664,74 +725,96 @@ NdnsfIntegrationEnvironment::forwardInterest(ndn::DummyClientFace& destination,
                                              const ndn::Interest& interest,
                                              bool userToProvider)
 {
-  const bool faultsEnabled = m_status == EnvironmentStatus::RequestActive;
   const auto name = interest.getName().toUri();
-  if (faultsEnabled && userToProvider &&
-      m_activeFaults.dropStreamInterestPredicate &&
-      m_activeFaults.dropStreamInterestPredicate(interest)) {
+  FaultProfile faults;
+  bool faultsEnabled = false;
+  {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
+    faults = m_activeFaults;
+    faultsEnabled = m_status == EnvironmentStatus::RequestActive;
+  }
+  if (faultsEnabled && userToProvider && faults.dropStreamInterestPredicate &&
+      faults.dropStreamInterestPredicate(interest)) {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
     ++m_bridgeStats.droppedPackets;
     ++m_bridgeStats.droppedStreamInterests;
-    if (m_bridgeStats.firstDroppedName.empty()) {
+    if (m_bridgeStats.firstDroppedName.empty())
       m_bridgeStats.firstDroppedName = name;
-    }
     return;
   }
   if (faultsEnabled && userToProvider &&
-      m_activeFaults.dropStreamInterestCursor != 0 &&
-      m_bridgeStats.droppedStreamInterests <
-        m_activeFaults.dropStreamInterestCount) {
+      faults.dropStreamInterestCursor != 0) {
     const auto parsed = parseInvocationEventName(interest.getName());
-    if (parsed && parsed->cursor == m_activeFaults.dropStreamInterestCursor) {
-      ++m_bridgeStats.droppedPackets;
-      ++m_bridgeStats.droppedStreamInterests;
-      if (m_bridgeStats.firstDroppedName.empty()) {
-        m_bridgeStats.firstDroppedName = name;
+    if (parsed && parsed->cursor == faults.dropStreamInterestCursor) {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      if (m_bridgeStats.droppedStreamInterests < faults.dropStreamInterestCount) {
+        ++m_bridgeStats.droppedPackets;
+        ++m_bridgeStats.droppedStreamInterests;
+        if (m_bridgeStats.firstDroppedName.empty())
+          m_bridgeStats.firstDroppedName = name;
+        return;
       }
-      return;
     }
   }
-  if (!faultsEnabled || (!m_activeFaults.dropPackets &&
-                         !m_activeFaults.duplicatePackets &&
-                         !m_activeFaults.reorderPackets)) {
+  if (!faultsEnabled || (!faults.dropPackets && !faults.duplicatePackets &&
+                         !faults.reorderPackets)) {
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      ++m_bridgeStats.forwardedInterests;
+    }
     deliverInterest(destination, interest);
-    ++m_bridgeStats.forwardedInterests;
     return;
   }
-  if (m_activeFaults.dropPackets) {
+  if (faults.dropPackets) {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
     ++m_bridgeStats.droppedPackets;
-    if (m_bridgeStats.firstDroppedName.empty()) {
+    if (m_bridgeStats.firstDroppedName.empty())
       m_bridgeStats.firstDroppedName = name;
-    }
     return;
   }
 
-  auto deliver = [&] (const ndn::Interest& packet) {
-    deliverInterest(destination, packet);
-    ++m_bridgeStats.forwardedInterests;
-  };
-  auto deliverWithDuplicate = [&] (const ndn::Interest& packet) {
-    deliver(packet);
-    if (m_activeFaults.duplicatePackets) {
-      deliver(packet);
-      ++m_bridgeStats.duplicatedPackets;
-    }
-  };
-  auto& pending = userToProvider ? m_pendingUserInterest : m_pendingProviderInterest;
-  if (m_activeFaults.reorderPackets) {
-    if (!pending) {
-      pending = interest;
-      if (m_bridgeStats.firstPendingName.empty()) {
-        m_bridgeStats.firstPendingName = name;
+  std::vector<ndn::Interest> deliveries;
+  if (faults.reorderPackets) {
+    std::optional<ndn::Interest> pending;
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      auto& held = userToProvider ? m_pendingUserInterest : m_pendingProviderInterest;
+      if (!held) {
+        held = interest;
+        if (m_bridgeStats.firstPendingName.empty())
+          m_bridgeStats.firstPendingName = name;
+        return;
       }
-      return;
+      pending = std::move(held);
+      held.reset();
+      const size_t copies = faults.duplicatePackets ? 2 : 1;
+      m_bridgeStats.forwardedInterests += 2 * copies;
+      if (faults.duplicatePackets)
+        m_bridgeStats.duplicatedPackets += 2;
+      ++m_bridgeStats.reorderedPackets;
     }
-    deliverWithDuplicate(interest);
-    deliverWithDuplicate(*pending);
-    pending.reset();
-    ++m_bridgeStats.reorderedPackets;
-    return;
+    deliveries.push_back(interest);
+    if (faults.duplicatePackets) {
+      deliveries.push_back(interest);
+    }
+    deliveries.push_back(std::move(*pending));
+    if (faults.duplicatePackets)
+      deliveries.push_back(deliveries.back());
   }
-  deliverWithDuplicate(interest);
+  else {
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      const size_t copies = faults.duplicatePackets ? 2 : 1;
+      m_bridgeStats.forwardedInterests += copies;
+      if (faults.duplicatePackets)
+        ++m_bridgeStats.duplicatedPackets;
+    }
+    deliveries.push_back(interest);
+    if (faults.duplicatePackets)
+      deliveries.push_back(interest);
+  }
+  for (const auto& packet : deliveries)
+    deliverInterest(destination, packet);
 }
 
 void
@@ -739,15 +822,29 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
                                           const ndn::Data& data,
                                           bool userToProvider)
 {
-  const bool faultsEnabled = m_status == EnvironmentStatus::RequestActive;
   const auto name = data.getName().toUri();
+  FaultProfile faults;
+  bool faultsEnabled = false;
+  {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
+    faults = m_activeFaults;
+    faultsEnabled = m_status == EnvironmentStatus::RequestActive;
+  }
   const auto streamEvent = !userToProvider && faultsEnabled
     ? parseInvocationEventName(data.getName())
     : std::optional<ParsedInvocationEventName>{};
-  if (streamEvent && m_activeFaults.tamperStreamDataCursor != 0 &&
-      streamEvent->cursor == m_activeFaults.tamperStreamDataCursor &&
-      m_bridgeStats.tamperedStreamDataPackets <
-        m_activeFaults.tamperStreamDataCount) {
+  if (streamEvent && faults.tamperStreamDataCursor != 0 &&
+      streamEvent->cursor == faults.tamperStreamDataCursor) {
+    bool tamper = false;
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      if (m_bridgeStats.tamperedStreamDataPackets < faults.tamperStreamDataCount) {
+        ++m_bridgeStats.forwardedData;
+        ++m_bridgeStats.tamperedStreamDataPackets;
+        tamper = true;
+      }
+    }
+    if (tamper) {
     auto tampered = data;
     const auto content = tampered.getContent();
     ndn::Buffer altered(content.value(), content.value_size());
@@ -756,94 +853,126 @@ NdnsfIntegrationEnvironment::forwardData(ndn::DummyClientFace& destination,
     }
     tampered.setContent(altered);
     deliverData(destination, tampered);
-    ++m_bridgeStats.forwardedData;
-    ++m_bridgeStats.tamperedStreamDataPackets;
     return;
-  }
-  if (streamEvent && m_activeFaults.dropStreamDataCursor != 0 &&
-      streamEvent->cursor == m_activeFaults.dropStreamDataCursor &&
-      m_bridgeStats.droppedStreamDataPackets <
-        m_activeFaults.dropStreamDataCount) {
-    ++m_bridgeStats.droppedPackets;
-    ++m_bridgeStats.droppedStreamDataPackets;
-    if (m_bridgeStats.firstDroppedName.empty()) {
-      m_bridgeStats.firstDroppedName = name;
     }
-    return;
   }
-  if (streamEvent && m_activeFaults.reorderStreamDataCursor != 0) {
-    const auto heldCursor = m_activeFaults.reorderStreamDataCursor;
-    if (streamEvent->cursor == heldCursor && !m_pendingStreamProviderData) {
-      m_pendingStreamProviderData = data;
-      if (m_bridgeStats.firstPendingName.empty()) {
-        m_bridgeStats.firstPendingName = name;
-      }
+  if (streamEvent && faults.dropStreamDataCursor != 0 &&
+      streamEvent->cursor == faults.dropStreamDataCursor) {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
+    if (m_bridgeStats.droppedStreamDataPackets < faults.dropStreamDataCount) {
+      ++m_bridgeStats.droppedPackets;
+      ++m_bridgeStats.droppedStreamDataPackets;
+      if (m_bridgeStats.firstDroppedName.empty())
+        m_bridgeStats.firstDroppedName = name;
       return;
     }
-    if (streamEvent->cursor == heldCursor + 1 && m_pendingStreamProviderData) {
+  }
+  if (streamEvent && faults.reorderStreamDataCursor != 0) {
+    const auto heldCursor = faults.reorderStreamDataCursor;
+    std::optional<ndn::Data> pending;
+    if (streamEvent->cursor == heldCursor) {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      if (!m_pendingStreamProviderData) {
+        m_pendingStreamProviderData = data;
+        if (m_bridgeStats.firstPendingName.empty())
+          m_bridgeStats.firstPendingName = name;
+        return;
+      }
+    }
+    if (streamEvent->cursor == heldCursor + 1) {
+      {
+        std::lock_guard<std::mutex> lock(m_bridgeMutex);
+        if (m_pendingStreamProviderData) {
+          pending = std::move(m_pendingStreamProviderData);
+          m_pendingStreamProviderData.reset();
+          m_bridgeStats.forwardedData += 2;
+          ++m_bridgeStats.reorderedPackets;
+          ++m_bridgeStats.reorderedStreamDataPairs;
+        }
+      }
+      if (pending) {
       deliverData(destination, data);
-      ++m_bridgeStats.forwardedData;
-      deliverData(destination, *m_pendingStreamProviderData);
-      ++m_bridgeStats.forwardedData;
-      m_pendingStreamProviderData.reset();
-      ++m_bridgeStats.reorderedPackets;
-      ++m_bridgeStats.reorderedStreamDataPairs;
-      return;
-    }
-  }
-  if (streamEvent && m_activeFaults.duplicateStreamDataCursor != 0 &&
-      streamEvent->cursor == m_activeFaults.duplicateStreamDataCursor &&
-      m_bridgeStats.duplicatedStreamDataPackets <
-        m_activeFaults.duplicateStreamDataCount) {
-    deliverData(destination, data);
-    deliverData(destination, data);
-    m_bridgeStats.forwardedData += 2;
-    ++m_bridgeStats.duplicatedPackets;
-    ++m_bridgeStats.duplicatedStreamDataPackets;
-    return;
-  }
-  if (!faultsEnabled || (!m_activeFaults.dropPackets &&
-                         !m_activeFaults.duplicatePackets &&
-                         !m_activeFaults.reorderPackets)) {
-    deliverData(destination, data);
-    ++m_bridgeStats.forwardedData;
-    return;
-  }
-  if (m_activeFaults.dropPackets) {
-    ++m_bridgeStats.droppedPackets;
-    if (m_bridgeStats.firstDroppedName.empty()) {
-      m_bridgeStats.firstDroppedName = name;
-    }
-    return;
-  }
-
-  auto deliver = [&] (const ndn::Data& packet) {
-    deliverData(destination, packet);
-    ++m_bridgeStats.forwardedData;
-  };
-  auto deliverWithDuplicate = [&] (const ndn::Data& packet) {
-    deliver(packet);
-    if (m_activeFaults.duplicatePackets) {
-      deliver(packet);
-      ++m_bridgeStats.duplicatedPackets;
-    }
-  };
-  auto& pending = userToProvider ? m_pendingUserData : m_pendingProviderData;
-  if (m_activeFaults.reorderPackets) {
-    if (!pending) {
-      pending = data;
-      if (m_bridgeStats.firstPendingName.empty()) {
-        m_bridgeStats.firstPendingName = name;
+        deliverData(destination, *pending);
+        return;
       }
-      return;
     }
-    deliverWithDuplicate(data);
-    deliverWithDuplicate(*pending);
-    pending.reset();
-    ++m_bridgeStats.reorderedPackets;
+  }
+  if (streamEvent && faults.duplicateStreamDataCursor != 0 &&
+      streamEvent->cursor == faults.duplicateStreamDataCursor) {
+    bool duplicate = false;
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      if (m_bridgeStats.duplicatedStreamDataPackets < faults.duplicateStreamDataCount) {
+        m_bridgeStats.forwardedData += 2;
+        ++m_bridgeStats.duplicatedPackets;
+        ++m_bridgeStats.duplicatedStreamDataPackets;
+        duplicate = true;
+      }
+    }
+    if (duplicate) {
+    deliverData(destination, data);
+    deliverData(destination, data);
+    return;
+    }
+  }
+  if (!faultsEnabled || (!faults.dropPackets && !faults.duplicatePackets &&
+                         !faults.reorderPackets)) {
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      ++m_bridgeStats.forwardedData;
+    }
+    deliverData(destination, data);
     return;
   }
-  deliverWithDuplicate(data);
+  if (faults.dropPackets) {
+    std::lock_guard<std::mutex> lock(m_bridgeMutex);
+    ++m_bridgeStats.droppedPackets;
+    if (m_bridgeStats.firstDroppedName.empty())
+      m_bridgeStats.firstDroppedName = name;
+    return;
+  }
+  std::vector<ndn::Data> deliveries;
+  if (faults.reorderPackets) {
+    std::optional<ndn::Data> pending;
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      auto& held = userToProvider ? m_pendingUserData : m_pendingProviderData;
+      if (!held) {
+        held = data;
+        if (m_bridgeStats.firstPendingName.empty())
+          m_bridgeStats.firstPendingName = name;
+        return;
+      }
+      pending = std::move(held);
+      held.reset();
+      const size_t copies = faults.duplicatePackets ? 2 : 1;
+      m_bridgeStats.forwardedData += 2 * copies;
+      if (faults.duplicatePackets)
+        m_bridgeStats.duplicatedPackets += 2;
+      ++m_bridgeStats.reorderedPackets;
+    }
+    deliveries.push_back(data);
+    if (faults.duplicatePackets) {
+      deliveries.push_back(data);
+    }
+    deliveries.push_back(std::move(*pending));
+    if (faults.duplicatePackets)
+      deliveries.push_back(deliveries.back());
+  }
+  else {
+    {
+      std::lock_guard<std::mutex> lock(m_bridgeMutex);
+      const size_t copies = faults.duplicatePackets ? 2 : 1;
+      m_bridgeStats.forwardedData += copies;
+      if (faults.duplicatePackets)
+        ++m_bridgeStats.duplicatedPackets;
+    }
+    deliveries.push_back(data);
+    if (faults.duplicatePackets)
+      deliveries.push_back(data);
+  }
+  for (const auto& packet : deliveries)
+    deliverData(destination, packet);
 }
 
 ndn::DummyClientFace&
