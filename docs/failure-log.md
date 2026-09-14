@@ -4741,3 +4741,15 @@ which differs from the Spec186 handoff seal
 - **Lesson**: reuse means revalidate exact bytes, not copy a historical
   digest; every SIF transfer or file replacement must refresh the candidate
   identity.
+## 2026-09-14 — Spec186 r28c Clang toolchain-root omission
+
+- **Area**: T006 native Waf configure using the historical successful recipe.
+- **Symptom**: after dependency stages completed, native configure rejected
+  `/usr/lib/llvm-10/bin/clang` as outside the required `/usr/bin` toolchain
+  root and stopped before compiling source.
+- **Root cause**: the template copied the Clang10/O0 compiler and flags but
+  omitted the historical explicit `--toolchain-root=/usr` configure option.
+- **Correction**: add that option to the canonical native configure command,
+  regenerate the sealed definition, and rerun preflight before building.
+- **Lesson**: a successful compiler name/flag match is insufficient; the Waf
+  toolchain-root boundary is part of the reusable build recipe.

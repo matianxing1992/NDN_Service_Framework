@@ -205,6 +205,7 @@ PY
     export CXX=/usr/bin/clang++-10
     export CXXFLAGS="-B/usr/bin -O0 -g0 -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES"
     ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --with-examples --disable-local-dependency-prefix \
+      --toolchain-root=/usr \
       --onnx-prefix=/opt/onnx \
       --nac-abe-prefix=/opt/ndnsf-di/current \
       --ndn-svs-source-tree=/src/ndn-svs --ndn-svs-build-tree=/src/ndn-svs/build \

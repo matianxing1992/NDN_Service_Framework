@@ -72,6 +72,7 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "NUMPY_BASE_IMPORT_PASS" in source
     assert "clang-10" in TEMPLATE.read_text()
     assert "/usr/bin/clang++-10" in TEMPLATE.read_text()
+    assert "--toolchain-root=/usr" in TEMPLATE.read_text()
     assert TEMPLATE.read_text().index("export CXX=/usr/bin/clang++-10") < TEMPLATE.read_text().index("./waf -j1 -v --targets=")
     assert "/var/lib/dpkg/updates" in TEMPLATE.read_text()
     build_script = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh").read_text()
