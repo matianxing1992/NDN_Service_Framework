@@ -78,3 +78,7 @@ input and output root are supplied and the C++ User process completes through
 the actual MiniNDN/NFD network. T003 remains **WAITING_EXTERNAL_INPUT** until
 the regular base SIF, host-gate manifest and convergence PASS are available;
 no SIF build, two-run local gate or TigerCluster promotion was started.
+
+External-input recheck at 2026-09-15 17:48 -05:00 found no regular `.sif` under
+the repository or `/home/tianxing/NDN`; the only matches were pytest fixtures
+and Apptainer probe images, none of which satisfy the Spec187 base contract.
