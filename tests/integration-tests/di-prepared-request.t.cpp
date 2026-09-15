@@ -28,7 +28,9 @@
 
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -36,6 +38,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -1069,7 +1072,221 @@ struct Spec185PreparedModelTestAccess
 
 } // namespace ndnsf::di
 
+#if defined(SPEC187_YOLO_SELECTOR)
+BOOST_AUTO_TEST_SUITE(Spec187YoloMiniNdn)
+#else
 BOOST_AUTO_TEST_SUITE(Spec185PreparedRequest)
+#endif
+
+#if defined(SPEC187_YOLO_SELECTOR)
+namespace {
+
+std::filesystem::path
+spec187RequiredPath(const char* name)
+{
+  const auto* value = std::getenv(name);
+  BOOST_REQUIRE_MESSAGE(value != nullptr && *value != '\0',
+                        std::string("missing Spec187 environment: ") + name);
+  const auto path = std::filesystem::absolute(value).lexically_normal();
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
+                        std::string("Spec187 file is unavailable: ") + path.string());
+  return path;
+}
+
+std::vector<std::uint8_t>
+spec187ReadInput(const std::filesystem::path& path)
+{
+  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  BOOST_REQUIRE_MESSAGE(input.good(), "Spec187 input cannot be opened");
+  const auto size = input.tellg();
+  BOOST_REQUIRE_MESSAGE(size >= 0 && size <= static_cast<std::streamoff>(4 * 1024 * 1024),
+                        "Spec187 input exceeds the bounded request size");
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  input.seekg(0);
+  BOOST_REQUIRE_MESSAGE(bytes.empty() || input.read(
+    reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())),
+    "Spec187 input read failed");
+  return bytes;
+}
+
+std::optional<std::uint64_t>
+spec187FieldPosition(const std::string& line, const std::string& field)
+{
+  std::size_t position = line.find(field);
+  while (position != std::string::npos) {
+    const bool before = position == 0 || std::isspace(
+      static_cast<unsigned char>(line[position - 1])) ||
+      line[position - 1] == '{' || line[position - 1] == ',';
+    const auto afterPosition = position + field.size();
+    const bool after = afterPosition == line.size() ||
+      std::isspace(static_cast<unsigned char>(line[afterPosition])) ||
+      line[afterPosition] == ',' || line[afterPosition] == '}';
+    if (before && after)
+      return position;
+    position = line.find(field, position + 1);
+  }
+  return std::nullopt;
+}
+
+std::optional<std::uint64_t>
+spec187FindStage(const std::filesystem::path& directory,
+                const std::string& filePrefix,
+                const std::string& marker,
+                const std::vector<std::string>& fields)
+{
+  std::error_code error;
+  for (std::filesystem::directory_iterator it(directory, error), end;
+       !error && it != end; it.increment(error)) {
+    if (!it->is_regular_file(error))
+      continue;
+    const auto name = it->path().filename().string();
+    if (name.rfind(filePrefix, 0) != 0 || it->path().extension() != ".log")
+      continue;
+    std::ifstream input(it->path(), std::ios::binary);
+    if (!input.good())
+      continue;
+    const std::string text{std::istreambuf_iterator<char>(input),
+                           std::istreambuf_iterator<char>()};
+    std::istringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+      if (line.find(marker) == std::string::npos)
+        continue;
+      if (!std::all_of(fields.begin(), fields.end(), [&line] (const auto& field) {
+            return spec187FieldPosition(line, field).has_value();
+          }))
+        continue;
+      const auto epochPosition = line.find("epochMs=");
+      if (epochPosition == std::string::npos)
+        continue;
+      const auto first = epochPosition + std::string("epochMs=").size();
+      const auto last = line.find_first_of(" \t\r\n", first);
+      try {
+        return std::stoull(line.substr(first, last - first));
+      }
+      catch (...) {
+        continue;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+std::uint64_t
+spec187RequireStage(const std::filesystem::path& directory,
+                    const std::string& filePrefix,
+                    const std::string& marker,
+                    std::vector<std::string> fields)
+{
+  const auto observed = spec187FindStage(directory, filePrefix, marker, fields);
+  BOOST_REQUIRE_MESSAGE(observed.has_value(),
+                        "missing correlated Spec187 stage evidence '" + marker +
+                        "' under " + directory.string());
+  return *observed;
+}
+
+bool
+spec187HasCorrelatedMarker(const std::filesystem::path& directory,
+                           const std::string& filePrefix,
+                           const std::string& marker,
+                           const std::vector<std::string>& fields)
+{
+  std::error_code error;
+  for (std::filesystem::directory_iterator it(directory, error), end;
+       !error && it != end; it.increment(error)) {
+    if (!it->is_regular_file(error))
+      continue;
+    const auto name = it->path().filename().string();
+    if (name.rfind(filePrefix, 0) != 0 || it->path().extension() != ".log")
+      continue;
+    std::ifstream input(it->path(), std::ios::binary);
+    if (!input.good())
+      continue;
+    std::istringstream lines(std::string{std::istreambuf_iterator<char>(input),
+                                         std::istreambuf_iterator<char>()});
+    std::string line;
+    while (std::getline(lines, line)) {
+      if (line.find(marker) == std::string::npos)
+        continue;
+      if (std::all_of(fields.begin(), fields.end(), [&line] (const auto& field) {
+            return spec187FieldPosition(line, field).has_value();
+          }))
+        return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(NativeRequesterThroughMiniNdn)
+{
+  const auto configPath = spec187RequiredPath("SPEC187_NATIVE_REQUEST_CONFIG");
+  const auto inputPath = spec187RequiredPath("SPEC187_NATIVE_REQUEST_INPUT");
+  const auto* outputValue = std::getenv("SPEC187_NATIVE_REQUEST_OUTPUT");
+  BOOST_REQUIRE_MESSAGE(outputValue != nullptr && *outputValue != '\0',
+                        "missing Spec187 environment: SPEC187_NATIVE_REQUEST_OUTPUT");
+  const auto outputPath = std::filesystem::absolute(outputValue).lexically_normal();
+  BOOST_REQUIRE_MESSAGE(!std::filesystem::exists(outputPath),
+                        "Spec187 output already exists");
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_directory(outputPath.parent_path()),
+                        "Spec187 output parent is unavailable");
+
+  RuntimeConfig config;
+  config.nativeConfigPath = configPath.string();
+  auto runtime = Runtime::open(std::move(config));
+  auto prepared = runtime->user().prepare();
+  RequestOptions options;
+  options.timeout = std::chrono::milliseconds(60000);
+  options.ackTimeout = std::chrono::milliseconds(1500);
+  const auto handle = prepared.request(Input::inlineBytes(spec187ReadInput(inputPath)), options);
+  const auto result = handle.result(options.timeout);
+  BOOST_REQUIRE_MESSAGE(!result.payload.empty(), "Spec187 native result payload is empty");
+  BOOST_REQUIRE_MESSAGE(!result.planDigest.empty(), "Spec187 result has no plan digest");
+  BOOST_REQUIRE_MESSAGE(!result.modelDigest.empty(), "Spec187 result has no model digest");
+
+  const auto evidenceDirectory = outputPath.parent_path();
+  const auto requestId = handle.id();
+  const auto attempt = std::string("attemptEpoch=1");
+  const auto ackEpoch = spec187RequireStage(
+    evidenceDirectory, "user", "NDNSF_DI_NATIVE_ACK_CLOSED",
+    {"requestId=" + requestId, attempt});
+  const auto selectionCommitEpoch = spec187RequireStage(
+    evidenceDirectory, "user", "NDNSF_DI_NATIVE_SELECTION_COMMITTED",
+    {"requestId=" + requestId, attempt, "planDigest=" + result.planDigest});
+  const auto selectionAcceptedEpoch = spec187RequireStage(
+    evidenceDirectory, "provider-", "NDNSF_DI_NATIVE_SELECTION_ACCEPTED",
+    {"requestId=" + requestId, attempt, "provider=/",
+     "planDigest=" + result.planDigest});
+  const auto executionCompletedEpoch = spec187RequireStage(
+    evidenceDirectory, "provider-", "NDNSF_DI_NATIVE_PROVIDER_EXECUTION_COMPLETED",
+    {"requestId=" + requestId, "attemptEpoch=1", "provider=/",
+     "planDigest=" + result.planDigest});
+  BOOST_REQUIRE_MESSAGE(ackEpoch <= selectionCommitEpoch &&
+                        selectionCommitEpoch <= selectionAcceptedEpoch &&
+                        selectionAcceptedEpoch <= executionCompletedEpoch,
+                        "Spec187 native stage evidence is out of order");
+  const auto observed = spec187HasCorrelatedMarker(
+    evidenceDirectory, "provider-", "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED",
+    {"\"requestId\":\"" + requestId + "\"",
+     "\"attemptEpoch\":1",
+     "\"planDigest\":\"" + result.planDigest + "\"",
+     "\"executionCompleted\":true"});
+  BOOST_REQUIRE_MESSAGE(observed,
+                        "missing correlated Spec187 execution evidence under " +
+                        evidenceDirectory.string());
+
+  std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+  BOOST_REQUIRE_MESSAGE(output.good(), "Spec187 output cannot be opened");
+  BOOST_REQUIRE_MESSAGE(output.write(reinterpret_cast<const char*>(result.payload.data()),
+                                     static_cast<std::streamsize>(result.payload.size())),
+                        "Spec187 result output write failed");
+  std::cout << "SPEC187_NATIVE_REQUEST_PASS request=" << handle.id()
+            << " plan=" << result.planDigest << " model=" << result.modelDigest << '\n';
+  runtime->close();
+  BOOST_REQUIRE(runtime->drain(std::chrono::seconds(60)));
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(PreparedRequestsSharePackageButAllocateIndependentIds)
 {

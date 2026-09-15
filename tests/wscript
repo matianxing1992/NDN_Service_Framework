@@ -275,6 +275,24 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec187's YOLO MiniNDN selector reuses the production-backed served
+    # Provider fixture, but gives it an independent binary and suite identity.
+    # The Python MiniNDN harness may launch this selector as a child; all
+    # ACK/Selection/Provider/Response assertions remain in this C++ source.
+    bld.program(target='../spec187-yolo-minindn',
+                name='spec187-yolo-minindn',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
+                         'SPEC187_YOLO_SELECTOR'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec185 B4 prepared-conversation selector.  Keep the provider-backed
     # two-turn wrapper path beside the B3 request fixture and add the focused
     # opaque-checkpoint API boundary cases from their dedicated translation

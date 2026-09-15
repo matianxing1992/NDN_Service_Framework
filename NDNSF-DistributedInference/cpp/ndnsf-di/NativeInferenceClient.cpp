@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <atomic>
@@ -17,6 +18,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -1228,6 +1230,16 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             conversations = operation->conversations;
             conversationTurn = operation->conversationTurn;
           }
+          {
+            std::ostringstream record;
+            record << "NDNSF_DI_NATIVE_ACK_CLOSED"
+                   << " requestId=" << operation->requestId
+                   << " attemptEpoch=" << sourceAttempt
+                   << " epochMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch()).count()
+                   << " ackDigest=" << closure.digest;
+            logRuntimeEvidence(record.str());
+          }
           NativeRequestControl control{coreRequestId, sourceAttempt, operation->deadline,
             [flag = operation->cancelled] { return flag->load(); }};
           if (!runtime || !inspected || !strategies.enumerate || !strategies.proposeRoles ||
@@ -1267,6 +1279,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             }
           }
           const auto corePlan = planned.corePlan;
+          const auto sealedPlanDigest = planned.sealed.planDigest;
           bool published = false;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
@@ -1293,8 +1306,9 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             }
             return;
           }
-          operation->user->postToIo([operation, sourceAttempt, coreRequestId, digest = closure.digest,
-                                    plan = corePlan] {
+          operation->user->postToIo([operation, sourceAttempt, coreRequestId,
+                                    digest = closure.digest, plan = corePlan,
+                                    sealedPlanDigest] {
             try {
               {
                 std::lock_guard<std::mutex> lock(operation->mutex);
@@ -1305,6 +1319,16 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                   "request expired before commit", operation->requestId, operation->attempt);
               if (!operation->user->CommitCollaborationPlan(ndn::Name(coreRequestId), digest, plan))
                 throw std::runtime_error("Core rejected the sealed plan");
+              {
+                std::ostringstream record;
+                record << "NDNSF_DI_NATIVE_SELECTION_COMMITTED"
+                       << " requestId=" << operation->requestId
+                       << " attemptEpoch=" << sourceAttempt
+                       << " epochMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch()).count()
+                       << " planDigest=" << sealedPlanDigest;
+                logRuntimeEvidence(record.str());
+              }
               std::lock_guard<std::mutex> lock(operation->mutex);
             if (!operation->cancelled->load() && operation->attempt == sourceAttempt)
                 operation->phase = DiRequestPhase::Committed;

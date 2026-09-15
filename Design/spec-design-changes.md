@@ -300,4 +300,15 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 - 验证命令、结果与持久证据：
 - 状态 / 剩余验收 / 下一步：
 
+### D-187：YOLO MiniNDN 原生 User selector 接线
+
+- 日期 / Spec / 任务与契约 ID：2026-09-15；[Spec187](../specs/187-yolo-minindn-sif-app/spec.md)；T002/T006 / FR-005、FR-006、FR-012。
+- 模块 / 当前与目标章节：`Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`、`tests/integration-tests/di-prepared-request.t.cpp`、`tests/wscript`；YOLO MiniNDN local acceptance。
+- 原设计 / 新设计 / 修改原因：原接线在 Python MiniNDN case 完成后另起 `DummyClientFace` C++ fixture，且 selector 可缺省，不能证明同一网络调用链。当前在显式 `SPEC187_NATIVE_MODE=1` 下由 runner 在网络启动前校验 selector/config/input/output，并把注册的 C++ `NativeRequesterThroughMiniNdn` 作为 MiniNDN User 子进程启动；C++ 直接调用 `Runtime::open → User::prepare → PreparedModel::request`，通过继承的 `NDN_CLIENT_TRANSPORT` 连接节点 NFD。
+- 当前已实现部分 / 目标未实现部分：C++ target、source closure、fail-closed 输入门和独立 served-provider selector 已通过；Requester 的 ACK/Selection 与 Provider 的 Selection/execution 阶段记录按 request/attempt/plan 关联并由 C++ selector 校验顺序；真实 candidate-bound config、两次 local MiniNDN run、SIF/Tiger promotion 尚未观测。
+- 兼容性、迁移或撤回影响：未改变 NDNSF wire 或默认旧 Python harness；只有显式 Spec187 native mode 使用 C++ User，缺失 selector/config/input/output 不回退到 Python PASS。
+- 源码提交或范围 / 文档提交定位：本地 T002 工作区改动；[B187-LOCAL-YOLO evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo.md)、[convergence report](../specs/187-yolo-minindn-sif-app/evidence/convergence-20260915-r1.md)。
+- 验证命令、结果与持久证据：`spec187-yolo-minindn` normal compile/link `rc=0`（`-j4`，1m6.118s）；独立 served-provider C++ selector `rc=0`；缺失 native input selector 以 rc=201 fail-closed；官方 review-agent r7 `STATIC_PASS`，阶段证据详见 B187-LOCAL-YOLO。
+- 状态 / 剩余验收 / 下一步：`PARTIAL`；等待 regular base SIF、host-gate manifest 和 native requester config/input 后执行两次 local gate，再决定 TigerCluster promotion。
+
 历史 Spec 的完整回溯是后续独立核对工作，本轮不虚构它们的变更记录。

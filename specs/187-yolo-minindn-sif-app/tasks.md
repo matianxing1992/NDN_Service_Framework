@@ -7,25 +7,25 @@
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | PARTIAL | — | 静态门与 mutation check 通过；仍需 regular base SIF/host-gate 才能跑完整闭合序列；[b187-local-closure.md](evidence/b187-local-closure.md) | 2026-09-15 15:08 -05:00 |
-| [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | NOT_STARTED | T001 | 需 selector/build registration；未运行 | 2026-09-15 14:53 -05:00 |
-| [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | NOT_STARTED | T002 | 需 convergence PASS、base SIF；未运行 | 2026-09-15 14:53 -05:00 |
-| [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | NOT_STARTED | T003 | 仅 LOCAL_PASS 后执行；未运行 | 2026-09-15 14:53 -05:00 |
+| [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | PARTIAL | T001 | r7 STATIC_PASS；C++ target compile/link 与独立 served-provider selector 通过；through-MiniNDN 仍需 candidate-bound native config/input；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-15 15:44 -05:00 |
+| [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | WAITING_EXTERNAL_INPUT | T002 | regular base SIF、host-gate manifest、convergence PASS 和两次 through-MiniNDN run 均未具备；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-15 15:27 -05:00 |
+| [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | WAITING_EXTERNAL_INPUT | T003 | T003 尚未 LOCAL_PASS；未启动 Slurm/Apptainer；[b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | 2026-09-15 15:32 -05:00 |
 | [T005 QWEN deferral and delivery record](#t005-qwen-deferral-and-delivery-record) | DONE | — | QWEN 明确保持 TODO，未进入 YOLO candidate；[qwen-deferred.md](evidence/qwen-deferred.md) | 2026-09-15 15:16 -05:00 |
-| [T006 Design-code convergence and final evidence](#t006-design-code-convergence-and-final-evidence) | NOT_STARTED | T001,T002 | 必须先于 T003/T004 正式验收 | 2026-09-15 14:53 -05:00 |
+| [T006 Design-code convergence and final evidence](#t006-design-code-convergence-and-final-evidence) | DONE | T001,T002 | 静态收敛 PASS；正式 local/cluster 资格仍依赖外部 candidate 输入；[convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | 2026-09-15 15:32 -05:00 |
 
 ## Current Checkpoint
 
-2026-09-15 15:08 -05:00：T001 的 changed-base 零副作用门已实现；定向 Python 检查 3 passed，冻结只读 review-agent 返回 STATIC_PASS。regular base SIF 不存在，历史 images/spec180-runtime-r119.sif 为 dangling symlink；因此 T001 保持 PARTIAL，完整 handoff/render/build 闭合待外部 base 与 host-gate 输入。下一步继续 T002 的 C++ selector 接线。
+2026-09-15 15:44 -05:00：T002 的 C++ selector 已注册并接入 Spec187 native mode；阶段证据现按 request/attempt/plan 关联，并以 epochMs 核对 ACK → Selection commit → Provider accepted → Provider execution 顺序。r7 官方 review-agent 返回 STATIC_PASS；受影响目标以 `-j4` 编译通过（1m6.118s），独立 served-provider selector 通过，缺输入 selector 按预期 fail-closed。真实 through-MiniNDN 请求仍需 candidate-bound config/input，T001 仍缺 regular base SIF/host-gate，T003 及后续批次保持 WAITING_EXTERNAL_INPUT/PARTIAL。
 
 ## Logical Batches
 
 | Batch ID | Members | Stable exit | Shared selector / build | Status |
 | --- | --- | --- | --- | --- |
 | B187-LOCAL-CLOSURE | T001 | closure gate rejects invalid candidate inputs before side effects and accepts a verified pair tuple | existing Tiger script checks and mutation fixtures | PARTIAL |
-| B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | NOT_STARTED |
-| B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | NOT_STARTED |
+| B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | PARTIAL |
+| B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | WAITING_EXTERNAL_INPUT |
 | B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | DONE |
-| B187-CONVERGENCE | T006 | fresh audit PASS before formal local/cluster evidence | CodeGraph plus exact source and symbol checks | NOT_STARTED |
+| B187-CONVERGENCE | T006 | fresh audit PASS before formal local/cluster evidence | CodeGraph plus exact source and symbol checks | DONE |
 
 ## Task Details
 
@@ -44,6 +44,12 @@
 **Design binding**: FR-005, FR-009, FR-012; add a registered C++ selector under tests/integration-tests and tests/wscript, and wire Experiments/NDNSF_DI_YoloAckDriven_Minindn.py only as MiniNDN/NFD/identity/process orchestration. The selector must own request/ACK/Selection/Provider/Response assertions and the Face/io_context/scheduler lifetime barrier.
 
 **Outcome**: a named C++ production target invokes the real DI path through the maintained YOLO case; Python-only markers cannot close the task.
+
+Spec187 native mode requires absolute `SPEC187_NATIVE_SELECTOR`,
+`SPEC187_NATIVE_REQUEST_CONFIG`, `SPEC187_NATIVE_REQUEST_INPUT` and
+`SPEC187_NATIVE_REQUEST_OUTPUT` inputs. The runner validates them before
+`start_network()` and launches the C++ selector as the MiniNDN User process;
+there is no configurable test filter or post-run DummyClientFace substitute.
 
 **Risk class / Dynamic profile**: high / asan-ubsan; invariant is authenticated selection, terminal result and no active owner after drain.
 
@@ -84,17 +90,17 @@
 | Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Dynamic validation | Build scope / target / -j / elapsed / exit | Review trace / closure decision | Behavior result | Evidence / remaining |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | B187-LOCAL-CLOSURE | production callers, implementation, tests, build, migration: `build-sif-app.py`, `test_sif_app.py`; evidence lane in [b187-local-closure.md](evidence/b187-local-closure.md) | no P0–P3; STATIC_PASS | not run; regular base unavailable | focused offline checks: 3 passed; SIF/runtime not observed | NOT_RUN; dynamic card awaits regular base | not run | review-agent STATIC_PASS on frozen diff; OPEN_FOR_NEXT_BATCH | PARTIAL | regular base SIF and host-gate manifest remain |
-| B187-LOCAL-YOLO | planned in T002/T003 | not observed | not run | not run | NOT_RUN | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | evidence/b187-local-yolo.md to be created |
-| B187-TIGER | planned in T004 | not observed | not run | not run | NOT_RUN | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | evidence/b187-tiger-yolo.md to be created |
+| B187-LOCAL-YOLO | production callers, implementation, state/lifecycle, build/source closure, tests/evidence: [b187-local-yolo.md](evidence/b187-local-yolo.md) | no P0-P2 after r7 review; token/JSON boundaries and epoch order checked | target compile/link passed; first compile miss and unpreloaded loader boundary are retained | independent C++ served-provider selector passed; through-MiniNDN selector failed closed on missing config before Runtime open | NOT_RUN for real MiniNDN/SIF | `spec187-yolo-minindn`, `build-spec185-b0c-normal`, `-j4`, 1m6.118s, rc=0 | review-agent r7 STATIC_PASS; OPEN_FOR_NEXT_BATCH | PARTIAL | regular base SIF, native requester config/input, convergence and two local runs remain |
+| B187-TIGER | no execution because T003 has no LOCAL_PASS; [b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | N/A before local gate | not run | not run | NOT_RUN | not run | review-agent N/A; BLOCKED_BY_LOCAL_GATE | WAITING_EXTERNAL_INPUT | T003 LOCAL_PASS and external TigerCluster access remain |
 | B187-DEFERRED | documentation lane covered; other lanes N/A by scope | N/A by docs-only scope | N/A | N/A | N/A | N/A | review-agent N/A; CLOSED_FOR_VALIDATION | DONE | QWEN remains TODO; [qwen-deferred.md](evidence/qwen-deferred.md) |
-| B187-CONVERGENCE | planned in T006 | not observed | not run | not run | NOT_RUN | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | convergence report pending |
+| B187-CONVERGENCE | production/callers, implementation, state/lifecycle, build/source closure, evidence: [convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | no P0-P2 after r7 review | target compile/link passed | missing-input selector fail-closed; real MiniNDN/SIF not observed | NOT_RUN for formal qualification | build boundary recorded in B187-LOCAL-YOLO | review-agent r7 STATIC_PASS; CLOSED_FOR_VALIDATION | DONE (static) | external candidate inputs and formal runs remain |
 
 ### Batch Retrospective
 
-- static: T001 review-agent STATIC_PASS; no P0–P3 findings.
-- compile/link: not run; selector source closure and target registration are pending.
-- runtime/test: focused Python checks passed, but no SIF, MiniNDN or Tiger run has started.
-- unobserved: regular base SIF, host-gate manifest, local pair build, C++ selector, local YOLO run and cluster run.
+- static: T001 and T002 review-agent gates are STATIC_PASS; r3/r4 found the output-collision and marker-correlation issues, r6/r7 confirmed their repairs.
+- compile/link: `spec187-yolo-minindn` linked successfully in the existing DI build tree with `-j4` after retaining the first `CollaborationPlan` digest compile miss.
+- runtime/test: focused Python checks and the independent C++ served-provider selector passed; the through-MiniNDN selector has a correlated stage oracle but only a fail-closed missing-input run so far.
+- unobserved: regular base SIF, host-gate manifest, candidate SIF/APP, candidate-bound C++ requester config/input, two real MiniNDN runs, and cluster run.
 
 ## Dependencies & Execution Order
 

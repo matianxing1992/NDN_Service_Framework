@@ -8,6 +8,13 @@
 - YOLO model, profile, identity/KeyChain and NFD inputs in an operator-owned run directory.
 - Enough local disk for base, candidate, APP snapshot and temporary build output.
 
+For the native local gate, also provide absolute, candidate-bound paths through
+`SPEC187_NATIVE_MODE=1`, `SPEC187_NATIVE_SELECTOR`,
+`SPEC187_NATIVE_REQUEST_CONFIG`, `SPEC187_NATIVE_REQUEST_INPUT` and
+`SPEC187_NATIVE_REQUEST_OUTPUT`. The selector is launched as the MiniNDN User
+process and inherits its node transport; a missing input or an existing output
+is rejected before MiniNDN starts.
+
 ## Local sequence
 
 Run from the repository root and use a new candidate/run-id directory:
@@ -16,7 +23,8 @@ Run from the repository root and use a new candidate/run-id directory:
 2. render the runtime definition with the exact base SIF and host-gate manifest.
 3. invoke build-local-sif.sh with Apptainer 1.5.3.
 4. invoke build-sif-app.sh and validate the resulting pair manifest.
-5. run the existing YOLO MiniNDN harness with the local pair and C++ Spec187YoloMiniNdn selector.
+5. run the existing YOLO MiniNDN harness with the local pair and C++
+   `Spec187YoloMiniNdn/NativeRequesterThroughMiniNdn` selector.
 6. repeat the local case once with the same pair identity; retain separate run records.
 
 Do not run steps 3–6 while the base SIF is a dangling link or while the candidate closure is not locally available.

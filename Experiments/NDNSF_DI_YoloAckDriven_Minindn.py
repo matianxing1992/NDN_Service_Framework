@@ -914,33 +914,66 @@ class MiniNdnCaseRuntime:
                 "NDNSF_DI_NATIVE_PROVIDER_READY", "providers", "native",
             ))
 
-        user_args = common + [
-            "--canonical-package", str(package),
-            "--catalogue-registry", str(registry),
-            "--offer-trust-root", str(trust_root),
-            "--offer-public-key-map", str(public_key_map),
-            "--catalog-data-name", catalogue_data_name,
-            "--catalog-signer", catalogue_signer,
-            "--ack-timeout-ms", "1500",
-            "--timeout-ms", "60000",
-            # The canonical YOLO26n graph is pinned at 640-by-640 static input
-            # (T004); the legacy 32-by-32 default cannot feed it.
-            "--input-size", "640",
-            "--sequential-requests", "1",
-            "--request-id",
-            "/spec180-" + str(self.inputs.get("lifecycle_case",
-                                                self.binding.case)).lower() + "-" + hashlib.sha256(
-                str(self.binding.output).encode("utf-8")).hexdigest()[:16],
-            "--lifecycle-output-dir", str(self.binding.output),
-            "--lifecycle-case", str(self.inputs.get("lifecycle_case",
-                                                     self.binding.case)),
-            "--envelope-key-file", str(envelope_key_file),
-            "--native-tensor-input",
-        ]
-        commands.append(CaseProcessSpec(
-            "user", str(nodes["user"]), python_command("user.py", user_args),
-            "YOLO_ACK_DRIVEN_RESULT", "user",
-        ))
+        spec187_native_mode = bool(self.inputs.get("spec187_native_mode", False))
+        if spec187_native_mode:
+            selector = Path(str(self.inputs.get("spec187_native_selector", "")))
+            request_config = Path(str(self.inputs.get(
+                "spec187_native_request_config", "")))
+            request_input = Path(str(self.inputs.get(
+                "spec187_native_request_input", "")))
+            request_output = Path(str(self.inputs.get(
+                "spec187_native_request_output", "")))
+            if (not selector.is_absolute() or selector.is_symlink()
+                    or not selector.is_file() or not os.access(selector, os.X_OK)):
+                raise RunnerError("SPEC187_NATIVE_SELECTOR_INVALID")
+            for label, path in (("config", request_config),
+                                ("input", request_input)):
+                if (not path.is_absolute() or path.is_symlink()
+                        or not path.is_file() or not os.access(path, os.R_OK)):
+                    raise RunnerError("SPEC187_NATIVE_REQUEST_" + label.upper() + "_INVALID")
+            if (not request_output.is_absolute() or request_output.is_symlink()
+                    or request_output.exists()
+                    or not request_output.parent.is_dir()
+                    or not os.access(request_output.parent, os.W_OK)):
+                raise RunnerError("SPEC187_NATIVE_REQUEST_OUTPUT_INVALID")
+            selector_command = " ".join(shlex.quote(item) for item in (
+                str(selector),
+                "--run_test=Spec187YoloMiniNdn/NativeRequesterThroughMiniNdn",
+                "--log_level=test_suite",
+            ))
+            commands.append(CaseProcessSpec(
+                "user", str(nodes["user"]),
+                ("cd " + shlex.quote(str(ROOT)) + " && exec " + selector_command),
+                "SPEC187_NATIVE_REQUEST_PASS", "user", "native",
+            ))
+        else:
+            user_args = common + [
+                "--canonical-package", str(package),
+                "--catalogue-registry", str(registry),
+                "--offer-trust-root", str(trust_root),
+                "--offer-public-key-map", str(public_key_map),
+                "--catalog-data-name", catalogue_data_name,
+                "--catalog-signer", catalogue_signer,
+                "--ack-timeout-ms", "1500",
+                "--timeout-ms", "60000",
+                # The canonical YOLO26n graph is pinned at 640-by-640 static input
+                # (T004); the legacy 32-by-32 default cannot feed it.
+                "--input-size", "640",
+                "--sequential-requests", "1",
+                "--request-id",
+                "/spec180-" + str(self.inputs.get("lifecycle_case",
+                                                    self.binding.case)).lower() + "-" + hashlib.sha256(
+                    str(self.binding.output).encode("utf-8")).hexdigest()[:16],
+                "--lifecycle-output-dir", str(self.binding.output),
+                "--lifecycle-case", str(self.inputs.get("lifecycle_case",
+                                                         self.binding.case)),
+                "--envelope-key-file", str(envelope_key_file),
+                "--native-tensor-input",
+            ]
+            commands.append(CaseProcessSpec(
+                "user", str(nodes["user"]), python_command("user.py", user_args),
+                "YOLO_ACK_DRIVEN_RESULT", "user",
+            ))
         if phase is None:
             return tuple(commands)
         return tuple(item for item in commands if item.startup_phase == phase)
@@ -3261,6 +3294,23 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     Y-A is proven; the function never calls the legacy deployment-first main.
     """
     runtime_inputs = dict(inputs)
+    spec187_native_mode = os.environ.get("SPEC187_NATIVE_MODE", "").strip() == "1"
+    if spec187_native_mode:
+        selector = os.environ.get("SPEC187_NATIVE_SELECTOR", "").strip()
+        request_config = os.environ.get("SPEC187_NATIVE_REQUEST_CONFIG", "").strip()
+        request_input = os.environ.get("SPEC187_NATIVE_REQUEST_INPUT", "").strip()
+        request_output = os.environ.get("SPEC187_NATIVE_REQUEST_OUTPUT", "").strip()
+        if not selector:
+            raise RunnerError("SPEC187_NATIVE_SELECTOR_REQUIRED")
+        if not request_config or not request_input or not request_output:
+            raise RunnerError("SPEC187_NATIVE_REQUEST_INPUTS_REQUIRED")
+        runtime_inputs.update({
+            "spec187_native_mode": True,
+            "spec187_native_selector": selector,
+            "spec187_native_request_config": request_config,
+            "spec187_native_request_input": request_input,
+            "spec187_native_request_output": request_output,
+        })
     if subcase:
         runtime_inputs["subcase"] = subcase
         runtime_inputs["lifecycle_case"] = subcase
@@ -3365,6 +3415,16 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # controller/repository construction remains read-compatible.
     env["NDNSF_DI_STATE_ROOT"] = str(
         runtime_inputs.get("state_root") or os.environ.get("NDNSF_DI_STATE_ROOT", ""))
+    if spec187_native_mode:
+        env["SPEC187_NATIVE_MODE"] = "1"
+        env["SPEC187_NATIVE_SELECTOR"] = str(
+            runtime_inputs["spec187_native_selector"])
+        env["SPEC187_NATIVE_REQUEST_CONFIG"] = str(
+            runtime_inputs["spec187_native_request_config"])
+        env["SPEC187_NATIVE_REQUEST_INPUT"] = str(
+            runtime_inputs["spec187_native_request_input"])
+        env["SPEC187_NATIVE_REQUEST_OUTPUT"] = str(
+            runtime_inputs["spec187_native_request_output"])
     env.setdefault("NDNSF_HANDLER_THREADS", "1")
     env.setdefault("NDNSF_ACK_THREADS", "1")
     cleanup_done = False
@@ -3430,10 +3490,20 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
         runtime.wait_for_ready(started, 120.0)
         user_log = started[0][2]
         text = user_log.read_text(errors="replace") if user_log.exists() else ""
-        result_lines = [line for line in text.splitlines()
-                        if line.startswith("YOLO_ACK_DRIVEN_RESULT ")]
-        if not result_lines or "status=true" not in result_lines[-1]:
-            raise RunnerError("CASE_RUNTIME_TERMINAL_RESPONSE_INVALID")
+        if spec187_native_mode:
+            user_log = next((path for spec, _proc, path in started
+                             if spec.name == "user"), None)
+            native_text = user_log.read_text(errors="replace") \
+                if user_log is not None and user_log.exists() else ""
+            result_lines = [line for line in native_text.splitlines()
+                            if line.startswith("SPEC187_NATIVE_REQUEST_PASS ")]
+            if not result_lines:
+                raise RunnerError("CASE_RUNTIME_NATIVE_SELECTOR_RESULT_INVALID")
+        else:
+            result_lines = [line for line in text.splitlines()
+                            if line.startswith("YOLO_ACK_DRIVEN_RESULT ")]
+            if not result_lines or "status=true" not in result_lines[-1]:
+                raise RunnerError("CASE_RUNTIME_TERMINAL_RESPONSE_INVALID")
         children = _close_case_children(runtime, phase_started, expected_user_exit=0)
         cleanup_done = True
         (binding.output / "child-exits.json").write_text(
