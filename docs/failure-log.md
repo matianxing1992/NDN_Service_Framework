@@ -5339,3 +5339,20 @@ which differs from the Spec186 handoff seal
   `-j4` upper bound and still prevents unbounded parallel builds.
 - **Lesson**: build reproducibility needs an explicit resource tuple; an
   unexplained serial fallback is another source of avoidable repeated work.
+
+## 2026-09-15 — Spec186 r76 base input drifted before handoff rendering
+
+- **Area**: T006 base-SIF identity and local-first promotion.
+- **Symptom**: the base file kept the same name, byte count
+  `3088814080`, and recorded timestamp, but its SHA-256 changed from the
+  previously sealed `sha256:1dd9626748b6fdbe93abf819a944e0628bf7a2b5feddcc562fe7d233f927e74c`
+  to the stable observed `sha256:d9be92ea6dd74521e43a0751d6d16651ffc2320541aa97207ec1db51261446bd`.
+  Rendering the candidate against the old lock returned `HANDOFF_BASE_DIGEST`.
+- **Root cause**: the temporary external base input was not immutable across
+  retries; its filename, size, and mtime were insufficient identity.
+- **Correction**: preserve the old lock and evidence, reject the mismatch,
+  and require a new lock/source handoff whose base digest is the bytes read at
+  the next render. No SIF candidate was promoted from the stale lock.
+- **Lesson**: hash the actual base immediately before every render/build and
+  bind the resulting digest to the candidate; never infer identity from file
+  metadata.

@@ -41,6 +41,7 @@ of the stopping point; it is not a qualification result.
 | `native-build-r61-20260915.md` | fresh host six-target Waf/Python build and bundle closure | host-native identity PASS; host RUNPATH prevents SIF promotion |
 | `native-build-r64-20260915.md` | current-source host native target and loader closure | r64 `197/197` Waf + extension build and official verify PASS; host RUNPATH still prevents SIF promotion |
 | `static-build-preflight-20260915.md` (r65 section) | current-source handoff after the r64 build receipt and preflight repair | source seal/base/definition revalidated; required host qualification manifest still absent |
+| `base-sif-digest-drift-r76-20260915.md` | r76 local-first base identity retry | same-size base bytes changed digest; stale lock was rejected before definition render |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do
