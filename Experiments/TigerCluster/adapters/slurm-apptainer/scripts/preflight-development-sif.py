@@ -14,6 +14,7 @@ import importlib.util
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -331,6 +332,57 @@ def check_base_capabilities(apptainer: Path, base_sif: Path,
     return tests
 
 
+def check_base_content(apptainer: Path, base_sif: Path) -> None:
+    """Read CUDA shared-library payloads to catch latent SquashFS corruption.
+
+    With squashfuse installed, ``apptainer exec`` can satisfy capability
+    predicates by mounting individual files without traversing every compressed
+    block.  The image builder later performs a full unsquashfs extraction, so
+    exercise the large CUDA payloads here and fail before native compilation if
+    a compressed block is unreadable.
+    """
+    script = """set -eu
+from_python() {
+  /opt/venv/bin/python - "$@"
+}
+from_python <<'PY'
+from pathlib import Path
+
+for root in Path('/usr/local').glob('cuda*'):
+    if not root.is_dir():
+        continue
+    for path in root.rglob('*.so*'):
+        if not path.is_file() or path.is_symlink():
+            continue
+        with path.open('rb') as stream:
+            while stream.read(8 * 1024 * 1024):
+                pass
+PY
+"""
+    command = [str(apptainer)]
+    config = os.environ.get("SPEC186_APPTAINER_CONFIG", "").strip()
+    if config:
+        command.extend(["-c", config])
+    command.extend(["exec", "--no-mount", "dev", "--no-home", "--cleanenv",
+                    str(base_sif), "/bin/sh", "-c", script])
+    result = subprocess.run(command, text=True, capture_output=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
+        fail("BASE_SIF_CONTENT", detail[0] if detail else result.returncode)
+
+
+def check_build_disk_capacity(base_sif: Path) -> None:
+    """Stop before extraction when the host cannot hold the build working set."""
+    free = shutil.disk_usage(base_sif.parent).free
+    # The base is compressed; extraction plus the native build tree, package
+    # cache and final SIF needs materially more than one base-file copy. Keep a
+    # fixed floor for this Ubuntu/CUDA base and scale with larger future bases.
+    required = max(16 * 1024**3, base_sif.stat().st_size * 4)
+    if free < required:
+        fail("BASE_SIF_DISK_SPACE",
+             f"free={free} required={required} base={base_sif.stat().st_size}")
+
+
 def check_static_inputs(definition: Path) -> tuple[Path, Path, list[str]]:
     boundary_module().validate_definition(definition)
     entries = file_entries(definition)
@@ -443,7 +495,9 @@ def main() -> int:
             fail("APPTAINER_MISSING", apptainer)
         if not base_sif.is_file():
             fail("BASE_SIF_MISSING", base_sif)
+        check_build_disk_capacity(base_sif)
         check_base_capabilities(apptainer, base_sif, definition)
+        check_base_content(apptainer, base_sif)
         check_base_numpy(apptainer, base_sif, wheels.resolve())
     print(f"SPEC186_PREFLIGHT_PASS wheels={wheels} "
           f"workspaceConsumers={len(consumers)}")

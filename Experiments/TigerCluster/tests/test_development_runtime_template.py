@@ -84,6 +84,10 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "NUMPY_PRIVATE_LIB_SET" in source
     assert "NUMPY_FINAL_RPATH_RESTORE_MISSING" in source
     assert "NUMPY_BASE_IMPORT_PASS" in source
+    assert "BASE_SIF_CONTENT" in source
+    assert "BASE_SIF_DISK_SPACE" in source
+    assert "16 * 1024**3" in source
+    assert "cuda*" in source
     assert "clang-10" in TEMPLATE.read_text()
     assert "/usr/bin/clang++-10" in TEMPLATE.read_text()
     assert "SPEC186_BASE_CAPABILITY_BEGIN" in TEMPLATE.read_text()

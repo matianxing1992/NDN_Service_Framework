@@ -5356,3 +5356,20 @@ which differs from the Spec186 handoff seal
 - **Lesson**: hash the actual base immediately before every render/build and
   bind the resulting digest to the candidate; never infer identity from file
   metadata.
+
+## 2026-09-15 — Spec186 r78 extraction exhausted the host build workspace
+
+- **Area**: T006 local 1.5.3 SIF build, base extraction.
+- **Symptom**: the base SIF mounted and its CUDA payloads could be read, but
+  Apptainer's full unsquashfs extraction stopped around 70% with a zstd error
+  while only about 12 GiB was free. The 8 GiB host `build/` tree and stale
+  generated bundles consumed the working set; no candidate SIF was emitted.
+- **Root cause**: the preflight checked mounted capability paths but did not
+  reserve space for the uncompressed base, native build tree, package cache,
+  and final image together.
+- **Correction**: remove only regenerable ignored build/bundle directories,
+  retain the base and current handoff, and add a fail-closed disk-capacity
+  check requiring at least 16 GiB (or four times the base bytes) before image
+  extraction.
+- **Lesson**: capacity is part of the build input tuple. A valid SIF digest
+  and mounted import do not prove that the host can materialize its full root.
