@@ -1090,11 +1090,16 @@ BOOST_AUTO_TEST_CASE(FinalizeRejectsEmptyAndOversizeModel)
     recipe.maxAssembledBytes, true);
   BOOST_CHECK_EQUAL(outcome.failureCode, "DI_NATIVE_ONNX_WORKER_RESULT");
 
-  // Model beyond the request budget (the recipe cap itself would also trip).
-  const std::vector<std::uint8_t> big(recipe.maxAssembledBytes + 1, 0x01);
+  // Keep the rejection probe bounded.  The maintained vector uses an
+  // 8-GiB assembly ceiling for production-sized models; allocating
+  // maxAssembledBytes+1 here would turn a unit test into an OOM/swap test.
+  auto boundedRecipe = recipe;
+  boundedRecipe.maxAssembledBytes = 64;
+  const std::vector<std::uint8_t> big(
+    boundedRecipe.maxAssembledBytes + 1, 0x01);
   outcome = finalizeNativeOnnxWorkerResponse(
-    true, 0, okResultMetadata(row, big), big, recipe,
-    recipe.maxAssembledBytes, true);
+    true, 0, okResultMetadata(row, big), big, boundedRecipe,
+    boundedRecipe.maxAssembledBytes, true);
   BOOST_CHECK_EQUAL(outcome.failureCode, "DI_NATIVE_ONNX_WORKER_RESULT");
 }
 

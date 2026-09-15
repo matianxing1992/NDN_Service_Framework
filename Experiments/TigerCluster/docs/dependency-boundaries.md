@@ -16,7 +16,7 @@ not a claim that a Core-only build profile already works.
 | ONNX native adapter | `ndnsf-di-adapter-onnx-objects` and ONNX runner/assembler consumers | ONNX full-protobuf headers and archives, ONNX Runtime when available, Protobuf, Boost and NDN-CXX | ONNX is a real native link boundary, not merely a Python packaging dependency. |
 | YOLO native adapter | `ndnsf-di-adapter-yolo-objects` and `NativeYoloMergeRunner` consumers | Boost and NDN-CXX, plus the DI library when linked by an executable | YOLO itself does not add ONNX at the adapter object group, but current DI and example targets can still pull the monolithic library. |
 | Qwen native adapter | `ndnsf-di-adapter-qwen-objects` and Qwen session consumers | Boost plus the Rust tokenizer static archive for the shared DI library | The Rust bridge is statically linked; it is not a runtime `dlopen` library. |
-| Native assembly worker | `examples/wscript`: `di-native-assembly-worker` | ONNX full-protobuf, ONNX Runtime, NDN-CXX, NDN-SVS, Protobuf, Boost, OpenSSL and `libdl` | It is created before the `WITH_EXAMPLES` return, so the current examples recursion does not provide a Core-only escape. |
+| Native assembly worker | `examples/wscript`: `di-native-assembly-worker`; test fixtures `tests/standalone/spec182-worker-tools/*.cpp` | Production worker: ONNX full-protobuf, ONNX Runtime, NDN-CXX, NDN-SVS, Protobuf, Boost, OpenSSL and `libdl`; protocol fixtures: libc only | It is created before the `WITH_EXAMPLES` return, so the current examples recursion does not provide a Core-only escape. The five fixture sources are mandatory for the full unit-test target; omitting them produces a misleading link-green/runtime-red build. |
 | Python Core/SDK | `packaging/python/core` and `sdk` | Core has no third-party runtime dependency; SDK depends on the matching Core package | Python metadata expresses a smaller, separable boundary. |
 | Python ONNX/Qwen adapters | `packaging/python/adapters/onnx` and `qwen` | ONNX adapter: `onnx` plus optional CPU/GPU ONNX Runtime; Qwen adapter: `tokenizers` | These are explicit optional application profiles, but they do not yet control the root C++ Waf graph. |
 
@@ -49,7 +49,8 @@ preflight error without changing the SIF contract.
 
 The preflight now treats the rendered definition as a consumer contract. It
 requires the four declared source archives, checks each archive's required
-entry points (`wscript`, package setup files, CMake/Waf metadata), verifies
+entry points (`wscript`, package setup files, CMake/Waf metadata, and the
+Spec182 worker fixture subtree), verifies
 that every `tar -xf` extracts the matching archive into the expected `/src`
 root, and resolves every non-cleanup `/src/...` reference in the builder shell
 against that archive. It also requires the pinned private wheels used by the

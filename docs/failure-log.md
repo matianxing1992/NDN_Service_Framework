@@ -1,5 +1,36 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec186 T006 test target and subprocess closure
+
+- **Symptom:** The first fresh `unit-tests,integration-tests` build completed,
+  but the unit suite reported six missing `spec182-worker-tool-*` binaries.
+  After adding fixtures, worker subprocess cases first returned
+  `DI_NATIVE_ONNX_WORKER_SIGNALED`, garbage stdout returned
+  `DI_NATIVE_ONNX_WORKER_INCOMPLETE`, and the worker suite could stall while a
+  finalization test allocated the 8-GiB fixture ceiling. The complete
+  integration run later stopped two Qwen rows at `sourceFile.good()` because
+  no Qwen3-0.6B source artifact was available.
+- **Root cause:** `tests/wscript` treated required worker fixtures as optional;
+  the child environment omitted `HOME`, so ndn-cxx selected the checkout's
+  root-owned `.ndn` directory and aborted while opening the PIB; the parent
+  only distinguished frame completeness from child exit status, and the unit
+  test derived a huge allocation from a production-sized limit. The Qwen
+  failures are a declared external-input gap, not a native or SIF failure.
+- **Fix:** add and build five libc-only worker fixtures, fail Waf immediately
+  when one is absent, retain `HOME` in the minimal child environment, classify
+  any non-empty incomplete stdout as a protocol error, and bound the oversize
+  finalization probe with a local 64-byte cap. Add the fixture subtree to the
+  source-archive preflight and require `NDNSF_SPEC182_BIN_DIR` in the test
+  receipt. Preserve the Qwen rows as blocked until the exact model tuple is
+  supplied.
+- **Evidence:** `specs/186-spec184-tiger-qwen-experiments/evidence/t006-unit-integration-20260915.md`;
+  focused worker protocol `29/29`, activation `9/9`, full unit `1047/1047`,
+  and integration `171/173` with the two named missing-artifact cases.
+- **Lesson:** a link-green test binary is not a complete test input. Waf target
+  census, fixture source membership, child runtime environment, bounded test
+  allocations, and model-file availability must be checked before interpreting
+  a suite result.
+
 ## 2026-09-15 — Spec186 r49/r50 drifted from the successful GPU template
 
 - **Symptom:** r49 job `212374` built NAC-ABE, NDN-SVS and NDNSD, then failed the

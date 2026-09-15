@@ -45,6 +45,13 @@ APT 安装的编译器、protoc 和系统开发包在安装后由 definition 自
 错误地当成 base 已有能力。该门失败时禁止开始完整原生编译，应根据
 `docs/failure-log.md` 的对应条目修复输入后再建立新的候选。
 
+完整 unit/integration 构建还必须封存并构建
+`tests/standalone/spec182-worker-tools/` 下的五个
+`spec182-worker-tool-*` fixture；它们缺失时 Waf 应在构建前明确报错，不能
+静默省略 target。运行 unit-tests 时将 `NDNSF_SPEC182_BIN_DIR` 设为同一
+sealed build tree，并保留 worker 子进程的 `HOME`，否则 checkout 内的
+root-owned `.ndn` 目录可能让 ndn-cxx 在协议启动前 SIGABRT。
+
 ```bash
 python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-development-sif.py \
   --definition /absolute/path/to/rendered-runtime.def \

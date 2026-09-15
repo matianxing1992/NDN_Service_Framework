@@ -117,6 +117,17 @@ def test_waf_does_not_default_to_a_developer_temp_toolchain():
     assert "or os.path.join(top, 'build', 'tokenizer-bridge-target')" in source
 
 
+def test_full_native_test_target_census_requires_worker_fixtures():
+    source = (ROOT / "tests/wscript").read_text(encoding="utf-8")
+    assert "'spec182-worker-tool-' + role" in source
+    for role in ("block", "sigkill", "silent0", "silent7", "garbage"):
+        assert "'" + role + "'" in source
+    assert "missing required Spec182 worker fixture" in source
+    assert "from waflib import Errors" in source
+    preflight = PREFLIGHT.read_text(encoding="utf-8")
+    assert "tests/standalone/spec182-worker-tools" in preflight
+
+
 def test_preflight_rejects_workspace_archive_omitting_consumed_source(tmp_path):
     definition = render(tmp_path)
     workspace = tmp_path / "workspace.tar"
@@ -177,6 +188,7 @@ def test_preflight_cross_checks_all_source_archives_and_consumers(tmp_path):
             "wscript", "pythonWrapper/setup.py",
             "NDNSF-DistributedRepo/pythonWrapper/setup.py",
             "NDNSF-DistributedInference/ndnsf_distributed_inference",
+            "tests/standalone/spec182-worker-tools",
         },
         "ndn-svs.tar": {"wscript", "libndn-svs.pc.in"},
         "nacAbe.tar": {"CMakeLists.txt", "src"},
@@ -213,6 +225,7 @@ def test_preflight_rejects_a_source_consumer_missing_from_dependency_archive(tmp
             "wscript", "pythonWrapper/setup.py",
             "NDNSF-DistributedRepo/pythonWrapper/setup.py",
             "NDNSF-DistributedInference/ndnsf_distributed_inference",
+            "tests/standalone/spec182-worker-tools",
         ],
         "ndn-svs.tar": ["wscript", "libndn-svs.pc.in"],
         "nacAbe.tar": ["CMakeLists.txt", "src"],

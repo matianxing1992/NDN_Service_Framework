@@ -1448,21 +1448,30 @@ public:
     posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&attributes, 0);
 
-    // Minimal environment: only loader-relevant variables survive.  The
+    // Minimal environment: loader variables plus HOME survive.  ndn-cxx
+    // needs HOME to resolve the user's PIB; omitting it makes a child started
+    // from a checkout fall back to the repository's .ndn directory, which
+    // may be root-owned and causes an abort before the protocol starts.  The
     // worker never receives credentials or request state through the env.
     const char* pathValue = std::getenv("PATH");
     const char* libraryPath = std::getenv("LD_LIBRARY_PATH");
+    const char* homeValue = std::getenv("HOME");
     const std::string pathEnv = std::string("PATH=") +
       (pathValue != nullptr ? pathValue : "");
     const std::string ldEnv = std::string("LD_LIBRARY_PATH=") +
       (libraryPath != nullptr ? libraryPath : "");
-    char* envp[3] = {nullptr, nullptr, nullptr};
+    const std::string homeEnv = std::string("HOME=") +
+      (homeValue != nullptr ? homeValue : "");
+    char* envp[4] = {nullptr, nullptr, nullptr, nullptr};
     std::size_t envCount = 0;
     if (pathValue != nullptr) {
       envp[envCount++] = const_cast<char*>(pathEnv.c_str());
     }
     if (libraryPath != nullptr) {
       envp[envCount++] = const_cast<char*>(ldEnv.c_str());
+    }
+    if (homeValue != nullptr) {
+      envp[envCount++] = const_cast<char*>(homeEnv.c_str());
     }
     envp[envCount] = nullptr;
 
@@ -1632,6 +1641,7 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
     std::size_t writeOffset = 0;
     bool writeDone = false;
     bool stdoutEof = false;
+    bool stdoutHadBytes = false;
 
     for (;;) {
       entryActiveGate(control);  // every round; throws on cancel/deadline
@@ -1641,6 +1651,12 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
       // ended: a reaped child may still have written a complete frame whose
       // bytes sit unread in the pipe.
       if (stdoutEof && child.reaped && !response.complete()) {
+        // A non-empty stream that cannot produce a complete response frame is
+        // a protocol violation (including garbage or a truncated header).
+        // Reserve INCOMPLETE for a clean child that emitted no bytes at all.
+        if (stdoutHadBytes) {
+          workerFail("WORKER_PROTOCOL");
+        }
         if (child.wasSignaled()) {
           workerFail("WORKER_SIGNALED");
         }
@@ -1723,6 +1739,7 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
             const ssize_t got =
               read(child.fromChild, buffer.data(), buffer.size());
             if (got > 0) {
+              stdoutHadBytes = true;
               if (response.feed(buffer.data(),
                                 static_cast<std::size_t>(got)) ==
                   NativeOnnxResponseDecoder::Result::ProtocolError) {

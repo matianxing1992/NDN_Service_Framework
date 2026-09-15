@@ -3,6 +3,7 @@
 top = '..'
 
 import os
+from waflib import Errors
 
 def build(bld):
     bld.program(target='../spec181-exact-data-wire',
@@ -116,15 +117,15 @@ def build(bld):
     # cancel / incomplete subprocess cases; never installed and never
     # referenced by production code.  Each tool is a dependency-free libc
     # binary so it stays isolated from the framework in its own process group.
+    # These fixtures are part of the unit-test contract: silently omitting them
+    # leaves the binary build green while six subprocess cases fail at runtime.
     for role in ['block', 'sigkill', 'silent0', 'silent7', 'garbage']:
         target = 'spec182-worker-tool-' + role
         source = bld.path.find_node('standalone/spec182-worker-tools/' + role + '.cpp')
-        # The worker tools are optional fixtures.  A source checkout that does
-        # not carry them must still configure and build the production/test
-        # targets; passing None to waf's program() causes an unrelated
-        # configure-time AttributeError and hides the actual build status.
         if source is None:
-            continue
+            raise Errors.WafError(
+                'missing required Spec182 worker fixture: tests/standalone/' +
+                'spec182-worker-tools/' + role + '.cpp')
         bld.program(target='../' + target,
                     name=target,
                     source=[source],

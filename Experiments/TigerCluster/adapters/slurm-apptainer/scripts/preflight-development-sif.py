@@ -42,6 +42,10 @@ SOURCE_ARCHIVE_CONTRACT = {
             "pythonWrapper/setup.py",
             "NDNSF-DistributedRepo/pythonWrapper/setup.py",
             "NDNSF-DistributedInference/ndnsf_distributed_inference",
+            # Full unit-tests include native worker subprocess cases.  An
+            # omitted fixture subtree otherwise leaves the link green while
+            # six runtime cases fail after the expensive build.
+            "tests/standalone/spec182-worker-tools",
         ),
     },
     "ndn-svs.tar": {

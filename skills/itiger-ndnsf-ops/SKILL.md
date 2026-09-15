@@ -75,6 +75,15 @@ APT 安装的编译器和系统工具不属于该块，会在安装后由 builde
 可以在秒级发现“归档存在但实际消费的子目录缺失”和“definition 要求的编译器/SDK
 不在 base 中”，而不是等 `%post` 运行到对应命令才失败。
 
+完整 Core/Repo/DI unit gate 还必须把 `tests/standalone/spec182-worker-tools/`
+五个无依赖 worker fixture 纳入 `workspace.tar` 和 Waf target census
+（`spec182-worker-tool-block|sigkill|silent0|silent7|garbage`）。源码缺失时
+应由 Waf 立即报出明确的 missing-fixture 错误；不能静默跳过 target 后再把
+`unit-tests` 的 subprocess failure 归因于 SIF。运行测试时设置
+`NDNSF_SPEC182_BIN_DIR` 指向同一 sealed build tree，避免从错误的 cwd 或旧
+build 目录拾取 worker。worker 子进程保留 `HOME` 以解析 NDN PIB；否则仓库中
+root-owned `.ndn` 目录会导致 child 在协议启动前 SIGABRT。
+
 `build-local-sif.sh` 会在 preflight 前解析 `Bootstrap: localimage` 的真实 base
 路径，不能再静默退化为 definition-only 检查。若 SIF 已经生成、但后续 ABI 或
 运行时门失败，使用同一 definition、source seal、host gate、Apptainer 和输出
