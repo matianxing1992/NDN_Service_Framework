@@ -126,6 +126,8 @@ def test_full_native_test_target_census_requires_worker_fixtures():
     assert "from waflib import Errors" in source
     preflight = PREFLIGHT.read_text(encoding="utf-8")
     assert "tests/standalone/spec182-worker-tools" in preflight
+    sealer = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-local-sif-source.py").read_text(encoding="utf-8")
+    assert '"tests/standalone/spec182-worker-tools"' in sealer
 
 
 def test_preflight_rejects_workspace_archive_omitting_consumed_source(tmp_path):

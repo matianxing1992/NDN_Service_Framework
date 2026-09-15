@@ -65,6 +65,9 @@ FILES = (
     "scripts/run_spec180_case.py",
     "scripts/validate_spec180_results.py",
     "tests/fixtures/spec180/yolo26n/fixed-fixture.ppm",
+    # Full unit-test target closure: these libc-only children are required by
+    # the Spec182 native worker protocol/activation cases.
+    "tests/standalone/spec182-worker-tools",
 )
 NDN_SVS_FILES = (
     "waf",

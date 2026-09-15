@@ -31,6 +31,22 @@
   allocations, and model-file availability must be checked before interpreting
   a suite result.
 
+## 2026-09-15 — Spec186 r68 archive seal omitted required worker fixtures
+
+- **Symptom:** r68 `prepare`/`verify` produced a valid source seal, but the
+  preflight stopped before SIF build with
+  `SPEC186_PREFLIGHT_SOURCE_ARCHIVE_REQUIRED_MEMBER_MISSING:workspace.tar:tests/standalone/spec182-worker-tools`.
+- **Root cause:** the source sealer's explicit `FILES` allowlist had not been
+  updated when the full unit target began requiring the five worker fixtures.
+  The checkout contained the sources, while `workspace.tar` did not.
+- **Fix:** add the fixture subtree to `prepare-local-sif-source.py` and lock a
+  static test that the Waf target census, preflight contract, and source sealer
+  all name it. Recreate a new source-sealed candidate; do not patch r68 in
+  place.
+- **Lesson:** a source seal can be internally consistent and still be
+  incomplete unless its producer allowlist is cross-checked against every
+  builder and test consumer.
+
 ## 2026-09-15 — Spec186 r49/r50 drifted from the successful GPU template
 
 - **Symptom:** r49 job `212374` built NAC-ABE, NDN-SVS and NDNSD, then failed the
