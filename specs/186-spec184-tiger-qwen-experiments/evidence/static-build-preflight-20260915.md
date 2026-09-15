@@ -78,3 +78,24 @@ The tests cover shell syntax, source-consumer missing-path rejection, complete
 consumer enumeration, base-capability extraction, template boundaries and
 the preflight-before-build ordering. This is a static/build gate result only;
 it does not qualify MiniNDN, CUDA, single-node Tiger, two-node Tiger or Qwen.
+
+## r61 marker-scoped preflight receipt
+
+The current-source handoff was regenerated at commit
+`c4c908e8f43aa5da9780d3423388de9583daea98`. The rendered definition digest is
+`sha256:91f0c4e65eb30624c518c7352c50c6ae294e54b50365f200a341e4e5ed548d28`
+and its source seal is
+`sha256:d6f31b85e8bbceb04f802511aeb20630dd835364e39eefedad5db5cb6cdfd9b7`.
+Against the exact local base `spec186-repaired-base-final.sif` (SHA-256
+`eb0c2760e623aca7b844fca97dc470527c0ef74d0d97f3794ff8fa4a7cbd1d99`), the
+preflight returned:
+
+```text
+SPEC186_PREFLIGHT_PASS wheels=/home/tianxing/NDN/ndn-service-framework/.codex-tmp/spec186-source-handoff-r61/wheels workspaceConsumers=11
+```
+
+The read-only base predicates covered the four ONNX SDK files, Cargo registry
+source directory, and the exported Rust `cargo`/`rustc` paths. The APT-provided
+Clang 10 predicate was correctly excluded from the base list. This is a static
+preflight PASS only; it does not imply SIF build, MiniNDN, CUDA, or Tiger
+qualification.
