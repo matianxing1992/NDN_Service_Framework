@@ -23,7 +23,12 @@ same digest. The current YOLO launcher hash is
 current Qwen launcher hash remains
 `2aa563c5aea765ca7221609233afaab13b0631b45d7f0714b6df871f004c4abf`.
 
-The host bundle is deliberately not promoted as the Tiger application bundle.
+The bundle manifest remains bound to the build source commit above. The later
+documentation-only checkpoint `54b54bd0abf8490a7d2320b32c6e5a90f7698e1c` has a
+new source seal, so this r61 binary bundle is deliberately not promoted as the
+current Tiger application bundle until rebuilt against that seal.
+
+The host bundle is also deliberately not promoted as the Tiger application bundle.
 Its ELF RUNPATH still contains host-only prefixes such as
 `/tmp/spec186-nacabe-install-r5/lib`, `/home/tianxing/NDN/ndn-svs/build`, and
 `build-spec186-r61`. The container definition must rebuild the changing app

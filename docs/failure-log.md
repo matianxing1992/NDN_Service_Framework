@@ -5125,6 +5125,23 @@ which differs from the Spec186 handoff seal
   definition; checking only literal tokens is insufficient for declared
   capability variables.
 
+## 2026-09-15 — Spec186 r63 handoff rejected the stale local base digest
+
+- **Symptom:** rendering the r63 source handoff against
+  `.codex-tmp/spec186-repaired-base-final.sif` returned `HANDOFF_BASE_DIGEST`.
+  The lock carried the earlier `sha256:eb0c2760…`, while the unchanged-size
+  local file currently hashes to
+  `sha256:1dd9626748b6fdbe93abf819a944e0628bf7a2b5feddcc562fe7d233f927e74c`.
+- **Root cause:** the prior lock was stale relative to the local base bytes;
+  a file name and size did not establish the base identity.
+- **Correction:** preserve the mismatch as a failure, create a new lock with
+  the observed digest, prepare r63 from the current source, and rerun the
+  definition preflight successfully. The base still needs exact inspect/build
+  closure before promotion.
+- **Lesson:** source handoff and SIF rendering must hash the actual base bytes
+  before any build; never repair a stale identity by silently accepting a
+  similarly named image.
+
 ## 2026-09-15 — Spec186 host Rustup shim was unusable without its home
 
 - **Symptom:** r61 native `waf configure` reached the pinned tokenizer bridge,
