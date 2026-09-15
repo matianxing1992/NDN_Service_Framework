@@ -38,6 +38,7 @@ of the stopping point; it is not a qualification result.
 | `closure-handoff-20260914.md` | current implemented/wired/executed/measured reconciliation | local-first SIF promotion is authoritative; r38 is a compute-build fallback boundary and Spec186 remains `IN_PROGRESS` |
 | `successful-template-comparison-20260915.md` | pre-build comparison against the last complete YOLO GPU SIF candidate | freezes base SHA/compiler/Apptainer/acceptance shape; records r49/r50 drift and requires exact-template render before another build |
 | `static-build-preflight-20260915.md` | static review of SIF build inputs and resumable verification | builder base resolution now precedes preflight; consumed workspace paths and the explicit `SPEC186_BASE_CAPABILITY_BEGIN/END` predicates fail before compilation; APT-installed tools remain post-install checks; `--verify-existing` rechecks unchanged SIF bytes without rebuild; 114 full TigerCluster tests pass |
+| `native-build-r61-20260915.md` | fresh host six-target Waf/Python build and bundle closure | host-native identity PASS; host RUNPATH prevents SIF promotion |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do

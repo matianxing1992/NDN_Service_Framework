@@ -86,7 +86,10 @@ Core/SDK、ONNX CPU/GPU 和 Qwen 包的分离元数据尚未选择 C++ targets�
 profile/target graph 前，禁止删除 ONNX、Protobuf、Rust tokenizer 或 assembly
 worker 检查来制造 Core-only 假象。DI 构建必须显式设置封存的
 `NDNSF_RUST_PREFIX` 与 `NDNSF_CARGO_HOME`（可选
-`NDNSF_TOKENIZER_BRIDGE_TARGET`）；`.codex-tmp/spec182…` 不是合法默认路径。
+`NDNSF_RUSTUP_HOME` 和 `NDNSF_TOKENIZER_BRIDGE_TARGET`）；Waf 在昂贵的 Cargo
+构建前探测封存的 `cargo --version` 与 `rustc --version`。只有 rustup shim
+需要设置匹配的 `NDNSF_RUSTUP_HOME`，独立工具链不需要；`.codex-tmp/spec182…`
+不是合法默认路径。
 只有新的 SpecKit 任务、实际 Waf target 图和干净构建共同证明无消费者时，才能
 缩小某个 profile 的依赖，并把生成的依赖 manifest 与 candidate 绑定。
 
@@ -132,3 +135,7 @@ sealed 的工具链派生 base（记录 `APT::Sandbox::User "root"`、project-ba
 预检的 base 能力范围由 definition 中的
 `SPEC186_BASE_CAPABILITY_BEGIN/END` 块显式声明；块外由 APT 安装的编译器和
 系统开发包应在安装后验证，不应作为输入 base 的先决条件。
+宿主机直接编译出的 app bundle 即使能通过 import/`ldd`，也必须检查 ELF
+RUNPATH；含 `/tmp`、宿主 checkout 或宿主依赖 prefix 的路径只能作为本机证据，
+不得直接挂入 SIF。应用必须在匹配 SDK/container 内重建并验证
+`/opt/ndnsf-di/current` 闭包。
