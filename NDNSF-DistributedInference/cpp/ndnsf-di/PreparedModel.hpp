@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -241,6 +242,16 @@ public:
   Conversation openConversation(const ConversationOptions& options = {}) const;
 
 private:
+  // A prepared view owns its lazily materialized native client while the
+  // application owns the view. Runtime's registry is deliberately weak so
+  // cache eviction can release catalog/source bytes once all views and
+  // handles are gone; copies of one view share this binding.
+  struct ClientState
+  {
+    mutable std::mutex mutex;
+    std::shared_ptr<NativeInferenceClient> client;
+  };
+
   using ClientFactory = std::function<std::shared_ptr<NativeInferenceClient>(
     const std::shared_ptr<const PreparedModelPackage>&)>;
   PreparedModel(std::shared_ptr<const PreparedModelPackage> package,
@@ -258,6 +269,7 @@ private:
   PreparationReceipt m_receipt;
   std::shared_ptr<void> m_lease;
   ClientFactory m_clientFactory;
+  std::shared_ptr<ClientState> m_clientState;
   friend class ModelPreparationCache;
   friend class Conversation;
   friend struct Spec185PreparedModelTestAccess;

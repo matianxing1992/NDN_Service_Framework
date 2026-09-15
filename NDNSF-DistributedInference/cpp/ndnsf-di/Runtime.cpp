@@ -789,12 +789,14 @@ struct RuntimeState
   // Shared only as an opaque identity token; it never contains request or
   // authorization state and is used to bind placement handles to this State.
   std::shared_ptr<void> runtimeBinding;
-  std::map<std::string, std::shared_ptr<NativeInferenceClient>> clients;
+  // Prepared views and pending handles own clients. Runtime keeps only a weak
+  // lookup/index so idle cache entries can release their catalog/source bytes.
+  std::map<std::string, std::weak_ptr<NativeInferenceClient>> clients;
   // Immutable client snapshots let the Core drain predicate inspect client
   // quiescence without acquiring the DI state mutex while the Core worker
   // holds its own runtime mutex.  Writers publish under mutex; readers use
   // the atomic shared_ptr operations below.
-  using ClientList = std::vector<std::shared_ptr<NativeInferenceClient>>;
+  using ClientList = std::vector<std::weak_ptr<NativeInferenceClient>>;
   std::shared_ptr<const ClientList> clientsSnapshot = std::make_shared<const ClientList>();
 };
 
@@ -956,7 +958,11 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
                   "Runtime Core I/O failed: " + state->coreOwner->ioFailure());
   const auto key = package->preparationKeyDigest;
   const auto found = state->clients.find(key);
-  if (found != state->clients.end()) return found->second;
+  if (found != state->clients.end()) {
+    if (const auto existing = found->second.lock())
+      return existing;
+    state->clients.erase(found);
+  }
   const auto registration = state->models.find(package->registration->key);
   if (registration == state->models.end())
     throw DiError("MODEL_NOT_FOUND", "local", "request", "prepared model registration is not retained");
@@ -1016,7 +1022,11 @@ std::vector<std::shared_ptr<NativeInferenceClient>> snapshotRuntimeClients(
                                                    std::memory_order_acquire);
   if (!snapshot)
     return clients;
-  clients.assign(snapshot->begin(), snapshot->end());
+  clients.reserve(snapshot->size());
+  for (const auto& weak : *snapshot) {
+    if (const auto client = weak.lock())
+      clients.push_back(client);
+  }
   return clients;
 }
 
@@ -1397,8 +1407,10 @@ Runtime::~Runtime() noexcept
         state->phase = detail::RuntimeState::Phase::Closing;
       state->cv.notify_all();
       clients.reserve(state->clients.size());
-      for (const auto& entry : state->clients)
-        clients.push_back(entry.second);
+      for (const auto& entry : state->clients) {
+        if (const auto client = entry.second.lock())
+          clients.push_back(client);
+      }
     }
     // The owner stop gate serializes this producer with a final stop while
     // the State mutex remains free for client completion notifiers.
@@ -1429,8 +1441,13 @@ void detail::RuntimeTestAccess::bindProviderFixture(
       owner->ioRunning.load(std::memory_order_acquire))
     throw std::runtime_error(
       "Runtime test fixture binding must precede Core I/O start");
+  const bool hasLiveClient = std::any_of(runtime->m_state->clients.begin(),
+                                         runtime->m_state->clients.end(),
+                                         [] (const auto& entry) {
+                                           return !entry.second.expired();
+                                         });
   if (runtime->m_state->preparationInFlight.load(std::memory_order_acquire) != 0 ||
-      !runtime->m_state->clients.empty())
+      hasLiveClient)
     throw std::runtime_error(
       "Runtime test fixture binding requires no preparation or clients");
   // Runtime::open leaves production Core transport unmaterialized.  If a
@@ -1468,8 +1485,10 @@ void Runtime::close() noexcept
       if (state->phase == detail::RuntimeState::Phase::Open)
         state->phase = detail::RuntimeState::Phase::Closing;
       clients.reserve(state->clients.size());
-      for (const auto& entry : state->clients)
-        clients.push_back(entry.second);
+      for (const auto& entry : state->clients) {
+        if (const auto client = entry.second.lock())
+          clients.push_back(client);
+      }
     }
     closeRuntimeClients(clients);
     if (owner && owner->operationRuntime)
@@ -1514,8 +1533,10 @@ bool Runtime::drain(Milliseconds timeout) const
       if (state->phase == detail::RuntimeState::Phase::Open)
         state->phase = detail::RuntimeState::Phase::Closing;
       clients.reserve(state->clients.size());
-      for (const auto& entry : state->clients)
-        clients.push_back(entry.second);
+      for (const auto& entry : state->clients) {
+        if (const auto client = entry.second.lock())
+          clients.push_back(client);
+      }
     }
     closeRuntimeClients(clients);
     if (owner && owner->operationRuntime)
