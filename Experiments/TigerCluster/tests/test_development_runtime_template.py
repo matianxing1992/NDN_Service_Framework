@@ -82,3 +82,21 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "preflight-development-sif.py" in build_script
     assert build_script.index("preflight_json") < build_script.index('echo "LOCAL_SIF_BUILD_START')
     assert build_script.index("base_sif=''") < build_script.index('preflight_args=')
+
+
+def test_successful_gpu_template_is_a_required_comparison_reference():
+    reference = ROOT / "Experiments/TigerCluster/docs/successful-tiger-gpu-template.md"
+    text = reference.read_text(encoding="utf-8")
+    assert "44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0" in text
+    assert "Clang 10" in text and "Apptainer 1.5.3" in text
+    assert "210365" in text and "210366" in text
+    assert "not current Spec186 evidence" in text
+
+
+def test_sif_build_docs_require_template_before_render():
+    docs = (ROOT / "Experiments/TigerCluster/docs/sif-build.md").read_text(encoding="utf-8")
+    skill = (ROOT / "skills/itiger-ndnsf-ops/SKILL.md").read_text(encoding="utf-8")
+    for text in (docs, skill):
+        assert "successful-tiger-gpu-template.md" in text
+        assert "prepare-development-handoff.py render" in text or "从 `render`" in text
+        assert "failure-log.md" in text

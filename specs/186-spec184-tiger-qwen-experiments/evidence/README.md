@@ -36,6 +36,7 @@ of the stopping point; it is not a qualification result.
 | `tiger-r38-build-boundary-20260914.md` | Tiger compute 1.5.3 exact-SIF build/import and first launch | final SIF build/import passed on `itiger02`; runner stopped before MiniNDN at canonical catalogue verification, so no GPU qualification |
 | `tiger-r38-import-shadow-fix-20260915.md` | raw r38 runner exception and source/package shadow repair | job `212356` identified the installed native binding shadow; local runner fix and 150 focused regressions pass; new sealed candidate required |
 | `closure-handoff-20260914.md` | current implemented/wired/executed/measured reconciliation | local-first SIF promotion is authoritative; r38 is a compute-build fallback boundary and Spec186 remains `IN_PROGRESS` |
+| `successful-template-comparison-20260915.md` | pre-build comparison against the last complete YOLO GPU SIF candidate | freezes base SHA/compiler/Apptainer/acceptance shape; records r49/r50 drift and requires exact-template render before another build |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do

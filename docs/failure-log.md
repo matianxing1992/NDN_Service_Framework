@@ -1,5 +1,28 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec186 r49/r50 drifted from the successful GPU template
+
+- **Symptom:** r49 job `212374` built NAC-ABE, NDN-SVS and NDNSD, then failed the
+  explicit NDN-SVS closure check. Diagnostic job `212376` captured `ld` not found
+  and `stdlib.h` not found; both came from Waf's `-B/usr` prefix. r50 job
+  `212377` changed that flag and reached the same closure check, but it used the
+  r38 intermediate base and GCC instead of the retained successful Clang/base
+  tuple, so it was cancelled at 13/284 before promotion.
+- **Root cause:** a failed candidate definition was being edited as an
+  experiment instead of first comparing it with
+  `Experiments/TigerCluster/docs/successful-tiger-gpu-template.md`. The
+  successful candidate's base SIF (`44b44d...6907b0`) and Clang 10/O0 recipe were
+  available in project storage, but the new definitions silently substituted an
+  intermediate SIF, GCC and a different toolchain root.
+- **Fix:** stop r50, make the successful-candidate template comparison a required
+  skill and SIF-build documentation gate, and add static tests for the frozen
+  base/compiler/job references. The next candidate must be rendered by
+  `prepare-development-handoff.py render` from the canonical template with an
+  explicit difference table before `build-local-sif.sh` is called.
+- **Lesson:** changing flags until one check passes is not a reproducible build
+  method. Historical success is a design reference, while every source/base/app/
+  compiler change still requires a new sealed candidate and its own evidence.
+
 ## 2026-09-14 — Spec186 r29 replay source path drift
 
 - **Symptom:** r29 compiled all 284 native targets and both Python extensions, then Apptainer `%post` exited at `cp: cannot stat '/src/ndnsf/packaging/ndnsf-di-container/jobs/spec180'`.

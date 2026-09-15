@@ -30,6 +30,43 @@ description: Prepare or review NDNSF source and SIF delivery, diagnose container
 复用这些入口；不要另建构建 pipeline、复制启动器或把兼容链接变成第二份实现。
 先检查真实脚本参数和 effective config，再使用调用命令；不凭本 skill 假设已有工具支持新选项。
 
+## Successful-Candidate Template Gate
+
+每次 Spec186、Spec184 或后续 NDNSF-DI 的 SIF/Tiger 工作，在生成新
+definition 或申请计算节点之前，必须先阅读并逐项比对
+`Experiments/TigerCluster/docs/successful-tiger-gpu-template.md`。该文件是
+最后一次完整 YOLO GPU 候选的**参考模板**，不是新运行的证据；其中的
+base-SIF 摘要、Clang 10/O0 编译边界、Apptainer 1.5.3、app/model/oracle
+字段和单/双节点验收形状必须进入新候选的比较表。
+
+候选 definition 只能通过维护的
+`prepare-development-handoff.py render` 从
+`development-runtime.def.in` 渲染。不得从失败 definition 手工复制、把
+intermediate SIF 当成成功模板的 base、将 GCC/Clang/工具链根悄悄替换，或
+通过删掉构建步骤来绕过失败。每次允许的差异都要记录为新的 candidate
+plane（source、base、app、compiler、profile、model、harness 或 resource），
+并在昂贵构建前保留一份 template-vs-rendered diff 和 base/definition/source
+摘要交叉检查。
+
+构建前固定顺序：
+
+1. 核对模板冻结元组和实际 base-SIF SHA/bytes；base 不匹配时停止，不用相似
+   文件名或中间产物替代。
+2. 用 `render` 生成 definition，运行 `bash -n`、嵌入 Python AST、
+   `spec170_sif_build_boundary.py` 和 `preflight-development-sif.py`。
+3. 检查编译器可执行文件、`--toolchain-root`、CXXFLAGS、Waf child source/
+   build pair、pkg-config 和 final-stage `%files from builder`；任何模板漂移
+   先记录失败再修复，不能边构建边猜参数。
+4. 仅在上述门全绿后调用唯一入口
+   `adapters/slurm-apptainer/scripts/build-local-sif.sh`，并将完整原始日志与
+   candidate 绑定。构建、import 或 READY 通过仍不能替代 MiniNDN/Tiger
+   协议、CUDA、数值和 cleanup 证据。
+
+历史成功 job、SIF 或 app 可以帮助确定验收形状，但不能直接复用 job ID 或把
+旧结果拼入新 candidate。若发现新的构建失败，先将 symptom、root cause、
+correction、lesson 写入 `docs/failure-log.md`，并把新的防回归谓词加入脚本、
+测试或本节；未完成该记录前不得再次提交同类构建。
+
 ## Delivery And Native Boundary
 
 - 固定 NDNSF、NAC-ABE、NDN-SVS 及NDNSD等直接ABI消费者的实际版本；未提交改动须显式纳入来源身份，不能只记录 HEAD。

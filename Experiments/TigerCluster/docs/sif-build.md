@@ -35,6 +35,32 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-deve
 当前三库源码固定、可迁移definition和接收机器步骤见 [source handoff](source-handoff.md)。
 共享操作skill在仓库根 [skills/](../../../skills/README.md)；实际构建仍使用上述唯一入口。
 
+## 先复用成功模板，再开始构建
+
+Spec186 的每个新候选都必须先阅读
+[successful Tiger GPU template](successful-tiger-gpu-template.md)。它保存了最近
+一次完整 YOLO GPU 候选的可复用形状：base SIF SHA
+`44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0`、Clang 10
+和 `-O0 -g0 -B/usr/bin`、Apptainer 1.5.3、只读 app、固定模型 oracle 以及
+single/two-node 的终态字段。它不是当前候选的运行证据；source、base、app、
+compiler、profile、model 或 harness 任一变化都要产生新的 candidate。
+
+不要从上一次失败的 rendered definition 继续编辑。先把模板与新候选的
+source seal、base SIF SHA/bytes、definition、compiler/toolchain root、Waf 的
+NDN-SVS source/build pair、pkg-config、final-stage transfer 和运行 profile
+列成差异表，再由 `prepare-development-handoff.py render` 生成 definition。
+渲染后依次执行 shell/Python/边界/preflight 检查，确认 `--toolchain-root`、
+Clang 路径和 `CXXFLAGS` 与模板一致，之后才调用 `build-local-sif.sh`。任何
+不在差异表中的改动都按失败处理并写入 failure log；不能通过删除 apt、换
+GCC、换 intermediate base 或减少目标来“试一下”。
+
+这条顺序对应 Apptainer 官方定义文件规则：`localimage` 可在构建时验证
+SIF base，multi-stage `%files from` 只从先前 stage 复制，定义文件本身应作为
+构建元数据保存；参见 [Definition Files](https://apptainer.org/user-docs/master/definition_files.html)
+和 [Build a Container](https://apptainer.org/docs/user/main/build_a_container.html)。
+若要声明可复现输出，应固定 `SOURCE_DATE_EPOCH`，并避免会使定义元数据失真的
+`--section` 用法。
+
 ## Output Layout
 
 ## Tiger 节点版本边界
