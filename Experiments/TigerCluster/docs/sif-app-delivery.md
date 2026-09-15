@@ -20,7 +20,7 @@ Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-sif-app.sh \
   --expected-apptainer 1.5.3
 ```
 
-该命令会重新核对 base/candidate 的 SHA-256、构建记录、Apptainer 版本和 `/opt/ndnsf-app` 的完整 ELF/Python 闭包，并通过 `apptainer exec --cleanenv --containall` 将候选的完整应用树复制到外置 APP，再对绑定后的准确树重跑文件类型、ELF 依赖和 Python import 检查。`--apptainer` 可以指向系统 launcher symlink，但记录和执行会固定其解析后的 regular binary 及 SHA-256。宿主工作区中的 `.so`、Python extension、venv 或 build 目录不会被读取。输出目录和 manifest 已发布后均不可覆盖；manifest 的 `appDigest` 绑定所有文件、base、candidate、构建记录和挂载表。发布使用确定性的进程锁、候选 SIF 独立快照和 Apptainer 文件描述符；APP 与 manifest 之间用可恢复事务标记协调，崩溃后下一次调用会清理未完成发布或收束已完成 pair。
+该命令会重新核对 base/candidate 的 SHA-256、构建记录、Apptainer 版本和 `/opt/ndnsf-app` 的完整 ELF/Python 闭包，并先在 base SIF 内确认 `/opt/venv/bin/python`、`/opt/ndn-base/lib` 和 `/opt/onnxruntime/lib` 存在。随后通过 `apptainer exec --cleanenv --containall` 将候选的完整应用树复制到外置 APP，再对绑定后的准确树重跑文件类型、ELF 依赖和 Python import 检查。`--apptainer` 可以指向系统 launcher symlink，但记录和执行会固定其解析后的 regular binary 及 SHA-256。宿主工作区中的 `.so`、Python extension、venv 或 build 目录不会被读取。输出目录和 manifest 已发布后均不可覆盖；manifest 的 `appDigest` 绑定所有文件、base、candidate、构建记录和挂载表。发布使用确定性的进程锁、候选 SIF 独立快照和 Apptainer 文件描述符；APP 与 manifest 之间用可恢复事务标记协调，崩溃后下一次调用会清理未完成发布或收束已完成 pair。
 
 ## Local pre-Tiger verification
 
@@ -42,12 +42,12 @@ Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-sif-app.sh \
   /opt/ndnsf-di/app/bin/di-native-provider <provider-args>
 ```
 
-本地验证必须记录 C++ 入口的真实启动、请求/ACK/Selection/Response、错误/取消和清理结果；仅 `--help`、Python import 或 `ldd` 不是协议资格。失败保持原始日志和 `NOT_READY`/`UNQUALIFIED` 边界，不上传该 pair。
+本地验证必须记录 C++ 入口的真实启动、请求/ACK/Selection/Response、错误/取消和清理结果；仅 `--help`、Python import 或 `ldd` 不是协议资格。运行器结束后会删除本次 job-scoped scratch；证据应写入单独的 `--evidence` 挂载。失败保持原始日志和 `NOT_READY`/`UNQUALIFIED` 边界，不上传该 pair。
 
 ## Tiger execution
 
 把同一 `base.sif`、`app/` 和 `app-manifest.json` 复制到项目存储后，在 Slurm 作业中调用同一 `run-sif-app.sh`（去掉 `--local`）。运行器重新计算 base 和 APP manifest，要求 `SLURM_JOB_ID`，并把 APP 挂载到 `/opt/ndnsf-di/app`。`PATH`、`LD_LIBRARY_PATH` 和 `PYTHONPATH` 只包含该 APP 及明确的 `/opt/ndn-base` 稳定层；base SIF 中可能残留的旧应用路径不会成为回退路径。APP 目录和 manifest 必须保持只读，输入路径不能是 symlink。
 
-复合身份至少包含 base SIF、候选 SIF、容器构建记录、APP 文件清单、Apptainer 版本、模型/制品/profile 和实际挂载。任何一项改变都必须重新打包并在本地重跑；不能只替换 APP 文件或只修改 profile。
+复合身份至少包含 base SIF、候选 SIF、容器构建记录、APP 文件清单、Apptainer 版本、模型/制品/profile 和实际挂载。当前发布的 pair manifest 使用 `ndnsf-sif-app-v2`，其中明确声明 `/opt/venv/bin/python`、`/opt/ndn-base/lib` 和 `/opt/onnxruntime/lib` 这组 base runtime contract；旧 v1 manifest 必须重新发布。任何一项改变都必须重新打包并在本地重跑；不能只替换 APP 文件或只修改 profile。
 
 现有 `build-local-sif.sh` 与 `run-container.sh` 保留为完整应用 SIF 的兼容入口。新 pair 入口不自动提交 Slurm、构建 SIF 或上传 Tiger；只有本地验证通过后才进入人工交付步骤。

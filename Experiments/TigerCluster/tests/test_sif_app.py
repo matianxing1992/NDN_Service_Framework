@@ -67,7 +67,7 @@ def _fixture(tmp_path):
          "sha256": _digest(b"source-seal")},
     ])
     record = {
-        "schemaVersion": "ndnsf-sif-app-v1",
+        "schemaVersion": "ndnsf-sif-app-v2",
         "status": "PASS",
         "buildBoundary": "container-runtime-in-sif-extracted",
         "candidateLayout": "opt/ndnsf-app",
@@ -87,7 +87,12 @@ def _fixture(tmp_path):
                                      "App_ServiceController")],
         "runtimeContract": {"cleanenv": True, "containall": True,
                              "appFallback": "forbidden", "modelMount": "/models:ro",
-                             "artifactMount": "/artifacts:ro"},
+                             "artifactMount": "/artifacts:ro",
+                             "baseRuntime": {
+                                 "python": "/opt/venv/bin/python",
+                                 "ndnBaseLib": "/opt/ndn-base/lib",
+                                 "onnxRuntimeLib": "/opt/onnxruntime/lib",
+                             }},
         "tigerAction": "verify-pair-and-execute-only",
     }
     record["appDigest"] = validator._record_digest(record)
@@ -166,6 +171,11 @@ def test_delivery_scripts_have_isolated_runtime_contract():
     assert "/proc/self/fd/$models_fd:/models:ro" in text
     assert "APPTAINER_PAIR_APPTAINER_NOT_REGULAR" in text
     assert "APPTAINER_PAIR_BIND_PATH_INVALID" in text
+    assert "APPTAINER_PAIR_BASE_RUNTIME_CONTRACT_FAILED" in text
+    assert "--bind \"/proc/self/fd/$scratch_fd:/scratch:rw\"" in text
+    assert "scratch_parent_fd" in text
+    assert "scratch_created" in text
+    assert "trap cleanup_scratch EXIT" in text
 
 
 def test_build_driver_rejects_overwrite_and_uses_container_extraction():
@@ -176,6 +186,9 @@ def test_build_driver_rejects_overwrite_and_uses_container_extraction():
     assert "candidateVerification" in text
     assert "APP_OUTPUT_BUSY" in text
     assert "APP_ELF_DEPENDENCY_FAILED" in text
+    assert "APP_BASE_RUNTIME_CONTRACT_FAILED" in text
+    assert "pinned_image" in text
+    assert "APP_IMAGE_ARGUMENT_MISSING" in text
     assert "/opt/ndnsf-app" in text
 
 

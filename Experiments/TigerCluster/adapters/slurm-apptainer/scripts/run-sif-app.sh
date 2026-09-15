@@ -157,7 +157,114 @@ else
   esac
 fi
 [ ! -e "$scratch" ] || { echo APPTAINER_PAIR_SCRATCH_EXISTS >&2; exit 4; }
+scratch_parent=$(dirname -- "$scratch")
+scratch_name=$(basename -- "$scratch")
+exec {scratch_parent_fd}<"$scratch_parent" || {
+  echo APPTAINER_PAIR_SCRATCH_PARENT_OPEN_FAILED >&2; exit 4;
+}
+scratch_created=0
+scratch_fd=-1
+scratch_identity=''
+
+# Scratch is a per-run private directory.  Register cleanup before any
+# post-mkdir probe so a failed probe cannot leak the newly-created directory.
+# Cleanup uses a fixed parent descriptor, a fixed root descriptor, and saved
+# inode identities before removing entries or the root path.
+cleanup_scratch() {
+  local status=$?
+  local cleanup_status=0
+  trap - EXIT
+  set +e
+  if [ "$scratch_created" -eq 1 ] && [ "$scratch_fd" -ge 0 ]; then
+    python3 - "$scratch_parent_fd" "$scratch_name" "$scratch_fd" "$scratch_identity" <<'PY'
+import os
+import stat
+import sys
+
+parent_fd = int(sys.argv[1])
+root_name = sys.argv[2]
+root_fd = int(sys.argv[3])
+identity_text = sys.argv[4]
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+def fail():
+    raise SystemExit(1)
+
+try:
+    info = os.fstat(root_fd)
+    expected = (info.st_dev, info.st_ino)
+    if identity_text:
+        recorded = tuple(int(value) for value in identity_text.split(":", 1))
+        if recorded != expected:
+            fail()
+    if not stat.S_ISDIR(info.st_mode):
+        fail()
+    root_entry = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+    if (root_entry.st_dev, root_entry.st_ino) != expected:
+        fail()
+    os.fchmod(root_fd, info.st_mode | 0o700)
+
+    def remove_children(directory_fd):
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                saved = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                saved_identity = (saved.st_dev, saved.st_ino)
+                if stat.S_ISLNK(saved.st_mode):
+                    current = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) != saved_identity:
+                        fail()
+                    os.unlink(entry.name, dir_fd=directory_fd)
+                    continue
+                if stat.S_ISDIR(saved.st_mode):
+                    child_fd = os.open(entry.name, flags, dir_fd=directory_fd)
+                    try:
+                        child_info = os.fstat(child_fd)
+                        if ((child_info.st_dev, child_info.st_ino) != saved_identity
+                                or not stat.S_ISDIR(child_info.st_mode)):
+                            fail()
+                        os.fchmod(child_fd, child_info.st_mode | 0o700)
+                        remove_children(child_fd)
+                        current = os.stat(entry.name, dir_fd=directory_fd,
+                                          follow_symlinks=False)
+                        if ((current.st_dev, current.st_ino) != saved_identity
+                                or not stat.S_ISDIR(current.st_mode)):
+                            fail()
+                        os.rmdir(entry.name, dir_fd=directory_fd)
+                    finally:
+                        os.close(child_fd)
+                else:
+                    current = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) != saved_identity:
+                        fail()
+                    os.unlink(entry.name, dir_fd=directory_fd)
+
+    remove_children(root_fd)
+    current_root = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+    if ((current_root.st_dev, current_root.st_ino) != expected
+            or not stat.S_ISDIR(current_root.st_mode)):
+        fail()
+    os.rmdir(root_name, dir_fd=parent_fd)
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY
+    cleanup_status=$?
+  else
+    cleanup_status=1
+  fi
+  if [ "$cleanup_status" -ne 0 ]; then
+    echo APPTAINER_PAIR_SCRATCH_CLEANUP_FAILED:"$scratch" >&2
+    [ "$status" -ne 0 ] || status=4
+  fi
+  exit "$status"
+}
+trap cleanup_scratch EXIT
+
 mkdir "$scratch" || { echo APPTAINER_PAIR_SCRATCH_BUSY >&2; exit 4; }
+scratch_created=1
+exec {scratch_fd}<"$scratch" || {
+  echo APPTAINER_PAIR_SCRATCH_OPEN_FAILED >&2; exit 4;
+}
+scratch_identity=$(stat -Lc '%d:%i' "/proc/self/fd/$scratch_fd")
 mkdir "$scratch/home"
 chmod 700 "$scratch" "$scratch/home"
 [ "$(stat -c '%u' "$scratch")" = "$(id -u)" ] || {
@@ -220,6 +327,13 @@ recorded_base_sha=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["bas
   echo APPTAINER_PAIR_BASE_SIF_DIGEST_CHANGED >&2; exit 4;
 }
 
+if ! env -u APPTAINERENV_HOME -u APPTAINERENV_PWD -u SINGULARITYENV_HOME \
+  -u SINGULARITYENV_PWD /proc/self/fd/3 exec --cleanenv --containall \
+  /proc/self/fd/4 /bin/sh -c 'set -eu; test -x /opt/venv/bin/python; test -d /opt/ndn-base/lib; test -d /opt/onnxruntime/lib'; then
+  echo APPTAINER_PAIR_BASE_RUNTIME_CONTRACT_FAILED >&2
+  exit 4
+fi
+
 # Keep directory descriptors open through the final exec.  Binding these
 # descriptors prevents a writable parent from replacing a validated child
 # between the second validation and Apptainer's bind processing.
@@ -253,9 +367,9 @@ pin_dir "$evidence" evidence_fd "$evidence_identity"
 # The APP paths are mounted explicitly.  Only the stable base-layer paths and
 # the reviewed APP paths participate in lookup; an old complete-app tree in a
 # base image is never a fallback.
-exec env -u APPTAINERENV_HOME -u APPTAINERENV_PWD -u SINGULARITYENV_HOME \
+env -u APPTAINERENV_HOME -u APPTAINERENV_PWD -u SINGULARITYENV_HOME \
   -u SINGULARITYENV_PWD /proc/self/fd/3 exec --cleanenv --containall --pwd /scratch \
-  --home "$scratch/home:$home_target" "${gpu_args[@]}" \
+  --home "/proc/self/fd/$scratch_fd/home:$home_target" "${gpu_args[@]}" \
   --env "SLURM_JOB_ID=$job_id,NDNSF_PAIR_APP_DIGEST=$(python3 -c 'import json,sys; print(json.load(sys.stdin)[\"appDigest\"])' <<<"$validation_json"),PATH=/opt/ndnsf-di/app/bin:/opt/venv/bin:/opt/ndn-base/bin:/usr/bin:/bin,LD_LIBRARY_PATH=/opt/ndnsf-di/app/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib,PYTHONNOUSERSITE=1,PYTHONPATH=/opt/ndnsf-di/app/python,NDNSF_MODEL_ROOT=/models,NDNSF_ARTIFACT_ROOT=/artifacts" \
   --bind "/proc/self/fd/$app_lib_fd:/opt/ndnsf-di/app/lib:ro" \
   --bind "/proc/self/fd/$app_bin_fd:/opt/ndnsf-di/app/bin:ro" \
@@ -267,5 +381,5 @@ exec env -u APPTAINERENV_HOME -u APPTAINERENV_PWD -u SINGULARITYENV_HOME \
   --bind "/proc/self/fd/$artifacts_fd:/artifacts:ro" \
   --bind "/proc/self/fd/$identity_fd:/identity:ro" \
   --bind "/proc/self/fd/$evidence_fd:/evidence:rw" \
-  --bind "$scratch:/scratch:rw" \
+  --bind "/proc/self/fd/$scratch_fd:/scratch:rw" \
   /proc/self/fd/4 "$@"

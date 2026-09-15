@@ -26,7 +26,8 @@ git diff --check -- Experiments/TigerCluster -> PASS
 The focused C++-free regression checks cover immutable staging cleanup,
 atomic intent tokens, placeholder recovery, marker FIFO rejection without
 blocking, manifest symlink/inode protection, orphan marker-temp cleanup, and
-source inode checks before publication.
+source inode checks before publication. The runner now has a no-follow scratch
+cleanup trap and the pair manifest binds the required stable base paths.
 
 The local input gates behave fail-closed:
 
@@ -38,6 +39,18 @@ run-sif-app.sh --local with missing base -> status 4 APPTAINER_PAIR_BASE_SIF_MIS
 The installed launcher reports Apptainer `1.5.3`; its resolved executable
 `/usr/bin/apptainer` has SHA-256
 `sha256:2cbfdcbc53a0a1eb56a1327cc42c4cfbdb48beaa03b9a26547df9e4556d3b673`.
+
+## r29 hardening review
+
+- review snapshot: `.codex-tmp/sif-app-review-20260915-r29`
+- `changes.diff` SHA-256: `sha256:b9605692e2b661f98575bf569af945aacaad4598d0456b7585fcbe860b073d6a`
+- six snapshot files matched their recorded hashes
+- read-only reviewer result: `STATIC_PASS`
+- the review confirmed FD-pinned base/candidate Apptainer probes, fixed
+  scratch parent/root descriptors with inode rechecks, FD-pinned scratch and
+  home mounts, and the `ndnsf-sif-app-v2` contract
+- compile/link, real Apptainer execution, C++ request-chain behavior,
+  abnormal-signal cleanup and TigerCluster qualification remain unobserved
 
 ## Dynamic boundary
 

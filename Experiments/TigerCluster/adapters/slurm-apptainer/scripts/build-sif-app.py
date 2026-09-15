@@ -35,6 +35,12 @@ EXPECTED_BINARIES = (
     "di-native-fault-provider",
     "App_ServiceController",
 )
+BASE_RUNTIME_CHECK = r"""
+set -eu
+test -x /opt/venv/bin/python
+test -d /opt/ndn-base/lib
+test -d /opt/onnxruntime/lib
+"""
 _PUBLISH_LOCKS: list[object] = []
 _PUBLISH_DIR_FDS: list[int] = []
 
@@ -132,12 +138,19 @@ def load_build_record(path: Path, candidate: Path, expected: str) -> dict[str, A
 
 
 def run_apptainer(apptainer: Path, arguments: list[str],
-                   expected_identity: tuple[int, int], expected_digest: str) -> None:
-    """Execute a pinned Apptainer inode through an inherited proc fd."""
+                   expected_identity: tuple[int, int], expected_digest: str,
+                   *, pinned_image: Path | None = None,
+                   image_identity: tuple[int, int] | None = None,
+                   image_digest: str | None = None) -> None:
+    """Execute pinned Apptainer and, when supplied, a pinned image inode."""
+    image_fd: int | None = None
+    pass_fds: list[int] = []
+    command = list(arguments)
     try:
         if identity(apptainer) != expected_identity or digest(apptainer) != expected_digest:
             fail("APP_APPTAINER_CHANGED_BEFORE_USE")
         fd = os.open(apptainer, os.O_RDONLY)
+        pass_fds.append(fd)
     except (OSError, BuildSifAppError) as error:
         fail("APP_APPTAINER_OPEN_FAILED", error)
     try:
@@ -146,13 +159,36 @@ def run_apptainer(apptainer: Path, arguments: list[str],
         fd_path = Path(f"/proc/self/fd/{fd}")
         if digest(fd_path) != expected_digest:
             fail("APP_APPTAINER_CHANGED_BEFORE_USE")
-        subprocess.run([str(fd_path), *arguments], check=True, pass_fds=(fd,))
+        if pinned_image is not None:
+            if image_identity is None or image_digest is None:
+                fail("APP_IMAGE_PIN_METADATA_MISSING")
+            if identity(pinned_image) != image_identity or digest(pinned_image) != image_digest:
+                fail("APP_IMAGE_CHANGED_BEFORE_USE")
+            image_fd = os.open(pinned_image, os.O_RDONLY)
+            pass_fds.append(image_fd)
+            image_fd_path = Path(f"/proc/self/fd/{image_fd}")
+            image_info = os.fstat(image_fd)
+            if ((image_info.st_dev, image_info.st_ino) != image_identity
+                    or digest(image_fd_path) != image_digest):
+                fail("APP_IMAGE_CHANGED_BEFORE_USE")
+            image_name = str(pinned_image)
+            try:
+                image_index = command.index(image_name)
+            except ValueError:
+                fail("APP_IMAGE_ARGUMENT_MISSING", image_name)
+            command[image_index] = str(image_fd_path)
+        subprocess.run([str(fd_path), *command], check=True, pass_fds=tuple(pass_fds))
     except (OSError, subprocess.CalledProcessError) as error:
         fail("APP_APPTAINER_EXEC_FAILED", error)
     finally:
         os.close(fd)
+        if image_fd is not None:
+            os.close(image_fd)
     if identity(apptainer) != expected_identity or digest(apptainer) != expected_digest:
         fail("APP_APPTAINER_CHANGED_AFTER_USE")
+    if pinned_image is not None and (
+            identity(pinned_image) != image_identity or digest(pinned_image) != image_digest):
+        fail("APP_IMAGE_CHANGED_AFTER_USE")
 
 
 def run_in_candidate(apptainer: Path, candidate: Path, script: str,
@@ -163,10 +199,35 @@ def run_in_candidate(apptainer: Path, candidate: Path, script: str,
     if app_override is not None:
         arguments.extend(["--bind", f"{app_override}:/opt/ndnsf-app:ro"])
     arguments.extend([str(candidate), "/bin/sh", "-c", script])
+    candidate_identity = identity(candidate)
+    candidate_digest = digest(candidate)
     try:
-        run_apptainer(apptainer, arguments, expected_identity, expected_digest)
+        run_apptainer(apptainer, arguments, expected_identity, expected_digest,
+                      pinned_image=candidate, image_identity=candidate_identity,
+                      image_digest=candidate_digest)
     except BuildSifAppError as error:
         fail(error_code, error)
+
+
+def verify_base_runtime(apptainer: Path, base: Path,
+                        apptainer_identity: tuple[int, int],
+                        apptainer_digest: str,
+                        base_identity: tuple[int, int],
+                        base_digest: str) -> None:
+    """Check the stable paths required by the APP runner before publishing."""
+    try:
+        run_apptainer(
+            apptainer,
+            ["exec", "--cleanenv", "--containall", str(base),
+             "/bin/sh", "-c", BASE_RUNTIME_CHECK],
+            apptainer_identity,
+            apptainer_digest,
+            pinned_image=base,
+            image_identity=base_identity,
+            image_digest=base_digest,
+        )
+    except BuildSifAppError as error:
+        fail("APP_BASE_RUNTIME_CONTRACT_FAILED", error)
 
 
 def extract(apptainer: Path, candidate: Path, output: Path,
@@ -184,7 +245,9 @@ cp -a /opt/ndnsf-app/. "$out/"
     command = ["exec", "--cleanenv", "--containall", "--bind",
                f"{output}:/out:rw", str(candidate), "/bin/sh", "-c", script]
     try:
-        run_apptainer(apptainer, command, expected_identity, expected_digest)
+        run_apptainer(apptainer, command, expected_identity, expected_digest,
+                      pinned_image=candidate, image_identity=identity(candidate),
+                      image_digest=digest(candidate))
     except BuildSifAppError as error:
         fail("APP_EXTRACTION_FAILED", error)
 
@@ -1028,6 +1091,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     candidate_identity = identity(candidate)
     record_identity = identity(record_path)
     record_sha = digest(record_path)
+    verify_base_runtime(apptainer, base, apptainer_identity, apptainer_sha,
+                        base_identity, base_sha)
     input_temp: Path | None = None
     try:
         fd, input_name = tempfile.mkstemp(prefix="ndnsf-sif-app-candidate-", suffix=".sif")
@@ -1183,7 +1248,7 @@ PYTHONPATH="$app/python" PYTHONNOUSERSITE=1 /opt/venv/bin/python \
             fail("APP_REQUIRED_ARTIFACT_MISSING", missing[0])
         entrypoints = [f"/opt/ndnsf-di/app/bin/{name}" for name in EXPECTED_BINARIES]
         body: dict[str, Any] = {
-            "schemaVersion": "ndnsf-sif-app-v1",
+            "schemaVersion": "ndnsf-sif-app-v2",
             "status": "PASS",
             "buildBoundary": "container-runtime-in-sif-extracted",
             "candidateLayout": APP_LAYOUT,
@@ -1219,6 +1284,11 @@ PYTHONPATH="$app/python" PYTHONNOUSERSITE=1 /opt/venv/bin/python \
                 "appFallback": "forbidden",
                 "modelMount": "/models:ro",
                 "artifactMount": "/artifacts:ro",
+                "baseRuntime": {
+                    "python": "/opt/venv/bin/python",
+                    "ndnBaseLib": "/opt/ndn-base/lib",
+                    "onnxRuntimeLib": "/opt/onnxruntime/lib",
+                },
             },
             "tigerAction": "verify-pair-and-execute-only",
         }
