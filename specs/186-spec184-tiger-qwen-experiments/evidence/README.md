@@ -40,7 +40,7 @@ of the stopping point; it is not a qualification result.
 | `static-build-preflight-20260915.md` | static review of SIF build inputs and resumable verification | builder base resolution now precedes preflight; all four source-archive entry points, extraction roots, consumed `/src` paths, pinned wheels and explicit `SPEC186_BASE_CAPABILITY_BEGIN/END` predicates fail before compilation; APT-installed tools remain post-install checks; `--verify-existing` rechecks unchanged SIF bytes without rebuild; 116 full TigerCluster tests pass |
 | `native-build-r61-20260915.md` | fresh host six-target Waf/Python build and bundle closure | host-native identity PASS; host RUNPATH prevents SIF promotion |
 | `native-build-r64-20260915.md` | current-source host native target and loader closure | r64 `197/197` Waf + extension build and official verify PASS; host RUNPATH still prevents SIF promotion |
-| `static-build-preflight-20260915.md` (r64 section) | current-source handoff after the r61 build receipt | source seal/base/definition revalidated; required host qualification manifest still absent |
+| `static-build-preflight-20260915.md` (r65 section) | current-source handoff after the r64 build receipt and preflight repair | source seal/base/definition revalidated; required host qualification manifest still absent |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do

@@ -162,3 +162,22 @@ SPEC186_PREFLIGHT_PASS wheels=/home/tianxing/NDN/ndn-service-framework/.codex-tm
 The focused template suite passed `13 passed`, and the full TigerCluster suite
 passed `116 passed in 9.01s`. This remains a pre-build/static closure gate;
 the local source-sealed SIF and MiniNDN/Tiger protocol gates are still open.
+
+## r65 current-source preflight (2026-09-15)
+
+After the preflight/skill repair and the current native-closure evidence
+commit, the source handoff was regenerated at `01b2230c83fc9c5a81a8b5fb847db6dc3631daf3`.
+The new source seal is `sha256:e3ea5a71d92beb4ff7abcbd727a9dcd69a86159eeb989a134621c229f2b1663e`,
+and the rendered definition is
+`sha256:921add324579d2251c004c32c7e0842ce22ec38efb00db73207ef0935386aa34`.
+The builder shell syntax, definition boundary/embedded-Python AST, and expanded
+source/base/wheel preflight all passed:
+
+```text
+SPEC186_R65_BUILDER_SHELL_SYNTAX_PASS
+SPEC186_R65_BOUNDARY_PASS ... pythonSnippets 6
+SPEC186_PREFLIGHT_PASS wheels=/home/tianxing/NDN/ndn-service-framework/.codex-tmp/spec186-source-handoff-r65/wheels workspaceConsumers=11
+```
+
+No host qualification manifest, source-sealed application bundle, SIF build,
+MiniNDN, or Tiger execution is implied by this receipt.
