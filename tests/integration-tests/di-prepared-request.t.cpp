@@ -8,6 +8,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
@@ -27,6 +32,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -42,40 +48,289 @@ namespace {
 
 using namespace ndnsf::di;
 
-// Sanitizer instrumentation stretches the borrowed-Face cleanup path while
-// preserving the same drain contract. Keep the normal test budget tight but
-// give the instrumented selector enough wall-clock time to reach its real
-// terminal barrier instead of turning tool overhead into a leaked fixture.
+// The C-04 qualification contract gives each native case a 60-second bound.
+// Use that same bound for normal and sanitizer selectors: the Runtime drain
+// includes native client and Face cleanup, and a busy host must not turn a
+// valid lifecycle completion into a five-second scheduling failure. A true
+// stuck worker still fails within this explicit qualification deadline.
 std::chrono::seconds testDrainTimeout()
 {
-#if defined(__SANITIZE_ADDRESS__)
-  return std::chrono::seconds(5);
-#elif defined(__clang__)
-#  if __has_feature(address_sanitizer)
-  return std::chrono::seconds(5);
-#  endif
-#endif
-  return std::chrono::seconds(2);
+  return std::chrono::seconds(60);
 }
 
-template<typename Future>
-void pumpUntilFutureReady(ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
-                          Future& future,
-                          std::chrono::seconds budget)
+// Keep the conversation result observation independent of libstdc++'s
+// std::future shared-state bookkeeping.  The fixture pumps a borrowed Face
+// while a native request blocks in another C++ thread; result state is shared
+// separately from the thread owner so a worker can never destroy the object
+// that owns (and joins) that same worker.
+struct ConversationResultState
+{
+  std::mutex mutex;
+  std::optional<Result> value;
+  std::exception_ptr error;
+  std::atomic<bool> ready{false};
+};
+
+struct ConversationResultObservation
+{
+  RequestHandle handle;
+  std::shared_ptr<ConversationResultState> state;
+  std::thread worker;
+
+  ~ConversationResultObservation()
+    noexcept
+  {
+    try {
+      // A failed pump must actively release the native wait before joining;
+      // otherwise cleanup would wait for the full result timeout.  The worker
+      // captures only state and handle, never this owner.
+      handle.cancel();
+    }
+    catch (...) {
+      // Cleanup must remain non-throwing even if the production cancellation
+      // callback reports an already-closing executor.
+    }
+    if (worker.joinable()) {
+      try {
+        worker.join();
+      }
+      catch (...) {
+        // A joinable worker is never owned by itself; any join failure is an
+        // unrecoverable fixture invariant violation and must not escape a
+        // noexcept destructor.
+        std::terminate();
+      }
+    }
+  }
+
+  Result get()
+  {
+    if (worker.joinable())
+      worker.join();
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->error)
+      std::rethrow_exception(state->error);
+    if (!state->value)
+      throw std::runtime_error("Spec185 conversation result observation is empty");
+    return std::move(*state->value);
+  }
+};
+
+// Exercise the public blocking PreparedModel::run() entry point while the
+// integration fixture pumps the same borrowed Face used by the native
+// requester.  The worker owns only the immutable model/input/options and the
+// result state; the observation owner joins it before the fixture can be
+// destroyed.  The request deadline bounds cleanup if the production chain
+// fails before producing a result.
+struct PreparedRunObservation
+{
+  std::shared_ptr<ConversationResultState> state;
+  std::thread worker;
+
+  ~PreparedRunObservation() noexcept
+  {
+    if (worker.joinable()) {
+      try {
+        worker.join();
+      }
+      catch (...) {
+        std::terminate();
+      }
+    }
+  }
+
+  Result get()
+  {
+    if (worker.joinable())
+      worker.join();
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->error)
+      std::rethrow_exception(state->error);
+    if (!state->value)
+      throw std::runtime_error("Spec185 prepared run observation is empty");
+    return std::move(*state->value);
+  }
+};
+
+std::shared_ptr<PreparedRunObservation>
+startPreparedRunObservation(PreparedModel model, Input input, RequestOptions options)
+{
+  auto observation = std::make_shared<PreparedRunObservation>();
+  observation->state = std::make_shared<ConversationResultState>();
+  const auto state = observation->state;
+  observation->worker = std::thread([state, model = std::move(model), input = std::move(input),
+                                     options] () mutable {
+    try {
+      auto result = model.run(input, options);
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->value = std::move(result);
+      }
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->error = std::current_exception();
+    }
+    state->ready.store(true, std::memory_order_release);
+  });
+  return observation;
+}
+
+std::shared_ptr<ConversationResultObservation>
+startConversationResultObservation(RequestHandle handle,
+                                   std::chrono::seconds timeout)
+{
+  auto observation = std::make_shared<ConversationResultObservation>();
+  observation->handle = handle;
+  observation->state = std::make_shared<ConversationResultState>();
+  const auto state = observation->state;
+  observation->worker = std::thread([state, handle, timeout] {
+    try {
+      auto result = handle.result(timeout);
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->value = std::move(result);
+      }
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->error = std::current_exception();
+    }
+    state->ready.store(true, std::memory_order_release);
+  });
+  return observation;
+}
+
+// The same explicit state/owner split is used for drain() observations.  It
+// removes std::async/future wait bookkeeping from the borrowed-Face fixture
+// while retaining a join barrier for every detached native wait.
+struct BooleanResultState
+{
+  std::mutex mutex;
+  std::optional<bool> value;
+  std::exception_ptr error;
+  std::atomic<bool> ready{false};
+};
+
+struct BooleanResultObservation
+{
+  std::shared_ptr<BooleanResultState> state;
+  std::thread worker;
+
+  ~BooleanResultObservation() noexcept
+  {
+    if (worker.joinable()) {
+      try {
+        worker.join();
+      }
+      catch (...) {
+        std::terminate();
+      }
+    }
+  }
+
+  bool get()
+  {
+    if (worker.joinable())
+      worker.join();
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->error)
+      std::rethrow_exception(state->error);
+    if (!state->value)
+      throw std::runtime_error("Spec185 boolean observation is empty");
+    return *state->value;
+  }
+};
+
+std::shared_ptr<BooleanResultObservation>
+startBooleanResultObservation(std::function<bool()> operation)
+{
+  auto observation = std::make_shared<BooleanResultObservation>();
+  observation->state = std::make_shared<BooleanResultState>();
+  const auto state = observation->state;
+  observation->worker = std::thread([state, operation = std::move(operation)] {
+    try {
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->value = operation();
+      }
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->error = std::current_exception();
+    }
+    state->ready.store(true, std::memory_order_release);
+  });
+  return observation;
+}
+
+void
+pumpUntilBooleanResultReady(
+  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
+  const std::shared_ptr<BooleanResultObservation>& observation,
+  std::chrono::seconds budget)
 {
   const auto deadline = std::chrono::steady_clock::now() + budget;
-  while (future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
+  while (!observation->state->ready.load(std::memory_order_acquire) &&
          std::chrono::steady_clock::now() < deadline) {
-    // pumpUntil() is intentionally chunked to keep existing fixture callers
-    // bounded.  Repeat complete chunks while the result future is pending,
-    // and let the fixture stop at the first completed result so it does not
-    // process unrelated queued events after the request's terminal edge.
-    environment.pumpUntil([&future] {
-      return future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
-    });
+    environment.pumpUntil([] { return false; });
   }
-  if (future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+  if (!observation->state->ready.load(std::memory_order_acquire))
+    throw std::runtime_error("Spec185 boolean result pump deadline expired");
+}
+
+void
+pumpUntilConversationResultReady(
+  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
+  const std::shared_ptr<ConversationResultObservation>& observation,
+  std::chrono::seconds budget)
+{
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while (!observation->state->ready.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    // Complete one bounded face-pump chunk before checking the worker flag.
+    // Keeping the predicate out of pumpFaces avoids sanitizer-sensitive
+    // exception unwinding through a callback that captures test state.
+    environment.pumpUntil([] { return false; });
+  }
+  if (!observation->state->ready.load(std::memory_order_acquire))
     throw std::runtime_error("Spec185 conversation result pump deadline expired");
+}
+
+void
+pumpUntilPreparedRunReady(
+  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
+  const std::shared_ptr<PreparedRunObservation>& observation,
+  std::chrono::seconds budget)
+{
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while (!observation->state->ready.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    environment.pumpUntil([] { return false; });
+  }
+  if (!observation->state->ready.load(std::memory_order_acquire))
+    throw std::runtime_error("Spec185 prepared run pump deadline expired");
+}
+
+void
+pumpUntilConversationResultsReady(
+  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
+  const std::shared_ptr<ConversationResultObservation>& first,
+  const std::shared_ptr<ConversationResultObservation>& second,
+  std::chrono::seconds budget)
+{
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while ((!first->state->ready.load(std::memory_order_acquire) ||
+          !second->state->ready.load(std::memory_order_acquire)) &&
+         std::chrono::steady_clock::now() < deadline) {
+    // Keep the predicate-free bounded pump used by the conversation helper;
+    // readiness is observed through explicit C++ state owned outside the
+    // worker thread.
+    environment.pumpUntil([] { return false; });
+  }
+  if (!first->state->ready.load(std::memory_order_acquire) ||
+      !second->state->ready.load(std::memory_order_acquire))
+    throw std::runtime_error("Spec185 conversation result pair pump deadline expired");
 }
 
 // Keep the synchronous busy-turn exception boundary out of the large
@@ -455,6 +710,274 @@ RuntimeConfig runtimeConfig(const RuntimeFixture& fixture)
   return config;
 }
 
+struct InProcessRuntimeBinding
+{
+  // Declared before Runtime in each test so the borrowed ServiceUser and Face
+  // remain alive through Runtime destruction.
+  std::shared_ptr<ndn_service_framework::test::NdnsfIntegrationEnvironment>
+    environment;
+  std::shared_ptr<ndn_service_framework::ServiceUser> user;
+  std::shared_ptr<NativeAuthenticatedGrantClient> grants;
+  std::shared_ptr<const NativeOfferAdmission> admission;
+};
+
+std::string readTextFile(const std::filesystem::path& path)
+{
+  std::ifstream input(path, std::ios::binary);
+  if (!input.good())
+    throw std::runtime_error("cannot read Spec185 fixture file: " + path.string());
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+InProcessRuntimeBinding
+bindInProcessRuntime(RuntimeFixture& fixture, const std::shared_ptr<Runtime>& runtime)
+{
+  if (!runtime)
+    throw std::invalid_argument("Spec185 in-process binding requires Runtime");
+
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.groupPrefix = ndn::Name("/group");
+  profile.syncPrefix = ndn::Name("/ndnsf/spec185/t013/sync");
+  profile.userNode = ndn::Name("/ndnsf/spec185/t013/user");
+  profile.providerNode = ndn::Name("/ndnsf/spec185/t013/provider");
+  profile.userIdentity = ndn::Name("/user");
+  profile.providerIdentity = ndn::Name("/provider");
+  profile.attributeAuthority = ndn::Name("/aa");
+  profile.serviceName = ndn::Name("/Inference");
+  profile.providerRoles = {"/Backbone"};
+  auto environment = std::make_shared<
+    ndn_service_framework::test::NdnsfIntegrationEnvironment>(profile);
+  environment->bootstrap();
+  environment->enableProductionIngressForTest();
+
+  // Reuse the exact offer policy and candidate identity frozen in the native
+  // requester fixture.  The lifecycle selectors do not need a Provider
+  // response, but they must still carry a real immutable admission owner so
+  // request construction cannot silently bypass Runtime's validation path.
+  const auto config = nativeParseJson(readTextFile(fixture.configPath));
+  const auto& offer = config.at("offer_admission");
+  std::map<std::string, std::string> publicKeys;
+  for (const auto& [keyId, relativePath] : offer.at("public_key_files").items()) {
+    publicKeys.emplace(keyId, readTextFile(fixture.root / relativePath.get<std::string>()));
+  }
+  auto admission = std::make_shared<NativeOfferAdmission>(
+    nativeCanonicalJson(offer.at("policy")), std::move(publicKeys),
+    offer.at("candidate_digest").get<std::string>());
+
+  // Cancellation and drain cases deliberately stop before ACK/grant
+  // acquisition.  Use a real requester-bound grant client with a cancellable
+  // transport callback; any accidental late acquisition still observes the
+  // production control deadline instead of fabricating a successful grant.
+  const auto requesterKey = readTextFile(fixture.root / "requester.pem");
+  std::unique_ptr<BIO, decltype(&BIO_free)> requesterBio(
+    BIO_new_mem_buf(requesterKey.data(), static_cast<int>(requesterKey.size())), BIO_free);
+  std::shared_ptr<EVP_PKEY> requesterPrivate(
+    PEM_read_bio_PrivateKey(requesterBio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
+  if (!requesterPrivate)
+    throw std::runtime_error("cannot load Spec185 requester fixture key");
+  const auto authorityPublicPem = readTextFile(fixture.root / "authority-public.pem");
+  std::unique_ptr<BIO, decltype(&BIO_free)> authorityBio(
+    BIO_new_mem_buf(authorityPublicPem.data(), static_cast<int>(authorityPublicPem.size())), BIO_free);
+  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> authorityPublic(
+    PEM_read_bio_PUBKEY(authorityBio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
+  if (!authorityPublic)
+    throw std::runtime_error("cannot load Spec185 authority fixture key");
+  std::string authorityPublicRaw(32, '\0');
+  std::size_t authorityPublicSize = authorityPublicRaw.size();
+  if (EVP_PKEY_get_raw_public_key(
+        authorityPublic.get(), reinterpret_cast<unsigned char*>(authorityPublicRaw.data()),
+        &authorityPublicSize) != 1 || authorityPublicSize != authorityPublicRaw.size())
+    throw std::runtime_error("Spec185 authority fixture key is not Ed25519");
+  const auto protectionEpoch = config.at("grant").at("protection_epoch").get<std::string>();
+  NativeAuthenticatedGrantClient::Issue issue = [] (
+    const NativeSignedGrantRequest&, const std::string&, std::uint64_t,
+    const NativeGrantControl& control) {
+    control.check();
+    return NativeKeyGrant{};
+  };
+  NativeAuthenticatedGrantClient::Publish publish = [] (
+    const std::string& name, const std::string&, const NativeGrantControl& control) {
+    control.check();
+    return name;
+  };
+  auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
+    environment->user().getName().toUri(), std::move(requesterPrivate),
+    environment->profile().attributeAuthority.toUri(), std::move(authorityPublicRaw),
+    protectionEpoch, std::move(issue), std::move(publish));
+
+  auto user = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment->user(), [] (ndn_service_framework::ServiceUser*) {});
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    runtime, user, grants, admission);
+  return {std::move(environment), std::move(user), std::move(grants), std::move(admission)};
+}
+
+bool drainWithInProcessPump(const InProcessRuntimeBinding& binding,
+                            const std::shared_ptr<Runtime>& runtime,
+                            std::chrono::seconds timeout)
+{
+  auto observation = startBooleanResultObservation([runtime, timeout] {
+    return runtime->drain(timeout);
+  });
+  pumpUntilBooleanResultReady(*binding.environment, observation, timeout);
+  return observation->get();
+}
+
+struct DrainNotificationState
+{
+  std::mutex mutex;
+  std::optional<bool> value;
+  std::atomic<bool> ready{false};
+};
+
+bool waitForInProcessDrainNotification(
+  const InProcessRuntimeBinding& binding, const std::shared_ptr<Runtime>& runtime,
+  std::chrono::seconds timeout, Subscription& subscription)
+{
+  auto state = std::make_shared<DrainNotificationState>();
+  subscription = runtime->drainAsync(
+    timeout, [state] (std::exception_ptr error, bool drained) {
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->value = !error && drained;
+      }
+      state->ready.store(true, std::memory_order_release);
+    });
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!state->ready.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    binding.environment->pumpUntil([] { return false; });
+  }
+  if (!state->ready.load(std::memory_order_acquire))
+    throw std::runtime_error("Spec185 drainAsync notification pump deadline expired");
+  std::lock_guard<std::mutex> lock(state->mutex);
+  return state->value.value_or(false);
+}
+
+ProviderConfig
+preparedProviderConfig(const std::string& serviceName,
+                       const std::vector<std::string>& roles)
+{
+  std::vector<std::string> values{
+    "provider", "--provider", "/provider", "--group", "/group",
+    "--controller", "/controller", "--trust-schema",
+    std::filesystem::absolute("examples/trust-any.conf").string(),
+    "--service", serviceName, "--workers", "1"};
+  for (const auto& role : roles) {
+    values.push_back("--role");
+    values.push_back(role);
+  }
+  std::vector<const char*> argv;
+  argv.reserve(values.size());
+  for (const auto& value : values)
+    argv.push_back(value.c_str());
+  return ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
+}
+
+std::shared_ptr<NativeModelRunnerFactory>
+makePreparedServedProviderRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs)
+{
+  auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
+  const auto creator = [runs] (const NativeModelRunnerSpec& spec) {
+    const bool nativeMerge = spec.backend == "native-yolo-postprocess";
+    ExecutionEvidence evidence;
+    evidence.providerName = spec.metadata.at("provider");
+    evidence.providerBootId = spec.metadata.at("boot");
+    evidence.evidenceEpoch = 1;
+    evidence.runnerKind = nativeMerge ? RunnerKind::NativeYoloPostprocess
+                                      : RunnerKind::OnnxRuntimeCpu;
+    evidence.realCompute = !nativeMerge;
+    evidence.deviceKind = "cpu";
+    evidence.deviceId = "0";
+    evidence.deviceIds = {"0"};
+    evidence.runtimeVersion = "spec185-prepared-served-provider";
+    evidence.modelDigest = spec.metadata.at("artifact");
+    evidence.planDigest = spec.metadata.at("plan");
+    evidence.artifactDigests[spec.role] = spec.metadata.at("artifact");
+    evidence.roles = {spec.role};
+    evidence.loadCompleted = !nativeMerge;
+    evidence.warmupCompleted = !nativeMerge;
+    evidence.createdAtMs = 1;
+    evidence.validate();
+    return makeNativeModelRunner(
+      [runs] (const RoleExecutionContext&) {
+        runs->fetch_add(1, std::memory_order_relaxed);
+        const std::string response = "spec185-provider-response";
+        return std::map<std::string, TensorBundle>{
+          {"final-response", TensorBundle{
+            "final-response",
+            std::vector<std::uint8_t>(response.begin(), response.end()),
+            1, response.size()}}};
+      },
+      std::move(evidence));
+  };
+  factory->registerBackend("onnxruntime-cpu", creator);
+  factory->registerBackend("native-yolo-postprocess", creator);
+  factory->freeze();
+  return factory;
+}
+
+NativeProviderHandlerConfig::RunnerPreparationFactory
+makePreparedServedProviderPreparation()
+{
+  return [] (ndn_service_framework::ServiceProvider::CollaborationContext&,
+             const NativeSelectionProjectionV3& projection,
+             const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
+    if (!protectedRuntime ||
+        protectedRuntime->state() != ProtectedRuntimeState::GrantVerified)
+      throw std::runtime_error("Spec185 served Provider did not verify grant");
+    const auto& assembly = projection.assembly;
+    NativeModelRunnerSpec spec;
+    spec.role = assembly.selectedRole;
+    spec.metadata["provider"] = projection.provider;
+    spec.metadata["boot"] = protectedRuntime->binding().providerBootId;
+    spec.metadata["plan"] = projection.planDigest;
+    spec.metadata["artifact"] = assembly.artifactDigest;
+    spec.metadata["fragmentDigest"] = assembly.artifactDigest;
+    spec.metadata["recipeDigest"] = assembly.recipeDigest;
+    if (assembly.mergeKind == "NATIVE_POSTPROCESS") {
+      spec.kind = "native-yolo-postprocess";
+      spec.backend = "native-yolo-postprocess";
+      std::string shape;
+      if (!assembly.expectedOutputs.empty()) {
+        for (const auto& dimension : assembly.expectedOutputs.front().shape) {
+          if (!shape.empty()) shape += ',';
+          shape += std::holds_alternative<std::int64_t>(dimension)
+            ? std::to_string(std::get<std::int64_t>(dimension))
+            : std::get<std::string>(dimension);
+        }
+      }
+      spec.metadata["mergeKind"] = assembly.mergeKind;
+      spec.metadata["postprocessIdentity"] = assembly.postprocessIdentity;
+      spec.metadata["postprocessOutputName"] = assembly.postprocessOutputName;
+      spec.metadata["postprocessSort"] = assembly.postprocessSort;
+      spec.metadata["expectedOutputShape"] = shape;
+      spec.metadata["postprocessConfidenceThreshold"] =
+        std::to_string(assembly.postprocessConfidenceThreshold);
+    }
+    else {
+      spec.kind = "onnx-model";
+      spec.backend = assembly.backend;
+      spec.path = (std::filesystem::temp_directory_path() / "model.onnx").string();
+      spec.metadata["modelManifestDigest"] = assembly.modelManifestDigest;
+      spec.metadata["artifactProfileDigest"] = assembly.artifactProfileDigest;
+      spec.metadata["graphDigest"] = assembly.graphDigest;
+      spec.metadata["canonicalInitializerDigest"] = assembly.canonicalInitializerDigest;
+      spec.metadata["adapterDescriptorDigest"] = assembly.adapterDescriptorDigest;
+      spec.metadata["assemblerDescriptorDigest"] = assembly.assemblerDescriptorDigest;
+      spec.metadata["backendAbi"] = assembly.backendAbi;
+      spec.metadata["precision"] = assembly.precision;
+      spec.metadata["quantization"] = assembly.quantization;
+      spec.metadata["layout"] = assembly.layout;
+      spec.metadata["padding"] = assembly.padding;
+      spec.metadata["maxSourceBytes"] = std::to_string(assembly.maxSourceBytes);
+      spec.metadata["maxAssembledBytes"] = std::to_string(assembly.maxAssembledBytes);
+      spec.metadata["maxNodes"] = std::to_string(assembly.maxNodes);
+    }
+    return spec;
+  };
+}
+
 } // namespace
 
 namespace ndnsf::di {
@@ -484,11 +1007,13 @@ BOOST_AUTO_TEST_SUITE(Spec185PreparedRequest)
 BOOST_AUTO_TEST_CASE(PreparedRequestsSharePackageButAllocateIndependentIds)
 {
   RuntimeFixture fixture;
+  InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
+  binding = bindInProcessRuntime(fixture, runtime);
   auto prepared = runtime->user().prepare();
   // This request goes through Runtime::prepare's production client factory;
-  // the immediate cancellation only avoids requiring a Provider for this
-  // ownership/identity probe.
+  // the immediate cancellation keeps this identity probe independent of a
+  // Provider response while still using the fixture-owned real Face.
   const auto bytes = Input::inlineBytes({0x01, 0x02, 0x03});
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
@@ -510,11 +1035,6 @@ BOOST_AUTO_TEST_CASE(PreparedRequestsSharePackageButAllocateIndependentIds)
                         [] (const DiError& error) {
                           return error.code() == "UNSUPPORTED_CAPABILITY";
                         });
-  // No Provider is attached to this local Runtime.  Cancel immediately after
-  // the identity assertions so this allocation-only case cannot turn the
-  // unprovisioned Runtime's asynchronous NAC public-parameter retry into an
-  // unrelated test-process abort.  Provider-backed execution and grant
-  // identity are covered by the next case.
   first.cancel();
   second.cancel();
   BOOST_CHECK(first.status() == RequestStatus::Cancelled ||
@@ -522,13 +1042,15 @@ BOOST_AUTO_TEST_CASE(PreparedRequestsSharePackageButAllocateIndependentIds)
   BOOST_CHECK(second.status() == RequestStatus::Cancelled ||
               second.status() == RequestStatus::Failed);
   runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+  BOOST_CHECK(drainWithInProcessPump(binding, runtime, testDrainTimeout()));
 }
 
 BOOST_AUTO_TEST_CASE(StreamingRequestReaderPreservesTerminalEventAcrossCancel)
 {
   RuntimeFixture fixture(true);
+  InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
+  binding = bindInProcessRuntime(fixture, runtime);
   auto prepared = runtime->user().prepare();
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
@@ -574,14 +1096,25 @@ BOOST_AUTO_TEST_CASE(StreamingRequestReaderPreservesTerminalEventAcrossCancel)
                                  error.boundary() == "request";
                         });
   movedReader.close();
+  // Release the reader and request state before draining the owning Runtime.
+  // Keeping either handle alive here retains the factory-created native client
+  // and its external Face while later tests run in the same process.
+  pendingRead = Subscription{};
+  movedReader = EventReader{};
+  handle = RequestHandle{};
   runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+  // Runtime close includes the native client and Face cleanup boundary used
+  // by C-04; use the qualification budget instead of a shorter fixture-only
+  // bound so a valid cancellation drain cannot be rejected under load.
+  BOOST_CHECK(drainWithInProcessPump(binding, runtime, testDrainTimeout()));
 }
 
 BOOST_AUTO_TEST_CASE(VerifiedStreamingDefaultsMaterializeWithoutExplicitOptions)
 {
   RuntimeFixture fixture(true);
+  InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
+  binding = bindInProcessRuntime(fixture, runtime);
   auto prepared = runtime->user().prepare();
   BOOST_REQUIRE(prepared.capabilities().streaming);
   BOOST_CHECK(std::find(prepared.capabilities().outputModes.begin(),
@@ -598,10 +1131,10 @@ BOOST_AUTO_TEST_CASE(VerifiedStreamingDefaultsMaterializeWithoutExplicitOptions)
   BOOST_CHECK(handle.status() == RequestStatus::Cancelled ||
               handle.status() == RequestStatus::Failed);
   runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+  BOOST_CHECK(drainWithInProcessPump(binding, runtime, testDrainTimeout()));
 }
 
-BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
+BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
 {
   RuntimeFixture fixture;
   ndn_service_framework::test::BootstrapProfile profile;
@@ -801,8 +1334,11 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
   auto providerPrepared = prepared;
 
   RequestOptions options;
-  options.timeout = std::chrono::seconds(5);
-  options.ackTimeout = std::chrono::seconds(2);
+  // Two concurrent selections externalize three assignment payloads each;
+  // keep the fixture's ACK budget above that observed transport work while
+  // retaining a bounded request deadline for the negative paths below.
+  options.timeout = std::chrono::seconds(10);
+  options.ackTimeout = std::chrono::seconds(5);
   auto first = providerPrepared.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
   auto second = providerPrepared.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
   BOOST_REQUIRE_NE(first.id(), second.id());
@@ -842,7 +1378,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
   auto resultAsyncPromise = std::make_shared<std::promise<bool>>();
   auto resultAsyncSet = std::make_shared<std::atomic<bool>>(false);
   auto resultAsyncSubscription = first.resultAsync(
-    std::chrono::seconds(5),
+    std::chrono::seconds(10),
     [resultAsyncPromise, resultAsyncSet, firstId]
     (std::exception_ptr error, std::optional<Result> result) {
       if (!resultAsyncSet->exchange(true, std::memory_order_acq_rel))
@@ -886,14 +1422,17 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
   auto recycledSubscription = first.onCompletion(
     [] (std::exception_ptr, std::optional<Result>) {});
 
-  auto firstFuture = std::async(std::launch::async, [first] { return first.result(std::chrono::seconds(5)); });
-  auto secondFuture = std::async(std::launch::async, [second] { return second.result(std::chrono::seconds(5)); });
-  environment.pumpUntil([&] {
-    return firstFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready &&
-           secondFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
-  });
-  const auto firstResult = firstFuture.get();
-  const auto secondResult = secondFuture.get();
+  auto firstObservation = startConversationResultObservation(first, std::chrono::seconds(10));
+  auto secondObservation = startConversationResultObservation(second, std::chrono::seconds(10));
+  // pumpUntil is intentionally bounded so setup-only callers cannot spin
+  // forever.  A deferred collaboration's ACK window may expire at the end of
+  // one bounded pump, so continue with another bounded pump before joining
+  // the workers.  This keeps the test driver alive through the real Face
+  // scheduler boundary without relying on std::future's shared state.
+  pumpUntilConversationResultsReady(environment, firstObservation, secondObservation,
+                                    std::chrono::seconds(10));
+  const auto firstResult = firstObservation->get();
+  const auto secondResult = secondObservation->get();
   auto completionReady = completionPromise->get_future();
   auto resultAsyncReady = resultAsyncPromise->get_future();
   auto timedWaitReady = timedWaitPromise->get_future();
@@ -908,8 +1447,12 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
   BOOST_CHECK_EQUAL(std::string(firstResult.payload.begin(), firstResult.payload.end()),
                     "spec185-provider-response");
   BOOST_CHECK_EQUAL(firstResult.requestId, firstId);
+  BOOST_CHECK_EQUAL(firstResult.modelDigest, model.intentDigest());
+  BOOST_CHECK(!firstResult.planDigest.empty());
   BOOST_CHECK_EQUAL(std::string(secondResult.payload.begin(), secondResult.payload.end()),
                     "spec185-provider-response");
+  BOOST_CHECK_EQUAL(secondResult.modelDigest, model.intentDigest());
+  BOOST_CHECK(!secondResult.planDigest.empty());
   BOOST_CHECK_EQUAL(ackCount->load(std::memory_order_relaxed), 2U);
   BOOST_CHECK_EQUAL(responseCount->load(std::memory_order_relaxed), 2U);
   {
@@ -924,6 +1467,31 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
     }
   }
 
+  // The public blocking API must traverse the same production requester,
+  // authenticated ACK/Selection, Provider execution, response decoding and
+  // Runtime-owned client lifetime as request().  Run it in a C++ worker while
+  // this fixture pumps the real Face; a local fake client would miss the
+  // scheduling and transport boundaries that this regression protects.
+  auto runObservation = startPreparedRunObservation(
+    providerPrepared, Input::inlineBytes({0x0a, 0x0b, 0x0c}), options);
+  pumpUntilPreparedRunReady(environment, runObservation, std::chrono::seconds(10));
+  const auto runResult = runObservation->get();
+  BOOST_CHECK_EQUAL(std::string(runResult.payload.begin(), runResult.payload.end()),
+                    "spec185-provider-response");
+  BOOST_REQUIRE(!runResult.requestId.empty());
+  BOOST_CHECK_EQUAL(runResult.modelDigest, model.intentDigest());
+  BOOST_CHECK(!runResult.planDigest.empty());
+  BOOST_CHECK_EQUAL(ackCount->load(std::memory_order_relaxed), 3U);
+  BOOST_CHECK_EQUAL(responseCount->load(std::memory_order_relaxed), 3U);
+  {
+    std::lock_guard<std::mutex> lock(*observationMutex);
+    BOOST_CHECK_EQUAL(ackRequestIds->size(), 3U);
+    BOOST_CHECK_EQUAL(selectionByRequest->size(), 3U);
+    BOOST_CHECK_EQUAL(grantRequestIds->size(), 3U);
+    BOOST_CHECK(grantRequestIds->count(runResult.requestId) == 1U);
+    BOOST_CHECK(selectionByRequest->count(runResult.requestId) == 1U);
+  }
+
   // A repository reference keeps its complete canonical metadata on the
   // request wire.  The Provider fixture applies the same authenticated
   // content-digest gate used by its data owner and must reject a hot request
@@ -936,19 +1504,18 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
     {"plaintextSize", 3}, {"protectionEpoch", "fixture-epoch"} };
   auto wrongDigestRequest = providerPrepared.request(
     Input::repository(DataRef::fromPublishedMetadata(nativeCanonicalJson(wrongReference))), options);
-  auto wrongDigestFuture = std::async(std::launch::async, [wrongDigestRequest] () mutable {
-    try {
-      (void)wrongDigestRequest.result(std::chrono::seconds(5));
-      return false;
-    }
-    catch (const std::exception&) {
-      return true;
-    }
-  });
-  environment.pumpUntil([&] {
-    return wrongDigestFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
-  });
-  BOOST_CHECK(wrongDigestFuture.get());
+  auto wrongDigestObservation = startConversationResultObservation(
+    wrongDigestRequest, std::chrono::seconds(5));
+  pumpUntilConversationResultReady(environment, wrongDigestObservation,
+                                   std::chrono::seconds(5));
+  bool wrongDigestFailed = false;
+  try {
+    (void)wrongDigestObservation->get();
+  }
+  catch (const std::exception&) {
+    wrongDigestFailed = true;
+  }
+  BOOST_CHECK(wrongDigestFailed);
   BOOST_CHECK(wrongDigestRejected->load(std::memory_order_acquire));
 
   // Advance the installed Controller status after the grant/response keys
@@ -972,19 +1539,18 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
   BOOST_REQUIRE(environment.user().installControllerStatus(revokedStatus));
 
   auto revokedRequest = providerPrepared.request(Input::inlineBytes({0x06, 0x07, 0x08}), options);
-  auto revokedFuture = std::async(std::launch::async, [revokedRequest] () mutable {
-    try {
-      (void)revokedRequest.result(std::chrono::seconds(5));
-      return false;
-    }
-    catch (const std::exception&) {
-      return true;
-    }
-  });
-  environment.pumpUntil([&] {
-    return revokedFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
-  });
-  BOOST_CHECK(revokedFuture.get());
+  auto revokedObservation = startConversationResultObservation(
+    revokedRequest, std::chrono::seconds(5));
+  pumpUntilConversationResultReady(environment, revokedObservation,
+                                   std::chrono::seconds(5));
+  bool revokedFailed = false;
+  try {
+    (void)revokedObservation->get();
+  }
+  catch (const std::exception&) {
+    revokedFailed = true;
+  }
+  BOOST_CHECK(revokedFailed);
   BOOST_CHECK(revokedRequest.status() == RequestStatus::Failed ||
               revokedRequest.status() == RequestStatus::Cancelled);
 
@@ -1003,13 +1569,257 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughProvider)
   // This test-only binding borrows the integration environment's Face.  Run
   // the Runtime drain concurrently while pumping that borrowed transport so
   // terminal collaboration cleanup reaches the same external I/O owner.
-  auto drainFuture = std::async(std::launch::async, [runtime] {
+  auto drainObservation = startBooleanResultObservation([runtime] {
     return runtime->drain(std::chrono::seconds(2));
   });
-  environment.pumpUntil([&] {
-    return drainFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
-  });
-  BOOST_CHECK(drainFuture.get());
+  pumpUntilBooleanResultReady(environment, drainObservation, std::chrono::seconds(2));
+  BOOST_CHECK(drainObservation->get());
+}
+
+BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
+{
+  // This is the production-chain counterpart to the Core collaboration
+  // fixture above.  The ACK strategy only supplies the authenticated V3 offer;
+  // the selected request is handled by Provider::serve and its native
+  // assembly/runner pipeline.
+  RuntimeFixture fixture(false, true);
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.groupPrefix = ndn::Name("/group");
+  profile.syncPrefix = ndn::Name("/ndnsf/spec185/served-provider/sync");
+  profile.userNode = ndn::Name("/ndnsf/spec185/served-provider/user");
+  profile.providerNode = ndn::Name("/ndnsf/spec185/served-provider/provider");
+  profile.userIdentity = ndn::Name("/user");
+  profile.providerIdentity = ndn::Name("/provider");
+  profile.attributeAuthority = ndn::Name("/aa");
+  profile.serviceName = ndn::Name("/Inference");
+  profile.providerRoles = {"/LLM/Pipeline/Stage/0"};
+  profile.deferBridgeDelivery = true;
+  profile.providerFacesHaveDedicatedIoWorkers = true;
+  auto environment = std::make_shared<
+    ndn_service_framework::test::NdnsfIntegrationEnvironment>(profile);
+  environment->bootstrap();
+
+  auto runtime = Runtime::open(runtimeConfig(fixture));
+  auto prepared = runtime->user().prepare();
+  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+  const auto model = package->catalog.model.descriptor;
+  const auto candidates = package->catalog.splitter->enumerate(
+    model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto roles = candidates.front().executionPlan.roles;
+  BOOST_REQUIRE(!roles.empty());
+  BOOST_REQUIRE(std::all_of(roles.begin(), roles.end(), [] (const std::string& role) {
+    return !role.empty() && role.front() == '/';
+  }));
+
+  const auto serviceName = environment->profile().serviceName.toUri();
+  const auto requesterName = environment->user().getName().toUri();
+  const auto providerName = environment->provider().getName().toUri();
+  const auto providerBootId = environment->provider().getProviderBootEpoch();
+  const auto offerKey = deterministicEd25519Key(0x31);
+  const auto offerKeyId = nativePlanningDigest(rawPublicKey(offerKey));
+  NativeProviderOfferV3Config offerConfig;
+  offerConfig.provider = providerName;
+  offerConfig.service = serviceName;
+  offerConfig.bootEpoch = providerName + ":" + providerBootId;
+  offerConfig.signerKeyId = offerKeyId;
+  offerConfig.acceptedRoles = roles;
+  offerConfig.backends = {"onnxruntime-cpu"};
+  offerConfig.hasModel = true;
+  offerConfig.signDigest = [offerKey] (const std::string& value) {
+    return signDigest(offerKey, value);
+  };
+  const auto candidatePolicyDigest = nativePlanningDigest("spec185-served-provider-policy");
+  const auto policy = nativeCanonicalJson(NativeJson{
+    {"schema", "spec180-provider-offer-trust-v1"},
+    {"candidateId", "spec185-served-provider"},
+    {"candidateDigest", candidatePolicyDigest},
+    {"trustSchema", "/group/trust"},
+    {"entries", NativeJson::array({NativeJson{
+      {"provider", providerName}, {"service", serviceName},
+      {"keyLocatorPrefix", environment->provider().getSigningKeyName().toUri()},
+      {"signerKeyId", offerKeyId},
+      {"certificateName", environment->provider().getSigningCertificateName().toUri()}}})}});
+  auto admission = std::make_shared<NativeOfferAdmission>(
+    policy, std::map<std::string, std::string>{{offerKeyId, publicKeyPem(offerKey)}},
+    candidatePolicyDigest);
+
+  const auto requesterKey = deterministicEd25519Key(0x41);
+  const auto authorityKey = deterministicEd25519Key(0x51);
+  const auto recipientKey = deterministicEd25519Key(0x61);
+  const auto registration = nativeParseJson(package->registration->configurationJson);
+  const auto protectionEpoch = registration.at("grant").at(
+    "protection_epoch").get<std::string>();
+  const auto authorityName = environment->profile().attributeAuthority.toUri();
+  NativeGrantIssuerConfig issuerConfig;
+  issuerConfig.authorityIdentity = authorityName;
+  issuerConfig.requesterIdentity = requesterName;
+  issuerConfig.protectionEpoch = protectionEpoch;
+  issuerConfig.keyId = "spec185-served-provider-grant";
+  issuerConfig.authorityPrivateKey = authorityKey;
+  issuerConfig.requesterPublicKey = requesterKey;
+  issuerConfig.allowedModelManifests = {package->catalog.model.modelManifestDigest};
+  issuerConfig.publicationSources.emplace(
+    package->catalog.model.modelManifestDigest,
+    NativeGrantPublicationSource{
+      package->catalog.model.descriptor.modelName,
+      package->catalog.model.descriptor.contentDigest,
+      package->catalog.model.canonicalSourceDigest,
+      package->catalog.model.canonicalInitializerObjectDigest,
+      nativePlanningDigest("fixture-profile")});
+  issuerConfig.recipientPublicKeys = {{providerName, recipientKey}};
+  issuerConfig.contentKey = [] (const auto&, const auto&) {
+    return std::vector<std::uint8_t>(32, 0x77);
+  };
+  auto grantIssuer = std::make_shared<NativeArtifactGrantIssuer>(std::move(issuerConfig));
+  auto issuedGrants = std::make_shared<std::map<std::string, NativeKeyGrant>>();
+  auto issuedGrantsMutex = std::make_shared<std::mutex>();
+  NativeAuthenticatedGrantClient::Issue issue = [grantIssuer, issuedGrants,
+                                                   issuedGrantsMutex] (
+    const NativeSignedGrantRequest& request, const std::string& publishedManifest,
+    std::uint64_t expiresAtMs, const NativeGrantControl& control) {
+    control.check();
+    const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<
+      std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    auto grant = grantIssuer->issue(request, nowMs, expiresAtMs, publishedManifest);
+    {
+      std::lock_guard<std::mutex> lock(*issuedGrantsMutex);
+      (*issuedGrants)[grant.grantDigest] = grant;
+    }
+    return grant;
+  };
+  NativeAuthenticatedGrantClient::Publish publish = [] (
+    const std::string& name, const std::string&, const NativeGrantControl& control) {
+    control.check();
+    return name;
+  };
+  auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
+    requesterName, requesterKey, authorityName, rawPublicKey(authorityKey),
+    protectionEpoch, std::move(issue), std::move(publish));
+
+  const auto providerIdentity = environment->keyChain().getPib().getIdentity(
+    environment->provider().getName());
+  const auto providerCertificate = providerIdentity.getDefaultKey().getDefaultCertificate();
+  const auto authorityIdentity = environment->keyChain().getPib().getIdentity(
+    environment->profile().attributeAuthority);
+  const auto authorityCertificate = authorityIdentity.getDefaultKey().getDefaultCertificate();
+  const auto providerConfig = preparedProviderConfig(serviceName, roles);
+  auto runs = std::make_shared<std::atomic<unsigned>>(0);
+  auto preparation = makePreparedServedProviderPreparation();
+  auto protectedFactory = [issuedGrants, issuedGrantsMutex, authorityName,
+                           authorityKey, recipientKey, providerBootId] (
+    ndn_service_framework::ServiceProvider::CollaborationContext&,
+    const NativeSelectionProjectionV3& projection,
+    const std::shared_ptr<ProviderGroupCoordinator>&) {
+    NativeKeyGrant grant;
+    {
+      std::lock_guard<std::mutex> lock(*issuedGrantsMutex);
+      const auto found = issuedGrants->find(projection.grantDigest);
+      if (found == issuedGrants->end())
+        throw std::runtime_error("Spec185 served Provider grant publication missing");
+      grant = found->second;
+    }
+    ProtectedRuntimeBindingV1 binding;
+    binding.provider = projection.provider;
+    binding.role = projection.executionRole.roleId;
+    binding.requestId = projection.requestId;
+    binding.attempt = projection.attempt;
+    binding.planCoreDigest = projection.planCoreDigest;
+    binding.planDigest = projection.planDigest;
+    binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+    binding.protectionEpoch = projection.selectedRole.protectionEpoch;
+    binding.grantName = projection.grantName;
+    binding.grantDigest = projection.grantDigest;
+    binding.providerBootId = providerBootId;
+    binding.fencingToken = nativeProtectedFencingToken(projection, providerBootId, {});
+    binding.expiresAtMs = projection.deadlineMs;
+    for (const auto& endpoint : projection.dataflow.mayPublish) {
+      binding.mayPublishEndpointDigests.insert(endpoint.endpointDigest);
+      binding.mayPublishConsumerByEndpoint[endpoint.endpointDigest] = endpoint.consumerRole;
+    }
+    for (const auto& endpoint : projection.dataflow.mustFetch) {
+      if (endpoint.sourceKind == "APPLICATION_INPUT" || endpoint.operation == "APPLICATION_INPUT")
+        continue;
+      binding.mustFetchEndpointDigests.insert(endpoint.endpointDigest);
+      binding.mustFetchProducerByEndpoint[endpoint.endpointDigest] = endpoint.producerRole;
+    }
+    NativeProtectedGrantConfig grantConfig;
+    grantConfig.authorityIdentity = authorityName;
+    grantConfig.authorityPublicKeyRaw = rawPublicKey(authorityKey);
+    grantConfig.recipientKey = {NativeRecipientKey::Kind::Ed25519Seed, std::string(32, 0x61)};
+    grantConfig.modelManifestDigest = projection.selectedRole.modelManifestDigest;
+    grantConfig.fetchGrant = [wire = grant.wireJson] (const std::string&) {
+      return wire;
+    };
+    auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(grantConfig));
+    runtime->verifyGrant(binding, static_cast<std::uint64_t>(std::chrono::duration_cast<
+      std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
+    return runtime;
+  };
+  auto ackHandler = [offerConfig] (const ndn_service_framework::RequestMessage& request) {
+    const auto payload = request.getPayload();
+    const auto issued = issueNativeProviderOfferV3(
+      std::vector<std::uint8_t>(payload.begin(), payload.end()), offerConfig,
+      static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count()));
+    ndn_service_framework::ServiceProvider::AckDecision decision;
+    if (!issued || !issued->status) {
+      decision.message = issued ? issued->message : "DI_NATIVE_REQUEST_NOT_V3";
+      return decision;
+    }
+    decision.status = true;
+    decision.message = issued->message;
+    decision.payload = ndn::Buffer(issued->payload.begin(), issued->payload.end());
+    decision.pendingStateTtlMs = issued->pendingStateTtlMs;
+    return decision;
+  };
+  auto facade = Provider::fromServiceProviderForTest(
+    environment->providerFace(), environment->provider(), environment->keyChain(),
+    providerCertificate, authorityCertificate, providerConfig,
+    makePreparedServedProviderRunnerFactory(runs), std::move(preparation),
+    std::move(protectedFactory), std::move(ackHandler));
+  environment->enableProductionIngressForTest();
+  auto served = facade.serve({serviceName, roles});
+  BOOST_REQUIRE(served.valid());
+  environment->provider().markHybridResponseKeyWrappedForTest(serviceName);
+  const auto ackKey = environment->provider().prepareHybridSendKeyForTest(serviceName, "ACK");
+  const auto responseKey = environment->provider().prepareHybridSendKeyForTest(serviceName, "RESPONSE");
+  environment->user().cacheHybridReceiveKeyForTest(ackKey.keyId, ackKey.epochId, ackKey.key);
+  environment->user().cacheHybridReceiveKeyForTest(responseKey.keyId, responseKey.epochId, responseKey.key);
+  const auto selectionKey = environment->user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
+  environment->provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+
+  auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment->user(), [] (ndn_service_framework::ServiceUser*) {});
+  InProcessRuntimeBinding binding;
+  binding.environment = environment;
+  binding.user = environmentUser;
+  binding.grants = grants;
+  binding.admission = admission;
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    runtime, environmentUser, grants, admission);
+
+  RequestOptions options;
+  options.timeout = std::chrono::seconds(10);
+  options.ackTimeout = std::chrono::seconds(5);
+  auto handle = prepared.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
+  auto observation = startConversationResultObservation(handle, std::chrono::seconds(10));
+  pumpUntilConversationResultReady(*environment, observation, std::chrono::seconds(10));
+  const auto result = observation->get();
+  BOOST_CHECK_EQUAL(std::string(result.payload.begin(), result.payload.end()),
+                    "spec185-provider-response");
+  BOOST_CHECK_EQUAL(result.modelDigest, model.intentDigest());
+  BOOST_CHECK(!result.planDigest.empty());
+  BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
+  const auto counters = facade.counters();
+  BOOST_CHECK_EQUAL(counters.assemblies, 1U);
+  BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
+
+  runtime->close();
+  BOOST_REQUIRE(drainWithInProcessPump(binding, runtime, testDrainTimeout()));
+  served.close();
+  facade.stop();
+  BOOST_CHECK(facade.drain(std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
@@ -1302,11 +2112,9 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   // sanitizer observes the production exception boundary without coupling it
   // to this integration test's large stack frame.
   BOOST_CHECK(conversationRejectsBusyTurn(conversation, options));
-  auto firstResultFuture = std::async(std::launch::async, [first, conversationResultWait] {
-    return first.result(conversationResultWait);
-  });
-  pumpUntilFutureReady(environment, firstResultFuture, conversationTimeout);
-  const auto firstResult = firstResultFuture.get();
+  auto firstObservation = startConversationResultObservation(first, conversationResultWait);
+  pumpUntilConversationResultReady(environment, firstObservation, conversationTimeout);
+  const auto firstResult = firstObservation->get();
   BOOST_CHECK(!firstResult.payload.empty());
   auto checkpoint = conversation.checkpoint();
   const auto checkpointBytes = checkpoint.bytes();
@@ -1331,11 +2139,9 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   BOOST_CHECK(exportedCheckpoint.bytes() == checkpointBytes);
 
   auto second = conversation.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
-  auto secondResultFuture = std::async(std::launch::async, [second, conversationResultWait] {
-    return second.result(conversationResultWait);
-  });
-  pumpUntilFutureReady(environment, secondResultFuture, conversationTimeout);
-  const auto secondResult = secondResultFuture.get();
+  auto secondObservation = startConversationResultObservation(second, conversationResultWait);
+  pumpUntilConversationResultReady(environment, secondObservation, conversationTimeout);
+  const auto secondResult = secondObservation->get();
   BOOST_CHECK(!secondResult.payload.empty());
   BOOST_CHECK_EQUAL(completedTurns->load(std::memory_order_relaxed), 2U);
   BOOST_CHECK(ackCount->load(std::memory_order_relaxed) >= 2U);
@@ -1375,22 +2181,18 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   restoredOptions.checkpoint = recoveredCheckpoint;
   auto restored = prepared.openConversation(restoredOptions);
   auto third = restored.request(Input::inlineBytes({0x07, 0x08, 0x09}), options);
-  auto thirdResultFuture = std::async(std::launch::async, [third, conversationResultWait] {
-    return third.result(conversationResultWait);
-  });
-  pumpUntilFutureReady(environment, thirdResultFuture, conversationTimeout);
-  BOOST_CHECK(!thirdResultFuture.get().payload.empty());
+  auto thirdObservation = startConversationResultObservation(third, conversationResultWait);
+  pumpUntilConversationResultReady(environment, thirdObservation, conversationTimeout);
+  BOOST_CHECK(!thirdObservation->get().payload.empty());
   BOOST_CHECK_EQUAL(completedTurns->load(std::memory_order_relaxed), 3U);
   restored.close();
   conversation.close();
   runtime->close();
-  auto drainFuture = std::async(std::launch::async, [runtime] {
+  auto drainObservation = startBooleanResultObservation([runtime] {
     return runtime->drain(std::chrono::seconds(3));
   });
-  environment.pumpUntil([&] {
-    return drainFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
-  });
-  BOOST_CHECK(drainFuture.get());
+  pumpUntilBooleanResultReady(environment, drainObservation, std::chrono::seconds(3));
+  BOOST_CHECK(drainObservation->get());
 }
 
 BOOST_AUTO_TEST_CASE(PlacementHandlesAreRuntimeBound)
@@ -1455,36 +2257,37 @@ BOOST_AUTO_TEST_CASE(PreparedRequestFactoryErrorsMapAtPublicBoundary)
 BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncIncludesNativeClientWork)
 {
   RuntimeFixture fixture;
+  InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
+  binding = bindInProcessRuntime(fixture, runtime);
   auto prepared = runtime->user().prepare();
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
   auto handle = prepared.request(Input::inlineBytes({0x01}), options);
   runtime->close();
-  auto completion = std::make_shared<std::promise<bool>>();
-  auto completed = std::make_shared<std::atomic<bool>>(false);
-  auto future = completion->get_future();
   const auto drainTimeout = testDrainTimeout();
-  auto subscription = runtime->drainAsync(
-    drainTimeout,
-    [completion, completed](std::exception_ptr error, bool drained) {
-      if (!completed->exchange(true, std::memory_order_acq_rel))
-        completion->set_value(!error && drained);
-    });
-  BOOST_REQUIRE(future.wait_for(drainTimeout) == std::future_status::ready);
-  BOOST_CHECK(future.get());
+  Subscription subscription;
+  BOOST_CHECK(waitForInProcessDrainNotification(
+    binding, runtime, drainTimeout, subscription));
   BOOST_CHECK(handle.status() == RequestStatus::Failed ||
               handle.status() == RequestStatus::Cancelled);
   subscription.cancel();
+  // Repeat the terminal fence after the asynchronous callback has been
+  // retired.  This mirrors the multi-client cases below and lets the Runtime
+  // release its final native client before the fixture Face is destroyed.
+  runtime->close();
+  BOOST_CHECK(drainWithInProcessPump(binding, runtime, drainTimeout));
 }
 
 BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncTracksMultiplePreparedClients)
 {
   RuntimeFixture fixture;
+  InProcessRuntimeBinding binding;
   auto config = runtimeConfig(fixture);
   config.models.push_back({"secondary", fixture.configPath.string()});
   auto runtime = Runtime::open(config);
+  binding = bindInProcessRuntime(fixture, runtime);
   auto primary = runtime->user().prepare("default");
   auto secondary = runtime->user().prepare("secondary");
   RequestOptions options;
@@ -1498,31 +2301,43 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncTracksMultiplePreparedClients)
   // Two distinct prepared registrations materialize two Runtime clients. The
   // non-closing Core drain must inspect both through the immutable DI snapshot
   // without taking the DI state mutex under the Core worker lock.
-  auto completion = std::make_shared<std::promise<bool>>();
-  auto completed = std::make_shared<std::atomic<bool>>(false);
-  auto future = completion->get_future();
-  auto subscription = runtime->drainAsync(
-    std::chrono::seconds(2),
-    [completion, completed](std::exception_ptr error, bool drained) {
-      if (!completed->exchange(true, std::memory_order_acq_rel))
-        completion->set_value(!error && drained);
-    });
+  const auto drainTimeout = testDrainTimeout();
+  Subscription subscription;
   // Register while both clients still own active request work, then drive the
   // terminal transitions. This exercises the notifier wakeup path as well as
-  // the multi-client snapshot.
+  // the multi-client snapshot through the borrowed fixture Face.
+  auto notification = std::make_shared<DrainNotificationState>();
+  subscription = runtime->drainAsync(
+    drainTimeout, [notification] (std::exception_ptr error, bool drained) {
+      {
+        std::lock_guard<std::mutex> lock(notification->mutex);
+        notification->value = !error && drained;
+      }
+      notification->ready.store(true, std::memory_order_release);
+    });
   primaryHandle.cancel();
   secondaryHandle.cancel();
-  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
-  BOOST_CHECK(future.get());
+  const auto deadline = std::chrono::steady_clock::now() + drainTimeout;
+  while (!notification->ready.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    binding.environment->pumpUntil([] { return false; });
+  }
+  BOOST_REQUIRE(notification->ready.load(std::memory_order_acquire));
+  {
+    std::lock_guard<std::mutex> lock(notification->mutex);
+    BOOST_CHECK(notification->value.value_or(false));
+  }
   subscription.cancel();
   runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+  BOOST_CHECK(drainWithInProcessPump(binding, runtime, drainTimeout));
 }
 
 BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncWakesAfterLastClientTimerRetires)
 {
   RuntimeFixture fixture;
+  InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
+  binding = bindInProcessRuntime(fixture, runtime);
   auto prepared = runtime->user().prepare();
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(300);
@@ -1532,24 +2347,17 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncWakesAfterLastClientTimerRetires)
   // Keep Runtime open: this exercises the non-closing drainAsync path and
   // requires the client-owned request deadline timer to release its final
   // ticket before the outer Core waiter is notified.
-  auto completion = std::make_shared<std::promise<bool>>();
-  auto completed = std::make_shared<std::atomic<bool>>(false);
-  auto future = completion->get_future();
-  auto subscription = runtime->drainAsync(
-    std::chrono::seconds(2),
-    [completion, completed](std::exception_ptr error, bool drained) {
-      if (!completed->exchange(true, std::memory_order_acq_rel))
-        completion->set_value(!error && drained);
-    });
-  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
-  BOOST_CHECK(future.get());
+  const auto drainTimeout = testDrainTimeout();
+  Subscription subscription;
+  BOOST_CHECK(waitForInProcessDrainNotification(
+    binding, runtime, drainTimeout, subscription));
   BOOST_CHECK(handle.status() == RequestStatus::Failed ||
               handle.status() == RequestStatus::Cancelled);
   // The open-runtime notification is not a shutdown operation.
   BOOST_CHECK_NO_THROW(runtime->user());
   subscription.cancel();
   runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+  BOOST_CHECK(drainWithInProcessPump(binding, runtime, drainTimeout));
 }
 
 BOOST_AUTO_TEST_CASE(PreparedRequestRejectsUnsupportedTextBeforeNativeSubmission)

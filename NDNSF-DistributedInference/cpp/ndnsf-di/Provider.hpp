@@ -145,7 +145,8 @@ public:
     const ProviderConfig& config,
     std::shared_ptr<NativeModelRunnerFactory> runnerFactory,
     NativeProviderHandlerConfig::RunnerPreparationFactory preparationFactory,
-    NativeProviderHandlerConfig::ProtectedRuntimeFactory protectedRuntimeFactory = {});
+    NativeProviderHandlerConfig::ProtectedRuntimeFactory protectedRuntimeFactory = {},
+    ndn_service_framework::ServiceProvider::AckStrategyHandler ackHandler = {});
 #endif
 
 private:
