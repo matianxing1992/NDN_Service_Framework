@@ -245,6 +245,26 @@ def test_delivery_scripts_have_isolated_runtime_contract():
     assert "APPTAINER_PAIR_APPTAINER_NOT_REGULAR" in text
     assert "APPTAINER_PAIR_BIND_PATH_INVALID" in text
     assert "APPTAINER_PAIR_BASE_RUNTIME_CONTRACT_FAILED" in text
+    assert "--nfd-socket PATH" in text
+    assert "APPTAINER_PAIR_NFD_SOCKET_MISSING" in text
+    assert "APPTAINER_PAIR_NFD_SOCKET_DIR_OWNER_MISMATCH" in text
+    assert "APPTAINER_PAIR_NFD_SOCKET_DIR_NOT_PRIVATE" in text
+    assert "APPTAINER_PAIR_NFD_SOCKET_NOT_JOB_SCOPED" in text
+    assert "APPTAINER_PAIR_NFD_SOCKET_DIR_NOT_DEDICATED" in text
+    assert "NDN_CLIENT_TRANSPORT=unix:///tmp/ndnsf-di-nfd/$nfd_socket_name" in text
+    assert "NDN_CLIENT_PIB=pib-sqlite3:$home_target/.ndn" in text
+    assert "NDN_CLIENT_TPM=tpm-file:$home_target/.ndn" in text
+    assert "APPTAINER_PAIR_IDENTITY_TPM_MISSING" in text
+    assert "-type f -name '*.privkey'" in text
+    assert "UPDATE tpmInfo SET tpm_locator" in text
+    assert "APPTAINER_PAIR_TPM_LOCATOR_REWRITE_FAILED" in text
+    assert '--bind "/proc/self/fd/$nfd_socket_dir_fd:/tmp/ndnsf-di-nfd:ro"' in text
+    assert 'test -S "$socket_path"' in text
+    assert 'expected_identity="$2"' in text
+    assert 'exec "$@"' in text
+    assert 'cp -a --no-preserve=ownership' in text
+    assert 'app_status=$?' in text
+    assert 'exec env -u' not in text
     assert "--bind \"/proc/self/fd/$scratch_fd:/scratch:rw\"" in text
     assert "scratch_parent_fd" in text
     assert "scratch_created" in text
