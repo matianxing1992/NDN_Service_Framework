@@ -1090,6 +1090,22 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     app_record_path = check_simple_path(Path(args.record).expanduser(), "APP_RECORD_PATH")
     if not base.is_file() or not candidate.is_file():
         fail("APP_SIF_MISSING")
+    # Validate every immutable input before opening publication descriptors,
+    # creating locks, or recovering staging state.  A rejected candidate must
+    # have no publication-side effects, even when an old staging tree exists.
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.]+)?", args.expected_apptainer):
+        fail("APP_EXPECTED_APPTAINER_INVALID")
+    apptainer = check_apptainer_path(Path(args.apptainer))
+    actual_version = apptainer_version(apptainer)
+    if actual_version != args.expected_apptainer:
+        fail("APP_APPTAINER_VERSION_MISMATCH", f"local={actual_version} expected={args.expected_apptainer}")
+    apptainer_identity = identity(apptainer)
+    apptainer_sha = digest(apptainer)
+    base_sha = digest(base)
+    candidate_sha = digest(candidate)
+    build_record = load_build_record(record_path, candidate, candidate_sha)
+    if build_record["buildInput"]["baseSif"]["sha256"] != base_sha:
+        fail("APP_BASE_DIGEST_MISMATCH", build_record["buildInput"]["baseSif"]["sha256"])
     if output.parent != app_record_path.parent:
         fail("APP_RECORD_MUST_SHARE_PARENT")
     if not output.parent.is_dir() or output.parent.is_symlink():
@@ -1152,19 +1168,6 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         pass
     else:
         fail("APP_RECORD_MUST_BE_ADJACENT")
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.]+)?", args.expected_apptainer):
-        fail("APP_EXPECTED_APPTAINER_INVALID")
-    apptainer = check_apptainer_path(Path(args.apptainer))
-    actual_version = apptainer_version(apptainer)
-    if actual_version != args.expected_apptainer:
-        fail("APP_APPTAINER_VERSION_MISMATCH", f"local={actual_version} expected={args.expected_apptainer}")
-    apptainer_identity = identity(apptainer)
-    apptainer_sha = digest(apptainer)
-    base_sha = digest(base)
-    candidate_sha = digest(candidate)
-    build_record = load_build_record(record_path, candidate, candidate_sha)
-    if build_record["buildInput"]["baseSif"]["sha256"] != base_sha:
-        fail("APP_BASE_DIGEST_MISMATCH", build_record["buildInput"]["baseSif"]["sha256"])
     base_identity = identity(base)
     candidate_identity = identity(candidate)
     record_identity = identity(record_path)

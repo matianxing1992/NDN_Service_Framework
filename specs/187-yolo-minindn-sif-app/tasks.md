@@ -6,7 +6,7 @@
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | NOT_STARTED | — | 需 regular base SIF；未运行 | 2026-09-15 14:53 -05:00 |
+| [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | PARTIAL | — | 静态门与 mutation check 通过；仍需 regular base SIF/host-gate 才能跑完整闭合序列；[b187-local-closure.md](evidence/b187-local-closure.md) | 2026-09-15 15:08 -05:00 |
 | [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | NOT_STARTED | T001 | 需 selector/build registration；未运行 | 2026-09-15 14:53 -05:00 |
 | [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | NOT_STARTED | T002 | 需 convergence PASS、base SIF；未运行 | 2026-09-15 14:53 -05:00 |
 | [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | NOT_STARTED | T003 | 仅 LOCAL_PASS 后执行；未运行 | 2026-09-15 14:53 -05:00 |
@@ -15,13 +15,13 @@
 
 ## Current Checkpoint
 
-2026-09-15 14:53 -05:00：Spec187 文档、契约和任务已建立；当前只完成规划。regular base SIF 不存在，历史 images/spec180-runtime-r119.sif 为 dangling symlink；不得把它当作 T001 输入。下一步从 T001 开始，先实现并 mutation-test 零副作用 closure gate。
+2026-09-15 15:08 -05:00：T001 的 changed-base 零副作用门已实现；定向 Python 检查 3 passed，冻结只读 review-agent 返回 STATIC_PASS。regular base SIF 不存在，历史 images/spec180-runtime-r119.sif 为 dangling symlink；因此 T001 保持 PARTIAL，完整 handoff/render/build 闭合待外部 base 与 host-gate 输入。下一步继续 T002 的 C++ selector 接线。
 
 ## Logical Batches
 
 | Batch ID | Members | Stable exit | Shared selector / build | Status |
 | --- | --- | --- | --- | --- |
-| B187-LOCAL-CLOSURE | T001 | closure gate rejects invalid candidate inputs before side effects and accepts a verified pair tuple | existing Tiger script checks and mutation fixtures | NOT_STARTED |
+| B187-LOCAL-CLOSURE | T001 | closure gate rejects invalid candidate inputs before side effects and accepts a verified pair tuple | existing Tiger script checks and mutation fixtures | PARTIAL |
 | B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | NOT_STARTED |
 | B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | NOT_STARTED |
 | B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | NOT_STARTED |
@@ -83,7 +83,7 @@
 
 | Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Dynamic validation | Build scope / target / -j / elapsed / exit | Review trace / closure decision | Behavior result | Evidence / remaining |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B187-LOCAL-CLOSURE | production callers, implementation, tests, build, migration: planned; exact files listed in T001 | not observed | not run | not run | NOT_RUN; card to be frozen at batch exit | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | evidence/b187-local-closure.md to be created |
+| B187-LOCAL-CLOSURE | production callers, implementation, tests, build, migration: `build-sif-app.py`, `test_sif_app.py`; evidence lane in [b187-local-closure.md](evidence/b187-local-closure.md) | no P0–P3; STATIC_PASS | not run; regular base unavailable | focused offline checks: 3 passed; SIF/runtime not observed | NOT_RUN; dynamic card awaits regular base | not run | review-agent STATIC_PASS on frozen diff; OPEN_FOR_NEXT_BATCH | PARTIAL | regular base SIF and host-gate manifest remain |
 | B187-LOCAL-YOLO | planned in T002/T003 | not observed | not run | not run | NOT_RUN | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | evidence/b187-local-yolo.md to be created |
 | B187-TIGER | planned in T004 | not observed | not run | not run | NOT_RUN | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | evidence/b187-tiger-yolo.md to be created |
 | B187-DEFERRED | documentation lane covered; other lanes N/A by scope | not observed | N/A | N/A | N/A | N/A | review-agent N/A; CLOSED_FOR_VALIDATION after docs checks | PLANNED | evidence/qwen-deferred.md to be created |
@@ -91,10 +91,10 @@
 
 ### Batch Retrospective
 
-- static: not observed; every code task still requires frozen read-only review-agent evidence.
+- static: T001 review-agent STATIC_PASS; no P0–P3 findings.
 - compile/link: not run; selector source closure and target registration are pending.
-- runtime/test: not observed; no SIF, MiniNDN or Tiger run has started.
-- unobserved: regular base SIF, local pair build, C++ selector, local YOLO run and cluster run.
+- runtime/test: focused Python checks passed, but no SIF, MiniNDN or Tiger run has started.
+- unobserved: regular base SIF, host-gate manifest, local pair build, C++ selector, local YOLO run and cluster run.
 
 ## Dependencies & Execution Order
 
