@@ -990,6 +990,13 @@ struct Spec185PreparedModelTestAccess
     return model.m_package;
   }
 
+  static std::weak_ptr<const NativeCanonicalSource>
+  source(const PreparedModel& model)
+  {
+    return model.m_package->catalog.preparation->sourceLifetimeForTest(
+      model.m_package->catalog.model.descriptor);
+  }
+
   static PreparedModel
   bind(const PreparedModel& model,
        std::function<std::shared_ptr<NativeInferenceClient>(
@@ -1828,6 +1835,17 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   // sealed state tensors.  Keep the ordinary streaming probes on the compact
   // YOLO fixture, but use the source-bound Qwen fixture for real turns.
   RuntimeFixture fixture(true, true);
+  // Deliberately pin a stale model default. The native conversation boundary
+  // must rebind it to each freshly allocated continuation generation identity
+  // after defaults are merged, rather than rejecting or replaying the old ID.
+  {
+    NativeJson config;
+    std::ifstream input(fixture.configPath);
+    input >> config;
+    config["request"]["generation_defaults"]["generationId"] = std::string(32, '0');
+    std::ofstream output(fixture.configPath);
+    output << nativeCanonicalJson(config);
+  }
   ndn_service_framework::test::BootstrapProfile profile;
   profile.groupPrefix = ndn::Name("/group");
   profile.syncPrefix = ndn::Name("/ndnsf/spec185/t007/sync");
@@ -2278,6 +2296,50 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncIncludesNativeClientWork)
   // release its final native client before the fixture Face is destroyed.
   runtime->close();
   BOOST_CHECK(drainWithInProcessPump(binding, runtime, drainTimeout));
+}
+
+BOOST_AUTO_TEST_CASE(RuntimeClientDoesNotKeepEvictedSourceAlive)
+{
+  RuntimeFixture fixture;
+  // Change only the frozen request budget so the second registration has a
+  // distinct preparation identity while reusing the same valid ONNX fixture.
+  NativeJson secondaryConfig;
+  {
+    std::ifstream input(fixture.configPath);
+    input >> secondaryConfig;
+  }
+  secondaryConfig["request"]["max_candidates"] = 2;
+  const auto secondaryPath = fixture.write(
+    "secondary-requester.json", nativeCanonicalJson(secondaryConfig));
+
+  InProcessRuntimeBinding binding;
+  auto config = runtimeConfig(fixture);
+  config.maxPreparedEntries = 1;
+  config.models.push_back({"secondary", secondaryPath.string()});
+  auto runtime = Runtime::open(config);
+  binding = bindInProcessRuntime(fixture, runtime);
+
+  std::optional<PreparedModel> first;
+  first.emplace(runtime->user().prepare("default"));
+  auto source = ndnsf::di::Spec185PreparedModelTestAccess::source(*first);
+  BOOST_REQUIRE(!source.expired());
+  {
+    RequestOptions options;
+    options.timeout = std::chrono::milliseconds(500);
+    options.ackTimeout = std::chrono::milliseconds(50);
+    auto handle = first->request(Input::inlineBytes({0x01}), options);
+    handle.cancel();
+    binding.environment->pumpUntil([] { return false; });
+  }
+  // The application still owns the prepared view, so the source remains live
+  // even if the Runtime cache later has to retire this package.
+  BOOST_REQUIRE(!source.expired());
+  first.reset(); // release the view and its lazily cached client
+
+  auto second = runtime->user().prepare("secondary");
+  BOOST_CHECK(source.expired());
+  runtime->close();
+  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncTracksMultiplePreparedClients)

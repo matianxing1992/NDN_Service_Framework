@@ -44,8 +44,13 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 | [T013 Current Candidate Process Qualification](#t013) | PARTIAL | B6 exit | B7 served-provider integration and full C++ process matrix now pass on normal and ASan/UBSan candidates; C++ tests cover the public request path, assignment/ACK/grant, Provider execution/response, conversation/recovery/replacement, revoke, deadline/cache and drain cleanup. Final source/ELF/no-Python identity convergence and batch closure remain to be recorded; [b7-cpp-qualification](evidence/b7-cpp-qualification.md#b7-served-provider-integration-and-qualification-20260915) | 2026-09-15 01:50 -05:00 |
 | [T012 Thin Python Prepared Model Facade](#t012) | NOT_STARTED | B7 C++ qualification exit | B8 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T019 Prepared Client Ownership and Eviction](#t019) | PASS | T003/T005 static | B7R static v3, normal and ASan/UBSan C++ eviction/source-lifetime selector `RC=0`; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
+| [T020 Conversation Terminal Admission Ordering](#t020) | PARTIAL | T007 static | B7R static v3, normal and ASan/UBSan two-turn selector `RC=0`; artificial delayed notification and separate failure-turn stress remain unobserved; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
+| [T021 Generation Identity and Grant-Bound Provider Cache](#t021) | PARTIAL | T007/T010 static | B7R static v3, C++ same-grant hit/independent-grant cold selector normal and ASan/UBSan `RC=0`; protected Provider cross-request production matrix remains unobserved; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
 
 ## Current Checkpoint
+
+2026-09-15 02:36 -05:00 B7R lifecycle fixes：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-lifecycle-fixes-review-v3` 返回 `STATIC_PASS`，manifest SHA256=`dbbe150f1c03f3fc5b509e01e19b43724ed5882719ea94f5c0e81d1edc201736`，无 P0-P3。Runtime client registry 改为 weak index、PreparedModel 共享惰性 client、会话终态在结果可见前释放 turn gate、默认 generation identity 合并后归一化；Provider 受保护 cache 明确按 Provider/grantName/grantDigest 隔离。normal `-j4` 与独立 ASan/UBSan `-j4` 受影响目标构建均 `RC=0`，新增缓存淘汰、两轮会话和独立授权 cold/hit/cold C++ selector 均 normal/ASan `RC=0`、无 sanitizer 报告。T019 已 PASS；T020/T021 因人工延迟/失败会话压力及受保护 Provider 跨独立授权生产请求尚未观测保持 `PARTIAL`；T013 的 source/ELF/no-Python convergence、T012/T014 仍未完成。详见 [b7r lifecycle evidence](evidence/b7r-lifecycle-fixes-20260915.md)。
 
 2026-09-15 01:50 -05:00 B7 served-provider integration：新增 C++ `PreparedRequestCompletesThroughServedProvider`，从 Runtime prepare、assignment/ACK、authenticated grant、Provider serve/runner 到 response 完整走通；normal focused、完整 `Spec185Process`（5 cases，含38个隔离 native selector）及 ASan/UBSan focused/full matrix 均 `RC=0`、无 sanitizer 报告。过程中真实发现并修复测试/接线缺陷：缺失头文件、deferred bridge 引发的 borrowed-Face 竞态、publication source 未授权、`onnxruntime-cpu` factory 名称不一致；一次 drain selector 超时经隔离复跑和完整矩阵复跑通过。T013 仍保持 `PARTIAL`，因为本轮未重新声明最终 source/ELF/no-Python identity convergence 或文档闭合；详见 [b7 evidence](evidence/b7-cpp-qualification.md#b7-served-provider-integration-and-qualification-20260915)。
 
@@ -237,7 +242,7 @@ T016提供合作splitter，前移到B1后/T003前；实际顺序T015→T001/T002
 `NDNSF-DistributedInference/cpp/ndnsf-di/`；tests/examples/pythonWrapper/Design路径从repo root解析。
 原生行为任务先编写相应C++反例与fixture，再实现完整行为并用官方review-agent只读审查全diff及五lane。
 同批任务静态通过、测试尚未运行时状态PARTIAL，不能勾选。B0C、B1、B2、B3、B4、B5在全部成员静态门和组合门通过后共享构建/测试；
-B0、B2E、B6–B9是单任务批次，各自达到出口即验证。完整批次/五lane/构建复测范围见[执行表](batch-execution.md)。T012只写binding断言，T014只做文档交付。
+B0、B2E、B6–B9是单任务批次，各自达到出口即验证；B7R是B7后的审计修复验证门。完整批次/五lane/构建复测范围见[执行表](batch-execution.md)。T012只写binding断言，T014只做文档交付。
 跨批验收依赖必须实际通过；T012还要求T013完整C++ qualification出口，不接受仅静态接线。
 成员证据采用C-04同一批记录模板，不创建第二份进度权威。
 C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同检查项；没有实现/证据不能关闭对应任务。
@@ -544,9 +549,45 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Exit / oracle**: 所有本Spec任务完整验收且链接可追溯；当前设计不混入planned；双PDF身份/排版通过；184不被自动勾选。
 
+<a id="t019"></a>
+
+- [x] T019 [US1] Prepared Client Ownership and Eviction — PreparedModel.hpp/PreparedModel.cpp; Runtime.cpp; NativeCanonicalPreparationCatalog.*; tests/integration-tests/di-prepared-request.t.cpp
+
+  **Batch / Depends**: B7R / T003/T005 static。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD02,CD04 / F06,F10 / FN02,FN04 / FLOW02,FLOW07 / PO02,PO04。
+
+  **Implementation and review**: PreparedModel copies share one lazy client owner; Runtime lookup/snapshot is weak; pending handles retain the client; the C++ fixture observes exact catalog source lifetime across request/cancel/release and `maxEntries=1` eviction.
+
+  **Exit / oracle**: normal and ASan/UBSan eviction selectors pass with source weak owner expired after the cache evicts an idle package; no public API or wire change.
+
+<a id="t020"></a>
+
+- [ ] T020 [US2] Conversation Terminal Admission Ordering — NativeConversationContinuation.hpp; NativeInferenceClient.cpp; Conversation.cpp; tests/integration-tests/di-prepared-request.t.cpp
+
+  **Batch / Depends**: B7R / T007 static。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD05 / F13 / FN05 / FLOW05 / PO05。
+
+  **Implementation and review**: Internal conversation abort and the process-local terminal hook run before terminal event/Core result visibility; public completion remains an observer path. The two-turn C++ oracle passes normal and ASan/UBSan.
+
+  **Exit / oracle**: delayed completion notification and a separate failed-turn immediate retry must still be added before this task can be checked; current evidence keeps those lanes `PARTIAL`.
+
+<a id="t021"></a>
+
+- [ ] T021 [US2] Generation Identity and Grant-Bound Provider Cache — PreparedModel.cpp; ProviderArtifactCache.hpp; C-03 execution contract; tests/integration-tests/di-prepared-provider.t.cpp
+
+  **Batch / Depends**: B7R / T007/T010 static。
+
+  **Design binding**: [C-08](contracts/code-design.md#design-binding-and-readiness) CD03,CD05 / F05,F13 / FN03,FN05 / FLOW03,FLOW05 / PO03,PO05。
+
+  **Implementation and review**: Merge model generation defaults before rebinding the current continuation identity; keep protected artifact cache identity bound to authenticated Provider/grantName/grantDigest and document independent-grant isolation. The C++ cache oracle passes same-grant hit and independent-grant cold behavior in normal and ASan/UBSan.
+
+  **Exit / oracle**: production protected Provider requests under two independent grants must still measure source fetch, assembly, template and runner counts; until that matrix runs, this task remains `PARTIAL`.
+
 ## Fragmentation Review
 
-18任务按12个可观察批次组织；B0安装/ABI、B2E扩展边界有独立出口；B0C及B1–B5成对组合，B6–B9分别迁移、完整C++资格、Python包装与文档。任务卡按registry实际执行顺序排列，保留原ID；详细分组依据见[执行表](batch-execution.md#allocation-and-closure-decision)。
+21个任务按12个产品批次及B7R审计修复门组织；B0安装/ABI、B2E扩展边界有独立出口；B0C及B1–B5成对组合，B6–B9分别迁移、完整C++资格、Python包装与文档，B7R重新验证生命周期和身份缺口。任务卡按registry实际执行顺序排列，保留原ID并登记审计修复ID；详细分组依据见[执行表](batch-execution.md#allocation-and-closure-decision)。
 Runtime与cache不同owner、request与conversation不同持久语义、Provider与Python不同安全/验收边界，因此不合并。
 T013是真实集成验收，T014是源码/API/资格交付，不替代前面的行为测试。
 

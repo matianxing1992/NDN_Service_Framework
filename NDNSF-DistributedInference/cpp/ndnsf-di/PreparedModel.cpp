@@ -509,7 +509,7 @@ PreparedModel::PreparedModel(std::shared_ptr<const PreparedModelPackage> package
                              PreparationReceipt receipt, std::shared_ptr<void> lease,
                              ClientFactory clientFactory)
   : m_package(std::move(package)), m_receipt(std::move(receipt)), m_lease(std::move(lease)),
-    m_clientFactory(std::move(clientFactory))
+    m_clientFactory(std::move(clientFactory)), m_clientState(std::make_shared<ClientState>())
 {
   if (!m_package)
     throw std::invalid_argument("prepared model requires a verified package");
@@ -760,37 +760,36 @@ RequestHandle PreparedModel::requestInternal(
       nativeOptions.stream->generationId[i] = static_cast<std::uint8_t>(
         std::stoul(continuation->generationId.substr(i * 2, 2), nullptr, 16));
     }
-    // Conversation owns the generation identity for every turn.  Legacy
-    // callers may still carry a fixed generationId in application options;
-    // normalize that compatibility field to the freshly allocated native
-    // continuation identity before the authenticated generation contract is
-    // derived.  The caller cannot choose or replay a conversation identity.
-    if (!nativeInput.options.empty()) {
-      try {
-        auto application = nativeParseJson(std::string(nativeInput.options.begin(),
-                                                        nativeInput.options.end()));
-        if (!application.is_object())
-          throw std::invalid_argument("conversation application options must be an object");
-        if (application.contains("generationId"))
-          application["generationId"] = continuation->generationId;
-        if (application.contains("generation_id"))
-          application["generation_id"] = continuation->generationId;
-        const auto canonical = nativeCanonicalJson(application);
-        nativeInput.options.assign(canonical.begin(), canonical.end());
-      }
-      catch (const DiError&) {
-        throw;
-      }
-      catch (const std::exception& error) {
-        throw DiError("INVALID_GENERATION_OPTIONS", "conversation", "request",
-                      std::string("conversation generation options are invalid: ") + error.what());
-      }
-    }
   }
   if (nativeOptions.stream && nativeInput.options.empty()) {
     const auto defaults = verifiedGenerationDefaults(*m_package);
     if (!defaults.empty())
       nativeInput.options.assign(defaults.begin(), defaults.end());
+  }
+  if (continuation && !nativeInput.options.empty()) {
+    // Conversation owns the generation identity for every turn. Normalize
+    // both caller options and model defaults after default merging; a pinned
+    // generationId in generation_defaults must never be able to reintroduce
+    // an identity from an earlier turn.
+    try {
+      auto application = nativeParseJson(std::string(nativeInput.options.begin(),
+                                                      nativeInput.options.end()));
+      if (!application.is_object())
+        throw std::invalid_argument("conversation application options must be an object");
+      if (application.contains("generationId"))
+        application["generationId"] = continuation->generationId;
+      if (application.contains("generation_id"))
+        application["generation_id"] = continuation->generationId;
+      const auto canonical = nativeCanonicalJson(application);
+      nativeInput.options.assign(canonical.begin(), canonical.end());
+    }
+    catch (const DiError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw DiError("INVALID_GENERATION_OPTIONS", "conversation", "request",
+                    std::string("conversation generation options are invalid: ") + error.what());
+    }
   }
   if (options.generation) {
     if (nativeInput.options.empty())
@@ -817,14 +816,27 @@ RequestHandle PreparedModel::requestInternal(
     throw DiError("STRATEGY_NOT_FOUND", "local", "request",
                   "placement strategy belongs to a different Runtime");
   std::shared_ptr<NativeInferenceClient> client;
-  try {
-    client = m_clientFactory(m_package);
+  {
+    std::lock_guard<std::mutex> lock(m_clientState->mutex);
+    client = m_clientState->client;
   }
-  catch (const DiError&) {
-    throw;
-  }
-  catch (const std::exception& error) {
-    throw mapPublicRequestError(error);
+  if (!client) {
+    std::shared_ptr<NativeInferenceClient> created;
+    try {
+      created = m_clientFactory(m_package);
+    }
+    catch (const DiError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw mapPublicRequestError(error);
+    }
+    {
+      std::lock_guard<std::mutex> lock(m_clientState->mutex);
+      if (!m_clientState->client)
+        m_clientState->client = std::move(created);
+      client = m_clientState->client;
+    }
   }
   if (!client)
     throw DiError("RUNTIME_CLOSED", "local", "request", "native Runtime client is unavailable");

@@ -56,6 +56,9 @@ NativeConversationCheckpoint/commit回调；advanced转换仍复用原native sch
 可移动不可复制；同一会话最多一个在途 turn，并发请求报 `CONVERSATION_BUSY`，不隐式排无限队列。
 不同会话独立。generation/stream 从已验证任务契约推导默认值；不支持会话的 adapter 在 open
 抛 UNSUPPORTED_CAPABILITY，不能伪装成无状态多次请求。
+模型注册的 `generation_defaults` 只能提供本次请求的生成参数；`generationId` 和
+`generation_id` 属于 conversation turn identity，不能固定在模型默认值中。实现必须在默认值
+合并后再次写入当前 continuation identity，避免旧 turn 的身份绕过归一化。
 请求端不传 parent receipt/role map/plan，coordinator 从已认证 checkpoint/journal 读取。
 会话每轮的 canonical token suffix 由已验证 native adapter 根据 `Input` 生成，
 coordinator 在追加轮次把它接在 durable parent 后并验证严格增长；公开
@@ -127,6 +130,12 @@ plaintext 只活在当前授权 staging lease；不持久化明文或跨请求�
 如果已有后端不能证明 immutable template 与 mutable runner 分离，则该后端只复用 assembled
 artifact，不缓存 live runner；这是明确支持矩阵，不冒充 warm runner 命中。
 T009/T010 记录 source_fetch、assembly、template_hit、runner_created、active_lease，分别证明各层。
+受保护 artifact 的 `protectionIdentity` 必须包含本次已验证的 Provider、`grantName` 和
+`grantDigest`。因此两个独立授权即使指向完全相同的 immutable model/graph/recipe，也必须使用
+不同 cache entry；第二个请求不能计为 `template_hit` 或跨授权 runner 复用。该隔离是当前安全契约，
+不是实现缺陷。可共享的不可变 source/ciphertext 材料若以后单独抽层，仍须保留每请求的授权、解密
+和 plaintext staging lease；当前实现没有把这类未来优化计入资格结果。C++ cache selector 必须
+同时覆盖同一授权的 hit 与不同授权的 cold build，并记录 build/source/runner 计数。
 本期不支持 prepare(prewarm=true)，否则会突破 post-Selection 授权边界。
 
 Provider预算独立于requester cache。maxArtifactBytes同时限制暂存+已发布artifact及template内存，

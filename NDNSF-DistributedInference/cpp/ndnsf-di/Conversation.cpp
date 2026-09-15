@@ -224,6 +224,16 @@ RequestHandle Conversation::request(const Input& input, const RequestOptions& op
 
   try {
     auto continuation = makeContinuation(input);
+    auto weakState = std::weak_ptr<State>(m_state);
+    continuation.onTerminal = [weakState, generation] {
+      if (const auto state = weakState.lock()) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->active && state->activeGeneration == generation) {
+          state->active = false;
+          state->activeHandle = RequestHandle{};
+        }
+      }
+    };
     auto requestOptions = options;
     if (!requestOptions.stream)
       requestOptions.stream = StreamOptions{true};
@@ -239,7 +249,6 @@ RequestHandle Conversation::request(const Input& input, const RequestOptions& op
     if (cancelAfterClose)
       handle.cancel();
 
-    auto weakState = std::weak_ptr<State>(m_state);
     auto completion = handle.onCompletion(
       [weakState, generation](std::exception_ptr, std::optional<Result>) {
         if (const auto state = weakState.lock()) {

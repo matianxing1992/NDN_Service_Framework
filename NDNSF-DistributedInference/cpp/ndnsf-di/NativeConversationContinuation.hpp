@@ -2,6 +2,7 @@
 #define NDNSF_DI_NATIVE_CONVERSATION_CONTINUATION_HPP
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,11 @@ struct NativeConversationContinuation
   std::string generationId;
   std::vector<std::int64_t> canonicalTokenIds;
   std::vector<std::string> expectedRoles;
+  // Process-local lifecycle hook. It is intentionally outside the wire
+  // continuation contract and runs before the native operation exposes its
+  // terminal result. Conversation uses it to release its serial-turn gate
+  // independently of asynchronous public completion notification.
+  std::function<void()> onTerminal;
 };
 
 } // namespace ndnsf::di

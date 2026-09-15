@@ -37,6 +37,7 @@ B1/B2可完成纯本地owner与模型准备；B3前须核对184的请求/授权/
 | B5 | T009,T010 | Provider artifact/template lifecycle | Spec185ProviderAssembly | asan-ubsan | 认证后准备及安全复用，stop后lease=0 |
 | B6 | T011 | Native callers/export | Spec185Compatibility | none | native进程入口与旧签名对照通过 |
 | B7 | T013 | Complete C++ qualification | Spec185Process | asan-ubsan | 安装SDK和独立生产进程全部原生模式闭合 |
+| B7R | T019,T020,T021 | Lifecycle and identity audit repairs | affected C++ request/provider selectors | asan-ubsan | 审计缺口修复有C++证据，未观测项不冒充资格完成 |
 | B8 | T012 | Thin Python wrapper | wrapper-only checks | none | 基于B7完整原生资格的映射通过 |
 | B9 | T014 | Design handoff | document checks | none | 源码/API/资格交付一致 |
 
@@ -50,7 +51,7 @@ B6–B9各自单任务有独立出口：不能要求先完成Python再运行其�
 
 每批分配依据为同一生产入口、共同契约、独立oracle、共享source closure和稳定出口。
 B1 owner、B2 cache、B3 request、B4 conversation、B5 provider不能仅为少一次构建合并。
-T001–T018均含对应测试编写、静态审查、证据更新；不拆出“写测试/跑测试/写报告”的行政任务。
+T001–T018及B7R的T019–T021均含对应测试编写、静态审查、证据更新；不拆出“写测试/跑测试/写报告”的行政任务。
 批内新增任务必须先登记ID及出口；已有稳定出口不得继续扩张。
 
 ## Build and Validation Order
@@ -76,11 +77,11 @@ T016的cooperative接口/catalog字段先于Package构造，因此B2E排在B1之
 
 ## Native Public API Authority
 
-[C-07全API清单](contracts/api-catalog.md)是签名/Python对应/生命周期完整性检查入口。当前执行队列为18任务12批；本轮将新发现归入既有owner，不另拆行政批次。
+[C-07全API清单](contracts/api-catalog.md)是签名/Python对应/生命周期完整性检查入口。当前执行队列为21任务、12个产品批次及B7R修复门；T019–T021保留审计发现的独立C++出口，不与Python或文档验收混合。
 T015建立每行exposure及缺失项；T002/T004/T006/T009完成生命周期；T011完整C++例子，T013原生矩阵；T012验证直接binding及有限便利层；T014核对实际全部导出。
 
 [C-05](contracts/api-usability.md)定义六层API、model key、能力、结果/错误、可靠流和扩展freeze；[C-06](contracts/cpp-first.md)定义独立C++入口及native异步owner。
-执行顺序：T015 → T001,T002 → T016 → T003–T011 → T013 → T012 → T014。入口api.hpp/provider.hpp；Provider-only不要求User目录或requester私钥。配置、规划、状态机、恢复由C++提供，Python不得补缺。
+执行顺序：T015 → T001,T002 → T016 → T003–T011 → T013 → T019,T020,T021 → T012 → T014。入口api.hpp/provider.hpp；Provider-only不要求User目录或requester私钥。配置、规划、状态机、恢复由C++提供，Python不得补缺。
 
 ## Migration and Rollback
 

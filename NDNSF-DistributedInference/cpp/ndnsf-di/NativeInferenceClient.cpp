@@ -429,6 +429,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   std::optional<NativeConversationTurn> conversationTurn;
   bool conversationCommitted = false;
   bool deferConversationCleanup = false;
+  std::function<void()> conversationTerminal;
   bool won = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
@@ -467,6 +468,8 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     conversations = operation->conversations;
     conversationTurn = operation->conversationTurn;
     conversationCommitted = operation->conversationCommitted;
+    if (operation->options.conversation && operation->options.conversation->onTerminal)
+      conversationTerminal = operation->options.conversation->onTerminal;
     deferConversationCleanup = operation->conversationTransactionActive;
     if (deferConversationCleanup) {
       if (inlineCoreCleanup) {
@@ -489,6 +492,27 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     operation->phase = DiRequestPhase::Terminal;
     cancelDeadline = std::move(operation->cancelDeadline);
     cancelBootstrapRetry = std::move(operation->cancelBootstrapRetry);
+  }
+  // Conversation rollback is part of the internal terminal transition. It
+  // must finish before either the event reader or result waiter can observe a
+  // terminal request; otherwise a caller can submit the next turn while the
+  // coordinator still owns the previous transaction.
+  if (conversations && conversationTurn && !conversationCommitted) {
+    try {
+      const NativeDiError cancelledError(
+        terminal == NativeRequestStatus::Cancelled ? "CANCELLED" : "NATIVE_REQUEST_FAILED",
+        "conversation", "terminal", "native conversation turn terminated",
+        operation->requestId, conversationTurn->attempt);
+      conversations->abortTurn(*conversationTurn, cancelledError);
+    }
+    catch (...) {
+      // Preserve the terminal request outcome. The lifecycle hook below is
+      // still best-effort; close/drain remains the owner of any failed retry.
+    }
+  }
+  if (conversationTerminal) {
+    try { conversationTerminal(); }
+    catch (...) {}
   }
   // Publish the terminal frame before completing the Core state. Core wakes a
   // pending reader during complete/fail; publishing first prevents an EOF
@@ -533,18 +557,6 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   unregisterOperation(operation);
   if (cancelDeadline) cancelDeadline();
   if (cancelBootstrapRetry) cancelBootstrapRetry();
-  if (conversations && conversationTurn && !conversationCommitted) {
-    try {
-      const NativeDiError cancelledError(
-        terminal == NativeRequestStatus::Cancelled ? "CANCELLED" : "NATIVE_REQUEST_FAILED",
-        "conversation", "terminal", "native conversation turn terminated",
-        operation->requestId, conversationTurn->attempt);
-      conversations->abortTurn(*conversationTurn, cancelledError);
-    }
-    catch (...) {
-      // A terminal request must not be resurrected by an abort-side failure.
-    }
-  }
   if (cancelCore && !deferConversationCleanup) {
     const auto user = operation->user;
     const auto id = ndn::Name(operation->coreRequestId);

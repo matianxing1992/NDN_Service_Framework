@@ -4,7 +4,8 @@
 
 ## Dispatch Order
 
-本表细化plan已有12个批次，保留18个任务ID与既有验收要求；不是新增产品范围。
+本表细化plan已有12个产品批次，保留原18个任务ID与既有验收要求；B7R是针对审计发现的修复验证门，
+不改变B8/B9产品顺序或新增独立产品范围。
 执行状态仍只在[tasks.md](tasks.md)登记，不能把本表当第二份进度表。
 `DI/`指`NDNSF-DistributedInference/cpp/ndnsf-di/`；Core指`ndn-service-framework/`。
 测试文件及完整Design binding见任务卡，suite全部PLANNED，必须先核对注册再运行。
@@ -21,11 +22,12 @@
 | 08 / B5 | T009 → T010 | Provider facade→认证后组装→artifact lease；DI+provider可执行文件及fixture | Spec185ProviderAssembly；冷/热请求安全隔离，stop后清理闭合 | evidence/b5-provider.md |
 | 09 / B6 | T011 | native caller、公开SDK消费、CLI兼容；DI+受影响examples及安装consumer | Spec185Compatibility；安装后例子及最小unary/stream真实接线通过 | evidence/b6-migration.md |
 | 10 / B7 | T013 | 已完成native链的当前候选；复用同身份binary，仅因源码/依赖变化增量构建 | Spec185Process；全部C++模式/反例、no-Python及依赖身份资格通过 | evidence/b7-cpp-qualification.md |
+| 10R / B7R | T019 → T020 → T021 | B7后生命周期/终态/身份审计修复；只构建受影响DI request/provider targets | 新增C++缓存淘汰、会话终态准入、generation identity与grant-bound cache selector；未观测项显式保留 | evidence/b7r-lifecycle-fixes-20260915.md |
 | 11 / B8 | T012 | 既有pybind TU与Python薄封装；只构建受影响extension及ABI依赖 | wrapper-only checks；C-07映射、GIL/async/异常边界通过，不推进native资格 | evidence/b8-python.md |
 | 12 / B9 | T014 | Design/API/交付文件；文档生成器与双PDF，无native构建 | 文档/源码/证据一致，184未完成项保留 | evidence/b9-handoff.md |
 
 上表为默认拓扑顺序；依赖硬门仍按任务卡。按共享 [Dependency-Scoped Dispatch](../../skills/speckit-code-design/references/pre-test-static-review.md#dependency-scoped-dispatch)，依赖该任务的工作必须等待通过；无依赖、文件边界清晰且自身前置已满足的任务可继续。单主会话内主代理编码、只读 review-agent 子代理异步审查固定快照，派发后优先推进合格独立工作。
-当前 registry 的 T003→T004、T005→T006 等仍有显式依赖，B5仍依赖B4出口，本修订不解除这些硬门。没有已登记独立任务时允许等待；若细分独立子任务，先记录 Design binding、依赖、写入范围和单一共享文件owner，再开始重叠工作。批次 evidence 记录审查快照/摘要、派发与返回时间、重叠任务或等待原因；不另建进度权威。B0C前就须核对184同树Core/DI接线，不能等B3才第一次检查。
+当前 registry 的 T003→T004、T005→T006 等仍有显式依赖，B5仍依赖B4出口，本修订不解除这些硬门。B7R只修复B7审计发现的生命周期、终态与身份契约，T020/T021的未观测项不能被B8包装验收覆盖。没有已登记独立任务时允许等待；若细分独立子任务，先记录 Design binding、依赖、写入范围和单一共享文件owner，再开始重叠工作。批次 evidence 记录审查快照/摘要、派发与返回时间、重叠任务或等待原因；不另建进度权威。B0C前就须核对184同树Core/DI接线，不能等B3才第一次检查。
 B0只关闭当时存在的接口与ABI；不能要求尚未编码的Runtime/PreparedModel先可链接。未来公开符号在所属批次检查安装导出，B6汇总消费；B7不再重新设计SDK。
 
 ## Per-Task Static Gate
@@ -46,11 +48,11 @@ T017内部按调度/ticket→完成/订阅→reader三个逻辑段自查，但�
 
 | Lane | Batch-specific binding |
 | --- | --- |
-| production entry/callers | 上表生产入口；B0/B6为安装consumer，B0C为NativeInferenceClient及Core-only consumer，B1–B5为各领域owner，B7为独立authority/requester/provider，B8为pybind实际入口，B9为Design生成入口 |
+| production entry/callers | 上表生产入口；B0/B6为安装consumer，B0C为NativeInferenceClient及Core-only consumer，B1–B5为各领域owner，B7/B7R为独立authority/requester/provider及DI生命周期调用方，B8为pybind实际入口，B9为Design生成入口 |
 | implementation and wire | 各任务C-08/C-09类/字段/函数delta；B0C必须核对Core传输终态与DI领域终态分层；其他批次wire无修改时写N/A及diff依据，不伪造协议审查 |
-| test/harness/oracle | 上表suite→任务卡实际C++fixture/独立oracle→tests/wscript注册；B7逐模式进程oracle；B8只wrapper断言；B9为文档校验与证据引用，native N/A |
+| test/harness/oracle | 上表suite→任务卡实际C++fixture/独立oracle→tests/wscript注册；B7逐模式进程oracle，B7R为缓存/终态/身份C++ selector；B8只wrapper断言；B9为文档校验与证据引用，native N/A |
 | build/source closure | 根wscript、tests/wscript、examples/wscript及实际改变的安装/pybind入口；登记definition TU→target→binary/hash，B9只文档构建输入和PDF身份 |
-| migration/evidence | C-07兼容/暴露、C-09 Core依赖方向、调用方矩阵、上表唯一结果文件与tasks状态；B0C不得保留重复executor，B8不得新增Python领域owner |
+| migration/evidence | C-07兼容/暴露、C-09 Core依赖方向、调用方矩阵、上表唯一结果文件与tasks状态；B7R保留审计发现和未观测边界；B0C不得保留重复executor，B8不得新增Python领域owner |
 
 本表是coverage计划。执行时每lane填实际path:symbol、查询与covered/N/A(reason)/gap；泛称目录或只抄计划不能STATIC_PASS。
 review trace记录官方skill路径/SHA、base与工作树diff摘要、发现、修复及复审。每批一个结果文件容纳所有任务静态门和批末结果，不另造每任务报告。

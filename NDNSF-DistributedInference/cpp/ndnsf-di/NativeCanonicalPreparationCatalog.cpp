@@ -89,6 +89,13 @@ std::shared_ptr<const NativeAdapterRegistry> NativeCanonicalPreparationCatalog::
   return m_state->adapters;
 }
 
+std::weak_ptr<const NativeCanonicalSource>
+NativeCanonicalPreparationCatalog::sourceLifetimeForTest(
+  const NativeModelDescriptor& model) const
+{
+  return m_state->find(model).source;
+}
+
 NativeCanonicalSource NativeCanonicalPreparationCatalog::sourceFor(
   const NativeModelDescriptor& model) const
 {

@@ -1188,6 +1188,85 @@ BOOST_AUTO_TEST_CASE(ProtectedArtifactCacheColdHitBindsGrantAndRetainsCiphertext
   BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(ProtectedArtifactCacheSeparatesIndependentGrantIdentities)
+{
+  const auto grantOne = std::string("sha256:") + std::string(64, 'a');
+  const auto grantTwo = std::string("sha256:") + std::string(64, 'b');
+  std::istringstream projectionInput(providerProjection(
+    ndn::Name("/spec185/provider/cache-grant"),
+    ndn::Name("/spec185/provider/cache-grant-request"),
+    std::string("sha256:") + std::string(64, '1'),
+    std::string("sha256:") + std::string(64, '2'),
+    "epoch-1", "/spec185/grant/one", grantOne));
+  auto projection = nativeSelectionProjectionV3FromJson(projectionInput, "/Backbone");
+  projection.canonicalArtifactName = "/spec185/cache-grant/root";
+
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{128 * 1024, 3,
+                                                           std::chrono::milliseconds(2000)});
+  NativeRequestControl control;
+  control.requestId = projection.requestId;
+  control.attempt = projection.attempt;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  ProviderArtifactKey key;
+  key.sourceDigest = "sha256:" + std::string(64, '3');
+  key.canonicalSourceName = "/spec185/cache-grant/source";
+  key.canonicalRootName = projection.canonicalArtifactName;
+  key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+  key.canonicalGraphDigest = projection.assembly.graphDigest;
+  key.role = projection.assembly.selectedRole;
+  key.candidateDigest = projection.offerDigest;
+  key.recipeDigest = projection.assembly.recipeDigest;
+  key.backendAbi = projection.assembly.backendAbi;
+  key.device = "cpu";
+  key.precision = projection.assembly.precision;
+  key.quantization = projection.assembly.quantization;
+  key.layoutDigest = projection.assembly.layout;
+  key.artifactProfile = projection.assembly.artifactProfileDigest;
+  key.securityDomain = projection.groupCapabilityV1;
+  key.protectionEpoch = projection.assembly.protectionEpoch;
+  key.protectionIdentity = projection.provider + "|" + projection.grantName + "|" +
+                           projection.grantDigest;
+  std::atomic<unsigned> builds{0};
+  const auto build = [&] (const NativeRequestControl&) {
+    builds.fetch_add(1, std::memory_order_relaxed);
+    auto artifact = std::make_shared<PreparedProviderArtifact>();
+    artifact->encryptedObjectName = "protected-ciphertext";
+    artifact->ciphertextDigest = "sha256:" + std::string(64, 'c');
+    artifact->formatVersion = "test-protected-v1";
+    artifact->canonicalMetadataJson = "{\"schema\":\"protected\"}";
+    artifact->ciphertextBytes = 8;
+    auto runner = std::make_shared<NativeModelRunnerSpec>();
+    runner->role = projection.assembly.selectedRole;
+    runner->kind = "protected-template";
+    return ProviderArtifactCache::BuildResult{std::move(artifact), std::move(runner)};
+  };
+
+  auto first = cache.acquireWithRunner(key, projection, control, build);
+  BOOST_REQUIRE(first);
+  BOOST_CHECK(!first.cacheHit());
+  auto sameGrant = cache.acquireWithRunner(key, projection, control, build);
+  BOOST_REQUIRE(sameGrant);
+  BOOST_CHECK(sameGrant.cacheHit());
+
+  auto independent = projection;
+  independent.grantName = "/spec185/grant/two";
+  independent.grantDigest = grantTwo;
+  auto independentKey = key;
+  independentKey.protectionIdentity = independent.provider + "|" + independent.grantName +
+                                      "|" + independent.grantDigest;
+  auto second = cache.acquireWithRunner(independentKey, independent, control, build);
+  BOOST_REQUIRE(second);
+  BOOST_CHECK(!second.cacheHit());
+  BOOST_CHECK_EQUAL(builds.load(std::memory_order_relaxed), 2U);
+  BOOST_CHECK_EQUAL(cache.counters().templateHits, 1U);
+
+  second = {};
+  sameGrant = {};
+  first = {};
+  cache.stop();
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheColdHitUsesExactArtifact)
 {
   const auto fixture = providerAssemblyFixture();
