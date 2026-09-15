@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA = "ndnsf-sif-app-v1"
+SCHEMA = "ndnsf-sif-app-v2"
 APP_LAYOUT = "opt/ndnsf-app"
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.]+)?$")
@@ -44,6 +44,11 @@ RUNTIME_CONTRACT = {
     "appFallback": "forbidden",
     "modelMount": "/models:ro",
     "artifactMount": "/artifacts:ro",
+    "baseRuntime": {
+        "python": "/opt/venv/bin/python",
+        "ndnBaseLib": "/opt/ndn-base/lib",
+        "onnxRuntimeLib": "/opt/onnxruntime/lib",
+    },
 }
 
 
