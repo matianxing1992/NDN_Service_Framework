@@ -45,6 +45,30 @@ APT 安装的编译器、protoc 和系统开发包在安装后由 definition 自
 错误地当成 base 已有能力。该门失败时禁止开始完整原生编译，应根据
 `docs/failure-log.md` 的对应条目修复输入后再建立新的候选。
 
+### Seal 前的 packaging 入口检查
+
+源码封存必须排在最后一个代码修复之后。运行 handoff 的 `prepare` 之前，先
+对 definition 会调用的脚本和所有 Python native-extension packaging 入口做
+语法检查；这一步在本机完成，不消耗 SIF 构建时间：
+
+```bash
+bash -n Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh
+python3 -m py_compile \
+  pythonWrapper/setup.py \
+  NDNSF-DistributedRepo/pythonWrapper/setup.py \
+  Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-development-handoff.py \
+  Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-local-sif-source.py \
+  Experiments/TigerCluster/adapters/slurm-apptainer/scripts/validate-local-sif-source.py \
+  Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-development-sif.py
+```
+
+`bash -n` 只适用于 shell；Python 文件必须由 `py_compile` 单独检查。随后再执行
+`prepare-development-handoff.py prepare`、`verify`、`render` 和 preflight。若
+任何 setup、Waf、definition 或依赖文件在 source seal 生成后改变，必须换新的
+release/output 路径并重新生成 seal、definition 和 handoff；不能让旧归档继续
+进入 SIF。失败时先保留旧 receipt，再把症状、根因、修复和教训写入
+`docs/failure-log.md`。
+
 完整 unit/integration 构建还必须封存并构建
 `tests/standalone/spec182-worker-tools/` 下的五个
 `spec182-worker-tool-*` fixture；它们缺失时 Waf 应在构建前明确报错，不能

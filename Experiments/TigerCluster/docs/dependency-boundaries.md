@@ -59,6 +59,15 @@ no-network Python installs and checks that the base already contains the
 archive/definition drift before APT or compilation; they do not claim that
 the current monolithic Waf graph is a Core-only profile.
 
+Packaging metadata is part of the same contract. Before creating a source seal,
+compile every `setup.py` consumed by the builder (including both
+`pythonWrapper/setup.py` files) and syntax-check the handoff, source-sealer,
+source-validator and preflight entrypoints. The seal is created only after this
+gate and after the focused packaging tests pass. A later source edit invalidates
+the handoff even when the changed file is only packaging metadata; generate a
+new handoff/release rather than rebuilding an archive that still contains the
+old file.
+
 ## Follow-up design (plan only)
 
 The next packaging change should introduce explicit target profiles with an
