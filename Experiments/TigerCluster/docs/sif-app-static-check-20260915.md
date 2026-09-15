@@ -87,3 +87,12 @@ its build record are supplied.
 The local build gate remains blocked at input discovery: the recorded base SIF
 is not present locally (the `images/spec180-runtime-r119.sif` entry is a broken
 compatibility symlink), so no SIF or APP was produced and nothing was uploaded.
+
+## Local build attempt r1
+
+On 2026-09-15, the real pair materialization command was run with the recorded
+Apptainer `1.5.3` executable and the compatibility base path. It stopped before
+Apptainer execution stopped at `APP_BASE_SIF_PATH_SYMLINK` with `rc=4`, because the base path is
+a broken symlink. The raw command, output and return code are preserved in
+`.codex-tmp/local-first-sif-attempt-20260915-r1/`; no candidate, APP or upload
+was produced.
