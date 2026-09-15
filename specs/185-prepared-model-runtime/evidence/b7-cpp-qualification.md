@@ -176,6 +176,8 @@ The served-provider test adds a C++ integration path from the public `Runtime::o
 
 The immutable v63 snapshot `.codex-tmp/spec185-t013-served-provider-review-v63-20260915` was reviewed by the official `/home/tianxing/.codex/skills/review-agent/SKILL.md` and returned `STATIC_PASS`; batch composition returned `B7_COMPOSITION_PASS`, both with no P0-P3 findings. Snapshot identity: base `6b523b3c8d511c325d8084a8c62959b184a95270`, changes SHA256 `7c2653842a1eb44fb07563b569703d92f4e28dd53148fe5d105c1a8fb22069ee`, paths SHA256 `a9cafb1a364d6018a89f0b4dca1ead1285e8ffc150de2a341e9263e8a1cfb6d1`, source SHA256 `e9119d85f5e7d1e7f369a41b570d074a8e689ffcf2845ac273deee6c6a4012de`.
 
+The final v63 composition review reconfirmed the same immutable identity: `PreparedModel → Runtime → Core ACK/Selection/grant → Provider::serve → NativeProviderHandler → backend runner → Response`; test-only ACK injection remains behind `NDNSF_DI_PROVIDER_TEST_SEAM`, and the C++ selector owns the business oracle. The review retained P2 coverage limits only: the served case does not independently qualify production canonical assembly, remote authority publication/fetch, or multi-provider/fallback/wrong-epoch/wrong-grant behavior; those remain covered by the existing provider-assembly selectors and prior evidence.
+
 ### Defects exposed by the integration path
 
 These failures were retained before repair; none is counted as a passing result.
