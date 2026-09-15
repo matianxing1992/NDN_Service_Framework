@@ -181,3 +181,28 @@ SPEC186_PREFLIGHT_PASS wheels=/home/tianxing/NDN/ndn-service-framework/.codex-tm
 
 No host qualification manifest, source-sealed application bundle, SIF build,
 MiniNDN, or Tiger execution is implied by this receipt.
+
+## r70 worker-fixture and base-identity receipt (2026-09-15)
+
+After the full native test campaign exposed the missing worker fixture subtree,
+`prepare-local-sif-source.py` was updated and a new handoff was sealed from
+source commit `4944c68c477f6f0a44e2f570729c14f34024dd93`. The resulting source
+seal is `sha256:f16b2bd98977de50a1996c3192ccf3035c10d1685dfb546ecd4399cc94520056`,
+and the rendered definition is
+`sha256:232babdee57db42e0bd131c7f4e53e7771ec797c209cbc5ca76991c95100a9a3`.
+The actual temporary base bytes were rehashed and bound as
+`sha256:071bae8eed882bf865f4f5f6bf06c900f17a93e42bac870001a331c9e2cc82c2`;
+the previous `1dd962...` identity was rejected and retained as a failure.
+
+`prepare-development-handoff.py prepare` and `verify` returned `SOURCE_READY`,
+`render` returned the above definition identity, and the expanded preflight
+returned:
+
+```text
+SPEC186_PREFLIGHT_PASS wheels=/home/tianxing/NDN/ndn-service-framework/.codex-tmp/spec186-source-handoff-r70/wheels workspaceConsumers=11
+```
+
+The r70 archive contains `tests/standalone/spec182-worker-tools` and is the
+first source handoff whose archive producer, Waf target census and preflight
+contract agree on the complete worker subprocess test closure. This remains a
+static/source-delivery PASS; no SIF or Tiger qualification is claimed.
