@@ -303,6 +303,45 @@ def test_build_driver_rejects_forbidden_elf_runtime_path(tmp_path, monkeypatch):
         builder.verify_elf_runtime_paths(tmp_path)
 
 
+def test_publish_rejects_changed_base_before_publication_side_effects(tmp_path, monkeypatch):
+    """A stale build record must not trigger locks or staging recovery."""
+    base = tmp_path / "base.sif"
+    candidate = tmp_path / "candidate.sif"
+    base.write_bytes(b"current-base")
+    candidate.write_bytes(b"candidate")
+    apptainer = tmp_path / "apptainer"
+    apptainer.write_bytes(b"apptainer")
+    apptainer.chmod(0o755)
+    record = tmp_path / "candidate-record.json"
+    monkeypatch.setattr(builder, "load_build_record", lambda *args: {
+        "buildInput": {"baseSif": {"sha256": _digest(b"old-base")}},
+    })
+    monkeypatch.setattr(builder, "apptainer_version", lambda path: "1.5.3")
+    parent = tmp_path / "release"
+    parent.mkdir()
+    output = parent / "app"
+    app_record = parent / "app-manifest.json"
+    stale = parent / "app.tmp.stale"
+    stale.mkdir()
+    (stale / "marker").write_text("must remain", encoding="utf-8")
+
+    def unexpected_lock(*args, **kwargs):
+        raise AssertionError("publication lock acquired before input validation")
+
+    monkeypatch.setattr(builder.fcntl, "flock", unexpected_lock)
+    args = type("Args", (), {
+        "base_sif": str(base), "candidate_sif": str(candidate),
+        "candidate_record": str(record), "output": str(output),
+        "record": str(app_record), "apptainer": str(apptainer),
+        "expected_apptainer": "1.5.3",
+    })()
+    with pytest.raises(builder.BuildSifAppError, match="APP_BASE_DIGEST_MISMATCH"):
+        builder.publish(args)
+    assert not output.exists()
+    assert not app_record.exists()
+    assert (stale / "marker").read_text(encoding="utf-8") == "must remain"
+
+
 def test_staging_token_is_atomic_and_immutable_cleanup_restores_write_bits(tmp_path):
     parent = tmp_path / "release"
     parent.mkdir()
