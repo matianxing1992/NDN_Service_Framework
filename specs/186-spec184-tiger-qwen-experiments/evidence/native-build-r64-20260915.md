@@ -9,7 +9,7 @@ be compiled and inspected before rebuilding the matching container bundle.
 
 | Field | Result |
 | --- | --- |
-| source checkout | `SPEC184Experiments` at `2a36aba7` |
+| native source input checkout | `SPEC184Experiments` at `c7f03b4e` |
 | build directory | `build-spec186-r64` |
 | builder | host Waf + Python 3.8 extension build |
 | native targets | `197/197`, Waf build exit 0, 14m30.116s |
@@ -50,5 +50,8 @@ checked against `/opt/ndnsf-di/current`.
 | `di-native-provider` | 47698752 | `358b234eb85ba8357e734f3a895b753145f261f489fadaef81b51d8f653d3342` |
 | `_ndnsf.cpython-38-x86_64-linux-gnu.so` | 110725448 | `64d6a5d14fdcb191fdb05b0c08b362c83aa9bf66243ce6562a82e281a885edd0` |
 
-The next closure gate is a source-sealed application rebuild in the matching
+The subsequent preflight/skill commits do not change the C++/Waf source inputs
+listed in this receipt, but they do change the candidate source seal; therefore
+the r66 handoff is a new candidate and cannot reuse this host bundle as a
+promoted artifact. The next closure gate is a source-sealed application rebuild in the matching
 Apptainer 1.5.3 builder; the host RUNPATH result above remains a hard boundary.
