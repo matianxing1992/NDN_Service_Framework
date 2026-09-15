@@ -4982,3 +4982,24 @@ which differs from the Spec186 handoff seal
 - **Lesson**: moving an artifact variable is insufficient for a rendered
   definition; the definition's `From:` identity and the wrapper path must be
   checked together before dispatch.
+
+## 2026-09-15 — Spec186 r38 canonical catalogue wrapper stopped before MiniNDN
+
+- **Area**: T009 single-node launch after the compute-side SIF build.
+- **Symptom**: job `212306` completed the 284-target native build, final SIF
+  creation and in-container native import with Apptainer 1.5.3, then returned
+  `SPEC180_CASE_RESULT status=WAITING_EXTERNAL_INPUT
+  error=CANONICAL_CATALOGUE_VERIFY_FAILED` before MiniNDN startup (Slurm exit
+  78). No protocol, numerical, CUDA-role or cleanup result was produced.
+- **Root cause boundary**: the runner converts the original exception into the
+  generic catalogue error. Direct `cryptography` import and direct
+  `ModelFamilyAdapter` catalogue diagnostics pass in the same final image, so
+  this is not evidence of a failed SIF build or invalid catalogue by itself;
+  the runner-specific path/module/input exception remains unresolved.
+- **Correction**: preserve the immutable r38 SIF and receipt, capture the raw
+  `_validate_package` exception before retry, and require local-first SIF
+  promotion or a separately sealed compute-build exception. Do not blind-rebuild
+  or promote this job to a GPU result.
+- **Lesson**: a wrapper status is not a root cause. Keep build/import,
+  catalogue-adapter diagnostics and MiniNDN/GPU qualification as separate gates
+  and record the first uncaught exception before changing candidate inputs.

@@ -31,12 +31,27 @@ Spec186 的直接交付目标是 **真实 MiniNDN + TigerCluster YOLO 实验**�
 静态检查、组件测试、旧证据或占位模型。主资格路径固定为：
 
 1. 固定 candidate，并完成 native/build、base SIF、只读 application bundle 和
-   exact local composition 这些前置门；
+   SIF definition/preflight 这些前置门；
 2. 用同一 candidate 在真实 MiniNDN 多进程执行 YOLO Y-A/Y-B 正例和 Y-N 负例；
-3. 将同一 base+app composition 交给 TigerCluster，先完成单节点 GPU YOLO，再完成
+3. 再在本地用 Apptainer 1.5.3 构建并完成 exact-SIF 静态、loader 和本机 CPU smoke
+   门禁；封存 SIF 字节 SHA 后才上传，Tiger 计算节点必须核对并复用同一 SHA；
+4. 将同一 base+app composition 交给 TigerCluster，先完成单节点 GPU YOLO，再完成
    双节点 normal 和 dependency-negative YOLO；
-4. 在新 allocation 独立复跑双节点 normal，核对所有 candidate/profile/artifact
+5. 在新 allocation 独立复跑双节点 normal，核对所有 candidate/profile/artifact
    hash 和新的节点、GPU、身份。
+
+### SIF Promotion Boundary
+
+本地构建是默认发布路径：本地实验 host 使用 `/usr/local/bin/apptainer` 1.5.3
+完成 definition/source/app 绑定、`preflight-development-sif.py`、`import`、入口
+`--help`、`readelf`/`ldd -r`、RPATH/SONAME 和本机 CPU smoke，随后记录 SIF 字节数、
+SHA-256、source seal、definition、依赖及 app bundle digest。只有这份封存结果才能
+上传到 Tiger 项目存储。登录节点的 `/usr/bin/apptainer` 1.3.4 只允许做 SSH、
+Slurm、路径和配额元数据检查；分配到的计算节点使用
+`/home/tma1/.local/bin/apptainer-1.5.3` 核对同一 SHA 后直接运行，不得因上传而重新
+构建或替换镜像。若本地 helper、文件系统或权限使 materialization/build 无法完成，
+必须保留失败证据并以新的 source-sealed candidate 在计算节点 1.5.3 构建；该例外
+不能使用登录节点 1.3.4，也不能把远端新 SIF 当作本地 smoke 的等价物。
 
 静态 schema、CodeGraph、unit/integration、ABI、preflight 和 `check/prepare` 只
 是上述路径的 fail-closed 前置条件；它们可以证明 wiring 或阻止错误提交，但不能
@@ -61,6 +76,7 @@ cleanup 回执的运行都不得记为实验 PASS。
 1. **Given** 本地没有该提交对象，**When** 操作者获取对象并验证 SHA、父提交和工作树，**Then** 只有精确的 `575b43c` 可用于创建初始分支；修复后的 candidate 必须是该提交的可追溯后代并单独记录 source seal。
 2. **Given** candidate 的任一输入、配置或运行时文件被替换，**When** 执行 pre-dispatch gate，**Then** gate 指出最早重跑阶段，并且没有上传、staging、`sbatch` 或远程变更。
 3. **Given** 只改变应用层文件，**When** 比较变更平面，**Then** 未改变的基础库 SIF 可复用，但应用、harness 和正式运行证据必须生成新的身份。
+4. **Given** 本地 SIF 已通过 exact-SIF 门禁，**When** 上传并在 Tiger 计算节点接收，**Then** 接收 SHA 必须与本地封存 SHA 完全相同；任何远端重建都必须生成新的 candidate 和新的证据链。
 
 ### User Story 2 - Verify Native YOLO On MiniNDN (Priority: P1)
 
@@ -107,6 +123,7 @@ GPU，再做双节点 YOLO；节点间角色通过 NDN 传递真实依赖，不�
 1. **Given** local exact-SIF gate 通过且 profile 未被改写，**When** 提交单节点 GPU run，**Then** 三个模型角色观察到 CUDA，Merge 显式使用 CPU 后处理，并完成 warmup/measured 请求。
 2. **Given** 两个真实 compute node，**When** 执行 YOLO graph，**Then** BackboneNeck、DetectShard0、DetectShard1、Merge 分布在声明的节点，跨节点依赖使用真实 NDN Data。
 3. **Given** 路由、GPU、身份、容器库或应用权限错误，**When** run 失败，**Then** 保留首失败边界和清理结果，不把 readiness 或 transport PASS 记为推理 PASS。
+4. **Given** 本地 smoke 已通过，**When** Tiger 计算节点启动同一镜像，**Then** 运行前核对 SIF、app、profile 和 case bundle digest；本地 smoke 不得替代 Tiger 的 CUDA、Slurm、NFD、跨节点 Data 和 terminal 证据。
 
 ### User Story 5 - Diagnose And Reuse Safely (Priority: P2)
 
@@ -154,9 +171,10 @@ GPU，再做双节点 YOLO；节点间角色通过 NDN 传递真实依赖，不�
 - **FR-014**: Negative cases MUST be bounded, fail closed, tied to a unique producer/consumer dependency edge and preserve the original failure; no silent retry, reselection or CPU fallback is allowed.
 - **FR-015**: Each candidate and gate MUST have at most one active run; unknown scheduler state MUST be queried before retry, and every temporary resource MUST be owned by the run being cleaned.
 - **FR-016**: The implementation MUST include a post-implementation design-to-code convergence audit using CodeGraph and effective configuration. Any unresolved semantic, security, production-wiring or evidence discrepancy MUST block full validation.
-- **FR-017**: The validation order MUST be focused repair tests → convergence audit → cheap source/definition/base-SIF preflight → complete unit/integration → MiniNDN → exact-SIF local → Tiger single-node → Tiger two-node → independent reuse. A preflight PASS MUST NOT be promoted to a MiniNDN or GPU result.
+- **FR-017**: The validation order MUST be focused repair tests → convergence audit → cheap source/definition/base-SIF preflight → complete unit/integration → MiniNDN → local exact-SIF build/import/loader/CPU smoke → immutable promotion and same-SHA compute verification → Tiger single-node → Tiger two-node → independent reuse. A preflight or local smoke PASS MUST NOT be promoted to a MiniNDN or GPU result.
 - **FR-018**: Evidence MUST be stored under `specs/186-spec184-tiger-qwen-experiments/evidence/` and local `Experiments/TigerCluster/results/<run-id>` or declared project storage; secrets, private keys, models, SIFs and large logs MUST remain outside Git.
 - **FR-019**: The handoff MUST include exact commands, candidate/profile/artifact hashes, model identity, allocation/job identity, host/GPU observations, first failure if any, exit/cleanup records and offline-verifiable result references.
+- **FR-020**: SIF promotion MUST default to a local Apptainer 1.5.3 build followed by exact-SIF preflight, loader checks and a local CPU smoke before upload. The uploaded SIF byte SHA-256 MUST equal the sealed local SHA-256, and Tiger compute Apptainer 1.5.3 MUST verify and reuse that same digest without rebuilding. A host/tool/filesystem exception MUST preserve its first failure and create a new source-sealed compute-built candidate; Tiger login-node Apptainer 1.3.4 MUST never build, inspect or execute a SIF.
 
 ### Key Entities
 
@@ -178,6 +196,7 @@ GPU，再做双节点 YOLO；节点间角色通过 NDN 传递真实依赖，不�
 - **SC-006**: A registered Tiger dependency-negative run reaches its exact fault boundary within the shared budget, produces no successful response or silent reselection, and leaves no run-owned process.
 - **SC-007**: A second independent two-node normal allocation reuses identical profile, base SIF, application, harness, model, input, oracle and graph hashes while producing new run/node/GPU identities.
 - **SC-008**: A new operator can reproduce the accepted local and Tiger commands from the Spec186 quickstart and offline evidence without relying on private chat, undocumented paths or hidden host libraries.
+- **SC-009**: At least one candidate records a local 1.5.3 SIF build, local exact-SIF smoke, immutable upload, and Tiger compute 1.5.3 same-SHA verification; if the local path is blocked, the evidence records the first failure and the explicitly exceptional compute-built replacement instead of claiming promotion.
 
 ## Assumptions
 
@@ -186,6 +205,7 @@ GPU，再做双节点 YOLO；节点间角色通过 NDN 传递真实依赖，不�
 - Qwen3.6-27B 的正式资格仍属于外部输入；0.6B 结果不能关闭该行。
 - Tiger 物理 GPU、Slurm account/partition、Apptainer 版本、节点名和项目存储位置在 T001 记录，不写死为当前一次 allocation。
 - 本机 NDNSF-DI 的 SIF 构建与检查只使用 Apptainer 1.5.3；Tiger 登录节点的 1.3.4 仅用于 SSH/Slurm 元数据，不作为 SIF 运行时或兼容回退。
+- 默认先在本地 Apptainer 1.5.3 完成 SIF 构建、exact-SIF smoke 和封存再上传；只有本地 materialization/build 有可复核阻断时，才允许在 Tiger compute 1.5.3 以新 candidate 重建，并保留原失败。
 - 稳定基础库 SIF 和频繁变化的 DI/UAV 应用 bundle 分层；应用以只读方式挂载，禁止宿主库覆盖容器内基础库。
 - 不做性能显著性结论；warmup/measured 只用于正确性和复现证据。
 

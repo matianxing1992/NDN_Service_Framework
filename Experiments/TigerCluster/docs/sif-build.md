@@ -9,7 +9,9 @@
 目前为 ACCEPTED DESIGN / PLANNED TOOLING；下面的现有 complete-SIF 命令仍是旧实现，
 不能仅加一个 bind 就声称已支持分层发布。默认先在本地实验 host 用 Apptainer
 1.5.3 构建并检查稳定基础 SIF，再把同一 hash 的 SIF 上传到项目存储；Tiger
-计算节点只做同一镜像的 inspect、preflight 和 GPU/MiniNDN 运行验证。
+计算节点只做同一镜像的 inspect、preflight 和 GPU/MiniNDN 运行验证。若本地
+helper、文件系统或权限阻断 materialization/build，必须保留首失败并以新的
+source-sealed candidate 在 compute 1.5.3 例外构建；登录节点 1.3.4 不得参与。
 
 ## Existing Build Entry
 
@@ -44,7 +46,9 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-deve
 
 因此本项目不需要用登录节点的 1.3.4 构建 SIF；SIF 只用计算节点的
 Apptainer 1.5.3 构建，并在同一 1.5.3 运行时完成 inspect、preflight 和执行。
-登录节点只负责把作业送入 Slurm，不能作为版本回退或隐式 builder。
+登录节点只负责把作业送入 Slurm，不能作为版本回退或隐式 builder。默认 SIF 在
+本地实验 host 的 1.5.3 构建，compute 1.5.3 核对同一 SHA 后执行；只有本地路径
+有已记录阻断时，才允许 compute 1.5.3 例外构建，并在新 candidate 中记录替代关系。
 
 ## Recommended Build And Upload Flow
 

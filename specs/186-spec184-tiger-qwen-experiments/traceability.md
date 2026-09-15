@@ -21,6 +21,7 @@
 | FR-017 validation order | all | plan Execution Gates | T005–T012 | V04–V14 |
 | FR-018 evidence storage | US5 | validation matrix Evidence Rules | T013 | V14 |
 | FR-019 operator handoff artifacts | US5 | quickstart and evidence rules | T013 | V14 |
+| FR-020 local-first SIF promotion and same-SHA reuse | US1, US4 | spec SIF Promotion Boundary; plan Execution Gates | T006.d, T009 | V05, V09 |
 | SC-001 exact baseline/candidate | US1 | candidate identity | T001, T003 | V01, V02 |
 | SC-002 pre-dispatch rejection | US1 | candidate identity | T003 | V02 |
 | SC-003 local YOLO | US2 | profile + validation matrix | T007 | V06, V07 |
@@ -29,6 +30,7 @@
 | SC-006 dependency-negative | US4 | terminal acceptance | T010 | V11 |
 | SC-007 independent reuse | US5 | invalidation matrix | T012 | V13 |
 | SC-008 reproducible handoff | US5 | quickstart and evidence rules | T013 | V14 |
+| SC-009 local SIF promotion or recorded exception | US1, US4 | spec SIF Promotion Boundary; evidence closure handoff | T006.d, T013 | V05, V09, V14 |
 
 ## Evidence Status Vocabulary
 

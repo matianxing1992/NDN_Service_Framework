@@ -69,6 +69,13 @@ For local SIF work, use the profile's explicit `/usr/local/bin/apptainer`
 nodes. The Tiger login node's `/usr/bin/apptainer` is 1.3.4 and is metadata
 only; it never executes a SIF and is not a fallback.
 
+Before the Tiger submit, complete the local promotion sequence: build the sealed
+SIF with `/usr/local/bin/apptainer` 1.5.3, run the preflight/import/loader checks and
+local CPU smoke, record its byte SHA-256, then upload that exact file. On the login
+node check only path/quota metadata; on the allocated compute node verify the uploaded
+SHA with `/home/tma1/.local/bin/apptainer-1.5.3` before running. A compute-side rebuild
+is an exception that needs a new source-sealed candidate and a preserved local failure.
+
 ## 4. TigerCluster
 
 ```bash
