@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -20,6 +21,11 @@ builder_spec = importlib.util.spec_from_file_location(
 )
 builder = importlib.util.module_from_spec(builder_spec)
 builder_spec.loader.exec_module(builder)
+handoff_spec = importlib.util.spec_from_file_location(
+    "development_handoff", SCRIPT_DIR / "prepare-development-handoff.py"
+)
+handoff = importlib.util.module_from_spec(handoff_spec)
+handoff_spec.loader.exec_module(handoff)
 
 
 def _digest(data):
@@ -32,7 +38,14 @@ def _fixture(tmp_path):
                    "manifest", "replay"):
         (app / folder).mkdir(parents=True, exist_ok=True)
     payloads = {
+        "lib/libndn-service-framework.so.0.1.0": b"framework",
         "lib/libndnsf-distributed-inference.so": b"di",
+        "lib/libndn-svs.so.0.1.0": b"svs",
+        "lib/libnac-abe.so": b"nac-abe",
+        "lib/libndnsd.so.0.1.0": b"ndnsd",
+        "lib/libopenabe.so": b"openabe",
+        "lib/librelic.so": b"relic",
+        "lib/librelic_ec.so": b"relic-ec",
         "bin/di-native-provider": b"provider",
         "bin/di-native-fault-provider": b"fault",
         "bin/App_ServiceController": b"controller",
@@ -88,6 +101,8 @@ def _fixture(tmp_path):
         "runtimeContract": {"cleanenv": True, "containall": True,
                              "appFallback": "forbidden", "modelMount": "/models:ro",
                              "artifactMount": "/artifacts:ro",
+                             "appNativeLibraries": list(validator.RUNTIME_CONTRACT["appNativeLibraries"]),
+                             "baseNativeLibraries": list(validator.RUNTIME_CONTRACT["baseNativeLibraries"]),
                              "baseRuntime": {
                                  "python": "/opt/venv/bin/python",
                                  "ndnBaseLib": "/opt/ndn-base/lib",
@@ -109,7 +124,7 @@ def test_pair_manifest_verifies_all_bytes_and_identity(tmp_path):
     app, base, manifest = _fixture(tmp_path)
     result = validator.validate(manifest, app, base)
     assert result["status"] == "PASS"
-    assert result["files"] == 9
+    assert result["files"] == 16
 
 
 @pytest.mark.parametrize("mutation", ["changed", "extra", "escaped"])
@@ -151,6 +166,64 @@ def test_pair_manifest_rejects_special_file(tmp_path):
         validator.validate(manifest, app, base)
 
 
+def test_handoff_rejects_symlinked_base_before_resolution(tmp_path):
+    target = tmp_path / "missing-base.sif"
+    link = tmp_path / "base.sif"
+    link.symlink_to(target)
+    with pytest.raises(ValueError, match="HANDOFF_BASE_SIF_PATH_SYMLINK"):
+        handoff.reject_symlink_components(link, "HANDOFF_BASE_SIF_PATH")
+
+
+def test_real_native_build_needed_names_are_in_app_allowlist():
+    # ROOT is Experiments/TigerCluster; its second parent is the repository
+    # root where the reusable native build trees live.
+    repo = ROOT.parents[1]
+    candidates = [
+        repo / "build-spec185-b0c-normal/examples/di-native-provider",
+        repo / "build-spec185-b0c-normal/examples/App_ServiceController",
+        repo / "build-spec185-b0c-normal/libndnsf-distributed-inference.so",
+    ]
+    available = [path for path in candidates if path.is_file()]
+    if not available:
+        pytest.skip("no local native build candidate under " + str(repo))
+    app_libraries = set(validator.RUNTIME_CONTRACT["appNativeLibraries"])
+    # Derive the base side from the published runtime contract.  An unknown
+    # NEEDED name must fail instead of disappearing when filtered to APP.
+    base_libraries = set(validator.RUNTIME_CONTRACT["baseNativeLibraries"])
+    names = set()
+    for path in available:
+        output = subprocess.check_output(["readelf", "-d", str(path)], text=True)
+        names.update(re.findall(r"Shared library: \[([^]]+)\]", output))
+    unknown = names - app_libraries - base_libraries
+    assert not unknown, f"unclassified DT_NEEDED names: {sorted(unknown)}"
+
+    # A container run can provide the exact APP/lib directory for a source
+    # candidate.  In that mode check the actual ldd resolution for every APP
+    # dependency.  Host-only builds commonly resolve through /usr/local/lib;
+    # leave that boundary explicitly unqualified here and let the container
+    # packager's mandatory ldd gate perform the runtime rejection.
+    custom = names & app_libraries
+    app_lib_root = os.environ.get("NDNSF_TEST_APP_LIB_ROOT")
+    if not custom or not app_lib_root:
+        pytest.skip("APP/lib origin requires a container runtime root")
+    app_lib_root = str(Path(app_lib_root).resolve()) + "/"
+    ldd_env = os.environ.copy()
+    ldd_env["LD_LIBRARY_PATH"] = app_lib_root + ldd_env.get("LD_LIBRARY_PATH", "")
+    for path in available:
+        output = subprocess.check_output(["ldd", str(path)], text=True,
+                                         stderr=subprocess.STDOUT, env=ldd_env)
+        resolutions = {}
+        for line in output.splitlines():
+            fields = line.strip().split()
+            if len(fields) >= 3 and fields[1] == "=>":
+                resolutions[fields[0]] = fields[2]
+        for name in sorted(custom):
+            resolved = resolutions.get(name)
+            assert resolved, f"ldd did not resolve APP dependency {name} for {path}"
+            assert resolved.startswith(app_lib_root), (
+                f"APP dependency {name} escaped APP/lib: {resolved}")
+
+
 def test_delivery_scripts_have_isolated_runtime_contract():
     build = SCRIPT_DIR / "build-sif-app.sh"
     run = SCRIPT_DIR / "run-sif-app.sh"
@@ -186,6 +259,10 @@ def test_build_driver_rejects_overwrite_and_uses_container_extraction():
     assert "candidateVerification" in text
     assert "APP_OUTPUT_BUSY" in text
     assert "APP_ELF_DEPENDENCY_FAILED" in text
+    assert "APP_ELF_LIBRARY_ORIGIN_MISMATCH" in text
+    assert "APP_ELF_FORBIDDEN_RESOLVED_PATH" in text
+    assert "APP_MATERIALIZED_ELF_LIBRARY_ORIGIN_MISMATCH" in text
+    assert "/usr/local/lib/" in text
     assert "APP_BASE_RUNTIME_CONTRACT_FAILED" in text
     assert "pinned_image" in text
     assert "APP_IMAGE_ARGUMENT_MISSING" in text

@@ -93,6 +93,18 @@ def git(workspace, *args):
                                    text=True, stderr=subprocess.PIPE).strip()
 
 
+def reject_symlink_components(path, code):
+    """Reject compatibility links before resolving a build input path."""
+    path = Path(path)
+    if not path.is_absolute():
+        fail(code + "_NOT_ABSOLUTE")
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        if current.is_symlink():
+            fail(code + "_SYMLINK:" + str(current))
+
+
 def check_checkout(workspace, revision):
     """Pin the actual checkout; untracked logs do not authorize untracked code."""
     if git(workspace, "rev-parse", "HEAD") != revision:
@@ -223,10 +235,15 @@ def verify(bundle):
 
 def render(bundle, base_sif, destination):
     """Resolve machine-specific paths after verifying the exact dependency base."""
-    bundle, base_sif = Path(bundle).resolve(), Path(base_sif).resolve()
+    raw_bundle, raw_base_sif = Path(bundle), Path(base_sif)
+    reject_symlink_components(raw_bundle, "HANDOFF_BUNDLE_PATH")
+    reject_symlink_components(raw_base_sif, "HANDOFF_BASE_SIF_PATH")
+    bundle, base_sif = raw_bundle.resolve(), raw_base_sif.resolve()
     checked = verify(bundle)
     lock = load_lock(bundle / "dependency-lock.json")
-    if not base_sif.is_file() or digest(base_sif) != lock["baseSif"]["sha256"]:
+    if not base_sif.is_file():
+        fail("HANDOFF_BASE_SIF_MISSING")
+    if digest(base_sif) != lock["baseSif"]["sha256"]:
         fail("HANDOFF_BASE_DIGEST")
     for path in [bundle, base_sif]:
         if not re.fullmatch(r"/[A-Za-z0-9_./+-]+", str(path)):

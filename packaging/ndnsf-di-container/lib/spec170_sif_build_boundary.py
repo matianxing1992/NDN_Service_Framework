@@ -173,6 +173,10 @@ def validate_definition(path: Path | str) -> dict[str, object]:
             "APP_ELF_RUNTIME_CHECK_MISSING",
         "/usr/bin/readelf -d \"$native_path\"":
             "APP_ELF_READelf_CHECK_MISSING",
+        "LINKED_LIBRARY_ORIGIN_MISMATCH":
+            "NATIVE_LIBRARY_ORIGIN_CHECK_MISSING",
+        "UNDECLARED_HOST_LIBRARY":
+            "NATIVE_HOST_LIBRARY_CHECK_MISSING",
     }
     for marker, code in required_builder_markers.items():
         if marker not in builder_post:
@@ -186,6 +190,18 @@ def validate_definition(path: Path | str) -> dict[str, object]:
         "/opt/ndnsf-stage/lib/libndn-service-framework": "FRAMEWORK_TRANSFER_MISSING",
         "/opt/ndnsf-stage/lib/libndnsf-distributed-inference.so":
             "DI_LIBRARY_TRANSFER_MISSING",
+        "/opt/ndnsf-stage/lib/libndn-svs.so.0.1.0":
+            "SVS_LIBRARY_TRANSFER_MISSING",
+        "/opt/ndnsf-stage/lib/libnac-abe.so":
+            "NAC_ABE_LIBRARY_TRANSFER_MISSING",
+        "/opt/ndnsf-stage/lib/libndnsd.so.0.1.0":
+            "NDNSD_LIBRARY_TRANSFER_MISSING",
+        "/opt/ndnsf-stage/lib/libopenabe.so":
+            "OPENABE_LIBRARY_TRANSFER_MISSING",
+        "/opt/ndnsf-stage/lib/librelic.so":
+            "RELIC_LIBRARY_TRANSFER_MISSING",
+        "/opt/ndnsf-stage/lib/librelic_ec.so":
+            "RELIC_EC_LIBRARY_TRANSFER_MISSING",
         "/opt/ndnsf-stage/python": "PYTHON_TRANSFER_MISSING",
         "/opt/ndnsf-stage/manifest/container-native-build.json":
             "BUILD_MANIFEST_TRANSFER_MISSING",
@@ -235,6 +251,20 @@ def validate_definition(path: Path | str) -> dict[str, object]:
             "APP_LAYOUT_DIRECTORIES_MISSING",
         "install -m 0755 /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so":
             "APP_DI_LIBRARY_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/lib/libndn-service-framework.so.0.1.0":
+            "APP_FRAMEWORK_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0":
+            "APP_SVS_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/lib/libnac-abe.so":
+            "APP_NAC_ABE_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0":
+            "APP_NDNSD_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/lib/libopenabe.so":
+            "APP_OPENABE_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/lib/librelic.so":
+            "APP_RELIC_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/lib/librelic_ec.so":
+            "APP_RELIC_EC_INSTALL_MISSING",
         "install -m 0755 /opt/ndnsf-candidate/bin/di-native-provider /opt/ndnsf-app/bin/di-native-provider":
             "APP_PROVIDER_INSTALL_MISSING",
         "install -m 0755 /opt/ndnsf-candidate/bin/di-native-fault-provider /opt/ndnsf-app/bin/di-native-fault-provider":
@@ -250,6 +280,7 @@ def validate_definition(path: Path | str) -> dict[str, object]:
         "manifest/source-seal.json": "APP_SOURCE_SEAL_MISSING",
         "manifest/app-runtime.lock.json": "APP_RUNTIME_LOCK_MISSING",
         "APP_LAYOUT_VERIFY=ndnsf-app-v2": "APP_LAYOUT_VERIFY_MISSING",
+        "APP_NATIVE_LIBRARY_CLOSURE_MISMATCH": "APP_NATIVE_LIBRARY_CLOSURE_CHECK_MISSING",
     }
     for marker, code in required_replacement_markers.items():
         if marker not in final_post:
