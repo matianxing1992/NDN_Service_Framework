@@ -7,7 +7,9 @@
 [Layered Runtime Delivery](../../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md)。
 应用更新可复用未变基础 SIF，但须在对应 builder 内构建并验证新组合。
 目前为 ACCEPTED DESIGN / PLANNED TOOLING；下面的现有 complete-SIF 命令仍是旧实现，
-不能仅加一个 bind 就声称已支持分层发布。基础与应用构建/运行由实验机器接续。
+不能仅加一个 bind 就声称已支持分层发布。默认先在本地实验 host 用 Apptainer
+1.5.3 构建并检查稳定基础 SIF，再把同一 hash 的 SIF 上传到项目存储；Tiger
+计算节点只做同一镜像的 inspect、preflight 和 GPU/MiniNDN 运行验证。
 
 ## Existing Build Entry
 
@@ -43,6 +45,24 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-deve
 因此本项目不需要用登录节点的 1.3.4 构建 SIF；SIF 只用计算节点的
 Apptainer 1.5.3 构建，并在同一 1.5.3 运行时完成 inspect、preflight 和执行。
 登录节点只负责把作业送入 Slurm，不能作为版本回退或隐式 builder。
+
+## Recommended Build And Upload Flow
+
+1. 在本地实验 host 用 `/usr/local/bin/apptainer` 1.5.3 构建 source-sealed
+   基础 SIF，并运行 `preflight-development-sif.py`、`import`、入口
+   `--help`、`readelf`/`ldd -r` 和本地 MiniNDN CPU smoke。
+2. 记录 SIF 字节数、SHA-256、source seal、definition、依赖和 app bundle
+   digest；任何一项改变都生成新的候选，不覆盖旧镜像。
+3. 将 SIF 上传到 Tiger 项目存储后，在登录节点只做路径/配额/Slurm 元数据
+   检查；不得调用登录节点 1.3.4 的 build、inspect 或 exec。
+4. 在分配到的计算节点用
+   `/home/tma1/.local/bin/apptainer-1.5.3` 校验同一 SHA-256，随后执行
+   `--nv` 的 bounded GPU/MiniNDN 运行。Tiger 的 CUDA、NFD、Slurm、节点
+   映射和跨进程协议证据仍必须单独收集；本地 smoke 不能替代这些证据。
+
+这样可以把原生编译和 SIF 封装从 Tiger 作业中移出；应用只读 bundle 的变更
+不重建未变化的基础 SIF。当前完整镜像约 4 GiB，上传前必须检查项目配额，
+并只保留按 digest 命名的候选，避免重复占用存储。
 
 新构建显式选择新目录，例如：
 

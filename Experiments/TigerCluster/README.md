@@ -45,7 +45,9 @@ SSH、Slurm 和资源/路径元数据；分配到的计算节点统一使用
 
 ## Compatibility And Review Boundary
 
-开发机负责代码、静态审查与测试，实验机负责SIF构建和Tiger集群运行；MiniNDN依当前Spec安排。
+开发机负责代码、静态审查与测试；本地实验 host 用 1.5.3 构建并检查 source-sealed
+SIF，Tiger 集群只接收同一 hash 的镜像并负责计算节点运行验证；MiniNDN 依当前
+Spec 安排。登录节点 1.3.4 不参与 SIF 操作。
 另一台机器应从明确的完整源码基线开始，按本README及构建说明操作。
 新运行显式使用`results/<run-id>/`，新镜像使用`images/<candidate>/`；
 本地历史镜像链接不随Git交付，须另行获取或构建候选并核对身份。
