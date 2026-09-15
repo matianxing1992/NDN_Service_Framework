@@ -92,7 +92,15 @@ compatibility symlink), so no SIF or APP was produced and nothing was uploaded.
 
 On 2026-09-15, the real pair materialization command was run with the recorded
 Apptainer `1.5.3` executable and the compatibility base path. It stopped before
-Apptainer execution stopped at `APP_BASE_SIF_PATH_SYMLINK` with `rc=4`, because the base path is
-a broken symlink. The raw command, output and return code are preserved in
-`.codex-tmp/local-first-sif-attempt-20260915-r1/`; no candidate, APP or upload
-was produced.
+Apptainer execution at `APP_BASE_SIF_PATH_SYMLINK` with `rc=4`, because the base
+path is a broken symlink. The raw command, output and return code are preserved
+in `.codex-tmp/local-first-sif-attempt-20260915-r1/`; no candidate, APP or
+upload was produced.
+
+## Remote base lookup attempt r1
+
+The recorded cluster path was checked without uploading or modifying remote
+state. The SSH alias `tigercluster` could not be resolved by this host
+(`rc=255`, `Could not resolve hostname`); the command and output are preserved
+in `.codex-tmp/local-first-base-probe-20260915-r1/`. No remote SIF was read and
+the local build remains blocked on a regular base SIF and its digest check.
