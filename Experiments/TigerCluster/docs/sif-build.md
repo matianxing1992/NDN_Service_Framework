@@ -15,8 +15,11 @@
 详细归属、builder ABI、只读挂载、组合身份与验收见
 [Layered Runtime Delivery](../../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md)。
 应用更新可复用未变基础 SIF，但须在对应 builder 内构建并验证新组合。
-目前为 ACCEPTED DESIGN / PLANNED TOOLING；下面的现有 complete-SIF 命令仍是旧实现，
-不能仅加一个 bind 就声称已支持分层发布。基础与应用构建/运行由实验机器接续。
+pair 入口见 [SIF + APP delivery](sif-app-delivery.md)。应用候选必须采用
+`/opt/ndnsf-app` 分层布局；旧 `build-local-sif.sh` 生成的
+`/opt/ndnsf-di/current` complete-application SIF 仍可回放历史候选，但不能直接
+作为新的 pair APP 来源。pair 入口只接受容器内验证的候选，不接受宿主编译的
+`.so`、Python extension 或 venv。
 
 ## Existing Build Entry
 
