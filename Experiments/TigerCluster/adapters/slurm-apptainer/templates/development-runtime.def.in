@@ -303,6 +303,11 @@ PY
     cp -a /src/ndnsf/NDNSF-DistributedInference /opt/ndnsf-stage/replay/repo/
     cp -a /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper /opt/ndnsf-stage/replay/repo/NDNSF-DistributedRepo/
     cp -a /src/ndnsf/pythonWrapper /opt/ndnsf-stage/replay/repo/
+    # The exact-SIF preflight and the repository-backed Qwen/Yolo harness use
+    # these two maintained Spec162 repo-node helpers.  The source sealer carries
+    # them explicitly, so preserve their repository-relative path in the image.
+    cp -a /src/ndnsf/specs/162-itiger-qwen36-generation \
+      /opt/ndnsf-stage/replay/repo/specs/
     cp -a /src/ndnsf/examples/trust-schema.conf /opt/ndnsf-stage/replay/repo/examples/
     cp -a /src/ndnsf/examples/python /opt/ndnsf-stage/replay/repo/examples/
     cp -a /src/ndnsf/Experiments/TigerCluster/jobs/spec180 \

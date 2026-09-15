@@ -4929,3 +4929,21 @@ which differs from the Spec186 handoff seal
 - **Lesson**: static gates must describe the current multi-stage ownership
   boundary; changing a definition without updating its gate creates a false
   pre-build failure.
+## 2026-09-15 — Spec186 r38 final replay omitted Spec162 repo helpers
+
+- **Area**: T006 exact-SIF replay closure on the Tiger compute node.
+- **Symptom**: r38 completed the 284-target native build, Python wheels,
+  native import/`ldd` checks, and final SIF creation with Apptainer 1.5.3,
+  but the final SIF preflight returned `SPEC175_SIF_RUNTIME_INVALID` because
+  `/opt/ndnsf-di/replay/repo/specs/162-itiger-qwen36-generation/jobs/run-repo-node.py`
+  and `register-qwen36-repo.py` were absent.
+- **Root cause**: the sealed workspace archive contained both maintained
+  Spec162 helpers, while the replay staging block copied `Experiments`, tools,
+  tests, examples, and package wrappers but never copied the `specs/162...`
+  subtree into the image.
+- **Correction**: copy the source-sealed Spec162 subtree into
+  `/opt/ndnsf-stage/replay/repo/specs/` and add a static template assertion;
+  rerun the candidate before accepting any SIF or YOLO result.
+- **Lesson**: source-sealer inclusion and image replay inclusion are separate
+  boundaries; exact-SIF preflight must verify every runtime file at its final
+  in-image path before GPU execution.
