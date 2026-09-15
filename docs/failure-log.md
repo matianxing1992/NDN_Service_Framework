@@ -5393,3 +5393,20 @@ which differs from the Spec186 handoff seal
 - **Lesson**: every post-build command must declare whether it writes a build
   manifest; immutable SIF validation must never depend on writable container
   paths.
+
+## 2026-09-15 — Spec186 r81 Python wrapper retained the SVS build-tree RUNPATH
+
+- **Area**: T006 exact SIF native/Python extension closure.
+- **Symptom**: after the Waf RUNPATH correction, r81 completed `284/284`,
+  produced a SIF, and passed import/`ldd`, but the immutable ELF scan still
+  found `/src/ndn-svs/build` in `_ndnsf.so` RUNPATH.
+- **Root cause**: both Python wrapper `setup.py` files independently added the
+  explicit NDN-SVS build directory as an `-rpath` while linking the exact
+  `libndn-svs.so` object. The build-tree path was therefore reintroduced after
+  the Waf fix.
+- **Correction**: retain the explicit SVS build tree only as a link-time
+  `extra_object`; rely on the staged `NDNSF_LIBRARY_DIR` runtime rpath and add
+  static assertions covering both wrappers. r81 is retained as a
+  `BUILD_PASS_RUNTIME_BOUNDARY_FAIL` candidate and cannot be promoted.
+- **Lesson**: runtime-path audits must inspect every native producer,
+  including setuptools extensions, not only the main Waf link graph.

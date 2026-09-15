@@ -133,6 +133,10 @@ def test_explicit_svs_build_tree_is_link_only_not_runtime_runpath():
     assert "svs_runtime_dirs = ([svs_runtime_libdir]" in source
     assert "`/src/ndn-svs/build`" in source
     assert "f'-Wl,-rpath,{path}' for path in svs_runtime_dirs" in source
+    for setup_path in (ROOT / "pythonWrapper/setup.py", ROOT / "NDNSF-DistributedRepo/pythonWrapper/setup.py"):
+        setup_source = setup_path.read_text(encoding="utf-8")
+        assert "-Wl,-rpath,{build}" not in setup_source
+        assert "build tree" in setup_source
 
 
 def test_full_native_test_target_census_requires_worker_fixtures():

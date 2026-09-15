@@ -93,7 +93,9 @@ def build_extension() -> Extension:
             library_dirs.insert(0, str(path))
             extra_link_args.append(f"-Wl,-rpath,{path}")
     if source:
-        extra_link_args.append(f"-Wl,-rpath,{build}")
+        # Keep the explicit source/build pair for link-time ABI selection;
+        # the runtime library is staged under NDNSF_LIBRARY_DIR.  Do not put
+        # the checkout's build tree into the extension RUNPATH.
     if nac:
         library_dirs.insert(0, str(nac / "lib"))
         libraries = [name for name in libraries if name != "nac-abe"]

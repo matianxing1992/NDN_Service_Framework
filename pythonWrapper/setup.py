@@ -129,7 +129,9 @@ def build_extension() -> Extension:
         # when another dependency supplies /usr/local/lib earlier in -L.
         svs_objects = [str(build / "libndn-svs.so")]
         libraries = [name for name in libraries if name != "ndn-svs"]
-        extra_link_args.insert(0, f"-Wl,-rpath,{build}")
+        # The build tree is a link-time source of the selected ABI only.  The
+        # runtime library is staged under NDNSF_LIBRARY_DIR; encoding `build`
+        # here would leak `/src/ndn-svs/build` into the sealed SIF RUNPATH.
 
     nac_includes = []
     nac_objects = []
