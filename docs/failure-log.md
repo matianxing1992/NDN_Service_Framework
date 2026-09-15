@@ -5107,3 +5107,20 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a dependency check is useful only when its provider is explicit
   and its ownership matches the selected target. Packaging metadata and Waf
   sources must be audited together before narrowing a SIF profile.
+
+## 2026-09-15 — Spec186 capability preflight omitted exported Rust paths
+
+- **Area**: T006 source/definition/base capability preflight.
+- **Symptom**: the rendered builder definition checked Rust and Cargo with
+  `NDNSF_RUST_PREFIX` and `NDNSF_CARGO_HOME`, but the preflight's literal-path
+  parser returned no Rust/Cargo predicates. A missing tokenizer toolchain could
+  therefore pass the cheap capability gate.
+- **Root cause**: `_base_capability_tests()` matched only unquoted literal
+  `/usr` or `/opt` paths and did not expand variables exported earlier in the
+  same builder shell.
+- **Correction**: parse stable `export NAME=/absolute/path` assignments,
+  expand them in `test -x/-f/-d` predicates, and add regression assertions for
+  cargo, rustc and the Cargo registry source directory.
+- **Lesson**: static checks must model the small shell language used by the
+  definition; checking only literal tokens is insufficient for declared
+  capability variables.

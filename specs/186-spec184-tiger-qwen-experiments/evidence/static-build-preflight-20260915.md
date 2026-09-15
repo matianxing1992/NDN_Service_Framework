@@ -28,6 +28,9 @@ survive until `%post` after compilation had begun.
   still require a new output path.
 - Record the defect and lesson in `docs/failure-log.md` so a future repair does
   not restore the weaker ordering.
+- The capability parser now expands absolute prefixes exported by the builder
+  shell before reading `test -x/-f/-d` predicates, so Rust/Cargo variable-backed
+  paths are checked rather than silently omitted.
 
 ## Dependency boundary audit
 

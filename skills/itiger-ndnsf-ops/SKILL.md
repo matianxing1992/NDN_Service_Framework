@@ -66,7 +66,8 @@ plane（source、base、app、compiler、profile、model、harness 或 resource�
 消费的源码路径：凡是被 `cp` 或 pip 安装命令引用的 `/src/ndnsf/...` 路径，都要
 在 `workspace.tar` 中存在；否则以 `WORKSPACE_CONSUMER_PATH_MISSING` 在编译前
 停止。传入 `--base-sif` 和同一 Apptainer 时，它会从 definition 的 `test -x/-f/-d`
-谓词提取 base-owned 工具、ONNX SDK、Rust 和头文件能力并在只读容器中验证。这样
+谓词（包括先前 `export` 的 Rust/Cargo 前缀变量）提取 base-owned 工具、ONNX
+SDK、Rust 和头文件能力并在只读容器中验证。这样
 可以在秒级发现“归档存在但实际消费的子目录缺失”和“definition 要求的编译器/SDK
 不在 base 中”，而不是等 `%post` 运行到对应命令才失败。
 

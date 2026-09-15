@@ -147,6 +147,9 @@ def test_preflight_extracts_base_capability_predicates(tmp_path):
     checks = set(preflight._base_capability_tests(definition))
     assert ("-x", "/usr/bin/clang-10") in checks
     assert ("-f", "/opt/onnx/lib/libonnx.a") in checks
+    assert ("-x", "/opt/rust-prefix/bin/cargo") in checks
+    assert ("-x", "/opt/rust-prefix/bin/rustc") in checks
+    assert ("-d", "/opt/cargo-home/registry/src") in checks
     assert all(not path.startswith("/opt/ndnsf-stage") for _, path in checks)
 
 

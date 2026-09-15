@@ -117,12 +117,44 @@ def check_workspace_consumers(definition: Path, workspace: Path) -> list[str]:
 
 
 def _base_capability_tests(definition: Path) -> list[tuple[str, str]]:
-    """Extract base-owned test predicates from the rendered builder shell."""
+    """Extract base-owned test predicates from the rendered builder shell.
+
+    Builder definitions commonly export stable absolute prefixes and then use
+    shell variables in their predicates (for example
+    ``test -x "$NDNSF_RUST_PREFIX/bin/cargo"``).  Parse those exports before
+    tokenising the predicates so variable-backed capabilities receive the same
+    read-only preflight as literal paths.
+    """
+    environment: dict[str, str] = {}
+    for raw in _builder_post(definition).splitlines():
+        try:
+            tokens = shlex.split(raw, comments=True)
+        except ValueError:
+            continue
+        if len(tokens) == 2 and tokens[0] == "export" and "=" in tokens[1]:
+            name, value = tokens[1].split("=", 1)
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                environment[name] = value
+
+    def expand(path: str) -> str:
+        return re.sub(
+            r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))",
+            lambda match: environment.get(
+                match.group(1) or match.group(2), match.group(0)),
+            path)
+
     tests: set[tuple[str, str]] = set()
     for raw in _builder_post(definition).splitlines():
-        for match in re.finditer(r"\btest\s+(-[fxd])\s+(/(?:usr|opt)/[^\s\\;]+)", raw):
-            kind, path = match.groups()
-            path = path.rstrip("'\")")
+        try:
+            tokens = shlex.split(raw, comments=True)
+        except ValueError:
+            continue
+        for index in range(len(tokens) - 2):
+            if tokens[index] != "test" or tokens[index + 1] not in {"-f", "-x", "-d"}:
+                continue
+            kind, path = tokens[index + 1], expand(tokens[index + 2])
+            if not path.startswith(("/usr/", "/opt/")):
+                continue
             if (path.startswith("/opt/ndnsf-stage") or
                     path.startswith("/opt/ndnsf-candidate") or
                     path.startswith("/opt/ndnsf-di/current")):
