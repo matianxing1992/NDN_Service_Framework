@@ -41,8 +41,8 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 | [T009 Provider Facade and Authenticated Assembly](#t009) | PARTIAL | B4 exit | B5 T009 static v11, T010 v67 and composition v4 `PASS`; normal compile v22 and authenticated/full runtime v21-v23 `RC=0`; sanitizer compile v3 and full runtime v2-v3 `RC=0`; final composition/closure record pending; [b5-provider](evidence/b5-provider.md#b5-sanitizer-compile-runtime-pass-v3-v2-v3) | 2026-09-14 05:24 -05:00 |
 | [T010 Protected Artifact and Runner Template Reuse](#t010) | PARTIAL | T009 static | B5 T010 static v67 and composition v4 `PASS`; normal compile v22 and full runtime v21-v23 `RC=0`; sanitizer compile v3 and full runtime v2-v3 `RC=0`; final composition/closure record pending; [b5-provider](evidence/b5-provider.md#b5-sanitizer-compile-runtime-pass-v3-v2-v3) | 2026-09-14 05:24 -05:00 |
 | [T011 Native Caller Migration and Compatibility Registry](#t011) | PASS | B5 exit | B6 closed; v12 static/composition pass; 359/359 `-j4` build, C++ compatibility selector, in-tree and external installed consumers, public example checks, ELF/no-Python closure, and fresh C++ unary/stream process oracles all pass; full qualification remains B7; [b6-migration](evidence/b6-migration.md) | 2026-09-14 01:00 -05:00 |
-| [T013 Current Candidate Process Qualification](#t013) | PARTIAL | B6 exit | B7 served-provider integration and full C++ process matrix now pass on normal and ASan/UBSan candidates; C++ tests cover the public request path, assignment/ACK/grant, Provider execution/response, conversation/recovery/replacement, revoke, deadline/cache and drain cleanup. Final source/ELF/no-Python identity convergence and batch closure remain to be recorded; [b7-cpp-qualification](evidence/b7-cpp-qualification.md#b7-served-provider-integration-and-qualification-20260915) | 2026-09-15 01:50 -05:00 |
-| [T012 Thin Python Prepared Model Facade](#t012) | NOT_STARTED | B7 C++ qualification exit | B8 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T013 Current Candidate Process Qualification](#t013) | PASS | B6 exit | Final B7 C++ process matrix passes on normal and ASan/UBSan candidates after rebuilding the complete source/external closure; installed C++ caller and 24-artifact ELF/no-Python receipt pass. Leak-enabled ASan remains an external OpenABE limitation and is recorded separately; Python SC-005 remains T012. [b7-cpp-qualification](evidence/b7-cpp-qualification.md#b7-final-candidate-convergence-20260915) | 2026-09-15 06:10 -05:00 |
+| [T012 Thin Python Prepared Model Facade](#t012) | PASS | B7 C++ qualification exit | B8 closed; v19 static PASS, DI/extension compile-link PASS, refreshed C++ selectors and 31 Python binding/compatibility tests PASS; subinterpreter and packaging-wheel stress remain unobserved. [b8-python](evidence/b8-python.md) | 2026-09-15 07:50 -05:00 |
 | [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T019 Prepared Client Ownership and Eviction](#t019) | PASS | T003/T005 static | B7R static v3, normal and ASan/UBSan C++ eviction/source-lifetime selector `RC=0`; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
 | [T020 Conversation Terminal Admission Ordering](#t020) | PASS | T007 static | B7R follow-up static `PASS`; normal and ASan/UBSan C++ selectors plus repeated selectors `RC=0`; delayed completion callback gate, failed-turn `CANCELLED` immediate replacement, and successful result-to-next-turn oracle observed; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md#t020-follow-up-delayed-completion-and-immediate-retry) | 2026-09-15 03:16 -05:00 |
@@ -51,6 +51,10 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 ## Current Checkpoint
 
 2026-09-15 04:00 -05:00 B7R T021 follow-up：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-t021-review-v9` 返回 `STATIC_PASS`，manifest SHA256=`37b893574652b639ee1d814d9b5e04be67e89fa61ab9c1d26b65f1b461db403d`、diff SHA256=`d7fc266003e3b7ce305ba1b7d6f28a35fb1895795d35c61f0cbdb044936fdb52`，无 P0-P3。修复 exact-forward cache runner 地址 ABA：外部 registry 维护单调 runner identity 并在析构移除，公共基类布局保持不变。`spec185-provider-assembly` normal `-j4` build 58.876s、ASan/UBSan `-j4` build 91.044s 均 `RC=0`；两次独立 grant 的 production protected Provider selector normal/ASan 均 `RC=0`、`*** No errors detected`，分别观察 sourceFetches=2、assemblies=2、templateHits=0、runnersCreated=2 与 runner execution=2。T021 已 PASS；T013、T012/T014 仍保持各自状态。详情见 [T021 follow-up](evidence/b7r-lifecycle-fixes-20260915.md#t021-follow-up-production-protected-independent-grant-matrix)。
+
+2026-09-15 06:10 -05:00 B7 T013 final convergence：先保留只构建 `spec185-process` 导致旧外部 requester ABI 的失败（requester `-11`）；随后以系统优先 `-j4` 重建 normal 与 ASan/UBSan 的完整 DI、process、prepared-selector、integration 和外部 requester/provider/authority/controller/worker 闭包。normal process 五 case×2、ASan/UBSan（`detect_leaks=0`）五 case×2 均 `RC=0`、`*** No errors detected`；独立 drain selector 两次通过。24-artifact ELF/readelf/ldd receipt 为 `CLOSURE_PASS=True`、`NO_PYTHON_NEEDED=NONE`、`ELF_LDD_ERRORS=NONE`；仓库外当前公共头/库 staged prefix 的 C++ caller consumer 通过。Leak-enabled ASan 的唯一边界是 `/usr/local/lib/libopenabe.so` 16项策略树分配泄漏，单独保留为外部依赖限制，不伪造 sanitizer PASS。T013 已 PASS；T012/T014 仍按依赖保持未完成。详见 [B7 final candidate convergence](evidence/b7-cpp-qualification.md#b7-final-candidate-convergence-20260915)。
+
+2026-09-15 07:50 -05:00 B8 T012：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-t012-review-v19-20260915` 返回 `STATIC_PASS`，manifest 已记录且无 P0-P3；v15/v17/v18 的 translator 与 teardown fixture findings 均保留。系统优先 `-j4` 重建 DI 受影响闭包 `RC=0`（2:24.38）及 Python extension `RC=0`（r4）；同一候选运行 `test_spec185_prepared_model.py` 9/9、继承 `test_spec182_native_bindings.py` 合计31/31，真实 C++ `spec185-process` 5 cases、`spec185-prepared-request` 15 cases、`spec185-prepared-conversation` 16 cases 均 `RC=0` 且无 Boost 错误。修正了标准异常 translator 吞咽和继承测试对已退役 requester parser 的过时断言；新增子进程 `DiError` 字段/模块退出回归。B8 已 PASS；Python subinterpreter、wheel packaging 和 wrapper sanitizer 仍未观测。详见 [b8-python](evidence/b8-python.md)。
 
 2026-09-15 03:16 -05:00 B7R T020 follow-up：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-t020-review-v01cytpt` 返回 `STATIC_PASS`，manifest SHA256=`8d882b58a426f004617ab10ee641f3f3db3e6c33b02f406b3025b26cd9835437`，无 P0-P3。`spec185-prepared-request` normal 与独立 ASan/UBSan `-j4` 构建均 `RC=0`；同一 conversation selector normal、ASan/UBSan 各运行两次，均 `RC=0`、`*** No errors detected`。C++ 夹具用共享 native worker 上的公开 completion callback gate 延迟会话失败回调，确认 `CANCELLED` 结果可见后立即 replacement；首个成功 `result(0)` 后立即提交下一 turn，后续 checkpoint/commit/recovery/drain 继续通过。T020 已 PASS；T021、T013、T012/T014 仍按各自未观测项保持原状态。详情见 [T020 follow-up](evidence/b7r-lifecycle-fixes-20260915.md#t020-follow-up-delayed-completion-and-immediate-retry)。
 
@@ -501,7 +505,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t013"></a>
 
-- [ ] T013 [US4] Current Candidate Process Qualification — tests/integration-tests/di-prepared-process.t.cpp; tests/wscript; evidence/b7-cpp-qualification.md
+- [x] T013 [US4] Current Candidate Process Qualification — tests/integration-tests/di-prepared-process.t.cpp; tests/wscript; evidence/b7-cpp-qualification.md
 
   **Batch / Depends**: B7 / B6 exit。
 
@@ -515,11 +519,11 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Lifecycle completeness**: C-07生命周期矩阵全部原生反例先通过；Python随后仅验边界语义。
 
-  **Exit / oracle**: SC-001至SC-008的原生部分逐条证据；SC-005 Python部分留T012；no-Python ELF/进程依赖；不同安全域和cache命中反例；无startup/collector错误冒充协议结果。
+  **Exit / oracle**: SC-001至SC-008的原生部分逐条证据；SC-005 Python部分留T012；no-Python ELF/进程依赖；不同安全域和cache命中反例；无startup/collector错误冒充协议结果。已完成 normal 与 ASan/UBSan `detect_leaks=0` C++ matrix、安装 C++ caller 和 24-artifact ELF receipt；外部 OpenABE leak-enabled ASan 限制见唯一 B7 evidence，不计产品 PASS。
 
 <a id="t012"></a>
 
-- [ ] T012 [US4] Thin Python Prepared Model Facade — pythonWrapper/src/ndnsf/di_bindings.cpp; NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/client.py; NDNSF-DistributedInference/ndnsf_distributed_inference/app_sdk/facades.py; tests/python/test_spec185_prepared_model.py; contracts/caller-matrix.md
+- [x] T012 [US4] Thin Python Prepared Model Facade — pythonWrapper/src/ndnsf/di_bindings.cpp; NDNSF-DistributedInference/ndnsf_distributed_inference/api/__init__.py; NDNSF-DistributedInference/ndnsf_distributed_inference/api/_async.py; NDNSF-DistributedInference/ndnsf_distributed_inference/provider_api.py; tests/python/test_spec185_prepared_model.py; tests/python/test_spec182_native_bindings.py
 
   **Batch / Depends**: B8 / B7 C++ qualification exit。
 
@@ -533,7 +537,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Lifecycle completeness**: C-07直接pybind对象/便利方法逐项映射；start_prepare保留显式handle；async取消/GC/loop关闭/解释器退出反例；不引入Python领域owner。
 
-  **Exit / oracle**: Python输入/异常/事件映射和寿命通过；native断言仍C++；无静默legacy fallback；若实际模块文件不同先更新精确caller映射。
+  **Exit / oracle**: Python输入/异常/事件映射和寿命通过；native断言仍C++；无静默legacy fallback；实际模块路径已按当前 `api/` 与 `provider_api.py` caller 映射更新。v19 静态、DI/extension compile-link、31项 Python 回归及刷新后的 C++ process/request/conversation selectors 均有证据；subinterpreter、wheel packaging 与 wrapper sanitizer 保持未观测。
 
 <a id="t014"></a>
 

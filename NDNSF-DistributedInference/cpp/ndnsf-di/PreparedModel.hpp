@@ -159,6 +159,8 @@ public:
 
   /** Read the next reliable stream event, using a local millisecond timeout. */
   std::optional<Event> next(std::chrono::milliseconds timeout);
+  /** Return the request's remaining business deadline used by binding defaults. */
+  std::chrono::milliseconds remainingTimeout() const;
   /** Register one error-first read callback; the token cancels only this read. */
   Subscription nextAsync(std::chrono::milliseconds timeout,
                           std::function<void(std::exception_ptr, std::optional<Event>)> callback);

@@ -1,5 +1,25 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec185 T013 mixed external-binary closure (RESOLVED)
+
+The first final normal run rebuilt only `spec185-process` after a public native runner ABI
+repair. The external `DI_NativeRequester` and prepared selectors remained stale; the first
+requester boundary was an empty-log `-11`, before any protocol result. The raw run is
+`.codex-tmp/spec185-t013-final-20260915/process-runtime-normal.log`. Rebuilding the complete
+DI/process/prepared-selector and external caller closure produced the final normal matrix
+`RC=0`; this failure is a build-identity boundary, not a native protocol result.
+
+## 2026-09-15 — Spec185 T013 leak-enabled sanitizer dependency boundary (QUALIFIED)
+
+The ASan/UBSan process matrix with leak detection enabled stopped with `RC=201` in
+`/usr/local/lib/libopenabe.so` policy-tree allocations (1,232–1,236 bytes across 16 allocations).
+No ASan/UBSan memory or undefined-behavior report was emitted. The same complete candidate with
+`detect_leaks=0` passed all five C++ process cases twice, and the isolated drain selector passed
+twice. This remains an external dependency limitation rather than a product sanitizer PASS;
+the raw runs are `.codex-tmp/spec185-t013-final-20260915/process-runtime-asan.log` and
+`process-runtime-asan-final.log`, with the durable decision in
+[B7 final candidate convergence](../specs/185-prepared-model-runtime/evidence/b7-cpp-qualification.md#b7-final-candidate-convergence-20260915).
+
 ## 2026-09-15 — Spec185 T021 protected Provider runner-address ABA (RESOLVED)
 
 The first production protected independent-grant selector reached both grant verification and
@@ -5371,4 +5391,6 @@ v63 静态门后，既有 build tree 以系统优先 PATH、`-j4` 仅构建 `spe
 2026-09-15 01:50 -05:00 B7 T013 served-provider grant boundary：`prepared-served-focused-v2.rc=201` 已到 ACK/grant，但授权器拒绝 `published source is not authorized`；fixture publication source 缺少与 authorized manifest 相同的 model/content/canonical/initializer/artifact-profile digests，已补齐，原始日志 `.codex-tmp/spec185-b7/prepared-served-focused-v2.log` 保留。
 2026-09-15 01:50 -05:00 B7 T013 served-provider backend boundary：`prepared-served-focused-v3.rc=201` 已完成 assignment、ACK 与 grant verification，但 runner factory 未注册 offer 选择的 `onnxruntime-cpu` backend；已按 production backend identity 修正 fixture，原始日志 `.codex-tmp/spec185-b7/prepared-served-focused-v3.log` 保留。
 2026-09-15 01:50 -05:00 B7 T013 matrix transient boundary：normal v35 与 sanitizer v2 的一次隔离 selector 均在 `RuntimeDrainAsyncIncludesNativeClientWork` 的 60 秒 notification pump 期限失败；该 selector 隔离复跑两次及之后完整 normal/sanitizer matrix 均 `rc=0`，未发现 sanitizer 报告。原始日志 `.codex-tmp/spec185-b7/process-runtime-normal-v35-served-provider.log`、`process-runtime-asan-v2.log` 保留；不将单次超时计为产品 PASS。
-2026-09-15 01:50 -05:00 B7 T013 qualification：served-provider focused normal/ASan、完整 normal `spec185-process`（5 cases）及 sanitizer C++ matrix（38 isolated selectors）均 `rc=0` 且 `*** No errors detected`；sanitizer matrix 无 `AddressSanitizer`、`UndefinedBehaviorSanitizer` 或 `runtime error:`。证据见 [b7-cpp-qualification](../specs/185-prepared-model-runtime/evidence/b7-cpp-qualification.md#b7-served-provider-integration-and-qualification-20260915)，T013 仍为 `PARTIAL`，生产 canonical assembler/remote authority 与最终 source/ELF/no-Python convergence 未由本轮 served fixture 单独证明。
+2026-09-15 01:50 -05:00 B7 T013 served-provider qualification（历史阶段）：served-provider focused normal/ASan、完整 normal `spec185-process`（5 cases）及 sanitizer C++ matrix（38 isolated selectors）均 `rc=0` 且 `*** No errors detected`；当时 T013 仍为 `PARTIAL`，因为最终 source/ELF/no-Python convergence 尚未刷新。该阶段已由 2026-09-15 final convergence 条目 supersede，生产 canonical assembler/remote authority 仍保留其既定边界。
+
+2026-09-15 06:10 -05:00 B7 T013 final convergence：完整 normal 与 ASan/UBSan（`detect_leaks=0`）候选闭包、五个 process cases（行为 cases 双次、配置 probe 单次）、安装 C++ caller 及 24-artifact ELF/no-Python receipt 均通过，T013 现为 `PASS`。Leak-enabled ASan 仅在外部 `/usr/local/lib/libopenabe.so` 策略树分配上以 `rc=201` 结束，已单列为外部依赖限制；见 [B7 final candidate convergence](../specs/185-prepared-model-runtime/evidence/b7-cpp-qualification.md#b7-final-candidate-convergence-20260915)。

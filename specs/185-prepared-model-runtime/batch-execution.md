@@ -21,7 +21,7 @@
 | 07 / B4 | T007 → T008 | Conversation→既有coordinator/journal；DI及会话fixture | Spec185Conversation；两轮持久提交、恢复/替换/导出与handle一致 | evidence/b4-conversation.md |
 | 08 / B5 | T009 → T010 | Provider facade→认证后组装→artifact lease；DI+provider可执行文件及fixture | Spec185ProviderAssembly；冷/热请求安全隔离，stop后清理闭合 | evidence/b5-provider.md |
 | 09 / B6 | T011 | native caller、公开SDK消费、CLI兼容；DI+受影响examples及安装consumer | Spec185Compatibility；安装后例子及最小unary/stream真实接线通过 | evidence/b6-migration.md |
-| 10 / B7 | T013 | 已完成native链的当前候选；复用同身份binary，仅因源码/依赖变化增量构建 | Spec185Process；全部C++模式/反例、no-Python及依赖身份资格通过 | evidence/b7-cpp-qualification.md |
+| 10 / B7 | T013 | 当前native链候选；复用同身份binary，并在外部ABI/源码变化后重建完整DI、process、prepared-selector和调用方闭包 | Spec185Process；normal与ASan/UBSan C++模式/反例、安装C++ caller、no-Python ELF/依赖身份资格均通过；leak-enabled ASan 的外部 OpenABE 限制单列 | evidence/b7-cpp-qualification.md#b7-final-candidate-convergence-20260915 |
 | 10R / B7R | T019 → T020 → T021 | B7后生命周期/终态/身份审计修复；只构建受影响DI request/provider targets | 新增C++缓存淘汰、会话终态准入、generation identity与grant-bound cache selector；未观测项显式保留 | evidence/b7r-lifecycle-fixes-20260915.md |
 | 11 / B8 | T012 | 既有pybind TU与Python薄封装；只构建受影响extension及ABI依赖 | wrapper-only checks；C-07映射、GIL/async/异常边界通过，不推进native资格 | evidence/b8-python.md |
 | 12 / B9 | T014 | Design/API/交付文件；文档生成器与双PDF，无native构建 | 文档/源码/证据一致，184未完成项保留 | evidence/b9-handoff.md |

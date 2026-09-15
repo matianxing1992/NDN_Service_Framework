@@ -2,7 +2,7 @@
 
 ## Status
 
-`PARTIAL`。T013 的实现、逐任务静态门和批次组合门已通过，普通 compile-link 已恢复；聚焦 prepared-request C++ 运行已在有界 Face pump 修复后通过，但完整 process 矩阵、sanitizer、清理和最终批次收口仍未完成。
+`PASS`。T013 的实现、逐任务静态门和批次组合门已通过；当前 normal 与 ASan/UBSan（`detect_leaks=0`）C++ process matrix、安装 C++ caller、ELF/no-Python closure 和最终批次收口均有当前候选证据。Leak-enabled ASan 在外部 OpenABE 分配中失败，作为外部限制单独保留，不计产品 sanitizer PASS；Python SC-005 留在 T012。
 
 ## Static and composition gates
 
@@ -95,7 +95,7 @@ Command boundary: system-first `/usr/bin/g++ -B/usr/bin`, `CXX=/usr/bin/g++`, ex
 - Focused trace v2: `.codex-tmp/spec185-b7/prepared-timeout-trace-v2.log` with `.rc` = `201` shows both requests' ACKs matched in about 100ms (`ackWindowExpired=false`), but neither request emitted `COLLAB_ACK_CLOSED`, selection, or Provider execution before the 10-second request budget expired. A temporary diagnostic confirmed `scheduleAckTimeout=true`, `scheduleImmediateAckTimeout=true`, and `ackTimeoutMs=5000` for both requests; no `ACK_TIMEOUT_CALLBACK` was observed. `strace` also showed no timerfd armed for the 5-second ACK deadline. This is a production scheduler/state-machine boundary, not a fixture budget qualification; the diagnostic logging is temporary and is not itself a PASS.
 - Focused retry v3: `.codex-tmp/spec185-b7/prepared-timeout-focus-v3.log` with `.rc` = `0` runs only `Spec185PreparedRequest/PreparedRequestCompletesThroughProvider` against the v5 candidate. The case completed in approximately 11.09s with `*** No errors detected`; the four-round bounded `pumpUntil` continued driving the User Face scheduler through the 5-second ACK boundary before waiting on futures. This closes the prior focused test-driver boundary, but it is not the full process qualification.
 
-## Coverage status
+## Historical coverage status (superseded by final convergence)
 
 | Lane | Status | Boundary |
 | --- | --- | --- |
@@ -105,7 +105,8 @@ Command boundary: system-first `/usr/bin/g++ -B/usr/bin`, `CXX=/usr/bin/g++`, ex
 | build/source closure | `PASS` | v5 linked `spec185-process`, B3/B5 selectors, and `integration-tests` after the closure repair |
 | migration/evidence | `PARTIAL` | v5 candidate and focused runtime identity are retained; full qualification and sanitizer evidence remain pending |
 
-No runtime PASS, no ASan/UBSan/LSan result, and no final B7 closure is claimed. T013 remains `PARTIAL` pending repair and fresh static review, compile-link, and runtime evidence.
+At this historical checkpoint no runtime PASS, sanitizer result, or final B7 closure was claimed;
+the later final convergence section supersedes this status and records the current T013 `PASS`.
 
 ### Conversation runtime v3
 
@@ -202,3 +203,79 @@ These failures were retained before repair; none is counted as a passing result.
 The current C++ integration evidence now observes the full public request-to-response chain and the negative/lifecycle paths in the B7 matrix. It can catch build-registration, wiring, source-authorization, backend identity, protocol-state and lifecycle failures; the retained logs show that it did catch each of the first four classes during this run. The served-provider happy path still uses explicit test seams for preparation, runner, protected runtime and local publication, so it does not by itself qualify the production canonical assembler or a remote authority publication. Those production paths remain represented by the existing provider-assembly selectors.
 
 T013 therefore remains `PARTIAL` until the final source/ELF/no-Python identity convergence and batch closure record are refreshed against this candidate. No Python-only assertion is used to claim native behavior, and no SIF/Tiger or large-model qualification is implied.
+
+## B7 final candidate convergence 2026-09-15
+
+This section closes the B7 candidate against the same source and binary identity used by the
+native process matrix. The first final attempt was deliberately retained: a build of only
+`spec185-process` left the external `DI_NativeRequester` and prepared selectors stale after the
+public `NativeModelRunner` ABI repair. The normal process then stopped at the first requester
+boundary with `-11` and an empty requester log. The raw run is
+`.codex-tmp/spec185-t013-final-20260915/process-runtime-normal.log`; the review diagnosis is
+recorded in the corresponding session handoff. Rebuilding the external requester/provider and
+then the complete prepared-selector closure removed the mixed-binary boundary; no production
+protocol change was inferred from the stale-binary failure.
+
+The final normal closure used system-first `/usr/bin/g++ -B/usr/bin`, `-j4`, and the existing
+`build-spec185-b0c-normal` tree. The all-target build (`.codex-tmp/spec185-t013-final-build-normal-all-20260915.log`,
+`.rc=0`, 3:28.188) included `spec185-prepared-request`, `spec185-prepared-conversation`,
+`spec185-provider-assembly`, `spec185-process`, and `integration-tests`; the external requester,
+provider, authority, controller and assembly-worker binaries were rebuilt in the same tree. The
+final process matrix (`.codex-tmp/spec185-t013-final-20260915/process-runtime-normal-final.log`,
+`.rc=0`, 6:47.93) ran five registered process cases; the four behavior cases launch their
+isolated native selectors twice, while the configuration probe runs once. It emitted
+`*** No errors detected`, used 77,284 KB maximum resident memory and reported zero swaps.
+
+An independent ASan/UBSan candidate was built in `build-spec185-b3-asan-ubsan-fast` with `-j4`;
+the complete selector rebuild (`.codex-tmp/spec185-t013-final-build-asan-all-20260915.log`,
+`.rc=0`, 5:19.288) followed the earlier production/external closure build
+(`.codex-tmp/spec185-t013-final-build-asan-20260915.log`, `.rc=0`, 22:31.959). The final process
+matrix was run with `ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1` and
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1` because the separate leak-enabled run stops in
+the external `/usr/local/lib/libopenabe.so` policy-tree allocations; the attribution is retained in
+the raw child logs `/tmp/spec185-b7-unary-240815-1/requester.log` and
+`/tmp/spec185-b7-stream-240815-2/provider.log`. The no-leak ASan/UBSan matrix
+(`.codex-tmp/spec185-t013-final-20260915/process-runtime-asan-final.log`, `.rc=0`, 7:49.89)
+ran all five cases twice, emitted `*** No errors detected`, used 1,481,268 KB maximum resident
+memory, reported zero swaps, and contained no ASan, UBSan or `runtime error:` report. The retained
+leak-enabled run (`process-runtime-asan.log`, `.rc=201`) is an external dependency boundary
+(1,232–1,236 bytes in 16 `libopenabe` allocations), not a product sanitizer PASS; it remains
+qualified separately rather than being hidden by the no-leak invocation. The previously flaky
+`RuntimeDrainAsyncIncludesNativeClientWork` selector also passed twice in isolation under this
+ASan candidate (`drain-asan-1.log` and `drain-asan-2.log`, both `.rc=0`).
+
+The candidate ELF/no-Python receipt is
+`.codex-tmp/spec185-t013-final-20260915/elf-closure/candidate-receipt.json`, with the derived
+summary in `elf-closure/summary.txt`. It covers 24 normal and ASan artifacts and records
+`NO_PYTHON_NEEDED=NONE`, `SOURCE_TREE_RUNTIME_LEAKS=NONE`, `ELF_LDD_ERRORS=NONE`,
+`CLOSURE_PASS=True`, HEAD `23811d8619b109bc428f6e84cdabb05ad836089c`, working-tree diff
+SHA256 `e88e06b7e5714a221b788271cc8628d8575145af64511b9ccd0c56140f080f2e`, and source-manifest
+SHA256 `6b83fa1b7735ea8f948ffe9b36815e308768a0f9fa940a64b8e47ede7d885d6f`. The receipt is
+explicitly a dirty-worktree candidate identity; unrelated worktree changes are not part of the
+T013 checkpoint.
+
+The installed C++ caller was compiled outside the repository from the current DI/Core libraries
+and public `ndnsf-di/api.hpp`/`provider.hpp`. The first in-repository staging attempt was rejected
+by the consumer's source-tree include guard; a second exposed unresolved generated `.pc`
+placeholders. After moving the prefix to `/tmp/spec185-t013-manual-prefix-v3` and replacing those
+packaging placeholders with the actual system/NDN-CXX link closure, the authoritative caller
+consumer returned `Spec185CallerConsumer PASS` and emitted
+`SPEC185_INSTALLED_CALLER_CONSUMER_OK`; the outer command output is
+`.codex-tmp/spec185-t013-final-20260915/installed-caller-v3.log`, and the marker is retained in
+`.codex-tmp/spec185-t013-final-20260915/installed-caller-v3/installed/run.log`.
+
+### B7 five-lane closure and limits
+
+| Lane | Observed result |
+| --- | --- |
+| production entry/callers | C++ Runtime/PreparedModel requester, independent authority/provider processes, served Provider path, and installed public caller all exercised; normal and ASan/UBSan process matrices passed |
+| implementation and wire | ACK/selection/grant, Provider serve/runner/response, conversation/recovery/replacement, revoke, deadline/cache and drain paths observed; no new production wire change in this convergence step |
+| test/harness/oracle | `spec185-process` owns five C++ cases with repeated isolated native selectors; each result is a C++ oracle and no Python assertion supplies native behavior |
+| build/source closure | normal and ASan/UBSan target closures rebuilt with `-j4`; 24-artifact ELF/readelf/ldd receipt reports no Python dependency or missing library |
+| migration/evidence | external C++ caller passes from the staged public prefix; stale-binary, packaging-placeholder and external LeakSanitizer boundaries are preserved as failures/limits |
+
+The closure is sufficient for the T013 native exit: the local C++ request-to-response and negative
+lifecycle matrix, installed C++ consumer, and no-Python ELF/process checks all have current
+candidate evidence. It does not qualify a remote authority, Tiger/SIF deployment, large Qwen model,
+GPU execution, or the Python wrapper lane (SC-005 remains T012). The leak-enabled ASan result is
+also not a product PASS because its first failing boundary is an external OpenABE allocation leak.
