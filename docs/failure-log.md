@@ -4947,3 +4947,22 @@ which differs from the Spec186 handoff seal
 - **Lesson**: source-sealer inclusion and image replay inclusion are separate
   boundaries; exact-SIF preflight must verify every runtime file at its final
   in-image path before GPU execution.
+
+## 2026-09-15 — Spec186 r38 GPU launch referenced missing staged inputs
+
+- **Area**: T009/T010 exact-SIF GPU launch input binding.
+- **Symptom**: after the final SIF build, native import and `ldd` closure
+  passed, but Apptainer rejected the first YOLO launch before MiniNDN startup:
+  `mount source /project/tma1/ndnsf-di/identities/spec186 doesn't exist`.
+  The configured `spec186-yolo-case-bundles/Y-A` directory was also absent on
+  the project filesystem.
+- **Root cause**: the ad-hoc runtime wrapper used planned paths rather than
+  the currently staged project paths; the case and identity directories had
+  been cleaned or renamed while the wrapper retained their old names.
+- **Correction**: use the complete staged
+  `candidates/spec180-runtime-b6710fd6/models` input tree (including the
+  verified `yolo26n.onnx` digest), remove the nonexistent identity bind because
+  the runner bootstraps per-process keychains, bind a durable state directory,
+  and persist the final SIF outside `/tmp` before launching.
+- **Lesson**: a valid SIF cannot compensate for stale external binds; validate
+  every host input path and persist the image before starting a GPU campaign.
