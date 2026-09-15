@@ -24,9 +24,11 @@ Rust 检查从基础定义中随意删除来模拟 Core-only 构建；真正的�
 需要新的 SpecKit 任务和干净重建。
 
 DI 构建还必须显式提供封存的 `NDNSF_RUST_PREFIX`、`NDNSF_CARGO_HOME`，可选的
-`NDNSF_TOKENIZER_BRIDGE_TARGET`；前两个变量缺失时 Waf 立即失败，tokenizer
-target 默认落在普通 `build/` 树中。开发机 `.codex-tmp/spec182…` 不再是任何
-正式构建的隐式依赖。
+`NDNSF_RUSTUP_HOME` 和 `NDNSF_TOKENIZER_BRIDGE_TARGET`；前两个变量缺失时
+Waf 立即失败，并在 Cargo 构建前探测 `cargo --version`、`rustc --version`。
+只有 rustup shim 需要设置 `NDNSF_RUSTUP_HOME`，独立安装的 Rust 工具链不需要；
+tokenizer target 默认落在普通 `build/` 树中。开发机 `.codex-tmp/spec182…`
+不再是任何正式构建的隐式依赖。
 
 在调用构建入口前，先运行同目录的
 `preflight-development-sif.py`。它用秒级检查交叉核对 rendered definition

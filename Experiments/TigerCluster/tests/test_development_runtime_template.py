@@ -105,6 +105,9 @@ def test_waf_does_not_default_to_a_developer_temp_toolchain():
     assert ".codex-tmp/spec182-t001-dependencies" not in source
     assert "NDNSF_RUST_PREFIX is required" in source
     assert "NDNSF_CARGO_HOME is required" in source
+    assert "NDNSF_RUSTUP_HOME" in source
+    assert "is not runnable; check" in source
+    assert "[path, '--version']" in source
     assert "or os.path.join(top, 'build', 'tokenizer-bridge-target')" in source
 
 

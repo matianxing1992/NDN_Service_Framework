@@ -5124,6 +5124,23 @@ which differs from the Spec186 handoff seal
 - **Lesson**: static checks must model the small shell language used by the
   definition; checking only literal tokens is insufficient for declared
   capability variables.
+
+## 2026-09-15 — Spec186 host Rustup shim was unusable without its home
+
+- **Symptom:** r61 native `waf configure` reached the pinned tokenizer bridge,
+  but a host Rust prefix backed by rustup shims could not run without its
+  matching `RUSTUP_HOME`; a second configure succeeded only after setting
+  `NDNSF_RUSTUP_HOME=/tmp/rustup-spec186`.
+- **Root cause:** Waf exported `PATH` and `CARGO_HOME` but did not validate the
+  `cargo`/`rustc` executables or propagate an optional rustup home, so a hidden
+  host-only toolchain dependency appeared late in configure.
+- **Fix:** `_ensure_tokenizer_bridge()` now requires `rustc`, accepts optional
+  `NDNSF_RUSTUP_HOME`, and runs both sealed tools with `--version` before Cargo.
+- **Lesson:** A sealed path is insufficient evidence of a runnable toolchain;
+  preflight must probe the executable and its resolver state before expensive
+  compilation. Standalone SIF toolchains remain compatible because the rustup
+  variable is optional.
+
 ## 2026-09-15 — Spec186 r61 rejected stale r55 host gate before build
 
 - **Area**: T006 current source-seal and host-gate cross-check.

@@ -41,6 +41,12 @@ before native compilation. Predicates outside that block may validate tools
 installed by the builder itself (for example `clang-10` from APT) and are
 not base requirements.
 
+Waf also probes the sealed `cargo --version` and `rustc --version` before the
+expensive tokenizer build. A Rust prefix made of rustup shims may set the
+optional `NDNSF_RUSTUP_HOME` to its matching home; a standalone toolchain does
+not need it. This turns a resolver failure into an immediate, actionable
+preflight error without changing the SIF contract.
+
 ## Follow-up design (plan only)
 
 The next packaging change should introduce explicit target profiles with an

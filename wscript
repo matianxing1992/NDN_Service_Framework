@@ -85,6 +85,14 @@ def _ensure_tokenizer_bridge(conf):
     if not os.path.isdir(cargo_home):
         conf.fatal(f'Pinned Rust cargo home is missing: {cargo_home} '
                    '(set NDNSF_CARGO_HOME)')
+    rustup_home = os.environ.get('NDNSF_RUSTUP_HOME', '').strip()
+    if rustup_home and not os.path.isdir(rustup_home):
+        conf.fatal(f'Pinned Rust rustup home is missing: {rustup_home} '
+                   '(unset NDNSF_RUSTUP_HOME for a standalone toolchain)')
+    rustc = os.path.join(rust_prefix, 'bin', 'rustc')
+    if not os.path.isfile(rustc) or not os.access(rustc, os.X_OK):
+        conf.fatal(f'Pinned Rust rustc is missing: {rustc} '
+                   '(set NDNSF_RUST_PREFIX)')
     target_dir = os.environ.get('NDNSF_TOKENIZER_BRIDGE_TARGET', '').strip() \
         or os.path.join(top, 'build', 'tokenizer-bridge-target')
     crate_dir = os.path.join(
@@ -113,6 +121,18 @@ def _ensure_tokenizer_bridge(conf):
         build_env['PATH'] = os.path.join(rust_prefix, 'bin') + \
             os.pathsep + build_env.get('PATH', '')
         build_env['CARGO_HOME'] = cargo_home
+        if rustup_home:
+            build_env['RUSTUP_HOME'] = rustup_home
+        for tool, path in (('cargo', cargo), ('rustc', rustc)):
+            probe = subprocess.run(
+                [path, '--version'], env=build_env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True)
+            if probe.returncode != 0:
+                tail = '\n'.join(probe.stdout.splitlines()[-10:])
+                conf.fatal(f'Pinned Rust {tool} is not runnable; check '
+                           f'NDNSF_RUST_PREFIX and optional '
+                           f'NDNSF_RUSTUP_HOME:\n{tail}')
         proc = subprocess.run(
             [cargo, 'build', '--release', '--locked', '-j2', '--offline',
              '--target-dir', target_dir,

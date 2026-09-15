@@ -65,6 +65,16 @@ profile split proposal are recorded in
 profile remains future work and must be implemented as a new SpecKit task with
 a clean rebuild; no dependency check was removed in this repair.
 
+### r61 Rust toolchain probe (2026-09-15)
+
+The host configure initially reached the tokenizer bridge with a Rust prefix
+whose `cargo` and `rustc` were rustup shims. They failed without the matching
+`RUSTUP_HOME`, after which configure succeeded with
+`NDNSF_RUSTUP_HOME=/tmp/rustup-spec186`. Waf now accepts that optional variable
+and probes both sealed binaries with `--version` before invoking Cargo, so this
+hidden dependency fails fast instead of consuming a full tokenizer build.
+Standalone SIF toolchains leave the variable unset.
+
 ## Verification
 
 ```text
