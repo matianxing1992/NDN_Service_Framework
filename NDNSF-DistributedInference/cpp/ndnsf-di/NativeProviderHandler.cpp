@@ -1893,6 +1893,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         selectionProjection->plan.modelFormat = state->plan.modelFormat;
         selectionProjection->plan.plannerKind = state->plan.plannerKind;
       }
+      if (selectionProjection) {
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_SELECTION_ACCEPTED"
+               << " requestId=" << selectionProjection->requestId
+               << " attemptEpoch=" << selectionProjection->attempt
+               << " epochMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::system_clock::now().time_since_epoch()).count()
+               << " provider=" << ctx.localProvider().toUri()
+               << " role=" << role
+               << " planDigest=" << selectionProjection->planDigest;
+        logRuntimeEvidence(record.str());
+      }
       const NativeExecutionPlan& executionPlan = selectionProjection
         ? selectionProjection->plan : state->plan;
       const auto authenticatedGeneration =
@@ -3276,6 +3288,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                << " final_scope=" << config.finalResponseScope
                << " has_payload=" << (finalPayload ? "true" : "false");
         logRuntimeInfo(record.str());
+      }
+      {
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_PROVIDER_EXECUTION_COMPLETED"
+               << " requestId=" << ctx.sessionId()
+               << " attemptEpoch=" << (executionAttempt
+                     ? executionAttempt->attemptEpoch
+                     : (selectionProjection ? selectionProjection->attempt : 1))
+               << " epochMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::system_clock::now().time_since_epoch()).count()
+               << " provider=" << ctx.localProvider().toUri()
+               << " planDigest=" << requestPlanDigest;
+        logRuntimeEvidence(record.str());
       }
       if (finalPayload) {
         if (ctx.isStreamed() &&
