@@ -1,5 +1,25 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec186 host gate rejected the current stable text decoder
+
+- **Symptom:** Generating a current host gate returned
+  `NATIVE_TEXT_DELTA_CONTRACT_MISSING` and
+  `NATIVE_TEXT_DELTA_SEMANTICS_MISSING`, although
+  `NativeEpochCoordinator.cpp` computes the terminal delta from
+  `stableCandidateText` and the committed `generatedText` prefix. The focused
+  checker suite also exposed a stale `provider.fetchPermissionsFromController`
+  test marker after the executable moved to pointer syntax.
+- **Root cause:** `scripts/spec175_contract_gate.py` and its test fixture only
+  recognized the pre-stable-decoder spelling `candidateText.substr`; the
+  production serving-path test still searched for the old member-access form.
+- **Fix:** accept either candidate or stable decoded text when checking the
+  equivalent contract, update the mutation fixture to cover the stable form,
+  and match the current `provider->fetchPermissionsFromController` call. The
+  checker suite passes `15/15`.
+- **Lesson:** source-contract gates must track semantic equivalents as the
+  implementation evolves; otherwise a preflight can fail before the actual
+  dependency or runtime checks and recreate the same trial-and-error loop.
+
 ## 2026-09-15 — Spec186 T006 test target and subprocess closure
 
 - **Symptom:** The first fresh `unit-tests,integration-tests` build completed,

@@ -527,12 +527,19 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
     epoch_source = _read(epoch_path) if epoch_path.is_file() else ""
     text_output_markers = (
         "candidateText =",
-        "textDelta = candidateText.substr",
         "requireTextOutput",
         "textDelta",
     )
     missing_text_output = tuple(
         marker for marker in text_output_markers if marker not in epoch_source)
+    # The stable decoder is the authoritative terminal text projection.  The
+    # older candidateText spelling remains valid for descendants that do not
+    # withhold decoder bytes, but the gate must accept the stronger
+    # stableCandidateText implementation as well.
+    if not any(marker in epoch_source for marker in (
+            "textDelta = candidateText.substr",
+            "textDelta = stableCandidateText.substr")):
+        missing_text_output += ("textDelta = candidateText.substr",)
     if "requireGenerationTextOutput" not in handler_source:
         missing_text_output += ("requireGenerationTextOutput",)
     if "generationTextDecoderFactory" not in handler_source:
@@ -547,8 +554,11 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
     # always-empty implementation can retain the field while discarding the
     # newly decoded suffix.  Bind the delta to the exact previously emitted
     # text length so a source mutation is caught before a broad run.
-    text_delta_semantics = "candidateText.substr(generatedText.size())"
-    if text_delta_semantics not in epoch_source:
+    text_delta_semantics = (
+        "candidateText.substr(generatedText.size())",
+        "stableCandidateText.substr(generatedText.size())",
+    )
+    if not any(marker in epoch_source for marker in text_delta_semantics):
         issues.append(_issue(
             "NATIVE_TEXT_DELTA_SEMANTICS_MISSING",
             "terminal text delta is not derived from the committed text prefix",

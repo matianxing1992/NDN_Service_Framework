@@ -115,8 +115,8 @@ def test_source_census_accepts_canonical_streaming_fixture(tmp_path: Path) -> No
               "sampling_repetition_penalty" "sampling_seed" "sampling_digest"
             """,
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp": """
-              candidateText = textDelta = candidateText.substr requireTextOutput
-              candidateText.substr(generatedText.size())
+              candidateText = stableCandidateText = textDelta = stableCandidateText.substr requireTextOutput
+              stableCandidateText.substr(generatedText.size())
               textDelta
             """,
             "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp": """
@@ -242,7 +242,7 @@ def test_native_provider_serving_path_is_selection_gated_and_source_bound() -> N
     assert "serving rejects ready-made role artifact for" in source
     # Startup may keep metadata-only role declarations, but may not invoke the
     # legacy repository materializer in the serving installation block.
-    serving_block = install[:install.index("provider.fetchPermissionsFromController")]
+    serving_block = install[:install.index("provider->fetchPermissionsFromController")]
     assert "materializeManifestSpecs(" not in serving_block
 
     assembler = (REPO /
@@ -329,21 +329,21 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
         (
             "text",
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp",
-            "textDelta = candidateText.substr",
-            "textDelta = candidateText",
+            "textDelta = stableCandidateText.substr",
+            "textDelta = stableCandidateText",
             "NATIVE_TEXT_DELTA_CONTRACT_MISSING",
         ),
         (
             "text-prefix",
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp",
-            "candidateText.substr(generatedText.size())",
-            "candidateText.substr(generatedText.capacity())",
+            "stableCandidateText.substr(generatedText.size())",
+            "stableCandidateText.substr(generatedText.capacity())",
             "NATIVE_TEXT_DELTA_SEMANTICS_MISSING",
         ),
         (
             "empty-delta",
             "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp",
-            "textDelta = candidateText.substr",
+            "textDelta = stableCandidateText.substr",
             "textDelta = \"\"",
             "NATIVE_TEXT_DELTA_CONTRACT_MISSING",
         ),
