@@ -47,6 +47,22 @@
   incomplete unless its producer allowlist is cross-checked against every
   builder and test consumer.
 
+## 2026-09-15 — Spec186 r69 base SIF digest drift
+
+- **Symptom:** Rendering the r69 definition rejected the temporary base with
+  `HANDOFF_BASE_DIGEST`: the lock held SHA `1dd962...e74c`, while the same-size
+  file measured `071bae...c2c2`. A direct Apptainer inspect was also blocked by
+  the local mount hook (`destination /dev doesn't exist in container`).
+- **Root cause:** the base file was replaced or rebuilt after the earlier
+  handoff without a corresponding lock refresh. File name and byte count were
+  insufficient identity.
+- **Fix:** preserve the rejection and create a new candidate only after
+  recomputing the base SHA-256 from the actual file. Keep the old lock and
+  candidate immutable; do not force render or reuse the stale SIF identity.
+- **Evidence:** `specs/186-spec184-tiger-qwen-experiments/evidence/base-sif-digest-drift-20260915.md`.
+- **Lesson:** every SIF render must hash the bytes at the point of use and
+  compare them with the candidate lock before any build or runtime claim.
+
 ## 2026-09-15 — Spec186 r49/r50 drifted from the successful GPU template
 
 - **Symptom:** r49 job `212374` built NAC-ABE, NDN-SVS and NDNSD, then failed the
