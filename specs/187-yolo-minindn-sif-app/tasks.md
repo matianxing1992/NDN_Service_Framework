@@ -15,7 +15,7 @@
 
 ## Current Checkpoint
 
-2026-09-15 15:44 -05:00：T002 的 C++ selector 已注册并接入 Spec187 native mode；阶段证据现按 request/attempt/plan 关联，并以 epochMs 核对 ACK → Selection commit → Provider accepted → Provider execution 顺序。r7 官方 review-agent 返回 STATIC_PASS；受影响目标以 `-j4` 编译通过（1m6.118s），独立 served-provider selector 通过，缺输入 selector 按预期 fail-closed。真实 through-MiniNDN 请求仍需 candidate-bound config/input，T001 仍缺 regular base SIF/host-gate，T003 及后续批次保持 WAITING_EXTERNAL_INPUT/PARTIAL。
+2026-09-15 17:51 -05:00：T002 的 C++ selector 已注册并接入 Spec187 native mode；阶段证据现按 request/attempt/plan 关联，并以 epochMs 核对 ACK → Selection commit → Provider accepted → Provider execution 顺序。r7 官方 review-agent 返回 STATIC_PASS；受影响目标以 `-j4` 编译通过（1m6.118s），独立 served-provider selector 通过，缺输入 selector 按预期 fail-closed。已补齐 T001–T006 的显式 FR/SC requirement coverage，分析器追踪到 12/12 FR 与 6/6 SC。真实 through-MiniNDN 请求仍需 candidate-bound config/input，T001 仍缺 regular base SIF/host-gate，T003 及后续批次保持 WAITING_EXTERNAL_INPUT/PARTIAL。
 
 ## Logical Batches
 
@@ -33,6 +33,10 @@
 
 **Design binding**: FR-001..FR-003, FR-006, FR-011; existing prepare-development-handoff.py, build-local-sif.sh, build-sif-app.py, validate-sif-app.py and run-sif-app.sh. Preserve their path/digest ownership and add only missing composition or mutation checks.
 
+**Requirement coverage**: FR-001, FR-002, FR-003, FR-004, FR-006, FR-011.
+
+**Success criteria**: SC-001, SC-003, SC-005.
+
 **Outcome**: one command sequence validates source, base, definition, APP, profile and mounts; stale symlinks, host library fallback and changed digests cause zero build/upload/run side effects.
 
 **C++/native acceptance**: N/A for the closure gate itself; native behavior remains T002/T003.
@@ -42,6 +46,10 @@
 ### T002 C++ YOLO selector and MiniNDN caller wiring
 
 **Design binding**: FR-005, FR-009, FR-012; add a registered C++ selector under tests/integration-tests and tests/wscript, and wire Experiments/NDNSF_DI_YoloAckDriven_Minindn.py only as MiniNDN/NFD/identity/process orchestration. The selector must own request/ACK/Selection/Provider/Response assertions and the Face/io_context/scheduler lifetime barrier.
+
+**Requirement coverage**: FR-005, FR-009, FR-012.
+
+**Success criteria**: SC-002, SC-005.
 
 **Outcome**: a named C++ production target invokes the real DI path through the maintained YOLO case; Python-only markers cannot close the task.
 
@@ -57,6 +65,10 @@ there is no configurable test filter or post-run DummyClientFace substitute.
 
 **Design binding**: FR-002..FR-006; reuse the four existing TigerCluster entrypoints and quickstart.md. Do not add a new base builder in this task.
 
+**Requirement coverage**: FR-002, FR-003, FR-004, FR-005, FR-006.
+
+**Success criteria**: SC-001, SC-002, SC-003, SC-005.
+
 **Outcome**: local candidate SIF+APP is built or materialized from a regular base SIF and the C++ selector passes twice with the same pair identity.
 
 **Risk class / Dynamic profile**: high / asan-ubsan; dynamic card freezes nominal, missing/changed path, invalid identity and cleanup cases.
@@ -64,6 +76,10 @@ there is no configurable test filter or post-run DummyClientFace substitute.
 ### T004 TigerCluster same-candidate promotion
 
 **Design binding**: FR-007..FR-009; existing run-sif-app.sh and Slurm wrapper only. No rebuild or profile/model substitution.
+
+**Requirement coverage**: FR-007, FR-008, FR-009.
+
+**Success criteria**: SC-004, SC-005.
 
 **Outcome**: one bounded cluster run uses the exact LOCAL_PASS pair; scheduler and facility failures remain separate.
 
@@ -73,6 +89,10 @@ there is no configurable test filter or post-run DummyClientFace substitute.
 
 **Design binding**: FR-010; update only Spec187 scope/checkpoint/evidence references.
 
+**Requirement coverage**: FR-010.
+
+**Success criteria**: SC-006.
+
 **Outcome**: QWEN is TODO and cannot be read by YOLO candidate or acceptance.
 
 **Risk class / Dynamic profile**: none / none; documentation-only.
@@ -80,6 +100,10 @@ there is no configurable test filter or post-run DummyClientFace substitute.
 ### T006 Design-code convergence and final evidence
 
 **Design binding**: FR-011, FR-012; inspect actual production call graph, effective configuration, source/build registration, C++ selector and evidence paths with CodeGraph and exact source checks.
+
+**Requirement coverage**: FR-011, FR-012.
+
+**Success criteria**: SC-005.
 
 **Outcome**: severity-classified convergence report returns PASS; any controlling gap creates a repair task before T003/T004 formal validation.
 
