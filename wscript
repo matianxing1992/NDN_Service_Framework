@@ -388,15 +388,15 @@ def configure(conf):
         path for path in list(conf.env.LIBPATH_NDN_CXX or [])
         if path not in svs_libpaths
     ]
-    # The build-tree framework is loaded by examples from $ORIGIN/.. .  Do
-    # not place the installed system libdir ahead of that runpath: an older
-    # /usr/local/libndn-service-framework can otherwise satisfy the SONAME and
-    # leave newly linked symbols unresolved at process startup.  The system
-    # libdir is already in ld.so.cache; retain explicit non-system SVS paths.
-    svs_rpaths = [
-        f'-Wl,-rpath,{path}' for path in list(conf.env.LIBPATH_NDN_SVS or [])
-        if path != conf.env.LIBDIR
-    ]
+    # Keep the selected build directory in LIBPATH for link-time ABI
+    # selection, but never encode that source/build tree in a runtime
+    # RUNPATH. The installed libdir is copied into the final SIF; using it
+    # here prevents `/src/ndn-svs/build` from becoming a host-only dependency.
+    svs_runtime_libdir = conf.env.LIBDIR or ''
+    svs_runtime_dirs = ([svs_runtime_libdir] if svs_runtime_libdir
+                        and svs_runtime_libdir not in ('/usr/lib', '/usr/lib64')
+                        else [])
+    svs_rpaths = [f'-Wl,-rpath,{path}' for path in svs_runtime_dirs]
     conf.env.LINKFLAGS = svs_rpaths + [
         flag for flag in list(conf.env.LINKFLAGS or [])
         if flag not in svs_rpaths

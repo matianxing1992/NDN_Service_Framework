@@ -65,6 +65,18 @@ seal、definition labels、base 与 Apptainer 版本、SIF hash 和完整运行�
 但记录方法为 `local-apptainer-existing-sif-verify`。输出 SIF 或记录已经存在时，
 普通构建模式仍然 fail-closed，避免覆盖可追溯候选。
 
+### Immutable SIF runtime probe
+
+`manifest/verify-native.py final` 只属于 definition 的 final `%post`：它会把
+`finalVerification` 写回 `container-native-build.json`，因此不能直接在只读
+SIF 中作为运行时命令调用。封存后的运行时门必须使用不会写入镜像的检查：在
+同一 Apptainer 1.5.3 下导入 `ndnsf._ndnsf`、NDNSF-DI、Repo、ONNX/ORT、
+tokenizer 和 NumPy，逐一执行 `/opt/ndnsf-di/current/bin` 二进制的 `ldd`
+（无 `not found`）与 `readelf -d` RUNPATH 检查，运行 provider `--help`，并
+确认 replay entrypoint 和 `replay/source-seal.json` 存在。若需要重复完整候选
+门，使用上面的 `--verify-existing`，不要在只读镜像中运行会改写 manifest 的
+脚本。
+
 当前三库源码固定、可迁移definition和接收机器步骤见 [source handoff](source-handoff.md)。
 共享操作skill在仓库根 [skills/](../../../skills/README.md)；实际构建仍使用上述唯一入口。
 

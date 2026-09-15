@@ -35,6 +35,17 @@ numerical oracle、退出码和 cleanup 回执的结果只能保持 `WAITING_EXT
 状态只表示本任务声明的范围；`VERIFIED`、`PASS` 和实验状态必须带新 candidate
 digest、run ID、命令、节点/GPU、oracle、退出和 cleanup 证据。
 
+**Latest candidate boundary (2026-09-15)**: r80 completed the container-native
+`./waf -j2` build (`284/284`) and produced an Apptainer 1.5.3 SIF, with builder
+imports and `ldd` checks passing. The immutable probe exposed a build-tree
+`/src/ndn-svs/build` RUNPATH, so r80 is retained as
+`BUILD_PASS_RUNTIME_BOUNDARY_FAIL` in
+`evidence/native-sif-r80-rpath-boundary-20260915.md`; it does not advance T006.b,
+T006.c, T006.d, or any MiniNDN/Tiger task. Waf now keeps the explicit SVS
+source/build pair for link-time selection but emits the installed `LIBDIR` for
+runtime RUNPATH; a fresh source seal, definition, SIF and closure receipt are
+required.
+
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
 | T001.a | T001 | 获取并验证 `575b43cc93bbed29932303caf3d09974f1585af7` 对象、父提交、tree 和 clean checkout；记录于 `evidence/baseline-inventory.md` | VERIFIED | `evidence/baseline-inventory.md` source seal and ancestor receipt | — | 任何 source checkout 变化重做 |

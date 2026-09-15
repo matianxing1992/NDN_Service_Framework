@@ -127,6 +127,14 @@ def test_waf_does_not_default_to_a_developer_temp_toolchain():
     assert "or os.path.join(top, 'build', 'tokenizer-bridge-target')" in source
 
 
+def test_explicit_svs_build_tree_is_link_only_not_runtime_runpath():
+    source = (ROOT / "wscript").read_text(encoding="utf-8")
+    assert "svs_runtime_libdir = conf.env.LIBDIR or ''" in source
+    assert "svs_runtime_dirs = ([svs_runtime_libdir]" in source
+    assert "`/src/ndn-svs/build`" in source
+    assert "f'-Wl,-rpath,{path}' for path in svs_runtime_dirs" in source
+
+
 def test_full_native_test_target_census_requires_worker_fixtures():
     source = (ROOT / "tests/wscript").read_text(encoding="utf-8")
     assert "'spec182-worker-tool-' + role" in source

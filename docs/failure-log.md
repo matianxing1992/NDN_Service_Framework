@@ -5373,3 +5373,23 @@ which differs from the Spec186 handoff seal
   extraction.
 - **Lesson**: capacity is part of the build input tuple. A valid SIF digest
   and mounted import do not prove that the host can materialize its full root.
+
+## 2026-09-15 — Spec186 read-only SIF probe called a build-time manifest writer
+
+- **Area**: T006 exact local SIF runtime closure check.
+- **Symptom**: the first post-build probe invoked
+  `/opt/ndnsf-di/current/manifest/verify-native.py final` directly inside the
+  sealed SIF and received `OSError: [Errno 30] Read-only file system` while
+  rewriting `container-native-build.json`.
+- **Root cause**: `verify-native.py final` is the definition's build-time
+  final-stage verifier; it records `finalVerification` in the manifest and is
+  not a read-only runtime entrypoint. The probe mixed that mutating build gate
+  with the immutable SIF runtime gate.
+- **Correction**: keep the successful build-time invocation unchanged and use
+  read-only runtime checks for the sealed candidate: Python/native imports,
+  `ldd`/RUNPATH closure, provider `--help`, replay entrypoint and source-seal
+  presence. Document this distinction in the TigerCluster SIF procedure so a
+  runtime check cannot fail for attempting to mutate an immutable image.
+- **Lesson**: every post-build command must declare whether it writes a build
+  manifest; immutable SIF validation must never depend on writable container
+  paths.

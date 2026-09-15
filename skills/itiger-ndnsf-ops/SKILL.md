@@ -62,6 +62,15 @@ plane（source、base、app、compiler、profile、model、harness 或 resource�
    candidate 绑定。构建、import 或 READY 通过仍不能替代 MiniNDN/Tiger
    协议、CUDA、数值和 cleanup 证据。
 
+封存后的 SIF 是只读运行时。`manifest/verify-native.py final` 会在 definition
+的 final `%post` 中回写 `container-native-build.json`，只能作为构建阶段门；不
+要直接在已封存 SIF 中执行它。运行时必须改用只读检查：同一 Apptainer 版本内导入
+`ndnsf._ndnsf`、NDNSF-DI、Repo、ONNX/ORT、tokenizer 和 NumPy，检查 provider、
+fault-provider 与 controller 的 `ldd` 无 `not found`，检查 `readelf -d` 的
+RUNPATH，运行 provider `--help`，并确认 replay entrypoint 与 source seal 存在。
+需要重复完整候选门时调用 `build-local-sif.sh --verify-existing`，不要尝试向
+SIF manifest 写回结果。
+
 `preflight-development-sif.py` 还必须检查 definition 的 builder shell 实际
 消费的源码路径：凡是被 `cp` 或 pip 安装命令引用的 `/src/ndnsf/...` 路径，都要
 在 `workspace.tar` 中存在；并且四个源码归档的必需入口、`tar -xf` 到 `/src`
