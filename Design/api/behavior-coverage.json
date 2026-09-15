@@ -3180,13 +3180,35 @@
       ]
     },
     {
-      "api_id": "API-b78e92752464",
+      "api_id": "API-fdd44017e561",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp",
+      "name": "ndnsf::di::NativeModelRunner::NativeModelRunner",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        86
+      ]
+    },
+    {
+      "api_id": "API-a4b136dffd90",
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp",
       "name": "ndnsf::di::NativeModelRunner::~NativeModelRunner",
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        86
+        87
+      ]
+    },
+    {
+      "api_id": "API-31ea9c220dd0",
+      "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp",
+      "name": "ndnsf::di::NativeModelRunner::cacheIdentity",
+      "status": "CONTRACT_REFERENCED",
+      "contracts": [
+        "AC-08"
+      ],
+      "declaration_lines": [
+        94
       ]
     },
     {

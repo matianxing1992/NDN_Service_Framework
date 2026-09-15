@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec185 T021 protected Provider runner-address ABA (RESOLVED)
+
+The first production protected independent-grant selector reached both grant verification and
+assembly/source-fetch boundaries but reported `runnerRuns=1` for two newly-created runners. The
+ProviderRoleWorker exact-forward cache used a raw runner address as identity; allocator reuse returned
+the first runner's cached output to the second request. The raw failure is preserved at
+`.codex-tmp/spec185-t021-runtime/production-independent-grants-normal-v4.log`. A monotonic identity in
+an external process-local registry, removed at base destruction, fixed the boundary without changing
+the public polymorphic base layout. The v9 static review, normal selector, and ASan/UBSan selector now
+pass; durable details are in [T021 lifecycle evidence](../specs/185-prepared-model-runtime/evidence/b7r-lifecycle-fixes-20260915.md#t021-follow-up-production-protected-independent-grant-matrix).
+
 ## 2026-09-14 — Side-by-side comparison layout and raster checks (RESOLVED)
 
 首轮说明页标题的PyMuPDF textbox高度校验失败；r2/r3修复后，微小光栅字形差异与一级灰度取整触发像素门禁。保留三轮日志与候选；全量只读诊断后，r4的79页／130面板文本精确校验、显著光栅差异容差和全页渲染通过，不声明逐像素相等。见[side-by-side evidence](../specs/185-prepared-model-runtime/evidence/proposal-side-by-side-20260914.md)。

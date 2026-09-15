@@ -147,3 +147,59 @@ ordering. The fixture specifically observes a delayed completion callback on the
 failed-turn immediate replacement; it does not claim a separately injected successful-turn callback
 delay. T021's protected Provider cross-grant production matrix, T013's final source/ELF/no-Python
 qualification, and T012/T014 remain open.
+
+## T021 follow-up: production protected independent-grant matrix
+
+**Date**: 2026-09-15 04:00 -05:00
+**Base**: `7ffd8228d97aa69a4543d80e9a4f3755f9f17c27`
+**Scope**: production Provider canonical source assembly, protected grant isolation, and runner execution.
+
+The immutable review snapshot `.codex-tmp/spec185-t021-review-v9` received official
+`review-agent` `STATIC_PASS` with no P0-P3 findings. Its manifest SHA256 is
+`37b893574652b639ee1d814d9b5e04be67e89fa61ab9c1d26b65f1b461db403d` and its reviewed diff SHA256 is
+`d7fc266003e3b7ce305ba1b7d6f28a35fb1895795d35c61f0cbdb044936fdb52`. The review found that the
+exact-forward cache used runner object addresses, so allocator address reuse could return outputs from a
+retired runner to a new independent request. The fix keeps the public polymorphic base layout unchanged:
+an external process-local registry assigns a monotonic runner identity and removes it in the base
+destructor; `ProviderRoleWorker` keys the cache with that identity and fails closed for a missing runner.
+
+Normal affected-target compile-link used the existing `build-spec185-b0c-normal` tree, system-first
+`PATH=/usr/bin:/bin:/usr/sbin:/sbin`, `CXX=/usr/bin/g++`, `WAFLOCK=.lock-spec185-b0c-normal`, and `-j4`:
+
+```text
+./waf build -j4 --targets=spec185-provider-assembly
+```
+
+It returned `RC=0` in 58.876 seconds. Raw log: `.codex-tmp/spec185-t021-runtime/build-normal-v5.log`;
+binary SHA256: `6329f7e2dacc151bee597b7e04603de24d33643e1dfea32b2997651f2f207fb7`.
+
+The independent ASan/UBSan build used `build-spec185-b3-asan-ubsan-fast`, the same system-first
+toolchain and `-j4`, with `WAFLOCK=.lock-spec185-b3-asan-ubsan-fast`:
+
+```text
+./waf build -j4 --targets=spec185-provider-assembly
+```
+
+It returned `RC=0` in 91.044 seconds. Raw log: `.codex-tmp/spec185-t021-runtime/build-asan-v3.log`;
+binary SHA256: `bc1a1acec57288343a04eda208db585cb4e71bfe14a4db94e41264cd77d4dd5f`.
+
+The selector drives the real `ServiceUser.RequestService` → publication/ACK → Selection assignment →
+Provider protected grant verification → canonical root/source fetch → `ProviderArtifactCache` →
+`NativeCanonicalOnnxAssembler` → runner creation → C++ runner execution → response path. Two requests
+use the same canonical source and assembly recipe but distinct request-bound grants and grant digests.
+Both runs completed with `sourceFetches=2`, `assemblies=2`, `templateHits=0`, `runnersCreated=2`, and
+`runnerRuns=2`; this proves independent grants do not reuse a grant-bound prepared entry. It does not
+claim that production grant issuance/publication or a real ONNX Runtime model was exercised: the issuer,
+encrypted source, and deterministic C++ runner are fixture components while the Provider preparation and
+cache path are production code.
+
+| Candidate | Selector log | Result |
+| --- | --- | --- |
+| normal | `.codex-tmp/spec185-t021-runtime/production-independent-grants-normal-v5.log` | `RC=0`, `*** No errors detected` |
+| ASan/UBSan + LSan | `.codex-tmp/spec185-t021-runtime/production-independent-grants-asan-v3.log` | `RC=0`, `*** No errors detected`, no sanitizer report |
+
+Earlier selector attempts are retained under `.codex-tmp/spec185-t021-runtime/` and exposed fixture
+binding defects (missing `groupCapabilityV1`, attempt propagation, and device binding identity) before
+the final run. One final pre-fix run also exposed the production runner-address ABA (`runnerRuns=1`),
+which was repaired and re-reviewed above. The T021 static, compile-link, and C++ runtime-test lanes are
+now closed; T013 source/ELF/no-Python convergence and T012/T014 remain separate open work.

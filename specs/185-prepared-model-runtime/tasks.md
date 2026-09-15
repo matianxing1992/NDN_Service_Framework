@@ -46,9 +46,11 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 | [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T019 Prepared Client Ownership and Eviction](#t019) | PASS | T003/T005 static | B7R static v3, normal and ASan/UBSan C++ eviction/source-lifetime selector `RC=0`; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
 | [T020 Conversation Terminal Admission Ordering](#t020) | PASS | T007 static | B7R follow-up static `PASS`; normal and ASan/UBSan C++ selectors plus repeated selectors `RC=0`; delayed completion callback gate, failed-turn `CANCELLED` immediate replacement, and successful result-to-next-turn oracle observed; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md#t020-follow-up-delayed-completion-and-immediate-retry) | 2026-09-15 03:16 -05:00 |
-| [T021 Generation Identity and Grant-Bound Provider Cache](#t021) | PARTIAL | T007/T010 static | B7R static v3, C++ same-grant hit/independent-grant cold selector normal and ASan/UBSan `RC=0`; protected Provider cross-request production matrix remains unobserved; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
+| [T021 Generation Identity and Grant-Bound Provider Cache](#t021) | PASS | T007/T010 static | B7R v9 static `PASS`; production protected Provider matrix with two independent grants, canonical source fetch, assembly, runner creation and execution passes normal and ASan/UBSan C++ selectors `RC=0`; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md#t021-follow-up-production-protected-independent-grant-matrix) | 2026-09-15 04:00 -05:00 |
 
 ## Current Checkpoint
+
+2026-09-15 04:00 -05:00 B7R T021 follow-up：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-t021-review-v9` 返回 `STATIC_PASS`，manifest SHA256=`37b893574652b639ee1d814d9b5e04be67e89fa61ab9c1d26b65f1b461db403d`、diff SHA256=`d7fc266003e3b7ce305ba1b7d6f28a35fb1895795d35c61f0cbdb044936fdb52`，无 P0-P3。修复 exact-forward cache runner 地址 ABA：外部 registry 维护单调 runner identity 并在析构移除，公共基类布局保持不变。`spec185-provider-assembly` normal `-j4` build 58.876s、ASan/UBSan `-j4` build 91.044s 均 `RC=0`；两次独立 grant 的 production protected Provider selector normal/ASan 均 `RC=0`、`*** No errors detected`，分别观察 sourceFetches=2、assemblies=2、templateHits=0、runnersCreated=2 与 runner execution=2。T021 已 PASS；T013、T012/T014 仍保持各自状态。详情见 [T021 follow-up](evidence/b7r-lifecycle-fixes-20260915.md#t021-follow-up-production-protected-independent-grant-matrix)。
 
 2026-09-15 03:16 -05:00 B7R T020 follow-up：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-t020-review-v01cytpt` 返回 `STATIC_PASS`，manifest SHA256=`8d882b58a426f004617ab10ee641f3f3db3e6c33b02f406b3025b26cd9835437`，无 P0-P3。`spec185-prepared-request` normal 与独立 ASan/UBSan `-j4` 构建均 `RC=0`；同一 conversation selector normal、ASan/UBSan 各运行两次，均 `RC=0`、`*** No errors detected`。C++ 夹具用共享 native worker 上的公开 completion callback gate 延迟会话失败回调，确认 `CANCELLED` 结果可见后立即 replacement；首个成功 `result(0)` 后立即提交下一 turn，后续 checkpoint/commit/recovery/drain 继续通过。T020 已 PASS；T021、T013、T012/T014 仍按各自未观测项保持原状态。详情见 [T020 follow-up](evidence/b7r-lifecycle-fixes-20260915.md#t020-follow-up-delayed-completion-and-immediate-retry)。
 
@@ -577,7 +579,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t021"></a>
 
-- [ ] T021 [US2] Generation Identity and Grant-Bound Provider Cache — PreparedModel.cpp; ProviderArtifactCache.hpp; C-03 execution contract; tests/integration-tests/di-prepared-provider.t.cpp
+- [x] T021 [US2] Generation Identity and Grant-Bound Provider Cache — PreparedModel.cpp; ProviderArtifactCache.hpp; C-03 execution contract; tests/integration-tests/di-prepared-provider.t.cpp
 
   **Batch / Depends**: B7R / T007/T010 static。
 
@@ -585,7 +587,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Implementation and review**: Merge model generation defaults before rebinding the current continuation identity; keep protected artifact cache identity bound to authenticated Provider/grantName/grantDigest and document independent-grant isolation. The C++ cache oracle passes same-grant hit and independent-grant cold behavior in normal and ASan/UBSan.
 
-  **Exit / oracle**: production protected Provider requests under two independent grants must still measure source fetch, assembly, template and runner counts; until that matrix runs, this task remains `PARTIAL`.
+  **Exit / oracle**: normal and ASan/UBSan production protected Provider selectors under two independent grants observe sourceFetches=2, assemblies=2, templateHits=0, runnersCreated=2 and two C++ runner executions; the task is PASS. Cross-grant reuse remains intentionally unclaimed because grant identity is part of the protected cache key.
 
 ## Fragmentation Review
 

@@ -248,6 +248,17 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 
 ## 新记录模板
 
+### D-185-B7R：runner identity 与 exact-forward cache 生命周期契约
+
+- 日期 / Spec / 任务与契约 ID：2026-09-15；[Spec185](../specs/185-prepared-model-runtime/spec.md)；T021 / C-03、C-08。
+- 模块 / 当前与目标章节：NDNSF-DI `NativeModelRunner` 与 `ProviderRoleWorker`；当前 API reference 的 `NativeModelRunner` 条目。
+- 原设计 / 新设计 / 修改原因：exact-forward cache 原先用 runner 原始地址区分实例；生产两次独立授权请求中 allocator 复用地址会错误命中已销毁 runner 的输出。当前改为进程内外部 registry 分配单调 runner identity，并在 base destructor 移除登记；cache key 使用该 identity。公共多态基类不增加数据成员，保持对象布局不变。
+- 当前已实现部分 / 目标未实现部分：normal 与 ASan/UBSan C++ protected Provider selector 观察两次独立 grant 各自 source fetch、assembly、runner creation 和 execution；生产 grant issuance 与真实 ONNX Runtime 模型仍由 fixture/后续资格批次覆盖。
+- 兼容性、迁移或撤回影响：新增构造、析构和 identity accessor 已登记到当前 DI API inventory/reference；无 wire 字段变化，旧 runner 地址不再作为 cache identity。
+- 源码提交或范围 / 文档提交定位：`NativeModelRunner.hpp/.cpp`、`ProviderRoleWorker.cpp`、T021 C++ selector；本地 checkpoint 待组合门通过后提交。
+- 验证命令、结果与持久证据：`.codex-tmp/spec185-t021-runtime/production-independent-grants-normal-v5.log` 与 `production-independent-grants-asan-v3.log` 均 `RC=0`；详见 [B7R T021 evidence](../specs/185-prepared-model-runtime/evidence/b7r-lifecycle-fixes-20260915.md#t021-follow-up-production-protected-independent-grant-matrix)。
+- 状态：PASS（T021）；T013、T012、T014 仍按各自验收边界保持未完成。
+
 ### D-185-B4：会话追加输入的 native adapter token 契约
 
 - 日期 / Spec / 任务：2026-09-13；[Spec185](../specs/185-prepared-model-runtime/spec.md)；T007/T008 B4。

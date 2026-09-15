@@ -1419,4 +1419,418 @@ BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubsti
   expectMismatch(wrongGrant);
 }
 
+BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheSeparatesIndependentGrants)
+{
+  // This fixture deliberately leaves RunnerPreparationFactory empty so the
+  // Provider facade executes its production canonical-root/source assembler
+  // and ProviderArtifactCache path.  The runner itself remains a deterministic
+  // C++ oracle so this selector measures preparation and cache behavior without
+  // requiring a local ONNX Runtime model execution.
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/Inference/Spec185ProviderCache");
+  profile.providerRoles = {"/Backbone"};
+  profile.deferBridgeDelivery = true;
+  profile.providerFacesHaveDedicatedIoWorkers = true;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  environment.user().setUseTokens(false);
+  environment.provider().setUseTokens(false);
+
+  const auto serviceName = environment.profile().serviceName;
+  const auto providerName = environment.provider().getName();
+  const auto requesterName = environment.user().getName();
+  const auto authorityPrivate = makeEd25519Key('p');
+  const auto requesterPrivate = makeEd25519Key('q');
+  const auto recipientPrivate = makeEd25519Key('r');
+  const auto providerBootId = environment.provider().getProviderBootEpoch();
+  const auto protectionEpoch = std::string("spec185-provider-cache-protected-v1");
+
+  const auto fixture = providerAssemblyFixture();
+  BOOST_REQUIRE(!fixture.empty());
+  const auto source = providerAssemblyRead(fixture);
+  BOOST_REQUIRE(!source.empty());
+  const auto sourceDigest = providerAssemblyDigest(source);
+  const auto sourceIdentity = providerAssemblySourceIdentity(source);
+  const auto profileDigest = std::string("sha256:") + std::string(64, 'b');
+  const auto rootName = ndn::Name("/spec185/provider/cache/root");
+  const auto sourceDataName = ndn::Name(requesterName)
+    .append("NDNSF").append("LARGE-DATA").append(serviceName)
+    .append("spec185-provider-cache-source").appendVersion();
+  const auto sourceName = sourceDataName;
+  const auto rootText = std::string(
+    "{\"artifactProfileDigest\":\"") + profileDigest +
+    "\",\"metadata\":{\"canonicalSourceBytes\":" +
+    std::to_string(source.size()) +
+    ",\"canonicalSourceDataName\":\"" + sourceName.toUri() +
+    "\",\"canonicalSourceDigest\":\"" + sourceDigest +
+    "\"},\"modelIdentityDigest\":\"sha256:" + std::string(64, 'a') +
+    "\",\"modelName\":\"spec175-tiny-causal-lm-v1\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}";
+  const std::vector<std::uint8_t> rootPayload(rootText.begin(), rootText.end());
+  const auto rootDigest = providerAssemblyDigest(rootPayload);
+
+  // Publish one exact-name encrypted source object through the same DummyFace
+  // and Segmenter path used by the existing assignment-fetch tests.
+  auto publishLarge = [&] (const ndn::Name& dataName,
+                           const std::vector<std::uint8_t>& payload) {
+    HybridMessageCrypto crypto;
+    HybridCryptoCounters counters;
+    const auto key = crypto.getOrCreateSendKey(
+      serviceName, requesterName, std::string("/SERVICE") + serviceName.toUri(),
+      "REQUEST-LARGE", counters);
+    const auto associatedDataText = dataName.toUri() + "|REQUEST-LARGE|" +
+                                    serviceName.toUri();
+    const ndn::Buffer associatedData(
+      reinterpret_cast<const std::uint8_t*>(associatedDataText.data()),
+      associatedDataText.size());
+    const auto encrypted = hybridAesGcmEncrypt(
+      key.key,
+      ndn::span<const std::uint8_t>(payload.data(), payload.size()),
+      ndn::span<const std::uint8_t>(associatedData.data(), associatedData.size()));
+    HybridMessageEnvelope envelope;
+    envelope.setKeyId(key.keyId);
+    envelope.setEpochId(key.epochId);
+    envelope.setMessageType("REQUEST-LARGE");
+    envelope.setNonce(encrypted.nonce);
+    envelope.setCipherText(encrypted.ciphertext);
+    envelope.setAuthTag(encrypted.tag);
+    const auto wireBlock = envelope.WireEncode();
+    ndn::Segmenter segmenter(
+      environment.keyChain(), ndn::security::signingWithSha256());
+    const auto segments = segmenter.segment(
+      ndn::span<const std::uint8_t>(wireBlock.data(), wireBlock.size()),
+      dataName, 4096, ndn::time::milliseconds(60000));
+    BOOST_REQUIRE(!segments.empty());
+    environment.provider().cacheHybridReceiveKeyForTest(
+      key.keyId, key.epochId, key.key);
+    for (const auto& data : segments) {
+      environment.user().cacheDataForTest(*data, ndn::time::milliseconds(60000));
+      environment.userFace().put(*data);
+    }
+  };
+  publishLarge(sourceDataName, source);
+
+  struct IssuedGrant
+  {
+    NativeKeyGrant grant;
+    std::uint64_t verificationTimeMs = 0;
+  };
+  NativeGrantIssuerConfig issuerConfig;
+  issuerConfig.authorityIdentity = "/spec185/cache-authority";
+  issuerConfig.requesterIdentity = requesterName.toUri();
+  issuerConfig.protectionEpoch = protectionEpoch;
+  issuerConfig.keyId = "spec185-provider-cache-grant";
+  issuerConfig.authorityPrivateKey = authorityPrivate;
+  issuerConfig.requesterPublicKey = publicKey(requesterPrivate);
+  issuerConfig.allowedModelManifests = {rootDigest};
+  issuerConfig.recipientPublicKeys.emplace(providerName.toUri(), publicKey(recipientPrivate));
+  issuerConfig.contentKey = [] (const std::string&, const std::string&) {
+    return std::vector<std::uint8_t>(32, 0x52);
+  };
+  const auto issueGrant = [&] (const ndn::Name& requestId) {
+    NativeSignedGrantRequest request;
+    request.providerIdentity = providerName.toUri();
+    request.requesterIdentity = requesterName.toUri();
+    request.requestId = requestId.toUri();
+    request.attempt = 1;
+    request.planCoreDigest = rootDigest;
+    request.grantViewDigest = rootDigest;
+    request.modelManifestDigest = rootDigest;
+    request.protectionEpoch = protectionEpoch;
+    request.issuedAtMs = 1;
+    const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    return IssuedGrant{NativeArtifactGrantIssuer(issuerConfig).issue(
+      request.sign(*requesterPrivate), now, now + 60000), now};
+  };
+
+  const auto requestOne = ndn::Name("/spec185-provider-cache-one");
+  const auto requestTwo = ndn::Name("/spec185-provider-cache-two");
+  const auto firstGrant = issueGrant(requestOne);
+  const auto independentGrant = issueGrant(requestTwo);
+  auto grantWires = std::make_shared<std::map<std::string, std::string>>();
+  (*grantWires)[firstGrant.grant.grantDigest] = firstGrant.grant.wireJson;
+  (*grantWires)[independentGrant.grant.grantDigest] = independentGrant.grant.wireJson;
+
+  auto runnerRuns = std::make_shared<std::atomic<unsigned>>(0);
+  auto runnerFactory = std::make_shared<RegistryNativeModelRunnerFactory>();
+  runnerFactory->registerBackend(
+    "onnxruntime",
+    [runnerRuns] (const NativeModelRunnerSpec& spec) {
+      ExecutionEvidence evidence;
+      evidence.providerName = spec.metadata.at("evidence.providerName");
+      evidence.providerBootId = spec.metadata.at("evidence.providerBootId");
+      evidence.evidenceEpoch = 1;
+      evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
+      evidence.realCompute = true;
+      evidence.deviceKind = "cpu";
+      evidence.deviceId = "0";
+      evidence.deviceIds = {"0"};
+      evidence.runtimeVersion = "spec185-provider-cache-oracle";
+      evidence.modelDigest = spec.metadata.at("evidence.modelDigest");
+      evidence.planDigest = spec.metadata.at("evidence.planDigest");
+      evidence.artifactDigests[spec.role] = spec.metadata.at("evidence.artifactDigest");
+      evidence.roles = {spec.role};
+      evidence.loadCompleted = true;
+      evidence.warmupCompleted = true;
+      evidence.createdAtMs = 1;
+      evidence.validate();
+      return makeNativeModelRunner(
+        [runnerRuns] (const RoleExecutionContext&) {
+          runnerRuns->fetch_add(1, std::memory_order_relaxed);
+          const std::string response = "spec185-provider-cache-response";
+          return std::map<std::string, TensorBundle>{{
+            "final-response", TensorBundle{
+              "final-response",
+              std::vector<std::uint8_t>(response.begin(), response.end()),
+              1, response.size()}}};
+        }, std::move(evidence));
+    });
+
+  const auto providerIdentity = environment.keyChain().getPib().getIdentity(providerName);
+  const auto providerCertificate = providerIdentity.getDefaultKey().getDefaultCertificate();
+  auto protectedRuntimeFactory =
+    [grantWires, authorityPublic = publicKeyBytes(authorityPrivate),
+     recipientSeed = std::string(32, 'r'), protectionEpoch, providerBootId] (
+      ndn_service_framework::ServiceProvider::CollaborationContext&,
+      const NativeSelectionProjectionV3& projection,
+      const std::shared_ptr<ProviderGroupCoordinator>&) {
+      const auto grant = grantWires->find(projection.grantDigest);
+      if (grant == grantWires->end())
+        throw std::runtime_error("provider cache test grant is not registered");
+      ProtectedRuntimeBindingV1 binding;
+      binding.provider = projection.provider;
+      binding.role = projection.executionRole.roleId;
+      binding.requestId = projection.requestId;
+      binding.attempt = projection.attempt;
+      binding.planCoreDigest = projection.planCoreDigest;
+      binding.planDigest = projection.planDigest;
+      binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+      binding.protectionEpoch = protectionEpoch;
+      binding.grantName = projection.grantName;
+      binding.grantDigest = projection.grantDigest;
+      binding.providerBootId = providerBootId;
+      binding.fencingToken = nativeProtectedFencingToken(projection, providerBootId, {});
+      binding.expiresAtMs = projection.deadlineMs;
+      NativeProtectedGrantConfig grantConfig;
+      grantConfig.authorityIdentity = "/spec185/cache-authority";
+      grantConfig.authorityPublicKeyRaw = authorityPublic;
+      grantConfig.recipientKey = {NativeRecipientKey::Kind::Ed25519Seed, recipientSeed};
+      grantConfig.modelManifestDigest = projection.selectedRole.modelManifestDigest;
+      grantConfig.fetchGrant = [wire = grant->second] (const std::string&) { return wire; };
+      auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(grantConfig));
+      runtime->verifyGrant(binding, static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count()));
+      return runtime;
+    };
+
+  auto facade = Provider::fromServiceProviderForTest(
+    environment.providerFace(), environment.provider(), environment.keyChain(),
+    providerCertificate, providerCertificate,
+    makeConfig(providerName.toUri(), serviceName.toUri()),
+    runnerFactory, {}, std::move(protectedRuntimeFactory));
+  environment.enableProductionIngressForTest();
+  auto registration = facade.serve({serviceName.toUri(), {"/Backbone"}});
+  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+  const auto ackKey = environment.provider().prepareHybridSendKeyForTest(serviceName, "ACK");
+  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(serviceName, "RESPONSE");
+  environment.user().cacheHybridReceiveKeyForTest(ackKey.keyId, ackKey.epochId, ackKey.key);
+  environment.user().cacheHybridReceiveKeyForTest(responseKey.keyId, responseKey.epochId, responseKey.key);
+  const auto selectionKey = environment.user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
+  environment.provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+
+  struct Probe
+  {
+    std::mutex mutex;
+    bool published = false;
+    bool selected = false;
+    bool response = false;
+    bool terminal = false;
+    std::string failure;
+  };
+  std::mutex probeMutex;
+  std::map<std::string, std::shared_ptr<Probe>> probes;
+  environment.user().setRequestPublisher(
+    [&] (const ndn::Name& requestId,
+         const ndn::Name& requestName,
+         const std::vector<ndn::Name>& providers,
+         const ndn::Name&, const ndn_service_framework::RequestMessage& request, std::size_t) {
+      std::shared_ptr<Probe> probe;
+      {
+        std::lock_guard<std::mutex> lock(probeMutex);
+        const auto it = probes.find(requestId.toUri());
+        if (it == probes.end()) return;
+        probe = it->second;
+      }
+      if (providers.size() != 1U) {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        probe->failure = "provider cache request provider set mismatch";
+        return;
+      }
+      const auto block = request.WireEncode();
+      const auto publication = makeProviderPublication(
+        requestName, serviceName, requestId, requesterName, "REQUEST",
+        ndn::Buffer(block.data(), block.size()));
+      environment.provider().cacheHybridReceiveKeyForTest(
+        publication.key.keyId, publication.key.epochId, publication.key.key);
+      environment.userPubSub().publish(
+        requestName,
+        ndn::span<const std::uint8_t>(publication.wire.data(), publication.wire.size()));
+      std::lock_guard<std::mutex> lock(probe->mutex);
+      probe->published = true;
+    });
+  environment.userPubSub().subscribeToProducer(
+    environment.profile().providerNode,
+    [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+      if (const auto ack = parseRequestAckNameV2(publication.name)) {
+        if (ack->serviceName == serviceName) {
+          ndn::Block block(publication.data);
+          environment.user().handleRequestAckByName(publication.name, block);
+        }
+      }
+    }, true);
+
+  const auto makeProjection = [&] (const ndn::Name& requestId,
+                                   const NativeKeyGrant& grant) {
+    auto projection = makeProviderAssemblyProjection(
+      rootDigest, profileDigest, sourceIdentity.graphDigest,
+      sourceIdentity.initializerDigest);
+    projection.provider = providerName.toUri();
+    projection.requestId = requestId.toUri();
+    projection.attempt = 1;
+    projection.plan.serviceName = serviceName.toUri();
+    projection.planDigest = rootDigest;
+    projection.planCoreDigest = rootDigest;
+    projection.ackClosedDigest = rootDigest;
+    projection.offerDigest = rootDigest;
+    projection.securityPolicySnapshotDigest = rootDigest;
+    projection.groupCapabilityV1 = "spec185-provider-cache-capability";
+    projection.hasGrantBinding = true;
+    projection.grantName = grant.grantName;
+    projection.grantDigest = grant.grantDigest;
+    projection.assembly.role = "/Backbone";
+    projection.assembly.selectedRole = "/Backbone";
+    projection.assembly.protectionEpoch = protectionEpoch;
+    projection.selectedRole = projection.assembly;
+    projection.executionRole.roleId = "/Backbone";
+    projection.executionRole.stageId = "/Backbone";
+    projection.dataflow.requestId = requestId.toUri();
+    projection.dataflow.attempt = projection.attempt;
+    projection.dataflow.planDigest = rootDigest;
+    projection.dataflow.role = "/Backbone";
+    projection.deviceBinding.provider = providerName.toUri();
+    projection.deviceBinding.role = "/Backbone";
+    projection.deviceBinding.offerDigest = rootDigest;
+    projection.plan.roles = {"/Backbone"};
+    projection.assembly.recipeDigest.clear();
+    const auto recipe = canonicalNativeOnnxRecipeJson(projection.assembly);
+    projection.assembly.recipeDigest = providerAssemblyDigest(
+      std::vector<std::uint8_t>(recipe.begin(), recipe.end()));
+    projection.selectedRole.recipeDigest = projection.assembly.recipeDigest;
+    return projection;
+  };
+
+  const auto runRequest = [&] (const ndn::Name& requestId,
+                               const IssuedGrant& issued,
+                               unsigned expectedAssemblies,
+                               unsigned expectedSourceFetches,
+                               unsigned expectedTemplateHits,
+                               unsigned expectedRunners) {
+    auto projection = makeProjection(requestId, issued.grant);
+    const auto projectionText = nativeSelectionProjectionV3ToJson(projection);
+    auto rootDataName = ndn::Name(requesterName);
+    rootDataName.append("NDNSF").append("LARGE-DATA").append(serviceName)
+      .append(requestId).append("root").appendVersion();
+    publishLarge(rootDataName, rootPayload);
+    auto probe = std::make_shared<Probe>();
+    {
+      std::lock_guard<std::mutex> lock(probeMutex);
+      probes[requestId.toUri()] = probe;
+    }
+    ndn_service_framework::RequestMessage request;
+    const std::string payload = "provider-cache-input";
+    ndn::Buffer payloadBuffer(reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size());
+    request.setPayload(payloadBuffer, payloadBuffer.size());
+    request.setPolicyEpoch(environment.user().getCurrentPolicyEpoch());
+    environment.user().RequestService(
+      std::vector<ndn::Name>{providerName}, serviceName, request, 200,
+      ndn_service_framework::ServiceUser::AckCandidatesHandler(
+        [&, probe, requestId, projectionText, rootDataName] (
+          const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+          if (candidates.size() != 1U || candidates.front().providerName != providerName) {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->failure = "provider cache ACK candidate mismatch";
+            return std::vector<ndn_service_framework::AckSelectionCandidate>{};
+          }
+          ndn_service_framework::CollaborationAssignmentEnvelope envelope;
+          envelope.role = "/Backbone";
+          envelope.assignedArtifact = rootName;
+          envelope.artifactDataName = rootDataName;
+          envelope.opaquePayload = ndn::Buffer(
+            reinterpret_cast<const std::uint8_t*>(projectionText.data()), projectionText.size());
+          if (!environment.user().setSelectionAssignmentPayloadForRequest(
+                requestId, providerName,
+                ndn_service_framework::encodeCollaborationAssignmentEnvelope(envelope))) {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->failure = "provider cache assignment rejected";
+            return std::vector<ndn_service_framework::AckSelectionCandidate>{};
+          }
+          std::lock_guard<std::mutex> lock(probe->mutex);
+          probe->selected = true;
+          return candidates;
+        }),
+      4000,
+      [probe] (const ndn::Name&) {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        if (probe->failure.empty()) probe->failure = "provider cache request timed out";
+        probe->terminal = true;
+      },
+      [probe] (const ndn_service_framework::ResponseMessage& response) {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        if (!response.getStatus() && probe->failure.empty())
+          probe->failure = response.getErrorInfo();
+        probe->response = response.getStatus();
+        probe->terminal = true;
+      }, ndn_service_framework::tlv::FirstResponding, requestId);
+    environment.pumpUntil([&] {
+      std::lock_guard<std::mutex> lock(probe->mutex);
+      if (!probe->terminal || !probe->response) return false;
+      const auto counters = facade.counters();
+      return counters.assemblies == expectedAssemblies &&
+             counters.sourceFetches == expectedSourceFetches &&
+             counters.templateHits == expectedTemplateHits &&
+             counters.runnersCreated == expectedRunners;
+    });
+    {
+      std::lock_guard<std::mutex> lock(probe->mutex);
+      BOOST_CHECK(probe->published);
+      BOOST_CHECK(probe->selected);
+      BOOST_CHECK(probe->response);
+      BOOST_CHECK_MESSAGE(probe->failure.empty(), probe->failure);
+    }
+    {
+      std::lock_guard<std::mutex> lock(probeMutex);
+      probes.erase(requestId.toUri());
+    }
+  };
+
+  // A protected grant is request-bound, so two independent requests must not
+  // share the grant-bound cache entry even when their canonical source and
+  // assembly recipe are identical.  The direct cache selector above covers
+  // same-grant hit accounting; this test covers the production request path.
+  runRequest(requestOne, firstGrant, 1, 1, 0, 1);
+  runRequest(requestTwo, independentGrant, 2, 2, 0, 2);
+  BOOST_CHECK_EQUAL(runnerRuns->load(std::memory_order_relaxed), 2U);
+  const auto counters = facade.counters();
+  BOOST_CHECK_EQUAL(counters.sourceFetches, 2U);
+  BOOST_CHECK_EQUAL(counters.assemblies, 2U);
+  BOOST_CHECK_EQUAL(counters.templateHits, 0U);
+  BOOST_CHECK_EQUAL(counters.runnersCreated, 2U);
+  registration.close();
+  facade.stop();
+  BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

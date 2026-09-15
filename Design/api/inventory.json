@@ -15346,14 +15346,36 @@
           "surface": "declared-interface"
         },
         {
-          "name": "ndnsf::di::NativeModelRunner::~NativeModelRunner",
+          "name": "ndnsf::di::NativeModelRunner::NativeModelRunner",
           "kind": "function",
           "access": "public",
           "line": 86,
-          "signature": "virtual ~NativeModelRunner() = default;",
+          "signature": "NativeModelRunner();",
           "documentation": "",
           "test_only": false,
-          "id": "API-b78e92752464",
+          "id": "API-fdd44017e561",
+          "surface": "declared-interface"
+        },
+        {
+          "name": "ndnsf::di::NativeModelRunner::~NativeModelRunner",
+          "kind": "function",
+          "access": "public",
+          "line": 87,
+          "signature": "virtual ~NativeModelRunner() noexcept;",
+          "documentation": "",
+          "test_only": false,
+          "id": "API-a4b136dffd90",
+          "surface": "declared-interface"
+        },
+        {
+          "name": "ndnsf::di::NativeModelRunner::cacheIdentity",
+          "kind": "function",
+          "access": "public",
+          "line": 94,
+          "signature": "std::uint64_t\n  cacheIdentity() const;",
+          "documentation": "/**\n   * Stable identity for this runner instance.  ProviderRoleWorker uses this\n   * value when it keys its exact-forward output cache; object addresses are\n   * unsuitable because a newly-created runner may reuse a retired address.\n   */",
+          "test_only": false,
+          "id": "API-31ea9c220dd0",
           "surface": "declared-interface"
         },
         {
@@ -15675,7 +15697,7 @@
       ],
       "parse_errors": [],
       "module": "DI",
-      "sha256": "c57bccd28e0a14441f97e6ece91c714f8eefe6614ab2bfa8dfd33668bde16a0d"
+      "sha256": "d2126f2d4ff062ff6624c8c663bdfbdd629ce082a633faed9d081d662e634c55"
     },
     {
       "file": "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.hpp",

@@ -1,9 +1,57 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
+#include <atomic>
+#include <mutex>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace ndnsf::di {
+
+namespace {
+
+struct RunnerCacheIdentityRegistry
+{
+  std::mutex mutex;
+  std::unordered_map<const NativeModelRunner*, std::uint64_t> identities;
+  std::atomic<std::uint64_t> next{1};
+};
+
+RunnerCacheIdentityRegistry&
+runnerCacheIdentityRegistry()
+{
+  static RunnerCacheIdentityRegistry registry;
+  return registry;
+}
+
+}
+
+NativeModelRunner::NativeModelRunner()
+{
+  auto& registry = runnerCacheIdentityRegistry();
+  const auto identity = registry.next.fetch_add(1, std::memory_order_relaxed);
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  registry.identities.emplace(this, identity);
+}
+
+NativeModelRunner::~NativeModelRunner() noexcept
+{
+  auto& registry = runnerCacheIdentityRegistry();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  registry.identities.erase(this);
+}
+
+std::uint64_t
+NativeModelRunner::cacheIdentity() const
+{
+  auto& registry = runnerCacheIdentityRegistry();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  const auto found = registry.identities.find(this);
+  if (found == registry.identities.end()) {
+    throw std::logic_error("NativeModelRunner cache identity is unavailable");
+  }
+  return found->second;
+}
 
 void
 NativeOpaqueStateHandleV1::validate() const
