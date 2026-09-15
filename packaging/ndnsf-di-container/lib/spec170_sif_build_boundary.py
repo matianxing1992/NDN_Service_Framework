@@ -163,6 +163,16 @@ def validate_definition(path: Path | str) -> dict[str, object]:
         "pip": "PYTHON_EXTENSION_BUILD_MISSING",
         "container-configure-closure.json": "CONFIGURE_CLOSURE_MISSING",
         "container-native-build.json": "BUILD_MANIFEST_MISSING",
+        "export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage":
+            "PYTHON_NAC_STAGE_PREFIX_MISSING",
+        "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib":
+            "PYTHON_STAGE_LIBRARY_CLOSURE_MISSING",
+        "NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib'":
+            "PYTHON_RUNTIME_RPATH_MISSING",
+        "APP_ELF_RUNTIME_CHECK=ndnsf-app-v2":
+            "APP_ELF_RUNTIME_CHECK_MISSING",
+        "/usr/bin/readelf -d \"$native_path\"":
+            "APP_ELF_READelf_CHECK_MISSING",
     }
     for marker, code in required_builder_markers.items():
         if marker not in builder_post:
@@ -174,6 +184,8 @@ def validate_definition(path: Path | str) -> dict[str, object]:
     required_transfers = {
         "/opt/ndnsf-stage/bin/di-native-provider": "PROVIDER_TRANSFER_MISSING",
         "/opt/ndnsf-stage/lib/libndn-service-framework": "FRAMEWORK_TRANSFER_MISSING",
+        "/opt/ndnsf-stage/lib/libndnsf-distributed-inference.so":
+            "DI_LIBRARY_TRANSFER_MISSING",
         "/opt/ndnsf-stage/python": "PYTHON_TRANSFER_MISSING",
         "/opt/ndnsf-stage/manifest/container-native-build.json":
             "BUILD_MANIFEST_TRANSFER_MISSING",
@@ -200,6 +212,8 @@ def validate_definition(path: Path | str) -> dict[str, object]:
             "STALE_PROVIDER_REMOVAL_MISSING",
         "rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so":
             "STALE_FRAMEWORK_REMOVAL_MISSING",
+        "rm -f /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so":
+            "STALE_DI_LIBRARY_REMOVAL_MISSING",
         "rm -f /opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf":
             "STALE_EXTENSION_REMOVAL_MISSING",
         "find /opt/venv/lib/python3.10/site-packages/ndnsf":
@@ -213,10 +227,35 @@ def validate_definition(path: Path | str) -> dict[str, object]:
         # every rebuilt candidate for the same residue.
         "/opt/venv/lib/python3.10/site-packages/functorch*":
             "FUNCTORCH_REMOVAL_MISSING",
+        "test ! -e /opt/ndnsf-app":
+            "APP_ROOT_PREEXISTENCE_GUARD_MISSING",
+        "test ! -L /opt/ndnsf-app":
+            "APP_ROOT_SYMLINK_GUARD_MISSING",
+        "install -d /opt/ndnsf-app/bin /opt/ndnsf-app/lib /opt/ndnsf-app/python":
+            "APP_LAYOUT_DIRECTORIES_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so":
+            "APP_DI_LIBRARY_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/bin/di-native-provider /opt/ndnsf-app/bin/di-native-provider":
+            "APP_PROVIDER_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/bin/di-native-fault-provider /opt/ndnsf-app/bin/di-native-fault-provider":
+            "APP_FAULT_PROVIDER_INSTALL_MISSING",
+        "install -m 0755 /opt/ndnsf-candidate/bin/App_ServiceController /opt/ndnsf-app/bin/App_ServiceController":
+            "APP_CONTROLLER_INSTALL_MISSING",
+        "cp -aL /opt/ndnsf-candidate/python/. /opt/ndnsf-app/python/":
+            "APP_PYTHON_COPY_MISSING",
+        "cp -aL /opt/ndnsf-candidate/replay/. /opt/ndnsf-app/replay/":
+            "APP_REPLAY_COPY_MISSING",
+        "cp -aL /opt/ndnsf-candidate/replay/source-seal.json /opt/ndnsf-app/manifest/source-seal.json":
+            "APP_SOURCE_SEAL_COPY_MISSING",
+        "manifest/source-seal.json": "APP_SOURCE_SEAL_MISSING",
+        "manifest/app-runtime.lock.json": "APP_RUNTIME_LOCK_MISSING",
+        "APP_LAYOUT_VERIFY=ndnsf-app-v2": "APP_LAYOUT_VERIFY_MISSING",
     }
     for marker, code in required_replacement_markers.items():
         if marker not in final_post:
             _fail(f"WRONG_BUILD_BOUNDARY_{code}")
+    if "cp -aL /opt/ndnsf-candidate/lib/. /opt/ndnsf-app/lib/" in final_post:
+        _fail("WRONG_BUILD_BOUNDARY_APP_COPIES_BASE_LIBRARIES")
     if "di-native-fault-provider" in builder_post:
         if "rm -f /opt/ndnsf-di/current/bin/di-native-fault-provider" not in final_post:
             _fail("WRONG_BUILD_BOUNDARY_FAULT_PROVIDER_STALE_REMOVAL_MISSING")

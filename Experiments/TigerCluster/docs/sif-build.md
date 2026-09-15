@@ -16,7 +16,10 @@
 [Layered Runtime Delivery](../../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md)。
 应用更新可复用未变基础 SIF，但须在对应 builder 内构建并验证新组合。
 pair 入口见 [SIF + APP delivery](sif-app-delivery.md)。应用候选必须采用
-`/opt/ndnsf-app` 分层布局；旧 `build-local-sif.sh` 生成的
+`/opt/ndnsf-app` 分层布局。当前 `development-runtime.def.in` 在同一
+container-native builder 中保留旧 `/opt/ndnsf-di/current` 兼容检查树，同时发布
+无 symlink 的 `/opt/ndnsf-app` 候选树（只包含 DI 应用程序、DI 原生库和绑定，基础库仍由
+base 提供）；旧 `build-local-sif.sh` 生成且没有该候选树的
 `/opt/ndnsf-di/current` complete-application SIF 仍可回放历史候选，但不能直接
 作为新的 pair APP 来源。pair 入口只接受容器内验证的候选，不接受宿主编译的
 `.so`、Python extension 或 venv。

@@ -92,12 +92,21 @@ def build_extension() -> Extension:
                 raise RuntimeError("NDNSF_LIBRARY_DIR does not contain libndn-service-framework: " + str(path))
             library_dirs.insert(0, str(path))
             extra_link_args.append(f"-Wl,-rpath,{path}")
-    if source:
+    runtime_rpath = os.environ.get("NDNSF_RUNTIME_RPATH")
+    if runtime_rpath:
+        runtime_dirs = [value for value in runtime_rpath.split(os.pathsep) if value]
+        extra_link_args = [
+            *[f"-Wl,-rpath,{value}" for value in runtime_dirs],
+            *[value for value in extra_link_args
+              if not value.startswith("-Wl,-rpath,")],
+        ]
+    elif source:
         extra_link_args.append(f"-Wl,-rpath,{build}")
     if nac:
         library_dirs.insert(0, str(nac / "lib"))
         libraries = [name for name in libraries if name != "nac-abe"]
-        extra_link_args.append(f"-Wl,-rpath,{nac / 'lib'}")
+        if not runtime_rpath:
+            extra_link_args.append(f"-Wl,-rpath,{nac / 'lib'}")
 
     return Extension(
         "py_repoclient._py_repoclient",

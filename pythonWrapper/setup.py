@@ -116,8 +116,11 @@ def build_extension() -> Extension:
         candidate_dirs = [str(local_build)] if local_build.exists() else []
 
     library_dirs = list(dict.fromkeys([*candidate_dirs, *library_dirs]))
+    runtime_rpath = os.environ.get("NDNSF_RUNTIME_RPATH")
+    runtime_dirs = ([value for value in runtime_rpath.split(os.pathsep) if value]
+                    if runtime_rpath else candidate_dirs)
     extra_link_args = [
-        *[f"-Wl,-rpath,{value}" for value in candidate_dirs],
+        *[f"-Wl,-rpath,{value}" for value in runtime_dirs],
         *extra_link_args,
     ]
     svs_includes = []
@@ -129,7 +132,8 @@ def build_extension() -> Extension:
         # when another dependency supplies /usr/local/lib earlier in -L.
         svs_objects = [str(build / "libndn-svs.so")]
         libraries = [name for name in libraries if name != "ndn-svs"]
-        extra_link_args.insert(0, f"-Wl,-rpath,{build}")
+        if not runtime_rpath:
+            extra_link_args.insert(0, f"-Wl,-rpath,{build}")
 
     nac_includes = []
     nac_objects = []
@@ -138,7 +142,8 @@ def build_extension() -> Extension:
         library_dirs = list(dict.fromkeys([str(nac_prefix / "lib"), *library_dirs]))
         libraries = [name for name in libraries if name != "nac-abe"]
         nac_objects = [str(nac_prefix / "lib/libnac-abe.so")]
-        extra_link_args.append(f"-Wl,-rpath,{nac_prefix / 'lib'}")
+        if not runtime_rpath:
+            extra_link_args.append(f"-Wl,-rpath,{nac_prefix / 'lib'}")
 
     return Extension(
         "ndnsf._ndnsf",

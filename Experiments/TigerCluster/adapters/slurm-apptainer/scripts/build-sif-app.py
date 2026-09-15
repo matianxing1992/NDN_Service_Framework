@@ -342,6 +342,35 @@ def file_rows(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def verify_elf_runtime_paths(root: Path) -> None:
+    """Reject builder/compatibility paths embedded in published APP ELF files."""
+    forbidden = ("/opt/ndnsf-di/current", "/opt/ndnsf-stage", "/src/")
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            with path.open("rb") as stream:
+                if stream.read(4) != b"\x7fELF":
+                    continue
+        except OSError as error:
+            fail("APP_ELF_READ_FAILED", error)
+        result = subprocess.run(
+            ["/usr/bin/readelf", "-d", str(path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if result.returncode != 0:
+            fail("APP_ELF_DYNAMIC_SECTION_FAILED", path)
+        runpath_lines = [
+            line for line in result.stdout.splitlines()
+            if "(RPATH)" in line or "(RUNPATH)" in line
+        ]
+        for marker in forbidden:
+            if any(marker in line for line in runpath_lines):
+                fail("APP_ELF_FORBIDDEN_RUNTIME_PATH", f"{path}:{marker}")
+
+
 def reject_manifest_symlinks(root: Path) -> None:
     for path in root.rglob("*"):
         if path.is_symlink():
@@ -1232,6 +1261,7 @@ PYTHONPATH="$app/python" PYTHONNOUSERSITE=1 /opt/venv/bin/python \
         (temp / STAGING_TOKEN).unlink(missing_ok=True)
         verify_materialized(apptainer, candidate_for_use, temp,
                             apptainer_identity, apptainer_sha)
+        verify_elf_runtime_paths(temp)
         temp_source_identity = identity(temp)
         rows = file_rows(temp)
         names = {row["path"] for row in rows}

@@ -19,7 +19,7 @@
 | `prepare-development-handoff.py` / `prepare`, `REQUIRED_WHEELS` | ADD接受四库checkout、锁文件、wheel目录及新输出目录；要求精确commit、无tracked修改，拒绝归档未跟踪源码；要求模板所用五个wheel齐全；复用既有sealer生成四个source-only归档、相对路径seal、输入manifest和definition模板。 |
 | `prepare-development-handoff.py` / `verify` | ADD验证锁/每项文件hash、三库commit与source seal、归档内容；不调用编译器、Apptainer或SSH，不把SOURCE_READY当作运行PASS。 |
 | `prepare-development-handoff.py` / `render` | ADD验证输入及外部base SIF摘要后，只替换模板中的包目录/base路径/seal/release身份，生成本机可执行definition；搬运后重新render，不编辑旧seal身份。 |
-| `development-runtime.def.in` | ADD从历史r119多阶段recipe整理：新NAC/SVS/NDNSD/Core和两扩展在builder内重建；显式依赖prefix、完整输出集合、清除自有旧输出、builder/final摘要相等。base只提供基础依赖。 |
+| `development-runtime.def.in` | ADD从历史r119多阶段recipe整理：新NAC/SVS/NDNSD/Core和两扩展在builder内重建；显式依赖prefix、完整输出集合、清除自有旧输出、builder/final摘要相等；final 同时发布兼容 `/opt/ndnsf-di/current` 和无 symlink 的 `/opt/ndnsf-app`。base只提供基础依赖。 |
 | `development-handoff.lock.json` | ADD四库GitHub Experimental来源及完整commit、base SIF身份、wheel文件名/hash/公开下载URL和获取要求；不含个人路径、模型/密钥或宿主二进制。 |
 | `skills/` | ADD近期维护的可共享技能及引用；构建细节仍在Tiger目录，不在技能中另写一套脚本。 |
 
@@ -109,7 +109,7 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-develo
 
 最后一步替换base路径；工具会先核对实际SIF摘要。生成的definition在包外，包搬迁后重新render到新文件。获得当前源码所需的host qualification manifest和已核对版本的Apptainer后，按 [SIF build](sif-build.md) 调用既有`build-local-sif.sh`，传入新definition和`bundle/source/source-seal.json`。缺少该manifest时交付状态仍为SOURCE_READY，尚不具备该构建入口要求的全部前置证据；不能传入过期G3清单绕过。现有Tiny/YOLO/Qwen workload和Tiger profile各自的输入/验收边界继续有效。
 
-构建成功后先保留新SIF摘要、build record、容器native manifest及实际loaded libraries证据，再运行有限Tiger功能用例。反馈必须含四库commit、SIF摘要、profile/config、日志和复现步骤；不要在开发机开始Spec182前回写实验PASS。
+构建成功后先保留新SIF摘要、build record、容器native manifest及实际loaded libraries证据，再运行有限Tiger功能用例。最终镜像同时保留兼容检查树和只含 DI 应用内容的无 symlink `/opt/ndnsf-app`；基础库不得复制进外置 APP。反馈必须含四库commit、SIF摘要、profile/config、日志和复现步骤；不要在开发机开始Spec182前回写实验PASS。
 
 ## Checkpoint
 

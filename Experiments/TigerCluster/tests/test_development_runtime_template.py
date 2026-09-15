@@ -41,6 +41,22 @@ def test_rendered_template_preserves_container_build_boundary(tmp_path):
     result = boundary.validate_definition(path)
     assert result["status"] == "PASS" and result["hostBinaryInputs"] == []
     assert result["baseImage"] == str(tmp_path / "base.sif")
+    text = path.read_text()
+    assert "/opt/ndnsf-stage/lib/libndnsf-distributed-inference.so" in text
+    assert "/opt/ndnsf-app/bin" in text
+    assert "test ! -e /opt/ndnsf-app" in text
+    assert "test ! -L /opt/ndnsf-app" in text
+    assert "install -m 0755 /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so" in text
+    assert "install -m 0755 /opt/ndnsf-candidate/bin/di-native-provider /opt/ndnsf-app/bin/di-native-provider" in text
+    assert "install -m 0755 /opt/ndnsf-candidate/bin/di-native-fault-provider /opt/ndnsf-app/bin/di-native-fault-provider" in text
+    assert "install -m 0755 /opt/ndnsf-candidate/bin/App_ServiceController /opt/ndnsf-app/bin/App_ServiceController" in text
+    assert "cp -aL /opt/ndnsf-candidate/python/. /opt/ndnsf-app/python/" in text
+    assert "cp -aL /opt/ndnsf-candidate/replay/. /opt/ndnsf-app/replay/" in text
+    assert "cp -aL /opt/ndnsf-candidate/lib/. /opt/ndnsf-app/lib/" not in text
+    assert "APP_LAYOUT_VERIFY=ndnsf-app-v2" in text
+    assert "NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib'" in text
+    assert "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib" in text
+    assert "export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage" in text
 
 
 @pytest.mark.parametrize("stage", ["builder", "final"])
