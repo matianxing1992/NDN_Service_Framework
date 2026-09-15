@@ -4966,3 +4966,19 @@ which differs from the Spec186 handoff seal
   and persist the final SIF outside `/tmp` before launching.
 - **Lesson**: a valid SIF cannot compensate for stale external binds; validate
   every host input path and persist the image before starting a GPU campaign.
+
+## 2026-09-15 — Spec186 r38 persistent intermediate path was not rendered
+
+- **Area**: T006 persistent Tiger SIF build inputs.
+- **Symptom**: the persistent intermediate SIF completed successfully, but the
+  final build stopped before container creation with
+  `LOCAL_SIF_BASE_MISSING path=/tmp/spec186-r38-intermediate-base.sif`.
+- **Root cause**: the wrapper moved `INTERMEDIATE` to project storage while
+  the already rendered final definition still referenced its former `/tmp`
+  `From:` path.
+- **Correction**: update the rendered final definition to the same persistent
+  project-storage path and reuse the verified intermediate SIF on the next
+  allocation.
+- **Lesson**: moving an artifact variable is insufficient for a rendered
+  definition; the definition's `From:` identity and the wrapper path must be
+  checked together before dispatch.
