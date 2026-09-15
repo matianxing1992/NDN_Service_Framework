@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture(autouse=True)
 def isolated_build_environment(monkeypatch):
     for name in ("NDNSF_LIBRARY_DIR", "NDNSF_NAC_ABE_PREFIX",
-                 "NDNSF_NDN_SVS_SOURCE_TREE", "NDNSF_NDN_SVS_BUILD_TREE"):
+                 "NDNSF_NDN_SVS_SOURCE_TREE", "NDNSF_NDN_SVS_BUILD_TREE",
+                 "NDNSF_RUNTIME_RPATH"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -109,6 +110,28 @@ def test_explicit_ndnsf_library_dir_rejects_silent_linker_fallback(
     else:
         raise AssertionError("missing candidate directory was accepted")
     assert not captured
+
+
+def test_runtime_rpath_override_targets_pair_locations(monkeypatch, tmp_path, setup_path):
+    candidate = (tmp_path / "candidate-lib").resolve()
+    candidate.mkdir()
+    (candidate / "libndn-service-framework.so").touch()
+    (candidate / "libndnsf-distributed-inference.so").touch()
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("NDNSF_LIBRARY_DIR", str(candidate))
+    monkeypatch.setenv("NDNSF_RUNTIME_RPATH", "$ORIGIN/../../lib:/opt/ndn-base/lib")
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
+
+    runpy.run_path(str(setup_path), run_name="__main__")
+    extension = captured["ext_modules"][0]
+    runpaths = [
+        value[len("-Wl,-rpath,"):]
+        for value in extension.extra_link_args
+        if value.startswith("-Wl,-rpath,")
+    ]
+    assert runpaths == ["$ORIGIN/../../lib", "/opt/ndn-base/lib"]
+    assert str(candidate) not in runpaths
+    assert all("/opt/ndnsf-di/current" not in value for value in runpaths)
 
 
 @pytest.mark.parametrize("candidate", [os.pathsep, os.pathsep * 2])

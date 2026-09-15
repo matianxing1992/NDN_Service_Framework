@@ -433,6 +433,25 @@ int main() {
         conf.env.NDNSF_NAC_ABE_PREFIX = nac_abe_prefix
         conf.msg('Explicit NAC-ABE prefix', nac_abe_prefix)
 
+    # A layered application may link against staged builder inputs, but its
+    # published ELF objects must resolve only through their APP-relative path
+    # and the immutable base runtime.  When requested, replace every
+    # dependency-discovery RPATH accumulated above (SVS, NAC-ABE, local
+    # prefixes) with the explicit pair runtime paths.  Link search paths stay
+    # intact, so this changes runtime ownership without weakening the build
+    # closure.
+    runtime_rpath = os.environ.get('NDNSF_RUNTIME_RPATH', '')
+    if runtime_rpath:
+        runtime_paths = [path for path in runtime_rpath.split(os.pathsep) if path]
+        existing_linkflags = [
+            flag for flag in list(conf.env.LINKFLAGS or [])
+            if not flag.startswith('-Wl,-rpath,')
+        ]
+        conf.env.LINKFLAGS = [
+            *(f'-Wl,-rpath,{path}' for path in runtime_paths),
+            *existing_linkflags,
+        ]
+
     conf.check_cfg(package='openssl', args=['--cflags', '--libs'], uselib_store='OPENSSL',
                    pkg_config_path=pkg_config_path)
     

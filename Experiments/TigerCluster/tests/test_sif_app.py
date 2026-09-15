@@ -192,6 +192,20 @@ def test_build_driver_rejects_overwrite_and_uses_container_extraction():
     assert "/opt/ndnsf-app" in text
 
 
+def test_build_driver_rejects_forbidden_elf_runtime_path(tmp_path, monkeypatch):
+    elf = tmp_path / "bin" / "provider"
+    elf.parent.mkdir()
+    elf.write_bytes(b"\x7fELF\x02\x01\x01")
+
+    class Result:
+        returncode = 0
+        stdout = " 0x1 (RUNPATH) Library runpath: [/opt/ndnsf-di/current/lib]\\n"
+
+    monkeypatch.setattr(builder.subprocess, "run", lambda *args, **kwargs: Result())
+    with pytest.raises(builder.BuildSifAppError, match="APP_ELF_FORBIDDEN_RUNTIME_PATH"):
+        builder.verify_elf_runtime_paths(tmp_path)
+
+
 def test_staging_token_is_atomic_and_immutable_cleanup_restores_write_bits(tmp_path):
     parent = tmp_path / "release"
     parent.mkdir()
