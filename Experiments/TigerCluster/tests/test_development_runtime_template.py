@@ -95,6 +95,7 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "cp -a /src/ndnsf/Experiments/TigerCluster/jobs/spec180" in TEMPLATE.read_text()
     assert "cp -a /src/ndnsf/specs/162-itiger-qwen36-generation" in TEMPLATE.read_text()
     assert "cp -a /src/ndnsf/packaging/ndnsf-di-container/jobs/spec180" not in TEMPLATE.read_text()
+    assert "install -d /dev /tmp /var/tmp" in TEMPLATE.read_text()
     assert "/var/lib/dpkg/updates" in TEMPLATE.read_text()
     build_script = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh").read_text()
     assert "preflight-development-sif.py" in build_script

@@ -16,6 +16,12 @@ Stage: builder
 
 %post
     set -eu
+    # The pinned bootstrap image is intentionally minimal and may omit mount
+    # points that Apptainer's normal inspect/exec path expects.  Create these
+    # directories inside the resulting image before installing the runtime so
+    # 1.5.3 can inspect and execute the final SIF without a host-only mount
+    # workaround.
+    install -d /dev /tmp /var/tmp
     unset PYTHONOPTIMIZE PYTHONHOME PYTHONPATH
     export NDNSF_CONTAINER_BUILD=1
     export NDNSF_RUST_PREFIX=/opt/rust-prefix

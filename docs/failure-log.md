@@ -1,5 +1,24 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec186 local Apptainer could not inspect the minimal base
+
+- **Symptom:** Apptainer 1.5.3 `inspect --json` and an ordinary `exec` against
+  `spec186-repaired-base-final.sif` failed before the payload ran because the
+  bootstrap filesystem had no `/dev`; the mount hook reported
+  `destination /dev doesn't exist in container`. The repository preflight
+  could still check the base with `--no-mount dev`, so this defect was easy to
+  miss until the final SIF inspection boundary.
+- **Root cause:** the pinned base image is a deliberately minimal SquashFS
+  filesystem, while the final builder assumed Apptainer mount points would be
+  present in the inherited root.
+- **Fix:** make the development definition create `/dev`, `/tmp`, and
+  `/var/tmp` at the beginning of `%post`, and add a static regression asserting
+  those directories remain part of the final image contract. Base preflight
+  continues to use `--no-mount dev` because it must not mutate the base.
+- **Lesson:** a base capability check and final runtime inspection exercise
+  different filesystem contracts; both must be explicit before an expensive
+  SIF build.
+
 ## 2026-09-15 — Spec186 host gate rejected the current stable text decoder
 
 - **Symptom:** Generating a current host gate returned
