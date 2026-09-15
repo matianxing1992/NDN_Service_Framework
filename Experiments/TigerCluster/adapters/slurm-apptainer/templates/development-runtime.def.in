@@ -519,6 +519,9 @@ Stage: final
     /opt/ndnsf-stage/manifest/container-configure-closure.json /opt/ndnsf-candidate/manifest/container-configure-closure.json
     /opt/ndnsf-stage/manifest/container-native-build.json /opt/ndnsf-candidate/manifest/container-native-build.json
     /opt/ndnsf-stage/replay /opt/ndnsf-candidate/replay
+    # The final stage has no /build-input bind. Carry the wheel-private NumPy
+    # DSOs produced and checked in the builder through the stage boundary.
+    /opt/venv/lib/python3.10/site-packages/numpy.libs /opt/ndnsf-candidate/numpy.libs
 
 %post
     set -eu
@@ -591,31 +594,17 @@ PY
         if [ -e "$path" ]; then rm -rf "$path"; fi
     done
     rm -f /opt/venv/bin/torchrun /opt/venv/bin/transformers
-    # NumPy is inherited from the base SIF. Preserve the exact wheel-private
-    # DSOs in the final image too; the base extension's RPATH resolves them
-    # relative to this site-packages directory, not the staged app tree.
-    /opt/venv/bin/python - <<'PY'
-from pathlib import Path
-from zipfile import ZipFile
-
-wheels = sorted(Path('/build-input/wheels').glob('numpy-1.26.4-*.whl'))
-assert len(wheels) == 1, 'NUMPY_WHEEL_COUNT'
-destination = Path('/opt/venv/lib/python3.10/site-packages/numpy.libs')
-destination.mkdir(parents=True, exist_ok=True)
-expected = {
-    'libopenblas64_p-r0-0cf96a72.3.23.dev.so',
-    'libgfortran-040039e1.so.5.0.0',
-    'libquadmath-96973f99.so.0.0.0',
-}
-with ZipFile(wheels[0]) as archive:
-    members = {Path(name).name: name for name in archive.namelist()
-               if name.startswith('numpy.libs/') and not name.endswith('/')}
-    assert set(members) == expected, 'NUMPY_WHEEL_PRIVATE_LIB_SET'
-    for name in sorted(expected):
-        target = destination / name
-        target.write_bytes(archive.read(members[name]))
-        target.chmod(0o755)
-PY
+    # The final stage has no source-wheel bind; use the exact, already checked
+    # builder payload carried through %files from builder above.
+    test -d /opt/ndnsf-candidate/numpy.libs
+    install -d /opt/venv/lib/python3.10/site-packages/numpy.libs
+    cp -a /opt/ndnsf-candidate/numpy.libs/. /opt/venv/lib/python3.10/site-packages/numpy.libs/
+    for name in \
+        libopenblas64_p-r0-0cf96a72.3.23.dev.so \
+        libgfortran-040039e1.so.5.0.0 \
+        libquadmath-96973f99.so.0.0.0; do
+        test -x "/opt/venv/lib/python3.10/site-packages/numpy.libs/$name"
+    done
     ldconfig
 
     extension_count=$(find /opt/venv/lib/python3.10/site-packages/ndnsf -maxdepth 1 -name '_ndnsf*.so' -type f | wc -l)

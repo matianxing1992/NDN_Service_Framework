@@ -62,7 +62,31 @@ normalize_version() {
   printf '%s\n' "$1" | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/'
 }
 
-local_version=$("$apptainer_bin" version)
+apptainer_run() {
+  if [ -n "${SPEC186_APPTAINER_CONFIG:-}" ]; then
+    "$apptainer_bin" -c "$SPEC186_APPTAINER_CONFIG" "$@"
+  else
+    "$apptainer_bin" "$@"
+  fi
+}
+
+apptainer_build() {
+  # Tiger's user-space 1.5.3 installation has no subordinate-id allocation,
+  # and the pinned Ubuntu 20.04 base cannot load the newer fakeroot helper.
+  # Root-mapped user namespaces therefore run the %post section directly;
+  # this keeps the CLI, builder, and runtime on the same 1.5.3 binary.
+  build_args=()
+  if [ "${SPEC186_APPTAINER_ROOT_MAPPED:-0}" = 1 ]; then
+    build_args+=(--ignore-subuid --ignore-fakeroot-command)
+  fi
+  if [ -n "${SPEC186_APPTAINER_CONFIG:-}" ]; then
+    "$apptainer_bin" -c "$SPEC186_APPTAINER_CONFIG" build "${build_args[@]}" "$@"
+  else
+    "$apptainer_bin" build "${build_args[@]}" "$@"
+  fi
+}
+
+local_version=$(apptainer_run --version)
 [ "$(normalize_version "$local_version")" = "$(normalize_version "$expected_version")" ] || {
   echo "LOCAL_SIF_APPTAINER_VERSION_MISMATCH local=$local_version compute=$expected_version" >&2
   exit 4
@@ -319,9 +343,9 @@ if [ "$bootstrap" = localimage ]; then
 fi
 
 echo "LOCAL_SIF_BUILD_START definition=$definition output=$sif apptainer=$local_version binary=$apptainer_bin"
-"$apptainer_bin" build --force "$partial" "$definition"
+apptainer_build --force "$partial" "$definition"
 [ -s "$partial" ] || { echo LOCAL_SIF_EMPTY >&2; exit 4; }
-inspect_json=$("$apptainer_bin" inspect --json "$partial")
+inspect_json=$(apptainer_run inspect --json "$partial")
 if ! ndnsf_labels_json=$(python3 - "$definition" "$inspect_json" "$source_seal" <<'PY'
 import json
 import sys

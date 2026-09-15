@@ -23,9 +23,11 @@ not promoted to protocol or GPU qualification.
 ## Current boundaries
 
 - Local `apptainer` resolves only to `/usr/local/bin/apptainer` 1.5.3. Tiger
-  compute `srun` reports `/usr/bin/apptainer` 1.5.3-1.el9. The Tiger login
-  node is a control-plane metadata boundary; its observed 1.3.4 package is not
-  used for SIF execution and is never a runtime fallback.
+  compute SIF operations use the prefix-relocated
+  `/home/tma1/.local/bin/apptainer-1.5.3` 1.5.3. The Tiger login node's
+  `/usr/bin/apptainer` 1.3.4 is a control-plane metadata boundary; it is not
+  used for SIF build, inspect, preflight or execution and is never a runtime
+  fallback.
 - The r6 application package is staged read-only in project storage. The exact
   source-sealed base SIF is still absent, so all eight pre-dispatch gates fail
   closed before scheduler side effects.

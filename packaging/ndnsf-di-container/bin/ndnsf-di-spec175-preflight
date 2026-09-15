@@ -269,8 +269,12 @@ def validate_sif(sif: Path, apptainer: str | None, expected_sha: str | None,
         fail("SPEC175_SIF_DIGEST_MISMATCH", actual)
     record = {"path": str(sif.resolve()), "sha256": actual, "bytes": sif.stat().st_size}
     if apptainer:
+        command_prefix = [apptainer]
+        config = os.environ.get("SPEC186_APPTAINER_CONFIG", "").strip()
+        if config:
+            command_prefix.extend(["-c", config])
         try:
-            result = subprocess.run([apptainer, "inspect", "--json", str(sif)], text=True,
+            result = subprocess.run([*command_prefix, "inspect", "--json", str(sif)], text=True,
                                     capture_output=True, check=False)
         except OSError as exc:
             fail("SPEC175_APPTAINER_UNAVAILABLE", exc)
@@ -290,7 +294,7 @@ def validate_sif(sif: Path, apptainer: str | None, expected_sha: str | None,
             fail("SPEC175_SIF_SOURCE_SEAL_LABEL_MISMATCH",
                  f"expected={source_seal_digest} actual={labels.get('org.ndnsf.di.source-seal')}")
         probe = subprocess.run(
-            [apptainer, "exec", "--cleanenv", str(sif), "python3", "-c", _RUNTIME_PROBE],
+            [*command_prefix, "exec", "--cleanenv", str(sif), "python3", "-c", _RUNTIME_PROBE],
             text=True, capture_output=True, check=False,
         )
         if probe.returncode != 0:

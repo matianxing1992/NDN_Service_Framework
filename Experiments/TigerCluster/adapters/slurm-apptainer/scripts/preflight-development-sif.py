@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import shlex
 import subprocess
 import sys
@@ -133,9 +134,13 @@ import numpy
 assert numpy.__version__ == '1.26.4', numpy.__version__
 print('NUMPY_BASE_IMPORT_PASS')
 """
-    command = [str(apptainer), "exec", "--no-mount", "dev", "--writable-tmpfs",
-               "--bind", f"{wheels}:/build-input/wheels:ro", str(base_sif),
-               "/opt/venv/bin/python", "-"]
+    command = [str(apptainer)]
+    config = os.environ.get("SPEC186_APPTAINER_CONFIG", "").strip()
+    if config:
+        command.extend(["-c", config])
+    command.extend(["exec", "--no-mount", "dev", "--writable-tmpfs",
+                    "--bind", f"{wheels}:/build-input/wheels:ro", str(base_sif),
+                    "/opt/venv/bin/python", "-"])
     result = subprocess.run(command, input=script, text=True, capture_output=True)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:]

@@ -9,7 +9,7 @@ for SSH/Slurm metadata and is never an execution fallback.
 | Scope | Explicit executable | Required version | Verification |
 | --- | --- | --- | --- |
 | Local MiniNDN/SIF | `/usr/local/bin/apptainer` | `1.5.3` | `apptainer --version` → `apptainer version 1.5.3` |
-| Tiger compute SIF | `/home/tma1/.local/bin/apptainer-1.5.3` | `1.5.3` | bounded `srun ... /home/tma1/.local/bin/apptainer-1.5.3 --version` → `apptainer version 1.5.3`; SHA-256 `f7ac8e00b9d9c2e78e4b7bedb549df7868092910227db5e8b91be8a47212af06` |
+| Tiger compute SIF | `/home/tma1/.local/bin/apptainer-1.5.3` | `1.5.3` | bounded `srun ... /home/tma1/.local/bin/apptainer-1.5.3 --version` → `apptainer version 1.5.3`; prefix-relocated user-space binary SHA-256 `a73ab497f71e4371ddad0bc4211c46b78bdfb491b10e9640e16d5cfaa090a8c4`; `exec /bin/true` PASS |
 | Tiger login | `/usr/bin/apptainer` metadata only | `1.3.4` allowed on control plane | observed `apptainer version 1.3.4-1.el9`; no SIF command is run there |
 
 All eight `spec184-*.json` profiles now carry
@@ -55,3 +55,18 @@ claimed here.
 The profile checks and Tiger adapter tests pass. These receipts remain
 pre-dispatch evidence only; the exact source-sealed base SIF, local route
 repair, Qwen3 tuple and runtime campaign are still required for qualification.
+
+## 2026-09-15 execution-boundary correction
+
+The Tiger login node's `/usr/bin/apptainer` 1.3.4 is control-plane metadata
+only. It is never used to build, inspect, preflight, or execute an NDNSF-DI SIF.
+Every SIF operation is dispatched to the allocated compute node and uses the
+prefix-relocated `/home/tma1/.local/bin/apptainer-1.5.3` (SHA-256
+`a73ab497f71e4371ddad0bc4211c46b78bdfb491b10e9640e16d5cfaa090a8c4`).
+
+The compute build uses the same 1.5.3 binary for the intermediate builder input,
+the final two-stage SIF build, image inspection, and runtime preflight. The
+root-mapped mode is explicit (`SPEC186_APPTAINER_ROOT_MAPPED=1`) because this
+account has no subordinate-ID allocation; it is not a fallback to login-node
+1.3.4. The final SIF is built and run on the compute node's local `/tmp` so
+project/home quota limits cannot cause a hidden copy or a version substitution.

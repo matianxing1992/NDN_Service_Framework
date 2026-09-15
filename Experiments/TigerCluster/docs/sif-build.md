@@ -33,6 +33,17 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-deve
 
 ## Output Layout
 
+## Tiger 节点版本边界
+
+| 节点 | Apptainer | 允许用途 | SIF 构建/检查/执行 |
+| --- | --- | --- | --- |
+| 登录节点 | `/usr/bin/apptainer` 1.3.4 | SSH、Slurm 提交和路径/资源元数据 | 禁止；不执行任何 SIF 操作 |
+| 计算节点 | `/home/tma1/.local/bin/apptainer-1.5.3` 1.5.3 | 分配到的节点上的构建、检查、preflight 和运行 | 唯一允许的 Tiger CLI |
+
+因此本项目不需要用登录节点的 1.3.4 构建 SIF；SIF 只用计算节点的
+Apptainer 1.5.3 构建，并在同一 1.5.3 运行时完成 inspect、preflight 和执行。
+登录节点只负责把作业送入 Slurm，不能作为版本回退或隐式 builder。
+
 新构建显式选择新目录，例如：
 
 ```bash
@@ -53,6 +64,14 @@ bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.s
 `/usr/bin/apptainer` 的 1.3.4 只用于 SSH/Slurm 元数据，不能作为构建或运行
 回退。原脚本的`--help`打印用法并返回2，沿用既有行为。
 SIF、缓存、私有身份、模型和大日志不入Git。镜像在容器builder内编译原生组件；宿主驱动构建，不提供宿主.so或venv作为运行依赖。
+
+Tiger 账户没有 subordinate UID/GID，且 v23 Ubuntu 20.04 基础镜像的 glibc
+无法运行新 fakeroot helper。计算节点构建因此显式设置
+`SPEC186_APPTAINER_CONFIG=/etc/apptainer/apptainer.conf` 和
+`SPEC186_APPTAINER_ROOT_MAPPED=1`；入口会以同一个 1.5.3 CLI 加上
+`--ignore-subuid --ignore-fakeroot-command` 建立 root-mapped builder。这个
+模式只解决构建权限边界，最终 SIF 仍由 1.5.3 构建、检查并在计算节点执行。
+登录节点 1.3.4 不得参与任何一个步骤。
 
 ## Existing Images
 

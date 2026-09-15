@@ -4859,3 +4859,56 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a successful small-file probe is insufficient; validate the
   complete bootstrap extraction in the same 1.5.3 environment that will run
   the candidate, and record the failing path before switching hosts.
+
+## 2026-09-14 — Spec186 r38 rootless builder lacked subordinate IDs and compatible fakeroot
+
+- **Area**: T006 SIF build on Tiger compute.
+- **Symptom**: the first r38 allocation stopped before `%post` with
+  `newgidmap: write to gid_map failed: Operation not permitted`; the Tiger
+  account has no `/etc/subuid`/`/etc/subgid` entry. A root-mapped retry then
+  reached the pinned Ubuntu 20.04 base but its embedded fakeroot helper
+  required `GLIBC_2.33`/`GLIBC_2.34`, while the base provides an older glibc.
+- **Root cause**: the user-space Apptainer 1.5.3 executable had no setuid
+  starter and the default fakeroot path was incompatible with the base image.
+- **Correction**: add an explicit Tiger root-mapped build mode to the
+  repository build entrypoint. It uses the same Apptainer 1.5.3 binary with
+  `--ignore-subuid --ignore-fakeroot-command`; the `%post` runs as uid 0 in
+  the root-mapped namespace. The mode is opt-in via
+  `SPEC186_APPTAINER_ROOT_MAPPED=1` and does not alter privileged builds.
+- **Lesson**: version alignment alone does not establish build capability;
+  record subordinate-ID, starter, and base-glibc prerequisites before a full
+  SIF build.
+
+## 2026-09-14 — Spec186 r38 v23 base omitted the locked Rust builder inputs
+
+- **Area**: T006 builder dependency closure.
+- **Symptom**: after adding the ONNX SDK, the compute build passed the ONNX
+  checks and stopped at `test -x /opt/rust-prefix/bin/cargo`.
+- **Root cause**: the historical v23 dependency base contains ONNX Runtime and
+  a Python environment, but not the locked Rust 1.90.0 toolchain or the
+  offline Cargo registry required by the rendered recipe.
+- **Correction**: restore the already verified Rust 1.90.0 toolchain and
+  tokenizers Cargo registry as builder-only inputs in the compute staging
+  area; the final two-stage definition keeps the inputs inside the same
+  1.5.3-built image and records their hashes in the build receipt.
+- **Lesson**: a base SIF name is not a dependency closure. Check every
+  explicit `/opt` prerequisite before starting native compilation.
+
+## 2026-09-15 — Spec186 r38 final stage lost the NumPy wheel input
+
+- **Area**: T006 final two-stage SIF assembly.
+- **Symptom**: r38 completed all 284 native targets, both Python extensions,
+  import checks and `ldd` checks in the builder, then failed in the final
+  `%post` with `AssertionError: NUMPY_WHEEL_COUNT`.
+- **Root cause**: the final stage intentionally receives only `%files from
+  builder`; it has no `/build-input/wheels` directory. The final-stage
+  script nevertheless tried to reopen the builder-only NumPy wheel instead
+  of consuming the already checked private DSOs.
+- **Correction**: carry the builder's
+  `/opt/venv/lib/python3.10/site-packages/numpy.libs` directory through the
+  stage boundary and validate the exact three expected DSOs in the final
+  image. The wheel remains a builder input and is not copied into the runtime
+  image.
+- **Lesson**: every final-stage check must use files declared in that stage's
+  `%files` inputs; do not reference source or wheel paths removed at the
+  builder cleanup boundary.

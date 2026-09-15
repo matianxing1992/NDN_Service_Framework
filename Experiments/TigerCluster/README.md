@@ -38,6 +38,11 @@ bash Experiments/TigerCluster/jobs/spec180/submit.sh <gate> <profile.json> <run-
 模型准备与运行证据见 [Qwen models](docs/itiger-qwen-models.md)、[Qwen evidence](docs/itiger-qwen-evidence.md)。
 Spec180既定用例见 [quickstart](../../specs/180-ack-driven-cross-model-qualification/quickstart.md)；其历史阶段/状态以相应Spec为准，不作为启动旧资格流程的指令。
 
+Tiger 节点的版本边界固定为：登录节点 `/usr/bin/apptainer` 1.3.4 只用于
+SSH、Slurm 和资源/路径元数据；分配到的计算节点统一使用
+`/home/tma1/.local/bin/apptainer-1.5.3` 1.5.3 完成 SIF 构建、inspect、preflight
+和执行。当前候选不得在登录节点构建 SIF，也不得把 1.3.4 当作运行时回退。
+
 ## Compatibility And Review Boundary
 
 开发机负责代码、静态审查与测试，实验机负责SIF构建和Tiger集群运行；MiniNDN依当前Spec安排。

@@ -61,8 +61,9 @@ allowed.
 - `runtime.apptainer.path` and `runtime.apptainer.version` MUST be explicit for
   every profile; the version MUST be exactly `1.5.3`. Local MiniNDN/SIF paths
   MUST probe that executable with `--version`. Tiger profiles use
-  `/usr/bin/apptainer` on allocated compute nodes; the login node is a
-  submit/metadata boundary and its 1.3.4 package MUST NOT be used for SIF.
+  `/home/tma1/.local/bin/apptainer-1.5.3` on allocated compute nodes; the login
+  node's `/usr/bin/apptainer` 1.3.4 package is a submit/metadata boundary and
+  MUST NOT build, inspect, preflight or execute a SIF.
 - `runtime.allowCpuFallback` and each role's `allowCpuFallback` MUST be explicit;
   every role value MUST equal the runtime value, and GPU qualification requires
   `false`.
