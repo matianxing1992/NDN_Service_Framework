@@ -5124,3 +5124,18 @@ which differs from the Spec186 handoff seal
 - **Lesson**: static checks must model the small shell language used by the
   definition; checking only literal tokens is insufficient for declared
   capability variables.
+## 2026-09-15 — Spec186 r61 rejected stale r55 host gate before build
+
+- **Area**: T006 current source-seal and host-gate cross-check.
+- **Symptom**: `build-local-sif.sh --strict-host-source-seal` for the r61
+  definition with the retained r55 manifest stopped before base preflight with
+  `SOURCE_SEAL_REVISION_SOURCE_CHANGE`; the sealed paths included the changed
+  preflight helper and `wscript`.
+- **Root cause**: r55 is a tiny-ONNX host qualification for an older source
+  identity and cannot authorize the current r61 native build.
+- **Correction**: preserve r55 as historical evidence, require a new host-gate
+  run for the current source/app identity, and do not start SIF compilation
+  with the stale manifest.
+- **Lesson**: a structurally valid host manifest is not reusable across source
+  or build-helper changes; strict source-seal comparison must run before any
+  expensive SIF operation.

@@ -99,3 +99,12 @@ source directory, and the exported Rust `cargo`/`rustc` paths. The APT-provided
 Clang 10 predicate was correctly excluded from the base list. This is a static
 preflight PASS only; it does not imply SIF build, MiniNDN, CUDA, or Tiger
 qualification.
+
+## r61 strict host-gate check
+
+The build entry was invoked with `--strict-host-source-seal` and the
+retained r55 host manifest. It stopped before base preflight with
+`LOCAL_SIF_HOST_GATE_SOURCE_SEAL_INVALID
+code=SOURCE_SEAL_REVISION_SOURCE_CHANGE`, identifying the changed preflight
+helper and `wscript`. No SIF compilation started; r55 remains historical
+tiny-ONNX evidence and a new host-gate receipt is required for r61.
