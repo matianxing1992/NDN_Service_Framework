@@ -75,6 +75,21 @@ and probes both sealed binaries with `--version` before invoking Cargo, so this
 hidden dependency fails fast instead of consuming a full tokenizer build.
 Standalone SIF toolchains leave the variable unset.
 
+### r64 current-source receipt (2026-09-15)
+
+After the r61 host build receipt and subsequent documentation changes, a fresh
+handoff was prepared from source commit
+`2c005662a3822e9a193ed33b2448b6dcfd968815`. The actual local base bytes were
+hashed as `sha256:1dd9626748b6fdbe93abf819a944e0628bf7a2b5feddcc562fe7d233f927e74c`;
+the rendered definition is
+`sha256:cdcfce6c11c6ad7156fb993d61aec67ea9b5e01c9d314447abad6a968462053b` and
+the source seal is
+`sha256:bf0380c504b604008be5672f990d1f4528d8c4a9f863e409c24fe967088b4e9b`.
+`preflight-development-sif.py` returned
+`SPEC186_PREFLIGHT_PASS ... workspaceConsumers=11`. No SIF build was started:
+the required current-source host qualification manifest is still absent, and
+the r61 host bundle is not a matching-container app closure.
+
 ## Verification
 
 ```text
