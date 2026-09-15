@@ -52,6 +52,8 @@ def build_extension() -> Extension:
             if not path.is_file():
                 raise RuntimeError("NDNSF_NDN_SVS pair is missing required file: " + str(path))
         explicit_includes.extend([str(source), str(build)])
+        # The explicit SVS build tree is link-only; runtime resolution uses
+        # the staged library directory and must not encode the checkout path.
         extra_objects.append(str(build / "libndn-svs.so"))
     nac = os.environ.get("NDNSF_NAC_ABE_PREFIX", "")
     if nac:
@@ -92,10 +94,6 @@ def build_extension() -> Extension:
                 raise RuntimeError("NDNSF_LIBRARY_DIR does not contain libndn-service-framework: " + str(path))
             library_dirs.insert(0, str(path))
             extra_link_args.append(f"-Wl,-rpath,{path}")
-    if source:
-        # Keep the explicit source/build pair for link-time ABI selection;
-        # the runtime library is staged under NDNSF_LIBRARY_DIR.  Do not put
-        # the checkout's build tree into the extension RUNPATH.
     if nac:
         library_dirs.insert(0, str(nac / "lib"))
         libraries = [name for name in libraries if name != "nac-abe"]

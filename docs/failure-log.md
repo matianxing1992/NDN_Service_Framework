@@ -5410,3 +5410,17 @@ which differs from the Spec186 handoff seal
   `BUILD_PASS_RUNTIME_BOUNDARY_FAIL` candidate and cannot be promoted.
 - **Lesson**: runtime-path audits must inspect every native producer,
   including setuptools extensions, not only the main Waf link graph.
+
+## 2026-09-15 — Spec186 r82 Repo wrapper metadata stopped on an empty source guard
+
+- **Area**: T006 exact SIF native/Python extension build.
+- **Symptom**: the r82 container built the native targets and the primary
+  `ndnsf` wheel, then failed while preparing the Repo Python wrapper with
+  `IndentationError: expected an indented block after 'if' statement`.
+- **Root cause**: removing the SVS build-tree RUNPATH left an empty `if source:`
+  block in `NDNSF-DistributedRepo/pythonWrapper/setup.py`.
+- **Correction**: remove the empty guard and retain an explicit comment stating
+  that the SVS build tree is link-only; Python setup syntax and all 118
+  TigerCluster static checks now pass before the rebuild.
+- **Lesson**: after mechanical RUNPATH edits, compile every packaging entrypoint
+  before starting an expensive SIF build.
