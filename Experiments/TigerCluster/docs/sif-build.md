@@ -34,8 +34,10 @@ target 默认落在普通 `build/` 树中。开发机 `.codex-tmp/spec182…` �
 wheel-private DSOs/RPATH，以及基础 SIF 中的 NumPy 导入；`build-local-sif.sh`
 也会在解析 `localimage` base 后自动重复这个门。它还扫描 builder shell 中
 实际被 `cp`/pip 消费的 `/src/ndnsf/...` 路径，确认这些子目录真的封存在
-`workspace.tar`，并在提供 base SIF 时检查 definition 要求的编译器、ONNX SDK、
-Rust 和系统头文件能力。该门失败时禁止开始完整原生编译，应根据
+`workspace.tar`，并在提供 base SIF 时只检查 definition 中
+`SPEC186_BASE_CAPABILITY_BEGIN/END` 块声明的 ONNX SDK、Rust 等 base 能力。
+APT 安装的编译器、protoc 和系统开发包在安装后由 definition 自己验证，不会被
+错误地当成 base 已有能力。该门失败时禁止开始完整原生编译，应根据
 `docs/failure-log.md` 的对应条目修复输入后再建立新的候选。
 
 ```bash
@@ -168,3 +170,8 @@ Tiger 账户没有 subordinate UID/GID，且 v23 Ubuntu 20.04 基础镜像的 gl
 
 此次目录整理只执行静态路径/内容核对和相关工具单测，不构建SIF、不提交Slurm、不跑MiniNDN。
 将来交付需要按对应候选完成实际镜像闭包与运行验证；单纯目录移动不要求重跑无关C++测试。
+
+基础能力的范围由 definition 中的
+`SPEC186_BASE_CAPABILITY_BEGIN/END` 块显式声明。块外的编译器、protoc 和系统
+开发包如果由 builder 的 APT 步骤安装，应在安装后检查，不得在构建前被误判为
+base 已有能力。

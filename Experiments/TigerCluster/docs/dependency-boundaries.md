@@ -35,8 +35,11 @@ Protobuf or assembly-worker checks. The selected Spec186 candidate must declare
 the exact prefixes, Cargo cache, source seal and resulting native targets in its
 manifest. The Rust toolchain and Cargo cache are supplied explicitly through
 `NDNSF_RUST_PREFIX` and `NDNSF_CARGO_HOME`; no `.codex-tmp/spec182…` path is a
-valid default. The build preflight must verify the declared base capability and
-every builder source path before native compilation.
+valid default. The build preflight must verify the definition's explicit
+`SPEC186_BASE_CAPABILITY_BEGIN/END` block and every builder source path
+before native compilation. Predicates outside that block may validate tools
+installed by the builder itself (for example `clang-10` from APT) and are
+not base requirements.
 
 ## Follow-up design (plan only)
 

@@ -82,6 +82,8 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "NUMPY_BASE_IMPORT_PASS" in source
     assert "clang-10" in TEMPLATE.read_text()
     assert "/usr/bin/clang++-10" in TEMPLATE.read_text()
+    assert "SPEC186_BASE_CAPABILITY_BEGIN" in TEMPLATE.read_text()
+    assert "SPEC186_BASE_CAPABILITY_END" in TEMPLATE.read_text()
     assert "--toolchain-root=/usr" in TEMPLATE.read_text()
     assert TEMPLATE.read_text().index("export CXX=/usr/bin/clang++-10") < TEMPLATE.read_text().index("./waf -j1 -v --targets=")
     assert "cp -a /src/ndnsf/Experiments/TigerCluster/jobs/spec180" in TEMPLATE.read_text()
@@ -145,7 +147,7 @@ def test_preflight_reports_all_consumed_workspace_paths(tmp_path):
 def test_preflight_extracts_base_capability_predicates(tmp_path):
     definition = render(tmp_path)
     checks = set(preflight._base_capability_tests(definition))
-    assert ("-x", "/usr/bin/clang-10") in checks
+    assert ("-x", "/usr/bin/clang-10") not in checks
     assert ("-f", "/opt/onnx/lib/libonnx.a") in checks
     assert ("-x", "/opt/rust-prefix/bin/cargo") in checks
     assert ("-x", "/opt/rust-prefix/bin/rustc") in checks

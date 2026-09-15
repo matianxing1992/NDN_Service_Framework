@@ -32,6 +32,12 @@ survive until `%post` after compilation had begun.
   shell before reading `test -x/-f/-d` predicates, so Rust/Cargo variable-backed
   paths are checked rather than silently omitted.
 
+The capability scope is now explicit: only predicates between
+`SPEC186_BASE_CAPABILITY_BEGIN/END` are executed against the input base. APT
+installed compilers and system development packages remain post-install checks
+inside the builder, so a base that intentionally relies on the recipe's APT
+bootstrap is not rejected before that bootstrap runs.
+
 ## Dependency boundary audit
 
 The source/build review also confirmed that the repeated dependency failures

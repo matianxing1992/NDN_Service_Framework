@@ -83,14 +83,16 @@ PY
     tar -xf /build-input/ndn-svs.tar -C /src/ndn-svs
     tar -xf /build-input/nacAbe.tar -C /src/nac-abe
     tar -xf /build-input/ndnSd.tar -C /src/ndn-sd
+    # SPEC186_BASE_CAPABILITY_BEGIN
     test -f /opt/onnx/include/onnx/checker.h
     test -f /opt/onnx/include/onnx/shape_inference/implementation.h
     test -f /opt/onnx/lib/libonnx.a
     test -f /opt/onnx/lib/libonnx_proto.a
     test -x "$NDNSF_RUST_PREFIX/bin/cargo"
     test -x "$NDNSF_RUST_PREFIX/bin/rustc"
-    test "$("$NDNSF_RUST_PREFIX/bin/rustc" --version | awk '{print $2}')" = 1.90.0
     test -d "$NDNSF_CARGO_HOME/registry/src"
+    # SPEC186_BASE_CAPABILITY_END
+    test "$("$NDNSF_RUST_PREFIX/bin/rustc" --version | awk '{print $2}')" = 1.90.0
 
     export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig
     /usr/bin/cmake -S /src/nac-abe -B /tmp/nac-abe-build \

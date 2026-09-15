@@ -65,9 +65,10 @@ plane（source、base、app、compiler、profile、model、harness 或 resource�
 `preflight-development-sif.py` 还必须检查 definition 的 builder shell 实际
 消费的源码路径：凡是被 `cp` 或 pip 安装命令引用的 `/src/ndnsf/...` 路径，都要
 在 `workspace.tar` 中存在；否则以 `WORKSPACE_CONSUMER_PATH_MISSING` 在编译前
-停止。传入 `--base-sif` 和同一 Apptainer 时，它会从 definition 的 `test -x/-f/-d`
-谓词（包括先前 `export` 的 Rust/Cargo 前缀变量）提取 base-owned 工具、ONNX
-SDK、Rust 和头文件能力并在只读容器中验证。这样
+停止。传入 `--base-sif` 和同一 Apptainer 时，它会从 definition 的
+`SPEC186_BASE_CAPABILITY_BEGIN/END` 谓词块（包括先前 `export` 的
+Rust/Cargo 前缀变量）提取 base-owned ONNX、Rust 和头文件能力并在只读容器中验证。
+APT 安装的编译器和系统工具不属于该块，会在安装后由 builder 自己检查。这样
 可以在秒级发现“归档存在但实际消费的子目录缺失”和“definition 要求的编译器/SDK
 不在 base 中”，而不是等 `%post` 运行到对应命令才失败。
 
@@ -128,3 +129,6 @@ sealed 的工具链派生 base（记录 `APT::Sandbox::User "root"`、project-ba
 
 按实际证据区分 package checks、build、local runtime、cluster functional 和 performance。
 本地两实例只能 LOCAL_PASS；未完成运行不能填写 PASS。结束后同步任务与交接记录，附明确版本、结果、限制和下一步。
+预检的 base 能力范围由 definition 中的
+`SPEC186_BASE_CAPABILITY_BEGIN/END` 块显式声明；块外由 APT 安装的编译器和
+系统开发包应在安装后验证，不应作为输入 base 的先决条件。

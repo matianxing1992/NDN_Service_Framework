@@ -123,7 +123,9 @@ def _base_capability_tests(definition: Path) -> list[tuple[str, str]]:
     shell variables in their predicates (for example
     ``test -x "$NDNSF_RUST_PREFIX/bin/cargo"``).  Parse those exports before
     tokenising the predicates so variable-backed capabilities receive the same
-    read-only preflight as literal paths.
+    read-only preflight as literal paths. Only predicates between the explicit
+    SPEC186_BASE_CAPABILITY_BEGIN and SPEC186_BASE_CAPABILITY_END markers are
+    considered; post-install checks are not base prerequisites.
     """
     environment: dict[str, str] = {}
     for raw in _builder_post(definition).splitlines():
@@ -144,7 +146,17 @@ def _base_capability_tests(definition: Path) -> list[tuple[str, str]]:
             path)
 
     tests: set[tuple[str, str]] = set()
+    in_base_block = False
     for raw in _builder_post(definition).splitlines():
+        marker = raw.strip()
+        if marker == "# SPEC186_BASE_CAPABILITY_BEGIN":
+            in_base_block = True
+            continue
+        if marker == "# SPEC186_BASE_CAPABILITY_END":
+            in_base_block = False
+            continue
+        if not in_base_block:
+            continue
         try:
             tokens = shlex.split(raw, comments=True)
         except ValueError:
