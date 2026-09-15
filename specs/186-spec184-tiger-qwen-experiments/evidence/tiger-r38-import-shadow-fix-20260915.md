@@ -48,3 +48,21 @@ Experiments/TigerCluster/tests/test_spec186_candidate.py: 50 passed
 The existing r38 SIF is immutable historical evidence and does not contain
 this source fix. A new source-sealed candidate must be built before rerunning
 MiniNDN or claiming any TigerCluster result.
+
+## Same-SIF bound verification
+
+To separate the runner fix from a rebuild, the fixed file was read-only bound
+over the exact in-image replay path while retaining the immutable r38 SIF. The
+compute jobs used Apptainer 1.5.3, `--cleanenv --containall`, and the target
+path `/opt/ndnsf-di/replay/repo/Experiments/NDNSF_DI_YoloAckDriven_Minindn.py`:
+
+```text
+job 212358: NATIVE_IMPORT_PASS /opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so /opt/venv/lib/python3.10/site-packages/py_repoclient/__init__.py
+job 212359: ROOT /opt/ndnsf-di/replay/repo
+job 212359: ROOTS (PosixPath('/opt/ndnsf-di/replay/repo/NDNSF-DistributedInference'),)
+job 212359: NATIVE_IMPORT_PASS /opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf.cpython-310-x86_64-linux-gnu.so /opt/venv/lib/python3.10/site-packages/py_repoclient/__init__.py
+```
+
+This confirms the exact replay path no longer shadows the installed native
+packages. It is still an import-boundary check, not a MiniNDN or GPU result;
+the new candidate rebuild and promotion gates remain open.
