@@ -5084,3 +5084,26 @@ which differs from the Spec186 handoff seal
 - **Lesson**: optional preflight arguments must be derived from the rendered
   candidate before the gate runs. A gate that can silently downgrade to a
   weaker mode is itself a release defect.
+
+## 2026-09-15 — Spec186 Waf defaulted to a developer-only Rust dependency path
+
+- **Area**: T006 native dependency and packaging boundary.
+- **Symptom**: root `wscript` silently searched `.codex-tmp/spec182-t001-dependencies`
+  for the Rust tokenizer toolchain and Cargo cache. A clean host or a sealed
+  builder without that historical directory failed later, while a developer
+  checkout could appear portable only by accident.
+- **Root cause**: the tokenizer bridge helper treated an old Spec182 staging
+  directory as the default provider instead of requiring the candidate to
+  declare its toolchain and cache. Static inspection also confirmed that the
+  current Waf graph combines DI mechanism, ONNX, YOLO and Qwen sources, and
+  creates the ONNX-dependent assembly worker before the examples guard; the
+  Python package split does not yet select independent C++ profiles.
+- **Correction**: require `NDNSF_RUST_PREFIX` and `NDNSF_CARGO_HOME`, default
+  only the bridge target to the regular `build/` tree, add a regression test,
+  and record the source/target map in
+  `Experiments/TigerCluster/docs/dependency-boundaries.md`. Keep ONNX,
+  Protobuf, Rust and assembly-worker checks until an explicit profile/target
+  graph is implemented and clean-built.
+- **Lesson**: a dependency check is useful only when its provider is explicit
+  and its ownership matches the selected target. Packaging metadata and Waf
+  sources must be audited together before narrowing a SIF profile.

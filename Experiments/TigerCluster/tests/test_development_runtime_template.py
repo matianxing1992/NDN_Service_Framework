@@ -98,6 +98,14 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     subprocess.run(["/bin/bash", "-n"], input=build_script, text=True, check=True)
 
 
+def test_waf_does_not_default_to_a_developer_temp_toolchain():
+    source = (ROOT / "wscript").read_text(encoding="utf-8")
+    assert ".codex-tmp/spec182-t001-dependencies" not in source
+    assert "NDNSF_RUST_PREFIX is required" in source
+    assert "NDNSF_CARGO_HOME is required" in source
+    assert "or os.path.join(top, 'build', 'tokenizer-bridge-target')" in source
+
+
 def test_preflight_rejects_workspace_archive_omitting_consumed_source(tmp_path):
     definition = render(tmp_path)
     workspace = tmp_path / "workspace.tar"

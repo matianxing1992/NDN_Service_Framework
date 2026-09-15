@@ -62,27 +62,31 @@ def _ensure_tokenizer_bridge(conf):
 
     The frozen dependency contract statically links the Rust engine into the
     DI shared library; the C ABI is a private implementation detail and is
-    never dlopen'd or installed.  Cargo runs against the pinned toolchain
-    recorded in the spec182 case manifest (.codex-tmp spec182-t001-
-    dependencies rust-prefix/cargo-home), in its own target directory, with
-    --locked --offline at -j2, and is only re-invoked when a crate source is
-    newer than the archive (configure re-runs keep it current).
+    never dlopen'd or installed.  The builder must provide the sealed Rust
+    toolchain and Cargo cache explicitly through NDNSF_RUST_PREFIX and
+    NDNSF_CARGO_HOME.  The target directory defaults to the regular build
+    tree, not a developer temporary directory.  Cargo uses --locked
+    --offline at -j2 and is only re-invoked when a crate source is newer than
+    the archive (configure re-runs keep it current).
     """
     top = conf.path.abspath()
-    pinned = os.path.join(top, '.codex-tmp', 'spec182-t001-dependencies')
-    rust_prefix = os.environ.get('NDNSF_RUST_PREFIX', '').strip() \
-        or os.path.join(pinned, 'rust-prefix')
+    rust_prefix = os.environ.get('NDNSF_RUST_PREFIX', '').strip()
+    if not rust_prefix:
+        conf.fatal('NDNSF_RUST_PREFIX is required; provide the sealed Rust '
+                   'toolchain prefix explicitly')
     cargo = os.path.join(rust_prefix, 'bin', 'cargo')
     if not os.path.isfile(cargo) or not os.access(cargo, os.X_OK):
         conf.fatal(f'Pinned Rust cargo is missing: {cargo} '
                    '(set NDNSF_RUST_PREFIX)')
-    cargo_home = os.environ.get('NDNSF_CARGO_HOME', '').strip() \
-        or os.path.join(pinned, 'cargo-home')
+    cargo_home = os.environ.get('NDNSF_CARGO_HOME', '').strip()
+    if not cargo_home:
+        conf.fatal('NDNSF_CARGO_HOME is required; provide the sealed Cargo '
+                   'registry/cache explicitly')
     if not os.path.isdir(cargo_home):
         conf.fatal(f'Pinned Rust cargo home is missing: {cargo_home} '
                    '(set NDNSF_CARGO_HOME)')
     target_dir = os.environ.get('NDNSF_TOKENIZER_BRIDGE_TARGET', '').strip() \
-        or os.path.join(pinned, 'tokenizer-bridge-target')
+        or os.path.join(top, 'build', 'tokenizer-bridge-target')
     crate_dir = os.path.join(
         top, 'NDNSF-DistributedInference', 'cpp', 'adapters', 'qwen',
         'tokenizer-bridge')

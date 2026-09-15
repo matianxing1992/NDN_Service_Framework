@@ -59,6 +59,25 @@ T001–T005、T006.a/b 和 T013 提供可审计的前置或离线收口；T006.c
 
 **Constraints**: 构建并行度最高 `-j4`；同一构建树不并发；运行前 fail-closed；无宿主库覆盖；每 candidate/gate 单一活动 run；本机 Qwen 仅 CPU 0.6B 范围。
 
+## Confirmed dependency boundary (2026-09-15)
+
+静态核查 root `wscript`、`examples/wscript`、Python package metadata 和 Qwen
+tokenizer bridge 后，当前 Waf 图仍是组合构建：`ndn-service-framework` 拥有
+NDN-CXX、NDN-SVS、Boost、Protobuf、NAC-ABE、NDNSD、OpenSSL 和 `libdl` 的 Core
+闭包；`ndnsf-distributed-inference` 把 DI mechanism、ONNX、YOLO、Qwen 源文件
+放进同一个可安装 native library，共享构建还静态链接 Rust tokenizer bridge；
+`di-native-assembly-worker` 在 examples guard 之前生成并需要 ONNX full-protobuf
+及 ONNX Runtime。`configure()` 目前也无 profile guard 地要求 ONNX prefix 并
+构建 tokenizer bridge。Python core/SDK、ONNX（CPU/GPU optional Runtime）和
+Qwen（tokenizers）元数据已经分开，但尚未反向控制 C++ Waf targets。
+
+这意味着 Spec186 当前必须交付完整、明确声明的组合依赖，不能通过删除检查伪造
+Core-only 支持；`.codex-tmp/spec182…` 也不能作为 Rust 工具链或 Cargo cache
+默认。具体证据、源/目标表和后续 `core`/`di-core`/`di-onnx`/`di-qwen`/`app`
+profile 方案见 [TigerCluster dependency boundary audit](../../Experiments/TigerCluster/docs/dependency-boundaries.md)。
+独立 profile 和由选中 Waf target 自动生成的依赖 manifest 属于后续 SpecKit
+任务；本计划只把当前耦合纳入 candidate/preflight 约束。
+
 ## Constitution Check
 
 | Principle / gate | Plan response | Status |

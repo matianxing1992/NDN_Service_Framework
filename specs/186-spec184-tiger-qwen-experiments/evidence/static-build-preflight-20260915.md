@@ -29,6 +29,33 @@ survive until `%post` after compilation had begun.
 - Record the defect and lesson in `docs/failure-log.md` so a future repair does
   not restore the weaker ordering.
 
+## Dependency boundary audit
+
+The source/build review also confirmed that the repeated dependency failures
+are partly a real Waf coupling and partly packaging drift:
+
+- `ndn-service-framework` has a Core link closure of NDN-CXX, NDN-SVS, Boost,
+  Protobuf, NAC-ABE, NDNSD, OpenSSL and `libdl`.
+- The installable `ndnsf-distributed-inference` target currently combines DI
+  mechanism, ONNX, YOLO and Qwen sources. Its shared variant adds the static
+  Rust tokenizer bridge.
+- `configure()` requires the ONNX full-protobuf prefix and invokes the Rust
+  bridge builder without an independent profile guard. The assembly worker in
+  `examples/wscript` is declared before the `WITH_EXAMPLES` return and consumes
+  ONNX/ONNX Runtime as well.
+- Python package metadata separates Core/SDK, ONNX (CPU/GPU optional Runtime)
+  and Qwen (`tokenizers`), but those package boundaries do not yet select the
+  native Waf targets.
+
+The portability defect is now closed at the source boundary: Waf requires
+`NDNSF_RUST_PREFIX` and `NDNSF_CARGO_HOME` explicitly and defaults only the
+tokenizer target to `build/tokenizer-bridge-target`; it no longer falls back to
+`.codex-tmp/spec182-t001-dependencies`. The full source/target table and the
+profile split proposal are recorded in
+`Experiments/TigerCluster/docs/dependency-boundaries.md`. An actual Core-only
+profile remains future work and must be implemented as a new SpecKit task with
+a clean rebuild; no dependency check was removed in this repair.
+
 ## Verification
 
 ```text

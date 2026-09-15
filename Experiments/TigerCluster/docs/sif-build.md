@@ -17,6 +17,16 @@ source-sealed candidate 在 compute 1.5.3 例外构建；登录节点 1.3.4 不�
 
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。
+当前 Waf 目标仍把 Core、DI mechanism、ONNX、YOLO、Qwen 和 native assembly
+worker 部分连接在同一构建图中；已核实的链接边界和 Python 包边界见
+[dependency boundary audit](dependency-boundaries.md)。因此不能把 ONNX 或
+Rust 检查从基础定义中随意删除来模拟 Core-only 构建；真正的独立 profile 仍
+需要新的 SpecKit 任务和干净重建。
+
+DI 构建还必须显式提供封存的 `NDNSF_RUST_PREFIX`、`NDNSF_CARGO_HOME`，可选的
+`NDNSF_TOKENIZER_BRIDGE_TARGET`；前两个变量缺失时 Waf 立即失败，tokenizer
+target 默认落在普通 `build/` 树中。开发机 `.codex-tmp/spec182…` 不再是任何
+正式构建的隐式依赖。
 
 在调用构建入口前，先运行同目录的
 `preflight-development-sif.py`。它用秒级检查交叉核对 rendered definition

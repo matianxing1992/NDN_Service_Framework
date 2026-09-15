@@ -77,6 +77,17 @@ plane（source、base、app、compiler、profile、model、harness 或 resource�
 preflight，并生成 `local-apptainer-existing-sif-verify` 记录，不重新编译。只有
 source/base/definition 或候选闭包改变时才删除旧候选并新建 SIF。
 
+当前 root Waf 图的真实边界记录在
+`Experiments/TigerCluster/docs/dependency-boundaries.md`：Core、DI mechanism、
+ONNX、YOLO、Qwen 和 native assembly worker 仍存在组合构建耦合；Python
+Core/SDK、ONNX CPU/GPU 和 Qwen 包的分离元数据尚未选择 C++ targets。未完成新的
+profile/target graph 前，禁止删除 ONNX、Protobuf、Rust tokenizer 或 assembly
+worker 检查来制造 Core-only 假象。DI 构建必须显式设置封存的
+`NDNSF_RUST_PREFIX` 与 `NDNSF_CARGO_HOME`（可选
+`NDNSF_TOKENIZER_BRIDGE_TARGET`）；`.codex-tmp/spec182…` 不是合法默认路径。
+只有新的 SpecKit 任务、实际 Waf target 图和干净构建共同证明无消费者时，才能
+缩小某个 profile 的依赖，并把生成的依赖 manifest 与 candidate 绑定。
+
 历史成功 job、SIF 或 app 可以帮助确定验收形状，但不能直接复用 job ID 或把
 旧结果拼入新 candidate。若发现新的构建失败，先将 symptom、root cause、
 correction、lesson 写入 `docs/failure-log.md`，并把新的防回归谓词加入脚本、
