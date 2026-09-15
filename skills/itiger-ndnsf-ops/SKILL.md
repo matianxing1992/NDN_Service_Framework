@@ -67,6 +67,14 @@ plane（source、base、app、compiler、profile、model、harness 或 resource�
 correction、lesson 写入 `docs/failure-log.md`，并把新的防回归谓词加入脚本、
 测试或本节；未完成该记录前不得再次提交同类构建。
 
+成功模板的 base digest 不代表 base 内已经有历史 builder 工具链。提交前必须
+在目标计算节点的 exact SIF 中探测 Clang/GCC、ONNX full-protobuf、Rust/Cargo、
+Python headers、CMake、protoc 和 pkg-config。若 root-mapped Apptainer 无法运行
+Debian `_apt` sandbox，禁止把 apt 删除后继续声称模板复用；应建立单独 source-
+sealed 的工具链派生 base（记录 `APT::Sandbox::User "root"`、project-backed
+`APPTAINER_TMPDIR` 和新 base SHA），或停止并反馈缺口。严禁把宿主编译器/`.so`
+复制进 SIF。
+
 ## Delivery And Native Boundary
 
 - 固定 NDNSF、NAC-ABE、NDN-SVS 及NDNSD等直接ABI消费者的实际版本；未提交改动须显式纳入来源身份，不能只记录 HEAD。

@@ -35,3 +35,20 @@ Spec183 documents).
 
 Do not copy job IDs or results into a new run. Use them only as the expected
 evidence shape and as a regression comparison.
+
+## Builder prerequisites and Tiger exception
+
+The frozen base digest identifies the runtime starting point; it does not imply
+that the base already contains the historical builder toolchain. A compute
+probe on the exact file showed that this base has no `/usr/bin/clang-10`,
+`/opt/onnx`, or `/opt/rust-prefix`. The successful recipe therefore depended on
+its builder bootstrap and must not be shortened to a base-only build. The r38
+intermediate contains ONNX full-protobuf, Rust 1.90 and GCC, but not Clang 10.
+
+Tiger's root-mapped Apptainer mode cannot run the default Debian `_apt` sandbox;
+the first `apt-get` failure is retained in `docs/failure-log.md`. If a new
+candidate needs to install the missing compiler, derive a separately sealed
+toolchain base with an explicit `APT::Sandbox::User "root"` policy and a
+project-backed Apptainer temporary directory, then record that derived base as
+a new candidate plane. Do not copy host compiler files into the image or hide
+the change by editing a failed final definition.

@@ -46,6 +46,14 @@ pair and stage transfer list are unchanged. The exact project base was checked
 on compute as 3,586,351,104 bytes with SHA-256
 `44b44d564c64387716a17588ea387ee2a255948ee744855291c8e7a0676907b0`.
 
+The follow-up capability probe (`212386`/`212387`, Apptainer 1.5.3) showed that
+this reference base contains neither Clang 10 nor the `/opt/onnx` and
+`/opt/rust-prefix` build inputs. The existing r38 intermediate contains the
+ONNX/Rust inputs and GCC but still no Clang. This capability mismatch is now a
+required pre-build check; it explains why exact r51 could not proceed past APT
+under the root-mapped account and why a derived toolchain base, if used, must
+be a new candidate plane.
+
 The remote pre-build command was:
 
 ```bash
@@ -55,8 +63,9 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-deve
   --base-sif /project/tma1/ndnsf-di/candidates/spec183-v52-20260911/planes/runtime/base-runtime-controller-version-j4-v23.sif
 ```
 
-It returned `SPEC186_PREFLIGHT_PASS`; no native build or runtime qualification
-has been claimed from this receipt.
+It returned `SPEC186_PREFLIGHT_PASS`; the subsequent exact-template build job
+`212385` failed at root-mapped APT before compilation. No native build or
+runtime qualification has been claimed from this receipt.
 
 ## Checks required before an expensive build
 

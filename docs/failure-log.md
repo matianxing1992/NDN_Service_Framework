@@ -23,6 +23,24 @@
   method. Historical success is a design reference, while every source/base/app/
   compiler change still requires a new sealed candidate and its own evidence.
 
+## 2026-09-15 — Spec186 r51 template build hit root-mapped APT sandbox
+
+- **Symptom:** exact-template render and preflight passed, but compute job
+  `212385` stopped at the first `apt-get update` with `setgroups 65534 failed`
+  and Apptainer exit 100.
+- **Root cause:** the historical builder assumed a Debian `_apt` privilege
+  transition that the Tiger root-mapped account cannot perform. The exact
+  historical base also lacks `/usr/bin/clang-10`, `/opt/onnx` and
+  `/opt/rust-prefix`; those are builder prerequisites, not runtime guarantees.
+- **Correction:** retain r51 as the exact-template failure; probe the base and
+  r38 intermediate capabilities (job `212386`/`212387`) before any retry. The
+  next candidate must use a separately sealed toolchain base or an explicitly
+  recorded compute exception with a validated APT sandbox policy and a
+  project-backed Apptainer temporary directory.
+- **Lesson:** a successful definition template is reusable only after its base
+  capability and builder privilege assumptions are checked on the actual host;
+  do not delete apt or copy host compiler files as an unrecorded workaround.
+
 ## 2026-09-14 — Spec186 r29 replay source path drift
 
 - **Symptom:** r29 compiled all 284 native targets and both Python extensions, then Apptainer `%post` exited at `cp: cannot stat '/src/ndnsf/packaging/ndnsf-di-container/jobs/spec180'`.
