@@ -10,7 +10,7 @@
 | [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | NOT_STARTED | T001 | 需 selector/build registration；未运行 | 2026-09-15 14:53 -05:00 |
 | [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | NOT_STARTED | T002 | 需 convergence PASS、base SIF；未运行 | 2026-09-15 14:53 -05:00 |
 | [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | NOT_STARTED | T003 | 仅 LOCAL_PASS 后执行；未运行 | 2026-09-15 14:53 -05:00 |
-| [T005 QWEN deferral and delivery record](#t005-qwen-deferral-and-delivery-record) | NOT_STARTED | — | 文档 N/A；未运行 | 2026-09-15 14:53 -05:00 |
+| [T005 QWEN deferral and delivery record](#t005-qwen-deferral-and-delivery-record) | DONE | — | QWEN 明确保持 TODO，未进入 YOLO candidate；[qwen-deferred.md](evidence/qwen-deferred.md) | 2026-09-15 15:16 -05:00 |
 | [T006 Design-code convergence and final evidence](#t006-design-code-convergence-and-final-evidence) | NOT_STARTED | T001,T002 | 必须先于 T003/T004 正式验收 | 2026-09-15 14:53 -05:00 |
 
 ## Current Checkpoint
@@ -24,7 +24,7 @@
 | B187-LOCAL-CLOSURE | T001 | closure gate rejects invalid candidate inputs before side effects and accepts a verified pair tuple | existing Tiger script checks and mutation fixtures | PARTIAL |
 | B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | NOT_STARTED |
 | B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | NOT_STARTED |
-| B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | NOT_STARTED |
+| B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | DONE |
 | B187-CONVERGENCE | T006 | fresh audit PASS before formal local/cluster evidence | CodeGraph plus exact source and symbol checks | NOT_STARTED |
 
 ## Task Details
@@ -86,7 +86,7 @@
 | B187-LOCAL-CLOSURE | production callers, implementation, tests, build, migration: `build-sif-app.py`, `test_sif_app.py`; evidence lane in [b187-local-closure.md](evidence/b187-local-closure.md) | no P0–P3; STATIC_PASS | not run; regular base unavailable | focused offline checks: 3 passed; SIF/runtime not observed | NOT_RUN; dynamic card awaits regular base | not run | review-agent STATIC_PASS on frozen diff; OPEN_FOR_NEXT_BATCH | PARTIAL | regular base SIF and host-gate manifest remain |
 | B187-LOCAL-YOLO | planned in T002/T003 | not observed | not run | not run | NOT_RUN | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | evidence/b187-local-yolo.md to be created |
 | B187-TIGER | planned in T004 | not observed | not run | not run | NOT_RUN | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | evidence/b187-tiger-yolo.md to be created |
-| B187-DEFERRED | documentation lane covered; other lanes N/A by scope | not observed | N/A | N/A | N/A | N/A | review-agent N/A; CLOSED_FOR_VALIDATION after docs checks | PLANNED | evidence/qwen-deferred.md to be created |
+| B187-DEFERRED | documentation lane covered; other lanes N/A by scope | N/A by docs-only scope | N/A | N/A | N/A | N/A | review-agent N/A; CLOSED_FOR_VALIDATION | DONE | QWEN remains TODO; [qwen-deferred.md](evidence/qwen-deferred.md) |
 | B187-CONVERGENCE | planned in T006 | not observed | not run | not run | NOT_RUN | not run | review-agent not run; OPEN_FOR_NEXT_BATCH | PLANNED | convergence report pending |
 
 ### Batch Retrospective
