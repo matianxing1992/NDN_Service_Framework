@@ -4,23 +4,25 @@
 \begin{tikzpicture}
 \node[dstate] (new) at (0,0) {request 参数校验\\创建 Operation};
 \node[dstate] (pending) at (5,0) {Pending\\固定绝对 deadline};
-\node[dstate] (prep) at (10,0) {PreparingInput\\调度进入此阶段};
-\node[dstate] (fail) at (10,-3) {Failed\\原生请求链未就绪};
+\node[dstate] (prep) at (10,0) {PreparingInput\\PreparedModel 输入投影};
+\node[dstate] (core) at (10,-3) {Core request\\ACK / Selection /\\Response};
+\node[dstate] (fail) at (5,-6) {Failed\\兼容构造无 preparation/contract};
 \node[dstate] (cancel) at (5,-3) {Cancelled\\cancel 竞争终态};
 \node[dstate] (timeout) at (0,-3) {Failed\\请求 deadline 到期};
 \draw[down] (new)--(pending);
 \draw[down] (pending)--(prep);
-\draw[down] (prep)--node[dlabel,right]{默认 dispatch}(fail);
+\draw[down] (prep)--node[dlabel,right]{prepared runtime}(core);
+\draw[down] (pending)--node[dlabel,left]{无 runtime/contract}(fail);
 \draw[down] (pending)--node[dlabel,right]{尚未终态}(cancel);
 \draw[down] (pending)--node[dlabel,above,sloped]{超时先发生}(timeout);
 \end{tikzpicture}
 \end{center}
 \diagramnote{图混合展示内部 phase（PreparingInput）与对外 status（Pending/Failed/Cancelled），
-它们不是同一个枚举。进入 PreparingInput 不表示准备算法已被调用完成：
-\code{dispatchOperation} 当前报告 \code{NATIVE_REQUEST_PIPELINE_NOT_READY}，
-不能继续画成 ACK、规划、提交和成功链。}
+它们不是同一个枚举。PreparedModel 路径从输入投影进入 Core request，并由 C++ 过程矩阵验证
+ACK/Selection/Response；没有 preparation/request contract 的兼容构造保留
+\code{NATIVE_REQUEST_PIPELINE_NOT_READY}。}
 \callout{终态与等待}{cancel、deadline 和 dispatch 失败竞争一次终态写入；已有终态不被后续路径覆盖。
 result(waitTimeout) 的局部超时只结束这次等待，不自动取消 operation。构造或提交前的非法参数异常未画成异步终态。}
-\diagramnote{源码：\code{NativeInferenceClient.cpp} 的 request、dispatchOperation、
+\diagramnote{源码：\code{PreparedModel.cpp} 与 \code{NativeInferenceClient.cpp} 的 request、dispatchOperation、
 markTerminal、cancelOperation 和 result。声明中存在 Succeeded 等状态不代表默认路径已可达。
-Python 应用入口与已实现的原生局部组件仍需按各自契约理解。}
+Python facade 只转换参数、异常、GIL 与 asyncio，不另建请求状态机。}

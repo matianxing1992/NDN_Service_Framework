@@ -277,6 +277,18 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
   新字段仅完成静态复审准备，normal/sanitizer selector 尚未重跑，B4 仍 `PARTIAL`。当前/目标 PDF
   在 B4 通过并进入文档交付时按 MANAGEMENT.md 统一刷新，未把本次未验收行为写成资格 PASS。
 
+### D-185-B8/B9：PreparedModel 原生入口与设计交付快照
+
+- 日期 / Spec / 任务与契约 ID：2026-09-15；[Spec185](../specs/185-prepared-model-runtime/spec.md)；T012/T014 / C-05、C-06、C-07、C-08。
+- 模块 / 当前与目标章节：NDNSF-DI `Runtime`、`User`、`PreparedModel`、`NativeInferenceClient`、pybind facade；Design 当前/目标 API、G7 图与双 PDF。
+- 设计变化：当前设计从“原生 dispatch 尚未接通”的历史快照更新为区分两条实际路径：`Runtime::open → User::prepare → PreparedModel → NativeInferenceClient` 已由 C++ 过程矩阵和 Python 薄绑定验收；没有 preparation/request contract 的兼容构造仍返回 `NATIVE_REQUEST_PIPELINE_NOT_READY`。目标设计继续独立保留 TG-01--TG-05 的 `PLANNED` 内容。
+- 修改原因：T013/T012 已形成当前候选的原生过程与包装边界，旧当前书会把已验证实现误报为未实现；API 清单、绑定映射、行为覆盖和源码快照也需要绑定同一工作树身份。
+- 当前已实现 / 目标未实现：B7 C++ 过程矩阵、B8 Python 绑定和 lifecycle 修复有各自证据；subinterpreter、wheel packaging、Spec184 外部模型/retirement、I05 与 SIF/Tiger 仍保持未观测或 `PARTIAL`。
+- 兼容性 / 撤回：保留旧 `APPClient` 编排和无 runtime 的兼容失败语义；未新增 wire 字段。若回退文档，只能回退当前设计说明，不得覆盖目标快照或降低已记录的 C++ 资格证据等级。
+- 源码范围 / 文档提交定位：`Design/api/*`、`Design/current-api.tex`、`Design/current-content.tex`、`Design/current-design.tex`、`Design/current-diagrams.tex`、`Design/diagrams/di-current-flow.tex`、`Design/api-contracts.json`、`Design/validation.md` 与 `specs/185-prepared-model-runtime/evidence/b9-handoff.md`；源码身份由 `Design/source-baseline.json` 和 `evidence/source-baseline-worktree.patch` 绑定。
+- 验证命令、结果与持久证据：`test_design_state.py`、`verify-api-reference.py`、`verify-source-baseline.py` 均 `PASS`；双 PDF 构建和 `verify.py` 均 `PASS`，构建目录 `.codex-tmp/design-pdf-20260915T130303244487Z/`，详见 [B9 handoff](../specs/185-prepared-model-runtime/evidence/b9-handoff.md)。
+- 状态：`PASS`（文档交付）；这不升级 Spec184 的外部资格，也不把文档门替代 native C++ 运行验收。
+
 ### D-编号：设计变化名称
 
 - 日期 / Spec 链接 / 任务与契约 ID：

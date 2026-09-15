@@ -1,12 +1,14 @@
 # NDNSF 四模块设计
 
-**2026-09-12 基线限制**：当前书与 API 清单仍绑定其登记快照，相对本轮工作树已有54个文件变化，
-不能当作最新实现的完整说明。本次 Spec185 仅新增目标规划，不自动刷新或声称审计这些并行源码。
-[Spec185 目标API](../specs/185-prepared-model-runtime/contracts/public-api.md) 与
+**2026-09-15 当前快照**：当前书与 API 清单已按 Spec185 B9 文档批次刷新，绑定
+`source-baseline.json` 记录的 514 个文件和工作树补丁；这表示源码/API 身份可还原，
+不替代逐行语义审计或外部资格。目标书继续独立冻结，不能由当前快照自动覆盖。
+[Spec185 API/实现契约](../specs/185-prepared-model-runtime/contracts/public-api.md) 与
 [内部类/函数/字段实现契约](../specs/185-prepared-model-runtime/contracts/code-design.md)、
 [完整API/Python映射/生命周期表](../specs/185-prepared-model-runtime/contracts/api-catalog.md)、
 [独立C++契约](../specs/185-prepared-model-runtime/contracts/cpp-first.md)、[全API审计](../specs/185-prepared-model-runtime/api-review.md)及
-[审计](../specs/185-prepared-model-runtime/audit.md) 是本次增量入口；其实现状态 PLANNED。
+[审计](../specs/185-prepared-model-runtime/audit.md) 是本次增量入口；B7/B8 实现与 B9 文档交付已
+有独立证据，未观测项仍按 active Spec 保持 `PARTIAL` 或 `UNOBSERVED`。
 
 **内容状态：R3 REVISED。** 已按 [R2 逐章审阅](reviews/chapter-audit-20260908.md)
 修正确认的事实错误，重写 23 组关键 API 契约，补充字段、状态、失败和调用例子。
@@ -47,7 +49,8 @@
 5. 文档不替代 active Spec，也不改变功能或运行资格验收。
 6. 每个 Spec 开始、目标变更和实现验收时同步 spec-design-changes.md；无设计变化也记录“无”，部分实现保持 PARTIAL。更新 PDF、正文和记录须属于同一文档提交。
 
-下一步：沿 Spec182 推进原生请求与生成/会话迁移，同步实际行为；其余目标在对应 Spec 中定稿，保留独立源码基线。
+下一步：维护当前 API 与 active Spec185/Spec184 证据同步；外部模型、retirement、SIF/Tiger
+和目标 TG-01--TG-05 仍在各自 Spec 中独立推进，保留独立源码基线。
 
 ## API 更新命令
 

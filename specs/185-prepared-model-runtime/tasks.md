@@ -38,17 +38,19 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 | [T006 Handle Deadlines Events and Cancellation](#t006) | PASS | T005 static | B3 closed; [b3-request](evidence/b3-request.md) covers handle/deadline/event/cancel/drain cases, normal and ASan/UBSan C++ extension/request selectors (10/10 and 12/12 x 2 each) | 2026-09-13 07:50 -05:00 |
 | [T007 Prepared Conversations and Committed Checkpoints](#t007) | PASS | B3 exit | B4 closed; final composition `B4_COMPOSITION_PASS`, normal v26 and ASan/UBSan+LSan v19 builds, conversation r49/r50 and r40/r41, API r51/r52 and r42/r43 all `RC=0`; C++ two-turn, checkpoint, close/drain and unauthenticated rejection evidence in [b4-conversation](evidence/b4-conversation.md) | 2026-09-13 13:01 -05:00 |
 | [T008 Conversation Recovery Replacement and Export](#t008) | PASS | T007 static | B4 closed; final composition `B4_COMPOSITION_PASS`, normal v26 and ASan/UBSan+LSan v19 builds, conversation r49/r50 and r40/r41, API r51/r52 and r42/r43 all `RC=0`; C++ recovery, export/import and replacement isolation evidence in [b4-conversation](evidence/b4-conversation.md) | 2026-09-13 13:01 -05:00 |
-| [T009 Provider Facade and Authenticated Assembly](#t009) | PARTIAL | B4 exit | B5 T009 static v11, T010 v67 and composition v4 `PASS`; normal compile v22 and authenticated/full runtime v21-v23 `RC=0`; sanitizer compile v3 and full runtime v2-v3 `RC=0`; final composition/closure record pending; [b5-provider](evidence/b5-provider.md#b5-sanitizer-compile-runtime-pass-v3-v2-v3) | 2026-09-14 05:24 -05:00 |
-| [T010 Protected Artifact and Runner Template Reuse](#t010) | PARTIAL | T009 static | B5 T010 static v67 and composition v4 `PASS`; normal compile v22 and full runtime v21-v23 `RC=0`; sanitizer compile v3 and full runtime v2-v3 `RC=0`; final composition/closure record pending; [b5-provider](evidence/b5-provider.md#b5-sanitizer-compile-runtime-pass-v3-v2-v3) | 2026-09-14 05:24 -05:00 |
+| [T009 Provider Facade and Authenticated Assembly](#t009) | PASS | B4 exit | B5 closed; T009 static v11, T010 v67 and final composition v5 `PASS`; normal compile v22/runtime v21-v23 and sanitizer compile v3/runtime v2-v3 all `RC=0`, 8/8 C++ cases; [b5-provider](evidence/b5-provider.md#b5-composition-review-pass-v5-and-closure) | 2026-09-15 13:05 -05:00 |
+| [T010 Protected Artifact and Runner Template Reuse](#t010) | PASS | T009 static | B5 closed; T010 static v67 and final composition v5 `PASS`; normal compile v22/runtime v21-v23 and sanitizer compile v3/runtime v2-v3 all `RC=0`, 8/8 C++ cases; [b5-provider](evidence/b5-provider.md#b5-composition-review-pass-v5-and-closure) | 2026-09-15 13:05 -05:00 |
 | [T011 Native Caller Migration and Compatibility Registry](#t011) | PASS | B5 exit | B6 closed; v12 static/composition pass; 359/359 `-j4` build, C++ compatibility selector, in-tree and external installed consumers, public example checks, ELF/no-Python closure, and fresh C++ unary/stream process oracles all pass; full qualification remains B7; [b6-migration](evidence/b6-migration.md) | 2026-09-14 01:00 -05:00 |
 | [T013 Current Candidate Process Qualification](#t013) | PASS | B6 exit | Final B7 C++ process matrix passes on normal and ASan/UBSan candidates after rebuilding the complete source/external closure; installed C++ caller and 24-artifact ELF/no-Python receipt pass. Leak-enabled ASan remains an external OpenABE limitation and is recorded separately; Python SC-005 remains T012. [b7-cpp-qualification](evidence/b7-cpp-qualification.md#b7-final-candidate-convergence-20260915) | 2026-09-15 06:10 -05:00 |
 | [T012 Thin Python Prepared Model Facade](#t012) | PASS | B7 C++ qualification exit | B8 closed; v19 static PASS, DI/extension compile-link PASS, refreshed C++ selectors and 31 Python binding/compatibility tests PASS; subinterpreter and packaging-wheel stress remain unobserved. [b8-python](evidence/b8-python.md) | 2026-09-15 07:50 -05:00 |
-| [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
+| [T014 Design API and Scoped Handoff](#t014) | PASS | T012 acceptance | B9 closed; static review v05 and final composition `B9_COMPOSITION_PASS`; current API/behavior/source snapshot, scoped current-vs-target design, three diagram views and dual-PDF identity/layout all pass; Spec184 outstanding registry retained; [b9-handoff](evidence/b9-handoff.md) | 2026-09-15 13:05 -05:00 |
 | [T019 Prepared Client Ownership and Eviction](#t019) | PASS | T003/T005 static | B7R static v3, normal and ASan/UBSan C++ eviction/source-lifetime selector `RC=0`; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
 | [T020 Conversation Terminal Admission Ordering](#t020) | PASS | T007 static | B7R follow-up static `PASS`; normal and ASan/UBSan C++ selectors plus repeated selectors `RC=0`; delayed completion callback gate, failed-turn `CANCELLED` immediate replacement, and successful result-to-next-turn oracle observed; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md#t020-follow-up-delayed-completion-and-immediate-retry) | 2026-09-15 03:16 -05:00 |
 | [T021 Generation Identity and Grant-Bound Provider Cache](#t021) | PASS | T007/T010 static | B7R v9 static `PASS`; production protected Provider matrix with two independent grants, canonical source fetch, assembly, runner creation and execution passes normal and ASan/UBSan C++ selectors `RC=0`; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md#t021-follow-up-production-protected-independent-grant-matrix) | 2026-09-15 04:00 -05:00 |
 
 ## Current Checkpoint
+
+2026-09-15 13:05 -05:00 B9 T014：按 `Design/MANAGEMENT.md` 刷新当前 API/绑定参考、行为覆盖与源码快照；`test_design_state.py`、`verify-api-reference.py`、`verify-source-baseline.py` 均 `PASS`（327 文件、17,589 声明、1,114 绑定、514 快照文件）。当前/目标双 PDF 在 `.codex-tmp/design-pdf-20260915T130303244487Z/` 构建并通过 `verify.py`（91/98 页、59/65 目录章节、字体嵌入、无版面警告）；当前设计明确 PreparedModel 原生路径和兼容 `NATIVE_REQUEST_PIPELINE_NOT_READY` 分支，目标设计保持独立。B5 T009/T010 的 final composition v5、normal/sanitizer C++ 运行已在本 checkpoint 复核为 PASS；Spec184 Qwen3.6-27B、继承 negative/retirement、I05、SIF/Tiger 和 B8 subinterpreter/wheel 等未观测项仍保持原状态。T014 已通过静态审查 v05 与 `B9_COMPOSITION_PASS`，现标记 `PASS`。详见 [B9 handoff](evidence/b9-handoff.md)。
 
 2026-09-15 04:00 -05:00 B7R T021 follow-up：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-t021-review-v9` 返回 `STATIC_PASS`，manifest SHA256=`37b893574652b639ee1d814d9b5e04be67e89fa61ab9c1d26b65f1b461db403d`、diff SHA256=`d7fc266003e3b7ce305ba1b7d6f28a35fb1895795d35c61f0cbdb044936fdb52`，无 P0-P3。修复 exact-forward cache runner 地址 ABA：外部 registry 维护单调 runner identity 并在析构移除，公共基类布局保持不变。`spec185-provider-assembly` normal `-j4` build 58.876s、ASan/UBSan `-j4` build 91.044s 均 `RC=0`；两次独立 grant 的 production protected Provider selector normal/ASan 均 `RC=0`、`*** No errors detected`，分别观察 sourceFetches=2、assemblies=2、templateHits=0、runnersCreated=2 与 runner execution=2。T021 已 PASS；T013、T012/T014 仍保持各自状态。详情见 [T021 follow-up](evidence/b7r-lifecycle-fixes-20260915.md#t021-follow-up-production-protected-independent-grant-matrix)。
 
@@ -425,7 +427,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t007"></a>
 
-- [ ] T007 [US2] Prepared Conversations and Committed Checkpoints — Conversation.hpp/Conversation.cpp; tests/integration-tests/di-prepared-conversation.t.cpp
+- [x] T007 [US2] Prepared Conversations and Committed Checkpoints — Conversation.hpp/Conversation.cpp; tests/integration-tests/di-prepared-conversation.t.cpp
 
   **Batch / Depends**: B4 / B3 exit。
 
@@ -437,11 +439,11 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **API revision**: C-03：公开opaque ConversationCheckpoint，避免应用传receipt/commit owner；恢复仍校验安全绑定。
 
-  **Exit / oracle**: 两轮真实native结果；stream final未commit时无新checkpoint；并发turn拒绝；不支持adapter及错模型checkpoint拒绝。
+  **Exit / oracle**: 两轮真实native结果；stream final未commit时无新checkpoint；并发turn拒绝；不支持adapter及错模型checkpoint拒绝。B7 C++ qualification and composition evidence: [evidence/b7-cpp-qualification.md](evidence/b7-cpp-qualification.md#b7-final-candidate-convergence-20260915)。
 
 <a id="t008"></a>
 
-- [ ] T008 [US2] Conversation Recovery Replacement and Export — Conversation.cpp; tests/integration-tests/di-prepared-conversation.t.cpp
+- [x] T008 [US2] Conversation Recovery Replacement and Export — Conversation.cpp; tests/integration-tests/di-prepared-conversation.t.cpp
 
   **Batch / Depends**: B4 / T007 static。
 
@@ -451,7 +453,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Implementation and review**: 复用原子private export与restore；配置恢复/替换接同一coordinator；覆盖成功提交后取消、Provider替换和Runtime重开；禁止第二套journal。
 
-  **Exit / oracle**: 恢复后parent/hash chain一致；replacement attempt隔离；export失败旧文件保留；durable成功不降级；ASan/UBSan同selector两次。
+  **Exit / oracle**: 恢复后parent/hash chain一致；replacement attempt隔离；export失败旧文件保留；durable成功不降级；ASan/UBSan同selector两次。B7 C++ qualification and composition evidence: [evidence/b7-cpp-qualification.md](evidence/b7-cpp-qualification.md#b7-final-candidate-convergence-20260915)。
 
 <a id="t009"></a>
 
@@ -541,7 +543,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t014"></a>
 
-- [ ] T014 [US4] Design API and Scoped Handoff — Design/; specs/185-prepared-model-runtime/; docs/architecture.md
+- [x] T014 [US4] Design API and Scoped Handoff — Design/; specs/185-prepared-model-runtime/; docs/architecture.md
 
   **Batch / Depends**: B9 / T012 acceptance。
 
@@ -555,7 +557,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Lifecycle completeness**: 核对C-07全表、exposure、安装头和Python实际导出，advanced/CLI不绑定必须显式登记。
 
-  **Exit / oracle**: 所有本Spec任务完整验收且链接可追溯；当前设计不混入planned；双PDF身份/排版通过；184不被自动勾选。
+  **Exit / oracle**: 所有本Spec任务完整验收且链接可追溯；当前设计不混入planned；双PDF身份/排版通过；184不被自动勾选。B9 static review v05 and final composition `B9_COMPOSITION_PASS` are recorded in [evidence/b9-handoff.md](evidence/b9-handoff.md)。
 
 <a id="t019"></a>
 

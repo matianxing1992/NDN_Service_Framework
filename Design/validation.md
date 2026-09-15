@@ -1,5 +1,26 @@
 # 文档验证记录
 
+## Spec185 B9 当前/目标设计交付 — 2026-09-15
+
+`PASS`（文档单元）。按 `Design/MANAGEMENT.md` 依次执行
+`build-api-reference.py --changed-only`、`build-behavior-coverage.py`、
+`refresh-snapshot.py` 和 `build.py`。当前清单为 327 个源码/API 文件、17,589 个声明条目、
+1,114 个绑定操作；行为覆盖为 6,168 个函数，快照为 514 个文件。`test_design_state.py`、
+`verify-api-reference.py` 和 `verify-source-baseline.py` 均 `PASS`，没有 API 文件集、签名、
+快照或绑定漂移。
+
+双 PDF 构建目录为
+`.codex-tmp/design-pdf-20260915T130303244487Z/`，当前 91 页/59 个目录章节，目标
+98 页/65 个目录章节；字体嵌入、目录页码、警告和版面检查均通过，PDF 哈希记录在
+`Design/build-provenance.json`。当前设计新增 PreparedModel → NativeInferenceClient 的
+已接通路径及兼容 `NATIVE_REQUEST_PIPELINE_NOT_READY` 边界；目标设计保持独立，未把
+Spec184 的 Qwen3.6-27B、retirement、I05 或 SIF/Tiger 未完成项升级为 PASS。
+
+该文档单元只刷新设计/API 身份和证据索引；native C++ 资格以
+[B7 C++ evidence](../specs/185-prepared-model-runtime/evidence/b7-cpp-qualification.md)
+为准，Python 绑定边界以 [B8 evidence](../specs/185-prepared-model-runtime/evidence/b8-python.md)
+为准。
+
 ## R3 Diagram Supplement
 
 两份 PDF 各新增 G1--G9：当前 91 页/59 章，目标 96 页/64 章。图解页分别为

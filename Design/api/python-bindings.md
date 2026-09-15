@@ -4,11 +4,20 @@
 
 ## pythonWrapper/src/ndnsf/_ndnsf.cpp
 
-SHA-256：`4cd84559f3469c85ceb9e4cc5cbbb898390f8dc76989b524c53602d97f893db7`。
+SHA-256：`3753d48efeb3256310d563d512e6ec4fc3ebd84b327e8e521a7edf804c776cd9`。
+
+### root · "schema"
+
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L4345)
+
+```cpp
+value("schema",
+std::string{})
+```
 
 ### see-source-owner · "decode"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6067)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6212)
 
 ```cpp
 def_static("decode",
@@ -18,7 +27,7 @@ py::arg("wire"))
 
 ### see-source-owner · "wire_encode"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6064)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6209)
 
 ```cpp
 def("wire_encode",
@@ -27,7 +36,7 @@ def("wire_encode",
 
 ### see-source-owner · "digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6063)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6208)
 
 ```cpp
 def("digest",
@@ -36,7 +45,7 @@ def("digest",
 
 ### see-source-owner · "fields"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6060)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6205)
 
 ```cpp
 def_property_readonly("fields",
@@ -45,7 +54,7 @@ def_property_readonly("fields",
 
 ### see-source-owner · "get_field"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6058)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6203)
 
 ```cpp
 def("get_field",
@@ -56,7 +65,7 @@ py::return_value_policy::copy)
 
 ### see-source-owner · "has_field"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6057)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6202)
 
 ```cpp
 def("has_field",
@@ -66,7 +75,7 @@ py::arg("name"))
 
 ### see-source-owner · "set_field"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6056)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6201)
 
 ```cpp
 def("set_field",
@@ -77,7 +86,7 @@ py::arg("value"))
 
 ### see-source-owner · "version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6055)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6200)
 
 ```cpp
 def_property("version",
@@ -87,7 +96,7 @@ def_property("version",
 
 ### m · "make_opaque_control_handle"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6100)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6245)
 
 ```cpp
 def("make_opaque_control_handle",
@@ -97,7 +106,7 @@ py::arg("bytes") = 24)
 
 ### m · "is_valid_opaque_control_handle"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6102)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6247)
 
 ```cpp
 def("is_valid_opaque_control_handle",
@@ -107,7 +116,7 @@ py::arg("handle"))
 
 ### NativeStreamFecInfo · "enabled"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6116)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6261)
 
 ```cpp
 def_property_readonly("enabled",
@@ -116,7 +125,7 @@ def_property_readonly("enabled",
 
 ### NativeStreamFecInfo · "metadata"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6115)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6260)
 
 ```cpp
 def_readwrite("metadata",
@@ -125,7 +134,7 @@ def_readwrite("metadata",
 
 ### NativeStreamFecInfo · "repair_symbol"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6114)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6259)
 
 ```cpp
 def_readwrite("repair_symbol",
@@ -134,7 +143,7 @@ def_readwrite("repair_symbol",
 
 ### NativeStreamFecInfo · "source_block_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6113)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6258)
 
 ```cpp
 def_readwrite("source_block_id",
@@ -143,7 +152,7 @@ def_readwrite("source_block_id",
 
 ### NativeStreamFecInfo · "data_lengths"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6112)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6257)
 
 ```cpp
 def_readwrite("data_lengths",
@@ -152,7 +161,7 @@ def_readwrite("data_lengths",
 
 ### NativeStreamFecInfo · "symbol_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6111)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6256)
 
 ```cpp
 def_readwrite("symbol_count",
@@ -161,7 +170,7 @@ def_readwrite("symbol_count",
 
 ### NativeStreamFecInfo · "symbol_index"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6110)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6255)
 
 ```cpp
 def_readwrite("symbol_index",
@@ -170,7 +179,7 @@ def_readwrite("symbol_index",
 
 ### NativeStreamFecInfo · "parity_shards"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6109)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6254)
 
 ```cpp
 def_readwrite("parity_shards",
@@ -179,7 +188,7 @@ def_readwrite("parity_shards",
 
 ### NativeStreamFecInfo · "data_shards"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6108)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6253)
 
 ```cpp
 def_readwrite("data_shards",
@@ -188,7 +197,7 @@ def_readwrite("data_shards",
 
 ### NativeStreamFecInfo · "scheme"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6107)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6252)
 
 ```cpp
 def_readwrite("scheme",
@@ -197,7 +206,7 @@ def_readwrite("scheme",
 
 ### NativeStreamChunk · "metadata"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6143)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6288)
 
 ```cpp
 def_readwrite("metadata",
@@ -206,7 +215,7 @@ def_readwrite("metadata",
 
 ### NativeStreamChunk · "fec"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6142)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6287)
 
 ```cpp
 def_readwrite("fec",
@@ -215,7 +224,7 @@ def_readwrite("fec",
 
 ### NativeStreamChunk · "segment_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6141)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6286)
 
 ```cpp
 def_readwrite("segment_count",
@@ -224,7 +233,7 @@ def_readwrite("segment_count",
 
 ### NativeStreamChunk · "segment_index"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6140)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6285)
 
 ```cpp
 def_readwrite("segment_index",
@@ -233,7 +242,7 @@ def_readwrite("segment_index",
 
 ### NativeStreamChunk · "frame_last_seq"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6139)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6284)
 
 ```cpp
 def_readwrite("frame_last_seq",
@@ -242,7 +251,7 @@ def_readwrite("frame_last_seq",
 
 ### NativeStreamChunk · "frame_first_seq"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6138)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6283)
 
 ```cpp
 def_readwrite("frame_first_seq",
@@ -251,7 +260,7 @@ def_readwrite("frame_first_seq",
 
 ### NativeStreamChunk · "frame_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6137)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6282)
 
 ```cpp
 def_readwrite("frame_id",
@@ -260,7 +269,7 @@ def_readwrite("frame_id",
 
 ### NativeStreamChunk · "key_chunk"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6136)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6281)
 
 ```cpp
 def_readwrite("key_chunk",
@@ -269,7 +278,7 @@ def_readwrite("key_chunk",
 
 ### NativeStreamChunk · "deadline_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6135)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6280)
 
 ```cpp
 def_readwrite("deadline_ms",
@@ -278,7 +287,7 @@ def_readwrite("deadline_ms",
 
 ### NativeStreamChunk · "arrival_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6134)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6279)
 
 ```cpp
 def_readwrite("arrival_ms",
@@ -287,7 +296,7 @@ def_readwrite("arrival_ms",
 
 ### NativeStreamChunk · "capture_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6133)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6278)
 
 ```cpp
 def_readwrite("capture_ms",
@@ -296,7 +305,7 @@ def_readwrite("capture_ms",
 
 ### NativeStreamChunk · "content_type"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6132)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6277)
 
 ```cpp
 def_readwrite("content_type",
@@ -305,7 +314,7 @@ def_readwrite("content_type",
 
 ### NativeStreamChunk · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6123)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6268)
 
 ```cpp
 def_property("payload",
@@ -315,7 +324,7 @@ def_property("payload",
 
 ### NativeStreamChunk · "seq"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6122)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6267)
 
 ```cpp
 def_readwrite("seq",
@@ -324,7 +333,7 @@ def_readwrite("seq",
 
 ### NativeStreamChunk · "session_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6121)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6266)
 
 ```cpp
 def_readwrite("session_epoch",
@@ -333,7 +342,7 @@ def_readwrite("session_epoch",
 
 ### NativeStreamChunk · "stream_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6120)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6265)
 
 ```cpp
 def_readwrite("stream_id",
@@ -342,7 +351,7 @@ def_readwrite("stream_id",
 
 ### NativeStreamNameMapEntry · "predicted_group_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6180)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6325)
 
 ```cpp
 def_property_readonly("predicted_group_items",
@@ -351,7 +360,7 @@ def_property_readonly("predicted_group_items",
 
 ### NativeStreamNameMapEntry · "has_group_binding"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6178)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6323)
 
 ```cpp
 def_property_readonly("has_group_binding",
@@ -360,7 +369,7 @@ def_property_readonly("has_group_binding",
 
 ### NativeStreamNameMapEntry · "is_tombstone"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6177)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6322)
 
 ```cpp
 def("is_tombstone",
@@ -369,7 +378,7 @@ def("is_tombstone",
 
 ### NativeStreamNameMapEntry · "make_tombstone"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6176)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6321)
 
 ```cpp
 def_static("make_tombstone",
@@ -378,7 +387,7 @@ def_static("make_tombstone",
 
 ### NativeStreamNameMapEntry · "from_grouped_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6166)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6311)
 
 ```cpp
 def_static("from_grouped_name",
@@ -395,7 +404,7 @@ py::arg("predicted_repair_items"))
 
 ### NativeStreamNameMapEntry · "from_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6162)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6307)
 
 ```cpp
 def_static("from_name",
@@ -405,7 +414,7 @@ py::arg("name"))
 
 ### NativeStreamNameMapEntry · "predicted_repair_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6160)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6305)
 
 ```cpp
 def_readwrite("predicted_repair_items",
@@ -414,7 +423,7 @@ def_readwrite("predicted_repair_items",
 
 ### NativeStreamNameMapEntry · "predicted_source_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6158)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6303)
 
 ```cpp
 def_readwrite("predicted_source_items",
@@ -423,7 +432,7 @@ def_readwrite("predicted_source_items",
 
 ### NativeStreamNameMapEntry · "group_item_index"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6157)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6302)
 
 ```cpp
 def_readwrite("group_item_index",
@@ -432,7 +441,7 @@ def_readwrite("group_item_index",
 
 ### NativeStreamNameMapEntry · "sample_class"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6156)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6301)
 
 ```cpp
 def_readwrite("sample_class",
@@ -441,7 +450,7 @@ def_readwrite("sample_class",
 
 ### NativeStreamNameMapEntry · "group_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6155)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6300)
 
 ```cpp
 def_readwrite("group_id",
@@ -450,7 +459,7 @@ def_readwrite("group_id",
 
 ### NativeStreamNameMapEntry · "tombstone"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6154)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6299)
 
 ```cpp
 def_readwrite("tombstone",
@@ -459,7 +468,7 @@ def_readwrite("tombstone",
 
 ### NativeStreamNameMapEntry · "original_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6147)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6292)
 
 ```cpp
 def_property("original_name",
@@ -469,7 +478,7 @@ def_property("original_name",
 
 ### NativeStreamNameMapBlock · "last_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6231)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6376)
 
 ```cpp
 def("last_cursor",
@@ -478,7 +487,7 @@ def("last_cursor",
 
 ### NativeStreamNameMapBlock · "fits_signed_wire_budget"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6229)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6374)
 
 ```cpp
 def("fits_signed_wire_budget",
@@ -489,7 +498,7 @@ py::arg("configured_wire_cap"))
 
 ### NativeStreamNameMapBlock · "content_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6226)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6371)
 
 ```cpp
 def("content_digest",
@@ -498,7 +507,7 @@ def("content_digest",
 
 ### NativeStreamNameMapBlock · "canonical_content"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6223)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6368)
 
 ```cpp
 def("canonical_content",
@@ -507,7 +516,7 @@ def("canonical_content",
 
 ### NativeStreamNameMapBlock · "decode"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6215)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6360)
 
 ```cpp
 def_static("decode",
@@ -517,7 +526,7 @@ py::arg("wire"))
 
 ### NativeStreamNameMapBlock · "wire_encode"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6212)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6357)
 
 ```cpp
 def("wire_encode",
@@ -526,7 +535,7 @@ def("wire_encode",
 
 ### NativeStreamNameMapBlock · "validate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6208)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6353)
 
 ```cpp
 def("validate",
@@ -535,7 +544,7 @@ def("validate",
 
 ### NativeStreamNameMapBlock · "entries"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6207)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6352)
 
 ```cpp
 def_readwrite("entries",
@@ -544,7 +553,7 @@ def_readwrite("entries",
 
 ### NativeStreamNameMapBlock · "previous_content_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6192)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6337)
 
 ```cpp
 def_property("previous_content_digest",
@@ -554,7 +563,7 @@ def_property("previous_content_digest",
 
 ### NativeStreamNameMapBlock · "first_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6191)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6336)
 
 ```cpp
 def_readwrite("first_cursor",
@@ -563,7 +572,7 @@ def_readwrite("first_cursor",
 
 ### NativeStreamNameMapBlock · "block_capacity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6190)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6335)
 
 ```cpp
 def_readwrite("block_capacity",
@@ -572,7 +581,7 @@ def_readwrite("block_capacity",
 
 ### NativeStreamNameMapBlock · "block_number"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6189)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6334)
 
 ```cpp
 def_readwrite("block_number",
@@ -581,7 +590,7 @@ def_readwrite("block_number",
 
 ### NativeStreamNameMapBlock · "mapping_version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6188)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6333)
 
 ```cpp
 def_readwrite("mapping_version",
@@ -590,7 +599,7 @@ def_readwrite("mapping_version",
 
 ### NativeStreamNameMapBlock · "session_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6187)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6332)
 
 ```cpp
 def_readwrite("session_epoch",
@@ -599,7 +608,7 @@ def_readwrite("session_epoch",
 
 ### NativeStreamNameMapBlock · "stream_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6186)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6331)
 
 ```cpp
 def_readwrite("stream_id",
@@ -608,7 +617,7 @@ def_readwrite("stream_id",
 
 ### NativeStreamNameMapBlock · "contract_version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6185)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6330)
 
 ```cpp
 def_readwrite("contract_version",
@@ -617,7 +626,7 @@ def_readwrite("contract_version",
 
 ### m · "make_stream_name_map_root"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6233)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6378)
 
 ```cpp
 def("make_stream_name_map_root",
@@ -628,7 +637,7 @@ py::arg("stream_id"))
 
 ### m · "make_stream_name_map_block_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6238)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6383)
 
 ```cpp
 def("make_stream_name_map_block_name",
@@ -641,7 +650,7 @@ py::arg("block_number"))
 
 ### NativeStreamCursorFrontiers · "validate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6255)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6400)
 
 ```cpp
 def("validate",
@@ -654,7 +663,7 @@ py::arg("checkpoint_block"))
 
 ### NativeStreamCursorFrontiers · "next_reserved"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6254)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6399)
 
 ```cpp
 def_readwrite("next_reserved",
@@ -663,7 +672,7 @@ def_readwrite("next_reserved",
 
 ### NativeStreamCursorFrontiers · "mapping_committed_through"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6252)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6397)
 
 ```cpp
 def_readwrite("mapping_committed_through",
@@ -672,7 +681,7 @@ def_readwrite("mapping_committed_through",
 
 ### NativeStreamCursorFrontiers · "latest_produced"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6251)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6396)
 
 ```cpp
 def_readwrite("latest_produced",
@@ -681,7 +690,7 @@ def_readwrite("latest_produced",
 
 ### NativeStreamCursorFrontiers · "latest_join"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6250)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6395)
 
 ```cpp
 def_readwrite("latest_join",
@@ -690,7 +699,7 @@ def_readwrite("latest_join",
 
 ### NativeStreamCursorFrontiers · "oldest_retained"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6249)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6394)
 
 ```cpp
 def_readwrite("oldest_retained",
@@ -699,7 +708,7 @@ def_readwrite("oldest_retained",
 
 ### NativeStreamNameMapCheckpoint · "content_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6266)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6411)
 
 ```cpp
 def_property("content_digest",
@@ -709,7 +718,7 @@ def_property("content_digest",
 
 ### NativeStreamNameMapCheckpoint · "block_number"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6265)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6410)
 
 ```cpp
 def_readwrite("block_number",
@@ -718,7 +727,7 @@ def_readwrite("block_number",
 
 ### NativeStreamNameMapCheckpoint · "frontiers"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6264)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6409)
 
 ```cpp
 def_readwrite("frontiers",
@@ -727,7 +736,7 @@ def_readwrite("frontiers",
 
 ### NativeStreamNameMapResolverConfig · "max_original_name_wire_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6309)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6454)
 
 ```cpp
 def_readwrite("max_original_name_wire_bytes",
@@ -736,7 +745,7 @@ def_readwrite("max_original_name_wire_bytes",
 
 ### NativeStreamNameMapResolverConfig · "max_reverse_entries"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6307)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6452)
 
 ```cpp
 def_readwrite("max_reverse_entries",
@@ -745,7 +754,7 @@ def_readwrite("max_reverse_entries",
 
 ### NativeStreamNameMapResolverConfig · "max_quarantine_blocks"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6305)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6450)
 
 ```cpp
 def_readwrite("max_quarantine_blocks",
@@ -754,7 +763,7 @@ def_readwrite("max_quarantine_blocks",
 
 ### NativeStreamNameMapResolverConfig · "max_verified_blocks"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6303)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6448)
 
 ```cpp
 def_readwrite("max_verified_blocks",
@@ -763,7 +772,7 @@ def_readwrite("max_verified_blocks",
 
 ### NativeStreamNameMapResolverConfig · "signed_wire_cap"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6302)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6447)
 
 ```cpp
 def_readwrite("signed_wire_cap",
@@ -772,7 +781,7 @@ def_readwrite("signed_wire_cap",
 
 ### NativeStreamNameMapResolverConfig · "payload_prefix"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6295)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6440)
 
 ```cpp
 def_property("payload_prefix",
@@ -782,7 +791,7 @@ def_property("payload_prefix",
 
 ### NativeStreamNameMapResolverConfig · "mapping_root"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6288)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6433)
 
 ```cpp
 def_property("mapping_root",
@@ -792,7 +801,7 @@ def_property("mapping_root",
 
 ### NativeStreamNameMapResolverConfig · "expected_provider"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6281)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6426)
 
 ```cpp
 def_property("expected_provider",
@@ -802,7 +811,7 @@ def_property("expected_provider",
 
 ### NativeStreamNameMapResolverConfig · "block_capacity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6280)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6425)
 
 ```cpp
 def_readwrite("block_capacity",
@@ -811,7 +820,7 @@ def_readwrite("block_capacity",
 
 ### NativeStreamNameMapResolverConfig · "mapping_version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6279)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6424)
 
 ```cpp
 def_readwrite("mapping_version",
@@ -820,7 +829,7 @@ def_readwrite("mapping_version",
 
 ### NativeStreamNameMapResolverConfig · "session_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6278)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6423)
 
 ```cpp
 def_readwrite("session_epoch",
@@ -829,7 +838,7 @@ def_readwrite("session_epoch",
 
 ### NativeStreamNameMapResolverConfig · "stream_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6277)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6422)
 
 ```cpp
 def_readwrite("stream_id",
@@ -838,7 +847,7 @@ def_readwrite("stream_id",
 
 ### NativeStreamNameMapResolverConfig · "contract_version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6276)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6421)
 
 ```cpp
 def_readwrite("contract_version",
@@ -847,7 +856,7 @@ def_readwrite("contract_version",
 
 ### NativeVerifiedStreamNameMapData · "required_before_monotonic_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6340)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6485)
 
 ```cpp
 def_readwrite("required_before_monotonic_ms",
@@ -856,7 +865,7 @@ def_readwrite("required_before_monotonic_ms",
 
 ### NativeVerifiedStreamNameMapData · "received_monotonic_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6338)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6483)
 
 ```cpp
 def_readwrite("received_monotonic_ms",
@@ -865,7 +874,7 @@ def_readwrite("received_monotonic_ms",
 
 ### NativeVerifiedStreamNameMapData · "content"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6331)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6476)
 
 ```cpp
 def_property("content",
@@ -875,7 +884,7 @@ def_property("content",
 
 ### NativeVerifiedStreamNameMapData · "signed_wire_size"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6330)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6475)
 
 ```cpp
 def_readwrite("signed_wire_size",
@@ -884,7 +893,7 @@ def_readwrite("signed_wire_size",
 
 ### NativeVerifiedStreamNameMapData · "has_final_block"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6329)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6474)
 
 ```cpp
 def_readwrite("has_final_block",
@@ -893,7 +902,7 @@ def_readwrite("has_final_block",
 
 ### NativeVerifiedStreamNameMapData · "content_type"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6328)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6473)
 
 ```cpp
 def_readwrite("content_type",
@@ -902,7 +911,7 @@ def_readwrite("content_type",
 
 ### NativeVerifiedStreamNameMapData · "verified_provider"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6321)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6466)
 
 ```cpp
 def_property("verified_provider",
@@ -912,7 +921,7 @@ def_property("verified_provider",
 
 ### NativeVerifiedStreamNameMapData · "data_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6314)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6459)
 
 ```cpp
 def_property("data_name",
@@ -922,7 +931,7 @@ def_property("data_name",
 
 ### NativeStreamNameMapAdmissionDisposition · "FATAL_SESSION"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6349)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6494)
 
 ```cpp
 value("FATAL_SESSION",
@@ -931,7 +940,7 @@ nsf::StreamNameMapAdmissionDisposition::FatalSession)
 
 ### NativeStreamNameMapAdmissionDisposition · "REJECTED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6348)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6493)
 
 ```cpp
 value("REJECTED",
@@ -940,7 +949,7 @@ nsf::StreamNameMapAdmissionDisposition::Rejected)
 
 ### NativeStreamNameMapAdmissionDisposition · "QUARANTINED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6347)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6492)
 
 ```cpp
 value("QUARANTINED",
@@ -949,7 +958,7 @@ nsf::StreamNameMapAdmissionDisposition::Quarantined)
 
 ### NativeStreamNameMapAdmissionDisposition · "DUPLICATE"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6346)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6491)
 
 ```cpp
 value("DUPLICATE",
@@ -958,7 +967,7 @@ nsf::StreamNameMapAdmissionDisposition::Duplicate)
 
 ### NativeStreamNameMapAdmissionDisposition · "ADMITTED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6345)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6490)
 
 ```cpp
 value("ADMITTED",
@@ -967,7 +976,7 @@ nsf::StreamNameMapAdmissionDisposition::Admitted)
 
 ### NativeStreamNameMapTiming · "LATE"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6354)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6499)
 
 ```cpp
 value("LATE",
@@ -976,7 +985,7 @@ nsf::StreamNameMapTiming::Late)
 
 ### NativeStreamNameMapTiming · "AHEAD"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6353)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6498)
 
 ```cpp
 value("AHEAD",
@@ -985,7 +994,7 @@ nsf::StreamNameMapTiming::Ahead)
 
 ### NativeStreamNameMapTiming · "UNCLASSIFIED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6352)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6497)
 
 ```cpp
 value("UNCLASSIFIED",
@@ -994,7 +1003,7 @@ nsf::StreamNameMapTiming::Unclassified)
 
 ### NativeStreamNameMapAdmissionResult · "fatal"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6371)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6516)
 
 ```cpp
 def_property_readonly("fatal",
@@ -1003,7 +1012,7 @@ def_property_readonly("fatal",
 
 ### NativeStreamNameMapAdmissionResult · "accepted"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6370)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6515)
 
 ```cpp
 def_property_readonly("accepted",
@@ -1012,7 +1021,7 @@ def_property_readonly("accepted",
 
 ### NativeStreamNameMapAdmissionResult · "mapping_committed_through"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6368)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6513)
 
 ```cpp
 def_readonly("mapping_committed_through",
@@ -1021,7 +1030,7 @@ def_readonly("mapping_committed_through",
 
 ### NativeStreamNameMapAdmissionResult · "state_changed"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6367)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6512)
 
 ```cpp
 def_readonly("state_changed",
@@ -1030,7 +1039,7 @@ def_readonly("state_changed",
 
 ### NativeStreamNameMapAdmissionResult · "reason"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6366)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6511)
 
 ```cpp
 def_readonly("reason",
@@ -1039,7 +1048,7 @@ def_readonly("reason",
 
 ### NativeStreamNameMapAdmissionResult · "timing_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6362)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6507)
 
 ```cpp
 def_property_readonly("timing_name",
@@ -1048,7 +1057,7 @@ def_property_readonly("timing_name",
 
 ### NativeStreamNameMapAdmissionResult · "disposition_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6358)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6503)
 
 ```cpp
 def_property_readonly("disposition_name",
@@ -1057,7 +1066,7 @@ def_property_readonly("disposition_name",
 
 ### NativeStreamNameMapResolution · "predicted_group_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6397)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6542)
 
 ```cpp
 def_property_readonly("predicted_group_items",
@@ -1066,7 +1075,7 @@ def_property_readonly("predicted_group_items",
 
 ### NativeStreamNameMapResolution · "has_group_binding"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6395)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6540)
 
 ```cpp
 def_property_readonly("has_group_binding",
@@ -1075,7 +1084,7 @@ def_property_readonly("has_group_binding",
 
 ### NativeStreamNameMapResolution · "schedulable"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6394)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6539)
 
 ```cpp
 def_property_readonly("schedulable",
@@ -1084,7 +1093,7 @@ def_property_readonly("schedulable",
 
 ### NativeStreamNameMapResolution · "timing_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6390)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6535)
 
 ```cpp
 def_property_readonly("timing_name",
@@ -1093,7 +1102,7 @@ def_property_readonly("timing_name",
 
 ### NativeStreamNameMapResolution · "predicted_repair_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6388)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6533)
 
 ```cpp
 def_readonly("predicted_repair_items",
@@ -1102,7 +1111,7 @@ def_readonly("predicted_repair_items",
 
 ### NativeStreamNameMapResolution · "predicted_source_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6386)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6531)
 
 ```cpp
 def_readonly("predicted_source_items",
@@ -1111,7 +1120,7 @@ def_readonly("predicted_source_items",
 
 ### NativeStreamNameMapResolution · "group_item_index"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6385)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6530)
 
 ```cpp
 def_readonly("group_item_index",
@@ -1120,7 +1129,7 @@ def_readonly("group_item_index",
 
 ### NativeStreamNameMapResolution · "sample_class"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6384)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6529)
 
 ```cpp
 def_readonly("sample_class",
@@ -1129,7 +1138,7 @@ def_readonly("sample_class",
 
 ### NativeStreamNameMapResolution · "group_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6383)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6528)
 
 ```cpp
 def_readonly("group_id",
@@ -1138,7 +1147,7 @@ def_readonly("group_id",
 
 ### NativeStreamNameMapResolution · "terminal_unproduced"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6381)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6526)
 
 ```cpp
 def_readonly("terminal_unproduced",
@@ -1147,7 +1156,7 @@ def_readonly("terminal_unproduced",
 
 ### NativeStreamNameMapResolution · "tombstone"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6380)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6525)
 
 ```cpp
 def_readonly("tombstone",
@@ -1156,7 +1165,7 @@ def_readonly("tombstone",
 
 ### NativeStreamNameMapResolution · "original_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6375)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6520)
 
 ```cpp
 def_property_readonly("original_name",
@@ -1165,7 +1174,7 @@ def_property_readonly("original_name",
 
 ### NativeStreamNameMapResolution · "cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6374)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6519)
 
 ```cpp
 def_readonly("cursor",
@@ -1174,7 +1183,7 @@ def_readonly("cursor",
 
 ### NativeStreamNameResolverState · "diagnostics"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6446)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6591)
 
 ```cpp
 def("diagnostics",
@@ -1183,7 +1192,7 @@ def("diagnostics",
 
 ### NativeStreamNameResolverState · "binding_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6445)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6590)
 
 ```cpp
 def("binding_count",
@@ -1192,7 +1201,7 @@ def("binding_count",
 
 ### NativeStreamNameResolverState · "quarantined_block_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6443)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6588)
 
 ```cpp
 def("quarantined_block_count",
@@ -1201,7 +1210,7 @@ def("quarantined_block_count",
 
 ### NativeStreamNameResolverState · "verified_block_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6442)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6587)
 
 ```cpp
 def("verified_block_count",
@@ -1210,7 +1219,7 @@ def("verified_block_count",
 
 ### NativeStreamNameResolverState · "faulted"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6441)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6586)
 
 ```cpp
 def("faulted",
@@ -1219,7 +1228,7 @@ def("faulted",
 
 ### NativeStreamNameResolverState · "checkpoint"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6440)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6585)
 
 ```cpp
 def("checkpoint",
@@ -1228,7 +1237,7 @@ def("checkpoint",
 
 ### NativeStreamNameResolverState · "frontiers"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6439)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6584)
 
 ```cpp
 def("frontiers",
@@ -1237,7 +1246,7 @@ def("frontiers",
 
 ### NativeStreamNameResolverState · "evict_local_block"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6437)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6582)
 
 ```cpp
 def("evict_local_block",
@@ -1247,7 +1256,7 @@ py::arg("block_number"))
 
 ### NativeStreamNameResolverState · "mark_terminal_unproduced"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6434)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6579)
 
 ```cpp
 def("mark_terminal_unproduced",
@@ -1257,7 +1266,7 @@ py::arg("cursor"))
 
 ### NativeStreamNameResolverState · "reverse_resolve"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6429)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6574)
 
 ```cpp
 def("reverse_resolve",
@@ -1268,7 +1277,7 @@ py::arg("original_name"))
 
 ### NativeStreamNameResolverState · "resolve"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6424)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6569)
 
 ```cpp
 def("resolve",
@@ -1279,7 +1288,7 @@ py::arg("cursor"))
 
 ### NativeStreamNameResolverState · "lookup"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6422)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6567)
 
 ```cpp
 def("lookup",
@@ -1289,7 +1298,7 @@ py::arg("cursor"))
 
 ### NativeStreamNameResolverState · "refresh_checkpoint"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6420)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6565)
 
 ```cpp
 def("refresh_checkpoint",
@@ -1299,7 +1308,7 @@ py::arg("checkpoint"))
 
 ### NativeStreamNameResolverState · "admit_verified_wire"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6406)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6551)
 
 ```cpp
 def("admit_verified_wire",
@@ -1312,7 +1321,7 @@ py::arg("content_wire"))
 
 ### NativeStreamNameResolverState · "admit_verified_block"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6404)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6549)
 
 ```cpp
 def("admit_verified_block",
@@ -1322,7 +1331,7 @@ py::arg("input"))
 
 ### NativeStreamNameResolverState · "reset"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6402)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6547)
 
 ```cpp
 def("reset",
@@ -1333,7 +1342,7 @@ py::arg("checkpoint"))
 
 ### NativeStreamMetrics · "bytes_received"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6462)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6607)
 
 ```cpp
 def_readwrite("bytes_received",
@@ -1342,7 +1351,7 @@ def_readwrite("bytes_received",
 
 ### NativeStreamMetrics · "bytes_produced"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6461)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6606)
 
 ```cpp
 def_readwrite("bytes_produced",
@@ -1351,7 +1360,7 @@ def_readwrite("bytes_produced",
 
 ### NativeStreamMetrics · "max_pending"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6460)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6605)
 
 ```cpp
 def_readwrite("max_pending",
@@ -1360,7 +1369,7 @@ def_readwrite("max_pending",
 
 ### NativeStreamMetrics · "overflows"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6459)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6604)
 
 ```cpp
 def_readwrite("overflows",
@@ -1369,7 +1378,7 @@ def_readwrite("overflows",
 
 ### NativeStreamMetrics · "nacks"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6458)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6603)
 
 ```cpp
 def_readwrite("nacks",
@@ -1378,7 +1387,7 @@ def_readwrite("nacks",
 
 ### NativeStreamMetrics · "timeouts"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6457)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6602)
 
 ```cpp
 def_readwrite("timeouts",
@@ -1387,7 +1396,7 @@ def_readwrite("timeouts",
 
 ### NativeStreamMetrics · "gaps"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6456)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6601)
 
 ```cpp
 def_readwrite("gaps",
@@ -1396,7 +1405,7 @@ def_readwrite("gaps",
 
 ### NativeStreamMetrics · "stale"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6455)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6600)
 
 ```cpp
 def_readwrite("stale",
@@ -1405,7 +1414,7 @@ def_readwrite("stale",
 
 ### NativeStreamMetrics · "duplicates"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6454)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6599)
 
 ```cpp
 def_readwrite("duplicates",
@@ -1414,7 +1423,7 @@ def_readwrite("duplicates",
 
 ### NativeStreamMetrics · "emitted"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6453)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6598)
 
 ```cpp
 def_readwrite("emitted",
@@ -1423,7 +1432,7 @@ def_readwrite("emitted",
 
 ### NativeStreamMetrics · "received"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6452)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6597)
 
 ```cpp
 def_readwrite("received",
@@ -1432,7 +1441,7 @@ def_readwrite("received",
 
 ### NativeStreamMetrics · "evicted"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6451)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6596)
 
 ```cpp
 def_readwrite("evicted",
@@ -1441,7 +1450,7 @@ def_readwrite("evicted",
 
 ### NativeStreamMetrics · "produced"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6450)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6595)
 
 ```cpp
 def_readwrite("produced",
@@ -1450,7 +1459,7 @@ def_readwrite("produced",
 
 ### NativeStreamProducerBuffer · "metrics"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6470)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6615)
 
 ```cpp
 def_property_readonly("metrics",
@@ -1459,7 +1468,7 @@ def_property_readonly("metrics",
 
 ### NativeStreamProducerBuffer · "size"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6469)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6614)
 
 ```cpp
 def("size",
@@ -1468,7 +1477,7 @@ def("size",
 
 ### NativeStreamProducerBuffer · "sequences"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6468)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6613)
 
 ```cpp
 def("sequences",
@@ -1477,7 +1486,7 @@ def("sequences",
 
 ### NativeStreamProducerBuffer · "get"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6467)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6612)
 
 ```cpp
 def("get",
@@ -1486,7 +1495,7 @@ def("get",
 
 ### NativeStreamProducerBuffer · "put"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6466)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6611)
 
 ```cpp
 def("put",
@@ -1495,7 +1504,7 @@ def("put",
 
 ### NativeStreamConsumerReorderBuffer · "metrics"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6489)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6634)
 
 ```cpp
 def_property_readonly("metrics",
@@ -1504,7 +1513,7 @@ def_property_readonly("metrics",
 
 ### NativeStreamConsumerReorderBuffer · "pending_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6488)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6633)
 
 ```cpp
 def_property_readonly("pending_bytes",
@@ -1513,7 +1522,7 @@ def_property_readonly("pending_bytes",
 
 ### NativeStreamConsumerReorderBuffer · "pending_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6487)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6632)
 
 ```cpp
 def_property_readonly("pending_count",
@@ -1522,7 +1531,7 @@ def_property_readonly("pending_count",
 
 ### NativeStreamConsumerReorderBuffer · "next_seq"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6486)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6631)
 
 ```cpp
 def_property_readonly("next_seq",
@@ -1531,7 +1540,7 @@ def_property_readonly("next_seq",
 
 ### NativeStreamConsumerReorderBuffer · "skip_to"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6485)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6630)
 
 ```cpp
 def("skip_to",
@@ -1540,7 +1549,7 @@ def("skip_to",
 
 ### NativeStreamConsumerReorderBuffer · "drain_ready"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6484)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6629)
 
 ```cpp
 def("drain_ready",
@@ -1549,7 +1558,7 @@ def("drain_ready",
 
 ### NativeStreamConsumerReorderBuffer · "pending_sequences"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6482)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6627)
 
 ```cpp
 def("pending_sequences",
@@ -1559,7 +1568,7 @@ py::arg("limit") = 0)
 
 ### NativeStreamConsumerReorderBuffer · "missing_sequences"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6480)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6625)
 
 ```cpp
 def("missing_sequences",
@@ -1569,7 +1578,7 @@ py::arg("limit") = 32)
 
 ### NativeStreamConsumerReorderBuffer · "push"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6479)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6624)
 
 ```cpp
 def("push",
@@ -1578,7 +1587,7 @@ def("push",
 
 ### NativeStreamConsumerReorderBuffer · "reset"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6477)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6622)
 
 ```cpp
 def("reset",
@@ -1590,7 +1599,7 @@ py::arg("next_seq") = 0)
 
 ### NativeStreamPrefetchPhase · "STOPPED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6497)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6642)
 
 ```cpp
 value("STOPPED",
@@ -1599,7 +1608,7 @@ nsf::StreamPrefetchPhase::Stopped)
 
 ### NativeStreamPrefetchPhase · "RECOVERING"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6496)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6641)
 
 ```cpp
 value("RECOVERING",
@@ -1608,7 +1617,7 @@ nsf::StreamPrefetchPhase::Recovering)
 
 ### NativeStreamPrefetchPhase · "FETCHING"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6495)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6640)
 
 ```cpp
 value("FETCHING",
@@ -1617,7 +1626,7 @@ nsf::StreamPrefetchPhase::Fetching)
 
 ### NativeStreamPrefetchPhase · "ADJUSTING"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6494)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6639)
 
 ```cpp
 value("ADJUSTING",
@@ -1626,7 +1635,7 @@ nsf::StreamPrefetchPhase::Adjusting)
 
 ### NativeStreamPrefetchPhase · "CHASING"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6493)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6638)
 
 ```cpp
 value("CHASING",
@@ -1635,7 +1644,7 @@ nsf::StreamPrefetchPhase::Chasing)
 
 ### NativeStreamPrefetchPhase · "INACTIVE"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6492)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6637)
 
 ```cpp
 value("INACTIVE",
@@ -1644,7 +1653,7 @@ nsf::StreamPrefetchPhase::Inactive)
 
 ### NativeStreamFetchDecision · "reason"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6537)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6682)
 
 ```cpp
 def_readwrite("reason",
@@ -1653,7 +1662,7 @@ def_readwrite("reason",
 
 ### NativeStreamFetchDecision · "capacity_reason"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6536)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6681)
 
 ```cpp
 def_readwrite("capacity_reason",
@@ -1662,7 +1671,7 @@ def_readwrite("capacity_reason",
 
 ### NativeStreamFetchDecision · "mapping_wait_reason"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6535)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6680)
 
 ```cpp
 def_readwrite("mapping_wait_reason",
@@ -1671,7 +1680,7 @@ def_readwrite("mapping_wait_reason",
 
 ### NativeStreamFetchDecision · "detector_profile"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6534)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6679)
 
 ```cpp
 def_readwrite("detector_profile",
@@ -1680,7 +1689,7 @@ def_readwrite("detector_profile",
 
 ### NativeStreamFetchDecision · "policy_mode"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6533)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6678)
 
 ```cpp
 def_readwrite("policy_mode",
@@ -1689,7 +1698,7 @@ def_readwrite("policy_mode",
 
 ### NativeStreamFetchDecision · "phase_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6530)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6675)
 
 ```cpp
 def_property_readonly("phase_name",
@@ -1698,7 +1707,7 @@ def_property_readonly("phase_name",
 
 ### NativeStreamFetchDecision · "phase"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6529)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6674)
 
 ```cpp
 def_readwrite("phase",
@@ -1707,7 +1716,7 @@ def_readwrite("phase",
 
 ### NativeStreamFetchDecision · "retransmission_eligible"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6528)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6673)
 
 ```cpp
 def_readwrite("retransmission_eligible",
@@ -1716,7 +1725,7 @@ def_readwrite("retransmission_eligible",
 
 ### NativeStreamFetchDecision · "congestion_hold"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6527)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6672)
 
 ```cpp
 def_readwrite("congestion_hold",
@@ -1725,7 +1734,7 @@ def_readwrite("congestion_hold",
 
 ### NativeStreamFetchDecision · "future_wait"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6526)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6671)
 
 ```cpp
 def_readwrite("future_wait",
@@ -1734,7 +1743,7 @@ def_readwrite("future_wait",
 
 ### NativeStreamFetchDecision · "mapping_ready"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6525)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6670)
 
 ```cpp
 def_readwrite("mapping_ready",
@@ -1743,7 +1752,7 @@ def_readwrite("mapping_ready",
 
 ### NativeStreamFetchDecision · "live_edge_confidence"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6524)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6669)
 
 ```cpp
 def_readwrite("live_edge_confidence",
@@ -1752,7 +1761,7 @@ def_readwrite("live_edge_confidence",
 
 ### NativeStreamFetchDecision · "pressure"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6523)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6668)
 
 ```cpp
 def_readwrite("pressure",
@@ -1761,7 +1770,7 @@ def_readwrite("pressure",
 
 ### NativeStreamFetchDecision · "atomic_deferrals"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6522)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6667)
 
 ```cpp
 def_readwrite("atomic_deferrals",
@@ -1770,7 +1779,7 @@ def_readwrite("atomic_deferrals",
 
 ### NativeStreamFetchDecision · "atomic_expansions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6521)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6666)
 
 ```cpp
 def_readwrite("atomic_expansions",
@@ -1779,7 +1788,7 @@ def_readwrite("atomic_expansions",
 
 ### NativeStreamFetchDecision · "later_cursor_advice"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6520)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6665)
 
 ```cpp
 def_readwrite("later_cursor_advice",
@@ -1788,7 +1797,7 @@ def_readwrite("later_cursor_advice",
 
 ### NativeStreamFetchDecision · "terminal_unproduced_advice"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6519)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6664)
 
 ```cpp
 def_readwrite("terminal_unproduced_advice",
@@ -1797,7 +1806,7 @@ def_readwrite("terminal_unproduced_advice",
 
 ### NativeStreamFetchDecision · "future_wait_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6518)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6663)
 
 ```cpp
 def_readwrite("future_wait_count",
@@ -1806,7 +1815,7 @@ def_readwrite("future_wait_count",
 
 ### NativeStreamFetchDecision · "retransmission_budget"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6517)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6662)
 
 ```cpp
 def_readwrite("retransmission_budget",
@@ -1815,7 +1824,7 @@ def_readwrite("retransmission_budget",
 
 ### NativeStreamFetchDecision · "payload_budget"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6516)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6661)
 
 ```cpp
 def_readwrite("payload_budget",
@@ -1824,7 +1833,7 @@ def_readwrite("payload_budget",
 
 ### NativeStreamFetchDecision · "mapping_budget"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6515)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6660)
 
 ```cpp
 def_readwrite("mapping_budget",
@@ -1833,7 +1842,7 @@ def_readwrite("mapping_budget",
 
 ### NativeStreamFetchDecision · "aggregate_in_flight_limit"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6514)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6659)
 
 ```cpp
 def_readwrite("aggregate_in_flight_limit",
@@ -1842,7 +1851,7 @@ def_readwrite("aggregate_in_flight_limit",
 
 ### NativeStreamFetchDecision · "payload_end_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6513)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6658)
 
 ```cpp
 def_readwrite("payload_end_cursor",
@@ -1851,7 +1860,7 @@ def_readwrite("payload_end_cursor",
 
 ### NativeStreamFetchDecision · "payload_begin_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6512)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6657)
 
 ```cpp
 def_readwrite("payload_begin_cursor",
@@ -1860,7 +1869,7 @@ def_readwrite("payload_begin_cursor",
 
 ### NativeStreamFetchDecision · "mapping_end_block"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6511)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6656)
 
 ```cpp
 def_readwrite("mapping_end_block",
@@ -1869,7 +1878,7 @@ def_readwrite("mapping_end_block",
 
 ### NativeStreamFetchDecision · "mapping_begin_block"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6510)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6655)
 
 ```cpp
 def_readwrite("mapping_begin_block",
@@ -1878,7 +1887,7 @@ def_readwrite("mapping_begin_block",
 
 ### NativeStreamFetchDecision · "remaining_recovery_budget_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6509)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6654)
 
 ```cpp
 def_readwrite("remaining_recovery_budget_ms",
@@ -1887,7 +1896,7 @@ def_readwrite("remaining_recovery_budget_ms",
 
 ### NativeStreamFetchDecision · "recovery_checkpoint_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6508)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6653)
 
 ```cpp
 def_readwrite("recovery_checkpoint_ms",
@@ -1896,7 +1905,7 @@ def_readwrite("recovery_checkpoint_ms",
 
 ### NativeStreamFetchDecision · "hold_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6507)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6652)
 
 ```cpp
 def_readwrite("hold_ms",
@@ -1905,7 +1914,7 @@ def_readwrite("hold_ms",
 
 ### NativeStreamFetchDecision · "packet_demand"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6506)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6651)
 
 ```cpp
 def_readwrite("packet_demand",
@@ -1914,7 +1923,7 @@ def_readwrite("packet_demand",
 
 ### NativeStreamFetchDecision · "sample_demand"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6505)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6650)
 
 ```cpp
 def_readwrite("sample_demand",
@@ -1923,7 +1932,7 @@ def_readwrite("sample_demand",
 
 ### NativeStreamFetchDecision · "missing_timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6504)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6649)
 
 ```cpp
 def_readwrite("missing_timeout_ms",
@@ -1932,7 +1941,7 @@ def_readwrite("missing_timeout_ms",
 
 ### NativeStreamFetchDecision · "interest_lifetime_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6503)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6648)
 
 ```cpp
 def_readwrite("interest_lifetime_ms",
@@ -1941,7 +1950,7 @@ def_readwrite("interest_lifetime_ms",
 
 ### NativeStreamFetchDecision · "lookahead"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6502)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6647)
 
 ```cpp
 def_readwrite("lookahead",
@@ -1950,7 +1959,7 @@ def_readwrite("lookahead",
 
 ### NativeStreamFetchDecision · "window"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6501)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6646)
 
 ```cpp
 def_readwrite("window",
@@ -1959,7 +1968,7 @@ def_readwrite("window",
 
 ### NativeStreamAdaptiveFetcherState · "decide"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6625)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6770)
 
 ```cpp
 def("decide",
@@ -1970,7 +1979,7 @@ py::arg("playout_deadline_ms") = 0)
 
 ### NativeStreamAdaptiveFetcherState · "invalid_observations"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6624)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6769)
 
 ```cpp
 def_property_readonly("invalid_observations",
@@ -1979,7 +1988,7 @@ def_property_readonly("invalid_observations",
 
 ### NativeStreamAdaptiveFetcherState · "phase_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6621)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6766)
 
 ```cpp
 def_property_readonly("phase_name",
@@ -1988,7 +1997,7 @@ def_property_readonly("phase_name",
 
 ### NativeStreamAdaptiveFetcherState · "stop_live"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6620)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6765)
 
 ```cpp
 def("stop_live",
@@ -1997,7 +2006,7 @@ def("stop_live",
 
 ### NativeStreamAdaptiveFetcherState · "record_invalid_observation"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6619)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6764)
 
 ```cpp
 def("record_invalid_observation",
@@ -2006,7 +2015,7 @@ def("record_invalid_observation",
 
 ### NativeStreamAdaptiveFetcherState · "record_recovery"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6617)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6762)
 
 ```cpp
 def("record_recovery",
@@ -2016,7 +2025,7 @@ py::arg("completed"))
 
 ### NativeStreamAdaptiveFetcherState · "begin_recovery"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6615)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6760)
 
 ```cpp
 def("begin_recovery",
@@ -2027,7 +2036,7 @@ py::arg("playout_deadline_ms"))
 
 ### NativeStreamAdaptiveFetcherState · "observe_sample_extent"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6613)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6758)
 
 ```cpp
 def("observe_sample_extent",
@@ -2038,7 +2047,7 @@ py::arg("actual_count"))
 
 ### NativeStreamAdaptiveFetcherState · "observe_accepted_sample"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6609)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6754)
 
 ```cpp
 def("observe_accepted_sample",
@@ -2053,7 +2062,7 @@ py::arg("known_produced") = true)
 
 ### NativeStreamAdaptiveFetcherState · "set_in_flight"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6607)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6752)
 
 ```cpp
 def("set_in_flight",
@@ -2065,7 +2074,7 @@ py::arg("retransmission"))
 
 ### NativeStreamAdaptiveFetcherState · "set_mapped_live_policy_enabled"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6604)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6749)
 
 ```cpp
 def("set_mapped_live_policy_enabled",
@@ -2075,7 +2084,7 @@ py::arg("enabled"))
 
 ### NativeStreamAdaptiveFetcherState · "advance_next_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6602)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6747)
 
 ```cpp
 def("advance_next_cursor",
@@ -2085,7 +2094,7 @@ py::arg("next_cursor"))
 
 ### NativeStreamAdaptiveFetcherState · "update_mapping_frontier"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6599)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6744)
 
 ```cpp
 def("update_mapping_frontier",
@@ -2096,7 +2105,7 @@ py::arg("next_reserved_cursor"))
 
 ### NativeStreamAdaptiveFetcherState · "reset_mapped_live"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6594)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6739)
 
 ```cpp
 def("reset_mapped_live",
@@ -2112,7 +2121,7 @@ py::arg("now_ms") = 0)
 
 ### NativeStreamAdaptiveFetcherState · "configure_mapped_live"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6590)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6735)
 
 ```cpp
 def("configure_mapped_live",
@@ -2126,7 +2135,7 @@ py::arg("detector_profile"))
 
 ### NativeStreamAdaptiveFetcherState · "reset_live"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6587)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6732)
 
 ```cpp
 def("reset_live",
@@ -2139,7 +2148,7 @@ py::arg("now_ms") = 0)
 
 ### NativeStreamAdaptiveFetcherState · "decay"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6586)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6731)
 
 ```cpp
 def("decay",
@@ -2149,7 +2158,7 @@ py::arg("factor") = 0.85)
 
 ### NativeStreamAdaptiveFetcherState · "set_backlog_pressure"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6585)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6730)
 
 ```cpp
 def("set_backlog_pressure",
@@ -2158,7 +2167,7 @@ def("set_backlog_pressure",
 
 ### NativeStreamAdaptiveFetcherState · "record_duplicate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6584)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6729)
 
 ```cpp
 def("record_duplicate",
@@ -2167,7 +2176,7 @@ def("record_duplicate",
 
 ### NativeStreamAdaptiveFetcherState · "record_congestion_mark"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6582)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6727)
 
 ```cpp
 def("record_congestion_mark",
@@ -2178,7 +2187,7 @@ py::arg("mark"))
 
 ### NativeStreamAdaptiveFetcherState · "record_nack_reason"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6579)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6724)
 
 ```cpp
 def("record_nack_reason",
@@ -2190,7 +2199,7 @@ py::arg("reason"))
 
 ### NativeStreamAdaptiveFetcherState · "record_nack"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6577)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6722)
 
 ```cpp
 def("record_nack",
@@ -2200,7 +2209,7 @@ py::overload_cast<>(
 
 ### NativeStreamAdaptiveFetcherState · "record_timeout_evidence"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6574)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6719)
 
 ```cpp
 def("record_timeout_evidence",
@@ -2213,7 +2222,7 @@ py::arg("was_future"))
 
 ### NativeStreamAdaptiveFetcherState · "record_timeout"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6572)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6717)
 
 ```cpp
 def("record_timeout",
@@ -2223,7 +2232,7 @@ py::overload_cast<>(
 
 ### NativeStreamAdaptiveFetcherState · "observe_rtt"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6570)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6715)
 
 ```cpp
 def("observe_rtt",
@@ -2234,7 +2243,7 @@ py::arg("alpha") = 0.25)
 
 ### NativeStreamAdaptiveFetcherState · "detector_profile"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6569)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6714)
 
 ```cpp
 def_readwrite("detector_profile",
@@ -2243,7 +2252,7 @@ def_readwrite("detector_profile",
 
 ### NativeStreamAdaptiveFetcherState · "congestion_decrease_multiplier"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6568)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6713)
 
 ```cpp
 def_readwrite("congestion_decrease_multiplier",
@@ -2252,7 +2261,7 @@ def_readwrite("congestion_decrease_multiplier",
 
 ### NativeStreamAdaptiveFetcherState · "adjust_multiplier"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6567)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6712)
 
 ```cpp
 def_readwrite("adjust_multiplier",
@@ -2261,7 +2270,7 @@ def_readwrite("adjust_multiplier",
 
 ### NativeStreamAdaptiveFetcherState · "chase_multiplier"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6566)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6711)
 
 ```cpp
 def_readwrite("chase_multiplier",
@@ -2270,7 +2279,7 @@ def_readwrite("chase_multiplier",
 
 ### NativeStreamAdaptiveFetcherState · "mapping_block_capacity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6565)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6710)
 
 ```cpp
 def_readwrite("mapping_block_capacity",
@@ -2279,7 +2288,7 @@ def_readwrite("mapping_block_capacity",
 
 ### NativeStreamAdaptiveFetcherState · "retransmission_reserve"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6564)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6709)
 
 ```cpp
 def_readwrite("retransmission_reserve",
@@ -2288,7 +2297,7 @@ def_readwrite("retransmission_reserve",
 
 ### NativeStreamAdaptiveFetcherState · "mapping_reserve"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6563)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6708)
 
 ```cpp
 def_readwrite("mapping_reserve",
@@ -2297,7 +2306,7 @@ def_readwrite("mapping_reserve",
 
 ### NativeStreamAdaptiveFetcherState · "aggregate_in_flight_limit"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6562)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6707)
 
 ```cpp
 def_readwrite("aggregate_in_flight_limit",
@@ -2306,7 +2315,7 @@ def_readwrite("aggregate_in_flight_limit",
 
 ### NativeStreamAdaptiveFetcherState · "recovery_reserve_packets"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6561)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6706)
 
 ```cpp
 def_readwrite("recovery_reserve_packets",
@@ -2315,7 +2324,7 @@ def_readwrite("recovery_reserve_packets",
 
 ### NativeStreamAdaptiveFetcherState · "detection_period_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6560)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6705)
 
 ```cpp
 def_readwrite("detection_period_ms",
@@ -2324,7 +2333,7 @@ def_readwrite("detection_period_ms",
 
 ### NativeStreamAdaptiveFetcherState · "live_edge_stable_required"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6559)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6704)
 
 ```cpp
 def_readwrite("live_edge_stable_required",
@@ -2333,7 +2342,7 @@ def_readwrite("live_edge_stable_required",
 
 ### NativeStreamAdaptiveFetcherState · "live_edge_window"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6558)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6703)
 
 ```cpp
 def_readwrite("live_edge_window",
@@ -2342,7 +2351,7 @@ def_readwrite("live_edge_window",
 
 ### NativeStreamAdaptiveFetcherState · "live_edge_period_similarity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6557)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6702)
 
 ```cpp
 def_readwrite("live_edge_period_similarity",
@@ -2351,7 +2360,7 @@ def_readwrite("live_edge_period_similarity",
 
 ### NativeStreamAdaptiveFetcherState · "live_edge_change_threshold"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6556)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6701)
 
 ```cpp
 def_readwrite("live_edge_change_threshold",
@@ -2360,7 +2369,7 @@ def_readwrite("live_edge_change_threshold",
 
 ### NativeStreamAdaptiveFetcherState · "max_missing_timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6555)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6700)
 
 ```cpp
 def_readwrite("max_missing_timeout_ms",
@@ -2369,7 +2378,7 @@ def_readwrite("max_missing_timeout_ms",
 
 ### NativeStreamAdaptiveFetcherState · "min_missing_timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6554)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6699)
 
 ```cpp
 def_readwrite("min_missing_timeout_ms",
@@ -2378,7 +2387,7 @@ def_readwrite("min_missing_timeout_ms",
 
 ### NativeStreamAdaptiveFetcherState · "max_interest_lifetime_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6553)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6698)
 
 ```cpp
 def_readwrite("max_interest_lifetime_ms",
@@ -2387,7 +2396,7 @@ def_readwrite("max_interest_lifetime_ms",
 
 ### NativeStreamAdaptiveFetcherState · "min_interest_lifetime_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6552)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6697)
 
 ```cpp
 def_readwrite("min_interest_lifetime_ms",
@@ -2396,7 +2405,7 @@ def_readwrite("min_interest_lifetime_ms",
 
 ### NativeStreamAdaptiveFetcherState · "max_lookahead"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6551)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6696)
 
 ```cpp
 def_readwrite("max_lookahead",
@@ -2405,7 +2414,7 @@ def_readwrite("max_lookahead",
 
 ### NativeStreamAdaptiveFetcherState · "base_lookahead"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6550)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6695)
 
 ```cpp
 def_readwrite("base_lookahead",
@@ -2414,7 +2423,7 @@ def_readwrite("base_lookahead",
 
 ### NativeStreamAdaptiveFetcherState · "min_lookahead"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6549)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6694)
 
 ```cpp
 def_readwrite("min_lookahead",
@@ -2423,7 +2432,7 @@ def_readwrite("min_lookahead",
 
 ### NativeStreamAdaptiveFetcherState · "max_window"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6548)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6693)
 
 ```cpp
 def_readwrite("max_window",
@@ -2432,7 +2441,7 @@ def_readwrite("max_window",
 
 ### NativeStreamAdaptiveFetcherState · "base_window"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6547)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6692)
 
 ```cpp
 def_readwrite("base_window",
@@ -2441,7 +2450,7 @@ def_readwrite("base_window",
 
 ### NativeStreamAdaptiveFetcherState · "min_window"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6546)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6691)
 
 ```cpp
 def_readwrite("min_window",
@@ -2450,7 +2459,7 @@ def_readwrite("min_window",
 
 ### NativeStreamAdaptiveFetcherState · "backlog_pressure"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6545)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6690)
 
 ```cpp
 def_readwrite("backlog_pressure",
@@ -2459,7 +2468,7 @@ def_readwrite("backlog_pressure",
 
 ### NativeStreamAdaptiveFetcherState · "duplicate_pressure"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6544)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6689)
 
 ```cpp
 def_readwrite("duplicate_pressure",
@@ -2468,7 +2477,7 @@ def_readwrite("duplicate_pressure",
 
 ### NativeStreamAdaptiveFetcherState · "nack_pressure"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6543)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6688)
 
 ```cpp
 def_readwrite("nack_pressure",
@@ -2477,7 +2486,7 @@ def_readwrite("nack_pressure",
 
 ### NativeStreamAdaptiveFetcherState · "timeout_pressure"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6542)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6687)
 
 ```cpp
 def_readwrite("timeout_pressure",
@@ -2486,7 +2495,7 @@ def_readwrite("timeout_pressure",
 
 ### NativeStreamAdaptiveFetcherState · "rtt_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6541)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6686)
 
 ```cpp
 def_readwrite("rtt_ms",
@@ -2495,7 +2504,7 @@ def_readwrite("rtt_ms",
 
 ### NativeLiveStreamFecScheme · "GF256_TWO_REPAIR"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6631)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6776)
 
 ```cpp
 value("GF256_TWO_REPAIR",
@@ -2504,7 +2513,7 @@ nsf::LiveStreamFecScheme::Gf256TwoRepair)
 
 ### NativeLiveStreamFecScheme · "XOR_ONE_REPAIR"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6630)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6775)
 
 ```cpp
 value("XOR_ONE_REPAIR",
@@ -2513,7 +2522,7 @@ nsf::LiveStreamFecScheme::XorOneRepair)
 
 ### NativeLiveStreamFecScheme · "NONE"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6629)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6774)
 
 ```cpp
 value("NONE",
@@ -2522,7 +2531,7 @@ nsf::LiveStreamFecScheme::None)
 
 ### NativeSampleClassProfile · "validate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6647)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6792)
 
 ```cpp
 def("validate",
@@ -2531,7 +2540,7 @@ def("validate",
 
 ### NativeSampleClassProfile · "bounded"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6642)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6787)
 
 ```cpp
 def_static("bounded",
@@ -2545,7 +2554,7 @@ py::arg("safety_margin_items") = 1)
 
 ### NativeSampleClassProfile · "safety_margin_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6640)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6785)
 
 ```cpp
 def_readwrite("safety_margin_items",
@@ -2554,7 +2563,7 @@ def_readwrite("safety_margin_items",
 
 ### NativeSampleClassProfile · "history_capacity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6639)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6784)
 
 ```cpp
 def_readwrite("history_capacity",
@@ -2563,7 +2572,7 @@ def_readwrite("history_capacity",
 
 ### NativeSampleClassProfile · "hard_max_source_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6637)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6782)
 
 ```cpp
 def_readwrite("hard_max_source_items",
@@ -2572,7 +2581,7 @@ def_readwrite("hard_max_source_items",
 
 ### NativeSampleClassProfile · "seed_source_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6636)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6781)
 
 ```cpp
 def_readwrite("seed_source_items",
@@ -2581,7 +2590,7 @@ def_readwrite("seed_source_items",
 
 ### NativeSampleClassProfile · "class_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6635)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6780)
 
 ```cpp
 def_readwrite("class_id",
@@ -2590,7 +2599,7 @@ def_readwrite("class_id",
 
 ### NativeSampleClassPredictionStatus · "overpredicted_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6663)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6808)
 
 ```cpp
 def_readonly("overpredicted_items",
@@ -2599,7 +2608,7 @@ def_readonly("overpredicted_items",
 
 ### NativeSampleClassPredictionStatus · "overpredictions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6661)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6806)
 
 ```cpp
 def_readonly("overpredictions",
@@ -2608,7 +2617,7 @@ def_readonly("overpredictions",
 
 ### NativeSampleClassPredictionStatus · "underpredicted_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6659)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6804)
 
 ```cpp
 def_readonly("underpredicted_items",
@@ -2617,7 +2626,7 @@ def_readonly("underpredicted_items",
 
 ### NativeSampleClassPredictionStatus · "underpredictions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6657)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6802)
 
 ```cpp
 def_readonly("underpredictions",
@@ -2626,7 +2635,7 @@ def_readonly("underpredictions",
 
 ### NativeSampleClassPredictionStatus · "observations"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6656)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6801)
 
 ```cpp
 def_readonly("observations",
@@ -2635,7 +2644,7 @@ def_readonly("observations",
 
 ### NativeSampleClassPredictionStatus · "prediction"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6655)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6800)
 
 ```cpp
 def_readonly("prediction",
@@ -2644,7 +2653,7 @@ def_readonly("prediction",
 
 ### NativeSampleClassPredictionStatus · "class_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6654)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6799)
 
 ```cpp
 def_readonly("class_id",
@@ -2653,7 +2662,7 @@ def_readonly("class_id",
 
 ### NativeLiveStreamSamplePredictor · "statuses"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6676)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6821)
 
 ```cpp
 def("statuses",
@@ -2662,7 +2671,7 @@ def("statuses",
 
 ### NativeLiveStreamSamplePredictor · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6675)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6820)
 
 ```cpp
 def("status",
@@ -2671,7 +2680,7 @@ def("status",
 
 ### NativeLiveStreamSamplePredictor · "observe"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6674)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6819)
 
 ```cpp
 def("observe",
@@ -2680,7 +2689,7 @@ def("observe",
 
 ### NativeLiveStreamSamplePredictor · "predict"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6670)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6815)
 
 ```cpp
 def("predict",
@@ -2690,7 +2699,7 @@ def("predict",
 
 ### NativeLiveStreamSamplePredictor · "reset"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6669)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6814)
 
 ```cpp
 def("reset",
@@ -2699,7 +2708,7 @@ def("reset",
 
 ### NativeLiveStreamFecOptions · "validate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6697)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6842)
 
 ```cpp
 def("validate",
@@ -2708,7 +2717,7 @@ def("validate",
 
 ### NativeLiveStreamFecOptions · "enabled"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6696)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6841)
 
 ```cpp
 def_property_readonly("enabled",
@@ -2717,7 +2726,7 @@ def_property_readonly("enabled",
 
 ### NativeLiveStreamFecOptions · "recovery_capacity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6695)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6840)
 
 ```cpp
 def_property_readonly("recovery_capacity",
@@ -2726,7 +2735,7 @@ def_property_readonly("recovery_capacity",
 
 ### NativeLiveStreamFecOptions · "gf256_two_repair"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6692)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6837)
 
 ```cpp
 def_static("gf256_two_repair",
@@ -2738,7 +2747,7 @@ py::arg("recovery_budget_ms") = 500)
 
 ### NativeLiveStreamFecOptions · "xor_one_repair"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6689)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6834)
 
 ```cpp
 def_static("xor_one_repair",
@@ -2750,7 +2759,7 @@ py::arg("recovery_budget_ms") = 500)
 
 ### NativeLiveStreamFecOptions · "none"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6688)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6833)
 
 ```cpp
 def_static("none",
@@ -2759,7 +2768,7 @@ def_static("none",
 
 ### NativeLiveStreamFecOptions · "repair_symbols"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6687)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6832)
 
 ```cpp
 def_readwrite("repair_symbols",
@@ -2768,7 +2777,7 @@ def_readwrite("repair_symbols",
 
 ### NativeLiveStreamFecOptions · "recovery_budget_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6686)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6831)
 
 ```cpp
 def_readwrite("recovery_budget_ms",
@@ -2777,7 +2786,7 @@ def_readwrite("recovery_budget_ms",
 
 ### NativeLiveStreamFecOptions · "max_source_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6685)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6830)
 
 ```cpp
 def_readwrite("max_source_bytes",
@@ -2786,7 +2795,7 @@ def_readwrite("max_source_bytes",
 
 ### NativeLiveStreamFecOptions · "source_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6682)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6827)
 
 ```cpp
 def_property("source_items",
@@ -2796,7 +2805,7 @@ def_property("source_items",
 
 ### NativeLiveStreamFecOptions · "max_source_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6681)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6826)
 
 ```cpp
 def_readwrite("max_source_items",
@@ -2805,7 +2814,7 @@ def_readwrite("max_source_items",
 
 ### NativeLiveStreamFecOptions · "scheme"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6680)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6825)
 
 ```cpp
 def_readwrite("scheme",
@@ -2814,7 +2823,7 @@ def_readwrite("scheme",
 
 ### NativeStreamAdvancedOptions · "startup_timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6716)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6861)
 
 ```cpp
 def_readwrite("startup_timeout_ms",
@@ -2823,7 +2832,7 @@ def_readwrite("startup_timeout_ms",
 
 ### NativeStreamAdvancedOptions · "signed_wire_cap"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6714)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6859)
 
 ```cpp
 def_readwrite("signed_wire_cap",
@@ -2832,7 +2841,7 @@ def_readwrite("signed_wire_cap",
 
 ### NativeStreamAdvancedOptions · "max_pending_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6712)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6857)
 
 ```cpp
 def_readwrite("max_pending_interests",
@@ -2841,7 +2850,7 @@ def_readwrite("max_pending_interests",
 
 ### NativeStreamAdvancedOptions · "max_name_reservations"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6710)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6855)
 
 ```cpp
 def_readwrite("max_name_reservations",
@@ -2850,7 +2859,7 @@ def_readwrite("max_name_reservations",
 
 ### NativeStreamAdvancedOptions · "retained_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6708)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6853)
 
 ```cpp
 def_readwrite("retained_items",
@@ -2859,7 +2868,7 @@ def_readwrite("retained_items",
 
 ### NativeStreamAdvancedOptions · "mapping_ahead_blocks"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6706)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6851)
 
 ```cpp
 def_readwrite("mapping_ahead_blocks",
@@ -2868,7 +2877,7 @@ def_readwrite("mapping_ahead_blocks",
 
 ### NativeStreamAdvancedOptions · "mapping_block_capacity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6704)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6849)
 
 ```cpp
 def_readwrite("mapping_block_capacity",
@@ -2877,7 +2886,7 @@ def_readwrite("mapping_block_capacity",
 
 ### NativeStreamConfig · "advanced"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6731)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6876)
 
 ```cpp
 def_readwrite("advanced",
@@ -2886,7 +2895,7 @@ def_readwrite("advanced",
 
 ### NativeStreamConfig · "session_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6730)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6875)
 
 ```cpp
 def_readwrite("session_epoch",
@@ -2895,7 +2904,7 @@ def_readwrite("session_epoch",
 
 ### NativeStreamConfig · "fec"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6729)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6874)
 
 ```cpp
 def_readwrite("fec",
@@ -2904,7 +2913,7 @@ def_readwrite("fec",
 
 ### NativeStreamConfig · "sample_classes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6728)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6873)
 
 ```cpp
 def_readwrite("sample_classes",
@@ -2913,7 +2922,7 @@ def_readwrite("sample_classes",
 
 ### NativeStreamConfig · "sample_period_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6727)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6872)
 
 ```cpp
 def_readwrite("sample_period_ms",
@@ -2922,7 +2931,7 @@ def_readwrite("sample_period_ms",
 
 ### NativeStreamConfig · "data_prefix"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6722)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6867)
 
 ```cpp
 def_property("data_prefix",
@@ -2932,7 +2941,7 @@ def_property("data_prefix",
 
 ### NativeStreamConfig · "stream_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6721)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6866)
 
 ```cpp
 def_readwrite("stream_id",
@@ -2941,7 +2950,7 @@ def_readwrite("stream_id",
 
 ### NativeLiveStreamDefinition · "validate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6757)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6902)
 
 ```cpp
 def("validate",
@@ -2950,7 +2959,7 @@ def("validate",
 
 ### NativeLiveStreamDefinition · "mapping_root"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6754)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6899)
 
 ```cpp
 def_property_readonly("mapping_root",
@@ -2959,7 +2968,7 @@ def_property_readonly("mapping_root",
 
 ### NativeLiveStreamDefinition · "fec"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6753)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6898)
 
 ```cpp
 def_readwrite("fec",
@@ -2968,7 +2977,7 @@ def_readwrite("fec",
 
 ### NativeLiveStreamDefinition · "sample_classes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6752)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6897)
 
 ```cpp
 def_readwrite("sample_classes",
@@ -2977,7 +2986,7 @@ def_readwrite("sample_classes",
 
 ### NativeLiveStreamDefinition · "sample_period_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6751)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6896)
 
 ```cpp
 def_readwrite("sample_period_ms",
@@ -2986,7 +2995,7 @@ def_readwrite("sample_period_ms",
 
 ### NativeLiveStreamDefinition · "signed_wire_cap"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6750)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6895)
 
 ```cpp
 def_readwrite("signed_wire_cap",
@@ -2995,7 +3004,7 @@ def_readwrite("signed_wire_cap",
 
 ### NativeLiveStreamDefinition · "max_pending_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6749)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6894)
 
 ```cpp
 def_readwrite("max_pending_interests",
@@ -3004,7 +3013,7 @@ def_readwrite("max_pending_interests",
 
 ### NativeLiveStreamDefinition · "max_name_reservations"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6748)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6893)
 
 ```cpp
 def_readwrite("max_name_reservations",
@@ -3013,7 +3022,7 @@ def_readwrite("max_name_reservations",
 
 ### NativeLiveStreamDefinition · "retained_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6747)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6892)
 
 ```cpp
 def_readwrite("retained_items",
@@ -3022,7 +3031,7 @@ def_readwrite("retained_items",
 
 ### NativeLiveStreamDefinition · "mapping_ahead_blocks"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6746)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6891)
 
 ```cpp
 def_readwrite("mapping_ahead_blocks",
@@ -3031,7 +3040,7 @@ def_readwrite("mapping_ahead_blocks",
 
 ### NativeLiveStreamDefinition · "mapping_block_capacity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6745)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6890)
 
 ```cpp
 def_readwrite("mapping_block_capacity",
@@ -3040,7 +3049,7 @@ def_readwrite("mapping_block_capacity",
 
 ### NativeLiveStreamDefinition · "mapping_version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6744)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6889)
 
 ```cpp
 def_readwrite("mapping_version",
@@ -3049,7 +3058,7 @@ def_readwrite("mapping_version",
 
 ### NativeLiveStreamDefinition · "session_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6743)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6888)
 
 ```cpp
 def_readwrite("session_epoch",
@@ -3058,7 +3067,7 @@ def_readwrite("session_epoch",
 
 ### NativeLiveStreamDefinition · "semantic_data_prefix"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6740)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6885)
 
 ```cpp
 def_property("semantic_data_prefix",
@@ -3068,7 +3077,7 @@ def_property("semantic_data_prefix",
 
 ### NativeLiveStreamDefinition · "provider"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6737)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6882)
 
 ```cpp
 def_property("provider",
@@ -3078,7 +3087,7 @@ def_property("provider",
 
 ### NativeLiveStreamDefinition · "stream_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6736)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6881)
 
 ```cpp
 def_readwrite("stream_id",
@@ -3087,7 +3096,7 @@ def_readwrite("stream_id",
 
 ### NativeLiveStreamDefinition · "contract_version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6735)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6880)
 
 ```cpp
 def_readwrite("contract_version",
@@ -3096,7 +3105,7 @@ def_readwrite("contract_version",
 
 ### NativeLiveStreamItemReservation · "mapping_version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6769)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6914)
 
 ```cpp
 def_readonly("mapping_version",
@@ -3105,7 +3114,7 @@ def_readonly("mapping_version",
 
 ### NativeLiveStreamItemReservation · "session_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6768)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6913)
 
 ```cpp
 def_readonly("session_epoch",
@@ -3114,7 +3123,7 @@ def_readonly("session_epoch",
 
 ### NativeLiveStreamItemReservation · "original_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6765)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6910)
 
 ```cpp
 def_property_readonly("original_name",
@@ -3123,7 +3132,7 @@ def_property_readonly("original_name",
 
 ### NativeLiveStreamItemReservation · "cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6764)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6909)
 
 ```cpp
 def_readonly("cursor",
@@ -3132,7 +3141,7 @@ def_readonly("cursor",
 
 ### NativeLiveStreamGroupReservation · "repairs"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6776)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6921)
 
 ```cpp
 def_readonly("repairs",
@@ -3141,7 +3150,7 @@ def_readonly("repairs",
 
 ### NativeLiveStreamGroupReservation · "sources"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6775)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6920)
 
 ```cpp
 def_readonly("sources",
@@ -3150,7 +3159,7 @@ def_readonly("sources",
 
 ### NativeLiveStreamGroupReservation · "group_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6772)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6917)
 
 ```cpp
 def_property_readonly("group_id",
@@ -3159,7 +3168,7 @@ def_property_readonly("group_id",
 
 ### NativeLiveStreamItemKind · "REPAIR"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6780)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6925)
 
 ```cpp
 value("REPAIR",
@@ -3168,7 +3177,7 @@ nsf::LiveStreamItemKind::Repair)
 
 ### NativeLiveStreamItemKind · "SOURCE"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6779)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6924)
 
 ```cpp
 value("SOURCE",
@@ -3177,7 +3186,7 @@ nsf::LiveStreamItemKind::Source)
 
 ### NativeLiveStreamSampleReservation · "group"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6788)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6933)
 
 ```cpp
 def_readonly("group",
@@ -3186,7 +3195,7 @@ def_readonly("group",
 
 ### NativeLiveStreamSampleReservation · "predicted_source_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6786)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6931)
 
 ```cpp
 def_readonly("predicted_source_items",
@@ -3195,7 +3204,7 @@ def_readonly("predicted_source_items",
 
 ### NativeLiveStreamSampleReservation · "sample_class"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6785)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6930)
 
 ```cpp
 def_readonly("sample_class",
@@ -3204,7 +3213,7 @@ def_readonly("sample_class",
 
 ### NativeLiveStreamSampleReservation · "sample_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6784)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6929)
 
 ```cpp
 def_readonly("sample_id",
@@ -3213,7 +3222,7 @@ def_readonly("sample_id",
 
 ### NativeLiveStreamReadiness · "safe_join_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6793)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6938)
 
 ```cpp
 def_readwrite("safe_join_cursor",
@@ -3222,7 +3231,7 @@ def_readwrite("safe_join_cursor",
 
 ### NativeLiveStreamReadiness · "measured_sample_period_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6792)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6937)
 
 ```cpp
 def_readwrite("measured_sample_period_ms",
@@ -3231,7 +3240,7 @@ def_readwrite("measured_sample_period_ms",
 
 ### NativeLiveStreamDescriptor · "validate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6801)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6946)
 
 ```cpp
 def("validate",
@@ -3240,7 +3249,7 @@ def("validate",
 
 ### NativeLiveStreamDescriptor · "safe_join_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6800)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6945)
 
 ```cpp
 def_readwrite("safe_join_cursor",
@@ -3249,7 +3258,7 @@ def_readwrite("safe_join_cursor",
 
 ### NativeLiveStreamDescriptor · "measured_sample_period_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6799)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6944)
 
 ```cpp
 def_readwrite("measured_sample_period_ms",
@@ -3258,7 +3267,7 @@ def_readwrite("measured_sample_period_ms",
 
 ### NativeLiveStreamDescriptor · "checkpoint"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6798)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6943)
 
 ```cpp
 def_readwrite("checkpoint",
@@ -3267,7 +3276,7 @@ def_readwrite("checkpoint",
 
 ### NativeLiveStreamDescriptor · "definition"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6797)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6942)
 
 ```cpp
 def_readwrite("definition",
@@ -3276,7 +3285,7 @@ def_readwrite("definition",
 
 ### NativeLiveStreamLifecycleState · "FAILED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6810)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6955)
 
 ```cpp
 value("FAILED",
@@ -3285,7 +3294,7 @@ nsf::LiveStreamLifecycleState::Failed)
 
 ### NativeLiveStreamLifecycleState · "STOPPED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6809)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6954)
 
 ```cpp
 value("STOPPED",
@@ -3294,7 +3303,7 @@ nsf::LiveStreamLifecycleState::Stopped)
 
 ### NativeLiveStreamLifecycleState · "ACTIVE"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6808)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6953)
 
 ```cpp
 value("ACTIVE",
@@ -3303,7 +3312,7 @@ nsf::LiveStreamLifecycleState::Active)
 
 ### NativeLiveStreamLifecycleState · "PREPARING"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6807)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6952)
 
 ```cpp
 value("PREPARING",
@@ -3312,7 +3321,7 @@ nsf::LiveStreamLifecycleState::Preparing)
 
 ### NativeLiveStreamItemProvenance · "FEC_RECOVERED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6814)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6959)
 
 ```cpp
 value("FEC_RECOVERED",
@@ -3321,7 +3330,7 @@ nsf::LiveStreamItemProvenance::FecRecovered)
 
 ### NativeLiveStreamItemProvenance · "SIGNED_DATA"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6813)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6958)
 
 ```cpp
 value("SIGNED_DATA",
@@ -3330,7 +3339,7 @@ nsf::LiveStreamItemProvenance::SignedData)
 
 ### NativeVerifiedLiveStreamItem · "received_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6828)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6973)
 
 ```cpp
 def_readonly("received_ms",
@@ -3339,7 +3348,7 @@ def_readonly("received_ms",
 
 ### NativeVerifiedLiveStreamItem · "provenance"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6827)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6972)
 
 ```cpp
 def_readonly("provenance",
@@ -3348,7 +3357,7 @@ def_readonly("provenance",
 
 ### NativeVerifiedLiveStreamItem · "content"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6824)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6969)
 
 ```cpp
 def_property_readonly("content",
@@ -3357,7 +3366,7 @@ def_property_readonly("content",
 
 ### NativeVerifiedLiveStreamItem · "verified_provider"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6821)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6966)
 
 ```cpp
 def_property_readonly("verified_provider",
@@ -3366,7 +3375,7 @@ def_property_readonly("verified_provider",
 
 ### NativeVerifiedLiveStreamItem · "original_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6818)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6963)
 
 ```cpp
 def_property_readonly("original_name",
@@ -3375,7 +3384,7 @@ def_property_readonly("original_name",
 
 ### NativeVerifiedLiveStreamItem · "cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6817)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6962)
 
 ```cpp
 def_readonly("cursor",
@@ -3384,7 +3393,7 @@ def_readonly("cursor",
 
 ### NativeLiveStreamItemAdmission · "reject_item"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6834)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6979)
 
 ```cpp
 def_static("reject_item",
@@ -3393,7 +3402,7 @@ def_static("reject_item",
 
 ### NativeLiveStreamItemAdmission · "accept_item"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6833)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6978)
 
 ```cpp
 def_static("accept_item",
@@ -3402,7 +3411,7 @@ def_static("accept_item",
 
 ### NativeLiveStreamItemAdmission · "reason"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6832)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6977)
 
 ```cpp
 def_readonly("reason",
@@ -3411,7 +3420,7 @@ def_readonly("reason",
 
 ### NativeLiveStreamItemAdmission · "accepted"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6831)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6976)
 
 ```cpp
 def_readonly("accepted",
@@ -3420,7 +3429,7 @@ def_readonly("accepted",
 
 ### NativeLiveStreamSampleObservation · "item_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6841)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6986)
 
 ```cpp
 def_readwrite("item_count",
@@ -3429,7 +3438,7 @@ def_readwrite("item_count",
 
 ### NativeLiveStreamSampleObservation · "retrieval_delay_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6840)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6985)
 
 ```cpp
 def_readwrite("retrieval_delay_ms",
@@ -3438,7 +3447,7 @@ def_readwrite("retrieval_delay_ms",
 
 ### NativeLiveStreamSampleObservation · "arrival_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6839)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6984)
 
 ```cpp
 def_readwrite("arrival_ms",
@@ -3447,7 +3456,7 @@ def_readwrite("arrival_ms",
 
 ### NativeLiveStreamSampleObservation · "sample_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6838)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6983)
 
 ```cpp
 def_readwrite("sample_id",
@@ -3456,7 +3465,7 @@ def_readwrite("sample_id",
 
 ### NativeLiveStreamStatus · "fetch_decision"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6953)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7098)
 
 ```cpp
 def_readonly("fetch_decision",
@@ -3465,7 +3474,7 @@ def_readonly("fetch_decision",
 
 ### NativeLiveStreamStatus · "reason"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6952)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7097)
 
 ```cpp
 def_readonly("reason",
@@ -3474,7 +3483,7 @@ def_readonly("reason",
 
 ### NativeLiveStreamStatus · "sample_class_predictions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6950)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7095)
 
 ```cpp
 def_readonly("sample_class_predictions",
@@ -3483,7 +3492,7 @@ def_readonly("sample_class_predictions",
 
 ### NativeLiveStreamStatus · "provider_retry_future_hits"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6948)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7093)
 
 ```cpp
 def_readonly("provider_retry_future_hits",
@@ -3492,7 +3501,7 @@ def_readonly("provider_retry_future_hits",
 
 ### NativeLiveStreamStatus · "provider_retry_future_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6946)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7091)
 
 ```cpp
 def_readonly("provider_retry_future_interests",
@@ -3501,7 +3510,7 @@ def_readonly("provider_retry_future_interests",
 
 ### NativeLiveStreamStatus · "provider_initial_future_hits"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6944)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7089)
 
 ```cpp
 def_readonly("provider_initial_future_hits",
@@ -3510,7 +3519,7 @@ def_readonly("provider_initial_future_hits",
 
 ### NativeLiveStreamStatus · "provider_initial_future_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6942)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7087)
 
 ```cpp
 def_readonly("provider_initial_future_interests",
@@ -3519,7 +3528,7 @@ def_readonly("provider_initial_future_interests",
 
 ### NativeLiveStreamStatus · "provider_future_hits"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6941)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7086)
 
 ```cpp
 def_readonly("provider_future_hits",
@@ -3528,7 +3537,7 @@ def_readonly("provider_future_hits",
 
 ### NativeLiveStreamStatus · "provider_future_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6940)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7085)
 
 ```cpp
 def_readonly("provider_future_interests",
@@ -3537,7 +3546,7 @@ def_readonly("provider_future_interests",
 
 ### NativeLiveStreamStatus · "mapping_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6939)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7084)
 
 ```cpp
 def_readonly("mapping_bytes",
@@ -3546,7 +3555,7 @@ def_readonly("mapping_bytes",
 
 ### NativeLiveStreamStatus · "terminal_gap_superseded"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6937)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7082)
 
 ```cpp
 def_readonly("terminal_gap_superseded",
@@ -3555,7 +3564,7 @@ def_readonly("terminal_gap_superseded",
 
 ### NativeLiveStreamStatus · "stale_ready_drops"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6935)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7080)
 
 ```cpp
 def_readonly("stale_ready_drops",
@@ -3564,7 +3573,7 @@ def_readonly("stale_ready_drops",
 
 ### NativeLiveStreamStatus · "drain_wake_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6933)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7078)
 
 ```cpp
 def_readonly("drain_wake_count",
@@ -3573,7 +3582,7 @@ def_readonly("drain_wake_count",
 
 ### NativeLiveStreamStatus · "terminal_gap_queue_depth"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6931)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7076)
 
 ```cpp
 def_readonly("terminal_gap_queue_depth",
@@ -3582,7 +3591,7 @@ def_readonly("terminal_gap_queue_depth",
 
 ### NativeLiveStreamStatus · "oldest_ready_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6929)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7074)
 
 ```cpp
 def_readonly("oldest_ready_cursor",
@@ -3591,7 +3600,7 @@ def_readonly("oldest_ready_cursor",
 
 ### NativeLiveStreamStatus · "ready_queue_depth"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6927)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7072)
 
 ```cpp
 def_readonly("ready_queue_depth",
@@ -3600,7 +3609,7 @@ def_readonly("ready_queue_depth",
 
 ### NativeLiveStreamStatus · "next_deliver_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6925)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7070)
 
 ```cpp
 def_readonly("next_deliver_cursor",
@@ -3609,7 +3618,7 @@ def_readonly("next_deliver_cursor",
 
 ### NativeLiveStreamStatus · "recovery_metadata_cache_hits"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6923)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7068)
 
 ```cpp
 def_readonly("recovery_metadata_cache_hits",
@@ -3618,7 +3627,7 @@ def_readonly("recovery_metadata_cache_hits",
 
 ### NativeLiveStreamStatus · "recovery_coalesced_waiters"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6921)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7066)
 
 ```cpp
 def_readonly("recovery_coalesced_waiters",
@@ -3627,7 +3636,7 @@ def_readonly("recovery_coalesced_waiters",
 
 ### NativeLiveStreamStatus · "recovery_group_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6919)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7064)
 
 ```cpp
 def_readonly("recovery_group_interests",
@@ -3636,7 +3645,7 @@ def_readonly("recovery_group_interests",
 
 ### NativeLiveStreamStatus · "recovery_frontier_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6917)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7062)
 
 ```cpp
 def_readonly("recovery_frontier_interests",
@@ -3645,7 +3654,7 @@ def_readonly("recovery_frontier_interests",
 
 ### NativeLiveStreamStatus · "recovery_control_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6915)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7060)
 
 ```cpp
 def_readonly("recovery_control_interests",
@@ -3654,7 +3663,7 @@ def_readonly("recovery_control_interests",
 
 ### NativeLiveStreamStatus · "recovery_exhaustions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6914)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7059)
 
 ```cpp
 def_readonly("recovery_exhaustions",
@@ -3663,7 +3672,7 @@ def_readonly("recovery_exhaustions",
 
 ### NativeLiveStreamStatus · "recovery_attempts"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6913)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7058)
 
 ```cpp
 def_readonly("recovery_attempts",
@@ -3672,7 +3681,7 @@ def_readonly("recovery_attempts",
 
 ### NativeLiveStreamStatus · "recovered_groups"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6911)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7056)
 
 ```cpp
 def_readonly("recovered_groups",
@@ -3681,7 +3690,7 @@ def_readonly("recovered_groups",
 
 ### NativeLiveStreamStatus · "recoverable_groups"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6909)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7054)
 
 ```cpp
 def_readonly("recoverable_groups",
@@ -3690,7 +3699,7 @@ def_readonly("recoverable_groups",
 
 ### NativeLiveStreamStatus · "terminal_missing_sources"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6907)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7052)
 
 ```cpp
 def_readonly("terminal_missing_sources",
@@ -3699,7 +3708,7 @@ def_readonly("terminal_missing_sources",
 
 ### NativeLiveStreamStatus · "recovery_eligible_sources"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6905)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7050)
 
 ```cpp
 def_readonly("recovery_eligible_sources",
@@ -3708,7 +3717,7 @@ def_readonly("recovery_eligible_sources",
 
 ### NativeLiveStreamStatus · "declared_recovery_capacity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6903)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7048)
 
 ```cpp
 def_readonly("declared_recovery_capacity",
@@ -3717,7 +3726,7 @@ def_readonly("declared_recovery_capacity",
 
 ### NativeLiveStreamStatus · "retry_suppression_reasons"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6901)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7046)
 
 ```cpp
 def_readonly("retry_suppression_reasons",
@@ -3726,7 +3735,7 @@ def_readonly("retry_suppression_reasons",
 
 ### NativeLiveStreamStatus · "retry_suppressions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6900)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7045)
 
 ```cpp
 def_readonly("retry_suppressions",
@@ -3735,7 +3744,7 @@ def_readonly("retry_suppressions",
 
 ### NativeLiveStreamStatus · "retry_successes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6899)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7044)
 
 ```cpp
 def_readonly("retry_successes",
@@ -3744,7 +3753,7 @@ def_readonly("retry_successes",
 
 ### NativeLiveStreamStatus · "future_cursor_horizon"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6897)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7042)
 
 ```cpp
 def_readonly("future_cursor_horizon",
@@ -3753,7 +3762,7 @@ def_readonly("future_cursor_horizon",
 
 ### NativeLiveStreamStatus · "retry_future_payload_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6895)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7040)
 
 ```cpp
 def_readonly("retry_future_payload_interests",
@@ -3762,7 +3771,7 @@ def_readonly("retry_future_payload_interests",
 
 ### NativeLiveStreamStatus · "initial_future_payload_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6893)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7038)
 
 ```cpp
 def_readonly("initial_future_payload_interests",
@@ -3771,7 +3780,7 @@ def_readonly("initial_future_payload_interests",
 
 ### NativeLiveStreamStatus · "future_payload_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6892)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7037)
 
 ```cpp
 def_readonly("future_payload_interests",
@@ -3780,7 +3789,7 @@ def_readonly("future_payload_interests",
 
 ### NativeLiveStreamStatus · "payload_unresolved_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6890)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7035)
 
 ```cpp
 def_readonly("payload_unresolved_interests",
@@ -3789,7 +3798,7 @@ def_readonly("payload_unresolved_interests",
 
 ### NativeLiveStreamStatus · "payload_nonproductive_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6888)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7033)
 
 ```cpp
 def_readonly("payload_nonproductive_interests",
@@ -3798,7 +3807,7 @@ def_readonly("payload_nonproductive_interests",
 
 ### NativeLiveStreamStatus · "payload_protection_only_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6886)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7031)
 
 ```cpp
 def_readonly("payload_protection_only_interests",
@@ -3807,7 +3816,7 @@ def_readonly("payload_protection_only_interests",
 
 ### NativeLiveStreamStatus · "payload_application_useful_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6884)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7029)
 
 ```cpp
 def_readonly("payload_application_useful_interests",
@@ -3816,7 +3825,7 @@ def_readonly("payload_application_useful_interests",
 
 ### NativeLiveStreamStatus · "payload_repair_data_consumed"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6882)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7027)
 
 ```cpp
 def_readonly("payload_repair_data_consumed",
@@ -3825,7 +3834,7 @@ def_readonly("payload_repair_data_consumed",
 
 ### NativeLiveStreamStatus · "payload_repair_data_responses"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6880)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7025)
 
 ```cpp
 def_readonly("payload_repair_data_responses",
@@ -3834,7 +3843,7 @@ def_readonly("payload_repair_data_responses",
 
 ### NativeLiveStreamStatus · "payload_source_data_admissions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6878)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7023)
 
 ```cpp
 def_readonly("payload_source_data_admissions",
@@ -3843,7 +3852,7 @@ def_readonly("payload_source_data_admissions",
 
 ### NativeLiveStreamStatus · "payload_unclassified_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6876)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7021)
 
 ```cpp
 def_readonly("payload_unclassified_interests",
@@ -3852,7 +3861,7 @@ def_readonly("payload_unclassified_interests",
 
 ### NativeLiveStreamStatus · "retry_payload_repair_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6874)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7019)
 
 ```cpp
 def_readonly("retry_payload_repair_interests",
@@ -3861,7 +3870,7 @@ def_readonly("retry_payload_repair_interests",
 
 ### NativeLiveStreamStatus · "initial_payload_repair_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6872)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7017)
 
 ```cpp
 def_readonly("initial_payload_repair_interests",
@@ -3870,7 +3879,7 @@ def_readonly("initial_payload_repair_interests",
 
 ### NativeLiveStreamStatus · "payload_repair_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6871)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7016)
 
 ```cpp
 def_readonly("payload_repair_interests",
@@ -3879,7 +3888,7 @@ def_readonly("payload_repair_interests",
 
 ### NativeLiveStreamStatus · "retry_payload_source_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6869)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7014)
 
 ```cpp
 def_readonly("retry_payload_source_interests",
@@ -3888,7 +3897,7 @@ def_readonly("retry_payload_source_interests",
 
 ### NativeLiveStreamStatus · "initial_payload_source_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6867)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7012)
 
 ```cpp
 def_readonly("initial_payload_source_interests",
@@ -3897,7 +3906,7 @@ def_readonly("initial_payload_source_interests",
 
 ### NativeLiveStreamStatus · "payload_source_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6866)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7011)
 
 ```cpp
 def_readonly("payload_source_interests",
@@ -3906,7 +3915,7 @@ def_readonly("payload_source_interests",
 
 ### NativeLiveStreamStatus · "retry_payload_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6865)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7010)
 
 ```cpp
 def_readonly("retry_payload_interests",
@@ -3915,7 +3924,7 @@ def_readonly("retry_payload_interests",
 
 ### NativeLiveStreamStatus · "initial_payload_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6864)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7009)
 
 ```cpp
 def_readonly("initial_payload_interests",
@@ -3924,7 +3933,7 @@ def_readonly("initial_payload_interests",
 
 ### NativeLiveStreamStatus · "payload_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6863)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7008)
 
 ```cpp
 def_readonly("payload_interests",
@@ -3933,7 +3942,7 @@ def_readonly("payload_interests",
 
 ### NativeLiveStreamStatus · "mapping_new_data_responses"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6861)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7006)
 
 ```cpp
 def_readonly("mapping_new_data_responses",
@@ -3942,7 +3951,7 @@ def_readonly("mapping_new_data_responses",
 
 ### NativeLiveStreamStatus · "mapping_data_responses"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6860)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7005)
 
 ```cpp
 def_readonly("mapping_data_responses",
@@ -3951,7 +3960,7 @@ def_readonly("mapping_data_responses",
 
 ### NativeLiveStreamStatus · "mapping_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6859)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7004)
 
 ```cpp
 def_readonly("mapping_interests",
@@ -3960,7 +3969,7 @@ def_readonly("mapping_interests",
 
 ### NativeLiveStreamStatus · "retry_exhaustions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6858)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7003)
 
 ```cpp
 def_readonly("retry_exhaustions",
@@ -3969,7 +3978,7 @@ def_readonly("retry_exhaustions",
 
 ### NativeLiveStreamStatus · "deadline_skips"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6857)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7002)
 
 ```cpp
 def_readonly("deadline_skips",
@@ -3978,7 +3987,7 @@ def_readonly("deadline_skips",
 
 ### NativeLiveStreamStatus · "late_arrivals"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6856)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7001)
 
 ```cpp
 def_readonly("late_arrivals",
@@ -3987,7 +3996,7 @@ def_readonly("late_arrivals",
 
 ### NativeLiveStreamStatus · "retry_attempts"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6855)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7000)
 
 ```cpp
 def_readonly("retry_attempts",
@@ -3996,7 +4005,7 @@ def_readonly("retry_attempts",
 
 ### NativeLiveStreamStatus · "nacks"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6854)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6999)
 
 ```cpp
 def_readonly("nacks",
@@ -4005,7 +4014,7 @@ def_readonly("nacks",
 
 ### NativeLiveStreamStatus · "timeouts"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6853)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6998)
 
 ```cpp
 def_readonly("timeouts",
@@ -4014,7 +4023,7 @@ def_readonly("timeouts",
 
 ### NativeLiveStreamStatus · "recovered"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6852)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6997)
 
 ```cpp
 def_readonly("recovered",
@@ -4023,7 +4032,7 @@ def_readonly("recovered",
 
 ### NativeLiveStreamStatus · "rejected"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6851)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6996)
 
 ```cpp
 def_readonly("rejected",
@@ -4032,7 +4041,7 @@ def_readonly("rejected",
 
 ### NativeLiveStreamStatus · "delivered"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6850)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6995)
 
 ```cpp
 def_readonly("delivered",
@@ -4041,7 +4050,7 @@ def_readonly("delivered",
 
 ### NativeLiveStreamStatus · "in_flight"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6849)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6994)
 
 ```cpp
 def_readonly("in_flight",
@@ -4050,7 +4059,7 @@ def_readonly("in_flight",
 
 ### NativeLiveStreamStatus · "mapping_blocks"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6848)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6993)
 
 ```cpp
 def_readonly("mapping_blocks",
@@ -4059,7 +4068,7 @@ def_readonly("mapping_blocks",
 
 ### NativeLiveStreamStatus · "pending_interests"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6847)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6992)
 
 ```cpp
 def_readonly("pending_interests",
@@ -4068,7 +4077,7 @@ def_readonly("pending_interests",
 
 ### NativeLiveStreamStatus · "retained_items"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6846)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6991)
 
 ```cpp
 def_readonly("retained_items",
@@ -4077,7 +4086,7 @@ def_readonly("retained_items",
 
 ### NativeLiveStreamStatus · "frontiers"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6845)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6990)
 
 ```cpp
 def_readonly("frontiers",
@@ -4086,7 +4095,7 @@ def_readonly("frontiers",
 
 ### NativeLiveStreamStatus · "state"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6844)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6989)
 
 ```cpp
 def_readonly("state",
@@ -4095,7 +4104,7 @@ def_readonly("state",
 
 ### NativePublishedLiveStreamPacketKind · "REPAIR"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6958)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7103)
 
 ```cpp
 value("REPAIR",
@@ -4104,7 +4113,7 @@ nsf::PublishedLiveStreamPacketKind::Repair)
 
 ### NativePublishedLiveStreamPacketKind · "SOURCE"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6957)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7102)
 
 ```cpp
 value("SOURCE",
@@ -4113,7 +4122,7 @@ nsf::PublishedLiveStreamPacketKind::Source)
 
 ### NativePublishedLiveStreamPacketKind · "MAPPING"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6956)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7101)
 
 ```cpp
 value("MAPPING",
@@ -4122,7 +4131,7 @@ nsf::PublishedLiveStreamPacketKind::Mapping)
 
 ### NativePublishedLiveStreamPacket · "materialized_monotonic_us"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6981)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7126)
 
 ```cpp
 def_readonly("materialized_monotonic_us",
@@ -4131,7 +4140,7 @@ def_readonly("materialized_monotonic_us",
 
 ### NativePublishedLiveStreamPacket · "wire_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6978)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7123)
 
 ```cpp
 def_property_readonly("wire_digest",
@@ -4140,7 +4149,7 @@ def_property_readonly("wire_digest",
 
 ### NativePublishedLiveStreamPacket · "signed_data_wire"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6974)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7119)
 
 ```cpp
 def_property_readonly("signed_data_wire",
@@ -4149,7 +4158,7 @@ def_property_readonly("signed_data_wire",
 
 ### NativePublishedLiveStreamPacket · "provider"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6971)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7116)
 
 ```cpp
 def_property_readonly("provider",
@@ -4158,7 +4167,7 @@ def_property_readonly("provider",
 
 ### NativePublishedLiveStreamPacket · "data_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6968)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7113)
 
 ```cpp
 def_property_readonly("data_name",
@@ -4167,7 +4176,7 @@ def_property_readonly("data_name",
 
 ### NativePublishedLiveStreamPacket · "cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6965)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7110)
 
 ```cpp
 def_property_readonly("cursor",
@@ -4176,7 +4185,7 @@ def_property_readonly("cursor",
 
 ### NativePublishedLiveStreamPacket · "mapping_version"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6964)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7109)
 
 ```cpp
 def_readonly("mapping_version",
@@ -4185,7 +4194,7 @@ def_readonly("mapping_version",
 
 ### NativePublishedLiveStreamPacket · "session_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6963)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7108)
 
 ```cpp
 def_readonly("session_epoch",
@@ -4194,7 +4203,7 @@ def_readonly("session_epoch",
 
 ### NativePublishedLiveStreamPacket · "stream_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6962)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7107)
 
 ```cpp
 def_readonly("stream_id",
@@ -4203,7 +4212,7 @@ def_readonly("stream_id",
 
 ### NativePublishedLiveStreamPacket · "kind"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6961)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7106)
 
 ```cpp
 def_readonly("kind",
@@ -4212,7 +4221,7 @@ def_readonly("kind",
 
 ### NativePublishedPacketFeedOptions · "max_queued_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6988)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7133)
 
 ```cpp
 def_readwrite("max_queued_bytes",
@@ -4221,7 +4230,7 @@ def_readwrite("max_queued_bytes",
 
 ### NativePublishedPacketFeedOptions · "max_queued_packets"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6987)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7132)
 
 ```cpp
 def_readwrite("max_queued_packets",
@@ -4230,7 +4239,7 @@ def_readwrite("max_queued_packets",
 
 ### NativePublishedPacketFeedOptions · "from_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6986)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7131)
 
 ```cpp
 def_readwrite("from_cursor",
@@ -4239,7 +4248,7 @@ def_readwrite("from_cursor",
 
 ### NativePublishedPacketFeedStatus · "closed"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6996)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7141)
 
 ```cpp
 def_readonly("closed",
@@ -4248,7 +4257,7 @@ def_readonly("closed",
 
 ### NativePublishedPacketFeedStatus · "last_dropped_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6995)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7140)
 
 ```cpp
 def_readonly("last_dropped_cursor",
@@ -4257,7 +4266,7 @@ def_readonly("last_dropped_cursor",
 
 ### NativePublishedPacketFeedStatus · "first_dropped_cursor"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6994)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7139)
 
 ```cpp
 def_readonly("first_dropped_cursor",
@@ -4266,7 +4275,7 @@ def_readonly("first_dropped_cursor",
 
 ### NativePublishedPacketFeedStatus · "dropped_packets"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6993)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7138)
 
 ```cpp
 def_readonly("dropped_packets",
@@ -4275,7 +4284,7 @@ def_readonly("dropped_packets",
 
 ### NativePublishedPacketFeedStatus · "queued_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6992)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7137)
 
 ```cpp
 def_readonly("queued_bytes",
@@ -4284,7 +4293,7 @@ def_readonly("queued_bytes",
 
 ### NativePublishedPacketFeedStatus · "queued_packets"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L6991)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7136)
 
 ```cpp
 def_readonly("queued_packets",
@@ -4293,7 +4302,7 @@ def_readonly("queued_packets",
 
 ### NativePublishedPacketFeed · "close"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7002)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7147)
 
 ```cpp
 def("close",
@@ -4302,7 +4311,7 @@ def("close",
 
 ### NativePublishedPacketFeed · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7001)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7146)
 
 ```cpp
 def("status",
@@ -4311,7 +4320,7 @@ def("status",
 
 ### NativePublishedPacketFeed · "take_available"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7000)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7145)
 
 ```cpp
 def("take_available",
@@ -4320,7 +4329,7 @@ def("take_available",
 
 ### NativeLiveStreamPublisher · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7069)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7214)
 
 ```cpp
 def("stop",
@@ -4329,7 +4338,7 @@ def("stop",
 
 ### NativeLiveStreamPublisher · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7068)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7213)
 
 ```cpp
 def("status",
@@ -4338,7 +4347,7 @@ def("status",
 
 ### NativeLiveStreamPublisher · "open_published_packet_feed"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7067)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7212)
 
 ```cpp
 def("open_published_packet_feed",
@@ -4347,7 +4356,7 @@ def("open_published_packet_feed",
 
 ### NativeLiveStreamPublisher · "activate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7066)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7211)
 
 ```cpp
 def("activate",
@@ -4356,7 +4365,7 @@ def("activate",
 
 ### NativeLiveStreamPublisher · "publish_sample"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7056)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7201)
 
 ```cpp
 def("publish_sample",
@@ -4367,7 +4376,7 @@ def("publish_sample",
 
 ### NativeLiveStreamPublisher · "publish_group"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7046)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7191)
 
 ```cpp
 def("publish_group",
@@ -4378,7 +4387,7 @@ def("publish_group",
 
 ### NativeLiveStreamPublisher · "publish"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7040)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7185)
 
 ```cpp
 def("publish",
@@ -4389,7 +4398,7 @@ def("publish",
 
 ### NativeLiveStreamPublisher · "prepare_sample_extent"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7038)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7183)
 
 ```cpp
 def("prepare_sample_extent",
@@ -4400,7 +4409,7 @@ py::arg("actual_source_items"))
 
 ### NativeLiveStreamPublisher · "announce_sample"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7025)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7170)
 
 ```cpp
 def("announce_sample",
@@ -4415,7 +4424,7 @@ py::arg("name_factory"))
 
 ### NativeLiveStreamPublisher · "reserve_group"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7015)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7160)
 
 ```cpp
 def("reserve_group",
@@ -4427,7 +4436,7 @@ def("reserve_group",
 
 ### NativeLiveStreamPublisher · "reserve_many_ahead"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7009)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7154)
 
 ```cpp
 def("reserve_many_ahead",
@@ -4437,7 +4446,7 @@ def("reserve_many_ahead",
 
 ### NativeLiveStreamPublisher · "reserve_ahead"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7006)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7151)
 
 ```cpp
 def("reserve_ahead",
@@ -4446,7 +4455,7 @@ def("reserve_ahead",
 
 ### NativeStreamPublisher · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7086)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7231)
 
 ```cpp
 def("stop",
@@ -4455,7 +4464,7 @@ def("stop",
 
 ### NativeStreamPublisher · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7085)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7230)
 
 ```cpp
 def("status",
@@ -4464,7 +4473,7 @@ def("status",
 
 ### NativeStreamPublisher · "flush"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7084)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7229)
 
 ```cpp
 def("flush",
@@ -4473,7 +4482,7 @@ def("flush",
 
 ### NativeStreamPublisher · "push"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7077)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7222)
 
 ```cpp
 def("push",
@@ -4483,7 +4492,7 @@ py::arg("signed_data"))
 
 ### NativeStreamPublisher · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7073)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7218)
 
 ```cpp
 def("start",
@@ -4492,7 +4501,7 @@ def("start",
 
 ### NativePredictiveStreamCheckpoint · "next_expected_sample_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7097)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7242)
 
 ```cpp
 def_readwrite("next_expected_sample_id",
@@ -4501,7 +4510,7 @@ def_readwrite("next_expected_sample_id",
 
 ### NativePredictiveStreamCheckpoint · "latest_produced_sample_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7095)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7240)
 
 ```cpp
 def_readwrite("latest_produced_sample_id",
@@ -4510,7 +4519,7 @@ def_readwrite("latest_produced_sample_id",
 
 ### NativePredictiveStreamCheckpoint · "oldest_retained_sample_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7093)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7238)
 
 ```cpp
 def_readwrite("oldest_retained_sample_id",
@@ -4519,7 +4528,7 @@ def_readwrite("oldest_retained_sample_id",
 
 ### NativePredictiveStreamCheckpoint · "initial_sample_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7091)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7236)
 
 ```cpp
 def_readwrite("initial_sample_id",
@@ -4528,7 +4537,7 @@ def_readwrite("initial_sample_id",
 
 ### NativePredictiveStreamDescriptor · "measured_sample_period_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7131)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7276)
 
 ```cpp
 def_property_readonly("measured_sample_period_ms",
@@ -4537,7 +4546,7 @@ def_property_readonly("measured_sample_period_ms",
 
 ### NativePredictiveStreamDescriptor · "frontier_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7127)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7272)
 
 ```cpp
 def_property_readonly("frontier_name",
@@ -4546,7 +4555,7 @@ def_property_readonly("frontier_name",
 
 ### NativePredictiveStreamDescriptor · "checkpoint"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7123)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7268)
 
 ```cpp
 def_property_readonly("checkpoint",
@@ -4555,7 +4564,7 @@ def_property_readonly("checkpoint",
 
 ### NativePredictiveStreamDescriptor · "definition"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7119)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7264)
 
 ```cpp
 def_property_readonly("definition",
@@ -4564,7 +4573,7 @@ def_property_readonly("definition",
 
 ### NativeLiveStreamConsumerHandle · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7141)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7286)
 
 ```cpp
 def("stop",
@@ -4573,7 +4582,7 @@ def("stop",
 
 ### NativeLiveStreamConsumerHandle · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7140)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7285)
 
 ```cpp
 def("status",
@@ -4582,7 +4591,7 @@ def("status",
 
 ### NativeLiveStreamConsumerHandle · "observe_accepted_sample"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7139)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7284)
 
 ```cpp
 def("observe_accepted_sample",
@@ -4591,7 +4600,7 @@ def("observe_accepted_sample",
 
 ### NativeLiveStreamConsumerHandle · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7138)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7283)
 
 ```cpp
 def("start",
@@ -4600,7 +4609,7 @@ def("start",
 
 ### NativePredictiveStreamSubscriber · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7148)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7293)
 
 ```cpp
 def("stop",
@@ -4609,7 +4618,7 @@ def("stop",
 
 ### NativePredictiveStreamSubscriber · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7147)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7292)
 
 ```cpp
 def("status",
@@ -4618,7 +4627,7 @@ def("status",
 
 ### NativePredictiveStreamSubscriber · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7146)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7291)
 
 ```cpp
 def("start",
@@ -4627,7 +4636,7 @@ def("start",
 
 ### ExecutionLeaseState · "EXPIRED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7156)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7301)
 
 ```cpp
 value("EXPIRED",
@@ -4636,7 +4645,7 @@ nsf::ExecutionLeaseState::Expired)
 
 ### ExecutionLeaseState · "RELEASED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7155)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7300)
 
 ```cpp
 value("RELEASED",
@@ -4645,7 +4654,7 @@ nsf::ExecutionLeaseState::Released)
 
 ### ExecutionLeaseState · "ABORTED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7154)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7299)
 
 ```cpp
 value("ABORTED",
@@ -4654,7 +4663,7 @@ nsf::ExecutionLeaseState::Aborted)
 
 ### ExecutionLeaseState · "EXECUTING"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7153)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7298)
 
 ```cpp
 value("EXECUTING",
@@ -4663,7 +4672,7 @@ nsf::ExecutionLeaseState::Executing)
 
 ### ExecutionLeaseState · "COMMITTED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7152)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7297)
 
 ```cpp
 value("COMMITTED",
@@ -4672,7 +4681,7 @@ nsf::ExecutionLeaseState::Committed)
 
 ### ExecutionLeaseState · "PREPARED"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7151)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7296)
 
 ```cpp
 value("PREPARED",
@@ -4681,7 +4690,7 @@ nsf::ExecutionLeaseState::Prepared)
 
 ### GenericExecutionLease · "idempotency_key"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7182)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7327)
 
 ```cpp
 def_readwrite("idempotency_key",
@@ -4690,7 +4699,7 @@ def_readwrite("idempotency_key",
 
 ### GenericExecutionLease · "execution_deadline_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7180)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7325)
 
 ```cpp
 def_readwrite("execution_deadline_ms",
@@ -4699,7 +4708,7 @@ def_readwrite("execution_deadline_ms",
 
 ### GenericExecutionLease · "expires_at_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7179)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7324)
 
 ```cpp
 def_readwrite("expires_at_ms",
@@ -4708,7 +4717,7 @@ def_readwrite("expires_at_ms",
 
 ### GenericExecutionLease · "state"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7178)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7323)
 
 ```cpp
 def_readwrite("state",
@@ -4717,7 +4726,7 @@ def_readwrite("state",
 
 ### GenericExecutionLease · "conflict_keys"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7177)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7322)
 
 ```cpp
 def_readwrite("conflict_keys",
@@ -4726,7 +4735,7 @@ def_readwrite("conflict_keys",
 
 ### GenericExecutionLease · "resource_binding_proof"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7170)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7315)
 
 ```cpp
 def_property("resource_binding_proof",
@@ -4736,7 +4745,7 @@ def_property("resource_binding_proof",
 
 ### GenericExecutionLease · "resource_binding_schema"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7168)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7313)
 
 ```cpp
 def_readwrite("resource_binding_schema",
@@ -4745,7 +4754,7 @@ def_readwrite("resource_binding_schema",
 
 ### GenericExecutionLease · "plan_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7167)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7312)
 
 ```cpp
 def_readwrite("plan_digest",
@@ -4754,7 +4763,7 @@ def_readwrite("plan_digest",
 
 ### GenericExecutionLease · "service_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7166)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7311)
 
 ```cpp
 def_readwrite("service_name",
@@ -4763,7 +4772,7 @@ def_readwrite("service_name",
 
 ### GenericExecutionLease · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7165)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7310)
 
 ```cpp
 def_readwrite("request_id",
@@ -4772,7 +4781,7 @@ def_readwrite("request_id",
 
 ### GenericExecutionLease · "requester_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7164)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7309)
 
 ```cpp
 def_readwrite("requester_name",
@@ -4781,7 +4790,7 @@ def_readwrite("requester_name",
 
 ### GenericExecutionLease · "provider_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7163)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7308)
 
 ```cpp
 def_readwrite("provider_epoch",
@@ -4790,7 +4799,7 @@ def_readwrite("provider_epoch",
 
 ### GenericExecutionLease · "provider_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7162)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7307)
 
 ```cpp
 def_readwrite("provider_name",
@@ -4799,7 +4808,7 @@ def_readwrite("provider_name",
 
 ### GenericExecutionLease · "lease_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7161)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7306)
 
 ```cpp
 def_readwrite("lease_id",
@@ -4808,7 +4817,7 @@ def_readwrite("lease_id",
 
 ### GenericExecutionLease · "schema"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7160)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7305)
 
 ```cpp
 def_readwrite("schema",
@@ -4817,7 +4826,7 @@ def_readwrite("schema",
 
 ### ExecutionLeaseBinding · "resource_binding_proof"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7192)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7337)
 
 ```cpp
 def_property("resource_binding_proof",
@@ -4827,7 +4836,7 @@ def_property("resource_binding_proof",
 
 ### ExecutionLeaseBinding · "resource_binding_schema"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7190)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7335)
 
 ```cpp
 def_readwrite("resource_binding_schema",
@@ -4836,7 +4845,7 @@ def_readwrite("resource_binding_schema",
 
 ### ExecutionLeaseBinding · "plan_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7189)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7334)
 
 ```cpp
 def_readwrite("plan_digest",
@@ -4845,7 +4854,7 @@ def_readwrite("plan_digest",
 
 ### ExecutionLeaseBinding · "service_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7188)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7333)
 
 ```cpp
 def_readwrite("service_name",
@@ -4854,7 +4863,7 @@ def_readwrite("service_name",
 
 ### ExecutionLeaseBinding · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7187)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7332)
 
 ```cpp
 def_readwrite("request_id",
@@ -4863,7 +4872,7 @@ def_readwrite("request_id",
 
 ### ExecutionLeaseBinding · "requester_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7186)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7331)
 
 ```cpp
 def_readwrite("requester_name",
@@ -4872,7 +4881,7 @@ def_readwrite("requester_name",
 
 ### ExecutionLeaseResult · "idempotent_replay"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7206)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7351)
 
 ```cpp
 def_readonly("idempotent_replay",
@@ -4881,7 +4890,7 @@ def_readonly("idempotent_replay",
 
 ### ExecutionLeaseResult · "retry_after_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7205)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7350)
 
 ```cpp
 def_readonly("retry_after_ms",
@@ -4890,7 +4899,7 @@ def_readonly("retry_after_ms",
 
 ### ExecutionLeaseResult · "lease"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7204)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7349)
 
 ```cpp
 def_readonly("lease",
@@ -4899,7 +4908,7 @@ def_readonly("lease",
 
 ### ExecutionLeaseResult · "reason_code"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7203)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7348)
 
 ```cpp
 def_readonly("reason_code",
@@ -4908,7 +4917,7 @@ def_readonly("reason_code",
 
 ### ExecutionLeaseResult · "operation"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7202)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7347)
 
 ```cpp
 def_readonly("operation",
@@ -4917,7 +4926,7 @@ def_readonly("operation",
 
 ### ExecutionLeaseResult · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7201)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7346)
 
 ```cpp
 def_readonly("status",
@@ -4926,7 +4935,7 @@ def_readonly("status",
 
 ### ExecutionLeaseCounters · "active_executing"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7226)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7371)
 
 ```cpp
 def_readonly("active_executing",
@@ -4935,7 +4944,7 @@ def_readonly("active_executing",
 
 ### ExecutionLeaseCounters · "active_committed"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7225)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7370)
 
 ```cpp
 def_readonly("active_committed",
@@ -4944,7 +4953,7 @@ def_readonly("active_committed",
 
 ### ExecutionLeaseCounters · "active_prepared"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7224)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7369)
 
 ```cpp
 def_readonly("active_prepared",
@@ -4953,7 +4962,7 @@ def_readonly("active_prepared",
 
 ### ExecutionLeaseCounters · "rejected_by_reason"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7222)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7367)
 
 ```cpp
 def_readonly("rejected_by_reason",
@@ -4962,7 +4971,7 @@ def_readonly("rejected_by_reason",
 
 ### ExecutionLeaseCounters · "cleanup_timeout"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7221)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7366)
 
 ```cpp
 def_readonly("cleanup_timeout",
@@ -4971,7 +4980,7 @@ def_readonly("cleanup_timeout",
 
 ### ExecutionLeaseCounters · "stale_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7220)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7365)
 
 ```cpp
 def_readonly("stale_epoch",
@@ -4980,7 +4989,7 @@ def_readonly("stale_epoch",
 
 ### ExecutionLeaseCounters · "conflict"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7219)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7364)
 
 ```cpp
 def_readonly("conflict",
@@ -4989,7 +4998,7 @@ def_readonly("conflict",
 
 ### ExecutionLeaseCounters · "idempotent_replay"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7217)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7362)
 
 ```cpp
 def_readonly("idempotent_replay",
@@ -4998,7 +5007,7 @@ def_readonly("idempotent_replay",
 
 ### ExecutionLeaseCounters · "renewed"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7216)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7361)
 
 ```cpp
 def_readonly("renewed",
@@ -5007,7 +5016,7 @@ def_readonly("renewed",
 
 ### ExecutionLeaseCounters · "expired"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7215)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7360)
 
 ```cpp
 def_readonly("expired",
@@ -5016,7 +5025,7 @@ def_readonly("expired",
 
 ### ExecutionLeaseCounters · "released"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7214)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7359)
 
 ```cpp
 def_readonly("released",
@@ -5025,7 +5034,7 @@ def_readonly("released",
 
 ### ExecutionLeaseCounters · "aborted"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7213)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7358)
 
 ```cpp
 def_readonly("aborted",
@@ -5034,7 +5043,7 @@ def_readonly("aborted",
 
 ### ExecutionLeaseCounters · "activated"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7212)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7357)
 
 ```cpp
 def_readonly("activated",
@@ -5043,7 +5052,7 @@ def_readonly("activated",
 
 ### ExecutionLeaseCounters · "committed"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7211)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7356)
 
 ```cpp
 def_readonly("committed",
@@ -5052,7 +5061,7 @@ def_readonly("committed",
 
 ### ExecutionLeaseCounters · "prepared"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7210)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7355)
 
 ```cpp
 def_readonly("prepared",
@@ -5061,7 +5070,7 @@ def_readonly("prepared",
 
 ### ProviderExecutionLeaseTable · "counters"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7272)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7417)
 
 ```cpp
 def("counters",
@@ -5071,7 +5080,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "has_pinned_binding_proof"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7266)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7411)
 
 ```cpp
 def("has_pinned_binding_proof",
@@ -5083,7 +5092,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "has_active_conflict_key"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7263)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7408)
 
 ```cpp
 def("has_active_conflict_key",
@@ -5094,7 +5103,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "find"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7261)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7406)
 
 ```cpp
 def("find",
@@ -5104,7 +5113,7 @@ py::arg("lease_id"))
 
 ### ProviderExecutionLeaseTable · "cleanup_expired"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7259)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7404)
 
 ```cpp
 def("cleanup_expired",
@@ -5114,7 +5123,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "release"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7255)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7400)
 
 ```cpp
 def("release",
@@ -5128,7 +5137,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "renew"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7250)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7395)
 
 ```cpp
 def("renew",
@@ -5143,7 +5152,7 @@ py::arg("expires_at_ms"))
 
 ### ProviderExecutionLeaseTable · "abort"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7246)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7391)
 
 ```cpp
 def("abort",
@@ -5157,7 +5166,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "validate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7243)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7388)
 
 ```cpp
 def("validate",
@@ -5170,7 +5179,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "validate_and_activate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7238)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7383)
 
 ```cpp
 def("validate_and_activate",
@@ -5185,7 +5194,7 @@ py::arg("execution_deadline_ms"))
 
 ### ProviderExecutionLeaseTable · "commit"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7234)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7379)
 
 ```cpp
 def("commit",
@@ -5199,7 +5208,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "prepare"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7232)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7377)
 
 ```cpp
 def("prepare",
@@ -5210,7 +5219,7 @@ py::arg("now_ms"))
 
 ### ProviderExecutionLeaseTable · "provider_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7230)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7375)
 
 ```cpp
 def_property_readonly("provider_epoch",
@@ -5219,7 +5228,7 @@ def_property_readonly("provider_epoch",
 
 ### m · "encode_large_data_reference_payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7275)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7420)
 
 ```cpp
 def("encode_large_data_reference_payload",
@@ -5239,7 +5248,7 @@ py::arg("digest") = "")
 
 ### m · "parse_large_data_reference_payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7299)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7444)
 
 ```cpp
 def("parse_large_data_reference_payload",
@@ -5249,7 +5258,7 @@ py::arg("payload"))
 
 ### ServiceResponse · "wire_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7317)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7462)
 
 ```cpp
 def_readwrite("wire_digest",
@@ -5258,7 +5267,7 @@ def_readwrite("wire_digest",
 
 ### ServiceResponse · "signer_certificate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7316)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7461)
 
 ```cpp
 def_readwrite("signer_certificate",
@@ -5267,7 +5276,7 @@ def_readwrite("signer_certificate",
 
 ### ServiceResponse · "data_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7315)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7460)
 
 ```cpp
 def_readwrite("data_name",
@@ -5276,7 +5285,7 @@ def_readwrite("data_name",
 
 ### ServiceResponse · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7314)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7459)
 
 ```cpp
 def_readwrite("request_id",
@@ -5285,7 +5294,7 @@ def_readwrite("request_id",
 
 ### ServiceResponse · "error"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7313)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7458)
 
 ```cpp
 def_readwrite("error",
@@ -5294,7 +5303,7 @@ def_readwrite("error",
 
 ### ServiceResponse · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7312)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7457)
 
 ```cpp
 def_readwrite("payload",
@@ -5303,7 +5312,7 @@ def_readwrite("payload",
 
 ### ServiceResponse · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7311)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7456)
 
 ```cpp
 def_readwrite("status",
@@ -5312,7 +5321,7 @@ def_readwrite("status",
 
 ### AckDecision · "pending_state_ttl_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7327)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7472)
 
 ```cpp
 def_readwrite("pending_state_ttl_ms",
@@ -5321,7 +5330,7 @@ def_readwrite("pending_state_ttl_ms",
 
 ### AckDecision · "selection_input_key_offer"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7326)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7471)
 
 ```cpp
 def_readwrite("selection_input_key_offer",
@@ -5330,7 +5339,7 @@ def_readwrite("selection_input_key_offer",
 
 ### AckDecision · "reservation_lease"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7325)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7470)
 
 ```cpp
 def_readwrite("reservation_lease",
@@ -5339,7 +5348,7 @@ def_readwrite("reservation_lease",
 
 ### AckDecision · "suppress"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7324)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7469)
 
 ```cpp
 def_readwrite("suppress",
@@ -5348,7 +5357,7 @@ def_readwrite("suppress",
 
 ### AckDecision · "message"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7323)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7468)
 
 ```cpp
 def_readwrite("message",
@@ -5357,7 +5366,7 @@ def_readwrite("message",
 
 ### AckDecision · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7322)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7467)
 
 ```cpp
 def_readwrite("payload",
@@ -5366,7 +5375,7 @@ def_readwrite("payload",
 
 ### AckDecision · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7321)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7466)
 
 ```cpp
 def_readwrite("status",
@@ -5375,7 +5384,7 @@ def_readwrite("status",
 
 ### AckCandidate · "trust_schema_validated"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7343)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7488)
 
 ```cpp
 def_readwrite("trust_schema_validated",
@@ -5384,7 +5393,7 @@ def_readwrite("trust_schema_validated",
 
 ### AckCandidate · "validated_wire_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7342)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7487)
 
 ```cpp
 def_readwrite("validated_wire_digest",
@@ -5393,7 +5402,7 @@ def_readwrite("validated_wire_digest",
 
 ### AckCandidate · "signer_key_locator"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7341)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7486)
 
 ```cpp
 def_readwrite("signer_key_locator",
@@ -5402,7 +5411,7 @@ def_readwrite("signer_key_locator",
 
 ### AckCandidate · "signer_identity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7340)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7485)
 
 ```cpp
 def_readwrite("signer_identity",
@@ -5411,7 +5420,7 @@ def_readwrite("signer_identity",
 
 ### AckCandidate · "selection_input_key_offer"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7338)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7483)
 
 ```cpp
 def_readwrite("selection_input_key_offer",
@@ -5420,7 +5429,7 @@ def_readwrite("selection_input_key_offer",
 
 ### AckCandidate · "telemetry"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7337)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7482)
 
 ```cpp
 def_readwrite("telemetry",
@@ -5429,7 +5438,7 @@ def_readwrite("telemetry",
 
 ### AckCandidate · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7336)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7481)
 
 ```cpp
 def_readwrite("payload",
@@ -5438,7 +5447,7 @@ def_readwrite("payload",
 
 ### AckCandidate · "message"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7335)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7480)
 
 ```cpp
 def_readwrite("message",
@@ -5447,7 +5456,7 @@ def_readwrite("message",
 
 ### AckCandidate · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7334)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7479)
 
 ```cpp
 def_readwrite("status",
@@ -5456,7 +5465,7 @@ def_readwrite("status",
 
 ### AckCandidate · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7333)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7478)
 
 ```cpp
 def_readwrite("request_id",
@@ -5465,7 +5474,7 @@ def_readwrite("request_id",
 
 ### AckCandidate · "service_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7332)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7477)
 
 ```cpp
 def_readwrite("service_name",
@@ -5474,7 +5483,7 @@ def_readwrite("service_name",
 
 ### AckCandidate · "provider_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7331)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7476)
 
 ```cpp
 def_readwrite("provider_name",
@@ -5483,7 +5492,7 @@ def_readwrite("provider_name",
 
 ### CollaborationAckClosure · "request_deadline_us"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7351)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7496)
 
 ```cpp
 def_readwrite("request_deadline_us",
@@ -5492,7 +5501,7 @@ def_readwrite("request_deadline_us",
 
 ### CollaborationAckClosure · "closed_at_us"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7350)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7495)
 
 ```cpp
 def_readwrite("closed_at_us",
@@ -5501,7 +5510,7 @@ def_readwrite("closed_at_us",
 
 ### CollaborationAckClosure · "digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7349)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7494)
 
 ```cpp
 def_readwrite("digest",
@@ -5510,7 +5519,7 @@ def_readwrite("digest",
 
 ### CollaborationAckClosure · "candidates"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7348)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7493)
 
 ```cpp
 def_readwrite("candidates",
@@ -5519,7 +5528,7 @@ def_readwrite("candidates",
 
 ### CollaborationAckClosure · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7347)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7492)
 
 ```cpp
 def_readwrite("request_id",
@@ -5528,7 +5537,7 @@ def_readwrite("request_id",
 
 ### LargeDataPublishResult · "error"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7365)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7510)
 
 ```cpp
 def_readwrite("error",
@@ -5537,7 +5546,7 @@ def_readwrite("error",
 
 ### LargeDataPublishResult · "encrypted"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7364)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7509)
 
 ```cpp
 def_readwrite("encrypted",
@@ -5546,7 +5555,7 @@ def_readwrite("encrypted",
 
 ### LargeDataPublishResult · "protection_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7363)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7508)
 
 ```cpp
 def_readwrite("protection_epoch",
@@ -5555,7 +5564,7 @@ def_readwrite("protection_epoch",
 
 ### LargeDataPublishResult · "authorization_scope"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7362)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7507)
 
 ```cpp
 def_readwrite("authorization_scope",
@@ -5564,7 +5573,7 @@ def_readwrite("authorization_scope",
 
 ### LargeDataPublishResult · "manifest_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7361)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7506)
 
 ```cpp
 def_readwrite("manifest_digest",
@@ -5573,7 +5582,7 @@ def_readwrite("manifest_digest",
 
 ### LargeDataPublishResult · "content_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7360)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7505)
 
 ```cpp
 def_readwrite("content_digest",
@@ -5582,7 +5591,7 @@ def_readwrite("content_digest",
 
 ### LargeDataPublishResult · "plaintext_size"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7359)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7504)
 
 ```cpp
 def_readwrite("plaintext_size",
@@ -5591,7 +5600,7 @@ def_readwrite("plaintext_size",
 
 ### LargeDataPublishResult · "object_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7358)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7503)
 
 ```cpp
 def_readwrite("object_id",
@@ -5600,7 +5609,7 @@ def_readwrite("object_id",
 
 ### LargeDataPublishResult · "encrypted_data_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7357)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7502)
 
 ```cpp
 def_readwrite("encrypted_data_name",
@@ -5609,7 +5618,7 @@ def_readwrite("encrypted_data_name",
 
 ### LargeDataPublishResult · "success"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7356)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7501)
 
 ```cpp
 def_readwrite("success",
@@ -5618,7 +5627,7 @@ def_readwrite("success",
 
 ### SignedAppDataResult · "error"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7373)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7518)
 
 ```cpp
 def_readwrite("error",
@@ -5627,7 +5636,7 @@ def_readwrite("error",
 
 ### SignedAppDataResult · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7372)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7517)
 
 ```cpp
 def_readwrite("payload",
@@ -5636,7 +5645,7 @@ def_readwrite("payload",
 
 ### SignedAppDataResult · "signer_certificate"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7371)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7516)
 
 ```cpp
 def_readwrite("signer_certificate",
@@ -5645,7 +5654,7 @@ def_readwrite("signer_certificate",
 
 ### SignedAppDataResult · "data_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7370)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7515)
 
 ```cpp
 def_readwrite("data_name",
@@ -5654,7 +5663,7 @@ def_readwrite("data_name",
 
 ### SignedAppDataResult · "success"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7369)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7514)
 
 ```cpp
 def_readwrite("success",
@@ -5663,7 +5672,7 @@ def_readwrite("success",
 
 ### CollaborationAssignment · "role_providers"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7385)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7530)
 
 ```cpp
 def_readwrite("role_providers",
@@ -5672,7 +5681,7 @@ def_readwrite("role_providers",
 
 ### CollaborationAssignment · "assignment_payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7384)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7529)
 
 ```cpp
 def_readwrite("assignment_payload",
@@ -5681,7 +5690,7 @@ def_readwrite("assignment_payload",
 
 ### CollaborationAssignment · "selection_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7383)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7528)
 
 ```cpp
 def_readwrite("selection_digest",
@@ -5690,7 +5699,7 @@ def_readwrite("selection_digest",
 
 ### CollaborationAssignment · "provisioning_timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7382)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7527)
 
 ```cpp
 def_readwrite("provisioning_timeout_ms",
@@ -5699,7 +5708,7 @@ def_readwrite("provisioning_timeout_ms",
 
 ### CollaborationAssignment · "requires_provisioning"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7381)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7526)
 
 ```cpp
 def_readwrite("requires_provisioning",
@@ -5708,7 +5717,7 @@ def_readwrite("requires_provisioning",
 
 ### CollaborationAssignment · "artifact_data_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7380)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7525)
 
 ```cpp
 def_readwrite("artifact_data_name",
@@ -5717,7 +5726,7 @@ def_readwrite("artifact_data_name",
 
 ### CollaborationAssignment · "assigned_artifact"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7379)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7524)
 
 ```cpp
 def_readwrite("assigned_artifact",
@@ -5726,7 +5735,7 @@ def_readwrite("assigned_artifact",
 
 ### CollaborationAssignment · "service"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7378)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7523)
 
 ```cpp
 def_readwrite("service",
@@ -5735,7 +5744,7 @@ def_readwrite("service",
 
 ### CollaborationAssignment · "role"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7377)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7522)
 
 ```cpp
 def_readwrite("role",
@@ -5744,7 +5753,7 @@ def_readwrite("role",
 
 ### CollaborationData · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7395)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7540)
 
 ```cpp
 def_readwrite("payload",
@@ -5753,7 +5762,7 @@ def_readwrite("payload",
 
 ### CollaborationData · "sequence"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7394)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7539)
 
 ```cpp
 def_readwrite("sequence",
@@ -5762,7 +5771,7 @@ def_readwrite("sequence",
 
 ### CollaborationData · "producer_role"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7393)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7538)
 
 ```cpp
 def_readwrite("producer_role",
@@ -5771,7 +5780,7 @@ def_readwrite("producer_role",
 
 ### CollaborationData · "producer"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7392)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7537)
 
 ```cpp
 def_readwrite("producer",
@@ -5780,7 +5789,7 @@ def_readwrite("producer",
 
 ### CollaborationData · "topic"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7391)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7536)
 
 ```cpp
 def_readwrite("topic",
@@ -5789,7 +5798,7 @@ def_readwrite("topic",
 
 ### CollaborationData · "key_scope"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7390)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7535)
 
 ```cpp
 def_readwrite("key_scope",
@@ -5798,7 +5807,7 @@ def_readwrite("key_scope",
 
 ### CollaborationData · "session_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7389)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7534)
 
 ```cpp
 def_readwrite("session_id",
@@ -5807,7 +5816,7 @@ def_readwrite("session_id",
 
 ### SegmentedObjectProducer · "error"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7413)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7558)
 
 ```cpp
 def_property_readonly("error",
@@ -5816,7 +5825,7 @@ def_property_readonly("error",
 
 ### SegmentedObjectProducer · "segment_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7412)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7557)
 
 ```cpp
 def_property_readonly("segment_count",
@@ -5825,7 +5834,7 @@ def_property_readonly("segment_count",
 
 ### SegmentedObjectProducer · "versioned_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7411)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7556)
 
 ```cpp
 def_property_readonly("versioned_name",
@@ -5834,7 +5843,7 @@ def_property_readonly("versioned_name",
 
 ### SegmentedObjectProducer · "base_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7410)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7555)
 
 ```cpp
 def_property_readonly("base_name",
@@ -5843,7 +5852,7 @@ def_property_readonly("base_name",
 
 ### SegmentedObjectProducer · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7409)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7554)
 
 ```cpp
 def("stop",
@@ -5852,7 +5861,7 @@ def("stop",
 
 ### SegmentedObjectProducer · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7408)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7553)
 
 ```cpp
 def("start",
@@ -5861,7 +5870,7 @@ def("start",
 
 ### FileSegmentedObjectProducer · "error"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7438)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7583)
 
 ```cpp
 def_property_readonly("error",
@@ -5870,7 +5879,7 @@ def_property_readonly("error",
 
 ### FileSegmentedObjectProducer · "public_key_der"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7437)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7582)
 
 ```cpp
 def_property_readonly("public_key_der",
@@ -5879,7 +5888,7 @@ def_property_readonly("public_key_der",
 
 ### FileSegmentedObjectProducer · "signing_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7436)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7581)
 
 ```cpp
 def_property_readonly("signing_ms",
@@ -5888,7 +5897,7 @@ def_property_readonly("signing_ms",
 
 ### FileSegmentedObjectProducer · "wire_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7435)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7580)
 
 ```cpp
 def_property_readonly("wire_bytes",
@@ -5897,7 +5906,7 @@ def_property_readonly("wire_bytes",
 
 ### FileSegmentedObjectProducer · "data_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7434)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7579)
 
 ```cpp
 def_property_readonly("data_count",
@@ -5906,7 +5915,7 @@ def_property_readonly("data_count",
 
 ### FileSegmentedObjectProducer · "file_size"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7433)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7578)
 
 ```cpp
 def_property_readonly("file_size",
@@ -5915,7 +5924,7 @@ def_property_readonly("file_size",
 
 ### FileSegmentedObjectProducer · "segment_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7432)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7577)
 
 ```cpp
 def_property_readonly("segment_count",
@@ -5924,7 +5933,7 @@ def_property_readonly("segment_count",
 
 ### FileSegmentedObjectProducer · "versioned_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7431)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7576)
 
 ```cpp
 def_property_readonly("versioned_name",
@@ -5933,7 +5942,7 @@ def_property_readonly("versioned_name",
 
 ### FileSegmentedObjectProducer · "base_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7430)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7575)
 
 ```cpp
 def_property_readonly("base_name",
@@ -5942,7 +5951,7 @@ def_property_readonly("base_name",
 
 ### FileSegmentedObjectProducer · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7429)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7574)
 
 ```cpp
 def("stop",
@@ -5951,7 +5960,7 @@ def("stop",
 
 ### FileSegmentedObjectProducer · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7428)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7573)
 
 ```cpp
 def("start",
@@ -5960,7 +5969,7 @@ def("start",
 
 ### DataPacket · "content"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7445)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7590)
 
 ```cpp
 def_readwrite("content",
@@ -5969,7 +5978,7 @@ def_readwrite("content",
 
 ### DataPacket · "wire"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7444)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7589)
 
 ```cpp
 def_readwrite("wire",
@@ -5978,7 +5987,7 @@ def_readwrite("wire",
 
 ### DataPacket · "segment"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7443)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7588)
 
 ```cpp
 def_readwrite("segment",
@@ -5987,7 +5996,7 @@ def_readwrite("segment",
 
 ### DataPacket · "name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7442)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7587)
 
 ```cpp
 def_readwrite("name",
@@ -5996,7 +6005,7 @@ def_readwrite("name",
 
 ### m · "verify_data_packet_signature"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7447)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7592)
 
 ```cpp
 def("verify_data_packet_signature",
@@ -6007,7 +6016,7 @@ py::arg("public_key_der"))
 
 ### m · "verify_detached_sha256_signature"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7449)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7594)
 
 ```cpp
 def("verify_detached_sha256_signature",
@@ -6019,7 +6028,7 @@ py::arg("public_key_der"))
 
 ### m · "verify_data_packet_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7451)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7596)
 
 ```cpp
 def("verify_data_packet_digest",
@@ -6029,7 +6038,7 @@ py::arg("wire"))
 
 ### SegmentHintRange · "forwarding_hints"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7458)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7603)
 
 ```cpp
 def_readwrite("forwarding_hints",
@@ -6038,7 +6047,7 @@ def_readwrite("forwarding_hints",
 
 ### SegmentHintRange · "end"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7457)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7602)
 
 ```cpp
 def_readwrite("end",
@@ -6047,7 +6056,7 @@ def_readwrite("end",
 
 ### SegmentHintRange · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7456)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7601)
 
 ```cpp
 def_readwrite("start",
@@ -6056,7 +6065,7 @@ def_readwrite("start",
 
 ### StoredDataProducer · "error"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7472)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7617)
 
 ```cpp
 def_property_readonly("error",
@@ -6065,7 +6074,7 @@ def_property_readonly("error",
 
 ### StoredDataProducer · "segment_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7471)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7616)
 
 ```cpp
 def_property_readonly("segment_count",
@@ -6074,7 +6083,7 @@ def_property_readonly("segment_count",
 
 ### StoredDataProducer · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7470)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7615)
 
 ```cpp
 def("stop",
@@ -6083,7 +6092,7 @@ def("stop",
 
 ### StoredDataProducer · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7469)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7614)
 
 ```cpp
 def("start",
@@ -6092,7 +6101,7 @@ def("start",
 
 ### RepoDataPlaneProducer · "error"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7491)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7636)
 
 ```cpp
 def_property_readonly("error",
@@ -6101,7 +6110,7 @@ def_property_readonly("error",
 
 ### RepoDataPlaneProducer · "thread_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7490)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7635)
 
 ```cpp
 def_property_readonly("thread_count",
@@ -6110,7 +6119,7 @@ def_property_readonly("thread_count",
 
 ### RepoDataPlaneProducer · "miss_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7489)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7634)
 
 ```cpp
 def_property_readonly("miss_count",
@@ -6119,7 +6128,7 @@ def_property_readonly("miss_count",
 
 ### RepoDataPlaneProducer · "hit_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7488)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7633)
 
 ```cpp
 def_property_readonly("hit_count",
@@ -6128,7 +6137,7 @@ def_property_readonly("hit_count",
 
 ### RepoDataPlaneProducer · "interest_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7486)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7631)
 
 ```cpp
 def_property_readonly("interest_count",
@@ -6137,7 +6146,7 @@ def_property_readonly("interest_count",
 
 ### RepoDataPlaneProducer · "active_prefix_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7484)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7629)
 
 ```cpp
 def_property_readonly("active_prefix_count",
@@ -6146,7 +6155,7 @@ def_property_readonly("active_prefix_count",
 
 ### RepoDataPlaneProducer · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7483)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7628)
 
 ```cpp
 def("stop",
@@ -6155,7 +6164,7 @@ def("stop",
 
 ### RepoDataPlaneProducer · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7482)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7627)
 
 ```cpp
 def("start",
@@ -6164,7 +6173,7 @@ def("start",
 
 ### RepoDataPlaneProducer · "activate_prefix"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7481)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7626)
 
 ```cpp
 def("activate_prefix",
@@ -6173,7 +6182,7 @@ def("activate_prefix",
 
 ### m · "make_segmented_data_packets"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7493)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7638)
 
 ```cpp
 def("make_segmented_data_packets",
@@ -6187,7 +6196,7 @@ py::arg("freshness_ms") = 60000)
 
 ### m · "make_signed_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7501)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7646)
 
 ```cpp
 def("make_signed_data",
@@ -6200,7 +6209,7 @@ py::arg("freshness_ms") = 300)
 
 ### m · "make_predictive_data_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7508)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7653)
 
 ```cpp
 def("make_predictive_data_name",
@@ -6212,7 +6221,7 @@ py::arg("sequence"))
 
 ### m · "wrap_selection_gated_input_key"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7514)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7659)
 
 ```cpp
 def("wrap_selection_gated_input_key",
@@ -6223,7 +6232,7 @@ py::arg("recipient_public_key"))
 
 ### m · "decode_data_packet"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7522)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7667)
 
 ```cpp
 def("decode_data_packet",
@@ -6233,7 +6242,7 @@ py::arg("wire"))
 
 ### m · "fetch_segmented_data_packets"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7526)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7671)
 
 ```cpp
 def("fetch_segmented_data_packets",
@@ -6246,7 +6255,7 @@ py::arg("forwarding_hints") = std::vector<std::string>{})
 
 ### AdaptiveSegmentFetchResult · "final_window"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7557)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7702)
 
 ```cpp
 def_readonly("final_window",
@@ -6255,7 +6264,7 @@ def_readonly("final_window",
 
 ### AdaptiveSegmentFetchResult · "maximum_in_flight"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7555)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7700)
 
 ```cpp
 def_readonly("maximum_in_flight",
@@ -6264,7 +6273,7 @@ def_readonly("maximum_in_flight",
 
 ### AdaptiveSegmentFetchResult · "retransmitted_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7553)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7698)
 
 ```cpp
 def_readonly("retransmitted_bytes",
@@ -6273,7 +6282,7 @@ def_readonly("retransmitted_bytes",
 
 ### AdaptiveSegmentFetchResult · "wire_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7552)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7697)
 
 ```cpp
 def_readonly("wire_bytes",
@@ -6282,7 +6291,7 @@ def_readonly("wire_bytes",
 
 ### AdaptiveSegmentFetchResult · "interest_wire_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7550)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7695)
 
 ```cpp
 def_readonly("interest_wire_bytes",
@@ -6291,7 +6300,7 @@ def_readonly("interest_wire_bytes",
 
 ### AdaptiveSegmentFetchResult · "data_wire_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7548)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7693)
 
 ```cpp
 def_readonly("data_wire_bytes",
@@ -6300,7 +6309,7 @@ def_readonly("data_wire_bytes",
 
 ### AdaptiveSegmentFetchResult · "logical_bytes"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7546)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7691)
 
 ```cpp
 def_readonly("logical_bytes",
@@ -6309,7 +6318,7 @@ def_readonly("logical_bytes",
 
 ### AdaptiveSegmentFetchResult · "timeout_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7544)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7689)
 
 ```cpp
 def_readonly("timeout_count",
@@ -6318,7 +6327,7 @@ def_readonly("timeout_count",
 
 ### AdaptiveSegmentFetchResult · "duplicate_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7542)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7687)
 
 ```cpp
 def_readonly("duplicate_count",
@@ -6327,7 +6336,7 @@ def_readonly("duplicate_count",
 
 ### AdaptiveSegmentFetchResult · "retransmission_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7540)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7685)
 
 ```cpp
 def_readonly("retransmission_count",
@@ -6336,7 +6345,7 @@ def_readonly("retransmission_count",
 
 ### AdaptiveSegmentFetchResult · "interest_count"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7538)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7683)
 
 ```cpp
 def_readonly("interest_count",
@@ -6345,7 +6354,7 @@ def_readonly("interest_count",
 
 ### AdaptiveSegmentFetchResult · "delivered_segments"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7536)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7681)
 
 ```cpp
 def_readonly("delivered_segments",
@@ -6354,7 +6363,7 @@ def_readonly("delivered_segments",
 
 ### AdaptiveSegmentFetchResult · "total_segments"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7534)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7679)
 
 ```cpp
 def_readonly("total_segments",
@@ -6363,7 +6372,7 @@ def_readonly("total_segments",
 
 ### m · "fetch_adaptive_segmented_data_packets"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7560)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7705)
 
 ```cpp
 def("fetch_adaptive_segmented_data_packets",
@@ -6381,7 +6390,7 @@ py::arg("on_packet"))
 
 ### m · "fetch_exact_data_packet"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7572)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7717)
 
 ```cpp
 def("fetch_exact_data_packet",
@@ -6395,7 +6404,7 @@ py::call_guard<py::gil_scoped_release>())
 
 ### m · "verify_and_unwrap_native_grant"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7584)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7729)
 
 ```cpp
 def("verify_and_unwrap_native_grant",
@@ -6424,7 +6433,7 @@ py::call_guard<py::gil_scoped_release>())
 
 ### m · "fetch_segmented_object"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7630)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7775)
 
 ```cpp
 def("fetch_segmented_object",
@@ -6439,7 +6448,7 @@ py::call_guard<py::gil_scoped_release>())
 
 ### m · "fetch_segmented_object_with_segment_hints"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7639)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7784)
 
 ```cpp
 def("fetch_segmented_object_with_segment_hints",
@@ -6453,7 +6462,7 @@ py::call_guard<py::gil_scoped_release>())
 
 ### m · "fetch_known_segmented_object_with_segment_hints"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7646)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7791)
 
 ```cpp
 def("fetch_known_segmented_object_with_segment_hints",
@@ -6468,7 +6477,7 @@ py::call_guard<py::gil_scoped_release>())
 
 ### CollaborationContext · "stream_cancelled"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7719)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7864)
 
 ```cpp
 def_property_readonly("stream_cancelled",
@@ -6477,7 +6486,7 @@ def_property_readonly("stream_cancelled",
 
 ### CollaborationContext · "fail_stream"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7717)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7862)
 
 ```cpp
 def("fail_stream",
@@ -6488,7 +6497,7 @@ py::arg("message"))
 
 ### CollaborationContext · "finish_stream"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7715)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7860)
 
 ```cpp
 def("finish_stream",
@@ -6499,7 +6508,7 @@ py::arg("reason") = 4)
 
 ### CollaborationContext · "publish_stream_event"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7713)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7858)
 
 ```cpp
 def("publish_stream_event",
@@ -6509,7 +6518,7 @@ py::arg("payload"))
 
 ### CollaborationContext · "is_streamed"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7712)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7857)
 
 ```cpp
 def_property_readonly("is_streamed",
@@ -6518,7 +6527,7 @@ def_property_readonly("is_streamed",
 
 ### CollaborationContext · "publish_final_response"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7710)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7855)
 
 ```cpp
 def("publish_final_response",
@@ -6528,7 +6537,7 @@ py::arg("payload"))
 
 ### CollaborationContext · "report_operation_status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7708)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7853)
 
 ```cpp
 def("report_operation_status",
@@ -6538,7 +6547,7 @@ py::arg("status"))
 
 ### CollaborationContext · "wait_for"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7703)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7848)
 
 ```cpp
 def("wait_for",
@@ -6551,7 +6560,7 @@ py::arg("timeout_ms") = 5000)
 
 ### CollaborationContext · "wait_one"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7699)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7844)
 
 ```cpp
 def("wait_one",
@@ -6563,7 +6572,7 @@ py::arg("timeout_ms") = 5000)
 
 ### CollaborationContext · "fetch_large_exact"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7694)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7839)
 
 ```cpp
 def("fetch_large_exact",
@@ -6576,7 +6585,7 @@ py::arg("expected_segments"))
 
 ### CollaborationContext · "fetch_large"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7690)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7835)
 
 ```cpp
 def("fetch_large",
@@ -6588,7 +6597,7 @@ py::arg("timeout_ms") = 5000)
 
 ### CollaborationContext · "publish_large_named"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7684)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7829)
 
 ```cpp
 def("publish_large_named",
@@ -6602,7 +6611,7 @@ py::arg("freshness_ms") = 60000)
 
 ### CollaborationContext · "publish_large"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7678)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7823)
 
 ```cpp
 def("publish_large",
@@ -6616,7 +6625,7 @@ py::arg("freshness_ms") = 60000)
 
 ### CollaborationContext · "publish"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7674)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7819)
 
 ```cpp
 def("publish",
@@ -6628,7 +6637,7 @@ py::arg("payload"))
 
 ### CollaborationContext · "allow_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7671)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7816)
 
 ```cpp
 def("allow_data",
@@ -6639,7 +6648,7 @@ py::arg("topic_prefix"))
 
 ### CollaborationContext · "fail"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7669)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7814)
 
 ```cpp
 def("fail",
@@ -6649,7 +6658,7 @@ py::arg("reason"))
 
 ### CollaborationContext · "fetch_encrypted_large_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7666)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7811)
 
 ```cpp
 def("fetch_encrypted_large_data",
@@ -6660,7 +6669,7 @@ py::arg("service") = "")
 
 ### CollaborationContext · "get_artifact"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7664)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7809)
 
 ```cpp
 def("get_artifact",
@@ -6670,7 +6679,7 @@ py::arg("artifact_name"))
 
 ### CollaborationContext · "fetch_artifact"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7661)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7806)
 
 ```cpp
 def("fetch_artifact",
@@ -6681,7 +6690,7 @@ py::arg("timeout_ms") = 5000)
 
 ### CollaborationContext · "assignment"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7660)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7805)
 
 ```cpp
 def_property_readonly("assignment",
@@ -6690,7 +6699,7 @@ def_property_readonly("assignment",
 
 ### CollaborationContext · "local_provider"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7659)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7804)
 
 ```cpp
 def_property_readonly("local_provider",
@@ -6699,7 +6708,7 @@ def_property_readonly("local_provider",
 
 ### CollaborationContext · "requester_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7658)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7803)
 
 ```cpp
 def_property_readonly("requester_name",
@@ -6708,7 +6717,7 @@ def_property_readonly("requester_name",
 
 ### CollaborationContext · "role"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7657)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7802)
 
 ```cpp
 def_property_readonly("role",
@@ -6717,7 +6726,7 @@ def_property_readonly("role",
 
 ### CollaborationContext · "session_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7656)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7801)
 
 ```cpp
 def_property_readonly("session_id",
@@ -6726,7 +6735,7 @@ def_property_readonly("session_id",
 
 ### NativeServiceController · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7739)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7884)
 
 ```cpp
 def("stop",
@@ -6735,7 +6744,7 @@ def("stop",
 
 ### NativeServiceController · "run"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7738)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7883)
 
 ```cpp
 def("run",
@@ -6745,7 +6754,7 @@ py::call_guard<py::gil_scoped_release>())
 
 ### NativeServiceController · "wait_until_ready"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7735)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7880)
 
 ```cpp
 def("wait_until_ready",
@@ -6756,7 +6765,7 @@ py::arg("timeout_ms") = 10000)
 
 ### NativeServiceController · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7734)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7879)
 
 ```cpp
 def("start",
@@ -6765,7 +6774,7 @@ def("start",
 
 ### StreamWriter · "remaining_deadline_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7748)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7893)
 
 ```cpp
 def_property_readonly("remaining_deadline_ms",
@@ -6774,7 +6783,7 @@ def_property_readonly("remaining_deadline_ms",
 
 ### StreamWriter · "cancelled"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7747)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7892)
 
 ```cpp
 def_property_readonly("cancelled",
@@ -6783,7 +6792,7 @@ def_property_readonly("cancelled",
 
 ### StreamWriter · "fail"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7745)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7890)
 
 ```cpp
 def("fail",
@@ -6794,7 +6803,7 @@ py::arg("message"))
 
 ### StreamWriter · "finish_stream"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7743)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7888)
 
 ```cpp
 def("finish_stream",
@@ -6805,7 +6814,7 @@ py::arg("reason") = 4)
 
 ### StreamWriter · "publish_event"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7742)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7887)
 
 ```cpp
 def("publish_event",
@@ -6815,7 +6824,7 @@ py::arg("payload"))
 
 ### NativeStreamedInvocationHandle · "cancel"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7755)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7900)
 
 ```cpp
 def("cancel",
@@ -6824,7 +6833,7 @@ def("cancel",
 
 ### NativeStreamedInvocationHandle · "metrics"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7754)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7899)
 
 ```cpp
 def_property_readonly("metrics",
@@ -6833,7 +6842,7 @@ def_property_readonly("metrics",
 
 ### NativeStreamedInvocationHandle · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7753)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7898)
 
 ```cpp
 def_property_readonly("status",
@@ -6842,7 +6851,7 @@ def_property_readonly("status",
 
 ### NativeStreamedInvocationHandle · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7752)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7897)
 
 ```cpp
 def_property_readonly("request_id",
@@ -6851,7 +6860,7 @@ def_property_readonly("request_id",
 
 ### NativeServiceProvider · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7844)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7989)
 
 ```cpp
 def("stop",
@@ -6860,7 +6869,7 @@ def("stop",
 
 ### NativeServiceProvider · "wait_until_ready"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7842)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7987)
 
 ```cpp
 def("wait_until_ready",
@@ -6870,7 +6879,7 @@ py::arg("timeout_ms") = 15000)
 
 ### NativeServiceProvider · "run"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7841)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7986)
 
 ```cpp
 def("run",
@@ -6880,7 +6889,7 @@ py::call_guard<py::gil_scoped_release>())
 
 ### NativeServiceProvider · "create_stream"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7839)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7984)
 
 ```cpp
 def("create_stream",
@@ -6890,7 +6899,7 @@ py::arg("config"))
 
 ### NativeServiceProvider · "create_live_stream"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7837)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7982)
 
 ```cpp
 def("create_live_stream",
@@ -6900,7 +6909,7 @@ py::arg("definition"))
 
 ### NativeServiceProvider · "start_ndnsd_periodic_publish"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7835)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7980)
 
 ```cpp
 def("start_ndnsd_periodic_publish",
@@ -6910,7 +6919,7 @@ py::arg("interval_seconds"))
 
 ### NativeServiceProvider · "set_ndnsd_meta"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7833)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7978)
 
 ```cpp
 def("set_ndnsd_meta",
@@ -6920,7 +6929,7 @@ py::arg("meta"))
 
 ### NativeServiceProvider · "update_ndnsd_meta"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7831)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7976)
 
 ```cpp
 def("update_ndnsd_meta",
@@ -6931,7 +6940,7 @@ py::arg("value"))
 
 ### NativeServiceProvider · "publish_service_info"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7829)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7974)
 
 ```cpp
 def("publish_service_info",
@@ -6943,7 +6952,7 @@ py::arg("meta_info") = py::dict())
 
 ### NativeServiceProvider · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7828)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7973)
 
 ```cpp
 def("start",
@@ -6952,7 +6961,7 @@ def("start",
 
 ### NativeServiceProvider · "add_collaboration_service"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7822)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7967)
 
 ```cpp
 def("add_collaboration_service",
@@ -6966,7 +6975,7 @@ py::arg("include_ack_context") = false)
 
 ### NativeServiceProvider · "set_r1_reservation_terminal_handler"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7819)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7964)
 
 ```cpp
 def("set_r1_reservation_terminal_handler",
@@ -6977,7 +6986,7 @@ py::arg("handler"))
 
 ### NativeServiceProvider · "set_r1_selection_decision_handler"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7816)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7961)
 
 ```cpp
 def("set_r1_selection_decision_handler",
@@ -6988,7 +6997,7 @@ py::arg("handler"))
 
 ### NativeServiceProvider · "register_opaque_selection_participant"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7811)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7956)
 
 ```cpp
 def("register_opaque_selection_participant",
@@ -7003,7 +7012,7 @@ py::arg("on_aborted"))
 
 ### NativeServiceProvider · "configure_opaque_selection_store"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7807)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7952)
 
 ```cpp
 def("configure_opaque_selection_store",
@@ -7016,7 +7025,7 @@ py::arg("max_prepare_ms") = 1000)
 
 ### NativeServiceProvider · "publish_stream_packet_for_test"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7804)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7949)
 
 ```cpp
 def("publish_stream_packet_for_test",
@@ -7026,7 +7035,7 @@ py::arg("wire"))
 
 ### NativeServiceProvider · "set_stream_retention_interceptor_for_test"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7801)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7946)
 
 ```cpp
 def("set_stream_retention_interceptor_for_test",
@@ -7036,7 +7045,7 @@ py::arg("callback"))
 
 ### NativeServiceProvider · "set_stream_publication_interceptor_for_test"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7798)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7943)
 
 ```cpp
 def("set_stream_publication_interceptor_for_test",
@@ -7046,7 +7055,7 @@ py::arg("callback"))
 
 ### NativeServiceProvider · "provider_signing_certificate_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7796)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7941)
 
 ```cpp
 def_property_readonly("provider_signing_certificate_name",
@@ -7055,7 +7064,7 @@ def_property_readonly("provider_signing_certificate_name",
 
 ### NativeServiceProvider · "provider_signing_key_name"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7794)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7939)
 
 ```cpp
 def_property_readonly("provider_signing_key_name",
@@ -7064,7 +7073,7 @@ def_property_readonly("provider_signing_key_name",
 
 ### NativeServiceProvider · "provider_identity"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7792)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7937)
 
 ```cpp
 def_property_readonly("provider_identity",
@@ -7073,7 +7082,7 @@ def_property_readonly("provider_identity",
 
 ### NativeServiceProvider · "provider_boot_epoch"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7790)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7935)
 
 ```cpp
 def_property_readonly("provider_boot_epoch",
@@ -7082,7 +7091,7 @@ def_property_readonly("provider_boot_epoch",
 
 ### NativeServiceProvider · "set_deployment_prepare_handler"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7787)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7932)
 
 ```cpp
 def("set_deployment_prepare_handler",
@@ -7092,7 +7101,7 @@ py::arg("handler"))
 
 ### NativeServiceProvider · "add_streaming_context_service"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7784)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7929)
 
 ```cpp
 def("add_streaming_context_service",
@@ -7103,7 +7112,7 @@ py::arg("handler"))
 
 ### NativeServiceProvider · "add_streaming_service"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7782)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7927)
 
 ```cpp
 def("add_streaming_service",
@@ -7114,7 +7123,7 @@ py::arg("handler"))
 
 ### NativeServiceProvider · "add_service"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7776)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7921)
 
 ```cpp
 def("add_service",
@@ -7128,7 +7137,7 @@ py::arg("include_ack_context") = false)
 
 ### NativeServiceUser · "pump"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8026)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8186)
 
 ```cpp
 def("pump",
@@ -7137,7 +7146,7 @@ def("pump",
 
 ### NativeServiceUser · "get_ndnsd_services"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8025)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8185)
 
 ```cpp
 def("get_ndnsd_services",
@@ -7146,7 +7155,7 @@ def("get_ndnsd_services",
 
 ### NativeServiceUser · "refresh_permissions"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8024)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8184)
 
 ```cpp
 def("refresh_permissions",
@@ -7155,7 +7164,7 @@ def("refresh_permissions",
 
 ### NativeServiceUser · "get_allowed_services"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8023)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8183)
 
 ```cpp
 def("get_allowed_services",
@@ -7164,7 +7173,7 @@ def("get_allowed_services",
 
 ### NativeServiceUser · "stop"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8021)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8181)
 
 ```cpp
 def("stop",
@@ -7174,7 +7183,7 @@ py::call_guard<py::gil_scoped_release>())
 
 ### NativeServiceUser · "start"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8016)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8176)
 
 ```cpp
 def("start",
@@ -7183,7 +7192,7 @@ def("start",
 
 ### NativeServiceUser · "get_collaboration_status_snapshot"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8013)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8173)
 
 ```cpp
 def("get_collaboration_status_snapshot",
@@ -7194,7 +7203,7 @@ py::arg("timeout_ms") = 500)
 
 ### NativeServiceUser · "query_collaboration_status"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8010)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8170)
 
 ```cpp
 def("query_collaboration_status",
@@ -7207,7 +7216,7 @@ py::arg("timeout_ms") = 500)
 
 ### NativeServiceUser · "request_collaboration_async"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7995)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8155)
 
 ```cpp
 def("request_collaboration_async",
@@ -7230,7 +7239,7 @@ py::arg("request_id") = "")
 
 ### NativeServiceUser · "publish_collaboration_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7991)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8151)
 
 ```cpp
 def("publish_collaboration_data",
@@ -7244,7 +7253,7 @@ py::arg("payload"))
 
 ### NativeServiceUser · "clear_verified_collaboration_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7988)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8148)
 
 ```cpp
 def("clear_verified_collaboration_data",
@@ -7255,7 +7264,7 @@ py::arg("key_scope"))
 
 ### NativeServiceUser · "wait_for_verified_collaboration_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7983)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8143)
 
 ```cpp
 def("wait_for_verified_collaboration_data",
@@ -7270,7 +7279,7 @@ py::arg("consume") = true)
 
 ### NativeServiceUser · "commit_collaboration_plan"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7973)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8133)
 
 ```cpp
 def("commit_collaboration_plan",
@@ -7292,7 +7301,7 @@ py::arg("role_provider_assignments") =
 
 ### NativeServiceUser · "begin_collaboration"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7962)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8122)
 
 ```cpp
 def("begin_collaboration",
@@ -7315,7 +7324,7 @@ py::arg("on_stream_error") = py::none())
 
 ### NativeServiceUser · "request_collaboration"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7948)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8108)
 
 ```cpp
 def("request_collaboration",
@@ -7337,7 +7346,7 @@ py::arg("request_id") = "")
 
 ### NativeServiceUser · "fetch_signed_app_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7945)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8105)
 
 ```cpp
 def("fetch_signed_app_data",
@@ -7349,7 +7358,7 @@ py::arg("timeout_ms") = 5000)
 
 ### NativeServiceUser · "publish_signed_app_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7942)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8102)
 
 ```cpp
 def("publish_signed_app_data",
@@ -7361,7 +7370,7 @@ py::arg("freshness_ms") = 60000)
 
 ### NativeServiceUser · "publish_encrypted_large_data"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7937)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8097)
 
 ```cpp
 def("publish_encrypted_large_data",
@@ -7374,7 +7383,7 @@ py::arg("freshness_ms") = 60000)
 
 ### NativeServiceUser · "stream_metrics_for_test"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7935)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8095)
 
 ```cpp
 def("stream_metrics_for_test",
@@ -7384,7 +7393,7 @@ py::arg("request_id"))
 
 ### NativeServiceUser · "cancel_stream_request"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7933)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8093)
 
 ```cpp
 def("cancel_stream_request",
@@ -7394,7 +7403,7 @@ py::arg("request_id"))
 
 ### NativeServiceUser · "request_service_streaming_handle"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7928)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8088)
 
 ```cpp
 def("request_service_streaming_handle",
@@ -7411,7 +7420,7 @@ py::arg("on_error"))
 
 ### NativeServiceUser · "request_service_streaming"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7924)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8084)
 
 ```cpp
 def("request_service_streaming",
@@ -7426,7 +7435,7 @@ py::arg("on_error"))
 
 ### NativeServiceUser · "request_service_targeted_async"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7917)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8077)
 
 ```cpp
 def("request_service_targeted_async",
@@ -7441,7 +7450,7 @@ py::arg("timeout_ms") = 5000)
 
 ### NativeServiceUser · "request_service_async"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7909)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8069)
 
 ```cpp
 def("request_service_async",
@@ -7457,7 +7466,7 @@ py::arg("strategy") = "first-responding")
 
 ### NativeServiceUser · "request_service_select"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7900)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8060)
 
 ```cpp
 def("request_service_select",
@@ -7474,7 +7483,7 @@ py::arg("request_capabilities") = std::nullopt)
 
 ### NativeServiceUser · "request_service_targeted"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7895)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8055)
 
 ```cpp
 def("request_service_targeted",
@@ -7487,7 +7496,7 @@ py::arg("timeout_ms") = 5000)
 
 ### NativeServiceUser · "request_service"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7886)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8046)
 
 ```cpp
 def("request_service",
@@ -7504,7 +7513,7 @@ py::arg("request_capabilities") = std::nullopt)
 
 ### NativeServiceUser · "subscribe_stream"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7877)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8037)
 
 ```cpp
 def("subscribe_stream",
@@ -7522,7 +7531,7 @@ py::arg("on_status") = std::optional<py::function>())
 
 ### NativeServiceUser · "open_live_stream"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7869)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8029)
 
 ```cpp
 def("open_live_stream",
@@ -7537,9 +7546,59 @@ py::arg("interest_lifetime_ms") = 500,
 py::arg("on_status") = std::optional<py::function>())
 ```
 
+### NativeServiceUser · "native_conversation_coordinator_from_config"
+
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8025)
+
+```cpp
+def("native_conversation_coordinator_from_config",
+&NativeServiceUser::nativeConversationCoordinatorFromConfig,
+py::arg("configuration_json"),
+py::arg("base_directory") = ".",
+py::keep_alive<0, 1>())
+```
+
+### NativeServiceUser · "native_inference_client_configured"
+
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8020)
+
+```cpp
+def("native_inference_client_configured",
+&NativeServiceUser::nativeInferenceClientConfigured,
+py::arg("runtime"),
+py::arg("preparation"),
+py::arg("admission"),
+py::arg("conversations") = nullptr,
+py::keep_alive<0, 1>())
+```
+
+### NativeServiceUser · "native_grant_client_from_config"
+
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8016)
+
+```cpp
+def("native_grant_client_from_config",
+&NativeServiceUser::nativeGrantClientFromConfig,
+py::arg("configuration_json"),
+py::arg("base_directory") = ".",
+py::keep_alive<0, 1>())
+```
+
+### NativeServiceUser · "native_preparation"
+
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8014)
+
+```cpp
+def("native_preparation",
+&NativeServiceUser::nativePreparation,
+py::arg("catalog"),
+py::arg("service_name"),
+py::keep_alive<0, 1>())
+```
+
 ### NativeServiceUser · "native_inference_client"
 
-[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L7867)
+[源码](../../pythonWrapper/src/ndnsf/_ndnsf.cpp#L8012)
 
 ```cpp
 def("native_inference_client",
@@ -7550,11 +7609,748 @@ py::keep_alive<0, 1>())
 
 ## pythonWrapper/src/ndnsf/di_bindings.cpp
 
-SHA-256：`58847625fc73fca2760ec96205743b1a0ce5fc131fc2fd91b4ee5f2a650e92c3`。
+SHA-256：`e214e8e6773a97bb3499b4f806a5132483bff268102e4fd725aa7ab344ae19da`。
+
+### CachePolicy · "REFRESH"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L210)
+
+```cpp
+value("REFRESH",
+di::CachePolicy::Refresh)
+```
+
+### CachePolicy · "USE_OR_FETCH"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L209)
+
+```cpp
+value("USE_OR_FETCH",
+di::CachePolicy::UseOrFetch)
+```
+
+### CachePolicy · "USE_OR_WAIT"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L208)
+
+```cpp
+value("USE_OR_WAIT",
+di::CachePolicy::UseOrWait)
+```
+
+### CachePolicy · "REQUIRE_READY"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L207)
+
+```cpp
+value("REQUIRE_READY",
+di::CachePolicy::RequireReady)
+```
+
+### PreparationStatus · "CANCELLED"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L216)
+
+```cpp
+value("CANCELLED",
+di::PreparationStatus::Cancelled)
+```
+
+### PreparationStatus · "FAILED"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L215)
+
+```cpp
+value("FAILED",
+di::PreparationStatus::Failed)
+```
+
+### PreparationStatus · "READY"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L214)
+
+```cpp
+value("READY",
+di::PreparationStatus::Ready)
+```
+
+### PreparationStatus · "PENDING"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L213)
+
+```cpp
+value("PENDING",
+di::PreparationStatus::Pending)
+```
+
+### PreparationOrigin · "REFRESHED"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L222)
+
+```cpp
+value("REFRESHED",
+di::PreparationReceipt::Origin::Refreshed)
+```
+
+### PreparationOrigin · "FETCHED"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L221)
+
+```cpp
+value("FETCHED",
+di::PreparationReceipt::Origin::Fetched)
+```
+
+### PreparationOrigin · "JOINED_IN_FLIGHT"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L220)
+
+```cpp
+value("JOINED_IN_FLIGHT",
+di::PreparationReceipt::Origin::JoinedInFlight)
+```
+
+### PreparationOrigin · "CACHE_HIT"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L219)
+
+```cpp
+value("CACHE_HIT",
+di::PreparationReceipt::Origin::CacheHit)
+```
+
+### RequestStatus · "CANCELLED"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L228)
+
+```cpp
+value("CANCELLED",
+di::RequestStatus::Cancelled)
+```
+
+### RequestStatus · "FAILED"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L227)
+
+```cpp
+value("FAILED",
+di::RequestStatus::Failed)
+```
+
+### RequestStatus · "SUCCEEDED"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L226)
+
+```cpp
+value("SUCCEEDED",
+di::RequestStatus::Succeeded)
+```
+
+### RequestStatus · "PENDING"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L225)
+
+```cpp
+value("PENDING",
+di::RequestStatus::Pending)
+```
+
+### ModelRegistration · "native_config_path"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L233)
+
+```cpp
+def_readwrite("native_config_path",
+&di::ModelRegistration::nativeConfigPath)
+```
+
+### ModelRegistration · "key"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L232)
+
+```cpp
+def_readwrite("key",
+&di::ModelRegistration::key)
+```
+
+### RuntimeConfig · "preparation_job_timeout_s"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L241)
+
+```cpp
+def_property("preparation_job_timeout_s",
+[] (const di::RuntimeConfig& config) { implementation omitted },
+[] (di::RuntimeConfig& config, const py::object& value) { implementation omitted })
+```
+
+### RuntimeConfig · "max_prepared_entries"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L240)
+
+```cpp
+def_readwrite("max_prepared_entries",
+&di::RuntimeConfig::maxPreparedEntries)
+```
+
+### RuntimeConfig · "max_prepared_bytes"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L239)
+
+```cpp
+def_readwrite("max_prepared_bytes",
+&di::RuntimeConfig::maxPreparedBytes)
+```
+
+### RuntimeConfig · "models"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L238)
+
+```cpp
+def_readwrite("models",
+&di::RuntimeConfig::models)
+```
+
+### RuntimeConfig · "native_config_path"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L237)
+
+```cpp
+def_readwrite("native_config_path",
+&di::RuntimeConfig::nativeConfigPath)
+```
+
+### UserConfig · "profile_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L251)
+
+```cpp
+def_readwrite("profile_name",
+&di::UserConfig::profileName)
+```
+
+### PrepareOptions · "timeout_s"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L256)
+
+```cpp
+def_property("timeout_s",
+[] (const di::PrepareOptions& options) { implementation omitted },
+[] (di::PrepareOptions& options, const py::object& value) { implementation omitted })
+```
+
+### PrepareOptions · "cache"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L255)
+
+```cpp
+def_readwrite("cache",
+&di::PrepareOptions::cache)
+```
+
+### ModelCapabilities · "conversations"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L274)
+
+```cpp
+def_readonly("conversations",
+&di::ModelCapabilities::conversations)
+```
+
+### ModelCapabilities · "streaming"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L273)
+
+```cpp
+def_readonly("streaming",
+&di::ModelCapabilities::streaming)
+```
+
+### ModelCapabilities · "output_modes"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L272)
+
+```cpp
+def_readonly("output_modes",
+&di::ModelCapabilities::outputModes)
+```
+
+### ModelCapabilities · "input_kinds"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L271)
+
+```cpp
+def_readonly("input_kinds",
+&di::ModelCapabilities::inputKinds)
+```
+
+### ModelCapabilities · "output_schema_json"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L270)
+
+```cpp
+def_readonly("output_schema_json",
+&di::ModelCapabilities::outputSchemaJson)
+```
+
+### ModelCapabilities · "input_schema_json"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L269)
+
+```cpp
+def_readonly("input_schema_json",
+&di::ModelCapabilities::inputSchemaJson)
+```
+
+### ModelManifest · "preparation_key_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L286)
+
+```cpp
+def_readonly("preparation_key_digest",
+&di::ModelManifest::preparationKeyDigest)
+```
+
+### ModelManifest · "task_contract_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L285)
+
+```cpp
+def_readonly("task_contract_digest",
+&di::ModelManifest::taskContractDigest)
+```
+
+### ModelManifest · "catalog_configuration_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L284)
+
+```cpp
+def_readonly("catalog_configuration_digest",
+&di::ModelManifest::catalogConfigurationDigest)
+```
+
+### ModelManifest · "planning_graph_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L283)
+
+```cpp
+def_readonly("planning_graph_digest",
+&di::ModelManifest::planningGraphDigest)
+```
+
+### ModelManifest · "canonical_graph_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L282)
+
+```cpp
+def_readonly("canonical_graph_digest",
+&di::ModelManifest::canonicalGraphDigest)
+```
+
+### ModelManifest · "task_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L281)
+
+```cpp
+def_readonly("task_name",
+&di::ModelManifest::taskName)
+```
+
+### ModelManifest · "model_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L280)
+
+```cpp
+def_readonly("model_digest",
+&di::ModelManifest::modelDigest)
+```
+
+### ModelManifest · "model_revision"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L279)
+
+```cpp
+def_readonly("model_revision",
+&di::ModelManifest::modelRevision)
+```
+
+### ModelManifest · "model_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L278)
+
+```cpp
+def_readonly("model_name",
+&di::ModelManifest::modelName)
+```
+
+### PreparationReceipt · "elapsed_s"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L292)
+
+```cpp
+def_property_readonly("elapsed_s",
+[] (const di::PreparationReceipt& receipt) { implementation omitted })
+```
+
+### PreparationReceipt · "manifest_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L291)
+
+```cpp
+def_readonly("manifest_digest",
+&di::PreparationReceipt::manifestDigest)
+```
+
+### PreparationReceipt · "preparation_key_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L290)
+
+```cpp
+def_readonly("preparation_key_digest",
+&di::PreparationReceipt::preparationKeyDigest)
+```
+
+### PreparationReceipt · "origin"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L289)
+
+```cpp
+def_readonly("origin",
+&di::PreparationReceipt::origin)
+```
+
+### GenerationOptions · "max_new_tokens"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L298)
+
+```cpp
+def_readwrite("max_new_tokens",
+&di::GenerationOptions::maxNewTokens)
+```
+
+### StreamOptions · "max_replacements"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L304)
+
+```cpp
+def_readwrite("max_replacements",
+&di::StreamOptions::maxReplacements)
+```
+
+### StreamOptions · "allow_replacement"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L303)
+
+```cpp
+def_readwrite("allow_replacement",
+&di::StreamOptions::allowReplacement)
+```
+
+### StreamOptions · "enabled"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L302)
+
+```cpp
+def_readwrite("enabled",
+&di::StreamOptions::enabled)
+```
+
+### RequestOptions · "stream"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L338)
+
+```cpp
+def_readwrite("stream",
+&di::RequestOptions::stream)
+```
+
+### RequestOptions · "generation"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L337)
+
+```cpp
+def_readwrite("generation",
+&di::RequestOptions::generation)
+```
+
+### RequestOptions · "output_mode"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L336)
+
+```cpp
+def_readwrite("output_mode",
+&di::RequestOptions::outputMode)
+```
+
+### RequestOptions · "application_request_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L335)
+
+```cpp
+def_readwrite("application_request_id",
+&di::RequestOptions::applicationRequestId)
+```
+
+### RequestOptions · "provider_names"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L334)
+
+```cpp
+def_readwrite("provider_names",
+&di::RequestOptions::providerNames)
+```
+
+### RequestOptions · "placement"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L325)
+
+```cpp
+def_property("placement",
+[] (const di::RequestOptions& options) { implementation omitted },
+[] (di::RequestOptions& options, std::shared_ptr<di::PlacementStrategy> value) { implementation omitted })
+```
+
+### RequestOptions · "ack_timeout_s"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L318)
+
+```cpp
+def_property("ack_timeout_s",
+[] (const di::RequestOptions& options) { implementation omitted },
+[] (di::RequestOptions& options, const py::object& value) { implementation omitted })
+```
+
+### RequestOptions · "timeout_s"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L311)
+
+```cpp
+def_property("timeout_s",
+[] (const di::RequestOptions& options) { implementation omitted },
+[] (di::RequestOptions& options, const py::object& value) { implementation omitted })
+```
+
+### DataRef · "canonical_metadata"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L343)
+
+```cpp
+def("canonical_metadata",
+&di::DataRef::canonicalMetadata)
+```
+
+### DataRef · "from_published_metadata"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L341)
+
+```cpp
+def_static("from_published_metadata",
+&di::DataRef::fromPublishedMetadata,
+py::arg("canonical_reference_json"))
+```
+
+### Input · "repository"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L349)
+
+```cpp
+def_static("repository",
+&di::Input::repository,
+py::arg("reference"))
+```
+
+### Input · "text"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L348)
+
+```cpp
+def_static("text",
+&di::Input::text,
+py::arg("utf8"))
+```
+
+### Input · "inline_bytes"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L346)
+
+```cpp
+def_static("inline_bytes",
+&di::Input::inlineBytes,
+py::arg("payload"),
+py::arg("application_options") = std::vector<std::uint8_t>{})
+```
+
+### Result · "matches_float32_tensor"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L356)
+
+```cpp
+def("matches_float32_tensor",
+&di::Result::matchesFloat32Tensor,
+py::arg("tensor_name"),
+py::arg("expected"),
+py::arg("tolerance"))
+```
+
+### Result · "plan_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L355)
+
+```cpp
+def_readonly("plan_digest",
+&di::Result::planDigest)
+```
+
+### Result · "model_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L354)
+
+```cpp
+def_readonly("model_digest",
+&di::Result::modelDigest)
+```
+
+### Result · "request_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L353)
+
+```cpp
+def_readonly("request_id",
+&di::Result::requestId)
+```
+
+### Result · "payload"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L352)
+
+```cpp
+def_readonly("payload",
+&di::Result::payload)
+```
+
+### Event · "sequence"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L363)
+
+```cpp
+def_readonly("sequence",
+&di::Event::sequence)
+```
+
+### Event · "terminal"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L362)
+
+```cpp
+def_readonly("terminal",
+&di::Event::terminal)
+```
+
+### Event · "payload"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L361)
+
+```cpp
+def_readonly("payload",
+&di::Event::payload)
+```
+
+### Event · "request_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L360)
+
+```cpp
+def_readonly("request_id",
+&di::Event::requestId)
+```
+
+### RequestDiagnostics · "observation_dropped"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L366)
+
+```cpp
+def_readonly("observation_dropped",
+&di::RequestDiagnostics::observationDropped)
+```
+
+### ConversationCheckpoint · "to_bytes"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L371)
+
+```cpp
+def("to_bytes",
+&di::ConversationCheckpoint::bytes)
+```
+
+### ConversationCheckpoint · "from_bytes"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L369)
+
+```cpp
+def_static("from_bytes",
+&di::ConversationCheckpoint::fromBytes,
+py::arg("bytes"))
+```
+
+### ConversationOptions · "checkpoint"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L376)
+
+```cpp
+def_readwrite("checkpoint",
+&di::ConversationOptions::checkpoint)
+```
+
+### ConversationOptions · "conversation_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L375)
+
+```cpp
+def_readwrite("conversation_id",
+&di::ConversationOptions::conversationId)
+```
+
+### Subscription · "__exit__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L387)
+
+```cpp
+def("__exit__",
+[] (ndn_service_framework::OperationSubscription& subscription,
+                           py::object, py::object, py::object) { implementation omitted })
+```
+
+### Subscription · "__enter__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L383)
+
+```cpp
+def("__enter__",
+[] (ndn_service_framework::OperationSubscription& subscription)
+         -> ndn_service_framework::OperationSubscription& { implementation omitted },
+py::return_value_policy::reference_internal)
+```
+
+### Subscription · "unsubscribe"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L382)
+
+```cpp
+def("unsubscribe",
+&ndn_service_framework::OperationSubscription::unsubscribe)
+```
+
+### Subscription · "cancel"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L381)
+
+```cpp
+def("cancel",
+&ndn_service_framework::OperationSubscription::cancel)
+```
 
 ### NativeRequestStatus · "CANCELLED"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L38)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L397)
 
 ```cpp
 value("CANCELLED",
@@ -7563,7 +8359,7 @@ di::NativeRequestStatus::Cancelled)
 
 ### NativeRequestStatus · "FAILED"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L37)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L396)
 
 ```cpp
 value("FAILED",
@@ -7572,7 +8368,7 @@ di::NativeRequestStatus::Failed)
 
 ### NativeRequestStatus · "SUCCEEDED"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L36)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L395)
 
 ```cpp
 value("SUCCEEDED",
@@ -7581,7 +8377,7 @@ di::NativeRequestStatus::Succeeded)
 
 ### NativeRequestStatus · "PENDING"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L35)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L394)
 
 ```cpp
 value("PENDING",
@@ -7590,7 +8386,7 @@ di::NativeRequestStatus::Pending)
 
 ### NativeInputTransportMode · "REPOSITORY_REFERENCE"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L43)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L402)
 
 ```cpp
 value("REPOSITORY_REFERENCE",
@@ -7599,16 +8395,567 @@ di::NativeInputTransportMode::RepositoryReference)
 
 ### NativeInputTransportMode · "INLINE"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L42)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L401)
 
 ```cpp
 value("INLINE",
 di::NativeInputTransportMode::Inline)
 ```
 
+### NativeInvocationMode · "TARGETED"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L407)
+
+```cpp
+value("TARGETED",
+ndn_service_framework::InvocationMode::Targeted)
+```
+
+### NativeInvocationMode · "NORMAL"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L406)
+
+```cpp
+value("NORMAL",
+ndn_service_framework::InvocationMode::Normal)
+```
+
+### NativeControllerVersion · "to_string"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L417)
+
+```cpp
+def("to_string",
+&ndn_service_framework::ControllerVersion::toString)
+```
+
+### NativeControllerVersion · "is_valid"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L416)
+
+```cpp
+def("is_valid",
+&ndn_service_framework::ControllerVersion::isValid)
+```
+
+### NativeControllerVersion · "controller_epoch"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L414)
+
+```cpp
+def_readwrite("controller_epoch",
+&ndn_service_framework::ControllerVersion::controllerEpoch)
+```
+
+### NativeControllerVersion · "controller_generation_timestamp"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L412)
+
+```cpp
+def_readwrite("controller_generation_timestamp",
+&ndn_service_framework::ControllerVersion::controllerGenerationTimestamp)
+```
+
+### NativeGenerationExecutionContractV1 · "streaming_operation_stride"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L456)
+
+```cpp
+def_readwrite("streaming_operation_stride",
+&di::NativeGenerationExecutionContractV1::streamingOperationStride)
+```
+
+### NativeGenerationExecutionContractV1 · "committed_prefix_token_ids"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L454)
+
+```cpp
+def_readwrite("committed_prefix_token_ids",
+&di::NativeGenerationExecutionContractV1::committedPrefixTokenIds)
+```
+
+### NativeGenerationExecutionContractV1 · "generation_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L452)
+
+```cpp
+def_readwrite("generation_id",
+&di::NativeGenerationExecutionContractV1::generationId)
+```
+
+### NativeGenerationExecutionContractV1 · "stop_strings"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L450)
+
+```cpp
+def_readwrite("stop_strings",
+&di::NativeGenerationExecutionContractV1::stopStrings)
+```
+
+### NativeGenerationExecutionContractV1 · "sampling_seed"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L448)
+
+```cpp
+def_readwrite("sampling_seed",
+&di::NativeGenerationExecutionContractV1::samplingSeed)
+```
+
+### NativeGenerationExecutionContractV1 · "sampling_repetition_penalty"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L446)
+
+```cpp
+def_readwrite("sampling_repetition_penalty",
+&di::NativeGenerationExecutionContractV1::samplingRepetitionPenalty)
+```
+
+### NativeGenerationExecutionContractV1 · "sampling_top_p"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L444)
+
+```cpp
+def_readwrite("sampling_top_p",
+&di::NativeGenerationExecutionContractV1::samplingTopP)
+```
+
+### NativeGenerationExecutionContractV1 · "sampling_top_k"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L442)
+
+```cpp
+def_readwrite("sampling_top_k",
+&di::NativeGenerationExecutionContractV1::samplingTopK)
+```
+
+### NativeGenerationExecutionContractV1 · "sampling_temperature"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L440)
+
+```cpp
+def_readwrite("sampling_temperature",
+&di::NativeGenerationExecutionContractV1::samplingTemperature)
+```
+
+### NativeGenerationExecutionContractV1 · "sampling_mode"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L438)
+
+```cpp
+def_readwrite("sampling_mode",
+&di::NativeGenerationExecutionContractV1::samplingMode)
+```
+
+### NativeGenerationExecutionContractV1 · "tokenizer_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L436)
+
+```cpp
+def_readwrite("tokenizer_digest",
+&di::NativeGenerationExecutionContractV1::tokenizerDigest)
+```
+
+### NativeGenerationExecutionContractV1 · "sampling_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L434)
+
+```cpp
+def_readwrite("sampling_digest",
+&di::NativeGenerationExecutionContractV1::samplingDigest)
+```
+
+### NativeGenerationExecutionContractV1 · "eos_token_ids"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L432)
+
+```cpp
+def_readwrite("eos_token_ids",
+&di::NativeGenerationExecutionContractV1::eosTokenIds)
+```
+
+### NativeGenerationExecutionContractV1 · "state_output_names"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L430)
+
+```cpp
+def_readwrite("state_output_names",
+&di::NativeGenerationExecutionContractV1::stateOutputNames)
+```
+
+### NativeGenerationExecutionContractV1 · "state_input_names"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L428)
+
+```cpp
+def_readwrite("state_input_names",
+&di::NativeGenerationExecutionContractV1::stateInputNames)
+```
+
+### NativeGenerationExecutionContractV1 · "token_input_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L426)
+
+```cpp
+def_readwrite("token_input_name",
+&di::NativeGenerationExecutionContractV1::tokenInputName)
+```
+
+### NativeGenerationExecutionContractV1 · "max_generated_tokens"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L424)
+
+```cpp
+def_readwrite("max_generated_tokens",
+&di::NativeGenerationExecutionContractV1::maxGeneratedTokens)
+```
+
+### NativeGenerationExecutionContractV1 · "mode"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L423)
+
+```cpp
+def_readwrite("mode",
+&di::NativeGenerationExecutionContractV1::mode)
+```
+
+### NativeGenerationExecutionContractV1 · "enabled"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L422)
+
+```cpp
+def_readwrite("enabled",
+&di::NativeGenerationExecutionContractV1::enabled)
+```
+
+### NativeConversationContinuation · "expected_roles"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L480)
+
+```cpp
+def_readwrite("expected_roles",
+&di::NativeConversationContinuation::expectedRoles)
+```
+
+### NativeConversationContinuation · "canonical_token_ids"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L478)
+
+```cpp
+def_readwrite("canonical_token_ids",
+&di::NativeConversationContinuation::canonicalTokenIds)
+```
+
+### NativeConversationContinuation · "generation_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L477)
+
+```cpp
+def_readwrite("generation_id",
+&di::NativeConversationContinuation::generationId)
+```
+
+### NativeConversationContinuation · "parent_checkpoint_wire"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L475)
+
+```cpp
+def_readwrite("parent_checkpoint_wire",
+&di::NativeConversationContinuation::parentCheckpointWire)
+```
+
+### NativeConversationContinuation · "mode"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L474)
+
+```cpp
+def_readwrite("mode",
+&di::NativeConversationContinuation::mode)
+```
+
+### NativeConversationContinuation · "retention_deadline_ms"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L472)
+
+```cpp
+def_readwrite("retention_deadline_ms",
+&di::NativeConversationContinuation::retentionDeadlineMs)
+```
+
+### NativeConversationContinuation · "request_contract_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L470)
+
+```cpp
+def_readwrite("request_contract_digest",
+&di::NativeConversationContinuation::requestContractDigest)
+```
+
+### NativeConversationContinuation · "parent_checkpoint_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L468)
+
+```cpp
+def_readwrite("parent_checkpoint_digest",
+&di::NativeConversationContinuation::parentCheckpointDigest)
+```
+
+### NativeConversationContinuation · "plan_role_map_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L466)
+
+```cpp
+def_readwrite("plan_role_map_digest",
+&di::NativeConversationContinuation::planRoleMapDigest)
+```
+
+### NativeConversationContinuation · "service_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L465)
+
+```cpp
+def_readwrite("service_name",
+&di::NativeConversationContinuation::serviceName)
+```
+
+### NativeConversationContinuation · "parent_context_epoch"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L463)
+
+```cpp
+def_readwrite("parent_context_epoch",
+&di::NativeConversationContinuation::parentContextEpoch)
+```
+
+### NativeConversationContinuation · "conversation_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L462)
+
+```cpp
+def_readwrite("conversation_id",
+&di::NativeConversationContinuation::conversationId)
+```
+
+### NativeStreamRequestOptions · "wire_decode"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L529)
+
+```cpp
+def("wire_decode",
+[] (ndn_service_framework::StreamRequestOptions& options,
+                              const py::bytes& wireBytes) { implementation omitted })
+```
+
+### NativeStreamRequestOptions · "wire_encode"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L525)
+
+```cpp
+def("wire_encode",
+[] (const ndn_service_framework::StreamRequestOptions& options) { implementation omitted })
+```
+
+### NativeStreamRequestOptions · "validate"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L524)
+
+```cpp
+def("validate",
+&ndn_service_framework::StreamRequestOptions::validate)
+```
+
+### NativeStreamRequestOptions · "max_replacements"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L522)
+
+```cpp
+def_readwrite("max_replacements",
+&ndn_service_framework::StreamRequestOptions::maxReplacements)
+```
+
+### NativeStreamRequestOptions · "allow_replacement"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L520)
+
+```cpp
+def_readwrite("allow_replacement",
+&ndn_service_framework::StreamRequestOptions::allowReplacement)
+```
+
+### NativeStreamRequestOptions · "max_event_wire_bytes"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L518)
+
+```cpp
+def_readwrite("max_event_wire_bytes",
+&ndn_service_framework::StreamRequestOptions::maxEventWireBytes)
+```
+
+### NativeStreamRequestOptions · "completion_grace_ms"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L516)
+
+```cpp
+def_readwrite("completion_grace_ms",
+&ndn_service_framework::StreamRequestOptions::completionGraceMs)
+```
+
+### NativeStreamRequestOptions · "retention_ms"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L515)
+
+```cpp
+def_readwrite("retention_ms",
+&ndn_service_framework::StreamRequestOptions::retentionMs)
+```
+
+### NativeStreamRequestOptions · "reorder_capacity"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L513)
+
+```cpp
+def_readwrite("reorder_capacity",
+&ndn_service_framework::StreamRequestOptions::reorderCapacity)
+```
+
+### NativeStreamRequestOptions · "callback_queue_capacity"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L511)
+
+```cpp
+def_readwrite("callback_queue_capacity",
+&ndn_service_framework::StreamRequestOptions::callbackQueueCapacity)
+```
+
+### NativeStreamRequestOptions · "publisher_queue_capacity"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L509)
+
+```cpp
+def_readwrite("publisher_queue_capacity",
+&ndn_service_framework::StreamRequestOptions::publisherQueueCapacity)
+```
+
+### NativeStreamRequestOptions · "max_event_retries"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L507)
+
+```cpp
+def_readwrite("max_event_retries",
+&ndn_service_framework::StreamRequestOptions::maxEventRetries)
+```
+
+### NativeStreamRequestOptions · "interest_lifetime_ms"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L505)
+
+```cpp
+def_readwrite("interest_lifetime_ms",
+&ndn_service_framework::StreamRequestOptions::interestLifetimeMs)
+```
+
+### NativeStreamRequestOptions · "interest_window"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L504)
+
+```cpp
+def_readwrite("interest_window",
+&ndn_service_framework::StreamRequestOptions::interestWindow)
+```
+
+### NativeStreamRequestOptions · "max_events"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L503)
+
+```cpp
+def_readwrite("max_events",
+&ndn_service_framework::StreamRequestOptions::maxEvents)
+```
+
+### NativeStreamRequestOptions · "event_key_grant_wire"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L496)
+
+```cpp
+def_property("event_key_grant_wire",
+[] (const ndn_service_framework::StreamRequestOptions& options) { implementation omitted },
+[] (ndn_service_framework::StreamRequestOptions& options, const py::object& value) { implementation omitted })
+```
+
+### NativeStreamRequestOptions · "controller_version"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L494)
+
+```cpp
+def_readwrite("controller_version",
+&ndn_service_framework::StreamRequestOptions::controllerVersion)
+```
+
+### NativeStreamRequestOptions · "deadline_epoch_ms"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L492)
+
+```cpp
+def_readwrite("deadline_epoch_ms",
+&ndn_service_framework::StreamRequestOptions::deadlineEpochMs)
+```
+
+### NativeStreamRequestOptions · "event_key_commitment"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L490)
+
+```cpp
+def_readwrite("event_key_commitment",
+&ndn_service_framework::StreamRequestOptions::eventKeyCommitment)
+```
+
+### NativeStreamRequestOptions · "stream_epoch"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L489)
+
+```cpp
+def_readwrite("stream_epoch",
+&ndn_service_framework::StreamRequestOptions::streamEpoch)
+```
+
+### NativeStreamRequestOptions · "attempt_epoch"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L488)
+
+```cpp
+def_readwrite("attempt_epoch",
+&ndn_service_framework::StreamRequestOptions::attemptEpoch)
+```
+
+### NativeStreamRequestOptions · "generation_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L487)
+
+```cpp
+def_readwrite("generation_id",
+&ndn_service_framework::StreamRequestOptions::generationId)
+```
+
+### NativeStreamRequestOptions · "mode"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L486)
+
+```cpp
+def_readwrite("mode",
+&ndn_service_framework::StreamRequestOptions::mode)
+```
+
+### NativeStreamRequestOptions · "version"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L485)
+
+```cpp
+def_readwrite("version",
+&ndn_service_framework::StreamRequestOptions::version)
+```
+
 ### NativeAdapterDescriptor · "descriptor_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L66)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L558)
 
 ```cpp
 def_property_readonly("descriptor_digest",
@@ -7617,7 +8964,7 @@ def_property_readonly("descriptor_digest",
 
 ### NativeAdapterDescriptor · "canonical_json"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L65)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L557)
 
 ```cpp
 def("canonical_json",
@@ -7626,7 +8973,7 @@ def("canonical_json",
 
 ### NativeAdapterDescriptor · "deterministic_analysis"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L64)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L556)
 
 ```cpp
 def_readwrite("deterministic_analysis",
@@ -7635,7 +8982,7 @@ def_readwrite("deterministic_analysis",
 
 ### NativeAdapterDescriptor · "splittable"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L63)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L555)
 
 ```cpp
 def_readwrite("splittable",
@@ -7644,7 +8991,7 @@ def_readwrite("splittable",
 
 ### NativeAdapterDescriptor · "graph_inspectable"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L62)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L554)
 
 ```cpp
 def_readwrite("graph_inspectable",
@@ -7653,7 +9000,7 @@ def_readwrite("graph_inspectable",
 
 ### NativeAdapterDescriptor · "state_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L61)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L553)
 
 ```cpp
 def_readwrite("state_schema_digest",
@@ -7662,7 +9009,7 @@ def_readwrite("state_schema_digest",
 
 ### NativeAdapterDescriptor · "split_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L60)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L552)
 
 ```cpp
 def_readwrite("split_schema_digest",
@@ -7671,7 +9018,7 @@ def_readwrite("split_schema_digest",
 
 ### NativeAdapterDescriptor · "graph_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L59)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L551)
 
 ```cpp
 def_readwrite("graph_schema_digest",
@@ -7680,7 +9027,7 @@ def_readwrite("graph_schema_digest",
 
 ### NativeAdapterDescriptor · "result_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L58)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L550)
 
 ```cpp
 def_readwrite("result_schema_digest",
@@ -7689,7 +9036,7 @@ def_readwrite("result_schema_digest",
 
 ### NativeAdapterDescriptor · "options_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L57)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L549)
 
 ```cpp
 def_readwrite("options_schema_digest",
@@ -7698,7 +9045,7 @@ def_readwrite("options_schema_digest",
 
 ### NativeAdapterDescriptor · "input_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L56)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L548)
 
 ```cpp
 def_readwrite("input_schema_digest",
@@ -7707,7 +9054,7 @@ def_readwrite("input_schema_digest",
 
 ### NativeAdapterDescriptor · "precisions"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L55)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L547)
 
 ```cpp
 def_readwrite("precisions",
@@ -7716,7 +9063,7 @@ def_readwrite("precisions",
 
 ### NativeAdapterDescriptor · "backends"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L54)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L546)
 
 ```cpp
 def_readwrite("backends",
@@ -7725,7 +9072,7 @@ def_readwrite("backends",
 
 ### NativeAdapterDescriptor · "tasks"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L53)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L545)
 
 ```cpp
 def_readwrite("tasks",
@@ -7734,7 +9081,7 @@ def_readwrite("tasks",
 
 ### NativeAdapterDescriptor · "model_formats"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L52)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L544)
 
 ```cpp
 def_readwrite("model_formats",
@@ -7743,7 +9090,7 @@ def_readwrite("model_formats",
 
 ### NativeAdapterDescriptor · "abi"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L51)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L543)
 
 ```cpp
 def_readwrite("abi",
@@ -7752,7 +9099,7 @@ def_readwrite("abi",
 
 ### NativeAdapterDescriptor · "state_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L50)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L542)
 
 ```cpp
 def_readwrite("state_digest",
@@ -7761,7 +9108,7 @@ def_readwrite("state_digest",
 
 ### NativeAdapterDescriptor · "version"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L49)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L541)
 
 ```cpp
 def_readwrite("version",
@@ -7770,7 +9117,7 @@ def_readwrite("version",
 
 ### NativeAdapterDescriptor · "name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L48)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L540)
 
 ```cpp
 def_readwrite("name",
@@ -7779,7 +9126,7 @@ def_readwrite("name",
 
 ### NativeModelDescriptor · "model_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L81)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L573)
 
 ```cpp
 def_property_readonly("model_digest",
@@ -7788,7 +9135,7 @@ def_property_readonly("model_digest",
 
 ### NativeModelDescriptor · "canonical_json"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L80)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L572)
 
 ```cpp
 def("canonical_json",
@@ -7797,7 +9144,7 @@ def("canonical_json",
 
 ### NativeModelDescriptor · "source_revision"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L79)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L571)
 
 ```cpp
 def_readwrite("source_revision",
@@ -7806,7 +9153,7 @@ def_readwrite("source_revision",
 
 ### NativeModelDescriptor · "adapter"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L78)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L570)
 
 ```cpp
 def_readwrite("adapter",
@@ -7815,7 +9162,7 @@ def_readwrite("adapter",
 
 ### NativeModelDescriptor · "adapter_version"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L77)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L569)
 
 ```cpp
 def_readwrite("adapter_version",
@@ -7824,7 +9171,7 @@ def_readwrite("adapter_version",
 
 ### NativeModelDescriptor · "adapter_id"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L76)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L568)
 
 ```cpp
 def_readwrite("adapter_id",
@@ -7833,7 +9180,7 @@ def_readwrite("adapter_id",
 
 ### NativeModelDescriptor · "precision"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L75)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L567)
 
 ```cpp
 def_readwrite("precision",
@@ -7842,7 +9189,7 @@ def_readwrite("precision",
 
 ### NativeModelDescriptor · "model_format"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L74)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L566)
 
 ```cpp
 def_readwrite("model_format",
@@ -7851,7 +9198,7 @@ def_readwrite("model_format",
 
 ### NativeModelDescriptor · "graph_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L73)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L565)
 
 ```cpp
 def_readwrite("graph_digest",
@@ -7860,7 +9207,7 @@ def_readwrite("graph_digest",
 
 ### NativeModelDescriptor · "semantics_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L72)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L564)
 
 ```cpp
 def_readwrite("semantics_digest",
@@ -7869,7 +9216,7 @@ def_readwrite("semantics_digest",
 
 ### NativeModelDescriptor · "content_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L71)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L563)
 
 ```cpp
 def_readwrite("content_digest",
@@ -7878,7 +9225,7 @@ def_readwrite("content_digest",
 
 ### NativeModelDescriptor · "model_name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L70)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L562)
 
 ```cpp
 def_readwrite("model_name",
@@ -7887,7 +9234,7 @@ def_readwrite("model_name",
 
 ### NativeApplicationInput · "repository_reference"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L94)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L586)
 
 ```cpp
 def_readwrite("repository_reference",
@@ -7896,7 +9243,7 @@ def_readwrite("repository_reference",
 
 ### NativeApplicationInput · "transport_mode"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L93)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L585)
 
 ```cpp
 def_readwrite("transport_mode",
@@ -7905,7 +9252,7 @@ def_readwrite("transport_mode",
 
 ### NativeApplicationInput · "options"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L92)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L584)
 
 ```cpp
 def_readwrite("options",
@@ -7914,7 +9261,7 @@ def_readwrite("options",
 
 ### NativeApplicationInput · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L91)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L583)
 
 ```cpp
 def_readwrite("payload",
@@ -7923,7 +9270,7 @@ def_readwrite("payload",
 
 ### NativeApplicationInput · "options_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L90)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L582)
 
 ```cpp
 def_readwrite("options_schema_digest",
@@ -7932,7 +9279,7 @@ def_readwrite("options_schema_digest",
 
 ### NativeApplicationInput · "input_schema_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L89)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L581)
 
 ```cpp
 def_readwrite("input_schema_digest",
@@ -7941,16 +9288,52 @@ def_readwrite("input_schema_digest",
 
 ### NativeApplicationInput · "task_name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L88)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L580)
 
 ```cpp
 def_readwrite("task_name",
 &di::NativeApplicationInput::taskName)
 ```
 
+### NativeRequestOptions · "conversation"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L597)
+
+```cpp
+def_readwrite("conversation",
+&di::NativeRequestOptions::conversation)
+```
+
+### NativeRequestOptions · "stream"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L596)
+
+```cpp
+def_readwrite("stream",
+&di::NativeRequestOptions::stream)
+```
+
+### NativeRequestOptions · "generation"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L595)
+
+```cpp
+def_readwrite("generation",
+&di::NativeRequestOptions::generation)
+```
+
+### NativeRequestOptions · "application_request_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L594)
+
+```cpp
+def_readwrite("application_request_id",
+&di::NativeRequestOptions::applicationRequestId)
+```
+
 ### NativeRequestOptions · "output_mode"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L101)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L593)
 
 ```cpp
 def_readwrite("output_mode",
@@ -7959,7 +9342,7 @@ def_readwrite("output_mode",
 
 ### NativeRequestOptions · "task_name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L100)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L592)
 
 ```cpp
 def_readwrite("task_name",
@@ -7968,7 +9351,7 @@ def_readwrite("task_name",
 
 ### NativeRequestOptions · "ack_timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L99)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L591)
 
 ```cpp
 def_readwrite("ack_timeout_ms",
@@ -7977,16 +9360,354 @@ def_readwrite("ack_timeout_ms",
 
 ### NativeRequestOptions · "timeout_ms"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L98)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L590)
 
 ```cpp
 def_readwrite("timeout_ms",
 &di::NativeRequestOptions::timeoutMs)
 ```
 
+### NativeRequestContract · "tokenizer_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L608)
+
+```cpp
+def_readwrite("tokenizer_digest",
+&di::NativeRequestContract::tokenizerDigest)
+```
+
+### NativeRequestContract · "generation_mode"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L607)
+
+```cpp
+def_readwrite("generation_mode",
+&di::NativeRequestContract::generationMode)
+```
+
+### NativeRequestContract · "task_descriptor_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L606)
+
+```cpp
+def_readwrite("task_descriptor_digest",
+&di::NativeRequestContract::taskDescriptorDigest)
+```
+
+### NativeRequestContract · "adapter_composition_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L605)
+
+```cpp
+def_readwrite("adapter_composition_digest",
+&di::NativeRequestContract::adapterCompositionDigest)
+```
+
+### NativeRequestContract · "adapter_descriptor_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L604)
+
+```cpp
+def_readwrite("adapter_descriptor_digest",
+&di::NativeRequestContract::adapterDescriptorDigest)
+```
+
+### NativeRequestContract · "adapter_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L603)
+
+```cpp
+def_readwrite("adapter_name",
+&di::NativeRequestContract::adapterName)
+```
+
+### NativeRequestContract · "task_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L602)
+
+```cpp
+def_readwrite("task_name",
+&di::NativeRequestContract::taskName)
+```
+
+### NativeRequestContract · "service_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L601)
+
+```cpp
+def_readwrite("service_name",
+&di::NativeRequestContract::serviceName)
+```
+
+### NativeSecurityPolicySnapshot · "require_protected_artifacts"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L613)
+
+```cpp
+def_readwrite("require_protected_artifacts",
+&di::NativeSecurityPolicySnapshot::requireProtectedArtifacts)
+```
+
+### NativeSecurityPolicySnapshot · "policy_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L612)
+
+```cpp
+def_readwrite("policy_digest",
+&di::NativeSecurityPolicySnapshot::policyDigest)
+```
+
+### NativeCandidateBudget · "max_reentries"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L619)
+
+```cpp
+def_readwrite("max_reentries",
+&di::NativeCandidateBudget::maxReentries)
+```
+
+### NativeCandidateBudget · "max_policy_ms"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L618)
+
+```cpp
+def_readwrite("max_policy_ms",
+&di::NativeCandidateBudget::maxPolicyMs)
+```
+
+### NativeCandidateBudget · "max_candidates"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L617)
+
+```cpp
+def_readwrite("max_candidates",
+&di::NativeCandidateBudget::maxCandidates)
+```
+
+### NativeStateTensorMapping · "outputs"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L624)
+
+```cpp
+def_readwrite("outputs",
+&di::NativeStateTensorMapping::outputs)
+```
+
+### NativeStateTensorMapping · "inputs"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L623)
+
+```cpp
+def_readwrite("inputs",
+&di::NativeStateTensorMapping::inputs)
+```
+
+### NativeCanonicalPreparationCatalog · "adapters"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L633)
+
+```cpp
+def_property_readonly("adapters",
+&di::NativeCanonicalPreparationCatalog::adapters)
+```
+
+### NativeRequestCatalog · "load"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L676)
+
+```cpp
+def_static("load",
+[](const std::string& configuration_json,
+                            const py::bytes& model_bytes,
+                            const py::object& initializer_bytes,
+                            std::uint64_t max_source_bytes,
+                            std::uint64_t max_assembled_bytes) { implementation omitted },
+py::arg("configuration_json"),
+py::arg("model_bytes"),
+py::arg("initializer_bytes") = py::none(),
+py::arg("max_source_bytes") = 256ULL * 1024ULL * 1024ULL,
+py::arg("max_assembled_bytes") = 512ULL * 1024ULL * 1024ULL)
+```
+
+### NativeRequestCatalog · "state_mapping"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L675)
+
+```cpp
+def_readonly("state_mapping",
+&di::NativeRequestCatalog::stateMapping)
+```
+
+### NativeRequestCatalog · "splitter"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L674)
+
+```cpp
+def_readonly("splitter",
+&di::NativeRequestCatalog::splitter)
+```
+
+### NativeRequestCatalog · "preparation"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L673)
+
+```cpp
+def_readonly("preparation",
+&di::NativeRequestCatalog::preparation)
+```
+
+### NativeRequestCatalog · "canonical_initializer_object_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L670)
+
+```cpp
+def_property_readonly("canonical_initializer_object_digest",
+[] (const di::NativeRequestCatalog& catalog) { implementation omitted })
+```
+
+### NativeRequestCatalog · "canonical_source_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L667)
+
+```cpp
+def_property_readonly("canonical_source_digest",
+[] (const di::NativeRequestCatalog& catalog) { implementation omitted })
+```
+
+### NativeRequestCatalog · "model_manifest_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L664)
+
+```cpp
+def_property_readonly("model_manifest_digest",
+[] (const di::NativeRequestCatalog& catalog) { implementation omitted })
+```
+
+### NativeRequestCatalog · "model_ref"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L659)
+
+```cpp
+def_property_readonly("model_ref",
+[] (const di::NativeRequestCatalog& catalog) { implementation omitted })
+```
+
+### NativeRequestRuntime · "max_segments"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L713)
+
+```cpp
+def_readwrite("max_segments",
+&di::NativeRequestRuntime::maxSegments)
+```
+
+### NativeRequestRuntime · "no_progress_ms"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L712)
+
+```cpp
+def_readwrite("no_progress_ms",
+&di::NativeRequestRuntime::noProgressMs)
+```
+
+### NativeRequestRuntime · "state_mapping"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L711)
+
+```cpp
+def_readwrite("state_mapping",
+&di::NativeRequestRuntime::stateMapping)
+```
+
+### NativeRequestRuntime · "catalog"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L710)
+
+```cpp
+def_readwrite("catalog",
+&di::NativeRequestRuntime::catalog)
+```
+
+### NativeRequestRuntime · "grants"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L709)
+
+```cpp
+def_readwrite("grants",
+&di::NativeRequestRuntime::grants)
+```
+
+### NativeRequestRuntime · "budget"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L708)
+
+```cpp
+def_readwrite("budget",
+&di::NativeRequestRuntime::budget)
+```
+
+### NativeRequestRuntime · "security"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L707)
+
+```cpp
+def_readwrite("security",
+&di::NativeRequestRuntime::security)
+```
+
+### NativeRequestRuntime · "input_layout_digest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L706)
+
+```cpp
+def_readwrite("input_layout_digest",
+&di::NativeRequestRuntime::inputLayoutDigest)
+```
+
+### NativeRequestRuntime · "protection_epoch"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L705)
+
+```cpp
+def_readwrite("protection_epoch",
+&di::NativeRequestRuntime::protectionEpoch)
+```
+
+### NativeRequestRuntime · "requester_identity"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L704)
+
+```cpp
+def_readwrite("requester_identity",
+&di::NativeRequestRuntime::requesterIdentity)
+```
+
+### NativeRequestRuntime · "contract"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L703)
+
+```cpp
+def_readwrite("contract",
+&di::NativeRequestRuntime::contract)
+```
+
+### module · "native_request_runtime_from_json"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L715)
+
+```cpp
+def("native_request_runtime_from_json",
+[](const std::string& configuration_json,
+                const di::NativeRequestCatalog& catalog,
+                std::shared_ptr<const di::NativeAuthenticatedGrantClient> grants) { implementation omitted },
+py::arg("configuration_json"),
+py::arg("catalog"),
+py::arg("grants"))
+```
+
 ### NativeInferenceResult · "plan_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L107)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L727)
 
 ```cpp
 def_readonly("plan_digest",
@@ -7995,7 +9716,7 @@ def_readonly("plan_digest",
 
 ### NativeInferenceResult · "model_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L106)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L726)
 
 ```cpp
 def_readonly("model_digest",
@@ -8004,7 +9725,7 @@ def_readonly("model_digest",
 
 ### NativeInferenceResult · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L105)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L725)
 
 ```cpp
 def_readonly("payload",
@@ -8013,7 +9734,7 @@ def_readonly("payload",
 
 ### NativeInferenceEvent · "terminal"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L112)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L732)
 
 ```cpp
 def_readonly("terminal",
@@ -8022,7 +9743,7 @@ def_readonly("terminal",
 
 ### NativeInferenceEvent · "payload"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L111)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L731)
 
 ```cpp
 def_readonly("payload",
@@ -8031,7 +9752,7 @@ def_readonly("payload",
 
 ### NativeInferenceEvent · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L110)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L730)
 
 ```cpp
 def_readonly("request_id",
@@ -8040,7 +9761,7 @@ def_readonly("request_id",
 
 ### NativeAdapterRegistry · "frozen"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L119)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L739)
 
 ```cpp
 def_property_readonly("frozen",
@@ -8049,7 +9770,7 @@ def_property_readonly("frozen",
 
 ### NativeAdapterRegistry · "find"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L118)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L738)
 
 ```cpp
 def("find",
@@ -8058,7 +9779,7 @@ def("find",
 
 ### NativeAdapterRegistry · "freeze"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L117)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L737)
 
 ```cpp
 def("freeze",
@@ -8067,7 +9788,7 @@ def("freeze",
 
 ### NativeYoloComponentSpec · "candidate_digest"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L157)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L777)
 
 ```cpp
 def_readwrite("candidate_digest",
@@ -8076,7 +9797,7 @@ def_readwrite("candidate_digest",
 
 ### NativeYoloComponentSpec · "merge_kind"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L156)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L776)
 
 ```cpp
 def_readwrite("merge_kind",
@@ -8085,7 +9806,7 @@ def_readwrite("merge_kind",
 
 ### NativeYoloComponentSpec · "result_egress_role"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L154)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L774)
 
 ```cpp
 def_readwrite("result_egress_role",
@@ -8094,7 +9815,7 @@ def_readwrite("result_egress_role",
 
 ### NativeYoloComponentSpec · "input_ingress_role"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L152)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L772)
 
 ```cpp
 def_readwrite("input_ingress_role",
@@ -8103,7 +9824,7 @@ def_readwrite("input_ingress_role",
 
 ### NativeYoloComponentSpec · "node_names_by_role"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L150)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L770)
 
 ```cpp
 def_readwrite("node_names_by_role",
@@ -8112,7 +9833,7 @@ def_readwrite("node_names_by_role",
 
 ### NativeYoloComponentSpec · "roles"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L149)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L769)
 
 ```cpp
 def_readwrite("roles",
@@ -8121,7 +9842,7 @@ def_readwrite("roles",
 
 ### NativeYoloComponentSpec · "priority"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L148)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L768)
 
 ```cpp
 def_readwrite("priority",
@@ -8130,7 +9851,7 @@ def_readwrite("priority",
 
 ### NativeYoloComponentSpec · "candidate_id"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L147)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L767)
 
 ```cpp
 def_readwrite("candidate_id",
@@ -8139,16 +9860,27 @@ def_readwrite("candidate_id",
 
 ### NativeInferenceHandle · "status_name"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L180)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L819)
 
 ```cpp
 def_property_readonly("status_name",
 [](const di::NativeInferenceHandle& handle) { implementation omitted })
 ```
 
+### NativeInferenceHandle · "observe"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L803)
+
+```cpp
+def("observe",
+[] (di::NativeInferenceHandle& handle,
+                         py::function observer) { implementation omitted },
+py::arg("observer"))
+```
+
 ### NativeInferenceHandle · "cancel"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L179)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L802)
 
 ```cpp
 def("cancel",
@@ -8157,7 +9889,7 @@ def("cancel",
 
 ### NativeInferenceHandle · "result"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L175)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L797)
 
 ```cpp
 def("result",
@@ -8168,16 +9900,34 @@ py::arg("wait_timeout_ms") = 0)
 
 ### NativeInferenceHandle · "status"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L174)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L796)
 
 ```cpp
 def_property_readonly("status",
 &di::NativeInferenceHandle::status)
 ```
 
+### NativeInferenceHandle · "conversation_checkpoint"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L795)
+
+```cpp
+def_property_readonly("conversation_checkpoint",
+&di::NativeInferenceHandle::conversationCheckpoint)
+```
+
+### NativeInferenceHandle · "application_request_id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L794)
+
+```cpp
+def_property_readonly("application_request_id",
+&di::NativeInferenceHandle::applicationRequestId)
+```
+
 ### NativeInferenceHandle · "request_id"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L173)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L793)
 
 ```cpp
 def_property_readonly("request_id",
@@ -8186,7 +9936,7 @@ def_property_readonly("request_id",
 
 ### NativeInferenceClient · "request"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L187)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L826)
 
 ```cpp
 def("request",
@@ -8200,9 +9950,751 @@ py::arg("options"))
 
 ### NativeInferenceClient · "close"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L186)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L825)
 
 ```cpp
 def("close",
 &di::NativeInferenceClient::close)
+```
+
+### EventReader · "__exit__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L874)
+
+```cpp
+def("__exit__",
+[] (di::EventReader& reader, py::object, py::object, py::object) { implementation omitted })
+```
+
+### EventReader · "__enter__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L871)
+
+```cpp
+def("__enter__",
+[] (di::EventReader& reader) -> di::EventReader& { implementation omitted },
+py::return_value_policy::reference_internal)
+```
+
+### EventReader · "close"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L870)
+
+```cpp
+def("close",
+&di::EventReader::close)
+```
+
+### EventReader · "next_async"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L839)
+
+```cpp
+def("next_async",
+[] (const di::EventReader& reader,
+                             const py::object& timeout,
+                             const py::object& callback) -> py::object { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none(),
+py::arg("callback") = py::none())
+```
+
+### EventReader · "next"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L831)
+
+```cpp
+def("next",
+[] (di::EventReader& reader, const py::object& timeout) { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none())
+```
+
+### RequestHandle · "cancel"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L977)
+
+```cpp
+def("cancel",
+&di::RequestHandle::cancel)
+```
+
+### RequestHandle · "observe"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L964)
+
+```cpp
+def("observe",
+[] (const di::RequestHandle& handle, py::function callback) { implementation omitted },
+py::arg("callback"))
+```
+
+### RequestHandle · "result_async"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L931)
+
+```cpp
+def("result_async",
+[] (const di::RequestHandle& handle, const py::object& timeout,
+                              const py::object& callback) -> py::object { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none(),
+py::arg("callback") = py::none())
+```
+
+### RequestHandle · "on_completion"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L917)
+
+```cpp
+def("on_completion",
+[] (const di::RequestHandle& handle, py::function callback) { implementation omitted },
+py::arg("callback"))
+```
+
+### RequestHandle · "diagnostics"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L916)
+
+```cpp
+def_property_readonly("diagnostics",
+&di::RequestHandle::diagnostics)
+```
+
+### RequestHandle · "events_async"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L910)
+
+```cpp
+def("events_async",
+[] (const di::RequestHandle& handle,
+                               const py::object& timeout) { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none())
+```
+
+### RequestHandle · "events"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L909)
+
+```cpp
+def("events",
+&di::RequestHandle::events)
+```
+
+### RequestHandle · "wait"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L900)
+
+```cpp
+def("wait",
+[] (const di::RequestHandle& handle, const py::object& timeout) { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none())
+```
+
+### RequestHandle · "result"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L891)
+
+```cpp
+def("result",
+[] (const di::RequestHandle& handle, const py::object& timeout) { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none())
+```
+
+### RequestHandle · "status_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L882)
+
+```cpp
+def_property_readonly("status_name",
+[] (const di::RequestHandle& handle) { implementation omitted })
+```
+
+### RequestHandle · "status"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L881)
+
+```cpp
+def_property_readonly("status",
+&di::RequestHandle::status)
+```
+
+### RequestHandle · "id"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L880)
+
+```cpp
+def_property_readonly("id",
+&di::RequestHandle::id)
+```
+
+### PreparedModel · "open_conversation"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L994)
+
+```cpp
+def("open_conversation",
+&di::PreparedModel::openConversation,
+py::kw_only(),
+py::arg("options") = di::ConversationOptions{})
+```
+
+### PreparedModel · "run"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L988)
+
+```cpp
+def("run",
+[] (const di::PreparedModel& model, const di::Input& input,
+                     const di::RequestOptions& options) { implementation omitted },
+py::arg("input"),
+py::kw_only(),
+py::arg("options") = di::RequestOptions{})
+```
+
+### PreparedModel · "request"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L985)
+
+```cpp
+def("request",
+&di::PreparedModel::request,
+py::arg("input"),
+py::kw_only(),
+py::arg("options") = di::RequestOptions{})
+```
+
+### PreparedModel · "capabilities"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L984)
+
+```cpp
+def_property_readonly("capabilities",
+&di::PreparedModel::capabilities)
+```
+
+### PreparedModel · "receipt"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L982)
+
+```cpp
+def_property_readonly("receipt",
+&di::PreparedModel::receipt,
+py::return_value_policy::reference_internal)
+```
+
+### PreparedModel · "manifest"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L980)
+
+```cpp
+def_property_readonly("manifest",
+&di::PreparedModel::manifest,
+py::return_value_policy::reference_internal)
+```
+
+### PreparationHandle · "cancel"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1064)
+
+```cpp
+def("cancel",
+&di::PreparationHandle::cancel)
+```
+
+### PreparationHandle · "on_completion"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1050)
+
+```cpp
+def("on_completion",
+[] (const di::PreparationHandle& handle, py::function callback) { implementation omitted },
+py::arg("callback"))
+```
+
+### PreparationHandle · "result_async"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1017)
+
+```cpp
+def("result_async",
+[] (const di::PreparationHandle& handle, const py::object& timeout,
+                              const py::object& callback) -> py::object { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none(),
+py::arg("callback") = py::none())
+```
+
+### PreparationHandle · "result"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1008)
+
+```cpp
+def("result",
+[] (const di::PreparationHandle& handle, const py::object& timeout) { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none())
+```
+
+### PreparationHandle · "status_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L999)
+
+```cpp
+def_property_readonly("status_name",
+[] (const di::PreparationHandle& handle) { implementation omitted })
+```
+
+### PreparationHandle · "status"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L998)
+
+```cpp
+def_property_readonly("status",
+&di::PreparationHandle::status)
+```
+
+### Conversation · "__exit__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1080)
+
+```cpp
+def("__exit__",
+[] (di::Conversation& conversation, py::object, py::object, py::object) { implementation omitted })
+```
+
+### Conversation · "__enter__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1077)
+
+```cpp
+def("__enter__",
+[] (di::Conversation& conversation) -> di::Conversation& { implementation omitted },
+py::return_value_policy::reference_internal)
+```
+
+### Conversation · "close"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1076)
+
+```cpp
+def("close",
+&di::Conversation::close)
+```
+
+### Conversation · "export_checkpoint"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1071)
+
+```cpp
+def("export_checkpoint",
+[] (const di::Conversation& conversation,
+                                   const std::string& destination) { implementation omitted },
+py::arg("destination"))
+```
+
+### Conversation · "checkpoint"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1070)
+
+```cpp
+def("checkpoint",
+&di::Conversation::checkpoint)
+```
+
+### Conversation · "request"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1067)
+
+```cpp
+def("request",
+&di::Conversation::request,
+py::arg("input"),
+py::kw_only(),
+py::arg("options") = di::RequestOptions{})
+```
+
+### NativeProviderConfig · "equivalent"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1089)
+
+```cpp
+def("equivalent",
+&di::ProviderConfig::equivalent)
+```
+
+### NativeProviderConfig · "valid"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1088)
+
+```cpp
+def("valid",
+&di::ProviderConfig::valid)
+```
+
+### NativeProviderConfig · "from_file"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1087)
+
+```cpp
+def_static("from_file",
+&di::ProviderConfig::fromFile,
+py::arg("path"))
+```
+
+### ServiceDefinition · "allowed_roles"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1094)
+
+```cpp
+def_readwrite("allowed_roles",
+&di::ServiceDefinition::allowedRoles)
+```
+
+### ServiceDefinition · "service_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1093)
+
+```cpp
+def_readwrite("service_name",
+&di::ServiceDefinition::serviceName)
+```
+
+### ProviderCounters · "active_leases"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1101)
+
+```cpp
+def_readonly("active_leases",
+&di::ProviderCounters::activeLeases)
+```
+
+### ProviderCounters · "runners_created"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1100)
+
+```cpp
+def_readonly("runners_created",
+&di::ProviderCounters::runnersCreated)
+```
+
+### ProviderCounters · "template_hits"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1099)
+
+```cpp
+def_readonly("template_hits",
+&di::ProviderCounters::templateHits)
+```
+
+### ProviderCounters · "assemblies"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1098)
+
+```cpp
+def_readonly("assemblies",
+&di::ProviderCounters::assemblies)
+```
+
+### ProviderCounters · "source_fetches"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1097)
+
+```cpp
+def_readonly("source_fetches",
+&di::ProviderCounters::sourceFetches)
+```
+
+### ProviderRegistration · "__exit__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1111)
+
+```cpp
+def("__exit__",
+[] (di::ProviderRegistration& registration, py::object, py::object, py::object) { implementation omitted })
+```
+
+### ProviderRegistration · "__enter__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1108)
+
+```cpp
+def("__enter__",
+[] (di::ProviderRegistration& registration) -> di::ProviderRegistration& { implementation omitted },
+py::return_value_policy::reference_internal)
+```
+
+### ProviderRegistration · "service_name"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1107)
+
+```cpp
+def_property_readonly("service_name",
+&di::ProviderRegistration::serviceName)
+```
+
+### ProviderRegistration · "valid"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1106)
+
+```cpp
+def("valid",
+&di::ProviderRegistration::valid)
+```
+
+### ProviderRegistration · "closed"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1105)
+
+```cpp
+def("closed",
+&di::ProviderRegistration::closed)
+```
+
+### ProviderRegistration · "close"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1104)
+
+```cpp
+def("close",
+&di::ProviderRegistration::close)
+```
+
+### Provider · "counters"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1148)
+
+```cpp
+def_property_readonly("counters",
+&di::Provider::counters)
+```
+
+### Provider · "valid"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1147)
+
+```cpp
+def("valid",
+&di::Provider::valid)
+```
+
+### Provider · "drain_async"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1128)
+
+```cpp
+def("drain_async",
+[] (const di::Provider& provider, const py::object& timeout,
+                             const py::object& callback) -> py::object { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none(),
+py::arg("callback") = py::none())
+```
+
+### Provider · "drain"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1123)
+
+```cpp
+def("drain",
+[] (const di::Provider& provider, const py::object& timeout) { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none())
+```
+
+### Provider · "stop"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1122)
+
+```cpp
+def("stop",
+&di::Provider::stop)
+```
+
+### Provider · "serve"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1118)
+
+```cpp
+def("serve",
+[] (di::Provider& provider, const di::ServiceDefinition& definition) { implementation omitted },
+py::arg("definition"))
+```
+
+### User · "prepare_async"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1167)
+
+```cpp
+def("prepare_async",
+[] (const di::User& user, const std::string& modelKey,
+                                const di::PrepareOptions& options,
+                                const py::object& timeout) { implementation omitted },
+py::arg("model_key") = "default",
+py::kw_only(),
+py::arg("options") = di::PrepareOptions{},
+py::arg("timeout_s") = py::none())
+```
+
+### User · "start_prepare"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1159)
+
+```cpp
+def("start_prepare",
+[] (const di::User& user, const std::string& modelKey,
+                                di::PrepareOptions options, const py::object& timeout) { implementation omitted },
+py::arg("model_key") = "default",
+py::kw_only(),
+py::arg("options") = di::PrepareOptions{},
+py::arg("timeout_s") = py::none())
+```
+
+### User · "prepare"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1151)
+
+```cpp
+def("prepare",
+[] (const di::User& user, const std::string& modelKey,
+                         di::PrepareOptions options, const py::object& timeout) { implementation omitted },
+py::arg("model_key") = "default",
+py::kw_only(),
+py::arg("options") = di::PrepareOptions{},
+py::arg("timeout_s") = py::none())
+```
+
+### Runtime · "__aexit__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1249)
+
+```cpp
+def("__aexit__",
+[] (std::shared_ptr<di::Runtime> runtime,
+                            py::object excType, py::object exc, py::object traceback) { implementation omitted })
+```
+
+### Runtime · "__aenter__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1245)
+
+```cpp
+def("__aenter__",
+[] (std::shared_ptr<di::Runtime> runtime) { implementation omitted })
+```
+
+### Runtime · "__exit__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1227)
+
+```cpp
+def("__exit__",
+[] (di::Runtime& runtime, py::object excType,
+                           py::object, py::object) { implementation omitted })
+```
+
+### Runtime · "__enter__"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1224)
+
+```cpp
+def("__enter__",
+[] (di::Runtime& runtime) -> di::Runtime& { implementation omitted },
+py::return_value_policy::reference_internal)
+```
+
+### Runtime · "drain_async"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1204)
+
+```cpp
+def("drain_async",
+[] (std::shared_ptr<di::Runtime> runtime,
+                             const py::object& timeout,
+                             const py::object& callback) -> py::object { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none(),
+py::arg("callback") = py::none())
+```
+
+### Runtime · "drain"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1199)
+
+```cpp
+def("drain",
+[] (const di::Runtime& runtime, const py::object& timeout) { implementation omitted },
+py::kw_only(),
+py::arg("timeout_s") = py::none())
+```
+
+### Runtime · "close"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1198)
+
+```cpp
+def("close",
+&di::Runtime::close)
+```
+
+### Runtime · "provider"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1195)
+
+```cpp
+def("provider",
+[] (di::Runtime& runtime) { implementation omitted })
+```
+
+### Runtime · "provider"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1192)
+
+```cpp
+def("provider",
+[] (di::Runtime& runtime, const di::ProviderConfig& config) { implementation omitted },
+py::arg("config"))
+```
+
+### Runtime · "placement_strategy"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1187)
+
+```cpp
+def("placement_strategy",
+[] (const di::Runtime& runtime, const std::string& id) { implementation omitted },
+py::arg("id"))
+```
+
+### Runtime · "user"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1186)
+
+```cpp
+def("user",
+&di::Runtime::user,
+py::arg("config") = di::UserConfig{})
+```
+
+### Runtime · "open"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1182)
+
+```cpp
+def_static("open",
+[] (di::ProviderConfig config) { implementation omitted },
+py::arg("provider_config"))
+```
+
+### Runtime · "open"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1178)
+
+```cpp
+def_static("open",
+[] (di::RuntimeConfig config) { implementation omitted },
+py::arg("config"))
 ```

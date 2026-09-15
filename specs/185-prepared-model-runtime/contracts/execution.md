@@ -64,8 +64,10 @@ NativeConversationCheckpoint/commit回调；advanced转换仍复用原native sch
 coordinator 在追加轮次把它接在 durable parent 后并验证严格增长；公开
 `RequestOptions` 不接受调用者提供的 token lineage，也不由 Python 侧分词或伪造。
 adapter 没有 operator-pinned conversation input encoder 时，准备/会话请求必须显式报
-`UNSUPPORTED_CAPABILITY`；本期 fixture 的 `OPAQUE_BYTE_TOKEN_IDS` 仅是其声明的
-受限输入契约，不代表通用模型 tokenizer。
+`UNSUPPORTED_CAPABILITY`；fixture 可声明 `OPAQUE_BYTE_TOKEN_IDS`（逐字节受限输入）或
+`TENSOR_BUNDLE_TOKEN_IDS`（从已认证 tensor bundle 的指定 Int64 token tensor 提取），均不代表
+通用模型 tokenizer。输入编码器必须与执行 coordinator 使用同一 token suffix，不能把 transport
+framing bytes 当作会话 token。
 checkpoint() 仅返回已提交快照；未提交首轮报 `CHECKPOINT_NOT_READY`。
 恢复必须验证 requester、model、task、tokenizer、conversation 与 receipt 绑定，不接受换模型的 checkpoint。
 持久 wire 复用现有格式和 owner，禁止新增一个只存内存“已成功”的会话副本。

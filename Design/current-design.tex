@@ -3,10 +3,11 @@
 \input{layout.tex}
 \begin{document}
 \begin{quote}
-\textbf{源码基线提示（2026-09-12）：}本书主体与 API 清单绑定已登记的历史源码快照。
-Spec185 规划审计发现当前工作树相对该快照有 54 个既有文件变化，尚未完成全书语义刷新。
-最新 DI 请求与资格状态以 Spec184 的任务和证据为准；Spec185 的 PreparedModel/Runtime
-属于目标设计，尚未实现。本次仅重建文档与登记目标，不声称全书符合最新工作树。
+\textbf{源码基线提示（2026-09-15）：}本书与 API 清单绑定
+\code{source-baseline.json} 记录的当前工作树快照，基线提交为
+\texttt{\SourceBaseline}，并保留未提交源码差异补丁及快照身份。
+Spec185 的 PreparedModel/Runtime、C++ 请求过程和薄 Python 绑定已有当前实现及
+对应证据；未观测的子解释器、wheel 打包、外部模型与 Spec184 资格仍保持原状态，不能由本书升级。
 \end{quote}
 \tableofcontents
 \clearpage
