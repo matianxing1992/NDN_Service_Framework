@@ -45,6 +45,7 @@ of the stopping point; it is not a qualification result.
 | `base-sif-disk-boundary-r78-20260915.md` | r78 local-first extraction retry | base mounted but full unsquashfs extraction exceeded the previous free-space working set; capacity gate added |
 | `native-sif-r80-rpath-boundary-20260915.md` | r80 local 1.5.3 complete SIF build and immutable probe | 284/284 and import/ldd passed, but `/src/ndn-svs/build` leaked into RUNPATH; candidate retained as runtime-boundary failure and rebuilt after Waf correction |
 | `native-sif-r81-rpath-boundary-20260915.md` | r81 rebuild after Waf RUNPATH correction | 284/284 and final import/ldd passed, but setuptools wrappers reintroduced `/src/ndn-svs/build`; wrapper rpath fix requires a new candidate |
+| `native-sif-r83-closure-20260915.md` | r83 exact local 1.5.3 SIF build and immutable runtime closure | 284/284, ten imports, native `ldd`/RUNPATH, provider/replay help and source-seal checks pass; MiniNDN/Tiger/Qwen qualification remains open |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the
 declared project-storage counterpart. Secrets, models, SIFs and large logs do

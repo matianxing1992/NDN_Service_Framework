@@ -33,3 +33,25 @@ same-SHA verification and execution. Login-node Apptainer 1.3.4 is metadata-only
 
 No runtime PASS is inferred from the r38 build, import, READY, CUDA visibility or
 direct adapter diagnostics.
+
+## r83 update — 2026-09-15
+
+The repaired source revision `854c802379b63dc45a96b1a3caf2a7b4a872306f` was
+sealed and built locally with Apptainer 1.5.3. The container-native Waf build
+passed `284/284`; output SIF
+`sha256:275629970d771bee9f635099ec37d130fa89a8cff9211444d81d78de5ec7a7c2`
+uses base `sha256:1dd9626748b6fdbe93abf819a944e0628bf7a2b5feddcc562fe7d233f927e74c`
+and definition
+`sha256:1c1fa780b11d3ce54e2a203f01c5122f6a266dc3440b6f9cd79e45174ebe14bd`.
+
+The immutable r83 runtime probe passed ten Python imports, packaged native
+`ldd` and RPATH checks, provider `--help`, the real YOLO MiniNDN replay
+`--help`, and replay source-seal presence. The exact receipt is
+`native-sif-r83-closure-20260915.md`. This advances the local exact SIF
+loader boundary (T006.b), but not local CPU smoke, upload/receive promotion,
+MiniNDN protocol execution, Tiger GPU execution, or Qwen qualification.
+
+The first two probe attempts also exposed a reproducibility rule: the sealed
+probe must set a writable temporary HOME/XDG directory and leave unsupported
+host NDN TPM selectors unset. The correction and rationale are recorded in
+`docs/failure-log.md`.

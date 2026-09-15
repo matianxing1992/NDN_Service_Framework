@@ -5424,3 +5424,20 @@ which differs from the Spec186 handoff seal
   TigerCluster static checks now pass before the rebuild.
 - **Lesson**: after mechanical RUNPATH edits, compile every packaging entrypoint
   before starting an expensive SIF build.
+
+## 2026-09-15 — Spec186 r83 immutable probe inherited a read-only HOME
+
+- **Area**: T006 exact local SIF runtime closure check.
+- **Symptom**: the first sealed-image probe aborted while importing `ndn` because
+  the default `/home/tianxing/.ndn` directory was read-only; a retry that forced
+  an unsupported `TpmFile` selector failed before the import gate as well.
+- **Root cause**: the probe isolated the image but did not declare a writable
+  runtime home and therefore exercised host-specific NDN keychain defaults.
+- **Correction**: run the immutable probe with `--cleanenv --containall`,
+  `--pwd /tmp`, and a temporary `HOME`/XDG directory, while leaving NDN keychain
+  variables unset. The same r83 SIF then passed all ten Python imports, native
+  `ldd`/RUNPATH checks, provider `--help`, replay `--help`, and source-seal
+  presence checks.
+- **Lesson**: runtime closure scripts must pin writable scratch locations and
+  avoid unsupported host keychain selectors; otherwise an environment setup
+  failure can be mistaken for a SIF or application failure.
