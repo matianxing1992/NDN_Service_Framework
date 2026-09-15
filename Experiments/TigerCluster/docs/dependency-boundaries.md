@@ -47,6 +47,17 @@ optional `NDNSF_RUSTUP_HOME` to its matching home; a standalone toolchain does
 not need it. This turns a resolver failure into an immediate, actionable
 preflight error without changing the SIF contract.
 
+The preflight now treats the rendered definition as a consumer contract. It
+requires the four declared source archives, checks each archive's required
+entry points (`wscript`, package setup files, CMake/Waf metadata), verifies
+that every `tar -xf` extracts the matching archive into the expected `/src`
+root, and resolves every non-cleanup `/src/...` reference in the builder shell
+against that archive. It also requires the pinned private wheels used by the
+no-network Python installs and checks that the base already contains the
+`tokenizers`, `onnx`, and `onnxruntime` package directories. These checks catch
+archive/definition drift before APT or compilation; they do not claim that
+the current monolithic Waf graph is a Core-only profile.
+
 ## Follow-up design (plan only)
 
 The next packaging change should introduce explicit target profiles with an

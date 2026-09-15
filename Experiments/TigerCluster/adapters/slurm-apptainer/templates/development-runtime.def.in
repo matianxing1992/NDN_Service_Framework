@@ -88,6 +88,12 @@ PY
     test -f /opt/onnx/include/onnx/shape_inference/implementation.h
     test -f /opt/onnx/lib/libonnx.a
     test -f /opt/onnx/lib/libonnx_proto.a
+    # These packages are inherited from the pinned base and are consumed by
+    # the no-network builder checks.  Missing directories used to surface only
+    # after the expensive source build or during the final import probe.
+    test -d /opt/venv/lib/python3.10/site-packages/tokenizers
+    test -d /opt/venv/lib/python3.10/site-packages/onnx
+    test -d /opt/venv/lib/python3.10/site-packages/onnxruntime
     test -x "$NDNSF_RUST_PREFIX/bin/cargo"
     test -x "$NDNSF_RUST_PREFIX/bin/rustc"
     test -d "$NDNSF_CARGO_HOME/registry/src"

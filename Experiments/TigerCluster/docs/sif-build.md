@@ -36,7 +36,10 @@ tokenizer target 默认落在普通 `build/` 树中。开发机 `.codex-tmp/spec
 wheel-private DSOs/RPATH，以及基础 SIF 中的 NumPy 导入；`build-local-sif.sh`
 也会在解析 `localimage` base 后自动重复这个门。它还扫描 builder shell 中
 实际被 `cp`/pip 消费的 `/src/ndnsf/...` 路径，确认这些子目录真的封存在
-`workspace.tar`，并在提供 base SIF 时只检查 definition 中
+`workspace.tar`；同时交叉核对四个源码归档的必需入口、`tar -xf` 解包根和
+builder shell 中所有非清理 `/src/...` 消费路径，避免只因归档文件本身存在就
+漏过隐藏源码依赖。它还检查离线 pip 所需的固定私有 wheels，以及基础 SIF 中
+预装的 `tokenizers`、`onnx` 和 `onnxruntime` 包目录，并在提供 base SIF 时只检查 definition 中
 `SPEC186_BASE_CAPABILITY_BEGIN/END` 块声明的 ONNX SDK、Rust 等 base 能力。
 APT 安装的编译器、protoc 和系统开发包在安装后由 definition 自己验证，不会被
 错误地当成 base 已有能力。该门失败时禁止开始完整原生编译，应根据

@@ -77,6 +77,10 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     source = PREFLIGHT.read_text(encoding="utf-8")
     ast.parse(source, filename=str(PREFLIGHT))
     assert "WORKSPACE_TARGET_INPUT_MISSING" in source
+    assert "SOURCE_ARCHIVE_REQUIRED_MEMBER_MISSING" in source
+    assert "SOURCE_ARCHIVE_EXTRACTION_MISMATCH" in source
+    assert "SOURCE_CONSUMER_PATH_MISSING" in source
+    assert "REQUIRED_WHEEL_COUNT" in source
     assert "NUMPY_PRIVATE_LIB_SET" in source
     assert "NUMPY_FINAL_RPATH_RESTORE_MISSING" in source
     assert "NUMPY_BASE_IMPORT_PASS" in source
@@ -84,6 +88,8 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "/usr/bin/clang++-10" in TEMPLATE.read_text()
     assert "SPEC186_BASE_CAPABILITY_BEGIN" in TEMPLATE.read_text()
     assert "SPEC186_BASE_CAPABILITY_END" in TEMPLATE.read_text()
+    assert "/opt/venv/lib/python3.10/site-packages/tokenizers" in TEMPLATE.read_text()
+    assert "/opt/venv/lib/python3.10/site-packages/onnxruntime" in TEMPLATE.read_text()
     assert "--toolchain-root=/usr" in TEMPLATE.read_text()
     assert TEMPLATE.read_text().index("export CXX=/usr/bin/clang++-10") < TEMPLATE.read_text().index("./waf -j1 -v --targets=")
     assert "cp -a /src/ndnsf/Experiments/TigerCluster/jobs/spec180" in TEMPLATE.read_text()
@@ -156,6 +162,70 @@ def test_preflight_extracts_base_capability_predicates(tmp_path):
     assert ("-x", "/opt/rust-prefix/bin/rustc") in checks
     assert ("-d", "/opt/cargo-home/registry/src") in checks
     assert all(not path.startswith("/opt/ndnsf-stage") for _, path in checks)
+
+
+def test_preflight_cross_checks_all_source_archives_and_consumers(tmp_path):
+    definition = render(tmp_path)
+    roots = {
+        "workspace.tar": "/src/ndnsf",
+        "ndn-svs.tar": "/src/ndn-svs",
+        "nacAbe.tar": "/src/nac-abe",
+        "ndnSd.tar": "/src/ndn-sd",
+    }
+    members = {
+        "workspace.tar": {
+            "wscript", "pythonWrapper/setup.py",
+            "NDNSF-DistributedRepo/pythonWrapper/setup.py",
+            "NDNSF-DistributedInference/ndnsf_distributed_inference",
+        },
+        "ndn-svs.tar": {"wscript", "libndn-svs.pc.in"},
+        "nacAbe.tar": {"CMakeLists.txt", "src"},
+        "ndnSd.tar": {"wscript", "ndnsd.pc.in"},
+    }
+    source_pattern = re.compile(
+        r"/src/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:/([A-Za-z0-9_./+:-]+))?")
+    post = preflight._builder_post(definition)
+    archive_for_root = {root: archive for archive, root in roots.items()}
+    for match in source_pattern.finditer(post):
+        relative = (match.group(2) or "").rstrip(".,;)")
+        if not relative or relative == "build" or relative.startswith("build/"):
+            continue
+        archive = archive_for_root["/src/" + match.group(1)]
+        members[archive].add(relative)
+    for archive_name, archive_members in members.items():
+        path = tmp_path / "bundle/source" / archive_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(path, "w") as archive:
+            for member in sorted(archive_members):
+                info = tarfile.TarInfo(member)
+                info.size = 0
+                archive.addfile(info)
+    checked = preflight.check_source_archive_contract(definition)
+    assert "NDNSF-DistributedInference/ndnsf_distributed_inference" in checked["workspace.tar"]
+
+
+def test_preflight_rejects_a_source_consumer_missing_from_dependency_archive(tmp_path):
+    definition = render(tmp_path)
+    source = tmp_path / "bundle/source"
+    source.mkdir(parents=True)
+    required = {
+        "workspace.tar": [
+            "wscript", "pythonWrapper/setup.py",
+            "NDNSF-DistributedRepo/pythonWrapper/setup.py",
+            "NDNSF-DistributedInference/ndnsf_distributed_inference",
+        ],
+        "ndn-svs.tar": ["wscript", "libndn-svs.pc.in"],
+        "nacAbe.tar": ["CMakeLists.txt", "src"],
+        "ndnSd.tar": ["wscript", "ndnsd.pc.in"],
+    }
+    for name, members in required.items():
+        with tarfile.open(source / name, "w") as archive:
+            for member in members:
+                info = tarfile.TarInfo(member)
+                info.size = 0
+                archive.addfile(info)
+    with pytest.raises(SystemExit, match="SPEC186_PREFLIGHT_SOURCE_CONSUMER_PATH_MISSING"):
+        preflight.check_source_archive_contract(definition)
 
 
 def test_successful_gpu_template_is_a_required_comparison_reference():

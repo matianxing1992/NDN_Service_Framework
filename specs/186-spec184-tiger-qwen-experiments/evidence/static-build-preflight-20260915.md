@@ -140,3 +140,25 @@ retained r55 host manifest. It stopped before base preflight with
 code=SOURCE_SEAL_REVISION_SOURCE_CHANGE`, identifying the changed preflight
 helper and `wscript`. No SIF compilation started; r55 remains historical
 tiny-ONNX evidence and a new host-gate receipt is required for r61.
+
+## Source archive consumer cross-check (2026-09-15)
+
+The repository preflight was tightened after the static audit found that a
+valid `workspace.tar` could still omit a path consumed by a later builder
+command. It now requires the four source archives' entry points, verifies each
+`tar -xf` source and `/src` extraction root, scans every non-cleanup `/src/...`
+reference in the builder shell, requires the pinned private wheels, and checks
+the base-owned `tokenizers`, `onnx`, and `onnxruntime` package directories.
+An omitted source member is rejected with
+`SPEC186_PREFLIGHT_SOURCE_CONSUMER_PATH_MISSING` before Apptainer build.
+
+The rendered r64 definition and local base were rerun through the expanded
+preflight and returned:
+
+```text
+SPEC186_PREFLIGHT_PASS wheels=/home/tianxing/NDN/ndn-service-framework/.codex-tmp/spec186-source-handoff-r64/wheels workspaceConsumers=11
+```
+
+The focused template suite passed `13 passed`, and the full TigerCluster suite
+passed `116 passed in 9.01s`. This remains a pre-build/static closure gate;
+the local source-sealed SIF and MiniNDN/Tiger protocol gates are still open.

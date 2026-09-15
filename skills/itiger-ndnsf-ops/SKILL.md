@@ -64,10 +64,13 @@ plane（source、base、app、compiler、profile、model、harness 或 resource�
 
 `preflight-development-sif.py` 还必须检查 definition 的 builder shell 实际
 消费的源码路径：凡是被 `cp` 或 pip 安装命令引用的 `/src/ndnsf/...` 路径，都要
-在 `workspace.tar` 中存在；否则以 `WORKSPACE_CONSUMER_PATH_MISSING` 在编译前
-停止。传入 `--base-sif` 和同一 Apptainer 时，它会从 definition 的
+在 `workspace.tar` 中存在；并且四个源码归档的必需入口、`tar -xf` 到 `/src`
+根的映射，以及所有非清理 `/src/...` 引用都必须与归档成员匹配，否则在编译前
+以 `SOURCE_ARCHIVE_*` 或 `SOURCE_CONSUMER_PATH_MISSING` 停止。离线 pip 的固定
+私有 wheels 也必须各自恰好存在；传入 `--base-sif` 和同一 Apptainer 时，它会从 definition 的
 `SPEC186_BASE_CAPABILITY_BEGIN/END` 谓词块（包括先前 `export` 的
-Rust/Cargo 前缀变量）提取 base-owned ONNX、Rust 和头文件能力并在只读容器中验证。
+Rust/Cargo 前缀变量）提取 base-owned ONNX、Rust、头文件和预装
+`tokenizers`/`onnx`/`onnxruntime` 能力并在只读容器中验证。
 APT 安装的编译器和系统工具不属于该块，会在安装后由 builder 自己检查。这样
 可以在秒级发现“归档存在但实际消费的子目录缺失”和“definition 要求的编译器/SDK
 不在 base 中”，而不是等 `%post` 运行到对应命令才失败。

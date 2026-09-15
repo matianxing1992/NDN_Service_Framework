@@ -5173,3 +5173,19 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a structurally valid host manifest is not reusable across source
   or build-helper changes; strict source-seal comparison must run before any
   expensive SIF operation.
+
+## 2026-09-15 — Spec186 source-consumer preflight parsed shell continuations
+
+- **Area**: T006 preflight regression.
+- **Symptom**: the first implementation of the all-archive source-consumer
+  check reported `SOURCE_COMMAND_SYNTAX:No escaped character` on valid
+  definition lines ending in a shell continuation backslash, so its new
+  positive and negative tests failed before examining archive members.
+- **Root cause**: the checker passed each physical `%post` line to `shlex`
+  even though a continued shell command is not a complete standalone input.
+- **Correction**: use a narrow matcher for the one-line `tar -xf ... -C ...`
+  form and scan source references without tokenizing unrelated continued
+  lines. Add regression coverage for all four archive mappings and an omitted
+  consumer path; the full TigerCluster test set then passed.
+- **Lesson**: static shell preflight must model only the syntax it needs and
+  must not reject valid continuation lines while trying to inspect them.

@@ -30,6 +30,42 @@ NUMPY_PRIVATE_LIBS = frozenset({
     "libquadmath-96973f99.so.0.0.0",
 })
 
+# These are source inputs consumed by the rendered definition.  Keeping the
+# contract here makes an omitted archive member fail before Apptainer starts
+# APT, CMake, Waf, or pip.  The archives are intentionally flat: each one is
+# extracted into its matching /src directory.
+SOURCE_ARCHIVE_CONTRACT = {
+    "workspace.tar": {
+        "root": "/src/ndnsf",
+        "required": (
+            "wscript",
+            "pythonWrapper/setup.py",
+            "NDNSF-DistributedRepo/pythonWrapper/setup.py",
+            "NDNSF-DistributedInference/ndnsf_distributed_inference",
+        ),
+    },
+    "ndn-svs.tar": {
+        "root": "/src/ndn-svs",
+        "required": ("wscript", "libndn-svs.pc.in"),
+    },
+    "nacAbe.tar": {
+        "root": "/src/nac-abe",
+        "required": ("CMakeLists.txt", "src"),
+    },
+    "ndnSd.tar": {
+        "root": "/src/ndn-sd",
+        "required": ("wscript", "ndnsd.pc.in"),
+    },
+}
+
+REQUIRED_WHEEL_GLOBS = (
+    "pybind11-2.13.6-*.whl",
+    "python_ndn-0.3-*.whl",
+    "aenum-3.1.17-*.whl",
+    "pygtrie-2.5.0-*.whl",
+    "pycryptodomex-3.23.0-*.whl",
+)
+
 
 def fail(code: str, detail: object = "") -> "NoReturn":
     suffix = f":{detail}" if detail else ""
@@ -66,6 +102,98 @@ def file_entries(definition: Path) -> list[tuple[Path, str]]:
         if fields:
             entries.append((Path(fields[0]), fields[1] if len(fields) > 1 else ""))
     return entries
+
+
+def _archive_names(path: Path) -> set[str]:
+    try:
+        with tarfile.open(path, "r:*") as archive:
+            return {member.name.lstrip("./").rstrip("/")
+                    for member in archive.getmembers()}
+    except (OSError, tarfile.TarError) as error:
+        fail("SOURCE_ARCHIVE_READ", error)
+
+
+def _has_member(names: set[str], relative: str) -> bool:
+    return any(name == relative or name.startswith(relative + "/")
+               for name in names)
+
+
+def check_source_archive_contract(definition: Path) -> dict[str, list[str]]:
+    """Cross-check source archives against every source path in ``%post``.
+
+    A source sealer can be internally valid while the definition consumes a
+    file that was never selected into that seal.  Resolve the rendered
+    ``tar``/``cd``/``cp``/``pip`` paths here and verify the archive member
+    exists before the expensive container build begins.
+    """
+    entries = file_entries(definition)
+    by_destination = {destination: source for source, destination in entries}
+    archives: dict[str, tuple[Path, set[str]]] = {}
+    for archive_name, contract in SOURCE_ARCHIVE_CONTRACT.items():
+        destination = "/build-input/" + archive_name
+        source = by_destination.get(destination)
+        if source is None:
+            fail("SOURCE_ARCHIVE_UNDECLARED", archive_name)
+        if not source.is_file():
+            fail("INPUT_MISSING", source)
+        names = _archive_names(source)
+        missing = [relative for relative in contract["required"]
+                   if not _has_member(names, relative)]
+        if missing:
+            fail("SOURCE_ARCHIVE_REQUIRED_MEMBER_MISSING",
+                 archive_name + ":" + missing[0])
+        archives[archive_name] = (source, names)
+
+    extracted: dict[str, str] = {}
+    post = _builder_post(definition)
+    for raw in post.splitlines():
+        # The template keeps each tar command on one line.  Use a narrow
+        # matcher instead of shlex here because a neighbouring shell line may
+        # end in a continuation backslash and is not a complete command by
+        # itself.
+        match = re.match(r"^\s*tar\s+-x[fv]?\s+(\S+)\s+-C\s+(\S+)", raw)
+        if match is None:
+            continue
+        archive_token, destination = match.groups()
+        archive_name = Path(archive_token).name
+        if archive_token != "/build-input/" + archive_name:
+            fail("SOURCE_ARCHIVE_PATH_UNDECLARED", archive_token)
+        if archive_name not in archives:
+            fail("SOURCE_ARCHIVE_UNDECLARED", archive_name)
+        extracted[destination] = archive_name
+
+    for archive_name, contract in SOURCE_ARCHIVE_CONTRACT.items():
+        root = contract["root"]
+        if extracted.get(root) != archive_name:
+            fail("SOURCE_ARCHIVE_EXTRACTION_MISMATCH",
+                 archive_name + "->" + root)
+
+    # Match all non-cleanup /src references, rather than only the historical
+    # cp/pip subset.  This catches an omitted file used by a later ``cd``,
+    # ``test``, Python snippet, or compiler flag as well.
+    references: dict[str, list[str]] = {name: [] for name in archives}
+    source_pattern = re.compile(
+        r"/src/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:/([A-Za-z0-9_./+:-]+))?")
+    roots = {contract["root"]: name
+             for name, contract in SOURCE_ARCHIVE_CONTRACT.items()}
+    for raw in post.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("rm "):
+            continue
+        for match in source_pattern.finditer(raw):
+            root_path = "/src/" + match.group(1)
+            archive_name = roots.get(root_path)
+            if archive_name is None:
+                fail("SOURCE_ROOT_UNDECLARED", root_path)
+            relative = (match.group(2) or "").rstrip(".,;)")
+            if not relative or relative == "build" or relative.startswith("build/"):
+                continue
+            names = archives[archive_name][1]
+            if not _has_member(names, relative):
+                fail("SOURCE_CONSUMER_PATH_MISSING",
+                     archive_name + ":" + relative)
+            references[archive_name].append(relative)
+    return {name: sorted(set(values)) for name, values in references.items()}
 
 
 def _builder_post(definition: Path) -> str:
@@ -222,6 +350,10 @@ def check_static_inputs(definition: Path) -> tuple[Path, Path, list[str]]:
     if required not in names:
         fail("WORKSPACE_TARGET_INPUT_MISSING", required)
 
+    for pattern in REQUIRED_WHEEL_GLOBS:
+        matches = sorted(wheels.glob(pattern))
+        if len(matches) != 1:
+            fail("REQUIRED_WHEEL_COUNT", pattern + ":" + str(len(matches)))
     wheel_files = sorted(wheels.glob("numpy-1.26.4-*.whl"))
     if len(wheel_files) != 1:
         fail("NUMPY_WHEEL_COUNT", len(wheel_files))
@@ -254,6 +386,7 @@ def check_static_inputs(definition: Path) -> tuple[Path, Path, list[str]]:
     for target in ("ndnsf-distributed-inference", "ndnsf-distributed-inference.pc"):
         if target not in text:
             fail("WAF_TARGET_UNDECLARED", target)
+    check_source_archive_contract(definition)
     consumers = check_workspace_consumers(definition, workspace)
     return workspace, wheels, consumers
 
