@@ -213,3 +213,12 @@ produced.
   subassertion because no materialized APP/lib root exists on this host
 - compile/link, SIF/Apptainer runtime, C++/Python startup, Slurm and Tiger
   qualification remain unobserved and are not claimed as PASS
+
+## Local pair gate after checkpoint
+
+The committed scripts were rerun with the recorded Apptainer `1.5.3` binary.
+The input gate again returned `APP_BASE_SIF_PATH_SYMLINK` with `rc=4` before
+Apptainer execution; the result is preserved in
+`.codex-tmp/local-first-sif-attempt-20260915-r3/`. This confirms the blocker is
+the missing regular base SIF, not a changed script path. No candidate, APP or
+Tiger upload was produced.
