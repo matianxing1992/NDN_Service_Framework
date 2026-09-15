@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import re
 import subprocess
+import tarfile
 
 import pytest
 
@@ -21,6 +22,15 @@ try:
     spec.loader.exec_module(boundary)
 finally:
     del sys.modules[spec.name]
+
+preflight_spec = importlib.util.spec_from_file_location(
+    "spec186_development_preflight", PREFLIGHT)
+preflight = importlib.util.module_from_spec(preflight_spec)
+sys.modules[preflight_spec.name] = preflight
+try:
+    preflight_spec.loader.exec_module(preflight)
+finally:
+    del sys.modules[preflight_spec.name]
 
 
 def render(tmp_path):
@@ -82,6 +92,54 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "preflight-development-sif.py" in build_script
     assert build_script.index("preflight_json") < build_script.index('echo "LOCAL_SIF_BUILD_START')
     assert build_script.index("base_sif=''") < build_script.index('preflight_args=')
+    assert build_script.index('base_sif=$(awk') < build_script.index('preflight_args=')
+    assert "--verify-existing" in build_script
+    assert "local-apptainer-existing-sif-verify" in build_script
+    subprocess.run(["/bin/bash", "-n"], input=build_script, text=True, check=True)
+
+
+def test_preflight_rejects_workspace_archive_omitting_consumed_source(tmp_path):
+    definition = render(tmp_path)
+    workspace = tmp_path / "workspace.tar"
+    with tarfile.open(workspace, "w") as archive:
+        info = tarfile.TarInfo("Experiments/NDNSF_DI_YoloAckDriven_Minindn.py")
+        info.size = 0
+        archive.addfile(info)
+    with pytest.raises(SystemExit, match="SPEC186_PREFLIGHT_WORKSPACE_CONSUMER_PATH_MISSING"):
+        preflight.check_workspace_consumers(definition, workspace)
+
+
+def test_preflight_reports_all_consumed_workspace_paths(tmp_path):
+    definition = render(tmp_path)
+    workspace = tmp_path / "workspace.tar"
+    paths = {
+        "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py",
+        "Experiments/TigerCluster/jobs/spec180",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference",
+        "NDNSF-DistributedRepo/pythonWrapper",
+        "pythonWrapper",
+        "tools/ndnsf-di",
+        "tests/fixtures",
+        "specs/162-itiger-qwen36-generation",
+        "examples/trust-schema.conf",
+        "examples/python",
+    }
+    with tarfile.open(workspace, "w") as archive:
+        for path in paths:
+            info = tarfile.TarInfo(path)
+            info.size = 0
+            archive.addfile(info)
+    consumed = preflight.check_workspace_consumers(definition, workspace)
+    assert "Experiments/TigerCluster/jobs/spec180" in consumed
+    assert "NDNSF-DistributedInference/ndnsf_distributed_inference" in consumed
+
+
+def test_preflight_extracts_base_capability_predicates(tmp_path):
+    definition = render(tmp_path)
+    checks = set(preflight._base_capability_tests(definition))
+    assert ("-x", "/usr/bin/clang-10") in checks
+    assert ("-f", "/opt/onnx/lib/libonnx.a") in checks
+    assert all(not path.startswith("/opt/ndnsf-stage") for _, path in checks)
 
 
 def test_successful_gpu_template_is_a_required_comparison_reference():

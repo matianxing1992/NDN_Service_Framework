@@ -49,7 +49,7 @@ T001–T005、T006.a/b 和 T013 提供可审计的前置或离线收口；T006.c
 
 **Storage**: Git 只存规范、脚本、profile、collector 和小型 fixtures；模型、tokenizer、SIF、private keys 与大日志存于声明的本地或 project storage；运行证据位于 `Experiments/TigerCluster/results/<run-id>` 和 Spec186 evidence。
 
-**Testing**: focused unit/mutation tests → design-code convergence audit → cheap source/definition/base-SIF preflight → complete unit/integration → MiniNDN → local exact-SIF build/import/CPU smoke → immutable upload and same-SHA compute verification → Tiger single-node → Tiger two-node → reuse。各门结果不得跨 candidate 晋级。
+**Testing**: focused unit/mutation tests → design-code convergence audit → cheap source/definition/base-SIF preflight (including builder-consumer and base-capability checks) → complete unit/integration → MiniNDN → local exact-SIF build/import/CPU smoke → immutable upload and same-SHA compute verification → Tiger single-node → Tiger two-node → reuse。后续 loader/runtime 门失败时，在 candidate identity 不变的前提下使用 `--verify-existing`，不重复编译。各门结果不得跨 candidate 晋级。
 
 **Target Platform**: 本地 Linux CPU/MiniNDN 与本地 Apptainer 1.5.3 SIF builder；TigerCluster Linux compute nodes、Slurm 和 Apptainer 1.5.3。实验主机只保留 `/usr/local/bin/apptainer` 1.5.3；Tiger 登录节点的 1.3.4 仅是元数据入口，不参与 SIF 构建/执行，也不是本机回退版本。物理 GPU、节点和 account 仍记录在 allocation receipt。
 

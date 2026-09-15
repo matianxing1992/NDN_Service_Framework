@@ -6,7 +6,7 @@
 详细归属、builder ABI、只读挂载、组合身份与验收见
 [Layered Runtime Delivery](../../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md)。
 应用更新可复用未变基础 SIF，但须在对应 builder 内构建并验证新组合。
-目前为 ACCEPTED DESIGN / PLANNED TOOLING；下面的现有 complete-SIF 命令仍是旧实现，
+目前为 ACCEPTED DESIGN / PLANNED TOOLING；下面的 complete-SIF 命令是兼容入口，
 不能仅加一个 bind 就声称已支持分层发布。默认先在本地实验 host 用 Apptainer
 1.5.3 构建并检查稳定基础 SIF，再把同一 hash 的 SIF 上传到项目存储；Tiger
 计算节点只做同一镜像的 inspect、preflight 和 GPU/MiniNDN 运行验证。若本地
@@ -22,7 +22,10 @@ source-sealed candidate 在 compute 1.5.3 例外构建；登录节点 1.3.4 不�
 `preflight-development-sif.py`。它用秒级检查交叉核对 rendered definition
 的输入文件、sealed `workspace.tar` 中显式 Waf target 的模板、NumPy
 wheel-private DSOs/RPATH，以及基础 SIF 中的 NumPy 导入；`build-local-sif.sh`
-也会自动重复这个门。该门失败时禁止开始完整原生编译，应根据
+也会在解析 `localimage` base 后自动重复这个门。它还扫描 builder shell 中
+实际被 `cp`/pip 消费的 `/src/ndnsf/...` 路径，确认这些子目录真的封存在
+`workspace.tar`，并在提供 base SIF 时检查 definition 要求的编译器、ONNX SDK、
+Rust 和系统头文件能力。该门失败时禁止开始完整原生编译，应根据
 `docs/failure-log.md` 的对应条目修复输入后再建立新的候选。
 
 ```bash
@@ -31,6 +34,12 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/preflight-deve
   --apptainer /usr/local/bin/apptainer \
   --base-sif /absolute/path/to/base.sif
 ```
+
+如果 SIF 已经完成构建、只是 `import`、loader 或后续运行门失败，不要重新编译：
+使用 `build-local-sif.sh --verify-existing` 复用同一个 SIF。该模式仍检查源码
+seal、definition labels、base 与 Apptainer 版本、SIF hash 和完整运行时 preflight，
+但记录方法为 `local-apptainer-existing-sif-verify`。输出 SIF 或记录已经存在时，
+普通构建模式仍然 fail-closed，避免覆盖可追溯候选。
 
 当前三库源码固定、可迁移definition和接收机器步骤见 [source handoff](source-handoff.md)。
 共享操作skill在仓库根 [skills/](../../../skills/README.md)；实际构建仍使用上述唯一入口。
@@ -104,6 +113,20 @@ bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.s
   --source-seal /absolute/path/to/source-seal.json \
   --host-gate-manifest /absolute/path/to/qualified-host-gate.json \
   --apptainer /absolute/path/to/qualified/apptainer \
+  --expected-apptainer 1.5.3
+```
+
+复用已生成候选的命令只需增加 `--verify-existing`，其他输入必须保持相同：
+
+```bash
+bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh \
+  --verify-existing \
+  --definition /absolute/path/to/sealed-runtime.def \
+  --sif /absolute/path/to/Experiments/TigerCluster/images/<candidate>/runtime.sif \
+  --record /absolute/path/to/Experiments/TigerCluster/images/<candidate>/verify-record.json \
+  --source-seal /absolute/path/to/source-seal.json \
+  --host-gate-manifest /absolute/path/to/qualified-host-gate.json \
+  --apptainer /usr/local/bin/apptainer \
   --expected-apptainer 1.5.3
 ```
 

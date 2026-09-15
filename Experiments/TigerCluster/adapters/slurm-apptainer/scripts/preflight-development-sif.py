@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -67,7 +68,94 @@ def file_entries(definition: Path) -> list[tuple[Path, str]]:
     return entries
 
 
-def check_static_inputs(definition: Path) -> tuple[Path, Path]:
+def _builder_post(definition: Path) -> str:
+    stages = boundary_module()._parse_stages(
+        definition.read_text(encoding="utf-8"))
+    builders = [stage for stage in stages if stage.name == "builder"]
+    if len(builders) != 1:
+        fail("BUILDER_STAGE_COUNT", len(builders))
+    return builders[0].sections.get("post", "")
+
+
+def check_workspace_consumers(definition: Path, workspace: Path) -> list[str]:
+    """Verify source paths consumed by build commands exist in workspace.tar.
+
+    `%files` only proves that the archive itself is present.  A later `cp` or
+    pip install can still name a path omitted by the source sealer, which used
+    to fail after the expensive container build started.  Inspect only
+    commands that consume source paths; cleanup and generated build paths are
+    intentionally excluded.
+    """
+    consumed: list[str] = []
+    for raw in _builder_post(definition).splitlines():
+        line = raw.strip()
+        if (not line or line.startswith("#") or line.startswith("rm ") or
+                line.startswith("install -d")):
+            continue
+        if "cp " not in line and "pip install" not in line:
+            continue
+        for match in re.finditer(r"/src/ndnsf/([^\s\\'\"]+)", line):
+            relative = match.group(1).rstrip(";,)")
+            if (relative.endswith("/build") or relative.startswith("build/") or
+                    "/build/" in relative):
+                continue
+            consumed.append(relative)
+
+    try:
+        with tarfile.open(workspace, "r:*") as archive:
+            names = {member.name.lstrip("./").rstrip("/")
+                     for member in archive.getmembers()}
+    except (OSError, tarfile.TarError) as error:
+        fail("WORKSPACE_ARCHIVE_READ", error)
+
+    missing = [relative for relative in consumed
+               if not any(name == relative or name.startswith(relative + "/")
+                          for name in names)]
+    if missing:
+        fail("WORKSPACE_CONSUMER_PATH_MISSING", missing[0])
+    return sorted(set(consumed))
+
+
+def _base_capability_tests(definition: Path) -> list[tuple[str, str]]:
+    """Extract base-owned test predicates from the rendered builder shell."""
+    tests: set[tuple[str, str]] = set()
+    for raw in _builder_post(definition).splitlines():
+        for match in re.finditer(r"\btest\s+(-[fxd])\s+(/(?:usr|opt)/[^\s\\;]+)", raw):
+            kind, path = match.groups()
+            path = path.rstrip("'\")")
+            if (path.startswith("/opt/ndnsf-stage") or
+                    path.startswith("/opt/ndnsf-candidate") or
+                    path.startswith("/opt/ndnsf-di/current")):
+                continue
+            tests.add((kind, path))
+    return sorted(tests)
+
+
+def check_base_capabilities(apptainer: Path, base_sif: Path,
+                            definition: Path) -> list[tuple[str, str]]:
+    """Run cheap read-only checks for every base-owned tool/path predicate."""
+    tests = _base_capability_tests(definition)
+    if not tests:
+        fail("BASE_CAPABILITY_TESTS_EMPTY")
+    script = ["set -eu"]
+    for kind, path in tests:
+        script.append(
+            f"test {shlex.quote(kind)} {shlex.quote(path)} || "
+            f"{{ echo BASE_CAPABILITY_MISSING:{path} >&2; exit 1; }}")
+    command = [str(apptainer)]
+    config = os.environ.get("SPEC186_APPTAINER_CONFIG", "").strip()
+    if config:
+        command.extend(["-c", config])
+    command.extend(["exec", "--no-mount", "dev", str(base_sif),
+                    "/bin/sh", "-c", "\n".join(script)])
+    result = subprocess.run(command, text=True, capture_output=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
+        fail("BASE_CAPABILITIES", detail[0] if detail else result.returncode)
+    return tests
+
+
+def check_static_inputs(definition: Path) -> tuple[Path, Path, list[str]]:
     boundary_module().validate_definition(definition)
     entries = file_entries(definition)
     workspace = next((source for source, dest in entries
@@ -122,7 +210,8 @@ def check_static_inputs(definition: Path) -> tuple[Path, Path]:
     for target in ("ndnsf-distributed-inference", "ndnsf-distributed-inference.pc"):
         if target not in text:
             fail("WAF_TARGET_UNDECLARED", target)
-    return workspace, wheels
+    consumers = check_workspace_consumers(definition, workspace)
+    return workspace, wheels, consumers
 
 
 def check_base_numpy(apptainer: Path, base_sif: Path, wheels: Path) -> None:
@@ -162,7 +251,8 @@ def main() -> int:
     parser.add_argument("--apptainer", type=Path)
     parser.add_argument("--base-sif", type=Path)
     args = parser.parse_args()
-    _, wheels = check_static_inputs(args.definition.resolve())
+    definition = args.definition.resolve()
+    _, wheels, consumers = check_static_inputs(definition)
     if (args.apptainer is None) != (args.base_sif is None):
         fail("BASE_ARGUMENT_PAIR")
     if args.apptainer is not None:
@@ -172,8 +262,10 @@ def main() -> int:
             fail("APPTAINER_MISSING", apptainer)
         if not base_sif.is_file():
             fail("BASE_SIF_MISSING", base_sif)
+        check_base_capabilities(apptainer, base_sif, definition)
         check_base_numpy(apptainer, base_sif, wheels.resolve())
-    print(f"SPEC186_PREFLIGHT_PASS wheels={wheels}")
+    print(f"SPEC186_PREFLIGHT_PASS wheels={wheels} "
+          f"workspaceConsumers={len(consumers)}")
     return 0
 
 

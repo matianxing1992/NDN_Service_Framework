@@ -62,6 +62,21 @@ plane（source、base、app、compiler、profile、model、harness 或 resource�
    candidate 绑定。构建、import 或 READY 通过仍不能替代 MiniNDN/Tiger
    协议、CUDA、数值和 cleanup 证据。
 
+`preflight-development-sif.py` 还必须检查 definition 的 builder shell 实际
+消费的源码路径：凡是被 `cp` 或 pip 安装命令引用的 `/src/ndnsf/...` 路径，都要
+在 `workspace.tar` 中存在；否则以 `WORKSPACE_CONSUMER_PATH_MISSING` 在编译前
+停止。传入 `--base-sif` 和同一 Apptainer 时，它会从 definition 的 `test -x/-f/-d`
+谓词提取 base-owned 工具、ONNX SDK、Rust 和头文件能力并在只读容器中验证。这样
+可以在秒级发现“归档存在但实际消费的子目录缺失”和“definition 要求的编译器/SDK
+不在 base 中”，而不是等 `%post` 运行到对应命令才失败。
+
+`build-local-sif.sh` 会在 preflight 前解析 `Bootstrap: localimage` 的真实 base
+路径，不能再静默退化为 definition-only 检查。若 SIF 已经生成、但后续 ABI 或
+运行时门失败，使用同一 definition、source seal、host gate、Apptainer 和输出
+路径调用 `--verify-existing`；它会重新验证 label、SIF hash 和完整 Spec175
+preflight，并生成 `local-apptainer-existing-sif-verify` 记录，不重新编译。只有
+source/base/definition 或候选闭包改变时才删除旧候选并新建 SIF。
+
 历史成功 job、SIF 或 app 可以帮助确定验收形状，但不能直接复用 job ID 或把
 旧结果拼入新 candidate。若发现新的构建失败，先将 symptom、root cause、
 correction、lesson 写入 `docs/failure-log.md`，并把新的防回归谓词加入脚本、

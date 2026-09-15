@@ -2,9 +2,10 @@
 # Build the complete NDNSF-DI application SIF on the local host.
 #
 # This is the normal Spec170 release entry point.  The definition may use
-# ``Bootstrap: localimage`` for a sealed, qualified base SIF, but the final
-# application SIF is always built and verified here.  Docker/OCI archives and
-# Tiger-side materialization are intentionally not accepted by this script.
+# ``Bootstrap: localimage`` for a sealed, qualified base SIF.  The normal mode
+# builds and verifies the final application SIF; --verify-existing reuses an
+# already-built candidate for the same verification gates.  Docker/OCI
+# archives and Tiger-side materialization are intentionally not accepted.
 set -euo pipefail
 
 usage() {
@@ -13,12 +14,14 @@ usage: build-local-sif.sh \
   --definition PATH --sif PATH --record PATH --source-seal PATH \
   --host-gate-manifest PATH \
   [--strict-host-source-seal] \
+  [--verify-existing] \
   --apptainer PATH --expected-apptainer VERSION
 
 The definition is executed by the local host's Apptainer.  It may bootstrap
 from a sealed localimage, but must produce the complete application SIF.
 The expected version must come from a bounded Slurm compute-node probe, not
-from the Tiger login node.
+from the Tiger login node.  --verify-existing skips compilation and verifies
+an existing SIF against the same definition, source seal and runtime gates.
 EOF
   exit 2
 }
@@ -29,6 +32,7 @@ record=''
 source_seal=''
 host_gate_manifest=''
 strict_host_source_seal=0
+verify_existing=0
 apptainer_bin=''
 expected_version=''
 
@@ -40,6 +44,7 @@ while (($#)); do
     --source-seal) source_seal=${2:-}; shift 2 ;;
     --host-gate-manifest) host_gate_manifest=${2:-}; shift 2 ;;
     --strict-host-source-seal) strict_host_source_seal=1; shift ;;
+    --verify-existing) verify_existing=1; shift ;;
     --apptainer) apptainer_bin=${2:-}; shift 2 ;;
     --expected-apptainer) expected_version=${2:-}; shift 2 ;;
     *) usage ;;
@@ -53,7 +58,11 @@ done
 [ -f "$definition" ] || { echo LOCAL_SIF_DEFINITION_MISSING >&2; exit 4; }
 [ -f "$source_seal" ] || { echo LOCAL_SIF_SOURCE_SEAL_MISSING >&2; exit 4; }
 [ -f "$host_gate_manifest" ] || { echo LOCAL_SIF_HOST_GATE_MANIFEST_MISSING >&2; exit 4; }
-[ ! -e "$sif" ] || { echo LOCAL_SIF_OUTPUT_EXISTS >&2; exit 4; }
+if [ "$verify_existing" = 1 ]; then
+  [ -s "$sif" ] || { echo LOCAL_SIF_EXISTING_MISSING >&2; exit 4; }
+else
+  [ ! -e "$sif" ] || { echo LOCAL_SIF_OUTPUT_EXISTS >&2; exit 4; }
+fi
 [ ! -e "$record" ] || { echo LOCAL_SIF_RECORD_EXISTS >&2; exit 4; }
 [ -x "$apptainer_bin" ] || { echo LOCAL_SIF_APPTAINER_NOT_EXECUTABLE >&2; exit 4; }
 apptainer_bin=$(readlink -f "$apptainer_bin")
@@ -299,28 +308,10 @@ fi
   exit 4
 }
 
-# Cross-check the sealed inputs before starting the expensive container build.
-# This catches missing Waf target inputs and base-venv wheel/RPATH defects in
-# seconds; the final image still runs the complete native closure audit below.
-preflight_args=(--definition "$definition")
-if [ -n "$base_sif" ]; then
-  preflight_args+=(--apptainer "$apptainer_bin" --base-sif "$base_sif")
-fi
-if ! preflight_json=$(python3 "$preflight_validator" "${preflight_args[@]}" 2>&1); then
-  printf '%s\n' "$preflight_json" >&2
-  exit 4
-fi
-echo "LOCAL_SIF_PREFLIGHT $preflight_json"
-
-mkdir -p "$(dirname "$sif")" "$(dirname "$record")"
-partial="$sif.partial"
-record_partial="$record.partial"
-rm -f "$partial" "$record_partial"
-trap 'rm -f "$partial" "$record_partial"' EXIT INT TERM
-
-definition_sha256=$(sha256sum "$definition" | awk '{print $1}')
-source_seal_sha256=$(sha256sum "$source_seal" | awk '{print $1}')
-
+# Resolve the sealed localimage before the development preflight.  The
+# preflight must inspect the actual base SIF (toolchain paths, ONNX SDK and
+# NumPy closure) before any expensive build starts; leaving this resolution
+# below the preflight silently downgraded that check to definition-only mode.
 bootstrap=$(awk -F: '
   tolower($1) ~ /^[[:space:]]*bootstrap[[:space:]]*$/ {
     value=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); print tolower(value); exit
@@ -342,10 +333,44 @@ if [ "$bootstrap" = localimage ]; then
   base_sif_bytes=$(stat -c '%s' "$base_sif")
 fi
 
-echo "LOCAL_SIF_BUILD_START definition=$definition output=$sif apptainer=$local_version binary=$apptainer_bin"
-apptainer_build --force "$partial" "$definition"
-[ -s "$partial" ] || { echo LOCAL_SIF_EMPTY >&2; exit 4; }
-inspect_json=$(apptainer_run inspect --json "$partial")
+# Cross-check the sealed inputs before starting the expensive container build.
+# This catches missing Waf target inputs and base-venv wheel/RPATH defects in
+# seconds; the final image still runs the complete native closure audit below.
+preflight_args=(--definition "$definition")
+if [ -n "$base_sif" ]; then
+  preflight_args+=(--apptainer "$apptainer_bin" --base-sif "$base_sif")
+fi
+if ! preflight_json=$(python3 "$preflight_validator" "${preflight_args[@]}" 2>&1); then
+  printf '%s\n' "$preflight_json" >&2
+  exit 4
+fi
+echo "LOCAL_SIF_PREFLIGHT $preflight_json"
+
+mkdir -p "$(dirname "$sif")" "$(dirname "$record")"
+partial="$sif.partial"
+record_partial="$record.partial"
+if [ "$verify_existing" = 1 ]; then
+  rm -f "$record_partial"
+  trap 'rm -f "$record_partial"' EXIT INT TERM
+else
+  rm -f "$partial" "$record_partial"
+  trap 'rm -f "$partial" "$record_partial"' EXIT INT TERM
+fi
+
+definition_sha256=$(sha256sum "$definition" | awk '{print $1}')
+source_seal_sha256=$(sha256sum "$source_seal" | awk '{print $1}')
+
+if [ "$verify_existing" = 1 ]; then
+  echo "LOCAL_SIF_REUSE_VERIFY_START definition=$definition output=$sif apptainer=$local_version binary=$apptainer_bin"
+  inspect_json=$(apptainer_run inspect --json "$sif")
+  build_method="local-apptainer-existing-sif-verify"
+else
+  echo "LOCAL_SIF_BUILD_START definition=$definition output=$sif apptainer=$local_version binary=$apptainer_bin"
+  apptainer_build --force "$partial" "$definition"
+  [ -s "$partial" ] || { echo LOCAL_SIF_EMPTY >&2; exit 4; }
+  inspect_json=$(apptainer_run inspect --json "$partial")
+  build_method="local-apptainer-definition-build"
+fi
 if ! ndnsf_labels_json=$(python3 - "$definition" "$inspect_json" "$source_seal" <<'PY'
 import json
 import sys
@@ -398,7 +423,9 @@ PY
 ); then
   exit 4
 fi
-mv "$partial" "$sif"
+if [ "$verify_existing" != 1 ]; then
+  mv "$partial" "$sif"
+fi
 sif_sha256=$(sha256sum "$sif" | awk '{print $1}')
 
 # The source-only check above is necessary but insufficient.  Before a build
@@ -418,7 +445,7 @@ python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
   "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
   "$source_validation_json" "$host_gate_json" "$spec175_input_preflight_json" \
-  "$spec175_preflight_json" <<'PY'
+  "$spec175_preflight_json" "$build_method" <<'PY'
 import hashlib
 import json
 import os
@@ -429,10 +456,10 @@ import sys
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
  apptainer_bin, apptainer_sha, boundary_json, source_validation_json,
  host_gate_json, spec175_input_preflight_json,
- spec175_preflight_json) = sys.argv[1:]
+ spec175_preflight_json, build_method) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
-    "method": "local-apptainer-definition",
+    "method": build_method,
 }
 if base_sif:
     build_input["baseSif"] = {
@@ -473,5 +500,10 @@ PY
 mv "$record_partial" "$record"
 
 trap - EXIT INT TERM
-printf 'LOCAL_SIF_BUILD_PASS sif=%s sha256:%s apptainer=%s\n' \
-  "$sif" "$sif_sha256" "$local_version"
+if [ "$verify_existing" = 1 ]; then
+  printf 'LOCAL_SIF_REUSE_VERIFY_PASS sif=%s sha256:%s apptainer=%s\n' \
+    "$sif" "$sif_sha256" "$local_version"
+else
+  printf 'LOCAL_SIF_BUILD_PASS sif=%s sha256:%s apptainer=%s\n' \
+    "$sif" "$sif_sha256" "$local_version"
+fi

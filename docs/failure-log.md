@@ -5066,3 +5066,21 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a final `import ndnsf._ndnsf` check does not cover every replay
   path. Validate the exact entrypoint's import ordering under the same SIF and
   treat source/package shadowing as a build/runtime closure defect.
+
+## 2026-09-15 — Spec186 build preflight did not inspect the declared base
+
+- **Area**: T006 definition/base capability preflight.
+- **Symptom**: static review found that `build-local-sif.sh` invoked
+  `preflight-development-sif.py` while `base_sif` was still empty. The
+  preflight therefore checked the definition and archives but skipped its
+  read-only base NumPy import, even for a `Bootstrap: localimage` candidate.
+- **Root cause**: the shell parsed the definition's `From:` path only after
+  the preflight and before `apptainer build`; the ordering made the optional
+  `--base-sif` argument silently disappear.
+- **Correction**: resolve and hash the actual localimage base before
+  preflight; add source-consumer archive checks and base-owned executable,
+  SDK, Rust and header capability checks; cover the ordering and diagnostics in
+  `test_development_runtime_template.py`.
+- **Lesson**: optional preflight arguments must be derived from the rendered
+  candidate before the gate runs. A gate that can silently downgrade to a
+  weaker mode is itself a release defect.
