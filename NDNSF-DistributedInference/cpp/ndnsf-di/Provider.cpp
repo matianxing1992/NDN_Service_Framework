@@ -684,6 +684,7 @@ struct Provider::State
   std::shared_ptr<NativeModelRunnerFactory> testRunnerFactory;
   NativeProviderHandlerConfig::RunnerPreparationFactory testPreparationFactory;
   NativeProviderHandlerConfig::ProtectedRuntimeFactory testProtectedRuntimeFactory;
+  ndn_service_framework::ServiceProvider::AckStrategyHandler testAckHandler;
 #endif
   ndn::security::Certificate providerCertificate;
   ndn::security::Certificate controllerCertificate;
@@ -1123,7 +1124,8 @@ Provider Provider::fromServiceProviderForTest(
   const ProviderConfig& config,
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory,
   NativeProviderHandlerConfig::RunnerPreparationFactory preparationFactory,
-  NativeProviderHandlerConfig::ProtectedRuntimeFactory protectedRuntimeFactory)
+  NativeProviderHandlerConfig::ProtectedRuntimeFactory protectedRuntimeFactory,
+  ndn_service_framework::ServiceProvider::AckStrategyHandler ackHandler)
 {
   if (!config.m_impl)
     throw std::invalid_argument("Provider requires a validated ProviderConfig");
@@ -1141,6 +1143,7 @@ Provider Provider::fromServiceProviderForTest(
   state->testRunnerFactory = std::move(runnerFactory);
   state->testPreparationFactory = std::move(preparationFactory);
   state->testProtectedRuntimeFactory = std::move(protectedRuntimeFactory);
+  state->testAckHandler = std::move(ackHandler);
   state->providerCertificate = providerCertificate;
   state->controllerCertificate = controllerCertificate;
   state->serviceProvider = std::shared_ptr<ndn_service_framework::ServiceProvider>(
@@ -1777,6 +1780,9 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
   NativeServiceDefinition definition;
   definition.serviceName = canonicalServiceName;
   definition.allowedRoles.assign(roles.begin(), roles.end());
+#if defined(NDNSF_DI_PROVIDER_TEST_SEAM)
+  definition.ackHandler = m_state->testAckHandler;
+#endif
   std::shared_ptr<NativeServiceRegistration> native;
   try {
     std::shared_ptr<NativeInferenceProvider> nativeHost;

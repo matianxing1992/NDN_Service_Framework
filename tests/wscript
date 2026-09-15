@@ -84,6 +84,7 @@ def build(bld):
         'ndn-service-framework/ControllerGenerationStore.cpp',
         'ndn-service-framework/RevocationState.cpp',
         'ndn-service-framework/PolicyRefreshCoordinator.cpp',
+        'ndn-service-framework/OperationRuntime.cpp',
         'ndn-service-framework/common.cpp',
         'ndn-service-framework/utils.cpp',
     ])
@@ -269,7 +270,7 @@ def build(bld):
                        di_integration_sources,
                 includes=framework_includes,
                 use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
-                defines=['HAVE_TESTS'],
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
@@ -288,7 +289,7 @@ def build(bld):
                        di_integration_sources,
                 includes=framework_includes,
                 use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
-                defines=['HAVE_TESTS'],
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
@@ -332,6 +333,20 @@ def build(bld):
                 includes=['..', '../ndn-service-framework'],
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec185 B7 native process qualification. The C++ selector owns the
+    # assertions and invokes the existing Python files only as lifecycle
+    # orchestrators for isolated NFD/PIB/TPM child processes.
+    bld.program(target='../spec185-process',
+                name='spec185-process',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-process.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Exercise the shared native projection and model-specific merge contract
