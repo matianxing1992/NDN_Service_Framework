@@ -4912,3 +4912,20 @@ which differs from the Spec186 handoff seal
 - **Lesson**: every final-stage check must use files declared in that stage's
   `%files` inputs; do not reference source or wheel paths removed at the
   builder cleanup boundary.
+
+## 2026-09-15 — Spec186 r38 preflight encoded the old NumPy stage contract
+
+- **Area**: T006 cheap definition preflight.
+- **Symptom**: after carrying `numpy.libs` through `%files from builder`, the
+  corrected r38 definition was rejected before the retry with
+  `SPEC186_PREFLIGHT_NUMPY_FINAL_RPATH_RESTORE_MISSING:1`.
+- **Root cause**: the repository preflight counted the old wheel-extraction
+  Python block twice. The final stage now consumes the builder payload through
+  an explicit stage-boundary copy, so only the builder block legitimately
+  contains the wheel destination expression.
+- **Correction**: update the preflight contract to require one builder
+  destination plus the final-stage `%files` input and copy markers. No native
+  compilation is needed for this correction.
+- **Lesson**: static gates must describe the current multi-stage ownership
+  boundary; changing a definition without updating its gate creates a false
+  pre-build failure.

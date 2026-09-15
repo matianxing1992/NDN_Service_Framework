@@ -106,8 +106,17 @@ def check_static_inputs(definition: Path) -> tuple[Path, Path]:
         "destination = Path('/opt/venv/lib/python3.10/site-packages/numpy.libs')"
     )
     destination_count = text.count(expected_destination)
-    if destination_count < 2:
-        fail("NUMPY_FINAL_RPATH_RESTORE_MISSING", destination_count)
+    if destination_count < 1:
+        # Keep the established diagnostic code while reporting the updated
+        # builder-side requirement.
+        fail("NUMPY_FINAL_RPATH_RESTORE_MISSING", f"builder={destination_count}")
+    # The final stage has no /build-input bind. It must receive the checked
+    # private DSOs through `%files from builder`, then copy that payload into
+    # the inherited NumPy site-packages directory.
+    if "/opt/venv/lib/python3.10/site-packages/numpy.libs /opt/ndnsf-candidate/numpy.libs" not in text:
+        fail("NUMPY_FINAL_STAGE_INPUT_MISSING")
+    if "cp -a /opt/ndnsf-candidate/numpy.libs/. /opt/venv/lib/python3.10/site-packages/numpy.libs/" not in text:
+        fail("NUMPY_FINAL_STAGE_COPY_MISSING")
     if "/opt/ndnsf-stage/python/numpy.libs" in text:
         fail("NUMPY_STAGING_DESTINATION")
     for target in ("ndnsf-distributed-inference", "ndnsf-distributed-inference.pc"):
