@@ -1,7 +1,7 @@
 # Feature Specification: Prepared Model Runtime
 
 **Feature**: 185-prepared-model-runtime | **Branch**: Experimental | **Date**: 2026-09-12
-**Status**: PLANNED — 本轮交付审计、修订设计及任务，不包含产品实现。
+**Status**: COMPLETE — B0–B9 实现、原生验收、Python 绑定验收和设计/API 交付已完成；Spec184 外部资格边界仍按其自身状态维护。
 **Input**: 用户提供的 Runtime/User/PreparedModel 草案，审计后以本目录契约为准。
 
 ## Summary
@@ -12,7 +12,7 @@
 独立 artifact authority、Core Request/ACK/Selection/Response 和既有会话事务保持其所有权。
 
 完整能力首先由独立C++ SDK和生产进程提供，Python核心对象由pybind11直接绑定，便利层只转换参数、异常、GIL与asyncio；详见[C-06](contracts/cpp-first.md)。
-[C-07全API及生命周期](contracts/api-catalog.md)列出全部新稳定application/provider入口、Python映射、值类型、析构与关闭规则。设计要求独立和完整，当前仍NOT_IMPLEMENTED/NOT_RUN。
+[C-07全API及生命周期](contracts/api-catalog.md)列出全部新稳定application/provider入口、Python映射、值类型、析构与关闭规则。B0–B9 已按该契约实现并验收；subinterpreter、wheel、Spec184外部模型和SIF/Tiger等明确未观测边界不在本 Spec 的完成声明中。
 全表面盘点见[API review](api-review.md)，不等于8500项声明的完整正确性证明。
 
 ## User Scenarios & Testing
@@ -91,7 +91,7 @@ Spec184 T007/T008、Qwen3.6-27B 外部资格和旧路径 retirement 未完成项
 
 ## Acceptance Evidence Contract
 
-所有下列 suite 均为 **PLANNED / NOT_RUN**；名称是待注册的 Boost C++ selector，不是已有测试。
+下表保留设计阶段注册的 suite 名称；当前运行状态与真实结果以 `tasks.md` 及各批次 evidence 为准。名称对应已注册的 Boost C++ selector，未观测边界不会因文档登记而升级为 PASS。
 生产库为现有 `ndnsf-distributed-inference`（Waf 注册在根 `wscript:587`），selector 归现有
 `unit-tests` 或 `integration-tests`；T001 必须核对实际 target/output 并登记映射，不能猜 build 路径。
 

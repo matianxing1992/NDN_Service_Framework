@@ -1,13 +1,13 @@
 # Implementation Plan: Prepared Model Runtime
 
-**Branch**: Experimental | **Date**: 2026-09-12 | **Status**: PLANNED
+**Branch**: Experimental | **Date**: 2026-09-12 | **Status**: COMPLETE / B0–B9 delivered; external qualification boundaries remain scoped to Spec184 and the recorded unobserved limits
 **Authority**: [spec](spec.md) · [contracts](contracts/public-api.md) · [tasks](tasks.md) · [audit](audit.md)
 
 ## Constitution Check
 
 沿用 C++17、ndn-cxx/Core、现有 native DI catalog/adapter/planner/Provider 和 Waf；
 绑定为 pythonWrapper 下现有 pybind11 模块。DI公开领域包装；通用运行时、订阅和等待机制在Core实现，Core不引入模型语义，详见[C-09](contracts/core-app-boundary.md)。
-目录名固定185，不建长期功能分支，不执行实现/编译/实验作为本轮规划的一部分。
+目录名固定185，不建长期功能分支；实现、编译和实验按本执行表完成，未观测边界保留在对应 evidence 中。
 所有新示例避免 C++20 designated initializer；使用构造后赋值。
 源码基线见 audit，开始执行时读取最新 HEAD、dirty diff 和184资格证据，不能用本轮 hash 永久冻结实现。
 
@@ -43,7 +43,8 @@ B1/B2可完成纯本地owner与模型准备；B3前须核对184的请求/授权/
 
 B6/B8的none仅适用于不改变native行为的导出/薄封装；若引入owner或状态变化，先归入相应native批次并增加动态卡。
 实际依赖为B0→B0C→B1；B0C具有C-09 PO-C1–C4五lane覆盖，逐任务只读静态门后做组合审查，再共享编译/测试。
-Core头/ABI改变须重建受影响消费者并记录真实链接闭包；本轮仅修订规划，不执行native构建。
+Core头/ABI改变须重建受影响消费者并记录真实链接闭包；初始规划阶段原计划仅修订规划、不执行
+native构建，实际 B0–B9 执行结果以 `tasks.md` 和各批次 evidence 为准。
 B7只重跑受185改变的链路及最终process范围，不重复全部184历史实验。
 B6–B9各自单任务有独立出口：不能要求先完成Python再运行其依赖的C++进程验证，也不能先交付再验收。
 
@@ -61,7 +62,7 @@ T001–T018及B7R的T019–T021均含对应测试编写、静态审查、证据�
 原生测试fixture/driver/oracle均为C++，直接调用库或C++进程。
 先 `C++ production → C++ unit/integration/process → Python wrapper checks`。
 逐小任务只读review-agent → 批末五lane组合审查 → 共享构建和定向测试 → 动态卡。
-参见 [C-04](contracts/validation.md)；新suite是PLANNED，不可直接拿未注册名称声称跑过。
+参见 [C-04](contracts/validation.md)；selector 的注册与实际运行状态以 tasks/evidence 为准，不能用未注册名称或文档检查声称产品资格。
 
 普通DI修改复用核验过的build tree，按实际target选 `-j4`，系统g++/binutils/Boost/NAC-ABE闭包；
 观察vmstat，不启动竞争构建。ABI/共享头变化只重建必要transitive consumers；

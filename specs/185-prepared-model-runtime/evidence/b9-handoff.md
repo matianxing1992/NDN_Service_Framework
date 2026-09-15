@@ -19,6 +19,9 @@
   `Design/evidence/source-baseline-worktree.patch`.
 - Current API inventory: 327 files, 17,589 declaration entries; Python binding map: 1,114
   operations; behavior coverage: 6,168 functions.
+- The active `spec.md` and `plan.md` headers now report `COMPLETE` for the delivered B0–B9
+  scope; their historical planning language is retained only where it describes earlier
+  checkpoints, and external Spec184/SIF/Tiger limits remain explicit.
 
 ## Design/code boundary
 
@@ -86,6 +89,15 @@ also returned `B9_COMPOSITION_PASS` with no P0–P3 findings. The final snapshot
 `T014 | PASS` table row, `[x] T014` card, document links, current/target separation,
 source/API/PDF identities, five lanes and unobserved boundaries. B9 is closed; no compile-link,
 runtime, or sanitizer was required for this document-only batch.
+
+The final composition review for the status-synchronized document set returned
+`B9_COMPOSITION_PASS` on immutable snapshot `.codex-tmp/spec185-b9-composition-v03-20260915`,
+with no P0–P3 findings. Its base is `8bbee681ba80b124b3f9e67b0a2dc97867c0c5ed`, with 27 paths,
+changes SHA-256 `1d21e983864dde4bd00f4d50edfd2b04a0dd9e7b10b51a7d1a022f2f347d3322`, and paths
+SHA-256 `3122ef90ff8e049ab71236dfe16f3975771d307588a874617fabd1b3e004884f`. It confirmed the
+final `spec.md`/`plan.md` `COMPLETE` status, the 21/21 PASS task table, `[x] T014`, and the
+document/source/PDF evidence boundaries. This final review was document-only; compile-link,
+runtime, and sanitizer were not required for B9.
 
 ## Unobserved boundaries
 
