@@ -1,5 +1,19 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec186 root-mapped builder could not chmod inherited tmp
+
+- **Symptom:** The first local r71 SIF attempt reached `%post` but stopped at
+  `install -d /dev /tmp /var/tmp` with `Operation not permitted` for the
+  inherited `/tmp` and `/var/tmp` mount points.
+- **Root cause:** root-mapped Apptainer exposes existing host temporary
+  directories as mounts; `install -d` also requests their mode/ownership even
+  when the directories already exist.
+- **Fix:** create each mount point only when it is absent, preserving existing
+  mount permissions while still materializing `/dev` in the final image.
+- **Lesson:** final-image filesystem guards must be idempotent under both
+  ordinary and root-mapped builders; existence checks are safer than chmod-like
+  directory installation.
+
 ## 2026-09-15 — Spec186 local Apptainer could not inspect the minimal base
 
 - **Symptom:** Apptainer 1.5.3 `inspect --json` and an ordinary `exec` against
