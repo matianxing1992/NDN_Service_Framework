@@ -998,6 +998,32 @@ def test_launcher_import_path_includes_repo_client_before_network(tmp_path: Path
     # same root through its explicit PYTHONPATH in run_minindn_case().
 
 
+def test_runtime_pythonpath_does_not_shadow_installed_native_bindings(
+        tmp_path: Path, monkeypatch):
+    module = load_runner()
+    site_root = tmp_path / "site-packages"
+    (site_root / "ndnsf").mkdir(parents=True)
+    (site_root / "py_repoclient").mkdir()
+    (site_root / "ndnsf" /
+     "_ndnsf.cpython-311-x86_64-linux-gnu.so").write_bytes(b"")
+    (site_root / "py_repoclient" /
+     "_py_repoclient.cpython-311-x86_64-linux-gnu.so").write_bytes(b"")
+    monkeypatch.setattr(module.site, "getsitepackages", lambda: [str(site_root)])
+    monkeypatch.setattr(module.site, "getusersitepackages",
+                        lambda: str(tmp_path / "user-site"))
+
+    roots = module._runtime_pythonpath(tmp_path / "app")
+
+    assert str(ROOT / "NDNSF-DistributedInference") in roots
+    assert str(ROOT / "NDNSF-DistributedRepo/pythonWrapper") not in roots
+    assert str(ROOT / "pythonWrapper") not in roots
+    assert roots[-1] == str(tmp_path / "app")
+    assert module.SIF_RUNTIME_PYTHONPATH.split(":")[0] == (
+        "/opt/venv/lib/python3.10/site-packages")
+    assert "/opt/ndnsf-di/replay/pythonWrapper" not in (
+        module.SIF_RUNTIME_PYTHONPATH)
+
+
 def test_child_ndn_log_uses_dedicated_setting_without_mutating_runner_environment():
     module = load_runner()
     runner_env = {

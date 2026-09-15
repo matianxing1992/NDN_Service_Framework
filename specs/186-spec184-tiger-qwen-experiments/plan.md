@@ -135,7 +135,7 @@ source seal
 2. **G1 / T002–T004** — portability audit、candidate/profile closure 和 lifecycle/transport adapter；focused tests 可在此阶段执行。
 3. **G2 / T005** — design-code convergence `PASS`；否则停止。
 4. **G3-pre / T006** — run `preflight-development-sif.py` against the rendered definition, sealed workspace/wheels and exact base SIF; a failure stops before native compilation and receives a failure-log entry.
-5. **G3 / T006** — 完整 build/unit/integration 和 runtime/ABI closure；完成 native/app closure，但不把它升级为 SIF 或 GPU 结果。
+5. **G3 / T006** — 完整 build/unit/integration 和 runtime/ABI closure；完成 native/app closure，并在 exact replay entrypoint 下检查 venv 原生 binding 未被源码 wrapper shadow，但不把它升级为 SIF 或 GPU 结果。
 6. **G4 / T007–T008** — fresh MiniNDN YOLO 和 Qwen3-0.6B local CPU；分别标记 `LOCAL_CPU_PASS`、`SMOKE_ONLY` 或 `WAITING_EXTERNAL_INPUT`。
 7. **G4-promote / T006.d** — 在 MiniNDN 后默认用本地 1.5.3 完成 exact-SIF build/import/CPU smoke 并封存 SIF SHA；上传后只在登录节点做元数据检查，在 compute 1.5.3 核对同一 SHA，不允许隐式远端重建。若本地 builder 有已记录阻断，compute 构建必须使用新的 candidate 和例外 receipt。
 8. **G5 / T009** — exact base+app composition、single-node GPU YOLO。

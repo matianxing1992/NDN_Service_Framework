@@ -5003,3 +5003,25 @@ which differs from the Spec186 handoff seal
 - **Lesson**: a wrapper status is not a root cause. Keep build/import,
   catalogue-adapter diagnostics and MiniNDN/GPU qualification as separate gates
   and record the first uncaught exception before changing candidate inputs.
+
+## 2026-09-15 — Spec186 replay source shadowed sealed native bindings
+
+- **Area**: T009 canonical-catalogue validation inside the sealed SIF.
+- **Symptom**: the corrected raw-exception probe (job `212356`) showed
+  `ImportError: cannot import name '_ndnsf' from partially initialized module
+  'ndnsf'` from the replay checkout's `pythonWrapper/ndnsf/__init__.py`.
+  The earlier probe (`212355`) failed in its own diagnostic loader because it
+  did not register the dynamically loaded module in `sys.modules`; that was a
+  probe defect, not candidate evidence.
+- **Root cause**: the replay runner inserted
+  `NDNSF-DistributedRepo/pythonWrapper` and `pythonWrapper` before the venv
+  site-packages in both its launcher path and child `PYTHONPATH`. The pure
+  Python source package therefore shadowed the installed `_ndnsf.so` and
+  `_py_repoclient.so`, despite the final SIF import check passing.
+- **Correction**: select source wrapper roots only when the active interpreter
+  lacks the corresponding compiled extension; make SIF site-packages the first
+  child path entry; add a regression test covering both bindings. Rebuild and
+  reseal the candidate before qualification.
+- **Lesson**: a final `import ndnsf._ndnsf` check does not cover every replay
+  path. Validate the exact entrypoint's import ordering under the same SIF and
+  treat source/package shadowing as a build/runtime closure defect.

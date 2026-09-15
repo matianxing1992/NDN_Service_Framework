@@ -36,15 +36,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # processes are spawned.  Keep the launcher import boundary identical to the
 # child PYTHONPATH below; otherwise a real entrypoint run fails before MiniNDN
 # starts even though isolated module tests pass.
-_LOCAL_PYTHON_ROOTS = (
-    ROOT / "NDNSF-DistributedRepo/pythonWrapper",
-    ROOT / "pythonWrapper",
-    ROOT / "NDNSF-DistributedInference",
-)
-for _python_root in reversed(_LOCAL_PYTHON_ROOTS):
-    if _python_root.is_dir() and str(_python_root) not in sys.path:
-        sys.path.insert(0, str(_python_root))
-
 # Exact-SIF replay contract (SPEC180_RUNTIME_SIF / SPEC180_RUNTIME_APPTAINER):
 # when the environment declares the sealed candidate image, every NFD and
 # application child command is prefixed with the only approved Apptainer
@@ -61,11 +52,54 @@ SIF_RUNTIME_PYTHON = "/opt/venv/bin/python"
 SIF_RUNTIME_PYTHONPATH = ":".join((
     "/opt/venv/lib/python3.10/site-packages",
     f"{SIF_RUNTIME_REPO}/NDNSF-DistributedInference",
-    f"{SIF_RUNTIME_REPO}/NDNSF-DistributedRepo/pythonWrapper",
-    f"{SIF_RUNTIME_REPO}/pythonWrapper",
     f"{SIF_RUNTIME_REPO}/examples/python",
 ))
 SPEC180_SIF_HOST_PROCESS_FALLBACK = "SPEC180_SIF_HOST_PROCESS_FALLBACK"
+
+
+def _installed_native_extension(package: str, stem: str) -> bool:
+    """Return whether the active interpreter has a compiled package binding.
+
+    The sealed SIF installs ``ndnsf`` and ``py_repoclient`` into the venv.
+    Replay source trees contain same-named pure-Python packages, so putting
+    those trees ahead of site-packages shadows the compiled bindings and
+    raises the misleading ``partially initialized module`` ImportError.
+    """
+    try:
+        roots = [Path(value) for value in site.getsitepackages()]
+    except (AttributeError, TypeError):
+        roots = []
+    try:
+        roots.append(Path(site.getusersitepackages()))
+    except (AttributeError, TypeError):
+        pass
+    return any(
+        any((root / package).glob(stem + "*.so"))
+        for root in roots
+    )
+
+
+def _source_python_roots() -> tuple[Path, ...]:
+    """Choose source roots only when their compiled bindings are absent."""
+    roots: list[Path] = [ROOT / "NDNSF-DistributedInference"]
+    if not _installed_native_extension("py_repoclient", "_py_repoclient"):
+        roots.insert(0, ROOT / "NDNSF-DistributedRepo/pythonWrapper")
+    if not _installed_native_extension("ndnsf", "_ndnsf"):
+        roots.insert(0, ROOT / "pythonWrapper")
+    return tuple(roots)
+
+
+def _runtime_pythonpath(extra: Path | None = None) -> list[str]:
+    """Build a child path without shadowing installed native packages."""
+    roots = [str(path) for path in _source_python_roots()]
+    if extra is not None:
+        roots.append(str(extra))
+    return roots
+
+
+for _python_root in reversed(_source_python_roots()):
+    if _python_root.is_dir() and str(_python_root) not in sys.path:
+        sys.path.insert(0, str(_python_root))
 
 
 def sif_runtime_enabled() -> bool:
@@ -3382,19 +3416,17 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
         env["SPEC180_YN_MUTATION"] = subcase
     else:
         env.pop("SPEC180_YN_MUTATION", None)
-    env["PYTHONPATH"] = ":".join(filter(None, (
-        str(ROOT / "NDNSF-DistributedInference"),
-        str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"),
-        str(ROOT / "pythonWrapper"),
-        str(py_dir),
-        # The local qualification host installs onnxruntime and the Python
-        # bindings in the interpreter's user site.  HOME is intentionally
-        # node-scoped for NDN PIB/TPM isolation, so retain this dependency
-        # path explicitly instead of relying on Python's user-site discovery.
-        str(site.getusersitepackages())
-        if Path(site.getusersitepackages()).is_dir() else "",
-        env.get("PYTHONPATH", ""),
-    )))
+    pythonpath_roots = _runtime_pythonpath(py_dir)
+    # The local qualification host installs onnxruntime and the Python
+    # bindings in the interpreter's user site.  HOME is intentionally
+    # node-scoped for NDN PIB/TPM isolation, so retain this dependency path
+    # explicitly instead of relying on Python's user-site discovery.
+    user_site = Path(site.getusersitepackages())
+    if user_site.is_dir():
+        pythonpath_roots.append(str(user_site))
+    if env.get("PYTHONPATH"):
+        pythonpath_roots.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_roots)
     # APPDeployment/APPClient use a durable journal even for this bounded
     # qualification.  Give every process the same case-scoped persistent
     # root; requester namespaces keep client records distinct, while the

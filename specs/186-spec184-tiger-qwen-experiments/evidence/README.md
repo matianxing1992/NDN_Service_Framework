@@ -34,6 +34,7 @@ of the stopping point; it is not a qualification result.
 | `direct-target-audit-20260913.md` | direct-objective and critical-path audit | MiniNDN + TigerCluster YOLO is the primary target; static/build/preflight are prerequisites and Qwen is conditional |
 | `preflight-development-sif-20260914.md` | cheap pre-build cross-check | definition, sealed Waf input, NumPy wheel/RPATH and base-SIF import pass; runtime qualification remains open |
 | `tiger-r38-build-boundary-20260914.md` | Tiger compute 1.5.3 exact-SIF build/import and first launch | final SIF build/import passed on `itiger02`; runner stopped before MiniNDN at canonical catalogue verification, so no GPU qualification |
+| `tiger-r38-import-shadow-fix-20260915.md` | raw r38 runner exception and source/package shadow repair | job `212356` identified the installed native binding shadow; local runner fix and 150 focused regressions pass; new sealed candidate required |
 | `closure-handoff-20260914.md` | current implemented/wired/executed/measured reconciliation | local-first SIF promotion is authoritative; r38 is a compute-build fallback boundary and Spec186 remains `IN_PROGRESS` |
 
 Runtime receipts belong in `Experiments/TigerCluster/results/<run-id>` or the

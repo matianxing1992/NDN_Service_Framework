@@ -11,7 +11,7 @@ supporting or offline gates; V08/V12 are conditional Qwen3-0.6B checks. A suppor
 | V02 | T002/T003 | Profile, path, hash, mode, schema and candidate mutations | rejection code, restart gate, zero side effects | VERIFIED |
 | V03 | T004 | MiniNDN/Tiger lifecycle with explicit sockets, routes and cleanup | argv/env, process map, readiness barrier, cleanup | VERIFIED (focused) |
 | V04 | T005 | Production path convergence | CodeGraph traceability and `PASS` audit | PASS (implementation) |
-| V05 | T006 | Build/runtime/ABI and layered base+app composition | builder receipt, import/help, `readelf`, `ldd -r`, SIF/app hashes | PARTIAL: native/app PASS; exact source-sealed SIF open |
+| V05 | T006 | Build/runtime/ABI and layered base+app composition | builder receipt, import/help, exact replay import-order check, `readelf`, `ldd -r`, SIF/app hashes | PARTIAL: native/app and local shadow regression PASS; exact rebuilt source-sealed SIF open |
 | V06 | T007 | YOLO MiniNDN Y-A/Y-B normal | terminal response, `[1,50,6]`, oracle, dependencies, cleanup | WAITING_EXTERNAL_INPUT: case bundles and process vector pass; exact base SIF/native closure still open |
 | V07 | T007 | YOLO MiniNDN Y-N registration/dependency negatives | expected rejection, unique edge, no response/reselection, cleanup | WAITING_EXTERNAL_INPUT: case bundles and process vector pass; exact base SIF/native closure still open |
 | V08 | T008 | Qwen3-0.6B CPU cold request and follow-up | model/backend/tokenizer digest, token IDs, checkpoint, terminal, cleanup | WAITING_EXTERNAL_INPUT |
