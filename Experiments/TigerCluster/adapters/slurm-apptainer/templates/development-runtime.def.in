@@ -235,7 +235,9 @@ PY
     # compiled concurrently; serialize the largest target set for stability.
     # Dependency builds above remain -j2 and all parallelism stays below the
     # repository-wide TigerCluster ceiling of -j4.
-    ./waf -j1 -v --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-inference.pc,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider
+    # The handoff lock caps build parallelism at two; keep this bounded while
+    # avoiding an unnecessarily serial native build on the experiment host.
+    ./waf -j2 -v --targets=ndn-service-framework,ndnsf-distributed-inference,ndnsf-distributed-inference.pc,libndn-service-framework.pc,App_ServiceController,di-native-provider,di-native-fault-provider
 
     install -m 0755 build/libndn-service-framework.so /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0
     ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-stage/lib/libndn-service-framework.so

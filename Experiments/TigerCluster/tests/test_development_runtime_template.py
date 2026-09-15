@@ -91,7 +91,7 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "/opt/venv/lib/python3.10/site-packages/tokenizers" in TEMPLATE.read_text()
     assert "/opt/venv/lib/python3.10/site-packages/onnxruntime" in TEMPLATE.read_text()
     assert "--toolchain-root=/usr" in TEMPLATE.read_text()
-    assert TEMPLATE.read_text().index("export CXX=/usr/bin/clang++-10") < TEMPLATE.read_text().index("./waf -j1 -v --targets=")
+    assert TEMPLATE.read_text().index("export CXX=/usr/bin/clang++-10") < TEMPLATE.read_text().index("./waf -j2 -v --targets=")
     assert "cp -a /src/ndnsf/Experiments/TigerCluster/jobs/spec180" in TEMPLATE.read_text()
     assert "cp -a /src/ndnsf/specs/162-itiger-qwen36-generation" in TEMPLATE.read_text()
     assert "cp -a /src/ndnsf/packaging/ndnsf-di-container/jobs/spec180" not in TEMPLATE.read_text()

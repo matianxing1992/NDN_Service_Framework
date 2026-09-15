@@ -5324,3 +5324,18 @@ which differs from the Spec186 handoff seal
 - **Lesson**: rootless/root-mapped build constraints must be encoded in the
   definition before network package operations; a successful source preflight
   cannot imply that namespace-sensitive package setup is runnable.
+
+## 2026-09-15 — Spec186 r75 native build was serial under a two-job lock
+
+- **Area**: T006 local 1.5.3 SIF build, NDNSF native target compilation.
+- **Symptom**: after the root-mapped APT fix passed, the definition invoked
+  `./waf -j1` for 284 native targets. At 14/284 the run was stopped because
+  the serial schedule would consume excessive wall time; no SIF was emitted.
+- **Root cause**: the template had drifted from the handoff requirement's
+  bounded `maxBuildJobs=2` and used a stricter serial setting without a
+  documented memory requirement.
+- **Correction**: use `./waf -j2` in the sealed definition and assert the
+  command in the static template gate. This remains below the repository's
+  `-j4` upper bound and still prevents unbounded parallel builds.
+- **Lesson**: build reproducibility needs an explicit resource tuple; an
+  unexplained serial fallback is another source of avoidable repeated work.
