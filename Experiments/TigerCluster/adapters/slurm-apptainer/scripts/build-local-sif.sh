@@ -88,6 +88,11 @@ apptainer_build() {
   if [ "${SPEC186_APPTAINER_ROOT_MAPPED:-0}" = 1 ]; then
     build_args+=(--ignore-subuid --ignore-fakeroot-command)
   fi
+  # mksquashfs defaults to all host CPUs.  That made a multi-gigabyte image
+  # build sensitive to this VM's memory pressure and once produced a SIF with
+  # a corrupt compressed data block.  Keep the release path deterministic and
+  # bounded; operators may raise this explicitly after validating the host.
+  build_args+=(--mksquashfs-args "${SPEC186_MKSQUASHFS_ARGS:--processors 1}")
   if [ -n "${SPEC186_APPTAINER_CONFIG:-}" ]; then
     "$apptainer_bin" -c "$SPEC186_APPTAINER_CONFIG" build "${build_args[@]}" "$@"
   else

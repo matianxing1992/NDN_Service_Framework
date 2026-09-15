@@ -9,12 +9,14 @@ mutations after this gate returns ``ok``.
 from __future__ import annotations
 
 import hashlib
+import importlib.machinery
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import sysconfig
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 
@@ -820,22 +822,36 @@ def _native_checks(profile: Mapping[str, Any], failures: list[str], commands: li
             # probe name asks CPython for a different initializer and creates
             # a false ImportError even when the ELF closure is valid. Probe
             # the canonical package name in a subprocess so collector imports
-            # cannot mask the result.
-            package_root = ext.parent.parent
-            probe = (
-                "import sys; sys.path.insert(0, %r); "
-                "import ndnsf._ndnsf; print(ndnsf._ndnsf.__file__)"
-            ) % str(package_root)
-            commands.append([sys.executable, "-c", probe])
-            try:
-                result = subprocess.run(
-                    [sys.executable, "-c", probe], stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, timeout=20, check=False, text=True,
-                )
-                if result.returncode != 0:
-                    failures.append("NATIVE_EXTENSION_IMPORT_FAILED:" + str(result.returncode))
-            except (OSError, subprocess.SubprocessError) as exc:
-                failures.append("NATIVE_EXTENSION_IMPORT_FAILED:" + type(exc).__name__)
+            # cannot mask the result. A SIF commonly carries a Python ABI that
+            # differs from the orchestration host (for example CPython 3.10
+            # in the image and CPython 3.8 on the login node). In that case a
+            # host import is invalid evidence and is explicitly deferred to
+            # the immutable SIF probe; the ELF closure is still checked below.
+            host_suffixes = {
+                suffix for suffix in importlib.machinery.EXTENSION_SUFFIXES
+                if suffix != ".so"
+            }
+            host_abi_match = any(ext.name.endswith(suffix) for suffix in host_suffixes)
+            if host_abi_match:
+                package_root = ext.parent.parent
+                probe = (
+                    "import sys; sys.path.insert(0, %r); "
+                    "import ndnsf._ndnsf; print(ndnsf._ndnsf.__file__)"
+                ) % str(package_root)
+                commands.append([sys.executable, "-c", probe])
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "-c", probe], stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, timeout=20, check=False, text=True,
+                    )
+                    if result.returncode != 0:
+                        failures.append("NATIVE_EXTENSION_IMPORT_FAILED:" + str(result.returncode))
+                except (OSError, subprocess.SubprocessError) as exc:
+                    failures.append("NATIVE_EXTENSION_IMPORT_FAILED:" + type(exc).__name__)
+            else:
+                host_abi = sysconfig.get_config_var("SOABI") or "unknown"
+                commands.append(["deferred-native-import", str(ext),
+                                 "host-soabi=" + host_abi])
             for tool, args in (("readelf", ["readelf", "-d", str(ext)]),
                                ("ldd", ["ldd", "-r", str(ext)])):
                 commands.append(args)
@@ -845,6 +861,17 @@ def _native_checks(profile: Mapping[str, Any], failures: list[str], commands: li
                                             check=False, text=True)
                     if result.returncode != 0:
                         failures.append("NATIVE_" + tool.upper() + ":" + str(result.returncode))
+                    if tool == "ldd":
+                        unresolved = []
+                        for line in result.stdout.splitlines():
+                            if "not found" in line:
+                                unresolved.append(line.strip())
+                            elif "undefined symbol:" in line:
+                                symbol = line.split("undefined symbol:", 1)[1].strip()
+                                if not symbol.startswith(("Py", "_Py")):
+                                    unresolved.append(line.strip())
+                        if unresolved:
+                            failures.append("NATIVE_LDD_UNRESOLVED:" + str(len(unresolved)))
                 except (OSError, subprocess.SubprocessError) as exc:
                     failures.append("NATIVE_" + tool.upper() + ":" + type(exc).__name__)
     else:

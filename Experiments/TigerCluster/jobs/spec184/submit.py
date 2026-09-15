@@ -360,10 +360,22 @@ def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
                 "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                 "HOME": str(run_root / "home"),
                 "LC_ALL": "C",
+                # MiniNDN's Node.popen(shell=True) resolves the shell from
+                # the launcher environment, even when the command itself
+                # supplies a node-scoped environment.  Keep that dependency
+                # explicit in the scrubbed local runtime.
+                "SHELL": "/bin/bash",
             }
             for name in ("USER", "LOGNAME", "SUDO_USER", "TMPDIR"):
                 if os.environ.get(name):
                     child_env[name] = os.environ[name]
+            # Apptainer configuration is part of the selected runtime, not a
+            # host library/path input. Preserve an explicitly selected config
+            # (for example the root-mapped local 1.5.3 test config) while the
+            # rest of the caller environment remains scrubbed.
+            if os.environ.get("APPTAINER_CONFIG_FILE"):
+                child_env["APPTAINER_CONFIG_FILE"] = os.environ[
+                    "APPTAINER_CONFIG_FILE"]
             child_env.update({str(key): str(value)
                               for key, value in effective["environment"].items()})
             child = subprocess.Popen(argv, cwd=str(run_root), env=child_env,

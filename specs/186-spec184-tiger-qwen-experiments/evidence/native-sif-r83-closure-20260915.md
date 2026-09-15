@@ -1,4 +1,11 @@
-# Spec186 r83 exact local SIF closure — 2026-09-15
+# Spec186 r83 exact local SIF closure — 2026-09-15 (superseded)
+
+> **Status: INVALIDATED.** The original build-time and first immutable probe
+> passed, but a fresh remount later produced a SquashFS zlib/data-read error
+> in NumPy (`SQUASHFS error ... zlib decompression failed`). This record is
+> retained as failure history only; r83 must not be uploaded or executed as a
+> candidate. A replacement build is required with the bounded mksquashfs
+> setting and a second remount probe.
 
 ## Candidate identity
 

@@ -55,3 +55,12 @@ The first two probe attempts also exposed a reproducibility rule: the sealed
 probe must set a writable temporary HOME/XDG directory and leave unsupported
 host NDN TPM selectors unset. The correction and rationale are recorded in
 `docs/failure-log.md`.
+
+### r83 supersession
+
+After the initial probe, a fresh `apptainer exec` remount failed importing
+NumPy with `SQUASHFS error: zlib decompression failed` and
+`cannot read file data: Input/output error`. The build record and first probe
+therefore do not establish a usable image. r83 is invalidated and remains only
+as failure history; the replacement must use bounded `mksquashfs` packing and
+repeat the probe after a separate remount.

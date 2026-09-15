@@ -17,6 +17,10 @@ source-sealed candidate 在 compute 1.5.3 例外构建；登录节点 1.3.4 不�
 
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。
+该入口默认向 `mksquashfs` 传入 `-processors 1`，限制镜像封存的内存峰值并
+避免实验虚拟机在高并发压缩时产生损坏的数据块。只有在记录新的 SIF 摘要并
+重新通过完整 immutable probe 后，才允许通过 `SPEC186_MKSQUASHFS_ARGS`
+显式提高并行度。
 当前 Waf 目标仍把 Core、DI mechanism、ONNX、YOLO、Qwen 和 native assembly
 worker 部分连接在同一构建图中；已核实的链接边界和 Python 包边界见
 [dependency boundary audit](dependency-boundaries.md)。因此不能把 ONNX 或

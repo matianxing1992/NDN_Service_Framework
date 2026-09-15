@@ -5441,3 +5441,47 @@ which differs from the Spec186 handoff seal
 - **Lesson**: runtime closure scripts must pin writable scratch locations and
   avoid unsupported host keychain selectors; otherwise an environment setup
   failure can be mistaken for a SIF or application failure.
+
+## 2026-09-15 — Spec186 r83 SIF compressed data block was corrupt
+
+- **Area**: T006 exact local SIF runtime closure.
+- **Symptom**: the r83 SIF passed the build-time import gate, but a fresh
+  `apptainer exec` failed to import NumPy with `cannot read file data: Input/output error`.
+  The kernel reported SquashFS decompression failure for a data block; r80 and
+  r81 did not reproduce it.
+- **Root cause**: the image packer used its unrestricted all-CPU default on
+  this memory-constrained experiment VM, and the resulting compressed block
+  was not readable after materialization.
+- **Correction**: bound `mksquashfs` to one processor by default through
+  `build-local-sif.sh`; an explicit override is allowed only with a new SIF
+  digest and a complete immutable probe.
+- **Lesson**: a successful `%post` and immediate import do not prove that the
+  final SquashFS data can be read after remount; verify the materialized image
+  and bound the packer's resource use.
+
+## 2026-09-15 — Spec186 SIF MiniNDN waited on the wrong NFD namespace
+
+- **Area**: T006 exact-SIF MiniNDN startup and routing.
+- **Symptom**: NFD logs showed every node creating `/run/nfd/<node>.sock`,
+  while the legacy readiness helper reported all sockets missing or all
+  `nfdc` probes unavailable.
+- **Root cause**: the helper checked the host's global `/run/nfd` and then
+  invoked host-side `nfdc`; exact-SIF replay uses a per-run bind directory and
+  an Apptainer mount namespace for each node.
+- **Correction**: check the case-scoped bind directory, probe `nfdc` through
+  the same SIF with the node-specific transport, and temporarily wrap
+  MiniNDN's routing `node.cmd('nfdc ...')` calls with that provider.
+- **Lesson**: readiness and route configuration must execute in the same
+  namespace as the forwarder they claim to validate.
+
+## 2026-09-15 — Spec186 local MiniNDN launcher omitted SHELL
+
+- **Area**: T006 local host orchestration boundary.
+- **Symptom**: after NFD and routing became ready, Controller startup failed
+  with `KeyError` from MiniNDN's `Node.popen(shell=True)`.
+- **Root cause**: the scrubbed local child environment declared `PATH` and
+  `HOME` but not the `SHELL` variable that MiniNDN reads directly.
+- **Correction**: declare `SHELL=/bin/bash` in the local runtime environment
+  and keep it covered by the pre-dispatch launch path.
+- **Lesson**: environment scrubbing must preserve every variable consumed by
+  the orchestrator itself; an application dependency list alone is incomplete.

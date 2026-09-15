@@ -20,6 +20,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shlex
 import signal
@@ -28,6 +29,7 @@ import site
 import sys
 import subprocess
 import time
+import types
 from typing import Any, Mapping
 
 
@@ -128,10 +130,14 @@ def _sif_bind_args(base_env: Mapping[str, str] | None = None) -> list[str]:
     bind_roots = [
         ROOT / "results",
         ROOT / "specs",
-        Path("/run/nfd"),
         operator_home / ".local/state/ndnsf/spec180",
         operator_home / ".config/ndnsf/spec180",
     ]
+    nfd_root_value = str(env.get("SPEC180_RUNTIME_NFD_DIR", "") or
+                          os.environ.get("SPEC180_RUNTIME_NFD_DIR", ""))
+    nfd_root = Path(nfd_root_value) if nfd_root_value else Path("/run/nfd")
+    if nfd_root.exists():
+        bind_roots.append(nfd_root)
     result: list[str] = []
     seen: set[str] = set()
     for raw in bind_roots:
@@ -139,7 +145,10 @@ def _sif_bind_args(base_env: Mapping[str, str] | None = None) -> list[str]:
         if not path.exists() or str(path) in seen:
             continue
         seen.add(str(path))
-        result.extend(["--bind", f"{path}:{path}"])
+        if path == nfd_root.expanduser().resolve():
+            result.extend(["--bind", f"{path}:/run/nfd"])
+        else:
+            result.extend(["--bind", f"{path}:{path}"])
     # The application and candidate input layers are immutable external
     # inputs.  Bind them explicitly into the same absolute path (case inputs)
     # or the stable /app/bundle mount (application) so child processes cannot
@@ -234,10 +243,134 @@ class Spec180SifNfd:
                 # destroy the quoted Apptainer command.  Pass a shell argv
                 # instead so MiniNDN keeps its normal process ownership.
                 import minindn.apps.application as _application
+                env_dict = {}
+                if os.environ.get("APPTAINER_CONFIG_FILE"):
+                    # MiniNDN node shells are created before Application.start
+                    # and do not reliably inherit late host environment
+                    # changes. Pass the selected Apptainer config explicitly
+                    # so every NFD node uses the same 1.5.3 runtime policy.
+                    env_dict["APPTAINER_CONFIG_FILE"] = os.environ[
+                        "APPTAINER_CONFIG_FILE"]
                 _application.Application.start(
-                    self, ["bash", "-lc", command], logfile=self.logFile)
+                    self, ["bash", "-lc", command], logfile=self.logFile,
+                    envDict=env_dict or None)
 
         return SifNfd(*args, **kwargs)
+
+
+def _wait_for_sif_nfd_sockets(ndn, output_dir: Path, socket_root: Path,
+                              timeout_s: float = 20.0) -> None:
+    """Wait for NFD sockets in the case-scoped host bind directory.
+
+    The maintained legacy helper checks the host's global ``/run/nfd`` tree.
+    Exact-SIF replay binds a writable, per-case directory to ``/run/nfd``
+    inside each Apptainer process, so consulting the global path would report
+    a false startup failure even after NFD has created its socket and accepted
+    ``nfdc`` commands.
+    """
+    nodes = list(ndn.net.hosts)
+    socket_root = Path(socket_root)
+    deadline = time.time() + timeout_s
+    missing: list[str] = []
+    not_ready: list[str] = []
+    while time.time() < deadline:
+        missing = [
+            node.name for node in nodes
+            if not (socket_root / (str(node.name) + ".sock")).exists()
+        ]
+        if missing:
+            time.sleep(0.25)
+            continue
+        not_ready = []
+        for node in nodes:
+            # ``node.cmd`` runs outside the NFD Apptainer process.  Probe
+            # through the same exact-SIF command provider so the command sees
+            # the case bind mounted at /run/nfd and the node's client.conf.
+            home_dir = node.params["params"]["homeDir"]
+            transport = "unix:///run/nfd/" + str(node.name) + ".sock"
+            # The prefix deliberately clears inherited NDN_CLIENT_* values.
+            # Set the node-specific transport inside the container after the
+            # prefix; otherwise nfdc falls back to an unavailable default and
+            # reports a false readiness failure.
+            probe = sif_exec_prefix({}, home_dir=home_dir) + \
+                " env NDN_CLIENT_TRANSPORT=" + shlex.quote(transport) + \
+                " nfdc face list >/dev/null 2>&1; echo $?"
+            config = os.environ.get("APPTAINER_CONFIG_FILE", "")
+            if config:
+                probe = "APPTAINER_CONFIG_FILE=" + shlex.quote(config) + " " + probe
+            rc = node.cmd(probe).strip().splitlines()
+            if not rc or rc[-1] != "0":
+                not_ready.append(node.name)
+        if not not_ready:
+            return
+        time.sleep(0.25)
+
+    diagnostics: dict[str, Any] = {}
+    for node in nodes:
+        home = Path(node.params["params"]["homeDir"])
+        nfd_log = home / "log" / "nfd.log"
+        copied_log = ""
+        if nfd_log.exists():
+            copied = output_dir / ("nfd-startup-" + str(node.name) + "-nfd.log")
+            copied.write_text(nfd_log.read_text(errors="replace"))
+            copied_log = str(copied)
+        socket_path = socket_root / (str(node.name) + ".sock")
+        diagnostics[str(node.name)] = {
+            "socket": str(socket_path),
+            "socket_in_container": "/run/nfd/" + str(node.name) + ".sock",
+            "socket_exists": socket_path.exists(),
+            "nfdc_face_list_ready": node.name not in not_ready,
+            "home": str(home),
+            "nfd_log": str(nfd_log),
+            "copied_log": copied_log,
+            "nfd_log_tail": "\n".join(
+                nfd_log.read_text(errors="replace").splitlines()[-80:]
+            ) if nfd_log.exists() else "",
+        }
+    (output_dir / "nfd-startup-failure.json").write_text(
+        json.dumps(diagnostics, indent=2, sort_keys=True) + "\n")
+    raise RuntimeError(
+        "NFD startup failure: missing sockets for {}; nfdc not ready for {}".format(
+            ",".join(missing), ",".join(not_ready)))
+
+
+def _wrap_sif_nfdc_commands(ndn) -> list[tuple[object, object]]:
+    """Route MiniNDN's host-side nfdc helpers into each exact-SIF NFD.
+
+    MiniNDN's routing helper invokes ``node.cmd('nfdc ...')`` directly.  The
+    NFD processes now live in per-node Apptainer mount namespaces, so that
+    host command would use the unrelated default ``/run/nfd.sock``.  Install
+    a temporary node-local command adapter while routing is configured and
+    return the original bound methods for deterministic restoration.
+    """
+    if not sif_runtime_enabled():
+        return []
+    originals: list[tuple[object, object]] = []
+    config = os.environ.get("APPTAINER_CONFIG_FILE", "")
+    for node in ndn.net.hosts:
+        original = node.cmd
+        home_dir = node.params["params"]["homeDir"]
+        transport = "unix:///run/nfd/" + str(node.name) + ".sock"
+
+        def wrapped(self, *args, _original=original, _home=home_dir,
+                    _transport=transport, **kwargs):
+            if args and isinstance(args[0], str) and args[0].lstrip().startswith("nfdc "):
+                command = sif_exec_prefix({}, home_dir=_home)
+                if config:
+                    command = "APPTAINER_CONFIG_FILE=" + shlex.quote(config) + " " + command
+                command += " env NDN_CLIENT_TRANSPORT=" + shlex.quote(_transport)
+                command += " " + args[0]
+                args = (command,) + args[1:]
+            return _original(*args, **kwargs)
+
+        node.cmd = types.MethodType(wrapped, node)
+        originals.append((node, original))
+    return originals
+
+
+def _restore_node_commands(originals: list[tuple[object, object]]) -> None:
+    for node, original in originals:
+        node.cmd = original
 
 REQUIRED_ENV = (
     "NDNSF_DI_STATE_ROOT",
@@ -578,6 +711,14 @@ class MiniNdnCaseRuntime:
         if self._ndn is not None:
             raise RunnerError("CASE_RUNTIME_NETWORK_ALREADY_STARTED")
         legacy = self._legacy_module()
+        if sif_runtime_enabled():
+            # ``--containall`` gives the image a read-only /run. Give every
+            # case its own writable socket directory and bind it to the fixed
+            # in-image NFD endpoint root. This avoids shared sockets and does
+            # not require mutating the host's /run hierarchy.
+            nfd_root = self.binding.output / "nfd"
+            nfd_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.environ["SPEC180_RUNTIME_NFD_DIR"] = str(nfd_root)
         legacy.Minindn.cleanUp()
         legacy.Minindn.verifyDependencies()
         # MiniNDN's constructor parses the process-wide argv for its own
@@ -603,7 +744,12 @@ class MiniNdnCaseRuntime:
             ndn.start()
             nfd_app = Spec180SifNfd if sif_runtime_enabled() else legacy.Nfd
             legacy.AppManager(ndn, ndn.net.hosts, nfd_app, logLevel="INFO")
-            legacy.perf.wait_for_nfd_sockets(ndn, self.binding.output)
+            if sif_runtime_enabled():
+                _wait_for_sif_nfd_sockets(
+                    ndn, self.binding.output,
+                    self.binding.output / "nfd")
+            else:
+                legacy.perf.wait_for_nfd_sockets(ndn, self.binding.output)
         except Exception as exc:
             cleanup_errors = []
             try:
@@ -667,17 +813,21 @@ class MiniNdnCaseRuntime:
         group_prefix = str(identities["group"])
         repo_prefix = str(identities.get("repoServicePrefix",
                                          "/NDNSF/DistributedRepo/Object"))
-        rh = legacy.NdnRoutingHelper(ndn.net, "udp", "link-state")
-        for node_name, prefixes in self.route_origins().items():
-            rh.addOrigin([ndn.net[node_name]], list(prefixes))
-        rh.calculateRoutes()
-        for node in ndn.net.hosts:
-            legacy.Nfdc.setStrategy(node, controller_identity.rsplit("/", 1)[0],
-                                    legacy.Nfdc.STRATEGY_BEST_ROUTE)
-            legacy.Nfdc.setStrategy(node, group_prefix,
-                                    legacy.Nfdc.STRATEGY_MULTICAST)
-            legacy.Nfdc.setStrategy(node, repo_prefix,
-                                    legacy.Nfdc.STRATEGY_MULTICAST)
+        originals = _wrap_sif_nfdc_commands(ndn)
+        try:
+            rh = legacy.NdnRoutingHelper(ndn.net, "udp", "link-state")
+            for node_name, prefixes in self.route_origins().items():
+                rh.addOrigin([ndn.net[node_name]], list(prefixes))
+            rh.calculateRoutes()
+            for node in ndn.net.hosts:
+                legacy.Nfdc.setStrategy(node, controller_identity.rsplit("/", 1)[0],
+                                        legacy.Nfdc.STRATEGY_BEST_ROUTE)
+                legacy.Nfdc.setStrategy(node, group_prefix,
+                                        legacy.Nfdc.STRATEGY_MULTICAST)
+                legacy.Nfdc.setStrategy(node, repo_prefix,
+                                        legacy.Nfdc.STRATEGY_MULTICAST)
+        finally:
+            _restore_node_commands(originals)
 
     def initialize_keychains(self, ndn=None, *, dual_signing_certs: bool = True) -> None:
         ndn = ndn or self._ndn
@@ -1529,6 +1679,13 @@ def _validate_native_library_closure() -> None:
     it prevents repeating a misleading live run with incompatible host
     libraries.
     """
+    # The host MiniNDN process is only an orchestrator when exact-SIF replay is
+    # enabled. Its host ``nfd`` and diagnostic CPython extension are expected
+    # to have a different ABI from the sealed image; comparing them would
+    # reject a valid candidate before any SIF child starts. The immutable SIF
+    # probe and the child command provider own closure validation in this mode.
+    if sif_runtime_enabled():
+        return
     nfd = shutil.which("nfd")
     if not nfd:
         raise RunnerError("NATIVE_LIBRARY_CLOSURE_NFD_MISSING")
@@ -1699,6 +1856,35 @@ def _validate_package(package: Path, registry: Path) -> Mapping[str, Any]:
     if not isinstance(catalogue, Mapping):
         raise RunnerError("CANONICAL_CATALOGUE_MISSING")
     try:
+        # The outer MiniNDN launcher deliberately starts with
+        # PYTHONNOUSERSITE=1 so child processes cannot inherit an arbitrary
+        # operator package set. Canonical graph validation is an explicit
+        # host-side preflight, however, and its declared ONNX inspector may
+        # live in that user site. Add only the interpreter's known site roots
+        # for this short validation import; the immutable SIF probe repeats
+        # the check inside the sealed Python 3.10 environment.
+        site_roots = [site.getusersitepackages(), *site.getsitepackages()]
+        # MiniNDN gives every node a private HOME. Resolve the operator's
+        # original user site from USER/LOGNAME as a fallback so the host
+        # preflight still sees the explicitly installed ONNX inspector.
+        identities = (os.environ.get("SUDO_USER", ""),
+                      os.environ.get("USER", ""),
+                      os.environ.get("LOGNAME", ""))
+        py_version = ".".join(str(part) for part in sys.version_info[:2])
+        for identity in identities:
+            if not identity or identity == "root":
+                continue
+            try:
+                operator_home = Path(pwd.getpwnam(identity).pw_dir)
+            except KeyError:
+                continue
+            site_roots.extend((
+                str(operator_home / ".local" / "lib" / ("python" + py_version) / "site-packages"),
+                str(operator_home / ".local" / "lib" / ("python" + py_version) / "dist-packages"),
+            ))
+        for root in site_roots:
+            if root and root not in sys.path:
+                sys.path.append(root)
         sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
         from ndnsf_distributed_inference.adapters.yolo import build_yolo26n_adapter
         build_yolo26n_adapter(package, registry_path=registry)
