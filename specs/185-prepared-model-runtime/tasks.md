@@ -45,10 +45,12 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 | [T012 Thin Python Prepared Model Facade](#t012) | NOT_STARTED | B7 C++ qualification exit | B8 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T014 Design API and Scoped Handoff](#t014) | NOT_STARTED | T012 acceptance | B9 planned; implementation/build/runtime NOT_RUN | 2026-09-12 16:24 -05:00 |
 | [T019 Prepared Client Ownership and Eviction](#t019) | PASS | T003/T005 static | B7R static v3, normal and ASan/UBSan C++ eviction/source-lifetime selector `RC=0`; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
-| [T020 Conversation Terminal Admission Ordering](#t020) | PARTIAL | T007 static | B7R static v3, normal and ASan/UBSan two-turn selector `RC=0`; artificial delayed notification and separate failure-turn stress remain unobserved; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
+| [T020 Conversation Terminal Admission Ordering](#t020) | PASS | T007 static | B7R follow-up static `PASS`; normal and ASan/UBSan C++ selectors plus repeated selectors `RC=0`; delayed completion callback gate, failed-turn `CANCELLED` immediate replacement, and successful result-to-next-turn oracle observed; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md#t020-follow-up-delayed-completion-and-immediate-retry) | 2026-09-15 03:16 -05:00 |
 | [T021 Generation Identity and Grant-Bound Provider Cache](#t021) | PARTIAL | T007/T010 static | B7R static v3, C++ same-grant hit/independent-grant cold selector normal and ASan/UBSan `RC=0`; protected Provider cross-request production matrix remains unobserved; [b7r-lifecycle-fixes](evidence/b7r-lifecycle-fixes-20260915.md) | 2026-09-15 02:36 -05:00 |
 
 ## Current Checkpoint
+
+2026-09-15 03:16 -05:00 B7R T020 follow-up：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-t020-review-v01cytpt` 返回 `STATIC_PASS`，manifest SHA256=`8d882b58a426f004617ab10ee641f3f3db3e6c33b02f406b3025b26cd9835437`，无 P0-P3。`spec185-prepared-request` normal 与独立 ASan/UBSan `-j4` 构建均 `RC=0`；同一 conversation selector normal、ASan/UBSan 各运行两次，均 `RC=0`、`*** No errors detected`。C++ 夹具用共享 native worker 上的公开 completion callback gate 延迟会话失败回调，确认 `CANCELLED` 结果可见后立即 replacement；首个成功 `result(0)` 后立即提交下一 turn，后续 checkpoint/commit/recovery/drain 继续通过。T020 已 PASS；T021、T013、T012/T014 仍按各自未观测项保持原状态。详情见 [T020 follow-up](evidence/b7r-lifecycle-fixes-20260915.md#t020-follow-up-delayed-completion-and-immediate-retry)。
 
 2026-09-15 02:36 -05:00 B7R lifecycle fixes：官方 `review-agent` 对不可变快照 `.codex-tmp/spec185-lifecycle-fixes-review-v3` 返回 `STATIC_PASS`，manifest SHA256=`dbbe150f1c03f3fc5b509e01e19b43724ed5882719ea94f5c0e81d1edc201736`，无 P0-P3。Runtime client registry 改为 weak index、PreparedModel 共享惰性 client、会话终态在结果可见前释放 turn gate、默认 generation identity 合并后归一化；Provider 受保护 cache 明确按 Provider/grantName/grantDigest 隔离。normal `-j4` 与独立 ASan/UBSan `-j4` 受影响目标构建均 `RC=0`，新增缓存淘汰、两轮会话和独立授权 cold/hit/cold C++ selector 均 normal/ASan `RC=0`、无 sanitizer 报告。T019 已 PASS；T020/T021 因人工延迟/失败会话压力及受保护 Provider 跨独立授权生产请求尚未观测保持 `PARTIAL`；T013 的 source/ELF/no-Python convergence、T012/T014 仍未完成。详见 [b7r lifecycle evidence](evidence/b7r-lifecycle-fixes-20260915.md)。
 
@@ -563,7 +565,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
 <a id="t020"></a>
 
-- [ ] T020 [US2] Conversation Terminal Admission Ordering — NativeConversationContinuation.hpp; NativeInferenceClient.cpp; Conversation.cpp; tests/integration-tests/di-prepared-request.t.cpp
+- [x] T020 [US2] Conversation Terminal Admission Ordering — NativeConversationContinuation.hpp; NativeInferenceClient.cpp; Conversation.cpp; tests/integration-tests/di-prepared-request.t.cpp
 
   **Batch / Depends**: B7R / T007 static。
 
@@ -571,7 +573,7 @@ C-07每行是T015 exposure、T011 C++消费、T012绑定和T014文档的共同�
 
   **Implementation and review**: Internal conversation abort and the process-local terminal hook run before terminal event/Core result visibility; public completion remains an observer path. The two-turn C++ oracle passes normal and ASan/UBSan.
 
-  **Exit / oracle**: delayed completion notification and a separate failed-turn immediate retry must still be added before this task can be checked; current evidence keeps those lanes `PARTIAL`.
+  **Exit / oracle**: delayed completion notification and a separate failed-turn immediate retry are covered by the C++ worker-gate fixture; normal and ASan/UBSan selectors each pass twice. The public successful result-to-next-turn path, checkpoint/recovery and drain remain covered by the same native case.
 
 <a id="t021"></a>
 

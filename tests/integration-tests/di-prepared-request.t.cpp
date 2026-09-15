@@ -298,6 +298,66 @@ pumpUntilConversationResultReady(
 }
 
 void
+pumpUntilRequestTerminal(
+  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
+  const RequestHandle& handle, std::chrono::seconds budget)
+{
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while (handle.status() == RequestStatus::Pending &&
+         std::chrono::steady_clock::now() < deadline)
+    environment.pumpUntil([] { return false; });
+  if (handle.status() == RequestStatus::Pending)
+    throw std::runtime_error("Spec185 request terminal pump deadline expired");
+}
+
+// Hold a public completion callback while a Conversation failure becomes
+// visible. The native terminal hook must open the next turn before this gate
+// is released, without adding a production test seam.
+struct DelayedConversationCompletion
+{
+  DelayedConversationCompletion()
+    : entered(std::make_shared<std::promise<void>>()),
+      enteredFuture(entered->get_future().share()),
+      releasePromise(std::make_shared<std::promise<void>>()),
+      releaseFuture(releasePromise->get_future().share())
+  {
+  }
+
+  ~DelayedConversationCompletion() noexcept
+  {
+    release();
+  }
+
+  std::function<void(std::exception_ptr, std::optional<Result>)> callback() const
+  {
+    const auto enteredPromise = entered;
+    const auto release = releaseFuture;
+    return [enteredPromise, release](std::exception_ptr,
+                                     std::optional<Result>) {
+      try { enteredPromise->set_value(); }
+      catch (...) {}
+      release.wait();
+    };
+  }
+
+  bool wait(std::chrono::seconds timeout) const
+  {
+    return enteredFuture.wait_for(timeout) == std::future_status::ready;
+  }
+
+  void release() const
+  {
+    try { releasePromise->set_value(); }
+    catch (...) {}
+  }
+
+  std::shared_ptr<std::promise<void>> entered;
+  std::shared_future<void> enteredFuture;
+  std::shared_ptr<std::promise<void>> releasePromise;
+  std::shared_future<void> releaseFuture;
+};
+
+void
 pumpUntilPreparedRunReady(
   ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
   const std::shared_ptr<PreparedRunObservation>& observation,
@@ -2124,16 +2184,63 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
                         [] (const DiError& error) {
                           return error.code() == "CHECKPOINT_NOT_READY";
                         });
-  auto first = conversation.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
+  // Occupy the native operation worker in a public completion callback. The
+  // callback is deliberately unrelated to the Conversation, so this test
+  // does not add a production test seam or alter the installed API.
+  DelayedConversationCompletion failureCompletion;
+  NativeJson blockerConfig;
+  {
+    std::ifstream input(fixture.configPath);
+    input >> blockerConfig;
+  }
+  auto blockerDefaultsJson = blockerConfig.at("request").at("generation_defaults");
+  blockerDefaultsJson.erase("generationId");
+  blockerDefaultsJson.erase("generation_id");
+  const auto blockerDefaults = nativeCanonicalJson(blockerDefaultsJson);
+  RequestOptions blockerOptions = options;
+  blockerOptions.generation.reset();
+  const std::vector<std::uint8_t> blockerApplicationOptions(
+    blockerDefaults.begin(), blockerDefaults.end());
+  auto blocker = prepared.request(
+    Input::inlineBytes({0x0a, 0x0b, 0x0c}, blockerApplicationOptions), blockerOptions);
+  auto blockerCompletion = blocker.onCompletion(failureCompletion.callback());
+  blocker.cancel();
+  BOOST_REQUIRE(failureCompletion.wait(std::chrono::seconds(5)));
+
+  // Cancelled turns must release admission before the Conversation's
+  // asynchronous completion observer runs. Submit the replacement while the
+  // failed result is already visible and the observer worker is still gated.
+  auto failed = conversation.request(Input::inlineBytes({0x09, 0x09, 0x09}), options);
+  failed.cancel();
+  BOOST_CHECK_EXCEPTION(failed.result(std::chrono::milliseconds(0)), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "CANCELLED";
+                        });
+
+  // The retry is submitted before the failed turn's delayed observer is
+  // released. The native terminal hook must make this request admissible.
+  RequestHandle first;
+  try {
+    first = conversation.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
+  }
+  catch (...) {
+    failureCompletion.release();
+    throw;
+  }
+  failureCompletion.release();
   // The first request cannot complete before the test pumps the borrowed Face.
   // Keep the active-turn negative case in a small helper frame so the
   // sanitizer observes the production exception boundary without coupling it
   // to this integration test's large stack frame.
   BOOST_CHECK(conversationRejectsBusyTurn(conversation, options));
-  auto firstObservation = startConversationResultObservation(first, conversationResultWait);
-  pumpUntilConversationResultReady(environment, firstObservation, conversationTimeout);
-  const auto firstResult = firstObservation->get();
+  pumpUntilRequestTerminal(environment, first, conversationTimeout);
+  Result firstResult;
+  firstResult = first.result(std::chrono::milliseconds(0));
   BOOST_CHECK(!firstResult.payload.empty());
+  // A successful result is already visible to the caller here. Submit the
+  // next turn immediately, before any explicit Face pump, and let the normal
+  // two-turn path below verify that it commits and remains usable.
+  auto second = conversation.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
   auto checkpoint = conversation.checkpoint();
   const auto checkpointBytes = checkpoint.bytes();
   BOOST_REQUIRE(!checkpointBytes.empty());
@@ -2156,7 +2263,6 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   }();
   BOOST_CHECK(exportedCheckpoint.bytes() == checkpointBytes);
 
-  auto second = conversation.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
   auto secondObservation = startConversationResultObservation(second, conversationResultWait);
   pumpUntilConversationResultReady(environment, secondObservation, conversationTimeout);
   const auto secondResult = secondObservation->get();
