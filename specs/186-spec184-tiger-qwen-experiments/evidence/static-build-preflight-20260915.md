@@ -90,6 +90,13 @@ the source seal is
 the required current-source host qualification manifest is still absent, and
 the r61 host bundle is not a matching-container app closure.
 
+The same r64 definition was passed to `build-local-sif.sh
+--strict-host-source-seal` with the retained r55 host manifest. It stopped
+before base preflight with exit 4 and
+`LOCAL_SIF_HOST_GATE_SOURCE_SEAL_INVALID` (`SOURCE_SEAL_REVISION_SOURCE_CHANGE`
+for `packaging/ndnsf-di-container/bin/ndnsf-di-spec175-preflight` and `wscript`).
+No SIF output or remote side effect was created.
+
 ## Verification
 
 ```text
