@@ -147,6 +147,8 @@ public:
   NativeInferenceHandle() = default;
   std::string requestId() const;
   std::string applicationRequestId() const;
+  /** Return the absolute native submission deadline for owner-side waiters. */
+  std::chrono::steady_clock::time_point deadline() const;
   // Returns the authenticated checkpoint committed by the native conversation
   // owner, if this request completed a conversation turn.  An ordinary
   // request, an in-flight turn, or a failed/cancelled turn has no checkpoint.

@@ -171,13 +171,15 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertIn("native_conversation_coordinator_from_config", client)
         self.assertIn("_native_conversations", client)
 
-    def test_native_requester_cli_uses_shared_runtime_parser(self):
+    def test_native_requester_cli_uses_prepared_runtime_owner(self):
         source = REQUESTER.read_text(encoding="utf-8")
-        self.assertIn("nativeRequestRuntimeFromJson", source)
-        self.assertIn('"ndnsf-di-native-request-runtime-v1"', source)
+        # Spec185 moved the executable to the prepared-runtime owner.  Keep
+        # this inherited test focused on the public native route rather than
+        # requiring the retired hand-built runtime-parser path.
+        self.assertIn("Runtime::open", source)
+        self.assertIn("user.prepare", source)
+        self.assertIn("prepared.request", source)
         self.assertNotIn("NativeRequestRuntime runtime;", source)
-        self.assertIn("catalog.stateMapping.inputs", source)
-        self.assertIn('request.contains("application_request_id")', source)
         self.assertIn("options.applicationRequestId", source)
 
     def test_native_provider_target_has_relocatable_origin_runpath(self):

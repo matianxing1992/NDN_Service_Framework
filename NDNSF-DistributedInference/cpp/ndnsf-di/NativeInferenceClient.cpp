@@ -1677,6 +1677,15 @@ std::string NativeInferenceHandle::applicationRequestId() const
   return m_operation->applicationRequestId;
 }
 
+std::chrono::steady_clock::time_point NativeInferenceHandle::deadline() const
+{
+  if (!m_operation)
+    throw NativeDiError("INVALID_HANDLE", "local", "handle",
+                        "native inference handle is empty");
+  std::lock_guard<std::mutex> lock(m_operation->mutex);
+  return m_operation->deadline;
+}
+
 std::optional<std::string> NativeInferenceHandle::conversationCheckpoint() const
 {
   if (!m_operation) return std::nullopt;

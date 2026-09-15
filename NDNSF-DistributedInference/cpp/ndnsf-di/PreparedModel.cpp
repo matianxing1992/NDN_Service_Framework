@@ -286,11 +286,21 @@ Input Input::repository(DataRef reference)
 struct EventReader::State
 {
   std::shared_ptr<NativeEventReader> native;
+  std::chrono::steady_clock::time_point deadline{};
 };
 
 EventReader::~EventReader() noexcept
 {
   close();
+}
+
+std::chrono::milliseconds EventReader::remainingTimeout() const
+{
+  if (!m_state)
+    throw DiError("READER_CLOSED", "local", "events", "event reader is closed");
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    m_state->deadline - std::chrono::steady_clock::now());
+  return remaining.count() > 0 ? remaining : std::chrono::milliseconds(0);
 }
 
 std::optional<Event> EventReader::next(std::chrono::milliseconds timeout)
@@ -369,6 +379,7 @@ struct RequestHandle::State
                                                 std::optional<Result>)>)> resultAsync;
   std::function<Subscription(std::function<void(const Event&)>)> observe;
   std::chrono::milliseconds defaultTimeout{30'000};
+  std::chrono::steady_clock::time_point deadline{};
   // Keep the client owner alive for the complete request.  A factory-created
   // client owns the operation runtime; dropping it after request submission
   // would invoke close() and cancel the still-pending native operation.
@@ -396,7 +407,9 @@ Result RequestHandle::result() const
 {
   if (!m_state || !m_state->result)
     throw DiError("INVALID_HANDLE", "local", "handle", "request handle is empty");
-  return result(m_state->defaultTimeout);
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    m_state->deadline - std::chrono::steady_clock::now());
+  return result(remaining.count() > 0 ? remaining : std::chrono::milliseconds(0));
 }
 
 Result RequestHandle::result(std::chrono::milliseconds timeout) const
@@ -730,7 +743,7 @@ RequestHandle PreparedModel::request(const Input& input, const RequestOptions& o
 Result PreparedModel::run(const Input& input, const RequestOptions& options) const
 {
   auto handle = requestInternal(input, options);
-  return handle.result(options.timeout);
+  return handle.result();
 }
 
 RequestHandle PreparedModel::requestInternal(Input input, const RequestOptions& options) const
@@ -871,10 +884,12 @@ RequestHandle PreparedModel::requestInternal(
       return Result{value.payload, native->requestId(), value.modelDigest, value.planDigest};
     };
     state->cancel = [native] { native->cancel(); };
-    state->events = [native] {
+    state->deadline = native->deadline();
+    state->events = [native, deadline = state->deadline] {
       auto reader = std::make_shared<NativeEventReader>(native->events());
       auto readerState = std::make_shared<EventReader::State>();
       readerState->native = std::move(reader);
+      readerState->deadline = deadline;
       return EventReader(std::move(readerState));
     };
     state->diagnostics = [native] {
