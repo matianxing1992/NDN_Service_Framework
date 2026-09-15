@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Tiger baseline role KeyChain locator boundary (RESOLVED)
+
+静态复审首先发现普通角色没有显式 paired KeyChain locator；首个修正又把
+`pib-sqlite3`/`tpm-file` 写成文件路径，并让 issuer `prepare` 继承运行 locator。
+按 ndn-cxx backend 契约改为目录级 `/identities/<role>/.ndn`，并在 `prepare`
+阶段省略两个变量，保持每个角色和 issuer 的 store 隔离。官方 review-agent
+对冻结快照 `09e7ccd0cb8fd827e8fd9a94fc1fc8dcf8710c345558898921234794934e5d7e`
+返回 `STATIC_PASS`；baseline 聚焦测试 53 项通过。此项尚未运行 SIF、NFD、C++
+请求链或 Tiger qualification，详见
+[Tiger baseline identity evidence](../specs/185-prepared-model-runtime/evidence/tiger-baseline-identity-20260915.md)。
+
 ## 2026-09-15 — Spec185 T013 mixed external-binary closure (RESOLVED)
 
 The first final normal run rebuilt only `spec185-process` after a public native runner ABI

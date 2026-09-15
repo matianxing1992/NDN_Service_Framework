@@ -50,6 +50,14 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 
 ## Current Checkpoint
 
+2026-09-15 13:55 -05:00 Tiger baseline identity boundary：沿用现有
+`Experiments/TigerCluster` 启动脚本，修正普通角色的目录级 paired PIB/TPM
+locator，并让 offline `prepare` 不继承运行时 locator。官方 `review-agent`
+冻结快照 `STATIC_PASS`；`test_baseline.py` 为 53 passed，Python syntax 与
+diff 门禁通过。该项只闭合启动器命令形状，未观测有效 base SIF、容器 KeyChain、
+NFD/C++ 请求链或 Tiger/Slurm qualification；详见
+[Tiger identity evidence](evidence/tiger-baseline-identity-20260915.md)。
+
 2026-09-15 13:05 -05:00 B9 T014：按 `Design/MANAGEMENT.md` 刷新当前 API/绑定参考、行为覆盖与源码快照；`test_design_state.py`、`verify-api-reference.py`、`verify-source-baseline.py` 均 `PASS`（327 文件、17,589 声明、1,114 绑定、514 快照文件）。当前/目标双 PDF 在 `.codex-tmp/design-pdf-20260915T130303244487Z/` 构建并通过 `verify.py`（91/98 页、59/65 目录章节、字体嵌入、无版面警告）；当前设计明确 PreparedModel 原生路径和兼容 `NATIVE_REQUEST_PIPELINE_NOT_READY` 分支，目标设计保持独立。B5 T009/T010 的 final composition v5、normal/sanitizer C++ 运行已在本 checkpoint 复核为 PASS；Spec184 Qwen3.6-27B、继承 negative/retirement、I05、SIF/Tiger 和 B8 subinterpreter/wheel 等未观测项仍保持原状态。T014 已通过静态审查 v05 与 `B9_COMPOSITION_PASS`，现标记 `PASS`。详见 [B9 handoff](evidence/b9-handoff.md)。
 
 2026-09-15 11:46 -05:00 Tiger SIF+APP local-first tooling：已实现基础 SIF + 外置 `/opt/ndnsf-app` APP 的本地交付入口，准备本地 checkpoint；r29 实现经官方 `review-agent` 静态通过，r30 证据更新复核同样 `STATIC_PASS`。78 项离线脚本/manifest 测试、Python/Bash/ShellCheck 和 diff 门禁通过；当前机器没有有效 regular base/candidate SIF，因此 pair materialization、C++ 请求链、Apptainer runtime、Slurm/Tiger 仍未观测，不改变 T013/T014 的产品任务状态。详见 [SIF+APP static evidence](../../Experiments/TigerCluster/docs/sif-app-static-check-20260915.md)。
