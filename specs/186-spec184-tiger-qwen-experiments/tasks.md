@@ -35,7 +35,15 @@ numerical oracle、退出码和 cleanup 回执的结果只能保持 `WAITING_EXT
 状态只表示本任务声明的范围；`VERIFIED`、`PASS` 和实验状态必须带新 candidate
 digest、run ID、命令、节点/GPU、oracle、退出和 cleanup 证据。
 
-**Latest candidate boundary (2026-09-15)**: r83 used source revision
+**Superseding checkpoint (2026-09-15)**: T006.b is INVALIDATED for the current
+r83 file and T006.d remains BLOCKED. Original receipt SHA `27562997…` differs
+from observed `e8c84c2f…`; the old VERIFIED row below is historical only.
+Run `Experiments/TigerCluster/runtime/verify_sif_receipt.py` before any reuse.
+Do not build again until the successful-template comparison identifies which
+inputs can be reused and why a replacement is necessary. Packing parallelism
+is not an established corruption cause. MiniNDN and GPU acceptance remain open.
+
+**Historical candidate boundary (2026-09-15)**: r83 used source revision
 `854c802379b63dc45a96b1a3caf2a7b4a872306f`, the stable base SIF
 `sha256:1dd9626748b6fdbe93abf819a944e0628bf7a2b5feddcc562fe7d233f927e74c`,
 and Apptainer 1.5.3. The container-native `./waf -j2` build passed `284/284`

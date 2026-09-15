@@ -15,10 +15,20 @@ source-sealed candidate 在 compute 1.5.3 例外构建；登录节点 1.3.4 不�
 
 ## Existing Build Entry
 
+复用、测试或传输已有 SIF 前，必须对照原始成功构建记录执行：
+
+```bash
+python3 Experiments/TigerCluster/runtime/verify_sif_receipt.py --sif IMAGE --record BUILD_RECORD
+```
+
+不匹配时拒绝该镜像；禁止把当前摘要抄入 profile 来绕过原始记录。
+r83 曾发生这一检查遗漏，随后 NumPy 读取触发 SquashFS 解压错误。
+损坏原因仍未查明，不能据此宣称单线程压缩能够修复。
+
 构建入口：`Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh`。
 构建前准备源码seal并核对definition、依赖和工具链，沿用 [runtime package](../../../packaging/ndnsf-di-container/README.md) 的原生ABI与候选规则。
-该入口默认向 `mksquashfs` 传入 `-processors 1`，限制镜像封存的内存峰值并
-避免实验虚拟机在高并发压缩时产生损坏的数据块。只有在记录新的 SIF 摘要并
+该入口默认向 `mksquashfs` 传入 `-processors 1`，限制镜像封存的资源用量；
+这不是已证实的 r83 损坏修复，损坏原因尚未确定。只有在记录新的 SIF 摘要并
 重新通过完整 immutable probe 后，才允许通过 `SPEC186_MKSQUASHFS_ARGS`
 显式提高并行度。
 当前 Waf 目标仍把 Core、DI mechanism、ONNX、YOLO、Qwen 和 native assembly

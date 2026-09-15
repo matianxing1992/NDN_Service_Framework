@@ -5449,12 +5449,16 @@ which differs from the Spec186 handoff seal
   `apptainer exec` failed to import NumPy with `cannot read file data: Input/output error`.
   The kernel reported SquashFS decompression failure for a data block; r80 and
   r81 did not reproduce it.
-- **Root cause**: the image packer used its unrestricted all-CPU default on
-  this memory-constrained experiment VM, and the resulting compressed block
-  was not readable after materialization.
-- **Correction**: bound `mksquashfs` to one processor by default through
-  `build-local-sif.sh`; an explicit override is allowed only with a new SIF
-  digest and a complete immutable probe.
+- **Root cause**: unresolved. The original build receipt records SHA-256
+  `275629970d771bee9f635099ec37d130fa89a8cff9211444d81d78de5ec7a7c2`,
+  whereas the later observed file hashes to
+  `e8c84c2ffb82e5d1e2e54435cde9de74bd0b520b986ee42c4257b13bfdcd4da7`.
+  The earlier attribution to packing parallelism was unsupported. The file
+  no longer matches its accepted receipt; storage, mutation and reading
+  faults still need investigation.
+- **Correction**: reject the changed bytes against the original receipt;
+  never update the expected digest merely to pass pre-dispatch. Single-worker
+  packing is a resource precaution only, not a verified corruption fix.
 - **Lesson**: a successful `%post` and immediate import do not prove that the
   final SquashFS data can be read after remount; verify the materialized image
   and bound the packer's resource use.
