@@ -627,7 +627,11 @@ ProviderRoleWorker::exactForwardCacheKeyFor(
 {
   std::ostringstream os;
   appendString(os, "ndnsf-di-provider-local-exact-forward-cache-v1");
-  appendUint64(os, reinterpret_cast<std::uintptr_t>(runner));
+  if (runner == nullptr) {
+    throw std::invalid_argument(
+      "ProviderRoleWorker exact-forward cache requires a runner");
+  }
+  appendUint64(os, runner->cacheIdentity());
   appendString(os, item.role.role);
   appendUint64(os, static_cast<std::uint64_t>(item.role.inputs.size()));
   for (const auto& edge : item.role.inputs) {

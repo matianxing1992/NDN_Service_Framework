@@ -12500,12 +12500,29 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 class NativeModelRunner
 ```
 
-### API-b78e92752464 · ndnsf::di::NativeModelRunner::~NativeModelRunner
+### API-fdd44017e561 · ndnsf::di::NativeModelRunner::NativeModelRunner
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L86)
 
 ```cpp
-virtual ~NativeModelRunner() = default;
+NativeModelRunner();
+```
+
+### API-a4b136dffd90 · ndnsf::di::NativeModelRunner::~NativeModelRunner
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L87)
+
+```cpp
+virtual ~NativeModelRunner() noexcept;
+```
+
+### API-31ea9c220dd0 · ndnsf::di::NativeModelRunner::cacheIdentity
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L94)
+
+```cpp
+std::uint64_t
+  cacheIdentity() const;
 ```
 
 ### API-463a0077f0d0 · ndnsf::di::NativeModelRunner::run

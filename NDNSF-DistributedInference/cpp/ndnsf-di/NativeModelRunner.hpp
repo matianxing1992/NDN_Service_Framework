@@ -83,7 +83,16 @@ struct NativeConversationStateHandleV1
 class NativeModelRunner
 {
 public:
-  virtual ~NativeModelRunner() = default;
+  NativeModelRunner();
+  virtual ~NativeModelRunner() noexcept;
+
+  /**
+   * Stable identity for this runner instance.  ProviderRoleWorker uses this
+   * value when it keys its exact-forward output cache; object addresses are
+   * unsuitable because a newly-created runner may reuse a retired address.
+   */
+  std::uint64_t
+  cacheIdentity() const;
 
   virtual std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) = 0;
