@@ -1,95 +1,136 @@
---- a/Experiments/TigerCluster/README.md
-+++ b/Experiments/TigerCluster/README.md
-@@ -23,0 +24,4 @@
+--- a/NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp
++++ b/NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp
+@@ -252 +252,2 @@
+-      model.modelName.find("Yolo") == std::string::npos) {
++      model.modelName.find("Yolo") == std::string::npos &&
++      model.modelName.find("yolo") == std::string::npos) {
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.cpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.cpp
+@@ -192,2 +192,9 @@
+-    static CacheJoinReaper reaper;
+-    return reaper;
++    // A cache worker may be the last owner of RuntimeState and therefore
++    // destroy the cache while the process is already tearing down shared
++    // libraries.  A function-local object would then be destroyed before a
++    // late self-join handoff reaches enqueue(), leaving that worker with a
++    // dangling reaper pointer.  Keep the reaper process-lived; its worker
++    // thread and queue are reclaimed by process termination after all cache
++    // workers have either joined or been handed off.
++    static CacheJoinReaper* reaper = new CacheJoinReaper;
++    return *reaper;
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.cpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.cpp
+@@ -2,0 +3 @@
++#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+@@ -4,0 +6,3 @@
 +
-+后续分层交付方向已接受：稳定基础 SIF 与外置 DI/UAV 应用包分别构建，以固定组合
-+验收和运行。当前启动器迁移仍 PLANNED，边界与接续责任见
-+[SIF build](docs/sif-build.md#current-delivery-direction)。
---- a/Experiments/TigerCluster/docs/sif-build.md
-+++ b/Experiments/TigerCluster/docs/sif-build.md
-@@ -1,0 +2,11 @@
-+
-+## Current Delivery Direction
-+
-+2026-09-08 已接受后续使用**稳定基础 SIF + 外置版本化 DI/UAV 应用包**。
-+详细归属、builder ABI、只读挂载、组合身份与验收见
-+[Layered Runtime Delivery](../../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md)。
-+应用更新可复用未变基础 SIF，但须在对应 builder 内构建并验证新组合。
-+目前为 ACCEPTED DESIGN / PLANNED TOOLING；下面的现有 complete-SIF 命令仍是旧实现，
-+不能仅加一个 bind 就声称已支持分层发布。基础与应用构建/运行由实验机器接续。
-+
-+## Existing Build Entry
---- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp
-+++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp
-@@ -5,0 +6 @@
 +#include <algorithm>
-@@ -82,2 +83,7 @@
--  std::uint64_t sourceLimit = roles.front().maxSourceBytes;
--  std::uint64_t assemblyLimit = roles.front().maxAssembledBytes;
-+  const auto onnx = std::find_if(roles.begin(), roles.end(), [](const auto& role) {
-+    return role.mergeKind != "NATIVE_POSTPROCESS";
-+  });
-+  if (onnx == roles.end())
-+    throw std::invalid_argument("native canonical publication requires an ONNX source role");
-+  std::uint64_t sourceLimit = onnx->maxSourceBytes;
-+  std::uint64_t assemblyLimit = onnx->maxAssembledBytes;
-@@ -92,2 +98,4 @@
--    sourceLimit = std::min(sourceLimit, role.maxSourceBytes);
--    assemblyLimit = std::min(assemblyLimit, role.maxAssembledBytes);
-+    if (role.mergeKind != "NATIVE_POSTPROCESS") {
-+      sourceLimit = std::min(sourceLimit, role.maxSourceBytes);
-+      assemblyLimit = std::min(assemblyLimit, role.maxAssembledBytes);
++#include <cstring>
+@@ -55,2 +59 @@
+-    if (!conversationInput.is_object() ||
+-        conversationInput.value("kind", std::string{}) != "OPAQUE_BYTE_TOKEN_IDS")
++    if (!conversationInput.is_object())
+@@ -58,10 +61,40 @@
+-    // This operator-pinned fixture contract derives one canonical token from
+-    // each encoded byte.  Callers cannot supply or replace this encoder; it is
+-    // captured by the immutable adapter registry during preparation.
+-    entry.conversationTokenEncoder = [] (const std::vector<std::uint8_t>& bytes) {
+-      std::vector<std::int64_t> tokens;
+-      tokens.reserve(bytes.size());
+-      for (const auto byte : bytes)
+-        tokens.push_back(static_cast<std::int64_t>(byte));
+-      return tokens;
+-    };
++    const auto kind = conversationInput.value("kind", std::string{});
++    if (kind == "OPAQUE_BYTE_TOKEN_IDS") {
++      // This operator-pinned fixture contract derives one canonical token from
++      // each encoded byte.  Callers cannot supply or replace this encoder; it
++      // is captured by the immutable adapter registry during preparation.
++      entry.conversationTokenEncoder = [] (const std::vector<std::uint8_t>& bytes) {
++        std::vector<std::int64_t> tokens;
++        tokens.reserve(bytes.size());
++        for (const auto byte : bytes)
++          tokens.push_back(static_cast<std::int64_t>(byte));
++        return tokens;
++      };
 +    }
-@@ -111 +119,2 @@
--    if (identity.graphDigest != role.graphDigest || identity.initializerDigest != role.canonicalInitializerDigest)
-+    if (identity.graphDigest != role.graphDigest ||
-+        (role.mergeKind != "NATIVE_POSTPROCESS" && identity.initializerDigest != role.canonicalInitializerDigest))
---- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp
-+++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp
-@@ -247,2 +247,11 @@
--  if (hasAssemblyIdentity &&
--      (!completeAssemblyIdentity || !completeAssemblyRecipe)) {
-+  const bool completeNativeIdentity = isSha256Digest(role.modelManifestDigest) &&
-+    isSha256Digest(role.artifactProfileDigest) && isSha256Digest(role.graphDigest) &&
-+    isSha256Digest(role.adapterDescriptorDigest);
-+  if (validNativePostprocess &&
-+      (!isCpuBackend(role.backend) || role.expectedInputs.empty() ||
-+       role.expectedOutputs.size() != 1 ||
-+       role.expectedOutputs.front().name != role.postprocessOutputName ||
-+       role.expectedOutputs.front().dtype != "float32"))
-+    throw std::invalid_argument("V3 native postprocess role has invalid CPU or tensor contracts");
-+  if (hasAssemblyIdentity && (validNativePostprocess ? !completeNativeIdentity :
-+      (!completeAssemblyIdentity || !completeAssemblyRecipe))) {
---- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp
-+++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp
-@@ -216,0 +217 @@
-+    const bool nativeMerge = egress && candidate.mergeKind == "NATIVE_POSTPROCESS";
-@@ -227,4 +228,4 @@
--        !digest(role.canonicalInitializerDigest) || !digest(role.adapterDescriptorDigest) ||
--        !digest(role.assemblerDescriptorDigest) || role.backendAbi.empty() || role.precision.empty() ||
--        role.protectionEpoch.empty() || role.nodeIndices.empty() || !role.maxSourceBytes ||
--        !role.maxAssembledBytes || !role.maxNodes)
-+        !digest(role.adapterDescriptorDigest) || role.protectionEpoch.empty() || role.nodeIndices.empty() ||
-+        (!nativeMerge && (!digest(role.canonicalInitializerDigest) ||
-+          !digest(role.assemblerDescriptorDigest) || role.backendAbi.empty() || role.precision.empty() ||
-+          !role.maxSourceBytes || !role.maxAssembledBytes || !role.maxNodes)))
-@@ -371 +372,2 @@
--        model.canonicalSourceBytes > role.maxSourceBytes || model.canonicalInitializerBytes > role.maxSourceBytes)
-+        (role.mergeKind != "NATIVE_POSTPROCESS" &&
-+          (model.canonicalSourceBytes > role.maxSourceBytes || model.canonicalInitializerBytes > role.maxSourceBytes)))
-@@ -376 +378,2 @@
--    role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
-+    if (role.mergeKind != "NATIVE_POSTPROCESS")
-+      role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
---- a/docs/native-build-parallelism.md
-+++ b/docs/native-build-parallelism.md
-@@ -19,0 +20,9 @@
++    else if (kind == "TENSOR_BUNDLE_TOKEN_IDS") {
++      const auto tensorName = conversationInput.value("tensor_name", "input_ids");
++      if (tensorName.empty())
++        throw std::invalid_argument("tensor-bundle conversation input tensor name is empty");
++      // The native request payload is an authenticated tensor bundle.  A
++      // tensor-bundle encoder must derive the same token suffix as the
++      // execution coordinator, rather than hashing transport framing bytes.
++      entry.conversationTokenEncoder = [tensorName] (const std::vector<std::uint8_t>& bytes) {
++        if (!isEncodedTensorBundle(bytes))
++          throw std::invalid_argument("conversation input is not an encoded tensor bundle");
++        const auto tensors = decodeTensorBundle(bytes);
++        const auto found = std::find_if(tensors.begin(), tensors.end(),
++          [&tensorName] (const auto& tensor) { return tensor.name == tensorName; });
++        if (found == tensors.end() || found->elementType != TensorElementType::Int64 ||
++            found->shape.empty() || found->payload.empty() ||
++            found->payload.size() % sizeof(std::int64_t) != 0)
++          throw std::invalid_argument("conversation input token tensor is invalid");
++        std::vector<std::int64_t> tokens(found->payload.size() / sizeof(std::int64_t));
++        std::memcpy(tokens.data(), found->payload.data(), found->payload.size());
++        if (std::any_of(tokens.begin(), tokens.end(), [] (const auto token) { return token < 0; }))
++          throw std::invalid_argument("conversation input token ID is negative");
++        return tokens;
++      };
++    }
++    else {
++      throw std::invalid_argument("unsupported native conversation input encoder");
++    }
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.cpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.cpp
+@@ -937,0 +938,6 @@
++      // Start the owned Face before publishing the ServiceUser/grant pair.
++      // Thread or work-guard creation can fail; keeping the pair unpublished
++      // leaves the Runtime retryable instead of making a later request skip
++      // the only required start attempt.
++      if (!state->coreOwner->ioThread.joinable())
++        state->coreOwner->startIo(state->coreOwner);
+@@ -951,5 +957,5 @@
+-  // operator transport.  Start the owned Face only when a native client is
+-  // first materialized; this keeps preparation/configuration usable offline
+-  // while preserving one Core IO owner for every submitted request.
+-  if (!state->coreOwner->ioThread.joinable())
+-    state->coreOwner->startIo(state->coreOwner);
++  // operator transport.  Start the owned Face only when this call materialized
++  // the Runtime's ServiceUser.  A test or embedding boundary may have already
++  // supplied an external ServiceUser/Grant client; starting the unused Face in
++  // that case would create a second transport owner and can report a local NFD
++  // connection failure even though all request traffic uses the supplied Face.
+@@ -1468,0 +1475,13 @@
++void detail::RuntimeTestAccess::bindProviderOnlyFixture(
++  const std::shared_ptr<Runtime>& runtime, Provider provider)
++{
++  if (!runtime || !runtime->m_state || !provider.valid())
++    throw std::invalid_argument("Provider-only Runtime test fixture binding is incomplete");
++  std::lock_guard<std::mutex> lock(runtime->m_state->mutex);
++  if (!runtime->m_state->providerOnly ||
++      runtime->m_state->phase != detail::RuntimeState::Phase::Open)
++    throw std::runtime_error(
++      "Provider-only Runtime test fixture binding requires an open Provider Runtime");
++  runtime->m_state->provider = std::make_shared<Provider>(std::move(provider));
++}
 +
-+2026-09-08 用户强调只重建受影响模块。日常批次复用同一已验证配置的 build tree，
-+显式选择目标；DI 改动不清空 Core/UAV 对象、不因新 batch ID 创建 fresh build。
-+只有实际依赖变化（共享头文件、编译配置、ABI）才重建相应消费者。需要产出 DI 库时
-+选择 `--targets=ndnsf-distributed-inference`；需要验证单测时选择 `--targets=unit-tests`，
-+由 Waf 依赖图重编失效对象并链接，不能用“只编库成功”代替单测。
-+Waf 的 `[n/total]` 是任务图编号，不是实际编译次数；报告 Compiling/Linking 实际行。
-+R1-B2 首轮只编 DI preparation 与其测试，次轮只编测试；Core/UAV 没有重编，
-+分别 16.928s/16.033s。原始日志见当前 Spec 的 R1-B2 证据；不作为 fresh build 测量。
+@@ -1496,2 +1515,7 @@
+-    if (owner)
+-      owner->close();
++    // Keep the Core operation worker alive until the caller registers its
++    // drain barrier.  Runtime::close() is the non-blocking admission fence;
++    // stopping the Core worker here races a subsequent drainAsync() that
++    // still has to wait for NativeInferenceClient cleanup.  drain()/
++    // drainAsync() close the owner after their waiter is installed, while
++    // Runtime::~Runtime() remains the final close path for callers that do
++    // not request an explicit drain.
+--- a/NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp
++++ b/NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp
+@@ -9,0 +10 @@
++class Provider;
+@@ -27,0 +29,4 @@
++
++  /** Replace the unopened Provider-only owner with a borrowed-face fixture. */
++  static void bindProviderOnlyFixture(
++    const std::shared_ptr<Runtime>& runtime, Provider provider);

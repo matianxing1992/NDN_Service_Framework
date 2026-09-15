@@ -22,7 +22,11 @@ UAV & 容器、飞控、任务、操作权限、视频、录像及多视角识�
 \bottomrule
 \end{tabularx}
 
-\callout{关键现状}{已有 C++ Provider 执行组件不代表纯 C++ 请求全链路已经完成；当前原生 DI dispatch 仍返回 \code{NATIVE_REQUEST_PIPELINE_NOT_READY}。权限 grant 的局部取钥优化也不代表所有无关节点的运行状态完全不受影响。}
+\callout{关键现状}{当前已验证的原生请求入口是
+Runtime::open → User::prepare → PreparedModel → NativeInferenceClient，
+并由 C++ 过程选择器覆盖 ACK、Selection、Provider、Response、会话和清理。
+没有 Runtime preparation/request contract 的兼容构造仍明确返回
+\code{NATIVE_REQUEST_PIPELINE_NOT_READY}；这条限制不能被已验证的 PreparedModel 路径掩盖。}
 
 \newpage
 
@@ -544,11 +548,11 @@ catalogLookup 在目录锁外读取 store manifest，再在锁内附加本 Repo 
 \newpage
 
 \section{DI：应用入口与当前实现层次}
-\lead{Python 编排仍在；原生执行组件与原生请求入口的完成度不同}
-\code{ndnsf_distributed_inference.api} 当前为受审查的重新导出入口，实际实现仍在
-\code{app_sdk} 等 owner 中。InferenceApplication 管理应用定义/部署；
-InferenceClient/APPClient 接受请求并提供结果、取消、观察和恢复接口；
-InferenceProvider 对接实际网络 Provider。导入名字短不代表内部已经没有 Python 控制逻辑。[D1]
+\lead{原生 PreparedModel 是请求入口；Python 只做薄适配和编排}
+\code{ndnsf_distributed_inference.api} 导出 Runtime、User、PreparedModel、句柄和
+Provider 的 pybind 对象；\code{api/_async.py} 只转换 completion/reader 到 asyncio。
+旧 \code{app_sdk}/\code{APPClient} 编排仍保留为兼容 caller，不能把兼容入口的状态
+外推为 PreparedModel 已覆盖的全部能力。[D1]
 
 \subsection{两类应用请求}
 \begin{description}
@@ -559,17 +563,20 @@ InferenceProvider 对接实际网络 Provider。导入名字短不代表内部�
 \end{description}
 
 \subsection{C++ 已有的能力}
-NativeExecutionPlan、NativeProviderSession/Runtime、ProviderRoleWorker、
-模型 runner、依赖传输、生成协调器及 Provider host 等组件已存在。
-原生规划、grant、ONNX、tokenizer 和请求生命周期正在 Spec182 中逐步整合。[D3--D6]
+Runtime/User/PreparedModel 将已验证模型包、输入投影和请求句柄绑定到
+NativeInferenceClient；NativeExecutionPlan、NativeProviderSession/Runtime、
+ProviderRoleWorker、模型 runner、依赖传输、生成协调器及 Provider host 负责后续阶段。
+原生规划、grant、ONNX、tokenizer、会话和请求生命周期由 Spec185 的 C++ 证据逐项覆盖。[D3--D6]
 
-\subsection{明确未闭合的路径}
-当前 \code{NativeInferenceClient::request()} 会创建有 deadline 的 handle，调度原生操作；
-\code{dispatchOperation()} 仍以 \code{NATIVE_REQUEST_PIPELINE_NOT_READY} 结束。
-因此“纯 C++ 应用已完成默认端到端推理”不是当前可支持的结论。
-真实 catalog/Repo 输入准备、完整报价消费及请求编排接线仍有未完成项。[D7]
+\subsection{当前路径与限制}
+PreparedModel 的 request/run 会把准备包、输入、选项、绝对 deadline 和策略交给
+NativeInferenceClient，过程资格已由同一候选的 C++ selector 验证。
+直接构造没有 preparation/request contract 的 NativeInferenceClient 仍保留
+\code{NATIVE_REQUEST_PIPELINE_NOT_READY}，用于明确区分兼容/组件构造与生产 prepared 路径。
+Python subinterpreter、wheel packaging 和 Spec184 外部模型/实验资格仍未观测。[D7]
 
-\callout{目标与基线}{目标 TG-02 接受同一原生实现配可选 Python 外壳的方向；本章解释仍存在的 Python/C++ 分工，目标方向不构成 requester 已接通的证据。}
+\callout{目标与基线}{目标 TG-02 继续要求同一原生实现配可选 Python 外壳；当前
+PreparedModel 路径已经是该方向的已实现部分，兼容入口和未观测外部资格仍单独记录。}
 
 
 \subsection{如何选择入口并解释失败}
@@ -1003,7 +1010,7 @@ Tiger 的唯一维护入口为 \path{Experiments/TigerCluster/}。
 Core & 已有通用调用、Targeted、协作、流、安全及在线授权组件；本文核对主要生产路径与状态分支。\\
 Repo & 已有 C++ 对象存储/服务、Python 编排和制品 API；具体后端、目录操作及控制模式存在差异。\\
 UAV & 已有飞控/GUI/任务/视频/Repo/识别组件和研究夹具；真实硬件和模型接线按入口分别确认。\\
-DI & Python 应用编排与 C++ Provider 执行组件并存；原生请求全链路仍未接通，不能声明迁移完成。\\
+DI & C++ PreparedModel/NativeInferenceClient 与 Provider 执行链已接通并由原生过程矩阵验证；旧 Python 编排、subinterpreter/wheel 与外部资格仍分别保留边界。\\
 本轮文档 & 源码核对、PDF 构建与文本/版面检查；没有新协议测试或性能测量。\\
 \bottomrule
 \end{tabularx}
@@ -1020,16 +1027,17 @@ DI 有 \code{di-native-*} 及 Python/experiment 检查。[V1]
 完整网络结果和指定候选的硬件资格验收是不同证据等级。
 
 \subsection{活跃实现}
-当前 active Spec 为 \code{182-native-di-python-bindings}。
-真实来源/Repo 准备、报价消费、完整原生请求、流式接线、生成/会话与 Python caller 迁移
-仍由其 tasks/contracts 控制。本文不改写这些任务的验收状态。
+当前 active Spec 为 \code{185-prepared-model-runtime}；其 C++ qualification、Python
+binding 和 Design handoff 证据控制本轮状态。Spec184 的 Qwen3.6-27B、继承 negative/
+retirement、I05、Python retirement 与 SIF/Tiger 资格仍由
+\code{specs/184-native-di-closure/} 独立控制，本文不改写这些任务的验收状态。
 
 \callout{失效快照的处理}{代码变化后，source-baseline 摘要可能与当前工作树不再一致。
 这表示设计快照需要重新核对，而不是证明新代码有缺陷；目标文档也不能凭自动复制变成实现事实。}
 
 
 \subsection{能力、入口与证据的对应}
-Core 在线权限以 \code{ServiceController::grant/revoke} 和第 9–13 章分支为依据；Repo 精确目录以 RepoCore::catalogLookup 为依据；UAV 最新帧以 \code{BoundedLatestFrameQueue::push/popLatest} 为依据；DI 请求句柄以 NativeInferenceClient 为依据。这些行为核对分别进入 AC-08、AC-13、AC-21、AC-14。生成/KV 组件行为在 AC-18，原生全链路、sampling parity、会话恢复及 Python caller 迁移仍由 \code{specs/182-native-di-python-bindings/tasks.md} 和 evidence 控制。Design/reviews 的修订记录只证明文档工作，不替代这些功能门。
+Core 在线权限以 \code{ServiceController::grant/revoke} 和第 9–13 章分支为依据；Repo 精确目录以 RepoCore::catalogLookup 为依据；UAV 最新帧以 \code{BoundedLatestFrameQueue::push/popLatest} 为依据；DI 请求句柄以 NativeInferenceClient/PreparedModel 为依据。这些行为核对分别进入 AC-08、AC-13、AC-21、AC-14。生成/KV、原生过程、会话恢复和 Python facade 的当前证据分别链接 Spec185 B7/B8；Spec184 外部模型、retirement 与 SIF/Tiger 资格仍保持独立。Design/reviews 的修订记录只证明文档工作，不替代这些功能门。
 
 \newpage
 
@@ -1092,7 +1100,7 @@ D3 & DI C++ \path{NativeRequestPreparation.cpp}、\path{NativeOfferAdmission.cpp
 D4 & DI C++ NativePlanSealer、NativeGrantClient/Verifier、ProtectedRuntime、NativeProtectedArtifactStore；封装和保护。\\
 D5 & DI C++ NativeProviderSession/Runtime/Handler、ProviderRoleWorker、TensorBundleCodec、DependencyWaitScheduler、CollectiveRuntime。\\
 D6 & DI C++ NativeEpochCoordinator、NativeConversationCoordinator、NativeStandaloneTokenizer；生成与会话。\\
-D7 & DI C++ \path{NativeInferenceClient.cpp}: dispatchOperation；active Spec182 tasks 与 evidence。\\
+D7 & DI C++ \path{PreparedModel.cpp}、\path{NativeInferenceClient.cpp}: prepared request/dispatchOperation；Spec185 tasks 与 evidence。\\
 D8 & DI C++ NativeInferenceProvider；Python app\_sdk 与 sdk 的部署/扩展接口。\\
 \bottomrule
 \end{tabularx}

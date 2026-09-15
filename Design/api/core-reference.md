@@ -366,11 +366,11 @@ ensureControllerSignedCertificate(ndn::Face& face,
 
 ## ndn-service-framework/CertificatePublisher.hpp
 
-源码 SHA-256：`51e3a92ce53f267b544ec75d2786a5ca9519571c482527cea31897cecb0152dc`。
+源码 SHA-256：`bb0719e93cb4e84732e94395ff56135b222d0114e2719bae991b02439a9f0f29`。
 
 ### API-5655e7fe3141 · ndn_service_framework::CertificatePublisher
 
-public / declared-interface；[源码](../../ndn-service-framework/CertificatePublisher.hpp#L13)
+public / declared-interface；[源码](../../ndn-service-framework/CertificatePublisher.hpp#L14)
 
 ```cpp
 class CertificatePublisher
@@ -378,7 +378,7 @@ class CertificatePublisher
 
 ### API-8eab7074e1a7 · ndn_service_framework::CertificatePublisher::CertificatePublisher
 
-public / declared-interface；[源码](../../ndn-service-framework/CertificatePublisher.hpp#L16)
+public / declared-interface；[源码](../../ndn-service-framework/CertificatePublisher.hpp#L17)
 
 ```cpp
 CertificatePublisher(ndn::Face& face,
@@ -389,7 +389,7 @@ CertificatePublisher(ndn::Face& face,
 
 ### API-cf236f7cbbf6 · ndn_service_framework::CertificatePublisher::getCertificateName
 
-public / declared-interface；[源码](../../ndn-service-framework/CertificatePublisher.hpp#L21)
+public / declared-interface；[源码](../../ndn-service-framework/CertificatePublisher.hpp#L22)
 
 ```cpp
 const ndn::Name& getCertificateName() const;
@@ -397,7 +397,7 @@ const ndn::Name& getCertificateName() const;
 
 ### API-7415b68e5c91 · ndn_service_framework::CertificatePublisher::getRegisteredPrefix
 
-public / declared-interface；[源码](../../ndn-service-framework/CertificatePublisher.hpp#L22)
+public / declared-interface；[源码](../../ndn-service-framework/CertificatePublisher.hpp#L23)
 
 ```cpp
 const ndn::Name& getRegisteredPrefix() const;
@@ -10492,6 +10492,1850 @@ public / declared-interface；[源码](../../ndn-service-framework/NetworkTeleme
 size_t size() const;
 ```
 
+## ndn-service-framework/OperationRuntime.hpp
+
+源码 SHA-256：`b255cb28d3a2cc59e1119df205f4a48736021f0acdb0289d76e65bb0631d0f52`。
+
+### API-3d4489f1bae4 · ndn_service_framework::OperationErrorCode
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L21)
+
+```cpp
+enum class OperationErrorCode
+```
+
+### API-402d2345e745 · ndn_service_framework::OperationErrorCode::Closed
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L22)
+
+```cpp
+Closed
+```
+
+### API-c6ce57870b76 · ndn_service_framework::OperationErrorCode::Timeout
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L23)
+
+```cpp
+Timeout
+```
+
+### API-1b0fc59419bd · ndn_service_framework::OperationErrorCode::Cancelled
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L24)
+
+```cpp
+Cancelled
+```
+
+### API-7cb0d2979700 · ndn_service_framework::OperationErrorCode::Capacity
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L25)
+
+```cpp
+Capacity
+```
+
+### API-cad8360aa381 · ndn_service_framework::OperationErrorCode::EventGap
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L26)
+
+```cpp
+EventGap
+```
+
+### API-87f0b5225c88 · ndn_service_framework::OperationErrorCode::WouldDeadlock
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L27)
+
+```cpp
+WouldDeadlock
+```
+
+### API-baed13c9d10b · ndn_service_framework::OperationError
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L31)
+
+```cpp
+class OperationError : public std::runtime_error
+```
+
+### API-1c0502805641 · ndn_service_framework::OperationError::OperationError
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L34)
+
+```cpp
+OperationError(OperationErrorCode code, const std::string& message)
+```
+
+### API-b20c4aa85b88 · ndn_service_framework::OperationError::code
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L41)
+
+```cpp
+OperationErrorCode code() const noexcept
+```
+
+原始接口说明：
+
+```text
+/** Return the machine-readable Core error category. */
+```
+
+### API-7b5d0af6e8a1 · ndn_service_framework::detail::SubscriptionControl
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L49)
+
+```cpp
+struct SubscriptionControl
+```
+
+### API-a75044c71935 · ndn_service_framework::detail::SubscriptionControl::mutex
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L51)
+
+```cpp
+mutable std::mutex mutex;
+```
+
+### API-7185f460f61a · ndn_service_framework::detail::SubscriptionControl::cancelFn
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L52)
+
+```cpp
+std::function<void()> cancelFn;
+```
+
+### API-374f97ff3b5f · ndn_service_framework::detail::SubscriptionControl::cancelled
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L53)
+
+```cpp
+bool cancelled = false;
+```
+
+### API-8c05efa05d3d · ndn_service_framework::detail::SubscriptionControl::finished
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L54)
+
+```cpp
+bool finished = false;
+```
+
+### API-f8b25b1592a0 · ndn_service_framework::detail::SubscriptionControl::executing
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L55)
+
+```cpp
+bool executing = false;
+```
+
+### API-de48f8aa2f24 · ndn_service_framework::detail::SubscriptionControl::cancel
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L57)
+
+```cpp
+void cancel() noexcept
+```
+
+### API-dbf145988645 · ndn_service_framework::detail::SubscriptionControl::begin
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L79)
+
+```cpp
+bool begin() noexcept
+```
+
+### API-69cb69629381 · ndn_service_framework::detail::SubscriptionControl::setCancelFn
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L94)
+
+```cpp
+bool setCancelFn(std::function<void()> fn) noexcept
+```
+
+原始接口说明：
+
+```text
+/** Install a cancellation action for work selected but not yet delivered. */
+```
+
+### API-6e8f2f6aa451 · ndn_service_framework::detail::SubscriptionControl::end
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L103)
+
+```cpp
+void end(bool oneShot) noexcept
+```
+
+### API-b646ffa615a9 · ndn_service_framework::detail::SubscriptionControl::isCancelled
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L116)
+
+```cpp
+bool isCancelled() const noexcept
+```
+
+### API-a17f64493d8b · ndn_service_framework::detail::RuntimeTaskHold
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L123)
+
+```cpp
+struct RuntimeTaskHold
+```
+
+### API-065bb61a4314 · ndn_service_framework::detail::RuntimeState
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L125)
+
+```cpp
+struct RuntimeState
+```
+
+### API-d6db0a04940d · ndn_service_framework::detail::RuntimeState::Task
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L127)
+
+```cpp
+struct Task
+```
+
+### API-be63d0639afa · ndn_service_framework::detail::RuntimeState::Task::ticket
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L129)
+
+```cpp
+std::shared_ptr<RuntimeTaskHold> ticket;
+```
+
+### API-d676121c1685 · ndn_service_framework::detail::RuntimeState::Task::function
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L130)
+
+```cpp
+std::function<void()> function;
+```
+
+### API-0cdf1e979d17 · ndn_service_framework::detail::RuntimeState::DrainWaiter
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L133)
+
+```cpp
+struct DrainWaiter
+```
+
+### API-5ddaec1ae4ce · ndn_service_framework::detail::RuntimeState::DrainWaiter::control
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L135)
+
+```cpp
+std::shared_ptr<SubscriptionControl> control;
+```
+
+### API-ca65c3f649de · ndn_service_framework::detail::RuntimeState::DrainWaiter::callback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L136)
+
+```cpp
+std::function<void(bool)> callback;
+```
+
+### API-c05513e2fbfc · ndn_service_framework::detail::RuntimeState::DrainWaiter::deadline
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L137)
+
+```cpp
+std::chrono::steady_clock::time_point deadline;
+```
+
+### API-23fa16ee105d · ndn_service_framework::detail::RuntimeState::DrainWaiter::closeRuntime
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L138)
+
+```cpp
+bool closeRuntime = true;
+```
+
+### API-063d02ddf1b8 · ndn_service_framework::detail::RuntimeState::DrainWaiter::extraReady
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L139)
+
+```cpp
+std::function<bool()> extraReady;
+```
+
+### API-d0fc3364ecc1 · ndn_service_framework::detail::RuntimeState::Timer
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L142)
+
+```cpp
+struct Timer
+```
+
+### API-36d25efbc447 · ndn_service_framework::detail::RuntimeState::Timer::id
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L144)
+
+```cpp
+std::uint64_t id = 0;
+```
+
+### API-514426476c0a · ndn_service_framework::detail::RuntimeState::Timer::ticket
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L145)
+
+```cpp
+std::shared_ptr<RuntimeTaskHold> ticket;
+```
+
+### API-edc5fc4c562a · ndn_service_framework::detail::RuntimeState::Timer::function
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L146)
+
+```cpp
+std::function<void()> function;
+```
+
+### API-007e42977517 · ndn_service_framework::detail::RuntimeState::mutex
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L149)
+
+```cpp
+mutable std::mutex mutex;
+```
+
+### API-b99e81530657 · ndn_service_framework::detail::RuntimeState::condition
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L150)
+
+```cpp
+std::condition_variable condition;
+```
+
+### API-1bbeb588e1f2 · ndn_service_framework::detail::RuntimeState::queue
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L151)
+
+```cpp
+std::deque<Task> queue;
+```
+
+### API-50ab0f2f04e0 · ndn_service_framework::detail::RuntimeState::timers
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L152)
+
+```cpp
+std::multimap<std::chrono::steady_clock::time_point, Timer> timers;
+```
+
+### API-4c51d053be59 · ndn_service_framework::detail::RuntimeState::nextTimer
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L153)
+
+```cpp
+std::uint64_t nextTimer = 0;
+```
+
+### API-99076d1561f0 · ndn_service_framework::detail::RuntimeState::tickets
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L154)
+
+```cpp
+std::size_t tickets = 0;
+```
+
+### API-0168791a008b · ndn_service_framework::detail::RuntimeState::queued
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L155)
+
+```cpp
+std::size_t queued = 0;
+```
+
+### API-4d58a9c56670 · ndn_service_framework::detail::RuntimeState::active
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L156)
+
+```cpp
+std::size_t active = 0;
+```
+
+### API-820198a9efc4 · ndn_service_framework::detail::RuntimeState::closed
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L157)
+
+```cpp
+bool closed = false;
+```
+
+### API-5a8e08039309 · ndn_service_framework::detail::RuntimeState::drained
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L158)
+
+```cpp
+bool drained = false;
+```
+
+### API-3f3ed0dace08 · ndn_service_framework::detail::RuntimeState::worker
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L159)
+
+```cpp
+std::thread worker;
+```
+
+### API-951d47a065d0 · ndn_service_framework::detail::RuntimeState::workerId
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L160)
+
+```cpp
+std::thread::id workerId;
+```
+
+### API-d1647e16854a · ndn_service_framework::detail::RuntimeState::submitHook
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L161)
+
+```cpp
+std::function<void(std::function<void()>)> submitHook;
+```
+
+### API-dcf84068d096 · ndn_service_framework::detail::RuntimeState::notifyCallback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L162)
+
+```cpp
+std::function<void()> notifyCallback;
+```
+
+### API-e2af2baa8647 · ndn_service_framework::detail::RuntimeState::drainWaiters
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L163)
+
+```cpp
+std::vector<std::shared_ptr<DrainWaiter>> drainWaiters;
+```
+
+### API-e778d22407b8 · ndn_service_framework::detail::RuntimeState::~RuntimeState
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L165)
+
+```cpp
+~RuntimeState();
+```
+
+### API-a17f64493d8b · ndn_service_framework::detail::RuntimeTaskHold
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L169)
+
+```cpp
+struct RuntimeTaskHold
+```
+
+### API-3aa5d9152495 · ndn_service_framework::detail::RuntimeTaskHold::RuntimeTaskHold
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L171)
+
+```cpp
+explicit RuntimeTaskHold(std::shared_ptr<RuntimeState> state)
+```
+
+### API-5098b896dbb7 · ndn_service_framework::detail::RuntimeTaskHold::~RuntimeTaskHold
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L173)
+
+```cpp
+~RuntimeTaskHold();
+```
+
+### API-f006cf913367 · ndn_service_framework::detail::RuntimeTaskHold::state
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L174)
+
+```cpp
+std::shared_ptr<RuntimeState> state;
+```
+
+### API-8caed8a26ca8 · ndn_service_framework::OperationSubscription
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L184)
+
+```cpp
+class OperationSubscription
+```
+
+### API-23cfa44a1003 · ndn_service_framework::OperationSubscription::OperationSubscription
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L187)
+
+```cpp
+OperationSubscription() noexcept = default;
+```
+
+### API-b9cf4dd788cf · ndn_service_framework::OperationSubscription::OperationSubscription
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L188)
+
+```cpp
+OperationSubscription(OperationSubscription&&) noexcept = default;
+```
+
+### API-ad7a6863e2fe · ndn_service_framework::OperationSubscription::operator=
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L189)
+
+```cpp
+OperationSubscription& operator=(OperationSubscription&&) noexcept;
+```
+
+### API-5a22b5a29e94 · ndn_service_framework::OperationSubscription::OperationSubscription
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L190)
+
+```cpp
+OperationSubscription(const OperationSubscription&) = delete;
+```
+
+### API-325c4f456d89 · ndn_service_framework::OperationSubscription::operator=
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L191)
+
+```cpp
+OperationSubscription& operator=(const OperationSubscription&) = delete;
+```
+
+### API-055eacf2ff15 · ndn_service_framework::OperationSubscription::~OperationSubscription
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L192)
+
+```cpp
+~OperationSubscription() noexcept
+```
+
+### API-23a730a9ceea · ndn_service_framework::OperationSubscription::cancel
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L195)
+
+```cpp
+void cancel() noexcept;
+```
+
+原始接口说明：
+
+```text
+/** Cancel an undelivered callback.  This method is idempotent and noexcept. */
+```
+
+### API-60c0c6add2d7 · ndn_service_framework::OperationSubscription::unsubscribe
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L198)
+
+```cpp
+void unsubscribe() noexcept
+```
+
+原始接口说明：
+
+```text
+/** Compatibility spelling for the public C-07 subscription API. */
+```
+
+### API-e402a996e9d2 · ndn_service_framework::OperationSubscription::fromControl
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L201)
+
+```cpp
+static OperationSubscription fromControl(
+    std::shared_ptr<detail::SubscriptionControl> control) noexcept
+```
+
+原始接口说明：
+
+```text
+/** Create a subscription from a Core-owned control object. */
+```
+
+### API-83fc66b6335a · ndn_service_framework::OperationRuntime
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L224)
+
+```cpp
+class OperationRuntime : public std::enable_shared_from_this<OperationRuntime>
+```
+
+### API-8e7fb4d663b9 · ndn_service_framework::OperationRuntime::WorkTicket
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L227)
+
+```cpp
+class WorkTicket
+```
+
+### API-6931fcd1947e · ndn_service_framework::OperationRuntime::WorkTicket::WorkTicket
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L230)
+
+```cpp
+WorkTicket() noexcept = default;
+```
+
+### API-150b9220a856 · ndn_service_framework::OperationRuntime::WorkTicket::WorkTicket
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L231)
+
+```cpp
+WorkTicket(WorkTicket&& other) noexcept
+```
+
+### API-14a413a3f4de · ndn_service_framework::OperationRuntime::WorkTicket::operator=
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L235)
+
+```cpp
+WorkTicket& operator=(WorkTicket&& other) noexcept;
+```
+
+### API-24b5fa99fc4e · ndn_service_framework::OperationRuntime::WorkTicket::WorkTicket
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L236)
+
+```cpp
+WorkTicket(const WorkTicket&) = delete;
+```
+
+### API-c6e31ffaf2aa · ndn_service_framework::OperationRuntime::WorkTicket::operator=
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L237)
+
+```cpp
+WorkTicket& operator=(const WorkTicket&) = delete;
+```
+
+### API-30bfea10d9f2 · ndn_service_framework::OperationRuntime::WorkTicket::~WorkTicket
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L238)
+
+```cpp
+~WorkTicket() noexcept;
+```
+
+### API-ac314b2046e3 · ndn_service_framework::OperationRuntime::WorkTicket::valid
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L241)
+
+```cpp
+bool valid() const noexcept
+```
+
+原始接口说明：
+
+```text
+/** Whether this ticket still owns one runtime activity slot. */
+```
+
+### API-ee4f15dddbe7 · ndn_service_framework::OperationRuntime::create
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L256)
+
+```cpp
+static std::shared_ptr<OperationRuntime>
+  create(std::function<void(std::function<void()>)> submitHook = {});
+```
+
+原始接口说明：
+
+```text
+/** Create a runtime with its own worker; the hook is an internal test port. */
+```
+
+### API-e273f875dbb9 · ndn_service_framework::OperationRuntime::~OperationRuntime
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L259)
+
+```cpp
+~OperationRuntime() noexcept;
+```
+
+### API-cc3f3d08f0c0 · ndn_service_framework::OperationRuntime::acquire
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L262)
+
+```cpp
+WorkTicket acquire();
+```
+
+原始接口说明：
+
+```text
+/** Acquire one activity ticket or throw OperationError(Closed). */
+```
+
+### API-99cb70ea0c7e · ndn_service_framework::OperationRuntime::post
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L265)
+
+```cpp
+void post(WorkTicket& ticket, std::function<void()> task);
+```
+
+原始接口说明：
+
+```text
+/** Queue work associated with a ticket; the callback never runs under a caller lock. */
+```
+
+### API-fcf250393fc2 · ndn_service_framework::OperationRuntime::scheduleAt
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L268)
+
+```cpp
+std::function<void()> scheduleAt(WorkTicket& ticket,
+                                   std::chrono::steady_clock::time_point deadline,
+                                   std::function<void()> task);
+```
+
+原始接口说明：
+
+```text
+/** Schedule work associated with a ticket and return its cancellation action. */
+```
+
+### API-5928c8f8ceb1 · ndn_service_framework::OperationRuntime::close
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L273)
+
+```cpp
+void close() noexcept;
+```
+
+原始接口说明：
+
+```text
+/** Stop accepting tickets and allow already queued work to settle. */
+```
+
+### API-b297317e3ee2 · ndn_service_framework::OperationRuntime::notifyWaiters
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L276)
+
+```cpp
+void notifyWaiters() noexcept;
+```
+
+原始接口说明：
+
+```text
+/** Wake drain waiters whose owner supplies an external readiness predicate. */
+```
+
+### API-f0c3eeb0bae1 · ndn_service_framework::OperationRuntime::setNotifyCallback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L279)
+
+```cpp
+void setNotifyCallback(std::function<void()> callback);
+```
+
+原始接口说明：
+
+```text
+/** Install a non-owning readiness notification hook for an enclosing owner. */
+```
+
+### API-e4a638d70539 · ndn_service_framework::OperationRuntime::isQuiescent
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L282)
+
+```cpp
+bool isQuiescent() const noexcept;
+```
+
+原始接口说明：
+
+```text
+/** Return whether this runtime currently has no queued work or timers. */
+```
+
+### API-a2def5b4b947 · ndn_service_framework::OperationRuntime::drain
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L285)
+
+```cpp
+bool drain(std::chrono::milliseconds timeout);
+```
+
+原始接口说明：
+
+```text
+/** Close and wait for all tickets, queued work, and timers to settle. */
+```
+
+### API-2698d2608fc1 · ndn_service_framework::OperationRuntime::drainAsync
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L288)
+
+```cpp
+OperationSubscription
+  drainAsync(std::chrono::milliseconds timeout, std::function<void(bool)> callback);
+```
+
+原始接口说明：
+
+```text
+/** Register a non-business drain notification. */
+```
+
+### API-ea8ed6c0caed · ndn_service_framework::OperationRuntime::drainAsync
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L292)
+
+```cpp
+OperationSubscription
+  drainAsync(std::chrono::milliseconds timeout, std::function<void(bool)> callback,
+             bool closeRuntime);
+```
+
+原始接口说明：
+
+```text
+/** Register a drain notification with an explicit lifecycle mode. */
+```
+
+### API-0bf44936bd81 · ndn_service_framework::OperationRuntime::drainAsync
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L301)
+
+```cpp
+OperationSubscription
+  drainAsync(std::chrono::milliseconds timeout, std::function<void(bool)> callback,
+             bool closeRuntime, std::function<bool()> extraReady);
+```
+
+原始接口说明：
+
+```text
+/**
+   * Register a drain notification without changing the runtime lifecycle.
+   * The two- and three-argument overloads retain the historical close-and-drain
+   * behavior; this overload additionally accepts an external readiness probe.
+   */
+```
+
+### API-72ca84303431 · ndn_service_framework::OperationRuntime::isClosed
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L306)
+
+```cpp
+bool isClosed() const noexcept;
+```
+
+原始接口说明：
+
+```text
+/** Return whether this runtime has entered its one-way closing phase. */
+```
+
+### API-7676e2f374a5 · ndn_service_framework::OperationRuntime::isWorkerThread
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationRuntime.hpp#L309)
+
+```cpp
+bool isWorkerThread() const noexcept;
+```
+
+原始接口说明：
+
+```text
+/** Return whether the calling thread is this runtime's worker. */
+```
+
+## ndn-service-framework/OperationState.hpp
+
+源码 SHA-256：`58a5fa37df8b335467799a6daa18717d0302404db767906e6f0094be8115020f`。
+
+### API-c374d2dfe8e7 · ndn_service_framework::detail::operationException
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L28)
+
+```cpp
+inline std::exception_ptr
+operationException(OperationErrorCode code, const std::string& message)
+```
+
+### API-c9ebbd7b0fb5 · ndn_service_framework::detail::OperationChannelData
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L36)
+
+```cpp
+struct OperationChannelData
+```
+
+### API-508773cf6a7e · ndn_service_framework::detail::OperationChannelData::ReaderCallback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L38)
+
+```cpp
+using ReaderCallback = std::function<void(std::optional<Event>, std::exception_ptr)>;
+```
+
+### API-34c6afb1002a · ndn_service_framework::detail::OperationChannelData::EventRecord
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L39)
+
+```cpp
+struct EventRecord
+```
+
+### API-770020e256a7 · ndn_service_framework::detail::OperationChannelData::EventRecord::event
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L39)
+
+```cpp
+Event event;
+```
+
+### API-640a7a8f8b2f · ndn_service_framework::detail::OperationChannelData::EventRecord::bytes
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L39)
+
+```cpp
+std::size_t bytes = 0;
+```
+
+### API-cf041068664d · ndn_service_framework::detail::OperationChannelData::Observer
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L40)
+
+```cpp
+struct Observer
+```
+
+### API-4dcc7ff30daa · ndn_service_framework::detail::OperationChannelData::Observer::control
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L41)
+
+```cpp
+std::shared_ptr<SubscriptionControl> control;
+```
+
+### API-164701906118 · ndn_service_framework::detail::OperationChannelData::Observer::callback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L42)
+
+```cpp
+std::function<void(const Event&)> callback;
+```
+
+### API-dabd322860b7 · ndn_service_framework::detail::OperationChannelData::Observer::nextEvent
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L43)
+
+```cpp
+std::size_t nextEvent = 0;
+```
+
+### API-194e141ce993 · ndn_service_framework::detail::OperationChannelData::PendingRead
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L45)
+
+```cpp
+struct PendingRead
+```
+
+### API-9ed79231e339 · ndn_service_framework::detail::OperationChannelData::PendingRead::id
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L46)
+
+```cpp
+std::uint64_t id = 0;
+```
+
+### API-80a739568abb · ndn_service_framework::detail::OperationChannelData::PendingRead::control
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L47)
+
+```cpp
+std::shared_ptr<SubscriptionControl> control;
+```
+
+### API-38e2ea0d3346 · ndn_service_framework::detail::OperationChannelData::PendingRead::callback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L48)
+
+```cpp
+ReaderCallback callback;
+```
+
+### API-232c48da7cab · ndn_service_framework::detail::OperationChannelData::PendingRead::cancelTimer
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L49)
+
+```cpp
+std::function<void()> cancelTimer;
+```
+
+### API-d3ea512f4563 · ndn_service_framework::detail::OperationChannelData::PendingRead::commit
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L50)
+
+```cpp
+std::function<void()> commit;
+```
+
+### API-bbcc7c53ad5a · ndn_service_framework::detail::OperationChannelData::PendingRead::rollback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L51)
+
+```cpp
+std::function<void()> rollback;
+```
+
+### API-fb9c4dbdc7bb · ndn_service_framework::detail::OperationChannelData::PendingRead::generation
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L52)
+
+```cpp
+std::uint64_t generation = 0;
+```
+
+### API-aeabd03ff11e · ndn_service_framework::detail::OperationChannelData::OperationChannelData
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L55)
+
+```cpp
+explicit OperationChannelData(std::shared_ptr<OperationRuntime> runtime,
+                                std::function<void()> cancelBusiness,
+                                std::function<std::size_t(const Event&)> measure,
+                                std::function<std::exception_ptr(OperationErrorCode,
+                                                                  const std::string&)> mapError)
+```
+
+### API-37a8d3c57a24 · ndn_service_framework::detail::OperationChannelData::runtime
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L68)
+
+```cpp
+std::shared_ptr<OperationRuntime> runtime;
+```
+
+### API-de0f3954eb6c · ndn_service_framework::detail::OperationChannelData::ticket
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L69)
+
+```cpp
+std::optional<OperationRuntime::WorkTicket> ticket;
+```
+
+### API-15cb65bb62e8 · ndn_service_framework::detail::OperationChannelData::cancelBusiness
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L70)
+
+```cpp
+std::function<void()> cancelBusiness;
+```
+
+### API-dadbb09b3c03 · ndn_service_framework::detail::OperationChannelData::measure
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L71)
+
+```cpp
+std::function<std::size_t(const Event&)> measure;
+```
+
+### API-ffd3fb67d67f · ndn_service_framework::detail::OperationChannelData::mapError
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L72)
+
+```cpp
+std::function<std::exception_ptr(OperationErrorCode, const std::string&)> mapError;
+```
+
+### API-ae854603b18e · ndn_service_framework::detail::OperationChannelData::mutex
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L73)
+
+```cpp
+mutable std::mutex mutex;
+```
+
+### API-d6e7f89d3f79 · ndn_service_framework::detail::OperationChannelData::condition
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L74)
+
+```cpp
+std::condition_variable condition;
+```
+
+### API-7058811e69ca · ndn_service_framework::detail::OperationChannelData::terminal
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L75)
+
+```cpp
+bool terminal = false;
+```
+
+### API-8dd71b997c5c · ndn_service_framework::detail::OperationChannelData::succeeded
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L76)
+
+```cpp
+bool succeeded = false;
+```
+
+### API-71ccc6c84bc5 · ndn_service_framework::detail::OperationChannelData::failure
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L77)
+
+```cpp
+std::exception_ptr failure;
+```
+
+### API-bb7bbb6ebc76 · ndn_service_framework::detail::OperationChannelData::nextId
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L78)
+
+```cpp
+std::uint64_t nextId = 0;
+```
+
+### API-83da2ebfa52a · ndn_service_framework::detail::OperationChannelData::observers
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L79)
+
+```cpp
+std::map<std::uint64_t, Observer> observers;
+```
+
+### API-ea6f0e075aa7 · ndn_service_framework::detail::OperationChannelData::events
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L80)
+
+```cpp
+std::deque<EventRecord> events;
+```
+
+### API-3c3202d5496f · ndn_service_framework::detail::OperationChannelData::eventBytes
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L81)
+
+```cpp
+std::size_t eventBytes = 0;
+```
+
+### API-35355d1680c1 · ndn_service_framework::detail::OperationChannelData::eventGap
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L82)
+
+```cpp
+bool eventGap = false;
+```
+
+### API-93d0ea6015b6 · ndn_service_framework::detail::OperationChannelData::terminalEventPublished
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L83)
+
+```cpp
+bool terminalEventPublished = false;
+```
+
+### API-d8c619a6ba6b · ndn_service_framework::detail::OperationChannelData::readerActive
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L84)
+
+```cpp
+bool readerActive = false;
+```
+
+### API-3e265343ee7c · ndn_service_framework::detail::OperationChannelData::readerDispatchPending
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L85)
+
+```cpp
+bool readerDispatchPending = false;
+```
+
+### API-68c458752bba · ndn_service_framework::detail::OperationChannelData::readerGapPending
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L86)
+
+```cpp
+bool readerGapPending = false;
+```
+
+### API-23a3d15d0d50 · ndn_service_framework::detail::OperationChannelData::readerGapReported
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L87)
+
+```cpp
+bool readerGapReported = false;
+```
+
+### API-6ccedc60f8e0 · ndn_service_framework::detail::OperationChannelData::observerDropped
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L88)
+
+```cpp
+std::uint64_t observerDropped = 0;
+```
+
+### API-0c0b78de220a · ndn_service_framework::detail::OperationChannelData::readerId
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L89)
+
+```cpp
+std::uint64_t readerId = 0;
+```
+
+### API-50ec0338389f · ndn_service_framework::detail::OperationChannelData::readerCursor
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L90)
+
+```cpp
+std::uint64_t readerCursor = 0;
+```
+
+### API-832dde78db29 · ndn_service_framework::detail::OperationChannelData::pendingRead
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L91)
+
+```cpp
+std::optional<PendingRead> pendingRead;
+```
+
+### API-e5cc3086a15d · ndn_service_framework::detail::OperationChannelData::reclaimConsumedLocked
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L93)
+
+```cpp
+void reclaimConsumedLocked()
+```
+
+### API-55dc314a11f8 · ndn_service_framework::detail::OperationStateData
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L117)
+
+```cpp
+struct OperationStateData : OperationChannelData<Event>
+```
+
+### API-e152d0a48cad · ndn_service_framework::detail::OperationStateData::Base
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L119)
+
+```cpp
+using Base = OperationChannelData<Event>;
+```
+
+### API-d3c445572dd7 · ndn_service_framework::detail::OperationStateData::CompletionCallback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L120)
+
+```cpp
+using CompletionCallback = std::function<void()>;
+```
+
+### API-9eb4db337b7f · ndn_service_framework::detail::OperationStateData::ResultCallback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L121)
+
+```cpp
+using ResultCallback = std::function<void(std::optional<Result>, std::exception_ptr)>;
+```
+
+### API-51d86a733b3b · ndn_service_framework::detail::OperationStateData::CompletionWaiter
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L122)
+
+```cpp
+struct CompletionWaiter
+```
+
+### API-d0b6d5c96337 · ndn_service_framework::detail::OperationStateData::CompletionWaiter::control
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L123)
+
+```cpp
+std::shared_ptr<SubscriptionControl> control;
+```
+
+### API-b54272d14307 · ndn_service_framework::detail::OperationStateData::CompletionWaiter::callback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L124)
+
+```cpp
+CompletionCallback callback;
+```
+
+### API-1c69f11f9143 · ndn_service_framework::detail::OperationStateData::CompletionWaiter::resultCallback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L125)
+
+```cpp
+ResultCallback resultCallback;
+```
+
+### API-50d170f5cb1d · ndn_service_framework::detail::OperationStateData::CompletionWaiter::cancelTimer
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L126)
+
+```cpp
+std::function<void()> cancelTimer;
+```
+
+### API-ea96c81d56aa · ndn_service_framework::detail::OperationStateData::OperationStateData
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L129)
+
+```cpp
+OperationStateData(std::shared_ptr<OperationRuntime> runtime,
+                     std::function<void()> cancelBusiness,
+                     std::function<std::size_t(const Event&)> measure,
+                     std::function<std::exception_ptr(OperationErrorCode,
+                                                       const std::string&)> mapError)
+```
+
+### API-2e7d4bc71e03 · ndn_service_framework::detail::OperationStateData::result
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L137)
+
+```cpp
+std::optional<Result> result;
+```
+
+### API-c82e02237252 · ndn_service_framework::detail::OperationStateData::completionWaiters
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L138)
+
+```cpp
+std::map<std::uint64_t, CompletionWaiter> completionWaiters;
+```
+
+### API-367be73f9a70 · ndn_service_framework::detail::mapChannelError
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L142)
+
+```cpp
+template<typename Event>
+std::exception_ptr
+mapChannelError(const std::shared_ptr<OperationChannelData<Event>>& data,
+                OperationErrorCode code, const std::string& message)
+```
+
+### API-d98d17f7c5c2 · ndn_service_framework::detail::mapChannelErrorNoThrow
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L152)
+
+```cpp
+template<typename Event>
+std::exception_ptr
+mapChannelErrorNoThrow(const std::shared_ptr<OperationChannelData<Event>>& data,
+                       OperationErrorCode code, const std::string& message) noexcept
+```
+
+### API-02d1e4540105 · ndn_service_framework::detail::mapStateError
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L165)
+
+```cpp
+template<typename Result, typename Event>
+std::exception_ptr
+mapStateError(const std::shared_ptr<OperationStateData<Result, Event>>& data,
+              OperationErrorCode code, const std::string& message)
+```
+
+### API-6da2d6d0c7c3 · ndn_service_framework::detail::dispatchTask
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L174)
+
+```cpp
+template<typename Event>
+void dispatchTask(const std::shared_ptr<OperationChannelData<Event>>& data,
+                  std::function<void()> task);
+```
+
+### API-1dd32a8b23ce · ndn_service_framework::detail::dispatchReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L178)
+
+```cpp
+template<typename Event>
+void dispatchReader(const std::shared_ptr<OperationChannelData<Event>>& data,
+                    typename OperationChannelData<Event>::PendingRead pending,
+                    std::optional<Event> event, std::exception_ptr error)
+```
+
+### API-0666f0479089 · ndn_service_framework::detail::dispatchTask
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L267)
+
+```cpp
+template<typename Event>
+void dispatchTask(const std::shared_ptr<OperationChannelData<Event>>& data,
+                  std::function<void()> task)
+```
+
+### API-eb91fd53865c · ndn_service_framework::OperationReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L298)
+
+```cpp
+class OperationReader
+```
+
+### API-f04d9f07b2f5 · ndn_service_framework::OperationState
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L302)
+
+```cpp
+class OperationState
+```
+
+### API-e66183a513aa · ndn_service_framework::OperationState::CancelFunction
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L307)
+
+```cpp
+using CancelFunction = std::function<void()>;
+```
+
+### API-acf12bc5f57b · ndn_service_framework::OperationState::EventSizeFunction
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L308)
+
+```cpp
+using EventSizeFunction = std::function<std::size_t(const Event&)>;
+```
+
+### API-be22ddf9b09d · ndn_service_framework::OperationState::ErrorMapper
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L309)
+
+```cpp
+using ErrorMapper = std::function<std::exception_ptr(OperationErrorCode,
+                                                        const std::string&)>;
+```
+
+### API-a4b747763ce4 · ndn_service_framework::OperationState::Data
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L311)
+
+```cpp
+using Data = detail::OperationStateData<Result, Event>;
+```
+
+### API-76d67067aacb · ndn_service_framework::OperationState::Base
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L312)
+
+```cpp
+using Base = detail::OperationChannelData<Event>;
+```
+
+### API-0327430120e4 · ndn_service_framework::OperationState::OperationState
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L315)
+
+```cpp
+explicit OperationState(std::shared_ptr<OperationRuntime> runtime,
+                          CancelFunction cancelBusiness = {},
+                          EventSizeFunction measure = {},
+                          ErrorMapper mapError = {})
+```
+
+原始接口说明：
+
+```text
+/** Construct a state and acquire one Core runtime ticket. */
+```
+
+### API-420adb86f759 · ndn_service_framework::OperationState::OperationState
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L326)
+
+```cpp
+OperationState(const OperationState&) = delete;
+```
+
+### API-17aea4cc5a15 · ndn_service_framework::OperationState::operator=
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L327)
+
+```cpp
+OperationState& operator=(const OperationState&) = delete;
+```
+
+### API-d17c4685f553 · ndn_service_framework::OperationState::complete
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L330)
+
+```cpp
+bool complete(Result result)
+```
+
+原始接口说明：
+
+```text
+/** Complete once with an owning result; duplicate terminal claims return false. */
+```
+
+### API-4c54a3d1ac01 · ndn_service_framework::OperationState::fail
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L361)
+
+```cpp
+bool fail(std::exception_ptr error)
+```
+
+原始接口说明：
+
+```text
+/** Fail once with an exception; the exception is rethrown by synchronous readers. */
+```
+
+### API-30551ad36041 · ndn_service_framework::OperationState::cancel
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L410)
+
+```cpp
+bool cancel()
+```
+
+原始接口说明：
+
+```text
+/** Request business cancellation and publish the Core Cancelled terminal. */
+```
+
+### API-aa31b4b3f5c0 · ndn_service_framework::OperationState::isPending
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L436)
+
+```cpp
+bool isPending() const noexcept
+```
+
+原始接口说明：
+
+```text
+/** Return whether no terminal result has been published yet. */
+```
+
+### API-b3b255d23374 · ndn_service_framework::OperationState::isTerminal
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L443)
+
+```cpp
+bool isTerminal() const noexcept
+```
+
+原始接口说明：
+
+```text
+/** Return whether this state has reached a terminal result. */
+```
+
+### API-b2707476a110 · ndn_service_framework::OperationState::succeeded
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L450)
+
+```cpp
+bool succeeded() const noexcept
+```
+
+原始接口说明：
+
+```text
+/** Return whether the terminal result was successful. */
+```
+
+### API-112d2ad2e0b1 · ndn_service_framework::OperationState::failure
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L457)
+
+```cpp
+std::exception_ptr failure() const noexcept
+```
+
+原始接口说明：
+
+```text
+/** Return the terminal failure without changing its ownership. */
+```
+
+### API-335d6a311bf4 · ndn_service_framework::OperationState::result
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L464)
+
+```cpp
+Result result(std::chrono::milliseconds timeout)
+```
+
+原始接口说明：
+
+```text
+/** Wait for the result; a local timeout never changes the operation terminal. */
+```
+
+### API-583857b7f451 · ndn_service_framework::OperationState::onCompletion
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L484)
+
+```cpp
+OperationSubscription onCompletion(typename Data::CompletionCallback callback)
+```
+
+原始接口说明：
+
+```text
+/** Register one completion callback, subject to the shared 64-slot limit. */
+```
+
+### API-75971988c849 · ndn_service_framework::OperationState::resultAsync
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L509)
+
+```cpp
+OperationSubscription resultAsync(std::chrono::milliseconds timeout,
+                                    typename Data::ResultCallback callback)
+```
+
+原始接口说明：
+
+```text
+/** Register a timed result callback without cancelling business work on timeout. */
+```
+
+### API-4cc30dacefd7 · ndn_service_framework::OperationState::publish
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L558)
+
+```cpp
+bool publish(Event event, std::size_t encodedBytes)
+```
+
+原始接口说明：
+
+```text
+/**
+   * Publish one bounded event; consumed prefixes are reclaimed and false
+   * marks a sticky reader gap when unread history exceeds the cap.
+   */
+```
+
+### API-4aee5560afc2 · ndn_service_framework::OperationState::publishIf
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L569)
+
+```cpp
+bool publishIf(Event event, std::size_t encodedBytes,
+                 std::function<bool()> admission)
+```
+
+原始接口说明：
+
+```text
+/**
+   * Publish a non-terminal event only while an external owner admits it.
+   * The admission callback runs under the Core state mutex, so an application
+   * state transition can linearize against event insertion without making
+   * Core depend on that application's state or locking order.
+   */
+```
+
+### API-7146ee528e65 · ndn_service_framework::OperationState::publishTerminal
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L578)
+
+```cpp
+bool publishTerminal(Event event, std::size_t encodedBytes)
+```
+
+原始接口说明：
+
+```text
+/** Publish the one terminal observation after completion has been claimed. */
+```
+
+### API-39c5f202af5a · ndn_service_framework::OperationState::observe
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L765)
+
+```cpp
+OperationSubscription observe(std::function<void(const Event&)> callback)
+```
+
+原始接口说明：
+
+```text
+/** Register the independent best-effort observer channel. */
+```
+
+### API-f2a44f465317 · ndn_service_framework::OperationState::openReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L793)
+
+```cpp
+OperationReader<Event> openReader();
+```
+
+原始接口说明：
+
+```text
+/** Open the single reliable event reader. */
+```
+
+### API-9baaa27e5459 · ndn_service_framework::OperationState::observationDropped
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L796)
+
+```cpp
+std::uint64_t observationDropped() const
+```
+
+原始接口说明：
+
+```text
+/** Return the number of best-effort observer deliveries that were dropped. */
+```
+
+### API-6b007c0ff25e · ndn_service_framework::OperationState::failReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L803)
+
+```cpp
+void failReader(OperationErrorCode code, const std::string& message) noexcept
+```
+
+原始接口说明：
+
+```text
+/** Mark the reliable stream truncated without changing the business result. */
+```
+
+### API-eb91fd53865c · ndn_service_framework::OperationReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L991)
+
+```cpp
+class OperationReader
+```
+
+### API-50cff5828f89 · ndn_service_framework::OperationReader::Callback
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L994)
+
+```cpp
+using Callback = std::function<void(std::optional<Event>, std::exception_ptr)>;
+```
+
+### API-49d241605508 · ndn_service_framework::OperationReader::Data
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L995)
+
+```cpp
+using Data = detail::OperationChannelData<Event>;
+```
+
+### API-f77073ff5b05 · ndn_service_framework::OperationReader::OperationReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L997)
+
+```cpp
+OperationReader() noexcept = default;
+```
+
+### API-7aed449abb3a · ndn_service_framework::OperationReader::OperationReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L998)
+
+```cpp
+OperationReader(OperationReader&& other) noexcept
+```
+
+### API-fef77c48a221 · ndn_service_framework::OperationReader::operator=
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L1001)
+
+```cpp
+OperationReader& operator=(OperationReader&& other) noexcept
+```
+
+### API-ded899e1979a · ndn_service_framework::OperationReader::OperationReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L1011)
+
+```cpp
+OperationReader(const OperationReader&) = delete;
+```
+
+### API-2c5a77aa0728 · ndn_service_framework::OperationReader::operator=
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L1012)
+
+```cpp
+OperationReader& operator=(const OperationReader&) = delete;
+```
+
+### API-278e465555e3 · ndn_service_framework::OperationReader::~OperationReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L1013)
+
+```cpp
+~OperationReader() noexcept
+```
+
+### API-941d3a0d9a23 · ndn_service_framework::OperationReader::next
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L1016)
+
+```cpp
+std::optional<Event> next(std::chrono::milliseconds timeout)
+```
+
+原始接口说明：
+
+```text
+/** Read the next event, EOF, or a terminal error with a local timeout. */
+```
+
+### API-7a0b4f9ab89e · ndn_service_framework::OperationReader::nextAsync
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L1075)
+
+```cpp
+OperationSubscription nextAsync(std::chrono::milliseconds timeout, Callback callback)
+```
+
+原始接口说明：
+
+```text
+/** Register one asynchronous read; only one read may be in flight. */
+```
+
+### API-bde128d5762b · ndn_service_framework::OperationReader::close
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L1160)
+
+```cpp
+void close() noexcept
+```
+
+原始接口说明：
+
+```text
+/** Close this reader and release its single-reader lease. */
+```
+
+### API-509fbbd2ad1b · ndn_service_framework::OperationState<Result, Event>::openReader
+
+public / declared-interface；[源码](../../ndn-service-framework/OperationState.hpp#L1273)
+
+```cpp
+template<typename Result, typename Event>
+OperationReader<Event>
+OperationState<Result, Event>::openReader()
+```
+
 ## ndn-service-framework/PolicyParser.hpp
 
 源码 SHA-256：`eff6d3972b43dea4b9a85fb15325f13cf5f33da2f7559f785fd5f3889dfaa74d`。
@@ -12816,7 +14660,7 @@ void
 
 ## ndn-service-framework/ServiceController.hpp
 
-源码 SHA-256：`d6457f484c152bb6b675ac42e693b1d6f011818c41260b4224e532b0bfda7a86`。
+源码 SHA-256：`d2168f789e622cee4e0390c06f393641207307ca970913a733a33d2627eff861`。
 
 ### API-f7138fbcc116 · ndn_service_framework::ServiceControllerTestAccess
 
@@ -13071,7 +14915,7 @@ bool isRevoked(const ndn::Name& identity,
 
 ## ndn-service-framework/ServiceProvider.hpp
 
-源码 SHA-256：`dca865f89f9c3093b9bc35d1a24c38e3f291d9263fcba4009e430582b9169752`。
+源码 SHA-256：`381b163cbeb3fc94699c609f530b5d01b5c2cac4232a5c397e2d09ebf35a725a`。
 
 ### API-d30b48966880 · ndn_service_framework::RequestPayload
 
@@ -16160,9 +18004,24 @@ void startNdnsdPeriodicPublish(int intervalSeconds);
 /// Meta is read from the internal dict (updated via updateNdnsdMeta).
 ```
 
+### API-8ed942a2e424 · ndn_service_framework::ServiceProvider::stopNdnsdPeriodicPublish
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L832)
+
+```cpp
+void stopNdnsdPeriodicPublish();
+```
+
+原始接口说明：
+
+```text
+/// Stop the periodic NDNSD heartbeat. Must be called on the Face
+/// event-loop thread because the scheduler is not thread-safe.
+```
+
 ### API-3e88adaee0bc · ndn_service_framework::ServiceProvider::ServiceRegistration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L840)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L844)
 
 ```cpp
 class ServiceRegistration
@@ -16170,7 +18029,7 @@ class ServiceRegistration
 
 ### API-c3a3fd9da1b0 · ndn_service_framework::ServiceProvider::addScopedService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L856)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L860)
 
 ```cpp
 ServiceRegistration addScopedService(const ndn::Name& serviceName,
@@ -16200,7 +18059,7 @@ ServiceRegistration addScopedService(const ndn::Name& serviceName,
 
 ### API-23e6ea05d4d6 · ndn_service_framework::ServiceProvider::addScopedService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L860)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L864)
 
 ```cpp
 ServiceRegistration addScopedService(const ndn::Name& serviceName,
@@ -16211,7 +18070,7 @@ ServiceRegistration addScopedService(const ndn::Name& serviceName,
 
 ### API-33314e8f5bbb · ndn_service_framework::ServiceProvider::addScopedCollaborationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L869)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L873)
 
 ```cpp
 ServiceRegistration addScopedCollaborationHandler(
@@ -16232,7 +18091,7 @@ ServiceRegistration addScopedCollaborationHandler(
 
 ### API-5bf1f47bce59 · ndn_service_framework::ServiceProvider::OnRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L875)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L879)
 
 ```cpp
 void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
@@ -16240,7 +18099,7 @@ void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
 ### API-2c74fd2b18f6 · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L880)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L884)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16258,7 +18117,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-ce6ad183c0ae · ndn_service_framework::ServiceProvider::addStreamingHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L888)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L892)
 
 ```cpp
 void addStreamingHandler(const ndn::Name& serviceName,
@@ -16276,7 +18135,7 @@ void addStreamingHandler(const ndn::Name& serviceName,
 
 ### API-f4246c574451 · ndn_service_framework::ServiceProvider::addStreamingHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L892)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L896)
 
 ```cpp
 template<typename RequestT, typename EventT, typename ResponseT>
@@ -16288,7 +18147,7 @@ void addStreamingHandler(
 
 ### API-db1a937c4083 · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L919)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L923)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16299,7 +18158,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-d26296f9148f · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L924)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L928)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16310,7 +18169,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-7b0bf829c735 · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L929)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L933)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16320,7 +18179,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-ecfe6d2a4627 · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L933)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L937)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16329,7 +18188,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-9e97fc596ffd · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L936)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L940)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16339,7 +18198,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-bf6079c17933 · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L940)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L944)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16350,7 +18209,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-f3ad4bab8cf5 · ndn_service_framework::ServiceProvider::addTargetedService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L945)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L949)
 
 ```cpp
 void addTargetedService(const ndn::Name& serviceName,
@@ -16359,7 +18218,7 @@ void addTargetedService(const ndn::Name& serviceName,
 
 ### API-395d98cbbd61 · ndn_service_framework::ServiceProvider::addTargetedService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L948)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L952)
 
 ```cpp
 void addTargetedService(const ndn::Name& serviceName,
@@ -16368,7 +18227,7 @@ void addTargetedService(const ndn::Name& serviceName,
 
 ### API-10f7220f7bc0 · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L951)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L955)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16378,7 +18237,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-2dc04fe0801d · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L955)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L959)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16388,7 +18247,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-967ffe7a4dbe · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L959)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L963)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16398,7 +18257,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-b29e85449c8b · ndn_service_framework::ServiceProvider::addService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L963)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L967)
 
 ```cpp
 void addService(const ndn::Name& serviceName,
@@ -16409,7 +18268,7 @@ void addService(const ndn::Name& serviceName,
 
 ### API-31fb9e95454b · ndn_service_framework::ServiceProvider::addCollaborationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L968)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L972)
 
 ```cpp
 void addCollaborationHandler(const ndn::Name& serviceName,
@@ -16419,7 +18278,7 @@ void addCollaborationHandler(const ndn::Name& serviceName,
 
 ### API-defd0b71d2e8 · ndn_service_framework::ServiceProvider::addCollaborationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L972)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L976)
 
 ```cpp
 void addCollaborationHandler(const ndn::Name& serviceName,
@@ -16430,7 +18289,7 @@ void addCollaborationHandler(const ndn::Name& serviceName,
 
 ### API-b1331efa596b · ndn_service_framework::ServiceProvider::addCollaborationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L977)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L981)
 
 ```cpp
 void addCollaborationHandler(const ndn::Name& serviceName,
@@ -16439,7 +18298,7 @@ void addCollaborationHandler(const ndn::Name& serviceName,
 
 ### API-8d4b04abb862 · ndn_service_framework::ServiceProvider::addCollaborationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L980)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L984)
 
 ```cpp
 void addCollaborationHandler(const ndn::Name& serviceName,
@@ -16449,7 +18308,7 @@ void addCollaborationHandler(const ndn::Name& serviceName,
 
 ### API-2b56b8632469 · ndn_service_framework::ServiceProvider::setAckStrategyHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L984)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L988)
 
 ```cpp
 void setAckStrategyHandler(const ndn::Name& serviceName,
@@ -16458,7 +18317,7 @@ void setAckStrategyHandler(const ndn::Name& serviceName,
 
 ### API-7f02e58f28aa · ndn_service_framework::ServiceProvider::setLocalPublicationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L987)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L991)
 
 ```cpp
 void setLocalPublicationHandler(LocalPublicationHandler handler);
@@ -16466,7 +18325,7 @@ void setLocalPublicationHandler(LocalPublicationHandler handler);
 
 ### API-4e7ad019e025 · ndn_service_framework::ServiceProvider::setLegacyAckStrategyHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L989)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L993)
 
 ```cpp
 void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
@@ -16475,7 +18334,7 @@ void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
 
 ### API-183a987e9062 · ndn_service_framework::ServiceProvider::setSelectionStatusQueryable
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L992)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L996)
 
 ```cpp
 void setSelectionStatusQueryable(const ndn::Name& serviceName,
@@ -16484,7 +18343,7 @@ void setSelectionStatusQueryable(const ndn::Name& serviceName,
 
 ### API-9878963a17f0 · ndn_service_framework::ServiceProvider::reportSelectionOperationStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L998)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1002)
 
 ```cpp
 void reportSelectionOperationStatus(
@@ -16502,7 +18361,7 @@ void reportSelectionOperationStatus(
 
 ### API-08874a7bd8dc · ndn_service_framework::ServiceProvider::setGenericAdmissionLeaseValidator
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1001)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1005)
 
 ```cpp
 void setGenericAdmissionLeaseValidator(
@@ -16513,7 +18372,7 @@ void setGenericAdmissionLeaseValidator(
 
 ### API-f73e53ed6563 · ndn_service_framework::ServiceProvider::setGenericAdmissionLeaseRequired
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1005)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1009)
 
 ```cpp
 void setGenericAdmissionLeaseRequired(const ndn::Name& serviceName,
@@ -16522,7 +18381,7 @@ void setGenericAdmissionLeaseRequired(const ndn::Name& serviceName,
 
 ### API-18e4f9c73cfa · ndn_service_framework::ServiceProvider::grantGenericAdmissionLease
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1007)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1011)
 
 ```cpp
 void grantGenericAdmissionLease(GenericAdmissionLease lease);
@@ -16530,7 +18389,7 @@ void grantGenericAdmissionLease(GenericAdmissionLease lease);
 
 ### API-99a811f6f19a · ndn_service_framework::ServiceProvider::addHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1010)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1014)
 
 ```cpp
 template<typename RequestT, typename ResponseT>
@@ -16542,7 +18401,7 @@ void addHandler(const ndn::Name& serviceName,
 
 ### API-1695ffb726c0 · ndn_service_framework::ServiceProvider::hasService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1051)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1055)
 
 ```cpp
 bool hasService(const ndn::Name& serviceName) const;
@@ -16550,7 +18409,7 @@ bool hasService(const ndn::Name& serviceName) const;
 
 ### API-f316970f2dd8 · ndn_service_framework::ServiceProvider::fetchAndDecryptLargeData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1053)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1057)
 
 ```cpp
 LargeDataFetchResult fetchAndDecryptLargeData(
@@ -16560,7 +18419,7 @@ LargeDataFetchResult fetchAndDecryptLargeData(
 
 ### API-95516b8e845c · ndn_service_framework::ServiceProvider::resolveLargeDataReferencePayload
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1057)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1061)
 
 ```cpp
 LargeDataFetchResult resolveLargeDataReferencePayload(
@@ -16570,7 +18429,7 @@ LargeDataFetchResult resolveLargeDataReferencePayload(
 
 ### API-72ed2bc30851 · ndn_service_framework::ServiceProvider::makeRequestScopedResponseWithLargeDataOptimization
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1065)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1069)
 
 ```cpp
 LargeDataReferenceResponseResult makeRequestScopedResponseWithLargeDataOptimization(
@@ -16596,7 +18455,7 @@ LargeDataReferenceResponseResult makeRequestScopedResponseWithLargeDataOptimizat
 
 ### API-62e1060571d6 · ndn_service_framework::ServiceProvider::dispatchRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1076)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1080)
 
 ```cpp
 ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
@@ -16608,7 +18467,7 @@ ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
 
 ### API-5842147058bb · ndn_service_framework::ServiceProvider::handleDecryptedRequestByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1082)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1086)
 
 ```cpp
 ResponseMessage handleDecryptedRequestByName(const ndn::Name& requestName,
@@ -16617,7 +18476,7 @@ ResponseMessage handleDecryptedRequestByName(const ndn::Name& requestName,
 
 ### API-73855595bb88 · ndn_service_framework::ServiceProvider::handleDecryptedRequestByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1085)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1089)
 
 ```cpp
 ResponseMessage handleDecryptedRequestByName(const ndn::Name& requestName,
@@ -16626,7 +18485,7 @@ ResponseMessage handleDecryptedRequestByName(const ndn::Name& requestName,
 
 ### API-9efc8aff0382 · ndn_service_framework::ServiceProvider::OnRequestDecryptionSuccessCallbackV2
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1088)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1092)
 
 ```cpp
 void OnRequestDecryptionSuccessCallbackV2(const ndn::Name& requesterIdentity,
@@ -16637,7 +18496,7 @@ void OnRequestDecryptionSuccessCallbackV2(const ndn::Name& requesterIdentity,
 
 ### API-dd06b8fe796c · ndn_service_framework::ServiceProvider::OnRequestDecryptionErrorCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1093)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1097)
 
 ```cpp
 void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,
@@ -16648,7 +18507,7 @@ void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,
 
 ### API-d0973caab0bb · ndn_service_framework::ServiceProvider::processNDNSDServiceInfoCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1099)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1103)
 
 ```cpp
 void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
@@ -16662,7 +18521,7 @@ void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
 
 ### API-edad70e6ecad · ndn_service_framework::ServiceProvider::onPermissionResponseData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1101)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1105)
 
 ```cpp
 void onPermissionResponseData(const ndn::Interest& interest,
@@ -16671,7 +18530,7 @@ void onPermissionResponseData(const ndn::Interest& interest,
 
 ### API-46be81968559 · ndn_service_framework::ServiceProvider::onPermissionResponseTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1103)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1107)
 
 ```cpp
 void onPermissionResponseTimeout(const ndn::Interest& interest,
@@ -16680,7 +18539,7 @@ void onPermissionResponseTimeout(const ndn::Interest& interest,
 
 ### API-5c4b6b629ff6 · ndn_service_framework::ServiceProvider::fetchPolicyManifestFromController
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1105)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1109)
 
 ```cpp
 void fetchPolicyManifestFromController(const ndn::Name& controllerPrefix,
@@ -16689,7 +18548,7 @@ void fetchPolicyManifestFromController(const ndn::Name& controllerPrefix,
 
 ### API-134fa8f4cd07 · ndn_service_framework::ServiceProvider::onPolicyManifestData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1107)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1111)
 
 ```cpp
 void onPolicyManifestData(const ndn::Interest& interest,
@@ -16698,7 +18557,7 @@ void onPolicyManifestData(const ndn::Interest& interest,
 
 ### API-67ea06304aab · ndn_service_framework::ServiceProvider::onPolicyManifestTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1109)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1113)
 
 ```cpp
 void onPolicyManifestTimeout(const ndn::Interest& interest,
@@ -16707,7 +18566,7 @@ void onPolicyManifestTimeout(const ndn::Interest& interest,
 
 ### API-59fa08838d0f · ndn_service_framework::ServiceProvider::fetchPolicyStatusFromController
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1111)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1115)
 
 ```cpp
 void fetchPolicyStatusFromController(const ndn::Name& controllerPrefix,
@@ -16718,7 +18577,7 @@ void fetchPolicyStatusFromController(const ndn::Name& controllerPrefix,
 
 ### API-bc7d535f828c · ndn_service_framework::ServiceProvider::onPolicyStatusData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1115)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1119)
 
 ```cpp
 void onPolicyStatusData(const ndn::Interest& interest,
@@ -16728,7 +18587,7 @@ void onPolicyStatusData(const ndn::Interest& interest,
 
 ### API-26bc88b44bf4 · ndn_service_framework::ServiceProvider::onPolicyStatusTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1118)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1122)
 
 ```cpp
 void onPolicyStatusTimeout(const ndn::Interest& interest,
@@ -16737,7 +18596,7 @@ void onPolicyStatusTimeout(const ndn::Interest& interest,
 
 ### API-c9ea6ff970ae · ndn_service_framework::ServiceProvider::scheduleControllerStatusRefresh
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1120)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1124)
 
 ```cpp
 void scheduleControllerStatusRefresh(
@@ -16747,7 +18606,7 @@ void scheduleControllerStatusRefresh(
 
 ### API-58d9c5682c33 · ndn_service_framework::ServiceProvider::scheduleDeferredDkeyRefreshRetry
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1127)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1131)
 
 ```cpp
 void scheduleDeferredDkeyRefreshRetry(const ndn::Name& serviceName);
@@ -16764,7 +18623,7 @@ void scheduleDeferredDkeyRefreshRetry(const ndn::Name& serviceName);
 
 ### API-4d38f57cdfc4 · ndn_service_framework::ServiceProvider::isAcceptablePolicyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1128)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1132)
 
 ```cpp
 bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
@@ -16772,7 +18631,7 @@ bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
 
 ### API-e4629f6ec171 · ndn_service_framework::ServiceProvider::isAcceptablePolicyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1129)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1133)
 
 ```cpp
 bool isAcceptablePolicyEpoch(const ndn::Name& serviceName,
@@ -16781,7 +18640,7 @@ bool isAcceptablePolicyEpoch(const ndn::Name& serviceName,
 
 ### API-f77c208372af · ndn_service_framework::ServiceProvider::isAcceptableControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1131)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1135)
 
 ```cpp
 bool isAcceptableControllerVersion(
@@ -16790,7 +18649,7 @@ bool isAcceptableControllerVersion(
 
 ### API-12effb6738be · ndn_service_framework::ServiceProvider::isAcceptableControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1133)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1137)
 
 ```cpp
 bool isAcceptableControllerVersion(
@@ -16800,7 +18659,7 @@ bool isAcceptableControllerVersion(
 
 ### API-1dcc5d19761d · ndn_service_framework::ServiceProvider::maybeRefreshControllerVersionHint
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1136)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1140)
 
 ```cpp
 void maybeRefreshControllerVersionHint(
@@ -16810,7 +18669,7 @@ void maybeRefreshControllerVersionHint(
 
 ### API-fbbec2ad0788 · ndn_service_framework::ServiceProvider::authorizeControllerTransition
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1143)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1147)
 
 ```cpp
 __attribute__((noinline))
@@ -16822,7 +18681,7 @@ __attribute__((noinline))
 
 ### API-98ad0cd6a8ef · ndn_service_framework::ServiceProvider::adoptControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1148)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1152)
 
 ```cpp
 void adoptControllerVersion(const ControllerVersion& version);
@@ -16830,7 +18689,7 @@ void adoptControllerVersion(const ControllerVersion& version);
 
 ### API-402503e0f5ef · ndn_service_framework::ServiceProvider::invalidateControllerScopedCaches
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1154)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1158)
 
 ```cpp
 void invalidateControllerScopedCaches(
@@ -16853,7 +18712,7 @@ void invalidateControllerScopedCaches(
 
 ### API-76eb67f4d8ba · ndn_service_framework::ServiceProvider::refreshNacDkeyForControllerStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1172)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1176)
 
 ```cpp
 void refreshNacDkeyForControllerStatus(
@@ -16882,7 +18741,7 @@ void refreshNacDkeyForControllerStatus(
 
 ### API-65ca9a008ce1 · ndn_service_framework::ServiceProvider::replyFromIMS
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1179)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1183)
 
 ```cpp
 bool replyFromIMS(const ndn::Interest &interest);
@@ -16890,7 +18749,7 @@ bool replyFromIMS(const ndn::Interest &interest);
 
 ### API-56dddf3d86fd · ndn_service_framework::ServiceProvider::rememberPendingImsInterest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1180)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1184)
 
 ```cpp
 void rememberPendingImsInterest(const ndn::Interest& interest);
@@ -16898,7 +18757,7 @@ void rememberPendingImsInterest(const ndn::Interest& interest);
 
 ### API-eac7c82bea8e · ndn_service_framework::ServiceProvider::insertDataIntoIMS
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1181)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1185)
 
 ```cpp
 void insertDataIntoIMS(const ndn::Data& data);
@@ -16906,7 +18765,7 @@ void insertDataIntoIMS(const ndn::Data& data);
 
 ### API-13d0944a5adb · ndn_service_framework::ServiceProvider::insertDataIntoIMS
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1182)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1186)
 
 ```cpp
 void insertDataIntoIMS(const ndn::Data& data,
@@ -16915,7 +18774,7 @@ void insertDataIntoIMS(const ndn::Data& data,
 
 ### API-b7c16e8da36d · ndn_service_framework::ServiceProvider::satisfyPendingImsInterestsLocked
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1184)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1188)
 
 ```cpp
 void satisfyPendingImsInterestsLocked(const ndn::Data& insertedData);
@@ -16923,7 +18782,7 @@ void satisfyPendingImsInterestsLocked(const ndn::Data& insertedData);
 
 ### API-263c8d46dffd · ndn_service_framework::ServiceProvider::satisfyPendingImsInterestsLocked
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1185)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1189)
 
 ```cpp
 void satisfyPendingImsInterestsLocked();
@@ -16931,7 +18790,7 @@ void satisfyPendingImsInterestsLocked();
 
 ### API-a6ddfa0f1c45 · ndn_service_framework::ServiceProvider::pruneExpiredPendingImsInterestsLocked
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1186)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1190)
 
 ```cpp
 void pruneExpiredPendingImsInterestsLocked();
@@ -16939,7 +18798,7 @@ void pruneExpiredPendingImsInterestsLocked();
 
 ### API-d72f5a00851e · ndn_service_framework::ServiceProvider::onPrefixRegisterFailure
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1188)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1192)
 
 ```cpp
 void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason);
@@ -16947,7 +18806,7 @@ void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason)
 
 ### API-3c19df8c9d1b · ndn_service_framework::ServiceProvider::onInterest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1190)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1194)
 
 ```cpp
 void onInterest(const ndn::InterestFilter &, const ndn::Interest &interest);
@@ -16955,7 +18814,7 @@ void onInterest(const ndn::InterestFilter &, const ndn::Interest &interest);
 
 ### API-7d3167e87f3b · ndn_service_framework::ServiceProvider::handleExecutionActivateInterest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1191)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1195)
 
 ```cpp
 bool handleExecutionActivateInterest(const ndn::Interest& interest);
@@ -16963,7 +18822,7 @@ bool handleExecutionActivateInterest(const ndn::Interest& interest);
 
 ### API-38bc9fc53d11 · ndn_service_framework::ServiceProvider::publishProviderReady
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1192)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1196)
 
 ```cpp
 void publishProviderReady(const ndn::Name& requesterIdentity,
@@ -16974,7 +18833,7 @@ void publishProviderReady(const ndn::Name& requesterIdentity,
 
 ### API-3a8f7722f091 · ndn_service_framework::ServiceProvider::getProviderBootEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1199)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1203)
 
 ```cpp
 std::string getProviderBootEpoch() const
@@ -16989,7 +18848,7 @@ std::string getProviderBootEpoch() const
 
 ### API-ee7357741d83 · ndn_service_framework::ServiceProvider::serveDataWithIMS
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1204)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1208)
 
 ```cpp
 void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
@@ -16997,7 +18856,7 @@ void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::naca
 
 ### API-d73e86f7f792 · ndn_service_framework::ServiceProvider::PublishRequestAckMessageV2
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1206)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1210)
 
 ```cpp
 void PublishRequestAckMessageV2(const ndn::Name& requesterIdentity,
@@ -17014,7 +18873,7 @@ void PublishRequestAckMessageV2(const ndn::Name& requesterIdentity,
 
 ### API-288a73a6eedd · ndn_service_framework::ServiceProvider::onServiceSelectionMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1217)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1221)
 
 ```cpp
 void onServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
@@ -17022,7 +18881,7 @@ void onServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData &subs
 
 ### API-031e52165fd9 · ndn_service_framework::ServiceProvider::handleServiceSelectionMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1218)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1222)
 
 ```cpp
 void handleServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData& subscription,
@@ -17031,7 +18890,7 @@ void handleServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData& 
 
 ### API-aeac3b1ae7a2 · ndn_service_framework::ServiceProvider::prefetchSelectionMessageV2
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1220)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1224)
 
 ```cpp
 void prefetchSelectionMessageV2(const ndn::Name& requesterIdentity,
@@ -17041,7 +18900,7 @@ void prefetchSelectionMessageV2(const ndn::Name& requesterIdentity,
 
 ### API-d57cbb677b34 · ndn_service_framework::ServiceProvider::PublishMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1224)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1228)
 
 ```cpp
 void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
@@ -17049,7 +18908,7 @@ void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWi
 
 ### API-f4882855a67f · ndn_service_framework::ServiceProvider::publishHybridMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1225)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1229)
 
 ```cpp
 void publishHybridMessage(const ndn::Name& messageName,
@@ -17059,7 +18918,7 @@ void publishHybridMessage(const ndn::Name& messageName,
 
 ### API-486ced5b2db0 · ndn_service_framework::ServiceProvider::publishHybridEncodedMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1228)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1232)
 
 ```cpp
 void publishHybridEncodedMessage(const ndn::Name& messageName,
@@ -17068,7 +18927,7 @@ void publishHybridEncodedMessage(const ndn::Name& messageName,
 
 ### API-92478876642b · ndn_service_framework::ServiceProvider::decryptHybridMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1230)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1234)
 
 ```cpp
 bool decryptHybridMessage(const ndn::Name& messageName,
@@ -17079,7 +18938,7 @@ bool decryptHybridMessage(const ndn::Name& messageName,
 
 ### API-075ccc6b9422 · ndn_service_framework::ServiceProvider::OnServiceSelectionMessageDecryptionSuccessCallbackV2
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1235)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1239)
 
 ```cpp
 void OnServiceSelectionMessageDecryptionSuccessCallbackV2(const ndn::Name& requesterName,
@@ -17091,7 +18950,7 @@ void OnServiceSelectionMessageDecryptionSuccessCallbackV2(const ndn::Name& reque
 
 ### API-f765d181e2ad · ndn_service_framework::ServiceProvider::OnServiceSelectionMessageDecryptionErrorCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1241)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1245)
 
 ```cpp
 void OnServiceSelectionMessageDecryptionErrorCallback(
@@ -17104,7 +18963,7 @@ void OnServiceSelectionMessageDecryptionErrorCallback(
 
 ### API-c912a55f3fb3 · ndn_service_framework::ServiceProvider::registerNDNSFMessages
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1249)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1253)
 
 ```cpp
 void registerNDNSFMessages();
@@ -17116,9 +18975,25 @@ void registerNDNSFMessages();
 // Register NDNSF Messages in the ndn-svs
 ```
 
+### API-98871da7cd12 · ndn_service_framework::ServiceProvider::registerRequestSubscription
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1257)
+
+```cpp
+void registerRequestSubscription(const ndn::Name& serviceName);
+```
+
+原始接口说明：
+
+```text
+// Scoped services may be added after init(). Keep their V2
+// request subscription aligned with the service table so a
+// dynamically served collaboration can receive Requests.
+```
+
 ### API-842f103f9a6f · ndn_service_framework::ServiceProvider::registerServiceInfo
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1253)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1261)
 
 ```cpp
 virtual void registerServiceInfo();
@@ -17133,7 +19008,7 @@ virtual void registerServiceInfo();
 
 ### API-c2bd7a3f9535 · ndn_service_framework::ServiceProvider::isFresh
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1255)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1263)
 
 ```cpp
 bool isFresh(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
@@ -17141,7 +19016,7 @@ bool isFresh(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
 ### API-7462c8035226 · ndn_service_framework::ServiceProvider::onMissingData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1258)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1266)
 
 ```cpp
 void
@@ -17150,7 +19025,7 @@ void
 
 ### API-c4065d4a0587 · ndn_service_framework::ServiceProvider::RegistrationState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1271)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1279)
 
 ```cpp
 struct RegistrationState
@@ -17158,7 +19033,7 @@ struct RegistrationState
 
 ### API-44600f49e5dd · ndn_service_framework::ServiceProvider::RegistrationState::RegistrationState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1273)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1281)
 
 ```cpp
 RegistrationState(ndn::Name name, uint64_t gen)
@@ -17166,7 +19041,7 @@ RegistrationState(ndn::Name name, uint64_t gen)
 
 ### API-d8d0ec15abc7 · ndn_service_framework::ServiceProvider::RegistrationState::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1276)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1284)
 
 ```cpp
 ndn::Name serviceName;
@@ -17174,7 +19049,7 @@ ndn::Name serviceName;
 
 ### API-1589c75f4289 · ndn_service_framework::ServiceProvider::RegistrationState::generation
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1277)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1285)
 
 ```cpp
 uint64_t generation = 0;
@@ -17182,7 +19057,7 @@ uint64_t generation = 0;
 
 ### API-96863bebf41d · ndn_service_framework::ServiceProvider::RegistrationState::closed
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1278)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1286)
 
 ```cpp
 std::atomic<bool> closed{false};
@@ -17190,7 +19065,7 @@ std::atomic<bool> closed{false};
 
 ### API-0375561134d9 · ndn_service_framework::ServiceProvider::RegistrationControl
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1281)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1289)
 
 ```cpp
 struct RegistrationControl
@@ -17198,7 +19073,7 @@ struct RegistrationControl
 
 ### API-db0361bed0b0 · ndn_service_framework::ServiceProvider::RegistrationControl::mutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1285)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1293)
 
 ```cpp
 std::mutex mutex;
@@ -17213,7 +19088,7 @@ std::mutex mutex;
 
 ### API-ae0636ddfccc · ndn_service_framework::ServiceProvider::RegistrationControl::* owner
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1286)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1294)
 
 ```cpp
 ServiceProvider* owner = nullptr;
@@ -17221,7 +19096,7 @@ ServiceProvider* owner = nullptr;
 
 ### API-3e88adaee0bc · ndn_service_framework::ServiceProvider::ServiceRegistration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1292)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1300)
 
 ```cpp
 class ServiceRegistration
@@ -17229,7 +19104,7 @@ class ServiceRegistration
 
 ### API-efb9110501eb · ndn_service_framework::ServiceProvider::ServiceRegistration::ServiceRegistration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1295)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1303)
 
 ```cpp
 ServiceRegistration() noexcept = default;
@@ -17237,7 +19112,7 @@ ServiceRegistration() noexcept = default;
 
 ### API-e454035bfb35 · ndn_service_framework::ServiceProvider::ServiceRegistration::ServiceRegistration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1296)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1304)
 
 ```cpp
 ServiceRegistration(ServiceRegistration&& other) noexcept;
@@ -17245,7 +19120,7 @@ ServiceRegistration(ServiceRegistration&& other) noexcept;
 
 ### API-82860a8731a0 · ndn_service_framework::ServiceProvider::ServiceRegistration::operator=
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1297)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1305)
 
 ```cpp
 ServiceRegistration& operator=(ServiceRegistration&& other) noexcept;
@@ -17253,7 +19128,7 @@ ServiceRegistration& operator=(ServiceRegistration&& other) noexcept;
 
 ### API-cf5638749d93 · ndn_service_framework::ServiceProvider::ServiceRegistration::ServiceRegistration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1298)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1306)
 
 ```cpp
 ServiceRegistration(const ServiceRegistration&) = delete;
@@ -17261,7 +19136,7 @@ ServiceRegistration(const ServiceRegistration&) = delete;
 
 ### API-5f364d33d436 · ndn_service_framework::ServiceProvider::ServiceRegistration::operator=
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1299)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1307)
 
 ```cpp
 ServiceRegistration& operator=(const ServiceRegistration&) = delete;
@@ -17269,7 +19144,7 @@ ServiceRegistration& operator=(const ServiceRegistration&) = delete;
 
 ### API-ee96c9126468 · ndn_service_framework::ServiceProvider::ServiceRegistration::~ServiceRegistration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1300)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1308)
 
 ```cpp
 ~ServiceRegistration();
@@ -17277,7 +19152,7 @@ public / declared-interface；[源码](../../ndn-service-framework/ServiceProvid
 
 ### API-862a92089c03 · ndn_service_framework::ServiceProvider::ServiceRegistration::close
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1302)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1310)
 
 ```cpp
 void close() noexcept;
@@ -17285,7 +19160,7 @@ void close() noexcept;
 
 ### API-1dddddcd6a39 · ndn_service_framework::ServiceProvider::ServiceRegistration::closed
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1303)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1311)
 
 ```cpp
 bool closed() const noexcept;
@@ -17293,7 +19168,7 @@ bool closed() const noexcept;
 
 ### API-922ae8c53766 · ndn_service_framework::ServiceProvider::ServiceRegistration::valid
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1304)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1312)
 
 ```cpp
 bool valid() const noexcept;
@@ -17301,7 +19176,7 @@ bool valid() const noexcept;
 
 ### API-18ed137aaede · ndn_service_framework::ServiceProvider::ServiceRegistration::generation
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1305)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1313)
 
 ```cpp
 uint64_t generation() const noexcept;
@@ -17309,7 +19184,7 @@ uint64_t generation() const noexcept;
 
 ### API-7c07afca0097 · ndn_service_framework::ServiceProvider::ServiceRegistration::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1306)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1314)
 
 ```cpp
 ndn::Name serviceName() const;
@@ -17317,7 +19192,7 @@ ndn::Name serviceName() const;
 
 ### API-599401d26556 · ndn_service_framework::ServiceProvider::RegisteredService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1318)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1326)
 
 ```cpp
 struct RegisteredService
@@ -17325,7 +19200,7 @@ struct RegisteredService
 
 ### API-ef091ca23577 · ndn_service_framework::ServiceProvider::RegisteredService::ackHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1320)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1328)
 
 ```cpp
 AckStrategyHandler ackHandler;
@@ -17333,7 +19208,7 @@ AckStrategyHandler ackHandler;
 
 ### API-39160a416528 · ndn_service_framework::ServiceProvider::RegisteredService::requestHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1321)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1329)
 
 ```cpp
 RequestHandler requestHandler;
@@ -17341,7 +19216,7 @@ RequestHandler requestHandler;
 
 ### API-1f4782edee49 · ndn_service_framework::ServiceProvider::RegisteredService::targetedRequestHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1322)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1330)
 
 ```cpp
 RequestHandler targetedRequestHandler;
@@ -17349,7 +19224,7 @@ RequestHandler targetedRequestHandler;
 
 ### API-93a4bf1fcd63 · ndn_service_framework::ServiceProvider::RegisteredService::streamingHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1323)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1331)
 
 ```cpp
 StreamingHandler streamingHandler;
@@ -17357,7 +19232,7 @@ StreamingHandler streamingHandler;
 
 ### API-802562d45c35 · ndn_service_framework::ServiceProvider::RegisteredService::mode
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1324)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1332)
 
 ```cpp
 ServiceMode mode = ServiceMode::Normal;
@@ -17365,7 +19240,7 @@ ServiceMode mode = ServiceMode::Normal;
 
 ### API-4c68df2cc9ff · ndn_service_framework::ServiceProvider::RegisteredService::selectionStatusQueryable
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1325)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1333)
 
 ```cpp
 bool selectionStatusQueryable = false;
@@ -17373,7 +19248,7 @@ bool selectionStatusQueryable = false;
 
 ### API-d1cc6fa59fa0 · ndn_service_framework::ServiceProvider::RegisteredService::genericAdmissionLeaseRequired
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1326)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1334)
 
 ```cpp
 bool genericAdmissionLeaseRequired = false;
@@ -17381,7 +19256,7 @@ bool genericAdmissionLeaseRequired = false;
 
 ### API-ea6b65383541 · ndn_service_framework::ServiceProvider::RegisteredService::genericAdmissionLeaseValidator
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1327)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1335)
 
 ```cpp
 GenericAdmissionLeaseValidator genericAdmissionLeaseValidator;
@@ -17389,7 +19264,7 @@ GenericAdmissionLeaseValidator genericAdmissionLeaseValidator;
 
 ### API-20e46bab00e9 · ndn_service_framework::ServiceProvider::RegisteredService::registrationState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1332)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1340)
 
 ```cpp
 std::shared_ptr<RegistrationState> registrationState;
@@ -17406,7 +19281,7 @@ std::shared_ptr<RegistrationState> registrationState;
 
 ### API-8d9ad37510cc · ndn_service_framework::ServiceProvider::RegisteredCollaborationService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1335)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1343)
 
 ```cpp
 struct RegisteredCollaborationService
@@ -17414,7 +19289,7 @@ struct RegisteredCollaborationService
 
 ### API-296946e4fc86 · ndn_service_framework::ServiceProvider::RegisteredCollaborationService::ackHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1337)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1345)
 
 ```cpp
 AckStrategyHandler ackHandler;
@@ -17422,7 +19297,7 @@ AckStrategyHandler ackHandler;
 
 ### API-165a20b51883 · ndn_service_framework::ServiceProvider::RegisteredCollaborationService::handler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1338)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1346)
 
 ```cpp
 CollaborationHandler handler;
@@ -17430,7 +19305,7 @@ CollaborationHandler handler;
 
 ### API-a60e696dba58 · ndn_service_framework::ServiceProvider::RegisteredCollaborationService::allowedRoles
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1339)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1347)
 
 ```cpp
 std::vector<CollaborationRole> allowedRoles;
@@ -17438,7 +19313,7 @@ std::vector<CollaborationRole> allowedRoles;
 
 ### API-5239f78b9673 · ndn_service_framework::ServiceProvider::RegisteredCollaborationService::registrationState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1341)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1349)
 
 ```cpp
 std::shared_ptr<RegistrationState> registrationState;
@@ -17452,7 +19327,7 @@ std::shared_ptr<RegistrationState> registrationState;
 
 ### API-932339d9b076 · ndn_service_framework::ServiceProvider::allocateRegistrationGeneration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1349)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1357)
 
 ```cpp
 uint64_t allocateRegistrationGeneration();
@@ -17470,7 +19345,7 @@ uint64_t allocateRegistrationGeneration();
 
 ### API-e972422983f2 · ndn_service_framework::ServiceProvider::allowLegacyServiceTakeover
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1355)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1363)
 
 ```cpp
 bool allowLegacyServiceTakeover(const ndn::Name& serviceName);
@@ -17488,7 +19363,7 @@ bool allowLegacyServiceTakeover(const ndn::Name& serviceName);
 
 ### API-8b4c085b5c8c · ndn_service_framework::ServiceProvider::serviceEntryBusy
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1359)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1367)
 
 ```cpp
 static bool serviceEntryBusy(const RegisteredService& entry);
@@ -17504,7 +19379,7 @@ static bool serviceEntryBusy(const RegisteredService& entry);
 
 ### API-f1bdc6e2c3c0 · ndn_service_framework::ServiceProvider::drainClosedRegistrations
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1364)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1372)
 
 ```cpp
 void drainClosedRegistrations(
@@ -17523,7 +19398,7 @@ void drainClosedRegistrations(
 
 ### API-d23b39554507 · ndn_service_framework::ServiceProvider::detachClosedRegistration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1370)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1378)
 
 ```cpp
 void detachClosedRegistration(
@@ -17542,7 +19417,7 @@ void detachClosedRegistration(
 
 ### API-677ff27cd99d · ndn_service_framework::ServiceProvider::closeAllRegistrationStates
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1374)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1382)
 
 ```cpp
 void closeAllRegistrationStates();
@@ -17550,7 +19425,7 @@ void closeAllRegistrationStates();
 
 ### API-111b4d5b3b0d · ndn_service_framework::ServiceProvider::PendingEncryptedCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1376)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1384)
 
 ```cpp
 struct PendingEncryptedCollaborationData
@@ -17558,7 +19433,7 @@ struct PendingEncryptedCollaborationData
 
 ### API-52cdf45c2a8c · ndn_service_framework::ServiceProvider::PendingEncryptedCollaborationData::dataName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1378)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1386)
 
 ```cpp
 ndn::Name dataName;
@@ -17566,7 +19441,7 @@ ndn::Name dataName;
 
 ### API-65ed815f3331 · ndn_service_framework::ServiceProvider::PendingEncryptedCollaborationData::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1379)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1387)
 
 ```cpp
 ndn::Name requestId;
@@ -17574,7 +19449,7 @@ ndn::Name requestId;
 
 ### API-8a4e89490cfe · ndn_service_framework::ServiceProvider::PendingEncryptedCollaborationData::producer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1380)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1388)
 
 ```cpp
 ndn::Name producer;
@@ -17582,7 +19457,7 @@ ndn::Name producer;
 
 ### API-491c036e0cb0 · ndn_service_framework::ServiceProvider::PendingEncryptedCollaborationData::message
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1381)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1389)
 
 ```cpp
 CollaborationDataMessage message;
@@ -17590,7 +19465,7 @@ CollaborationDataMessage message;
 
 ### API-ab5cb6333b09 · ndn_service_framework::ServiceProvider::CollaborationSubscription
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1384)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1392)
 
 ```cpp
 struct CollaborationSubscription
@@ -17598,7 +19473,7 @@ struct CollaborationSubscription
 
 ### API-6b50df5100a4 · ndn_service_framework::ServiceProvider::CollaborationSubscription::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1386)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1394)
 
 ```cpp
 ndn::Name requestId;
@@ -17606,7 +19481,7 @@ ndn::Name requestId;
 
 ### API-1780a4152db2 · ndn_service_framework::ServiceProvider::CollaborationSubscription::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1387)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1395)
 
 ```cpp
 ndn::Name requesterName;
@@ -17614,7 +19489,7 @@ ndn::Name requesterName;
 
 ### API-e93ad80a8d05 · ndn_service_framework::ServiceProvider::CollaborationSubscription::keyScope
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1388)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1396)
 
 ```cpp
 KeyScope keyScope;
@@ -17622,7 +19497,7 @@ KeyScope keyScope;
 
 ### API-1b0f28906a23 · ndn_service_framework::ServiceProvider::CollaborationSubscription::topicPrefix
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1389)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1397)
 
 ```cpp
 Topic topicPrefix;
@@ -17630,7 +19505,7 @@ Topic topicPrefix;
 
 ### API-9152a069823a · ndn_service_framework::ServiceProvider::CollaborationSubscription::requestMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1390)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1398)
 
 ```cpp
 RequestMessage requestMessage;
@@ -17638,7 +19513,7 @@ RequestMessage requestMessage;
 
 ### API-9bf00fd40443 · ndn_service_framework::ServiceProvider::CollaborationSubscription::assignment
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1391)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1399)
 
 ```cpp
 CollaborationAssignment assignment;
@@ -17646,7 +19521,7 @@ CollaborationAssignment assignment;
 
 ### API-dcce64d5dcf3 · ndn_service_framework::ServiceProvider::CollaborationSubscription::onData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1392)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1400)
 
 ```cpp
 std::function<void(const CollaborationData&)> onData;
@@ -17654,7 +19529,7 @@ std::function<void(const CollaborationData&)> onData;
 
 ### API-340edbdf97b9 · ndn_service_framework::ServiceProvider::CollaborationSubscription::onContextData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1393)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1401)
 
 ```cpp
 std::function<void(CollaborationContext&,
@@ -17663,7 +19538,7 @@ std::function<void(CollaborationContext&,
 
 ### API-a23a0cc3d3e5 · ndn_service_framework::ServiceProvider::CollaborationSubscription::receiveFilterOnly
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1395)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1403)
 
 ```cpp
 bool receiveFilterOnly = false;
@@ -17671,7 +19546,7 @@ bool receiveFilterOnly = false;
 
 ### API-f1e5894f209e · ndn_service_framework::ServiceProvider::TargetedProviderTokenState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1398)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1406)
 
 ```cpp
 struct TargetedProviderTokenState
@@ -17679,7 +19554,7 @@ struct TargetedProviderTokenState
 
 ### API-80bfd74e9735 · ndn_service_framework::ServiceProvider::TargetedProviderTokenState::requesterIdentity
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1400)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1408)
 
 ```cpp
 ndn::Name requesterIdentity;
@@ -17687,7 +19562,7 @@ ndn::Name requesterIdentity;
 
 ### API-a87ce996e626 · ndn_service_framework::ServiceProvider::TargetedProviderTokenState::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1401)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1409)
 
 ```cpp
 ndn::Name serviceName;
@@ -17695,7 +19570,7 @@ ndn::Name serviceName;
 
 ### API-71e235e53772 · ndn_service_framework::ServiceProvider::TargetedProviderTokenState::userToken
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1402)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1410)
 
 ```cpp
 std::string userToken;
@@ -17703,7 +19578,7 @@ std::string userToken;
 
 ### API-4aacefd49201 · ndn_service_framework::ServiceProvider::makeErrorResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1405)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1413)
 
 ```cpp
 static ResponseMessage makeErrorResponse(const std::string& errorInfo);
@@ -17711,7 +19586,7 @@ static ResponseMessage makeErrorResponse(const std::string& errorInfo);
 
 ### API-c4a7c0428da9 · ndn_service_framework::ServiceProvider::makeDefaultAckDecision
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1407)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1415)
 
 ```cpp
 static AckDecision makeDefaultAckDecision();
@@ -17719,7 +19594,7 @@ static AckDecision makeDefaultAckDecision();
 
 ### API-73b305e9d09f · ndn_service_framework::ServiceProvider::schedulePendingRequestCleanup
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1409)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1417)
 
 ```cpp
 void schedulePendingRequestCleanup(const ndn::Name& pendingKey,
@@ -17729,7 +19604,7 @@ void schedulePendingRequestCleanup(const ndn::Name& pendingKey,
 
 ### API-f782769947eb · ndn_service_framework::ServiceProvider::CollaborationWorkFence
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1413)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1421)
 
 ```cpp
 struct CollaborationWorkFence
@@ -17737,7 +19612,7 @@ struct CollaborationWorkFence
 
 ### API-6e6b7eca40fb · ndn_service_framework::ServiceProvider::CollaborationWorkFence::deadline
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1415)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1423)
 
 ```cpp
 std::chrono::steady_clock::time_point deadline;
@@ -17745,7 +19620,7 @@ std::chrono::steady_clock::time_point deadline;
 
 ### API-6e0835fe6e89 · ndn_service_framework::ServiceProvider::CollaborationWorkFence::current
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1416)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1424)
 
 ```cpp
 std::function<bool()> current;
@@ -17753,7 +19628,7 @@ std::function<bool()> current;
 
 ### API-4a8150d45aa7 · ndn_service_framework::ServiceProvider::makeCollaborationWorkFence
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1418)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1426)
 
 ```cpp
 CollaborationWorkFence makeCollaborationWorkFence(
@@ -17765,7 +19640,7 @@ CollaborationWorkFence makeCollaborationWorkFence(
 
 ### API-1e0772d52d1c · ndn_service_framework::ServiceProvider::fetchAndDecryptLargeDataUntil
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1423)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1431)
 
 ```cpp
 LargeDataFetchResult fetchAndDecryptLargeDataUntil(
@@ -17776,7 +19651,7 @@ LargeDataFetchResult fetchAndDecryptLargeDataUntil(
 
 ### API-2bacec394dcb · ndn_service_framework::ServiceProvider::cleanupPendingRequestState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1428)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1436)
 
 ```cpp
 void cleanupPendingRequestState(const ndn::Name& pendingKey,
@@ -17785,7 +19660,7 @@ void cleanupPendingRequestState(const ndn::Name& pendingKey,
 
 ### API-cab7bbd74966 · ndn_service_framework::ServiceProvider::fencePendingRegistrationExecution
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1437)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1445)
 
 ```cpp
 std::string fencePendingRegistrationExecution(
@@ -17807,7 +19682,7 @@ std::string fencePendingRegistrationExecution(
 
 ### API-6dfada20b2f0 · ndn_service_framework::ServiceProvider::gateInlineRequestExecution
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1448)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1456)
 
 ```cpp
 bool gateInlineRequestExecution(
@@ -17835,7 +19710,7 @@ bool gateInlineRequestExecution(
 
 ### API-0f72b70a5c2e · ndn_service_framework::ServiceProvider::expirePendingRequestState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1457)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1465)
 
 ```cpp
 bool expirePendingRequestState(const ndn::Name& pendingKey);
@@ -17843,7 +19718,7 @@ bool expirePendingRequestState(const ndn::Name& pendingKey);
 
 ### API-3bfcd488f7fb · ndn_service_framework::ServiceProvider::shouldSuppressAdaptiveAck
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1459)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1467)
 
 ```cpp
 bool shouldSuppressAdaptiveAck(const ndn::Name& requesterIdentity,
@@ -17853,7 +19728,7 @@ bool shouldSuppressAdaptiveAck(const ndn::Name& requesterIdentity,
 
 ### API-a97027124f22 · ndn_service_framework::ServiceProvider::updateProviderRequestLifecycleState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1462)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1470)
 
 ```cpp
 void updateProviderRequestLifecycleState(
@@ -17866,7 +19741,7 @@ void updateProviderRequestLifecycleState(
 
 ### API-61826440cbcf · ndn_service_framework::ServiceProvider::attachStreamLifecycle
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1470)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1478)
 
 ```cpp
 std::shared_ptr<StreamInvocationLifecycle>
@@ -17881,7 +19756,7 @@ std::shared_ptr<StreamInvocationLifecycle>
 
 ### API-5216bbc1c80b · ndn_service_framework::ServiceProvider::getStreamLifecycle
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1473)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1481)
 
 ```cpp
 std::shared_ptr<StreamInvocationLifecycle>
@@ -17890,7 +19765,7 @@ std::shared_ptr<StreamInvocationLifecycle>
 
 ### API-ef159610e769 · ndn_service_framework::ServiceProvider::updateSelectionExecutionStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1475)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1483)
 
 ```cpp
 void updateSelectionExecutionStatus(
@@ -17905,7 +19780,7 @@ void updateSelectionExecutionStatus(
 
 ### API-9a68cedff369 · ndn_service_framework::ServiceProvider::replySelectionExecutionStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1483)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1491)
 
 ```cpp
 bool replySelectionExecutionStatus(const ndn::Interest& interest);
@@ -17913,7 +19788,7 @@ bool replySelectionExecutionStatus(const ndn::Interest& interest);
 
 ### API-2bf864a5e507 · ndn_service_framework::ServiceProvider::encodeSelectionExecutionStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1484)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1492)
 
 ```cpp
 static std::string encodeSelectionExecutionStatus(
@@ -17922,7 +19797,7 @@ static std::string encodeSelectionExecutionStatus(
 
 ### API-9c4ee9ce1caa · ndn_service_framework::ServiceProvider::makeUnknownSelectionExecutionStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1486)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1494)
 
 ```cpp
 static SelectionExecutionStatus makeUnknownSelectionExecutionStatus(
@@ -17932,7 +19807,7 @@ static SelectionExecutionStatus makeUnknownSelectionExecutionStatus(
 
 ### API-f94cad8c3026 · ndn_service_framework::ServiceProvider::dispatchAckDecisionAsync
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1492)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1500)
 
 ```cpp
 bool dispatchAckDecisionAsync(
@@ -17954,7 +19829,7 @@ bool dispatchAckDecisionAsync(
 
 ### API-0b75b0df3923 · ndn_service_framework::ServiceProvider::finishAckDecisionOnEventLoop
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1504)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1512)
 
 ```cpp
 void finishAckDecisionOnEventLoop(
@@ -17978,7 +19853,7 @@ void finishAckDecisionOnEventLoop(
 
 ### API-a2550f12d7d0 · ndn_service_framework::ServiceProvider::validateGenericAdmissionLeaseForSelection
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1511)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1519)
 
 ```cpp
 GenericLeaseValidationResult validateGenericAdmissionLeaseForSelection(
@@ -17993,7 +19868,7 @@ GenericLeaseValidationResult validateGenericAdmissionLeaseForSelection(
 
 ### API-0e9638ed5a67 · ndn_service_framework::ServiceProvider::finishDecodedRequestOnEventLoop
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1519)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1527)
 
 ```cpp
 void finishDecodedRequestOnEventLoop(
@@ -18005,7 +19880,7 @@ void finishDecodedRequestOnEventLoop(
 
 ### API-5ce5cb310353 · ndn_service_framework::ServiceProvider::finishTargetedRequestOnEventLoop
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1524)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1532)
 
 ```cpp
 bool finishTargetedRequestOnEventLoop(
@@ -18017,7 +19892,7 @@ bool finishTargetedRequestOnEventLoop(
 
 ### API-2d6d06b7da5e · ndn_service_framework::ServiceProvider::consumeTargetedProviderToken
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1529)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1537)
 
 ```cpp
 bool consumeTargetedProviderToken(const ndn::Name& requesterIdentity,
@@ -18028,7 +19903,7 @@ bool consumeTargetedProviderToken(const ndn::Name& requesterIdentity,
 
 ### API-02b7f5bc26de · ndn_service_framework::ServiceProvider::attachTargetedTokenBatch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1533)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1541)
 
 ```cpp
 void attachTargetedTokenBatch(const ndn::Name& requesterIdentity,
@@ -18039,7 +19914,7 @@ void attachTargetedTokenBatch(const ndn::Name& requesterIdentity,
 
 ### API-672267e1211d · ndn_service_framework::ServiceProvider::dispatchRequestExecutionAsync
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1541)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1549)
 
 ```cpp
 bool dispatchRequestExecutionAsync(
@@ -18063,7 +19938,7 @@ bool dispatchRequestExecutionAsync(
 
 ### API-e158ebcd790b · ndn_service_framework::ServiceProvider::initializeStreamPublisher
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1549)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1557)
 
 ```cpp
 bool initializeStreamPublisher(
@@ -18078,7 +19953,7 @@ bool initializeStreamPublisher(
 
 ### API-d120bddd3926 · ndn_service_framework::ServiceProvider::publishStreamEventOnFaceEventLoop
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1557)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1565)
 
 ```cpp
 void publishStreamEventOnFaceEventLoop(
@@ -18088,7 +19963,7 @@ void publishStreamEventOnFaceEventLoop(
 
 ### API-d40ee2710d13 · ndn_service_framework::ServiceProvider::onStreamEvent
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1560)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1568)
 
 ```cpp
 void onStreamEvent(const ndn::svs::SVSPubSub::SubscriptionData& subscription);
@@ -18096,7 +19971,7 @@ void onStreamEvent(const ndn::svs::SVSPubSub::SubscriptionData& subscription);
 
 ### API-1c7a0c296a9b · ndn_service_framework::ServiceProvider::dispatchCollaborationExecutionAsync
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1561)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1569)
 
 ```cpp
 bool dispatchCollaborationExecutionAsync(
@@ -18111,7 +19986,7 @@ bool dispatchCollaborationExecutionAsync(
 
 ### API-27a871d54edb · ndn_service_framework::ServiceProvider::prepareCollaborationAssignmentAsync
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1572)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1580)
 
 ```cpp
 void prepareCollaborationAssignmentAsync(
@@ -18133,7 +20008,7 @@ void prepareCollaborationAssignmentAsync(
 
 ### API-23c721b42c2b · ndn_service_framework::ServiceProvider::finishRequestExecutionOnEventLoop
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1583)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1591)
 
 ```cpp
 void finishRequestExecutionOnEventLoop(
@@ -18156,9 +20031,9 @@ void finishRequestExecutionOnEventLoop(
 // retired registration must never commit work in its name).
 ```
 
-### API-56afe706b6da · ndn_service_framework::ServiceProvider::fetchRequestScopedInputAndDispatch
+### API-0fa132759324 · ndn_service_framework::ServiceProvider::fetchRequestScopedInputAndDispatch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1592)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1600)
 
 ```cpp
 void fetchRequestScopedInputAndDispatch(
@@ -18168,12 +20043,13 @@ void fetchRequestScopedInputAndDispatch(
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
                 const ServiceSelectionMessage& selectionMessage,
+                const ndn::Buffer& assignmentPayload,
                 const std::string& selectionDigest);
 ```
 
 ### API-2d6d6a0712c2 · ndn_service_framework::ServiceProvider::publishExecutionFailureOnEventLoop
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1600)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1609)
 
 ```cpp
 void publishExecutionFailureOnEventLoop(
@@ -18188,7 +20064,7 @@ void publishExecutionFailureOnEventLoop(
 
 ### API-1904728801e2 · ndn_service_framework::ServiceProvider::completeCollaborationRoleOnEventLoop
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1608)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1617)
 
 ```cpp
 void completeCollaborationRoleOnEventLoop(
@@ -18201,7 +20077,7 @@ void completeCollaborationRoleOnEventLoop(
 
 ### API-a922ea3b371e · ndn_service_framework::ServiceProvider::publishCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1614)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1623)
 
 ```cpp
 void publishCollaborationData(const ndn::Name& requesterName,
@@ -18214,7 +20090,7 @@ void publishCollaborationData(const ndn::Name& requesterName,
 
 ### API-ad762997629f · ndn_service_framework::ServiceProvider::publishCollaborationLargeData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1620)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1629)
 
 ```cpp
 ndn::Name publishCollaborationLargeData(
@@ -18230,7 +20106,7 @@ ndn::Name publishCollaborationLargeData(
 
 ### API-8fea9e8fc5b9 · ndn_service_framework::ServiceProvider::publishCollaborationLargeDataNamed
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1629)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1638)
 
 ```cpp
 ndn::Name publishCollaborationLargeDataNamed(
@@ -18244,7 +20120,7 @@ ndn::Name publishCollaborationLargeDataNamed(
 
 ### API-922529a44a17 · ndn_service_framework::ServiceProvider::fetchCollaborationLargeData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1636)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1645)
 
 ```cpp
 std::optional<ndn::Buffer> fetchCollaborationLargeData(
@@ -18257,7 +20133,7 @@ std::optional<ndn::Buffer> fetchCollaborationLargeData(
 
 ### API-4796be8289a4 · ndn_service_framework::ServiceProvider::publishCollaborationDataV1Segments
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1642)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1651)
 
 ```cpp
 bool publishCollaborationDataV1Segments(
@@ -18269,7 +20145,7 @@ bool publishCollaborationDataV1Segments(
 
 ### API-2688b430f544 · ndn_service_framework::ServiceProvider::fetchCollaborationDataV1Segments
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1647)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1656)
 
 ```cpp
 std::optional<std::vector<ndn::Buffer>> fetchCollaborationDataV1Segments(
@@ -18289,7 +20165,7 @@ std::optional<std::vector<ndn::Buffer>> fetchCollaborationDataV1Segments(
 
 ### API-3f73f418ea50 · ndn_service_framework::ServiceProvider::publishCollaborationSignedExactData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1660)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1669)
 
 ```cpp
 bool publishCollaborationSignedExactData(
@@ -18301,7 +20177,7 @@ bool publishCollaborationSignedExactData(
 
 ### API-e015c9f48e5f · ndn_service_framework::ServiceProvider::fetchCollaborationSignedExactData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1665)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1674)
 
 ```cpp
 std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
@@ -18315,7 +20191,7 @@ std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
 
 ### API-679c637f45aa · ndn_service_framework::ServiceProvider::publishCollaborationFinalResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1672)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1681)
 
 ```cpp
 void publishCollaborationFinalResponse(
@@ -18329,7 +20205,7 @@ void publishCollaborationFinalResponse(
 
 ### API-02499acc82b6 · ndn_service_framework::ServiceProvider::onCollaborationDataMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1679)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1688)
 
 ```cpp
 void onCollaborationDataMessage(
@@ -18338,7 +20214,7 @@ void onCollaborationDataMessage(
 
 ### API-510ddd43018a · ndn_service_framework::ServiceProvider::deliverCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1681)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1690)
 
 ```cpp
 void deliverCollaborationData(const CollaborationData& data);
@@ -18346,7 +20222,7 @@ void deliverCollaborationData(const CollaborationData& data);
 
 ### API-f7feb4359e3b · ndn_service_framework::ServiceProvider::addCollaborationSubscription
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1682)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1691)
 
 ```cpp
 void addCollaborationSubscription(
@@ -18358,7 +20234,7 @@ void addCollaborationSubscription(
 
 ### API-27ca45502581 · ndn_service_framework::ServiceProvider::addCollaborationSubscription
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1687)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1696)
 
 ```cpp
 void addCollaborationSubscription(
@@ -18374,7 +20250,7 @@ void addCollaborationSubscription(
 
 ### API-ceb046c1cbf5 · ndn_service_framework::ServiceProvider::addCollaborationReceiveFilter
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1696)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1705)
 
 ```cpp
 void addCollaborationReceiveFilter(const ndn::Name& requestId,
@@ -18384,7 +20260,7 @@ void addCollaborationReceiveFilter(const ndn::Name& requestId,
 
 ### API-543e38ad6090 · ndn_service_framework::ServiceProvider::decryptCollaborationDataOrQueue
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1699)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1708)
 
 ```cpp
 void decryptCollaborationDataOrQueue(
@@ -18396,7 +20272,7 @@ void decryptCollaborationDataOrQueue(
 
 ### API-1c7f79508c23 · ndn_service_framework::ServiceProvider::maybeFetchCollaborationScopeKey
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1704)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1713)
 
 ```cpp
 bool maybeFetchCollaborationScopeKey(
@@ -18406,7 +20282,7 @@ bool maybeFetchCollaborationScopeKey(
 
 ### API-7ce24fd422fc · ndn_service_framework::ServiceProvider::waitForCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1707)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1716)
 
 ```cpp
 std::vector<CollaborationData> waitForCollaborationData(
@@ -18419,7 +20295,7 @@ std::vector<CollaborationData> waitForCollaborationData(
 
 ### API-3571588ed81c · ndn_service_framework::ServiceProvider::parseCollaborationAssignment
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1713)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1722)
 
 ```cpp
 static CollaborationAssignment parseCollaborationAssignment(
@@ -18429,7 +20305,7 @@ static CollaborationAssignment parseCollaborationAssignment(
 
 ### API-fb6a06f0c37a · ndn_service_framework::ServiceProvider::activeNacConsumer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1716)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1725)
 
 ```cpp
 ndn::nacabe::Consumer& activeNacConsumer()
@@ -18437,7 +20313,7 @@ ndn::nacabe::Consumer& activeNacConsumer()
 
 ### API-ccf6d2d21c37 · ndn_service_framework::ServiceProvider::activeNacProducer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1721)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1730)
 
 ```cpp
 ndn::nacabe::CacheProducer& activeNacProducer()
@@ -18445,7 +20321,7 @@ ndn::nacabe::CacheProducer& activeNacProducer()
 
 ### API-a698349e341b · ndn_service_framework::ServiceProvider::& m_face
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1725)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1734)
 
 ```cpp
 ndn::Face& m_face;
@@ -18453,7 +20329,7 @@ ndn::Face& m_face;
 
 ### API-82663c61581e · ndn_service_framework::ServiceProvider::m_scheduler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1726)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1735)
 
 ```cpp
 ndn::Scheduler m_scheduler;
@@ -18461,7 +20337,7 @@ ndn::Scheduler m_scheduler;
 
 ### API-1323b542a015 · ndn_service_framework::ServiceProvider::identity
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1727)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1736)
 
 ```cpp
 ndn::Name identity;
@@ -18469,7 +20345,7 @@ ndn::Name identity;
 
 ### API-b6d355d93612 · ndn_service_framework::ServiceProvider::m_keyChain
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1728)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1737)
 
 ```cpp
 ndn::KeyChain m_keyChain;
@@ -18477,15 +20353,23 @@ ndn::KeyChain m_keyChain;
 
 ### API-c885186c4a3d · ndn_service_framework::ServiceProvider::* m_testSigningKeyChain
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1729)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1738)
 
 ```cpp
 ndn::KeyChain* m_testSigningKeyChain = nullptr;
 ```
 
+### API-f661f1b3bf67 · ndn_service_framework::ServiceProvider::m_contentRegistrations
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1739)
+
+```cpp
+std::vector<std::shared_ptr<ndn::ScopedRegisteredPrefixHandle>> m_contentRegistrations;
+```
+
 ### API-c74ad22fd157 · ndn_service_framework::ServiceProvider::m_svsps
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1730)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1740)
 
 ```cpp
 std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
@@ -18493,7 +20377,7 @@ std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
 
 ### API-d1b4850ff110 · ndn_service_framework::ServiceProvider::m_localPublicationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1731)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1741)
 
 ```cpp
 LocalPublicationHandler m_localPublicationHandler;
@@ -18501,7 +20385,7 @@ LocalPublicationHandler m_localPublicationHandler;
 
 ### API-21cc036f7b41 · ndn_service_framework::ServiceProvider::m_streamPublicationInterceptorMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1732)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1742)
 
 ```cpp
 mutable std::mutex m_streamPublicationInterceptorMutex;
@@ -18509,7 +20393,7 @@ mutable std::mutex m_streamPublicationInterceptorMutex;
 
 ### API-624297ea67c9 · ndn_service_framework::ServiceProvider::m_streamPublicationInterceptorForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1733)
+public / test-helper；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1743)
 
 ```cpp
 StreamPublicationInterceptorForTest m_streamPublicationInterceptorForTest;
@@ -18517,7 +20401,7 @@ StreamPublicationInterceptorForTest m_streamPublicationInterceptorForTest;
 
 ### API-6caf5478c38b · ndn_service_framework::ServiceProvider::m_streamRetentionInterceptorForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1734)
+public / test-helper；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1744)
 
 ```cpp
 StreamRetentionInterceptorForTest m_streamRetentionInterceptorForTest;
@@ -18525,7 +20409,7 @@ StreamRetentionInterceptorForTest m_streamRetentionInterceptorForTest;
 
 ### API-cdba0f1b1ee5 · ndn_service_framework::ServiceProvider::m_streamRetentionExpiryObserverForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1735)
+public / test-helper；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1745)
 
 ```cpp
 StreamRetentionExpiryObserverForTest m_streamRetentionExpiryObserverForTest;
@@ -18533,7 +20417,7 @@ StreamRetentionExpiryObserverForTest m_streamRetentionExpiryObserverForTest;
 
 ### API-46fbca9d353a · ndn_service_framework::ServiceProvider::validator
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1736)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1746)
 
 ```cpp
 std::shared_ptr<MessageValidator> validator;
@@ -18541,7 +20425,7 @@ std::shared_ptr<MessageValidator> validator;
 
 ### API-697b8ee6b738 · ndn_service_framework::ServiceProvider::m_serviceNames
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1737)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1747)
 
 ```cpp
 std::vector<std::string> m_serviceNames;
@@ -18549,7 +20433,7 @@ std::vector<std::string> m_serviceNames;
 
 ### API-81ffaa9fe0e3 · ndn_service_framework::ServiceProvider::nac_validator
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1740)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1750)
 
 ```cpp
 ndn::ValidatorConfig nac_validator{m_face};
@@ -18563,7 +20447,7 @@ ndn::ValidatorConfig nac_validator{m_face};
 
 ### API-5f1154b70250 · ndn_service_framework::ServiceProvider::identityCert
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1741)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1751)
 
 ```cpp
 ndn::security::Certificate identityCert;
@@ -18571,7 +20455,7 @@ ndn::security::Certificate identityCert;
 
 ### API-1ee2ee51e46e · ndn_service_framework::ServiceProvider::signingCert
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1742)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1752)
 
 ```cpp
 ndn::security::Certificate signingCert;
@@ -18579,7 +20463,7 @@ ndn::security::Certificate signingCert;
 
 ### API-fa739f438e88 · ndn_service_framework::ServiceProvider::attrAuthorityCertificate
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1743)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1753)
 
 ```cpp
 ndn::security::Certificate attrAuthorityCertificate;
@@ -18587,7 +20471,7 @@ ndn::security::Certificate attrAuthorityCertificate;
 
 ### API-81fbb89e7c43 · ndn_service_framework::ServiceProvider::nacConsumer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1744)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1754)
 
 ```cpp
 ndn::nacabe::Consumer nacConsumer;
@@ -18595,7 +20479,7 @@ ndn::nacabe::Consumer nacConsumer;
 
 ### API-8ad35472965a · ndn_service_framework::ServiceProvider::m_testNacConsumer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1745)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1755)
 
 ```cpp
 std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
@@ -18603,7 +20487,7 @@ std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
 
 ### API-683592a3d78e · ndn_service_framework::ServiceProvider::m_isLocalMock
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1749)
+public / test-helper；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1759)
 
 ```cpp
 bool m_isLocalMock = false;
@@ -18619,7 +20503,7 @@ bool m_isLocalMock = false;
 
 ### API-c9c3f3730d06 · ndn_service_framework::ServiceProvider::m_networkTelemetry
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1751)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1761)
 
 ```cpp
 NetworkTelemetryStore m_networkTelemetry;
@@ -18633,7 +20517,7 @@ NetworkTelemetryStore m_networkTelemetry;
 
 ### API-abf35d1d5f62 · ndn_service_framework::ServiceProvider::nacProducer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1752)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1762)
 
 ```cpp
 ndn::nacabe::CacheProducer nacProducer;
@@ -18641,7 +20525,7 @@ ndn::nacabe::CacheProducer nacProducer;
 
 ### API-e87a401f831d · ndn_service_framework::ServiceProvider::m_testNacProducer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1756)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1766)
 
 ```cpp
 std::unique_ptr<ndn::nacabe::CacheProducer> m_testNacProducer;
@@ -18657,7 +20541,7 @@ std::unique_ptr<ndn::nacabe::CacheProducer> m_testNacProducer;
 
 ### API-b30bd4c55bbb · ndn_service_framework::ServiceProvider::m_signingInfo
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1757)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1767)
 
 ```cpp
 ndn::security::SigningInfo m_signingInfo;
@@ -18665,7 +20549,7 @@ ndn::security::SigningInfo m_signingInfo;
 
 ### API-4a96a630c08c · ndn_service_framework::ServiceProvider::m_timelineTrace
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1761)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1771)
 
 ```cpp
 bool m_timelineTrace = timelineTraceEnvEnabled();
@@ -18681,7 +20565,7 @@ bool m_timelineTrace = timelineTraceEnvEnabled();
 
 ### API-2354c93b190b · ndn_service_framework::ServiceProvider::m_currentPolicyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1762)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1772)
 
 ```cpp
 size_t m_currentPolicyEpoch = 0;
@@ -18689,7 +20573,7 @@ size_t m_currentPolicyEpoch = 0;
 
 ### API-12b6cbbda4fc · ndn_service_framework::ServiceProvider::m_controllerVersionMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1763)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1773)
 
 ```cpp
 mutable std::mutex m_controllerVersionMutex;
@@ -18697,7 +20581,7 @@ mutable std::mutex m_controllerVersionMutex;
 
 ### API-26f9ac862707 · ndn_service_framework::ServiceProvider::m_controllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1764)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1774)
 
 ```cpp
 std::optional<ControllerVersion> m_controllerVersion;
@@ -18705,7 +20589,7 @@ std::optional<ControllerVersion> m_controllerVersion;
 
 ### API-24eaae4c846c · ndn_service_framework::ServiceProvider::m_revocationStates
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1765)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1775)
 
 ```cpp
 std::map<std::string, RevocationState> m_revocationStates;
@@ -18713,7 +20597,7 @@ std::map<std::string, RevocationState> m_revocationStates;
 
 ### API-b258f5e6ce1f · ndn_service_framework::ServiceProvider::m_policyRefreshCoordinators
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1766)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1776)
 
 ```cpp
 std::map<std::string, PolicyRefreshCoordinator>
@@ -18722,7 +20606,7 @@ std::map<std::string, PolicyRefreshCoordinator>
 
 ### API-df4a1e5ef657 · ndn_service_framework::ServiceProvider::m_controllerPrefix
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1768)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1778)
 
 ```cpp
 ndn::Name m_controllerPrefix;
@@ -18730,7 +20614,7 @@ ndn::Name m_controllerPrefix;
 
 ### API-e2cdf6ac66f4 · ndn_service_framework::ServiceProvider::m_policyStatusFetchInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1769)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1779)
 
 ```cpp
 std::set<std::string> m_policyStatusFetchInFlight;
@@ -18738,7 +20622,7 @@ std::set<std::string> m_policyStatusFetchInFlight;
 
 ### API-9314b31070fd · ndn_service_framework::ServiceProvider::m_policyStatusRefreshScheduled
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1770)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1780)
 
 ```cpp
 std::map<std::string, ControllerVersion>
@@ -18747,7 +20631,7 @@ std::map<std::string, ControllerVersion>
 
 ### API-554bcece10de · ndn_service_framework::ServiceProvider::m_nacDkeyRefreshPendingServices
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1777)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1787)
 
 ```cpp
 std::set<std::string> m_nacDkeyRefreshPendingServices;
@@ -18765,7 +20649,7 @@ std::set<std::string> m_nacDkeyRefreshPendingServices;
 
 ### API-62c6a27d3c7e · ndn_service_framework::ServiceProvider::m_lastDkeyRefreshWave
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1781)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1791)
 
 ```cpp
 std::optional<ControllerVersion> m_lastDkeyRefreshWave;
@@ -18781,7 +20665,7 @@ std::optional<ControllerVersion> m_lastDkeyRefreshWave;
 
 ### API-280930a317b5 · ndn_service_framework::ServiceProvider::m_runtimeStatusStore
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1785)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1795)
 
 ```cpp
 std::unique_ptr<RuntimeStatusStore> m_runtimeStatusStore;
@@ -18797,7 +20681,7 @@ std::unique_ptr<RuntimeStatusStore> m_runtimeStatusStore;
 
 ### API-a358bab753a2 · ndn_service_framework::ServiceProvider::m_persistedRuntimeStatuses
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1786)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1796)
 
 ```cpp
 std::map<std::string, RuntimeStatusStore::Record>
@@ -18806,7 +20690,7 @@ std::map<std::string, RuntimeStatusStore::Record>
 
 ### API-1b460a38a1c3 · ndn_service_framework::ServiceProvider::m_processStartedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1790)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1800)
 
 ```cpp
 const uint64_t m_processStartedAtUs = static_cast<uint64_t>(
@@ -18823,7 +20707,7 @@ const uint64_t m_processStartedAtUs = static_cast<uint64_t>(
 
 ### API-599b389fd603 · ndn_service_framework::ServiceProvider::m_requiredKeyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1793)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1803)
 
 ```cpp
 size_t m_requiredKeyEpoch = 0;
@@ -18831,7 +20715,7 @@ size_t m_requiredKeyEpoch = 0;
 
 ### API-dfe4e578eca5 · ndn_service_framework::ServiceProvider::m_policyGracePeriodMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1794)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1804)
 
 ```cpp
 uint64_t m_policyGracePeriodMs = 0;
@@ -18839,7 +20723,7 @@ uint64_t m_policyGracePeriodMs = 0;
 
 ### API-6b887d738514 · ndn_service_framework::ServiceProvider::m_hybridMessageCrypto
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1795)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1805)
 
 ```cpp
 HybridMessageCrypto m_hybridMessageCrypto;
@@ -18847,7 +20731,7 @@ HybridMessageCrypto m_hybridMessageCrypto;
 
 ### API-b23bf61b7bc9 · ndn_service_framework::ServiceProvider::m_hybridCryptoCounters
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1796)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1806)
 
 ```cpp
 HybridCryptoCounters m_hybridCryptoCounters;
@@ -18855,7 +20739,7 @@ HybridCryptoCounters m_hybridCryptoCounters;
 
 ### API-5ab8229bbd6f · ndn_service_framework::ServiceProvider::m_cryptoProduceQueue
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1797)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1807)
 
 ```cpp
 SerializedWorkerQueue m_cryptoProduceQueue{"ServiceProvider NAC-ABE produce"};
@@ -18863,7 +20747,7 @@ SerializedWorkerQueue m_cryptoProduceQueue{"ServiceProvider NAC-ABE produce"};
 
 ### API-49278d3e6662 · ndn_service_framework::ServiceProvider::m_handlerPool
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1798)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1808)
 
 ```cpp
 BoundedWorkerPool m_handlerPool{"ServiceProvider application handlers"};
@@ -18871,7 +20755,7 @@ BoundedWorkerPool m_handlerPool{"ServiceProvider application handlers"};
 
 ### API-89f7255140ef · ndn_service_framework::ServiceProvider::m_ackPool
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1799)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1809)
 
 ```cpp
 BoundedWorkerPool m_ackPool{"ServiceProvider ACK handlers"};
@@ -18879,7 +20763,7 @@ BoundedWorkerPool m_ackPool{"ServiceProvider ACK handlers"};
 
 ### API-0f7f0cf5cf39 · ndn_service_framework::ServiceProvider::m_fetchStopping
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1801)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1811)
 
 ```cpp
 std::shared_ptr<std::atomic<bool>> m_fetchStopping =
@@ -18894,7 +20778,7 @@ std::shared_ptr<std::atomic<bool>> m_fetchStopping =
 
 ### API-98c0a978d4a0 · ndn_service_framework::ServiceProvider::m_fetchPool
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1803)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1813)
 
 ```cpp
 BoundedWorkerPool m_fetchPool{"ServiceProvider collaboration fetches"};
@@ -18902,7 +20786,7 @@ BoundedWorkerPool m_fetchPool{"ServiceProvider collaboration fetches"};
 
 ### API-f5751759608a · ndn_service_framework::ServiceProvider::chanllengeRecords
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1806)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1816)
 
 ```cpp
 std::map<ndn::Name,std::pair<std::string, ndn::Name>> chanllengeRecords;
@@ -18916,7 +20800,7 @@ std::map<ndn::Name,std::pair<std::string, ndn::Name>> chanllengeRecords;
 
 ### API-4e4ce2b2a167 · ndn_service_framework::ServiceProvider::authorizedRequestPrefixSet
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1808)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1818)
 
 ```cpp
 std::set<ndn::Name> authorizedRequestPrefixSet;
@@ -18930,7 +20814,7 @@ std::set<ndn::Name> authorizedRequestPrefixSet;
 
 ### API-f9bc51790989 · ndn_service_framework::ServiceProvider::unauthorizedRequestMap
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1810)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1820)
 
 ```cpp
 std::map<ndn::Name,ndn::Name> unauthorizedRequestMap;
@@ -18944,7 +20828,7 @@ std::map<ndn::Name,ndn::Name> unauthorizedRequestMap;
 
 ### API-9fc71187a405 · ndn_service_framework::ServiceProvider::pendingRequests
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1816)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1826)
 
 ```cpp
 std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
@@ -18961,7 +20845,7 @@ std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
 
 ### API-eadc1b11c430 · ndn_service_framework::ServiceProvider::m_pendingRegistrationStates
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1822)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1832)
 
 ```cpp
 std::map<ndn::Name, std::shared_ptr<RegistrationState>>
@@ -18980,7 +20864,7 @@ std::map<ndn::Name, std::shared_ptr<RegistrationState>>
 
 ### API-f584ee5adaf8 · ndn_service_framework::ServiceProvider::pendingProviderTokens
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1824)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1834)
 
 ```cpp
 std::map<ndn::Name,std::string> pendingProviderTokens;
@@ -18988,7 +20872,7 @@ std::map<ndn::Name,std::string> pendingProviderTokens;
 
 ### API-7ef96b9763dd · ndn_service_framework::ServiceProvider::m_streamLifecycles
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1827)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1837)
 
 ```cpp
 std::map<ndn::Name, std::shared_ptr<StreamInvocationLifecycle>>
@@ -19004,7 +20888,7 @@ std::map<ndn::Name, std::shared_ptr<StreamInvocationLifecycle>>
 
 ### API-5272268517a3 · ndn_service_framework::ServiceProvider::m_streamPublishers
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1829)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1839)
 
 ```cpp
 std::map<ndn::Name, std::shared_ptr<StreamEventPublisher>>
@@ -19013,7 +20897,7 @@ std::map<ndn::Name, std::shared_ptr<StreamEventPublisher>>
 
 ### API-cd0c8192c399 · ndn_service_framework::ServiceProvider::m_streamBindings
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1831)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1841)
 
 ```cpp
 std::map<ndn::Name, StreamBinding> m_streamBindings;
@@ -19021,7 +20905,7 @@ std::map<ndn::Name, StreamBinding> m_streamBindings;
 
 ### API-6a12aa118e5f · ndn_service_framework::ServiceProvider::pendingReservationLeases
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1832)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1842)
 
 ```cpp
 std::map<ndn::Name, ReservationLease> pendingReservationLeases;
@@ -19029,7 +20913,7 @@ std::map<ndn::Name, ReservationLease> pendingReservationLeases;
 
 ### API-5efae5a1b30c · ndn_service_framework::ServiceProvider::m_recentProviderRequests
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1833)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1843)
 
 ```cpp
 std::set<ndn::Name> m_recentProviderRequests;
@@ -19037,7 +20921,7 @@ std::set<ndn::Name> m_recentProviderRequests;
 
 ### API-3f7b72dae8de · ndn_service_framework::ServiceProvider::m_selectedProviderRequests
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1834)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1844)
 
 ```cpp
 std::set<ndn::Name> m_selectedProviderRequests;
@@ -19045,7 +20929,7 @@ std::set<ndn::Name> m_selectedProviderRequests;
 
 ### API-9b8d3d4b046c · ndn_service_framework::ServiceProvider::m_selectionDecryptsInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1835)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1845)
 
 ```cpp
 std::set<ndn::Name> m_selectionDecryptsInFlight;
@@ -19053,7 +20937,7 @@ std::set<ndn::Name> m_selectionDecryptsInFlight;
 
 ### API-63acba59e3bb · ndn_service_framework::ServiceProvider::R1AcceptedSelectionDecision
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1836)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1846)
 
 ```cpp
 struct R1AcceptedSelectionDecision
@@ -19061,7 +20945,7 @@ struct R1AcceptedSelectionDecision
 
 ### API-8deed03fc24d · ndn_service_framework::ServiceProvider::R1AcceptedSelectionDecision::decisionDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1838)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1848)
 
 ```cpp
 std::string decisionDigest;
@@ -19069,7 +20953,7 @@ std::string decisionDigest;
 
 ### API-66d0469d1703 · ndn_service_framework::ServiceProvider::R1AcceptedSelectionDecision::providerTokenHash
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1839)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1849)
 
 ```cpp
 std::string providerTokenHash;
@@ -19077,7 +20961,7 @@ std::string providerTokenHash;
 
 ### API-b6c3cd7de2e5 · ndn_service_framework::ServiceProvider::R1AcceptedSelectionDecision::decision
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1840)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1850)
 
 ```cpp
 std::string decision;
@@ -19085,7 +20969,7 @@ std::string decision;
 
 ### API-1015e1d4ae11 · ndn_service_framework::ServiceProvider::R1AcceptedSelectionDecision::receiptWire
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1841)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1851)
 
 ```cpp
 ndn::Buffer receiptWire;
@@ -19093,7 +20977,7 @@ ndn::Buffer receiptWire;
 
 ### API-20197963d495 · ndn_service_framework::ServiceProvider::R1AcceptedSelectionDecision::retainUntilMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1842)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1852)
 
 ```cpp
 uint64_t retainUntilMs = 0;
@@ -19101,7 +20985,7 @@ uint64_t retainUntilMs = 0;
 
 ### API-f09477c6329d · ndn_service_framework::ServiceProvider::m_r1AcceptedSelectionDecisions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1847)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1857)
 
 ```cpp
 std::map<std::string, R1AcceptedSelectionDecision>
@@ -19118,7 +21002,7 @@ std::map<std::string, R1AcceptedSelectionDecision>
 
 ### API-60f20d59175c · ndn_service_framework::ServiceProvider::m_pendingRequestTokenHashes
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1849)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1859)
 
 ```cpp
 std::map<ndn::Name, std::string> m_pendingRequestTokenHashes;
@@ -19126,7 +21010,7 @@ std::map<ndn::Name, std::string> m_pendingRequestTokenHashes;
 
 ### API-fe0acab2f31d · ndn_service_framework::ServiceProvider::m_selectedProviderTokenHashes
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1850)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1860)
 
 ```cpp
 std::map<ndn::Name, std::string> m_selectedProviderTokenHashes;
@@ -19134,7 +21018,7 @@ std::map<ndn::Name, std::string> m_selectedProviderTokenHashes;
 
 ### API-2a277c8d5027 · ndn_service_framework::ServiceProvider::m_recentProviderRequestTokenHashes
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1851)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1861)
 
 ```cpp
 std::set<std::string> m_recentProviderRequestTokenHashes;
@@ -19142,7 +21026,7 @@ std::set<std::string> m_recentProviderRequestTokenHashes;
 
 ### API-d762195a6ce0 · ndn_service_framework::ServiceProvider::m_consumedProviderTokenHashes
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1852)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1862)
 
 ```cpp
 std::set<std::string> m_consumedProviderTokenHashes;
@@ -19150,7 +21034,7 @@ std::set<std::string> m_consumedProviderTokenHashes;
 
 ### API-3f040bdf0a12 · ndn_service_framework::ServiceProvider::RequestScopedInvocationState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1853)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1863)
 
 ```cpp
 struct RequestScopedInvocationState
@@ -19158,7 +21042,7 @@ struct RequestScopedInvocationState
 
 ### API-809e397d4a57 · ndn_service_framework::ServiceProvider::RequestScopedInvocationState::keys
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1855)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1865)
 
 ```cpp
 RequestKeyBundle keys;
@@ -19166,7 +21050,7 @@ RequestKeyBundle keys;
 
 ### API-a17b05381bf5 · ndn_service_framework::ServiceProvider::RequestScopedInvocationState::binding
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1856)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1866)
 
 ```cpp
 RequestSecurityBinding binding;
@@ -19174,7 +21058,7 @@ RequestSecurityBinding binding;
 
 ### API-45ced86cd15e · ndn_service_framework::ServiceProvider::m_requestScopedInvocations
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1862)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1872)
 
 ```cpp
 std::map<ndn::Name, RequestScopedInvocationState>
@@ -19192,7 +21076,7 @@ std::map<ndn::Name, RequestScopedInvocationState>
 
 ### API-eba0479d0c22 · ndn_service_framework::ServiceProvider::m_requestScopedNonceRegistry
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1864)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1874)
 
 ```cpp
 NonceRegistry m_requestScopedNonceRegistry;
@@ -19200,7 +21084,7 @@ NonceRegistry m_requestScopedNonceRegistry;
 
 ### API-b54f6201fd77 · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1865)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1875)
 
 ```cpp
 struct PreparedDeploymentExecution
@@ -19208,7 +21092,7 @@ struct PreparedDeploymentExecution
 
 ### API-5ac4d3a8e41f · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1867)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1877)
 
 ```cpp
 ndn::Name requesterName;
@@ -19216,7 +21100,7 @@ ndn::Name requesterName;
 
 ### API-e03f6adf2442 · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1868)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1878)
 
 ```cpp
 ndn::Name providerName;
@@ -19224,7 +21108,7 @@ ndn::Name providerName;
 
 ### API-2e097280c2d8 · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1869)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1879)
 
 ```cpp
 ndn::Name serviceName;
@@ -19232,7 +21116,7 @@ ndn::Name serviceName;
 
 ### API-a9d2415d826c · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1870)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1880)
 
 ```cpp
 ndn::Name requestId;
@@ -19240,7 +21124,7 @@ ndn::Name requestId;
 
 ### API-90115091b544 · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::request
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1871)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1881)
 
 ```cpp
 RequestMessage request;
@@ -19248,7 +21132,7 @@ RequestMessage request;
 
 ### API-ca7c0f7587e5 · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::plan
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1872)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1882)
 
 ```cpp
 DeploymentPlan plan;
@@ -19256,7 +21140,7 @@ DeploymentPlan plan;
 
 ### API-61fd58894128 · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::ready
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1873)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1883)
 
 ```cpp
 ProviderReadyMessage ready;
@@ -19264,7 +21148,7 @@ ProviderReadyMessage ready;
 
 ### API-e65002ec8424 · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::selectionDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1874)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1884)
 
 ```cpp
 std::string selectionDigest;
@@ -19272,7 +21156,7 @@ std::string selectionDigest;
 
 ### API-307cbecab851 · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::activationDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1875)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1885)
 
 ```cpp
 std::string activationDigest;
@@ -19280,7 +21164,7 @@ std::string activationDigest;
 
 ### API-bf157a0acfbf · ndn_service_framework::ServiceProvider::PreparedDeploymentExecution::activated
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1876)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1886)
 
 ```cpp
 bool activated = false;
@@ -19288,7 +21172,7 @@ bool activated = false;
 
 ### API-4e0d84f4058b · ndn_service_framework::ServiceProvider::m_deploymentPrepareHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1878)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1888)
 
 ```cpp
 DeploymentPrepareHandler m_deploymentPrepareHandler;
@@ -19296,7 +21180,7 @@ DeploymentPrepareHandler m_deploymentPrepareHandler;
 
 ### API-d79974f8e1f6 · ndn_service_framework::ServiceProvider::m_providerReadyPublisher
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1879)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1889)
 
 ```cpp
 ProviderReadyPublisher m_providerReadyPublisher;
@@ -19304,7 +21188,7 @@ ProviderReadyPublisher m_providerReadyPublisher;
 
 ### API-dd2871953a4c · ndn_service_framework::ServiceProvider::m_r1SelectionDecisionHandlers
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1880)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1890)
 
 ```cpp
 std::map<ndn::Name, R1SelectionDecisionHandler>
@@ -19313,7 +21197,7 @@ std::map<ndn::Name, R1SelectionDecisionHandler>
 
 ### API-826e0a9d8a78 · ndn_service_framework::ServiceProvider::m_genericSelectionTxnStore
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1882)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1892)
 
 ```cpp
 std::shared_ptr<GenericSelectionTxnStore>
@@ -19322,7 +21206,7 @@ std::shared_ptr<GenericSelectionTxnStore>
 
 ### API-d157ad5fe2e7 · ndn_service_framework::ServiceProvider::m_opaqueSelectionParticipants
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1884)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1894)
 
 ```cpp
 std::map<ndn::Name, std::shared_ptr<OpaqueSelectionParticipant>>
@@ -19331,7 +21215,7 @@ std::map<ndn::Name, std::shared_ptr<OpaqueSelectionParticipant>>
 
 ### API-5408f83d9d05 · ndn_service_framework::ServiceProvider::m_r1ReservationTerminalHandlers
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1886)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1896)
 
 ```cpp
 std::map<ndn::Name, R1ReservationTerminalHandler>
@@ -19340,7 +21224,7 @@ std::map<ndn::Name, R1ReservationTerminalHandler>
 
 ### API-b8263d8ef0d2 · ndn_service_framework::ServiceProvider::m_r1ReservationByRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1888)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1898)
 
 ```cpp
 std::map<ndn::Name, std::string> m_r1ReservationByRequest;
@@ -19348,7 +21232,7 @@ std::map<ndn::Name, std::string> m_r1ReservationByRequest;
 
 ### API-51d8a8d4ee95 · ndn_service_framework::ServiceProvider::m_preparedDeployments
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1889)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1899)
 
 ```cpp
 std::map<std::string, PreparedDeploymentExecution> m_preparedDeployments;
@@ -19356,7 +21240,7 @@ std::map<std::string, PreparedDeploymentExecution> m_preparedDeployments;
 
 ### API-add41ad49704 · ndn_service_framework::ServiceProvider::m_targetedProviderTokens
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1890)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1900)
 
 ```cpp
 mutable std::map<std::string, TargetedProviderTokenState>
@@ -19365,7 +21249,7 @@ mutable std::map<std::string, TargetedProviderTokenState>
 
 ### API-9e1080bacdb9 · ndn_service_framework::ServiceProvider::m_consumedTargetedProviderTokenHashes
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1892)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1902)
 
 ```cpp
 mutable std::set<std::string> m_consumedTargetedProviderTokenHashes;
@@ -19373,7 +21257,7 @@ mutable std::set<std::string> m_consumedTargetedProviderTokenHashes;
 
 ### API-41ea3a51ef3c · ndn_service_framework::ServiceProvider::m_pendingRequestMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1893)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1903)
 
 ```cpp
 mutable std::mutex m_pendingRequestMutex;
@@ -19381,7 +21265,7 @@ mutable std::mutex m_pendingRequestMutex;
 
 ### API-ae6000c6a2ee · ndn_service_framework::ServiceProvider::m_collaborationServices
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1894)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1904)
 
 ```cpp
 std::map<ndn::Name, RegisteredCollaborationService> m_collaborationServices;
@@ -19389,7 +21273,7 @@ std::map<ndn::Name, RegisteredCollaborationService> m_collaborationServices;
 
 ### API-fb92b428febb · ndn_service_framework::ServiceProvider::m_collaborationDataByRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1895)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1905)
 
 ```cpp
 std::map<ndn::Name, std::vector<CollaborationData>> m_collaborationDataByRequest;
@@ -19397,7 +21281,7 @@ std::map<ndn::Name, std::vector<CollaborationData>> m_collaborationDataByRequest
 
 ### API-98edc2ac7b40 · ndn_service_framework::ServiceProvider::m_collaborationScopeKeysByRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1896)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1906)
 
 ```cpp
 std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>> m_collaborationScopeKeysByRequest;
@@ -19405,7 +21289,7 @@ std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>> m_collaborationScopeKeysByR
 
 ### API-de86cd2993f6 · ndn_service_framework::ServiceProvider::m_collaborationScopeKeyDataNamesByRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1897)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1907)
 
 ```cpp
 std::map<ndn::Name, std::map<KeyScope, ndn::Name>> m_collaborationScopeKeyDataNamesByRequest;
@@ -19413,7 +21297,7 @@ std::map<ndn::Name, std::map<KeyScope, ndn::Name>> m_collaborationScopeKeyDataNa
 
 ### API-94e2306fd620 · ndn_service_framework::ServiceProvider::m_collaborationServiceNamesByRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1898)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1908)
 
 ```cpp
 std::map<ndn::Name, ndn::Name> m_collaborationServiceNamesByRequest;
@@ -19421,7 +21305,7 @@ std::map<ndn::Name, ndn::Name> m_collaborationServiceNamesByRequest;
 
 ### API-fa5b00d936d2 · ndn_service_framework::ServiceProvider::m_collaborationRegistrationStates
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1904)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1914)
 
 ```cpp
 std::map<ndn::Name, std::shared_ptr<RegistrationState>>
@@ -19440,7 +21324,7 @@ std::map<ndn::Name, std::shared_ptr<RegistrationState>>
 
 ### API-ddfc9ff6daec · ndn_service_framework::ServiceProvider::m_collaborationScopeKeyFetchesInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1906)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1916)
 
 ```cpp
 std::set<std::string> m_collaborationScopeKeyFetchesInFlight;
@@ -19448,7 +21332,7 @@ std::set<std::string> m_collaborationScopeKeyFetchesInFlight;
 
 ### API-a942b5d1a61f · ndn_service_framework::ServiceProvider::m_pendingEncryptedCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1907)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1917)
 
 ```cpp
 std::map<ndn::Name, std::vector<PendingEncryptedCollaborationData>> m_pendingEncryptedCollaborationData;
@@ -19456,7 +21340,7 @@ std::map<ndn::Name, std::vector<PendingEncryptedCollaborationData>> m_pendingEnc
 
 ### API-dc46d182d1c8 · ndn_service_framework::ServiceProvider::m_collaborationArtifacts
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1908)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1918)
 
 ```cpp
 std::map<std::string, ndn::Buffer> m_collaborationArtifacts;
@@ -19464,7 +21348,7 @@ std::map<std::string, ndn::Buffer> m_collaborationArtifacts;
 
 ### API-78b0e064a5f7 · ndn_service_framework::ServiceProvider::m_collaborationSubscriptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1909)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1919)
 
 ```cpp
 std::vector<CollaborationSubscription> m_collaborationSubscriptions;
@@ -19472,7 +21356,7 @@ std::vector<CollaborationSubscription> m_collaborationSubscriptions;
 
 ### API-d5524848de8f · ndn_service_framework::ServiceProvider::m_collaborationMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1910)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1920)
 
 ```cpp
 std::mutex m_collaborationMutex;
@@ -19480,7 +21364,7 @@ std::mutex m_collaborationMutex;
 
 ### API-1a2e12883725 · ndn_service_framework::ServiceProvider::m_collaborationCv
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1911)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1921)
 
 ```cpp
 std::condition_variable m_collaborationCv;
@@ -19488,7 +21372,7 @@ std::condition_variable m_collaborationCv;
 
 ### API-b895aa0f34a9 · ndn_service_framework::ServiceProvider::m_collaborationSequence
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1912)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1922)
 
 ```cpp
 std::atomic<uint64_t> m_collaborationSequence{0};
@@ -19496,7 +21380,7 @@ std::atomic<uint64_t> m_collaborationSequence{0};
 
 ### API-e4797fbbaecb · ndn_service_framework::ServiceProvider::m_selectedOutstandingRequests
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1913)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1923)
 
 ```cpp
 std::atomic<size_t> m_selectedOutstandingRequests{0};
@@ -19504,7 +21388,7 @@ std::atomic<size_t> m_selectedOutstandingRequests{0};
 
 ### API-4622029069b4 · ndn_service_framework::ServiceProvider::m_cleanupInvocationCount
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1914)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1924)
 
 ```cpp
 size_t m_cleanupInvocationCount = 0;
@@ -19512,7 +21396,7 @@ size_t m_cleanupInvocationCount = 0;
 
 ### API-3b44894a82bf · ndn_service_framework::ServiceProvider::m_tokenConsumeCount
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1915)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1925)
 
 ```cpp
 size_t m_tokenConsumeCount = 0;
@@ -19520,7 +21404,7 @@ size_t m_tokenConsumeCount = 0;
 
 ### API-6100f8c74690 · ndn_service_framework::ServiceProvider::m_pendingRequestTimeoutGrace
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1916)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1926)
 
 ```cpp
 ndn::time::milliseconds m_pendingRequestTimeoutGrace{1000};
@@ -19528,7 +21412,7 @@ ndn::time::milliseconds m_pendingRequestTimeoutGrace{1000};
 
 ### API-88aa8dec28cb · ndn_service_framework::ServiceProvider::m_performanceMode
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1917)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1927)
 
 ```cpp
 bool m_performanceMode = false;
@@ -19536,7 +21420,7 @@ bool m_performanceMode = false;
 
 ### API-c2ba295d7acf · ndn_service_framework::ServiceProvider::m_useTokens
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1918)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1928)
 
 ```cpp
 bool m_useTokens = true;
@@ -19544,7 +21428,7 @@ bool m_useTokens = true;
 
 ### API-ea7f5617011c · ndn_service_framework::ServiceProvider::m_adaptiveAckAdmission
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1919)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1929)
 
 ```cpp
 bool m_adaptiveAckAdmission = false;
@@ -19552,7 +21436,7 @@ bool m_adaptiveAckAdmission = false;
 
 ### API-568c9f0cf2fe · ndn_service_framework::ServiceProvider::m_providerAckMaxPending
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1920)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1930)
 
 ```cpp
 size_t m_providerAckMaxPending = 0;
@@ -19560,7 +21444,7 @@ size_t m_providerAckMaxPending = 0;
 
 ### API-31005f93e288 · ndn_service_framework::ServiceProvider::m_providerAckMaxEventLoopLag
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1921)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1931)
 
 ```cpp
 ndn::time::milliseconds m_providerAckMaxEventLoopLag{0};
@@ -19568,7 +21452,7 @@ ndn::time::milliseconds m_providerAckMaxEventLoopLag{0};
 
 ### API-9b50528558ca · ndn_service_framework::ServiceProvider::m_providerAckMaxSelectionLag
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1922)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1932)
 
 ```cpp
 ndn::time::milliseconds m_providerAckMaxSelectionLag{0};
@@ -19576,7 +21460,7 @@ ndn::time::milliseconds m_providerAckMaxSelectionLag{0};
 
 ### API-0bc9fd5ebdaa · ndn_service_framework::ServiceProvider::m_pendingCleanupDeadlineMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1923)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1933)
 
 ```cpp
 mutable std::mutex m_pendingCleanupDeadlineMutex;
@@ -19584,7 +21468,7 @@ mutable std::mutex m_pendingCleanupDeadlineMutex;
 
 ### API-43b8361f909a · ndn_service_framework::ServiceProvider::m_pendingCleanupDeadlines
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1924)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1934)
 
 ```cpp
 std::map<ndn::Name, std::chrono::steady_clock::time_point>
@@ -19593,7 +21477,7 @@ std::map<ndn::Name, std::chrono::steady_clock::time_point>
 
 ### API-b1e232914602 · ndn_service_framework::ServiceProvider::m_pendingCleanupExpiryUnixMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1926)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1936)
 
 ```cpp
 std::map<ndn::Name, uint64_t> m_pendingCleanupExpiryUnixMs;
@@ -19601,7 +21485,7 @@ std::map<ndn::Name, uint64_t> m_pendingCleanupExpiryUnixMs;
 
 ### API-fd3021ca6842 · ndn_service_framework::ServiceProvider::m_authoritativePendingCleanupDeadlines
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1927)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1937)
 
 ```cpp
 std::set<ndn::Name> m_authoritativePendingCleanupDeadlines;
@@ -19609,7 +21493,7 @@ std::set<ndn::Name> m_authoritativePendingCleanupDeadlines;
 
 ### API-2cd81553bdb6 · ndn_service_framework::ServiceProvider::m_providerRequestLifecycleStatuses
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1928)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1938)
 
 ```cpp
 std::map<ndn::Name, ProviderRequestLifecycleStatus>
@@ -19618,16 +21502,32 @@ std::map<ndn::Name, ProviderRequestLifecycleStatus>
 
 ### API-d1448250efda · ndn_service_framework::ServiceProvider::m_selectionExecutionStatuses
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1930)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1940)
 
 ```cpp
 std::map<std::string, SelectionExecutionStatus>
                 m_selectionExecutionStatuses;
 ```
 
+### API-54224749b09c · ndn_service_framework::ServiceProvider::m_selectionExecutionStatusMutex
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1945)
+
+```cpp
+mutable std::mutex m_selectionExecutionStatusMutex;
+```
+
+原始接口说明：
+
+```text
+// Selection operation status is updated by collaboration worker
+// threads and may be queried from the Face thread concurrently.
+// Keep map/vector lifetime and snapshot reads under one lock.
+```
+
 ### API-6a8ce5f63811 · ndn_service_framework::ServiceProvider::m_providerRequestLifecycleCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1932)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1946)
 
 ```cpp
 ProviderRequestLifecycleCallback m_providerRequestLifecycleCallback;
@@ -19635,7 +21535,7 @@ ProviderRequestLifecycleCallback m_providerRequestLifecycleCallback;
 
 ### API-755c3d80ecd4 · ndn_service_framework::ServiceProvider::m_providerAdmissionCounters
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1933)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1947)
 
 ```cpp
 std::map<std::string, uint64_t> m_providerAdmissionCounters;
@@ -19643,7 +21543,7 @@ std::map<std::string, uint64_t> m_providerAdmissionCounters;
 
 ### API-1b873421ea01 · ndn_service_framework::ServiceProvider::m_genericAdmissionLeases
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1934)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1948)
 
 ```cpp
 ProviderAdmissionLeaseTable m_genericAdmissionLeases;
@@ -19651,7 +21551,7 @@ ProviderAdmissionLeaseTable m_genericAdmissionLeases;
 
 ### API-beb7330d60bc · ndn_service_framework::ServiceProvider::random
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1936)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1950)
 
 ```cpp
 ndn::random::RandomNumberEngine random;
@@ -19659,7 +21559,7 @@ ndn::random::RandomNumberEngine random;
 
 ### API-1c0ca675a660 · ndn_service_framework::ServiceProvider::m_IMS
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1938)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1952)
 
 ```cpp
 ndn::InMemoryStorageFifo m_IMS;
@@ -19667,7 +21567,7 @@ ndn::InMemoryStorageFifo m_IMS;
 
 ### API-7d4c38ab5b2b · ndn_service_framework::ServiceProvider::_cache_mutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1939)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1953)
 
 ```cpp
 std::mutex _cache_mutex;
@@ -19675,7 +21575,7 @@ std::mutex _cache_mutex;
 
 ### API-4bbbfff90da1 · ndn_service_framework::ServiceProvider::PendingImsInterest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1940)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1954)
 
 ```cpp
 struct PendingImsInterest
@@ -19683,7 +21583,7 @@ struct PendingImsInterest
 
 ### API-3b6ef13301cb · ndn_service_framework::ServiceProvider::PendingImsInterest::interest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1942)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1956)
 
 ```cpp
 ndn::Interest interest;
@@ -19691,7 +21591,7 @@ ndn::Interest interest;
 
 ### API-9ac237ccd980 · ndn_service_framework::ServiceProvider::PendingImsInterest::requestedAt
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1943)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1957)
 
 ```cpp
 ndn::time::steady_clock::time_point requestedAt;
@@ -19699,7 +21599,7 @@ ndn::time::steady_clock::time_point requestedAt;
 
 ### API-8a2e6f15dbb2 · ndn_service_framework::ServiceProvider::PendingImsInterest::expiresAt
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1944)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1958)
 
 ```cpp
 ndn::time::steady_clock::time_point expiresAt;
@@ -19707,7 +21607,7 @@ ndn::time::steady_clock::time_point expiresAt;
 
 ### API-bcb4c68daeaa · ndn_service_framework::ServiceProvider::m_pendingImsInterestsByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1946)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1960)
 
 ```cpp
 std::map<ndn::Name, std::deque<PendingImsInterest>> m_pendingImsInterestsByName;
@@ -19715,7 +21615,7 @@ std::map<ndn::Name, std::deque<PendingImsInterest>> m_pendingImsInterestsByName;
 
 ### API-0a15463aae37 · ndn_service_framework::ServiceProvider::m_pendingPrefixImsInterests
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1947)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1961)
 
 ```cpp
 std::vector<PendingImsInterest> m_pendingPrefixImsInterests;
@@ -19723,7 +21623,7 @@ std::vector<PendingImsInterest> m_pendingPrefixImsInterests;
 
 ### API-8bbb40b705cd · ndn_service_framework::ServiceProvider::m_pendingImsInsertionOrder
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1948)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1962)
 
 ```cpp
 std::deque<ndn::Name> m_pendingImsInsertionOrder;
@@ -19731,7 +21631,7 @@ std::deque<ndn::Name> m_pendingImsInsertionOrder;
 
 ### API-f3a032033b03 · ndn_service_framework::ServiceProvider::m_pendingImsInterestCount
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1949)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1963)
 
 ```cpp
 size_t m_pendingImsInterestCount = 0;
@@ -19739,7 +21639,7 @@ size_t m_pendingImsInterestCount = 0;
 
 ### API-03165f8d6a50 · ndn_service_framework::ServiceProvider::m_ServiceDiscovery
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1951)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1965)
 
 ```cpp
 OptionalServiceDiscovery m_ServiceDiscovery;
@@ -19747,7 +21647,7 @@ OptionalServiceDiscovery m_ServiceDiscovery;
 
 ### API-d8cedc19a00a · ndn_service_framework::ServiceProvider::m_ndnsdMeta
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1952)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1966)
 
 ```cpp
 std::map<std::string, std::string> m_ndnsdMeta;
@@ -19755,7 +21655,7 @@ std::map<std::string, std::string> m_ndnsdMeta;
 
 ### API-1f197842f9d6 · ndn_service_framework::ServiceProvider::m_ndnsdMetaMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1953)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1967)
 
 ```cpp
 mutable std::mutex m_ndnsdMetaMutex;
@@ -19763,7 +21663,7 @@ mutable std::mutex m_ndnsdMetaMutex;
 
 ### API-80499de488eb · ndn_service_framework::ServiceProvider::m_ndnsdScheduler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1954)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1968)
 
 ```cpp
 std::unique_ptr<ndn::Scheduler> m_ndnsdScheduler;
@@ -19771,7 +21671,7 @@ std::unique_ptr<ndn::Scheduler> m_ndnsdScheduler;
 
 ### API-630daeae9763 · ndn_service_framework::ServiceProvider::m_ndnsdHeartbeatEvent
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1955)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1969)
 
 ```cpp
 ndn::scheduler::ScopedEventId m_ndnsdHeartbeatEvent;
@@ -19779,7 +21679,7 @@ ndn::scheduler::ScopedEventId m_ndnsdHeartbeatEvent;
 
 ### API-bc496e281665 · ndn_service_framework::ServiceProvider::m_ndnsdHeartbeatIntervalSeconds
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1956)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1970)
 
 ```cpp
 int m_ndnsdHeartbeatIntervalSeconds = 0;
@@ -19787,7 +21687,7 @@ int m_ndnsdHeartbeatIntervalSeconds = 0;
 
 ### API-8a5af24f1060 · ndn_service_framework::ServiceProvider::m_authorizations
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1958)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1972)
 
 ```cpp
 ServiceAuthorizationTable m_authorizations;
@@ -19795,23 +21695,43 @@ ServiceAuthorizationTable m_authorizations;
 
 ### API-4c4deef14d2e · ndn_service_framework::ServiceProvider::m_configManager
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1960)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1974)
 
 ```cpp
 ConfigManager m_configManager;
 ```
 
-### API-8dff57fda8e9 · ndn_service_framework::ServiceProvider::m_sessionIDMap
+### API-de4ece99d762 · ndn_service_framework::ServiceProvider::m_sessionIDMap
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1962)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1982)
 
 ```cpp
-std::map<ndn::Name, int> m_sessionIDMap;
+std::map<ndn::Name, std::pair<int, ndn::svs::SeqNo>> m_sessionIDMap;
+```
+
+原始接口说明：
+
+```text
+// SVS may replay an older publication when a later sequence is
+// synchronized. Freshness binds producer session and each
+// publication name's highest accepted sequence.  The sequence
+// frontier is per name because independent valid publications can
+// arrive out of order on separate face/event-loop paths; a global
+// frontier would discard an unseen lower-sequence publication.
+```
+
+### API-9fe47629369f · ndn_service_framework::ServiceProvider::m_publicationSeqMap
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1983)
+
+```cpp
+std::map<ndn::Name, std::map<ndn::Name, ndn::svs::SeqNo>>
+                m_publicationSeqMap;
 ```
 
 ### API-a89e6d5c1dc4 · ndn_service_framework::ServiceProvider::svs_mutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1964)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1986)
 
 ```cpp
 std::mutex svs_mutex;
@@ -19819,7 +21739,7 @@ std::mutex svs_mutex;
 
 ### API-485fb045be04 · ndn_service_framework::ServiceProvider::m_registrationControl
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1971)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1993)
 
 ```cpp
 std::shared_ptr<RegistrationControl> m_registrationControl;
@@ -19837,7 +21757,7 @@ std::shared_ptr<RegistrationControl> m_registrationControl;
 
 ### API-3f9a9dc32cd2 · ndn_service_framework::ServiceProvider::m_registrationGeneration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1972)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1994)
 
 ```cpp
 uint64_t m_registrationGeneration = 0;
@@ -19845,7 +21765,7 @@ uint64_t m_registrationGeneration = 0;
 
 ### API-523e086d4e3b · ndn_service_framework::ServiceProvider::m_services
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1974)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceProvider.hpp#L1996)
 
 ```cpp
 std::map<ServiceKey, RegisteredService> m_services;
@@ -19853,7 +21773,7 @@ std::map<ServiceKey, RegisteredService> m_services;
 
 ## ndn-service-framework/ServiceUser.hpp
 
-源码 SHA-256：`ef797725a923b2058faa9f48d68cbc4591275154b78c995588c069080396a5c2`。
+源码 SHA-256：`55bcc34fdb82b739729ae76fd7476669f97147eaa2d17b9442f93e5df4a8caa9`。
 
 ### API-1da6177a0572 · ndn_service_framework::AckInfo
 
@@ -21466,9 +23386,53 @@ ServiceUser(ndn::Face& face,
                         std::string trustSchemaPath);
 ```
 
+### API-93a350706d65 · ndn_service_framework::ServiceUser::ServiceUser
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L402)
+
+```cpp
+ServiceUser(ndn::Face& face,
+                        ndn::Name group_prefix,
+                        ndn::security::Certificate encryptionCert,
+                        ndn::security::Certificate signingCert,
+                        ndn::security::Certificate attrAuthorityCertificate,
+                        std::string trustSchemaPath,
+                        ndn::KeyChain& signingKeyChain);
+```
+
+原始接口说明：
+
+```text
+/** Production owner injection: all SVS/NAC signing uses this
+             * KeyChain, which must outlive the ServiceUser. */
+```
+
+### API-050360e759e6 · ndn_service_framework::ServiceUser::ExternalKeyChainTag
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L409)
+
+```cpp
+struct ExternalKeyChainTag
+```
+
+### API-acd9ec0fb859 · ndn_service_framework::ServiceUser::ServiceUser
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L412)
+
+```cpp
+ServiceUser(ExternalKeyChainTag,
+                        ndn::Face& face,
+                        ndn::Name group_prefix,
+                        ndn::security::Certificate encryptionCert,
+                        ndn::security::Certificate signingCert,
+                        ndn::security::Certificate attrAuthorityCertificate,
+                        std::string trustSchemaPath,
+                        ndn::KeyChain* signingKeyChain);
+```
+
 ### API-95ec09f8ec7e · ndn_service_framework::ServiceUser::ServiceUser
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L400)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L420)
 
 ```cpp
 ServiceUser(LocalMockTag,
@@ -21481,7 +23445,7 @@ ServiceUser(LocalMockTag,
 
 ### API-d6cddf557395 · ndn_service_framework::ServiceUser::ServiceUser
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L406)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L426)
 
 ```cpp
 ServiceUser(LocalMockTag,
@@ -21495,7 +23459,7 @@ ServiceUser(LocalMockTag,
 
 ### API-d22945d1e1a9 · ndn_service_framework::ServiceUser::~ServiceUser
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L414)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L434)
 
 ```cpp
 virtual ~ServiceUser();
@@ -21503,7 +23467,7 @@ virtual ~ServiceUser();
 
 ### API-e45c59f5f194 · ndn_service_framework::ServiceUser::init
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L415)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L435)
 
 ```cpp
 void init();
@@ -21511,7 +23475,7 @@ void init();
 
 ### API-74ac68718c71 · ndn_service_framework::ServiceUser::attachLocalMockPubSubForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L424)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L444)
 
 ```cpp
 void attachLocalMockPubSubForTest(
@@ -21530,12 +23494,12 @@ void attachLocalMockPubSubForTest(
              */
 ```
 
-### API-98376dee365b · ndn_service_framework::ServiceUser::useSigningKeyChainForTest
+### API-f7187963605f · ndn_service_framework::ServiceUser::useSigningKeyChain
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L429)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L449)
 
 ```cpp
-void useSigningKeyChainForTest(ndn::KeyChain& keyChain);
+void useSigningKeyChain(ndn::KeyChain& keyChain);
 ```
 
 原始接口说明：
@@ -21545,9 +23509,23 @@ void useSigningKeyChainForTest(ndn::KeyChain& keyChain);
              * fixture-owned KeyChain that contains the supplied certificate. */
 ```
 
+### API-98376dee365b · ndn_service_framework::ServiceUser::useSigningKeyChainForTest
+
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L451)
+
+```cpp
+void useSigningKeyChainForTest(ndn::KeyChain& keyChain);
+```
+
+原始接口说明：
+
+```text
+/** Backward-compatible test spelling for LocalMock fixtures. */
+```
+
 ### API-7dcfee7062e3 · ndn_service_framework::ServiceUser::isNacConsumerReadyForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L435)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L457)
 
 ```cpp
 bool isNacConsumerReadyForTest();
@@ -21564,7 +23542,7 @@ bool isNacConsumerReadyForTest();
 
 ### API-4d712b34832a · ndn_service_framework::ServiceUser::cacheHybridReceiveKeyForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L438)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L460)
 
 ```cpp
 void cacheHybridReceiveKeyForTest(const std::string& keyId,
@@ -21580,7 +23558,7 @@ void cacheHybridReceiveKeyForTest(const std::string& keyId,
 
 ### API-8bd6ab6219ef · ndn_service_framework::ServiceUser::prepareHybridSendKeyForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L445)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L467)
 
 ```cpp
 HybridMessageKey prepareHybridSendKeyForTest(
@@ -21598,7 +23576,7 @@ HybridMessageKey prepareHybridSendKeyForTest(
 
 ### API-9e3f1a5874c2 · ndn_service_framework::ServiceUser::cacheDataForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L450)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L472)
 
 ```cpp
 void cacheDataForTest(
@@ -21614,7 +23592,7 @@ void cacheDataForTest(
 
 ### API-ab05f5dfc7f8 · ndn_service_framework::ServiceUser::cancelStreamRequestForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L456)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L478)
 
 ```cpp
 void cancelStreamRequestForTest(const ndn::Name& requestId);
@@ -21629,7 +23607,7 @@ void cancelStreamRequestForTest(const ndn::Name& requestId);
 
 ### API-d456eb947180 · ndn_service_framework::ServiceUser::cancelStreamRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L459)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L481)
 
 ```cpp
 void cancelStreamRequest(const ndn::Name& requestId);
@@ -21644,7 +23622,7 @@ void cancelStreamRequest(const ndn::Name& requestId);
 
 ### API-9a7442abbc1e · ndn_service_framework::ServiceUser::getStreamMetricsForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L460)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L482)
 
 ```cpp
 StreamedInvocationMetrics getStreamMetricsForTest(
@@ -21653,7 +23631,7 @@ StreamedInvocationMetrics getStreamMetricsForTest(
 
 ### API-39cac6fc3339 · ndn_service_framework::ServiceUser::hasStreamStateForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L462)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L484)
 
 ```cpp
 bool hasStreamStateForTest(const ndn::Name& requestId) const;
@@ -21661,7 +23639,7 @@ bool hasStreamStateForTest(const ndn::Name& requestId) const;
 
 ### API-9d346c360551 · ndn_service_framework::ServiceUser::streamCallbackQueueHighWaterMarkForTest
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L463)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L485)
 
 ```cpp
 size_t streamCallbackQueueHighWaterMarkForTest(
@@ -21670,7 +23648,7 @@ size_t streamCallbackQueueHighWaterMarkForTest(
 
 ### API-7dcf3a18fda6 · ndn_service_framework::ServiceUser::getName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L466)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L488)
 
 ```cpp
 ndn::Name getName();
@@ -21678,7 +23656,7 @@ ndn::Name getName();
 
 ### API-cb4383650299 · ndn_service_framework::ServiceUser::openLiveStream
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L469)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L491)
 
 ```cpp
 std::shared_ptr<LiveStreamConsumerHandle>
@@ -21694,7 +23672,7 @@ std::shared_ptr<LiveStreamConsumerHandle>
 
 ### API-2619677ba51d · ndn_service_framework::ServiceUser::subscribeStream
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L474)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L496)
 
 ```cpp
 std::shared_ptr<PredictiveStreamSubscriber>
@@ -21710,15 +23688,38 @@ std::shared_ptr<PredictiveStreamSubscriber>
 
 ### API-9040da67e128 · ndn_service_framework::ServiceUser::fetchPermissionsFromController
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L478)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L500)
 
 ```cpp
 void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
 ```
 
+### API-6dc9b84f3824 · ndn_service_framework::ServiceUser::isRequestBootstrapReady
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L509)
+
+```cpp
+bool isRequestBootstrapReady(
+                const ndn::Name& serviceName,
+                const std::vector<ndn::Name>& providers = {});
+```
+
+原始接口说明：
+
+```text
+/**
+             * Return whether a configured production requester has completed
+             * the local authorization bootstrap needed to begin a protected
+             * request. This predicate is intended for the Core request owner
+             * while running on the Face I/O thread; it never waits or performs
+             * network I/O. LocalMock users retain their explicit fixture
+             * boundary and return ready here.
+             */
+```
+
 ### API-f8c12279aea3 · ndn_service_framework::ServiceUser::applyPermissionResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L479)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L512)
 
 ```cpp
 void applyPermissionResponse(const PermissionResponse& response);
@@ -21726,7 +23727,7 @@ void applyPermissionResponse(const PermissionResponse& response);
 
 ### API-7a605821e212 · ndn_service_framework::ServiceUser::installControllerStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L482)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L515)
 
 ```cpp
 bool installControllerStatus(const PolicyStatusData& status,
@@ -21742,7 +23743,7 @@ bool installControllerStatus(const PolicyStatusData& status,
 
 ### API-e6f6f184bd0e · ndn_service_framework::ServiceUser::persistAcceptedControllerStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L486)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L519)
 
 ```cpp
 void persistAcceptedControllerStatus(
@@ -21759,7 +23760,7 @@ void persistAcceptedControllerStatus(
 
 ### API-f098e7e18447 · ndn_service_framework::ServiceUser::restorePersistedRuntimeStatuses
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L494)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L527)
 
 ```cpp
 void restorePersistedRuntimeStatuses();
@@ -21777,7 +23778,7 @@ void restorePersistedRuntimeStatuses();
 
 ### API-438fea11dbfe · ndn_service_framework::ServiceUser::getControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L495)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L528)
 
 ```cpp
 std::optional<ControllerVersion> getControllerVersion() const;
@@ -21785,7 +23786,7 @@ std::optional<ControllerVersion> getControllerVersion() const;
 
 ### API-dd4b28380e03 · ndn_service_framework::ServiceUser::getControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L496)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L529)
 
 ```cpp
 std::optional<ControllerVersion> getControllerVersion(
@@ -21794,7 +23795,7 @@ std::optional<ControllerVersion> getControllerVersion(
 
 ### API-88ae4c77c7c4 · ndn_service_framework::ServiceUser::getCurrentPolicyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L498)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L531)
 
 ```cpp
 size_t getCurrentPolicyEpoch() const;
@@ -21802,7 +23803,7 @@ size_t getCurrentPolicyEpoch() const;
 
 ### API-84e0c0ecbc30 · ndn_service_framework::ServiceUser::getCurrentPolicyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L499)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L532)
 
 ```cpp
 size_t getCurrentPolicyEpoch(const ndn::Name& serviceName) const;
@@ -21810,7 +23811,7 @@ size_t getCurrentPolicyEpoch(const ndn::Name& serviceName) const;
 
 ### API-68a709378c04 · ndn_service_framework::ServiceUser::getAllowedServices
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L500)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L533)
 
 ```cpp
 std::vector<std::tuple<std::string, std::string, size_t>>
@@ -21819,7 +23820,7 @@ std::vector<std::tuple<std::string, std::string, size_t>>
 
 ### API-18aa6ea62344 · ndn_service_framework::ServiceUser::getNdnsdReceivedDetails
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L503)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L536)
 
 ```cpp
 std::map<std::string, ndnsd::discovery::Details>
@@ -21834,7 +23835,7 @@ std::map<std::string, ndnsd::discovery::Details>
 
 ### API-4d5b745be8b9 · ndn_service_framework::ServiceUser::handlePermissionResponseData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L505)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L538)
 
 ```cpp
 static bool handlePermissionResponseData(const ndn::Data& data,
@@ -21845,7 +23846,7 @@ static bool handlePermissionResponseData(const ndn::Data& data,
 
 ### API-d6f00640ce6b · ndn_service_framework::ServiceUser::setRequestPublisher
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L509)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L542)
 
 ```cpp
 void setRequestPublisher(RequestPublisher publisher);
@@ -21853,7 +23854,7 @@ void setRequestPublisher(RequestPublisher publisher);
 
 ### API-9fe44b5ec94b · ndn_service_framework::ServiceUser::setLocalPublicationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L510)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L543)
 
 ```cpp
 void setLocalPublicationHandler(LocalPublicationHandler handler);
@@ -21861,7 +23862,7 @@ void setLocalPublicationHandler(LocalPublicationHandler handler);
 
 ### API-23fb7c9fabfe · ndn_service_framework::ServiceUser::makeGenericAdmissionLeaseSelectionPayload
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L511)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L544)
 
 ```cpp
 static ndn::Buffer makeGenericAdmissionLeaseSelectionPayload(
@@ -21871,7 +23872,7 @@ static ndn::Buffer makeGenericAdmissionLeaseSelectionPayload(
 
 ### API-5886684a7094 · ndn_service_framework::ServiceUser::setSelectionAssignmentPayloadForRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L514)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L547)
 
 ```cpp
 bool setSelectionAssignmentPayloadForRequest(
@@ -21882,7 +23883,7 @@ bool setSelectionAssignmentPayloadForRequest(
 
 ### API-eb6ca0577d31 · ndn_service_framework::ServiceUser::setRequestLifecycleCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L518)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L551)
 
 ```cpp
 void setRequestLifecycleCallback(RequestLifecycleCallback callback);
@@ -21890,7 +23891,7 @@ void setRequestLifecycleCallback(RequestLifecycleCallback callback);
 
 ### API-e6ce28e6083d · ndn_service_framework::ServiceUser::setAdmissionControlWarningHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L519)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L552)
 
 ```cpp
 void setAdmissionControlWarningHandler(AdmissionControlWarningHandler handler);
@@ -21898,7 +23899,7 @@ void setAdmissionControlWarningHandler(AdmissionControlWarningHandler handler);
 
 ### API-f4d7093795b8 · ndn_service_framework::ServiceUser::setAdmissionControlRejectHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L520)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L553)
 
 ```cpp
 void setAdmissionControlRejectHandler(AdmissionControlRejectHandler handler);
@@ -21906,7 +23907,7 @@ void setAdmissionControlRejectHandler(AdmissionControlRejectHandler handler);
 
 ### API-c27ab275c7c1 · ndn_service_framework::ServiceUser::getRequestStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L521)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L554)
 
 ```cpp
 std::optional<RequestLifecycleStatus>
@@ -21915,7 +23916,7 @@ std::optional<RequestLifecycleStatus>
 
 ### API-6ef9cdbd5325 · ndn_service_framework::ServiceUser::getActiveRequestStatuses
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L523)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L556)
 
 ```cpp
 std::vector<RequestLifecycleStatus> getActiveRequestStatuses() const;
@@ -21923,7 +23924,7 @@ std::vector<RequestLifecycleStatus> getActiveRequestStatuses() const;
 
 ### API-9cfc4eb4c026 · ndn_service_framework::ServiceUser::requestLifecycleStateToString
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L524)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L557)
 
 ```cpp
 static const char* requestLifecycleStateToString(RequestLifecycleState state);
@@ -21931,7 +23932,7 @@ static const char* requestLifecycleStateToString(RequestLifecycleState state);
 
 ### API-c17dcf371aa0 · ndn_service_framework::ServiceUser::getPendingCallCount
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L525)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L558)
 
 ```cpp
 size_t getPendingCallCount() const;
@@ -21939,7 +23940,7 @@ size_t getPendingCallCount() const;
 
 ### API-ca10a646c305 · ndn_service_framework::ServiceUser::setPendingCallTimeoutGrace
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L526)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L559)
 
 ```cpp
 void setPendingCallTimeoutGrace(ndn::time::milliseconds grace);
@@ -21947,7 +23948,7 @@ void setPendingCallTimeoutGrace(ndn::time::milliseconds grace);
 
 ### API-b003ce033edd · ndn_service_framework::ServiceUser::setResponseRetryOptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L527)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L560)
 
 ```cpp
 void setResponseRetryOptions(ResponseRetryOptions options);
@@ -21955,7 +23956,7 @@ void setResponseRetryOptions(ResponseRetryOptions options);
 
 ### API-9317432ffb9c · ndn_service_framework::ServiceUser::getResponseRetryOptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L528)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L561)
 
 ```cpp
 ResponseRetryOptions getResponseRetryOptions() const;
@@ -21963,7 +23964,7 @@ ResponseRetryOptions getResponseRetryOptions() const;
 
 ### API-ce250534c2c1 · ndn_service_framework::ServiceUser::setPerformanceMode
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L529)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L562)
 
 ```cpp
 void setPerformanceMode(bool enabled);
@@ -21971,7 +23972,7 @@ void setPerformanceMode(bool enabled);
 
 ### API-e9a18fe4cf1c · ndn_service_framework::ServiceUser::setHandlerThreads
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L530)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L563)
 
 ```cpp
 void setHandlerThreads(size_t n);
@@ -21979,7 +23980,7 @@ void setHandlerThreads(size_t n);
 
 ### API-df431f9288c1 · ndn_service_framework::ServiceUser::getHandlerThreads
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L531)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L564)
 
 ```cpp
 size_t getHandlerThreads() const;
@@ -21987,7 +23988,7 @@ size_t getHandlerThreads() const;
 
 ### API-747d66c00b29 · ndn_service_framework::ServiceUser::getHandlerQueueDepth
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L532)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L565)
 
 ```cpp
 size_t getHandlerQueueDepth() const;
@@ -21995,7 +23996,7 @@ size_t getHandlerQueueDepth() const;
 
 ### API-a9caed5fe994 · ndn_service_framework::ServiceUser::setAckProcessingThreads
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L533)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L566)
 
 ```cpp
 void setAckProcessingThreads(size_t n);
@@ -22003,7 +24004,7 @@ void setAckProcessingThreads(size_t n);
 
 ### API-599982292ec7 · ndn_service_framework::ServiceUser::getAckProcessingThreads
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L534)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L567)
 
 ```cpp
 size_t getAckProcessingThreads() const;
@@ -22011,7 +24012,7 @@ size_t getAckProcessingThreads() const;
 
 ### API-f4d875fb2a6c · ndn_service_framework::ServiceUser::getAckProcessingQueueDepth
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L535)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L568)
 
 ```cpp
 size_t getAckProcessingQueueDepth() const;
@@ -22019,7 +24020,7 @@ size_t getAckProcessingQueueDepth() const;
 
 ### API-1820caa0ffcb · ndn_service_framework::ServiceUser::setUseTokens
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L536)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L569)
 
 ```cpp
 void setUseTokens(bool enabled);
@@ -22027,7 +24028,7 @@ void setUseTokens(bool enabled);
 
 ### API-41b5e88474ac · ndn_service_framework::ServiceUser::getUseTokens
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L537)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L570)
 
 ```cpp
 bool getUseTokens() const;
@@ -22035,7 +24036,7 @@ bool getUseTokens() const;
 
 ### API-b2b04bc8048f · ndn_service_framework::ServiceUser::getHybridCryptoCounters
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L538)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L571)
 
 ```cpp
 HybridCryptoCounters& getHybridCryptoCounters();
@@ -22043,7 +24044,7 @@ HybridCryptoCounters& getHybridCryptoCounters();
 
 ### API-8586016c0b28 · ndn_service_framework::ServiceUser::setTimelineTrace
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L539)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L572)
 
 ```cpp
 void setTimelineTrace(bool enabled);
@@ -22051,7 +24052,7 @@ void setTimelineTrace(bool enabled);
 
 ### API-c1db43fd7176 · ndn_service_framework::ServiceUser::RuntimeDiagnostics
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L540)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L573)
 
 ```cpp
 struct RuntimeDiagnostics
@@ -22059,7 +24060,7 @@ struct RuntimeDiagnostics
 
 ### API-91f5c0107357 · ndn_service_framework::ServiceUser::RuntimeDiagnostics::callbackSkippedNoPending
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L542)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L575)
 
 ```cpp
 uint64_t callbackSkippedNoPending = 0;
@@ -22067,7 +24068,7 @@ uint64_t callbackSkippedNoPending = 0;
 
 ### API-a2b2d0b6e23d · ndn_service_framework::ServiceUser::RuntimeDiagnostics::callbackSkippedTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L543)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L576)
 
 ```cpp
 uint64_t callbackSkippedTimeout = 0;
@@ -22075,7 +24076,7 @@ uint64_t callbackSkippedTimeout = 0;
 
 ### API-4be0e3cb7205 · ndn_service_framework::ServiceUser::RuntimeDiagnostics::responseAfterPendingTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L544)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L577)
 
 ```cpp
 uint64_t responseAfterPendingTimeout = 0;
@@ -22083,7 +24084,7 @@ uint64_t responseAfterPendingTimeout = 0;
 
 ### API-d644550f65d3 · ndn_service_framework::ServiceUser::RuntimeDiagnostics::ackLatenciesMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L545)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L578)
 
 ```cpp
 std::vector<double> ackLatenciesMs;
@@ -22091,7 +24092,7 @@ std::vector<double> ackLatenciesMs;
 
 ### API-b383d3039d73 · ndn_service_framework::ServiceUser::consumeRuntimeDiagnostics
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L547)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L580)
 
 ```cpp
 RuntimeDiagnostics consumeRuntimeDiagnostics();
@@ -22099,7 +24100,7 @@ RuntimeDiagnostics consumeRuntimeDiagnostics();
 
 ### API-10f832c2cdbc · ndn_service_framework::ServiceUser::waitForVerifiedCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L553)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L586)
 
 ```cpp
 std::vector<VerifiedCollaborationData>
@@ -22122,7 +24123,7 @@ std::vector<VerifiedCollaborationData>
 
 ### API-69fb5b1187df · ndn_service_framework::ServiceUser::clearVerifiedCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L566)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L599)
 
 ```cpp
 void clearVerifiedCollaborationData(const RequestId& requestId,
@@ -22141,7 +24142,7 @@ void clearVerifiedCollaborationData(const RequestId& requestId,
 
 ### API-56610990f594 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L569)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L602)
 
 ```cpp
 struct AdaptiveAdmissionOptions
@@ -22149,7 +24150,7 @@ struct AdaptiveAdmissionOptions
 
 ### API-80ab4c65f157 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::enabled
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L571)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L604)
 
 ```cpp
 bool enabled = true;
@@ -22157,7 +24158,7 @@ bool enabled = true;
 
 ### API-24dd43daa795 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::minWindow
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L572)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L605)
 
 ```cpp
 size_t minWindow = 1;
@@ -22165,7 +24166,7 @@ size_t minWindow = 1;
 
 ### API-ae8080eefdfd · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::maxWindow
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L573)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L606)
 
 ```cpp
 size_t maxWindow = 512;
@@ -22173,7 +24174,7 @@ size_t maxWindow = 512;
 
 ### API-26f1c58b2e56 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::initialWindow
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L574)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L607)
 
 ```cpp
 size_t initialWindow = 16;
@@ -22181,7 +24182,7 @@ size_t initialWindow = 16;
 
 ### API-a655948e3efd · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::hardInflightLimit
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L575)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L608)
 
 ```cpp
 size_t hardInflightLimit = 512;
@@ -22189,7 +24190,7 @@ size_t hardInflightLimit = 512;
 
 ### API-d4385a891d8f · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::aiStep
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L576)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L609)
 
 ```cpp
 size_t aiStep = 4;
@@ -22197,7 +24198,7 @@ size_t aiStep = 4;
 
 ### API-eb1367292022 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::mdFactor
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L577)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L610)
 
 ```cpp
 double mdFactor = 0.85;
@@ -22205,7 +24206,7 @@ double mdFactor = 0.85;
 
 ### API-6901bfb60243 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::severeMdFactor
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L578)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L611)
 
 ```cpp
 double severeMdFactor = 0.5;
@@ -22213,7 +24214,7 @@ double severeMdFactor = 0.5;
 
 ### API-20d3697181cd · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::controlIntervalMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L579)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L612)
 
 ```cpp
 int controlIntervalMs = 500;
@@ -22221,7 +24222,7 @@ int controlIntervalMs = 500;
 
 ### API-c14d6c769037 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::targetLatencyMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L580)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L613)
 
 ```cpp
 int targetLatencyMs = 350;
@@ -22229,7 +24230,7 @@ int targetLatencyMs = 350;
 
 ### API-03b24a2904f2 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::hardTargetLatencyMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L581)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L614)
 
 ```cpp
 int hardTargetLatencyMs = 500;
@@ -22237,7 +24238,7 @@ int hardTargetLatencyMs = 500;
 
 ### API-2cf3722c8edd · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::softQueueLimit
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L582)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L615)
 
 ```cpp
 size_t softQueueLimit = 0;
@@ -22245,7 +24246,7 @@ size_t softQueueLimit = 0;
 
 ### API-72cdb60cdeeb · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::hardQueueLimit
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L583)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L616)
 
 ```cpp
 size_t hardQueueLimit = 0;
@@ -22253,7 +24254,7 @@ size_t hardQueueLimit = 0;
 
 ### API-9d133a530fb3 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::rateRecommendationEnabled
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L584)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L617)
 
 ```cpp
 bool rateRecommendationEnabled = true;
@@ -22261,7 +24262,7 @@ bool rateRecommendationEnabled = true;
 
 ### API-5845243a9003 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::initialRecommendedRateRps
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L585)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L618)
 
 ```cpp
 double initialRecommendedRateRps = 0.0;
@@ -22269,7 +24270,7 @@ double initialRecommendedRateRps = 0.0;
 
 ### API-dd7870cce4b0 · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::minRecommendedRateRps
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L586)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L619)
 
 ```cpp
 double minRecommendedRateRps = 1.0;
@@ -22277,7 +24278,7 @@ double minRecommendedRateRps = 1.0;
 
 ### API-a2e04e93ceaf · ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions::maxRecommendedRateRps
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L587)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L620)
 
 ```cpp
 double maxRecommendedRateRps = 0.0;
@@ -22285,7 +24286,7 @@ double maxRecommendedRateRps = 0.0;
 
 ### API-8275a2df13a4 · ndn_service_framework::ServiceUser::setAdaptiveAdmissionControl
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L589)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L622)
 
 ```cpp
 void setAdaptiveAdmissionControl(const AdaptiveAdmissionOptions& options);
@@ -22293,7 +24294,7 @@ void setAdaptiveAdmissionControl(const AdaptiveAdmissionOptions& options);
 
 ### API-e3ac568794f9 · ndn_service_framework::ServiceUser::getAdaptiveAdmissionOptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L590)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L623)
 
 ```cpp
 AdaptiveAdmissionOptions getAdaptiveAdmissionOptions() const;
@@ -22301,7 +24302,7 @@ AdaptiveAdmissionOptions getAdaptiveAdmissionOptions() const;
 
 ### API-12365af618cf · ndn_service_framework::ServiceUser::getAdaptiveAdmissionWindow
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L591)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L624)
 
 ```cpp
 size_t getAdaptiveAdmissionWindow() const;
@@ -22309,7 +24310,7 @@ size_t getAdaptiveAdmissionWindow() const;
 
 ### API-28aeef09291c · ndn_service_framework::ServiceUser::getAdaptiveAdmissionInflight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L592)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L625)
 
 ```cpp
 size_t getAdaptiveAdmissionInflight() const;
@@ -22317,7 +24318,7 @@ size_t getAdaptiveAdmissionInflight() const;
 
 ### API-d6445c6139e0 · ndn_service_framework::ServiceUser::getAdaptiveAdmissionQueueDepth
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L593)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L626)
 
 ```cpp
 size_t getAdaptiveAdmissionQueueDepth() const;
@@ -22325,7 +24326,7 @@ size_t getAdaptiveAdmissionQueueDepth() const;
 
 ### API-cf43f1578fdc · ndn_service_framework::ServiceUser::getAdaptiveAdmissionRecommendedRateRps
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L594)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L627)
 
 ```cpp
 double getAdaptiveAdmissionRecommendedRateRps() const;
@@ -22333,7 +24334,7 @@ double getAdaptiveAdmissionRecommendedRateRps() const;
 
 ### API-876759dcfcab · ndn_service_framework::ServiceUser::recordAdaptiveAdmissionBackpressure
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L595)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L628)
 
 ```cpp
 void recordAdaptiveAdmissionBackpressure();
@@ -22341,7 +24342,7 @@ void recordAdaptiveAdmissionBackpressure();
 
 ### API-5c50b53030e1 · ndn_service_framework::ServiceUser::makeAckSelectionHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L597)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L630)
 
 ```cpp
 static AckCandidatesHandler makeAckSelectionHandler(
@@ -22350,7 +24351,7 @@ static AckCandidatesHandler makeAckSelectionHandler(
 
 ### API-f14aabbb8d51 · ndn_service_framework::ServiceUser::selectFirstRespondingAck
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L600)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L633)
 
 ```cpp
 static std::vector<ndn_service_framework::AckSelectionCandidate>
@@ -22360,7 +24361,7 @@ static std::vector<ndn_service_framework::AckSelectionCandidate>
 
 ### API-0c93cf2d8d48 · ndn_service_framework::ServiceUser::selectRandomAck
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L604)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L637)
 
 ```cpp
 static std::vector<ndn_service_framework::AckSelectionCandidate>
@@ -22370,7 +24371,7 @@ static std::vector<ndn_service_framework::AckSelectionCandidate>
 
 ### API-bf0c8e10a164 · ndn_service_framework::ServiceUser::selectAllResponderAcks
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L608)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L641)
 
 ```cpp
 static std::vector<ndn_service_framework::AckSelectionCandidate>
@@ -22380,7 +24381,7 @@ static std::vector<ndn_service_framework::AckSelectionCandidate>
 
 ### API-15c424171b44 · ndn_service_framework::ServiceUser::PublishRequestV2
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L612)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L645)
 
 ```cpp
 void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
@@ -22392,7 +24393,7 @@ void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
 
 ### API-c4424e99b06e · ndn_service_framework::ServiceUser::prepareServiceRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L618)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L651)
 
 ```cpp
 PreparedServiceRequest prepareServiceRequest(const std::string& serviceName);
@@ -22400,7 +24401,7 @@ PreparedServiceRequest prepareServiceRequest(const std::string& serviceName);
 
 ### API-0ce2c8a00b75 · ndn_service_framework::ServiceUser::publishEncryptedLargeData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L620)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L653)
 
 ```cpp
 LargeDataPublishResult publishEncryptedLargeData(
@@ -22412,7 +24413,7 @@ LargeDataPublishResult publishEncryptedLargeData(
 
 ### API-9e90db18a209 · ndn_service_framework::ServiceUser::SignedAppDataHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L626)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L659)
 
 ```cpp
 using SignedAppDataHandler = std::function<void(const ndn::Data&)>;
@@ -22420,7 +24421,7 @@ using SignedAppDataHandler = std::function<void(const ndn::Data&)>;
 
 ### API-e21a3ff89e6b · ndn_service_framework::ServiceUser::SignedAppDataFailureHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L627)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L660)
 
 ```cpp
 using SignedAppDataFailureHandler =
@@ -22429,7 +24430,7 @@ using SignedAppDataFailureHandler =
 
 ### API-160499aab055 · ndn_service_framework::ServiceUser::publishSignedAppData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L637)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L670)
 
 ```cpp
 ndn::Name publishSignedAppData(
@@ -22452,7 +24453,7 @@ ndn::Name publishSignedAppData(
 
 ### API-9abc485ebd0b · ndn_service_framework::ServiceUser::publishCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L648)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L681)
 
 ```cpp
 bool publishCollaborationData(
@@ -22476,7 +24477,7 @@ bool publishCollaborationData(
 
 ### API-ef2281d2fe2d · ndn_service_framework::ServiceUser::fetchSignedAppData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L660)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L693)
 
 ```cpp
 void fetchSignedAppData(
@@ -22499,7 +24500,7 @@ void fetchSignedAppData(
 
 ### API-d7a9e5056883 · ndn_service_framework::ServiceUser::makeRequestWithLargeDataOptimization
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L667)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L700)
 
 ```cpp
 LargeDataReferenceRequestResult makeRequestWithLargeDataOptimization(
@@ -22513,7 +24514,7 @@ LargeDataReferenceRequestResult makeRequestWithLargeDataOptimization(
 
 ### API-c677e3df31ec · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L675)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L708)
 
 ```cpp
 ndn::Name RequestService(const PreparedServiceRequest& ctx,
@@ -22526,7 +24527,7 @@ ndn::Name RequestService(const PreparedServiceRequest& ctx,
 
 ### API-3d96c89ed2a8 · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L682)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L715)
 
 ```cpp
 ndn::Name RequestService(const PreparedServiceRequest& ctx,
@@ -22540,7 +24541,7 @@ ndn::Name RequestService(const PreparedServiceRequest& ctx,
 
 ### API-a123bee560b9 · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L690)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L723)
 
 ```cpp
 ndn::Name RequestService(const std::vector<ndn::Name>& providers,
@@ -22554,7 +24555,7 @@ ndn::Name RequestService(const std::vector<ndn::Name>& providers,
 
 ### API-96309fee7a50 · ndn_service_framework::ServiceUser::RequestServiceTracked
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L698)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L731)
 
 ```cpp
 ndn::Name RequestServiceTracked(
@@ -22570,7 +24571,7 @@ ndn::Name RequestServiceTracked(
 
 ### API-0904c56617b8 · ndn_service_framework::ServiceUser::QuerySelectionStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L708)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L741)
 
 ```cpp
 void QuerySelectionStatus(const ndn::Name& providerName,
@@ -22583,7 +24584,7 @@ void QuerySelectionStatus(const ndn::Name& providerName,
 
 ### API-5913a3259254 · ndn_service_framework::ServiceUser::GetCollaborationStatusSnapshot
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L715)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L748)
 
 ```cpp
 std::vector<SelectionExecutionStatus>
@@ -22592,7 +24593,7 @@ std::vector<SelectionExecutionStatus>
 
 ### API-1009e77682c2 · ndn_service_framework::ServiceUser::RequestServiceTargeted
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L718)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L751)
 
 ```cpp
 ndn::Name RequestServiceTargeted(const ndn::Name& provider,
@@ -22605,7 +24606,7 @@ ndn::Name RequestServiceTargeted(const ndn::Name& provider,
 
 ### API-09fc656cb649 · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L725)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L758)
 
 ```cpp
 ndn::Name RequestService(const ndn::Name& serviceName,
@@ -22618,7 +24619,7 @@ ndn::Name RequestService(const ndn::Name& serviceName,
 
 ### API-842e1076ab9c · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L732)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L765)
 
 ```cpp
 ndn::Name RequestService(const ndn::Name& serviceName,
@@ -22632,7 +24633,7 @@ ndn::Name RequestService(const ndn::Name& serviceName,
 
 ### API-19440859f4fe · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L740)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L773)
 
 ```cpp
 ndn::Name RequestService(const ndn::Name& serviceName,
@@ -22646,7 +24647,7 @@ ndn::Name RequestService(const ndn::Name& serviceName,
 
 ### API-99f816ae87bb · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L748)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L781)
 
 ```cpp
 ndn::Name RequestService(const std::vector<ndn::Name>& providers,
@@ -22663,7 +24664,7 @@ ndn::Name RequestService(const std::vector<ndn::Name>& providers,
 
 ### API-0187d1aee6c3 · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L759)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L792)
 
 ```cpp
 ndn::Name RequestService(const std::vector<ndn::Name>& providers,
@@ -22679,7 +24680,7 @@ ndn::Name RequestService(const std::vector<ndn::Name>& providers,
 
 ### API-224b39843407 · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L769)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L802)
 
 ```cpp
 ndn::Name RequestService(const ServiceName& service,
@@ -22694,7 +24695,7 @@ ndn::Name RequestService(const ServiceName& service,
 
 ### API-9e9c476a768e · ndn_service_framework::ServiceUser::RequestServiceStreaming
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L779)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L812)
 
 ```cpp
 template<typename RequestT, typename EventT, typename ResponseT>
@@ -22711,7 +24712,7 @@ std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
 
 ### API-d37543fe7d2f · ndn_service_framework::ServiceUser::RequestServiceStreaming
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L822)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L855)
 
 ```cpp
 template<typename RequestT, typename EventT, typename ResponseT>
@@ -22728,7 +24729,7 @@ std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
 
 ### API-a7927024cd2d · ndn_service_framework::ServiceUser::RequestCollaboration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L851)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L884)
 
 ```cpp
 ndn::Name RequestCollaboration(const ServiceName& service,
@@ -22741,7 +24742,7 @@ ndn::Name RequestCollaboration(const ServiceName& service,
 
 ### API-c9045b5b03e6 · ndn_service_framework::ServiceUser::BeginCollaboration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L858)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L891)
 
 ```cpp
 ndn::Name BeginCollaboration(const ServiceName& service,
@@ -22756,7 +24757,7 @@ ndn::Name BeginCollaboration(const ServiceName& service,
 
 ### API-a36a8977cca7 · ndn_service_framework::ServiceUser::BeginCollaboration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L867)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L900)
 
 ```cpp
 ndn::Name BeginCollaboration(const ServiceName& service,
@@ -22780,9 +24781,36 @@ ndn::Name BeginCollaboration(const ServiceName& service,
                                              onStreamError = {});
 ```
 
+### API-113aa178a270 · ndn_service_framework::ServiceUser::BeginCollaborationWithProviders
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L920)
+
+```cpp
+ndn::Name BeginCollaborationWithProviders(
+                                         const ServiceName& service,
+                                         const RequestPayload& initialRequest,
+                                         int ackCollectionTimeMs,
+                                         int timeoutMs,
+                                         CollaborationAckClosedHandler onAckClosed,
+                                         ResponseHandler onFinalResponse,
+                                         TimeoutHandler onTimeout,
+                                         const RequestId& requestId,
+                                         CollaborationAckCoverageHandler onAckCoverage,
+                                         const RequestCapabilities& requestCapabilities,
+                                         const std::optional<StreamRequestOptions>&
+                                             streamOptions,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamEvent,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamComplete,
+                                         std::function<void(const StreamedInvocationError&)>
+                                             onStreamError,
+                                         const std::vector<ndn::Name>& providerNames);
+```
+
 ### API-3ab0d3d87607 · ndn_service_framework::ServiceUser::CommitCollaborationPlan
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L887)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L941)
 
 ```cpp
 bool CommitCollaborationPlan(const RequestId& requestId,
@@ -22790,9 +24818,27 @@ bool CommitCollaborationPlan(const RequestId& requestId,
                                          CollaborationPlan plan);
 ```
 
+### API-1c87158d9e32 · ndn_service_framework::ServiceUser::CancelCollaboration
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L950)
+
+```cpp
+bool CancelCollaboration(const RequestId& requestId);
+```
+
+原始接口说明：
+
+```text
+/** Cancel a locally pending collaboration on the Face I/O thread.
+             * Removes pending admission/timers and request keys, prevents a
+             * later commit, and invokes no success/timeout callback. Returns
+             * false for an absent or non-collaboration request. This is local
+             * cancellation, not a receipt proving remote execution stopped. */
+```
+
 ### API-633ec82f4942 · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L892)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L953)
 
 ```cpp
 template<typename RequestT, typename ResponseT>
@@ -22807,7 +24853,7 @@ ndn::Name RequestService(const ServiceName& service,
 
 ### API-0e69e1dfb16b · ndn_service_framework::ServiceUser::RequestService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L931)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L992)
 
 ```cpp
 template<typename RequestT, typename ResponseT>
@@ -22822,7 +24868,7 @@ ndn::Name RequestService(const std::vector<ndn::Name>& providers,
 
 ### API-efa9e29aae17 · ndn_service_framework::ServiceUser::RequestServiceTargeted
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L977)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1038)
 
 ```cpp
 template<typename RequestT, typename ResponseT>
@@ -22836,7 +24882,7 @@ ndn::Name RequestServiceTargeted(const ndn::Name& provider,
 
 ### API-c9ae0f32ad81 · ndn_service_framework::ServiceUser::handleResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1020)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1081)
 
 ```cpp
 void handleResponse(const ndn::Name& requestId,
@@ -22846,7 +24892,7 @@ void handleResponse(const ndn::Name& requestId,
 
 ### API-828aa81a1971 · ndn_service_framework::ServiceUser::handleDecryptedResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1024)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1085)
 
 ```cpp
 bool handleDecryptedResponse(const ndn::Name& requestId,
@@ -22856,7 +24902,7 @@ bool handleDecryptedResponse(const ndn::Name& requestId,
 
 ### API-4a1ba83da401 · ndn_service_framework::ServiceUser::handleDecryptedResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1033)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1094)
 
 ```cpp
 bool handleDecryptedResponse(const ndn::Name& requestId,
@@ -22877,7 +24923,7 @@ bool handleDecryptedResponse(const ndn::Name& requestId,
 
 ### API-9ea6e276850d · ndn_service_framework::ServiceUser::handleDecryptedResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1038)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1099)
 
 ```cpp
 bool handleDecryptedResponse(const ndn::Name& requestId,
@@ -22886,7 +24932,7 @@ bool handleDecryptedResponse(const ndn::Name& requestId,
 
 ### API-9ea8d03ae1a4 · ndn_service_framework::ServiceUser::handleDecryptedResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1041)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1102)
 
 ```cpp
 bool handleDecryptedResponse(const ndn::Name& requestId,
@@ -22895,7 +24941,7 @@ bool handleDecryptedResponse(const ndn::Name& requestId,
 
 ### API-89ed88bc8601 · ndn_service_framework::ServiceUser::handleDecryptedResponseByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1044)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1105)
 
 ```cpp
 bool handleDecryptedResponseByName(const ndn::Name& responseName,
@@ -22904,7 +24950,7 @@ bool handleDecryptedResponseByName(const ndn::Name& responseName,
 
 ### API-c095b78ebaff · ndn_service_framework::ServiceUser::handleDecryptedResponseByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1047)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1108)
 
 ```cpp
 bool handleDecryptedResponseByName(const ndn::Name& responseName,
@@ -22913,7 +24959,7 @@ bool handleDecryptedResponseByName(const ndn::Name& responseName,
 
 ### API-ca47e4123ba0 · ndn_service_framework::ServiceUser::resolveLargeResponseReferencePayload
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1050)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1111)
 
 ```cpp
 std::optional<ResponseMessage>
@@ -22925,7 +24971,7 @@ std::optional<ResponseMessage>
 
 ### API-ffcdf14a6fa0 · ndn_service_framework::ServiceUser::handleRequestAckByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1056)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1117)
 
 ```cpp
 bool handleRequestAckByName(const ndn::Name& ackName,
@@ -22935,7 +24981,7 @@ bool handleRequestAckByName(const ndn::Name& ackName,
 
 ### API-c9b8ee5b662c · ndn_service_framework::ServiceUser::handleRequestAckByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1060)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1121)
 
 ```cpp
 bool handleRequestAckByName(const ndn::Name& ackName,
@@ -22944,7 +24990,7 @@ bool handleRequestAckByName(const ndn::Name& ackName,
 
 ### API-334f9010e1f6 · ndn_service_framework::ServiceUser::dispatchDecryptedResponseByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1062)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1123)
 
 ```cpp
 void dispatchDecryptedResponseByName(const ndn::Name& responseName,
@@ -22957,7 +25003,7 @@ void dispatchDecryptedResponseByName(const ndn::Name& responseName,
 
 ### API-3988b41ce599 · ndn_service_framework::ServiceUser::finishDecryptedResponseByName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1068)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1129)
 
 ```cpp
 void finishDecryptedResponseByName(const ndn::Name& responseName,
@@ -22967,7 +25013,7 @@ void finishDecryptedResponseByName(const ndn::Name& responseName,
 
 ### API-a4c9df664571 · ndn_service_framework::ServiceUser::finishRequestAckOnEventLoop
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1071)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1132)
 
 ```cpp
 void finishRequestAckOnEventLoop(const ndn::Name& providerName,
@@ -22979,7 +25025,7 @@ void finishRequestAckOnEventLoop(const ndn::Name& providerName,
 
 ### API-ae527a32a956 · ndn_service_framework::ServiceUser::OnResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1077)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1138)
 
 ```cpp
 virtual void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
@@ -22987,7 +25033,7 @@ virtual void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscriptio
 
 ### API-c9635ab486b2 · ndn_service_framework::ServiceUser::OnCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1078)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1139)
 
 ```cpp
 void OnCollaborationData(
@@ -22996,7 +25042,7 @@ void OnCollaborationData(
 
 ### API-211636f4e6df · ndn_service_framework::ServiceUser::processNDNSDServiceInfoCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1082)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1143)
 
 ```cpp
 void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
@@ -23010,7 +25056,7 @@ void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
 
 ### API-0c13b18c8c90 · ndn_service_framework::ServiceUser::onPermissionResponseData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1084)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1145)
 
 ```cpp
 void onPermissionResponseData(const ndn::Interest& interest,
@@ -23019,7 +25065,7 @@ void onPermissionResponseData(const ndn::Interest& interest,
 
 ### API-daedb9326ec9 · ndn_service_framework::ServiceUser::onPermissionResponseTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1086)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1147)
 
 ```cpp
 void onPermissionResponseTimeout(const ndn::Interest& interest,
@@ -23028,7 +25074,7 @@ void onPermissionResponseTimeout(const ndn::Interest& interest,
 
 ### API-fb334897a679 · ndn_service_framework::ServiceUser::fetchPolicyManifestFromController
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1088)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1149)
 
 ```cpp
 void fetchPolicyManifestFromController(const ndn::Name& controllerPrefix,
@@ -23037,7 +25083,7 @@ void fetchPolicyManifestFromController(const ndn::Name& controllerPrefix,
 
 ### API-5c25b8bd2177 · ndn_service_framework::ServiceUser::onPolicyManifestData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1090)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1151)
 
 ```cpp
 void onPolicyManifestData(const ndn::Interest& interest,
@@ -23046,7 +25092,7 @@ void onPolicyManifestData(const ndn::Interest& interest,
 
 ### API-327147448d17 · ndn_service_framework::ServiceUser::onPolicyManifestTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1092)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1153)
 
 ```cpp
 void onPolicyManifestTimeout(const ndn::Interest& interest,
@@ -23055,7 +25101,7 @@ void onPolicyManifestTimeout(const ndn::Interest& interest,
 
 ### API-3e92132744eb · ndn_service_framework::ServiceUser::fetchPolicyStatusFromController
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1094)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1155)
 
 ```cpp
 void fetchPolicyStatusFromController(const ndn::Name& controllerPrefix,
@@ -23066,7 +25112,7 @@ void fetchPolicyStatusFromController(const ndn::Name& controllerPrefix,
 
 ### API-b5997741cf50 · ndn_service_framework::ServiceUser::onPolicyStatusData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1098)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1159)
 
 ```cpp
 void onPolicyStatusData(const ndn::Interest& interest,
@@ -23076,7 +25122,7 @@ void onPolicyStatusData(const ndn::Interest& interest,
 
 ### API-b43eca6f5846 · ndn_service_framework::ServiceUser::onPolicyStatusTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1101)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1162)
 
 ```cpp
 void onPolicyStatusTimeout(const ndn::Interest& interest,
@@ -23085,7 +25131,7 @@ void onPolicyStatusTimeout(const ndn::Interest& interest,
 
 ### API-63dc80f1db1a · ndn_service_framework::ServiceUser::scheduleControllerStatusRefresh
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1103)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1164)
 
 ```cpp
 void scheduleControllerStatusRefresh(
@@ -23095,7 +25141,7 @@ void scheduleControllerStatusRefresh(
 
 ### API-2e0717822d44 · ndn_service_framework::ServiceUser::scheduleDeferredDkeyRefreshRetry
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1110)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1171)
 
 ```cpp
 void scheduleDeferredDkeyRefreshRetry(const ndn::Name& serviceName);
@@ -23112,7 +25158,7 @@ void scheduleDeferredDkeyRefreshRetry(const ndn::Name& serviceName);
 
 ### API-06ec85e8e6d8 · ndn_service_framework::ServiceUser::isAcceptablePolicyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1111)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1172)
 
 ```cpp
 bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
@@ -23120,7 +25166,7 @@ bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
 
 ### API-44d767ca2443 · ndn_service_framework::ServiceUser::isAcceptablePolicyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1112)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1173)
 
 ```cpp
 bool isAcceptablePolicyEpoch(const ndn::Name& serviceName,
@@ -23129,7 +25175,7 @@ bool isAcceptablePolicyEpoch(const ndn::Name& serviceName,
 
 ### API-ed23d83484c5 · ndn_service_framework::ServiceUser::isAcceptableControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1114)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1175)
 
 ```cpp
 bool isAcceptableControllerVersion(
@@ -23138,7 +25184,7 @@ bool isAcceptableControllerVersion(
 
 ### API-db76576d031f · ndn_service_framework::ServiceUser::isAcceptableControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1116)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1177)
 
 ```cpp
 bool isAcceptableControllerVersion(
@@ -23148,7 +25194,7 @@ bool isAcceptableControllerVersion(
 
 ### API-d7a720ade7db · ndn_service_framework::ServiceUser::maybeRefreshControllerVersionHint
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1119)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1180)
 
 ```cpp
 void maybeRefreshControllerVersionHint(
@@ -23158,7 +25204,7 @@ void maybeRefreshControllerVersionHint(
 
 ### API-e7f43da03b88 · ndn_service_framework::ServiceUser::authorizeControllerTransition
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1127)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1188)
 
 ```cpp
 __attribute__((noinline))
@@ -23170,7 +25216,7 @@ __attribute__((noinline))
 
 ### API-5f0665ec0e4f · ndn_service_framework::ServiceUser::adoptControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1132)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1193)
 
 ```cpp
 void adoptControllerVersion(const ControllerVersion& version);
@@ -23178,7 +25224,7 @@ void adoptControllerVersion(const ControllerVersion& version);
 
 ### API-27c05278318d · ndn_service_framework::ServiceUser::invalidateControllerScopedCaches
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1141)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1202)
 
 ```cpp
 void invalidateControllerScopedCaches(
@@ -23204,7 +25250,7 @@ void invalidateControllerScopedCaches(
 
 ### API-740f7165dd02 · ndn_service_framework::ServiceUser::refreshNacDkeyForControllerStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1159)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1220)
 
 ```cpp
 void refreshNacDkeyForControllerStatus(
@@ -23233,7 +25279,7 @@ void refreshNacDkeyForControllerStatus(
 
 ### API-189ab2271fd4 · ndn_service_framework::ServiceUser::OnRequestAck
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1165)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1226)
 
 ```cpp
 void OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
@@ -23241,7 +25287,7 @@ void OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
 ### API-58cb7ad27e00 · ndn_service_framework::ServiceUser::OnRequestAckDecryptionSuccessCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1167)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1228)
 
 ```cpp
 void OnRequestAckDecryptionSuccessCallback(const ndn::Name& providerName,
@@ -23253,7 +25299,7 @@ void OnRequestAckDecryptionSuccessCallback(const ndn::Name& providerName,
 
 ### API-bbb79a8c26d4 · ndn_service_framework::ServiceUser::OnRequestAckDecryptionErrorCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1173)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1234)
 
 ```cpp
 void OnRequestAckDecryptionErrorCallback(const ndn::Name& providerName,
@@ -23264,7 +25310,7 @@ void OnRequestAckDecryptionErrorCallback(const ndn::Name& providerName,
 
 ### API-b5e9a2edcda8 · ndn_service_framework::ServiceUser::PublishServiceSelectionMessageV2
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1178)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1239)
 
 ```cpp
 void PublishServiceSelectionMessageV2(const ndn::Name& providerName,
@@ -23274,7 +25320,7 @@ void PublishServiceSelectionMessageV2(const ndn::Name& providerName,
 
 ### API-5de9e066fe28 · ndn_service_framework::ServiceUser::OnResponseDecryptionErrorCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1182)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1243)
 
 ```cpp
 void OnResponseDecryptionErrorCallback(const ndn::Name& providerName,
@@ -23285,7 +25331,7 @@ void OnResponseDecryptionErrorCallback(const ndn::Name& providerName,
 
 ### API-8506002ed424 · ndn_service_framework::ServiceUser::replyFromIMS
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1187)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1248)
 
 ```cpp
 bool replyFromIMS(const ndn::Interest &interest);
@@ -23293,7 +25339,7 @@ bool replyFromIMS(const ndn::Interest &interest);
 
 ### API-bf325a4ba4f1 · ndn_service_framework::ServiceUser::onPrefixRegisterFailure
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1189)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1250)
 
 ```cpp
 void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason);
@@ -23301,7 +25347,7 @@ void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason)
 
 ### API-a696bb966cab · ndn_service_framework::ServiceUser::onInterest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1191)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1252)
 
 ```cpp
 void onInterest(const ndn::InterestFilter &, const ndn::Interest &interest);
@@ -23309,7 +25355,7 @@ void onInterest(const ndn::InterestFilter &, const ndn::Interest &interest);
 
 ### API-79262cd74613 · ndn_service_framework::ServiceUser::serveDataWithIMS
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1193)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1254)
 
 ```cpp
 void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
@@ -23317,7 +25363,7 @@ void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::naca
 
 ### API-056d03a201c5 · ndn_service_framework::ServiceUser::PublishMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1195)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1256)
 
 ```cpp
 void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
@@ -23325,7 +25371,7 @@ void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWi
 
 ### API-358c2d8e17d6 · ndn_service_framework::ServiceUser::publishHybridMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1196)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1257)
 
 ```cpp
 void publishHybridMessage(const ndn::Name& messageName,
@@ -23335,7 +25381,7 @@ void publishHybridMessage(const ndn::Name& messageName,
 
 ### API-826015885a98 · ndn_service_framework::ServiceUser::publishHybridEncodedMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1199)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1260)
 
 ```cpp
 void publishHybridEncodedMessage(const ndn::Name& messageName,
@@ -23344,7 +25390,7 @@ void publishHybridEncodedMessage(const ndn::Name& messageName,
 
 ### API-30a5417563c7 · ndn_service_framework::ServiceUser::decryptHybridMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1201)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1262)
 
 ```cpp
 bool decryptHybridMessage(const ndn::Name& messageName,
@@ -23355,7 +25401,7 @@ bool decryptHybridMessage(const ndn::Name& messageName,
 
 ### API-f94792b18a33 · ndn_service_framework::ServiceUser::registerNDNSFMessages
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1207)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1268)
 
 ```cpp
 void registerNDNSFMessages();
@@ -23369,7 +25415,7 @@ void registerNDNSFMessages();
 
 ### API-1503be689f5e · ndn_service_framework::ServiceUser::requestForServiceInfo
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1210)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1271)
 
 ```cpp
 void requestForServiceInfo();
@@ -23383,7 +25429,7 @@ void requestForServiceInfo();
 
 ### API-54985b7e62bd · ndn_service_framework::ServiceUser::isFresh
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1212)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1273)
 
 ```cpp
 bool isFresh(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
@@ -23391,7 +25437,7 @@ bool isFresh(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
 ### API-01c300d565e0 · ndn_service_framework::ServiceUser::registerIdentityPrefixWithRetry
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1217)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1278)
 
 ```cpp
 void registerIdentityPrefixWithRetry(size_t attempts = 0);
@@ -23399,7 +25445,7 @@ void registerIdentityPrefixWithRetry(size_t attempts = 0);
 
 ### API-e7a8200cd255 · ndn_service_framework::ServiceUser::onMissingData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1219)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1280)
 
 ```cpp
 void
@@ -23408,7 +25454,7 @@ void
 
 ### API-001a7f560c96 · ndn_service_framework::ServiceUser::StoredAck
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1223)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1284)
 
 ```cpp
 struct StoredAck
@@ -23416,7 +25462,7 @@ struct StoredAck
 
 ### API-cd86d1d15995 · ndn_service_framework::ServiceUser::StoredAck::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1225)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1286)
 
 ```cpp
 ndn::Name providerName;
@@ -23424,7 +25470,7 @@ ndn::Name providerName;
 
 ### API-eecad3b0d527 · ndn_service_framework::ServiceUser::StoredAck::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1226)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1287)
 
 ```cpp
 ndn::Name serviceName;
@@ -23432,7 +25478,7 @@ ndn::Name serviceName;
 
 ### API-4899b0e61388 · ndn_service_framework::ServiceUser::StoredAck::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1227)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1288)
 
 ```cpp
 ndn::Name requestId;
@@ -23440,7 +25486,7 @@ ndn::Name requestId;
 
 ### API-a1c567a2abbe · ndn_service_framework::ServiceUser::StoredAck::message
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1228)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1289)
 
 ```cpp
 ndn_service_framework::RequestAckMessage message;
@@ -23448,7 +25494,7 @@ ndn_service_framework::RequestAckMessage message;
 
 ### API-ba0bd49d868a · ndn_service_framework::ServiceUser::StoredAck::authenticationEvidence
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1229)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1290)
 
 ```cpp
 AckAuthenticationEvidence authenticationEvidence{};
@@ -23456,7 +25502,7 @@ AckAuthenticationEvidence authenticationEvidence{};
 
 ### API-046da228b4fd · ndn_service_framework::ServiceUser::PendingCall
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1232)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1293)
 
 ```cpp
 struct PendingCall
@@ -23464,7 +25510,7 @@ struct PendingCall
 
 ### API-6387bbddee0d · ndn_service_framework::ServiceUser::PublishCompactServiceSelectionMessageV2
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1234)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1295)
 
 ```cpp
 void PublishCompactServiceSelectionMessageV2(const std::vector<StoredAck>& selectedAcks);
@@ -23472,7 +25518,7 @@ void PublishCompactServiceSelectionMessageV2(const std::vector<StoredAck>& selec
 
 ### API-035c1ee9eea3 · ndn_service_framework::ServiceUser::usesR1ReservationSelection
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1235)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1296)
 
 ```cpp
 bool usesR1ReservationSelection(const PendingCall& pendingCall) const;
@@ -23480,7 +25526,7 @@ bool usesR1ReservationSelection(const PendingCall& pendingCall) const;
 
 ### API-ef0735061691 · ndn_service_framework::ServiceUser::PublishR1SelectionDecision
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1236)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1297)
 
 ```cpp
 void PublishR1SelectionDecision(const StoredAck& ack, bool selected);
@@ -23488,7 +25534,7 @@ void PublishR1SelectionDecision(const StoredAck& ack, bool selected);
 
 ### API-884193dc17c8 · ndn_service_framework::ServiceUser::closeR1ReservationDecisions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1237)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1298)
 
 ```cpp
 void closeR1ReservationDecisions(PendingCall& pendingCall);
@@ -23496,7 +25542,7 @@ void closeR1ReservationDecisions(PendingCall& pendingCall);
 
 ### API-e87c4d4d3399 · ndn_service_framework::ServiceUser::pollR1DecisionReceipt
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1238)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1299)
 
 ```cpp
 void pollR1DecisionReceipt(const ndn::Name& requestId,
@@ -23505,7 +25551,7 @@ void pollR1DecisionReceipt(const ndn::Name& requestId,
 
 ### API-780b7da689c5 · ndn_service_framework::ServiceUser::retryR1Decision
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1240)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1301)
 
 ```cpp
 void retryR1Decision(const ndn::Name& requestId,
@@ -23514,7 +25560,7 @@ void retryR1Decision(const ndn::Name& requestId,
 
 ### API-f942d136aedb · ndn_service_framework::ServiceUser::makeAckSelectionCandidate
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1242)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1303)
 
 ```cpp
 ndn_service_framework::AckSelectionCandidate
@@ -23523,7 +25569,7 @@ ndn_service_framework::AckSelectionCandidate
 
 ### API-046da228b4fd · ndn_service_framework::ServiceUser::PendingCall
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1245)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1306)
 
 ```cpp
 struct PendingCall
@@ -23531,7 +25577,7 @@ struct PendingCall
 
 ### API-2312564f53a2 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1247)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1308)
 
 ```cpp
 struct R1DecisionDelivery
@@ -23539,7 +25585,7 @@ struct R1DecisionDelivery
 
 ### API-7bf3a2d59c6b · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1249)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1310)
 
 ```cpp
 ndn::Name providerName;
@@ -23547,7 +25593,7 @@ ndn::Name providerName;
 
 ### API-49a116267aea · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1250)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1311)
 
 ```cpp
 ndn::Name serviceName;
@@ -23555,7 +25601,7 @@ ndn::Name serviceName;
 
 ### API-4ce35d6b77e3 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::messageName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1251)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1312)
 
 ```cpp
 ndn::Name messageName;
@@ -23563,7 +25609,7 @@ ndn::Name messageName;
 
 ### API-3adbcdf6e177 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::messageSuffix
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1252)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1313)
 
 ```cpp
 ndn::Name messageSuffix;
@@ -23571,7 +25617,7 @@ ndn::Name messageSuffix;
 
 ### API-a6638f21bf56 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::message
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1253)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1314)
 
 ```cpp
 ServiceSelectionMessage message;
@@ -23579,7 +25625,7 @@ ServiceSelectionMessage message;
 
 ### API-119fc6dda1b8 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::selectionDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1254)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1315)
 
 ```cpp
 std::string selectionDigest;
@@ -23587,7 +25633,7 @@ std::string selectionDigest;
 
 ### API-48f3c0ea7988 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::decisionDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1255)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1316)
 
 ```cpp
 std::string decisionDigest;
@@ -23595,7 +25641,7 @@ std::string decisionDigest;
 
 ### API-c8cd1cb898a4 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::expiresAtMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1256)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1317)
 
 ```cpp
 uint64_t expiresAtMs = 0;
@@ -23603,7 +25649,7 @@ uint64_t expiresAtMs = 0;
 
 ### API-84c7e6d2d8f0 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::transmissions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1257)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1318)
 
 ```cpp
 size_t transmissions = 0;
@@ -23611,7 +25657,7 @@ size_t transmissions = 0;
 
 ### API-dc0745b1ce00 · ndn_service_framework::ServiceUser::PendingCall::R1DecisionDelivery::receiptAccepted
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1258)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1319)
 
 ```cpp
 bool receiptAccepted = false;
@@ -23619,7 +25665,7 @@ bool receiptAccepted = false;
 
 ### API-0056498194b1 · ndn_service_framework::ServiceUser::PendingCall::providers
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1260)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1321)
 
 ```cpp
 std::vector<ndn::Name> providers;
@@ -23627,7 +25673,7 @@ std::vector<ndn::Name> providers;
 
 ### API-95e1905d578a · ndn_service_framework::ServiceUser::PendingCall::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1261)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1322)
 
 ```cpp
 ndn::Name serviceName;
@@ -23635,7 +25681,7 @@ ndn::Name serviceName;
 
 ### API-533da8a3c0c3 · ndn_service_framework::ServiceUser::PendingCall::requestName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1262)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1323)
 
 ```cpp
 ndn::Name requestName;
@@ -23643,7 +25689,7 @@ ndn::Name requestName;
 
 ### API-ec165135578e · ndn_service_framework::ServiceUser::PendingCall::requestNameWithoutPrefix
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1263)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1324)
 
 ```cpp
 ndn::Name requestNameWithoutPrefix;
@@ -23651,7 +25697,7 @@ ndn::Name requestNameWithoutPrefix;
 
 ### API-c967cef4dd9d · ndn_service_framework::ServiceUser::PendingCall::requestMessage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1264)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1325)
 
 ```cpp
 ndn_service_framework::RequestMessage requestMessage;
@@ -23659,7 +25705,7 @@ ndn_service_framework::RequestMessage requestMessage;
 
 ### API-358d35a79449 · ndn_service_framework::ServiceUser::PendingCall::strategy
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1265)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1326)
 
 ```cpp
 size_t strategy = ndn_service_framework::tlv::FirstResponding;
@@ -23667,7 +25713,7 @@ size_t strategy = ndn_service_framework::tlv::FirstResponding;
 
 ### API-2317e1b19049 · ndn_service_framework::ServiceUser::PendingCall::timeoutMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1266)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1327)
 
 ```cpp
 int timeoutMs = 0;
@@ -23675,7 +25721,7 @@ int timeoutMs = 0;
 
 ### API-8526b8ed89b2 · ndn_service_framework::ServiceUser::PendingCall::ackTimeoutMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1267)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1328)
 
 ```cpp
 int ackTimeoutMs = 0;
@@ -23683,7 +25729,7 @@ int ackTimeoutMs = 0;
 
 ### API-c2881f1b09b3 · ndn_service_framework::ServiceUser::PendingCall::createdAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1268)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1329)
 
 ```cpp
 uint64_t createdAtUs = 0;
@@ -23691,7 +25737,7 @@ uint64_t createdAtUs = 0;
 
 ### API-fd262e1aa405 · ndn_service_framework::ServiceUser::PendingCall::publishedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1269)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1330)
 
 ```cpp
 uint64_t publishedAtUs = 0;
@@ -23699,7 +25745,7 @@ uint64_t publishedAtUs = 0;
 
 ### API-95acfe9e4759 · ndn_service_framework::ServiceUser::PendingCall::firstAckAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1270)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1331)
 
 ```cpp
 uint64_t firstAckAtUs = 0;
@@ -23707,7 +25753,7 @@ uint64_t firstAckAtUs = 0;
 
 ### API-387d54843fdf · ndn_service_framework::ServiceUser::PendingCall::ackWindowDeadlineUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1271)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1332)
 
 ```cpp
 uint64_t ackWindowDeadlineUs = 0;
@@ -23715,7 +25761,7 @@ uint64_t ackWindowDeadlineUs = 0;
 
 ### API-bf3e33d7dd68 · ndn_service_framework::ServiceUser::PendingCall::ackSelectionAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1272)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1333)
 
 ```cpp
 uint64_t ackSelectionAtUs = 0;
@@ -23723,7 +25769,7 @@ uint64_t ackSelectionAtUs = 0;
 
 ### API-9f7714860df4 · ndn_service_framework::ServiceUser::PendingCall::ackSelectionCompletedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1273)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1334)
 
 ```cpp
 uint64_t ackSelectionCompletedAtUs = 0;
@@ -23731,7 +25777,7 @@ uint64_t ackSelectionCompletedAtUs = 0;
 
 ### API-f3398b90f11f · ndn_service_framework::ServiceUser::PendingCall::selectionScheduledAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1274)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1335)
 
 ```cpp
 uint64_t selectionScheduledAtUs = 0;
@@ -23739,7 +25785,7 @@ uint64_t selectionScheduledAtUs = 0;
 
 ### API-9cd8a4e5b89c · ndn_service_framework::ServiceUser::PendingCall::selectionPublishedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1275)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1336)
 
 ```cpp
 uint64_t selectionPublishedAtUs = 0;
@@ -23747,7 +25793,7 @@ uint64_t selectionPublishedAtUs = 0;
 
 ### API-f4ca85044a90 · ndn_service_framework::ServiceUser::PendingCall::responseObservedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1276)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1337)
 
 ```cpp
 uint64_t responseObservedAtUs = 0;
@@ -23755,7 +25801,7 @@ uint64_t responseObservedAtUs = 0;
 
 ### API-d613dc0ae3cf · ndn_service_framework::ServiceUser::PendingCall::responseDecryptedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1277)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1338)
 
 ```cpp
 uint64_t responseDecryptedAtUs = 0;
@@ -23763,7 +25809,7 @@ uint64_t responseDecryptedAtUs = 0;
 
 ### API-ab6047d0c88e · ndn_service_framework::ServiceUser::PendingCall::responseValidatedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1278)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1339)
 
 ```cpp
 uint64_t responseValidatedAtUs = 0;
@@ -23771,7 +25817,7 @@ uint64_t responseValidatedAtUs = 0;
 
 ### API-01c240f41f69 · ndn_service_framework::ServiceUser::PendingCall::requestDeadlineUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1279)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1340)
 
 ```cpp
 uint64_t requestDeadlineUs = 0;
@@ -23779,7 +25825,7 @@ uint64_t requestDeadlineUs = 0;
 
 ### API-8c4456844fdd · ndn_service_framework::ServiceUser::PendingCall::acksHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1280)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1341)
 
 ```cpp
 AcksHandler acksHandler;
@@ -23787,7 +25833,7 @@ AcksHandler acksHandler;
 
 ### API-0bf1c28fb48d · ndn_service_framework::ServiceUser::PendingCall::ackCandidatesHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1281)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1342)
 
 ```cpp
 AckCandidatesHandler ackCandidatesHandler;
@@ -23795,7 +25841,7 @@ AckCandidatesHandler ackCandidatesHandler;
 
 ### API-c8313aeef265 · ndn_service_framework::ServiceUser::PendingCall::timeoutHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1282)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1343)
 
 ```cpp
 TimeoutHandler timeoutHandler;
@@ -23803,7 +25849,7 @@ TimeoutHandler timeoutHandler;
 
 ### API-e72b314f13e5 · ndn_service_framework::ServiceUser::PendingCall::responseHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1283)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1344)
 
 ```cpp
 ResponseHandler responseHandler;
@@ -23811,7 +25857,7 @@ ResponseHandler responseHandler;
 
 ### API-1ecc1ff2feeb · ndn_service_framework::ServiceUser::PendingCall::hasResponse
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1284)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1345)
 
 ```cpp
 bool hasResponse = false;
@@ -23819,7 +25865,7 @@ bool hasResponse = false;
 
 ### API-c78c593c86cc · ndn_service_framework::ServiceUser::PendingCall::admissionPublished
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1285)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1346)
 
 ```cpp
 bool admissionPublished = false;
@@ -23827,7 +25873,7 @@ bool admissionPublished = false;
 
 ### API-76a65b6ad6ed · ndn_service_framework::ServiceUser::PendingCall::admissionReleased
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1286)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1347)
 
 ```cpp
 bool admissionReleased = false;
@@ -23835,7 +25881,7 @@ bool admissionReleased = false;
 
 ### API-ae25a7d8bf0f · ndn_service_framework::ServiceUser::PendingCall::ackTimeoutScheduled
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1287)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1348)
 
 ```cpp
 bool ackTimeoutScheduled = false;
@@ -23843,7 +25889,7 @@ bool ackTimeoutScheduled = false;
 
 ### API-17ebc21e4170 · ndn_service_framework::ServiceUser::PendingCall::requestTimeoutScheduled
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1288)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1349)
 
 ```cpp
 bool requestTimeoutScheduled = false;
@@ -23851,7 +25897,7 @@ bool requestTimeoutScheduled = false;
 
 ### API-779757975605 · ndn_service_framework::ServiceUser::PendingCall::scheduleAckTimeoutAfterPublish
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1289)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1350)
 
 ```cpp
 bool scheduleAckTimeoutAfterPublish = false;
@@ -23859,7 +25905,7 @@ bool scheduleAckTimeoutAfterPublish = false;
 
 ### API-0b3f9938d1b5 · ndn_service_framework::ServiceUser::PendingCall::scheduleImmediateAckTimeoutAfterPublish
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1290)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1351)
 
 ```cpp
 bool scheduleImmediateAckTimeoutAfterPublish = false;
@@ -23867,7 +25913,7 @@ bool scheduleImmediateAckTimeoutAfterPublish = false;
 
 ### API-af6e68c713da · ndn_service_framework::ServiceUser::PendingCall::ackWindowExpired
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1291)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1352)
 
 ```cpp
 bool ackWindowExpired = false;
@@ -23875,7 +25921,7 @@ bool ackWindowExpired = false;
 
 ### API-7cef8041306c · ndn_service_framework::ServiceUser::PendingCall::providerSelected
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1292)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1353)
 
 ```cpp
 bool providerSelected = false;
@@ -23883,7 +25929,7 @@ bool providerSelected = false;
 
 ### API-1f7b8476ab4e · ndn_service_framework::ServiceUser::PendingCall::targetedMode
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1293)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1354)
 
 ```cpp
 bool targetedMode = false;
@@ -23891,7 +25937,7 @@ bool targetedMode = false;
 
 ### API-3ea6aec4e8ae · ndn_service_framework::ServiceUser::PendingCall::timedOut
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1294)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1355)
 
 ```cpp
 bool timedOut = false;
@@ -23899,7 +25945,7 @@ bool timedOut = false;
 
 ### API-f786d9e1d1da · ndn_service_framework::ServiceUser::PendingCall::timeoutGraceActive
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1295)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1356)
 
 ```cpp
 bool timeoutGraceActive = false;
@@ -23907,7 +25953,7 @@ bool timeoutGraceActive = false;
 
 ### API-bd7e64e04031 · ndn_service_framework::ServiceUser::PendingCall::requestTimeoutEvent
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1296)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1357)
 
 ```cpp
 ndn::scheduler::EventId requestTimeoutEvent;
@@ -23915,7 +25961,7 @@ ndn::scheduler::EventId requestTimeoutEvent;
 
 ### API-3234a69fdd2f · ndn_service_framework::ServiceUser::PendingCall::responseAttemptTimeoutEvent
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1297)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1358)
 
 ```cpp
 ndn::scheduler::EventId responseAttemptTimeoutEvent;
@@ -23923,7 +25969,7 @@ ndn::scheduler::EventId responseAttemptTimeoutEvent;
 
 ### API-f352a30a56e4 · ndn_service_framework::ServiceUser::PendingCall::responseRetryEnabled
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1298)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1359)
 
 ```cpp
 bool responseRetryEnabled = false;
@@ -23931,7 +25977,7 @@ bool responseRetryEnabled = false;
 
 ### API-1798d0bf9a59 · ndn_service_framework::ServiceUser::PendingCall::responseRetryTimerArmed
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1299)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1360)
 
 ```cpp
 bool responseRetryTimerArmed = false;
@@ -23939,7 +25985,7 @@ bool responseRetryTimerArmed = false;
 
 ### API-14c6400c84dc · ndn_service_framework::ServiceUser::PendingCall::responseAttemptTimeoutMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1300)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1361)
 
 ```cpp
 int responseAttemptTimeoutMs = 0;
@@ -23947,7 +25993,7 @@ int responseAttemptTimeoutMs = 0;
 
 ### API-fd24e51e5d99 · ndn_service_framework::ServiceUser::PendingCall::responseMaxAttempts
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1301)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1362)
 
 ```cpp
 size_t responseMaxAttempts = 1;
@@ -23955,7 +26001,7 @@ size_t responseMaxAttempts = 1;
 
 ### API-89347a46bc0e · ndn_service_framework::ServiceUser::PendingCall::responseAttemptStartedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1302)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1363)
 
 ```cpp
 uint64_t responseAttemptStartedAtUs = 0;
@@ -23963,7 +26009,7 @@ uint64_t responseAttemptStartedAtUs = 0;
 
 ### API-47b001c47d46 · ndn_service_framework::ServiceUser::PendingCall::responseAttemptProviders
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1303)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1364)
 
 ```cpp
 std::vector<ndn::Name> responseAttemptProviders;
@@ -23971,7 +26017,7 @@ std::vector<ndn::Name> responseAttemptProviders;
 
 ### API-ced835a9f46d · ndn_service_framework::ServiceUser::PendingCall::ackDecryptsInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1304)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1365)
 
 ```cpp
 size_t ackDecryptsInFlight = 0;
@@ -23979,7 +26025,7 @@ size_t ackDecryptsInFlight = 0;
 
 ### API-c795b9420d9b · ndn_service_framework::ServiceUser::PendingCall::ackSelectionDeferrals
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1305)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1366)
 
 ```cpp
 size_t ackSelectionDeferrals = 0;
@@ -23987,7 +26033,7 @@ size_t ackSelectionDeferrals = 0;
 
 ### API-f375c02b1614 · ndn_service_framework::ServiceUser::PendingCall::learnedAckProviderCountAtPublish
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1306)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1367)
 
 ```cpp
 size_t learnedAckProviderCountAtPublish = 0;
@@ -23995,7 +26041,7 @@ size_t learnedAckProviderCountAtPublish = 0;
 
 ### API-7ea434d63615 · ndn_service_framework::ServiceUser::PendingCall::requestAcks
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1307)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1368)
 
 ```cpp
 std::vector<StoredAck> requestAcks;
@@ -24003,7 +26049,7 @@ std::vector<StoredAck> requestAcks;
 
 ### API-835b9e3fbd0e · ndn_service_framework::ServiceUser::PendingCall::customSelectedAcks
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1308)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1369)
 
 ```cpp
 std::vector<StoredAck> customSelectedAcks;
@@ -24011,7 +26057,7 @@ std::vector<StoredAck> customSelectedAcks;
 
 ### API-dd01d96387d8 · ndn_service_framework::ServiceUser::PendingCall::successfulAckProviders
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1309)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1370)
 
 ```cpp
 std::vector<ndn::Name> successfulAckProviders;
@@ -24019,7 +26065,7 @@ std::vector<ndn::Name> successfulAckProviders;
 
 ### API-d56b28183df4 · ndn_service_framework::ServiceUser::PendingCall::negativeAckProviders
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1310)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1371)
 
 ```cpp
 std::vector<ndn::Name> negativeAckProviders;
@@ -24027,7 +26073,7 @@ std::vector<ndn::Name> negativeAckProviders;
 
 ### API-1e310a75774d · ndn_service_framework::ServiceUser::PendingCall::selectionPublishedProviders
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1311)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1372)
 
 ```cpp
 std::vector<ndn::Name> selectionPublishedProviders;
@@ -24035,7 +26081,7 @@ std::vector<ndn::Name> selectionPublishedProviders;
 
 ### API-e5939e149789 · ndn_service_framework::ServiceUser::PendingCall::expectedResponseProviders
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1312)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1373)
 
 ```cpp
 std::vector<ndn::Name> expectedResponseProviders;
@@ -24043,7 +26089,7 @@ std::vector<ndn::Name> expectedResponseProviders;
 
 ### API-6e3bff28885e · ndn_service_framework::ServiceUser::PendingCall::responseProviders
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1313)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1374)
 
 ```cpp
 std::vector<ndn::Name> responseProviders;
@@ -24051,7 +26097,7 @@ std::vector<ndn::Name> responseProviders;
 
 ### API-ac469cdd5c19 · ndn_service_framework::ServiceUser::PendingCall::responseDecryptProvidersInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1314)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1375)
 
 ```cpp
 std::vector<ndn::Name> responseDecryptProvidersInFlight;
@@ -24059,7 +26105,7 @@ std::vector<ndn::Name> responseDecryptProvidersInFlight;
 
 ### API-427c7815b6d3 · ndn_service_framework::ServiceUser::PendingCall::largeResponseReferenceProvidersInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1315)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1376)
 
 ```cpp
 std::vector<ndn::Name> largeResponseReferenceProvidersInFlight;
@@ -24067,7 +26113,7 @@ std::vector<ndn::Name> largeResponseReferenceProvidersInFlight;
 
 ### API-6de5cfecce14 · ndn_service_framework::ServiceUser::PendingCall::selectedProvider
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1316)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1377)
 
 ```cpp
 ndn::Name selectedProvider;
@@ -24075,7 +26121,7 @@ ndn::Name selectedProvider;
 
 ### API-026ad9bef8cc · ndn_service_framework::ServiceUser::PendingCall::providerTokens
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1317)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1378)
 
 ```cpp
 std::map<std::string, std::string> providerTokens;
@@ -24083,33 +26129,55 @@ std::map<std::string, std::string> providerTokens;
 
 ### API-4eb9f7dd148a · ndn_service_framework::ServiceUser::PendingCall::selectionGatedInputKey
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1318)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1379)
 
 ```cpp
 ndn::Buffer selectionGatedInputKey;
 ```
 
+### API-d7b1b31ca3ef · ndn_service_framework::ServiceUser::PendingCall::RequestScopedProviderState
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1385)
+
+```cpp
+struct RequestScopedProviderState
+```
+
+### API-cba94bd0bd91 · ndn_service_framework::ServiceUser::PendingCall::RequestScopedProviderState::keys
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1387)
+
+```cpp
+RequestKeyBundle keys;
+```
+
+### API-387e31e81a1e · ndn_service_framework::ServiceUser::PendingCall::RequestScopedProviderState::binding
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1388)
+
+```cpp
+RequestSecurityBinding binding;
+```
+
+### API-500dfcf8ae89 · ndn_service_framework::ServiceUser::PendingCall::RequestScopedProviderState::inputDataName
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1389)
+
+```cpp
+ndn::Name inputDataName;
+```
+
 ### API-e16c64ecdfc6 · ndn_service_framework::ServiceUser::PendingCall::requestScopedPlaintext
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1324)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1391)
 
 ```cpp
 ndn::Buffer requestScopedPlaintext;
 ```
 
-原始接口说明：
-
-```text
-// Request-scoped confidentiality keeps the application input
-// out of the discovery Request.  The plaintext is retained
-// only until the selected Provider's exact-name Data packet
-// has been published, then the key bundle is retained only
-// for response decryption.
-```
-
 ### API-51cab1946277 · ndn_service_framework::ServiceUser::PendingCall::requestScopedKeys
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1325)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1392)
 
 ```cpp
 std::optional<RequestKeyBundle> requestScopedKeys;
@@ -24117,7 +26185,7 @@ std::optional<RequestKeyBundle> requestScopedKeys;
 
 ### API-c5c1cf6e70c1 · ndn_service_framework::ServiceUser::PendingCall::requestScopedBinding
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1326)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1393)
 
 ```cpp
 std::optional<RequestSecurityBinding> requestScopedBinding;
@@ -24125,15 +26193,34 @@ std::optional<RequestSecurityBinding> requestScopedBinding;
 
 ### API-410648907dee · ndn_service_framework::ServiceUser::PendingCall::requestScopedInputDataName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1327)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1394)
 
 ```cpp
 ndn::Name requestScopedInputDataName;
 ```
 
+### API-873b094ac088 · ndn_service_framework::ServiceUser::PendingCall::requestScopedProviderStates
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1400)
+
+```cpp
+std::map<std::string, RequestScopedProviderState>
+                    requestScopedProviderStates;
+```
+
+原始接口说明：
+
+```text
+// Collaboration selection may authorize several Providers
+// in one request.  Each Provider has its own wrapped key
+// bundle and authenticated input Data name; keeping this
+// state per Provider prevents same-name ciphertext collisions
+// and response decryption with the last Provider's key.
+```
+
 ### API-7f407112726c · ndn_service_framework::ServiceUser::PendingCall::requestScopedConfidentiality
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1328)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1402)
 
 ```cpp
 bool requestScopedConfidentiality = false;
@@ -24141,7 +26228,7 @@ bool requestScopedConfidentiality = false;
 
 ### API-09d11f58b249 · ndn_service_framework::ServiceUser::PendingCall::negativeAckReasons
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1329)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1403)
 
 ```cpp
 std::map<std::string, std::string> negativeAckReasons;
@@ -24149,7 +26236,7 @@ std::map<std::string, std::string> negativeAckReasons;
 
 ### API-a4f2192e08ad · ndn_service_framework::ServiceUser::PendingCall::isCollaboration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1330)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1404)
 
 ```cpp
 bool isCollaboration = false;
@@ -24157,7 +26244,7 @@ bool isCollaboration = false;
 
 ### API-705d4154a9c5 · ndn_service_framework::ServiceUser::PendingCall::collaborationDeferred
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1331)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1405)
 
 ```cpp
 bool collaborationDeferred = false;
@@ -24165,7 +26252,7 @@ bool collaborationDeferred = false;
 
 ### API-00f7f226eca2 · ndn_service_framework::ServiceUser::PendingCall::collaborationAcksClosed
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1332)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1406)
 
 ```cpp
 bool collaborationAcksClosed = false;
@@ -24173,7 +26260,7 @@ bool collaborationAcksClosed = false;
 
 ### API-eb70bcfbd149 · ndn_service_framework::ServiceUser::PendingCall::collaborationPlanCommitted
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1333)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1407)
 
 ```cpp
 bool collaborationPlanCommitted = false;
@@ -24181,7 +26268,7 @@ bool collaborationPlanCommitted = false;
 
 ### API-a4d893b7bd69 · ndn_service_framework::ServiceUser::PendingCall::collaborationPlan
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1334)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1408)
 
 ```cpp
 CollaborationPlan collaborationPlan;
@@ -24189,7 +26276,7 @@ CollaborationPlan collaborationPlan;
 
 ### API-b607cb83e1ac · ndn_service_framework::ServiceUser::PendingCall::collaborationAckClosedHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1335)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1409)
 
 ```cpp
 CollaborationAckClosedHandler collaborationAckClosedHandler;
@@ -24197,7 +26284,7 @@ CollaborationAckClosedHandler collaborationAckClosedHandler;
 
 ### API-02d3df9cc637 · ndn_service_framework::ServiceUser::PendingCall::collaborationAckCoverageHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1336)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1410)
 
 ```cpp
 CollaborationAckCoverageHandler collaborationAckCoverageHandler;
@@ -24205,7 +26292,7 @@ CollaborationAckCoverageHandler collaborationAckCoverageHandler;
 
 ### API-be96f0329361 · ndn_service_framework::ServiceUser::PendingCall::collaborationClosedAcks
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1337)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1411)
 
 ```cpp
 std::vector<StoredAck> collaborationClosedAcks;
@@ -24213,7 +26300,7 @@ std::vector<StoredAck> collaborationClosedAcks;
 
 ### API-1baaa89e042b · ndn_service_framework::ServiceUser::PendingCall::collaborationCommittedParticipants
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1338)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1412)
 
 ```cpp
 std::vector<SelectedParticipant> collaborationCommittedParticipants;
@@ -24221,7 +26308,7 @@ std::vector<SelectedParticipant> collaborationCommittedParticipants;
 
 ### API-e149ce0fb45b · ndn_service_framework::ServiceUser::PendingCall::collaborationAckClosedDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1339)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1413)
 
 ```cpp
 std::string collaborationAckClosedDigest;
@@ -24229,7 +26316,7 @@ std::string collaborationAckClosedDigest;
 
 ### API-43076c47022e · ndn_service_framework::ServiceUser::PendingCall::collaborationCommittedPlanDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1340)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1414)
 
 ```cpp
 std::string collaborationCommittedPlanDigest;
@@ -24237,7 +26324,7 @@ std::string collaborationCommittedPlanDigest;
 
 ### API-a00d9dcbf314 · ndn_service_framework::ServiceUser::PendingCall::collaborationAcksClosedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1341)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1415)
 
 ```cpp
 uint64_t collaborationAcksClosedAtUs = 0;
@@ -24245,7 +26332,7 @@ uint64_t collaborationAcksClosedAtUs = 0;
 
 ### API-171514b7a752 · ndn_service_framework::ServiceUser::PendingCall::collaborationAssignments
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1342)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1416)
 
 ```cpp
 std::map<std::string, ndn::Buffer> collaborationAssignments;
@@ -24253,7 +26340,7 @@ std::map<std::string, ndn::Buffer> collaborationAssignments;
 
 ### API-60e4498ddf11 · ndn_service_framework::ServiceUser::PendingCall::collaborationScopeKeys
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1347)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1421)
 
 ```cpp
 std::map<std::string, ndn::Buffer> collaborationScopeKeys;
@@ -24270,7 +26357,7 @@ std::map<std::string, ndn::Buffer> collaborationScopeKeys;
 
 ### API-28d73eaff71c · ndn_service_framework::ServiceUser::PendingCall::selectionAssignmentPayloads
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1348)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1422)
 
 ```cpp
 std::map<std::string, ndn::Buffer> selectionAssignmentPayloads;
@@ -24278,7 +26365,7 @@ std::map<std::string, ndn::Buffer> selectionAssignmentPayloads;
 
 ### API-950deded55f9 · ndn_service_framework::ServiceUser::PendingCall::trackSelectionStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1349)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1423)
 
 ```cpp
 bool trackSelectionStatus = false;
@@ -24286,7 +26373,7 @@ bool trackSelectionStatus = false;
 
 ### API-b46be9db36b8 · ndn_service_framework::ServiceUser::PendingCall::selectionStatusOptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1350)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1424)
 
 ```cpp
 SelectionStatusOptions selectionStatusOptions;
@@ -24294,7 +26381,7 @@ SelectionStatusOptions selectionStatusOptions;
 
 ### API-042869ba8769 · ndn_service_framework::ServiceUser::PendingCall::statusTimeoutHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1351)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1425)
 
 ```cpp
 SelectionStatusTimeoutHandler statusTimeoutHandler;
@@ -24302,7 +26389,7 @@ SelectionStatusTimeoutHandler statusTimeoutHandler;
 
 ### API-559502f2dd29 · ndn_service_framework::ServiceUser::PendingCall::selectionDigestsByProvider
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1352)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1426)
 
 ```cpp
 std::map<std::string, std::string> selectionDigestsByProvider;
@@ -24310,7 +26397,7 @@ std::map<std::string, std::string> selectionDigestsByProvider;
 
 ### API-65a47c8cf46b · ndn_service_framework::ServiceUser::PendingCall::selectionStatusesByProvider
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1353)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1427)
 
 ```cpp
 std::map<std::string, SelectionExecutionStatus> selectionStatusesByProvider;
@@ -24318,7 +26405,7 @@ std::map<std::string, SelectionExecutionStatus> selectionStatusesByProvider;
 
 ### API-b5a409892a64 · ndn_service_framework::ServiceUser::PendingCall::r1DecisionDeliveries
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1354)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1428)
 
 ```cpp
 std::map<std::string, R1DecisionDelivery> r1DecisionDeliveries;
@@ -24326,7 +26413,7 @@ std::map<std::string, R1DecisionDelivery> r1DecisionDeliveries;
 
 ### API-a7328cd52175 · ndn_service_framework::ServiceUser::PendingCall::deploymentPlan
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1355)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1429)
 
 ```cpp
 std::optional<DeploymentPlan> deploymentPlan;
@@ -24334,7 +26421,7 @@ std::optional<DeploymentPlan> deploymentPlan;
 
 ### API-efd2af9c9138 · ndn_service_framework::ServiceUser::PendingCall::deploymentReadyByMember
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1356)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1430)
 
 ```cpp
 std::map<std::string, ProviderReadyMessage> deploymentReadyByMember;
@@ -24342,7 +26429,7 @@ std::map<std::string, ProviderReadyMessage> deploymentReadyByMember;
 
 ### API-84f8689f1958 · ndn_service_framework::ServiceUser::PendingCall::deploymentActivationSent
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1357)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1431)
 
 ```cpp
 bool deploymentActivationSent = false;
@@ -24350,7 +26437,7 @@ bool deploymentActivationSent = false;
 
 ### API-8548b5d7e3c1 · ndn_service_framework::ServiceUser::PendingCall::streamLifecycle
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1360)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1434)
 
 ```cpp
 std::shared_ptr<StreamInvocationLifecycle> streamLifecycle;
@@ -24365,7 +26452,7 @@ std::shared_ptr<StreamInvocationLifecycle> streamLifecycle;
 
 ### API-af99eca92c8a · ndn_service_framework::ServiceUser::PendingCall::streamOptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1361)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1435)
 
 ```cpp
 std::optional<StreamRequestOptions> streamOptions;
@@ -24373,7 +26460,7 @@ std::optional<StreamRequestOptions> streamOptions;
 
 ### API-2cea8667d6d2 · ndn_service_framework::ServiceUser::PendingCall::streamEventKey
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1362)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1436)
 
 ```cpp
 ndn::Buffer streamEventKey;
@@ -24381,7 +26468,7 @@ ndn::Buffer streamEventKey;
 
 ### API-7d79063d0991 · ndn_service_framework::ServiceUser::TargetedTokenPair
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1365)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1439)
 
 ```cpp
 struct TargetedTokenPair
@@ -24389,7 +26476,7 @@ struct TargetedTokenPair
 
 ### API-f32c8772b14d · ndn_service_framework::ServiceUser::TargetedTokenPair::providerToken
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1367)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1441)
 
 ```cpp
 std::string providerToken;
@@ -24397,7 +26484,7 @@ std::string providerToken;
 
 ### API-ba4bb272daa2 · ndn_service_framework::ServiceUser::TargetedTokenPair::userToken
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1368)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1442)
 
 ```cpp
 std::string userToken;
@@ -24405,7 +26492,7 @@ std::string userToken;
 
 ### API-8cd4f4e179f5 · ndn_service_framework::ServiceUser::TargetedTokenPoolControl
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1371)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1445)
 
 ```cpp
 struct TargetedTokenPoolControl
@@ -24413,7 +26500,7 @@ struct TargetedTokenPoolControl
 
 ### API-ffd0a5b23226 · ndn_service_framework::ServiceUser::TargetedTokenPoolControl::nextBatch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1373)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1447)
 
 ```cpp
 size_t nextBatch = 0;
@@ -24421,7 +26508,7 @@ size_t nextBatch = 0;
 
 ### API-459670c861fc · ndn_service_framework::ServiceUser::TargetedTokenPoolControl::capacity
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1374)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1448)
 
 ```cpp
 size_t capacity = 0;
@@ -24429,7 +26516,7 @@ size_t capacity = 0;
 
 ### API-c28ed5bb3144 · ndn_service_framework::ServiceUser::TargetedTokenPoolControl::consumedSinceStore
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1375)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1449)
 
 ```cpp
 size_t consumedSinceStore = 0;
@@ -24437,7 +26524,7 @@ size_t consumedSinceStore = 0;
 
 ### API-48d57ed0c662 · ndn_service_framework::ServiceUser::TargetedTokenPoolControl::lastStoredAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1376)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1450)
 
 ```cpp
 uint64_t lastStoredAtUs = 0;
@@ -24445,7 +26532,7 @@ uint64_t lastStoredAtUs = 0;
 
 ### API-614cd6ef8046 · ndn_service_framework::ServiceUser::TargetedTokenPoolControl::refillStartedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1377)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1451)
 
 ```cpp
 uint64_t refillStartedAtUs = 0;
@@ -24453,7 +26540,7 @@ uint64_t refillStartedAtUs = 0;
 
 ### API-bffe7a508221 · ndn_service_framework::ServiceUser::TargetedTokenPoolControl::observed
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1378)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1452)
 
 ```cpp
 bool observed = false;
@@ -24461,7 +26548,7 @@ bool observed = false;
 
 ### API-e6c25a22a863 · ndn_service_framework::ServiceUser::TargetedTokenPoolControl::refillInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1379)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1453)
 
 ```cpp
 bool refillInFlight = false;
@@ -24469,7 +26556,7 @@ bool refillInFlight = false;
 
 ### API-dc2726915a44 · ndn_service_framework::ServiceUser::TargetedStreamOffer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1382)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1456)
 
 ```cpp
 struct TargetedStreamOffer
@@ -24477,7 +26564,7 @@ struct TargetedStreamOffer
 
 ### API-8578bfe2f8df · ndn_service_framework::ServiceUser::TargetedStreamOffer::providerBootEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1384)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1458)
 
 ```cpp
 std::string providerBootEpoch;
@@ -24485,7 +26572,7 @@ std::string providerBootEpoch;
 
 ### API-d96f1fbf6282 · ndn_service_framework::ServiceUser::TargetedStreamOffer::recipientCertName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1385)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1459)
 
 ```cpp
 std::string recipientCertName;
@@ -24493,7 +26580,7 @@ std::string recipientCertName;
 
 ### API-74816ab13152 · ndn_service_framework::ServiceUser::TargetedStreamOffer::recipientCertDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1386)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1460)
 
 ```cpp
 std::string recipientCertDigest;
@@ -24501,7 +26588,7 @@ std::string recipientCertDigest;
 
 ### API-e51d98535d6c · ndn_service_framework::ServiceUser::TargetedStreamOffer::recipientPublicKey
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1387)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1461)
 
 ```cpp
 std::string recipientPublicKey;
@@ -24509,7 +26596,7 @@ std::string recipientPublicKey;
 
 ### API-d6bee9857798 · ndn_service_framework::ServiceUser::attachStreamLifecycle
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1395)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1469)
 
 ```cpp
 std::shared_ptr<StreamInvocationLifecycle>
@@ -24529,7 +26616,7 @@ std::shared_ptr<StreamInvocationLifecycle>
 
 ### API-7fbaf2f986a5 · ndn_service_framework::ServiceUser::getStreamLifecycle
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1399)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1473)
 
 ```cpp
 std::shared_ptr<StreamInvocationLifecycle>
@@ -24538,7 +26625,7 @@ std::shared_ptr<StreamInvocationLifecycle>
 
 ### API-ac71ff49a8d1 · ndn_service_framework::ServiceUser::StreamBytesCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1401)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1475)
 
 ```cpp
 using StreamBytesCallback = std::function<void(const ndn::Buffer&)>;
@@ -24546,7 +26633,7 @@ using StreamBytesCallback = std::function<void(const ndn::Buffer&)>;
 
 ### API-55b3502c0edb · ndn_service_framework::ServiceUser::requestServiceStreamingBytes
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1402)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1476)
 
 ```cpp
 std::shared_ptr<StreamedInvocationSharedState>
@@ -24563,7 +26650,7 @@ std::shared_ptr<StreamedInvocationSharedState>
 
 ### API-b5593af2d60c · ndn_service_framework::ServiceUser::onStreamEvent
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1412)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1486)
 
 ```cpp
 void onStreamEvent(const ndn::svs::SVSPubSub::SubscriptionData& subscription);
@@ -24571,7 +26658,7 @@ void onStreamEvent(const ndn::svs::SVSPubSub::SubscriptionData& subscription);
 
 ### API-f54ed6c2f88d · ndn_service_framework::ServiceUser::initializeStreamConsumer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1413)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1487)
 
 ```cpp
 bool initializeStreamConsumer(const ndn::Name& providerName,
@@ -24582,7 +26669,7 @@ bool initializeStreamConsumer(const ndn::Name& providerName,
 
 ### API-c7bcf58fe30b · ndn_service_framework::ServiceUser::armStreamInactivityTimer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1417)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1491)
 
 ```cpp
 void armStreamInactivityTimer(const ndn::Name& requestId,
@@ -24591,7 +26678,7 @@ void armStreamInactivityTimer(const ndn::Name& requestId,
 
 ### API-28085e2da3e1 · ndn_service_framework::ServiceUser::disarmStreamInactivityTimer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1419)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1493)
 
 ```cpp
 void disarmStreamInactivityTimer(const ndn::Name& requestId);
@@ -24599,7 +26686,7 @@ void disarmStreamInactivityTimer(const ndn::Name& requestId);
 
 ### API-53a20d2f43e7 · ndn_service_framework::ServiceUser::PendingCallTraceRecord
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1420)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1494)
 
 ```cpp
 struct PendingCallTraceRecord
@@ -24607,7 +26694,7 @@ struct PendingCallTraceRecord
 
 ### API-6402e82431a4 · ndn_service_framework::ServiceUser::PendingCallTraceRecord::createdAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1422)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1496)
 
 ```cpp
 uint64_t createdAtUs = 0;
@@ -24615,7 +26702,7 @@ uint64_t createdAtUs = 0;
 
 ### API-f6c83afe9d91 · ndn_service_framework::ServiceUser::PendingCallTraceRecord::erasedAtUs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1423)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1497)
 
 ```cpp
 uint64_t erasedAtUs = 0;
@@ -24623,7 +26710,7 @@ uint64_t erasedAtUs = 0;
 
 ### API-cca07feed715 · ndn_service_framework::ServiceUser::PendingCallTraceRecord::timedOut
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1424)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1498)
 
 ```cpp
 bool timedOut = false;
@@ -24631,7 +26718,7 @@ bool timedOut = false;
 
 ### API-08237ec65268 · ndn_service_framework::ServiceUser::PendingCallTraceRecord::completed
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1425)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1499)
 
 ```cpp
 bool completed = false;
@@ -24639,7 +26726,7 @@ bool completed = false;
 
 ### API-3bb8c5e4cd8a · ndn_service_framework::ServiceUser::PendingCallTraceRecord::matchedAck
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1426)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1500)
 
 ```cpp
 bool matchedAck = false;
@@ -24647,7 +26734,7 @@ bool matchedAck = false;
 
 ### API-332650d8b9bc · ndn_service_framework::ServiceUser::PendingCallTraceRecord::requestName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1427)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1501)
 
 ```cpp
 ndn::Name requestName;
@@ -24655,7 +26742,7 @@ ndn::Name requestName;
 
 ### API-c8a71d52e933 · ndn_service_framework::ServiceUser::makeRequestId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1430)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1504)
 
 ```cpp
 static ndn::Name makeRequestId();
@@ -24663,7 +26750,7 @@ static ndn::Name makeRequestId();
 
 ### API-f94e3fd013cd · ndn_service_framework::ServiceUser::sanitizeLargeDataObjectId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1432)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1506)
 
 ```cpp
 static std::string sanitizeLargeDataObjectId(const std::string& objectLabel);
@@ -24671,7 +26758,7 @@ static std::string sanitizeLargeDataObjectId(const std::string& objectLabel);
 
 ### API-971ee7d67ffe · ndn_service_framework::ServiceUser::shouldTrackAckDecrypt
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1434)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1508)
 
 ```cpp
 static bool shouldTrackAckDecrypt(const PendingCall& pendingCall);
@@ -24679,7 +26766,7 @@ static bool shouldTrackAckDecrypt(const PendingCall& pendingCall);
 
 ### API-fec5a2c78a5c · ndn_service_framework::ServiceUser::requiresRequestScopedConfidentiality
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1436)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1510)
 
 ```cpp
 static bool requiresRequestScopedConfidentiality(
@@ -24688,7 +26775,7 @@ static bool requiresRequestScopedConfidentiality(
 
 ### API-2a0be76137f6 · ndn_service_framework::ServiceUser::prepareRequestScopedRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1446)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1520)
 
 ```cpp
 bool prepareRequestScopedRequest(
@@ -24713,7 +26800,7 @@ bool prepareRequestScopedRequest(
 
 ### API-a4753af70941 · ndn_service_framework::ServiceUser::prepareRequestControllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1457)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1531)
 
 ```cpp
 bool prepareRequestControllerVersion(
@@ -24733,20 +26820,21 @@ bool prepareRequestControllerVersion(
              */
 ```
 
-### API-04d36fcf105f · ndn_service_framework::ServiceUser::makeRequestScopedInputDataName
+### API-bfa856b5f326 · ndn_service_framework::ServiceUser::makeRequestScopedInputDataName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1461)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1535)
 
 ```cpp
 ndn::Name makeRequestScopedInputDataName(
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
-                uint64_t attempt) const;
+                uint64_t attempt,
+                const ndn::Name& providerName) const;
 ```
 
 ### API-2d1e47ba6b1c · ndn_service_framework::ServiceUser::evaluateAckSelection
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1466)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1541)
 
 ```cpp
 bool evaluateAckSelection(const ndn::Name& requestId);
@@ -24754,7 +26842,7 @@ bool evaluateAckSelection(const ndn::Name& requestId);
 
 ### API-f9e8e24260df · ndn_service_framework::ServiceUser::handleAckCollectionTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1468)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1543)
 
 ```cpp
 bool handleAckCollectionTimeout(const ndn::Name& requestId);
@@ -24762,7 +26850,7 @@ bool handleAckCollectionTimeout(const ndn::Name& requestId);
 
 ### API-ee4d0a9d5bc1 · ndn_service_framework::ServiceUser::closeDeferredCollaborationAcks
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1470)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1545)
 
 ```cpp
 bool closeDeferredCollaborationAcks(const ndn::Name& requestId,
@@ -24771,7 +26859,7 @@ bool closeDeferredCollaborationAcks(const ndn::Name& requestId,
 
 ### API-d46fafdc5754 · ndn_service_framework::ServiceUser::selectLateAckAfterAckTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1473)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1548)
 
 ```cpp
 bool selectLateAckAfterAckTimeout(PendingCall& pendingCall,
@@ -24780,7 +26868,7 @@ bool selectLateAckAfterAckTimeout(PendingCall& pendingCall,
 
 ### API-0f1880792ad9 · ndn_service_framework::ServiceUser::evaluateCustomAckSelection
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1476)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1551)
 
 ```cpp
 bool evaluateCustomAckSelection(PendingCall& pendingCall);
@@ -24788,7 +26876,7 @@ bool evaluateCustomAckSelection(PendingCall& pendingCall);
 
 ### API-df8d924f663d · ndn_service_framework::ServiceUser::externalizeLargeCollaborationAssignment
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1478)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1553)
 
 ```cpp
 ndn::Buffer externalizeLargeCollaborationAssignment(
@@ -24800,7 +26888,7 @@ ndn::Buffer externalizeLargeCollaborationAssignment(
 
 ### API-f9f9a5535040 · ndn_service_framework::ServiceUser::evaluateBuiltInAckSelection
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1484)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1559)
 
 ```cpp
 bool evaluateBuiltInAckSelection(PendingCall& pendingCall);
@@ -24808,7 +26896,7 @@ bool evaluateBuiltInAckSelection(PendingCall& pendingCall);
 
 ### API-6fd7beccda7f · ndn_service_framework::ServiceUser::recordNegativeAck
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1485)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1560)
 
 ```cpp
 void recordNegativeAck(PendingCall& pendingCall,
@@ -24819,7 +26907,7 @@ void recordNegativeAck(PendingCall& pendingCall,
 
 ### API-48f8ea735f96 · ndn_service_framework::ServiceUser::maybeEarlyStopAllKnownProvidersNegative
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1489)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1564)
 
 ```cpp
 bool maybeEarlyStopAllKnownProvidersNegative(const ndn::Name& requestId);
@@ -24827,7 +26915,7 @@ bool maybeEarlyStopAllKnownProvidersNegative(const ndn::Name& requestId);
 
 ### API-368ce5ce0f65 · ndn_service_framework::ServiceUser::hasReachedLatePipelineStage
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1490)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1565)
 
 ```cpp
 bool hasReachedLatePipelineStage(const PendingCall& pendingCall) const;
@@ -24835,7 +26923,7 @@ bool hasReachedLatePipelineStage(const PendingCall& pendingCall) const;
 
 ### API-e01eddc6844e · ndn_service_framework::ServiceUser::recordObservedAckProvider
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1491)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1566)
 
 ```cpp
 void recordObservedAckProvider(const ndn::Name& serviceName,
@@ -24845,7 +26933,7 @@ void recordObservedAckProvider(const ndn::Name& serviceName,
 
 ### API-529f86a704ee · ndn_service_framework::ServiceUser::getRecentAckProviderCount
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1494)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1569)
 
 ```cpp
 size_t getRecentAckProviderCount(const ndn::Name& serviceName,
@@ -24854,7 +26942,7 @@ size_t getRecentAckProviderCount(const ndn::Name& serviceName,
 
 ### API-1370828a801c · ndn_service_framework::ServiceUser::collaborationAckRoleCoverageSatisfied
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1496)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1571)
 
 ```cpp
 bool collaborationAckRoleCoverageSatisfied(const ndn::Name& requestId,
@@ -24863,7 +26951,7 @@ bool collaborationAckRoleCoverageSatisfied(const ndn::Name& requestId,
 
 ### API-c3c47ed4d531 · ndn_service_framework::ServiceUser::scheduleRequestTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1498)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1573)
 
 ```cpp
 void scheduleRequestTimeout(const ndn::Name& requestId, int timeoutMs);
@@ -24871,7 +26959,7 @@ void scheduleRequestTimeout(const ndn::Name& requestId, int timeoutMs);
 
 ### API-3745e2dd38a6 · ndn_service_framework::ServiceUser::finalizeTimedOutPendingCall
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1499)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1574)
 
 ```cpp
 void finalizeTimedOutPendingCall(const ndn::Name& requestId);
@@ -24879,7 +26967,7 @@ void finalizeTimedOutPendingCall(const ndn::Name& requestId);
 
 ### API-9e86b24e713e · ndn_service_framework::ServiceUser::scheduleSelectionStatusQuery
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1500)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1575)
 
 ```cpp
 void scheduleSelectionStatusQuery(const ndn::Name& requestId,
@@ -24889,7 +26977,7 @@ void scheduleSelectionStatusQuery(const ndn::Name& requestId,
 
 ### API-7eea77b32640 · ndn_service_framework::ServiceUser::querySelectionStatusForTimeoutDiagnostics
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1503)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1578)
 
 ```cpp
 void querySelectionStatusForTimeoutDiagnostics(const ndn::Name& requestId,
@@ -24898,7 +26986,7 @@ void querySelectionStatusForTimeoutDiagnostics(const ndn::Name& requestId,
 
 ### API-c7e9f9a0a713 · ndn_service_framework::ServiceUser::parseSelectionExecutionStatusPayload
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1505)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1580)
 
 ```cpp
 static SelectionExecutionStatus parseSelectionExecutionStatusPayload(
@@ -24909,7 +26997,7 @@ static SelectionExecutionStatus parseSelectionExecutionStatusPayload(
 
 ### API-672f152af72a · ndn_service_framework::ServiceUser::admitOrQueuePendingCall
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1509)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1584)
 
 ```cpp
 void admitOrQueuePendingCall(const ndn::Name& requestId,
@@ -24919,7 +27007,7 @@ void admitOrQueuePendingCall(const ndn::Name& requestId,
 
 ### API-1523810cb6ee · ndn_service_framework::ServiceUser::getEffectiveAdaptiveAdmissionQueueLimits
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1512)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1587)
 
 ```cpp
 std::pair<size_t, size_t>
@@ -24928,7 +27016,7 @@ std::pair<size_t, size_t>
 
 ### API-1fe6600a2bed · ndn_service_framework::ServiceUser::makeAdmissionControlStatus
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1514)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1589)
 
 ```cpp
 AdmissionControlStatus makeAdmissionControlStatus(const ndn::Name& requestId,
@@ -24940,7 +27028,7 @@ AdmissionControlStatus makeAdmissionControlStatus(const ndn::Name& requestId,
 
 ### API-8d07afa65c6b · ndn_service_framework::ServiceUser::notifyAdmissionControlWarning
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1519)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1594)
 
 ```cpp
 void notifyAdmissionControlWarning(const ndn::Name& requestId,
@@ -24952,7 +27040,7 @@ void notifyAdmissionControlWarning(const ndn::Name& requestId,
 
 ### API-bfe33a2fb521 · ndn_service_framework::ServiceUser::rejectPendingCallByAdmission
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1524)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1599)
 
 ```cpp
 void rejectPendingCallByAdmission(const ndn::Name& requestId,
@@ -24963,7 +27051,7 @@ void rejectPendingCallByAdmission(const ndn::Name& requestId,
 
 ### API-0794e9e0bc8b · ndn_service_framework::ServiceUser::publishAdmittedPendingCall
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1528)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1603)
 
 ```cpp
 void publishAdmittedPendingCall(const ndn::Name& requestId);
@@ -24971,7 +27059,7 @@ void publishAdmittedPendingCall(const ndn::Name& requestId);
 
 ### API-98f56c3a2be3 · ndn_service_framework::ServiceUser::drainAdaptiveAdmissionQueue
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1529)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1604)
 
 ```cpp
 void drainAdaptiveAdmissionQueue();
@@ -24979,7 +27067,7 @@ void drainAdaptiveAdmissionQueue();
 
 ### API-199d5f169d0c · ndn_service_framework::ServiceUser::scheduleAdaptiveAdmissionControl
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1530)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1605)
 
 ```cpp
 void scheduleAdaptiveAdmissionControl();
@@ -24987,7 +27075,7 @@ void scheduleAdaptiveAdmissionControl();
 
 ### API-7802313f96be · ndn_service_framework::ServiceUser::controlAdaptiveAdmissionWindow
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1531)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1606)
 
 ```cpp
 void controlAdaptiveAdmissionWindow();
@@ -24995,7 +27083,7 @@ void controlAdaptiveAdmissionWindow();
 
 ### API-b818e8f4b915 · ndn_service_framework::ServiceUser::getEffectiveAdaptiveAdmissionWindow
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1532)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1607)
 
 ```cpp
 size_t getEffectiveAdaptiveAdmissionWindow() const;
@@ -25003,7 +27091,7 @@ size_t getEffectiveAdaptiveAdmissionWindow() const;
 
 ### API-8774c4a81a99 · ndn_service_framework::ServiceUser::releaseAdaptiveAdmissionSlot
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1533)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1608)
 
 ```cpp
 void releaseAdaptiveAdmissionSlot(const ndn::Name& requestId,
@@ -25014,7 +27102,7 @@ void releaseAdaptiveAdmissionSlot(const ndn::Name& requestId,
 
 ### API-d0a3828d435a · ndn_service_framework::ServiceUser::containsName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1538)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1613)
 
 ```cpp
 static bool containsName(const std::vector<ndn::Name>& names,
@@ -25023,7 +27111,7 @@ static bool containsName(const std::vector<ndn::Name>& names,
 
 ### API-1fbe99359b61 · ndn_service_framework::ServiceUser::addUniqueName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1541)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1616)
 
 ```cpp
 static void addUniqueName(std::vector<ndn::Name>& names,
@@ -25032,7 +27120,7 @@ static void addUniqueName(std::vector<ndn::Name>& names,
 
 ### API-0fe74a0ce9f7 · ndn_service_framework::ServiceUser::removeName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1543)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1618)
 
 ```cpp
 static void removeName(std::vector<ndn::Name>& names,
@@ -25041,7 +27129,7 @@ static void removeName(std::vector<ndn::Name>& names,
 
 ### API-593ccfccd1a6 · ndn_service_framework::ServiceUser::selectRandomProvider
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1546)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1621)
 
 ```cpp
 static ndn::Name selectRandomProvider(const std::vector<ndn::Name>& providers);
@@ -25049,7 +27137,7 @@ static ndn::Name selectRandomProvider(const std::vector<ndn::Name>& providers);
 
 ### API-2da59090d747 · ndn_service_framework::ServiceUser::hasUserPermissionForProvider
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1548)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1623)
 
 ```cpp
 bool hasUserPermissionForProvider(const ndn::Name& providerName,
@@ -25058,7 +27146,7 @@ bool hasUserPermissionForProvider(const ndn::Name& providerName,
 
 ### API-60b3ee60724a · ndn_service_framework::ServiceUser::hasUserPermissionForRequest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1550)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1625)
 
 ```cpp
 bool hasUserPermissionForRequest(
@@ -25068,7 +27156,7 @@ bool hasUserPermissionForRequest(
 
 ### API-54b2296a56c4 · ndn_service_framework::ServiceUser::makeTargetedTokenPoolKey
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1553)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1628)
 
 ```cpp
 static std::string makeTargetedTokenPoolKey(
@@ -25078,7 +27166,7 @@ static std::string makeTargetedTokenPoolKey(
 
 ### API-fe731758c629 · ndn_service_framework::ServiceUser::popTargetedTokenPair
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1556)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1631)
 
 ```cpp
 bool popTargetedTokenPair(const ndn::Name& providerName,
@@ -25088,7 +27176,7 @@ bool popTargetedTokenPair(const ndn::Name& providerName,
 
 ### API-a86212539260 · ndn_service_framework::ServiceUser::storeTargetedTokenPairs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1559)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1634)
 
 ```cpp
 void storeTargetedTokenPairs(const ndn::Name& providerName,
@@ -25098,7 +27186,7 @@ void storeTargetedTokenPairs(const ndn::Name& providerName,
 
 ### API-e5fbd57f31f6 · ndn_service_framework::ServiceUser::getTargetedTokenBatchHint
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1562)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1637)
 
 ```cpp
 size_t getTargetedTokenBatchHint(const ndn::Name& providerName,
@@ -25107,7 +27195,7 @@ size_t getTargetedTokenBatchHint(const ndn::Name& providerName,
 
 ### API-97e188fc1de1 · ndn_service_framework::ServiceUser::markTargetedTokenRefillInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1564)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1639)
 
 ```cpp
 bool markTargetedTokenRefillInFlight(const ndn::Name& providerName,
@@ -25117,7 +27205,7 @@ bool markTargetedTokenRefillInFlight(const ndn::Name& providerName,
 
 ### API-d1567f8f970c · ndn_service_framework::ServiceUser::clearTargetedTokenRefill
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1567)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1642)
 
 ```cpp
 void clearTargetedTokenRefill(const ndn::Name& providerName,
@@ -25126,7 +27214,7 @@ void clearTargetedTokenRefill(const ndn::Name& providerName,
 
 ### API-2d80707fc0a5 · ndn_service_framework::ServiceUser::maybeRefillTargetedTokenPool
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1569)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1644)
 
 ```cpp
 void maybeRefillTargetedTokenPool(const ndn::Name& providerName,
@@ -25135,7 +27223,7 @@ void maybeRefillTargetedTokenPool(const ndn::Name& providerName,
 
 ### API-73fd89632c47 · ndn_service_framework::ServiceUser::findStoredAck
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1572)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1647)
 
 ```cpp
 static const StoredAck* findStoredAck(
@@ -25145,7 +27233,7 @@ static const StoredAck* findStoredAck(
 
 ### API-68bfaf23ccff · ndn_service_framework::ServiceUser::startRequestServiceWithRequestId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1576)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1651)
 
 ```cpp
 ndn::Name startRequestServiceWithRequestId(const ndn::Name& requestId,
@@ -25163,7 +27251,7 @@ ndn::Name startRequestServiceWithRequestId(const ndn::Name& requestId,
 
 ### API-cf5b018cc6c6 · ndn_service_framework::ServiceUser::prepareSelectionGatedInput
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1587)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1662)
 
 ```cpp
 ndn::Buffer prepareSelectionGatedInput(
@@ -25174,7 +27262,7 @@ ndn::Buffer prepareSelectionGatedInput(
 
 ### API-c5e49e77bff8 · ndn_service_framework::ServiceUser::cleanupPendingCallState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1592)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1667)
 
 ```cpp
 void cleanupPendingCallState(const ndn::Name& requestId);
@@ -25182,7 +27270,7 @@ void cleanupPendingCallState(const ndn::Name& requestId);
 
 ### API-293d008705b6 · ndn_service_framework::ServiceUser::handleProviderReadyInterest
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1593)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1668)
 
 ```cpp
 bool handleProviderReadyInterest(const ndn::Interest& interest);
@@ -25190,7 +27278,7 @@ bool handleProviderReadyInterest(const ndn::Interest& interest);
 
 ### API-3e6999918cb2 · ndn_service_framework::ServiceUser::maybeActivateReadyDeployment
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1594)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1669)
 
 ```cpp
 void maybeActivateReadyDeployment(const ndn::Name& requestId,
@@ -25199,7 +27287,7 @@ void maybeActivateReadyDeployment(const ndn::Name& requestId,
 
 ### API-facb9a63b90d · ndn_service_framework::ServiceUser::publishExecutionActivate
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1596)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1671)
 
 ```cpp
 void publishExecutionActivate(const ndn::Name& provider,
@@ -25210,7 +27298,7 @@ void publishExecutionActivate(const ndn::Name& provider,
 
 ### API-deb4b79b686f · ndn_service_framework::ServiceUser::logRequestPendingCreated
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1600)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1675)
 
 ```cpp
 void logRequestPendingCreated(const ndn::Name& requestId,
@@ -25219,7 +27307,7 @@ void logRequestPendingCreated(const ndn::Name& requestId,
 
 ### API-5d38672a68c3 · ndn_service_framework::ServiceUser::erasePendingCallWithTrace
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1602)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1677)
 
 ```cpp
 void erasePendingCallWithTrace(const ndn::Name& requestId,
@@ -25229,7 +27317,7 @@ void erasePendingCallWithTrace(const ndn::Name& requestId,
 
 ### API-9683cb541d2b · ndn_service_framework::ServiceUser::logAckMatchAttempt
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1605)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1680)
 
 ```cpp
 void logAckMatchAttempt(const ndn::Name& requestId,
@@ -25241,7 +27329,7 @@ void logAckMatchAttempt(const ndn::Name& requestId,
 
 ### API-a8a608e3a643 · ndn_service_framework::ServiceUser::logAckNoPending
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1610)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1685)
 
 ```cpp
 void logAckNoPending(const ndn::Name& requestId,
@@ -25252,7 +27340,7 @@ void logAckNoPending(const ndn::Name& requestId,
 
 ### API-dc04a1029638 · ndn_service_framework::ServiceUser::updateRequestLifecycleState
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1614)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1689)
 
 ```cpp
 void updateRequestLifecycleState(const ndn::Name& requestId,
@@ -25262,7 +27350,7 @@ void updateRequestLifecycleState(const ndn::Name& requestId,
 
 ### API-8001383bccd9 · ndn_service_framework::ServiceUser::samplePendingCallKeys
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1617)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1692)
 
 ```cpp
 std::string samplePendingCallKeys(size_t limit = 5) const;
@@ -25270,7 +27358,7 @@ std::string samplePendingCallKeys(size_t limit = 5) const;
 
 ### API-d1694fe1f37a · ndn_service_framework::ServiceUser::dispatchResponseHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1618)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1693)
 
 ```cpp
 void dispatchResponseHandler(ResponseHandler responseHandler,
@@ -25280,7 +27368,7 @@ void dispatchResponseHandler(ResponseHandler responseHandler,
 
 ### API-6d4d8cdcc6a7 · ndn_service_framework::ServiceUser::scheduleResponseAttemptTimeout
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1621)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1696)
 
 ```cpp
 void scheduleResponseAttemptTimeout(const ndn::Name& requestId,
@@ -25289,7 +27377,7 @@ void scheduleResponseAttemptTimeout(const ndn::Name& requestId,
 
 ### API-be1faa33cb25 · ndn_service_framework::ServiceUser::retryResponseWithNextProvider
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1623)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1698)
 
 ```cpp
 bool retryResponseWithNextProvider(const ndn::Name& requestId,
@@ -25298,7 +27386,7 @@ bool retryResponseWithNextProvider(const ndn::Name& requestId,
 
 ### API-44a82c42f8db · ndn_service_framework::ServiceUser::activeNacConsumer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1626)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1701)
 
 ```cpp
 ndn::nacabe::Consumer& activeNacConsumer()
@@ -25306,7 +27394,7 @@ ndn::nacabe::Consumer& activeNacConsumer()
 
 ### API-79230bc56187 · ndn_service_framework::ServiceUser::activeNacProducer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1631)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1706)
 
 ```cpp
 ndn::nacabe::CacheProducer& activeNacProducer()
@@ -25314,7 +27402,7 @@ ndn::nacabe::CacheProducer& activeNacProducer()
 
 ### API-64a4f6aa2239 · ndn_service_framework::ServiceUser::& m_face
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1636)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1711)
 
 ```cpp
 ndn::Face& m_face;
@@ -25322,7 +27410,7 @@ ndn::Face& m_face;
 
 ### API-c7c857876899 · ndn_service_framework::ServiceUser::m_scheduler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1637)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1712)
 
 ```cpp
 ndn::Scheduler m_scheduler;
@@ -25330,7 +27418,7 @@ ndn::Scheduler m_scheduler;
 
 ### API-0adb9180a382 · ndn_service_framework::ServiceUser::m_identityRegistration
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1639)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1714)
 
 ```cpp
 std::shared_ptr<ndn::ScopedRegisteredPrefixHandle> m_identityRegistration;
@@ -25342,9 +27430,17 @@ std::shared_ptr<ndn::ScopedRegisteredPrefixHandle> m_identityRegistration;
 // Retry callbacks retain only a weak reference to this route owner.
 ```
 
+### API-4b714e0252fe · ndn_service_framework::ServiceUser::m_serviceRegistrations
+
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1715)
+
+```cpp
+std::vector<std::shared_ptr<ndn::ScopedRegisteredPrefixHandle>> m_serviceRegistrations;
+```
+
 ### API-7e340a3afdfa · ndn_service_framework::ServiceUser::identity
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1640)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1716)
 
 ```cpp
 ndn::Name identity;
@@ -25352,7 +27448,7 @@ ndn::Name identity;
 
 ### API-f6572efd9449 · ndn_service_framework::ServiceUser::m_keyChain
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1641)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1717)
 
 ```cpp
 ndn::KeyChain m_keyChain;
@@ -25360,7 +27456,7 @@ ndn::KeyChain m_keyChain;
 
 ### API-01087fbd13b9 · ndn_service_framework::ServiceUser::* m_testSigningKeyChain
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1642)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1718)
 
 ```cpp
 ndn::KeyChain* m_testSigningKeyChain = nullptr;
@@ -25368,7 +27464,7 @@ ndn::KeyChain* m_testSigningKeyChain = nullptr;
 
 ### API-39484288b53f · ndn_service_framework::ServiceUser::m_svsps
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1643)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1719)
 
 ```cpp
 std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
@@ -25376,7 +27472,7 @@ std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
 
 ### API-f2f75286a556 · ndn_service_framework::ServiceUser::validator
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1644)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1720)
 
 ```cpp
 std::shared_ptr<MessageValidator> validator;
@@ -25384,7 +27480,7 @@ std::shared_ptr<MessageValidator> validator;
 
 ### API-fa01d3bfd8c7 · ndn_service_framework::ServiceUser::m_serviceNames
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1645)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1721)
 
 ```cpp
 std::vector<std::string> m_serviceNames;
@@ -25392,7 +27488,7 @@ std::vector<std::string> m_serviceNames;
 
 ### API-fe2c1ada83f5 · ndn_service_framework::ServiceUser::nac_validator
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1648)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1724)
 
 ```cpp
 ndn::ValidatorConfig nac_validator{m_face};
@@ -25406,7 +27502,7 @@ ndn::ValidatorConfig nac_validator{m_face};
 
 ### API-73f76d0eb5b8 · ndn_service_framework::ServiceUser::identityCert
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1649)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1725)
 
 ```cpp
 ndn::security::Certificate identityCert;
@@ -25414,7 +27510,7 @@ ndn::security::Certificate identityCert;
 
 ### API-704147065e27 · ndn_service_framework::ServiceUser::signingCert
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1650)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1726)
 
 ```cpp
 ndn::security::Certificate signingCert;
@@ -25422,7 +27518,7 @@ ndn::security::Certificate signingCert;
 
 ### API-1ba8b6d625c2 · ndn_service_framework::ServiceUser::attrAuthorityCertificate
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1651)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1727)
 
 ```cpp
 ndn::security::Certificate attrAuthorityCertificate;
@@ -25430,7 +27526,7 @@ ndn::security::Certificate attrAuthorityCertificate;
 
 ### API-59220350f259 · ndn_service_framework::ServiceUser::nacConsumer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1653)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1729)
 
 ```cpp
 ndn::nacabe::Consumer nacConsumer;
@@ -25438,7 +27534,7 @@ ndn::nacabe::Consumer nacConsumer;
 
 ### API-8fa98345ae10 · ndn_service_framework::ServiceUser::m_testNacConsumer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1654)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1730)
 
 ```cpp
 std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
@@ -25446,7 +27542,7 @@ std::unique_ptr<ndn::nacabe::Consumer> m_testNacConsumer;
 
 ### API-611591472c46 · ndn_service_framework::ServiceUser::m_isLocalMock
 
-public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L1658)
+public / test-helper；[源码](../../ndn-service-framework/ServiceUser.hpp#L1734)
 
 ```cpp
 bool m_isLocalMock = false;
@@ -25462,7 +27558,7 @@ bool m_isLocalMock = false;
 
 ### API-0c36638fbe7c · ndn_service_framework::ServiceUser::nacProducer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1660)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1736)
 
 ```cpp
 ndn::nacabe::CacheProducer nacProducer;
@@ -25476,7 +27572,7 @@ ndn::nacabe::CacheProducer nacProducer;
 
 ### API-f9bb52318bf2 · ndn_service_framework::ServiceUser::m_testNacProducer
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1661)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1737)
 
 ```cpp
 std::unique_ptr<ndn::nacabe::CacheProducer> m_testNacProducer;
@@ -25484,7 +27580,7 @@ std::unique_ptr<ndn::nacabe::CacheProducer> m_testNacProducer;
 
 ### API-083dfd9a5f2a · ndn_service_framework::ServiceUser::m_signingInfo
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1662)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1738)
 
 ```cpp
 ndn::security::SigningInfo m_signingInfo;
@@ -25492,7 +27588,7 @@ ndn::security::SigningInfo m_signingInfo;
 
 ### API-6d6a86f27d5c · ndn_service_framework::ServiceUser::m_useTokens
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1663)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1739)
 
 ```cpp
 bool m_useTokens = true;
@@ -25500,7 +27596,7 @@ bool m_useTokens = true;
 
 ### API-d03435f26d44 · ndn_service_framework::ServiceUser::m_timelineTrace
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1666)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1742)
 
 ```cpp
 bool m_timelineTrace = timelineTraceEnvEnabled();
@@ -25515,7 +27611,7 @@ bool m_timelineTrace = timelineTraceEnvEnabled();
 
 ### API-2ab078f1b726 · ndn_service_framework::ServiceUser::m_currentPolicyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1667)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1743)
 
 ```cpp
 size_t m_currentPolicyEpoch = 0;
@@ -25523,7 +27619,7 @@ size_t m_currentPolicyEpoch = 0;
 
 ### API-83aebaba4f5b · ndn_service_framework::ServiceUser::m_requiredKeyEpoch
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1668)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1744)
 
 ```cpp
 size_t m_requiredKeyEpoch = 0;
@@ -25531,7 +27627,7 @@ size_t m_requiredKeyEpoch = 0;
 
 ### API-d6e49ace0598 · ndn_service_framework::ServiceUser::m_controllerVersionMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1669)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1745)
 
 ```cpp
 mutable std::mutex m_controllerVersionMutex;
@@ -25539,7 +27635,7 @@ mutable std::mutex m_controllerVersionMutex;
 
 ### API-6e7d84bf37e7 · ndn_service_framework::ServiceUser::m_controllerVersion
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1670)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1746)
 
 ```cpp
 std::optional<ControllerVersion> m_controllerVersion;
@@ -25547,7 +27643,7 @@ std::optional<ControllerVersion> m_controllerVersion;
 
 ### API-80d88c7cc3fe · ndn_service_framework::ServiceUser::m_revocationStates
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1671)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1747)
 
 ```cpp
 std::map<std::string, RevocationState> m_revocationStates;
@@ -25555,7 +27651,7 @@ std::map<std::string, RevocationState> m_revocationStates;
 
 ### API-4f25c8f26a0f · ndn_service_framework::ServiceUser::m_policyRefreshCoordinators
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1672)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1748)
 
 ```cpp
 std::map<std::string, PolicyRefreshCoordinator>
@@ -25564,7 +27660,7 @@ std::map<std::string, PolicyRefreshCoordinator>
 
 ### API-7e6d32c30304 · ndn_service_framework::ServiceUser::m_controllerPrefix
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1674)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1750)
 
 ```cpp
 ndn::Name m_controllerPrefix;
@@ -25572,7 +27668,7 @@ ndn::Name m_controllerPrefix;
 
 ### API-68d120c92aa6 · ndn_service_framework::ServiceUser::m_policyStatusFetchInFlight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1675)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1751)
 
 ```cpp
 std::set<std::string> m_policyStatusFetchInFlight;
@@ -25580,7 +27676,7 @@ std::set<std::string> m_policyStatusFetchInFlight;
 
 ### API-4cc875534957 · ndn_service_framework::ServiceUser::m_policyStatusRefreshScheduled
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1676)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1752)
 
 ```cpp
 std::map<std::string, ControllerVersion>
@@ -25589,7 +27685,7 @@ std::map<std::string, ControllerVersion>
 
 ### API-6761b3b4e359 · ndn_service_framework::ServiceUser::m_nacDkeyRefreshPendingServices
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1683)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1759)
 
 ```cpp
 std::set<std::string> m_nacDkeyRefreshPendingServices;
@@ -25607,7 +27703,7 @@ std::set<std::string> m_nacDkeyRefreshPendingServices;
 
 ### API-e108651a6d90 · ndn_service_framework::ServiceUser::m_lastDkeyRefreshWave
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1687)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1763)
 
 ```cpp
 std::optional<ControllerVersion> m_lastDkeyRefreshWave;
@@ -25623,7 +27719,7 @@ std::optional<ControllerVersion> m_lastDkeyRefreshWave;
 
 ### API-015f9875677b · ndn_service_framework::ServiceUser::m_runtimeStatusStore
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1691)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1767)
 
 ```cpp
 std::unique_ptr<RuntimeStatusStore> m_runtimeStatusStore;
@@ -25639,7 +27735,7 @@ std::unique_ptr<RuntimeStatusStore> m_runtimeStatusStore;
 
 ### API-33865a2ccd49 · ndn_service_framework::ServiceUser::m_persistedRuntimeStatuses
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1692)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1768)
 
 ```cpp
 std::map<std::string, RuntimeStatusStore::Record>
@@ -25648,7 +27744,7 @@ std::map<std::string, RuntimeStatusStore::Record>
 
 ### API-a1a19d6fa058 · ndn_service_framework::ServiceUser::m_policyGracePeriodMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1694)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1770)
 
 ```cpp
 uint64_t m_policyGracePeriodMs = 0;
@@ -25656,7 +27752,7 @@ uint64_t m_policyGracePeriodMs = 0;
 
 ### API-b77b60f430d3 · ndn_service_framework::ServiceUser::m_hybridMessageCrypto
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1695)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1771)
 
 ```cpp
 HybridMessageCrypto m_hybridMessageCrypto;
@@ -25664,7 +27760,7 @@ HybridMessageCrypto m_hybridMessageCrypto;
 
 ### API-83e0a6b62839 · ndn_service_framework::ServiceUser::m_hybridCryptoCounters
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1696)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1772)
 
 ```cpp
 HybridCryptoCounters m_hybridCryptoCounters;
@@ -25672,7 +27768,7 @@ HybridCryptoCounters m_hybridCryptoCounters;
 
 ### API-cf891da3c6a3 · ndn_service_framework::ServiceUser::m_requestScopedNonceRegistry
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1697)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1773)
 
 ```cpp
 NonceRegistry m_requestScopedNonceRegistry;
@@ -25680,7 +27776,7 @@ NonceRegistry m_requestScopedNonceRegistry;
 
 ### API-0b949906e95b · ndn_service_framework::ServiceUser::m_cryptoProduceQueue
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1698)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1774)
 
 ```cpp
 SerializedWorkerQueue m_cryptoProduceQueue{"ServiceUser NAC-ABE produce"};
@@ -25688,7 +27784,7 @@ SerializedWorkerQueue m_cryptoProduceQueue{"ServiceUser NAC-ABE produce"};
 
 ### API-a64b79665371 · ndn_service_framework::ServiceUser::m_handlerPool
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1699)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1775)
 
 ```cpp
 BoundedWorkerPool m_handlerPool{"ServiceUser response callbacks"};
@@ -25696,7 +27792,7 @@ BoundedWorkerPool m_handlerPool{"ServiceUser response callbacks"};
 
 ### API-f6813cf0f7a8 · ndn_service_framework::ServiceUser::m_ackProcessingPool
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1700)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1776)
 
 ```cpp
 BoundedWorkerPool m_ackProcessingPool{"ServiceUser ACK processing"};
@@ -25704,7 +27800,7 @@ BoundedWorkerPool m_ackProcessingPool{"ServiceUser ACK processing"};
 
 ### API-37b0f630002c · ndn_service_framework::ServiceUser::m_IMS
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1702)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1778)
 
 ```cpp
 ndn::InMemoryStorageFifo m_IMS;
@@ -25712,7 +27808,7 @@ ndn::InMemoryStorageFifo m_IMS;
 
 ### API-61a9fb53ea1c · ndn_service_framework::ServiceUser::_cache_mutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1703)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1779)
 
 ```cpp
 std::mutex _cache_mutex;
@@ -25720,7 +27816,7 @@ std::mutex _cache_mutex;
 
 ### API-0eabc0eab13b · ndn_service_framework::ServiceUser::m_ServiceDiscovery
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1705)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1781)
 
 ```cpp
 OptionalServiceDiscovery m_ServiceDiscovery;
@@ -25728,7 +27824,7 @@ OptionalServiceDiscovery m_ServiceDiscovery;
 
 ### API-60afc6394c21 · ndn_service_framework::ServiceUser::m_authorizations
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1706)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1782)
 
 ```cpp
 ServiceAuthorizationTable m_authorizations;
@@ -25736,7 +27832,7 @@ ServiceAuthorizationTable m_authorizations;
 
 ### API-0a627ee12533 · ndn_service_framework::ServiceUser::m_strategyMap
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1708)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1784)
 
 ```cpp
 std::map<ndn::Name, size_t> m_strategyMap;
@@ -25744,7 +27840,7 @@ std::map<ndn::Name, size_t> m_strategyMap;
 
 ### API-f008aeadef12 · ndn_service_framework::ServiceUser::m_AckInfoMap
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1711)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1787)
 
 ```cpp
 std::map<ndn::Name, std::vector<AckInfo>> m_AckInfoMap;
@@ -25758,7 +27854,7 @@ std::map<ndn::Name, std::vector<AckInfo>> m_AckInfoMap;
 
 ### API-748ac086f43f · ndn_service_framework::ServiceUser::m_configManager
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1713)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1789)
 
 ```cpp
 ConfigManager m_configManager;
@@ -25766,7 +27862,7 @@ ConfigManager m_configManager;
 
 ### API-6e23a954b0cd · ndn_service_framework::ServiceUser::m_sessionIDMap
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1715)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1791)
 
 ```cpp
 std::map<ndn::Name, int> m_sessionIDMap;
@@ -25774,7 +27870,7 @@ std::map<ndn::Name, int> m_sessionIDMap;
 
 ### API-bd56d68a6265 · ndn_service_framework::ServiceUser::svs_mutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1717)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1793)
 
 ```cpp
 std::mutex svs_mutex;
@@ -25782,7 +27878,7 @@ std::mutex svs_mutex;
 
 ### API-e2bc80a3ad2c · ndn_service_framework::ServiceUser::m_pendingCalls
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1719)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1795)
 
 ```cpp
 std::map<ndn::Name, PendingCall> m_pendingCalls;
@@ -25790,7 +27886,7 @@ std::map<ndn::Name, PendingCall> m_pendingCalls;
 
 ### API-c7edb879ed2c · ndn_service_framework::ServiceUser::m_verifiedCollaborationMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1720)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1796)
 
 ```cpp
 std::mutex m_verifiedCollaborationMutex;
@@ -25798,7 +27894,7 @@ std::mutex m_verifiedCollaborationMutex;
 
 ### API-10ea00745e47 · ndn_service_framework::ServiceUser::m_verifiedCollaborationCv
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1721)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1797)
 
 ```cpp
 std::condition_variable m_verifiedCollaborationCv;
@@ -25806,7 +27902,7 @@ std::condition_variable m_verifiedCollaborationCv;
 
 ### API-eeab16ca9a39 · ndn_service_framework::ServiceUser::m_userCollaborationScopeKeys
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1722)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1798)
 
 ```cpp
 std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>>
@@ -25815,7 +27911,7 @@ std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>>
 
 ### API-101460588366 · ndn_service_framework::ServiceUser::m_verifiedCollaborationData
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1724)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1800)
 
 ```cpp
 std::map<ndn::Name, std::vector<VerifiedCollaborationData>>
@@ -25824,7 +27920,7 @@ std::map<ndn::Name, std::vector<VerifiedCollaborationData>>
 
 ### API-9f848c53c589 · ndn_service_framework::ServiceUser::m_collaborationSequence
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1726)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1802)
 
 ```cpp
 std::atomic<uint64_t> m_collaborationSequence{0};
@@ -25832,7 +27928,7 @@ std::atomic<uint64_t> m_collaborationSequence{0};
 
 ### API-778d9cd69638 · ndn_service_framework::ServiceUser::m_streamConsumers
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1727)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1803)
 
 ```cpp
 std::map<ndn::Name, std::shared_ptr<StreamEventConsumer>> m_streamConsumers;
@@ -25840,7 +27936,7 @@ std::map<ndn::Name, std::shared_ptr<StreamEventConsumer>> m_streamConsumers;
 
 ### API-52398f58551e · ndn_service_framework::ServiceUser::m_streamStates
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1728)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1804)
 
 ```cpp
 std::map<ndn::Name, std::shared_ptr<StreamedInvocationSharedState>> m_streamStates;
@@ -25848,7 +27944,7 @@ std::map<ndn::Name, std::shared_ptr<StreamedInvocationSharedState>> m_streamStat
 
 ### API-f75bf2be4fac · ndn_service_framework::ServiceUser::m_streamInactivityMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1729)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1805)
 
 ```cpp
 std::mutex m_streamInactivityMutex;
@@ -25856,7 +27952,7 @@ std::mutex m_streamInactivityMutex;
 
 ### API-110690ed20e1 · ndn_service_framework::ServiceUser::m_streamInactivityEpochs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1730)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1806)
 
 ```cpp
 std::map<ndn::Name, uint64_t> m_streamInactivityEpochs;
@@ -25864,7 +27960,7 @@ std::map<ndn::Name, uint64_t> m_streamInactivityEpochs;
 
 ### API-a430da7beb60 · ndn_service_framework::ServiceUser::m_streamEventKeysPending
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1731)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1807)
 
 ```cpp
 std::map<ndn::Name, ndn::Buffer> m_streamEventKeysPending;
@@ -25872,7 +27968,7 @@ std::map<ndn::Name, ndn::Buffer> m_streamEventKeysPending;
 
 ### API-189fd0f97e49 · ndn_service_framework::ServiceUser::m_targetedTokenPoolsMutex
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1732)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1808)
 
 ```cpp
 std::mutex m_targetedTokenPoolsMutex;
@@ -25880,7 +27976,7 @@ std::mutex m_targetedTokenPoolsMutex;
 
 ### API-e82a36e054ee · ndn_service_framework::ServiceUser::m_targetedTokenPools
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1733)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1809)
 
 ```cpp
 std::map<std::string, std::deque<TargetedTokenPair>> m_targetedTokenPools;
@@ -25888,7 +27984,7 @@ std::map<std::string, std::deque<TargetedTokenPair>> m_targetedTokenPools;
 
 ### API-4a6f21bcea56 · ndn_service_framework::ServiceUser::m_targetedTokenPoolControls
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1734)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1810)
 
 ```cpp
 std::map<std::string, TargetedTokenPoolControl>
@@ -25897,7 +27993,7 @@ std::map<std::string, TargetedTokenPoolControl>
 
 ### API-481172a7a551 · ndn_service_framework::ServiceUser::m_targetedStreamOffers
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1736)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1812)
 
 ```cpp
 std::map<std::string, TargetedStreamOffer> m_targetedStreamOffers;
@@ -25905,7 +28001,7 @@ std::map<std::string, TargetedStreamOffer> m_targetedStreamOffers;
 
 ### API-03ffff65b652 · ndn_service_framework::ServiceUser::m_recentAckProvidersByService
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1737)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1813)
 
 ```cpp
 std::map<ndn::Name, std::map<std::string, uint64_t>>
@@ -25914,7 +28010,7 @@ std::map<ndn::Name, std::map<std::string, uint64_t>>
 
 ### API-21402ac03f28 · ndn_service_framework::ServiceUser::m_pendingCallTraceHistory
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1739)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1815)
 
 ```cpp
 std::map<ndn::Name, PendingCallTraceRecord> m_pendingCallTraceHistory;
@@ -25922,7 +28018,7 @@ std::map<ndn::Name, PendingCallTraceRecord> m_pendingCallTraceHistory;
 
 ### API-658bc5fb913a · ndn_service_framework::ServiceUser::m_requestLifecycleStatuses
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1740)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1816)
 
 ```cpp
 std::map<ndn::Name, RequestLifecycleStatus> m_requestLifecycleStatuses;
@@ -25930,7 +28026,7 @@ std::map<ndn::Name, RequestLifecycleStatus> m_requestLifecycleStatuses;
 
 ### API-e1635f8d7b53 · ndn_service_framework::ServiceUser::m_requestLifecycleCallback
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1741)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1817)
 
 ```cpp
 RequestLifecycleCallback m_requestLifecycleCallback;
@@ -25938,7 +28034,7 @@ RequestLifecycleCallback m_requestLifecycleCallback;
 
 ### API-3defb8966a75 · ndn_service_framework::ServiceUser::m_admissionControlWarningHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1742)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1818)
 
 ```cpp
 AdmissionControlWarningHandler m_admissionControlWarningHandler;
@@ -25946,7 +28042,7 @@ AdmissionControlWarningHandler m_admissionControlWarningHandler;
 
 ### API-0ca5ddd65d6a · ndn_service_framework::ServiceUser::m_admissionControlRejectHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1743)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1819)
 
 ```cpp
 AdmissionControlRejectHandler m_admissionControlRejectHandler;
@@ -25954,7 +28050,7 @@ AdmissionControlRejectHandler m_admissionControlRejectHandler;
 
 ### API-1ced81974539 · ndn_service_framework::ServiceUser::m_requestPublisher
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1744)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1820)
 
 ```cpp
 RequestPublisher m_requestPublisher;
@@ -25962,7 +28058,7 @@ RequestPublisher m_requestPublisher;
 
 ### API-ea1ab92a19a3 · ndn_service_framework::ServiceUser::m_localPublicationHandler
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1745)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1821)
 
 ```cpp
 LocalPublicationHandler m_localPublicationHandler;
@@ -25970,7 +28066,7 @@ LocalPublicationHandler m_localPublicationHandler;
 
 ### API-84ced0cbc441 · ndn_service_framework::ServiceUser::m_pendingCallTimeoutGrace
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1746)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1822)
 
 ```cpp
 ndn::time::milliseconds m_pendingCallTimeoutGrace{500};
@@ -25978,7 +28074,7 @@ ndn::time::milliseconds m_pendingCallTimeoutGrace{500};
 
 ### API-23103b8a0c33 · ndn_service_framework::ServiceUser::m_responseRetryOptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1747)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1823)
 
 ```cpp
 ResponseRetryOptions m_responseRetryOptions;
@@ -25986,7 +28082,7 @@ ResponseRetryOptions m_responseRetryOptions;
 
 ### API-ead02acf70d4 · ndn_service_framework::ServiceUser::m_performanceMode
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1748)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1824)
 
 ```cpp
 bool m_performanceMode = false;
@@ -25994,7 +28090,7 @@ bool m_performanceMode = false;
 
 ### API-551b62c2dd9f · ndn_service_framework::ServiceUser::m_runtimeDiagnostics
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1751)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1827)
 
 ```cpp
 mutable RuntimeDiagnostics m_runtimeDiagnostics;
@@ -26009,7 +28105,7 @@ mutable RuntimeDiagnostics m_runtimeDiagnostics;
 
 ### API-5f86db79b462 · ndn_service_framework::ServiceUser::m_networkTelemetry
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1752)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1828)
 
 ```cpp
 NetworkTelemetryStore m_networkTelemetry;
@@ -26017,7 +28113,7 @@ NetworkTelemetryStore m_networkTelemetry;
 
 ### API-e11366325474 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionOptions
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1753)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1829)
 
 ```cpp
 AdaptiveAdmissionOptions m_adaptiveAdmissionOptions;
@@ -26025,7 +28121,7 @@ AdaptiveAdmissionOptions m_adaptiveAdmissionOptions;
 
 ### API-8466bd677055 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionWindow
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1754)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1830)
 
 ```cpp
 size_t m_adaptiveAdmissionWindow = 16;
@@ -26033,7 +28129,7 @@ size_t m_adaptiveAdmissionWindow = 16;
 
 ### API-1574d9af6fb5 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionSlowStartThreshold
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1755)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1831)
 
 ```cpp
 size_t m_adaptiveAdmissionSlowStartThreshold = 512;
@@ -26041,7 +28137,7 @@ size_t m_adaptiveAdmissionSlowStartThreshold = 512;
 
 ### API-52405e26da59 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionInflight
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1756)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1832)
 
 ```cpp
 size_t m_adaptiveAdmissionInflight = 0;
@@ -26049,7 +28145,7 @@ size_t m_adaptiveAdmissionInflight = 0;
 
 ### API-13a763ea0489 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionControlScheduled
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1757)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1833)
 
 ```cpp
 bool m_adaptiveAdmissionControlScheduled = false;
@@ -26057,7 +28153,7 @@ bool m_adaptiveAdmissionControlScheduled = false;
 
 ### API-39f0c0db0071 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalSuccesses
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1758)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1834)
 
 ```cpp
 uint64_t m_adaptiveAdmissionIntervalSuccesses = 0;
@@ -26065,7 +28161,7 @@ uint64_t m_adaptiveAdmissionIntervalSuccesses = 0;
 
 ### API-30d68b19b8c7 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalTimeouts
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1759)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1835)
 
 ```cpp
 uint64_t m_adaptiveAdmissionIntervalTimeouts = 0;
@@ -26073,7 +28169,7 @@ uint64_t m_adaptiveAdmissionIntervalTimeouts = 0;
 
 ### API-df88682d30aa · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalBackpressure
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1760)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1836)
 
 ```cpp
 uint64_t m_adaptiveAdmissionIntervalBackpressure = 0;
@@ -26081,7 +28177,7 @@ uint64_t m_adaptiveAdmissionIntervalBackpressure = 0;
 
 ### API-4068045ce9d1 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalQueueWarnings
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1761)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1837)
 
 ```cpp
 uint64_t m_adaptiveAdmissionIntervalQueueWarnings = 0;
@@ -26089,7 +28185,7 @@ uint64_t m_adaptiveAdmissionIntervalQueueWarnings = 0;
 
 ### API-79243a936a04 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalLatencySumMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1762)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1838)
 
 ```cpp
 double m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
@@ -26097,7 +28193,7 @@ double m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
 
 ### API-347923943e97 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalLatencyCount
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1763)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1839)
 
 ```cpp
 uint64_t m_adaptiveAdmissionIntervalLatencyCount = 0;
@@ -26105,7 +28201,7 @@ uint64_t m_adaptiveAdmissionIntervalLatencyCount = 0;
 
 ### API-e61911c32498 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalLatenciesMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1764)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1840)
 
 ```cpp
 std::vector<double> m_adaptiveAdmissionIntervalLatenciesMs;
@@ -26113,7 +28209,7 @@ std::vector<double> m_adaptiveAdmissionIntervalLatenciesMs;
 
 ### API-36d077012e87 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionBaselineLatencyMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1765)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1841)
 
 ```cpp
 double m_adaptiveAdmissionBaselineLatencyMs = 0.0;
@@ -26121,7 +28217,7 @@ double m_adaptiveAdmissionBaselineLatencyMs = 0.0;
 
 ### API-65cc555b5784 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionPreviousQueueDelayMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1766)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1842)
 
 ```cpp
 double m_adaptiveAdmissionPreviousQueueDelayMs = 0.0;
@@ -26129,7 +28225,7 @@ double m_adaptiveAdmissionPreviousQueueDelayMs = 0.0;
 
 ### API-50a8245f87b0 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionPreviousAverageLatencyMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1767)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1843)
 
 ```cpp
 double m_adaptiveAdmissionPreviousAverageLatencyMs = 0.0;
@@ -26137,7 +28233,7 @@ double m_adaptiveAdmissionPreviousAverageLatencyMs = 0.0;
 
 ### API-b77631453f00 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionPreviousP95LatencyMs
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1768)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1844)
 
 ```cpp
 double m_adaptiveAdmissionPreviousP95LatencyMs = 0.0;
@@ -26145,7 +28241,7 @@ double m_adaptiveAdmissionPreviousP95LatencyMs = 0.0;
 
 ### API-3b3e7e6027a0 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionCompletionRateEmaRps
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1769)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1845)
 
 ```cpp
 double m_adaptiveAdmissionCompletionRateEmaRps = 0.0;
@@ -26153,7 +28249,7 @@ double m_adaptiveAdmissionCompletionRateEmaRps = 0.0;
 
 ### API-de9e4daed687 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionRecommendedRateRps
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1770)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1846)
 
 ```cpp
 double m_adaptiveAdmissionRecommendedRateRps = 0.0;
@@ -26161,7 +28257,7 @@ double m_adaptiveAdmissionRecommendedRateRps = 0.0;
 
 ### API-52f265f4b255 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionLatencyRisingIntervals
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1771)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1847)
 
 ```cpp
 size_t m_adaptiveAdmissionLatencyRisingIntervals = 0;
@@ -26169,7 +28265,7 @@ size_t m_adaptiveAdmissionLatencyRisingIntervals = 0;
 
 ### API-3696e0497e49 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionAverageLatencyRisingIntervals
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1772)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1848)
 
 ```cpp
 size_t m_adaptiveAdmissionAverageLatencyRisingIntervals = 0;
@@ -26177,7 +28273,7 @@ size_t m_adaptiveAdmissionAverageLatencyRisingIntervals = 0;
 
 ### API-73bb980483ca · ndn_service_framework::ServiceUser::m_adaptiveAdmissionRecoveryIntervals
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1773)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1849)
 
 ```cpp
 size_t m_adaptiveAdmissionRecoveryIntervals = 0;
@@ -26185,7 +28281,7 @@ size_t m_adaptiveAdmissionRecoveryIntervals = 0;
 
 ### API-d4cae7293627 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionSuccessfulControlIntervals
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1774)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1850)
 
 ```cpp
 size_t m_adaptiveAdmissionSuccessfulControlIntervals = 0;
@@ -26193,7 +28289,7 @@ size_t m_adaptiveAdmissionSuccessfulControlIntervals = 0;
 
 ### API-bd9334981877 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionQueueDelayOverTargetIntervals
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1775)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1851)
 
 ```cpp
 size_t m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
@@ -26201,7 +28297,7 @@ size_t m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
 
 ### API-93cb3af40891 · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalCongested
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1776)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1852)
 
 ```cpp
 bool m_adaptiveAdmissionIntervalCongested = false;
@@ -26209,7 +28305,7 @@ bool m_adaptiveAdmissionIntervalCongested = false;
 
 ### API-2df6a7ebcabd · ndn_service_framework::ServiceUser::m_adaptiveAdmissionIntervalSevere
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1777)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1853)
 
 ```cpp
 bool m_adaptiveAdmissionIntervalSevere = false;
@@ -26217,7 +28313,7 @@ bool m_adaptiveAdmissionIntervalSevere = false;
 
 ### API-874dae6f514f · ndn_service_framework::ServiceUser::m_adaptiveAdmissionQueue
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1778)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1854)
 
 ```cpp
 std::deque<ndn::Name> m_adaptiveAdmissionQueue;
@@ -26225,7 +28321,7 @@ std::deque<ndn::Name> m_adaptiveAdmissionQueue;
 
 ### API-72ee2b984a73 · ndnsf::ProviderId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1784)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1860)
 
 ```cpp
 using ProviderId = ndn_service_framework::ProviderId;
@@ -26233,7 +28329,7 @@ using ProviderId = ndn_service_framework::ProviderId;
 
 ### API-cd1b12e83847 · ndnsf::ServiceName
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1785)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1861)
 
 ```cpp
 using ServiceName = ndn_service_framework::ServiceName;
@@ -26241,7 +28337,7 @@ using ServiceName = ndn_service_framework::ServiceName;
 
 ### API-e0b258b758d9 · ndnsf::RequestId
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1786)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1862)
 
 ```cpp
 using RequestId = ndn_service_framework::RequestId;
@@ -26249,7 +28345,7 @@ using RequestId = ndn_service_framework::RequestId;
 
 ### API-4642dc7737ec · ndnsf::RequestPayload
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1787)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1863)
 
 ```cpp
 using RequestPayload = ndn_service_framework::RequestPayload;
@@ -26257,7 +28353,7 @@ using RequestPayload = ndn_service_framework::RequestPayload;
 
 ### API-28f5378048ec · ndnsf::ResponsePayload
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1788)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1864)
 
 ```cpp
 using ResponsePayload = ndn_service_framework::ResponsePayload;
@@ -26265,7 +28361,7 @@ using ResponsePayload = ndn_service_framework::ResponsePayload;
 
 ### API-4cf896187af2 · ndnsf::AckCandidate
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1789)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1865)
 
 ```cpp
 using AckCandidate = ndn_service_framework::AckCandidate;
@@ -26273,7 +28369,7 @@ using AckCandidate = ndn_service_framework::AckCandidate;
 
 ### API-f715b66f185d · ndnsf::AckSelectionPolicy
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1790)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1866)
 
 ```cpp
 using AckSelectionPolicy = ndn_service_framework::AckSelectionPolicy;
@@ -26281,7 +28377,7 @@ using AckSelectionPolicy = ndn_service_framework::AckSelectionPolicy;
 
 ### API-aae4275c7907 · ndnsf::strategy::FirstResponding
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1794)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1870)
 
 ```cpp
 extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
@@ -26290,7 +28386,7 @@ extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
 
 ### API-f95460d715ff · ndnsf::strategy::RandomSelection
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1796)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1872)
 
 ```cpp
 extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
@@ -26299,7 +28395,7 @@ extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
 
 ### API-95cd02696316 · ndnsf::strategy::AllSelected
 
-public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1798)
+public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L1874)
 
 ```cpp
 extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
@@ -34163,11 +36259,11 @@ void
 
 ## ndn-service-framework/utils.hpp
 
-源码 SHA-256：`59e5eec6db7096c99fac3f30822a0af1808565c22552687cf592258f1b54fd8c`。
+源码 SHA-256：`c383cb761e53a1fb09fa3930966f668b40507f4486c50aa2c0e1de6afe279458`。
 
 ### API-21f9815fdd57 · ndn_service_framework::PolicyStatusName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L25)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L26)
 
 ```cpp
 struct PolicyStatusName
@@ -34175,7 +36271,7 @@ struct PolicyStatusName
 
 ### API-64fb6fc88bf8 · ndn_service_framework::PolicyStatusName::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L27)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L28)
 
 ```cpp
 ndn::Name serviceName;
@@ -34183,7 +36279,7 @@ ndn::Name serviceName;
 
 ### API-e07d563e2ebf · ndn_service_framework::PolicyStatusName::version
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L28)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L29)
 
 ```cpp
 std::optional<ControllerVersion> version;
@@ -34191,7 +36287,7 @@ std::optional<ControllerVersion> version;
 
 ### API-f3af33b5f94c · ndn_service_framework::makePolicyStatusName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L31)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L32)
 
 ```cpp
 ndn::Name makePolicyStatusName(const ndn::Name& controllerPrefix,
@@ -34201,7 +36297,7 @@ ndn::Name makePolicyStatusName(const ndn::Name& controllerPrefix,
 
 ### API-671e63304879 · ndn_service_framework::parsePolicyStatusName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L34)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L35)
 
 ```cpp
 std::optional<PolicyStatusName>
@@ -34211,7 +36307,7 @@ std::optional<PolicyStatusName>
 
 ### API-b54eaac0b634 · ndn_service_framework::RequestNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L38)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L39)
 
 ```cpp
 struct RequestNameV2
@@ -34219,7 +36315,7 @@ struct RequestNameV2
 
 ### API-8ede977e1c35 · ndn_service_framework::RequestNameV2::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L40)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L41)
 
 ```cpp
 ndn::Name requesterName;
@@ -34227,7 +36323,7 @@ ndn::Name requesterName;
 
 ### API-320aa7ae6409 · ndn_service_framework::RequestNameV2::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L41)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L42)
 
 ```cpp
 ndn::Name serviceName;
@@ -34235,7 +36331,7 @@ ndn::Name serviceName;
 
 ### API-9cf300eea986 · ndn_service_framework::RequestNameV2::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L42)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L43)
 
 ```cpp
 ndn::Name requestId;
@@ -34243,7 +36339,7 @@ ndn::Name requestId;
 
 ### API-98b7583433f3 · ndn_service_framework::ResponseNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L45)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L46)
 
 ```cpp
 struct ResponseNameV2
@@ -34251,7 +36347,7 @@ struct ResponseNameV2
 
 ### API-5ebf4c386379 · ndn_service_framework::ResponseNameV2::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L47)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L48)
 
 ```cpp
 ndn::Name providerName;
@@ -34259,7 +36355,7 @@ ndn::Name providerName;
 
 ### API-37d9415547e1 · ndn_service_framework::ResponseNameV2::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L48)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L49)
 
 ```cpp
 ndn::Name requesterName;
@@ -34267,7 +36363,7 @@ ndn::Name requesterName;
 
 ### API-e9e5f73a18b3 · ndn_service_framework::ResponseNameV2::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L49)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L50)
 
 ```cpp
 ndn::Name serviceName;
@@ -34275,7 +36371,7 @@ ndn::Name serviceName;
 
 ### API-da37325389b2 · ndn_service_framework::ResponseNameV2::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L50)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L51)
 
 ```cpp
 ndn::Name requestId;
@@ -34283,7 +36379,7 @@ ndn::Name requestId;
 
 ### API-7f69605a94a6 · ndn_service_framework::RequestAckNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L53)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L54)
 
 ```cpp
 struct RequestAckNameV2
@@ -34291,7 +36387,7 @@ struct RequestAckNameV2
 
 ### API-22d203885643 · ndn_service_framework::RequestAckNameV2::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L55)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L56)
 
 ```cpp
 ndn::Name providerName;
@@ -34299,7 +36395,7 @@ ndn::Name providerName;
 
 ### API-473a646bc1b8 · ndn_service_framework::RequestAckNameV2::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L56)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L57)
 
 ```cpp
 ndn::Name requesterName;
@@ -34307,7 +36403,7 @@ ndn::Name requesterName;
 
 ### API-4b25e191ccc2 · ndn_service_framework::RequestAckNameV2::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L57)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L58)
 
 ```cpp
 ndn::Name serviceName;
@@ -34315,7 +36411,7 @@ ndn::Name serviceName;
 
 ### API-8b8db5ab334e · ndn_service_framework::RequestAckNameV2::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L58)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L59)
 
 ```cpp
 ndn::Name requestId;
@@ -34323,7 +36419,7 @@ ndn::Name requestId;
 
 ### API-ece437890a55 · ndn_service_framework::ServiceSelectionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L61)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L62)
 
 ```cpp
 struct ServiceSelectionNameV2
@@ -34331,7 +36427,7 @@ struct ServiceSelectionNameV2
 
 ### API-f9f0d7709554 · ndn_service_framework::ServiceSelectionNameV2::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L63)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L64)
 
 ```cpp
 ndn::Name requesterName;
@@ -34339,7 +36435,7 @@ ndn::Name requesterName;
 
 ### API-71dcefba7ab4 · ndn_service_framework::ServiceSelectionNameV2::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L64)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L65)
 
 ```cpp
 ndn::Name providerName;
@@ -34347,7 +36443,7 @@ ndn::Name providerName;
 
 ### API-2edbada314de · ndn_service_framework::ServiceSelectionNameV2::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L65)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L66)
 
 ```cpp
 ndn::Name serviceName;
@@ -34355,7 +36451,7 @@ ndn::Name serviceName;
 
 ### API-6406ca25fdd6 · ndn_service_framework::ServiceSelectionNameV2::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L66)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L67)
 
 ```cpp
 ndn::Name requestId;
@@ -34363,7 +36459,7 @@ ndn::Name requestId;
 
 ### API-df16e63752e1 · ndn_service_framework::ServiceSelectionDecisionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L69)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L70)
 
 ```cpp
 struct ServiceSelectionDecisionNameV2
@@ -34371,7 +36467,7 @@ struct ServiceSelectionDecisionNameV2
 
 ### API-372967ea3638 · ndn_service_framework::ServiceSelectionDecisionNameV2::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L71)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L72)
 
 ```cpp
 ndn::Name requesterName;
@@ -34379,7 +36475,7 @@ ndn::Name requesterName;
 
 ### API-95d28aaa1058 · ndn_service_framework::ServiceSelectionDecisionNameV2::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L72)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L73)
 
 ```cpp
 ndn::Name providerName;
@@ -34387,7 +36483,7 @@ ndn::Name providerName;
 
 ### API-311fbf75c469 · ndn_service_framework::ServiceSelectionDecisionNameV2::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L73)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L74)
 
 ```cpp
 ndn::Name serviceName;
@@ -34395,7 +36491,7 @@ ndn::Name serviceName;
 
 ### API-8409d101b904 · ndn_service_framework::ServiceSelectionDecisionNameV2::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L74)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L75)
 
 ```cpp
 ndn::Name requestId;
@@ -34403,7 +36499,7 @@ ndn::Name requestId;
 
 ### API-ad917344297d · ndn_service_framework::ServiceSelectionDecisionNameV2::attempt
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L75)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L76)
 
 ```cpp
 uint64_t attempt = 0;
@@ -34411,7 +36507,7 @@ uint64_t attempt = 0;
 
 ### API-63b72a32f3a7 · ndn_service_framework::CompactServiceSelectionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L78)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L79)
 
 ```cpp
 struct CompactServiceSelectionNameV2
@@ -34419,7 +36515,7 @@ struct CompactServiceSelectionNameV2
 
 ### API-2904fea8e7e4 · ndn_service_framework::CompactServiceSelectionNameV2::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L80)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L81)
 
 ```cpp
 ndn::Name requesterName;
@@ -34427,7 +36523,7 @@ ndn::Name requesterName;
 
 ### API-e1071a4c5f7b · ndn_service_framework::CompactServiceSelectionNameV2::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L81)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L82)
 
 ```cpp
 ndn::Name serviceName;
@@ -34435,7 +36531,7 @@ ndn::Name serviceName;
 
 ### API-e87f93e1cdc1 · ndn_service_framework::CompactServiceSelectionNameV2::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L82)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L83)
 
 ```cpp
 ndn::Name requestId;
@@ -34443,7 +36539,7 @@ ndn::Name requestId;
 
 ### API-b06611783506 · ndn_service_framework::SelectionStatusQueryName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L85)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L86)
 
 ```cpp
 struct SelectionStatusQueryName
@@ -34451,7 +36547,7 @@ struct SelectionStatusQueryName
 
 ### API-aefff56b5750 · ndn_service_framework::SelectionStatusQueryName::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L87)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L88)
 
 ```cpp
 ndn::Name providerName;
@@ -34459,7 +36555,7 @@ ndn::Name providerName;
 
 ### API-06602f3c7123 · ndn_service_framework::SelectionStatusQueryName::serviceName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L88)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L89)
 
 ```cpp
 ndn::Name serviceName;
@@ -34467,7 +36563,7 @@ ndn::Name serviceName;
 
 ### API-1bb8f7ecd8a0 · ndn_service_framework::SelectionStatusQueryName::selectionDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L89)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L90)
 
 ```cpp
 std::string selectionDigest;
@@ -34475,7 +36571,7 @@ std::string selectionDigest;
 
 ### API-4ef9a291e622 · ndn_service_framework::SecureSelectionStatusName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L92)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L93)
 
 ```cpp
 struct SecureSelectionStatusName
@@ -34483,7 +36579,7 @@ struct SecureSelectionStatusName
 
 ### API-0005807dc34e · ndn_service_framework::SecureSelectionStatusName::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L94)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L95)
 
 ```cpp
 ndn::Name providerName;
@@ -34491,7 +36587,7 @@ ndn::Name providerName;
 
 ### API-3a62e75421a9 · ndn_service_framework::SecureSelectionStatusName::version
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L95)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L96)
 
 ```cpp
 uint64_t version = 0;
@@ -34499,7 +36595,7 @@ uint64_t version = 0;
 
 ### API-8fe0019a8397 · ndn_service_framework::SecureSelectionStatusName::statusHandle
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L96)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L97)
 
 ```cpp
 std::string statusHandle;
@@ -34507,7 +36603,7 @@ std::string statusHandle;
 
 ### API-40b97b4f3b31 · ndn_service_framework::ProviderReadyName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L99)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L100)
 
 ```cpp
 struct ProviderReadyName
@@ -34515,7 +36611,7 @@ struct ProviderReadyName
 
 ### API-84720198e9d3 · ndn_service_framework::ProviderReadyName::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L101)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L102)
 
 ```cpp
 ndn::Name requesterName;
@@ -34523,7 +36619,7 @@ ndn::Name requesterName;
 
 ### API-fd0c2c0a9d05 · ndn_service_framework::ProviderReadyName::version
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L102)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L103)
 
 ```cpp
 uint64_t version = 0;
@@ -34531,7 +36627,7 @@ uint64_t version = 0;
 
 ### API-d9a8cf160c1b · ndn_service_framework::ProviderReadyName::controlHandle
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L103)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L104)
 
 ```cpp
 std::string controlHandle;
@@ -34539,7 +36635,7 @@ std::string controlHandle;
 
 ### API-f0507dd02e11 · ndn_service_framework::ExecutionActivateName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L106)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L107)
 
 ```cpp
 struct ExecutionActivateName
@@ -34547,7 +36643,7 @@ struct ExecutionActivateName
 
 ### API-dff0f2248ea0 · ndn_service_framework::ExecutionActivateName::providerName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L108)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L109)
 
 ```cpp
 ndn::Name providerName;
@@ -34555,7 +36651,7 @@ ndn::Name providerName;
 
 ### API-10ba7660e685 · ndn_service_framework::ExecutionActivateName::version
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L109)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L110)
 
 ```cpp
 uint64_t version = 0;
@@ -34563,7 +36659,7 @@ uint64_t version = 0;
 
 ### API-b6ef3d7ec9d9 · ndn_service_framework::ExecutionActivateName::controlHandle
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L110)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L111)
 
 ```cpp
 std::string controlHandle;
@@ -34571,7 +36667,7 @@ std::string controlHandle;
 
 ### API-db6b6a904eab · ndn_service_framework::CollaborationDataName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L113)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L114)
 
 ```cpp
 struct CollaborationDataName
@@ -34579,7 +36675,7 @@ struct CollaborationDataName
 
 ### API-4543cb83bd74 · ndn_service_framework::CollaborationDataName::producerName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L115)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L116)
 
 ```cpp
 ndn::Name producerName;
@@ -34587,7 +36683,7 @@ ndn::Name producerName;
 
 ### API-ec7036218860 · ndn_service_framework::CollaborationDataName::requesterName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L116)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L117)
 
 ```cpp
 ndn::Name requesterName;
@@ -34595,7 +36691,7 @@ ndn::Name requesterName;
 
 ### API-56ef81eb671e · ndn_service_framework::CollaborationDataName::requestId
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L117)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L118)
 
 ```cpp
 ndn::Name requestId;
@@ -34603,7 +36699,7 @@ ndn::Name requestId;
 
 ### API-38b36c473baf · ndn_service_framework::CollaborationDataName::keyScope
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L118)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L119)
 
 ```cpp
 std::string keyScope;
@@ -34611,7 +36707,7 @@ std::string keyScope;
 
 ### API-f63598055bb4 · ndn_service_framework::CollaborationDataName::topic
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L119)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L120)
 
 ```cpp
 ndn::Name topic;
@@ -34619,7 +36715,7 @@ ndn::Name topic;
 
 ### API-2eb6542c2edd · ndn_service_framework::CollaborationDataName::sequence
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L120)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L121)
 
 ```cpp
 uint64_t sequence = 0;
@@ -34627,7 +36723,7 @@ uint64_t sequence = 0;
 
 ### API-72dca16f16cf · ndn_service_framework::LargeDataReference
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L123)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L124)
 
 ```cpp
 struct LargeDataReference
@@ -34635,7 +36731,7 @@ struct LargeDataReference
 
 ### API-6fe4041ba37f · ndn_service_framework::LargeDataReference::dataName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L125)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L126)
 
 ```cpp
 ndn::Name dataName;
@@ -34643,7 +36739,7 @@ ndn::Name dataName;
 
 ### API-d914aa4f471e · ndn_service_framework::LargeDataReference::objectType
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L126)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L127)
 
 ```cpp
 std::string objectType;
@@ -34651,7 +36747,7 @@ std::string objectType;
 
 ### API-8d7e3a237e88 · ndn_service_framework::LargeDataReference::objectId
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L127)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L128)
 
 ```cpp
 std::string objectId;
@@ -34659,7 +36755,7 @@ std::string objectId;
 
 ### API-0ea309e4e19d · ndn_service_framework::LargeDataReference::keyScope
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L132)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L133)
 
 ```cpp
 std::string keyScope;
@@ -34676,7 +36772,7 @@ std::string keyScope;
 
 ### API-809ff373c241 · ndn_service_framework::LargeDataReference::plaintextSize
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L133)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L134)
 
 ```cpp
 size_t plaintextSize = 0;
@@ -34684,7 +36780,7 @@ size_t plaintextSize = 0;
 
 ### API-1bff9628e826 · ndn_service_framework::LargeDataReference::encrypted
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L134)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L135)
 
 ```cpp
 bool encrypted = true;
@@ -34692,7 +36788,7 @@ bool encrypted = true;
 
 ### API-ecc8bded9ba2 · ndn_service_framework::LargeDataReference::digest
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L135)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L136)
 
 ```cpp
 std::string digest;
@@ -34700,7 +36796,7 @@ std::string digest;
 
 ### API-5cb75d4307b1 · ndn_service_framework::makeRequestNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L152)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L153)
 
 ```cpp
 ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
@@ -34729,7 +36825,7 @@ ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
 
 ### API-b5b726a9d0d0 · ndn_service_framework::makeRequestNameWithoutPrefixV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L155)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L156)
 
 ```cpp
 ndn::Name makeRequestNameWithoutPrefixV2(const ndn::Name& serviceName,
@@ -34738,7 +36834,7 @@ ndn::Name makeRequestNameWithoutPrefixV2(const ndn::Name& serviceName,
 
 ### API-6fdc5c21dc93 · ndn_service_framework::parseRequestNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L157)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L158)
 
 ```cpp
 std::optional<RequestNameV2> parseRequestNameV2(const ndn::Name& requestName);
@@ -34746,7 +36842,7 @@ std::optional<RequestNameV2> parseRequestNameV2(const ndn::Name& requestName);
 
 ### API-9840eba3df98 · ndn_service_framework::makeResponseNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L159)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L160)
 
 ```cpp
 ndn::Name makeResponseNameV2(const ndn::Name& providerName,
@@ -34757,7 +36853,7 @@ ndn::Name makeResponseNameV2(const ndn::Name& providerName,
 
 ### API-3f6efdf65efc · ndn_service_framework::makeResponseNameWithoutPrefixV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L163)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L164)
 
 ```cpp
 ndn::Name makeResponseNameWithoutPrefixV2(const ndn::Name& requesterName,
@@ -34767,7 +36863,7 @@ ndn::Name makeResponseNameWithoutPrefixV2(const ndn::Name& requesterName,
 
 ### API-1cd4afe1043f · ndn_service_framework::stripTrailingResponseSegments
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L169)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L170)
 
 ```cpp
 ndn::Name stripTrailingResponseSegments(const ndn::Name& responseName);
@@ -34783,7 +36879,7 @@ ndn::Name stripTrailingResponseSegments(const ndn::Name& responseName);
 
 ### API-38b97ddebbef · ndn_service_framework::parseResponseNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L170)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L171)
 
 ```cpp
 std::optional<ResponseNameV2> parseResponseNameV2(const ndn::Name& responseName);
@@ -34791,7 +36887,7 @@ std::optional<ResponseNameV2> parseResponseNameV2(const ndn::Name& responseName)
 
 ### API-16f31992a05d · ndn_service_framework::makeRequestAckNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L172)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L173)
 
 ```cpp
 ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,
@@ -34802,7 +36898,7 @@ ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,
 
 ### API-66acbc694560 · ndn_service_framework::makeRequestAckNameWithoutPrefixV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L176)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L177)
 
 ```cpp
 ndn::Name makeRequestAckNameWithoutPrefixV2(const ndn::Name& requesterName,
@@ -34812,7 +36908,7 @@ ndn::Name makeRequestAckNameWithoutPrefixV2(const ndn::Name& requesterName,
 
 ### API-69ff954f1297 · ndn_service_framework::parseRequestAckNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L179)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L180)
 
 ```cpp
 std::optional<RequestAckNameV2> parseRequestAckNameV2(const ndn::Name& requestAckName);
@@ -34820,7 +36916,7 @@ std::optional<RequestAckNameV2> parseRequestAckNameV2(const ndn::Name& requestAc
 
 ### API-88ff25d9903b · ndn_service_framework::makeServiceSelectionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L181)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L182)
 
 ```cpp
 ndn::Name makeServiceSelectionNameV2(const ndn::Name& requesterName,
@@ -34831,7 +36927,7 @@ ndn::Name makeServiceSelectionNameV2(const ndn::Name& requesterName,
 
 ### API-385c9aa409ec · ndn_service_framework::makeServiceSelectionNameWithoutPrefixV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L185)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L186)
 
 ```cpp
 ndn::Name makeServiceSelectionNameWithoutPrefixV2(const ndn::Name& providerName,
@@ -34841,7 +36937,7 @@ ndn::Name makeServiceSelectionNameWithoutPrefixV2(const ndn::Name& providerName,
 
 ### API-bef2f6e3960d · ndn_service_framework::parseServiceSelectionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L188)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L189)
 
 ```cpp
 std::optional<ServiceSelectionNameV2>
@@ -34850,7 +36946,7 @@ std::optional<ServiceSelectionNameV2>
 
 ### API-b3d77b5bc86c · ndn_service_framework::makeServiceSelectionDecisionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L190)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L191)
 
 ```cpp
 ndn::Name makeServiceSelectionDecisionNameV2(const ndn::Name& requesterName,
@@ -34862,7 +36958,7 @@ ndn::Name makeServiceSelectionDecisionNameV2(const ndn::Name& requesterName,
 
 ### API-ab40586c90d6 · ndn_service_framework::makeServiceSelectionDecisionNameWithoutPrefixV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L195)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L196)
 
 ```cpp
 ndn::Name makeServiceSelectionDecisionNameWithoutPrefixV2(
@@ -34874,7 +36970,7 @@ ndn::Name makeServiceSelectionDecisionNameWithoutPrefixV2(
 
 ### API-533dee72063c · ndn_service_framework::parseServiceSelectionDecisionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L200)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L201)
 
 ```cpp
 std::optional<ServiceSelectionDecisionNameV2>
@@ -34883,7 +36979,7 @@ std::optional<ServiceSelectionDecisionNameV2>
 
 ### API-1ffbb3570e47 · ndn_service_framework::makeCompactServiceSelectionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L202)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L203)
 
 ```cpp
 ndn::Name makeCompactServiceSelectionNameV2(const ndn::Name& requesterName,
@@ -34893,7 +36989,7 @@ ndn::Name makeCompactServiceSelectionNameV2(const ndn::Name& requesterName,
 
 ### API-e53905ff44a3 · ndn_service_framework::makeCompactServiceSelectionNameWithoutPrefixV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L205)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L206)
 
 ```cpp
 ndn::Name makeCompactServiceSelectionNameWithoutPrefixV2(const ndn::Name& serviceName,
@@ -34902,7 +36998,7 @@ ndn::Name makeCompactServiceSelectionNameWithoutPrefixV2(const ndn::Name& servic
 
 ### API-fb2fce0aa812 · ndn_service_framework::parseCompactServiceSelectionNameV2
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L207)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L208)
 
 ```cpp
 std::optional<CompactServiceSelectionNameV2>
@@ -34911,7 +37007,7 @@ std::optional<CompactServiceSelectionNameV2>
 
 ### API-1833840e6ef2 · ndn_service_framework::computeSelectionProviderTokenProofHash
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L209)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L210)
 
 ```cpp
 std::string computeSelectionProviderTokenProofHash(const ndn::Name& requesterName,
@@ -34922,7 +37018,7 @@ std::string computeSelectionProviderTokenProofHash(const ndn::Name& requesterNam
 
 ### API-01c54a265bb8 · ndn_service_framework::makeSelectionStatusQueryName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L214)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L215)
 
 ```cpp
 ndn::Name makeSelectionStatusQueryName(const ndn::Name& providerName,
@@ -34932,7 +37028,7 @@ ndn::Name makeSelectionStatusQueryName(const ndn::Name& providerName,
 
 ### API-c6e881e54133 · ndn_service_framework::parseSelectionStatusQueryName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L217)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L218)
 
 ```cpp
 std::optional<SelectionStatusQueryName>
@@ -34941,7 +37037,7 @@ std::optional<SelectionStatusQueryName>
 
 ### API-7e1feb8867fe · ndn_service_framework::computeSelectionDigest
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L219)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L220)
 
 ```cpp
 std::string computeSelectionDigest(const ServiceSelectionMessage& message);
@@ -34949,7 +37045,7 @@ std::string computeSelectionDigest(const ServiceSelectionMessage& message);
 
 ### API-fbe2ea4a3f2f · ndn_service_framework::computeSelectionDigestWithoutKeyEnvelope
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L225)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L226)
 
 ```cpp
 std::string computeSelectionDigestWithoutKeyEnvelope(
@@ -34967,7 +37063,7 @@ std::string computeSelectionDigestWithoutKeyEnvelope(
 
 ### API-a9aaa21180a2 · ndn_service_framework::makeOpaqueControlHandle
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L228)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L229)
 
 ```cpp
 std::string makeOpaqueControlHandle(size_t bytes = 24);
@@ -34975,7 +37071,7 @@ std::string makeOpaqueControlHandle(size_t bytes = 24);
 
 ### API-fdb14258a5d9 · ndn_service_framework::isValidOpaqueControlHandle
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L229)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L230)
 
 ```cpp
 bool isValidOpaqueControlHandle(const std::string& handle);
@@ -34983,7 +37079,7 @@ bool isValidOpaqueControlHandle(const std::string& handle);
 
 ### API-c490bfc5576b · ndn_service_framework::makeSecureSelectionStatusName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L230)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L231)
 
 ```cpp
 ndn::Name makeSecureSelectionStatusName(const ndn::Name& providerName,
@@ -34993,7 +37089,7 @@ ndn::Name makeSecureSelectionStatusName(const ndn::Name& providerName,
 
 ### API-a3125456c436 · ndn_service_framework::parseSecureSelectionStatusName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L233)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L234)
 
 ```cpp
 std::optional<SecureSelectionStatusName>
@@ -35002,7 +37098,7 @@ std::optional<SecureSelectionStatusName>
 
 ### API-d3d21490d3f9 · ndn_service_framework::makeProviderReadyName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L235)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L236)
 
 ```cpp
 ndn::Name makeProviderReadyName(const ndn::Name& requesterName,
@@ -35012,7 +37108,7 @@ ndn::Name makeProviderReadyName(const ndn::Name& requesterName,
 
 ### API-cb7fa70f1cd0 · ndn_service_framework::parseProviderReadyName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L238)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L239)
 
 ```cpp
 std::optional<ProviderReadyName> parseProviderReadyName(const ndn::Name& name);
@@ -35020,7 +37116,7 @@ std::optional<ProviderReadyName> parseProviderReadyName(const ndn::Name& name);
 
 ### API-d3e29152a447 · ndn_service_framework::makeExecutionActivateName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L239)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L240)
 
 ```cpp
 ndn::Name makeExecutionActivateName(const ndn::Name& providerName,
@@ -35030,7 +37126,7 @@ ndn::Name makeExecutionActivateName(const ndn::Name& providerName,
 
 ### API-7ef076a90e61 · ndn_service_framework::parseExecutionActivateName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L242)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L243)
 
 ```cpp
 std::optional<ExecutionActivateName> parseExecutionActivateName(const ndn::Name& name);
@@ -35038,7 +37134,7 @@ std::optional<ExecutionActivateName> parseExecutionActivateName(const ndn::Name&
 
 ### API-3fcf347366ca · ndn_service_framework::makeCollaborationDataName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L244)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L245)
 
 ```cpp
 ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
@@ -35051,7 +37147,7 @@ ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
 
 ### API-e468ce279ae3 · ndn_service_framework::parseCollaborationDataName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L250)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L251)
 
 ```cpp
 std::optional<CollaborationDataName>
@@ -35060,7 +37156,7 @@ std::optional<CollaborationDataName>
 
 ### API-9f0585c744fd · ndn_service_framework::encodeLargeDataReferencePayload
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L253)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L254)
 
 ```cpp
 ndn::Buffer encodeLargeDataReferencePayload(const LargeDataReference& reference);
@@ -35068,7 +37164,7 @@ ndn::Buffer encodeLargeDataReferencePayload(const LargeDataReference& reference)
 
 ### API-c84978b39adf · ndn_service_framework::parseLargeDataReferencePayload
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L254)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L255)
 
 ```cpp
 std::optional<LargeDataReference> parseLargeDataReferencePayload(const ndn::Buffer& payload);
@@ -35076,15 +37172,15 @@ std::optional<LargeDataReference> parseLargeDataReferencePayload(const ndn::Buff
 
 ### API-af4c372f60d5 · ndn_service_framework::isLargeDataReferencePayload
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L255)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L256)
 
 ```cpp
 bool isLargeDataReferencePayload(const ndn::Buffer& payload);
 ```
 
-### API-8709dd1c5f7a · ndn_service_framework::registerInterestFilterWithRetry
+### API-7129dfc8b1d3 · ndn_service_framework::registerInterestFilterWithRetry
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L262)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L263)
 
 ```cpp
 void registerInterestFilterWithRetry(
@@ -35094,7 +37190,8 @@ void registerInterestFilterWithRetry(
         std::function<void(const ndn::Name&)> onSuccess,
         std::function<void(const ndn::Name&, const std::string&)> onFailure,
         size_t attempts,
-        std::chrono::milliseconds delayBetweenAttempts);
+        std::chrono::milliseconds delayBetweenAttempts,
+        std::shared_ptr<ndn::ScopedRegisteredPrefixHandle> registrationHolder);
 ```
 
 原始接口说明：
@@ -35109,7 +37206,7 @@ void registerInterestFilterWithRetry(
 
 ### API-d0fd890274a6 · ndn_service_framework::CombineSegmentsIntoBuffer
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L273)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L275)
 
 ```cpp
 std::shared_ptr<ndn::Buffer> CombineSegmentsIntoBuffer(ndn::nacabe::SPtrVector<ndn::Data> segments);
@@ -35124,7 +37221,7 @@ std::shared_ptr<ndn::Buffer> CombineSegmentsIntoBuffer(ndn::nacabe::SPtrVector<n
 
 ### API-5debd4c7f01e · ndn_service_framework::NameToRegexString
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L275)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L277)
 
 ```cpp
 std::string NameToRegexString(ndn::Name& name);
@@ -35132,7 +37229,7 @@ std::string NameToRegexString(ndn::Name& name);
 
 ### API-b437a32734af · ndn_service_framework::RandomString
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L277)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L279)
 
 ```cpp
 std::string RandomString(const int len);
@@ -35140,7 +37237,7 @@ std::string RandomString(const int len);
 
 ### API-8c8bb30785c4 · ndn_service_framework::GetAttributesByName
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L279)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L281)
 
 ```cpp
 std::optional<std::vector<std::string>> GetAttributesByName(const ndn::Name& name);
@@ -35148,7 +37245,7 @@ std::optional<std::vector<std::string>> GetAttributesByName(const ndn::Name& nam
 
 ### API-724503b5e594 · ndn_service_framework::blockToSpan
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L282)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L284)
 
 ```cpp
 ndn::span<const uint8_t> blockToSpan(const ndn::Block& block);
@@ -35162,7 +37259,7 @@ ndn::span<const uint8_t> blockToSpan(const ndn::Block& block);
 
 ### API-b39361bb85e0 · ndn_service_framework::ConcatenateString
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L285)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L287)
 
 ```cpp
 std::string ConcatenateString(const std::vector<std::string>& strs);
@@ -35176,7 +37273,7 @@ std::string ConcatenateString(const std::vector<std::string>& strs);
 
 ### API-a556ce8e8670 · ndn_service_framework::mergeDataContents
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L288)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L290)
 
 ```cpp
 std::vector<uint8_t> mergeDataContents(const std::vector<std::shared_ptr<ndn::Data>>& dataPackets);
@@ -35190,7 +37287,7 @@ std::vector<uint8_t> mergeDataContents(const std::vector<std::shared_ptr<ndn::Da
 
 ### API-9fc2062cbeb4 · ndn_service_framework::encryptPermissionResponseForCertificate
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L292)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L294)
 
 ```cpp
 EncryptedPermissionResponse
@@ -35207,7 +37304,7 @@ EncryptedPermissionResponse
 
 ### API-0ff254455223 · ndn_service_framework::decryptPermissionResponseWithKeyChain
 
-public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L296)
+public / declared-interface；[源码](../../ndn-service-framework/utils.hpp#L298)
 
 ```cpp
 PermissionResponse
@@ -38089,7 +40186,7 @@ def best_transfer_target(self, src_peer: str, dst_peers: Iterable[str],
 
 ## pythonWrapper/ndnsf/service.py
 
-源码 SHA-256：`5b8f4a999001da97d8eb5faa075f8a63456c5fc726aae9558c9094fd0c75a99a`。
+源码 SHA-256：`7acb680cab4e430e765f998b61edc98bebc0b7cb7c0f431b1f58788561949b83`。
 
 ### API-cdf1f41211e2 · CollaborationDeadlineExceeded
 
@@ -41258,9 +43355,106 @@ def __init__(
     ) -> None:
 ```
 
+### API-aea3998940d1 · ServiceUser.load_native_request_catalog
+
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2399)
+
+```python
+def load_native_request_catalog(
+        configuration_json: str,
+        model_bytes: bytes,
+        initializer_bytes: bytes | None = None,
+        *,
+        max_source_bytes: int = 256 * 1024 * 1024,
+        max_assembled_bytes: int = 512 * 1024 * 1024,
+    ):
+```
+
+原始接口说明：
+
+```text
+Load a source checked catalog through the native DI owner.
+```
+
+### API-b491942b9488 · ServiceUser.native_preparation
+
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2412)
+
+```python
+def native_preparation(self, catalog, service_name: str):
+```
+
+原始接口说明：
+
+```text
+Bind catalog publication and inspection ports to this Core user.
+```
+
+### API-0ea2aecce055 · ServiceUser.native_runtime_from_config
+
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2417)
+
+```python
+def native_runtime_from_config(configuration_json: str, catalog, grants):
+```
+
+原始接口说明：
+
+```text
+Parse native runtime policy while retaining catalog and key ownership in C++.
+```
+
+### API-dd00ba3eabb6 · ServiceUser.native_grant_client_from_config
+
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2422)
+
+```python
+def native_grant_client_from_config(
+        self, configuration_json: str, base_directory: str = "."):
+```
+
+原始接口说明：
+
+```text
+Construct the requester-side native grant client from public-key config.
+```
+
+### API-a8e715905f41 · ServiceUser.native_inference_client_configured
+
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2428)
+
+```python
+def native_inference_client_configured(
+        self, runtime, preparation, admission, conversations=None):
+```
+
+原始接口说明：
+
+```text
+Create a fully configured native requester without Python planning.
+```
+
+### API-d6f8a638ed22 · ServiceUser.native_conversation_coordinator_from_config
+
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2434)
+
+```python
+def native_conversation_coordinator_from_config(
+        self, configuration_json: str, base_directory: str = "."):
+```
+
+原始接口说明：
+
+```text
+Load the operator-pinned conversation owner in C++.
+
+Key files, journal permissions, and checkpoint ownership never cross
+the Python boundary; this returns only an opaque native coordinator.
+```
+
 ### API-8fb1a1133d8d · ServiceUser.open_live_stream
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2398)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2444)
 
 ```python
 def open_live_stream(
@@ -41285,7 +43479,7 @@ Open semantic-name prefetch; callback receives validated opaque bytes.
 
 ### API-839525c26009 · ServiceUser.subscribe_stream
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2448)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2494)
 
 ```python
 def subscribe_stream(self, descriptor, options):
@@ -41299,7 +43493,7 @@ Open and start one high-level stream subscription.
 
 ### API-a574c8117f6c · ServiceUser.request_service
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2493)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2539)
 
 ```python
 def request_service(
@@ -41322,7 +43516,7 @@ def request_service(
 
 ### API-192a8b1914fa · ServiceUser.request_service_streaming
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2521)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2567)
 
 ```python
 def request_service_streaming(
@@ -41353,7 +43547,7 @@ through ``on_event`` or through ``async for`` on the returned handle.
 
 ### API-9efa59fae3e4 · ServiceUser.request_streaming
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2599)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2645)
 
 ```python
 def request_streaming(
@@ -41380,7 +43574,7 @@ the C++ runtime; callbacks receive opaque event/final payload bytes.
 
 ### API-7c6531e9f67d · ServiceUser.request_service_targeted
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2621)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2667)
 
 ```python
 def request_service_targeted(
@@ -41404,7 +43598,7 @@ submitted, including local admission, token bootstrap, and publication.
 
 ### API-77ef96165929 · ServiceUser.query_collaboration_status
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2643)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2689)
 
 ```python
 def query_collaboration_status(
@@ -41415,7 +43609,7 @@ def query_collaboration_status(
 
 ### API-63b97e239535 · ServiceUser.collaboration_status
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2658)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2704)
 
 ```python
 def collaboration_status(
@@ -41431,7 +43625,7 @@ Return the latest validated per-Provider snapshots for a request.
 
 ### API-4350094c06bb · ServiceUser.wait_for_verified_collaboration_data
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2670)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2716)
 
 ```python
 def wait_for_verified_collaboration_data(
@@ -41457,7 +43651,7 @@ request/name binding, scope metadata, and request-scope AEAD all pass.
 
 ### API-0a3182cb443f · ServiceUser.clear_verified_collaboration_data
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2725)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2771)
 
 ```python
 def clear_verified_collaboration_data(
@@ -41477,7 +43671,7 @@ control/ack exchange.  Call this once the transaction is terminal.
 
 ### API-8ad358522682 · ServiceUser.publish_collaboration_data
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2739)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2785)
 
 ```python
 def publish_collaboration_data(
@@ -41499,7 +43693,7 @@ Publish one requester-owned encrypted collaboration control record.
 
 ### API-0b36ec8cc3a8 · ServiceUser.watch_collaboration_request
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2758)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2804)
 
 ```python
 def watch_collaboration_request(
@@ -41514,7 +43708,7 @@ def watch_collaboration_request(
 
 ### API-43b43f87b697 · ServiceUser.wait_collaboration_request
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2843)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2889)
 
 ```python
 def wait_collaboration_request(
@@ -41527,7 +43721,7 @@ def wait_collaboration_request(
 
 ### API-97315ee8afb3 · ServiceUser.watch_collaboration_status
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2858)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2904)
 
 ```python
 def watch_collaboration_status(
@@ -41544,7 +43738,7 @@ Yield only monotonic member snapshots until the local watch ends.
 
 ### API-60ddde37250d · ServiceUser.wait_collaboration_status
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2889)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2935)
 
 ```python
 def wait_collaboration_status(
@@ -41556,7 +43750,7 @@ def wait_collaboration_status(
 
 ### API-2617550b12f7 · ServiceUser.request_service_select
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2902)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2948)
 
 ```python
 def request_service_select(
@@ -41590,7 +43784,7 @@ from one shared repo service name.
 
 ### API-dcca5f57e0cf · ServiceUser.request_service_async
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2963)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3009)
 
 ```python
 def request_service_async(
@@ -41617,7 +43811,7 @@ loop. Python only receives final response or timeout callbacks.
 
 ### API-30e3451b0daf · ServiceUser.request_service_targeted_async
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L2990)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3036)
 
 ```python
 def request_service_targeted_async(
@@ -41643,7 +43837,7 @@ total deadline includes admission, token bootstrap, and publication.
 
 ### API-d5ee6e3975c8 · ServiceUser.publish_encrypted_large_data
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3015)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3061)
 
 ```python
 def publish_encrypted_large_data(
@@ -41658,7 +43852,7 @@ def publish_encrypted_large_data(
 
 ### API-d33f12db80c9 · ServiceUser.publish_signed_app_data
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3031)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3077)
 
 ```python
 def publish_signed_app_data(
@@ -41678,7 +43872,7 @@ Publish signed APP Data at an exact name below this identity's DI prefix.
 
 ### API-dbf6ceebe6e6 · ServiceUser.fetch_signed_app_data
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3044)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3090)
 
 ```python
 def fetch_signed_app_data(
@@ -41698,7 +43892,7 @@ Fetch one exact APP record and validate its trust and signer identity.
 
 ### API-e8084ad3e77e · ServiceUser.begin_collaboration
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3057)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3103)
 
 ```python
 def begin_collaboration(
@@ -41739,7 +43933,7 @@ mutate the immutable ACK_CLOSED/commit_plan lifecycle.
 
 ### API-52e302e296fd · ServiceUser.request_collaboration
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3195)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3241)
 
 ```python
 def request_collaboration(
@@ -41777,7 +43971,7 @@ providers. It is observational only and must not return a value.
 
 ### API-b2a62479048f · ServiceUser.request_collaboration_async
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3271)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3317)
 
 ```python
 def request_collaboration_async(
@@ -41808,7 +44002,7 @@ Submit a generic multi-provider collaboration without blocking.
 
 ### API-1d493ac4c84e · ServiceUser.start
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3312)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3358)
 
 ```python
 def start(self) -> None:
@@ -41822,7 +44016,7 @@ Start the user's background Face event loop for async requests.
 
 ### API-ad5b05f6115f · ServiceUser.stop
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3317)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3363)
 
 ```python
 def stop(self) -> None:
@@ -41836,7 +44030,7 @@ Stop the user's background Face event loop.
 
 ### API-40e181a75c50 · ServiceUser.get_allowed_services
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3322)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3368)
 
 ```python
 def get_allowed_services(self) -> list[AllowedService]:
@@ -41850,7 +44044,7 @@ Return the current permission snapshot fetched from ServiceController.
 
 ### API-10ae1a19bfc8 · ServiceUser.refresh_permissions
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3334)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3380)
 
 ```python
 def refresh_permissions(self) -> None:
@@ -41864,7 +44058,7 @@ Reissue the controller permission fetch for this existing identity.
 
 ### API-cc35dcf4dd0c · ServiceUser.get_ndnsd_services
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3339)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3385)
 
 ```python
 def get_ndnsd_services(self) -> list[dict[str, Any]]:
@@ -41881,7 +44075,7 @@ serviceLifetime, publishTimestamp, and serviceMetaInfo dict.
 
 ### API-80db6fd69e6f · ServiceUser.pump
 
-public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3350)
+public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/service.py#L3396)
 
 ```python
 def pump(self, milliseconds: int) -> None:

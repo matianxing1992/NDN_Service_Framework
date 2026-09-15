@@ -630,7 +630,7 @@
         },
         {
           "title": "原生输入与选项",
-          "text": "NativeApplicationInput 区分 Inline 和 RepositoryReference，携带任务及 schema 绑定；内联字节与 Repo 引用不能混填。NativeRequestOptions 的 timeoutMs 默认 30000，ackTimeoutMs 默认 5000，后者是前者之内的报价预算。NativeInferenceClient 创建 handle 并调度请求；目前生产 dispatch 仍在期限检查后返回 NATIVE_REQUEST_PIPELINE_NOT_READY。"
+          "text": "NativeApplicationInput 区分 Inline 和 RepositoryReference，携带任务及 schema 绑定；内联字节与 Repo 引用不能混填。NativeRequestOptions 的 timeoutMs 默认 30000，ackTimeoutMs 默认 5000，后者是前者之内的报价预算。生产路径由 Runtime::open → User::prepare → PreparedModel 绑定已验证模型包，再由 NativeInferenceClient 创建 handle 并调度准备、ACK、Selection、Provider 与 Response。没有 preparation/request contract 的兼容构造仍明确返回 NATIVE_REQUEST_PIPELINE_NOT_READY；不能把该兼容分支当作 prepared 路径的结果。"
         },
         {
           "title": "句柄行为",
