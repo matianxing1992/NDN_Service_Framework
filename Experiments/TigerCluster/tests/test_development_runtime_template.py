@@ -99,6 +99,8 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "test -d /dev || mkdir /dev" in template_text
     assert "test -d /tmp || mkdir /tmp" in template_text
     assert "test -d /var/tmp || mkdir /var/tmp" in template_text
+    assert "APT::Sandbox::User \"root\";" in template_text
+    assert template_text.count("99ndnsf-root-mapped") == 2
     assert "/var/lib/dpkg/updates" in TEMPLATE.read_text()
     build_script = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.sh").read_text()
     assert "preflight-development-sif.py" in build_script

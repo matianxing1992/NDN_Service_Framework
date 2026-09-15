@@ -37,7 +37,12 @@ Stage: builder
     export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
     # The minimal bootstrap SIF may omit dpkg's transient state directories.
     # Recreate them before apt invokes dpkg so the package boundary is stable.
-    install -d /var/lib/dpkg/updates /etc/apt/preferences.d
+    install -d /var/lib/dpkg/updates /etc/apt/preferences.d /etc/apt/apt.conf.d
+    # Root-mapped Apptainer has no subordinate-id range.  APT's default
+    # _apt sandbox cannot switch uid/gid in that namespace, so make the
+    # required build boundary explicit instead of failing after repository
+    # downloads have started.
+    printf '%s\n' 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99ndnsf-root-mapped
     # Drop inherited application objects and build trees before using the base.
     rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /tmp/nac-abe-build /tmp/ndnsf-build-python /tmp/ndnsf-pc
     rm -rf /opt/ndnsf-stage /opt/ndnsf-candidate /opt/ndnsf-di/replay
@@ -550,6 +555,8 @@ Stage: final
     export DEBIAN_FRONTEND=noninteractive
     sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
     # Online APT repositories must still provide these builder-selected versions.
+    install -d /etc/apt/apt.conf.d
+    printf '%s\n' 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99ndnsf-root-mapped
     apt-get -o Acquire::Retries=3 update
     /opt/venv/bin/python - <<'PY'
 import json

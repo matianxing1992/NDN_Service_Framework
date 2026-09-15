@@ -5305,3 +5305,22 @@ which differs from the Spec186 handoff seal
   consumer path; the full TigerCluster test set then passed.
 - **Lesson**: static shell preflight must model only the syntax it needs and
   must not reject valid continuation lines while trying to inspect them.
+
+## 2026-09-15 — Spec186 r73 root-mapped APT sandbox failed before package install
+
+- **Area**: T006 local 1.5.3 SIF build, builder `%post`.
+- **Symptom**: after source/base preflight passed, the root-mapped Apptainer
+  build reached `apt-get update` and failed with `setgroups 65534 failed`,
+  `setegid 65534 failed`, and `Failed to setgroups` while APT tried to run its
+  `_apt` sandbox user.
+- **Root cause**: this host has no subordinate-id allocation and the build
+  intentionally uses Apptainer's root-mapped namespace; the definition did
+  not declare the APT sandbox user, so package setup depended on a namespace
+  capability that was unavailable.
+- **Correction**: make both builder and final stages create
+  `/etc/apt/apt.conf.d/99ndnsf-root-mapped` with
+  `APT::Sandbox::User "root";`, and add a static template regression. The
+  failed build produced no candidate SIF or record.
+- **Lesson**: rootless/root-mapped build constraints must be encoded in the
+  definition before network package operations; a successful source preflight
+  cannot imply that namespace-sensitive package setup is runnable.
