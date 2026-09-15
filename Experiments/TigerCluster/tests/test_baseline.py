@@ -39,7 +39,19 @@ def test_container_has_only_own_home_and_in_image_tools(tmp_path):
     assert "--cleanenv" in command and "--containall" in command
     assert not any(x.startswith("HOME=") for x in command)
     assert not any(":/identities:rw" in x or "root.key" in x for x in command)
+    assert "NDN_CLIENT_PIB=pib-sqlite3:/identities/user/.ndn" in command
+    assert "NDN_CLIENT_TPM=tpm-file:/identities/user/.ndn" in command
     assert command[-2:] == ["/opt/ndnsf-di/current/bin/nfdc", "status"]
+
+
+def test_identity_prepare_does_not_inherit_runtime_keychain_locators(tmp_path):
+    profile = baseline.load_profile(ROOT / "profiles/two-node.json")
+    command = baseline.container_command(
+        profile, tmp_path / "bundle", tmp_path / "private/issuer",
+        tmp_path / "public", tmp_path / "out", [baseline.PYTHON, "-c", "pass"],
+        prepare=tmp_path / "private")
+    assert not any(value.startswith("NDN_CLIENT_PIB=") for value in command)
+    assert not any(value.startswith("NDN_CLIENT_TPM=") for value in command)
 
 
 def fixture_records():

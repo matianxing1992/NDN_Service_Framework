@@ -120,7 +120,16 @@ def container_command(profile: dict, bundle: Path, home: Path, public: Path,
                 "NDN_CLIENT_TRANSPORT=unix:///node/nfd.sock",
                 "NDNSF_CONFIG=" + role_home + "/session.conf",
                 "NDNSF_CONTROLLER_CERT_FILE=/config/controller.cert",
-                "NDN_LOG=ndn_service_framework.*=ERROR", *argv]
+                "NDN_LOG=ndn_service_framework.*=ERROR"]
+    if prepare is None:
+        # Runtime::open only reuses the role's persistent identity when both
+        # locators are explicit.  The ndn-cxx locators name the .ndn store
+        # directory; the backends append pib.db/ndnsec-key-file themselves.
+        # Identity setup deliberately omits these variables so ndnsec uses
+        # the issuer HOME and cannot write every role into one store.
+        command += [f"NDN_CLIENT_PIB=pib-sqlite3:{role_home}/.ndn",
+                    f"NDN_CLIENT_TPM=tpm-file:{role_home}/.ndn"]
+    command += list(argv)
     return command
 
 
