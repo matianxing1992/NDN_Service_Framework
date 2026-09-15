@@ -4,7 +4,7 @@
 
 ## Build locally
 
-先在与 `base.sif` 同一 builder/依赖闭包内生成并验收一个应用候选 SIF。当前 `development-runtime.def.in` 会在容器内编译原生组件，并在最终镜像中发布无 symlink 的 `/opt/ndnsf-app`；APP 只放 DI 应用程序、`libndnsf-distributed-inference` 和绑定/配置，Core、SVS、NDNSD、NAC-ABE 等基础库只由 base 提供。候选必须有 `ndnsf-local-sif-build-v3` `PASS` 记录，且记录中的 `buildInput.baseSif.sha256` 必须等于要交付的 base SIF。只有旧 `/opt/ndnsf-di/current` 的 complete-application SIF 不能直接作为 pair 候选；脚本会在容器内布局检查处拒绝它。
+先在与 `base.sif` 同一 builder/依赖闭包内生成并验收一个应用候选 SIF。当前 `development-runtime.def.in` 会在容器内编译原生组件，并在最终镜像中发布无 symlink 的 `/opt/ndnsf-app`；APP 放置 DI 应用程序以及它实际需要的 Core、SVS、NDNSD、NAC-ABE、OpenABE、Relic 和绑定/配置，base 只提供稳定的 NDN-CXX、NFD、ONNX Runtime、Python 与系统运行库。候选必须有 `ndnsf-local-sif-build-v3` `PASS` 记录，且记录中的 `buildInput.baseSif.sha256` 必须等于要交付的 base SIF。只有旧 `/opt/ndnsf-di/current` 的 complete-application SIF 不能直接作为 pair 候选；脚本会在容器内布局检查处拒绝它。
 
 然后只需一次 pair 打包：
 
@@ -48,6 +48,6 @@ Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-sif-app.sh \
 
 把同一 `base.sif`、`app/` 和 `app-manifest.json` 复制到项目存储后，在 Slurm 作业中调用同一 `run-sif-app.sh`（去掉 `--local`）。运行器重新计算 base 和 APP manifest，要求 `SLURM_JOB_ID`，并把 APP 挂载到 `/opt/ndnsf-di/app`。`PATH`、`LD_LIBRARY_PATH` 和 `PYTHONPATH` 只包含该 APP 及明确的 `/opt/ndn-base` 稳定层；base SIF 中可能残留的旧应用路径不会成为回退路径。APP 目录和 manifest 必须保持只读，输入路径不能是 symlink。
 
-复合身份至少包含 base SIF、候选 SIF、容器构建记录、APP 文件清单、Apptainer 版本、模型/制品/profile 和实际挂载。当前发布的 pair manifest 使用 `ndnsf-sif-app-v2`，其中明确声明 `/opt/venv/bin/python`、`/opt/ndn-base/lib` 和 `/opt/onnxruntime/lib` 这组 base runtime contract；旧 v1 manifest 必须重新发布。任何一项改变都必须重新打包并在本地重跑；不能只替换 APP 文件或只修改 profile。
+复合身份至少包含 base SIF、候选 SIF、容器构建记录、APP 文件清单、Apptainer 版本、模型/制品/profile 和实际挂载。当前发布的 pair manifest 使用 `ndnsf-sif-app-v2`，其中明确声明 APP native library allowlist 以及 `/opt/venv/bin/python`、`/opt/ndn-base/lib` 和 `/opt/onnxruntime/lib` 这组 base runtime contract；旧 v1 manifest 必须重新发布。任何一项改变都必须重新打包并在本地重跑；不能只替换 APP 文件或只修改 profile。
 
 现有 `build-local-sif.sh` 与 `run-container.sh` 保留为完整应用 SIF 的兼容入口。新 pair 入口不自动提交 Slurm、构建 SIF 或上传 Tiger；只有本地验证通过后才进入人工交付步骤。

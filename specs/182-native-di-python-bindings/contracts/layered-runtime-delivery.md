@@ -11,13 +11,15 @@
 
 | Artifact | Content | Rebuild trigger |
 | --- | --- | --- |
-| Base SIF | OS/C++ runtime、ndn-cxx、NFD、NDN-SVS、NDNSD、NAC-ABE、NDNSF Core、稳定 NDNSF-Repo 组件，以及锁定的 ORT/ONNX/tokenizer/native dependencies | 所含库、工具链、ABI、配置或安全修复变化 |
-| Application bundle | 原生 DI/UAV 程序、libndnsf-distributed-inference、应用 adapter、配置、启动器与必要可选 bindings | 对应应用及其真实依赖变化 |
+| Base SIF | OS/C++ runtime、ndn-cxx、NFD、供基础层自身使用的 OpenABE/Relic/NAC-ABE foundation、稳定 NDNSF-Repo 组件，以及锁定的 ORT/ONNX/tokenizer/native dependencies | 所含库、工具链、ABI、配置或安全修复变化 |
+| Application bundle | NDNSF Core、NDN-SVS、NDNSD、原生 DI/UAV 程序、libndnsf-distributed-inference、应用 adapter、配置、启动器与必要可选 bindings；当前 pair manifest 显式携带这八个候选 ABI objects：`libndn-service-framework.so.0.1.0`、`libndnsf-distributed-inference.so`、`libndn-svs.so.0.1.0`、`libnac-abe.so`、`libndnsd.so.0.1.0`、`libopenabe.so`、`librelic.so`、`librelic_ec.so` | 对应应用及其真实依赖变化 |
 | Model/artifact bundle | 模型、tokenizer 数据、canonical source、模型制品 | 模型及制品身份变化；单独锁定，不混入基础镜像 |
 | Run evidence | 基础 SIF、应用、模型、profile 的组合身份和本次运行结果 | 每次运行独立生成 |
 
 NDNSF-Repo 只有已锁定且稳定的运行组件属于基础层；应用特定 Repo 配置属于应用层。
-某个依赖频繁变化时先调整归属和依赖锁，不能同时在内外放两份库再依赖搜索顺序选中。
+当前 pair 的八个候选 ABI objects 即使与基础层存在同名 foundation copy，也必须由 APP
+显式拥有并在运行时解析到 APP；验证器拒绝依赖搜索顺序或 `/usr/local/lib` 的不确定选择。
+某个依赖频繁变化时先调整归属和依赖锁，不能把未声明的第二份库当作回退。
 本分层不改变 Core/DI/Repo/UAV 的业务职责，不把 DI 逻辑下沉到 Core。
 
 ## Build and Load Contract
@@ -30,7 +32,9 @@ NDNSF-Repo 只有已锁定且稳定的运行组件属于基础层；应用特定
    应用配置/launcher 和 manifest。运行时只读挂载该版本，禁止绑定活动源码工作树
    或可变 latest 目录充当资格候选。构建缓存不随应用交付。
 4. 应用库使用明确的 RUNPATH/加载路径；记录实际 resolved libraries、hash 和 ABI。
-   Core/Repo 等基础库只能来自指定基础 SIF；应用库来自指定应用包。Python bindings
+上述八个候选 ABI objects 必须全部从指定应用包解析，不能从 `/opt/ndn-base/lib`、
+`/usr/local/lib`、`current` 或 `stage` 偷取同名对象；其余 foundation 与 Core/Repo
+稳定依赖只能来自明确的所属层。Python bindings
    如启用，也必须在对应 builder 内按正确 SOABI 构建，并转发到同一原生 DI 库。
 5. 新组合必须通过容器内依赖/符号/启动检查，再按实际变更执行规定验收。仅应用改动
    可复用未变 SIF，但旧组合的运行 PASS 不能直接赋予新应用。依赖或 ABI 变化时

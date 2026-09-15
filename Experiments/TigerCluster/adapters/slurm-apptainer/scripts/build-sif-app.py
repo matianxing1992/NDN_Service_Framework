@@ -35,6 +35,29 @@ EXPECTED_BINARIES = (
     "di-native-fault-provider",
     "App_ServiceController",
 )
+APP_NATIVE_LIBRARIES = (
+    "libndn-service-framework.so.0.1.0",
+    "libndnsf-distributed-inference.so",
+    "libndn-svs.so.0.1.0",
+    "libnac-abe.so",
+    "libndnsd.so.0.1.0",
+    "libopenabe.so",
+    "librelic.so",
+    "librelic_ec.so",
+)
+BASE_NATIVE_LIBRARIES = (
+    "libonnxruntime.so.1", "libndn-cxx.so.0.9.0",
+    "libboost_log.so.1.71.0", "libboost_stacktrace_backtrace.so.1.71.0",
+    "libboost_chrono.so.1.71.0", "libboost_thread.so.1.71.0",
+    "libboost_system.so.1.71.0", "libboost_filesystem.so.1.71.0",
+    "libboost_program_options.so.1.71.0", "libboost_regex.so.1.71.0",
+    "libboost_serialization.so.1.71.0", "libboost_iostreams.so.1.71.0",
+    "libboost_date_time.so.1.71.0", "libboost_atomic.so.1.71.0",
+    "libboost_log_setup.so.1.71.0", "libprotobuf.so.17", "libsqlite3.so.0",
+    "libgmp.so.10", "libpcap.so.0.8", "libssl.so.1.1", "libcrypto.so.1.1",
+    "libpthread.so.0", "libdl.so.2", "librt.so.1", "libstdc++.so.6",
+    "libm.so.6", "libgcc_s.so.1", "libc.so.6", "ld-linux-x86-64.so.2",
+)
 BASE_RUNTIME_CHECK = r"""
 set -eu
 test -x /opt/venv/bin/python
@@ -260,6 +283,7 @@ def verify_materialized(apptainer: Path, candidate: Path, output: Path,
 set -eu
 app=/opt/ndnsf-app
 test -d "$app/bin" -a -d "$app/lib" -a -d "$app/python" -a -d "$app/manifest"
+export LD_LIBRARY_PATH="$app/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib"
 /opt/venv/bin/python - "$app" <<'PY'
 import os
 import stat
@@ -272,6 +296,26 @@ if not stat.S_ISDIR(os.lstat(root).st_mode):
 
 def onerror(error):
     raise SystemExit("APP_MATERIALIZED_WALK_FAILED:" + str(error))
+
+app_libraries = {
+    "libndn-service-framework.so.0.1.0", "libndnsf-distributed-inference.so",
+    "libndn-svs.so.0.1.0", "libnac-abe.so", "libndnsd.so.0.1.0",
+    "libopenabe.so", "librelic.so", "librelic_ec.so",
+}
+forbidden_roots = ("/opt/ndnsf-di/current/", "/opt/ndnsf-stage/", "/src/", "/usr/local/lib/")
+
+def verify_elf_resolution(path, output):
+    if "not found" in output:
+        raise SystemExit("APP_MATERIALIZED_ELF_DEPENDENCY_FAILED:" + path)
+    for line in output.splitlines():
+        fields = line.strip().split()
+        if len(fields) < 3 or fields[1] != "=>":
+            continue
+        name, resolved = fields[0], fields[2]
+        if name in app_libraries and not resolved.startswith(root + "/lib/"):
+            raise SystemExit("APP_MATERIALIZED_ELF_LIBRARY_ORIGIN_MISMATCH:" + name + ":" + resolved)
+        if any(resolved.startswith(prefix) for prefix in forbidden_roots):
+            raise SystemExit("APP_MATERIALIZED_ELF_FORBIDDEN_RESOLVED_PATH:" + resolved)
 
 for directory, subdirectories, filenames in os.walk(root, onerror=onerror,
                                                     followlinks=False):
@@ -300,13 +344,18 @@ for directory, subdirectories, filenames in os.walk(root, onerror=onerror,
             raise SystemExit("APP_MATERIALIZED_ELF_READ_FAILED:" + str(error))
         result = subprocess.run(["ldd", path], text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if result.returncode != 0 or "not found" in result.stdout:
+        if result.returncode != 0:
             raise SystemExit("APP_MATERIALIZED_ELF_DEPENDENCY_FAILED:" + path)
+        verify_elf_resolution(path, result.stdout)
 PY
 for name in di-native-provider di-native-fault-provider App_ServiceController; do
     test -x "$app/bin/$name"
 done
-test -f "$app/lib/libndnsf-distributed-inference.so"
+for name in libndn-service-framework.so.0.1.0 libndnsf-distributed-inference.so \
+            libndn-svs.so.0.1.0 libnac-abe.so libndnsd.so.0.1.0 \
+            libopenabe.so librelic.so librelic_ec.so; do
+    test -f "$app/lib/$name"
+done
 LD_LIBRARY_PATH="$app/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib" \
 PYTHONPATH="$app/python" PYTHONNOUSERSITE=1 /opt/venv/bin/python \
     -c 'import ndnsf._ndnsf, ndnsf_distributed_inference, py_repoclient'
@@ -1145,6 +1194,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
             r"""set -eu
 app=/opt/ndnsf-app
 test -d "$app/bin" -a -d "$app/lib" -a -d "$app/python"
+export LD_LIBRARY_PATH="$app/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib"
 PYTHONNOUSERSITE=1 /opt/venv/bin/python - "$app" <<'PY'
 import os
 import stat
@@ -1172,7 +1222,11 @@ PY
 for name in di-native-provider di-native-fault-provider App_ServiceController; do
     test -x "$app/bin/$name"
 done
-test -f "$app/lib/libndnsf-distributed-inference.so"
+for name in libndn-service-framework.so.0.1.0 libndnsf-distributed-inference.so \
+            libndn-svs.so.0.1.0 libnac-abe.so libndnsd.so.0.1.0 \
+            libopenabe.so librelic.so librelic_ec.so; do
+    test -f "$app/lib/$name"
+done
 PYTHONNOUSERSITE=1 /opt/venv/bin/python - "$app" <<'PY'
 import os
 import stat
@@ -1182,6 +1236,26 @@ import sys
 root = sys.argv[1]
 def onerror(error):
     raise SystemExit("APP_ELF_WALK_FAILED:" + str(error))
+
+app_libraries = {
+    "libndn-service-framework.so.0.1.0", "libndnsf-distributed-inference.so",
+    "libndn-svs.so.0.1.0", "libnac-abe.so", "libndnsd.so.0.1.0",
+    "libopenabe.so", "librelic.so", "librelic_ec.so",
+}
+forbidden_roots = ("/opt/ndnsf-di/current/", "/opt/ndnsf-stage/", "/src/", "/usr/local/lib/")
+
+def verify_elf_resolution(path, output):
+    if "not found" in output:
+        raise SystemExit("APP_ELF_DEPENDENCY_FAILED:" + path)
+    for line in output.splitlines():
+        fields = line.strip().split()
+        if len(fields) < 3 or fields[1] != "=>":
+            continue
+        name, resolved = fields[0], fields[2]
+        if name in app_libraries and not resolved.startswith(root + "/lib/"):
+            raise SystemExit("APP_ELF_LIBRARY_ORIGIN_MISMATCH:" + name + ":" + resolved)
+        if any(resolved.startswith(prefix) for prefix in forbidden_roots):
+            raise SystemExit("APP_ELF_FORBIDDEN_RESOLVED_PATH:" + resolved)
 
 for directory, subdirectories, filenames in os.walk(root, onerror=onerror, followlinks=False):
     subdirectories.sort()
@@ -1197,8 +1271,9 @@ for directory, subdirectories, filenames in os.walk(root, onerror=onerror, follo
             raise SystemExit("APP_ELF_READ_FAILED:" + str(error))
         result = subprocess.run(["ldd", path], text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if result.returncode != 0 or "not found" in result.stdout:
+        if result.returncode != 0:
             raise SystemExit("APP_ELF_DEPENDENCY_FAILED:" + path)
+        verify_elf_resolution(path, result.stdout)
 PY
 LD_LIBRARY_PATH="$app/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib" \
 PYTHONPATH="$app/python" PYTHONNOUSERSITE=1 /opt/venv/bin/python \
@@ -1266,7 +1341,7 @@ PYTHONPATH="$app/python" PYTHONNOUSERSITE=1 /opt/venv/bin/python \
         rows = file_rows(temp)
         names = {row["path"] for row in rows}
         required = {
-            "lib/libndnsf-distributed-inference.so",
+            *(f"lib/{name}" for name in APP_NATIVE_LIBRARIES),
             *(f"bin/{name}" for name in EXPECTED_BINARIES),
             "python/ndnsf_distributed_inference/__init__.py",
             "manifest/app-runtime.lock.json",
@@ -1314,6 +1389,8 @@ PYTHONPATH="$app/python" PYTHONNOUSERSITE=1 /opt/venv/bin/python \
                 "appFallback": "forbidden",
                 "modelMount": "/models:ro",
                 "artifactMount": "/artifacts:ro",
+                "appNativeLibraries": list(APP_NATIVE_LIBRARIES),
+                "baseNativeLibraries": list(BASE_NATIVE_LIBRARIES),
                 "baseRuntime": {
                     "python": "/opt/venv/bin/python",
                     "ndnBaseLib": "/opt/ndn-base/lib",

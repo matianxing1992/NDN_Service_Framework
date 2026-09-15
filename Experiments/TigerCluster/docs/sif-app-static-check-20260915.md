@@ -74,6 +74,14 @@ its build record are supplied.
 - pair-safe C++ RPATH is `$ORIGIN/../lib:/opt/ndn-base/lib`; Python bindings use
   `$ORIGIN/../../lib:/opt/ndn-base/lib`; the packager rejects `current`, `stage`
   and `/src/` in ELF RPATH/RUNPATH
+- the APP native allowlist now carries the complete candidate ABI closure:
+  `libndn-service-framework.so.0.1.0`, `libndnsf-distributed-inference.so`,
+  `libndn-svs.so.0.1.0`, `libnac-abe.so`, `libndnsd.so.0.1.0`,
+  `libopenabe.so`, `librelic.so` and `librelic_ec.so`; the former DI-only
+  layout would leave the pair runner unable to resolve custom NEEDED entries
+- candidate and materialized APP checks now require each allowlisted `DT_NEEDED`
+  name to resolve from the mounted APP library directory and reject
+  `/usr/local/lib`, `current`, `stage` and `/src` resolutions
 
 ## Batch retrospective
 
@@ -87,6 +95,23 @@ its build record are supplied.
 The local build gate remains blocked at input discovery: the recorded base SIF
 is not present locally (the `images/spec180-runtime-r119.sif` entry is a broken
 compatibility symlink), so no SIF or APP was produced and nothing was uploaded.
+
+## r43 native ABI closure repair
+
+- frozen review snapshot: `.codex-tmp/spec185-sif-app-closure-review-r43`
+- `changes.diff` SHA-256: `sha256:b3072b98ab0ffeaf5f0d7c8707fdad5077d9f5d493b16410a3ca5f765a99b432`
+- scope: twelve handoff, template, packager, validator, boundary, test, contract and delivery-document files; file hashes are recorded in `files.sha256`
+- the APP allowlist now carries the eight candidate libraries required by the
+  observed C++ closure: `libndn-service-framework.so.0.1.0`,
+  `libndnsf-distributed-inference.so`, `libndn-svs.so.0.1.0`, `libnac-abe.so`,
+  `libndnsd.so.0.1.0`, `libopenabe.so`, `librelic.so` and `librelic_ec.so`
+- `pytest -q Experiments/TigerCluster/tests` passed `81`; Python compilation,
+  Bash syntax, ShellCheck and diff checks also passed
+- the handoff renderer now rejects symlinked base/bundle components before
+  path resolution; the regression suite records this as an input-gate check
+- this is a static/packaging repair only. A real candidate SIF, APP
+  materialization, loader startup, C++ request chain and Tiger run remain
+  unobserved until a regular base SIF with the locked digest is available
 
 ## Local build attempt r1
 
@@ -104,3 +129,87 @@ state. The SSH alias `tigercluster` could not be resolved by this host
 (`rc=255`, `Could not resolve hostname`); the command and output are preserved
 in `.codex-tmp/local-first-base-probe-20260915-r1/`. No remote SIF was read and
 the local build remains blocked on a regular base SIF and its digest check.
+
+## r46 native ABI closure and local-first gate repair
+
+- frozen review snapshot: `.codex-tmp/spec185-sif-app-closure-review-r46`
+- snapshot identity: `base=73c67a47a09d304c47b3486897dd5271e9be2b9f`,
+  `changesSha256=sha256:be6a21fa1d6c4b2332869dc8476f76192997bd2e371b6ccf89a3e293e4af1241`,
+  `pathsSha256=sha256:31c9cb57a5a40a4f9c33ad18aa428a2c512b4743df7007f3475719d35dbc0534`
+- scope: thirteen handoff, template, packager, validator, boundary, test,
+  contract, task and delivery-document files; exact file hashes are recorded
+  in `files.sha256`
+- boundary classification is corrected: native linked-library origin markers
+  are checked in the builder stage where `verify-native.py` is created; APP
+  materialization origin markers remain runtime checks in the packager
+- `pytest -q Experiments/TigerCluster/tests` passed `81`; Python compilation,
+  Bash syntax, ShellCheck and diff checks passed
+- official read-only `review-agent` result is pending for this frozen snapshot
+
+The local pair gate was rerun after this repair with the recorded Apptainer
+`1.5.3` executable. It stopped at `APP_BASE_SIF_PATH_SYMLINK` with `rc=4`
+before Apptainer execution because the recorded base path is still a broken
+compatibility symlink. The raw command and result are in
+`.codex-tmp/local-first-sif-attempt-20260915-r2/`; no SIF, APP or upload was
+produced.
+
+## r48 native ELF oracle repair
+
+- frozen review snapshot: `.codex-tmp/spec185-sif-app-closure-review-r48`
+- the native regression now retains the complete `DT_NEEDED` set, rejects
+  unclassified dependencies, and checks every APP dependency's `ldd` source
+  under `NDNSF_TEST_APP_LIB_ROOT` when a container APP root is supplied
+- host-only candidates without that APP root are explicitly skipped for the
+  origin assertion; the container packager's mandatory APP-first `ldd` check
+  remains the runtime gate and rejects `/usr/local/lib` and other forbidden
+  roots
+- `pytest -q Experiments/TigerCluster/tests`: `80 passed, 1 skipped`; Python
+  compilation and diff checks passed
+- official read-only `review-agent` review is pending for this immutable
+  snapshot
+
+## r49 native ELF oracle boundary repair
+
+- the test derives its base-side NEEDED allowlist from the published
+  `baseNativeLibraries` runtime contract, including Boost, SQLite and GMP
+  entries, instead of maintaining a second incomplete list
+- when `NDNSF_TEST_APP_LIB_ROOT` is present, `ldd` now receives an explicit
+  APP-first `LD_LIBRARY_PATH`; the source assertion therefore exercises the
+  selected APP/lib directory rather than merely reading the variable
+- local result remains `80 passed, 1 skipped` because this host has no APP
+  runtime root; no SIF/Apptainer/Tiger execution was performed
+- official read-only `review-agent` review is pending for the r49 snapshot
+
+## r50 native candidate path repair
+
+- the real ELF regression now locates reusable `build-spec185-*` trees from
+  the repository root (`ROOT.parents[1]` for `Experiments/TigerCluster`), so
+  an available native candidate is no longer silently skipped
+- focused execution found the candidate and ran the complete `DT_NEEDED`
+  allowlist oracle; only the APP-origin subassertion is skipped without a
+  container APP root (`APP/lib origin requires a container runtime root`)
+- full local Tiger APP tests remain `80 passed, 1 skipped`; no SIF,
+  Apptainer runtime or Tiger execution was performed
+- official read-only `review-agent` result: `STATIC_PASS`; no P0-P3 findings.
+  The immutable snapshot identity is `changesSha256=sha256:2dde13ff9d162d33e76234c10c921ad12dcf019653fd981f42deac8602127d8`,
+  `pathsSha256=sha256:1ea9212b7740ff8a9ca4498ccb1fb6117a67cc1484a0f7f0b54f3e115069a2d8`,
+  base `73c67a47a09d304c47b3486897dd5271e9be2b9f`
+- five lanes are statically closed; actual SIF/Apptainer, C++/Python startup,
+  APP-origin inside a materialized pair, Slurm and Tiger remain unobserved
+
+## r51 final static closure
+
+- final immutable review snapshot: `.codex-tmp/spec185-sif-app-closure-review-r51`
+- review scope: eleven implementation, contract and test files; progress and
+  failure records are maintained separately from the frozen review scope
+- snapshot identity: `base=73c67a47a09d304c47b3486897dd5271e9be2b9f`,
+  `changesSha256=sha256:02610b4a12aa83af17cc37a491c5c50765761e20eb12f4de21536214572d6f88`,
+  `pathsSha256=sha256:75e255e77f49765f79964a95d0ca087ff5da31e5965d7b086770f67639ad60dc`
+- official read-only `review-agent`: `STATIC_PASS`, no P0-P3 findings; APP
+  eight-library closure, base contract, complete NEEDED oracle, APP-first
+  `ldd`, builder/final boundary and forbidden-origin checks are statically
+  consistent
+- local tests: `80 passed, 1 skipped`; the single skip is only the APP-origin
+  subassertion because no materialized APP/lib root exists on this host
+- compile/link, SIF/Apptainer runtime, C++/Python startup, Slurm and Tiger
+  qualification remain unobserved and are not claimed as PASS

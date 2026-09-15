@@ -18,8 +18,9 @@
 pair 入口见 [SIF + APP delivery](sif-app-delivery.md)。应用候选必须采用
 `/opt/ndnsf-app` 分层布局。当前 `development-runtime.def.in` 在同一
 container-native builder 中保留旧 `/opt/ndnsf-di/current` 兼容检查树，同时发布
-无 symlink 的 `/opt/ndnsf-app` 候选树（只包含 DI 应用程序、DI 原生库和绑定，基础库仍由
-base 提供）；旧 `build-local-sif.sh` 生成且没有该候选树的
+无 symlink 的 `/opt/ndnsf-app` 候选树（包含 DI 应用程序及其 Core、SVS、NDNSD、NAC-ABE、
+OpenABE、Relic 和 DI 原生库闭包，稳定 NDN-CXX/NFD/ONNX Runtime/Python 由 base 提供）；旧
+`build-local-sif.sh` 生成且没有该候选树的
 `/opt/ndnsf-di/current` complete-application SIF 仍可回放历史候选，但不能直接
 作为新的 pair APP 来源。pair 入口只接受容器内验证的候选，不接受宿主编译的
 `.so`、Python extension 或 venv。

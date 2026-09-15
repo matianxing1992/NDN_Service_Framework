@@ -92,6 +92,12 @@ PY
     test "$(pkg-config --variable=libdir libnac-abe)" = /opt/ndnsf-di/current/lib
     test -f /opt/ndnsf-di/current/include/nac-abe/consumer.hpp
     install -m 0755 /opt/ndnsf-di/current/lib/libnac-abe.so /opt/ndnsf-stage/lib/libnac-abe.so
+    # NAC-ABE's dynamically loaded OpenABE/Relic objects are part of the
+    # application ABI. Stage regular copies so an external APP does not
+    # depend on an unrecorded /usr/local/lib or host loader path.
+    install -m 0755 /usr/local/lib/libopenabe.so /opt/ndnsf-stage/lib/libopenabe.so
+    install -m 0755 /usr/local/lib/librelic.so /opt/ndnsf-stage/lib/librelic.so
+    install -m 0755 /usr/local/lib/librelic_ec.so /opt/ndnsf-stage/lib/librelic_ec.so
     cp -a /opt/ndnsf-di/current/include/nac-abe /opt/ndnsf-stage/include/
     install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-stage/lib/pkgconfig/libnac-abe.pc
 
@@ -286,7 +292,8 @@ artifacts = [('provider', base / 'bin/di-native-provider', runtime / 'bin/di-nat
 for name, file in [('framework', 'libndn-service-framework.so.0.1.0'),
                    ('distributedInference', 'libndnsf-distributed-inference.so'),
                    ('ndn-svs', 'libndn-svs.so.0.1.0'), ('nac-abe', 'libnac-abe.so'),
-                   ('ndn-sd', 'libndnsd.so.0.1.0')]:
+                   ('ndn-sd', 'libndnsd.so.0.1.0'), ('openabe', 'libopenabe.so'),
+                   ('relic', 'librelic.so'), ('relic-ec', 'librelic_ec.so')]:
     artifacts.append((name, base / 'lib' / file, runtime / 'lib' / file))
 for name, package in [('extension', 'ndnsf'), ('repoExtension', 'py_repoclient')]:
     artifacts.append((name, extensions[package], Path(sysconfig.get_paths()['purelib']) / package / extensions[package].name))
@@ -316,8 +323,11 @@ def closure(path):
         actual = Path(match.group(1))
         logical = actual
         if actual.name in selected:
+            assert actual.parent == base / 'lib', 'LINKED_LIBRARY_ORIGIN_MISMATCH:' + str(actual)
             expected, logical = selected[actual.name]
             assert digest(actual) == digest(expected), 'LINKED_LIBRARY_MISMATCH:' + str(actual)
+        elif str(actual).startswith('/usr/local/lib/'):
+            raise AssertionError('UNDECLARED_HOST_LIBRARY:' + str(actual))
         dependencies[str(logical)] = digest(actual)
     return {'ldd': output, 'dependencies': dependencies}
 
@@ -423,6 +433,9 @@ Stage: final
     /opt/ndnsf-stage/lib/libndnsf-distributed-inference.so /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so
     /opt/ndnsf-stage/lib/libndn-svs.so.0.1.0 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0
     /opt/ndnsf-stage/lib/libnac-abe.so /opt/ndnsf-candidate/lib/libnac-abe.so
+    /opt/ndnsf-stage/lib/libopenabe.so /opt/ndnsf-candidate/lib/libopenabe.so
+    /opt/ndnsf-stage/lib/librelic.so /opt/ndnsf-candidate/lib/librelic.so
+    /opt/ndnsf-stage/lib/librelic_ec.so /opt/ndnsf-candidate/lib/librelic_ec.so
     /opt/ndnsf-stage/lib/libndnsd.so.0.1.0 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0
     /opt/ndnsf-stage/lib/pkgconfig/libndn-service-framework.pc /opt/ndnsf-candidate/lib/pkgconfig/libndn-service-framework.pc
     /opt/ndnsf-stage/lib/pkgconfig/ndnsf-distributed-inference.pc /opt/ndnsf-candidate/lib/pkgconfig/ndnsf-distributed-inference.pc
@@ -465,6 +478,7 @@ PY
     rm -f /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so*
     rm -f /opt/ndnsf-di/current/lib/libndn-svs.so*
     rm -f /opt/ndnsf-di/current/lib/libnac-abe.so*
+    rm -f /opt/ndnsf-di/current/lib/libopenabe.so* /opt/ndnsf-di/current/lib/librelic.so* /opt/ndnsf-di/current/lib/librelic_ec.so*
     rm -f /opt/ndnsf-di/current/lib/libndnsd.so* /usr/local/lib/libndnsd.so*
     rm -f /usr/local/lib/pkgconfig/ndnsd.pc
     rm -rf /opt/ndnsf-di/current/include/ndnsd /usr/local/include/ndnsd
@@ -485,6 +499,9 @@ PY
     install -m 0755 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0
     ln -s libndn-svs.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-svs.so
     install -m 0755 /opt/ndnsf-candidate/lib/libnac-abe.so /opt/ndnsf-di/current/lib/libnac-abe.so
+    install -m 0755 /opt/ndnsf-candidate/lib/libopenabe.so /opt/ndnsf-di/current/lib/libopenabe.so
+    install -m 0755 /opt/ndnsf-candidate/lib/librelic.so /opt/ndnsf-di/current/lib/librelic.so
+    install -m 0755 /opt/ndnsf-candidate/lib/librelic_ec.so /opt/ndnsf-di/current/lib/librelic_ec.so
     install -m 0755 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0
     ln -s libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libndnsd.so
     install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/libndn-service-framework.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-service-framework.pc
@@ -503,8 +520,10 @@ PY
     # Publish a symlink-free application tree for the external APP packager.
     # The /opt/ndnsf-di/current tree above remains only as a compatibility
     # runtime for the legacy complete-SIF checks; the pair runner never falls
-    # back to it. Base-owned Core/SVS/NDNSD/NAC-ABE libraries stay in the
-    # base SIF; copying the whole candidate lib directory would shadow them.
+    # back to it. The APP owns the candidate Core/SVS/NDNSD/NAC-ABE/OpenABE/
+    # Relic/DI ABI closure; the base owns stable NDN-CXX/NFD/ORT/Python.
+    # Copying the whole candidate lib directory would still shadow unrelated
+    # base objects, so the allowlist below is explicit.
     test ! -e /opt/ndnsf-app
     test ! -L /opt/ndnsf-app
     install -d /opt/ndnsf-app/bin /opt/ndnsf-app/lib /opt/ndnsf-app/python \
@@ -514,6 +533,20 @@ PY
     install -m 0755 /opt/ndnsf-candidate/bin/App_ServiceController /opt/ndnsf-app/bin/App_ServiceController
     install -m 0755 /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so \
       /opt/ndnsf-app/lib/libndnsf-distributed-inference.so
+    install -m 0755 /opt/ndnsf-candidate/lib/libndn-service-framework.so.0.1.0 \
+      /opt/ndnsf-app/lib/libndn-service-framework.so.0.1.0
+    install -m 0755 /opt/ndnsf-candidate/lib/libndn-svs.so.0.1.0 \
+      /opt/ndnsf-app/lib/libndn-svs.so.0.1.0
+    install -m 0755 /opt/ndnsf-candidate/lib/libnac-abe.so \
+      /opt/ndnsf-app/lib/libnac-abe.so
+    install -m 0755 /opt/ndnsf-candidate/lib/libndnsd.so.0.1.0 \
+      /opt/ndnsf-app/lib/libndnsd.so.0.1.0
+    install -m 0755 /opt/ndnsf-candidate/lib/libopenabe.so \
+      /opt/ndnsf-app/lib/libopenabe.so
+    install -m 0755 /opt/ndnsf-candidate/lib/librelic.so \
+      /opt/ndnsf-app/lib/librelic.so
+    install -m 0755 /opt/ndnsf-candidate/lib/librelic_ec.so \
+      /opt/ndnsf-app/lib/librelic_ec.so
     cp -aL /opt/ndnsf-candidate/python/. /opt/ndnsf-app/python/
     cp -aL /opt/ndnsf-candidate/replay/. /opt/ndnsf-app/replay/
     cp -aL /opt/ndnsf-candidate/replay/source-seal.json /opt/ndnsf-app/manifest/source-seal.json
@@ -533,6 +566,12 @@ h = hashlib.sha256(seal.read_bytes()).hexdigest()
     'buildBoundary': 'container-runtime-in-sif',
     'sourceSealSha256': 'sha256:' + h,
     'runtimeContract': {
+        'appNativeLibraries': [
+            'libndn-service-framework.so.0.1.0',
+            'libndnsf-distributed-inference.so', 'libndn-svs.so.0.1.0',
+            'libnac-abe.so', 'libndnsd.so.0.1.0', 'libopenabe.so',
+            'librelic.so', 'librelic_ec.so',
+        ],
         'python': '/opt/venv/bin/python',
         'ndnBaseLib': '/opt/ndn-base/lib',
         'onnxRuntimeLib': '/opt/onnxruntime/lib',
@@ -549,8 +588,14 @@ libraries = {
     for path in (root / 'lib').rglob('*')
     if path.is_file()
 }
-if libraries != {'libndnsf-distributed-inference.so'}:
-    raise SystemExit('APP_BASE_LIBRARY_SHADOW_OR_RESIDUE')
+expected = {
+    'libndn-service-framework.so.0.1.0',
+    'libndnsf-distributed-inference.so', 'libndn-svs.so.0.1.0',
+    'libnac-abe.so', 'libndnsd.so.0.1.0', 'libopenabe.so',
+    'librelic.so', 'librelic_ec.so',
+}
+if libraries != expected:
+    raise SystemExit('APP_NATIVE_LIBRARY_CLOSURE_MISMATCH')
 PY
     # APP_LAYOUT_VERIFY=ndnsf-app-v2: the external bundle has no base-owned
     # libraries or symlink/special-file escape paths.
@@ -568,7 +613,7 @@ PY
     repo_extension_count=$(find /opt/venv/lib/python3.10/site-packages/py_repoclient -maxdepth 1 -name '_py_repoclient*.so' -type f | wc -l)
     test "$repo_extension_count" -eq 1
     repo_extension_path=$(find /opt/venv/lib/python3.10/site-packages/py_repoclient -maxdepth 1 -name '_py_repoclient*.so' -type f)
-    sha256sum /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libnac-abe.so "$repo_extension_path" /opt/ndnsf-di/current/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-fault-provider /opt/ndnsf-di/current/bin/App_ServiceController /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0 "$extension_path" > /opt/ndnsf-di/current/manifest/final-native-sha256.txt
+    sha256sum /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0 /opt/ndnsf-di/current/lib/libnac-abe.so /opt/ndnsf-di/current/lib/libopenabe.so /opt/ndnsf-di/current/lib/librelic.so /opt/ndnsf-di/current/lib/librelic_ec.so "$repo_extension_path" /opt/ndnsf-di/current/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-fault-provider /opt/ndnsf-di/current/bin/App_ServiceController /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndnsf-distributed-inference.so /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0 "$extension_path" > /opt/ndnsf-di/current/manifest/final-native-sha256.txt
 
     /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
 
