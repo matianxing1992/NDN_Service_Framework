@@ -34,6 +34,7 @@ Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-sif-app.sh \
   --project /path/to/ndnsf-di \
   --scratch /tmp/ndnsf-di-local-pair \
   --identity /path/to/identity \
+  --nfd-socket /tmp/ndnsf-di-local-nfd/nfd.sock \
   --release-bind /path/to/releases \
   --models /path/to/models \
   --artifacts /path/to/artifacts \
@@ -41,6 +42,18 @@ Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-sif-app.sh \
   --gpu-count 0 -- \
   /opt/ndnsf-di/app/bin/di-native-provider <provider-args>
 ```
+
+`--identity` 必须是单一运行角色的 home，包含无符号链接的
+`.ndn/pib.db` 与作为目录的 `.ndn/ndnsec-key-file`（其中恰有一个 regular
+`*.privkey`）。运行器会把它复制到本次私有 scratch 的 `$HOME/.ndn`，同步重写
+副本 `tpmInfo` 的 locator，并设置成对的 `NDN_CLIENT_PIB`/`NDN_CLIENT_TPM`；不会直接打开
+共享身份源。`--nfd-socket` 必须指向本机或当前计算节点上已启动的 NFD Unix
+socket 文件；运行器将该文件的父目录只读绑定到容器 `/tmp/ndnsf-di-nfd`，保留 socket
+文件名并设置
+`NDN_CLIENT_TRANSPORT`。socket 的父目录必须由当前用户拥有、权限仅限 owner、位于
+`/tmp/ndnsf-di-<job-id>/`（本地模式为 `/tmp/ndnsf-di-local-*`），且除该 socket 外不得有
+其他条目；这样整个只读绑定只暴露一个专用 endpoint。运行器只负责连接既有 NFD 和执行一个
+APP 命令，不代替 NFD 的启动、配置或生命周期管理。
 
 本地验证必须记录 C++ 入口的真实启动、请求/ACK/Selection/Response、错误/取消和清理结果；仅 `--help`、Python import 或 `ldd` 不是协议资格。运行器结束后会删除本次 job-scoped scratch；证据应写入单独的 `--evidence` 挂载。失败保持原始日志和 `NOT_READY`/`UNQUALIFIED` 边界，不上传该 pair。
 

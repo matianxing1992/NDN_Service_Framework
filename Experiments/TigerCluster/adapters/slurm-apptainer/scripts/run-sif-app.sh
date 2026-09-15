@@ -6,7 +6,8 @@ umask 077
 usage() {
   cat >&2 <<'EOF'
 usage: run-sif-app.sh --base-sif PATH --app PATH --app-record PATH \
-  --project PATH --scratch PATH --identity PATH [--release-bind PATH] \
+  --project PATH --scratch PATH --identity PATH --nfd-socket PATH \
+  [--release-bind PATH] \
   [--models PATH] [--artifacts PATH] [--evidence PATH] [--gpu-count N] \
   [--apptainer PATH] [--expected-apptainer VERSION] [--local] -- COMMAND [ARGS...]
 
@@ -16,7 +17,7 @@ EOF
   exit 2
 }
 
-base_sif=''; app=''; app_record=''; project=''; scratch=''; identity=''
+base_sif=''; app=''; app_record=''; project=''; scratch=''; identity=''; nfd_socket=''
 release=''; models=''; artifacts=''; evidence=''; gpu_count=''
 apptainer_bin=/usr/local/bin/apptainer; expected_version=1.5.3; local_mode=0
 while (($#)); do
@@ -27,6 +28,7 @@ while (($#)); do
     --project) project="$2"; shift 2 ;;
     --scratch) scratch="$2"; shift 2 ;;
     --identity) identity="$2"; shift 2 ;;
+    --nfd-socket) nfd_socket="$2"; shift 2 ;;
     --release-bind) release="$2"; shift 2 ;;
     --models) models="$2"; shift 2 ;;
     --artifacts) artifacts="$2"; shift 2 ;;
@@ -41,6 +43,7 @@ while (($#)); do
 done
 if [ -z "$base_sif" ] || [ -z "$app" ] || [ -z "$app_record" ] || \
   [ -z "$project" ] || [ -z "$scratch" ] || [ -z "$identity" ] || \
+  [ -z "$nfd_socket" ] || \
   [ "$#" -eq 0 ]; then
   usage
 fi
@@ -78,7 +81,7 @@ models=${models:-$project/models}
 artifacts=${artifacts:-$project/artifacts}
 evidence=${evidence:-$project/evidence}
 # Every host path used as a bind source is checked before canonicalisation.
-python3 - "$project" "$identity" "$release" "$models" "$artifacts" "$evidence" "$scratch" <<'PY'
+python3 - "$project" "$identity" "$release" "$models" "$artifacts" "$evidence" "$scratch" "$nfd_socket" <<'PY'
 import sys
 from pathlib import Path
 for raw in sys.argv[1:]:
@@ -97,6 +100,9 @@ app=$(readlink -m "$app")
 app_record=$(readlink -m "$app_record")
 project=$(readlink -m "$project")
 identity=$(readlink -m "$identity")
+nfd_socket=$(readlink -m "$nfd_socket")
+nfd_socket_dir=$(dirname -- "$nfd_socket")
+nfd_socket_name=$(basename -- "$nfd_socket")
 release=$(readlink -m "$release"); models=$(readlink -m "$models")
 artifacts=$(readlink -m "$artifacts"); evidence=$(readlink -m "$evidence")
 [ -f "$base_sif" ] || { echo APPTAINER_PAIR_BASE_SIF_MISSING >&2; exit 4; }
@@ -106,6 +112,24 @@ fi
 [ -d "$app" ] || { echo APPTAINER_PAIR_APP_MISSING >&2; exit 4; }
 [ -f "$app_record" ] || { echo APPTAINER_PAIR_APP_RECORD_MISSING >&2; exit 4; }
 [ -d "$identity" ] || { echo APPTAINER_PAIR_IDENTITY_MISSING >&2; exit 4; }
+[ -d "$identity/.ndn" ] || { echo APPTAINER_PAIR_IDENTITY_STORE_MISSING >&2; exit 4; }
+[ -f "$identity/.ndn/pib.db" ] || { echo APPTAINER_PAIR_IDENTITY_PIB_MISSING >&2; exit 4; }
+[ -d "$identity/.ndn/ndnsec-key-file" ] || { echo APPTAINER_PAIR_IDENTITY_TPM_MISSING >&2; exit 4; }
+if find "$identity/.ndn" -type l -print -quit | grep -q .; then
+  echo APPTAINER_PAIR_IDENTITY_SYMLINK_FORBIDDEN >&2; exit 4
+fi
+if find "$identity/.ndn" \! -type f \! -type d -print -quit | grep -q .; then
+  echo APPTAINER_PAIR_IDENTITY_SPECIAL_FILE >&2; exit 4
+fi
+if find "$identity/.ndn/ndnsec-key-file" -mindepth 1 -maxdepth 1 \
+  \( \! -type f -o \! -name '*.privkey' \) -print -quit | grep -q .; then
+  echo APPTAINER_PAIR_IDENTITY_TPM_FILE_INVALID >&2; exit 4
+fi
+[ "$(find "$identity/.ndn/ndnsec-key-file" -mindepth 1 -maxdepth 1 \
+  -type f -name '*.privkey' -printf x | wc -c)" -eq 1 ] || {
+  echo APPTAINER_PAIR_IDENTITY_TPM_KEY_COUNT_INVALID >&2; exit 4;
+}
+[ -S "$nfd_socket" ] || { echo APPTAINER_PAIR_NFD_SOCKET_MISSING >&2; exit 4; }
 for path in "$release" "$models" "$artifacts" "$evidence"; do
   [ -d "$path" ] || { echo APPTAINER_PAIR_BIND_MISSING:"$path" >&2; exit 4; }
 done
@@ -141,6 +165,31 @@ recorded_apptainer_sha=$(python3 -c 'import json,sys; print(json.load(sys.stdin)
 if [ -z "$gpu_count" ]; then gpu_count=${SLURM_GPUS_ON_NODE:-0}; fi
 case "$gpu_count" in ''|*[!0-9]*) echo APPTAINER_PAIR_GPU_COUNT_INVALID >&2; exit 2 ;; esac
 job_id=${SLURM_JOB_ID:-local-$$}
+[ "$(stat -c '%u' "$nfd_socket_dir")" = "$(id -u)" ] || {
+  echo APPTAINER_PAIR_NFD_SOCKET_DIR_OWNER_MISMATCH >&2; exit 4;
+}
+nfd_socket_dir_mode=$(stat -c '%a' "$nfd_socket_dir")
+if (( 0$nfd_socket_dir_mode & 077 )); then
+  echo APPTAINER_PAIR_NFD_SOCKET_DIR_NOT_PRIVATE >&2; exit 4;
+fi
+[ "$(stat -c '%u' "$nfd_socket")" = "$(id -u)" ] || {
+  echo APPTAINER_PAIR_NFD_SOCKET_OWNER_MISMATCH >&2; exit 4;
+}
+if [ "$local_mode" = 0 ]; then
+  case "$nfd_socket_dir" in
+    "/tmp/ndnsf-di-$job_id"|"/tmp/ndnsf-di-$job_id"/*) ;;
+    *) echo APPTAINER_PAIR_NFD_SOCKET_NOT_JOB_SCOPED >&2; exit 4 ;;
+  esac
+else
+  case "$nfd_socket_dir" in
+    /tmp/ndnsf-di-local-*) ;;
+    *) echo APPTAINER_PAIR_NFD_SOCKET_NOT_LOCAL_SCOPED >&2; exit 4 ;;
+  esac
+fi
+if find "$nfd_socket_dir" -mindepth 1 -maxdepth 1 \
+  ! -name "$nfd_socket_name" -print -quit | grep -q .; then
+  echo APPTAINER_PAIR_NFD_SOCKET_DIR_NOT_DEDICATED >&2; exit 4
+fi
 case "$scratch" in /*) ;; *) echo APPTAINER_PAIR_SCRATCH_INVALID >&2; exit 4 ;; esac
 case "$scratch" in /tmp/*) ;; *) echo APPTAINER_PAIR_SCRATCH_INVALID >&2; exit 4 ;; esac
 case "$scratch" in *..*) echo APPTAINER_PAIR_SCRATCH_INVALID >&2; exit 4 ;; esac
@@ -334,7 +383,7 @@ if ! env -u APPTAINERENV_HOME -u APPTAINERENV_PWD -u SINGULARITYENV_HOME \
   exit 4
 fi
 
-# Keep directory descriptors open through the final exec.  Binding these
+# Keep directory descriptors open through the final command.  Binding these
 # descriptors prevents a writable parent from replacing a validated child
 # between the second validation and Apptainer's bind processing.
 pin_dir() {
@@ -347,11 +396,13 @@ pin_dir() {
   printf -v "$output_var" '%s' "$fd"
 }
 app_lib_fd=0; app_bin_fd=0; app_python_fd=0; app_manifest_fd=0; app_replay_fd=0
-release_fd=0; models_fd=0; artifacts_fd=0; identity_fd=0; evidence_fd=0
+release_fd=0; models_fd=0; artifacts_fd=0; identity_fd=0; nfd_socket_dir_fd=0; evidence_fd=0
 release_identity=$(stat -Lc '%d:%i' "$release")
 models_identity=$(stat -Lc '%d:%i' "$models")
 artifacts_identity=$(stat -Lc '%d:%i' "$artifacts")
 identity_dir_identity=$(stat -Lc '%d:%i' "$identity")
+nfd_socket_identity=$(stat -Lc '%d:%i' "$nfd_socket")
+nfd_socket_dir_identity=$(stat -Lc '%d:%i' "$nfd_socket_dir")
 evidence_identity=$(stat -Lc '%d:%i' "$evidence")
 pin_dir "$app/lib" app_lib_fd "$app_lib_identity"
 pin_dir "$app/bin" app_bin_fd "$app_bin_identity"
@@ -362,15 +413,91 @@ pin_dir "$release" release_fd "$release_identity"
 pin_dir "$models" models_fd "$models_identity"
 pin_dir "$artifacts" artifacts_fd "$artifacts_identity"
 pin_dir "$identity" identity_fd "$identity_dir_identity"
+pin_dir "$nfd_socket_dir" nfd_socket_dir_fd "$nfd_socket_dir_identity"
 pin_dir "$evidence" evidence_fd "$evidence_identity"
+
+# The identity input is a read-only source.  Copy its single role store into
+# this run's private HOME so Runtime can use paired locators without opening a
+# shared SQLite database or depending on a mutable host HOME.
+mkdir "$scratch/home/.ndn"
+cp -a --no-preserve=ownership "/proc/self/fd/$identity_fd/.ndn/." "$scratch/home/.ndn/"
+chmod 700 "$scratch/home/.ndn"
+if [ -L "$scratch/home/.ndn/pib.db" ] || [ ! -f "$scratch/home/.ndn/pib.db" ]; then
+  echo APPTAINER_PAIR_STAGED_PIB_INVALID >&2; exit 4;
+fi
+if [ -L "$scratch/home/.ndn/ndnsec-key-file" ] || [ ! -d "$scratch/home/.ndn/ndnsec-key-file" ]; then
+  echo APPTAINER_PAIR_STAGED_TPM_INVALID >&2; exit 4;
+fi
+if find "$scratch/home/.ndn/ndnsec-key-file" -mindepth 1 -maxdepth 1 \
+  \( \! -type f -o \! -name '*.privkey' \) -print -quit | grep -q .; then
+  echo APPTAINER_PAIR_STAGED_TPM_FILE_INVALID >&2; exit 4
+fi
+[ "$(find "$scratch/home/.ndn/ndnsec-key-file" -mindepth 1 -maxdepth 1 \
+  -type f -name '*.privkey' -printf x | wc -c)" -eq 1 ] || {
+  echo APPTAINER_PAIR_STAGED_TPM_KEY_COUNT_INVALID >&2; exit 4;
+}
+identity_digest=$(python3 - "$identity_fd" "$scratch/home/.ndn" <<'PY'
+import hashlib
+import stat
+import sys
+from pathlib import Path
+
+source_root = Path("/proc/self/fd") / sys.argv[1] / ".ndn"
+target_root = Path(sys.argv[2])
+
+def tree_digest(root):
+    digest = hashlib.sha256()
+    entries = sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix())
+    for path in entries:
+        relative = path.relative_to(root).as_posix().encode()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+            raise SystemExit("APPTAINER_PAIR_IDENTITY_DIGEST_INPUT_INVALID")
+        digest.update(relative + b"\0" + str(stat.S_IMODE(info.st_mode)).encode() + b"\0")
+        if stat.S_ISREG(info.st_mode):
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
+
+source_digest = tree_digest(source_root)
+target_digest = tree_digest(target_root)
+if source_digest != target_digest:
+    raise SystemExit("APPTAINER_PAIR_IDENTITY_DIGEST_MISMATCH")
+print(source_digest)
+PY
+)
+printf 'APPTAINER_PAIR_IDENTITY_DIGEST=%s\n' "$identity_digest" >&2
+python3 - "$scratch/home/.ndn/pib.db" "$home_target/.ndn" <<'PY'
+import sqlite3
+import sys
+
+database, locator_root = sys.argv[1:]
+locator = "tpm-file:" + locator_root
+with sqlite3.connect(database) as connection:
+    rows = connection.execute("SELECT tpm_locator FROM tpmInfo").fetchall()
+    if len(rows) != 1:
+        raise SystemExit("APPTAINER_PAIR_TPM_INFO_INVALID")
+    connection.execute("UPDATE tpmInfo SET tpm_locator = ?", (locator,))
+    connection.commit()
+    observed = connection.execute("SELECT tpm_locator FROM tpmInfo").fetchone()[0]
+    if observed != locator:
+        raise SystemExit("APPTAINER_PAIR_TPM_LOCATOR_REWRITE_FAILED")
+PY
+[ "$nfd_socket_identity" = "$(stat -Lc '%d:%i' "$nfd_socket")" ] || {
+  echo APPTAINER_PAIR_NFD_SOCKET_IDENTITY_CHANGED >&2; exit 4;
+}
 
 # The APP paths are mounted explicitly.  Only the stable base-layer paths and
 # the reviewed APP paths participate in lookup; an old complete-app tree in a
 # base image is never a fallback.
+set +e
+# shellcheck disable=SC2016 # The single-quoted wrapper runs inside the SIF.
 env -u APPTAINERENV_HOME -u APPTAINERENV_PWD -u SINGULARITYENV_HOME \
   -u SINGULARITYENV_PWD /proc/self/fd/3 exec --cleanenv --containall --pwd /scratch \
   --home "/proc/self/fd/$scratch_fd/home:$home_target" "${gpu_args[@]}" \
-  --env "SLURM_JOB_ID=$job_id,NDNSF_PAIR_APP_DIGEST=$(python3 -c 'import json,sys; print(json.load(sys.stdin)[\"appDigest\"])' <<<"$validation_json"),PATH=/opt/ndnsf-di/app/bin:/opt/venv/bin:/opt/ndn-base/bin:/usr/bin:/bin,LD_LIBRARY_PATH=/opt/ndnsf-di/app/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib,PYTHONNOUSERSITE=1,PYTHONPATH=/opt/ndnsf-di/app/python,NDNSF_MODEL_ROOT=/models,NDNSF_ARTIFACT_ROOT=/artifacts" \
+  --env "SLURM_JOB_ID=$job_id,NDNSF_PAIR_APP_DIGEST=$(python3 -c 'import json,sys; print(json.load(sys.stdin)[\"appDigest\"])' <<<"$validation_json"),PATH=/opt/ndnsf-di/app/bin:/opt/venv/bin:/opt/ndn-base/bin:/usr/bin:/bin,LD_LIBRARY_PATH=/opt/ndnsf-di/app/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib,PYTHONNOUSERSITE=1,PYTHONPATH=/opt/ndnsf-di/app/python,NDNSF_MODEL_ROOT=/models,NDNSF_ARTIFACT_ROOT=/artifacts,NDN_CLIENT_TRANSPORT=unix:///tmp/ndnsf-di-nfd/$nfd_socket_name,NDN_CLIENT_PIB=pib-sqlite3:$home_target/.ndn,NDN_CLIENT_TPM=tpm-file:$home_target/.ndn" \
   --bind "/proc/self/fd/$app_lib_fd:/opt/ndnsf-di/app/lib:ro" \
   --bind "/proc/self/fd/$app_bin_fd:/opt/ndnsf-di/app/bin:ro" \
   --bind "/proc/self/fd/$app_python_fd:/opt/ndnsf-di/app/python:ro" \
@@ -380,6 +507,18 @@ env -u APPTAINERENV_HOME -u APPTAINERENV_PWD -u SINGULARITYENV_HOME \
   --bind "/proc/self/fd/$models_fd:/models:ro" \
   --bind "/proc/self/fd/$artifacts_fd:/artifacts:ro" \
   --bind "/proc/self/fd/$identity_fd:/identity:ro" \
+  --bind "/proc/self/fd/$nfd_socket_dir_fd:/tmp/ndnsf-di-nfd:ro" \
   --bind "/proc/self/fd/$evidence_fd:/evidence:rw" \
   --bind "/proc/self/fd/$scratch_fd:/scratch:rw" \
-  /proc/self/fd/4 "$@"
+  /proc/self/fd/4 /bin/sh -c '
+    set -eu
+    socket_path="$1"
+    expected_identity="$2"
+    shift 2
+    test -S "$socket_path"
+    test "$(stat -Lc "%d:%i" "$socket_path")" = "$expected_identity"
+    exec "$@"
+  ' sh "/tmp/ndnsf-di-nfd/$nfd_socket_name" "$nfd_socket_identity" "$@"
+app_status=$?
+set -e
+exit "$app_status"

@@ -50,6 +50,16 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 
 ## Current Checkpoint
 
+2026-09-15 14:23 -05:00 Tiger layered APP runner：沿用既有
+`Experiments/TigerCluster` SIF/APP 脚本，修正 identity 目录复制与 `tpmInfo` locator
+同步、NFD socket 专用目录和 device/inode 复核、`cleanenv`/`containall`、FD pin 及
+scratch 清理。官方 `review-agent` 对冻结快照返回 `STATIC_PASS`（无 P0--P3），
+`bash -n`、ShellCheck、`pytest -q Experiments/TigerCluster/tests`（81 passed，1 skipped）
+和 diff 门禁通过。现有 regular base SIF 仍缺失（`spec180-runtime-r119.sif` 为 broken
+symlink），因此未运行 Apptainer/KeyChain/NFD/C++ 请求链、SIF 构建或 Tiger/Slurm；
+T013/T014 及其他产品任务状态不因本工具修正改变。详见
+[Tiger pair runner evidence](evidence/tiger-pair-runner-20260915.md)。
+
 2026-09-15 13:55 -05:00 Tiger baseline identity boundary：沿用现有
 `Experiments/TigerCluster` 启动脚本，修正普通角色的目录级 paired PIB/TPM
 locator，并让 offline `prepare` 不继承运行时 locator。官方 `review-agent`

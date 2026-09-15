@@ -1,5 +1,18 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Tiger layered APP runner static boundary (RESOLVED)
+
+官方 `review-agent` 首轮复核发现配对运行器的身份 TPM 目录类型、复制后 `tpmInfo`
+locator、NFD socket 子项和 scratch cleanup 边界问题；修正后又发现整个 NFD 父目录可被
+任意传入，最后发现 Slurm job scope 检查拒绝 job 根目录。当前版本按单角色目录复制并同步
+locator，要求 NFD 父目录由当前用户拥有、仅 owner 权限、位于解析后的 job/local scope，且
+只包含目标 socket，并在容器执行前复核 socket device/inode。三次冻结快照最终
+`STATIC_PASS`，无 P0--P3；`bash -n`、ShellCheck、TigerCluster 离线测试为
+`81 passed, 1 skipped`。详见
+[Tiger pair runner evidence](../specs/185-prepared-model-runtime/evidence/tiger-pair-runner-20260915.md)。
+本项仍未观测 regular base SIF、真实 Apptainer/KeyChain/NFD、C++ 请求链或 Tiger/Slurm；
+此前 `APP_BASE_SIF_PATH_SYMLINK` 和 SSH alias 无法解析的本地边界保持原记录。
+
 ## 2026-09-15 — Tiger baseline role KeyChain locator boundary (RESOLVED)
 
 静态复审首先发现普通角色没有显式 paired KeyChain locator；首个修正又把
