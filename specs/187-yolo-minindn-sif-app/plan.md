@@ -4,6 +4,8 @@
 
 ## Summary
 
+2026-09-15 补充 B187-BASE：T001 的基础制品前置由 `build-base-sif.py` 负责。依据当前 SIF+APP 分层修复历史脚本，单独验证锁定父镜像、NumPy 私有库和镜像内 C++ SDK consumer；批次出口为 `BASE_SMOKE_ONLY`，不扩展为 APP 或 MiniNDN 资格。五 lane 和构建证据见 [base repair](evidence/b187-base-repair.md)。
+
 本计划把用户需要的最快路径固定为一个 YOLO 垂直切片：复用已有 TigerCluster 构建和运行入口，先在本机用 MiniNDN 验证真实请求，再把同一不可变 pair 交付 TigerCluster。QWEN 不进入本轮实现或验收。
 
 ## Technical Context

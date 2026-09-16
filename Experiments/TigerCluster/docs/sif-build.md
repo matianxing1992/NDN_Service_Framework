@@ -1,5 +1,7 @@
 # Local SIF Build
 
+稳定依赖 base 的独立构建入口见 [Stable base SIF refresh](base-sif-build.md)。它修复锁定 NumPy wheel 的私有库并执行最终镜像基础冒烟检查；完整 APP 仍使用下述现有入口。
+
 ## Apptainer Version Policy
 
 2026-09-12 起，所有机器上的后续 NDNSF SIF 构建统一使用 Apptainer **1.5.3**，包括基础SIF、完整SIF及调用Apptainer的分层应用builder。开工前核对实际可执行文件、版本和SHA-256；不是1.5.3时先升级，禁止为通过门禁把预期版本改为旧版本。未来变更版本须明确修订本规则。

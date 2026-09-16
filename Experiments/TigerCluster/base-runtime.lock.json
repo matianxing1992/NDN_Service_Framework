@@ -1,0 +1,17 @@
+{
+  "schema": "ndnsf-stable-base-v1",
+  "parentSha256": "b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285",
+  "parentBytes": 3525861376,
+  "python": [3, 10],
+  "architecture": "x86_64",
+  "pythonStartupHooks": {
+    "coloredlogs.pth": "dda83a855986efa5cd87f0248b0199c0086eb0e8e7fece7d6741959c5ce39536",
+    "distutils-precedence.pth": "2638ce9e2500e572a5e0de7faed6661eb569d1b696fcba07b0dd223da5f5d224"
+  },
+  "numpy": {
+    "version": "1.26.4",
+    "filename": "numpy-1.26.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "ffa75af20b44f8dba823498024771d5ac50620e6915abac414251bd971b4529f",
+    "url": "https://files.pythonhosted.org/packages/4b/d7/ecf66c1cd12dc28b4040b15ab4d17b773b87fa9d29ca16125de01adb36cd/numpy-1.26.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+  }
+}

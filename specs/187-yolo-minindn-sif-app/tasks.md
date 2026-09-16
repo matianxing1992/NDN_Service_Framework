@@ -6,14 +6,16 @@
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | PARTIAL | — | 静态门与 mutation check 通过；仍需 regular base SIF/host-gate 才能跑完整闭合序列；[b187-local-closure.md](evidence/b187-local-closure.md) | 2026-09-15 15:08 -05:00 |
+| [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | PARTIAL | — | regular base SIF 已完成本机 smoke；完整 APP/host-gate 与 pair 验收仍待执行；[base repair](evidence/b187-base-repair.md)、[closure](evidence/b187-local-closure.md) | 2026-09-15 |
 | [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | PARTIAL | T001 | r7 STATIC_PASS；C++ target compile/link 与独立 served-provider selector 通过；through-MiniNDN 仍需 candidate-bound native config/input；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-15 15:44 -05:00 |
-| [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | WAITING_EXTERNAL_INPUT | T002 | regular base SIF、host-gate manifest、convergence PASS 和两次 through-MiniNDN run 均未具备；17:48 外部输入复核仍未找到有效 base；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-15 17:48 -05:00 |
-| [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | WAITING_EXTERNAL_INPUT | T003 | T003 尚未 LOCAL_PASS；未启动 Slurm/Apptainer；[b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | 2026-09-15 17:48 -05:00 |
+| [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | WAITING_EXTERNAL_INPUT | T002 | base 已生成；仍需 APP recipe/SDK 接线、host-gate、candidate config/input 和两次 through-MiniNDN run；[base repair](evidence/b187-base-repair.md)、[local YOLO](evidence/b187-local-yolo.md) | 2026-09-15 |
+| [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | WAITING_EXTERNAL_INPUT | T003 | T003 尚未 LOCAL_PASS；未启动 Tiger/Slurm；[b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | 2026-09-15 |
 | [T005 QWEN deferral and delivery record](#t005-qwen-deferral-and-delivery-record) | DONE | — | QWEN 明确保持 TODO，未进入 YOLO candidate；[qwen-deferred.md](evidence/qwen-deferred.md) | 2026-09-15 15:16 -05:00 |
 | [T006 Design-code convergence and final evidence](#t006-design-code-convergence-and-final-evidence) | DONE | T001,T002 | 静态收敛 PASS；正式 local/cluster 资格仍依赖外部 candidate 输入；[convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | 2026-09-15 15:32 -05:00 |
 
 ## Current Checkpoint
+
+2026-09-15 B187-BASE：r4 STATIC/COMPOSITION_PASS；15 个定向测试通过，实际 SIF 构建与最终镜像 C++ SDK/NumPy/NFD/ELF smoke 全部通过，SHA-256 `7b4b501033f2db876ccf5c19a9637a58b8b232cf4d555f5b8a225638e180837c`。缺失 OpenBLAS 的实际 overlay 反例被拒绝。额外旧门禁测试 6 项 fixture 失败另记，未伪造全套 PASS。仅 base 前置完成，T001/T003 保持原状态；见 [base repair](evidence/b187-base-repair.md)。
 
 2026-09-15 17:51 -05:00：T002 的 C++ selector 已注册并接入 Spec187 native mode；阶段证据现按 request/attempt/plan 关联，并以 epochMs 核对 ACK → Selection commit → Provider accepted → Provider execution 顺序。r7 官方 review-agent 返回 STATIC_PASS；受影响目标以 `-j4` 编译通过（1m6.118s），独立 served-provider selector 通过，缺输入 selector 按预期 fail-closed。已补齐 T001–T006 的显式 FR/SC requirement coverage，分析器追踪到 12/12 FR 与 6/6 SC。真实 through-MiniNDN 请求仍需 candidate-bound config/input，T001 仍缺 regular base SIF/host-gate，T003 及后续批次保持 WAITING_EXTERNAL_INPUT/PARTIAL。
 
@@ -22,6 +24,7 @@
 | Batch ID | Members | Stable exit | Shared selector / build | Status |
 | --- | --- | --- | --- | --- |
 | B187-LOCAL-CLOSURE | T001 | closure gate rejects invalid candidate inputs before side effects and accepts a verified pair tuple | existing Tiger script checks and mutation fixtures | PARTIAL |
+| B187-BASE | T001 prerequisite | pinned stable base builds and passes native SDK/NumPy smoke | test_base_runtime.py; build-base-sif.py; container C++ base-smoke | DONE |
 | B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | PARTIAL |
 | B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | WAITING_EXTERNAL_INPUT |
 | B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | DONE |

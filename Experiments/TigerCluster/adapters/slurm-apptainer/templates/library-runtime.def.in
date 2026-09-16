@@ -1,0 +1,25 @@
+Bootstrap: localimage
+From: @BASE_SIF@
+
+# Stable dependency base. Source-specific Core/DI and Python bindings are APP inputs.
+%files
+    @INPUT@/base-runtime.lock.json /build-input/base-runtime.lock.json
+    @INPUT@/base-runtime.py /build-input/base-runtime.py
+    @INPUT@/build-base-libraries.sh /build-input/build-base-libraries.sh
+    @INPUT@/wheels /build-input/wheels
+
+%post
+    /bin/bash /build-input/build-base-libraries.sh
+
+%environment
+    export PATH=/opt/ndn-base/bin:/opt/venv/bin:/usr/bin:/bin:/usr/sbin:/sbin
+    export LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    export PYTHONNOUSERSITE=1
+    unset PYTHONPATH PYTHONHOME PYTHONOPTIMIZE
+
+%test
+    /opt/venv/bin/python /opt/ndn-base/manifest/base-runtime.py verify
+
+%runscript
+    exec /opt/venv/bin/python /opt/ndn-base/manifest/base-runtime.py verify

@@ -1,0 +1,44 @@
+{
+  "schema": "ndnsf-base-smoke-evidence-v1",
+  "status": "PASS",
+  "scope": "BASE_SMOKE_ONLY",
+  "run": "Experiments/TigerCluster/images/base-repair-20260915/run-r2",
+  "sifSha256": "7b4b501033f2db876ccf5c19a9637a58b8b232cf4d555f5b8a225638e180837c",
+  "sifBytes": 3759759360,
+  "parentSha256": "b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285",
+  "apptainerVersion": "1.5.3",
+  "apptainerSha256": "2cbfdcbc53a0a1eb56a1327cc42c4cfbdb48beaa03b9a26547df9e4556d3b673",
+  "review": "r4 STATIC_PASS / B187-BASE_COMPOSITION_PASS",
+  "reviewedFiles": {
+    "Experiments/TigerCluster/base-runtime.lock.json": "511781dfc251802654f79a84d828adbb3b4d57f39b457042188eacd0cff02048",
+    "Experiments/TigerCluster/tests/test_base_runtime.py": "09a533742c33771346a896055b86230d5dc419550fd88a721285344e9ad6abbc",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/templates/library-runtime.def.in": "a52859c656da2b63aad29a3ffc5ba2a3a4cbce3e29c993b332da2a3f7bf4eaf3",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/base-runtime.py": "6625ce84ab426f6dfb278e8f5630cf0ec87d34ad10a0fcc30fd1364616f97e88",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-base-libraries.sh": "e7a37cf1f63b92131a152cbf762fa149ee73eedb1f76b759be5b97d413eee6d7",
+    "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-base-sif.py": "1d410c94634ede5475947802e8709773527b77d56801abdc0dd55b7e47ff0e08"
+  },
+  "smoke": {
+    "artifacts": {
+      "/opt/ndn-base/bin/nfd": "b5c5f519720e71bdcffbcca20c875ab3099e35bb63852da0daf3f42808e75ea8",
+      "/opt/ndn-base/bin/nfdc": "be5847edaabdfe1b2e24de409a96e51da0bc40865937d413d868fbf68e5c90a0",
+      "/opt/ndn-base/lib/libndn-cxx.so": "1d12d5234de42e55820f534aa00b80d3dfac11aaec895c2ea7ee0a26f0170f3c",
+      "/opt/ndn-base/manifest/base-smoke": "ce3c3376c1662d9b92cf76250f15e426270116781b3f2f4e4e35d87bac77cee9",
+      "/opt/onnxruntime/lib/libonnxruntime.so": "f433692f47ec671ab385384e186dae8ea870ae093331fbd2a44413285bf43e71"
+    },
+    "native": "/base/smoke ORT 1.20.0",
+    "nfd": "24.07",
+    "numpy": "1.26.4",
+    "numpyPrivateLibraries": [
+      "libgfortran-040039e1.so.5.0.0",
+      "libopenblas64_p-r0-0cf96a72.3.23.dev.so",
+      "libquadmath-96973f99.so.0.0.0"
+    ],
+    "scope": "BASE_SMOKE_ONLY",
+    "status": "PASS"
+  },
+  "missingOpenblas": {
+    "exitCode": 1,
+    "expectedError": "NUMPY_INSTALLED_LIBRARY_SET",
+    "method": "temporary writable overlay; SIF digest unchanged"
+  }
+}
