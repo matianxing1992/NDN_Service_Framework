@@ -1,18 +1,18 @@
 # Standard base SIF + NDNSF-DI APP delivery
 
-逻辑构建顺序为 **base → NDNSF → APP**：base 提供稳定依赖/SDK，NDNSF 层提供框架及安全/发现依赖，APP 层提供 DI 应用。当前物理打包仍把后两层一起放在外置 `app/`，并未实现三个独立的发布制品；不能把只有 base 的模型冒烟当成最终组合验收。
+逻辑构建采用 **base SIF + NDNSF**：base 提供全部已声明外部依赖及 SDK，NDNSF 层拥有本仓库框架、DI、Repo、UAV、绑定和应用。旧 `app/` 是 NDNSF 层的兼容打包名称；不能把只有 base 的模型冒烟当成最终组合验收。具体归属与增建规则见 [two-layer-delivery.md](two-layer-delivery.md)。
 
 本入口把部署对象固定为一对不可变制品：稳定的 `base.sif` 和由容器内已验证候选提取出的外置 `app/`。模型、密钥、实验配置和输出仍然是运行时挂载，不进入任一制品。APP 内的 C++ 对象只允许 `$ORIGIN/../lib` 与 `/opt/ndn-base/lib`，Python binding 只允许 `$ORIGIN/../../lib` 与 `/opt/ndn-base/lib`；构建和兼容 `current`/`stage`/源码路径由静态门及 APP packager 拒绝。
 
-新 base 的 OpenABE/RELIC 构建材料位于 `/opt/ndn-base/sdk/lib`。APP builder 必须先复制到自己的 stage，再链接并随 APP 发布；该 SDK 目录不能加入运行时 loader 路径。NDN-CXX 的头文件和 pkg-config 来自 `/opt/ndn-base`。CPython 头文件以容器解释器的 `sysconfig` 为准，不从宿主或不匹配的发行版开发包装入。SDK 适配和 loader 冒烟记录见 [B187-APP-SDK](../../../specs/187-yolo-minindn-sif-app/evidence/b187-app-sdk.md)；当前模板仍需补齐 ONNX/Rust 构建输入后才能完成当前源码 APP 验收。
+补齐 SDK 后，外部库、头文件和 pkg-config 统一来自 `/opt/ndn-base`，ONNX 与 Rust 分别位于 `/opt/onnx`、`/opt/rust`。NDNSF builder 为兼容旧 APP 校验复制必要的 base 库，不重新编译它们；`/opt/ndn-base/sdk/lib` 不加入运行时 loader 路径。CPython 头文件以容器解释器的 `sysconfig` 为准，不从宿主装入。历史 [B187-APP-SDK](../../../specs/187-yolo-minindn-sif-app/evidence/b187-app-sdk.md) 仅证明当时适配；当前完整候选验收仍为 PARTIAL。
 
 ## Build locally
 
 开发中的当前源码可先用同一入口增加 `--build-only`，省略 `--host-gate-manifest` 与 `--strict-host-source-seal`，得到 `BUILT_UNQUALIFIED` 本机测试候选。它保留源码/容器边界检查和模板内原生验收，但不声称 Spec175 资格。`validate-local-sif-build-record.py` 和正式 APP packager 会拒绝该状态；不能改 JSON 为 PASS 来发布。完整发布仍使用下述带 host gate 的流程。
 
-当前 handoff 另要求 `--native-inputs`：由 `prepare-native-build-inputs.py` 封存官方 ONNX 1.17 源码、Rust 1.90 安装器和 Cargo.lock 对应的离线 vendor 源码；将输出六个文件的摘要写入 lock 的 `nativeBuild.files`。镜像中重新编译 ONNX 与 tokenizer，禁止把宿主编译的 `.a` 复制进去。锁中的 `native-inputs.json` 摘要写入 definition，避免 render 后替换依赖 manifest。
+当前 handoff 要求 `--native-inputs`：由 `prepare-native-build-inputs.py` 封存官方 ONNX 1.17 源码、Rust 1.90 安装器和 Cargo.lock 对应的离线 vendor 源码；六个文件摘要写入 lock 的 `nativeBuild.files`。base 增建消费外部输入；NDNSF 仅核对相同身份并编译本仓库 tokenizer bridge，禁止复制宿主 `.a`。`native-inputs.json` 摘要绑定 definition 和 base SDK manifest。
 
-先在与 `base.sif` 同一 builder/依赖闭包内生成并验收一个应用候选 SIF。当前 `development-runtime.def.in` 会在容器内编译原生组件，并在最终镜像中发布无 symlink 的 `/opt/ndnsf-app`；APP 放置 DI 应用程序以及它实际需要的 Core、SVS、NDNSD、NAC-ABE、OpenABE、Relic 和绑定/配置，base 只提供稳定的 NDN-CXX、NFD、ONNX Runtime、Python 与系统运行库。候选必须有 `ndnsf-local-sif-build-v3` `PASS` 记录，且记录中的 `buildInput.baseSif.sha256` 必须等于要交付的 base SIF。只有旧 `/opt/ndnsf-di/current` 的 complete-application SIF 不能直接作为 pair 候选；脚本会在容器内布局检查处拒绝它。
+在同一已验证 base SDK 内构建 NDNSF 候选 SIF。`development-runtime.def.in` 仅编译仓库组件，最终同时发布完整 SIF 的兼容路径与无 symlink 的 `/opt/ndnsf-app`。后者保留 Core/DI、绑定与所需 base 库的逐字节副本；外部依赖归 base。正式 pair 发布仍要求 `ndnsf-local-sif-build-v3` `PASS` 记录，且 `buildInput.baseSif.sha256` 等于交付 base 的摘要；`BUILT_UNQUALIFIED` 只用于本机诊断，不满足发布要求。
 
 然后只需一次 pair 打包：
 

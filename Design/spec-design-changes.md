@@ -14,6 +14,10 @@
 
 ## 索引
 
+### 2026-09-15 — Spec187 Two-layer Packaging
+
+- **NO_DESIGN_CHANGE / product APIs; PARTIAL / packaging**：用户确认 `base SIF + NDNSF`，外部依赖和 SDK 在现有 base 上增建，本仓库各模块归统一 NDNSF 层。此次改动仅构建脚本、技能与交付归属，不改变 C++/Python 产品 API、请求协议或对象生命周期，因此不刷新产品 API/PDF 快照。实现和验收见 [two-layer delivery](../Experiments/TigerCluster/docs/two-layer-delivery.md)、[Spec187 tasks](../specs/187-yolo-minindn-sif-app/tasks.md) 和 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)；base SDK 已真实验收并封存，NDNSF candidate 仍保持 PARTIAL。
+
 ### 2026-09-12 — Spec185 Prepared Model Runtime
 
 - **2026-09-12 21:07 -05:00 / T003+T004 B2 `VERIFIED`**: C-02 preparation design is now implemented for the bounded local Runtime path. Before, `User::prepare` had no verified Package/cache implementation; after, `ModelPreparationCache` owns canonical source inspection, independent graph identity, immutable `PreparedModelPackage`, single-flight/refresh generations, waiter cancellation/deadlines, leases, LRU/byte budget and exactly-once completion. Core `OperationRuntime` remains the generic owner and has no DI dependency. Source range is the frozen B2 snapshot from base `9bdde3cf` with tracked patch SHA `2d1f7772efef5a0cdc689e340599a2b752262abb673de698427eda3b52ff7d9a`; bounded C++ normal/TSan evidence is recorded in [B2 evidence](../specs/185-prepared-model-runtime/evidence/b2-preparation.md). Request, conversation, Provider, Python and cross-process qualification remain `PLANNED`.

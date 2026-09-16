@@ -8,12 +8,24 @@
 | --- | --- | --- | --- | --- |
 | [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | PARTIAL | — | base smoke 和 APP SDK loader 正反例通过；34 脚本测试通过/1 skipped；ONNX/Rust 容器闭包、完整 APP/host-gate 与 pair 验收仍待执行；[SDK](evidence/b187-app-sdk.md)、[base repair](evidence/b187-base-repair.md)、[closure](evidence/b187-local-closure.md) | 2026-09-15 |
 | [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | PARTIAL | T001 | r7 STATIC_PASS；C++ target compile/link 与独立 served-provider selector 通过；through-MiniNDN 仍需 candidate-bound native config/input；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-15 15:44 -05:00 |
-| [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | WAITING_EXTERNAL_INPUT | T002 | base 已生成；仍需 APP recipe/SDK 接线、host-gate、candidate config/input 和两次 through-MiniNDN run；[base repair](evidence/b187-base-repair.md)、[local YOLO](evidence/b187-local-yolo.md) | 2026-09-15 |
+| [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | PARTIAL | T002 | 本机负责增建完整 base SDK、NDNSF consumer、candidate config/input 和两次 through-MiniNDN run；不要求用户提供可本机生成的输入；[candidate](evidence/b187-complete-candidate.md) | 2026-09-15 |
 | [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | WAITING_EXTERNAL_INPUT | T003 | T003 尚未 LOCAL_PASS；未启动 Tiger/Slurm；[b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | 2026-09-15 |
 | [T005 QWEN deferral and delivery record](#t005-qwen-deferral-and-delivery-record) | DONE | — | QWEN 明确保持 TODO，未进入 YOLO candidate；[qwen-deferred.md](evidence/qwen-deferred.md) | 2026-09-15 15:16 -05:00 |
-| [T006 Design-code convergence and final evidence](#t006-design-code-convergence-and-final-evidence) | DONE | T001,T002 | 静态收敛 PASS；正式 local/cluster 资格仍依赖外部 candidate 输入；[convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | 2026-09-15 15:32 -05:00 |
+| [T006 Design-code convergence and final evidence](#t006-design-code-convergence-and-final-evidence) | PARTIAL | T001,T002 | 两层交付改变构建边界，需重新核对受影响调用与契约；历史静态 PASS 保留，不能覆盖新方案；[convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | 2026-09-15 |
 
 ## Current Checkpoint
+
+2026-09-15 B187-BASE-SDK / DONE（base only）：最终 SIF SHA-256 `8ebfc4646a5f96109a8480b120e684ee3923bf067d2e49aef53b42d29e5acdd9`，4,087,824,384 bytes。最终镜像基础/SDK 原生检查通过，坏库覆盖按摘要拒绝；C++/ORT YOLO CPU 三次 oracle 对照通过。已封存于仓库外 `ndnsf-artifacts/base-sif/<sha256>/`，完整清单校验与移动后镜像复验通过、文件只读；构建 lock 已绑定新 base。T001/T003 保持 PARTIAL，下一步是 NDNSF consumer 实际构建与本地完整候选验收；不声明 MiniNDN/Tiger。见 [封存证据](evidence/b187-base-sdk-sealed.md)。
+
+2026-09-15 B187-BASE-SDK / PARTIAL：r5 修复后已在保留 rootfs 通过真实 SDK C++/Rust/Python/GStreamer/ELF 验证及基础 NumPy/NFD smoke；consumer r2 静态门与 46 项定向测试通过（5.59s）。当前封装最终 base SIF，按用户要求先验收并永久封存，再继续 NDNSF candidate；尚不声明最终镜像 PASS。见 [完整候选记录](evidence/b187-complete-candidate.md)。
+
+2026-09-15 B187-BASE-SDK / PARTIAL：首次增建已编完外部库，但 C++ probe 缺 NAC include 子目录而失败；保留 FAIL record 与 rootfs，修正并复审后在已有构建现场复验。T001/T003 不计完成；[失败边界](evidence/b187-complete-candidate.md)。
+
+2026-09-15 B187-BASE-SDK / PARTIAL：r4 不可变快照通过只读 `STATIC_PASS / B187-BASE-SDK_COMPOSITION_PASS`；`test_dependency_sdk.py` 与 `test_base_runtime.py` 共 24 passed（1.19s）。正在从现有 base 增建 `images/base-sdk-20260915-r1`，实际 SDK 验收尚未完成；随后接入 NDNSF consumer。见 [完整候选记录](evidence/b187-complete-candidate.md)。
+
+2026-09-15 B187-BASE-SDK / PARTIAL：用户接受 `base SIF + NDNSF` 两层，并要求从现有 base 增建依赖。脚本新增同一 base 入口的 dependency-bundle 模式，待静态门和真实构建验收；NDNSF consumer 下一批接线。本机 itiger-ndnsf-ops 安装版原为 2932 行过时副本，已基于仓库简版补齐规则并同步，skill validator 通过；旧安装版备份在 `.codex-tmp/spec187-two-layer-20260915/installed-skill-before.md`。T001/T003 仍未完成。
+
+2026-09-15 分层纠正：用户确认非 NDNSF＋APP 的依赖应在 base 内构建并验证。暂停完整候选重试，先补齐 base 的运行时与 SDK 闭包，避免 APP 阶段重复构建通用依赖。首轮容器已通过 ONNX/NAC-ABE/SVS/NDNSD 编译，停于 NDNSD metadata 检查；候选未生成，T001/T003 保持 PARTIAL。先前 base PASS 仅覆盖当时 smoke 集合，不代表完整构建依赖闭包；见 [完整候选记录](evidence/b187-complete-candidate.md)。
 
 2026-09-15 B187-NATIVE-INPUTS：官方 ONNX/Rust 与 Cargo.lock 离线 vendor 已封存，干净源码 handoff `SOURCE_READY`；23 个定向脚本测试通过。旧构建已归档并经内容比较后释放。当前继续构建完整 NDNSF+APP 候选，T001/T003 未完成；这些准备输入由本机生成，不再要求用户提供。见 [完整候选记录](evidence/b187-complete-candidate.md)。
 
@@ -34,7 +46,9 @@
 | B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | PARTIAL |
 | B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | WAITING_EXTERNAL_INPUT |
 | B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | DONE |
-| B187-CONVERGENCE | T006 | fresh audit PASS before formal local/cluster evidence | CodeGraph plus exact source and symbol checks | DONE |
+| B187-BASE-SDK | T001 prerequisite | existing base extended with verified external runtime and build SDK | test_dependency_sdk.py; actual container C++/Rust/Python probes | DONE (base only) |
+| B187-NDNSF-CONSUMER | T001,T003 | repository targets consume the verified base without rebuilding external dependencies | incremental container build and native YOLO runner | PARTIAL (static and packaging tests passed; actual build pending) |
+| B187-CONVERGENCE | T006 | fresh audit PASS before formal local/cluster evidence | CodeGraph plus exact source and symbol checks | PARTIAL |
 
 ## Task Details
 

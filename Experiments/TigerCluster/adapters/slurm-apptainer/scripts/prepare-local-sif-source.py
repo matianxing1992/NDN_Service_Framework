@@ -33,6 +33,7 @@ FILES = (
     "pythonWrapper/src",
     "NDNSF-DistributedRepo/pythonWrapper",
     "NDNSF-DistributedRepo/src",
+    "NDNSF-UAV-APP/tools/uav_video_pipeline_probe.cpp",
     "Experiments/NDNSF_DI_StreamedGeneration_Minindn.py",
     "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
     "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py",

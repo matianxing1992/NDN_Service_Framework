@@ -36,9 +36,26 @@ description: Prepare or review NDNSF source and SIF delivery, diagnose container
 
 ## Delivery And Native Boundary
 
+当前交付采用两层：**base SIF + NDNSF**。base 包含全部已声明外部运行依赖及构建 SDK；
+NDNSF 层统一拥有本仓库的 Core、DI、Repo、UAV、绑定和实验入口，不再另划第三个 APP 层。
+旧脚本的 APP 字段/路径可作为兼容名称，但不能据此重复构建外部依赖。
+
+- 先检查现有 base 的摘要、依赖 manifest、头文件/库/pkg-config、编译器和 Python ABI。
+  缺依赖时以现有已验证 base 为父镜像，补齐后输出新 SIF 与新摘要，保留旧镜像；不默认从零重建。
+- ONNX/ORT、Protobuf、Rust、NAC-ABE、NDN-SVS、NDNSD 等外部依赖在 base 中准备并验证。
+  按消费者实际需求核对完整依赖集合；不把这份举例当穷尽清单。版本、编译选项或 ABI 变化才使 base 失效。
+- NDNSF 日常源码变化只重建受影响的仓库目标、绑定及相应验收；不在 NDNSF 层 apt install、
+  下载依赖或再次编译外部库。Cargo.lock 等依赖声明仍随源码封存，需与 base 的依赖集合匹配；
+  缺项回到 base 补齐，不由构建阶段静默联网解决。
+- base 验收覆盖真实 C++ compile/link/run、Python ABI/import 和动态加载路径；仅 NumPy/NFD smoke
+  不证明 SDK 闭包。base 通过后才构建 NDNSF 候选，再做本地 C++ 模型/请求链与规定绑定验收。
+  base PASS、candidate build、YOLO runner、MiniNDN 和 Tiger 结论分别记录，不相互代替。
+- 验收最终 base SIF 后按 `docs/base-sif-build.md` 封存镜像、摘要、SDK manifest、输入和真实证据；
+  使用仓库外内容寻址目录，文件只读，不纳入临时清理。以后增建生成新目录，不原地覆盖旧 base。
+
 - 固定 NDNSF、NAC-ABE、NDN-SVS 及NDNSD等直接ABI消费者的实际版本；未提交改动须显式纳入来源身份，不能只记录 HEAD。
   交付 definition、source archives、依赖 manifest 与校验说明；所有输入使用可迁移布局和摘要。
-- builder 在容器内重新编译选定依赖、Core 和两个 Python 扩展；禁止把宿主 `.so`、venv 或 Python.h 当成容器运行闭包。
+- base builder 在容器内构建外部依赖；NDNSF builder 消费同一 base，在容器内编译仓库目标和 Python 扩展；禁止把宿主 `.so`、venv 或 Python.h 当成容器运行闭包。
   ABI变化后清理依赖对象，核对 include/lib/pkg-config、实际 loaded libraries、SOABI、RPATH 和版本。
 - 安装前清理本交付拥有的旧 runtime 输出；两扩展、NAC/SVS/Core与应用二进制进入 manifest。
   final artifact 摘要必须与 builder 记录一致；成功 import 或相同 SONAME 不能证明 ABI兼容。

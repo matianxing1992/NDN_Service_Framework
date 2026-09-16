@@ -1,0 +1,27 @@
+Bootstrap: localimage
+From: @BASE_SIF@
+
+%files
+    @INPUT@/sdk /build-input/sdk
+    @INPUT@/dependency-sdk.py /build-input/dependency-sdk.py
+    @INPUT@/base-runtime.py /build-input/base-runtime.py
+
+%post
+    /opt/venv/bin/python /opt/ndn-base/manifest/base-runtime.py verify
+    /usr/bin/python3 /build-input/dependency-sdk.py prepare
+    cp /build-input/base-runtime.py /opt/ndn-base/manifest/base-runtime.py
+    /opt/venv/bin/python /opt/ndn-base/manifest/base-runtime.py verify
+    rm -rf /build-input
+
+%environment
+    export PATH=/opt/ndn-base/bin:/opt/venv/bin:/usr/bin:/bin:/usr/sbin:/sbin
+    export LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    export PYTHONNOUSERSITE=1
+
+%test
+    /opt/venv/bin/python /opt/ndn-base/manifest/base-runtime.py verify
+    /usr/bin/python3 /opt/ndn-base/manifest/dependency-sdk.py verify
+
+%runscript
+    exec /usr/bin/python3 /opt/ndn-base/manifest/dependency-sdk.py verify

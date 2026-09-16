@@ -13,6 +13,8 @@
 
 ## Current Delivery Direction
 
+2026-09-15 用户将当前方向简化为 **base SIF + NDNSF**；全部外部依赖与 SDK 归 base，本仓库模块统一归 NDNSF。优先在已有 base 上补齐依赖。详见 [two-layer delivery](two-layer-delivery.md) 与 [base completion](base-sif-build.md)。以下旧 APP 名称保留兼容和历史说明，不额外划出应用构建层；当前迁移未验收部分保持 PARTIAL。
+
 2026-09-08 已接受后续使用**稳定基础 SIF + 外置版本化 DI/UAV 应用包**。
 详细归属、builder ABI、只读挂载、组合身份与验收见
 [Layered Runtime Delivery](../../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md)。

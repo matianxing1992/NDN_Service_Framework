@@ -229,8 +229,11 @@ def verify():
     require(np.__version__ == lock['numpy']['version'], 'NUMPY_VERSION')
     a = np.array([[1., 2.], [3., 4.]])
     require(np.array_equal(a @ a, [[7., 10.], [15., 22.]]), 'NUMPY_BLAS_SMOKE')
+    # Full dependency bases may contain the external NDN/crypto libraries;
+    # Core/DI production objects always belong to the separate NDNSF layer.
+    forbidden = APP_LIBS[:2] if (MANIFEST / 'dependency-sdk.json').is_file() else APP_LIBS
     for prefix in (LEGACY, Path('/usr/local'), BASE):
-        for stem in APP_LIBS:
+        for stem in forbidden:
             require(not list((prefix / 'lib').glob(stem + '.so*')), 'APPLICATION_LIBRARY_IN_BASE:' + stem)
     for name in APP_PACKAGES:
         require(not (site / name).exists() and not list(site.glob(name + '.*')),

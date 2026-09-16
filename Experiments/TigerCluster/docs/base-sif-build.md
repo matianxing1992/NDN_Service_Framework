@@ -1,6 +1,41 @@
 # Stable base SIF refresh
 
-入口由 TigerClusterExperiments 的 `build-base-libraries.sh` 改造而来。当前 base 提供 NDN-CXX/NFD、ORT、Python/NumPy 和基础构建 SDK；Core/DI/SVS/NDNSD/NAC-ABE 与绑定在 APP 中构建。不会使用旧 `--runtime-libraries-only` 选项，也不会借用旧 DI 库来满足新绑定的链接要求。
+## Validation And Permanent Retention
+
+当前已验收版本：SHA-256 `8ebfc4646a5f96109a8480b120e684ee3923bf067d2e49aef53b42d29e5acdd9`，
+4,087,824,384 bytes；见 [Spec187 封存证据](../../../specs/187-yolo-minindn-sif-app/evidence/b187-base-sdk-sealed.md)。
+
+base 是后续构建的固定输入，必须先对最终 SIF（而不只是 builder/rootfs）执行
+`base-runtime.py verify`、`dependency-sdk.py verify` 和真实 C++/ORT YOLO CPU smoke。
+SDK 验收覆盖依赖摘要、C++ compile/link/run、ONNX checker/shape inference、NAC/SVS/NDNSD
+符号、Rust、GStreamer、Python ABI/import、NumPy 私有库及 ELF 加载来源。
+另以只读覆盖错误 SDK 库做拒绝反例，不能仅看成功路径。
+
+通过后封存在仓库外 `/home/tianxing/NDN/ndnsf-artifacts/base-sif/<sha256>/`，
+保存只读 `base.sif`、`SHA256SUMS`、依赖 manifest、构建输入/脚本、真实验收记录和续建来源。
+该目录不入 Git，不属于 `.codex-tmp`、`images` 或构建缓存的自动清理范围；
+删除须单独明确授权。封存后缺依赖或 ABI 变化生成新摘要、新目录，禁止原地修改。
+跨机器传输后先核对 SHA-256，并在目标环境复验；本地 SDK/模型 PASS 不代表 MiniNDN/Tiger PASS。
+
+入口由 TigerClusterExperiments 的 `build-base-libraries.sh` 改造而来。[两层交付](two-layer-delivery.md)要求 base 包含全部外部依赖；Core/DI/Repo/UAV 及绑定归 NDNSF 层。此前基础 smoke 镜像只覆盖 NDN-CXX/NFD、ORT、Python/NumPy，不能据此认定完整 SDK 已通过。
+
+## Complete An Existing Base
+
+在已有已验证 base 上增建，无需重做 NumPy/NDN/ORT 基础修复。`--dependency-bundle` 使用已封存 handoff 的外部源码与工具链，并要求其 base digest 与传入父镜像一致：
+
+```bash
+python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-base-sif.py \
+  --base /absolute/path/verified-base.sif \
+  --dependency-bundle /absolute/path/verified-handoff \
+  --output /absolute/path/new-sdk-base-run \
+  --apptainer /usr/bin/apptainer --expected-apptainer 1.5.3
+```
+
+外部 NDN/crypto 依赖安装到 `/opt/ndn-base`，ONNX 到 `/opt/onnx`，Rust 到 `/opt/rust`；
+NDN-SVS 的匹配 source/build pair 和 Cargo vendor 随 SDK 保留，供 NDNSF 消费而非重新下载。
+新 `BASE_DEPENDENCY_SDK` 检查 headers/libraries/packages 身份、真实 C++/Rust compile/run 和动态闭包。
+脚本已实现，实际新镜像验收状态以 Spec187 evidence 为准；历史 `BASE_SMOKE_ONLY` 不自动升级。
+旧基础刷新入口和以下记录保留为初始基线流程，非完整 SDK 资格。
 
 ## Inputs
 
@@ -25,6 +60,6 @@ NumPy 修复采用完整 wheel 重装，逐一比对 `numpy.libs` 中 OpenBLAS�
 
 简单运行验证包括镜像内编译 C++ NDN-CXX/ORT consumer、运行它、NFD version、动态库闭包和 NumPy 矩阵乘法。结果范围是 `BASE_SMOKE_ONLY`，不能代替 APP 链接验证、模型推理、MiniNDN 或 TigerCluster 资格。
 
-此 base 的后续 APP builder 仍需以新 base 摘要重新绑定候选；不能沿用旧候选的 PASS。历史 SDK 兼容路径仅用于构建，生产 APP 仍采用 `sif-app-delivery.md` 的独立库集合和 RPATH。
+后续 NDNSF builder 必须以新 base 摘要重新绑定候选；不能沿用旧候选的 PASS。兼容 APP 布局仍由 `sif-app-delivery.md` 说明，不代表第三层。
 
-OpenABE/RELIC 构建材料位于 `/opt/ndn-base/sdk/lib`，不会进入默认 loader 路径。使用它们的 APP recipe 必须显式选择 SDK 并把对应动态库装入 APP；旧 recipe 的 `/usr/local/lib/libopenabe.so` 等路径不能直接沿用。当前入口验收范围是基础镜像，不代表旧 APP recipe 已完成迁移。
+初始 smoke base 的 OpenABE/RELIC 材料位于 `/opt/ndn-base/sdk/lib`。完整 SDK 增建将所需库明确安装并验证到 `/opt/ndn-base/lib`；NDNSF 不再使用未声明的 `/usr/local/lib`。NDNSF consumer 迁移与本地推理仍需独立验收。

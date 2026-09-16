@@ -1,5 +1,15 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec187 base SDK probe include closure
+
+外部依赖实际编译安装完成后，SDK C++ probe 缺少 `/opt/ndn-base/include/nac-abe`，`common.hpp` 无法解析。`images/base-sdk-20260915-r1/build.log`、FAIL record 与 rootfs 保留；修复并复审后复用该现场验证，不将编译成功当 SDK PASS。见 [完整候选证据](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
+更新：r5 只读审查通过；保留 rootfs 内 C++/Rust/Python/ELF 全部 probe PASS。consumer 脚本测试另有旧 handoff 断言仍要求复制外部源码，45 passed / 1 failed，按新的两层契约修正后复审复测；未产生协议结论。
+
+## 2026-09-15 — Spec187 complete candidate NDNSD metadata check
+
+首轮完整容器构建中 ONNX、NAC-ABE、NDN-SVS、NDNSD 编译安装成功，随后旧脚本将空的 `pkg-config --cflags-only-I ndnsd` 判为路径错误。目录已在 `CPLUS_INCLUDE_PATH` 时该输出会被过滤；修复为精确核对 `--variable=includedir`，保留 libdir 检查。原始 `build-r1/build.log` 保留，候选未生成，非协议失败。见 [完整候选证据](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
 ## 2026-09-15 — Spec187 offline Cargo vendor preparation
 
 实际 native input prepare 首边界为旧 Cargo cache 缺少锁定的 `wasi v0.11.1+wasi-snapshot-preview1`，offline vendor rc=101。已保留 FAIL record 与原始 `native-inputs/vendor.log`；不改 lock，在宿主准备阶段补全锁定缓存后，用全新目录重新离线封存。未开始 SIF/C++ build，也不是协议失败；见 [完整候选证据](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。

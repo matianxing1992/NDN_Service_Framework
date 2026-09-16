@@ -71,6 +71,8 @@ Experiments/TigerCluster/adapters/slurm-apptainer/scripts/, Experiments/TigerClu
 
 ## Notes
 
+2026-09-15 两层修订：优先在已验证 base 上补齐全部外部依赖/SDK，再由 NDNSF 层消费。B187-BASE-SDK 的稳定出口是新 base 的 C++/Rust/ELF/Python 验收；B187-NDNSF-CONSUMER 的稳定出口是无依赖安装/重编的仓库候选与本地 YOLO。两批分别静态门和构建验证；兼容 APP 字段不形成第三交付层，详见 [two-layer delivery](../../Experiments/TigerCluster/docs/two-layer-delivery.md)。
+
 2026-09-15 本地构建顺序修正：允许通过现有 `build-local-sif.sh --build-only` 先生成 `BUILT_UNQUALIFIED` 候选，用于当前源码容器编译和本机测试。该模式仍要求源封存、容器原生边界、镜像标签身份及模板内验证；不执行或声称旧 Spec175 host/模型资格。发布路径的 host-gate 与 `PASS` 要求保持不变，既有 release validator / APP packager 必须拒绝 `BUILT_UNQUALIFIED`。T001/T003 仍须实际 APP 与请求链验收才能完成。本模式不授权 Tiger 上传或运行。
 
 实现前置是取得 regular base SIF。当前本机 dangling link 只能产生 WAITING_EXTERNAL_INPUT，不能作为 build 或 runtime evidence。

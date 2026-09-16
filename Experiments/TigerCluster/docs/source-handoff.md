@@ -2,6 +2,8 @@
 
 ## Scope And Status
 
+2026-09-15：当前分层以 [two-layer-delivery.md](two-layer-delivery.md) 为准。外部依赖由现有 base 增建并验证，NDNSF builder 只构建仓库目标；本轮用户已授权本机构建及 YOLO 检查。下述 2026-09-06 的机器分工和源码版本属于历史交付，不覆盖当前授权或锁文件。
+
 **Status**: COMPLETE / SOURCE_READY。本交付固定NDNSF、NAC-ABE、NDN-SVS及传递依赖NDNSD源码，提供可迁移的构建输入及共享skills。
 
 2026-09-06用户明确纠正范围：本机本轮只负责交付；后续编译、unit/integration、Python扩展验证、MiniNDN、SIF和Tiger测试全部移交另一台机器。此前自行扩大的本机构建已停止，保留原始记录；它们不再是交付完成的前置条件，也不能被记为完整验证PASS。Spec182仍不开始。

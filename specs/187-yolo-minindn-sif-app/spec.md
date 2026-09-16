@@ -8,6 +8,8 @@
 
 **Status**: Draft
 
+**Delivery Revision (2026-09-15)**: 用户确认两层 `base SIF + NDNSF`，取代三层提法；base 包含全部外部运行依赖和构建 SDK，优先基于现有已验证 base 补齐。NDNSF 层统一承载本仓库 Core/DI/Repo/UAV、绑定及实验入口。本文既有 APP/pair 名称指兼容交付表示，不是额外第三层；详细归属与验收见 [two-layer delivery](../../Experiments/TigerCluster/docs/two-layer-delivery.md)。当前目标接受，构建迁移与真实验收仍为 PARTIAL。
+
 **Input**: User description: 先完成一个最快可运行的 YOLO MiniNDN 实验，复用已有 Experiments/TigerCluster SIF 构建脚本，消除隐藏依赖，先本机验证再交付 TigerCluster；QWEN 暂放 to-do。
 
 ## User Scenarios & Testing *(mandatory)*
