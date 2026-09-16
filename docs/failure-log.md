@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-16 — Spec187 authority handoff source closure
+
+新的 authority source handoff 首次使用现有依赖工作区时，在 `HANDOFF_SOURCE_UNTRACKED:examples/example-trust-anchor.cert` 处拒绝，未创建 bundle、未启动构建。该文件是依赖 checkout 的本机生成身份资料；原始记录 `.codex-tmp/spec187-authority-20260916/prepare-r1.log` 与 `prepare-r1.failure.json` 保留。改用三个锁定 revision 的干净 detached worktree 后，source handoff 成功；不放宽 untracked-source 门。
+
+## 2026-09-16 — Spec187 authority definition render path
+
+authority handoff 成功后，首次 render 传入相对 bundle 路径，被 `HANDOFF_BUNDLE_PATH_NOT_ABSOLUTE` 在构建前拒绝；未生成 definition、未启动 Apptainer。原始记录 `.codex-tmp/spec187-authority-20260916/render-r1.log` 与 `render-r1.failure.json` 保留；改用绝对路径后 render 成功。
+
 ## 2026-09-16 — Spec187 inherited DI headers differ from compiled source
 
 `unit-r2` 首个编译错误为 `RedistributionSpec` 未声明：pkg-config 指向 current/include，那里仍是父镜像遗留 DI 头；本次 builder 只安装 Core headers，DI 新头仅在 sealed replay 中。修复正式安装清单，删除遗留 DI header tree，并在 native verifier 比较已安装头与 replay 的完整集合及字节。不通过调整 include 优先级隐藏问题。r12 SIF 保持 BUILT_UNQUALIFIED；日志 `unit-r2/run.log`，见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。

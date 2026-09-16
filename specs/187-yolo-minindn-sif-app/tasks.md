@@ -18,6 +18,8 @@
 
 2026-09-16 清理了可重建的旧构建产物和未占用的旧 Codex 会话，磁盘恢复约 43 GiB；r12 诊断 SIF/rootfs 已移除，失败日志和证据保留。T007 冻结审查返回 `STATIC_PASS`，14 个模板测试、2 个 header/NDNSD 子集测试及 Python/`bash -n` 通过；已建立干净 HEAD `a0740640` worktree。
 
+2026-09-16 authority 闭包重建：source handoff 从干净 worktree 更新至 `bd5b2f3e`，新候选 `ec21657d…fc1eb` 完整构建 `295/295`，cleanenv native verifier、C++ DI unit 和 C++ YOLO native runner 均通过；构建记录仍为 `BUILT_UNQUALIFIED`。候选-bound authority 配置、through-MiniNDN 两次请求、host-gate/APP pair 与 Tiger 仍未执行，T001/T002/T003/T007 保持 `PARTIAL`。
+
 2026-09-16 B187-AUTHORITY-CLOSURE 静态/脚本批次：`DI_NativeArtifactAuthority` 已接入 source seal、Waf、builder/final 安装和 ELF/ldd/manifest 门，并同步 APP/validator 与 fixture。官方 review-agent 冻结快照 `review-authority-r2-20260916` 返回 `STATIC_PASS`（SHA-256 `36f3b9d7…de8d07`，五 lane 无 P0–P3）；定向测试 39 passed、1 skipped（4.16s）。尚未重建新候选，T001/T003/T007 继续 `PARTIAL`。
 
 2026-09-16 完整两阶段 candidate SIF 已生成：Apptainer 1.5.3，SIF SHA-256 `e6cef05a949c3b865b35424ddb486bee05ea8a0023dd9ba4f7f5eda556541657`，Waf C++ 293/293、两个 Python binding wheel、builder/final `verify-native.py`、Python import、`ldd` 和 SDK 4278 项检查通过；构建记录为 `BUILT_UNQUALIFIED`，不代表行为资格。容器临时 rootfs 已在保留记录后清理。
