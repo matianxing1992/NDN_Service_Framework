@@ -5532,6 +5532,26 @@ which differs from the Spec186 handoff seal
   acceptance dimensions. Keep both in the evidence instead of relabeling a
   forced cleanup as a protocol failure or a clean PASS.
 
+### 2026-09-16 — Spec186 Controller overlay did not remove forced teardown
+
+- **Area**: minimal local Y-A rerun after the terminal-response proof.
+- **Symptom**: mounting the corrected Controller script as a read-only
+  application-layer input still produced the same real YOLO response and
+  numerical match, but the Controller process ended as `-9` during bounded
+  teardown.
+- **Root cause**: the native Controller/Face shutdown path can remain blocked
+  after the publishing ServiceUser reports a socket EOF; changing the Python
+  ordering alone is not sufficient evidence that the sealed runtime has a
+  clean shutdown.
+- **Correction**: retain the terminal response as valid application evidence,
+  keep the cleanup result separate, and defer the shutdown repair to the next
+  fresh recipe-built candidate. Do not rebuild or mutate the accepted SIF for
+  this one-run proof.
+- **Lesson**: application-layer overlays are useful diagnostics, but the
+  production fix belongs in the fixed recipe and its builder/runtime image;
+  candidate promotion must wait for a fresh sealed build and a clean teardown
+  check.
+
 ### 2026-09-16 — Spec186 root MiniNDN child received an unmapped host path
 
 - **Symptom:** The first root local Y-A replay reached the MiniNDN process

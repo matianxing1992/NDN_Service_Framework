@@ -149,6 +149,7 @@ def main() -> int:
     # log above.  The fallback is used only when no publication receipt is
     # configured, and must not be released by a pre-readiness substring.
     print("SPEC180_CONTROLLER_READY", flush=True)
+    runtime_publication_user = None
     try:
         if args.spec180_runtime_publication_file:
             # spec181 T005 repair: the readiness probe's PUBPARAMS Data (named
@@ -186,6 +187,12 @@ def main() -> int:
             while runtime_publication_user is not None and not shutdown.wait(3600):
                 pass
             if shutdown.is_set():
+                # The publishing ServiceUser owns a live face and worker
+                # threads.  Stop it before the native Controller so the
+                # process can return cleanly when the harness tears down the
+                # case after a terminal response.
+                runtime_publication_user.stop()
+                runtime_publication_user = None
                 controller.stop()
                 return 0
         if not args.deploy_to_repo_manifest:
@@ -201,6 +208,8 @@ def main() -> int:
         while True:
             time.sleep(3600)
     finally:
+        if runtime_publication_user is not None:
+            runtime_publication_user.stop()
         controller.stop()
 
 

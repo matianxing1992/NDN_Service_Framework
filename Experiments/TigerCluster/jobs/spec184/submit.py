@@ -146,6 +146,9 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
             "SPEC180_RUNTIME_APP_LIB": "/app/bundle/lib",
             "SPEC180_RUNTIME_INPUT_ROOT": case_bundle,
         })
+        controller_script = bundle_path / "controller.py"
+        if controller_script.is_file():
+            env["SPEC180_RUNTIME_CONTROLLER_SCRIPT"] = str(controller_script)
     env.update({
         "SPEC180_RUNTIME_SIF": runtime["baseSif"]["path"],
         "SPEC180_RUNTIME_APPTAINER": runtime["apptainer"]["path"],

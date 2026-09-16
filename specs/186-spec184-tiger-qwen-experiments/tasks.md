@@ -59,6 +59,20 @@ T006.d still lacks local CPU smoke plus immutable upload/same-SHA receive.
 MiniNDN and Tiger qualification therefore remain blocked. The r80/r81 runtime
 boundary failures and r82 stale-handoff failure remain immutable history.
 
+**Local exact-SIF application checkpoint (2026-09-16)**: candidate
+`sha256:b1fbcadf7d423a9cb0910b2344d8c397f6c9b8a1bc236c475a604b02411e0312`
+used Apptainer 1.5.3, base SIF
+`sha256:089a4bc942db5fcc9d01ba2bf62b01ae1836416a232f0806a61931f26d946547`,
+and read-only app bundle
+`sha256:92934b89e842483a12b6669cf935b62a1ec8b1750d1093f097ccc4cbcbc58f79`.
+One real local Y-A cross-process request reached ACK, Selection and terminal
+response; the independent oracle matched shape `[1,50,6]` with maximum absolute
+error `0.0005340576171875`. The bounded harness still ended with
+`CASE_TERMINAL_CLEANUP_FAILURE:controller:-9`, so this advances only the
+application-execution boundary. T006.d, clean MiniNDN qualification, upload,
+Tiger GPU and two-node rows remain open. The evidence and next fresh-build rule
+are recorded in `evidence/local-sif-yolo-20260916-r86.md`.
+
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
 | T001.a | T001 | 获取并验证 `575b43cc93bbed29932303caf3d09974f1585af7` 对象、父提交、tree 和 clean checkout；记录于 `evidence/baseline-inventory.md` | VERIFIED | `evidence/baseline-inventory.md` source seal and ancestor receipt | — | 任何 source checkout 变化重做 |

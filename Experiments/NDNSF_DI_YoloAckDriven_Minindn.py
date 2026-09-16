@@ -194,6 +194,15 @@ def _sif_bind_args(base_env: Mapping[str, str] | None = None) -> list[str]:
         if app_path.is_dir() and str(app_path) not in seen:
             seen.add(str(app_path))
             result.extend(["--bind", f"{app_path}:/app/bundle:ro"])
+        controller_script = str(
+            env.get("SPEC180_RUNTIME_CONTROLLER_SCRIPT", "")).strip()
+        if controller_script:
+            controller_path = Path(controller_script).expanduser().resolve()
+            if controller_path.is_file():
+                result.extend(["--bind", (
+                    f"{controller_path}:/opt/ndnsf-di/replay/repo/"
+                    "examples/python/NDNSF-DistributedInference/yolo_2x2/"
+                    "controller.py:ro")])
     input_root = str(env.get("SPEC180_RUNTIME_INPUT_ROOT", "")).strip()
     if input_root:
         input_path = Path(input_root).expanduser().resolve()

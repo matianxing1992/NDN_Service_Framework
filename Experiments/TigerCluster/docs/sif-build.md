@@ -15,6 +15,42 @@ source-sealed candidate 在 compute 1.5.3 例外构建；登录节点 1.3.4 不�
 
 ## Existing Build Entry
 
+### One sealed build per candidate
+
+复杂候选必须遵循一条不可回退的封装链：
+
+```text
+source seal
+  -> complete input manifest
+  -> fixed base SIF
+  -> fresh builder stage
+  -> header/library/pkg-config/C++ consumer checks
+  -> final stage copies only verified outputs
+  -> one SIF pack
+  -> cleanenv runtime probes and local smoke
+```
+
+每次候选都使用新的 definition、输出路径和记录路径。`%post`、缓存目录、
+partial SIF 或 retained rootfs 不能作为下一次构建的输入；构建失败后保留日志
+用于诊断，但必须从 source seal 和 fresh builder stage 重新开始。`%files from`
+只能复制 builder 已经通过验证的文件，不能把 final stage 当作第二个编译环境。
+这样可以在生成 SIF 以前发现漏掉的 public header、静态库、pkg-config 文件、
+assembly worker 或 Python native extension，而不是等到封装完成后才由 consumer
+触发错误。
+
+预验证至少要覆盖四个层面：
+
+1. 输入清单与 source seal 的每个 archive、wheel、base SIF 和工具链摘要；
+2. builder 内实际消费的源码子目录、public headers、libraries、SONAME、
+   `pkg-config` 和所有 C++ consumer；
+3. final-stage transfer 清单与 builder 产物摘要一致，且 final 不再执行编译；
+4. 只读 SIF 中的 Python/native import、`ldd -r`、RUNPATH、入口 `--help` 和
+   一次本地功能 smoke。
+
+任何一层失败都只产生一个新的诊断 candidate；不得通过修改旧 rootfs、替换
+宿主库或复用旧 SIF 字节来“修复”它。应用包和基础 SIF 的 hash 必须分别记录，
+应用包变更只重做匹配 builder 和最终组合，基础 ABI 变更则重建受影响消费者。
+
 复用、测试或传输已有 SIF 前，必须对照原始成功构建记录执行：
 
 ```bash
