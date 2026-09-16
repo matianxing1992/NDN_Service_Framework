@@ -15,6 +15,33 @@ ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/templates/development-runtime.def.in"
 
 
+def test_installed_di_headers_reject_stale_missing_and_extra(tmp_path):
+    text = TEMPLATE.read_text().split("cat > /opt/ndnsf-stage/manifest/verify-native.py <<'PY'\n", 1)[1].split('\nPY', 1)[0]
+    tree = ast.parse(text)
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'verify_di_headers')
+    namespace = {'Path': Path}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), '<header-verifier>', 'exec'), namespace)
+    verify = namespace['verify_di_headers']
+    base, replay = tmp_path / 'base', tmp_path / 'replay'
+    source = replay / 'NDNSF-DistributedInference/cpp'
+    target = base / 'include/NDNSF-DistributedInference/cpp'
+    source.mkdir(parents=True)
+    target.mkdir(parents=True)
+    (source / 'api.hpp').write_text('current declaration')
+    (source / 'tokenizer-abi.h').write_text('public ABI declaration')
+    with pytest.raises(RuntimeError, match='DI_INSTALLED_HEADERS_MISMATCH'):
+        verify(base, replay)
+    (target / 'api.hpp').write_text('stale declaration')
+    with pytest.raises(RuntimeError, match='DI_INSTALLED_HEADERS_MISMATCH'):
+        verify(base, replay)
+    (target / 'api.hpp').write_bytes((source / 'api.hpp').read_bytes())
+    (target / 'tokenizer-abi.h').write_bytes((source / 'tokenizer-abi.h').read_bytes())
+    verify(base, replay)
+    (target / 'extra.hpp').write_text('retired declaration')
+    with pytest.raises(RuntimeError, match='DI_INSTALLED_HEADERS_MISMATCH'):
+        verify(base, replay)
+
+
 def test_ndnsd_prefix_check_survives_system_include_filter(tmp_path):
     include = tmp_path / 'include'
     include.mkdir()

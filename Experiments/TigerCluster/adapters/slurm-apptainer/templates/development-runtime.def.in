@@ -171,13 +171,17 @@ import shutil
 from pathlib import Path
 source = Path('/src/ndnsf')
 target = Path('/opt/ndnsf-stage/include')
-for path in (source / 'ndn-service-framework').rglob('*.hpp'):
+header_suffixes = {'.h', '.hpp', '.hxx', '.ipp', '.tpp'}
+for path in [p for p in list((source / 'ndn-service-framework').rglob('*')) + list((source / 'NDNSF-DistributedInference/cpp').rglob('*'))
+             if p.is_file() and p.suffix in header_suffixes]:
     dest = target / path.relative_to(source)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, dest)
 shutil.copy2(source / 'build/config.hpp', target / 'ndn-service-framework/config.hpp')
 PY
     cp -a /opt/ndnsf-stage/include/ndn-service-framework /opt/ndnsf-di/current/include/
+    rm -rf /opt/ndnsf-di/current/include/NDNSF-DistributedInference
+    cp -a /opt/ndnsf-stage/include/NDNSF-DistributedInference /opt/ndnsf-di/current/include/
     # Ensure setup.py cannot select a previous local build directory.
     rm -rf /src/ndnsf/build /src/ndnsf/pythonWrapper/build /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper/build
     # Link Python extensions against the staged candidate and the stable base,
@@ -243,6 +247,19 @@ assert platform.machine() == 'x86_64', 'BASE_ARCHITECTURE_REQUIRES_X86_64'
 assert sys.version_info[:2] == (3, 10), 'PYTHON_ABI_REQUIRES_3_10'
 assert sysconfig.get_paths()['purelib'] == '/opt/venv/lib/python3.10/site-packages', 'PYTHON_PREFIX_MISMATCH'
 base = Path('/opt/ndnsf-stage' if mode == 'builder' else '/opt/ndnsf-di/current')
+def verify_di_headers(base, replay):
+    relative = Path('NDNSF-DistributedInference/cpp')
+    source = replay / relative
+    installed = base / 'include' / relative
+    suffixes = {'.h', '.hpp', '.hxx', '.ipp', '.tpp'}
+    expected = {p.relative_to(source): p.read_bytes() for p in source.rglob('*')
+                if p.is_file() and p.suffix in suffixes}
+    actual = {p.relative_to(installed): p.read_bytes() for p in installed.rglob('*')
+              if p.is_file() and p.suffix in suffixes}
+    if not expected or actual != expected:
+        raise RuntimeError('DI_INSTALLED_HEADERS_MISMATCH')
+
+verify_di_headers(base, Path('/opt/ndnsf-stage/replay/repo' if mode == 'builder' else '/opt/ndnsf-di/replay/repo'))
 site = Path('/opt/ndnsf-stage/python' if mode == 'builder' else sysconfig.get_paths()['purelib'])
 manifest_path = base / 'manifest/container-native-build.json'
 
@@ -481,6 +498,7 @@ PY
     install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/libndn-service-framework.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-service-framework.pc
     install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/ndnsf-distributed-inference.pc /opt/ndnsf-di/current/lib/pkgconfig/ndnsf-distributed-inference.pc
     install -d /opt/ndnsf-di/current/include
+    rm -rf /opt/ndnsf-di/current/include/NDNSF-DistributedInference
     cp -a /opt/ndnsf-candidate/include/. /opt/ndnsf-di/current/include/
     install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc
     install -m 0644 /opt/ndnsf-candidate/lib/pkgconfig/libndn-svs.pc /opt/ndnsf-di/current/lib/pkgconfig/libndn-svs.pc
