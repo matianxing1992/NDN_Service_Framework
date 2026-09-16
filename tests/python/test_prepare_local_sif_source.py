@@ -38,6 +38,7 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
         names = archive.getnames()
     assert "pythonWrapper/src/ndnsf/_ndnsf.cpp" in names
     assert "examples/App_ServiceController.cpp" in names
+    assert "examples/DI_NativeArtifactAuthority.cpp" in names
     assert "NDNSF-DistributedRepo/wscript" in names
     assert "libndn-service-framework.pc.in" in names
     assert "packaging/ndnsf-di-container/jobs/spec175/workload.json" in names

@@ -40,6 +40,7 @@ REQUIRED_FILES = {
     "bin/di-native-provider",
     "bin/di-native-fault-provider",
     "bin/App_ServiceController",
+    "bin/DI_NativeArtifactAuthority",
     "python/ndnsf_distributed_inference/__init__.py",
     "manifest/app-runtime.lock.json",
     "manifest/source-seal.json",
