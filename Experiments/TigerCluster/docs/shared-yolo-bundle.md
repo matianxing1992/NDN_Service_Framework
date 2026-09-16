@@ -10,6 +10,14 @@ Download the SIF image from Google Drive:
 
 [ndnsfdi.sif](https://drive.google.com/file/d/17yb0fC3erx1fUw_gCKwL0z8QCh_8ownY/view?usp=sharing)
 
+An older SIF is also available for reference:
+
+[legacy ndnsfdi.sif](https://drive.google.com/file/d/1sCgOzXscRLhXMq8paiBGJBmPn6rrWoNq/view?usp=sharing)
+
+The legacy image is not the new build. The next SIF version is still under
+development and has not been released; use the image explicitly identified by
+the experiment owner.
+
 Download the companion directory from the same restricted handoff location:
 
 ```text
