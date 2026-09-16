@@ -25,9 +25,9 @@
   },
   "baseSif": {
     "filename": "base.sif",
-    "sha256": "sha256:7b4b501033f2db876ccf5c19a9637a58b8b232cf4d555f5b8a225638e180837c",
-    "bytes": 3759759360,
-    "recordedLocalPath": "Experiments/TigerCluster/images/base-repair-20260915/run-r2/base.sif",
+    "sha256": "sha256:8ebfc4646a5f96109a8480b120e684ee3923bf067d2e49aef53b42d29e5acdd9",
+    "bytes": 4087824384,
+    "recordedLocalPath": "/home/tianxing/NDN/ndnsf-artifacts/base-sif/8ebfc4646a5f96109a8480b120e684ee3923bf067d2e49aef53b42d29e5acdd9/base.sif",
     "role": "external-dependency-base-only",
     "delivery": "not-in-git; reuse or transfer exact existing SIF and verify SHA256"
   },
@@ -71,7 +71,7 @@
   "requirements": {
     "architecture": "x86_64",
     "containerPython": "CPython 3.10",
-    "maxBuildJobs": 2,
+    "maxBuildJobs": 4,
     "buildBoundary": "container-native",
     "apt": "online Ubuntu repositories; final stage installs builder-selected runtime package versions; not a fully offline APT lock",
     "baseProvidedDependencies": [

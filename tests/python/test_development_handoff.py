@@ -172,7 +172,10 @@ def test_render_checks_base_identity_and_preserves_package(inputs, tmp_path):
     assert result["hostGateManifest"] == "REQUIRED_FOR_BUILD"
     text = destination.read_text()
     assert "@BUNDLE@" not in text and "@BASE_SIF@" not in text
-    assert str(bundle / "source/nacAbe.tar") in text
+    # External sources remain sealed in the handoff for base construction,
+    # but the NDNSF consumer inherits their verified products from that base.
+    assert str(bundle / "source/nacAbe.tar") not in text
+    assert 'BASE_DEPENDENCY_IDENTITY_MISMATCH' in text
     assert handoff.verify(bundle)["sifBuild"] == "NOT_RUN"
     with pytest.raises(FileExistsError):
         handoff.render(bundle, base, destination)

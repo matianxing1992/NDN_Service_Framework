@@ -4,16 +4,13 @@ Stage: builder
 
 # Portable development runtime; rendered inputs are checked by the delivery tool.
 # The pinned base is a dependency input, not current application evidence.
-# APT requires network access. This recipe does not promise offline APT reproduction.
+# External dependencies and SDK are inherited from the verified base.
+# This repository layer neither downloads nor rebuilds external dependencies.
 
 %files
     @BUNDLE@/source/workspace.tar /build-input/workspace.tar
-    @BUNDLE@/source/ndn-svs.tar /build-input/ndn-svs.tar
-    @BUNDLE@/source/nacAbe.tar /build-input/nacAbe.tar
-    @BUNDLE@/source/ndnSd.tar /build-input/ndnSd.tar
     @BUNDLE@/source/source-seal.json /build-input/source-seal.json
-    @BUNDLE@/wheels /build-input/wheels
-    @BUNDLE@/native /build-input/native
+    @BUNDLE@/native/native-inputs.json /build-input/native/native-inputs.json
 
 %post
     set -eu
@@ -26,6 +23,7 @@ Stage: builder
     export LDFLAGS="-B/usr/bin"
     export PYTHONNOUSERSITE=1
     export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
+    /opt/venv/bin/python /opt/ndn-base/manifest/dependency-sdk.py verify
     # Drop inherited application objects and build trees before using the base.
     rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /tmp/nac-abe-build /tmp/ndnsf-build-python /tmp/ndnsf-pc
     rm -rf /opt/ndnsf-stage /opt/ndnsf-candidate /opt/ndnsf-di/replay
@@ -38,12 +36,7 @@ Stage: builder
     rm -f /opt/ndnsf-di/current/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-fault-provider /opt/ndnsf-di/current/bin/App_ServiceController
     rm -rf /opt/venv/lib/python3.10/site-packages/ndnsf /opt/venv/lib/python3.10/site-packages/py_repoclient /opt/venv/lib/python3.10/site-packages/ndnsf_distributed_inference
     rm -rf /opt/venv/lib/python3.10/site-packages/ndnsf-*.dist-info /opt/venv/lib/python3.10/site-packages/py_repoclient-*.dist-info /opt/venv/lib/python3.10/site-packages/ndnsf_di*.dist-info /opt/venv/lib/python3.10/site-packages/ndnsf_distributed_inference-*.dist-info
-    export DEBIAN_FRONTEND=noninteractive
-    sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
-    apt-get -o Acquire::Retries=3 update
-    apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates
-    rm -rf /var/lib/apt/lists/*
-    install -d /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /opt/ndnsf-stage/bin /opt/ndnsf-stage/include /opt/ndnsf-stage/lib/pkgconfig /opt/ndnsf-stage/python /opt/ndnsf-stage/manifest /opt/ndnsf-stage/replay/repo /tmp/ndnsf-pc /tmp/ndnsf-build-python
+    install -d /src/ndnsf /opt/ndnsf-stage/bin /opt/ndnsf-stage/include /opt/ndnsf-stage/lib/pkgconfig /opt/ndnsf-stage/python /opt/ndnsf-stage/manifest /opt/ndnsf-stage/replay/repo /tmp/ndnsf-pc /tmp/ndnsf-build-python
     /opt/venv/bin/python - <<'PY'
 import hashlib
 import json
@@ -65,10 +58,10 @@ for name, dependency in canonical.get('dependencies', {}).items():
     dependency['workspace'] = '<workspace:' + name + '>'
     dependency['archive']['path'] = '<archive:' + name + '>'
 assert 'sha256:' + hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == '@SEAL_DIGEST@', 'SOURCE_SEAL_CONTENT_MISMATCH'
-for name, row in [('workspace.tar', seal['archive']),
-                  ('ndn-svs.tar', seal['dependencies']['ndnSvs']['archive']),
-                  ('nacAbe.tar', seal['dependencies']['nacAbe']['archive']),
-                  ('ndnSd.tar', seal['dependencies']['ndnSd']['archive'])]:
+base_sdk = json.loads(Path('/opt/ndn-base/manifest/dependency-sdk.json').read_text())
+for name, archive in [('ndnSvs', 'ndn-svs.tar'), ('nacAbe', 'nacAbe.tar'), ('ndnSd', 'ndnSd.tar')]:
+    assert seal['dependencies'][name]['archive']['sha256'] == 'sha256:' + base_sdk['inputs']['files']['source/' + archive], 'BASE_DEPENDENCY_IDENTITY_MISMATCH:' + name
+for name, row in [('workspace.tar', seal['archive'])]:
     h = hashlib.sha256()
     with Path('/build-input', name).open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
@@ -76,12 +69,8 @@ for name, row in [('workspace.tar', seal['archive']),
     assert 'sha256:' + h.hexdigest() == row['sha256'], 'SOURCE_ARCHIVE_CHANGED:' + name
 PY
     tar -xf /build-input/workspace.tar -C /src/ndnsf
-    tar -xf /build-input/ndn-svs.tar -C /src/ndn-svs
-    tar -xf /build-input/nacAbe.tar -C /src/nac-abe
-    tar -xf /build-input/ndnSd.tar -C /src/ndn-sd
 
-    # Current native DI requires official full-protobuf ONNX and an offline
-    # Rust tokenizer build. Inputs are sealed sources/installers, never host .a.
+    # Bind this repository's tokenizer dependency declaration to the base SDK.
     /usr/bin/python3 - <<'PY'
 import hashlib
 import json
@@ -92,95 +81,34 @@ manifest = json.loads((root / 'native-inputs.json').read_text())
 assert manifest['schema'] == 'ndnsf-native-build-inputs-v1'
 assert manifest['onnxRevision'] == 'b8baa8446686496da4cc8fda09f2b6fe65c2a02c'
 assert manifest['rustVersion'] == '1.90.0'
-for name, expected in manifest['files'].items():
-    assert Path(name).name == name
-    assert 'sha256:' + hashlib.sha256((root / name).read_bytes()).hexdigest() == expected
+base_sdk = json.loads(Path('/opt/ndn-base/manifest/dependency-sdk.json').read_text())
+assert '@NATIVE_DIGEST@' == 'sha256:' + base_sdk['inputs']['files']['native/native-inputs.json'], 'BASE_NATIVE_INPUT_IDENTITY_MISMATCH'
 crate = Path('/src/ndnsf/NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge')
 for name in ['Cargo.toml', 'Cargo.lock']:
     assert 'sha256:' + hashlib.sha256((crate / name).read_bytes()).hexdigest() == manifest['crate'][name]
 PY
-    install -d /src/onnx /opt/cargo-vendor /opt/cargo-home /tmp/rust-install
-    tar -xf /build-input/native/onnx.tar -C /src/onnx
-    tar -xf /build-input/native/vendor.tar -C /opt/cargo-vendor
-    for component in cargo rustc rust-std; do
-        tar -xf "/build-input/native/$component-1.90.0-x86_64-unknown-linux-gnu.tar.xz" -C /tmp/rust-install
-        "/tmp/rust-install/$component-1.90.0-x86_64-unknown-linux-gnu/install.sh" --prefix=/opt/rust --disable-ldconfig
-    done
-    rm -rf /tmp/rust-install
-    printf '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "/opt/cargo-vendor"\n' > /opt/cargo-home/config.toml
     export NDNSF_RUST_PREFIX=/opt/rust
     export NDNSF_CARGO_HOME=/opt/cargo-home
     export NDNSF_TOKENIZER_BRIDGE_TARGET=/tmp/tokenizer-build
-    /usr/bin/cmake -S /src/onnx -B /tmp/onnx-build \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/onnx \
-        -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CXX_FLAGS=-B/usr/bin \
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_ONNX_PYTHON=OFF \
-        -DONNX_USE_LITE_PROTO=OFF -DONNX_BUILD_TESTS=OFF -DONNX_ML=ON \
-        -DONNX_GEN_PB_TYPE_STUBS=OFF -DPYTHON_EXECUTABLE=/usr/bin/python3
-    /usr/bin/cmake --build /tmp/onnx-build --parallel 4
-    /usr/bin/cmake --install /tmp/onnx-build
-
-    # The base SDK is a build input only. Publish regular APP-owned copies
-    # before compiling consumers; never add the SDK to the runtime loader path.
-    for library in libopenabe.so librelic.so librelic_ec.so; do
-        test -f "/opt/ndn-base/sdk/lib/$library"
-        install -m 0755 "/opt/ndn-base/sdk/lib/$library" "/opt/ndnsf-stage/lib/$library"
+    # Retain the legacy APP payload layout with byte-identical base copies.
+    # No dependency is compiled in the NDNSF layer.
+    for library in libopenabe.so librelic.so librelic_ec.so libnac-abe.so libndn-svs.so.0.1.0 libndnsd.so.0.1.0; do
+        install -m 0755 "/opt/ndn-base/lib/$library" "/opt/ndnsf-stage/lib/$library"
     done
-    test -f /opt/ndnsf-di/current/include/openabe/openabe.h
-    export CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include:/opt/ndn-base/include
-    export LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndn-base/lib
-    export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig
-    /usr/bin/cmake -S /src/nac-abe -B /tmp/nac-abe-build \
-      -DCMAKE_BUILD_TYPE=Release -DHAVE_TESTS=OFF -DBUILD_EXAMPLES=OFF \
-      -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
-      -DCMAKE_INSTALL_PREFIX=/opt/ndnsf-di/current -DCMAKE_INSTALL_LIBDIR=lib \
-      -DCMAKE_PREFIX_PATH='/opt/ndnsf-di/current;/opt/ndn-base' \
-      -DCMAKE_LIBRARY_PATH=/opt/ndnsf-stage/lib \
-      -DCMAKE_INSTALL_RPATH='$ORIGIN:/opt/ndn-base/lib' \
-      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
-    /usr/bin/cmake --build /tmp/nac-abe-build --parallel 2 --verbose
-    /usr/bin/cmake --install /tmp/nac-abe-build
-    test "$(pkg-config --variable=includedir libnac-abe)" = /opt/ndnsf-di/current/include
-    test "$(pkg-config --variable=libdir libnac-abe)" = /opt/ndnsf-di/current/lib
-    test -f /opt/ndnsf-di/current/include/nac-abe/consumer.hpp
-    install -m 0755 /opt/ndnsf-di/current/lib/libnac-abe.so /opt/ndnsf-stage/lib/libnac-abe.so
-    cp -a /opt/ndnsf-di/current/include/nac-abe /opt/ndnsf-stage/include/
-    install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-stage/lib/pkgconfig/libnac-abe.pc
-
-    export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin:/opt/ndnsf-di/current/bin
-    export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
-    export PKG_CONFIG_PATH=/tmp/ndnsf-pc:/opt/ndnsf-di/current/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
-    cd /src/ndn-svs
-    ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
-    ./waf -j2 -v
-    ./waf install -j2
-    cp -a /opt/ndnsf-di/current/include/ndn-svs /opt/ndnsf-stage/include/
-    install -m 0755 /opt/ndnsf-di/current/lib/libndn-svs.so.0.1.0 /opt/ndnsf-stage/lib/libndn-svs.so.0.1.0
     ln -s libndn-svs.so.0.1.0 /opt/ndnsf-stage/lib/libndn-svs.so
-    install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/libndn-svs.pc /opt/ndnsf-stage/lib/pkgconfig/libndn-svs.pc
-
-    # NDNSD owns SVSPubSub objects and must follow the selected SVS ABI.
-    # Its pkg-config metadata must come from the pinned, repaired source.
-    export CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include
-    export LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib
-    export CXX="/usr/bin/g++ -B/usr/bin"
-    export CPPFLAGS="-I/opt/ndnsf-di/current/include"
-    export LINKFLAGS='-L/opt/ndnsf-di/current/lib -Wl,-rpath,$ORIGIN/../lib:/opt/ndn-base/lib'
-    export LDFLAGS='-B/usr/bin -L/opt/ndnsf-di/current/lib -Wl,-rpath,$ORIGIN/../lib:/opt/ndn-base/lib'
-    test "$(pkg-config --variable=includedir libndn-svs)" = /opt/ndnsf-di/current/include
-    test "$(pkg-config --variable=libdir libndn-svs)" = /opt/ndnsf-di/current/lib
-    cd /src/ndn-sd
-    ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
-    ./waf -j2 -v
-    ./waf install -j2
-    test "$(pkg-config --cflags-only-I ndnsd | tr -d '[:space:]')" = '-I/opt/ndnsf-di/current/include'
-    test "$(pkg-config --variable=libdir ndnsd)" = /opt/ndnsf-di/current/lib
-    install -m 0755 /opt/ndnsf-di/current/lib/libndnsd.so.0.1.0 /opt/ndnsf-stage/lib/libndnsd.so.0.1.0
     ln -s libndnsd.so.0.1.0 /opt/ndnsf-stage/lib/libndnsd.so
-    cp -a /opt/ndnsf-di/current/include/ndnsd /opt/ndnsf-stage/include/
-    install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/ndnsd.pc /opt/ndnsf-stage/lib/pkgconfig/ndnsd.pc
+    for headers in openabe relic relic_ec nac-abe ndn-svs ndnsd; do
+        cp -a "/opt/ndn-base/include/$headers" /opt/ndnsf-stage/include/
+    done
+    for package in libnac-abe libndn-svs ndnsd; do
+        install -m 0644 "/opt/ndn-base/lib/pkgconfig/$package.pc" "/opt/ndnsf-stage/lib/pkgconfig/$package.pc"
+    done
+    export LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndn-base/lib
+    export PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    test "$(pkg-config --variable=includedir ndnsd)" = /opt/ndn-base/include
+    test "$(pkg-config --variable=libdir ndnsd)" = /opt/ndn-base/lib
 
-    export CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include
+    export CPLUS_INCLUDE_PATH=/opt/ndnsf-stage/include:/opt/ndn-base/include
     export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
     export PKG_CONFIG_PATH=/opt/ndnsf-stage/lib/pkgconfig:/tmp/ndnsf-pc:/opt/ndnsf-di/current/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
     export NDNSF_RUNTIME_RPATH='$ORIGIN/../lib:/opt/ndn-base/lib'
@@ -214,10 +142,10 @@ PY
     cd /src/ndnsf
     ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --with-examples --disable-local-dependency-prefix \
       --onnx-prefix=/opt/onnx \
-      --nac-abe-prefix=/opt/ndnsf-di/current \
-      --ndn-svs-source-tree=/src/ndn-svs --ndn-svs-build-tree=/src/ndn-svs/build \
+      --nac-abe-prefix=/opt/ndn-base \
+      --ndn-svs-source-tree=/opt/ndn-base/sdk/sources/ndn-svs --ndn-svs-build-tree=/opt/ndn-base/sdk/sources/ndn-svs/build \
       --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
-    ./waf -j2 -v --targets=ndn-service-framework,ndnsf-distributed-inference,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,di-native-provider,di-native-fault-provider
+    ./waf -j4 -v --targets=ndn-service-framework,ndnsf-distributed-inference,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,di-native-provider,di-native-fault-provider
 
     install -m 0755 build/libndn-service-framework.so /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0
     ln -s libndn-service-framework.so.0.1.0 /opt/ndnsf-stage/lib/libndn-service-framework.so
@@ -252,12 +180,11 @@ PY
     # while embedding only the pair runtime locations.  The build-only current
     # compatibility tree must never become an extension fallback path.
     export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage
-    export NDNSF_NDN_SVS_SOURCE_TREE=/src/ndn-svs
-    export NDNSF_NDN_SVS_BUILD_TREE=/src/ndn-svs/build
+    export NDNSF_NDN_SVS_SOURCE_TREE=/opt/ndn-base/sdk/sources/ndn-svs
+    export NDNSF_NDN_SVS_BUILD_TREE=/opt/ndn-base/sdk/sources/ndn-svs/build
     export NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib
     export NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib'
 
-    /opt/venv/bin/pip install --no-index --no-deps --target=/tmp/ndnsf-build-python /build-input/wheels/pybind11-2.13.6-py3-none-any.whl
     PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
     PYTHONPATH=/tmp/ndnsf-build-python CPLUS_INCLUDE_PATH=/opt/ndnsf-stage/include:/opt/ndn-base/include \
     NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib' \
@@ -266,7 +193,6 @@ PY
     PYTHONPATH=/tmp/ndnsf-build-python CPLUS_INCLUDE_PATH=/opt/ndnsf-stage/include:/opt/ndn-base/include \
     NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib' \
     /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper
-    /opt/venv/bin/pip install --no-index --find-links=/build-input/wheels --target=/opt/ndnsf-stage/python 'python-ndn==0.3'
     rm -rf /src/ndnsf/pythonWrapper/build /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper/build
     cp -a /src/ndnsf/NDNSF-DistributedInference/ndnsf_distributed_inference /opt/ndnsf-stage/python/
     # The Spec180 replay repo mirrors the sealed source for the exact-SIF
@@ -499,20 +425,16 @@ Stage: final
 %post
     set -eu
     unset PYTHONOPTIMIZE PYTHONHOME PYTHONPATH
-    export DEBIAN_FRONTEND=noninteractive
-    sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
-    # Online APT repositories must still provide these builder-selected versions.
-    apt-get -o Acquire::Retries=3 update
+    /opt/venv/bin/python /opt/ndn-base/manifest/dependency-sdk.py verify
     /opt/venv/bin/python - <<'PY'
 import json
 from pathlib import Path
 import subprocess
 body = json.loads(Path('/opt/ndnsf-candidate/manifest/container-native-build.json').read_text())
-packages = [name + '=' + version for name, version in sorted(body['runtimeAptPackages'].items())]
-if packages:
-    subprocess.check_call(['apt-get', 'install', '-y', '--no-install-recommends', *packages])
+for name, version in body['runtimeAptPackages'].items():
+    actual = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', name], text=True)
+    assert actual == version, 'BASE_RUNTIME_PACKAGE_CHANGED:' + name
 PY
-    rm -rf /var/lib/apt/lists/*
     export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin:/opt/ndnsf-di/current/bin
     export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
     export PYTHONNOUSERSITE=1
@@ -567,8 +489,8 @@ PY
     # Publish a symlink-free application tree for the external APP packager.
     # The /opt/ndnsf-di/current tree above remains only as a compatibility
     # runtime for the legacy complete-SIF checks; the pair runner never falls
-    # back to it. The APP owns the candidate Core/SVS/NDNSD/NAC-ABE/OpenABE/
-    # Relic/DI ABI closure; the base owns stable NDN-CXX/NFD/ORT/Python.
+    # back to it. Core/DI are repository outputs; external libraries below are
+    # byte-identical base copies for compatibility, not a third build layer.
     # Copying the whole candidate lib directory would still shadow unrelated
     # base objects, so the allowlist below is explicit.
     test ! -e /opt/ndnsf-app
