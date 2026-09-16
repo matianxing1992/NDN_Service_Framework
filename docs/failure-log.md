@@ -5505,6 +5505,27 @@ which differs from the Spec186 handoff seal
   and keep it covered by the pre-dispatch launch path.
 - **Lesson**: environment scrubbing must preserve every variable consumed by
   the orchestrator itself; an application dependency list alone is incomplete.
+
+### 2026-09-16 — Spec186 root MiniNDN child received an unmapped host path
+
+- **Symptom:** The first root local Y-A replay reached the MiniNDN process
+  boundary but Controller startup failed with
+  `FileNotFoundError` for the host path ending in
+  `.../spec186-yolo-local-atomic-r85-root/evidence/case-policy.json`.
+- **Root cause:** the outer launcher binds the host run root at
+  `/run/spec186` inside each exact SIF child, while `process_specs()` still
+  serialized host absolute paths for `--config`, generated policy, runtime
+  publication, state, lifecycle output, and the envelope key. The child could
+  not see those host paths even though the files existed on the host.
+- **Correction:** add one run-root path mapper, bind the run root explicitly
+  at `/run/spec186`, translate all child command arguments beneath that root,
+  and translate the corresponding `NDNSF_*`/`SPEC180_*` environment values.
+  Add a focused regression for the mapping and rerun the exact candidate after
+  rebuilding its source seal.
+- **Lesson:** a bind declaration alone does not establish path semantics;
+  every host-owned path crossing a container process boundary must be rendered
+  in the target namespace and checked before startup.
+
 ### 2026-09-15 — Spec186 r84 final SIF mksquashfs SIGSEGV
 
 - **Symptom:** The r84 local 1.5.3 build completed the locked source/dependency

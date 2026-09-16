@@ -416,6 +416,26 @@ def test_effective_config_has_explicit_case_transport_and_candidate():
         "/Y-B/canonical-package")
     assert effective["environment"]["SPEC180_YOLO_CONFIG"].endswith(
         "/Y-B/case-config.json")
+    assert effective["environment"]["SPEC180_RUNTIME_RUN_ROOT"] == "/tmp/render"
+
+
+def test_sif_child_paths_map_only_case_run_root(tmp_path):
+    runner_path = ROOT.parent / "NDNSF_DI_YoloAckDriven_Minindn.py"
+    runner_spec = importlib.util.spec_from_file_location(
+        "spec180_runner_path_mapping_test_module", runner_path)
+    runner = importlib.util.module_from_spec(runner_spec)
+    import sys
+    sys.modules[runner_spec.name] = runner
+    runner_spec.loader.exec_module(runner)
+    run_root = tmp_path / "case"
+    assert runner._sif_visible_path(
+        run_root / "evidence/case-policy.json", run_root
+    ) == "/run/spec186/evidence/case-policy.json"
+    assert runner._sif_visible_path(
+        run_root / "security/request-envelope.key", run_root
+    ) == "/run/spec186/security/request-envelope.key"
+    external = tmp_path / "case-bundle/case-config.json"
+    assert runner._sif_visible_path(external, run_root) == str(external)
 
 
 def test_tiger_render_targets_apptainer_and_yolo_runner():

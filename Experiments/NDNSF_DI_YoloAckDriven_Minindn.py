@@ -51,6 +51,7 @@ SIF_RUNTIME_APPTAINER = os.environ.get(
     "SPEC180_RUNTIME_APPTAINER", "/opt/apptainer/1.5.3/bin/apptainer")
 SIF_RUNTIME_REPO = "/opt/ndnsf-di/replay/repo"
 SIF_RUNTIME_PYTHON = "/opt/venv/bin/python"
+SIF_RUNTIME_RUN_ROOT = "/run/spec186"
 SIF_RUNTIME_PYTHONPATH = ":".join((
     "/opt/venv/lib/python3.10/site-packages",
     f"{SIF_RUNTIME_REPO}/NDNSF-DistributedInference",
@@ -112,6 +113,27 @@ def sif_runtime_enabled() -> bool:
     return bool(SIF_RUNTIME_SIF) and os.environ.get("SPEC180_RUNTIME_OUTER") != "1"
 
 
+def _sif_visible_path(path: str | Path, run_root: str | Path | None) -> str:
+    """Map a host case path into the fixed writable SIF run-root mount.
+
+    MiniNDN remains the host orchestrator, so it naturally materializes policy,
+    state, generated files, and evidence below the host run root.  Child
+    processes execute in the exact SIF where that tree is mounted at
+    ``/run/spec186``.  Keeping this translation in one pure helper prevents a
+    host absolute path from leaking into a child command or environment.
+    """
+    value = str(path)
+    if not run_root:
+        return value
+    try:
+        root = Path(run_root).expanduser().resolve(strict=False)
+        candidate = Path(value).expanduser().resolve(strict=False)
+        relative = candidate.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return value
+    return str(Path(SIF_RUNTIME_RUN_ROOT) / relative)
+
+
 def _sif_bind_args(base_env: Mapping[str, str] | None = None) -> list[str]:
     """Return data/control-plane bind mounts for the candidate image.
 
@@ -165,6 +187,12 @@ def _sif_bind_args(base_env: Mapping[str, str] | None = None) -> list[str]:
         if input_path.is_dir() and str(input_path) not in seen:
             seen.add(str(input_path))
             result.extend(["--bind", f"{input_path}:{input_path}:ro"])
+    run_root_value = str(env.get("SPEC180_RUNTIME_RUN_ROOT", "")).strip()
+    if run_root_value:
+        run_root = Path(run_root_value).expanduser().resolve()
+        if run_root.is_dir() and str(run_root) not in seen:
+            seen.add(str(run_root))
+            result.extend(["--bind", f"{run_root}:{SIF_RUNTIME_RUN_ROOT}:rw"])
     return result
 
 
@@ -203,7 +231,10 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
             continue
         if key in {"SPEC180_RUNTIME_SIF", "SPEC180_RUNTIME_APPTAINER"}:
             continue
-        pieces.extend(["--env", f"{key}={value}"])
+        mapped = _sif_visible_path(value, env.get("SPEC180_RUNTIME_RUN_ROOT"))
+        if key == "SPEC180_RUNTIME_RUN_ROOT":
+            mapped = SIF_RUNTIME_RUN_ROOT
+        pieces.extend(["--env", f"{key}={mapped}"])
     pieces.extend([
         "--env", 'NDN_CLIENT_CONF="${NDN_CLIENT_CONF:-}"',
         "--env", 'NDN_CLIENT_TRANSPORT="${NDN_CLIENT_TRANSPORT:-}"',
@@ -887,6 +918,12 @@ class MiniNdnCaseRuntime:
         if not isinstance(descriptor, Mapping):
             raise RunnerError("CASE_PROCESS_DESCRIPTOR_MISSING")
 
+        def child_path(path: str | Path) -> str:
+            """Render a path for a child process inside the exact SIF."""
+            if not sif_runtime_enabled():
+                return str(path)
+            return _sif_visible_path(path, self.binding.output)
+
         def verify_declared_digest(field: str, path: Path, code: str) -> None:
             expected = descriptor.get(field)
             if expected is None:
@@ -937,7 +974,8 @@ class MiniNdnCaseRuntime:
 
         policy = self.binding.policy
         generated = self.binding.output / "generated-policy"
-        common = ["--config", str(policy), "--generated-policy-dir", str(generated)]
+        common = ["--config", child_path(policy),
+                  "--generated-policy-dir", child_path(generated)]
         legacy = self._legacy_module()
         py_dir = Path(legacy.PY_DIR)
         repo = Path(legacy.REPO)
@@ -976,21 +1014,21 @@ class MiniNdnCaseRuntime:
             argv = [
                 executable,
                 "--serve",
-                "--plan", str(generated_plan),
-                "--manifest", str(generated_manifest),
+                "--plan", child_path(generated_plan),
+                "--manifest", child_path(generated_manifest),
                 "--service", self.binding.service_name,
                 "--provider", identity,
                 "--group", str(identities["group"]),
                 "--controller", str(identities["controller"]),
-                "--trust-schema", str(generated_trust_schema),
+                "--trust-schema", child_path(generated_trust_schema),
                 "--roles", ",".join(roles),
                 "--workers", "1",
                 "--handler-threads", "1",
                 "--ack-threads", "1",
-                "--artifact-cache-dir", str(
+                "--artifact-cache-dir", child_path(
                     self.binding.output / "native-artifact-cache" /
                     identity.rsplit("/", 1)[-1]),
-                "--selection-offer-key-file", str(key_path),
+                "--selection-offer-key-file", child_path(key_path),
                 "--offer-backend", "onnxruntime-cpu",
                 "--offer-can-provision",
                 "--permission-wait-ms", "60000",
@@ -1013,7 +1051,7 @@ class MiniNdnCaseRuntime:
         controller_args = list(common)
         if publication_file is not None:
             controller_args += [
-                "--spec180-runtime-publication-file", str(publication_file),
+                "--spec180-runtime-publication-file", child_path(publication_file),
             ]
         controller_ready_marker = (
             "SPEC180_RUNTIME_CATALOGUE_PUBLISHED"
@@ -1043,7 +1081,7 @@ class MiniNdnCaseRuntime:
                 "--provider-id", repo_id,
                 "--repo-node", repo_identity,
                 "--failure-domain", "spec180-repo",
-                "--storage-dir", str(self.binding.output / "repo-store"),
+                "--storage-dir", child_path(self.binding.output / "repo-store"),
                 "--handler-threads", "1", "--ack-threads", "1",
             ]),
             "Installed provider permission", "control",
@@ -1143,10 +1181,10 @@ class MiniNdnCaseRuntime:
             "/spec180-" + str(self.inputs.get("lifecycle_case",
                                                 self.binding.case)).lower() + "-" + hashlib.sha256(
                 str(self.binding.output).encode("utf-8")).hexdigest()[:16],
-            "--lifecycle-output-dir", str(self.binding.output),
+            "--lifecycle-output-dir", child_path(self.binding.output),
             "--lifecycle-case", str(self.inputs.get("lifecycle_case",
                                                      self.binding.case)),
-            "--envelope-key-file", str(envelope_key_file),
+            "--envelope-key-file", child_path(envelope_key_file),
             "--native-tensor-input",
         ]
         commands.append(CaseProcessSpec(

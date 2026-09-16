@@ -110,6 +110,10 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         "NDNSF_DI_STATE_ROOT": data_root + "/state",
         "NDNSF_DI_ENVELOPE_KEY_FILE": data_root + "/security/request-envelope.key",
         "SPEC180_CASE_OUTPUT_DIR": data_root + "/evidence",
+        # The host MiniNDN launcher owns this absolute tree. Exact-SIF child
+        # processes see the same tree at /run/spec186; the runner translates
+        # paths beneath this root before constructing each child command.
+        "SPEC180_RUNTIME_RUN_ROOT": data_root,
     }
     if profile["case"].startswith("yolo-"):
         bundle_path = Path(runtime["application"]["bundle"]["path"])
