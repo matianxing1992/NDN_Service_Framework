@@ -10,15 +10,15 @@ Download the SIF image from Google Drive:
 
 [ndnsfdi.sif](https://drive.google.com/file/d/17yb0fC3erx1fUw_gCKwL0z8QCh_8ownY/view?usp=sharing)
 
-An older SIF is also available for reference:
+The companion files are available in the `ndnsf-share` folder:
 
-[legacy ndnsfdi.sif](https://drive.google.com/file/d/1sCgOzXscRLhXMq8paiBGJBmPn6rrWoNq/view?usp=sharing)
+[ndnsf-share folder](https://drive.google.com/file/d/1sCgOzXscRLhXMq8paiBGJBmPn6rrWoNq/view?usp=sharing)
 
-The legacy image is not the new build. The next SIF version is still under
-development and has not been released; use the image explicitly identified by
-the experiment owner.
+The folder contains `app_bundle/`, `test_case/`, and `yolo_profile.json`. The
+next SIF version is still under development and has not been released; use the
+`ndnsfdi.sif` image explicitly identified above until a new link is announced.
 
-Download the companion directory from the same restricted handoff location:
+Download the companion directory from the `ndnsf-share` folder above:
 
 ```text
 ndnsf-share/
