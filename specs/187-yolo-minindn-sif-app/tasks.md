@@ -15,6 +15,10 @@
 
 ## Current Checkpoint
 
+2026-09-15 B187-CONSUMER-SCRATCH 静态/组合审查与 25 个定向测试通过（3.75s）；开始新 bundle-r5 的候选重试，实际原生编译/验收仍 PARTIAL。修改只影响容器 scratch 与失败保留，不改变封存 base。
+
+2026-09-15 B187-CONSUMER-SCRATCH / PARTIAL：已恢复，修复容器临时目录隔离，r1 静态/组合通过；补充失败现场保留的 r2 增量审查后统一测试，再生成新 definition 重试。封存 base 不变；[candidate evidence](evidence/b187-complete-candidate.md)。
+
 2026-09-15 storage cleanup DONE；候选构建仍暂停：已归档并逐文件核对 9 月 6 日两个旧 native build 后释放原目录；旧临时 checkout 的 RELEASE 副本与保留件比较一致后删除。Codex 两份故障备份无损压缩；82 个超过 30 天未更新的会话经 archive 内容比较及活动检查后压缩归档，可恢复，未改数据库。当前可用约 23 GiB；封存 base、模型、密钥和当前/近期会话保留。下一步先修复 build-r2 的临时目录权限/隔离边界，再继续构建。
 
 2026-09-15 B187-NDNSF-CONSUMER / PARTIAL，按用户要求先暂停构建、清理磁盘：build-r2 已通过 base SDK 复验，随后在清理旧 `/tmp/nac-abe-build` 等目录时因权限拒绝停止，尚未编译仓库目标。原始 log/record 保留；清理完成后先修复构建临时目录隔离，不重建或修改封存 base。

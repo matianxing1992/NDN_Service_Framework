@@ -26,6 +26,10 @@ Codex 两份旧故障备份从约 1.46 GiB 无损压缩至约 550 MiB，解压�
 
 ## Current result
 
+scratch r2 已通过只读静态/组合审查；25 个模板/handoff/build-only 定向测试通过（3.75s），`bash -n` 通过，快照与工作文件一致。日志 `scratch-tests-r1.log`。开始生成 `bundle-r5` / 新 definition，准备重试完整候选；未宣称容器编译已通过。
+
+恢复执行：builder scratch 统一移至 `/opt/ndnsf-build-work`，SDK 验证前设置 TMPDIR，pip/pkg-config/tokenizer 共用容器自有目录；不再删除固定宿主 `/tmp` 路径。r1 只读 `STATIC_PASS / B187-CONSUMER-SCRATCH_COMPOSITION_PASS`，diff SHA-256 `34c36810901add7a9cb4ea4c4316c2f6e7160477259c5724a07fb528971731e8`。r2 另加 Apptainer `--no-cleanup` 保留失败 rootfs，待增量审查与定向测试。build-r2 没有生成成功 build receipt；新增 `build-r2/failure.json` 是诊断记录，不能作为候选凭据。
+
 build-r2 首边界为 builder 清理历史 `/tmp/nac-abe-build`、`/tmp/ndnsf-build-python`、`/tmp/ndnsf-pc` 的 Permission denied / Operation not permitted；base SDK 复验已 PASS，尚未启动 NDNSF 编译。记录 `.codex-tmp/spec187-app-build-20260915/build-r2/build.log` / `record.json` 保留。用户要求先清理磁盘尤其旧 Codex 会话，暂停重试；后续先修复临时目录隔离，不把该失败判为 SDK/协议失败。
 
 续行 B187-NDNSF-CONSUMER：`bundle-r4` 为 SOURCE_READY，source seal `2815292f44c8f571ebbb73d375fc84765f3b971db07e08f43e58b24a91e76cdf`，新增已审查的 UAV probe 源文件并绑定封存 base。首个 render 调用因相对 bundle 路径被 `HANDOFF_BUNDLE_PATH_NOT_ABSOLUTE` 拒绝，未启动构建；原始 `render-r4.log` 保留，下一调用使用绝对路径。Context Mode project health PASS / active hash stale，进度以本地 Spec 为准。
