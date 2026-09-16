@@ -581,6 +581,15 @@ PY
     rm -f /opt/venv/bin/torchrun /opt/venv/bin/transformers
     ldconfig
 
+    # The inherited SDK may install 91-sdk-environment.sh. The repository
+    # runtime owns the later layer, including its library search directories.
+    cat > /.singularity.d/env/92-ndnsf-environment.sh <<'NDNSF_ENV'
+export PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:/opt/ndn-base/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
+export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+export PYTHONNOUSERSITE=1
+NDNSF_ENV
+
     extension_count=$(find /opt/venv/lib/python3.10/site-packages/ndnsf -maxdepth 1 -name '_ndnsf*.so' -type f | wc -l)
     test "$extension_count" -eq 1
     extension_path=$(find /opt/venv/lib/python3.10/site-packages/ndnsf -maxdepth 1 -name '_ndnsf*.so' -type f)

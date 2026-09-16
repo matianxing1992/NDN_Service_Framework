@@ -12,6 +12,7 @@ usage() {
 usage: build-local-sif.sh \
   --definition PATH --sif PATH --record PATH --source-seal PATH \
   [--host-gate-manifest PATH | --build-only] \
+  [--resume-final-rootfs PATH] \
   [--strict-host-source-seal] \
   --apptainer PATH --expected-apptainer VERSION
 
@@ -32,6 +33,7 @@ source_seal=''
 host_gate_manifest=''
 strict_host_source_seal=0
 build_only=0
+resume_final_rootfs=''
 apptainer_bin=''
 expected_version=''
 
@@ -44,6 +46,7 @@ while (($#)); do
     --host-gate-manifest) host_gate_manifest=${2:-}; shift 2 ;;
     --strict-host-source-seal) strict_host_source_seal=1; shift ;;
     --build-only) build_only=1; shift ;;
+    --resume-final-rootfs) resume_final_rootfs=${2:-}; shift 2 ;;
     --apptainer) apptainer_bin=${2:-}; shift 2 ;;
     --expected-apptainer) expected_version=${2:-}; shift 2 ;;
     *) usage ;;
@@ -56,6 +59,7 @@ done
 if [ "$build_only" = 1 ]; then
   [ -z "$host_gate_manifest" ] && [ "$strict_host_source_seal" = 0 ] || usage
 else
+  [ -z "$resume_final_rootfs" ] || usage
   [ -n "$host_gate_manifest" ] || usage
   [ -f "$host_gate_manifest" ] || { echo LOCAL_SIF_HOST_GATE_MANIFEST_MISSING >&2; exit 4; }
 fi
@@ -316,7 +320,22 @@ fi
 
 echo "LOCAL_SIF_BUILD_START definition=$definition output=$sif apptainer=$local_version binary=$apptainer_bin"
 # Retain failed container work for diagnosis and an evidence-bound continuation.
-"$apptainer_bin" build --no-cleanup --force "$partial" "$definition"
+if [ -n "$resume_final_rootfs" ]; then
+  # Only final packing may resume; the original two-stage definition and source
+  # identity remain mandatory. This mode can never emit a release PASS.
+  [ -d "$resume_final_rootfs" ] && [ ! -L "$resume_final_rootfs" ] || exit 4
+  resume_final_rootfs=$(readlink -f "$resume_final_rootfs")
+  cmp "$definition" "$resume_final_rootfs/.singularity.d/Singularity"
+  cmp "$source_seal" "$resume_final_rootfs/opt/ndnsf-di/replay/source-seal.json"
+  "$apptainer_bin" exec --cleanenv --containall --writable-tmpfs --no-mount home,cwd,hostfs,bind-paths "$resume_final_rootfs" \
+    /usr/bin/env LD_LIBRARY_PATH=/opt/ndn-base/lib:/opt/onnxruntime/lib \
+    /opt/venv/bin/python /opt/ndn-base/manifest/dependency-sdk.py verify
+  "$apptainer_bin" exec --cleanenv --containall --writable-tmpfs --no-mount home,cwd,hostfs,bind-paths "$resume_final_rootfs" \
+    /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
+  "$apptainer_bin" build --fakeroot --no-cleanup --force "$partial" "$resume_final_rootfs"
+else
+  "$apptainer_bin" build --no-cleanup --force "$partial" "$definition"
+fi
 [ -s "$partial" ] || { echo LOCAL_SIF_EMPTY >&2; exit 4; }
 inspect_json=$("$apptainer_bin" inspect --json "$partial")
 if ! ndnsf_labels_json=$(python3 - "$definition" "$inspect_json" "$source_seal" <<'PY'
@@ -371,6 +390,10 @@ PY
 ); then
   exit 4
 fi
+# Verify the real image's default environment, not exports inherited from %post.
+"$apptainer_bin" exec --cleanenv --containall --writable-tmpfs --no-mount home,cwd,hostfs,bind-paths "$partial" \
+  /opt/venv/bin/python /opt/ndnsf-di/current/manifest/verify-native.py final
+
 mv "$partial" "$sif"
 sif_sha256=$(sha256sum "$sif" | awk '{print $1}')
 
@@ -394,7 +417,7 @@ python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
   "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
   "$source_validation_json" "$host_gate_json" "$spec175_input_preflight_json" \
-  "$spec175_preflight_json" "$build_only" <<'PY'
+  "$spec175_preflight_json" "$build_only" "$resume_final_rootfs" <<'PY'
 import hashlib
 import json
 import os
@@ -405,7 +428,7 @@ import sys
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
  apptainer_bin, apptainer_sha, boundary_json, source_validation_json,
  host_gate_json, spec175_input_preflight_json,
- spec175_preflight_json, build_only) = sys.argv[1:]
+ spec175_preflight_json, build_only, resume_final_rootfs) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
     "method": "local-apptainer-definition",
@@ -416,6 +439,9 @@ if base_sif:
         "sha256": "sha256:" + base_sif_sha,
         "bytes": int(base_sif_bytes),
     }
+if resume_final_rootfs:
+    build_input['method'] = 'local-apptainer-definition-final-rootfs-resume'
+    build_input['resumedFinalRootfs'] = resume_final_rootfs
 body = {
     "schemaVersion": "ndnsf-local-sif-build-v3",
     "status": "BUILT_UNQUALIFIED" if build_only == '1' else "PASS",
