@@ -17,8 +17,8 @@ mutation checks remain open, so this evidence does not close T001, T003 or T004.
 **Tasks**: T002 C++ YOLO selector and MiniNDN caller wiring; T003 local pair gate
 **Batch**: B187-LOCAL-YOLO
 **Status**: PARTIAL
-**Base**: host working tree at `aafa29af` plus the recorded uncommitted DI,
-selector and runner changes; candidate SIF provenance remains `a0740640`.
+**Base**: local checkpoint `6be4968a`; candidate SIF provenance remains
+`a0740640`.
 
 ## 2026-09-16 local native request segmentation and through-MiniNDN runs
 
