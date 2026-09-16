@@ -97,6 +97,23 @@ def test_explicit_core_directory_rejects_dependency_only_base(tmp_path):
         boundary.validate_definition(path)
 
 
+def test_repository_runtime_environment_survives_inherited_sdk(tmp_path):
+    text = TEMPLATE.read_text()
+    runtime = text.split("<<'NDNSF_ENV'\n", 1)[1].split('\nNDNSF_ENV', 1)[0]
+    sdk = (TEMPLATE.parent / 'dependency-sdk.def.in').read_text()
+    sdk_environment = sdk.split('%environment\n', 1)[1].split('%test', 1)[0]
+    envdir = tmp_path / 'env'
+    envdir.mkdir()
+    (envdir / '91-sdk-environment.sh').write_text(sdk_environment)
+    command = ['sh', '-c', 'for script in "$1"/*; do . "$script"; done; '
+               'printf "%s" "$LD_LIBRARY_PATH"', 'fixture', str(envdir)]
+    assert '/opt/ndnsf-di/current/lib' not in subprocess.check_output(command, text=True)
+    (envdir / '92-ndnsf-environment.sh').write_text(runtime)
+    result = subprocess.check_output(command, text=True)
+    assert result.split(':') == ['/opt/ndnsf-di/current/lib', '/opt/ndn-base/lib',
+                                 '/opt/onnxruntime/lib']
+
+
 @pytest.mark.parametrize("stage", ["builder", "final"])
 def test_stage_shell_and_embedded_python_parse_without_execution(tmp_path, stage):
     path = render(tmp_path)

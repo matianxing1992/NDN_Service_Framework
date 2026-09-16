@@ -26,6 +26,30 @@ Codex 两份旧故障备份从约 1.46 GiB 无损压缩至约 550 MiB，解压�
 
 ## Current result
 
+B187-FINAL-PACK-USER STATIC_PASS / COMPOSITION_PASS，diff `5f2131665db7a0b366384547b55f1fd2a6f0a185450654ac1962f671e75a8a07`。4 个 build-only/resume CLI 回归通过（4.70s），`pack-user-tests-r1.log`。已确认 r11 进程退出并仅删除其不完整复制目录，原 final rootfs 不动；r12 使用 fakeroot 重新封装，验收尚待结果。
+
+r11 SDK/native 通过后，sandbox 复制暴露 `/run/ndnsf-di`、`/run/nfd`、`/tmp/ndnsf-di` 的容器 UID 私有目录不可由普通宿主用户读取。已中止（SIGINT）该打包，保留原 rootfs；恢复命令增补 `--fakeroot` 保持权限和 UID 映射，不能接受遗漏目录的镜像或放宽私有目录权限。首边界与日志保存于 `build-r11/build.log`，runtime-test 漏检。
+
+r11 实际 BASE_DEPENDENCY_SDK PASS（4278 artifacts）与隔离默认 native verifier exit 0，随后进入 Apptainer final packing。日志 `build-r11/build.log`；这只证明待封装 rootfs 的 SDK/ABI/加载闭包，最终 SIF 自身与 C++/YOLO 仍待验收。
+
+SDK-PROBE r1 与 ISOLATION r1 均经同一只读 reviewer 返回 STATIC_PASS / COMPOSITION_PASS；SDK diff `a636baba8da35581dfb9db2295197b0a03b1f57d1c1b5b19bb87b21b67a84029`。定向测试再跑 17 passed（4.86s），`environment-tests-r2.log`；r11 正在执行实际 SDK/native 复验与最终封装。两个 runner 禁用默认宿主绑定，仅保留声明的测试输入/输出；其实际结果仍待执行。
+
+r10 首边界为 SDK-only probe 的库来源：修复后的默认 runtime 优先 current，SDK verifier 检测到 `libopenabe.so` 来自项目层而非 base。`build-r10/build.log` 保留，未启动封装；修正仅限 SDK probe 子进程的 LD_LIBRARY_PATH，native 默认环境检查不改变。属于 runtime-test 漏检，T001/T003 仍 PARTIAL。
+
+B187-RUNTIME-ENV r4 `STATIC_PASS / COMPOSITION_PASS`，完整 diff SHA-256 `4ed43728c0ba15afecc1c2f741a8d9b24d3b5bd783f21211a55f343db9049dfe`；17 个定向测试通过（4.82s），`bash -n` 通过。`environment-tests-r1.log` 保存输出。已按受审 helper 为 retained final rootfs 增加同一 92 环境文件，原/有效 definition 与环境摘要见 `environment-delta-r10.json`；生产库不变。r10 从此 final rootfs 恢复封装，原 r8/r9 日志保持不变，未宣称正式资格。
+
+2026-09-16 B187-RUNTIME-ENV：r1 静态发现临时恢复 helper 使用可被优化禁用的 assert 和跟随 symlink 写入，已改为显式检查、exclusive create 和原子 recipe 替换。r2 diff `2824240b879e794bd5f5d21deb75a63a368efc79182fc2e2583cec295d7e6dea` 又发现最终只读 SIF verifier 会写 manifest，需 disposable writable tmpfs；未先运行失败命令。r3 增加 `--writable-tmpfs` 与 CLI 回归，禁用 home/cwd/hostfs/bind-paths，等待静态/组合复审。两项均归类 static 发现；生产二进制保持 r8 构建身份，最终运行未验收。Context Mode project health PASS / active tasks hash stale，本轮进度以仓库原件为准。
+
+r9 在打包前实际 clean container 复验中发现环境覆盖：SDK PASS，native import 因继承的 `91-sdk-environment.sh` 最后将 LD_LIBRARY_PATH 改回 base-only 而失败（rc=1）。这是新的运行时初始化缺口，不是 ABI 或缺失库；Core/DI 文件存在，final post 显式 export 曾掩盖此问题。正式模板增加 `92-ndnsf-environment.sh`，测试重放 base 91→repository 92 顺序。当前只实施环境增量，不重编库；保留 r8/r9 definition、原始日志及增量身份，重新做默认环境 native verifier 后再封装。
+
+B187-FINAL-PACK 静态/组合通过，diff `cc3571672b2512e239f484ca0b23d681f9a1ec285662150bfe81978af62e4508`；P3 文档位置建议已改为独立 `Final SIF Packing Recovery` 标题。16 个定向 CLI/模板检查通过（4.68s），`bash -n` 通过，日志 `pack-tests-r1.log`。r8 builder stage 已归档并 `tar --diff` 通过后释放大部分临时目录，约 16 GiB 可用；r9 从完整 final rootfs 恢复封装，日志 `build-r9/build.log`，实际最终 SIF 仍待结果。
+
+标准 r8：C++ 293 steps PASS（16m27.577s）、两组 binding、builder/final import/ABI/loader 均通过。最终 mksquashfs 完成后的 SIF copy 因磁盘不足失败（rc=255），未生成有效最终候选；首边界为 packing capacity。此前估算漏计临时 squashfs 与 SIF 同时占用，不宣称运行 PASS。完整 final rootfs `images/spec187-complete-20260915-r8/build-temp-956318929/rootfs` 保留。增加 build-only 的 final-rootfs 封装恢复入口，仍要求原两阶段 definition 门禁、definition/source-seal 字节一致、SDK/native verifier 和最终 SIF labels/hash；禁止用于 release PASS。
+
+标准 r8 正在执行：`bundle-r8/app-runtime-r8.def` 通过正常两阶段入口，日志 `build-r8/build.log`；封存 base 不变，未使用恢复 definition。此前 stage 产物与恢复脚本归档至 `build-r7/verified-builder-stage.tar.zst`，`tar --diff` exit 0 后释放多数旧 rootfs，少量只读目录残留；旧 rootfs 已不完整，不能再恢复执行。原始构建/失败日志保留。容器单元 runner 与文档 r2 组合复审通过，实际运行仍待最终候选。
+
+checkpoint `040c2dfd` 固化 stage-only 配置及门禁。r7 Repo wheel 与 builder 后续 import/native ABI/loader 检查全部 exit 0；但 `build-r7/final-build.log` 记录正常入口拒绝恢复 definition 的宿主 `%files` 二进制输入（rc=4，未构建 final）。准备层审查遗漏了最终入口 compatibility，归 runtime-test；不绕过门禁。为证明根本修复可从正式入口重现，改用已修复完整两阶段模板重新构建 NDNSF 层，复用封存 base。既有原生/绑定成果作为阶段验证保留，不计最终候选 PASS。
+
 Repo library r2：只读 `STATIC_PASS / B187-REPO-LIBRARY_COMPOSITION_PASS`，diff SHA-256 `99090a51a223f2e311cf83475d42b814c202429e06302d9d71f3b114fb7470fa`；模板/handoff 定向检查 25 passed（4.30s），`library-tests-r2.log`。恢复脚本也通过同次审查和 `bash -n`；已从 Repo pip 边界启动 r7，日志 `build-r7/builder.log`，未重编 Core/DI/主 binding。
 
 Repo library r1 静态/组合通过后，定向测试 22 passed / 2 failed：静态 boundary validator 仍硬编码旧 stage+base 字符串，拒绝新模板。失败日志 `library-tests-r1.log`。r2 同步门禁：显式 NDNSF 库目录仅 stage，依赖路径通过 pkg-config/prefix；新增对旧配置的拒绝反例，不放宽运行时 ABI/来源校验。

@@ -15,6 +15,18 @@
 
 ## Current Checkpoint
 
+2026-09-16 r11 封装复制因缺少 fakeroot 无法读取三个容器私有运行目录，已中止并保留失败日志；r12 已补权限映射重试，原 final rootfs 与生产库保持不变。4 个恢复入口回归通过；最终镜像和模型验收仍未完成，T001/T003 PARTIAL。
+
+2026-09-16 r11：base SDK 4278 项及实际编译 probe PASS，修复后的默认隔离 native verifier exit 0，已进入最终 SIF 封装；未重编 NDNSF。17 个脚本回归通过。最终 SIF 单元/YOLO 尚未运行，T001/T003 保持 PARTIAL，见 [candidate](evidence/b187-complete-candidate.md)。
+
+2026-09-16 r9 默认容器加载失败已定位为继承 SDK 环境覆盖项目库目录。正在审查 92 环境修复及最终 SIF 默认环境门；仅恢复已完成的 r8 final rootfs，不重编生产库。用户明确最终镜像须自包含，不依赖宿主源码/库/home；测试仅挂载声明的测试输入和输出。T001/T003 保持 PARTIAL，C++ 单元与 YOLO 实测尚未通过。
+
+2026-09-15 标准 r8 的完整 builder/final post 通过，但最终 SIF copy 因磁盘峰值不足失败，当前无有效候选。保留 final rootfs；只恢复封装并复验身份/ABI，不重编 Core/DI。最终镜像、容器单元、YOLO 仍未验收，T001/T003 PARTIAL。
+
+2026-09-15 标准 r8 正在构建：正常两阶段入口/SDK/configure 已通过，C++ `-j4` 进行中。此前恢复产物已归档验证；不采用被拒绝的 final 恢复路径。容器单元 runner 与文档静态/组合通过，实际单元/YOLO 与最终 SIF 仍待验收。
+
+2026-09-15 r7：Repo binding 与 builder ABI/import 检查通过；恢复 final definition 被正常交付门禁拒绝宿主二进制输入，尚无最终 SIF。配置根本修复已提交 `040c2dfd`，25 tests passed。下一步用修正后的正式两阶段模板重建 NDNSF 层、复用封存 base，再验收容器单元/YOLO；不放宽交付门禁。
+
 2026-09-15 r6：Core/DI C++ 293 steps 与主 Python binding 通过；Repo binding metadata 在显式库目录契约处失败。正在修复 template 调用参数并准备从该步骤恢复；最终候选及容器内 C++ 单元/YOLO 验收仍未通过，T001/T003 保持 PARTIAL。
 
 2026-09-15 source closure checkpoint `016daa38`，13 tests passed；恢复准备静态/组合通过，已复用 r3 rootfs/configure/Rust 继续原 C++ `-j4` 构建。最终 SIF、容器内 C++ 定向单元测试和 YOLO runner 尚待完成，T001/T003 保持 PARTIAL。

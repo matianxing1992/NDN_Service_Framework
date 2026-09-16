@@ -1,5 +1,25 @@
 # Failure Log and Evidence Index
 
+## 2026-09-16 — Spec187 sandbox packing requires fakeroot
+
+r11 SDK/native 预检通过，sandbox 复制时发现三个容器 UID 私有运行目录 Permission denied；已主动中止打包，未接受可能遗漏目录的镜像。恢复入口须显式 `build --fakeroot`，与原 definition 构建的 UID 映射一致，不修改运行目录权限绕过。日志 `build-r11/build.log`；见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
+## 2026-09-16 — Spec187 SDK probe scope after runtime environment repair
+
+r10 恢复预检在 `SDK_WRONG_ORIGIN:/opt/ndnsf-di/current/lib/libopenabe.so` 停止，尚未打包。修复后的默认 runtime 优先项目库，SDK-only verifier 因同名库来自项目层而拒绝。只为 SDK probe 设置 base/ORT 库路径；最终 native probe 继续检查默认环境，不放宽来源断言。日志 `build-r10/build.log`，见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
+## 2026-09-15 — Spec187 inherited SDK environment shadows repository runtime
+
+r9 恢复入口 SDK verifier PASS 后，默认 clean container 环境导入 native binding 失败：继承的 `91-sdk-environment.sh` 覆盖了 90-environment 中的 NDNSF 路径，Core/DI DSO 找不到。此前 final post 的显式 export 掩盖了启动环境问题。日志 `build-r9/build.log` 保留；正式模板增加后置 92 repository 环境文件，并对当前 final rootfs 应用同一环境增量、复验默认启动，不重编原生代码。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
+## 2026-09-15 — Spec187 final SIF packing disk peak
+
+标准 r8 的完整 builder 与 final post 均通过；最终 SIF 创建在 `copy_file_range` 报 `no space left on device`，rc=255。空间估算漏计压缩 squashfs 与 SIF 输出同时存在的峰值；不属于编译/模型/协议失败。保留完整 final rootfs 与 `build-r8/build.log`，仅恢复最终封装，并复验同一 definition/source seal/SDK/native manifest；不重编已通过的生产库。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
+## 2026-09-15 — Spec187 recovered builder final-delivery boundary
+
+r7 Repo wheel、builder import/ABI/loader 检查通过；但把 retained rootfs 中产物映射为 final `%files` 的恢复 definition 被正常入口以 `WRONG_BUILD_BOUNDARY_HOST_BINARY_INPUT` 拒绝（rc=4），未启动 SIF 封装。不得放宽此门禁或把准备层审查 PASS 当交付 PASS。保留 builder 产物、原始日志和恢复 recipes，使用已修复的正式两阶段模板重新构建 NDNSF 层；封存 base 不重建。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
 ## 2026-09-15 — Spec187 Repo binding library-directory contract
 
 retained builder r6 的 C++ 293 steps 通过（12m56.967s），`ndnsf` Python wheel 构建安装通过。Repo binding metadata 拒绝 `NDNSF_LIBRARY_DIR` 中不含 Core 的 `/opt/ndn-base/lib`；其 setup.py 要求每个显式目录均包含 Core。改为仅显式传 `/opt/ndnsf-stage/lib`，外部依赖仍由 pkg-config/pinned prefix 提供。保留 `build-r6/builder.log`，从 Repo binding 继续，不重编 Core/DI。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。

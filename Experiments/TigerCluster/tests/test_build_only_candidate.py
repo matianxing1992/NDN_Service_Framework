@@ -21,7 +21,8 @@ def module(name, path):
 
 
 @pytest.mark.parametrize('without_legacy', [False, True])
-def test_build_only_record_cannot_be_released(tmp_path, without_legacy):
+@pytest.mark.parametrize('resume', [False, True])
+def test_build_only_record_cannot_be_released(tmp_path, without_legacy, resume):
     fixture = module('build_record_fixture', ROOT / 'tests/python/test_build_local_sif_record.py')
     source = fixture.write_source_seal(tmp_path)
     seal = json.loads(source.read_text())
@@ -38,7 +39,18 @@ def test_build_only_record_cannot_be_released(tmp_path, without_legacy):
     apptainer.write_text('''#!/usr/bin/python3
 import json, pathlib, shutil, sys
 if sys.argv[1] == 'version': print('1.5.3')
-elif sys.argv[1] == 'build': shutil.copyfile(sys.argv[-1], sys.argv[-2])
+elif sys.argv[1] == 'exec':
+    # The verifier writes its manifest; a read-only SIF needs a disposable overlay.
+    if '/opt/ndnsf-di/current/manifest/verify-native.py' in sys.argv:
+        assert '--writable-tmpfs' in sys.argv
+        assert '--no-mount' in sys.argv
+        assert 'home,cwd,hostfs,bind-paths' in sys.argv
+elif sys.argv[1] == 'build':
+    source = pathlib.Path(sys.argv[-1])
+    if source.is_dir():
+        assert '--fakeroot' in sys.argv  # Preserve container users and private directories.
+        source = source / '.singularity.d/Singularity'
+    shutil.copyfile(source, sys.argv[-2])
 elif sys.argv[1] == 'inspect':
     labels = {}
     active = False
@@ -66,6 +78,21 @@ else: sys.exit(97)
     args = [str(entry), '--definition', str(definition),
             '--sif', str(sif), '--record', str(record), '--source-seal', str(source),
             '--apptainer', str(apptainer), '--expected-apptainer', '1.5.3']
+    if resume:
+        rootfs = tmp_path / 'final-rootfs'
+        (rootfs / '.singularity.d').mkdir(parents=True)
+        (rootfs / 'opt/ndnsf-di/replay').mkdir(parents=True)
+        shutil.copyfile(definition, rootfs / '.singularity.d/Singularity')
+        shutil.copyfile(source, rootfs / 'opt/ndnsf-di/replay/source-seal.json')
+        args += ['--resume-final-rootfs', str(rootfs)]
+        (rootfs / '.singularity.d/Singularity').write_text('wrong definition')
+        rejected = subprocess.run(args + ['--build-only'], text=True, capture_output=True)
+        assert rejected.returncode != 0 and not sif.exists() and not record.exists()
+        shutil.copyfile(definition, rootfs / '.singularity.d/Singularity')
+        (rootfs / 'opt/ndnsf-di/replay/source-seal.json').write_text('{}')
+        rejected = subprocess.run(args + ['--build-only'], text=True, capture_output=True)
+        assert rejected.returncode != 0 and not sif.exists() and not record.exists()
+        shutil.copyfile(source, rootfs / 'opt/ndnsf-di/replay/source-seal.json')
     # The ordinary release path still requires a host gate.
     rejected = subprocess.run(args, text=True, capture_output=True)
     assert rejected.returncode != 0 and not sif.exists() and not record.exists()
@@ -73,6 +100,8 @@ else: sys.exit(97)
     assert result.returncode == 0, result.stdout + result.stderr
     value = json.loads(record.read_text())
     assert value['status'] == 'BUILT_UNQUALIFIED'
+    if resume:
+        assert value['buildInput']['method'] == 'local-apptainer-definition-final-rootfs-resume'
     assert value['tigerAction'] == 'NOT_AUTHORIZED'
     for field in ['hostGate', 'spec175InputPreflight', 'spec175Preflight']:
         assert value[field]['status'] == 'NOT_RUN'
