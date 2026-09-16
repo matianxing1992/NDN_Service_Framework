@@ -1,5 +1,11 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec187 offline Cargo vendor preparation
+
+实际 native input prepare 首边界为旧 Cargo cache 缺少锁定的 `wasi v0.11.1+wasi-snapshot-preview1`，offline vendor rc=101。已保留 FAIL record 与原始 `native-inputs/vendor.log`；不改 lock，在宿主准备阶段补全锁定缓存后，用全新目录重新离线封存。未开始 SIF/C++ build，也不是协议失败；见 [完整候选证据](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
+更新：缺项已按原 lock 补齐，offline `native-inputs-r2` 成功。后续 handoff-r1 在依赖工作区的未跟踪 `examples/example-trust-anchor.cert` 处拒绝；使用锁定提交的干净依赖 worktree 重试，保留该原始边界而不放宽源封存规则。
+
 ## 2026-09-15 — YOLO base CPU smoke preparation (RESOLVED)
 
 首次手动预检错误地将 oracle digest 与 NPY 的裸 payload 比较；exporter 实际绑定完整 NPY，按源码核对完整文件后通过。静态 r1 另要求执行入口绑定模型/weights/fixture/oracle/SIF 摘要和硬超时；r2 修正后 `STATIC_PASS`，容器内 C++ 真实 YOLO 三次推理通过独立 oracle。全零 SIF hash 负例在容器启动前拒绝。仅 `YOLO_CPU_MODEL_SMOKE_ONLY`，不代表最终 NDNSF+APP 或 MiniNDN；原始 `.codex-tmp/yolo-sif-smoke-20260915/` 与 [持久证据](../specs/187-yolo-minindn-sif-app/evidence/yolo-base-cpu-20260915.md)。

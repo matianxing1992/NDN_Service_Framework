@@ -27,6 +27,7 @@ def render(tmp_path):
     values = {"@BUNDLE@": str(tmp_path / "bundle"),
               "@BASE_SIF@": str(tmp_path / "base.sif"),
               "@SEAL_DIGEST@": "sha256:" + "a" * 64,
+              "@NATIVE_DIGEST@": "sha256:" + "b" * 64,
               "@RELEASE@": "unit-static-only"}
     assert set(re.findall(r"@[A-Z_]+@", text)) == set(values)
     for key, value in values.items():
@@ -97,3 +98,16 @@ def test_builder_uses_isolated_sdk_as_app_input(tmp_path):
     assert 'python3.10-dev' not in builder
     assert "Path(sysconfig.get_paths()['include'], 'Python.h').is_file()" in builder
     assert '-Wl,-rpath,/opt/ndnsf-di/current/lib' not in builder
+
+
+def test_current_native_dependencies_are_built_inside_container(tmp_path):
+    text = render(tmp_path).read_text()
+    assert '@BUNDLE@' not in text
+    assert 'native /build-input/native' in text
+    assert '-DBUILD_ONNX_PYTHON=OFF' in text
+    assert '-DONNX_USE_LITE_PROTO=OFF' in text
+    assert '--onnx-prefix=/opt/onnx' in text
+    assert 'export NDNSF_CARGO_HOME=/opt/cargo-home' in text
+    assert 'export NDNSF_RUST_PREFIX=/opt/rust' in text
+    assert 'export NDNSF_TOKENIZER_BRIDGE_TARGET=/tmp/tokenizer-build' in text
+    assert 'manifest[\'crate\'][name]' in text

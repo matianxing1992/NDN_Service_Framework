@@ -30,6 +30,10 @@ REQUIRED_WHEELS = frozenset({
     "aenum-3.1.17-py3-none-any.whl",
     "pycryptodomex-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
 })
+NATIVE_FILES = frozenset({'onnx.tar', 'vendor.tar', 'native-inputs.json',
+    'cargo-1.90.0-x86_64-unknown-linux-gnu.tar.xz',
+    'rustc-1.90.0-x86_64-unknown-linux-gnu.tar.xz',
+    'rust-std-1.90.0-x86_64-unknown-linux-gnu.tar.xz'})
 
 
 def fail(reason):
@@ -85,6 +89,10 @@ def load_lock(path):
     for row in [data.get("baseSif", {}), *wheels]:
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", row.get("sha256", "")):
             fail("HANDOFF_ASSET_DIGEST")
+    native = data.get('nativeBuild', {}).get('files', {})
+    if set(native) != NATIVE_FILES or any(not re.fullmatch(r'sha256:[0-9a-f]{64}', v)
+                                        for v in native.values()):
+        fail('HANDOFF_NATIVE_INPUTS')
     return data
 
 
@@ -125,7 +133,7 @@ def check_selected(workspace, selected):
             fail("HANDOFF_SOURCE_UNTRACKED:" + canonical)
 
 
-def prepare(lock_path, workspaces, wheels, output):
+def prepare(lock_path, workspaces, wheels, output, native_inputs=None):
     """Create one source-only bundle using the maintained dependency sealer."""
     lock_path = Path(lock_path).resolve()
     lock = load_lock(lock_path)
@@ -148,6 +156,10 @@ def prepare(lock_path, workspaces, wheels, output):
         source = Path(wheels) / row["filename"]
         if not source.is_file() or digest(source) != row["sha256"]:
             fail("HANDOFF_WHEEL_DIGEST:" + row["filename"])
+    native_inputs = Path(native_inputs) if native_inputs else Path(wheels).parent / 'native-inputs'
+    for name, expected in lock['nativeBuild']['files'].items():
+        if not (native_inputs / name).is_file() or digest(native_inputs / name) != expected:
+            fail('HANDOFF_NATIVE_DIGEST:' + name)
     output.mkdir(parents=True)
     subprocess.run([
         sys.executable, str(HERE / "prepare-local-sif-source.py"),
@@ -172,6 +184,9 @@ def prepare(lock_path, workspaces, wheels, output):
     (output / "wheels").mkdir()
     for row in lock["wheels"]:
         shutil.copyfile(Path(wheels) / row["filename"], output / "wheels" / row["filename"])
+    (output / 'native').mkdir()
+    for name in NATIVE_FILES:
+        shutil.copyfile(native_inputs / name, output / 'native' / name)
     shutil.copyfile(TEMPLATE, output / "runtime.def.in")
     shutil.copyfile(lock_path, output / "dependency-lock.json")
     files = {str(p.relative_to(output)): digest(p) for p in sorted(output.rglob("*")) if p.is_file()}
@@ -220,6 +235,9 @@ def verify(bundle):
     for row in lock["wheels"]:
         if files.get("wheels/" + row["filename"]) != row["sha256"]:
             fail("HANDOFF_WHEEL_MANIFEST")
+    for name, expected in lock['nativeBuild']['files'].items():
+        if files.get('native/' + name) != expected:
+            fail('HANDOFF_NATIVE_MANIFEST:' + name)
     validator = module("handoff_source_validator", HERE / "validate-local-sif-source.py")
     checked = validator.validate(bundle / "source/source-seal.json")
     seal = json.loads((bundle / "source/source-seal.json").read_text(encoding="utf-8"))
@@ -251,6 +269,7 @@ def render(bundle, base_sif, destination):
     text = (bundle / "runtime.def.in").read_text(encoding="utf-8")
     for token, value in {"@BUNDLE@": str(bundle), "@BASE_SIF@": str(base_sif),
                          "@SEAL_DIGEST@": checked["sourceSealDigest"],
+                         "@NATIVE_DIGEST@": lock['nativeBuild']['files']['native-inputs.json'],
                          "@RELEASE@": lock["release"]}.items():
         text = text.replace(token, value)
     if re.search(r"@[A-Z_]+@", text):
@@ -275,6 +294,7 @@ def main():
     for name in ["ndnsf", "nac-abe", "ndn-svs", "ndnsd"]:
         prep.add_argument("--" + name + "-workspace", required=True, type=Path)
     prep.add_argument("--wheels", required=True, type=Path)
+    prep.add_argument('--native-inputs', required=True, type=Path)
     prep.add_argument("--output", required=True, type=Path)
     check = modes.add_parser("verify")
     check.add_argument("--bundle", required=True, type=Path)
@@ -288,7 +308,7 @@ def main():
             result = prepare(args.lock, {"ndnsf": args.ndnsf_workspace,
                 "nacAbe": args.nac_abe_workspace, "ndnSvs": args.ndn_svs_workspace,
                 "ndnSd": args.ndnsd_workspace},
-                args.wheels, args.output)
+                args.wheels, args.output, args.native_inputs)
         elif args.mode == "render":
             result = render(args.bundle, args.base_sif, args.output)
         else:

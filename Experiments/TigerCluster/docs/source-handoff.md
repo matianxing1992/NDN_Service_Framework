@@ -89,6 +89,17 @@ for row in lock['wheels']:
 print(delivery)
 PY
 
+# First generate native inputs from the pinned ONNX checkout, official Rust
+# 1.90.0 component archives, and the Cargo.lock-matching offline registry.
+python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-native-build-inputs.py \
+  --onnx-source /absolute/path/to/onnx-1.17-source \
+  --rust-archives /absolute/path/to/rust-1.90.0-components \
+  --rust-prefix /absolute/path/to/rust-1.90.0 \
+  --cargo-home /absolute/path/to/offline-cargo-home \
+  --crate ../source-handoff-20260906/sources/ndnsf/NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge \
+  --output ../source-handoff-20260906/native-inputs
+# The selected lock must include the six native input file hashes under
+# nativeBuild.files; source preparation rejects a missing/stale lock.
 python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-development-handoff.py prepare \
   --lock Experiments/TigerCluster/development-handoff.lock.json \
   --ndnsf-workspace ../source-handoff-20260906/sources/ndnsf \
@@ -96,6 +107,7 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-develo
   --ndn-svs-workspace ../source-handoff-20260906/sources/ndnSvs \
   --ndnsd-workspace ../source-handoff-20260906/sources/ndnSd \
   --wheels ../source-handoff-20260906/wheels \
+  --native-inputs ../source-handoff-20260906/native-inputs \
   --output ../source-handoff-20260906/bundle
 
 python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/prepare-development-handoff.py verify \

@@ -66,6 +66,10 @@ def inputs(tmp_path):
         (wheels / filename).write_bytes(b"pinned external wheel fixture")
     base = tmp_path / "base.sif"
     base.write_bytes(b"pinned external base fixture")
+    native = tmp_path / 'native-inputs'
+    native.mkdir()
+    for filename in handoff.NATIVE_FILES:
+        (native / filename).write_bytes(b'unit native source fixture')
     lock = tmp_path / "lock.json"
     lock.write_text(json.dumps({
         "schema": handoff.LOCK_SCHEMA, "release": "fixture-r1",
@@ -73,6 +77,7 @@ def inputs(tmp_path):
         "wheels": [{"filename": wheel.name, "sha256": handoff.digest(wheel)}
                    for wheel in sorted(wheels.iterdir())],
         "baseSif": {"sha256": handoff.digest(base)},
+        'nativeBuild': {'files': {p.name: handoff.digest(p) for p in native.iterdir()}},
     }))
     return lock, workspaces, wheels, base
 
@@ -108,7 +113,7 @@ def test_source_archives_survive_relocation_and_reject_tampering(inputs, tmp_pat
         handoff.verify(relocated)
 
 
-@pytest.mark.parametrize("change", ["revision", "dirty", "untracked", "wheel", "missing-wheel"])
+@pytest.mark.parametrize("change", ["revision", "dirty", "untracked", "wheel", "missing-wheel", "native", "missing-native"])
 def test_prepare_rejects_unpinned_inputs_before_output(inputs, tmp_path, change):
     lock, workspaces, wheels, _ = inputs
     if change == "revision":
@@ -123,6 +128,10 @@ def test_prepare_rejects_unpinned_inputs_before_output(inputs, tmp_path, change)
         (workspaces["ndnSvs"] / "wscript").write_text("changed\n")
     elif change == "untracked":
         (workspaces["ndnSvs"] / "ndn-svs/uncommitted.hpp").write_text("uncommitted\n")
+    elif change == 'native':
+        (tmp_path / 'native-inputs/onnx.tar').write_bytes(b'changed source archive')
+    elif change == 'missing-native':
+        (tmp_path / 'native-inputs/vendor.tar').unlink()
     else:
         next(wheels.iterdir()).write_bytes(b"wrong wheel")
     output = tmp_path / "rejected"

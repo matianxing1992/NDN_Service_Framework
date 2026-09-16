@@ -11,7 +11,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: build-local-sif.sh \
   --definition PATH --sif PATH --record PATH --source-seal PATH \
-  --host-gate-manifest PATH \
+  [--host-gate-manifest PATH | --build-only] \
   [--strict-host-source-seal] \
   --apptainer PATH --expected-apptainer VERSION
 
@@ -19,6 +19,8 @@ The definition is executed by the local host's Apptainer.  It may bootstrap
 from a sealed localimage, but must produce the complete application SIF.
 The expected version must come from a bounded Slurm compute-node probe, not
 from the Tiger login node.
+--build-only creates a BUILT_UNQUALIFIED candidate for local tests. It cannot
+produce a release PASS record or be used by the APP release packager.
 EOF
   exit 2
 }
@@ -29,6 +31,7 @@ record=''
 source_seal=''
 host_gate_manifest=''
 strict_host_source_seal=0
+build_only=0
 apptainer_bin=''
 expected_version=''
 
@@ -40,6 +43,7 @@ while (($#)); do
     --source-seal) source_seal=${2:-}; shift 2 ;;
     --host-gate-manifest) host_gate_manifest=${2:-}; shift 2 ;;
     --strict-host-source-seal) strict_host_source_seal=1; shift ;;
+    --build-only) build_only=1; shift ;;
     --apptainer) apptainer_bin=${2:-}; shift 2 ;;
     --expected-apptainer) expected_version=${2:-}; shift 2 ;;
     *) usage ;;
@@ -48,11 +52,15 @@ done
 
 [ -n "$definition" ] && [ -n "$sif" ] && [ -n "$record" ] && \
   [ -n "$source_seal" ] && [ -n "$apptainer_bin" ] && \
-  [ -n "$host_gate_manifest" ] && \
   [ -n "$expected_version" ] || usage
+if [ "$build_only" = 1 ]; then
+  [ -z "$host_gate_manifest" ] && [ "$strict_host_source_seal" = 0 ] || usage
+else
+  [ -n "$host_gate_manifest" ] || usage
+  [ -f "$host_gate_manifest" ] || { echo LOCAL_SIF_HOST_GATE_MANIFEST_MISSING >&2; exit 4; }
+fi
 [ -f "$definition" ] || { echo LOCAL_SIF_DEFINITION_MISSING >&2; exit 4; }
 [ -f "$source_seal" ] || { echo LOCAL_SIF_SOURCE_SEAL_MISSING >&2; exit 4; }
-[ -f "$host_gate_manifest" ] || { echo LOCAL_SIF_HOST_GATE_MANIFEST_MISSING >&2; exit 4; }
 [ ! -e "$sif" ] || { echo LOCAL_SIF_OUTPUT_EXISTS >&2; exit 4; }
 [ ! -e "$record" ] || { echo LOCAL_SIF_RECORD_EXISTS >&2; exit 4; }
 [ -x "$apptainer_bin" ] || { echo LOCAL_SIF_APPTAINER_NOT_EXECUTABLE >&2; exit 4; }
@@ -83,6 +91,7 @@ spec175_workload="$script_dir/../../../jobs/spec175/workload.json"
   echo LOCAL_SIF_SOURCE_VALIDATOR_MISSING >&2
   exit 4
 }
+if [ "$build_only" = 0 ]; then
 [ -f "$host_gate_validator" ] || {
   echo SPEC175_HOST_GATE_VALIDATOR_MISSING >&2
   exit 4
@@ -95,6 +104,7 @@ spec175_workload="$script_dir/../../../jobs/spec175/workload.json"
   echo SPEC175_WORKLOAD_MISSING >&2
   exit 4
 }
+fi
 if ! source_validation_json=$(python3 "$source_validator" --source-seal "$source_seal"); then
   exit 4
 fi
@@ -131,6 +141,9 @@ PY
 then
   exit 4
 fi
+host_gate_json='{"status":"NOT_RUN","scope":"BUILD_ONLY"}'
+spec175_input_preflight_json='{"status":"NOT_RUN","scope":"BUILD_ONLY"}'
+if [ "$build_only" = 0 ]; then
 if ! host_gate_json=$(python3 - "$host_gate_validator" "$host_gate_manifest" "$repository_root" <<'PY'
 import importlib.util
 import sys
@@ -263,6 +276,7 @@ if ! spec175_input_preflight_json=$(python3 "$spec175_preflight" \
     --source-seal "$source_seal" --workload "$spec175_workload"); then
   exit 4
 fi
+fi
 if ! boundary_json=$(python3 "$boundary_validator" --definition "$definition"); then
   exit 4
 fi
@@ -364,11 +378,14 @@ sif_sha256=$(sha256sum "$sif" | awk '{print $1}')
 # native ABI/ONNX probe inside it.  This is the boundary that rejects stale
 # host-built extensions, missing ldd dependencies, CPU-only ORT wheels, and
 # deployment-time PyTorch/Transformers residue.
+spec175_preflight_json='{"status":"NOT_RUN","scope":"BUILD_ONLY"}'
+if [ "$build_only" = 0 ]; then
 if ! spec175_preflight_json=$(python3 "$spec175_preflight" \
     --source-seal "$source_seal" --workload "$spec175_workload" \
     --sif "$sif" --apptainer "$apptainer_bin" \
     --expected-sif-sha256 "$sif_sha256"); then
   exit 4
+fi
 fi
 
 python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
@@ -376,7 +393,7 @@ python3 - "$record_partial" "$definition" "$definition_sha256" "$source_seal" \
   "$base_sif" "$base_sif_sha256" "$base_sif_bytes" "$ndnsf_labels_json" \
   "$apptainer_bin" "$apptainer_sha256" "$boundary_json" \
   "$source_validation_json" "$host_gate_json" "$spec175_input_preflight_json" \
-  "$spec175_preflight_json" <<'PY'
+  "$spec175_preflight_json" "$build_only" <<'PY'
 import hashlib
 import json
 import os
@@ -387,7 +404,7 @@ import sys
  base_sif, base_sif_sha, base_sif_bytes, labels_json,
  apptainer_bin, apptainer_sha, boundary_json, source_validation_json,
  host_gate_json, spec175_input_preflight_json,
- spec175_preflight_json) = sys.argv[1:]
+ spec175_preflight_json, build_only) = sys.argv[1:]
 build_input = {
     "definition": {"path": definition, "sha256": "sha256:" + definition_sha},
     "method": "local-apptainer-definition",
@@ -400,7 +417,7 @@ if base_sif:
     }
 body = {
     "schemaVersion": "ndnsf-local-sif-build-v3",
-    "status": "PASS",
+    "status": "BUILT_UNQUALIFIED" if build_only == '1' else "PASS",
     "buildInput": build_input,
     "sourceSeal": {"path": source_seal, "sha256": "sha256:" + source_sha},
     "sourceValidation": json.loads(source_validation_json),
@@ -419,7 +436,7 @@ body = {
     },
     "hostRole": "apptainer-driver-only",
     "containerNativeBuild": json.loads(boundary_json),
-    "tigerAction": "verify-hash-and-execute-only",
+    "tigerAction": "NOT_AUTHORIZED" if build_only == '1' else "verify-hash-and-execute-only",
 }
 body["recordDigest"] = "sha256:" + hashlib.sha256(
     json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -431,5 +448,8 @@ PY
 mv "$record_partial" "$record"
 
 trap - EXIT INT TERM
-printf 'LOCAL_SIF_BUILD_PASS sif=%s sha256:%s apptainer=%s\n' \
-  "$sif" "$sif_sha256" "$local_version"
+if [ "$build_only" = 1 ]; then
+  printf 'LOCAL_SIF_BUILT_UNQUALIFIED sif=%s sha256:%s apptainer=%s\n' "$sif" "$sif_sha256" "$local_version"
+else
+  printf 'LOCAL_SIF_BUILD_PASS sif=%s sha256:%s apptainer=%s\n' "$sif" "$sif_sha256" "$local_version"
+fi

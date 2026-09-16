@@ -8,6 +8,10 @@
 
 ## Build locally
 
+开发中的当前源码可先用同一入口增加 `--build-only`，省略 `--host-gate-manifest` 与 `--strict-host-source-seal`，得到 `BUILT_UNQUALIFIED` 本机测试候选。它保留源码/容器边界检查和模板内原生验收，但不声称 Spec175 资格。`validate-local-sif-build-record.py` 和正式 APP packager 会拒绝该状态；不能改 JSON 为 PASS 来发布。完整发布仍使用下述带 host gate 的流程。
+
+当前 handoff 另要求 `--native-inputs`：由 `prepare-native-build-inputs.py` 封存官方 ONNX 1.17 源码、Rust 1.90 安装器和 Cargo.lock 对应的离线 vendor 源码；将输出六个文件的摘要写入 lock 的 `nativeBuild.files`。镜像中重新编译 ONNX 与 tokenizer，禁止把宿主编译的 `.a` 复制进去。锁中的 `native-inputs.json` 摘要写入 definition，避免 render 后替换依赖 manifest。
+
 先在与 `base.sif` 同一 builder/依赖闭包内生成并验收一个应用候选 SIF。当前 `development-runtime.def.in` 会在容器内编译原生组件，并在最终镜像中发布无 symlink 的 `/opt/ndnsf-app`；APP 放置 DI 应用程序以及它实际需要的 Core、SVS、NDNSD、NAC-ABE、OpenABE、Relic 和绑定/配置，base 只提供稳定的 NDN-CXX、NFD、ONNX Runtime、Python 与系统运行库。候选必须有 `ndnsf-local-sif-build-v3` `PASS` 记录，且记录中的 `buildInput.baseSif.sha256` 必须等于要交付的 base SIF。只有旧 `/opt/ndnsf-di/current` 的 complete-application SIF 不能直接作为 pair 候选；脚本会在容器内布局检查处拒绝它。
 
 然后只需一次 pair 打包：
