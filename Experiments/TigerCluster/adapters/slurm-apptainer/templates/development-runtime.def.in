@@ -186,16 +186,16 @@ PY
     export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage
     export NDNSF_NDN_SVS_SOURCE_TREE=/opt/ndn-base/sdk/sources/ndn-svs
     export NDNSF_NDN_SVS_BUILD_TREE=/opt/ndn-base/sdk/sources/ndn-svs/build
-    export NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib
+    export NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib
     export NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib'
 
     PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
     PYTHONPATH=/opt/ndnsf-build-work/python CPLUS_INCLUDE_PATH=/opt/ndnsf-stage/include:/opt/ndn-base/include \
-    NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib' \
+    NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib' \
     /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/pythonWrapper
     PKG_CONFIG_PATH=/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig \
     PYTHONPATH=/opt/ndnsf-build-work/python CPLUS_INCLUDE_PATH=/opt/ndnsf-stage/include:/opt/ndn-base/include \
-    NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib' \
+    NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib' \
     /opt/venv/bin/pip install --no-index --no-deps --no-build-isolation --target=/opt/ndnsf-stage/python /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper
     rm -rf /src/ndnsf/pythonWrapper/build /src/ndnsf/NDNSF-DistributedRepo/pythonWrapper/build
     cp -a /src/ndnsf/NDNSF-DistributedInference/ndnsf_distributed_inference /opt/ndnsf-stage/python/

@@ -26,6 +26,18 @@ Codex 两份旧故障备份从约 1.46 GiB 无损压缩至约 550 MiB，解压�
 
 ## Current result
 
+Repo library r2：只读 `STATIC_PASS / B187-REPO-LIBRARY_COMPOSITION_PASS`，diff SHA-256 `99090a51a223f2e311cf83475d42b814c202429e06302d9d71f3b114fb7470fa`；模板/handoff 定向检查 25 passed（4.30s），`library-tests-r2.log`。恢复脚本也通过同次审查和 `bash -n`；已从 Repo pip 边界启动 r7，日志 `build-r7/builder.log`，未重编 Core/DI/主 binding。
+
+Repo library r1 静态/组合通过后，定向测试 22 passed / 2 failed：静态 boundary validator 仍硬编码旧 stage+base 字符串，拒绝新模板。失败日志 `library-tests-r1.log`。r2 同步门禁：显式 NDNSF 库目录仅 stage，依赖路径通过 pkg-config/prefix；新增对旧配置的拒绝反例，不放宽运行时 ABI/来源校验。
+
+r6 builder：C++ 293 steps 编译链接全部通过（12m56.967s），主 ndnsf wheel 构建安装通过。随后 Repo binding 在 metadata 阶段因 `NDNSF_LIBRARY_DIR` 含纯依赖目录而拒绝（rc=1），未完成候选。首边界是 template/setup.py 调用契约，静态漏检归 runtime-test（构建脚本执行）；不归模型/协议错误。修正显式 Core 库目录为 stage-only，base 外部依赖仍来自 pkg-config/pinned prefix。复审后从 Repo binding 继续，原 C++ 与主绑定成果保留。
+
+B187-CONTAINER-UNIT r1：官方只读 `STATIC_PASS / COMPOSITION_PASS`（bounded），冻结脚本 SHA-256 `0cbf002fb98dd71c79850a6708f71e77e3025e34cd0bbffd157b31f8481bd0f9`。同提交的 Runtime、Preparation、NativePlan、YoloMerge C++ tests 将在候选容器内编译，链接候选生产库；原生 fixture/oracle 仍为 C++。CLI help 与快照字节比较通过；实际编译/运行等待候选完成，状态 PARTIAL，不计 MiniNDN/Tiger。
+
+恢复准备复审 `STATIC_PASS / B187-RECOVERY_COMPOSITION_PASS`；原 r3 保留为失败。`resume-builder.py` 比较两个 source archive 的所有旧文件字节/权限，唯一新增为 DI `.pc.in`，随后更新 seal、重放原 source/native 身份校验。当前在 retained rootfs 继续原 C++ `-j4` 构建（293 steps），日志 `build-r6/builder.log`。最终 stage 将沿用原 final post 和 validator；恢复准备通过不计候选 PASS。
+
+SOURCE-CLOSURE checkpoint `016daa38`。恢复 recipe 的首次只读检查发生在 r6 render 完成前，因缺少 rendered definition 返回 STATIC_FAIL；未运行恢复。render 现已完成，definition SHA-256 `5d7fa93eee64e4b309b4776f7585fdbae0825f836b36aed528913a4e83c2d9a8`，seal `1fae2202ae463f4b0ed24c293aba6524c14aa26fc440356fc2e224c18fedca72`，已冻结全部输入等待复审。此为审查输入完整性问题，不是第二次构建失败。
+
 B187-SOURCE-CLOSURE：只读 `STATIC_PASS / COMPOSITION_PASS`，diff `92128adf098066009a9dafcb1e2f952f25cb2222c9e0dd57d946b075e9088a20`；新增 Core/DI pkg-config 输入回归，handoff 13 tests passed（5.02s），`source-tests-r1.log`。新 bundle-r6 与 definition 已生成。用户建议增加容器内 C++ 单元验证：后续在候选内编译运行定向 DI tests，再运行真实 YOLO；不使用宿主测试二进制，不把单元 PASS 当完整协议资格。
 
 build-r3 rc=255：SDK verifier、configure 与 Rust tokenizer staticlib 编译成功，Waf 在 task graph posting 时找不到 DI `.pc.in` 模板，未开始 C++ 编译。首边界为 source archive closure，静态漏检归类 compile-link。原始 `build-r3/build.log` 和 Apptainer rootfs 保留，拟补齐 sealer 清单后复用现场；base 身份不变，不计候选或协议 PASS。

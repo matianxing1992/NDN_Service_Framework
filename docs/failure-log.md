@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec187 Repo binding library-directory contract
+
+retained builder r6 的 C++ 293 steps 通过（12m56.967s），`ndnsf` Python wheel 构建安装通过。Repo binding metadata 拒绝 `NDNSF_LIBRARY_DIR` 中不含 Core 的 `/opt/ndn-base/lib`；其 setup.py 要求每个显式目录均包含 Core。改为仅显式传 `/opt/ndnsf-stage/lib`，外部依赖仍由 pkg-config/pinned prefix 提供。保留 `build-r6/builder.log`，从 Repo binding 继续，不重编 Core/DI。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
 ## 2026-09-15 — Spec187 consumer source archive missing DI metadata template
 
 build-r3 通过 SDK verifier、外部依赖 configure 和 Rust tokenizer 编译后，Waf 因源码包缺少 `NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in` 停止（rc=255），尚未开始 C++ 编译。保留 rootfs 与原始 `build-r3/build.log`；补齐源码封存范围后复用现场，不重建 base。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。

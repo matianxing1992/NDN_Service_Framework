@@ -15,6 +15,10 @@
 
 ## Current Checkpoint
 
+2026-09-15 r6：Core/DI C++ 293 steps 与主 Python binding 通过；Repo binding metadata 在显式库目录契约处失败。正在修复 template 调用参数并准备从该步骤恢复；最终候选及容器内 C++ 单元/YOLO 验收仍未通过，T001/T003 保持 PARTIAL。
+
+2026-09-15 source closure checkpoint `016daa38`，13 tests passed；恢复准备静态/组合通过，已复用 r3 rootfs/configure/Rust 继续原 C++ `-j4` 构建。最终 SIF、容器内 C++ 定向单元测试和 YOLO runner 尚待完成，T001/T003 保持 PARTIAL。
+
 2026-09-15 B187-NDNSF-CONSUMER / PARTIAL：build-r3 的 SDK/configure/Rust 已通过，Waf 因源码归档遗漏 DI `.pc.in` 模板停止，尚未开始 C++ 编译。原始日志和 rootfs 保留；修复封存清单并静态复审后复用现场。未生成候选或推理 PASS；见 [candidate evidence](evidence/b187-complete-candidate.md)。
 
 2026-09-15 B187-CONSUMER-SCRATCH 静态/组合审查与 25 个定向测试通过（3.75s）；开始新 bundle-r5 的候选重试，实际原生编译/验收仍 PARTIAL。修改只影响容器 scratch 与失败保留，不改变封存 base。

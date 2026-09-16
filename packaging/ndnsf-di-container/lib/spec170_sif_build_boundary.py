@@ -165,7 +165,7 @@ def validate_definition(path: Path | str) -> dict[str, object]:
         "container-native-build.json": "BUILD_MANIFEST_MISSING",
         "export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage":
             "PYTHON_NAC_STAGE_PREFIX_MISSING",
-        "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib":
+        "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib":
             "PYTHON_STAGE_LIBRARY_CLOSURE_MISSING",
         "NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib'":
             "PYTHON_RUNTIME_RPATH_MISSING",
@@ -181,6 +181,12 @@ def validate_definition(path: Path | str) -> dict[str, object]:
     for marker, code in required_builder_markers.items():
         if marker not in builder_post:
             _fail(f"WRONG_BUILD_BOUNDARY_{code}")
+    # This variable selects repository libraries, not general dependency paths.
+    # Repo's binding requires Core in every explicit directory; base dependencies
+    # are supplied separately by pkg-config and their pinned prefixes.
+    library_dirs = re.findall(r'\bNDNSF_LIBRARY_DIR=([^\s\\]+)', builder_post)
+    if any(value.strip("\"'") != "/opt/ndnsf-stage/lib" for value in library_dirs):
+        _fail("WRONG_BUILD_BOUNDARY_PYTHON_STAGE_LIBRARY_CLOSURE_MISMATCH")
     if re.search(r"(?:^|[\s'\"])/home/", builder_post):
         _fail("WRONG_BUILD_BOUNDARY_HOST_HOME_REFERENCE")
 
