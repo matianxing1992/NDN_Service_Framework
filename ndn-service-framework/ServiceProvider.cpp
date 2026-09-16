@@ -6073,86 +6073,15 @@ namespace ndn_service_framework
                 pendingKey, RequestScopedInvocationState{keys, expected});
         }
 
-        ndn::Interest interest(expected.inputDataName);
-        interest.setCanBePrefix(false);
-        interest.setMustBeFresh(true);
-        interest.setInterestLifetime(ndn::time::milliseconds(1000));
-        NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_FETCH requestId="
-                     << requestId.toUri()
-                     << " providerName=" << providerName.toUri()
-                     << " dataName=" << expected.inputDataName.toUri());
-        m_face.expressInterest(
-            interest,
+        const auto dispatchPlaintext =
             [this, requesterName, providerName, serviceName, requestId,
-             requestMessage, selectionMessage, expected, keys, selectionDigest, completed,
-             assignmentPayloadCopy,
-             finishFailure](const ndn::Interest&, const ndn::Data& data) mutable {
-                if (completed->load()) {
-                    return;
-                }
-                if (data.getName() != expected.inputDataName) {
-                    finishFailure("exact input Data name mismatch");
-                    return;
-                }
-                validator->validate(
-                    data,
-                    [this, requesterName, providerName, serviceName, requestId,
-                     requestMessage, selectionMessage, expected, keys, selectionDigest, completed,
-                     assignmentPayloadCopy,
-                     finishFailure](const ndn::Data& validated) mutable {
-                        if (validated.getName() != expected.inputDataName ||
-                            !isSignedByIdentity(validated, requesterName)) {
-                            finishFailure("input Data signer identity mismatch");
-                            return;
-                        }
-                        AeadEnvelope envelope;
-                        const auto& content = validated.getContent();
-                        bool decoded = false;
-                        try {
-                            auto [ok, block] = ndn::Block::fromBuffer(
-                                ndn::span<const uint8_t>(content.value(),
-                                                          content.value_size()));
-                            decoded = ok && envelope.wireDecode(block);
-                        }
-                        catch (const std::exception&) {
-                            decoded = false;
-                        }
-                        if (!decoded) {
-                            finishFailure("malformed input AEAD envelope");
-                            return;
-                        }
-                        const auto nowMs = nowMilliseconds();
-                        const auto lifetimeMs = std::chrono::milliseconds(
-                            std::max<uint64_t>(1, keys.expiresAtMs > nowMs ?
-                                keys.expiresAtMs - nowMs : 1));
-                        ndn::Buffer plaintext;
-                        RequestCryptoFailure failure = RequestCryptoFailure::NONE;
-                        if (!decryptRequestContent(
-                                keys.inputKey, keys.keyId, expected, envelope,
-                                plaintext, &failure)) {
-                            finishFailure(std::string("input AEAD rejected: ") +
-                                          requestCryptoFailureName(failure));
-                            return;
-                        }
-                        // Only authenticated input may consume replay state;
-                        // otherwise a forged packet can poison the nonce and
-                        // reject the later valid publication.
-                        if (!m_requestScopedNonceRegistry.reserve(
-                                keys.keyId,
-                                ndn::span<const uint8_t>(envelope.nonce.data(),
-                                                         envelope.nonce.size()),
-                                lifetimeMs)) {
-                            finishFailure("input AEAD nonce replayed");
-                            return;
-                        }
-                        if (completed->exchange(true)) {
-                            return;
-                        }
-                        boost::asio::post(m_face.getIoContext(),
+             requestMessage, selectionMessage, assignmentPayloadCopy,
+             selectionDigest](ndn::Buffer plaintext) {
+                boost::asio::post(m_face.getIoContext(),
                             [this, requesterName, providerName, serviceName,
                              requestId, requestMessage, selectionMessage,
-                             assignmentPayloadCopy,
-                             plaintext = std::move(plaintext), selectionDigest]() mutable {
+                             assignmentPayloadCopy, plaintext = std::move(plaintext),
+                             selectionDigest]() mutable {
                                 RequestMessage readyRequest(requestMessage);
                                 readyRequest.setPayload(plaintext, plaintext.size());
                                 if ((!hasService(serviceName) &&
@@ -6242,12 +6171,241 @@ namespace ndn_service_framework
                                     requestId, readyRequest, std::move(response),
                                     selectionDigest, inlineRegistrationState);
                             });
-                    },
-                    [finishFailure](const ndn::Data&,
-                                    const ndn::security::ValidationError& error) {
-                        finishFailure("input Data signature validation failed: " +
-                                      error.getInfo());
-                    });
+            };
+
+        const auto decryptEnvelopes =
+            [this, expected, keys, completed, finishFailure, dispatchPlaintext]
+            (const std::vector<AeadEnvelope>& envelopes) {
+                constexpr std::size_t inputMaxSegments = 4096;
+                if (envelopes.empty() || envelopes.size() > inputMaxSegments) {
+                    finishFailure("request-scoped input segment count is invalid");
+                    return;
+                }
+                const auto nowMs = nowMilliseconds();
+                const auto lifetimeMs = std::chrono::milliseconds(
+                    std::max<uint64_t>(1, keys.expiresAtMs > nowMs ?
+                        keys.expiresAtMs - nowMs : 1));
+                ndn::Buffer plaintext;
+                std::vector<ndn::Buffer> nonces;
+                nonces.reserve(envelopes.size());
+                for (std::size_t index = 0; index < envelopes.size(); ++index) {
+                    auto binding = expected;
+                    binding.segmentOrEventId = envelopes.size() == 1 ?
+                        "request-input" :
+                        "request-input/" + std::to_string(index);
+                    ndn::Buffer segmentPlaintext;
+                    RequestCryptoFailure failure = RequestCryptoFailure::NONE;
+                    if (!decryptRequestContent(keys.inputKey, keys.keyId, binding,
+                                                envelopes[index], segmentPlaintext, &failure)) {
+                        finishFailure(std::string("input AEAD rejected: ") +
+                                      requestCryptoFailureName(failure));
+                        return;
+                    }
+                    if (plaintext.size() + segmentPlaintext.size() > 16 * 1024 * 1024) {
+                        finishFailure("request-scoped input exceeds bounded plaintext size");
+                        return;
+                    }
+                    plaintext.insert(plaintext.end(), segmentPlaintext.begin(),
+                                     segmentPlaintext.end());
+                    nonces.push_back(envelopes[index].nonce);
+                }
+                // Only authenticated input may consume replay state; a
+                // forged segment must not poison a later valid publication.
+                if (!m_requestScopedNonceRegistry.reserveBatch(
+                        keys.keyId, nonces, lifetimeMs)) {
+                    finishFailure("input AEAD nonce replayed");
+                    return;
+                }
+                if (completed->exchange(true)) return;
+                dispatchPlaintext(std::move(plaintext));
+            };
+
+        const auto startSegmentedFetch =
+            [this, expected, requesterName, keys, completed, finishFailure, decryptEnvelopes]() {
+                ndn::Interest segmentInterest(expected.inputDataName);
+                segmentInterest.setCanBePrefix(true);
+                segmentInterest.setMustBeFresh(true);
+                segmentInterest.setInterestLifetime(ndn::time::milliseconds(1000));
+                try {
+                    constexpr std::size_t inputMaxSegments = 4096;
+                    constexpr std::size_t inputMaxEncodedBytes = 20 * 1024 * 1024;
+                    auto fetcherHolder =
+                        std::make_shared<std::shared_ptr<ndn::SegmentFetcher>>();
+                    auto observedSegments = std::make_shared<std::size_t>(0);
+                    auto observedEncodedBytes = std::make_shared<std::size_t>(0);
+                    ndn::SegmentFetcher::Options options;
+                    options.probeLatestVersion = false;
+                    options.useConstantCwnd = true;
+                    options.initCwnd = 8;
+                    options.maxTimeout = ndn::time::seconds(10);
+                    options.interestLifetime = ndn::time::milliseconds(1000);
+                    auto transportValidator = validator;
+                    auto fetcher = ndn::SegmentFetcher::start(
+                        m_face, segmentInterest,
+                        transportValidator->getConfiguredValidatorForSegmentFetcher(),
+                        options);
+                    *fetcherHolder = fetcher;
+                    const auto nowMs = nowMilliseconds();
+                    if (keys.expiresAtMs <= nowMs) {
+                        *fetcherHolder = nullptr;
+                        fetcher->stop();
+                        finishFailure("request-scoped input key expired before fetch");
+                        return;
+                    }
+                    // SegmentFetcher bounds the idle gap between successful
+                    // segments, but a valid publisher could otherwise keep
+                    // the invocation alive indefinitely by sending one
+                    // segment just before each idle timeout.  Tie the whole
+                    // transfer to the request key expiry as an absolute
+                    // deadline and stop the fetcher when it is reached.
+                    m_scheduler.schedule(
+                        ndn::time::milliseconds(keys.expiresAtMs - nowMs),
+                        [fetcherHolder, completed, finishFailure] {
+                            if (completed->load()) return;
+                            auto fetcher = std::move(*fetcherHolder);
+                            if (fetcher) fetcher->stop();
+                            finishFailure("request-scoped input fetch exceeded key lifetime");
+                        });
+                    fetcher->afterSegmentValidated.connect(
+                        [expected, requesterName, completed, finishFailure,
+                         fetcherHolder, observedSegments, observedEncodedBytes](
+                            const ndn::Data& data) {
+                            if (completed->load()) return;
+                            const auto& name = data.getName();
+                            const auto fail = [fetcherHolder, finishFailure](const std::string& reason) {
+                                auto fetcher = std::move(*fetcherHolder);
+                                if (fetcher) fetcher->stop();
+                                finishFailure(reason);
+                            };
+                            if (!expected.inputDataName.isPrefixOf(name) ||
+                                name.size() != expected.inputDataName.size() + 1 ||
+                                !name.at(-1).isSegment() ||
+                                !isSignedByIdentity(data, requesterName)) {
+                                fail("segmented input Data identity or name mismatch");
+                                return;
+                            }
+                            if (name.at(-1).toSegment() >= 4096 ||
+                                ++*observedSegments > inputMaxSegments ||
+                                data.getContent().value_size() > inputMaxEncodedBytes ||
+                                (*observedEncodedBytes += data.getContent().value_size()) >
+                                    inputMaxEncodedBytes) {
+                                fail("segmented input exceeds encoded transfer bounds");
+                                return;
+                            }
+                            if (data.getFinalBlock() &&
+                                (!data.getFinalBlock()->isSegment() ||
+                                 data.getFinalBlock()->toSegment() >= inputMaxSegments)) {
+                                fail("segmented input FinalBlock exceeds transfer bounds");
+                                return;
+                            }
+                        });
+                    fetcher->onComplete.connect(
+                        [completed, finishFailure, decryptEnvelopes, fetcherHolder](
+                            ndn::ConstBufferPtr buffer) {
+                            if (completed->load()) return;
+                            *fetcherHolder = nullptr;
+                            if (buffer->size() > 20 * 1024 * 1024) {
+                                finishFailure("segmented input exceeds encoded transfer bounds");
+                                return;
+                            }
+                            std::vector<AeadEnvelope> envelopes;
+                            std::size_t offset = 0;
+                            try {
+                                while (offset < buffer->size()) {
+                                    auto [parsed, block] = ndn::Block::fromBuffer(
+                                        ndn::span<const uint8_t>(buffer->data() + offset,
+                                                                  buffer->size() - offset));
+                                    if (!parsed || block.size() == 0) {
+                                        finishFailure("malformed segmented input envelope");
+                                        return;
+                                    }
+                                    offset += block.size();
+                                    AeadEnvelope envelope;
+                                    if (!envelope.wireDecode(block)) {
+                                        finishFailure("malformed segmented input AEAD envelope");
+                                        return;
+                                    }
+                                    if (envelope.ciphertext.size() > 4096) {
+                                        finishFailure("segmented input ciphertext exceeds chunk bound");
+                                        return;
+                                    }
+                                    envelopes.push_back(std::move(envelope));
+                                }
+                            }
+                            catch (const std::exception&) {
+                                finishFailure("malformed segmented input envelope");
+                                return;
+                            }
+                            decryptEnvelopes(envelopes);
+                        });
+                    fetcher->onError.connect(
+                        [completed, finishFailure, fetcherHolder](uint32_t code,
+                                                                   const std::string& reason) {
+                            if (completed->load()) return;
+                            *fetcherHolder = nullptr;
+                            finishFailure("segmented input fetch failed: " +
+                                          std::to_string(code) + ": " + reason);
+                        });
+                }
+                catch (const std::exception& error) {
+                    finishFailure(std::string("segmented input fetch setup failed: ") +
+                                  error.what());
+                }
+            };
+
+        ndn::Interest interest(expected.inputDataName);
+        interest.setCanBePrefix(true);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::milliseconds(1000));
+        NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_FETCH requestId="
+                     << requestId.toUri()
+                     << " providerName=" << providerName.toUri()
+                     << " dataName=" << expected.inputDataName.toUri());
+        m_face.expressInterest(
+            interest,
+            [this, requesterName, expected, completed, finishFailure,
+             decryptEnvelopes, startSegmentedFetch](const ndn::Interest&, const ndn::Data& data) {
+                if (completed->load()) return;
+                if (data.getName() == expected.inputDataName) {
+                    validator->validate(
+                        data,
+                        [requesterName, expected, completed, finishFailure,
+                         decryptEnvelopes](const ndn::Data& validated) {
+                            if (validated.getName() != expected.inputDataName ||
+                                !isSignedByIdentity(validated, requesterName)) {
+                                finishFailure("input Data signer identity mismatch");
+                                return;
+                            }
+                            AeadEnvelope envelope;
+                            bool decoded = false;
+                            try {
+                                const auto& content = validated.getContent();
+                                auto [ok, block] = ndn::Block::fromBuffer(
+                                    ndn::span<const uint8_t>(content.value(),
+                                                              content.value_size()));
+                                decoded = ok && envelope.wireDecode(block);
+                            }
+                            catch (const std::exception&) {}
+                            if (!decoded) {
+                                finishFailure("malformed input AEAD envelope");
+                                return;
+                            }
+                            decryptEnvelopes({std::move(envelope)});
+                        },
+                        [finishFailure](const ndn::Data&,
+                                        const ndn::security::ValidationError& error) {
+                            finishFailure("input Data signature validation failed: " +
+                                          error.getInfo());
+                        });
+                    return;
+                }
+                if (expected.inputDataName.isPrefixOf(data.getName()) &&
+                    data.getName().size() == expected.inputDataName.size() + 1 &&
+                    data.getName().at(-1).isSegment()) {
+                    startSegmentedFetch();
+                    return;
+                }
+                finishFailure("input Data name mismatch");
             },
             [finishFailure](const ndn::Interest&, const ndn::lp::Nack& nack) {
                 finishFailure("input Data Nack: " +

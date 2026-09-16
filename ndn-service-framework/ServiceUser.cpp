@@ -11269,15 +11269,72 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 binding.inputDataName = inputName;
                 binding.segmentOrEventId = "request-input";
 
-                encrypted = encryptRequestContent(
-                    keys.inputKey, keys.keyId, binding,
-                    ndn::span<const uint8_t>(
-                        pendingIt->second.requestScopedPlaintext.data(),
-                        pendingIt->second.requestScopedPlaintext.size()));
-                const auto encryptedWire = encrypted->wireEncode();
-                ndn::Buffer encryptedPayload(encryptedWire.data(), encryptedWire.size());
-                publishSignedAppData(inputName, encryptedPayload,
-                                     ndn::time::milliseconds(lifetimeMs));
+                const auto& plaintext = pendingIt->second.requestScopedPlaintext;
+                // A request-scoped input is encrypted with the fresh
+                // Provider-specific invocation key, so the generic
+                // service-authorized large-data publisher cannot be used as
+                // a drop-in replacement.  Keep small inputs as one exact
+                // Data packet, but publish larger inputs as independently
+                // authenticated envelopes under the same base name.  The
+                // Provider resolves the segment sequence after Selection;
+                // no oversized Data packet is ever put on the Face.
+                constexpr std::size_t inputChunkBytes = 4096;
+                constexpr std::size_t inputMaxPlaintextBytes = 16 * 1024 * 1024;
+                constexpr std::size_t inputMaxSegments = 4096;
+                if (plaintext.size() > inputMaxPlaintextBytes ||
+                    (plaintext.size() + inputChunkBytes - 1) / inputChunkBytes >
+                        inputMaxSegments) {
+                    throw std::length_error(
+                        "request-scoped input exceeds segmented publication bounds");
+                }
+                const bool useSegments = plaintext.size() > inputChunkBytes;
+                if (!useSegments) {
+                    binding.segmentOrEventId = "request-input";
+                    encrypted = encryptRequestContent(
+                        keys.inputKey, keys.keyId, binding,
+                        ndn::span<const uint8_t>(plaintext.data(), plaintext.size()));
+                    const auto encryptedWire = encrypted->wireEncode();
+                    ndn::Buffer encryptedPayload(encryptedWire.data(), encryptedWire.size());
+                    publishSignedAppData(inputName, encryptedPayload,
+                                         ndn::time::milliseconds(lifetimeMs));
+                }
+                else {
+                    const auto segmentCount = (plaintext.size() + inputChunkBytes - 1) /
+                                              inputChunkBytes;
+                    for (std::size_t segment = 0; segment < segmentCount; ++segment) {
+                        const auto offset = segment * inputChunkBytes;
+                        const auto length = std::min(inputChunkBytes, plaintext.size() - offset);
+                        binding.segmentOrEventId = "request-input/" +
+                                                   std::to_string(segment);
+                        const auto segmentEnvelope = encryptRequestContent(
+                            keys.inputKey, keys.keyId, binding,
+                            ndn::span<const uint8_t>(plaintext.data() + offset, length));
+                        const auto segmentWire = segmentEnvelope.wireEncode();
+                        auto data = std::make_shared<ndn::Data>(
+                            ndn::Name(inputName).appendSegment(segment));
+                        data->setFreshnessPeriod(ndn::time::milliseconds(lifetimeMs));
+                        data->setFinalBlock(ndn::name::Component::fromSegment(segmentCount - 1));
+                        data->setContent(ndn::Buffer(segmentWire.begin(), segmentWire.end()));
+                        (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
+                            .sign(*data, m_signingInfo);
+                        {
+                            std::lock_guard<std::mutex> cacheLock(_cache_mutex);
+                            m_IMS.insert(*data, ndn::time::milliseconds(lifetimeMs));
+                        }
+                        m_face.put(*data);
+                    }
+                    NDN_LOG_INFO("NDNSF_REQUEST_SCOPED_INPUT_SEGMENTS requestId="
+                                 << requestId.toUri()
+                                 << " providerName=" << providerName.toUri()
+                                 << " dataName=" << inputName.toUri()
+                                 << " plaintextBytes=" << plaintext.size()
+                                 << " chunkBytes=" << inputChunkBytes
+                                 << " segments=" << segmentCount);
+                }
+                // The Selection envelope authenticates the stable object
+                // binding.  Per-segment AAD is derived only while encrypting
+                // each segment and must not leak into the stored base binding.
+                binding.segmentOrEventId = "request-input";
                 scopedState.keys = keys;
                 scopedState.binding = binding;
                 scopedState.inputDataName = inputName;
