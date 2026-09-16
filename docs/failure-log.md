@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-16 — Spec187 inherited DI headers differ from compiled source
+
+`unit-r2` 首个编译错误为 `RedistributionSpec` 未声明：pkg-config 指向 current/include，那里仍是父镜像遗留 DI 头；本次 builder 只安装 Core headers，DI 新头仅在 sealed replay 中。修复正式安装清单，删除遗留 DI header tree，并在 native verifier 比较已安装头与 replay 的完整集合及字节。不通过调整 include 优先级隐藏问题。r12 SIF 保持 BUILT_UNQUALIFIED；日志 `unit-r2/run.log`，见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
+## 2026-09-16 — Spec187 container unit consumer compile flags
+
+最终 SIF 隔离 native probe PASS；`unit-r1` 的 C++ fixture 编译因手写 flags 缺少 NAC-ABE CMake 配置宏而找不到 `nac-abe-config.hpp`。修正测试消费者使用镜像内 pkg-config 的 cflags/libs，不重编生产库。原始 `unit-r1/run.log` 与 FAIL record 保留；见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
 ## 2026-09-16 — Spec187 sandbox packing requires fakeroot
 
 r11 SDK/native 预检通过，sandbox 复制时发现三个容器 UID 私有运行目录 Permission denied；已主动中止打包，未接受可能遗漏目录的镜像。恢复入口须显式 `build --fakeroot`，与原 definition 构建的 UID 映射一致，不修改运行目录权限绕过。日志 `build-r11/build.log`；见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
@@ -5487,3 +5495,5 @@ v63 静态门后，既有 build tree 以系统优先 PATH、`-j4` 仅构建 `spe
 2026-09-15 B187-BASE legacy gate check：旧 `test_build_local_sif_record.py` / `test_spec170_exact_sif_gate.py` 为 6 failed、11 passed；首边界是 fixture 未满足既有 validator 的 `NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage` 标记，导致预期后续检查无法到达。相关旧代码/测试相对 HEAD 均未修改，且没有调用新 base 入口；作为旧入口 fixture 修复事项保留，不假报全套通过。原始 `.codex-tmp/base-repair-20260915/existing-builder-tests.log` 和 [base evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-base-repair.md)。
 
 2026-09-15 B187-BASE run-r2 resolution：补齐容器工具链后，实际 SIF 构建、镜像内 C++ 编译/运行、NFD/NumPy/ELF 检查及最终 SIF 复验通过。SIF SHA-256 `7b4b501033f2db876ccf5c19a9637a58b8b232cf4d555f5b8a225638e180837c`；临时 overlay 删除 OpenBLAS 后正确拒绝，原 SIF hash 未变。r1 缺少 g++ 边界已解决；旧六项 fixture 失败仍保留。仅 `BASE_SMOKE_ONLY PASS`，不是 APP/MiniNDN/Tiger PASS；见 [durable receipt](../specs/187-yolo-minindn-sif-app/evidence/base-smoke-20260915.json)。
+2026-09-16 B187-CONTAINER-UNIT failure：候选 SIF `e6cef05a…541657` 内 C++ 测试已完成编译和 ELF 加载，`unit-r1` 首个运行边界因 `--containall --no-mount home` 下 fixture 无法创建 `/home/tianxing/.ndn` 而返回 `rc=134`；原始记录 `.codex-tmp/spec187-clean-restart/unit-r1/`。不是协议结果或库缺失；驱动经静态复审补充独立 `0700` HOME 后，`unit-r2` C++ DI/YOLO smoke 通过。
+2026-09-16 B187-YOLO-NATIVE failure：候选 SIF 内 ORT 和 NDNSF-DI runner ELF 均已加载，`yolo-r1` 首个运行边界同为不可写 `/home/tianxing/.ndn`，返回 `rc=134`；原始记录 `.codex-tmp/spec187-clean-restart/yolo-r1/`。驱动经静态复审补充独立 `0700` HOME 后，`yolo-r2 --native-runner` 三次推理通过；两次失败均保留，不计为模型或协议 PASS。

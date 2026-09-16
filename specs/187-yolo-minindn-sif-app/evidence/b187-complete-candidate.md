@@ -28,6 +28,14 @@ Codex 两份旧故障备份从约 1.46 GiB 无损压缩至约 550 MiB，解压�
 
 2026-09-16 清理与重排：删除了可重建的旧构建归档、旧候选 SIF/rootfs 和未占用的旧 Codex 会话文件，保留当前 Spec187 证据、失败日志、稳定 base SIF 及活动会话；磁盘余量由约 2.2 GiB 恢复到约 43 GiB。r12 的大文件仅作诊断，已删除其 candidate/rootfs，未沿用就地 header 修补。
 
+2026-09-16 完整两阶段 candidate SIF 构建完成：Apptainer 1.5.3，SIF SHA-256 `e6cef05a949c3b865b35424ddb486bee05ea8a0023dd9ba4f7f5eda556541657`，大小 4,139,118,592 bytes；Waf C++ `293/293`（`-j4`，16m4.970s）、NDNSF 与 Repo binding wheel、builder/final `verify-native.py`、Python import、`ldd` 和 4278 项 SDK manifest 检查通过。构建记录明确为 `BUILT_UNQUALIFIED`，不是本地或 Tiger 资格；打包临时 rootfs 已在记录后清理，磁盘恢复约 35 GiB。definition/source seal 与构建记录位于 `Experiments/TigerCluster/images/spec187-complete-20260916-clean/` 和 `.codex-tmp/spec187-clean-restart/`。
+
+`unit-r1` 首次候选内 C++ smoke 在 ELF 加载和测试编译后，于 fixture 创建 `/home/tianxing/.ndn` 时因 `--containall --no-mount home` 返回 134；该失败原始目录保留。run-di-unit-smoke.py 增加每次独立、owner 校验且 `0700` 的 HOME，并经官方 review-agent 复审 `STATIC_PASS`。`unit-r2` 使用同一 SIF/source revision `a0740640` 在容器内编译并运行 `di-runtime`、`di-preparation`、native plan 和 YOLO merge 四组 C++ tests，`DI_CPP_UNIT_SMOKE_PASS`，rc=0，52.56s，binary SHA-256 `b724eb792b9812bb8c76d48fcee4de68c30a87619ec30a8a136a28a533af721a`；记录 `.codex-tmp/spec187-clean-restart/unit-r2/`。
+
+`yolo-r1` 首次 native runner 同样在 ORT/NDNSF-DI ELF 加载后因候选隔离 HOME 返回 134，失败原始目录保留。run-yolo-cpu-smoke.py 采用相同 `0700` HOME 修复并经官方 review-agent `STATIC_PASS`。`yolo-r2 --native-runner` 在候选 SIF 内编译并运行 ORT+C++ tensor codec/runner 三次，50 行输出每次最大绝对误差 `0.000534058`，`YOLO_CPU_NATIVE_RUNNER_PASS`，rc=0，9.76s，binary SHA-256 `f2d5d1cd6eddef9abec17829c63e13e7efde6da541c90b5bef05ca8f467703fd`；记录 `.codex-tmp/spec187-clean-restart/yolo-r2/`。
+
+本轮已证明候选内 native library/binding 闭包和 C++/YOLO model smoke；尚未证明 host-gate/APP pair mutation、candidate-bound native requester config/input、真实 through-MiniNDN 两次请求、MiniNDN 负例或 Tiger promotion。`unit-r2`/`yolo-r2` 均是局部容器验收，不能把 T001/T002/T003/T007 或 LOCAL_PASS/Tiger PASS 提前关闭。
+
 2026-09-16 B187-PREPACK-CLOSURE T007 静态门：冻结快照 `.codex-tmp/spec187-clean-restart/review-t007-r1/`，`changes.diff` SHA-256 `23d2c6079e68d918fefdd141e9d3adfa31c7e62781eb959f6c802d582c6d0c0a`，官方 review-agent 返回 `STATIC_PASS`，无 P0–P3。审查确认 DI `.h/.hpp/.hxx/.ipp/.tpp` 完整安装和 sealed replay 逐字节比较、builder/final wiring、候选内 pkg-config C++ consumer flags 及文档边界。定向模板检查 `14 passed`，header/NDNSD 过滤子集 `2 passed`，Python 编译、`build-local-sif.sh` 语法检查通过；ShellCheck 仅报告既有 SC2015/SC1007 风格提示。实际容器编译、SIF 封装、C++/YOLO/MiniNDN 仍未观测，T001/T003 保持 PARTIAL。
 
 r12 的 header-only 恢复脚本不再使用；下一候选将使用 HEAD `a0740640` 的干净 NDNSF worktree、稳定 base SIF `8ebfc464…` 和新的 source seal，从完整两阶段 definition 重新走 pre-pack consumer gate。

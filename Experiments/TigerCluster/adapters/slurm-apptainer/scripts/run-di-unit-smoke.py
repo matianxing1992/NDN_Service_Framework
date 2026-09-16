@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import time
 
@@ -58,6 +59,15 @@ def main():
         record['testArchiveSha256'] = digest(archive)
         inputs = output / 'inputs'
         inputs.mkdir()
+        home = output / 'home'
+        home.mkdir()
+        home_stat = home.lstat()
+        if (not stat.S_ISDIR(home_stat.st_mode) or
+                home_stat.st_uid != os.geteuid()):
+            raise ValueError('PRIVATE_HOME_DIRECTORY_INVALID')
+        os.chmod(home, 0o700)
+        if stat.S_IMODE(home.stat().st_mode) != 0o700:
+            raise ValueError('PRIVATE_HOME_MODE_INVALID')
         subprocess.run(['tar', '-xf', str(archive), '-C', str(inputs)], check=True)
         record['testFiles'] = {str(p.relative_to(inputs)): digest(p)
                                for p in sorted(inputs.rglob('*')) if p.is_file()}
@@ -73,6 +83,7 @@ def main():
                     '"CANDIDATE_TEST_SOURCE_MISMATCH"')
         # All interpolated shell tokens below are fixed strings or a validated Git ID.
         script = ('set -eu\nexport PATH=/usr/bin:/bin\n'
+                  'export HOME=/home/tianxing\n'
                   'export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib\n'
                   f"/usr/bin/python3 -c '{identity}' {revision}\n"
                   'cd /test-inputs\n'
@@ -95,6 +106,7 @@ def main():
         command = [str(apptainer), 'exec', '--cleanenv', '--containall',
                    '--no-mount', 'home,cwd,hostfs,bind-paths',
                    '--bind', str(inputs) + ':/test-inputs:ro',
+                   '--bind', str(home) + ':/home/tianxing',
                    '--bind', str(output) + ':/evidence', str(sif),
                    '/bin/sh', '/evidence/run.sh']
         record['command'] = command

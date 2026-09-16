@@ -1,5 +1,19 @@
 # B187-LOCAL-YOLO Evidence
 
+## 2026-09-16 candidate update
+
+Candidate SIF `e6cef05a949c3b865b35424ddb486bee05ea8a0023dd9ba4f7f5eda556541657`
+was built with Apptainer 1.5.3 and the clean source revision `a0740640`. The
+container C++ unit smoke `unit-r2` passed (four DI/YOLO native test sources,
+`DI_CPP_UNIT_SMOKE_PASS`, 52.56s); the native ORT/DI YOLO smoke `yolo-r2`
+passed three runs with 50 rows and maximum absolute error `0.000534058`
+(`YOLO_CPU_NATIVE_RUNNER_PASS`, 9.76s). The first `unit-r1` and `yolo-r1`
+runs failed at the isolated HOME boundary (`/home/tianxing/.ndn`, `rc=134`);
+their records remain in `.codex-tmp/spec187-clean-restart/`. These are
+candidate-local C++/model results only. A candidate-bound requester config and
+input, two real through-MiniNDN runs, and the host-gate/pair mutation checks
+are still missing, so this evidence does not close T002 or T003.
+
 **Tasks**: T002 C++ YOLO selector and MiniNDN caller wiring; T003 local pair gate
 **Batch**: B187-LOCAL-YOLO
 **Status**: PARTIAL

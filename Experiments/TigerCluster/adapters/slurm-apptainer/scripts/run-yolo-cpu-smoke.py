@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import time
 
@@ -38,12 +39,25 @@ def main():
     parser.add_argument('--expected-sif-sha256', required=True)
     parser.add_argument('--model-root', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--native-runner', action='store_true',
+                        help='Exercise the candidate NDNSF-DI C++ runner and tensor codec')
     args = parser.parse_args()
     sif = args.base_sif.resolve(strict=True)
     models = args.model_root.resolve(strict=True)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    home = output / 'home'
+    home.mkdir()
+    home_stat = home.lstat()
+    if (not stat.S_ISDIR(home_stat.st_mode) or
+            home_stat.st_uid != os.geteuid()):
+        raise ValueError('PRIVATE_HOME_DIRECTORY_INVALID')
+    os.chmod(home, 0o700)
+    if stat.S_IMODE(home.stat().st_mode) != 0o700:
+        raise ValueError('PRIVATE_HOME_MODE_INVALID')
     record = {'status': 'FAIL', 'scope': 'YOLO_CPU_MODEL_SMOKE_ONLY', 'inputs': {}}
+    if args.native_runner:
+        record['scope'] = 'YOLO_CPU_NATIVE_RUNNER_ONLY'
     started = time.monotonic()
     try:
         checks = [(sif, args.expected_sif_sha256),
@@ -61,15 +75,22 @@ def main():
             'version': subprocess.check_output([apptainer, 'version'], text=True).strip()}
         if record['apptainer']['version'] != '1.5.3':
             raise ValueError('APPTAINER_VERSION_MISMATCH')
+        native_flags = ('-DNDNSF_NATIVE_RUNNER -I/opt/ndnsf-di/replay/repo '
+                        '-I/opt/ndnsf-di/current/include -I/opt/ndn-base/include '
+                        '-L/opt/ndnsf-di/current/lib -Wl,-rpath,/opt/ndnsf-di/current/lib '
+                        '-lndnsf-distributed-inference ' if args.native_runner else '')
         command = [apptainer, 'exec', '--cleanenv', '--containall',
+                   '--no-mount', 'home,cwd,hostfs,bind-paths',
                    '--bind', str(output) + ':/evidence',
+                   '--bind', str(home) + ':/home/tianxing',
                    '--bind', str(models) + ':/model:ro',
                    '--bind', str(FIXTURE) + ':/fixture.ppm:ro', str(sif),
                    '/bin/sh', '-ec',
-                   'export PATH=/usr/bin:/bin; '
+                   'export PATH=/usr/bin:/bin; export HOME=/home/tianxing; '
                    '/usr/bin/g++ -B/usr/bin -std=c++17 -O2 /evidence/probe.cpp '
                    '-I/opt/onnxruntime/include -L/opt/onnxruntime/lib '
-                   '-Wl,-rpath,/opt/onnxruntime/lib -lonnxruntime -o /evidence/yolo-cpu-smoke; '
+                   '-Wl,-rpath,/opt/onnxruntime/lib -lonnxruntime ' + native_flags +
+                   '-o /evidence/yolo-cpu-smoke; '
                    'ldd /evidence/yolo-cpu-smoke; '
                    'exec /usr/bin/timeout --kill-after=5s 120s /evidence/yolo-cpu-smoke '
                    '/model/canonical/yolo26n.onnx /fixture.ppm /model/oracle/full-model-output.npy']
@@ -85,7 +106,8 @@ def main():
                 raise
             if returncode:
                 raise subprocess.CalledProcessError(returncode, command)
-        if 'YOLO_CPU_MODEL_SMOKE_PASS' not in (output / 'run.log').read_text():
+        marker = 'YOLO_CPU_NATIVE_RUNNER_PASS' if args.native_runner else 'YOLO_CPU_MODEL_SMOKE_PASS'
+        if marker not in (output / 'run.log').read_text():
             raise ValueError('CPP_PASS_MARKER_MISSING')
         for path, expected in checks:
             if digest(path) != expected:
