@@ -5552,6 +5552,22 @@ which differs from the Spec186 handoff seal
   candidate promotion must wait for a fresh sealed build and a clean teardown
   check.
 
+### 2026-09-16 — Spec186 four-provider Y-B reached terminal response but cleanup forced
+
+- **Area**: local exact-SIF Y-B normal run
+- **Symptom**: all four roles reached READY; ACK count was 4, Selection selected
+  4 roles, the terminal response was successful and the numerical oracle matched,
+  but the bounded submitter ended with `cleanup.forced=true`, `exitCode=-15`.
+- **Root cause**: Controller/Repo/NFD child processes remained alive after the
+  terminal response and were not reaped by the current host harness cleanup
+  boundary.
+- **Correction**: preserve the four-provider protocol and numerical evidence as
+  an application-execution result, mark the harness result FAILED, terminate only
+  the exact run/SIF process identities, and do not promote the run to clean
+  qualification.
+- **Lesson**: provider execution success and process lifecycle success are
+  separate acceptance dimensions; a terminal response cannot hide forced cleanup.
+
 ### 2026-09-16 — Spec186 root MiniNDN child received an unmapped host path
 
 - **Symptom:** The first root local Y-A replay reached the MiniNDN process

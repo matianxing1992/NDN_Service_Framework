@@ -73,6 +73,18 @@ application-execution boundary. T006.d, clean MiniNDN qualification, upload,
 Tiger GPU and two-node rows remain open. The evidence and next fresh-build rule
 are recorded in `evidence/local-sif-yolo-20260916-r86.md`.
 
+**Four-provider local checkpoint (2026-09-16)**: the Y-B normal profile ran with
+the same SIF and app composition under candidate
+`sha256:66afadee66e0805a269055ab98a325190af9707f33e138c5c27e21d9f297d8dc`.
+All four roles reached READY; the lifecycle recorded ACK count 4, graph ready,
+four-role Selection, four-provider execution start and terminal response
+`status=true`. Three ONNX Runtime CPU roles reported `realCompute=true`; Merge
+completed its native postprocess. The oracle matched `[1,50,6]` with maximum
+absolute error `0.0005340576171875`. Cleanup was forced (`exitCode=-15`), so this
+advances the four-provider application boundary only; clean T007, T006.d
+promotion and Tiger rows remain open. See
+`evidence/local-sif-yolo-20260916-r86-four-provider.md`.
+
 | Step | Parent | Concrete outcome / path | State | Evidence / verification scope | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
 | T001.a | T001 | 获取并验证 `575b43cc93bbed29932303caf3d09974f1585af7` 对象、父提交、tree 和 clean checkout；记录于 `evidence/baseline-inventory.md` | VERIFIED | `evidence/baseline-inventory.md` source seal and ancestor receipt | — | 任何 source checkout 变化重做 |
