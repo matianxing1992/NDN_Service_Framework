@@ -312,3 +312,8 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 - 状态 / 剩余验收 / 下一步：`PARTIAL`；等待 regular base SIF、host-gate manifest 和 native requester config/input 后执行两次 local gate，再决定 TigerCluster promotion。
 
 历史 Spec 的完整回溯是后续独立核对工作，本轮不虚构它们的变更记录。
+
+### D-187-BASE: Stable dependency image repair
+
+- 2026-09-15；Spec187 T001 prerequisite；`NO_DESIGN_CHANGE`：仅修复部署脚本及稳定依赖镜像，不修改 Core/UAV/DI/Repo API、wire 或目标设计。
+- 保持现有稳定 base / 外置 APP 边界；NumPy wheel 私有库完整性与最终镜像 C++ SDK smoke 见 [base repair](../specs/187-yolo-minindn-sif-app/evidence/b187-base-repair.md)。本机最终镜像 `BASE_SMOKE_ONLY PASS`，缺库反例被拒绝；不以此刷新生产 API 或将 APP/MiniNDN 状态升级为 PASS。
