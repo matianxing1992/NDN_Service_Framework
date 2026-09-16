@@ -13,6 +13,7 @@ Stage: builder
     @BUNDLE@/source/ndnSd.tar /build-input/ndnSd.tar
     @BUNDLE@/source/source-seal.json /build-input/source-seal.json
     @BUNDLE@/wheels /build-input/wheels
+    @BUNDLE@/native /build-input/native
 
 %post
     set -eu
@@ -78,6 +79,46 @@ PY
     tar -xf /build-input/ndn-svs.tar -C /src/ndn-svs
     tar -xf /build-input/nacAbe.tar -C /src/nac-abe
     tar -xf /build-input/ndnSd.tar -C /src/ndn-sd
+
+    # Current native DI requires official full-protobuf ONNX and an offline
+    # Rust tokenizer build. Inputs are sealed sources/installers, never host .a.
+    /usr/bin/python3 - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+root = Path('/build-input/native')
+assert 'sha256:' + hashlib.sha256((root / 'native-inputs.json').read_bytes()).hexdigest() == '@NATIVE_DIGEST@'
+manifest = json.loads((root / 'native-inputs.json').read_text())
+assert manifest['schema'] == 'ndnsf-native-build-inputs-v1'
+assert manifest['onnxRevision'] == 'b8baa8446686496da4cc8fda09f2b6fe65c2a02c'
+assert manifest['rustVersion'] == '1.90.0'
+for name, expected in manifest['files'].items():
+    assert Path(name).name == name
+    assert 'sha256:' + hashlib.sha256((root / name).read_bytes()).hexdigest() == expected
+crate = Path('/src/ndnsf/NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge')
+for name in ['Cargo.toml', 'Cargo.lock']:
+    assert 'sha256:' + hashlib.sha256((crate / name).read_bytes()).hexdigest() == manifest['crate'][name]
+PY
+    install -d /src/onnx /opt/cargo-vendor /opt/cargo-home /tmp/rust-install
+    tar -xf /build-input/native/onnx.tar -C /src/onnx
+    tar -xf /build-input/native/vendor.tar -C /opt/cargo-vendor
+    for component in cargo rustc rust-std; do
+        tar -xf "/build-input/native/$component-1.90.0-x86_64-unknown-linux-gnu.tar.xz" -C /tmp/rust-install
+        "/tmp/rust-install/$component-1.90.0-x86_64-unknown-linux-gnu/install.sh" --prefix=/opt/rust --disable-ldconfig
+    done
+    rm -rf /tmp/rust-install
+    printf '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "/opt/cargo-vendor"\n' > /opt/cargo-home/config.toml
+    export NDNSF_RUST_PREFIX=/opt/rust
+    export NDNSF_CARGO_HOME=/opt/cargo-home
+    export NDNSF_TOKENIZER_BRIDGE_TARGET=/tmp/tokenizer-build
+    /usr/bin/cmake -S /src/onnx -B /tmp/onnx-build \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/onnx \
+        -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CXX_FLAGS=-B/usr/bin \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_ONNX_PYTHON=OFF \
+        -DONNX_USE_LITE_PROTO=OFF -DONNX_BUILD_TESTS=OFF -DONNX_ML=ON \
+        -DONNX_GEN_PB_TYPE_STUBS=OFF -DPYTHON_EXECUTABLE=/usr/bin/python3
+    /usr/bin/cmake --build /tmp/onnx-build --parallel 4
+    /usr/bin/cmake --install /tmp/onnx-build
 
     # The base SDK is a build input only. Publish regular APP-owned copies
     # before compiling consumers; never add the SDK to the runtime loader path.
@@ -172,6 +213,7 @@ Path('/opt/ndnsf-stage/manifest/container-configure-closure.json').write_text(
 PY
     cd /src/ndnsf
     ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --with-examples --disable-local-dependency-prefix \
+      --onnx-prefix=/opt/onnx \
       --nac-abe-prefix=/opt/ndnsf-di/current \
       --ndn-svs-source-tree=/src/ndn-svs --ndn-svs-build-tree=/src/ndn-svs/build \
       --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu

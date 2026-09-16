@@ -1,11 +1,11 @@
 {
   "schema": "ndnsf-development-lock-v1",
-  "release": "development-20260906",
+  "release": "spec187-development-20260915",
   "repositories": {
     "ndnsf": {
       "url": "https://github.com/matianxing1992/NDN_Service_Framework.git",
       "branch": "Experimental",
-      "revision": "447f7584072142edea8c8e2ae3ed4ffdc5fbd0c5"
+      "revision": "587abb29b42cae1df1385ad737a94f0c7e1c0b90"
     },
     "nacAbe": {
       "url": "https://github.com/matianxing1992/NAC-ABE.git",
@@ -24,12 +24,22 @@
     }
   },
   "baseSif": {
-    "filename": "spec180-runtime.sif",
-    "sha256": "sha256:b6710fd696a7f962f67f67a54278d92a15babb856c4af428a3f04ba54dc83285",
-    "bytes": 3525861376,
-    "recordedClusterPath": "/project/tma1/ndnsf-di/candidates/spec180-runtime-b6710fd6/spec180-runtime.sif",
+    "filename": "base.sif",
+    "sha256": "sha256:7b4b501033f2db876ccf5c19a9637a58b8b232cf4d555f5b8a225638e180837c",
+    "bytes": 3759759360,
+    "recordedLocalPath": "Experiments/TigerCluster/images/base-repair-20260915/run-r2/base.sif",
     "role": "external-dependency-base-only",
     "delivery": "not-in-git; reuse or transfer exact existing SIF and verify SHA256"
+  },
+  "nativeBuild": {
+    "files": {
+      "native-inputs.json": "sha256:c67567915e1171cfcce5d7f4e5f563f2004f63522932e829b611e095d0020aa8",
+      "onnx.tar": "sha256:7e96f2d8b38170cb14fd6363ff8b26b6c48138b48867fa4572ef42bbe27428d1",
+      "vendor.tar": "sha256:55f94ea7b0be193e8643c3b6b7b2030db3af8e3b2c7fa17ef6615a922c72d813",
+      "cargo-1.90.0-x86_64-unknown-linux-gnu.tar.xz": "sha256:9853db03d68578a30972e2755c89c66aec035fec641cf8f3a7117c81eec2578d",
+      "rustc-1.90.0-x86_64-unknown-linux-gnu.tar.xz": "sha256:48c2a42de9e92fcae8c24568f5fe40d5734696a6f80e83cc6d46eef1a78f13c9",
+      "rust-std-1.90.0-x86_64-unknown-linux-gnu.tar.xz": "sha256:663f4ab7945b392d5e5294dec1b050a66820a20e86f084ec37eeb0f2f7ff5569"
+    }
   },
   "wheels": [
     {
