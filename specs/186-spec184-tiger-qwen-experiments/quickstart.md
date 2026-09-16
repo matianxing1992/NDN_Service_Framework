@@ -63,6 +63,86 @@ python3 Experiments/TigerCluster/jobs/spec184/submit.py local \
 The Qwen case is accepted only when the model descriptor identifies actual Qwen3-0.6B
 weights and a compatible backend. A tiny fixture produces `SMOKE_ONLY`, not model PASS.
 
+## 3a. Reproduce the four-provider local Y-B result
+
+The following is the exact local composition used for the 2026-09-16 result. A
+SIF by itself is not the complete experiment input: transfer the immutable SIF,
+the matching read-only application bundle, the Y-B case bundle (model, key maps
+and catalogue), and the candidate-bound profile together. Keep model and private
+test keys in approved private storage; they are not Git artifacts.
+
+```text
+spec186-r86-reproduction/
+  spec186-local-r86.sif
+  spec186-app-bundle-r86-worker/       # read-only directory
+  spec186-yolo-minindn-normal-r86-worker.json
+  case/Y-B/                            # supplied case bundle
+```
+
+Verify the immutable inputs before running. The values below are the expected
+ones for this result; a different value is a new candidate and must receive a
+new run ID.
+
+```bash
+sha256sum spec186-local-r86.sif
+# 089a4bc942db5fcc9d01ba2bf62b01ae1836416a232f0806a61931f26d946547
+
+# Compute the application tree digest with the repository candidate helper.
+python3 - <<'PY'
+import importlib.util
+from pathlib import Path
+spec = importlib.util.spec_from_file_location(
+    'spec186_candidate', 'Experiments/TigerCluster/runtime/spec186_candidate.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.tree_digest(Path('spec186-app-bundle-r86-worker')))
+# 92934b89e842483a12b6669cf935b62a1ec8b1750d1093f097ccc4cbcbc58f79
+PY
+```
+
+Use the supplied r86 profile, or make a path-adjusted copy while preserving all
+declared digests. Do not use the older tracked profile that points to the r6
+bundle. Generate and validate the candidate without pre-creating its run root:
+
+```bash
+PROFILE=/path/to/spec186-yolo-minindn-normal-r86-worker.json
+RUN_ID=spec186-yolo-local-normal-r86-replay
+RUN_ROOT="$PWD/Experiments/TigerCluster/results/$RUN_ID"
+CANDIDATE="$PWD/$RUN_ID.candidate.json"
+
+test ! -e "$RUN_ROOT"
+python3 Experiments/TigerCluster/jobs/spec184/submit.py prepare \
+  --profile "$PROFILE" --run-id "$RUN_ID" \
+  --candidate-output "$CANDIDATE" \
+  --output "$PWD/$RUN_ID.prepare.json"
+python3 Experiments/TigerCluster/jobs/spec184/submit.py check \
+  --profile "$PROFILE" --candidate "$CANDIDATE"
+sudo -E python3 Experiments/TigerCluster/jobs/spec184/submit.py local \
+  --profile "$PROFILE" --candidate "$CANDIDATE" \
+  --run-id "$RUN_ID" --run-root "$RUN_ROOT"
+```
+
+The `local` command must run as root because MiniNDN/Mininet creates network
+namespaces. It creates the writable per-run HOME, NFD sockets and identity state;
+do not use a shared host `.ndn` directory or a volatile `/tmp` state root. The
+application bundle is mounted read-only and the SIF is never modified.
+
+For the reference candidate, the expected application markers are ACK count 4,
+four-role Selection, four-provider execution start and:
+
+```text
+YOLO_ACK_DRIVEN_RESULT status=true payload_bytes=1267
+```
+
+`evidence/yolo-numerical.json` should report `matched=true`, shape `[1,50,6]`
+and `maxAbsError=0.0005340576171875`. The three partition providers report
+`realCompute=true` with `onnxruntime-cpu`; `Merge` reports completed
+`native-yolo-postprocess`. Always inspect the lifecycle and every
+`provider-*.log`, not only the final response. The recorded r86 harness ended
+with forced cleanup (`exitCode=-15`), so reproducing the numerical response is
+an application-execution result, not a clean qualification PASS until teardown
+also exits normally.
+
 For local SIF work, use the profile's explicit `/usr/local/bin/apptainer`
 1.5.3 runtime. Tiger profiles use the project-owned
 `/home/tma1/.local/bin/apptainer-1.5.3` on allocated compute
