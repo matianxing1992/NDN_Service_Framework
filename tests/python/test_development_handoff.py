@@ -27,6 +27,14 @@ handoff = load("test_handoff", SCRIPTS / "prepare-development-handoff.py")
 sealer = load("test_handoff_sealer", SCRIPTS / "prepare-local-sif-source.py")
 
 
+def test_archive_includes_native_pkgconfig_build_inputs():
+    """Both selected native libraries must carry their Waf substitution inputs."""
+    selected = set(sealer.selected_files(ROOT))
+    for relative in ("libndn-service-framework.pc.in",
+                     "NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in"):
+        assert Path(relative) in selected
+
+
 def commit_fixture(path):
     for command in [
         ["git", "init", "-q", str(path)],

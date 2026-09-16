@@ -26,6 +26,12 @@ Codex 两份旧故障备份从约 1.46 GiB 无损压缩至约 550 MiB，解压�
 
 ## Current result
 
+B187-SOURCE-CLOSURE：只读 `STATIC_PASS / COMPOSITION_PASS`，diff `92128adf098066009a9dafcb1e2f952f25cb2222c9e0dd57d946b075e9088a20`；新增 Core/DI pkg-config 输入回归，handoff 13 tests passed（5.02s），`source-tests-r1.log`。新 bundle-r6 与 definition 已生成。用户建议增加容器内 C++ 单元验证：后续在候选内编译运行定向 DI tests，再运行真实 YOLO；不使用宿主测试二进制，不把单元 PASS 当完整协议资格。
+
+build-r3 rc=255：SDK verifier、configure 与 Rust tokenizer staticlib 编译成功，Waf 在 task graph posting 时找不到 DI `.pc.in` 模板，未开始 C++ 编译。首边界为 source archive closure，静态漏检归类 compile-link。原始 `build-r3/build.log` 和 Apptainer rootfs 保留，拟补齐 sealer 清单后复用现场；base 身份不变，不计候选或协议 PASS。
+
+build-r3 使用 `bundle-r5/app-runtime-r5.def` 已通过临时目录清理、SDK 复验和外部库 configure，正在编译仓库 Rust tokenizer bridge。脚本 checkpoint `d14b3f48`；实际输出仍待候选验收。额外磁盘诊断确认三个未占用 `.git/objects/pack/tmp_pack_*` 被 `git count-objects -v` 判为 garbage（7540688 KiB）；仅移除这三个失败临时文件后 garbage=0，未改正式 pack、loose objects 或历史。后续本地 checkpoint 命令禁用当次自动 gc，避免构建期间再次生成失败临时包。
+
 scratch r2 已通过只读静态/组合审查；25 个模板/handoff/build-only 定向测试通过（3.75s），`bash -n` 通过，快照与工作文件一致。日志 `scratch-tests-r1.log`。开始生成 `bundle-r5` / 新 definition，准备重试完整候选；未宣称容器编译已通过。
 
 恢复执行：builder scratch 统一移至 `/opt/ndnsf-build-work`，SDK 验证前设置 TMPDIR，pip/pkg-config/tokenizer 共用容器自有目录；不再删除固定宿主 `/tmp` 路径。r1 只读 `STATIC_PASS / B187-CONSUMER-SCRATCH_COMPOSITION_PASS`，diff SHA-256 `34c36810901add7a9cb4ea4c4316c2f6e7160477259c5724a07fb528971731e8`。r2 另加 Apptainer `--no-cleanup` 保留失败 rootfs，待增量审查与定向测试。build-r2 没有生成成功 build receipt；新增 `build-r2/failure.json` 是诊断记录，不能作为候选凭据。

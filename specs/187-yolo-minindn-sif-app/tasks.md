@@ -15,6 +15,8 @@
 
 ## Current Checkpoint
 
+2026-09-15 B187-NDNSF-CONSUMER / PARTIAL：build-r3 的 SDK/configure/Rust 已通过，Waf 因源码归档遗漏 DI `.pc.in` 模板停止，尚未开始 C++ 编译。原始日志和 rootfs 保留；修复封存清单并静态复审后复用现场。未生成候选或推理 PASS；见 [candidate evidence](evidence/b187-complete-candidate.md)。
+
 2026-09-15 B187-CONSUMER-SCRATCH 静态/组合审查与 25 个定向测试通过（3.75s）；开始新 bundle-r5 的候选重试，实际原生编译/验收仍 PARTIAL。修改只影响容器 scratch 与失败保留，不改变封存 base。
 
 2026-09-15 B187-CONSUMER-SCRATCH / PARTIAL：已恢复，修复容器临时目录隔离，r1 静态/组合通过；补充失败现场保留的 r2 增量审查后统一测试，再生成新 definition 重试。封存 base 不变；[candidate evidence](evidence/b187-complete-candidate.md)。

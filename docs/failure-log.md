@@ -1,5 +1,9 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec187 consumer source archive missing DI metadata template
+
+build-r3 通过 SDK verifier、外部依赖 configure 和 Rust tokenizer 编译后，Waf 因源码包缺少 `NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in` 停止（rc=255），尚未开始 C++ 编译。保留 rootfs 与原始 `build-r3/build.log`；补齐源码封存范围后复用现场，不重建 base。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
 ## 2026-09-15 — Spec187 consumer temporary directory cleanup
 
 build-r2 通过封存 base 的 SDK verifier 后，在清理固定 `/tmp/nac-abe-build` 等历史目录时权限拒绝，未开始 NDNSF 编译；不是模型或协议失败。按用户指示暂停重试先清理磁盘，之后修复构建临时目录隔离。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
