@@ -81,8 +81,20 @@ def test_rendered_template_preserves_container_build_boundary(tmp_path):
     assert "APP_NATIVE_LIBRARY_CLOSURE_MISMATCH" in text
     assert "APP_LAYOUT_VERIFY=ndnsf-app-v2" in text
     assert "NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib'" in text
-    assert "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib" in text
+    assert "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib" in text
+    assert "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib" not in text
     assert "export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage" in text
+
+
+def test_explicit_core_directory_rejects_dependency_only_base(tmp_path):
+    path = render(tmp_path)
+    text = path.read_text().replace(
+        "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib",
+        "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib", 1)
+    path.write_text(text)
+    with pytest.raises(boundary.Spec170BuildBoundaryError,
+                       match="PYTHON_STAGE_LIBRARY_CLOSURE_MISMATCH"):
+        boundary.validate_definition(path)
 
 
 @pytest.mark.parametrize("stage", ["builder", "final"])
