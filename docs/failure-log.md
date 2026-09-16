@@ -1,14 +1,5 @@
 # Failure Log and Evidence Index
 
-## 2026-09-16 — UAV editable export checkpoint hook boundary
-
-四页 PPTX 导出、文本/对象检查和全页 LibreOffice/Poppler 渲染通过后，普通
-`git commit` 被既有 `.git/hooks/pre-commit` 拒绝（exit 1）：
-`Commit blocked: development-assistant files or references remain in the Git index.`
-钩子默认扫描整个 index，既有 `.specify/memory/constitution.md:16` 等引用触发拒绝。
-未重试、未绕过钩子，交付文件保留待提交；不是产品或 PPTX 验证失败。
-精简证据及产物摘要见 [UAV export review](NDNSF-UAV/slides/UPDATES_UAV-review.md#editable-powerpoint-export--2026-09-16)。
-
 ## 2026-09-16 — Spec187 authority handoff source closure
 
 新的 authority source handoff 首次使用现有依赖工作区时，在 `HANDOFF_SOURCE_UNTRACKED:examples/example-trust-anchor.cert` 处拒绝，未创建 bundle、未启动构建。该文件是依赖 checkout 的本机生成身份资料；原始记录 `.codex-tmp/spec187-authority-20260916/prepare-r1.log` 与 `prepare-r1.failure.json` 保留。改用三个锁定 revision 的干净 detached worktree 后，source handoff 成功；不放宽 untracked-source 门。
