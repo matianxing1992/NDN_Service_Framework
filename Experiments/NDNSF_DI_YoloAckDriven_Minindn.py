@@ -24,6 +24,7 @@ import re
 import shlex
 import signal
 import shutil
+import sqlite3
 import site
 import sys
 import subprocess
@@ -134,7 +135,8 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
     ])
     for key, value in sorted(env.items()):
         if not (key.startswith("NDNSF_") or key.startswith("SPEC180_")
-                or key == "NDN_LOG"):
+                or key.startswith("SPEC181_") or key.startswith("SPEC187_")
+                or key in {"NDN_CLIENT_PIB", "NDN_CLIENT_TPM", "NDN_LOG"}):
             continue
         if key in {"SPEC180_RUNTIME_SIF", "SPEC180_RUNTIME_APPTAINER"}:
             continue
@@ -350,6 +352,28 @@ class RunnerError(ValueError):
     """Raised when a case cannot satisfy the source-bound runner contract."""
 
 
+def _rewrite_node_tpm_locator(node_home: Path, node_name: str) -> None:
+    """Bind an initialized MiniNDN PIB to its explicit node TPM directory."""
+    pib_path = node_home / ".ndn" / "pib.db"
+    tpm_locator = "tpm-file:" + str(node_home / ".ndn")
+    try:
+        with sqlite3.connect(pib_path) as connection:
+            rows = connection.execute(
+                "SELECT tpm_locator FROM tpmInfo").fetchall()
+            if len(rows) != 1:
+                raise RunnerError("CASE_RUNTIME_TPM_INFO_INVALID:" + node_name)
+            connection.execute(
+                "UPDATE tpmInfo SET tpm_locator = ?", (tpm_locator,))
+            observed = connection.execute(
+                "SELECT tpm_locator FROM tpmInfo").fetchone()[0]
+            if observed != tpm_locator:
+                raise RunnerError(
+                    "CASE_RUNTIME_TPM_LOCATOR_REWRITE_FAILED:" + node_name)
+    except sqlite3.Error as exc:
+        raise RunnerError(
+            "CASE_RUNTIME_TPM_INFO_UPDATE_FAILED:" + node_name) from exc
+
+
 @dataclass(frozen=True)
 class CaseProcessSpec:
     """One child process in the explicit case runtime.
@@ -522,8 +546,20 @@ class MiniNdnCaseRuntime:
         if self._ndn is not None:
             raise RunnerError("CASE_RUNTIME_NETWORK_ALREADY_STARTED")
         legacy = self._legacy_module()
-        legacy.Minindn.cleanUp()
-        legacy.Minindn.verifyDependencies()
+        # The host Python extension may need an explicit NAC-ABE preload to
+        # resolve symbols from the candidate build.  MiniNDN's node shells and
+        # NFD must not inherit that preload: it is an application-side repair
+        # for the extension, and loading it into bash/pty setup can deadlock
+        # network initialization before any child process is started.  Restore
+        # it before the first Controller/Provider/User command is launched.
+        inherited_preload = os.environ.pop("LD_PRELOAD", None)
+        try:
+            legacy.Minindn.cleanUp()
+            legacy.Minindn.verifyDependencies()
+        except Exception:
+            if inherited_preload is not None:
+                os.environ["LD_PRELOAD"] = inherited_preload
+            raise
         # MiniNDN's constructor parses the process-wide argv for its own
         # --work-dir/--result-dir options.  The Spec180 launcher has already
         # consumed ``--case`` but must not leak it into that parser; doing so
@@ -541,6 +577,10 @@ class MiniNdnCaseRuntime:
                 topoFile=str(self.binding.topology),
                 workDir=str(work_dir),
             )
+        except Exception:
+            if inherited_preload is not None:
+                os.environ["LD_PRELOAD"] = inherited_preload
+            raise
         finally:
             sys.argv = saved_argv
         try:
@@ -563,6 +603,9 @@ class MiniNdnCaseRuntime:
                 detail += ";cleanup=" + ";".join(cleanup_errors)
             raise RunnerError(
                 "CASE_RUNTIME_NETWORK_START_FAILED:" + detail) from exc
+        finally:
+            if inherited_preload is not None:
+                os.environ["LD_PRELOAD"] = inherited_preload
         self._ndn = ndn
         return ndn
 
@@ -589,6 +632,15 @@ class MiniNdnCaseRuntime:
         add(str(nodes["user"]), (user_identity, group_prefix))
         add(str(nodes["repo"]), (repo_identity, repo_identity + "/KEY",
                                   group_prefix, repo_prefix))
+        native_authority = self.inputs.get("native_authority")
+        if isinstance(native_authority, Mapping):
+            authority_identity = str(native_authority.get("identity", ""))
+            if _NAME_RE.fullmatch(authority_identity):
+                # The authority is a real native Provider on the controller
+                # node. Its identity and certificate must be routable before
+                # the requester sends the grant Interest.
+                add(str(nodes["controller"]), (
+                    authority_identity, authority_identity + "/KEY"))
         for identity in self.binding.provider_identities:
             node_name = str(nodes["providers"][identity])
             add(node_name, (identity, identity + "/KEY", group_prefix))
@@ -629,10 +681,16 @@ class MiniNdnCaseRuntime:
             raise RunnerError("CASE_RUNTIME_NETWORK_NOT_STARTED")
         legacy = self._legacy_module()
         identities = self.binding.identities
+        native_authority = self.inputs.get("native_authority")
+        additional_identities = []
+        if isinstance(native_authority, Mapping):
+            authority_identity = str(native_authority.get("identity", ""))
+            if _NAME_RE.fullmatch(authority_identity):
+                additional_identities.append(authority_identity)
         legacy.initialize_di_keychains(
             ndn,
             self.binding.output,
-            list(self.binding.provider_identities),
+            [*self.binding.provider_identities, *additional_identities],
             dual_signing_certs=dual_signing_certs,
             controller_node=str(self.binding.nodes["controller"]),
             app_root=str(identities_parent(self.binding.identities["controller"])),
@@ -641,6 +699,15 @@ class MiniNdnCaseRuntime:
             provider_prefix=str(self.binding.identities.get("providerPrefix", "")),
             repo_identity=str(self.binding.identities["repo"]),
         )
+        # ndnsec creates the PIB with the platform-default ``tpm-file:``
+        # locator.  Native Runtime::open receives an explicit node-scoped
+        # locator, so align the PIB metadata before any child opens the
+        # store; otherwise ndn-cxx treats the pair as a TPM mismatch and
+        # resets the imported identities, losing the key that decrypts the
+        # Controller's permission response.
+        for node in ndn.net.hosts:
+            node_home = Path(node.params["params"]["homeDir"])
+            _rewrite_node_tpm_locator(node_home, node.name)
 
     def process_specs(self, phase: str | None = None) -> tuple[CaseProcessSpec, ...]:
         """Build the candidate-bound Controller/Repo/Provider/User commands.
@@ -723,6 +790,156 @@ class MiniNdnCaseRuntime:
             verify_declared_digest(
                 "configSha256", config_path,
                 "CASE_PROCESS_CONFIG_DIGEST_MISMATCH")
+        native_authority = self.inputs.get("native_authority")
+        if self.inputs.get("spec187_native_mode"):
+            selector = Path(str(self.inputs.get("spec187_native_selector", "")))
+            selector_binding = descriptor.get("nativeSelectorBinding")
+            if (not selector.is_absolute()
+                    or not isinstance(selector_binding, Mapping)):
+                raise RunnerError("CASE_PROCESS_NATIVE_SELECTOR_INVALID")
+            if sif_runtime_enabled():
+                if (str(selector) != "/opt/ndnsf-di/current/bin/spec187-yolo-minindn"
+                        or selector_binding.get("path") != str(selector)
+                        or selector_binding.get("sealedSif") is not True
+                        or not _DIGEST_RE.fullmatch(
+                            str(selector_binding.get("sha256", "")))):
+                    raise RunnerError("CASE_PROCESS_NATIVE_SELECTOR_INVALID")
+            else:
+                if (selector.is_symlink() or not selector.is_file()
+                        or not os.access(selector, os.X_OK)):
+                    raise RunnerError("CASE_PROCESS_NATIVE_SELECTOR_INVALID")
+                try:
+                    selector_stat = selector.stat()
+                except OSError as exc:
+                    raise RunnerError("CASE_PROCESS_NATIVE_SELECTOR_STAT_FAILED") from exc
+                if any(int(selector_binding.get(field, -1)) != actual
+                       for field, actual in (("device", selector_stat.st_dev),
+                                             ("inode", selector_stat.st_ino),
+                                             ("size", selector_stat.st_size))):
+                    raise RunnerError("CASE_PROCESS_NATIVE_SELECTOR_REPLACED")
+                if str(selector_binding.get("sha256", "")) != digest_file(selector):
+                    raise RunnerError("CASE_PROCESS_NATIVE_SELECTOR_DIGEST_MISMATCH")
+            if not isinstance(native_authority, Mapping):
+                raise RunnerError("CASE_PROCESS_NATIVE_AUTHORITY_MISSING")
+            authority_config = Path(str(native_authority.get("config", "")))
+            if (not authority_config.is_absolute()
+                    or authority_config.is_symlink()
+                    or not authority_config.is_file()
+                    or not os.access(authority_config, os.R_OK)):
+                raise RunnerError("CASE_PROCESS_NATIVE_AUTHORITY_INVALID")
+            expected_authority_digest = str(
+                descriptor.get("nativeAuthorityConfigSha256", ""))
+            if expected_authority_digest and expected_authority_digest != digest_file(
+                    authority_config):
+                raise RunnerError("CASE_PROCESS_NATIVE_AUTHORITY_DIGEST_MISMATCH")
+            authority_file_bindings = descriptor.get(
+                "nativeAuthorityReferencedFiles")
+            if not isinstance(authority_file_bindings, Mapping):
+                raise RunnerError("CASE_PROCESS_NATIVE_AUTHORITY_FILES_MISSING")
+            referenced_files = native_authority.get("referenced_files", {})
+            if (not isinstance(referenced_files, Mapping)
+                    or set(authority_file_bindings) != set(referenced_files)):
+                raise RunnerError("CASE_PROCESS_NATIVE_AUTHORITY_FILES_MISMATCH")
+            for key, raw_path in referenced_files.items():
+                referenced = Path(str(raw_path))
+                expected_binding = authority_file_bindings.get(key)
+                if (not isinstance(expected_binding, Mapping)
+                        or referenced.is_symlink() or not referenced.is_file()):
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_AUTHORITY_FILE_INVALID:" + key)
+                try:
+                    actual_stat = referenced.stat()
+                except OSError as exc:
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_AUTHORITY_FILE_STAT_FAILED:" + key) from exc
+                if any(int(expected_binding.get(field, -1)) != actual
+                       for field, actual in (
+                           ("device", actual_stat.st_dev),
+                           ("inode", actual_stat.st_ino),
+                           ("size", actual_stat.st_size))):
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_AUTHORITY_FILE_REPLACED:" + key)
+                if str(expected_binding.get("sha256", "")) != digest_file(referenced):
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_AUTHORITY_FILE_DIGEST_MISMATCH:" + key)
+            for field, code in (
+                    ("spec187_native_grant_authority_public_key",
+                     "CASE_PROCESS_NATIVE_AUTHORITY_PUBLIC_KEY"),
+                    ("spec187_native_provider_recipient_key_map",
+                     "CASE_PROCESS_NATIVE_RECIPIENT_KEY_MAP")):
+                auxiliary = Path(str(self.inputs.get(field, "")))
+                if (not auxiliary.is_absolute() or auxiliary.is_symlink()
+                        or not auxiliary.is_file()
+                        or not os.access(auxiliary, os.R_OK)):
+                    raise RunnerError(code + "_INVALID")
+                expected = descriptor.get(
+                    "nativeAuthorityPublicKeySha256"
+                    if field.endswith("authority_public_key")
+                    else "nativeProviderRecipientKeyMapSha256")
+                if expected and str(expected) != digest_file(auxiliary):
+                    raise RunnerError(code + "_DIGEST_MISMATCH")
+            request_bindings = descriptor.get("nativeRequestFileBindings")
+            if not isinstance(request_bindings, Mapping):
+                raise RunnerError("CASE_PROCESS_NATIVE_REQUEST_FILES_MISSING")
+            for field, input_key, digest_key in (
+                    ("nativeRequestConfig", "spec187_native_request_config",
+                     "nativeRequestConfigSha256"),
+                    ("nativeRequestInput", "spec187_native_request_input",
+                     "nativeRequestInputSha256")):
+                request_path = Path(str(self.inputs.get(input_key, "")))
+                expected_binding = request_bindings.get(field)
+                if (not request_path.is_absolute() or request_path.is_symlink()
+                        or not request_path.is_file()
+                        or not os.access(request_path, os.R_OK)
+                        or not isinstance(expected_binding, Mapping)):
+                    raise RunnerError("CASE_PROCESS_NATIVE_REQUEST_FILE_INVALID:" + field)
+                try:
+                    actual_stat = request_path.stat()
+                except OSError as exc:
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_REQUEST_FILE_STAT_FAILED:" + field) from exc
+                if any(int(expected_binding.get(name, -1)) != actual
+                       for name, actual in (
+                           ("device", actual_stat.st_dev),
+                           ("inode", actual_stat.st_ino),
+                           ("size", actual_stat.st_size))):
+                    raise RunnerError("CASE_PROCESS_NATIVE_REQUEST_FILE_REPLACED:" + field)
+                if (str(expected_binding.get("sha256", "")) != digest_file(request_path)
+                        or str(descriptor.get(digest_key, "")) != digest_file(request_path)):
+                    raise RunnerError("CASE_PROCESS_NATIVE_REQUEST_FILE_DIGEST_MISMATCH:" + field)
+            requester_binding = self.inputs.get("native_request_binding")
+            requester_bindings = descriptor.get("nativeRequesterReferencedFiles")
+            if (not isinstance(requester_binding, Mapping)
+                    or not isinstance(requester_bindings, Mapping)):
+                raise RunnerError("CASE_PROCESS_NATIVE_REQUEST_BINDING_MISSING")
+            requester_files = requester_binding.get("referenced_files")
+            if (not isinstance(requester_files, Mapping)
+                    or set(requester_files) != set(requester_bindings)):
+                raise RunnerError("CASE_PROCESS_NATIVE_REQUEST_BINDING_MISMATCH")
+            for key, raw_path in requester_files.items():
+                referenced = Path(str(raw_path))
+                expected_binding = requester_bindings.get(key)
+                if (not isinstance(expected_binding, Mapping)
+                        or referenced.is_symlink() or not referenced.is_file()):
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_REQUEST_REFERENCED_FILE_INVALID:" + str(key))
+                try:
+                    actual_stat = referenced.stat()
+                except OSError as exc:
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_REQUEST_REFERENCED_FILE_STAT_FAILED:" +
+                        str(key)) from exc
+                if any(int(expected_binding.get(name, -1)) != actual
+                       for name, actual in (("device", actual_stat.st_dev),
+                                             ("inode", actual_stat.st_ino),
+                                             ("size", actual_stat.st_size))):
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_REQUEST_REFERENCED_FILE_REPLACED:" +
+                        str(key))
+                if str(expected_binding.get("sha256", "")) != digest_file(referenced):
+                    raise RunnerError(
+                        "CASE_PROCESS_NATIVE_REQUEST_REFERENCED_FILE_DIGEST_MISMATCH:" +
+                        str(key))
         catalogue_data_name = str(descriptor.get("catalogueDataName", ""))
         catalogue_signer = str(descriptor.get("catalogueSigner", ""))
         if not (_NAME_RE.fullmatch(catalogue_data_name)
@@ -851,6 +1068,23 @@ class MiniNdnCaseRuntime:
             for item in service_doc.get("providers", ())
             if isinstance(item, Mapping)
         }
+        if self.inputs.get("spec187_native_mode"):
+            authority_config = Path(str(native_authority["config"]))
+            if sif_runtime_enabled():
+                authority_executable = "/opt/ndnsf-di/current/bin/DI_NativeArtifactAuthority"
+            else:
+                authority_executable = os.environ.get(
+                    "SPEC180_NATIVE_AUTHORITY_BINARY",
+                    str(ROOT / "build-system-j2/examples/DI_NativeArtifactAuthority"),
+                )
+            authority_command = " ".join(shlex.quote(item) for item in (
+                authority_executable, "--config", str(authority_config)))
+            if not sif_runtime_enabled():
+                authority_command = "cd " + shlex.quote(str(ROOT)) + " && exec " + authority_command
+            commands.append(CaseProcessSpec(
+                "authority", str(nodes["controller"]), authority_command,
+                "NATIVE_GRANT_AUTHORITY_READY", "providers", "native",
+            ))
         private_key_entries = _load_document(
             private_key_map, "offer-private-key-map")
         if not isinstance(private_key_entries, Mapping):
@@ -923,27 +1157,48 @@ class MiniNdnCaseRuntime:
                 "spec187_native_request_input", "")))
             request_output = Path(str(self.inputs.get(
                 "spec187_native_request_output", "")))
-            if (not selector.is_absolute() or selector.is_symlink()
-                    or not selector.is_file() or not os.access(selector, os.X_OK)):
-                raise RunnerError("SPEC187_NATIVE_SELECTOR_INVALID")
+            if sif_runtime_enabled():
+                # The selector is part of the candidate runtime, just like
+                # the native Provider and grant authority.  A host build
+                # path would disappear under --cleanenv/--containall.
+                selector_command_path = Path(
+                    "/opt/ndnsf-di/current/bin/spec187-yolo-minindn")
+            else:
+                if (not selector.is_absolute() or selector.is_symlink()
+                        or not selector.is_file() or not os.access(selector, os.X_OK)):
+                    raise RunnerError("SPEC187_NATIVE_SELECTOR_INVALID")
+                selector_command_path = selector
             for label, path in (("config", request_config),
                                 ("input", request_input)):
+                if sif_runtime_enabled():
+                    path = _validate_results_bound_path(str(path),
+                                                        "nativeRequest" + label.title())
+                    if label == "config":
+                        request_config = path
+                    else:
+                        request_input = path
                 if (not path.is_absolute() or path.is_symlink()
                         or not path.is_file() or not os.access(path, os.R_OK)):
                     raise RunnerError("SPEC187_NATIVE_REQUEST_" + label.upper() + "_INVALID")
+            if sif_runtime_enabled():
+                request_output = _validate_results_bound_path(
+                    str(request_output), "nativeRequestOutput", output=True)
             if (not request_output.is_absolute() or request_output.is_symlink()
                     or request_output.exists()
                     or not request_output.parent.is_dir()
                     or not os.access(request_output.parent, os.W_OK)):
                 raise RunnerError("SPEC187_NATIVE_REQUEST_OUTPUT_INVALID")
             selector_command = " ".join(shlex.quote(item) for item in (
-                str(selector),
+                str(selector_command_path),
                 "--run_test=Spec187YoloMiniNdn/NativeRequesterThroughMiniNdn",
                 "--log_level=test_suite",
+                "--color_output=no",
             ))
+            if not sif_runtime_enabled():
+                selector_command = "cd " + shlex.quote(str(ROOT)) + " && exec " + selector_command
             commands.append(CaseProcessSpec(
                 "user", str(nodes["user"]),
-                ("cd " + shlex.quote(str(ROOT)) + " && exec " + selector_command),
+                selector_command,
                 "SPEC187_NATIVE_REQUEST_PASS", "user", "native",
             ))
         else:
@@ -1158,6 +1413,21 @@ class MiniNdnCaseRuntime:
                 node_env = dict(env)
                 node_env["NDN_CLIENT_TRANSPORT"] = (
                     "unix:///run/nfd/" + str(spec.node) + ".sock")
+                # Runtime::open reuses the node's persistent requester,
+                # provider, or controller identity only when the PIB and TPM
+                # locators are supplied as a pair.  MiniNDN's getPopen()
+                # supplies HOME for the node, but an ambient HOME alone is
+                # insufficient: the native Runtime would create a memory
+                # KeyChain whose certificate cannot decrypt the Controller's
+                # permission/DKEY response.  Bind each child to the exact
+                # PIB/TPM store created by initialize_di_keychains().  The
+                # ndn-cxx locators name the .ndn directory; the backends
+                # resolve pib.db and ndnsec-key-file beneath it.
+                node_home = Path(node_handles[spec.node].params["params"]["homeDir"])
+                node_env["NDN_CLIENT_PIB"] = (
+                    "pib-sqlite3:" + str(node_home / ".ndn"))
+                node_env["NDN_CLIENT_TPM"] = (
+                    "tpm-file:" + str(node_home / ".ndn"))
                 node_transport = node_env["NDN_CLIENT_TRANSPORT"]
                 # The exact-SIF replay contract prefixes every application
                 # child with the Apptainer command provider; the host process
@@ -1183,6 +1453,12 @@ class MiniNdnCaseRuntime:
                 # Controller readiness barrier before launching the repo.
                 if (phase == "control" and spec.name == "controller"
                         and len(specs) > 1):
+                    wait_for_ready(tuple(started), 90.0)
+                if (phase == "providers" and spec.name == "authority"
+                        and len(specs) > 1):
+                    # Providers must not publish protected offers until the
+                    # external grant service has installed its permission
+                    # and key material on the controller node.
                     wait_for_ready(tuple(started), 90.0)
         except Exception as exc:
             # A phase is atomic: if one child cannot be launched, do not leave
@@ -1353,6 +1629,53 @@ def digest_file(path: Path) -> str:
         raise RunnerError("FILE_READ_FAILED:" + str(path)) from exc
 
 
+def _file_binding(path: Path) -> Mapping[str, Any]:
+    try:
+        info = path.stat()
+    except OSError as exc:
+        raise RunnerError("FILE_STAT_FAILED:" + str(path)) from exc
+    return {
+        "sha256": digest_file(path),
+        "device": int(info.st_dev),
+        "inode": int(info.st_ino),
+        "size": int(info.st_size),
+    }
+
+
+def _validate_trust_schema(path: Path, label: str) -> None:
+    """Perform the cheap syntax gate before any native child is launched.
+
+    NDN trust schemas are configuration text rather than JSON.  The native
+    validator remains authoritative, but a missing/empty/garbled document
+    must be rejected during the runner's zero-side-effect preflight instead of
+    after MiniNDN has already started.
+    """
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RunnerError("NATIVE_TRUST_SCHEMA_READ_FAILED:" + label) from exc
+    if not raw or len(raw) > 1024 * 1024 or "\x00" in text:
+        raise RunnerError("NATIVE_TRUST_SCHEMA_INVALID:" + label)
+    # Ignore comments when checking the delimiter structure.  This catches
+    # truncation and accidental JSON/HTML substitutions without attempting to
+    # duplicate NDN's full parser in Python.
+    body = re.sub(r"(?m);[^\n]*", "", text)
+    if not re.search(r"(?m)\brule\s*\{", body) or not re.search(
+            r"(?m)\bchecker\s*\{", body):
+        raise RunnerError("NATIVE_TRUST_SCHEMA_INVALID:" + label)
+    depth = 0
+    for char in body:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth < 0:
+                raise RunnerError("NATIVE_TRUST_SCHEMA_INVALID:" + label)
+    if depth != 0:
+        raise RunnerError("NATIVE_TRUST_SCHEMA_INVALID:" + label)
+
+
 def _load_document(path: Path, label: str) -> Mapping[str, Any]:
     if not path.is_file():
         raise RunnerError("FILE_MISSING:" + label)
@@ -1385,6 +1708,46 @@ def _absolute_file(value: str, label: str) -> Path:
     return path
 
 
+def _validate_native_selector(value: str) -> Path:
+    """Resolve and bind the executable used by the native User process."""
+    if sif_runtime_enabled():
+        if not value:
+            raise RunnerError("SPEC187_NATIVE_SELECTOR_INVALID")
+        path = Path("/opt/ndnsf-di/current/bin/spec187-yolo-minindn")
+        # The outer runner is a host MiniNDN process.  The sealed path is
+        # checked inside the candidate by _validate_sif_selector_runtime().
+        return path
+    else:
+        path = Path(value)
+        if not path.is_absolute() or path.is_symlink():
+            raise RunnerError("SPEC187_NATIVE_SELECTOR_INVALID")
+        path = path.resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise RunnerError("SPEC187_NATIVE_SELECTOR_INVALID")
+    return path
+
+
+def _validate_sif_selector_runtime(binding: Mapping[str, Any]) -> None:
+    """Check the sealed selector from the host before MiniNDN side effects."""
+    if not sif_runtime_enabled():
+        return
+    expected = str(binding.get("sha256", ""))
+    if not _DIGEST_RE.fullmatch(expected):
+        raise RunnerError("SPEC187_NATIVE_SELECTOR_DIGEST_INVALID")
+    command = (sif_exec_prefix({}) + " sha256sum "
+               + shlex.quote("/opt/ndnsf-di/current/bin/spec187-yolo-minindn"))
+    try:
+        result = subprocess.run(command, shell=True, check=False,
+                                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RunnerError("SPEC187_NATIVE_SELECTOR_SIF_CHECK_FAILED") from exc
+    if result.returncode != 0:
+        raise RunnerError("SPEC187_NATIVE_SELECTOR_SIF_CHECK_FAILED")
+    observed = result.stdout.strip().split(maxsplit=1)
+    if not observed or "sha256:" + observed[0] != expected:
+        raise RunnerError("SPEC187_NATIVE_SELECTOR_SIF_DIGEST_MISMATCH")
+
+
 def _absolute_directory(value: str, label: str) -> Path:
     path = Path(value)
     if not path.is_absolute():
@@ -1395,6 +1758,34 @@ def _absolute_directory(value: str, label: str) -> Path:
     if not os.access(path, os.R_OK | os.X_OK):
         raise RunnerError("DIRECTORY_NOT_READABLE:" + label)
     return path
+
+
+def _validate_results_bound_path(value: str, label: str, *, output: bool = False) -> Path:
+    """Validate a native input that is visible through the exact-SIF bind."""
+    path = Path(value)
+    if not path.is_absolute():
+        raise RunnerError("PATH_NOT_ABSOLUTE:" + label)
+    bind_root = (ROOT / "results").resolve()
+    try:
+        relative = path.relative_to(bind_root)
+    except ValueError as exc:
+        raise RunnerError("NATIVE_REQUEST_PATH_OUTSIDE_RESULTS:" + label) from exc
+    if ".." in relative.parts:
+        raise RunnerError("NATIVE_REQUEST_PATH_TRAVERSAL:" + label)
+    current = bind_root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RunnerError("NATIVE_REQUEST_PATH_SYMLINK:" + label)
+    resolved = path.resolve()
+    if output:
+        if resolved.exists():
+            raise RunnerError("NATIVE_REQUEST_OUTPUT_EXISTS")
+        if not resolved.parent.is_dir() or not os.access(resolved.parent, os.W_OK):
+            raise RunnerError("NATIVE_REQUEST_OUTPUT_PARENT_INVALID")
+    elif not resolved.is_file() or not os.access(resolved, os.R_OK):
+        raise RunnerError("NATIVE_REQUEST_FILE_INVALID:" + label)
+    return resolved
 
 
 def _validate_output_root(value: str) -> Path:
@@ -1475,9 +1866,16 @@ def _ldd_library_map(binary: Path) -> dict[str, Path]:
     deterministic so it can run before MiniNDN creates any network state.
     """
     try:
+        # A local host may need LD_PRELOAD to resolve an extension's optional
+        # NAC-ABE symbols, but ldd must inspect the binary's declared closure.
+        # Letting the preload library run constructors here can also make ldd
+        # block before it emits the map.  Strip it only from this read-only
+        # probe; child application processes retain the operator's setting.
+        probe_environment = dict(os.environ)
+        probe_environment.pop("LD_PRELOAD", None)
         result = subprocess.run(
-            ["ldd", str(binary)], capture_output=True, text=True,
-            check=False,
+            ["ldd", str(binary)], capture_output=True, text=True, check=False,
+            env=probe_environment,
         )
     except OSError as exc:
         raise RunnerError("NATIVE_LIBRARY_CLOSURE_PROBE_FAILED:" + str(binary)) from exc
@@ -1903,8 +2301,467 @@ def _validate_policy_loader_compatibility(config: Mapping[str, Any]) -> None:
             str(exc)) from exc
 
 
+def _validate_native_authority_config(
+        path: Path, case_runtime: Mapping[str, Any],
+        package_manifest_digest: str) -> Mapping[str, Any]:
+    """Validate the external grant authority and its candidate-bound files.
+
+    The authority is a real native process in the Controller namespace.  Its
+    private/content keys therefore stay outside the case descriptor, while
+    every referenced file is pinned before MiniNDN starts and remains visible
+    through the exact-SIF ``results`` bind.
+    """
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise RunnerError("NATIVE_AUTHORITY_CONFIG_INVALID")
+    if not os.access(path, os.R_OK):
+        raise RunnerError("NATIVE_AUTHORITY_CONFIG_NOT_READABLE")
+    document = _load_document(path, "native-authority-config")
+    if document.get("schema") != "ndnsf-di-native-authority-v1":
+        raise RunnerError("NATIVE_AUTHORITY_SCHEMA_UNSUPPORTED")
+    authority = document.get("authority")
+    if not isinstance(authority, Mapping):
+        raise RunnerError("NATIVE_AUTHORITY_SECTION_INVALID")
+
+    def required_name(field: str) -> str:
+        value = str(authority.get(field, ""))
+        if not _NAME_RE.fullmatch(value):
+            raise RunnerError("NATIVE_AUTHORITY_NAME_INVALID:" + field)
+        return value
+
+    identity = required_name("identity")
+    service = required_name("service")
+    group = required_name("group")
+    controller_identity = required_name("controller_identity")
+    requester_identity = required_name("requester_identity")
+    def required_text(field: str, *, reject_plaintext: bool = False) -> str:
+        value = authority.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise RunnerError("NATIVE_AUTHORITY_FIELD_INVALID:" + field)
+        value = value.strip()
+        if reject_plaintext and value == PLAINTEXT_EPOCH:
+            raise RunnerError("NATIVE_AUTHORITY_FIELD_INVALID:" + field)
+        return value
+
+    # These values are consumed with json.at()/get<std::string>() by the
+    # native authority.  Validate them before MiniNDN starts so malformed
+    # input cannot pass Python preflight and fail only after the authority
+    # process has already joined the network.
+    protection_epoch = required_text("protection_epoch", reject_plaintext=True)
+    content_key_id = required_text("content_key_id")
+    expected_identities = case_runtime.get("identities")
+    if not isinstance(expected_identities, Mapping):
+        raise RunnerError("NATIVE_AUTHORITY_CASE_IDENTITIES_MISSING")
+    if controller_identity != str(expected_identities.get("controller", "")):
+        raise RunnerError("NATIVE_AUTHORITY_CONTROLLER_MISMATCH")
+    if requester_identity != str(expected_identities.get("user", "")):
+        raise RunnerError("NATIVE_AUTHORITY_REQUESTER_MISMATCH")
+    if group != str(expected_identities.get("group", "")):
+        raise RunnerError("NATIVE_AUTHORITY_GROUP_MISMATCH")
+    if identity in {controller_identity, requester_identity}:
+        raise RunnerError("NATIVE_AUTHORITY_IDENTITY_NOT_DISTINCT")
+    if not _DIGEST_RE.fullmatch(package_manifest_digest):
+        raise RunnerError("NATIVE_AUTHORITY_PACKAGE_DIGEST_INVALID")
+
+    def relative_file(field: str) -> Path:
+        raw = authority.get(field)
+        if not isinstance(raw, str) or not raw or Path(raw).is_absolute():
+            raise RunnerError("NATIVE_AUTHORITY_FILE_NOT_RELATIVE:" + field)
+        candidate = path.parent / raw
+        cursor = path.parent
+        for part in Path(raw).parts:
+            cursor = cursor.parent if part == ".." else cursor / part
+            if cursor.is_symlink():
+                raise RunnerError("NATIVE_AUTHORITY_FILE_SYMLINK:" + field)
+        resolved = candidate.resolve()
+        if not resolved.is_file():
+            raise RunnerError("NATIVE_AUTHORITY_FILE_INVALID:" + field)
+        if not os.access(resolved, os.R_OK):
+            raise RunnerError("NATIVE_AUTHORITY_FILE_NOT_READABLE:" + field)
+        if sif_runtime_enabled():
+            try:
+                resolved.relative_to(ROOT / "results")
+            except ValueError as exc:
+                raise RunnerError(
+                    "NATIVE_AUTHORITY_FILE_OUTSIDE_RESULTS:" + field) from exc
+        return resolved
+
+    file_paths = {
+        field: relative_file(field)
+        for field in ("trust_schema_file", "authority_private_key_file",
+                      "requester_public_key_file", "content_key_file")
+    }
+    recipient_files = authority.get("recipient_public_key_files")
+    if not isinstance(recipient_files, Mapping):
+        raise RunnerError("NATIVE_AUTHORITY_RECIPIENT_KEYS_INVALID")
+    provider_identities = case_runtime.get("providerIdentities")
+    if not isinstance(provider_identities, list):
+        raise RunnerError("NATIVE_AUTHORITY_PROVIDER_IDENTITIES_MISSING")
+    expected_recipient_identities = {str(item) for item in provider_identities}
+    actual_recipient_identities = {str(item) for item in recipient_files}
+    if actual_recipient_identities != expected_recipient_identities:
+        raise RunnerError("NATIVE_AUTHORITY_RECIPIENT_KEY_SET_MISMATCH")
+    recipient_paths: dict[str, Path] = {}
+    for provider_identity in provider_identities:
+        raw = recipient_files.get(provider_identity)
+        if not isinstance(raw, str) or not raw or Path(raw).is_absolute():
+            raise RunnerError(
+                "NATIVE_AUTHORITY_RECIPIENT_KEY_MISSING:" + provider_identity)
+        candidate = path.parent / raw
+        cursor = path.parent
+        for part in Path(raw).parts:
+            cursor = cursor.parent if part == ".." else cursor / part
+            if cursor.is_symlink():
+                raise RunnerError(
+                    "NATIVE_AUTHORITY_RECIPIENT_KEY_SYMLINK:" + provider_identity)
+        resolved = candidate.resolve()
+        if not resolved.is_file():
+            raise RunnerError(
+                "NATIVE_AUTHORITY_RECIPIENT_KEY_INVALID:" + provider_identity)
+        if not os.access(resolved, os.R_OK):
+            raise RunnerError(
+                "NATIVE_AUTHORITY_RECIPIENT_KEY_NOT_READABLE:" + provider_identity)
+        if sif_runtime_enabled():
+            try:
+                resolved.relative_to(ROOT / "results")
+            except ValueError as exc:
+                raise RunnerError(
+                    "NATIVE_AUTHORITY_RECIPIENT_KEY_OUTSIDE_RESULTS:" +
+                    provider_identity) from exc
+        recipient_paths[provider_identity] = resolved
+
+    allowed = authority.get("allowed_model_manifests")
+    if not isinstance(allowed, list) or not allowed:
+        raise RunnerError("NATIVE_AUTHORITY_ALLOWED_MANIFESTS_INVALID")
+    if any(not isinstance(item, str) or not _DIGEST_RE.fullmatch(item)
+           for item in allowed):
+        raise RunnerError("NATIVE_AUTHORITY_ALLOWED_MANIFEST_DIGEST_INVALID")
+    if package_manifest_digest not in allowed:
+        raise RunnerError("NATIVE_AUTHORITY_PACKAGE_NOT_ALLOWED")
+    publication_sources = authority.get("publication_sources", {})
+    if not isinstance(publication_sources, Mapping):
+        raise RunnerError("NATIVE_AUTHORITY_PUBLICATION_SOURCES_INVALID")
+    for manifest_digest, source in publication_sources.items():
+        if not _DIGEST_RE.fullmatch(str(manifest_digest)) or not isinstance(source, Mapping):
+            raise RunnerError("NATIVE_AUTHORITY_PUBLICATION_SOURCE_INVALID")
+        model_name = source.get("model_name")
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise RunnerError("NATIVE_AUTHORITY_PUBLICATION_MODEL_NAME_INVALID")
+        if not all(_DIGEST_RE.fullmatch(str(source.get(field, "")))
+                   for field in ("model_content_digest", "canonical_source_digest",
+                                 "artifact_profile_digest")):
+            raise RunnerError("NATIVE_AUTHORITY_PUBLICATION_DIGEST_INVALID")
+    return {
+        "config": str(path),
+        "identity": identity,
+        "service": service,
+        "group": group,
+        "controller_identity": controller_identity,
+        "requester_identity": requester_identity,
+        "protection_epoch": protection_epoch,
+        "content_key_id": content_key_id,
+        "authority_private_key_file": str(file_paths["authority_private_key_file"]),
+        "trust_schema_file": str(file_paths["trust_schema_file"]),
+        "requester_public_key_file": str(file_paths["requester_public_key_file"]),
+        "content_key_file": str(file_paths["content_key_file"]),
+        "recipient_public_key_files": {
+            identity: str(value) for identity, value in recipient_paths.items()
+        },
+        "referenced_files": {
+            "config": str(path),
+            "trust_schema": str(file_paths["trust_schema_file"]),
+            "authority_private_key": str(file_paths["authority_private_key_file"]),
+            "requester_public_key": str(file_paths["requester_public_key_file"]),
+            "content_key": str(file_paths["content_key_file"]),
+            **{"recipient_public_key:" + identity: str(value)
+               for identity, value in recipient_paths.items()},
+        },
+    }
+
+
+def _validate_native_provider_credentials(
+        authority_public_key: Path, recipient_map_path: Path,
+        case_runtime: Mapping[str, Any],
+        authority_identity: str | None = None) -> Mapping[str, Any]:
+    """Pin every file derived by NativeProtectedGrantCredentials.
+
+    Providers do not consume the public-key hint or recipient map in
+    isolation: the C++ factory derives a sibling trust-root registry, follows
+    its public-key path, and reads one private recipient key for the selected
+    provider.  Bind that complete closure before any child is launched.
+    """
+    if (not authority_public_key.is_absolute()
+            or authority_public_key.is_symlink()
+            or not authority_public_key.is_file()
+            or not os.access(authority_public_key, os.R_OK)):
+        raise RunnerError("NATIVE_PROVIDER_AUTHORITY_PUBLIC_KEY_INVALID")
+    if (not recipient_map_path.is_absolute()
+            or recipient_map_path.is_symlink()
+            or not recipient_map_path.is_file()
+            or not os.access(recipient_map_path, os.R_OK)):
+        raise RunnerError("NATIVE_PROVIDER_RECIPIENT_MAP_INVALID")
+
+    def bound_file(path: Path, label: str) -> Path:
+        cursor = Path(path.anchor or "/")
+        for part in path.parts[1:]:
+            cursor /= part
+            if cursor.is_symlink():
+                raise RunnerError("NATIVE_PROVIDER_FILE_SYMLINK:" + label)
+        if path.is_symlink() or not path.is_file() or not os.access(path, os.R_OK):
+            raise RunnerError("NATIVE_PROVIDER_FILE_INVALID:" + label)
+        if sif_runtime_enabled():
+            try:
+                path.resolve().relative_to(ROOT / "results")
+            except ValueError as exc:
+                raise RunnerError("NATIVE_PROVIDER_FILE_OUTSIDE_RESULTS:" + label) from exc
+        return path.resolve()
+
+    registry = bound_file(
+        authority_public_key.parent / "trust-root-registry-v1.json",
+        "registry")
+    registry_doc = _load_document(registry, "native-provider-registry")
+    if registry_doc.get("schemaVersion") != 1 or registry_doc.get("status") != "CONFIGURED":
+        raise RunnerError("NATIVE_PROVIDER_REGISTRY_INVALID")
+    policy = registry_doc.get("artifactPolicyAuthority")
+    if not isinstance(policy, Mapping):
+        raise RunnerError("NATIVE_PROVIDER_REGISTRY_POLICY_INVALID")
+    for field, expected in (("publicKeyAlgorithm", "ed25519"),
+                            ("signatureAlgorithm", "ed25519"),
+                            ("grantSchema", "ndnsf-di-key-grant-v1")):
+        if policy.get(field) != expected:
+            raise RunnerError("NATIVE_PROVIDER_REGISTRY_POLICY_INVALID:" + field)
+    for field in ("authorityId", "keyId"):
+        if not isinstance(policy.get(field), str) or not policy[field].strip():
+            raise RunnerError("NATIVE_PROVIDER_REGISTRY_POLICY_INVALID:" + field)
+    if (authority_identity is not None
+            and policy.get("authorityId") != authority_identity):
+        raise RunnerError("NATIVE_PROVIDER_REGISTRY_AUTHORITY_MISMATCH")
+    for field in ("acceptedModelFamilies", "protectionEpochs"):
+        value = policy.get(field)
+        if (not isinstance(value, list) or not value
+                or any(not isinstance(item, str) or not item.strip() for item in value)):
+            raise RunnerError("NATIVE_PROVIDER_REGISTRY_POLICY_INVALID:" + field)
+    public_key_path = policy.get("publicKeyPath")
+    if (not isinstance(public_key_path, str) or not public_key_path
+            or Path(public_key_path).is_absolute()
+            or ".." in Path(public_key_path).parts):
+        raise RunnerError("NATIVE_PROVIDER_REGISTRY_PUBLIC_KEY_PATH_INVALID")
+    registry_public_key = bound_file(
+        registry.parent.parent / public_key_path, "registry-public-key")
+    declared_digest = policy.get("publicKeySha256")
+    if (not isinstance(declared_digest, str)
+            or not _DIGEST_RE.fullmatch(declared_digest)
+            or declared_digest != digest_file(registry_public_key)):
+        raise RunnerError("NATIVE_PROVIDER_REGISTRY_PUBLIC_KEY_DIGEST_MISMATCH")
+    if digest_file(authority_public_key) != digest_file(registry_public_key):
+        raise RunnerError("NATIVE_PROVIDER_AUTHORITY_PUBLIC_KEY_DIGEST_MISMATCH")
+
+    map_doc = _load_document(recipient_map_path, "native-provider-recipient-map")
+    provider_identities = case_runtime.get("providerIdentities")
+    if not isinstance(provider_identities, list):
+        raise RunnerError("NATIVE_PROVIDER_IDENTITIES_MISSING")
+    expected = {str(item) for item in provider_identities}
+    if set(map_doc) != expected:
+        raise RunnerError("NATIVE_PROVIDER_RECIPIENT_MAP_KEY_SET_MISMATCH")
+    recipient_files: dict[str, Path] = {}
+    for provider in provider_identities:
+        raw = map_doc.get(provider)
+        if (not isinstance(raw, str) or not raw
+                or not Path(raw).expanduser().is_absolute()):
+            raise RunnerError("NATIVE_PROVIDER_RECIPIENT_KEY_MISSING:" + provider)
+        key_path = Path(raw).expanduser()
+        key_path = bound_file(key_path, "recipient-private:" + provider)
+        if b"PRIVATE KEY" not in key_path.read_bytes():
+            raise RunnerError("NATIVE_PROVIDER_RECIPIENT_KEY_NOT_PRIVATE:" + provider)
+        recipient_files[provider] = key_path
+    return {
+        "registry": registry,
+        "registry_public_key": registry_public_key,
+        "recipient_map": recipient_map_path.resolve(),
+        "recipient_private_key_files": recipient_files,
+        "referenced_files": {
+            "provider_registry": registry,
+            "provider_registry_public_key": registry_public_key,
+            "provider_recipient_map": recipient_map_path.resolve(),
+            **{"provider_recipient_private_key:" + provider: value
+               for provider, value in recipient_files.items()},
+        },
+    }
+
+
+def _load_native_ed25519_public_bytes(path: Path, label: str,
+                                     *, private: bool = False) -> bytes:
+    """Load one operator-pinned Ed25519 PEM and return its raw public bytes."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        # cryptography 2.x (still present on the qualification host) requires
+        # an explicit backend, while newer releases accept the same argument
+        # for compatibility.  Keep key parsing deterministic across hosts.
+        from cryptography.hazmat.backends import default_backend
+        payload = path.read_bytes()
+        if not payload.strip():
+            raise ValueError("empty key")
+        if private:
+            key = serialization.load_pem_private_key(
+                payload, password=None, backend=default_backend())
+            if not isinstance(key, ed25519.Ed25519PrivateKey):
+                raise ValueError("key is not Ed25519 private key")
+            return key.public_key().public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        key = serialization.load_pem_public_key(payload, backend=default_backend())
+        if not isinstance(key, ed25519.Ed25519PublicKey):
+            raise ValueError("key is not Ed25519 public key")
+        return key.public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    except RunnerError:
+        raise
+    except Exception as exc:
+        raise RunnerError("NATIVE_KEY_INVALID:" + label) from exc
+
+
+def _validate_native_key_material(
+        native_authority: Mapping[str, Any],
+        provider_credentials: Mapping[str, Any]) -> None:
+    """Verify that every native authority/provider key is one key graph.
+
+    The C++ processes independently load these files.  Checking only PEM
+    markers or file digests would allow a valid but unrelated key set to pass
+    Python preflight and fail later at grant verification.
+    """
+    authority_public = Path(str(provider_credentials["registry_public_key"]))
+    authority_private = Path(str(native_authority["authority_private_key_file"]))
+    requester_public = Path(str(native_authority["requester_public_key_file"]))
+    if (_load_native_ed25519_public_bytes(authority_private,
+                                          "authority-private", private=True)
+            != _load_native_ed25519_public_bytes(authority_public,
+                                                 "authority-public")):
+        raise RunnerError("NATIVE_AUTHORITY_KEY_PAIR_MISMATCH")
+    requester_public_bytes = _load_native_ed25519_public_bytes(
+        requester_public, "requester-public")
+    content_key = Path(str(native_authority["content_key_file"])).read_bytes()
+    if not content_key or len(content_key) > 256:
+        raise RunnerError("NATIVE_AUTHORITY_CONTENT_KEY_INVALID")
+    recipient_public_files = native_authority.get("recipient_public_key_files")
+    recipient_private_files = provider_credentials.get("recipient_private_key_files")
+    if not isinstance(recipient_public_files, Mapping) or not isinstance(
+            recipient_private_files, Mapping):
+        raise RunnerError("NATIVE_RECIPIENT_KEY_GRAPH_INVALID")
+    for provider, public_path in recipient_public_files.items():
+        private_path = recipient_private_files.get(provider)
+        if private_path is None:
+            raise RunnerError("NATIVE_RECIPIENT_KEY_GRAPH_MISSING:" + str(provider))
+        if (_load_native_ed25519_public_bytes(Path(str(private_path)),
+                                              "recipient-private:" + str(provider),
+                                              private=True)
+                != _load_native_ed25519_public_bytes(Path(str(public_path)),
+                                                     "recipient-public:" + str(provider))):
+            raise RunnerError("NATIVE_RECIPIENT_KEY_PAIR_MISMATCH:" + str(provider))
+    # The authority requester public key is compared by the requester private
+    # key binding below; retain this explicit load so a malformed PEM fails
+    # before any child process starts.
+    if not requester_public_bytes:
+        raise RunnerError("NATIVE_REQUESTER_PUBLIC_KEY_INVALID")
+
+
+def _validate_native_request_binding(
+        request_path: Path, native_authority: Mapping[str, Any],
+        provider_credentials: Mapping[str, Any],
+        package_manifest_digest: str) -> Mapping[str, Any]:
+    """Bind requester config identities, manifest and key graph to authority."""
+    document = _load_document(request_path, "native-request-config")
+    if document.get("schema") != "ndnsf-di-native-requester-v1":
+        raise RunnerError("NATIVE_REQUESTER_SCHEMA_UNSUPPORTED")
+    core = document.get("core")
+    grant = document.get("grant")
+    catalog = document.get("catalog")
+    source = catalog.get("source") if isinstance(catalog, Mapping) else None
+    publication = catalog.get("publication") if isinstance(catalog, Mapping) else None
+    if not isinstance(core, Mapping) or not isinstance(grant, Mapping):
+        raise RunnerError("NATIVE_REQUESTER_BINDING_SECTION_INVALID")
+    if not isinstance(source, Mapping) or not isinstance(publication, Mapping):
+        raise RunnerError("NATIVE_REQUESTER_CATALOG_BINDING_INVALID")
+    expected = {
+        "grant.authority_identity": native_authority["identity"],
+        "grant.authority_service": native_authority["service"],
+        "grant.protection_epoch": native_authority["protection_epoch"],
+        "core.requester_identity": native_authority["requester_identity"],
+        "core.group": native_authority["group"],
+        "core.authority_identity": native_authority["controller_identity"],
+    }
+    actual = {
+        "grant.authority_identity": grant.get("authority_identity"),
+        "grant.authority_service": grant.get("authority_service"),
+        "grant.protection_epoch": grant.get("protection_epoch"),
+        "core.requester_identity": core.get("requester_identity"),
+        "core.group": core.get("group"),
+        "core.authority_identity": core.get("authority_identity"),
+    }
+    for field, value in expected.items():
+        if actual[field] != value:
+            raise RunnerError("NATIVE_REQUESTER_BINDING_MISMATCH:" + field)
+    if source.get("model_manifest_digest") != package_manifest_digest:
+        raise RunnerError("NATIVE_REQUESTER_MODEL_MANIFEST_MISMATCH")
+    if publication.get("package_manifest_digest") != package_manifest_digest:
+        raise RunnerError("NATIVE_REQUESTER_PACKAGE_MANIFEST_MISMATCH")
+
+    def relative_file(section: Mapping[str, Any], field: str) -> Path:
+        raw = section.get(field)
+        if not isinstance(raw, str) or not raw or Path(raw).is_absolute():
+            raise RunnerError("NATIVE_REQUESTER_FILE_NOT_RELATIVE:" + field)
+        candidate = request_path.parent / raw
+        cursor = request_path.parent
+        for part in Path(raw).parts:
+            cursor = cursor.parent if part == ".." else cursor / part
+            if cursor.is_symlink():
+                raise RunnerError("NATIVE_REQUESTER_FILE_SYMLINK:" + field)
+        resolved = candidate.resolve()
+        if not resolved.is_file() or not os.access(resolved, os.R_OK):
+            raise RunnerError("NATIVE_REQUESTER_FILE_INVALID:" + field)
+        if sif_runtime_enabled():
+            try:
+                resolved.relative_to(ROOT / "results")
+            except ValueError as exc:
+                raise RunnerError(
+                    "NATIVE_REQUESTER_FILE_OUTSIDE_RESULTS:" + field) from exc
+        return resolved
+
+    trust_schema = relative_file(core, "trust_schema_file")
+    authority_public = relative_file(grant, "authority_public_key_file")
+    requester_private = relative_file(grant, "requester_private_key_file")
+    _validate_trust_schema(trust_schema, "requester")
+    authority_trust_schema = Path(str(native_authority["trust_schema_file"]))
+    if digest_file(trust_schema) != digest_file(authority_trust_schema):
+        raise RunnerError("NATIVE_REQUESTER_TRUST_SCHEMA_MISMATCH")
+    registry_public = Path(str(provider_credentials["registry_public_key"]))
+    if (_load_native_ed25519_public_bytes(authority_public, "requester-authority-public")
+            != _load_native_ed25519_public_bytes(registry_public,
+                                                 "registry-authority-public")):
+        raise RunnerError("NATIVE_REQUESTER_AUTHORITY_KEY_MISMATCH")
+    authority_requester_public = Path(
+        str(native_authority["requester_public_key_file"]))
+    if (_load_native_ed25519_public_bytes(requester_private,
+                                          "requester-private", private=True)
+            != _load_native_ed25519_public_bytes(authority_requester_public,
+                                                 "authority-requester-public")):
+        raise RunnerError("NATIVE_REQUESTER_KEY_PAIR_MISMATCH")
+    source_files: dict[str, Path] = {}
+    for field, binding_name in (("file", "requester_catalog_source"),
+                                ("initializer_file", "requester_catalog_initializer")):
+        if field in source:
+            source_files[binding_name] = relative_file(source, field)
+    return {
+        "referenced_files": {
+            "requester_trust_schema": trust_schema,
+            "requester_authority_public_key": authority_public,
+            "requester_private_key": requester_private,
+            **source_files,
+        },
+    }
+
+
 def _materialize_case_config(case: str, config: Mapping[str, Any],
-                             output: Path) -> Path:
+                             output: Path,
+                             native_authority: Mapping[str, Any] | None = None) -> Path:
     """Write an isolated case policy without changing the caller's policy.
 
     The resulting policy is a process-start authorization view.  It contains
@@ -1972,6 +2829,27 @@ def _materialize_case_config(case: str, config: Mapping[str, Any],
         "providers": [{"identity": repo_identity, "roles": []}],
         "dependencies": [],
     } for name in repo_versioned_services())
+    if native_authority is not None:
+        authority_identity = str(native_authority.get("identity", ""))
+        authority_service = str(native_authority.get("service", ""))
+        if (not _NAME_RE.fullmatch(authority_identity)
+                or not _NAME_RE.fullmatch(authority_service)):
+            raise RunnerError("NATIVE_AUTHORITY_POLICY_IDENTITY_INVALID")
+        if any(isinstance(item, Mapping)
+               and str(item.get("name", "")) == authority_service
+               for item in copied["services"]):
+            raise RunnerError("NATIVE_AUTHORITY_POLICY_SERVICE_COLLISION")
+        copied["services"].append({
+            "name": authority_service,
+            "model": authority_service,
+            "roles": [],
+            "users": [user_identity],
+            "providers": [{"identity": authority_identity, "roles": []}],
+            "dependencies": [],
+        })
+        # This second check covers the actual process-start policy, including
+        # the authority grant service added above.
+        _validate_policy_loader_compatibility(copied)
     policy_path = output / "case-policy.json"
     policy_path.write_text(
         json.dumps(copied, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
@@ -2344,7 +3222,6 @@ def validate_inputs(case: str, environment: Mapping[str, str]) -> tuple[Path, Ma
         # outside the descriptor, while a later process cannot silently swap
         # the key map or one Provider key after this preflight.
         private_key_file_digests[provider_identity] = digest_file(key_path)
-    case_policy = _materialize_case_config(case, config_doc, output)
     manifest = _load_document(package / "manifest.json", "canonical-manifest")
     catalogue = manifest.get("catalogue", {})
     candidates = catalogue.get("candidates", []) if isinstance(catalogue, Mapping) else []
@@ -2358,6 +3235,100 @@ def validate_inputs(case: str, environment: Mapping[str, str]) -> tuple[Path, Ma
     if not expected.issubset(candidate_ids):
         raise RunnerError("CASE_CANDIDATE_SET_INCOMPLETE:" + case)
     package_manifest_digest = digest_file(package / "manifest.json")
+    native_mode = environment.get("SPEC187_NATIVE_MODE", "").strip() == "1"
+    native_authority = None
+    native_request_binding: Mapping[str, Any] = {}
+    native_selector_path: Path | None = None
+    native_selector_binding: Mapping[str, Any] | None = None
+    if native_mode:
+        raw_selector = environment.get("SPEC187_NATIVE_SELECTOR", "").strip()
+        native_selector_path = _validate_native_selector(raw_selector)
+        if sif_runtime_enabled():
+            expected_selector_digest = environment.get(
+                "SPEC187_NATIVE_SELECTOR_SHA256", "").strip()
+            if not _DIGEST_RE.fullmatch(expected_selector_digest):
+                raise RunnerError("SPEC187_NATIVE_SELECTOR_DIGEST_REQUIRED")
+            native_selector_binding = {
+                "path": str(native_selector_path),
+                "sha256": expected_selector_digest,
+                "sealedSif": True,
+            }
+        else:
+            native_selector_binding = _file_binding(native_selector_path)
+        raw_authority_config = environment.get(
+            "SPEC187_NATIVE_AUTHORITY_CONFIG", "").strip()
+        if not raw_authority_config:
+            raise RunnerError("SPEC187_NATIVE_AUTHORITY_CONFIG_REQUIRED")
+        authority_path = Path(raw_authority_config)
+        if not authority_path.is_absolute():
+            raise RunnerError("PATH_NOT_ABSOLUTE:native-authority-config")
+        if sif_runtime_enabled():
+            authority_path = _validate_results_bound_path(
+                raw_authority_config, "nativeAuthorityConfig")
+        else:
+            if authority_path.is_symlink():
+                raise RunnerError("NATIVE_AUTHORITY_CONFIG_SYMLINK")
+            authority_path = authority_path.resolve()
+        native_authority = _validate_native_authority_config(
+            authority_path, case_runtime, package_manifest_digest)
+        _validate_trust_schema(Path(str(native_authority["trust_schema_file"])),
+                               "authority")
+        native_auxiliary_files: dict[str, Path] = {}
+        for field, env_name in (
+                ("nativeAuthorityPublicKey", "SPEC187_NATIVE_GRANT_AUTHORITY_PUBLIC_KEY"),
+                ("nativeProviderRecipientKeyMap", "SPEC187_NATIVE_PROVIDER_RECIPIENT_KEY_MAP")):
+            raw = environment.get(env_name, "").strip()
+            candidate = Path(raw)
+            if (not raw or not candidate.is_absolute() or candidate.is_symlink()
+                    or not candidate.is_file() or not os.access(candidate, os.R_OK)):
+                raise RunnerError("SPEC187_NATIVE_INPUT_INVALID:" + field)
+            if sif_runtime_enabled():
+                try:
+                    candidate.relative_to(ROOT / "results")
+                except ValueError as exc:
+                    raise RunnerError("SPEC187_NATIVE_INPUT_OUTSIDE_RESULTS:" + field) from exc
+            native_auxiliary_files[field] = candidate.resolve()
+        native_provider_credentials = _validate_native_provider_credentials(
+            native_auxiliary_files["nativeAuthorityPublicKey"],
+            native_auxiliary_files["nativeProviderRecipientKeyMap"],
+            case_runtime, str(native_authority["identity"]))
+        _validate_native_key_material(native_authority, native_provider_credentials)
+        native_authority = dict(native_authority)
+        native_authority["referenced_files"] = {
+            **dict(native_authority.get("referenced_files", {})),
+            **native_provider_credentials["referenced_files"],
+        }
+        native_request_files: dict[str, Path] = {}
+        for field, env_name in (
+                ("nativeRequestConfig", "SPEC187_NATIVE_REQUEST_CONFIG"),
+                ("nativeRequestInput", "SPEC187_NATIVE_REQUEST_INPUT")):
+            raw = environment.get(env_name, "").strip()
+            if not raw:
+                raise RunnerError("SPEC187_NATIVE_REQUEST_INPUTS_REQUIRED")
+            native_request_files[field] = (
+                _validate_results_bound_path(raw, field)
+                if sif_runtime_enabled() else _absolute_file(raw, field))
+        raw_request_output = environment.get(
+            "SPEC187_NATIVE_REQUEST_OUTPUT", "").strip()
+        if not raw_request_output:
+            raise RunnerError("SPEC187_NATIVE_REQUEST_INPUTS_REQUIRED")
+        native_request_files["nativeRequestOutput"] = (
+            _validate_results_bound_path(raw_request_output, "nativeRequestOutput",
+                                         output=True)
+            if sif_runtime_enabled() else Path(raw_request_output).resolve())
+        native_request_binding = _validate_native_request_binding(
+            native_request_files["nativeRequestConfig"], native_authority,
+            native_provider_credentials, package_manifest_digest)
+        native_authority["referenced_files"] = {
+            **dict(native_authority["referenced_files"]),
+            **native_request_binding["referenced_files"],
+        }
+    else:
+        native_auxiliary_files = {}
+        native_request_files = {}
+        native_provider_credentials = {}
+    case_policy = _materialize_case_config(
+        case, config_doc, output, native_authority=native_authority)
     descriptor = {
         "schema": "spec180-yolo-case-input-v1",
         "case": case,
@@ -2384,6 +3355,33 @@ def validate_inputs(case: str, environment: Mapping[str, str]) -> tuple[Path, Ma
         "caseRuntime": case_runtime,
         "casePolicySha256": digest_file(case_policy),
     }
+    if native_authority is not None:
+        descriptor["nativeAuthorityConfigSha256"] = digest_file(
+            Path(str(native_authority["config"])))
+        descriptor["nativeAuthorityReferencedFiles"] = {
+            key: _file_binding(Path(value))
+            for key, value in native_authority["referenced_files"].items()
+        }
+        descriptor.update({
+            field + "Sha256": digest_file(path)
+            for field, path in native_auxiliary_files.items()
+        })
+        descriptor.update({
+            field + "Sha256": digest_file(path)
+            for field, path in native_request_files.items()
+            if field != "nativeRequestOutput"
+        })
+        descriptor["nativeRequestFileBindings"] = {
+            field: _file_binding(path)
+            for field, path in native_request_files.items()
+            if field != "nativeRequestOutput"
+        }
+        descriptor["nativeRequesterReferencedFiles"] = {
+            key: _file_binding(Path(value))
+            for key, value in native_request_binding.get(
+                "referenced_files", {}).items()
+        }
+        descriptor["nativeSelectorBinding"] = native_selector_binding
     (output / "case-input.json").write_text(
         json.dumps(descriptor, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
@@ -2401,7 +3399,22 @@ def validate_inputs(case: str, environment: Mapping[str, str]) -> tuple[Path, Ma
                     "manifest": manifest, "descriptor": descriptor,
                     "case_plan": case_plan, "case_policy": case_policy,
                     "config_doc": config_doc, "state_root": state_root,
-                    "envelope_key_file": envelope_key_file}
+                    "envelope_key_file": envelope_key_file,
+                    "spec187_native_mode": native_mode,
+                    "native_authority": native_authority,
+                    "native_provider_credentials": native_provider_credentials,
+                    "native_request_binding": native_request_binding,
+                    "spec187_native_grant_authority_public_key":
+                        native_auxiliary_files.get("nativeAuthorityPublicKey"),
+                    "spec187_native_provider_recipient_key_map":
+                        native_auxiliary_files.get("nativeProviderRecipientKeyMap"),
+                    "spec187_native_selector": native_selector_path,
+                    "spec187_native_request_config":
+                        native_request_files.get("nativeRequestConfig"),
+                    "spec187_native_request_input":
+                        native_request_files.get("nativeRequestInput"),
+                    "spec187_native_request_output":
+                        native_request_files.get("nativeRequestOutput")}
 
 
 def _wait_for_runtime_receipt(output: Path, publication: Path,
@@ -3296,20 +4309,49 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     runtime_inputs = dict(inputs)
     spec187_native_mode = os.environ.get("SPEC187_NATIVE_MODE", "").strip() == "1"
     if spec187_native_mode:
-        selector = os.environ.get("SPEC187_NATIVE_SELECTOR", "").strip()
-        request_config = os.environ.get("SPEC187_NATIVE_REQUEST_CONFIG", "").strip()
-        request_input = os.environ.get("SPEC187_NATIVE_REQUEST_INPUT", "").strip()
-        request_output = os.environ.get("SPEC187_NATIVE_REQUEST_OUTPUT", "").strip()
+        selector = str(inputs.get("spec187_native_selector", ""))
+        # These paths were validated and bound by validate_inputs().  Do not
+        # re-read mutable environment values here: doing so would reopen a
+        # TOCTOU window between the descriptor snapshot and process startup.
+        request_config = str(inputs.get("spec187_native_request_config", ""))
+        request_input = str(inputs.get("spec187_native_request_input", ""))
+        request_output = str(inputs.get("spec187_native_request_output", ""))
+        native_authority = inputs.get("native_authority")
+        authority_config = (str(native_authority.get("config", ""))
+                            if isinstance(native_authority, Mapping) else "")
+        authority_public_key = str(
+            inputs.get("spec187_native_grant_authority_public_key", ""))
+        recipient_key_map = str(
+            inputs.get("spec187_native_provider_recipient_key_map", ""))
         if not selector:
             raise RunnerError("SPEC187_NATIVE_SELECTOR_REQUIRED")
         if not request_config or not request_input or not request_output:
             raise RunnerError("SPEC187_NATIVE_REQUEST_INPUTS_REQUIRED")
+        if not authority_config:
+            raise RunnerError("SPEC187_NATIVE_AUTHORITY_CONFIG_REQUIRED")
+        if not authority_public_key or not recipient_key_map:
+            raise RunnerError("SPEC187_NATIVE_PROVIDER_KEY_INPUTS_REQUIRED")
+        for label, raw in (("authority-public-key", authority_public_key),
+                           ("provider-recipient-key-map", recipient_key_map)):
+            candidate = Path(raw)
+            if (not candidate.is_absolute() or candidate.is_symlink()
+                    or not candidate.is_file() or not os.access(candidate, os.R_OK)):
+                raise RunnerError("SPEC187_NATIVE_INPUT_INVALID:" + label)
+            if sif_runtime_enabled():
+                try:
+                    candidate.resolve().relative_to(ROOT / "results")
+                except ValueError as exc:
+                    raise RunnerError(
+                        "SPEC187_NATIVE_INPUT_OUTSIDE_RESULTS:" + label) from exc
         runtime_inputs.update({
             "spec187_native_mode": True,
             "spec187_native_selector": selector,
             "spec187_native_request_config": request_config,
             "spec187_native_request_input": request_input,
             "spec187_native_request_output": request_output,
+            "spec187_native_authority_config": authority_config,
+            "spec187_native_grant_authority_public_key": authority_public_key,
+            "spec187_native_provider_recipient_key_map": recipient_key_map,
         })
     if subcase:
         runtime_inputs["subcase"] = subcase
@@ -3318,12 +4360,25 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # process specs read (the Y-B grant round trip).
     requested_epoch = str(
         os.environ.get(PROTECTION_EPOCH_ENV, "") or "").strip()
+    if spec187_native_mode:
+        native_authority = inputs.get("native_authority")
+        bound_epoch = (str(native_authority.get("protection_epoch", "")).strip()
+                       if isinstance(native_authority, Mapping) else "")
+        if (not bound_epoch or requested_epoch != bound_epoch
+                or requested_epoch == PLAINTEXT_EPOCH):
+            raise RunnerError("SPEC187_NATIVE_PROTECTION_EPOCH_MISMATCH")
+        requested_epoch = bound_epoch
     if subcase == "Y-N-E":
         if os.environ.get("SPEC181_GRANT_MUTATION", "") not in YN_GRANT_REJECTIONS:
             raise RunnerError("GRANT_MUTATION_INVALID")
         if not requested_epoch or requested_epoch == PLAINTEXT_EPOCH:
             raise RunnerError("GRANT_MUTATION_REQUIRES_PROTECTED_EPOCH")
-    if (case == "Y-B" or subcase == "Y-N-E") and requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
+    if spec187_native_mode:
+        if not requested_epoch or requested_epoch == PLAINTEXT_EPOCH:
+            raise RunnerError("SPEC187_NATIVE_REQUIRES_PROTECTED_EPOCH")
+        runtime_inputs["protection_epoch"] = requested_epoch
+    if ((case == "Y-B" or subcase == "Y-N-E") and requested_epoch
+            and requested_epoch != PLAINTEXT_EPOCH and not spec187_native_mode):
         runtime_inputs["protection_epoch"] = requested_epoch
     binding = CaseRuntimeBinding.from_inputs(case, output, runtime_inputs)
     publication = build_runtime_publication_file(binding, runtime_inputs)
@@ -3357,7 +4412,7 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
     # inputs; every Provider resolves its own recipient key from the configured
     # recipient map (the offer-key map is the backward-compatible default).
     # Plaintext Y-A keeps the default epoch.
-    if case == "Y-B" or subcase == "Y-N-E":
+    if ((case == "Y-B" or subcase == "Y-N-E") and not spec187_native_mode):
         requested_epoch = str(env.get(PROTECTION_EPOCH_ENV, "") or "").strip()
         if requested_epoch and requested_epoch != PLAINTEXT_EPOCH:
             env[PROTECTION_EPOCH_ENV] = requested_epoch
@@ -3425,6 +4480,19 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
             runtime_inputs["spec187_native_request_input"])
         env["SPEC187_NATIVE_REQUEST_OUTPUT"] = str(
             runtime_inputs["spec187_native_request_output"])
+        env["SPEC187_NATIVE_AUTHORITY_CONFIG"] = str(
+            runtime_inputs["spec187_native_authority_config"])
+        env["SPEC187_NATIVE_GRANT_AUTHORITY_PUBLIC_KEY"] = str(
+            runtime_inputs["spec187_native_grant_authority_public_key"])
+        env["SPEC187_NATIVE_PROVIDER_RECIPIENT_KEY_MAP"] = str(
+            runtime_inputs["spec187_native_provider_recipient_key_map"])
+        # Native Providers consume the same protected grant envelope as the
+        # requester, but their key material is supplied by the candidate
+        # authority bundle rather than the legacy Python authority seam.
+        env["SPEC181_GRANT_AUTHORITY_PUBLIC_KEY"] = str(
+            runtime_inputs["spec187_native_grant_authority_public_key"])
+        env["SPEC181_PROVIDER_RECIPIENT_KEY_MAP"] = str(
+            runtime_inputs["spec187_native_provider_recipient_key_map"])
     env.setdefault("NDNSF_HANDLER_THREADS", "1")
     env.setdefault("NDNSF_ACK_THREADS", "1")
     cleanup_done = False
@@ -3439,6 +4507,19 @@ def _run_live_case_once(case: str, output: Path, inputs: Mapping[str, Any], *,
         # any request.  Reject that split runtime before MiniNDN side effects.
         _validate_native_library_closure()
         _validate_local_native_build(env)
+        if spec187_native_mode and sif_runtime_enabled():
+            descriptor = inputs.get("descriptor")
+            selector_binding = (descriptor.get("nativeSelectorBinding", {})
+                                if isinstance(descriptor, Mapping) else {})
+            if not isinstance(selector_binding, Mapping):
+                raise RunnerError("SPEC187_NATIVE_SELECTOR_BINDING_MISSING")
+            _validate_sif_selector_runtime(selector_binding)
+        # The checks above may load tools and inspect the host for several
+        # seconds.  Re-run the zero-side-effect process-vector validation as
+        # the final boundary so every authority/provider/request file is
+        # still the exact descriptor-bound inode and digest immediately before
+        # MiniNDN creates NFD or any child process.
+        runtime.process_specs()
         ndn = runtime.start_network()
         runtime.configure_routing(ndn)
         runtime.initialize_keychains(ndn)

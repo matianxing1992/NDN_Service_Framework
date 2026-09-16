@@ -1089,6 +1089,7 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
                                 const NativeProviderHandlerConfig& config,
                                 const NativeExecutionPlan& plan,
                                 const std::string& sessionId,
+                                const std::optional<ExecutionAttemptKey>& executionAttempt,
                                 const NativeProviderAssignment& assignment,
                                 const std::string& localProvider,
                                 const std::map<std::string, TensorBundle>& initialInputs,
@@ -1102,11 +1103,9 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
   std::vector<std::pair<std::string, std::future<ProviderRoleResult>>> futures;
   futures.reserve(plan.roles.size());
   for (const auto& role : plan.roles) {
-    auto roleSpec = roleSpecFor(plan,
-                                role,
-                                sessionId,
-                                assignment,
-                                localProvider);
+    auto roleSpec = executionAttempt
+      ? roleSpecFor(plan, role, *executionAttempt, assignment, localProvider)
+      : roleSpecFor(plan, role, sessionId, assignment, localProvider);
     auto roleInputs = roleSpec.inputs.empty()
       ? initialInputs : std::map<std::string, TensorBundle>{};
     if (prepareRunner) {
@@ -1132,11 +1131,9 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
 
   std::optional<std::vector<uint8_t>> finalPayload;
   for (auto& item : futures) {
-    auto roleSpec = roleSpecFor(plan,
-                                item.first,
-                                sessionId,
-                                assignment,
-                                localProvider);
+    auto roleSpec = executionAttempt
+      ? roleSpecFor(plan, item.first, *executionAttempt, assignment, localProvider)
+      : roleSpecFor(plan, item.first, sessionId, assignment, localProvider);
     auto result = item.second.get();
     if (result.executionEvidence && config.executionEvidenceObserver &&
         *config.executionEvidenceObserver) {
@@ -2065,6 +2062,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.fail(*bindingError);
         return;
       }
+      // The V3 Selection projection is itself the authenticated request
+      // identity.  A non-lease local full-plan execution still reconstructs
+      // RoleSpec objects from the plan below; preserve the projection's
+      // request/attempt binding for those objects so execution evidence is
+      // correlated with the Selection that authorized the run.  Keep this
+      // separate from executionAttempt: only lease-bound attempts were
+      // admitted to attemptAuthority and may be completed below.
+      const auto roleExecutionAttempt = executionAttempt
+        ? executionAttempt
+        : (selectionProjection
+             ? std::optional<ExecutionAttemptKey>{ExecutionAttemptKey{
+                 selectionProjection->requestId,
+                 selectionProjection->attempt}}
+             : std::nullopt);
       const auto executionSessionId = executionAttempt
         ? executionAttempt->scopedSessionId()
         : ctx.sessionId();
@@ -2706,6 +2717,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                                        config,
                                                        executionPlan,
                                                        executionSessionId,
+                                                       roleExecutionAttempt,
                                                        assignment,
                                                        ctx.localProvider().toUri(),
                                                        initialInputs,

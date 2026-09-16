@@ -7,14 +7,26 @@
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | PARTIAL | — | base smoke、APP SDK loader、完整 candidate build、容器 C++ unit 和 YOLO native runner 通过；host-gate、pair mutation 与完整 APP/配置闭包仍待执行；[candidate](evidence/b187-complete-candidate.md) | 2026-09-16 |
-| [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | PARTIAL | T001 | r7 STATIC_PASS；C++ target compile/link、容器 C++ DI/YOLO unit 与 native runner 通过；through-MiniNDN 仍需 candidate-bound native config/input；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-16 |
-| [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | PARTIAL | T002 | candidate SIF 已生成，容器 C++ unit 与 YOLO native runner 各通过一次；仍需 candidate-bound config/input 和两次 through-MiniNDN run；[candidate](evidence/b187-complete-candidate.md) | 2026-09-16 |
+| [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | PARTIAL | T001 | C++ target compile/link、容器 C++ DI/YOLO unit、native runner 与两次 host through-MiniNDN terminal run 通过；T001 candidate-closure dependency 仍未闭合；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-16 |
+| [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | PARTIAL | T002 | 同一 candidate-bound config/input 的两次 host C++/MiniNDN run 通过；regular base SIF/APP host-gate、同 pair SIF execution 与 mutation gate 仍待验收；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-16 |
 | [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | WAITING_EXTERNAL_INPUT | T003 | T003 尚未 LOCAL_PASS；未启动 Tiger/Slurm；[b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | 2026-09-15 |
 | [T005 QWEN deferral and delivery record](#t005-qwen-deferral-and-delivery-record) | DONE | — | QWEN 明确保持 TODO，未进入 YOLO candidate；[qwen-deferred.md](evidence/qwen-deferred.md) | 2026-09-15 15:16 -05:00 |
 | [T006 Design-code convergence and final evidence](#t006-design-code-convergence-and-final-evidence) | PARTIAL | T001,T002 | 两层交付改变构建边界，需重新核对受影响调用与契约；历史静态 PASS 保留，不能覆盖新方案；[convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | 2026-09-15 |
 | [T007 Pre-pack candidate closure gate](#t007-pre-pack-candidate-closure-gate) | PARTIAL | T001 | T007 static gate 通过且完整 candidate 已打包；真实 pre-pack C++ consumer 尚未前置执行，unit-r2 仅为 SIF 内 consumer 验收，需修正门禁或补前置证据；[candidate](evidence/b187-complete-candidate.md) | 2026-09-16 |
 
 ## Current Checkpoint
+
+2026-09-16 B187-LOCAL-YOLO segmentation repair and host verification：修复大输入
+单 Data 发布边界，6,555,271-byte YOLO input 现在按 4,096-byte encrypted NDN
+segments 发布，共 1,601 段；Provider 使用 SegmentFetcher 组装后再解密和派发。
+C++ selector JSON evidence matcher 与 MiniNDN Boost.Test `--color_output=no`
+经过两次 official review-agent `STATIC_PASS`，selector 以 `-j4` 编译 30.668s，
+native identity manifest 以 `SPEC180_NATIVE_IDENTITY_OK` 通过。使用同一
+candidate-bound native config/input 的两次全新 host MiniNDN Y-A run 均为
+`SPEC180_CASE_RESULT status=PASS`（39.62s、40.17s），结果各 7,267 bytes。
+此前 single-Data、selector ANSI false-negative 及 envelope-key preflight 失败
+均保留原始日志；SIF/APP host-gate、same-pair SIF execution、T004 Tiger promotion
+仍未执行，任务不提前标为完成。
 
 2026-09-16 清理了可重建的旧构建产物和未占用的旧 Codex 会话，磁盘恢复约 43 GiB；r12 诊断 SIF/rootfs 已移除，失败日志和证据保留。T007 冻结审查返回 `STATIC_PASS`，14 个模板测试、2 个 header/NDNSD 子集测试及 Python/`bash -n` 通过；已建立干净 HEAD `a0740640` worktree。
 
@@ -92,7 +104,7 @@
 | B187-BASE | T001 prerequisite | pinned stable base builds and passes native SDK/NumPy smoke | test_base_runtime.py; build-base-sif.py; container C++ base-smoke | DONE |
 | B187-APP-SDK | T001 prerequisite | explicit SDK copies load from APP; missing library rejects without fallback | template/handoff/APP tests; container C++ loader probe | DONE (SDK only) |
 | B187-YOLO-BASE | T001 prerequisite | real YOLO26n CPU output matches independent oracle inside base | run-yolo-cpu-smoke.py; C++ yolo-cpu-smoke.cpp | DONE (model smoke only) |
-| B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | PARTIAL |
+| B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; host native candidate-bound config/input; SIF/APP execution pending | PARTIAL |
 | B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | WAITING_EXTERNAL_INPUT |
 | B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | DONE |
 | B187-BASE-SDK | T001 prerequisite | existing base extended with verified external runtime and build SDK | test_dependency_sdk.py; actual container C++/Rust/Python probes | DONE (base only) |
@@ -125,11 +137,17 @@
 
 **Outcome**: a named C++ production target invokes the real DI path through the maintained YOLO case; Python-only markers cannot close the task.
 
-Spec187 native mode requires absolute `SPEC187_NATIVE_SELECTOR`,
-`SPEC187_NATIVE_REQUEST_CONFIG`, `SPEC187_NATIVE_REQUEST_INPUT` and
-`SPEC187_NATIVE_REQUEST_OUTPUT` inputs. The runner validates them before
-`start_network()` and launches the C++ selector as the MiniNDN User process;
-there is no configurable test filter or post-run DummyClientFace substitute.
+Spec187 native mode requires `SPEC187_NATIVE_MODE=1`, the authority inputs
+`SPEC187_NATIVE_AUTHORITY_CONFIG`, `SPEC187_NATIVE_GRANT_AUTHORITY_PUBLIC_KEY`
+and `SPEC187_NATIVE_PROVIDER_RECIPIENT_KEY_MAP`, plus
+`SPEC187_NATIVE_SELECTOR`, `SPEC187_NATIVE_REQUEST_CONFIG`,
+`SPEC187_NATIVE_REQUEST_INPUT` and `SPEC187_NATIVE_REQUEST_OUTPUT`. Authority
+and request files are candidate-bound under the `results` bind; the sealed
+selector is `/opt/ndnsf-di/current/bin/spec187-yolo-minindn`. The runner
+validates digests and file identity before `start_network()`, starts the
+authority and waits for `NATIVE_GRANT_AUTHORITY_READY`, then launches the C++
+selector as the MiniNDN User process. There is no configurable test filter or
+post-run DummyClientFace substitute.
 
 **Risk class / Dynamic profile**: high / asan-ubsan; invariant is authenticated selection, terminal result and no active owner after drain.
 
@@ -204,7 +222,7 @@ one ABI/runtime tree, and one immutable candidate identity.
 | Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Dynamic validation | Build scope / target / -j / elapsed / exit | Review trace / closure decision | Behavior result | Evidence / remaining |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | B187-LOCAL-CLOSURE | production callers, implementation, tests, build, migration: `build-sif-app.py`, `test_sif_app.py`; evidence lane in [b187-local-closure.md](evidence/b187-local-closure.md) | no P0–P3; STATIC_PASS | not run; regular base unavailable | focused offline checks: 3 passed; SIF/runtime not observed | NOT_RUN; dynamic card awaits regular base | not run | review-agent STATIC_PASS on frozen diff; OPEN_FOR_NEXT_BATCH | PARTIAL | regular base SIF and host-gate manifest remain |
-| B187-LOCAL-YOLO | production callers, implementation, state/lifecycle, build/source closure, tests/evidence: [b187-local-yolo.md](evidence/b187-local-yolo.md) | no P0-P2 after r7 review; token/JSON boundaries and epoch order checked | target compile/link passed; candidate Waf 293/293 and container C++ consumer compile passed; first compile miss/loader boundary retained | served-provider selector, `unit-r2` C++ DI/YOLO tests and `yolo-r2 --native-runner` passed; through-MiniNDN selector still not run with real config | NOT_RUN for real MiniNDN | candidate SIF `e6cef05a…541657`, Waf `-j4` 16m4.970s; unit 52.56s; YOLO 9.76s | r7 plus HOME-driver repairs STATIC_PASS; OPEN_FOR_NEXT_BATCH | PARTIAL | host-gate/pair mutation, native requester config/input and two through-MiniNDN runs remain |
+| B187-LOCAL-YOLO | production callers, implementation, state/lifecycle, build/source closure, tests/evidence: [b187-local-yolo.md](evidence/b187-local-yolo.md) | no P0-P2 after segmentation, JSON matcher, ANSI and identity reviews; all returned STATIC_PASS | affected selector compile/link passed with `-j4` 30.668s; native identity manifest regenerated with `SPEC180_NATIVE_IDENTITY_OK`; earlier candidate Waf 293/293 retained | C++ selector, container C++ DI/YOLO unit, native runner and two host through-MiniNDN Y-A runs passed; segmented 6,555,271-byte input observed as 1,601 segments | host MiniNDN observed; SIF/APP qualification unobserved | host build `-j4` 30.668s; r27 40.17s; r28 39.62s; candidate SIF `e6cef05a…541657` not executed in this batch | review-agent STATIC_PASS; host terminal chain observed; OPEN_FOR_NEXT_BATCH for SIF/APP closure | PASS (host MiniNDN scope) | T001 host-gate/pair mutation, same-pair SIF execution and T004 Tiger promotion remain |
 | B187-TIGER | no execution because T003 has no LOCAL_PASS; [b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | N/A before local gate | not run | not run | NOT_RUN | not run | review-agent N/A; BLOCKED_BY_LOCAL_GATE | WAITING_EXTERNAL_INPUT | T003 LOCAL_PASS and external TigerCluster access remain |
 | B187-DEFERRED | documentation lane covered; other lanes N/A by scope | N/A by docs-only scope | N/A | N/A | N/A | N/A | review-agent N/A; CLOSED_FOR_VALIDATION | DONE | QWEN remains TODO; [qwen-deferred.md](evidence/qwen-deferred.md) |
 | B187-CONVERGENCE | production/callers, implementation, state/lifecycle, build/source closure, evidence: [convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | no P0-P2 after r7 review | target compile/link passed | missing-input selector fail-closed; real MiniNDN/SIF not observed | NOT_RUN for formal qualification | build boundary recorded in B187-LOCAL-YOLO | review-agent r7 STATIC_PASS; CLOSED_FOR_VALIDATION | DONE (static) | external candidate inputs and formal runs remain |

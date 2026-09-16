@@ -5505,3 +5505,9 @@ v63 静态门后，既有 build tree 以系统优先 PATH、`-j4` 仅构建 `spe
 2026-09-15 B187-BASE run-r2 resolution：补齐容器工具链后，实际 SIF 构建、镜像内 C++ 编译/运行、NFD/NumPy/ELF 检查及最终 SIF 复验通过。SIF SHA-256 `7b4b501033f2db876ccf5c19a9637a58b8b232cf4d555f5b8a225638e180837c`；临时 overlay 删除 OpenBLAS 后正确拒绝，原 SIF hash 未变。r1 缺少 g++ 边界已解决；旧六项 fixture 失败仍保留。仅 `BASE_SMOKE_ONLY PASS`，不是 APP/MiniNDN/Tiger PASS；见 [durable receipt](../specs/187-yolo-minindn-sif-app/evidence/base-smoke-20260915.json)。
 2026-09-16 B187-CONTAINER-UNIT failure：候选 SIF `e6cef05a…541657` 内 C++ 测试已完成编译和 ELF 加载，`unit-r1` 首个运行边界因 `--containall --no-mount home` 下 fixture 无法创建 `/home/tianxing/.ndn` 而返回 `rc=134`；原始记录 `.codex-tmp/spec187-clean-restart/unit-r1/`。不是协议结果或库缺失；驱动经静态复审补充独立 `0700` HOME 后，`unit-r2` C++ DI/YOLO smoke 通过。
 2026-09-16 B187-YOLO-NATIVE failure：候选 SIF 内 ORT 和 NDNSF-DI runner ELF 均已加载，`yolo-r1` 首个运行边界同为不可写 `/home/tianxing/.ndn`，返回 `rc=134`；原始记录 `.codex-tmp/spec187-clean-restart/yolo-r1/`。驱动经静态复审补充独立 `0700` HOME 后，`yolo-r2 --native-runner` 三次推理通过；两次失败均保留，不计为模型或协议 PASS。
+
+2026-09-16 B187-LOCAL-YOLO request-input transport boundary：host MiniNDN r21 将 6,555,921-byte request input 作为单个 Data 发布，编码包超过 8,800-byte 限制，Provider 未进入完整请求链；原始记录 `.codex-tmp/spec187-local-yolo-r21.log`。按 NDN segmenter/fetcher 契约改为 4,096-byte encrypted segments、`FinalBlockId`、`CanBePrefix` fetch 和总量/顺序/过期校验，未放宽单包限制。
+
+2026-09-16 B187-LOCAL-YOLO selector evidence boundary：分段修复后的 r27 已完成真实 ACK/Selection/ORT CPU/response，但 Python runner 首次以 `CASE_RUNTIME_NATIVE_SELECTOR_RESULT_INVALID` 结束；C++ selector 已写出 `SPEC187_NATIVE_REQUEST_PASS`，因 Boost.Test 默认 ANSI 前缀而未被严格 `startswith` oracle 观察。原始记录 `.codex-tmp/spec187-local-yolo-r27-test-matcher-fixed.log`，通过新增 `--color_output=no` 修复并保留严格标记判据。
+
+2026-09-16 B187-LOCAL-YOLO repeat preflight boundary：r28 第二次运行的首次尝试在 MiniNDN 启动前因复制运行目录时引用不存在的 envelope key 返回 `REQUEST_ENVELOPE_KEY_UNAVAILABLE`；未产生协议结论。原始记录 `.codex-tmp/spec187-local-yolo-r28.log`，随后复用同一 candidate key、隔离状态/输出目录重跑，r28 通过。

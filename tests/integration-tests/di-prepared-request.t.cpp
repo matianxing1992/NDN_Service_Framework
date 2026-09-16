@@ -22,6 +22,8 @@
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 #include <boost/test/unit_test.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -1099,7 +1101,10 @@ spec187ReadInput(const std::filesystem::path& path)
   std::ifstream input(path, std::ios::binary | std::ios::ate);
   BOOST_REQUIRE_MESSAGE(input.good(), "Spec187 input cannot be opened");
   const auto size = input.tellg();
-  BOOST_REQUIRE_MESSAGE(size >= 0 && size <= static_cast<std::streamoff>(4 * 1024 * 1024),
+  // The maintained YOLO contract is [1,3,640,640] float32 NCHW: 4,915,200
+  // payload bytes before the tensor-bundle envelope.  Keep a bounded margin
+  // for that real input while still rejecting unbounded request files.
+  BOOST_REQUIRE_MESSAGE(size >= 0 && size <= static_cast<std::streamoff>(16 * 1024 * 1024),
                         "Spec187 input exceeds the bounded request size");
   std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
   input.seekg(0);
@@ -1118,9 +1123,18 @@ spec187FieldPosition(const std::string& line, const std::string& field)
       static_cast<unsigned char>(line[position - 1])) ||
       line[position - 1] == '{' || line[position - 1] == ',';
     const auto afterPosition = position + field.size();
-    const bool after = afterPosition == line.size() ||
-      std::isspace(static_cast<unsigned char>(line[afterPosition])) ||
-      line[afterPosition] == ',' || line[afterPosition] == '}';
+    // Most evidence fields are exact tokens.  The Spec187 stage checks use
+    // `provider=/` as a bounded prefix because the selected provider name is
+    // part of the request-bound value; require at least one non-delimiter
+    // identity component after that prefix without weakening exact fields.
+    const bool prefix = !field.empty() && field.back() == '/';
+    const bool after = prefix ?
+      (afterPosition < line.size() &&
+       !std::isspace(static_cast<unsigned char>(line[afterPosition])) &&
+       line[afterPosition] != ',' && line[afterPosition] != '}') :
+      (afterPosition == line.size() ||
+       std::isspace(static_cast<unsigned char>(line[afterPosition])) ||
+       line[afterPosition] == ',' || line[afterPosition] == '}');
     if (before && after)
       return position;
     position = line.find(field, position + 1);
@@ -1178,7 +1192,21 @@ spec187RequireStage(const std::filesystem::path& directory,
                     const std::string& marker,
                     std::vector<std::string> fields)
 {
-  const auto observed = spec187FindStage(directory, filePrefix, marker, fields);
+  // The native result can reach the User immediately after the Provider
+  // emits its terminal marker.  The launcher keeps each child's log file
+  // open until teardown, so the marker may become visible a few scheduling
+  // ticks after result() returns.  Poll this evidence boundary briefly rather
+  // than treating normal pipe/file flush latency as a missing protocol stage.
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::seconds(5);
+  std::optional<std::uint64_t> observed;
+  do {
+    observed = spec187FindStage(directory, filePrefix, marker, fields);
+    if (observed.has_value())
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  while (std::chrono::steady_clock::now() < deadline);
   BOOST_REQUIRE_MESSAGE(observed.has_value(),
                         "missing correlated Spec187 stage evidence '" + marker +
                         "' under " + directory.string());
@@ -1186,10 +1214,9 @@ spec187RequireStage(const std::filesystem::path& directory,
 }
 
 bool
-spec187HasCorrelatedMarker(const std::filesystem::path& directory,
-                           const std::string& filePrefix,
-                           const std::string& marker,
-                           const std::vector<std::string>& fields)
+spec187HasExecutionEvidence(const std::filesystem::path& directory,
+                            const std::string& requestId,
+                            const std::string& planDigest)
 {
   std::error_code error;
   for (std::filesystem::directory_iterator it(directory, error), end;
@@ -1197,7 +1224,7 @@ spec187HasCorrelatedMarker(const std::filesystem::path& directory,
     if (!it->is_regular_file(error))
       continue;
     const auto name = it->path().filename().string();
-    if (name.rfind(filePrefix, 0) != 0 || it->path().extension() != ".log")
+    if (name.rfind("provider-", 0) != 0 || it->path().extension() != ".log")
       continue;
     std::ifstream input(it->path(), std::ios::binary);
     if (!input.good())
@@ -1206,11 +1233,28 @@ spec187HasCorrelatedMarker(const std::filesystem::path& directory,
                                          std::istreambuf_iterator<char>()});
     std::string line;
     while (std::getline(lines, line)) {
-      if (line.find(marker) == std::string::npos)
+      const auto markerPosition = line.find("NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED");
+      if (markerPosition == std::string::npos)
         continue;
-      if (std::all_of(fields.begin(), fields.end(), [&line] (const auto& field) {
-            return spec187FieldPosition(line, field).has_value();
-          }))
+      const auto jsonPosition = line.find('{', markerPosition);
+      if (jsonPosition == std::string::npos)
+        continue;
+      boost::property_tree::ptree evidence;
+      std::istringstream json(line.substr(jsonPosition));
+      try {
+        boost::property_tree::read_json(json, evidence);
+      }
+      catch (const boost::property_tree::json_parser_error&) {
+        continue;
+      }
+      // ExecutionEvidence is currently emitted through property_tree, so
+      // scalar values may be encoded either as JSON strings or native JSON
+      // numbers/booleans.  Compare their semantic text values instead of
+      // requiring one serialization spelling in this C++ selector.
+      if (evidence.get<std::string>("requestId", "") == requestId &&
+          evidence.get<std::string>("attemptEpoch", "") == "1" &&
+          evidence.get<std::string>("planDigest", "") == planDigest &&
+          evidence.get<std::string>("executionCompleted", "") == "true")
         return true;
     }
   }
@@ -1266,12 +1310,8 @@ BOOST_AUTO_TEST_CASE(NativeRequesterThroughMiniNdn)
                         selectionCommitEpoch <= selectionAcceptedEpoch &&
                         selectionAcceptedEpoch <= executionCompletedEpoch,
                         "Spec187 native stage evidence is out of order");
-  const auto observed = spec187HasCorrelatedMarker(
-    evidenceDirectory, "provider-", "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED",
-    {"\"requestId\":\"" + requestId + "\"",
-     "\"attemptEpoch\":1",
-     "\"planDigest\":\"" + result.planDigest + "\"",
-     "\"executionCompleted\":true"});
+  const auto observed = spec187HasExecutionEvidence(
+    evidenceDirectory, requestId, result.planDigest);
   BOOST_REQUIRE_MESSAGE(observed,
                         "missing correlated Spec187 execution evidence under " +
                         evidenceDirectory.string());
