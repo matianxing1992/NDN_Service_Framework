@@ -102,6 +102,7 @@ def test_rendered_template_preserves_container_build_boundary(tmp_path):
     assert "install -m 0755 /opt/ndnsf-candidate/bin/di-native-provider /opt/ndnsf-app/bin/di-native-provider" in text
     assert "install -m 0755 /opt/ndnsf-candidate/bin/di-native-fault-provider /opt/ndnsf-app/bin/di-native-fault-provider" in text
     assert "install -m 0755 /opt/ndnsf-candidate/bin/App_ServiceController /opt/ndnsf-app/bin/App_ServiceController" in text
+    assert "install -m 0755 /opt/ndnsf-candidate/bin/DI_NativeArtifactAuthority /opt/ndnsf-app/bin/DI_NativeArtifactAuthority" in text
     assert "cp -aL /opt/ndnsf-candidate/python/. /opt/ndnsf-app/python/" in text
     assert "cp -aL /opt/ndnsf-candidate/replay/. /opt/ndnsf-app/replay/" in text
     assert "cp -aL /opt/ndnsf-candidate/lib/. /opt/ndnsf-app/lib/" not in text

@@ -60,6 +60,7 @@ FILES = (
     "packaging/ndnsf-di-container/jobs/spec180",
     "examples/wscript",
     "examples/App_ServiceController.cpp",
+    "examples/DI_NativeArtifactAuthority.cpp",
     "NDNSF-DistributedRepo/include",
     "packaging/ndnsf-di-container/jobs/spec175/workload.json",
     "scripts/build_spec175_workload.py",

@@ -34,6 +34,7 @@ EXPECTED_BINARIES = (
     "di-native-provider",
     "di-native-fault-provider",
     "App_ServiceController",
+    "DI_NativeArtifactAuthority",
 )
 APP_NATIVE_LIBRARIES = (
     "libndn-service-framework.so.0.1.0",
@@ -348,7 +349,7 @@ for directory, subdirectories, filenames in os.walk(root, onerror=onerror,
             raise SystemExit("APP_MATERIALIZED_ELF_DEPENDENCY_FAILED:" + path)
         verify_elf_resolution(path, result.stdout)
 PY
-for name in di-native-provider di-native-fault-provider App_ServiceController; do
+for name in di-native-provider di-native-fault-provider App_ServiceController DI_NativeArtifactAuthority; do
     test -x "$app/bin/$name"
 done
 for name in libndn-service-framework.so.0.1.0 libndnsf-distributed-inference.so \
@@ -1222,7 +1223,7 @@ for directory, subdirectories, filenames in os.walk(root, onerror=onerror, follo
         if not valid:
             raise SystemExit("APP_CANDIDATE_SPECIAL_FILE:" + path)
 PY
-for name in di-native-provider di-native-fault-provider App_ServiceController; do
+for name in di-native-provider di-native-fault-provider App_ServiceController DI_NativeArtifactAuthority; do
     test -x "$app/bin/$name"
 done
 for name in libndn-service-framework.so.0.1.0 libndnsf-distributed-inference.so \

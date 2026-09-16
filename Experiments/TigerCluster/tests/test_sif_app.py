@@ -49,6 +49,7 @@ def _fixture(tmp_path):
         "bin/di-native-provider": b"provider",
         "bin/di-native-fault-provider": b"fault",
         "bin/App_ServiceController": b"controller",
+        "bin/DI_NativeArtifactAuthority": b"authority",
         "python/ndnsf/__init__.py": b"",
         "python/ndnsf_distributed_inference/__init__.py": b"",
     }
@@ -97,7 +98,7 @@ def _fixture(tmp_path):
         "files": rows,
         "entrypoints": ["/opt/ndnsf-di/app/bin/" + name
                         for name in ("di-native-provider", "di-native-fault-provider",
-                                     "App_ServiceController")],
+                                     "App_ServiceController", "DI_NativeArtifactAuthority")],
         "runtimeContract": {"cleanenv": True, "containall": True,
                              "appFallback": "forbidden", "modelMount": "/models:ro",
                              "artifactMount": "/artifacts:ro",
@@ -124,7 +125,7 @@ def test_pair_manifest_verifies_all_bytes_and_identity(tmp_path):
     app, base, manifest = _fixture(tmp_path)
     result = validator.validate(manifest, app, base)
     assert result["status"] == "PASS"
-    assert result["files"] == 16
+    assert result["files"] == 17
 
 
 @pytest.mark.parametrize("mutation", ["changed", "extra", "escaped"])

@@ -36,6 +36,8 @@ Codex 两份旧故障备份从约 1.46 GiB 无损压缩至约 550 MiB，解压�
 
 本轮已证明候选内 native library/binding 闭包和 C++/YOLO model smoke；尚未证明 host-gate/APP pair mutation、candidate-bound native requester config/input、真实 through-MiniNDN 两次请求、MiniNDN 负例或 Tiger promotion。`unit-r2`/`yolo-r2` 均是局部容器验收，不能把 T001/T002/T003/T007 或 LOCAL_PASS/Tiger PASS 提前关闭。
 
+2026-09-16 B187-AUTHORITY-CLOSURE：为受保护 native requester 补入 `DI_NativeArtifactAuthority` 的 source seal、Waf target、builder/final 安装与 ELF/ldd/manifest 验证，以及 APP/validator 和 fixture 接线。官方 review-agent 对冻结快照 `.codex-tmp/spec187-clean-restart/review-authority-r2-20260916/changes.diff` 返回 `STATIC_PASS`，SHA-256 `36f3b9d71074149166764798a1fef949323f57c51111fb9bf2ce883531de8d07`，五 lane 无 P0–P3；此前 fixture 文件计数缺口已修正为 17。定向离线测试 `pytest -q Experiments/TigerCluster/tests/test_development_runtime_template.py Experiments/TigerCluster/tests/test_sif_app.py tests/python/test_prepare_local_sif_source.py` 为 39 passed、1 skipped（4.16s）。这是候选构建前的静态/脚本闭包证据；新的 SIF、authority runtime、through-MiniNDN 和 Tiger 仍未观测，T001/T003/T007 保持 `PARTIAL`。
+
 2026-09-16 B187-PREPACK-CLOSURE T007 静态门：冻结快照 `.codex-tmp/spec187-clean-restart/review-t007-r1/`，`changes.diff` SHA-256 `23d2c6079e68d918fefdd141e9d3adfa31c7e62781eb959f6c802d582c6d0c0a`，官方 review-agent 返回 `STATIC_PASS`，无 P0–P3。审查确认 DI `.h/.hpp/.hxx/.ipp/.tpp` 完整安装和 sealed replay 逐字节比较、builder/final wiring、候选内 pkg-config C++ consumer flags 及文档边界。定向模板检查 `14 passed`，header/NDNSD 过滤子集 `2 passed`，Python 编译、`build-local-sif.sh` 语法检查通过；ShellCheck 仅报告既有 SC2015/SC1007 风格提示。实际容器编译、SIF 封装、C++/YOLO/MiniNDN 仍未观测，T001/T003 保持 PARTIAL。
 
 r12 的 header-only 恢复脚本不再使用；下一候选将使用 HEAD `a0740640` 的干净 NDNSF worktree、稳定 base SIF `8ebfc464…` 和新的 source seal，从完整两阶段 definition 重新走 pre-pack consumer gate。
