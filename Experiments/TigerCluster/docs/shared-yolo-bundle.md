@@ -15,8 +15,11 @@ The companion files are available in the `ndnsf-share` folder:
 [ndnsf-share folder](https://drive.google.com/file/d/1sCgOzXscRLhXMq8paiBGJBmPn6rrWoNq/view?usp=sharing)
 
 The folder contains `app_bundle/`, `test_case/`, and `yolo_profile.json`. The
-next SIF version is still under development and has not been released; use the
-`ndnsfdi.sif` image explicitly identified above until a new link is announced.
+`test_case` directory must include the YOLO26n ONNX model at
+`canonical-package/canonical/yolo26n.onnx`, its matching weights, oracle,
+catalogue data, and test-only key material. The next SIF version is still under
+development and has not been released; use the `ndnsfdi.sif` image explicitly
+identified above until a new link is announced.
 
 Download the companion directory from the `ndnsf-share` folder above:
 
