@@ -84,6 +84,10 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "NUMPY_PRIVATE_LIB_SET" in source
     assert "NUMPY_FINAL_RPATH_RESTORE_MISSING" in source
     assert "NUMPY_BASE_IMPORT_PASS" in source
+    base_numpy = source[source.index("def check_base_numpy"):source.index("\ndef main", source.index("def check_base_numpy"))]
+    assert "ZipFile" not in base_numpy
+    assert "/build-input/wheels" not in base_numpy
+    assert "--cleanenv" in base_numpy and "--containall" in base_numpy
     assert "BASE_SIF_CONTENT" in source
     assert "BASE_SIF_DISK_SPACE" in source
     assert "16 * 1024**3" in source
@@ -116,6 +120,18 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "--mksquashfs-args" in build_script
     assert "SPEC186_MKSQUASHFS_ARGS:--processors 1" in build_script
     subprocess.run(["/bin/bash", "-n"], input=build_script, text=True, check=True)
+
+
+def test_base_sif_builder_is_write_once_and_repairs_numpy_closure():
+    builder = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-base-sif.sh"
+    source = builder.read_text(encoding="utf-8")
+    assert "BASE_SIF_PARENT_SHA256_MISMATCH" in source
+    assert "BASE_SIF_NUMPY_PRIVATE_LIB_SET_MISMATCH" in source
+    assert "numpy-private-libs-and-setuptools-v1" in source
+    assert "BASE_NUMPY_IMPORT_PASS" in source
+    assert "BASE_SIF_OUTPUT_EXISTS" in source
+    assert "--ignore-subuid" in source
+    subprocess.run(["/bin/bash", "-n"], input=source, text=True, check=True)
 
 
 def test_waf_does_not_default_to_a_developer_temp_toolchain():

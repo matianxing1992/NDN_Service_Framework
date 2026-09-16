@@ -5478,6 +5478,22 @@ which differs from the Spec186 handoff seal
 - **Lesson**: readiness and route configuration must execute in the same
   namespace as the forwarder they claim to validate.
 
+## 2026-09-15 — Spec186 base-v2 packer option used GNU long spelling
+
+- **Area**: Spec186 immutable base SIF rebuild.
+- **Symptom**: the parent image, wheel extraction, and `%test` NumPy import
+  passed, but Apptainer failed while creating SquashFS with
+  `/usr/bin/mksquashfs: invalid option`.
+- **Root cause**: the first invocation supplied `--processors 1` through
+  `SPEC186_MKSQUASHFS_ARGS`; this mksquashfs accepts the single-dash option
+  `-processors 1`.
+- **Correction**: the base-v2 builder default now uses `-processors 1`; the
+  complete SIF entry point retains its existing shell default
+  `${SPEC186_MKSQUASHFS_ARGS:--processors 1}`, which expands to the same
+  single-dash value.  The failed definition remains as a diagnostic artifact.
+- **Lesson**: validate the exact Apptainer-to-mksquashfs argument vector before
+  spending time on image extraction and post-script execution.
+
 ## 2026-09-15 — Spec186 local MiniNDN launcher omitted SHELL
 
 - **Area**: T006 local host orchestration boundary.

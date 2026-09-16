@@ -447,30 +447,37 @@ def check_static_inputs(definition: Path) -> tuple[Path, Path, list[str]]:
     return workspace, wheels, consumers
 
 
-def check_base_numpy(apptainer: Path, base_sif: Path, wheels: Path) -> None:
+def check_base_numpy(apptainer: Path, base_sif: Path, wheels: Path | None = None) -> None:
+    """Verify NumPy from the base image itself.
+
+    The wheel-private DSO set is checked by check_static_inputs.  This probe
+    deliberately does not bind or copy a wheel into the image: doing so made
+    the old base appear healthy while its read-only runtime was broken.
+    """
     script = r"""
 from pathlib import Path
-from zipfile import ZipFile
-
-wheel = next(Path('/build-input/wheels').glob('numpy-1.26.4-*.whl'))
-destination = Path('/opt/venv/lib/python3.10/site-packages/numpy.libs')
-destination.mkdir(parents=True, exist_ok=True)
-with ZipFile(wheel) as archive:
-    for member in archive.namelist():
-        if member.startswith('numpy.libs/') and not member.endswith('/'):
-            target = destination / Path(member).name
-            target.write_bytes(archive.read(member))
-            target.chmod(0o755)
+import subprocess
 import numpy
 assert numpy.__version__ == '1.26.4', numpy.__version__
+destination = Path(numpy.__file__).parent.parent / 'numpy.libs'
+expected = {
+    'libgfortran-040039e1.so.5.0.0',
+    'libopenblas64_p-r0-0cf96a72.3.23.dev.so',
+    'libquadmath-96973f99.so.0.0.0',
+}
+assert {p.name for p in destination.iterdir() if p.is_file()} == expected
+from numpy.core import _multiarray_umath
+ldd = subprocess.run(['ldd', _multiarray_umath.__file__],
+                     text=True, capture_output=True, check=True)
+assert 'not found' not in ldd.stdout, ldd.stdout
 print('NUMPY_BASE_IMPORT_PASS')
 """
     command = [str(apptainer)]
     config = os.environ.get("SPEC186_APPTAINER_CONFIG", "").strip()
     if config:
         command.extend(["-c", config])
-    command.extend(["exec", "--no-mount", "dev", "--writable-tmpfs",
-                    "--bind", f"{wheels}:/build-input/wheels:ro", str(base_sif),
+    command.extend(["exec", "--cleanenv", "--containall", "--no-home",
+                    "--pwd", "/", "--no-mount", "dev", str(base_sif),
                     "/opt/venv/bin/python", "-"])
     result = subprocess.run(command, input=script, text=True, capture_output=True)
     if result.returncode != 0:

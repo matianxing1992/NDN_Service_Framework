@@ -407,6 +407,7 @@ def test_effective_config_has_explicit_case_transport_and_candidate():
     assert effective["argv"][:2] == ["/usr/bin/python3", str(submit.REPO_ROOT / "Experiments/NDNSF_DI_YoloAckDriven_Minindn.py")]
     assert effective["environment"]["SPEC186_APPTAINER_VERSION"] == "1.5.3"
     assert effective["environment"]["NDN_CLIENT_TRANSPORT"] == "unix:///run/nfd.sock"
+    assert effective["environment"]["SPEC180_NATIVE_PROVIDER_BINARY"] == "/app/bundle/bin/di-native-provider"
     assert effective["environment"]["SPEC180_RUNTIME_SIF"].endswith(".sif")
     assert effective["argv"][-2:] == ["--case", "Y-B"]
     assert all(role["allowCpuFallback"] is True for role in effective["roles"])

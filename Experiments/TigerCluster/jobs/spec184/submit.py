@@ -112,6 +112,14 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         "SPEC180_CASE_OUTPUT_DIR": data_root + "/evidence",
     }
     if profile["case"].startswith("yolo-"):
+        bundle_path = Path(runtime["application"]["bundle"]["path"])
+        entrypoint_path = Path(runtime["application"]["entrypoint"])
+        try:
+            entrypoint_relative = entrypoint_path.relative_to(bundle_path)
+        except ValueError as exc:
+            raise RenderError("APPLICATION_ENTRYPOINT_OUTSIDE_BUNDLE") from exc
+        if ".." in entrypoint_relative.parts or entrypoint_relative == Path("."):
+            raise RenderError("APPLICATION_ENTRYPOINT_OUTSIDE_BUNDLE")
         env.update({
             "SPEC180_YOLO_CANONICAL_PACKAGE": case_bundle + "/canonical-package",
             "SPEC180_YOLO_CATALOGUE_REGISTRY": case_bundle + "/catalogue-registry.json",
@@ -125,7 +133,7 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
             # The native binary is application-owned and is mounted separately
             # from the stable base SIF.  The runner propagates SPEC180_* into
             # every native child and its SIF command prefix.
-            "SPEC180_NATIVE_PROVIDER_BINARY": "/app/bundle/" + Path(runtime["application"]["entrypoint"]).name,
+            "SPEC180_NATIVE_PROVIDER_BINARY": "/app/bundle/" + entrypoint_relative.as_posix(),
             "SPEC180_RUNTIME_APP_BUNDLE": runtime["application"]["bundle"]["path"],
             "SPEC180_RUNTIME_APP_LIB": "/app/bundle/lib",
             "SPEC180_RUNTIME_INPUT_ROOT": case_bundle,
