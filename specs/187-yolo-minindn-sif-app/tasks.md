@@ -15,6 +15,8 @@
 
 ## Current Checkpoint
 
+2026-09-15 B187-YOLO-BASE：同一 base 中实际 C++/ORT YOLO26n CPU 推理三次通过（约 182/106/91 ms），50 行输出均满足独立 oracle 容差，最大绝对误差 0.000366211。此结果仅 `YOLO_CPU_MODEL_SMOKE_ONLY`；没有生成最终 NDNSF+APP candidate 或运行 MiniNDN。SDK 已适配，剩余 ONNX/Rust 容器构建输入、host gate 和完整 APP 接线仍由 T001/T003 承接；不把可由现有源码/缓存生成的输入归为用户必须提供的资料。见 [本机 YOLO 记录](evidence/yolo-base-cpu-20260915.md)。
+
 2026-09-15 B187-BASE：r4 STATIC/COMPOSITION_PASS；15 个定向测试通过，实际 SIF 构建与最终镜像 C++ SDK/NumPy/NFD/ELF smoke 全部通过，SHA-256 `7b4b501033f2db876ccf5c19a9637a58b8b232cf4d555f5b8a225638e180837c`。缺失 OpenBLAS 的实际 overlay 反例被拒绝。额外旧门禁测试 6 项 fixture 失败另记，未伪造全套 PASS。仅 base 前置完成，T001/T003 保持原状态；见 [base repair](evidence/b187-base-repair.md)。
 
 2026-09-15 17:51 -05:00：T002 的 C++ selector 已注册并接入 Spec187 native mode；阶段证据现按 request/attempt/plan 关联，并以 epochMs 核对 ACK → Selection commit → Provider accepted → Provider execution 顺序。r7 官方 review-agent 返回 STATIC_PASS；受影响目标以 `-j4` 编译通过（1m6.118s），独立 served-provider selector 通过，缺输入 selector 按预期 fail-closed。已补齐 T001–T006 的显式 FR/SC requirement coverage，分析器追踪到 12/12 FR 与 6/6 SC。真实 through-MiniNDN 请求仍需 candidate-bound config/input，T001 仍缺 regular base SIF/host-gate，T003 及后续批次保持 WAITING_EXTERNAL_INPUT/PARTIAL。
@@ -26,6 +28,7 @@
 | B187-LOCAL-CLOSURE | T001 | closure gate rejects invalid candidate inputs before side effects and accepts a verified pair tuple | existing Tiger script checks and mutation fixtures | PARTIAL |
 | B187-BASE | T001 prerequisite | pinned stable base builds and passes native SDK/NumPy smoke | test_base_runtime.py; build-base-sif.py; container C++ base-smoke | DONE |
 | B187-APP-SDK | T001 prerequisite | explicit SDK copies load from APP; missing library rejects without fallback | template/handoff/APP tests; container C++ loader probe | DONE (SDK only) |
+| B187-YOLO-BASE | T001 prerequisite | real YOLO26n CPU output matches independent oracle inside base | run-yolo-cpu-smoke.py; C++ yolo-cpu-smoke.cpp | DONE (model smoke only) |
 | B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | PARTIAL |
 | B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | WAITING_EXTERNAL_INPUT |
 | B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | DONE |

@@ -1,5 +1,7 @@
 # Standard base SIF + NDNSF-DI APP delivery
 
+逻辑构建顺序为 **base → NDNSF → APP**：base 提供稳定依赖/SDK，NDNSF 层提供框架及安全/发现依赖，APP 层提供 DI 应用。当前物理打包仍把后两层一起放在外置 `app/`，并未实现三个独立的发布制品；不能把只有 base 的模型冒烟当成最终组合验收。
+
 本入口把部署对象固定为一对不可变制品：稳定的 `base.sif` 和由容器内已验证候选提取出的外置 `app/`。模型、密钥、实验配置和输出仍然是运行时挂载，不进入任一制品。APP 内的 C++ 对象只允许 `$ORIGIN/../lib` 与 `/opt/ndn-base/lib`，Python binding 只允许 `$ORIGIN/../../lib` 与 `/opt/ndn-base/lib`；构建和兼容 `current`/`stage`/源码路径由静态门及 APP packager 拒绝。
 
 新 base 的 OpenABE/RELIC 构建材料位于 `/opt/ndn-base/sdk/lib`。APP builder 必须先复制到自己的 stage，再链接并随 APP 发布；该 SDK 目录不能加入运行时 loader 路径。NDN-CXX 的头文件和 pkg-config 来自 `/opt/ndn-base`。CPython 头文件以容器解释器的 `sysconfig` 为准，不从宿主或不匹配的发行版开发包装入。SDK 适配和 loader 冒烟记录见 [B187-APP-SDK](../../../specs/187-yolo-minindn-sif-app/evidence/b187-app-sdk.md)；当前模板仍需补齐 ONNX/Rust 构建输入后才能完成当前源码 APP 验收。
@@ -25,6 +27,17 @@ Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-sif-app.sh \
 该命令会重新核对 base/candidate 的 SHA-256、构建记录、Apptainer 版本和 `/opt/ndnsf-app` 的完整 ELF/Python 闭包，并先在 base SIF 内确认 `/opt/venv/bin/python`、`/opt/ndn-base/lib` 和 `/opt/onnxruntime/lib` 存在。随后通过 `apptainer exec --cleanenv --containall` 将候选的完整应用树复制到外置 APP，再对绑定后的准确树重跑文件类型、ELF 依赖和 Python import 检查。`--apptainer` 可以指向系统 launcher symlink，但记录和执行会固定其解析后的 regular binary 及 SHA-256。宿主工作区中的 `.so`、Python extension、venv 或 build 目录不会被读取。输出目录和 manifest 已发布后均不可覆盖；manifest 的 `appDigest` 绑定所有文件、base、candidate、构建记录和挂载表。发布使用确定性的进程锁、候选 SIF 独立快照和 Apptainer 文件描述符；APP 与 manifest 之间用可恢复事务标记协调，崩溃后下一次调用会清理未完成发布或收束已完成 pair。
 
 ## Local pre-Tiger verification
+
+最小 CPU 模型检查可先执行下列入口。它在指定 SIF 内编译 C++ ORT consumer，对锁定 YOLO26n graph/weights、固定 P3 输入和独立 PyTorch oracle 比较三次推理，并保留源/ELF/镜像摘要与硬超时记录。只产生 `YOLO_CPU_MODEL_SMOKE_ONLY`，不替代下面的 NDNSF 请求链检查：
+
+```bash
+python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-yolo-cpu-smoke.py \
+  --base-sif /path/to/candidate.sif --expected-sif-sha256 <sha256> \
+  --model-root /path/to/spec180-yolo-candidate-current \
+  --output /path/to/new-run
+```
+
+本机 base 运行结果见 [YOLO CPU evidence](../../../specs/187-yolo-minindn-sif-app/evidence/yolo-base-cpu-20260915.md)；固定小图仅验证回归一致性，不是照片识别准确率或性能基准。
 
 上传前用同一运行器做本机验证。`--local` 只解除 Slurm 作业号要求，不改变 `cleanenv`、`containall`、APP 显式只读挂载、模型/制品只读挂载、证据可写挂载或应用路径优先级：
 
