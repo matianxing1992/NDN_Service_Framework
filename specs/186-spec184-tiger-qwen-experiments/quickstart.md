@@ -9,6 +9,10 @@ then independent reuse). `check` and `prepare`, static tests, and local loader p
 are fail-closed prerequisites; they are not substitutes for those runtime rows. Qwen3-
 0.6B is an auxiliary CPU path and cannot close a missing YOLO result.
 
+For a user-facing download and setup guide using the shared names
+`ndnsfdi.sif`, `app_bundle`, `test_case`, and `yolo_profile.json`, see the
+[shared YOLO bundle guide](../../Experiments/TigerCluster/docs/shared-yolo-bundle.md).
+
 ## 1. Resolve Baseline
 
 ```bash

@@ -20,6 +20,12 @@ Experiments/                  MiniNDN and experiment harnesses
 RELEASE/                      Local release packaging artifacts and manuals
 ```
 
+For the ready-to-run local four-provider YOLO demo, see the
+[shared bundle guide](Experiments/TigerCluster/docs/shared-yolo-bundle.md).
+The SIF is hosted externally because it is a large binary; the companion
+application bundle and test package must be obtained from the restricted
+handoff location described there.
+
 The framework contribution is the service runtime itself: provider discovery,
 permission distribution, NAC-ABE-backed message protection, one-time token
 handshakes, ACK/Selection/Response execution, Targeted invocation for known
