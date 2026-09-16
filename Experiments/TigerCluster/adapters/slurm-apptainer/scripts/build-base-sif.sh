@@ -38,7 +38,7 @@ apptainer_bin=$(readlink -f "$apptainer_bin")
 [ ! -e "$record" ] || { echo BASE_SIF_RECORD_EXISTS >&2; exit 4; }
 config=$(printenv SPEC186_APPTAINER_CONFIG 2>/dev/null || true)
 root_mapped=$(printenv SPEC186_APPTAINER_ROOT_MAPPED 2>/dev/null || printf '0')
-mksquashfs_args=$(printenv SPEC186_MKSQUASHFS_ARGS 2>/dev/null || printf '%s' '-processors 1')
+mksquashfs_args=$(printenv SPEC186_MKSQUASHFS_ARGS 2>/dev/null || printf '%s' '-processors 1 -no-xattrs')
 normalize_version() {
   printf '%s\n' "$1" | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/'
 }

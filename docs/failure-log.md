@@ -5505,3 +5505,24 @@ which differs from the Spec186 handoff seal
   and keep it covered by the pre-dispatch launch path.
 - **Lesson**: environment scrubbing must preserve every variable consumed by
   the orchestrator itself; an application dependency list alone is incomplete.
+### 2026-09-15 — Spec186 r84 final SIF mksquashfs SIGSEGV
+
+- **Symptom:** The r84 local 1.5.3 build completed the locked source/dependency
+  build (`284/284` Waf targets), Python wrappers, native import and `ldd`
+  checks, then Apptainer failed while creating the final SquashFS image:
+  `mksquashfs command failed: signal: segmentation fault (core dumped)`.
+  Kernel evidence records `mksquashfs[310071]: segfault` at 20:10:58 UTC.
+- **Root cause:** The pinned Ubuntu 20.04 host provides SquashFS tools 4.4.
+  The failure is in the final root-mapped packing path, after all build and
+  runtime checks; no compiler, ABI, or source error was observed. The exact
+  4.4 xattr path is the remaining suspect because the application image is a
+  large derived rootfs and the base image succeeds with the same CLI.
+- **Correction:** Preserve the failed definition and logs as diagnostic
+  history. Retry with the explicit bounded argument `-processors 1 -no-xattrs`
+  (filesystem xattrs are not part of the NDNSF runtime contract); only promote
+  the resulting SIF after receipt, import, `--help`, `readelf`, `ldd -r` and
+  direct CPU smoke pass. If the retry fails, retain the first failing stage and
+  classify it as a host SquashFS tool boundary rather than an application pass.
+- **Lesson:** A successful container build phase does not prove SIF creation;
+  the final packer must be exercised and its kernel-level failure recorded in
+  the candidate evidence.

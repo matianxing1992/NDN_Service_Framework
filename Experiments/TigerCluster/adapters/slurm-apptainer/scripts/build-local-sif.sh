@@ -88,10 +88,11 @@ apptainer_build() {
   if [ "${SPEC186_APPTAINER_ROOT_MAPPED:-0}" = 1 ]; then
     build_args+=(--ignore-subuid --ignore-fakeroot-command)
   fi
-  # Bound packing resource usage. This is a precaution, not a demonstrated
-  # fix for r83 corruption: its observed hash differs from the build receipt
-  # and the cause of that byte change has not been established.
-  build_args+=(--mksquashfs-args "${SPEC186_MKSQUASHFS_ARGS:--processors 1}")
+  # Bound packing resource usage and avoid the xattr path that segfaults in
+  # Ubuntu 20.04's SquashFS 4.4 when packing the large root-mapped runtime.
+  # Runtime xattrs are not part of the NDNSF contract; override explicitly for
+  # a diagnostic retry only when a different packer policy is required.
+  build_args+=(--mksquashfs-args "${SPEC186_MKSQUASHFS_ARGS:--processors 1 -no-xattrs}")
   if [ -n "${SPEC186_APPTAINER_CONFIG:-}" ]; then
     "$apptainer_bin" -c "$SPEC186_APPTAINER_CONFIG" build "${build_args[@]}" "$@"
   else

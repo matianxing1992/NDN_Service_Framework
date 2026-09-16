@@ -118,7 +118,7 @@ def test_spec186_preflight_is_wired_before_expensive_build():
     assert "--verify-existing" in build_script
     assert "local-apptainer-existing-sif-verify" in build_script
     assert "--mksquashfs-args" in build_script
-    assert "SPEC186_MKSQUASHFS_ARGS:--processors 1" in build_script
+    assert "SPEC186_MKSQUASHFS_ARGS:--processors 1 -no-xattrs" in build_script
     subprocess.run(["/bin/bash", "-n"], input=build_script, text=True, check=True)
 
 
