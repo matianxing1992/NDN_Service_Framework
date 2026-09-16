@@ -7,10 +7,12 @@
 
 #include <ndn-cxx/util/sha256.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -51,7 +53,8 @@ BOOST_AUTO_TEST_SUITE(RequestScopedSelection)
 
 void
 runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
-                             bool revokeBeforeResponse)
+                             bool revokeBeforeResponse,
+                             std::size_t inputBytes = 0)
 {
   test::BootstrapProfile profile;
   profile.providerCount = 2;
@@ -89,11 +92,16 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   std::atomic<bool> tamperedResponseRejected{false};
   std::atomic<bool> revocationResponseRejected{false};
   std::atomic<bool> selectionReplayRejected{false};
+  std::atomic<std::size_t> inputPrefixInterests{0};
+  std::atomic<std::size_t> inputExactSegmentInterests{0};
+  std::atomic<std::size_t> inputSegmentsDelivered{0};
   std::optional<ndn::Block> capturedResponseBlock;
   ndn::Name capturedResponseName;
   ndn::Name capturedSelectionName;
   ndn::Buffer capturedSelectionWire;
-  const std::string inputText = "request-scoped-secret-input";
+  const std::string inputText = inputBytes == 0
+      ? "request-scoped-secret-input"
+      : std::string(inputBytes, 'i');
   // Force the production request-scoped large-response path.  The User must
   // receive only the compact reference and reconstruct the plaintext from
   // per-segment AEAD envelopes fetched from the Provider IMS.
@@ -111,6 +119,10 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
                 unselectedProviderExecuted = true;
               }
               const auto actualPayload = request.getPayload();
+              if (inputBytes > 4096) {
+                const auto expectedSegments = (inputBytes + 4096 - 1) / 4096;
+                BOOST_CHECK_GE(inputSegmentsDelivered.load(), expectedSegments);
+              }
               BOOST_CHECK_EQUAL_COLLECTIONS(
                   actualPayload.begin(), actualPayload.end(),
                   inputText.begin(), inputText.end());
@@ -306,6 +318,8 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   // Exact-name input Data is put on the User face by publishSignedAppData;
   // capture it before the fixture forwards it to the Provider.
   std::optional<ndn::Data> capturedInputData;
+  std::vector<ndn::Data> capturedInputSegments;
+  std::size_t largestInputDataWire = 0;
   auto inputObserver = environment.userFace().onSendData.connect(
       [&] (const ndn::Data& data) {
         if (data.getName().toUri().find("REQUEST-INPUT") == std::string::npos) {
@@ -324,7 +338,15 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
         }
         inputDataWasOpaque = decoded && !envelope.ciphertext.empty();
         if (decoded) {
-          capturedInputData = data;
+          largestInputDataWire = std::max(largestInputDataWire,
+                                          data.wireEncode().size());
+          if (data.getName().size() > 0 &&
+              data.getName().at(-1).isSegment()) {
+            capturedInputSegments.push_back(data);
+          }
+          else {
+            capturedInputData = data;
+          }
         }
       });
 
@@ -339,6 +361,39 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
     inputFetchRelays.emplace_back(environment.providerFace(index).onSendInterest.connect(
         [&, index] (const ndn::Interest& interest) {
           if (!capturedInputData || interest.getName() != capturedInputData->getName()) {
+            if (capturedInputSegments.empty()) {
+              return;
+            }
+            const auto baseName = capturedInputSegments.front().getName().getPrefix(-1);
+            if (interest.getName() == baseName) {
+              ++inputPrefixInterests;
+              auto segmentZero = std::find_if(
+                  capturedInputSegments.begin(), capturedInputSegments.end(),
+                  [&] (const ndn::Data& data) {
+                    return data.getName().get(-1).isSegment() &&
+                           data.getName().get(-1).toSegment() == 0;
+                  });
+              if (segmentZero != capturedInputSegments.end()) {
+                ++inputSegmentsDelivered;
+                environment.providerFace(index).receive(*segmentZero);
+              }
+              return;
+            }
+            if (!baseName.isPrefixOf(interest.getName()) ||
+                interest.getName().size() != baseName.size() + 1 ||
+                !interest.getName().at(-1).isSegment()) {
+              return;
+            }
+            auto segment = std::find_if(
+                capturedInputSegments.begin(), capturedInputSegments.end(),
+                [&] (const ndn::Data& data) {
+                  return data.getName() == interest.getName();
+                });
+            if (segment != capturedInputSegments.end()) {
+              ++inputExactSegmentInterests;
+              ++inputSegmentsDelivered;
+              environment.providerFace(index).receive(*segment);
+            }
             return;
           }
           environment.providerFace(index).receive(*capturedInputData);
@@ -366,7 +421,8 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   request.setRequestCapabilities(capabilities);
   ndn::Buffer input(reinterpret_cast<const uint8_t*>(inputText.data()), inputText.size());
   request.setPayload(input, input.size());
-  const int responseTimeoutMs = revokeBeforeResponse ? 100 : 5000;
+  const int responseTimeoutMs = revokeBeforeResponse ? 100 :
+      (inputBytes > 4096 ? 30000 : 5000);
   const auto requestId = environment.user().RequestService(
       // SegmentFetcher must retrieve and validate the per-segment response
       // after the compact Response reference arrives; keep this integration
@@ -398,6 +454,24 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   BOOST_CHECK(discoveryPayloadWasEmpty);
   BOOST_CHECK(inputDataWasOpaque);
   BOOST_CHECK(responseWasOpaque);
+  if (inputBytes > 4096) {
+    const auto expectedSegments = (inputBytes + 4096 - 1) / 4096;
+    std::set<std::uint64_t> segmentNumbers;
+    for (const auto& data : capturedInputSegments) {
+      BOOST_REQUIRE(data.getName().at(-1).isSegment());
+      segmentNumbers.insert(data.getName().at(-1).toSegment());
+      BOOST_REQUIRE(data.getFinalBlock());
+      BOOST_REQUIRE(data.getFinalBlock()->isSegment());
+      BOOST_CHECK_EQUAL(data.getFinalBlock()->toSegment(), expectedSegments - 1);
+    }
+    BOOST_CHECK_EQUAL(capturedInputSegments.size(), expectedSegments);
+    BOOST_CHECK_EQUAL(segmentNumbers.size(), expectedSegments);
+    BOOST_CHECK(!capturedInputData.has_value());
+    BOOST_CHECK_LE(largestInputDataWire, 8800U);
+    BOOST_CHECK_GE(inputPrefixInterests.load(), 1U);
+    BOOST_CHECK_GE(inputExactSegmentInterests.load(), expectedSegments - 1);
+    BOOST_CHECK_GE(inputSegmentsDelivered.load(), expectedSegments);
+  }
   BOOST_CHECK(wrongProviderRejected);
   BOOST_CHECK(wrongRecipientRejected);
   BOOST_CHECK(wrongSignerRejected);
@@ -437,6 +511,14 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
 BOOST_AUTO_TEST_CASE(SelectedProviderReceivesExactEncryptedInputOnly)
 {
   runRequestScopedResponseCase(true, false, false);
+}
+
+BOOST_AUTO_TEST_CASE(SelectedProviderReceivesSegmentedEncryptedInput)
+{
+  // Regression for the 6.55 MB YOLO request: the User must publish bounded
+  // signed Data segments and the Provider must reconstruct them through its
+  // production SegmentFetcher before invoking the handler.
+  runRequestScopedResponseCase(false, false, false, 6555271);
 }
 
 BOOST_AUTO_TEST_CASE(ModifiedInlineResponseCiphertextIsRejectedBeforeDelivery)

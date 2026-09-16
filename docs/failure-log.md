@@ -1,5 +1,14 @@
 # Failure Log and Evidence Index
 
+## 2026-09-16 — UAV editable export checkpoint hook boundary
+
+四页 PPTX 导出、文本/对象检查和全页 LibreOffice/Poppler 渲染通过后，普通
+`git commit` 被既有 `.git/hooks/pre-commit` 拒绝（exit 1）：
+`Commit blocked: development-assistant files or references remain in the Git index.`
+钩子默认扫描整个 index，既有 `.specify/memory/constitution.md:16` 等引用触发拒绝。
+未重试、未绕过钩子，交付文件保留待提交；不是产品或 PPTX 验证失败。
+精简证据及产物摘要见 [UAV export review](NDNSF-UAV/slides/UPDATES_UAV-review.md#editable-powerpoint-export--2026-09-16)。
+
 ## 2026-09-16 — Spec187 authority handoff source closure
 
 新的 authority source handoff 首次使用现有依赖工作区时，在 `HANDOFF_SOURCE_UNTRACKED:examples/example-trust-anchor.cert` 处拒绝，未创建 bundle、未启动构建。该文件是依赖 checkout 的本机生成身份资料；原始记录 `.codex-tmp/spec187-authority-20260916/prepare-r1.log` 与 `prepare-r1.failure.json` 保留。改用三个锁定 revision 的干净 detached worktree 后，source handoff 成功；不放宽 untracked-source 门。
@@ -5511,3 +5520,33 @@ v63 静态门后，既有 build tree 以系统优先 PATH、`-j4` 仅构建 `spe
 2026-09-16 B187-LOCAL-YOLO selector evidence boundary：分段修复后的 r27 已完成真实 ACK/Selection/ORT CPU/response，但 Python runner 首次以 `CASE_RUNTIME_NATIVE_SELECTOR_RESULT_INVALID` 结束；C++ selector 已写出 `SPEC187_NATIVE_REQUEST_PASS`，因 Boost.Test 默认 ANSI 前缀而未被严格 `startswith` oracle 观察。原始记录 `.codex-tmp/spec187-local-yolo-r27-test-matcher-fixed.log`，通过新增 `--color_output=no` 修复并保留严格标记判据。
 
 2026-09-16 B187-LOCAL-YOLO repeat preflight boundary：r28 第二次运行的首次尝试在 MiniNDN 启动前因复制运行目录时引用不存在的 envelope key 返回 `REQUEST_ENVELOPE_KEY_UNAVAILABLE`；未产生协议结论。原始记录 `.codex-tmp/spec187-local-yolo-r28.log`，随后复用同一 candidate key、隔离状态/输出目录重跑，r28 通过。
+
+2026-09-16 B187-LOCAL-YOLO maintained-runner compatibility boundary：r33–r35 将启动失败定位到旧 MiniNDN `popenGetEnv()` 对含 `=` 的环境值使用无界 `split`；r38 仅用临时 shim 证明替换解析后可完成真实链。维护 runner 已加入进程内兼容层，并由 Python 回归测试覆盖 `util` 与 `application.getPopen` 两入口。r39 使用维护脚本完成 host MiniNDN Y-A，首个协议边界为 terminal response，`SPEC180_CASE_RESULT status=PASS case=Y-A`；原始记录 `.codex-tmp/spec187-local-yolo-r39.log`，持久证据见 [local YOLO recheck](../specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md)。不启动 SIF/Tiger，也不把该 local PASS 外推为集群资格。
+
+2026-09-16 B187-LOCAL-YOLO current-source replay boundary：r40 因新输出根目录未创建返回 `OUTPUT_ROOT_MISSING`，r41 先后暴露输出路径门禁和 `LOCAL_NATIVE_BUILD_REJECTED:PROVIDER_LINKAGE_CHANGED`；按系统优先路径重新生成 native receipt 后 `SPEC180_NATIVE_IDENTITY_OK`，r42 在 MiniNDN Controller 控制阶段于证书注册边界以 `corrupted size vs. prev_size` abort。原始记录 `.codex-tmp/spec187-local-yolo-r40.log`、`r41.log`、`r42.log` 及 `results/spec187-local-yolo-r42/controller.log`；未进入 ACK/Selection/Provider，保留 r39 历史 PASS，不计当前重放为协议 PASS，待最小化 native 崩溃诊断。
+最小化 Controller 绑定复现可构造对象但在显式删除时 `SIGSEGV`，GDB 顶层为 Certificate map 析构；这是当前 native 生命周期诊断边界，尚未归因或修复。
+
+## 2026-09-16 request-scoped segmented-input regression
+
+当前源码已将 6,555,271-byte request-scoped input 从单个 Data 改为每段 4,096-byte
+加密 Data；为满足 ndn-cxx `SegmentFetcher` 的 `prefix/version/segment` 契约，User
+与 Provider 的输入基础名同步追加 `.appendVersion(attempt)`。官方静态复审快照
+`.codex-tmp/review-segmented-input-20260916-r3/` 返回 `STATIC_PASS`，changes
+SHA256=`1ca6d5017d0ffd0d8990bbd23dfb033fcc7cb1122432c0ca49af5042c210e020`。
+
+首次运行 `RequestScopedSelection/*` 曾出现一次旧 fixture 5s timeout，边界记录在
+`.codex-tmp/spec187-segmented-input-r1/request-scoped-suite.log`，未覆盖源码异常，
+也未计为 PASS。单独重跑和第二次整套 selector 均 `rc=0`；长输入 C++ 回归实际
+观察到 1,601 segments、统一 FinalBlock、单包 wire <8,800 bytes，Provider
+SegmentFetcher 在 handler 前完成组装。相关结果见
+`specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md`。
+
+该回归只闭合了 C++ DummyFace 的分段发布/组装边界；当前源码 MiniNDN r42 的
+Controller `corrupted size vs. prev_size` 控制面崩溃仍是独立未修复边界，不能以本次
+selector 结果替代当前源码 MiniNDN、SIF/APP 或 Tiger qualification。
+
+2026-09-16 B187-LOCAL-YOLO checkpoint boundary：本次四文件本地 checkpoint 首次执行
+被现有 `.git/hooks/pre-commit` 拒绝；钩子扫描整个 Git index 中的既有
+`.specify/memory/*` 文档引用并返回 exit 1，未绕过门禁。暂存内容已保存到
+`.codex-tmp/preexisting-index-20260916.patch`；该边界不影响前述 C++ 构建与 selector
+结果。
