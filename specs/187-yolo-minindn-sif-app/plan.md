@@ -57,6 +57,35 @@ PASS with the following obligations: existing TigerCluster entrypoints remain th
 
 Each batch stops at its stable exit. A later caller, selector, source closure or hard acceptance dependency creates a new batch instead of expanding the current one. Four miss classes and comparable build scope/elapsed are recorded in the batch evidence.
 
+## End-to-End Candidate Gate (mandatory before SIF packing)
+
+The candidate is planned and checked as one closure, even though its work is
+implemented in bounded units. The order is fixed:
+
+1. **Source closure**: seal the exact source revision and enumerate every
+   production header, shared library, executable, Python extension, pkg-config
+   file and runtime manifest that the definition is expected to install.
+2. **Container build**: compile Core/DI/Repo/UAV and bindings inside the base
+   SIF. The builder must install the complete public header tree from that same
+   source seal; an inherited header or library is a failure.
+3. **Pre-pack consumer gate**: before creating a squashfs/SIF, run the SDK
+   verifier and a real C++ consumer compile/link against the assembled runtime
+   tree. Compare installed headers and loaded libraries with the source/build
+   manifests. Any failure stops the batch before the expensive pack step.
+4. **SIF gate**: create the SIF only from the verified tree, then run the same
+   native verifier under `--cleanenv --containall` with all implicit host binds
+   disabled. The SIF digest and labels become immutable candidate identity.
+5. **Behavior gate**: run the container C++ unit selector, then the native YOLO
+   smoke, then the through-MiniNDN request. Python only orchestrates these
+   processes and records evidence; it cannot close a native behavior task.
+6. **Promotion gate**: only the unchanged SIF plus its source/model/profile
+   digests may be sent to TigerCluster. QWEN remains outside this closure.
+
+The build receipt records each gate separately. A successful earlier gate is not
+retroactively changed by a later failure, and no later gate may be used to infer
+an unobserved earlier gate. This order is the primary rework control for the
+remaining Spec187 work.
+
 ## Project Structure
 
 ### Documentation

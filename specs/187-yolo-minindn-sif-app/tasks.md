@@ -12,8 +12,17 @@
 | [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | WAITING_EXTERNAL_INPUT | T003 | T003 尚未 LOCAL_PASS；未启动 Tiger/Slurm；[b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | 2026-09-15 |
 | [T005 QWEN deferral and delivery record](#t005-qwen-deferral-and-delivery-record) | DONE | — | QWEN 明确保持 TODO，未进入 YOLO candidate；[qwen-deferred.md](evidence/qwen-deferred.md) | 2026-09-15 15:16 -05:00 |
 | [T006 Design-code convergence and final evidence](#t006-design-code-convergence-and-final-evidence) | PARTIAL | T001,T002 | 两层交付改变构建边界，需重新核对受影响调用与契约；历史静态 PASS 保留，不能覆盖新方案；[convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | 2026-09-15 |
+| [T007 Pre-pack candidate closure gate](#t007-pre-pack-candidate-closure-gate) | PARTIAL | T001 | r12 SIF 的真实 C++ consumer 编译发现遗留 DI headers；需先在 assembled runtime tree 完成 source/header/library/app closure，再允许 SIF packing；[candidate](evidence/b187-complete-candidate.md) | 2026-09-16 |
 
 ## Current Checkpoint
+
+2026-09-16 清理了可重建的旧构建产物和未占用的旧 Codex 会话，磁盘恢复约 43 GiB；r12 诊断 SIF/rootfs 已移除，失败日志和证据保留。T007 冻结审查返回 `STATIC_PASS`，14 个模板测试、2 个 header/NDNSD 子集测试及 Python/`bash -n` 通过；已建立干净 HEAD `a0740640` worktree，下一步重新封存 source handoff 并从完整两阶段 definition 构建。T001/T003 仍 `PARTIAL`。
+
+2026-09-16 流程已重排为端到端候选门：source closure → container build → pre-pack C++ consumer → SIF packing → cleanenv native verifier → C++ unit → YOLO → MiniNDN。T007 先修复并验证 assembled runtime tree，未通过前不再封装；现有 r12 仅作诊断候选，不计 T001/T003 完成。
+
+2026-09-16 unit-r2 暴露 candidate 安装 DI headers 仍为父镜像旧版；r12 不是可交付候选。正在补齐真实安装清单和 header/source 一致性门，只重封装已有原生二进制，C++ 单元与 YOLO 仍待通过，T001/T003 PARTIAL。
+
+2026-09-16 r12 最终 SIF 与隔离 native 加载 PASS，摘要 `c786bed8…`，receipt 为 BUILT_UNQUALIFIED；开始容器 C++ 单元验收。YOLO/MiniNDN/Tiger 尚未通过，T001/T003 仍 PARTIAL。
 
 2026-09-16 r11 封装复制因缺少 fakeroot 无法读取三个容器私有运行目录，已中止并保留失败日志；r12 已补权限映射重试，原 final rootfs 与生产库保持不变。4 个恢复入口回归通过；最终镜像和模型验收仍未完成，T001/T003 PARTIAL。
 
@@ -160,6 +169,24 @@ there is no configurable test filter or post-run DummyClientFace substitute.
 
 **Risk class / Dynamic profile**: high / none; invariant is requirement-to-production-path-to-evidence agreement.
 
+### T007 Pre-pack candidate closure gate
+
+**Design binding**: FR-001, FR-003, FR-011; the final candidate must contain the
+same sealed DI headers, libraries, applications, bindings and manifests that
+were built in the container.
+
+**Requirement coverage**: FR-001, FR-003, FR-011.
+
+**Success criteria**: SC-001, SC-003, SC-005.
+
+**Outcome**: assembled runtime tree passes exact source/header closure, SDK
+library-origin checks, default-environment native loading, and a real C++
+consumer compile/link before any squashfs/SIF packing. A failure preserves the
+tree and stops the batch; it cannot be hidden by a later SIF or Python test.
+
+**Risk class / Dynamic profile**: high / none; invariant is one source seal,
+one ABI/runtime tree, and one immutable candidate identity.
+
 ## Batch Quality Record
 
 | Batch ID | Coverage matrix | Static findings | Compile/build misses | Runtime/test misses | Dynamic validation | Build scope / target / -j / elapsed / exit | Review trace / closure decision | Behavior result | Evidence / remaining |
@@ -169,6 +196,7 @@ there is no configurable test filter or post-run DummyClientFace substitute.
 | B187-TIGER | no execution because T003 has no LOCAL_PASS; [b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | N/A before local gate | not run | not run | NOT_RUN | not run | review-agent N/A; BLOCKED_BY_LOCAL_GATE | WAITING_EXTERNAL_INPUT | T003 LOCAL_PASS and external TigerCluster access remain |
 | B187-DEFERRED | documentation lane covered; other lanes N/A by scope | N/A by docs-only scope | N/A | N/A | N/A | N/A | review-agent N/A; CLOSED_FOR_VALIDATION | DONE | QWEN remains TODO; [qwen-deferred.md](evidence/qwen-deferred.md) |
 | B187-CONVERGENCE | production/callers, implementation, state/lifecycle, build/source closure, evidence: [convergence-20260915-r1.md](evidence/convergence-20260915-r1.md) | no P0-P2 after r7 review | target compile/link passed | missing-input selector fail-closed; real MiniNDN/SIF not observed | NOT_RUN for formal qualification | build boundary recorded in B187-LOCAL-YOLO | review-agent r7 STATIC_PASS; CLOSED_FOR_VALIDATION | DONE (static) | external candidate inputs and formal runs remain |
+| B187-PREPACK-CLOSURE | source/header/library/app closure, actual C++ consumer and evidence: [b187-complete-candidate.md](evidence/b187-complete-candidate.md) | r12 header mismatch found; repair pending | r12 unit compile exposed stale DI headers | SIF behavior not observed after repair | NOT_RUN | no production rebuild; candidate repack only after tree gate | review-agent required on frozen repair; OPEN_FOR_NEXT_BATCH until consumer compile passes | PARTIAL | complete assembled runtime tree and consumer compile required |
 
 ### Batch Retrospective
 
@@ -179,4 +207,4 @@ there is no configurable test filter or post-run DummyClientFace substitute.
 
 ## Dependencies & Execution Order
 
-T001 → T002 → T006 → T003 → T004. T005 is independent documentation work and must not add a dependency to the YOLO path. Each code task receives its own static review before the batch composition review; T003 and T004 cannot start without convergence PASS and the preceding acceptance result.
+T001 → T007 → T002 → T006 → T003 → T004. T005 is independent documentation work and must not add a dependency to the YOLO path. T007 is a mandatory pre-pack closure gate; no SIF packing, C++ unit, YOLO, or MiniNDN run begins until its assembled-tree consumer check passes. Each code task receives its own static review before batch composition review, and each later gate consumes the exact immutable identity from the previous gate.

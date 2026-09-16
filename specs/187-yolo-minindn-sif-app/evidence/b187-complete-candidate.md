@@ -26,6 +26,20 @@ Codex 两份旧故障备份从约 1.46 GiB 无损压缩至约 550 MiB，解压�
 
 ## Current result
 
+2026-09-16 清理与重排：删除了可重建的旧构建归档、旧候选 SIF/rootfs 和未占用的旧 Codex 会话文件，保留当前 Spec187 证据、失败日志、稳定 base SIF 及活动会话；磁盘余量由约 2.2 GiB 恢复到约 43 GiB。r12 的大文件仅作诊断，已删除其 candidate/rootfs，未沿用就地 header 修补。
+
+2026-09-16 B187-PREPACK-CLOSURE T007 静态门：冻结快照 `.codex-tmp/spec187-clean-restart/review-t007-r1/`，`changes.diff` SHA-256 `23d2c6079e68d918fefdd141e9d3adfa31c7e62781eb959f6c802d582c6d0c0a`，官方 review-agent 返回 `STATIC_PASS`，无 P0–P3。审查确认 DI `.h/.hpp/.hxx/.ipp/.tpp` 完整安装和 sealed replay 逐字节比较、builder/final wiring、候选内 pkg-config C++ consumer flags 及文档边界。定向模板检查 `14 passed`，header/NDNSD 过滤子集 `2 passed`，Python 编译、`build-local-sif.sh` 语法检查通过；ShellCheck 仅报告既有 SC2015/SC1007 风格提示。实际容器编译、SIF 封装、C++/YOLO/MiniNDN 仍未观测，T001/T003 保持 PARTIAL。
+
+r12 的 header-only 恢复脚本不再使用；下一候选将使用 HEAD `a0740640` 的干净 NDNSF worktree、稳定 base SIF `8ebfc464…` 和新的 source seal，从完整两阶段 definition 重新走 pre-pack consumer gate。
+
+`unit-r2` 发现真实 header closure 缺口：current 安装目录的 AsyncDataflowRuntime.hpp SHA `7c371a6e…` 与 sealed source `5519d155…` 不同，缺少 RedistributionSpec；builder 安装逻辑只复制 Core hpp，遗留 DI hpp 来自父镜像。r12 不能计可交付。新增 header-only 修复批次：正式 builder/final 替换 DI headers，native verifier 比较完整头文件集及字节，回归拒绝缺失/旧/额外头。保留同一原生库，不调整 include 优先级掩盖错误。待审快照 `review-headers-r1`，`unit-r2` 日志/FAIL record 保留，compile-link 漏检。
+
+`unit-r1` compile-link 失败：手写 fixture flags 未携带 `libnac-abe.pc` 的 `NAC_ABE_CMAKE_BUILD`，两个测试源包含 production header 时找不到配置头。候选 SDK 文件存在且 pkg-config 给出正确参数，修复 test driver 使用容器 pkg-config；不修改 SIF/生产二进制。实际 FAIL record 与 log 保留，属于 compile-link 静态漏检，未计单元 PASS。
+
+r12 最终 SIF 构建与默认隔离 native verifier 均 exit 0，SHA-256 `c786bed830ecc12af8354819118a01dcae11564dd12e3b7d74e4db4f7630e7f8`，路径 `Experiments/TigerCluster/images/spec187-complete-20260915-r12/candidate.sif`。实际 receipt `build-r12/record.json` 保持 BUILT_UNQUALIFIED / NOT_AUTHORIZED，生产来源 `587abb29`。开始 `unit-r1` 容器内 C++ 编译/单元验收，尚未宣称模型或 MiniNDN PASS。
+
+r12 fakeroot 复制完成，`copy-di.diff` / `copy-app.diff` 均为空（diff exit 0），92 环境文件 cmp exit 0；三个私有目录 UID/GID 165531:165531、mode 750 与原件一致。实际 mksquashfs 输入确认是 r12 新 rootfs 后，释放 r8 重复 rootfs 主体以避免双份目录＋压缩文件＋最终 SIF 的磁盘峰值；少量不可读私有空目录残留不计完整 rootfs。旧 recipe 已保存在 `app-runtime-r10.def`；Apptainer 将新复制树内 `.singularity.d/Singularity` 改为 localimage packing recipe，属于恢复封装 provenance，非生产代码变化。原 r8 不再可恢复，r12 在压缩中，尚无最终 PASS。
+
 B187-FINAL-PACK-USER STATIC_PASS / COMPOSITION_PASS，diff `5f2131665db7a0b366384547b55f1fd2a6f0a185450654ac1962f671e75a8a07`。4 个 build-only/resume CLI 回归通过（4.70s），`pack-user-tests-r1.log`。已确认 r11 进程退出并仅删除其不完整复制目录，原 final rootfs 不动；r12 使用 fakeroot 重新封装，验收尚待结果。
 
 r11 SDK/native 通过后，sandbox 复制暴露 `/run/ndnsf-di`、`/run/nfd`、`/tmp/ndnsf-di` 的容器 UID 私有目录不可由普通宿主用户读取。已中止（SIGINT）该打包，保留原 rootfs；恢复命令增补 `--fakeroot` 保持权限和 UID 映射，不能接受遗漏目录的镜像或放宽私有目录权限。首边界与日志保存于 `build-r11/build.log`，runtime-test 漏检。
