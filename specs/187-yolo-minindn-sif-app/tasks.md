@@ -15,6 +15,12 @@
 
 ## Current Checkpoint
 
+2026-09-15 storage cleanup DONE；候选构建仍暂停：已归档并逐文件核对 9 月 6 日两个旧 native build 后释放原目录；旧临时 checkout 的 RELEASE 副本与保留件比较一致后删除。Codex 两份故障备份无损压缩；82 个超过 30 天未更新的会话经 archive 内容比较及活动检查后压缩归档，可恢复，未改数据库。当前可用约 23 GiB；封存 base、模型、密钥和当前/近期会话保留。下一步先修复 build-r2 的临时目录权限/隔离边界，再继续构建。
+
+2026-09-15 B187-NDNSF-CONSUMER / PARTIAL，按用户要求先暂停构建、清理磁盘：build-r2 已通过 base SDK 复验，随后在清理旧 `/tmp/nac-abe-build` 等目录时因权限拒绝停止，尚未编译仓库目标。原始 log/record 保留；清理完成后先修复构建临时目录隔离，不重建或修改封存 base。
+
+2026-09-15 B187-NDNSF-CONSUMER / PARTIAL：新 `bundle-r4` 与 definition 已封存，使用不可变 base `8ebfc464…` 启动完整候选 build-r2。只重建仓库目标，外部 SDK 沿用 base；原生 runner r2 已静态/组合通过，待本轮候选内实际编译运行。原始日志 `.codex-tmp/spec187-app-build-20260915/build-r2/build.log`；构建中不计 PASS，见 [candidate evidence](evidence/b187-complete-candidate.md)。
+
 2026-09-15 B187-BASE-SDK / DONE（base only）：最终 SIF SHA-256 `8ebfc4646a5f96109a8480b120e684ee3923bf067d2e49aef53b42d29e5acdd9`，4,087,824,384 bytes。最终镜像基础/SDK 原生检查通过，坏库覆盖按摘要拒绝；C++/ORT YOLO CPU 三次 oracle 对照通过。已封存于仓库外 `ndnsf-artifacts/base-sif/<sha256>/`，完整清单校验与移动后镜像复验通过、文件只读；构建 lock 已绑定新 base。T001/T003 保持 PARTIAL，下一步是 NDNSF consumer 实际构建与本地完整候选验收；不声明 MiniNDN/Tiger。见 [封存证据](evidence/b187-base-sdk-sealed.md)。
 
 2026-09-15 B187-BASE-SDK / PARTIAL：r5 修复后已在保留 rootfs 通过真实 SDK C++/Rust/Python/GStreamer/ELF 验证及基础 NumPy/NFD smoke；consumer r2 静态门与 46 项定向测试通过（5.59s）。当前封装最终 base SIF，按用户要求先验收并永久封存，再继续 NDNSF candidate；尚不声明最终镜像 PASS。见 [完整候选记录](evidence/b187-complete-candidate.md)。

@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## 2026-09-15 — Spec187 consumer temporary directory cleanup
+
+build-r2 通过封存 base 的 SDK verifier 后，在清理固定 `/tmp/nac-abe-build` 等历史目录时权限拒绝，未开始 NDNSF 编译；不是模型或协议失败。按用户指示暂停重试先清理磁盘，之后修复构建临时目录隔离。见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
+## 2026-09-15 — Spec187 consumer definition render preflight
+
+`bundle-r4` 封存成功后，render 的相对 bundle 路径被 `HANDOFF_BUNDLE_PATH_NOT_ABSOLUTE` 拒绝，尚未构建。改用绝对路径，保留 `.codex-tmp/spec187-app-build-20260915/render-r4.log`；见 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。
+
 ## 2026-09-15 — Spec187 base SDK probe include closure
 
 外部依赖实际编译安装完成后，SDK C++ probe 缺少 `/opt/ndn-base/include/nac-abe`，`common.hpp` 无法解析。`images/base-sdk-20260915-r1/build.log`、FAIL record 与 rootfs 保留；修复并复审后复用该现场验证，不将编译成功当 SDK PASS。见 [完整候选证据](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)。

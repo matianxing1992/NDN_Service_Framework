@@ -16,11 +16,19 @@
 
 ## Storage
 
+2026-09-15 用户再次要求先清理垃圾及过旧 Codex 会话，构建保持暂停。两个 9 月 6 日旧 build 归档为 `.codex-tmp/build-retention-20260915/old-sep06-native-builds.tar.zst`（约 851 MiB），`tar --diff` exit 0 后删除原 build-merge/build-abi，保留源码。六份临时/旧 checkout 的三个 RELEASE 大包分别与根目录保留件 `cmp` exit 0 后删重复文件，没有删除 Git 历史或原始运行日志。
+
+Codex 两份旧故障备份从约 1.46 GiB 无损压缩至约 550 MiB，解压流与原文件 `cmp` exit 0 后移除未压缩副本。用户未选择永久删除期限，因此采用可恢复的 30 天归档：82 个会话约 328 MiB 压缩至 186 MiB；`tar --diff` exit 0，当前 thread 与可见打开文件排除，删除未压缩副本前再次核对 inode/size/mtime。归档、清单及恢复说明在 `/home/tianxing/.codex/session-backups/cleanup-20260915/`。未改 live Codex SQLite/index，近期/活跃大会话、封存 base、模型和密钥均保留。当前磁盘可用约 23 GiB。
+
 准备结果更新：按原 Cargo.lock fetch 补齐 wasi 与 zerocopy-derive 后，`native-inputs-r2` 的 offline vendor 和封存成功；完整六文件摘要已写入 `development-handoff.lock.json`。首次 handoff 由于复用了依赖工作区中的未跟踪 `examples/example-trust-anchor.cert` 被拒绝（`handoff-r1.log`），未创建 bundle。改用三份依赖各自锁定提交的干净 detached worktree，避免将本机生成的身份资料纳入封存，不放宽 tracked-source 检查。
 
 旧 `build-spec185-b3-asan-ubsan-fast` 已归档为 `.codex-tmp/build-retention-20260915/spec185-asan-build.tar.zst`，`tar --diff` exit 0 后释放原目录。二进制和原始记录仍可从归档恢复；没有删除模型、密钥、当前 normal build 或 Git 历史。另七个旧 build/static snapshot 的归档同目录，完成内容比较后再释放原目录。
 
 ## Current result
+
+build-r2 首边界为 builder 清理历史 `/tmp/nac-abe-build`、`/tmp/ndnsf-build-python`、`/tmp/ndnsf-pc` 的 Permission denied / Operation not permitted；base SDK 复验已 PASS，尚未启动 NDNSF 编译。记录 `.codex-tmp/spec187-app-build-20260915/build-r2/build.log` / `record.json` 保留。用户要求先清理磁盘尤其旧 Codex 会话，暂停重试；后续先修复临时目录隔离，不把该失败判为 SDK/协议失败。
+
+续行 B187-NDNSF-CONSUMER：`bundle-r4` 为 SOURCE_READY，source seal `2815292f44c8f571ebbb73d375fc84765f3b971db07e08f43e58b24a91e76cdf`，新增已审查的 UAV probe 源文件并绑定封存 base。首个 render 调用因相对 bundle 路径被 `HANDOFF_BUNDLE_PATH_NOT_ABSOLUTE` 拒绝，未启动构建；原始 `render-r4.log` 保留，下一调用使用绝对路径。Context Mode project health PASS / active hash stale，进度以本地 Spec 为准。
 
 最新结果：最终 base SIF 真实验收并永久封存，SHA-256 `8ebfc4646a5f96109a8480b120e684ee3923bf067d2e49aef53b42d29e5acdd9`。基础/SDK probe、坏库覆盖拒绝、三次 C++/ORT YOLO CPU oracle 对照、封存清单校验与移动后复验均通过；见 [base 封存记录](b187-base-sdk-sealed.md)。仅 B187-BASE-SDK DONE，NDNSF consumer 实际候选仍待构建，T001/T003 保持 PARTIAL。下文保留先前阶段和失败边界。
 
