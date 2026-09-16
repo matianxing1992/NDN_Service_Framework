@@ -134,8 +134,20 @@ def test_repository_tokenizer_build_uses_base_vendor_identity(tmp_path):
     assert '--onnx-prefix=/opt/onnx' in text
     assert 'export NDNSF_CARGO_HOME=/opt/cargo-home' in text
     assert 'export NDNSF_RUST_PREFIX=/opt/rust' in text
-    assert 'export NDNSF_TOKENIZER_BRIDGE_TARGET=/tmp/tokenizer-build' in text
+    assert 'export NDNSF_TOKENIZER_BRIDGE_TARGET=/opt/ndnsf-build-work/tokenizer' in text
     assert "manifest['crate'][name]" in text
+
+
+def test_builder_scratch_never_cleans_host_tmp_paths(tmp_path):
+    text = render(tmp_path).read_text()
+    builder = {s.name: s for s in boundary._parse_stages(text)}['builder'].sections['post']
+    assert builder.index('export TMPDIR=/opt/ndnsf-build-work/tmp') < builder.index('dependency-sdk.py verify')
+    assert 'unset TMPDIR' in builder
+    for line in builder.splitlines():
+        if line.strip().startswith('rm '):
+            assert not re.search(r'(^|\s)/tmp(?:/|\s|$)', line)
+    assert '/tmp/ndnsf-build-python' not in builder
+    assert '/tmp/ndnsf-pc' not in builder
 
 
 @pytest.mark.parametrize('mutation', ['none', 'base', 'crate'])

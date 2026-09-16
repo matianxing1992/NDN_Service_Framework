@@ -315,7 +315,8 @@ if [ "$bootstrap" = localimage ]; then
 fi
 
 echo "LOCAL_SIF_BUILD_START definition=$definition output=$sif apptainer=$local_version binary=$apptainer_bin"
-"$apptainer_bin" build --force "$partial" "$definition"
+# Retain failed container work for diagnosis and an evidence-bound continuation.
+"$apptainer_bin" build --no-cleanup --force "$partial" "$definition"
 [ -s "$partial" ] || { echo LOCAL_SIF_EMPTY >&2; exit 4; }
 inspect_json=$("$apptainer_bin" inspect --json "$partial")
 if ! ndnsf_labels_json=$(python3 - "$definition" "$inspect_json" "$source_seal" <<'PY'
