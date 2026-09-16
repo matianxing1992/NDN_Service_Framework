@@ -52,6 +52,12 @@ SIF_RUNTIME_APPTAINER = os.environ.get(
 SIF_RUNTIME_REPO = "/opt/ndnsf-di/replay/repo"
 SIF_RUNTIME_PYTHON = "/opt/venv/bin/python"
 SIF_RUNTIME_RUN_ROOT = "/run/spec186"
+# RuntimeJournal deliberately rejects /run, /tmp, and /dev/shm roots in
+# production.  Keep the host case tree mounted at /run/spec186 for evidence
+# and sockets, but expose its persistent journal subtree at a non-volatile
+# in-image path so the sealed child sees the same bytes without weakening the
+# journal safety policy.
+SIF_RUNTIME_STATE_ROOT = "/opt/ndnsf-di/spec186-state"
 SIF_RUNTIME_PYTHONPATH = ":".join((
     "/opt/venv/lib/python3.10/site-packages",
     f"{SIF_RUNTIME_REPO}/NDNSF-DistributedInference",
@@ -125,6 +131,13 @@ def _sif_visible_path(path: str | Path, run_root: str | Path | None) -> str:
     value = str(path)
     if not run_root:
         return value
+    # Environment values such as ``1``, ``*=WARN``, identities, and service
+    # names are opaque strings, not host paths.  Resolving a relative value
+    # against the process cwd is unsafe because MiniNDN may change cwd while
+    # launching a node; a later call would then spuriously rewrite it below
+    # ``/run/spec186``.  Only absolute paths can belong to the bound tree.
+    if not Path(value).expanduser().is_absolute():
+        return value
     try:
         root = Path(run_root).expanduser().resolve(strict=False)
         candidate = Path(value).expanduser().resolve(strict=False)
@@ -187,12 +200,22 @@ def _sif_bind_args(base_env: Mapping[str, str] | None = None) -> list[str]:
         if input_path.is_dir() and str(input_path) not in seen:
             seen.add(str(input_path))
             result.extend(["--bind", f"{input_path}:{input_path}:ro"])
+        # The maintained YOLO user accepts a key-map whose values are
+        # relative to the case bundle (for example
+        # ``offer-public-keys/FullModel.pub``).  Exact-SIF children start in
+        # ``/`` for the Apptainer 1.5.3 MiniNDN race workaround, so expose
+        # this public-only subdirectory at the path used by that map.  The
+        # case bundle itself remains mounted at its immutable absolute path.
+        public_keys = input_path / "offer-public-keys"
+        if public_keys.is_dir():
+            result.extend(["--bind", f"{public_keys}:/offer-public-keys:ro"])
     run_root_value = str(env.get("SPEC180_RUNTIME_RUN_ROOT", "")).strip()
     if run_root_value:
         run_root = Path(run_root_value).expanduser().resolve()
         if run_root.is_dir() and str(run_root) not in seen:
             seen.add(str(run_root))
             result.extend(["--bind", f"{run_root}:{SIF_RUNTIME_RUN_ROOT}:rw"])
+            result.extend(["--bind", f"{run_root}:{SIF_RUNTIME_STATE_ROOT}:rw"])
     return result
 
 
@@ -217,7 +240,13 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
     else:
         pieces.extend(["--home", '"${HOME:-/tmp/minindn}:${HOME:-/tmp/minindn}"'])
     pieces.extend([
-        "--pwd", SIF_RUNTIME_REPO,
+        # All replay scripts and native binaries are referenced by absolute
+        # paths below.  Starting at the image root avoids an Apptainer 1.5.3
+        # race seen when MiniNDN launches several NFD namespaces at once:
+        # the otherwise valid replay directory can be unavailable while the
+        # per-process home bind is being assembled, yielding a misleading
+        # ``failed to set working directory`` startup failure.
+        "--pwd", "/",
         "--env", "PATH=/opt/venv/bin:/opt/ndnsf-di/current/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         "--env", "LD_LIBRARY_PATH=" + ":".join(filter(None, (
             str(env.get("SPEC180_RUNTIME_APP_LIB", "")).strip(),
@@ -232,6 +261,11 @@ def sif_exec_prefix(base_env: Mapping[str, str] | None = None,
         if key in {"SPEC180_RUNTIME_SIF", "SPEC180_RUNTIME_APPTAINER"}:
             continue
         mapped = _sif_visible_path(value, env.get("SPEC180_RUNTIME_RUN_ROOT"))
+        if key in {"NDNSF_DI_STATE_ROOT", "NDNSF_CONTROLLER_GENERATION_STATE"}:
+            runtime_root = env.get("SPEC180_RUNTIME_RUN_ROOT")
+            mapped_state = _sif_visible_path(value, runtime_root)
+            if mapped_state.startswith(SIF_RUNTIME_RUN_ROOT + "/"):
+                mapped = SIF_RUNTIME_STATE_ROOT + mapped_state[len(SIF_RUNTIME_RUN_ROOT):]
         if key == "SPEC180_RUNTIME_RUN_ROOT":
             mapped = SIF_RUNTIME_RUN_ROOT
         pieces.extend(["--env", f"{key}={mapped}"])
@@ -922,7 +956,18 @@ class MiniNdnCaseRuntime:
             """Render a path for a child process inside the exact SIF."""
             if not sif_runtime_enabled():
                 return str(path)
-            return _sif_visible_path(path, self.binding.output)
+            # The launcher binds the complete case run directory to
+            # ``/run/spec186``.  ``binding.output`` is the nested evidence
+            # directory, so using it as the mapping root would render
+            # ``evidence/case-policy.json`` as ``/run/spec186/case-policy``
+            # even though the file is mounted at
+            # ``/run/spec186/evidence/case-policy``.  Keep command arguments,
+            # state, secrets, and generated artifacts relative to the same
+            # parent bind root used by ``_sif_bind_args``.
+            run_root = self.inputs.get("runtime_run_root")
+            if run_root is None:
+                run_root = os.environ.get("SPEC180_RUNTIME_RUN_ROOT", "")
+            return _sif_visible_path(path, run_root or self.binding.output)
 
         def verify_declared_digest(field: str, path: Path, code: str) -> None:
             expected = descriptor.get(field)
@@ -2654,6 +2699,14 @@ def validate_inputs(case: str, environment: Mapping[str, str]) -> tuple[Path, Ma
         json.dumps(case_plan, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+    runtime_run_root_value = str(environment.get("SPEC180_RUNTIME_RUN_ROOT", "") or "").strip()
+    runtime_run_root: Path | None = None
+    if runtime_run_root_value:
+        runtime_run_root = Path(runtime_run_root_value).expanduser().resolve()
+        try:
+            output.relative_to(runtime_run_root)
+        except ValueError as exc:
+            raise RunnerError("RUNTIME_RUN_ROOT_OUTPUT_MISMATCH") from exc
     return output, {"package": package, "registry": registry,
                     "offer_trust_root": trust_root,
                     "offer_public_key_map": key_map_path,
@@ -2662,7 +2715,8 @@ def validate_inputs(case: str, environment: Mapping[str, str]) -> tuple[Path, Ma
                     "manifest": manifest, "descriptor": descriptor,
                     "case_plan": case_plan, "case_policy": case_policy,
                     "config_doc": config_doc, "state_root": state_root,
-                    "envelope_key_file": envelope_key_file}
+                    "envelope_key_file": envelope_key_file,
+                    "runtime_run_root": runtime_run_root}
 
 
 def _wait_for_runtime_receipt(output: Path, publication: Path,

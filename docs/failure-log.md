@@ -5506,6 +5506,32 @@ which differs from the Spec186 handoff seal
 - **Lesson**: environment scrubbing must preserve every variable consumed by
   the orchestrator itself; an application dependency list alone is incomplete.
 
+### 2026-09-16 — Spec186 exact-SIF YOLO reached terminal response but cleanup forced Controller
+
+- **Area**: minimal local `yolo-minindn-atomic` exact-SIF replay.
+- **Symptoms**: the first SIF replay could not open the relative
+  `offer-public-keys/FullModel.pub`; after that path was exposed, the Provider
+  reported no `DI_NativeOnnxAssemblyWorker`; after the worker was supplied in
+  the immutable application bundle, the User produced
+  `YOLO_ACK_DRIVEN_RESULT status=true`, numerical validation matched shape
+  `[1,50,6]` with maximum absolute error `0.0005340576171875`, but the outer
+  case returned `CASE_TERMINAL_CLEANUP_FAILURE:controller:-9`.
+- **Root causes**: exact-SIF children start at `/`, while the maintained key
+  map contains a case-relative public-key path; the sealed application bundle
+  did not contain the fixed worker executable that the native Provider looks
+  up beside its Provider binary; the Controller keeps a publishing ServiceUser
+  alive and does not finish shutdown inside the bounded legacy process stop
+  window.
+- **Corrections**: bind the public-key subdirectory read-only at
+  `/offer-public-keys`; compile the worker in the matching SIF builder and add
+  it to a separate hash-bound application bundle; preserve the exact result
+  and numerical evidence even when teardown fails; extend the local stop wait
+  to 30 seconds. The Controller shutdown path still needs a follow-up fix to
+  stop its publishing ServiceUser before returning.
+- **Lesson**: a real terminal response and clean process teardown are separate
+  acceptance dimensions. Keep both in the evidence instead of relabeling a
+  forced cleanup as a protocol failure or a clean PASS.
+
 ### 2026-09-16 — Spec186 root MiniNDN child received an unmapped host path
 
 - **Symptom:** The first root local Y-A replay reached the MiniNDN process

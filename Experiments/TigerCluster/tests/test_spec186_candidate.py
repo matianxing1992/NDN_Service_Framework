@@ -436,6 +436,8 @@ def test_sif_child_paths_map_only_case_run_root(tmp_path):
     ) == "/run/spec186/security/request-envelope.key"
     external = tmp_path / "case-bundle/case-config.json"
     assert runner._sif_visible_path(external, run_root) == str(external)
+    assert runner._sif_visible_path("1", run_root) == "1"
+    assert runner._sif_visible_path("*=WARN", run_root) == "*=WARN"
 
 
 def test_tiger_render_targets_apptainer_and_yolo_runner():

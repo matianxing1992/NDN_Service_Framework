@@ -109,6 +109,10 @@ def render_effective(profile: Mapping[str, Any], manifest: Mapping[str, Any],
         "PYTHONNOUSERSITE": "1",
         "NDNSF_DI_STATE_ROOT": data_root + "/state",
         "NDNSF_DI_ENVELOPE_KEY_FILE": data_root + "/security/request-envelope.key",
+        # ServiceController must use the case-scoped writer lease.  Its
+        # historical fallback is a shared /tmp file, which is unsafe across
+        # runs and is rejected by the generation store under exact SIF replay.
+        "NDNSF_CONTROLLER_GENERATION_STATE": data_root + "/state/controller-generation.state",
         "SPEC180_CASE_OUTPUT_DIR": data_root + "/evidence",
         # The host MiniNDN launcher owns this absolute tree. Exact-SIF child
         # processes see the same tree at /run/spec186; the runner translates
@@ -364,6 +368,21 @@ def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
     child = None
     exit_code = 125
     forced = False
+    # ``requestSeconds`` bounds the request phase inside the harness; it is
+    # not the wall-clock budget for MiniNDN/NFD startup plus catalogue
+    # publication and terminal cleanup.  Killing the outer runner at that
+    # point leaves NFD children outside its process group and turns a real
+    # readiness failure into an opaque wrapper timeout.  Diagnostic command
+    # overrides retain the short request bound because they intentionally do
+    # not execute the qualification harness.
+    if command is None:
+        local_timeout = sum(
+            int(profile["timeouts"][name])
+            for name in ("startupSeconds", "requestSeconds",
+                         "completionSeconds", "cleanupSeconds")
+        )
+    else:
+        local_timeout = int(profile["timeouts"]["requestSeconds"])
     try:
         with log_path.open("wb") as log:
             # Keep the host launcher usable while preventing host ABI and
@@ -388,13 +407,33 @@ def local_run(profile_path: Path, candidate_path: Path, *, run_id: str,
             if os.environ.get("APPTAINER_CONFIG_FILE"):
                 child_env["APPTAINER_CONFIG_FILE"] = os.environ[
                     "APPTAINER_CONFIG_FILE"]
+            # The host launcher performs the canonical YOLO package check
+            # before it starts MiniNDN.  That check imports the source-tree
+            # Python bindings, whose extension is linked against the exact
+            # application bundle selected by the candidate.  Supply only the
+            # bundle's native directory (plus the fixed ONNX SDK prefixes),
+            # rather than inheriting a developer's ambient LD_LIBRARY_PATH.
+            # Nested SIF children receive their own /app/bundle/lib path from
+            # sif_exec_prefix(); this host-only path fixes the preflight
+            # boundary without changing the sealed runtime.
+            if profile["case"].startswith("yolo-"):
+                bundle = Path(profile["runtime"]["application"]["bundle"]["path"])
+                app_lib = bundle / "lib"
+                if app_lib.is_dir():
+                    host_library_roots = [str(app_lib)]
+                    for sdk_lib in (Path("/opt/onnxruntime/lib"),
+                                    Path("/opt/onnx/lib")):
+                        if sdk_lib.is_dir():
+                            host_library_roots.append(str(sdk_lib))
+                    child_env["LD_LIBRARY_PATH"] = os.pathsep.join(
+                        host_library_roots)
             child_env.update({str(key): str(value)
                               for key, value in effective["environment"].items()})
             child = subprocess.Popen(argv, cwd=str(run_root), env=child_env,
                                      stdin=subprocess.DEVNULL, stdout=log,
                                      stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                exit_code = child.wait(timeout=profile["timeouts"]["requestSeconds"])
+                exit_code = child.wait(timeout=local_timeout)
             except subprocess.TimeoutExpired:
                 forced = True
                 os.killpg(child.pid, signal.SIGTERM)

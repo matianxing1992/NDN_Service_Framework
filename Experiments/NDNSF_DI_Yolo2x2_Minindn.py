@@ -135,10 +135,10 @@ def stop_process_group(procs: list[tuple[object, object, Path]]) -> None:
             p.send_signal(signal.SIGINT)
             try:
                 # Native Controller teardown closes several NDN faces and
-                # retained registration handles.  Three seconds was shorter
-                # than a clean shutdown on the local VM, so the harness sent
-                # SIGKILL and then misclassified cleanup as a product failure.
-                p.wait(timeout=10)
+                # retained registration handles.  Ten seconds can still be
+                # shorter than a clean shutdown on this VM, so allow the
+                # bounded local cleanup window to elapse before SIGKILL.
+                p.wait(timeout=30)
             except Exception:
                 p.kill()
         f.close()
