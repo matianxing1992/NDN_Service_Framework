@@ -81,3 +81,19 @@ def test_boundary_rejects_a_host_native_payload_counterfactual(tmp_path):
     path.write_text(path.read_text().replace("%files\n", "%files\n    /unavailable/host.so /build-input/host.so\n", 1))
     with pytest.raises(boundary.Spec170BuildBoundaryError, match="WRONG_BUILD_BOUNDARY_HOST_BINARY_INPUT"):
         boundary.validate_definition(path)
+
+
+def test_builder_uses_isolated_sdk_as_app_input(tmp_path):
+    text = render(tmp_path).read_text()
+    builder = {s.name: s for s in boundary._parse_stages(text)}['builder'].sections['post']
+    stage = builder.index('"/opt/ndn-base/sdk/lib/$library" "/opt/ndnsf-stage/lib/$library"')
+    assert stage < builder.index('/usr/bin/cmake -S /src/nac-abe')
+    assert '-DCMAKE_LIBRARY_PATH=/opt/ndnsf-stage/lib' in builder
+    assert 'export LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndn-base/lib' in builder
+    for line in builder.splitlines():
+        if 'export LD_LIBRARY_PATH=' in line:
+            assert '/opt/ndn-base/sdk' not in line
+    assert '/usr/local/lib/libopenabe.so /opt/ndnsf-stage' not in builder
+    assert 'python3.10-dev' not in builder
+    assert "Path(sysconfig.get_paths()['include'], 'Python.h').is_file()" in builder
+    assert '-Wl,-rpath,/opt/ndnsf-di/current/lib' not in builder

@@ -24,7 +24,7 @@ Stage: builder
     export CXXFLAGS="-B/usr/bin -DBOOST_PHOENIX_DONT_USE_PREPROCESSED_FILES"
     export LDFLAGS="-B/usr/bin"
     export PYTHONNOUSERSITE=1
-    export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
+    export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
     # Drop inherited application objects and build trees before using the base.
     rm -rf /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /tmp/nac-abe-build /tmp/ndnsf-build-python /tmp/ndnsf-pc
     rm -rf /opt/ndnsf-stage /opt/ndnsf-candidate /opt/ndnsf-di/replay
@@ -40,7 +40,7 @@ Stage: builder
     export DEBIAN_FRONTEND=noninteractive
     sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
     apt-get -o Acquire::Retries=3 update
-    apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates python3.10-dev
+    apt-get install -y --no-install-recommends build-essential cmake pkg-config libgmp-dev libssl-dev libsqlite3-dev libboost-all-dev libpcap-dev protobuf-compiler libprotobuf-dev libgtkmm-3.0-dev ca-certificates
     rm -rf /var/lib/apt/lists/*
     install -d /src/ndnsf /src/ndn-svs /src/nac-abe /src/ndn-sd /opt/ndnsf-stage/bin /opt/ndnsf-stage/include /opt/ndnsf-stage/lib/pkgconfig /opt/ndnsf-stage/python /opt/ndnsf-stage/manifest /opt/ndnsf-stage/replay/repo /tmp/ndnsf-pc /tmp/ndnsf-build-python
     /opt/venv/bin/python - <<'PY'
@@ -79,31 +79,36 @@ PY
     tar -xf /build-input/nacAbe.tar -C /src/nac-abe
     tar -xf /build-input/ndnSd.tar -C /src/ndn-sd
 
-    export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig
+    # The base SDK is a build input only. Publish regular APP-owned copies
+    # before compiling consumers; never add the SDK to the runtime loader path.
+    for library in libopenabe.so librelic.so librelic_ec.so; do
+        test -f "/opt/ndn-base/sdk/lib/$library"
+        install -m 0755 "/opt/ndn-base/sdk/lib/$library" "/opt/ndnsf-stage/lib/$library"
+    done
+    test -f /opt/ndnsf-di/current/include/openabe/openabe.h
+    export CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include:/opt/ndn-base/include
+    export LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndn-base/lib
+    export PKG_CONFIG_PATH=/opt/ndnsf-di/current/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig
     /usr/bin/cmake -S /src/nac-abe -B /tmp/nac-abe-build \
       -DCMAKE_BUILD_TYPE=Release -DHAVE_TESTS=OFF -DBUILD_EXAMPLES=OFF \
       -DCMAKE_CXX_COMPILER=/usr/bin/g++ -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
       -DCMAKE_INSTALL_PREFIX=/opt/ndnsf-di/current -DCMAKE_INSTALL_LIBDIR=lib \
-      -DCMAKE_PREFIX_PATH=/opt/ndnsf-di/current \
-      -DCMAKE_LIBRARY_PATH=/opt/ndnsf-di/current/lib
+      -DCMAKE_PREFIX_PATH='/opt/ndnsf-di/current;/opt/ndn-base' \
+      -DCMAKE_LIBRARY_PATH=/opt/ndnsf-stage/lib \
+      -DCMAKE_INSTALL_RPATH='$ORIGIN:/opt/ndn-base/lib' \
+      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
     /usr/bin/cmake --build /tmp/nac-abe-build --parallel 2 --verbose
     /usr/bin/cmake --install /tmp/nac-abe-build
     test "$(pkg-config --variable=includedir libnac-abe)" = /opt/ndnsf-di/current/include
     test "$(pkg-config --variable=libdir libnac-abe)" = /opt/ndnsf-di/current/lib
     test -f /opt/ndnsf-di/current/include/nac-abe/consumer.hpp
     install -m 0755 /opt/ndnsf-di/current/lib/libnac-abe.so /opt/ndnsf-stage/lib/libnac-abe.so
-    # NAC-ABE's dynamically loaded OpenABE/Relic objects are part of the
-    # application ABI. Stage regular copies so an external APP does not
-    # depend on an unrecorded /usr/local/lib or host loader path.
-    install -m 0755 /usr/local/lib/libopenabe.so /opt/ndnsf-stage/lib/libopenabe.so
-    install -m 0755 /usr/local/lib/librelic.so /opt/ndnsf-stage/lib/librelic.so
-    install -m 0755 /usr/local/lib/librelic_ec.so /opt/ndnsf-stage/lib/librelic_ec.so
     cp -a /opt/ndnsf-di/current/include/nac-abe /opt/ndnsf-stage/include/
     install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/libnac-abe.pc /opt/ndnsf-stage/lib/pkgconfig/libnac-abe.pc
 
     export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/venv/bin:/opt/ndnsf-di/current/bin
-    export LD_LIBRARY_PATH=/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
-    export PKG_CONFIG_PATH=/tmp/ndnsf-pc:/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/tmp/ndnsf-pc:/opt/ndnsf-di/current/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
     cd /src/ndn-svs
     ./waf configure --prefix=/opt/ndnsf-di/current --libdir=/opt/ndnsf-di/current/lib --boost-includes=/usr/include --boost-libs=/usr/lib/x86_64-linux-gnu
     ./waf -j2 -v
@@ -116,11 +121,11 @@ PY
     # NDNSD owns SVSPubSub objects and must follow the selected SVS ABI.
     # Its pkg-config metadata must come from the pinned, repaired source.
     export CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include
-    export LIBRARY_PATH=/opt/ndnsf-di/current/lib
+    export LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib
     export CXX="/usr/bin/g++ -B/usr/bin"
     export CPPFLAGS="-I/opt/ndnsf-di/current/include"
-    export LINKFLAGS="-L/opt/ndnsf-di/current/lib -Wl,-rpath,/opt/ndnsf-di/current/lib"
-    export LDFLAGS="-B/usr/bin -L/opt/ndnsf-di/current/lib -Wl,-rpath,/opt/ndnsf-di/current/lib"
+    export LINKFLAGS='-L/opt/ndnsf-di/current/lib -Wl,-rpath,$ORIGIN/../lib:/opt/ndn-base/lib'
+    export LDFLAGS='-B/usr/bin -L/opt/ndnsf-di/current/lib -Wl,-rpath,$ORIGIN/../lib:/opt/ndn-base/lib'
     test "$(pkg-config --variable=includedir libndn-svs)" = /opt/ndnsf-di/current/include
     test "$(pkg-config --variable=libdir libndn-svs)" = /opt/ndnsf-di/current/lib
     cd /src/ndn-sd
@@ -135,8 +140,8 @@ PY
     install -m 0644 /opt/ndnsf-di/current/lib/pkgconfig/ndnsd.pc /opt/ndnsf-stage/lib/pkgconfig/ndnsd.pc
 
     export CPLUS_INCLUDE_PATH=/opt/ndnsf-di/current/include
-    export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/onnxruntime/lib
-    export PKG_CONFIG_PATH=/opt/ndnsf-stage/lib/pkgconfig:/tmp/ndnsf-pc:/opt/ndnsf-di/current/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
+    export LD_LIBRARY_PATH=/opt/ndnsf-stage/lib:/opt/ndnsf-di/current/lib:/opt/ndn-base/lib:/opt/onnxruntime/lib
+    export PKG_CONFIG_PATH=/opt/ndnsf-stage/lib/pkgconfig:/tmp/ndnsf-pc:/opt/ndnsf-di/current/lib/pkgconfig:/opt/ndn-base/lib/pkgconfig:/opt/onnxruntime/lib/pkgconfig
     export NDNSF_RUNTIME_RPATH='$ORIGIN/../lib:/opt/ndn-base/lib'
     for package in libndn-cxx libndn-svs libnac-abe ndnsd openssl protobuf gtkmm-3.0 onnxruntime; do pkg-config --exists "$package"; done
     test -x /usr/bin/c++

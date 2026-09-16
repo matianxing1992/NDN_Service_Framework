@@ -6,7 +6,7 @@
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | PARTIAL | — | regular base SIF 已完成本机 smoke；完整 APP/host-gate 与 pair 验收仍待执行；[base repair](evidence/b187-base-repair.md)、[closure](evidence/b187-local-closure.md) | 2026-09-15 |
+| [T001 Candidate closure and pair mutation gate](#t001-candidate-closure-and-pair-mutation-gate) | PARTIAL | — | base smoke 和 APP SDK loader 正反例通过；34 脚本测试通过/1 skipped；ONNX/Rust 容器闭包、完整 APP/host-gate 与 pair 验收仍待执行；[SDK](evidence/b187-app-sdk.md)、[base repair](evidence/b187-base-repair.md)、[closure](evidence/b187-local-closure.md) | 2026-09-15 |
 | [T002 C++ YOLO selector and MiniNDN caller wiring](#t002-c-yolo-selector-and-minindn-caller-wiring) | PARTIAL | T001 | r7 STATIC_PASS；C++ target compile/link 与独立 served-provider selector 通过；through-MiniNDN 仍需 candidate-bound native config/input；[b187-local-yolo.md](evidence/b187-local-yolo.md) | 2026-09-15 15:44 -05:00 |
 | [T003 Local YOLO pair build and two-run gate](#t003-local-yolo-pair-build-and-two-run-gate) | WAITING_EXTERNAL_INPUT | T002 | base 已生成；仍需 APP recipe/SDK 接线、host-gate、candidate config/input 和两次 through-MiniNDN run；[base repair](evidence/b187-base-repair.md)、[local YOLO](evidence/b187-local-yolo.md) | 2026-09-15 |
 | [T004 TigerCluster same-candidate promotion](#t004-tigercluster-same-candidate-promotion) | WAITING_EXTERNAL_INPUT | T003 | T003 尚未 LOCAL_PASS；未启动 Tiger/Slurm；[b187-tiger-yolo.md](evidence/b187-tiger-yolo.md) | 2026-09-15 |
@@ -25,6 +25,7 @@
 | --- | --- | --- | --- | --- |
 | B187-LOCAL-CLOSURE | T001 | closure gate rejects invalid candidate inputs before side effects and accepts a verified pair tuple | existing Tiger script checks and mutation fixtures | PARTIAL |
 | B187-BASE | T001 prerequisite | pinned stable base builds and passes native SDK/NumPy smoke | test_base_runtime.py; build-base-sif.py; container C++ base-smoke | DONE |
+| B187-APP-SDK | T001 prerequisite | explicit SDK copies load from APP; missing library rejects without fallback | template/handoff/APP tests; container C++ loader probe | DONE (SDK only) |
 | B187-LOCAL-YOLO | T002,T003 | two identical-candidate local C++/MiniNDN terminal YOLO runs | Spec187YoloMiniNdn; Apptainer 1.5.3 candidate | PARTIAL |
 | B187-TIGER | T004 | one bounded same-candidate TigerCluster run | run-sif-app.sh and same selector | WAITING_EXTERNAL_INPUT |
 | B187-DEFERRED | T005 | QWEN listed as TODO without entering candidate | docs checks | DONE |
@@ -127,7 +128,7 @@ there is no configurable test filter or post-run DummyClientFace substitute.
 - static: T001 and T002 review-agent gates are STATIC_PASS; r3/r4 found the output-collision and marker-correlation issues, r6/r7 confirmed their repairs.
 - compile/link: `spec187-yolo-minindn` linked successfully in the existing DI build tree with `-j4` after retaining the first `CollaborationPlan` digest compile miss.
 - runtime/test: focused Python checks and the independent C++ served-provider selector passed; the through-MiniNDN selector has a correlated stage oracle but only a fail-closed missing-input run so far.
-- unobserved: regular base SIF, host-gate manifest, candidate SIF/APP, candidate-bound C++ requester config/input, two real MiniNDN runs, and cluster run.
+- unobserved: ONNX/Rust container build closure, current-source host-gate manifest, candidate SIF/APP, candidate-bound C++ requester config/input, two real MiniNDN runs, and cluster run. Base smoke and APP SDK loader checks are recorded separately in [B187-APP-SDK](evidence/b187-app-sdk.md); they do not close the request chain.
 
 ## Dependencies & Execution Order
 
