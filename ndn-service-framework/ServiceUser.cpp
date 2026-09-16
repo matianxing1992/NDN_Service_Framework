@@ -5588,7 +5588,11 @@ namespace ndn_service_framework
             // multi-Provider collaboration would race several ciphertexts
             // under one name and each consumer could fetch another
             // Provider's envelope.
-            .append("PROVIDER").append(providerName);
+            // SegmentFetcher uses the penultimate component as the versioned
+            // object prefix.  Keep the version deterministic from the bound
+            // attempt so the Provider can reconstruct the exact name before
+            // it unwraps the Selection key envelope.
+            .append("PROVIDER").append(providerName).appendVersion(attempt);
         return dataName;
     }
 

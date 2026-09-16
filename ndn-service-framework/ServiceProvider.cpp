@@ -6042,7 +6042,10 @@ namespace ndn_service_framework
             // Request-scoped keys and AAD are Provider-specific.  Mirror the
             // User's Provider component in the exact input name so a
             // collaboration cannot collide several encrypted inputs.
-            .append("PROVIDER").append(providerName);
+            // The final version component is deterministic from the bound
+            // attempt and is required by SegmentFetcher for segmented Data.
+            .append("PROVIDER").append(providerName).appendVersion(
+                expected.attempt);
         expected.segmentOrEventId = "request-input";
 
         SelectionKeyEnvelope envelope;

@@ -321,3 +321,12 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 
 - 2026-09-15；Spec187 T001 prerequisite；`NO_DESIGN_CHANGE`：仅修复部署脚本及稳定依赖镜像，不修改 Core/UAV/DI/Repo API、wire 或目标设计。
 - 保持现有稳定 base / 外置 APP 边界；NumPy wheel 私有库完整性与最终镜像 C++ SDK smoke 见 [base repair](../specs/187-yolo-minindn-sif-app/evidence/b187-base-repair.md)。本机最终镜像 `BASE_SMOKE_ONLY PASS`，缺库反例被拒绝；不以此刷新生产 API 或将 APP/MiniNDN 状态升级为 PASS。
+
+## D-187-SEGMENT：request-scoped large input 的标准 segmented Data 绑定
+
+- 日期 / Spec / 任务与契约：2026-09-16；[Spec187](../specs/187-yolo-minindn-sif-app/spec.md)；T002；request-scoped input transport。
+- 原设计与变化：6.55 MB 输入曾走单个 request-scoped Data，超过 8,800-byte transport bound。当前大输入按 4,096-byte encrypted chunks 发布为 `base/version/segment` Data，User 与 Provider 用 `.appendVersion(attempt)` 共享基础名；每段独立 AEAD AAD，统一 `FinalBlockId`，Provider 以 `SegmentFetcher` 组装后才解密/派发。小输入保留单 Data 路径。
+- 原因与兼容：Segmenter/SegmentFetcher 的 NDN object contract 需要 version component；attempt 派生版本不增加 wire 字段，也不改变 request/Selection 语义。旧单 Data 失败记录保留，不能把旧路径作为当前行为。
+- 源码与证据：`ndn-service-framework/ServiceUser.cpp`、`ServiceProvider.cpp`、`tests/integration-tests/request-scoped-selection.t.cpp`；[segmented regression](../specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md#2026-09-16-c-segmented-request-regression)。
+- 验证：官方 `review-agent` snapshot `review-segmented-input-20260916-r3` 返回 `STATIC_PASS`；`build-spec187-local-nac-r1` integration target `-j4` `rc=0`；`RequestScopedSelection/*` 与 `RequestScopedResponseConfidentiality/*` 第二次整套均 `rc=0`。长输入断言 1,601 segments、统一 FinalBlock、最大 wire <8,800 bytes 和完整组装后 handler。缺段/乱序/错误 FinalBlock/超时负例仍未运行。
+- 当前/目标边界：C++ DummyFace 分段边界已通过；当前源码 MiniNDN r42 Controller native crash、SIF/APP 与 Tiger qualification 仍独立 `PARTIAL`，不因本条升级。
