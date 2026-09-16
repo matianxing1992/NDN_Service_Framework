@@ -1587,6 +1587,15 @@ namespace ndn_service_framework
         useSigningKeyChain(keyChain);
     }
 
+    void
+    ServiceUser::useSigningKeyChainForSigningOnlyForTest(ndn::KeyChain& keyChain)
+    {
+        const auto identity = keyChain.getPib().getIdentity(signingCert.getIdentity());
+        const auto key = identity.getKey(signingCert.getKeyName());
+        (void)key.getCertificate(signingCert.getName());
+        m_testSigningKeyChain = &keyChain;
+    }
+
     bool
     ServiceUser::isNacConsumerReadyForTest()
     {
@@ -5097,6 +5106,16 @@ namespace ndn_service_framework
         ndn::Name encryptedDataName =
             makeLargeDataName(identity, ctx.serviceName, ctx.requestId, result.objectId);
         encryptedDataName.appendVersion();
+        static constexpr std::size_t maxSegmentBytes = 7000;
+        const bool activePut =
+            !isTruthyEnv("NDNSF_REQUEST_LARGE_DISABLE_ACTIVE_PUT");
+        if (activePut &&
+            (m_IMS.getLimit() == 0 ||
+             plaintext.size() > (m_IMS.getLimit() - 1) * maxSegmentBytes)) {
+            result.errorMessage =
+                "large-data publication exceeds transactional IMS staging capacity";
+            return result;
+        }
         const std::vector<std::string> attributes = {
             "/SERVICE" + ctx.serviceName.toUri()
         };
@@ -5104,6 +5123,10 @@ namespace ndn_service_framework
         try {
             const auto messageType = std::string("REQUEST-LARGE");
             const auto accessAttribute = std::string("/SERVICE") + ctx.serviceName.toUri();
+            ndn::nacabe::SPtrVector<ndn::Data> wrappedContentData;
+            ndn::nacabe::SPtrVector<ndn::Data> wrappedCkData;
+            ndn::Buffer wrappedMessageKey;
+            bool hasWrappedMessageKey = false;
             auto key = m_hybridMessageCrypto.getOrCreateSendKey(
                 ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
 
@@ -5123,25 +5146,20 @@ namespace ndn_service_framework
             envelope.setMessageType(messageType);
 
             if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
-                ndn::nacabe::SPtrVector<ndn::Data> contentData;
-                ndn::nacabe::SPtrVector<ndn::Data> ckData;
-                std::tie(contentData, ckData) =
+                std::tie(wrappedContentData, wrappedCkData) =
                     (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
                                         attributes,
                                         ndn::span<const uint8_t>(key.key.data(), key.key.size()),
                                         m_signingInfo);
-                auto wrapped = mergeDataContents(contentData);
-                if (wrapped.empty()) {
+                const auto wrapped = mergeDataContents(wrappedContentData);
+                wrappedMessageKey.assign(wrapped.begin(), wrapped.end());
+                if (wrappedMessageKey.empty()) {
                     result.errorMessage = "NAC-ABE produced no wrapped large-data MessageKey";
                     return result;
                 }
                 envelope.setWrappedMessageKey(
-                    ndn::Buffer(wrapped.data(), wrapped.size()));
-                serveDataWithIMS(contentData, ckData);
-                m_hybridMessageCrypto.cacheWrappedSendKey(
-                    ctx.serviceName, key.keyId,
-                    ndn::Buffer(wrapped.data(), wrapped.size()));
-                ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
+                    ndn::Buffer(wrappedMessageKey.data(), wrappedMessageKey.size()));
+                hasWrappedMessageKey = true;
             }
 
             const std::string adText = encryptedDataName.toUri() + "|" +
@@ -5172,29 +5190,157 @@ namespace ndn_service_framework
                 reinterpret_cast<const uint8_t*>(manifestText.data()),
                 manifestText.size()));
 
-            ndn::Segmenter segmenter(
-                m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain,
-                m_signingInfo);
-            auto segments = segmenter.segment(
-                ndn::span<const uint8_t>(encoded.data(), encoded.size()),
-                encryptedDataName,
-                7000,
-                freshness);
-            if (segments.empty()) {
+            // Segmenter::segment returns a vector owning every Data packet.
+            // That is acceptable for small objects but makes a multi-GiB
+            // model artifact retain the whole packet set until publication
+            // finishes.  The encrypted envelope is already contiguous here;
+            // materialize and release one signed packet at a time instead.
+            const auto segmentCount = encoded.empty() ? 0 :
+                1 + (encoded.size() - 1) / maxSegmentBytes;
+            if (segmentCount == 0) {
                 result.errorMessage = "large-data hybrid segmenter produced no segments";
                 return result;
             }
-
-            const bool activePut =
-                !isTruthyEnv("NDNSF_REQUEST_LARGE_DISABLE_ACTIVE_PUT");
-            for (const auto& data : segments) {
-                {
-                    std::lock_guard<std::mutex> lock(_cache_mutex);
-                    m_IMS.insert(*data, freshness);
+            auto& signingKeyChain =
+                m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+            std::unique_lock<std::mutex> stagingLock(_cache_mutex, std::defer_lock);
+            if (activePut) {
+                // Keep the capacity reservation and all staging inserts in one
+                // critical section.  Otherwise another publisher could evict
+                // an early segment before the replay phase reaches it.
+                stagingLock.lock();
+                const auto currentPackets = m_IMS.size();
+                const auto wrappedContentCount = wrappedContentData.size();
+                const auto wrappedCkCount = wrappedCkData.size();
+                const bool wrappedCountOverflow =
+                    wrappedContentCount > std::numeric_limits<std::size_t>::max() -
+                        wrappedCkCount;
+                const auto wrappedCount = wrappedCountOverflow ? 0 :
+                    wrappedContentCount + wrappedCkCount;
+                const bool capacityOverflow =
+                    wrappedCountOverflow ||
+                    segmentCount > m_IMS.getLimit() ||
+                    wrappedCount > m_IMS.getLimit() -
+                        std::min(segmentCount, m_IMS.getLimit()) ||
+                    segmentCount + wrappedCount > m_IMS.getLimit() ||
+                    currentPackets > m_IMS.getLimit() - (segmentCount + wrappedCount);
+                if (capacityOverflow) {
+                    stagingLock.unlock();
+                    result.errorMessage =
+                        "large-data publication exceeds transactional IMS staging capacity";
+                    return result;
+                }
+            }
+            std::vector<ndn::Name> stagedFullNames;
+            try {
+                std::vector<ndn::Name> stagedNames;
+                if (activePut) {
+                    // NAC-ABE wrapped-key packets are part of the same local
+                    // staging transaction.  Insert them under the held lock
+                    // instead of calling serveDataWithIMS (which locks again).
+                    if (hasWrappedMessageKey) {
+                        for (const auto& data : wrappedContentData) {
+                            const auto fullName = data->getFullName();
+                            const bool existed = static_cast<bool>(m_IMS.find(fullName));
+                            if (!existed) {
+                                // Register before insert so an exception from
+                                // IMS insertion is still covered by rollback.
+                                stagedFullNames.push_back(fullName);
+                            }
+                            m_IMS.insert(*data, freshness);
+                        }
+                        for (const auto& data : wrappedCkData) {
+                            const auto fullName = data->getFullName();
+                            const bool existed = static_cast<bool>(m_IMS.find(fullName));
+                            if (!existed) {
+                                stagedFullNames.push_back(fullName);
+                            }
+                            m_IMS.insert(*data, freshness);
+                        }
+                    }
+                    stagedNames.reserve(segmentCount);
+                }
+                else if (hasWrappedMessageKey) {
+                    serveDataWithIMS(wrappedContentData, wrappedCkData);
+                    m_hybridMessageCrypto.cacheWrappedSendKey(
+                        ctx.serviceName, key.keyId, wrappedMessageKey);
+                    ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
+                }
+                for (std::size_t segment = 0; segment < segmentCount; ++segment) {
+                    const auto offset = segment * maxSegmentBytes;
+                    const auto length = std::min(maxSegmentBytes, encoded.size() - offset);
+                    auto data = std::make_shared<ndn::Data>(
+                        ndn::Name(encryptedDataName).appendSegment(segment));
+                    data->setContent(ndn::span<const uint8_t>(encoded.data() + offset, length));
+                    data->setFinalBlock(
+                        ndn::name::Component::fromSegment(segmentCount - 1));
+                    data->setFreshnessPeriod(freshness);
+                    signingKeyChain.sign(*data, m_signingInfo);
+                    // Face::put documents OversizedPacketError as its packet
+                    // validation boundary.  Check the signed wire before any
+                    // network publication so a later packet cannot fail that
+                    // boundary after an earlier packet has been queued.
+                    if (data->wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE) {
+                        throw ndn::Face::OversizedPacketError(
+                            'D', data->getName(), data->wireEncode().size());
+                    }
+                    {
+                        if (activePut) {
+                            const auto fullName = data->getFullName();
+                            const bool existed = static_cast<bool>(m_IMS.find(fullName));
+                            if (!existed) {
+                                stagedFullNames.push_back(fullName);
+                            }
+                            m_IMS.insert(*data, freshness);
+                        }
+                        else {
+                            std::lock_guard<std::mutex> lock(_cache_mutex);
+                            m_IMS.insert(*data, freshness);
+                        }
+                    }
+                    if (activePut) {
+                        stagedNames.push_back(data->getName());
+                    }
                 }
                 if (activePut) {
-                    m_face.put(*data);
+                    // All signing, encoding and IMS insertion has succeeded.
+                    // Replay the stable IMS entries only after that prepare
+                    // phase while retaining one Data at a time. Keep the
+                    // cache lock through replay so another publisher cannot
+                    // evict a staged entry before its Face::put call.
+                    for (const auto& name : stagedNames) {
+                        std::shared_ptr<const ndn::Data> data;
+                        // stagingLock still owns _cache_mutex here, so do not
+                        // take a nested lock while resolving the staged entry.
+                        data = m_IMS.find(name);
+                        if (!data) {
+                            throw std::runtime_error(
+                                "large-data IMS staging entry disappeared before publication");
+                        }
+                        m_face.put(*data);
+                    }
+                    if (hasWrappedMessageKey) {
+                        m_hybridMessageCrypto.cacheWrappedSendKey(
+                            ctx.serviceName, key.keyId, wrappedMessageKey);
+                        ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
+                    }
+                    stagingLock.unlock();
                 }
+            }
+            catch (...) {
+                if (stagingLock.owns_lock()) {
+                    stagingLock.unlock();
+                }
+                // The root manifest is published only after every artifact
+                // succeeds, so a failed artifact has no externally advertised
+                // reference.  Remove any locally retained prefix before
+                // returning the failure; already queued Face packets remain
+                // unreferenced and expire with their freshness period.
+                std::lock_guard<std::mutex> lock(_cache_mutex);
+                for (const auto& fullName : stagedFullNames) {
+                    m_IMS.erase(fullName, false);
+                }
+                throw;
             }
 
             result.encryptedDataName = encryptedDataName;
@@ -5202,7 +5348,7 @@ namespace ndn_service_framework
                       << " name=" << result.encryptedDataName.toUri()
                       << " plaintextBytes=" << plaintext.size()
                       << " envelopeBytes=" << encoded.size()
-                      << " segments=" << segments.size()
+                      << " segments=" << segmentCount
                       << " wrappedKeyAttached=" << envelope.hasWrappedMessageKey()
                       << " activePut=" << activePut);
             result.success = true;

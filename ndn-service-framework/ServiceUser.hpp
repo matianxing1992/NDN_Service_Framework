@@ -450,6 +450,12 @@ namespace ndn_service_framework{
             /** Backward-compatible test spelling for LocalMock fixtures. */
             void useSigningKeyChainForTest(ndn::KeyChain& keyChain);
 
+            /** Bind only the LocalMock Data-signing owner for tests that
+             * pre-provision their hybrid key and do not exercise NAC-ABE
+             * bootstrap.  Unlike useSigningKeyChainForTest(), this hook does
+             * not start a Consumer or fetch public parameters. */
+            void useSigningKeyChainForSigningOnlyForTest(ndn::KeyChain& keyChain);
+
             /** Return whether the active LocalMock NAC-ABE Consumer has
              * obtained its DKEY.  Integration bootstrap uses this as a hard
              * readiness condition instead of inferring readiness from public
@@ -650,6 +656,16 @@ namespace ndn_service_framework{
 
             PreparedServiceRequest prepareServiceRequest(const std::string& serviceName);
 
+            /** Publish an encrypted envelope as versioned, finalized Data
+             * segments. With active publication enabled, the complete set is
+             * staged in IMS before Face::put is queued; the method's success
+             * result therefore means that publication was queued. A later
+             * transport failure is reported by the Face/event path and cannot
+             * be rolled back through this synchronous API. Active publication
+             * rejects objects whose estimated segment set exceeds the current
+             * IMS staging capacity; larger artifacts require a bounded-window
+             * publication protocol.
+             */
             LargeDataPublishResult publishEncryptedLargeData(
                 const PreparedServiceRequest& ctx,
                 const std::vector<uint8_t>& plaintext,

@@ -280,6 +280,73 @@ BOOST_AUTO_TEST_CASE(MultipleLargeDataObjectsUseOnePreparedRequestScope)
                  ndn::Buffer(configBytes.begin(), configBytes.end()));
 }
 
+BOOST_AUTO_TEST_CASE(LargeDataPublicationEmitsBoundedFinalizedSegments)
+{
+  ndn::security::KeyChain keyChain("pib-memory:large-data-segments",
+                                   "tpm-memory:large-data-segments");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/large-segments");
+  const ndn::Name serviceName("/HELLO/LARGE");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-segments"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
+                        "examples/trust-any.conf");
+  user.useSigningKeyChainForSigningOnlyForTest(keyChain);
+
+  const auto ctx = user.prepareServiceRequest(serviceName.toUri());
+  const auto sendKey = user.prepareHybridSendKeyForTest(serviceName, "REQUEST-LARGE");
+  const std::vector<uint8_t> payload(20000, 0x7c);
+  ScopedEnvironmentValue activePut("NDNSF_REQUEST_LARGE_DISABLE_ACTIVE_PUT", "0");
+  const auto before = face.sentData.size();
+  const auto published = user.publishEncryptedLargeData(
+      ctx, payload, "large-segment-regression");
+  BOOST_REQUIRE_MESSAGE(published.success,
+                        "large-data publication failed: " << published.errorMessage);
+  face.processEvents(ndn::time::milliseconds(-1));
+
+  std::vector<const ndn::Data*> segments;
+  for (size_t i = before; i < face.sentData.size(); ++i) {
+    const auto& data = face.sentData[i];
+    if (published.encryptedDataName.isPrefixOf(data.getName()) &&
+        data.getName().size() == published.encryptedDataName.size() + 1 &&
+        data.getName().get(-1).isSegment()) {
+      segments.push_back(&data);
+    }
+  }
+  BOOST_REQUIRE_GE(segments.size(), 3U);
+  size_t totalContentBytes = 0;
+  for (size_t i = 0; i < segments.size(); ++i) {
+    BOOST_CHECK_EQUAL(segments[i]->getName().get(-1).toSegment(), i);
+    BOOST_REQUIRE(segments[i]->getFinalBlock());
+    BOOST_CHECK(segments[i]->getFinalBlock()->isSegment());
+    BOOST_CHECK_EQUAL(segments[i]->getFinalBlock()->toSegment(), segments.size() - 1);
+    BOOST_CHECK_LE(segments[i]->getContent().value_size(), 7000U);
+    BOOST_CHECK_LE(segments[i]->wireEncode().size(), 8800U);
+    BOOST_CHECK(ndn::security::verifySignature(*segments[i], userCert));
+    totalContentBytes += segments[i]->getContent().value_size();
+  }
+  BOOST_CHECK_EQUAL(segments.size(), (totalContentBytes + 6999) / 7000);
+
+  ndn::Buffer assembled;
+  assembled.reserve(totalContentBytes);
+  for (const auto* data : segments) {
+    const auto content = data->getContent();
+    assembled.insert(assembled.end(), content.value(),
+                     content.value() + content.value_size());
+  }
+  HybridMessageEnvelope envelope;
+  BOOST_REQUIRE(envelope.WireDecode(ndn::Block(assembled)));
+  BOOST_CHECK_EQUAL(envelope.getMessageType(), "REQUEST-LARGE");
+  const std::string adText = published.encryptedDataName.toUri() +
+                             "|REQUEST-LARGE|" + serviceName.toUri();
+  const ndn::Buffer associatedData(reinterpret_cast<const uint8_t*>(adText.data()),
+                                   adText.size());
+  ndn::Buffer decrypted;
+  BOOST_REQUIRE(hybridAesGcmDecrypt(sendKey.key, envelope, associatedData, decrypted));
+  BOOST_CHECK_EQUAL_COLLECTIONS(decrypted.begin(), decrypted.end(),
+                                payload.begin(), payload.end());
+}
+
 BOOST_AUTO_TEST_CASE(MissingLargeDataFetchFailsCleanly)
 {
   ScopedEnvironmentValue fetchTimeout("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", "100");
