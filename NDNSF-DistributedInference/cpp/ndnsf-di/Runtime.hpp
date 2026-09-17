@@ -4,6 +4,7 @@
 #include "ndn-service-framework/OperationRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -32,11 +33,30 @@ struct ModelRegistration
 /** Runtime-owned native requester configuration and preparation budgets. */
 struct RuntimeConfig
 {
+  /**
+   * Optional native repository source owner.  When present, Runtime::prepare
+   * calls this owner instead of the legacy local-file loader.  The configured
+   * native owner must perform manifest lookup, digest/size verification and
+   * one idempotent ingest-on-miss through its RepoCore/RepoClient boundary,
+   * then return only verified source buffers. Runtime rechecks those bytes
+   * against the frozen catalog; the callback is a trusted ownership boundary
+   * and its Repo operation is covered by the owner-specific C++ test.
+   * Lifecycle failures must use the typed repository/DI error surface rather
+   * than encoding state in arbitrary backend text. It must retain no request
+   * or grant state.
+   */
+  using RepositorySourceLoader = std::function<NativeCanonicalSource(
+    const std::string& modelKey,
+    const std::string& catalogConfigurationJson,
+    std::uint64_t maxSourceBytes,
+    std::chrono::steady_clock::time_point deadline)>;
+
   std::string nativeConfigPath;
   std::vector<ModelRegistration> models;
   std::size_t maxPreparedBytes = 536870912;
   std::size_t maxPreparedEntries = 8;
   Milliseconds preparationJobTimeout{300000};
+  RepositorySourceLoader repositorySourceLoader;
 };
 
 /** v1 accepts the empty profile or the explicit default profile only. */
@@ -75,6 +95,16 @@ private:
   std::string m_boundary;
   std::string m_requestId;
   std::uint64_t m_attempt = 0;
+};
+
+/** Typed failure raised by a RepositorySourceLoader at the preparation
+ * boundary.  Lifecycle meaning must not be inferred from repository text. */
+class RepositorySourceError : public DiError
+{
+public:
+  enum class Kind { Unavailable, Timeout, Cancelled, Closed };
+
+  RepositorySourceError(Kind kind, std::string message);
 };
 
 namespace detail { struct RuntimeState; struct RuntimeTestAccess; }
