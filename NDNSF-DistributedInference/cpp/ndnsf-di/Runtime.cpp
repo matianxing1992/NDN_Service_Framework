@@ -235,7 +235,8 @@ struct FrozenConfig
   std::shared_ptr<const NativeOfferAdmission> offerAdmission;
 };
 
-PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& key)
+PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& key,
+                                 RuntimeConfig::RepositorySourceLoader repositorySourceLoader = {})
 {
   const auto root = nativeParseJson(frozen.canonicalJson);
   const auto& request = root.at("request");
@@ -253,6 +254,13 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
   spec.taskContractDigest = taskContractDigest;
   spec.inputLayoutDigest = inputLayoutDigest;
   spec.configurationDigest = frozen.configurationDigest;
+  spec.publicationServiceName = request.value("service", std::string{});
+  if (spec.publicationServiceName.empty()) {
+    const auto artifactRoot = catalog.at("publication").at("artifact_root").get<std::string>();
+    const auto separator = artifactRoot.find('/', 1);
+    spec.publicationServiceName = artifactRoot.substr(
+      0, separator == std::string::npos ? artifactRoot.size() : separator);
+  }
   const auto positiveLimit = [&] (const char* field) {
     if (!limits.contains(field) || !limits.at(field).is_number_unsigned() ||
         limits.at(field).get<std::uint64_t>() == 0)
@@ -262,11 +270,15 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
   };
   spec.maxSourceBytes = positiveLimit("max_source_bytes");
   spec.maxAssembledBytes = positiveLimit("max_assembled_bytes");
-  spec.loadSource = [] (const PreparationSpec& current,
-                        std::chrono::steady_clock::time_point deadline) {
+  spec.loadSource = [repositorySourceLoader = std::move(repositorySourceLoader)] (
+                      const PreparationSpec& current,
+                      std::chrono::steady_clock::time_point deadline) {
     try {
       if (std::chrono::steady_clock::now() >= deadline)
         throw DiError("PREPARATION_TIMEOUT", "local", "preparation", "preparation deadline expired");
+      if (repositorySourceLoader)
+        return repositorySourceLoader(current.key, current.catalogConfigurationJson,
+                                      current.maxSourceBytes, deadline);
       const auto catalog = nativeParseJson(current.catalogConfigurationJson);
       const auto& source = catalog.at("source");
       const auto sourceFile = requiredString(source, "file");
@@ -285,15 +297,26 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
       return result;
     }
     catch (const DiError& error) {
-      if (error.code() == "PREPARATION_TIMEOUT")
+      // Preserve lifecycle and deadline semantics from a native source owner;
+      // only an actual repository/local source failure is normalized here.
+      if (error.code() == "PREPARATION_TIMEOUT" ||
+          error.code() == "PREPARATION_CANCELLED" ||
+          error.code() == "RUNTIME_CLOSED")
         throw;
+      throw DiError("PREPARATION_SOURCE_UNAVAILABLE", "local", "preparation", error.what());
+    }
+    catch (const std::exception& error) {
+      // Repository lifecycle meaning is carried by RepositorySourceError (or
+      // another DiError), never guessed from arbitrary backend text.  A
+      // non-typed adapter failure is a source-unavailable failure by design.
       throw DiError("PREPARATION_SOURCE_UNAVAILABLE", "local", "preparation", error.what());
     }
   };
   return spec;
 }
 
-FrozenConfig freezeConfig(const std::filesystem::path& path, ndn::Face* callbackFace)
+FrozenConfig freezeConfig(const std::filesystem::path& path, ndn::Face* callbackFace,
+                          bool repositorySourceLoaderConfigured)
 {
   const auto canonicalPath = std::filesystem::absolute(path).lexically_normal();
   NativeJson root;
@@ -331,7 +354,24 @@ FrozenConfig freezeConfig(const std::filesystem::path& path, ndn::Face* callback
   };
   const auto& catalog = requiredObject(root, "catalog");
   const auto& source = requiredObject(catalog, "source");
-  (void)requiredString(source, "file");
+  if (source.contains("file")) {
+    (void)requiredString(source, "file");
+  }
+  else if (!repositorySourceLoaderConfigured) {
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "catalog",
+                  "catalog source requires file when no repository source loader is configured");
+  }
+  else {
+    // Repository-backed sources have no local locator.  Their immutable
+    // identity remains pinned in the frozen catalog and is checked again by
+    // NativeRequestCatalog when the returned bytes are assembled.
+    (void)requiredString(source, "data_name");
+    for (const auto* digest : {"digest", "model_manifest_digest", "canonical_graph_digest"}) {
+      if (!isDigest(requiredString(source, digest)))
+        throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "catalog",
+                      std::string("repository-backed catalog source has an invalid digest: ") + digest);
+    }
+  }
 
   const auto requesterIdentity = requiredString(core, "requester_identity");
   const auto coreAuthorityIdentity = requiredString(core, "authority_identity");
@@ -879,6 +919,68 @@ NativeJson requestRuntimeConfiguration(const FrozenConfig& frozen,
   };
 }
 
+/** Materialize the Runtime-owned Core user before prepare-time publication.
+ * Runtime::open remains metadata-only; this helper is called by prepare or
+ * the first request and is idempotent for fixture-bound users. */
+void ensureRuntimeCoreTransport(const std::shared_ptr<detail::RuntimeState>& state)
+{
+  if (!state)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime has no state");
+  std::unique_lock<std::mutex> lock(state->mutex);
+  if (state->phase != detail::RuntimeState::Phase::Open || !state->coreOwner ||
+      !state->coreOwner->operationRuntime)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+  if (state->coreOwner->ioFailed.load(std::memory_order_acquire))
+    throw DiError("RUNTIME_CLOSED", "local", "preparation",
+                  "Runtime Core I/O failed: " + state->coreOwner->ioFailure());
+  if (state->coreUser && state->grants)
+    return;
+  if (state->coreUser || state->grants)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation",
+                  "Runtime Core transport binding is incomplete");
+  const auto primary = state->models.find("default");
+  if (primary == state->models.end() || !primary->second.requesterPrivateKey ||
+      !primary->second.authorityPublicKey || !state->coreOwner->keyChain ||
+      state->coreOwner->requesterCertificate.getName().empty() ||
+      state->coreOwner->authorityCertificate.getName().empty())
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
+                  "Runtime Core identity material is unavailable");
+  try {
+    auto serviceUser = std::make_shared<ndn_service_framework::ServiceUser>(
+      *state->coreOwner->face, ndn::Name(primary->second.group),
+      state->coreOwner->requesterCertificate,
+      state->coreOwner->requesterCertificate,
+      state->coreOwner->authorityCertificate,
+      primary->second.trustSchema.string(), *state->coreOwner->keyChain);
+    serviceUser->init();
+    serviceUser->fetchPermissionsFromController(
+      ndn::Name(primary->second.coreAuthorityIdentity));
+    auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
+      primary->second.requesterIdentity, primary->second.requesterPrivateKey,
+      primary->second.authorityIdentity, rawPublicKey(primary->second.authorityPublicKey),
+      primary->second.protectionEpoch,
+      NativeAuthenticatedGrantClient::issueThroughCore(
+        serviceUser, primary->second.authorityIdentity,
+        primary->second.authorityService),
+      NativeAuthenticatedGrantClient::publishThroughCore(serviceUser));
+    if (!state->coreOwner->ioThread.joinable())
+      state->coreOwner->startIo(state->coreOwner);
+    if (state->coreOwner->ioFailed.load(std::memory_order_acquire))
+      throw DiError("RUNTIME_CLOSED", "local", "preparation",
+                    "Runtime Core I/O failed: " + state->coreOwner->ioFailure());
+    state->coreOwner->serviceUser = serviceUser;
+    state->coreUser = std::move(serviceUser);
+    state->grants = std::move(grants);
+  }
+  catch (const DiError&) {
+    throw;
+  }
+  catch (const std::exception& error) {
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
+                  std::string("Runtime Core user cannot be created: ") + error.what());
+  }
+}
+
 std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
   const std::shared_ptr<detail::RuntimeState>& state,
   const std::shared_ptr<const PreparedModelPackage>& package)
@@ -935,6 +1037,12 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
         NativeAuthenticatedGrantClient::publishThroughCore(serviceUser));
       // Publish the pair only after both objects and their callback closures
       // are complete; a constructor failure leaves Runtime retryable.
+      // Start the owned Face before publishing the ServiceUser/grant pair.
+      // Thread or work-guard creation can fail; keeping the pair unpublished
+      // leaves the Runtime retryable instead of making a later request skip
+      // the only required start attempt.
+      if (!state->coreOwner->ioThread.joinable())
+        state->coreOwner->startIo(state->coreOwner);
       state->coreOwner->serviceUser = std::move(serviceUser);
       state->coreUser = state->coreOwner->serviceUser;
       state->grants = std::move(grants);
@@ -948,11 +1056,11 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
     }
   }
   // Runtime::open validates and freezes configuration without touching the
-  // operator transport.  Start the owned Face only when a native client is
-  // first materialized; this keeps preparation/configuration usable offline
-  // while preserving one Core IO owner for every submitted request.
-  if (!state->coreOwner->ioThread.joinable())
-    state->coreOwner->startIo(state->coreOwner);
+  // operator transport.  Start the owned Face only when this call materialized
+  // the Runtime's ServiceUser.  A test or embedding boundary may have already
+  // supplied an external ServiceUser/Grant client; starting the unused Face in
+  // that case would create a second transport owner and can report a local NFD
+  // connection failure even though all request traffic uses the supplied Face.
   if (state->coreOwner->ioFailed.load(std::memory_order_acquire))
     throw DiError("RUNTIME_CLOSED", "local", "request",
                   "Runtime Core I/O failed: " + state->coreOwner->ioFailure());
@@ -970,7 +1078,7 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
   const auto runtime = nativeRequestRuntimeFromJson(
     nativeCanonicalJson(runtimeJson), package->catalog, state->grants);
   auto preparation = package->catalog.preparation->makePreparation(
-    state->coreUser, runtime.contract.serviceName);
+    state->coreUser, runtime.contract.serviceName, package->preparedPublication);
   auto client = std::make_shared<NativeInferenceClient>(
     state->coreUser, package->catalog.preparation->adapters(), runtime,
     state->conversations,
@@ -1046,6 +1154,15 @@ DiError::DiError(std::string code, std::string domain, std::string boundary,
   : std::runtime_error(std::move(message)), m_code(std::move(code)),
     m_domain(std::move(domain)), m_boundary(std::move(boundary)),
     m_requestId(std::move(requestId)), m_attempt(attempt)
+{
+}
+
+RepositorySourceError::RepositorySourceError(Kind kind, std::string message)
+  : DiError(kind == Kind::Timeout ? "PREPARATION_TIMEOUT" :
+            kind == Kind::Cancelled ? "PREPARATION_CANCELLED" :
+            kind == Kind::Closed ? "RUNTIME_CLOSED" :
+            "PREPARATION_SOURCE_UNAVAILABLE",
+            "repository", "preparation", std::move(message))
 {
 }
 
@@ -1199,8 +1316,53 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
   }
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
-  auto spec = preparationSpec(frozen, modelKey);
+  auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader);
   spec.runtimeBinding = m_state->runtimeBinding;
+  const auto publicationServiceName = spec.publicationServiceName;
+  spec.preparePublication = [state = m_state, publicationServiceName](
+    const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
+    const NativeRequestControl& control) {
+    ensureRuntimeCoreTransport(state);
+    std::shared_ptr<ndn_service_framework::ServiceUser> user;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      user = state->coreUser;
+    }
+    return catalog.preparePublication(user, publicationServiceName, model.descriptor, control);
+  };
+  spec.rollbackPublication = [state = m_state](const NativePreparedCanonicalPublication& publication) {
+    std::shared_ptr<ndn_service_framework::ServiceUser> user;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      user = state->coreUser;
+    }
+    if (!user)
+      return;
+    std::vector<ndn_service_framework::LargeDataPublishResult> rollbacks;
+    const auto addData = [&publication](auto& rollback) {
+      rollback.rollbackDataNames = publication.rollbackDataNames;
+      rollback.rollbackDataNames.push_back(publication.sourceDataName);
+      if (!publication.initializerDataName.empty())
+        rollback.rollbackDataNames.push_back(publication.initializerDataName);
+    };
+    for (const auto& reference : publication.rollbackKeyReferences) {
+      ndn_service_framework::LargeDataPublishResult rollback;
+      rollback.success = true;
+      rollback.encryptedDataName = ndn::Name(publication.rootDataName);
+      addData(rollback);
+      rollback.rollbackKeyId = reference.keyId;
+      rollback.rollbackServiceName = reference.serviceName;
+      rollbacks.push_back(std::move(rollback));
+    }
+    if (rollbacks.empty()) {
+      ndn_service_framework::LargeDataPublishResult rollback;
+      rollback.success = true;
+      rollback.encryptedDataName = ndn::Name(publication.rootDataName);
+      addData(rollback);
+      rollbacks.push_back(std::move(rollback));
+    }
+    user->abortLargeDataPublications(rollbacks);
+  };
   spec.clientFactory = [state = m_state](
     const std::shared_ptr<const PreparedModelPackage>& package) {
     return makeRuntimeClient(state, package);
@@ -1272,8 +1434,53 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
   }
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
-  auto spec = preparationSpec(frozen, modelKey);
+  auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader);
   spec.runtimeBinding = m_state->runtimeBinding;
+  const auto publicationServiceName = spec.publicationServiceName;
+  spec.preparePublication = [state = m_state, publicationServiceName](
+    const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
+    const NativeRequestControl& control) {
+    ensureRuntimeCoreTransport(state);
+    std::shared_ptr<ndn_service_framework::ServiceUser> user;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      user = state->coreUser;
+    }
+    return catalog.preparePublication(user, publicationServiceName, model.descriptor, control);
+  };
+  spec.rollbackPublication = [state = m_state](const NativePreparedCanonicalPublication& publication) {
+    std::shared_ptr<ndn_service_framework::ServiceUser> user;
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      user = state->coreUser;
+    }
+    if (!user)
+      return;
+    std::vector<ndn_service_framework::LargeDataPublishResult> rollbacks;
+    const auto addData = [&publication](auto& rollback) {
+      rollback.rollbackDataNames = publication.rollbackDataNames;
+      rollback.rollbackDataNames.push_back(publication.sourceDataName);
+      if (!publication.initializerDataName.empty())
+        rollback.rollbackDataNames.push_back(publication.initializerDataName);
+    };
+    for (const auto& reference : publication.rollbackKeyReferences) {
+      ndn_service_framework::LargeDataPublishResult rollback;
+      rollback.success = true;
+      rollback.encryptedDataName = ndn::Name(publication.rootDataName);
+      addData(rollback);
+      rollback.rollbackKeyId = reference.keyId;
+      rollback.rollbackServiceName = reference.serviceName;
+      rollbacks.push_back(std::move(rollback));
+    }
+    if (rollbacks.empty()) {
+      ndn_service_framework::LargeDataPublishResult rollback;
+      rollback.success = true;
+      rollback.encryptedDataName = ndn::Name(publication.rootDataName);
+      addData(rollback);
+      rollbacks.push_back(std::move(rollback));
+    }
+    user->abortLargeDataPublications(rollbacks);
+  };
   spec.clientFactory = [state = m_state](
     const std::shared_ptr<const PreparedModelPackage>& package) {
     return makeRuntimeClient(state, package);
@@ -1466,6 +1673,19 @@ void detail::RuntimeTestAccess::bindProviderFixture(
     entry.second.offerAdmission = admission;
 }
 
+void detail::RuntimeTestAccess::bindProviderOnlyFixture(
+  const std::shared_ptr<Runtime>& runtime, Provider provider)
+{
+  if (!runtime || !runtime->m_state || !provider.valid())
+    throw std::invalid_argument("Provider-only Runtime test fixture binding is incomplete");
+  std::lock_guard<std::mutex> lock(runtime->m_state->mutex);
+  if (!runtime->m_state->providerOnly ||
+      runtime->m_state->phase != detail::RuntimeState::Phase::Open)
+    throw std::runtime_error(
+      "Provider-only Runtime test fixture binding requires an open Provider Runtime");
+  runtime->m_state->provider = std::make_shared<Provider>(std::move(provider));
+}
+
 void Runtime::close() noexcept
 {
   if (!m_state)
@@ -1493,8 +1713,13 @@ void Runtime::close() noexcept
     closeRuntimeClients(clients);
     if (owner && owner->operationRuntime)
       owner->operationRuntime->notifyWaiters();
-    if (owner)
-      owner->close();
+    // Keep the Core operation worker alive until the caller registers its
+    // drain barrier.  Runtime::close() is the non-blocking admission fence;
+    // stopping the Core worker here races a subsequent drainAsync() that
+    // still has to wait for NativeInferenceClient cleanup.  drain()/
+    // drainAsync() close the owner after their waiter is installed, while
+    // Runtime::~Runtime() remains the final close path for callers that do
+    // not request an explicit drain.
   }
 }
 
@@ -1728,7 +1953,8 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   // frozen validator is bound to this one IO context.
   auto coreOwner = std::make_shared<detail::CoreRuntimeOwner>();
   coreOwner->face = std::make_shared<ndn::Face>(coreOwner->io);
-  const auto primary = freezeConfig(primaryPath, coreOwner->face.get());
+  const auto primary = freezeConfig(primaryPath, coreOwner->face.get(),
+                                    static_cast<bool>(config.repositorySourceLoader));
   try {
     // Runtime owns the KeyChain and creates the Core transport identities
     // once per Runtime. When the process supplies an NDN PIB/TPM pair (the
@@ -1822,7 +2048,8 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
                     "model registrations require unique non-default keys and paths");
     }
     const auto modelPath = (state->baseDirectory / registration.nativeConfigPath).lexically_normal();
-    const auto frozen = freezeConfig(modelPath, coreOwner->face.get());
+    const auto frozen = freezeConfig(modelPath, coreOwner->face.get(),
+                                     static_cast<bool>(config.repositorySourceLoader));
     if (!sameTrustDomain(primary, frozen))
       throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
                     "registered model configuration crosses the Runtime trust domain");

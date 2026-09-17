@@ -166,8 +166,8 @@ def build(bld):
                 name='spec185-runtime',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/di-runtime.t.cpp')],
-                includes=['..', '../ndn-service-framework'],
-                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndn-service-framework ndnsf-distributed-inference ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
@@ -206,6 +206,46 @@ def build(bld):
                         bld.path.find_node('unit-tests/di-preparation.t.cpp'),
                         bld.path.find_node('unit-tests/di-runtime.t.cpp'),
                         bld.path.find_node('unit-tests/core-operation-runtime.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec188 B188-3 immutable canonical publication cache.  The selector
+    # drives the production publisher through its native transport seam and
+    # keeps source verification/publication counters independent from request
+    # orchestration.
+    bld.program(target='../spec188-model-preparation-publication',
+                name='spec188-model-preparation-publication',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec188-model-preparation-publication.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec188 B188-4 request projection selector.  It parses the exact native
+    # envelope and checks that model references remain distinct from input
+    # DataRefs without copying model payload bytes into the request.
+    bld.program(target='../spec188-prepared-request-projection',
+                name='spec188-prepared-request-projection',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec188-prepared-request-projection.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec188 B188-4 bounded file-backed large-data serving.  The selector
+    # exercises the production ServiceUser interest path, exact signed
+    # segments, retransmission window and publication-file cleanup.
+    bld.program(target='../spec188-bounded-large-data-publisher',
+                name='spec188-bounded-large-data-publisher',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec188-bounded-large-data-publisher.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -289,6 +329,24 @@ def build(bld):
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
                          'SPEC187_YOLO_SELECTOR'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec188 repeats the same candidate-bound YOLO request through the
+    # maintained MiniNDN runner.  Keep a distinct selector/suite identity so
+    # its two-run evidence cannot be confused with the Spec187 qualification;
+    # the production DI source closure and C++ assertions remain shared.
+    bld.program(target='../spec188-yolo-repeat',
+                name='spec188-yolo-repeat',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
+                         'SPEC188_YOLO_SELECTOR'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
@@ -432,6 +490,7 @@ def build(bld):
                             'ndn-service-framework/ControllerGenerationStore.cpp',
                             'ndn-service-framework/RevocationState.cpp',
                             'ndn-service-framework/PolicyRefreshCoordinator.cpp',
+                            'ndn-service-framework/OperationRuntime.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
                             'NDNSF-UAV-APP/shared/UavProtocol.cpp',

@@ -2,8 +2,14 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoCore.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -20,6 +26,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -27,8 +34,17 @@ namespace {
 
 using ndnsf::di::DiError;
 using ndnsf::di::ModelRegistration;
+using ndnsf::di::RepositorySourceError;
 using ndnsf::di::Runtime;
 using ndnsf::di::RuntimeConfig;
+
+std::shared_ptr<EVP_PKEY> testEd25519Key(char value)
+{
+  const std::string seed(32, value);
+  return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(
+    EVP_PKEY_ED25519, nullptr,
+    reinterpret_cast<const unsigned char*>(seed.data()), seed.size()), EVP_PKEY_free);
+}
 
 void writeEd25519KeyPair(const std::filesystem::path& privatePath,
                          const std::filesystem::path& publicPath)
@@ -308,6 +324,72 @@ BOOST_AUTO_TEST_CASE(PrepareReportsSourceFailureAtPreparationBoundary)
   BOOST_CHECK(runtime->drain(std::chrono::seconds(1)));
 }
 
+BOOST_AUTO_TEST_CASE(RepositoryLoaderPreservesDeadlineAndCancellation)
+{
+  TempRuntimeConfig files;
+  const auto deadlinePath = files.makeConfig("deadline-requester.json");
+  RuntimeConfig deadlineConfig;
+  deadlineConfig.nativeConfigPath = deadlinePath.string();
+  deadlineConfig.maxPreparedBytes = 4 * 1024 * 1024;
+  deadlineConfig.preparationJobTimeout = std::chrono::seconds(3);
+  deadlineConfig.repositorySourceLoader = [] (
+    const std::string&, const std::string&, std::uint64_t,
+    std::chrono::steady_clock::time_point) {
+    throw RepositorySourceError(RepositorySourceError::Kind::Timeout,
+                                "repository source deadline expired");
+    return ndnsf::di::NativeCanonicalSource{};
+  };
+  auto deadlineRuntime = Runtime::open(deadlineConfig);
+  BOOST_CHECK_EXCEPTION(deadlineRuntime->user().prepare(), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "PREPARATION_TIMEOUT" &&
+                                 error.boundary() == "preparation";
+                        });
+  deadlineRuntime->close();
+  BOOST_CHECK(deadlineRuntime->drain(std::chrono::seconds(2)));
+
+  const auto cancelPath = files.makeConfig("cancel-requester.json");
+  RuntimeConfig cancelConfig;
+  cancelConfig.nativeConfigPath = cancelPath.string();
+  cancelConfig.maxPreparedBytes = 4 * 1024 * 1024;
+  cancelConfig.preparationJobTimeout = std::chrono::seconds(3);
+  cancelConfig.repositorySourceLoader = [] (
+    const std::string&, const std::string&, std::uint64_t,
+    std::chrono::steady_clock::time_point) {
+    throw RepositorySourceError(RepositorySourceError::Kind::Cancelled,
+                                "repository source cancelled");
+    return ndnsf::di::NativeCanonicalSource{};
+  };
+  auto cancelRuntime = Runtime::open(cancelConfig);
+  BOOST_CHECK_EXCEPTION(cancelRuntime->user().prepare(), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "PREPARATION_CANCELLED" &&
+                                 error.boundary() == "preparation";
+                        });
+  cancelRuntime->close();
+  BOOST_CHECK(cancelRuntime->drain(std::chrono::seconds(2)));
+
+  const auto keywordPath = files.makeConfig("keyword-requester.json");
+  RuntimeConfig keywordConfig;
+  keywordConfig.nativeConfigPath = keywordPath.string();
+  keywordConfig.maxPreparedBytes = 4 * 1024 * 1024;
+  keywordConfig.preparationJobTimeout = std::chrono::seconds(3);
+  keywordConfig.repositorySourceLoader = [] (
+    const std::string&, const std::string&, std::uint64_t,
+    std::chrono::steady_clock::time_point) {
+    throw std::runtime_error("repository object /cancelled not found; connection closed");
+    return ndnsf::di::NativeCanonicalSource{};
+  };
+  auto keywordRuntime = Runtime::open(keywordConfig);
+  BOOST_CHECK_EXCEPTION(keywordRuntime->user().prepare(), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "PREPARATION_SOURCE_UNAVAILABLE" &&
+                                 error.boundary() == "preparation";
+                        });
+  keywordRuntime->close();
+  BOOST_CHECK(keywordRuntime->drain(std::chrono::seconds(2)));
+}
+
 BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
 {
   TempRuntimeConfig files;
@@ -317,7 +399,140 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   config.maxPreparedBytes = 4 * 1024 * 1024;
   config.preparationJobTimeout = std::chrono::seconds(5);
 
+  // Exercise the actual RepoCore authority path through the public Runtime
+  // source-owner hook.  The local model file is removed before prepare, so a
+  // successful preparation proves lookup/miss-ingest/read from the Repo and
+  // cannot silently fall back to the legacy file loader.
+  std::ifstream modelInput(files.root() / "model.onnx", std::ios::binary);
+  const std::vector<std::uint8_t> repoPayload{
+    std::istreambuf_iterator<char>(modelInput), std::istreambuf_iterator<char>()};
+  BOOST_REQUIRE(!repoPayload.empty());
+  auto repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
+    ndnsf_distributed_repo::StorageCapability{
+      "/spec188/runtime-repo", 64 * 1024 * 1024, 0, 0.0, 1.0,
+      "local", {"filesystem"}, "persistent", true},
+    ndnsf_distributed_repo::makeFilesystemRepoStore(
+      (files.root() / "repo").string(), 64 * 1024, 1 << 20));
+  std::atomic<unsigned> repoLookups{0};
+  std::atomic<unsigned> repoIngests{0};
+  config.repositorySourceLoader = [repo, repoPayload, &repoLookups, &repoIngests](
+    const std::string&, const std::string& catalogJson, std::uint64_t maxSourceBytes,
+    std::chrono::steady_clock::time_point deadline) {
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("repository source deadline expired");
+    ++repoLookups;
+    const auto catalog = ndnsf::di::nativeParseJson(catalogJson);
+    const auto& source = catalog.at("source");
+    const auto objectName = source.at("data_name").get<std::string>();
+    const auto expectedDigest = source.at("digest").get<std::string>();
+    if (repoPayload.size() > maxSourceBytes)
+      throw std::runtime_error("repository source exceeds preparation limit");
+    auto verify = [&] {
+      const auto manifest = repo->getManifest(objectName);
+      if ("sha256:" + manifest.sha256 != expectedDigest ||
+          manifest.size != repoPayload.size())
+        throw std::runtime_error("repository manifest does not match pinned source");
+      const auto bytes = repo->get(objectName);
+      if (bytes.size() != manifest.size)
+        throw std::runtime_error("repository payload size differs from manifest");
+      return ndnsf::di::NativeCanonicalSource{bytes, std::nullopt};
+    };
+    try {
+      return verify();
+    }
+    catch (const std::out_of_range& error) {
+      if (std::string(error.what()).find("repo-object-not-found") == std::string::npos)
+        throw;
+      ++repoIngests;
+      repo->put(objectName, repoPayload, "spec188-model-source");
+      return verify();
+    }
+  };
+  // A repository-backed configuration deliberately has no local source
+  // locator.  Runtime::open must accept the pinned identity and defer all
+  // bytes to the configured owner.
+  {
+    std::ifstream input(configPath);
+    ndnsf::di::NativeJson runtimeJson;
+    input >> runtimeJson;
+    runtimeJson.at("catalog").at("source").erase("file");
+    files.write("prepared-requester.json", ndnsf::di::nativeCanonicalJson(runtimeJson));
+  }
+  std::error_code removed;
+  std::filesystem::remove(files.root() / "model.onnx", removed);
+  BOOST_REQUIRE(!removed);
+
+  // Runtime::prepare now owns the canonical publication boundary.  Bind the
+  // same LocalMock Core user used by the native publisher selector so this
+  // isolated regression exercises the production Runtime entry without
+  // depending on a live Controller/NFD bootstrap.  The wrapped REQUEST-LARGE
+  // key is deliberately provisioned before preparation; production deployments
+  // obtain the equivalent state from Core/NAC during startup.
+  ndn::security::KeyChain fixtureKeyChain{"pib-memory:", "tpm-memory:"};
+  ndn::DummyClientFace fixtureFace{fixtureKeyChain};
+  auto fixtureCert = ndn_service_framework::test::makeRsaIdentity(
+    fixtureKeyChain, ndn::Name("/user"));
+  auto fixtureAa = ndn_service_framework::test::makeRsaIdentity(
+    fixtureKeyChain, ndn::Name("/aa"));
+  auto fixtureUser = std::make_shared<ndn_service_framework::test::LocalServiceUser>(
+    fixtureFace, ndn::Name("/group"), fixtureCert, fixtureAa,
+    (files.root() / "trust.conf").string());
+  fixtureUser->useSigningKeyChainForTest(fixtureKeyChain);
+  fixtureUser->prepareHybridSendKeyForTest(ndn::Name("/Inference"), "REQUEST-LARGE");
+
+  // LocalMock ServiceUser queues publication work on its borrowed Face. Keep
+  // that io_context alive and actively driven for the entire Runtime lifetime.
+  struct IoContextRunner {
+    ndn::Face& face;
+    std::atomic<bool> running{true};
+    std::thread thread;
+
+    explicit IoContextRunner(ndn::Face& value)
+      : face(value), thread([this] {
+          while (running.load(std::memory_order_acquire)) {
+            face.getIoContext().poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          }
+          face.getIoContext().poll();
+        })
+    {
+    }
+
+    ~IoContextRunner()
+    {
+      running.store(false, std::memory_order_release);
+      face.getIoContext().stop();
+      if (thread.joinable())
+        thread.join();
+    }
+  } fixtureIo(fixtureFace);
+
+  const auto requesterKey = testEd25519Key('r');
+  auto grants = std::make_shared<ndnsf::di::NativeAuthenticatedGrantClient>(
+    "/user", requesterKey, "/aa", std::string(32, 'a'), "epoch-1",
+    [] (const ndnsf::di::NativeSignedGrantRequest&, const std::string&, std::uint64_t,
+        const ndnsf::di::NativeGrantControl&) { return ndnsf::di::NativeKeyGrant{}; },
+    [] (const std::string&, const std::string&, const ndnsf::di::NativeGrantControl&) {
+      return std::string("/fixture/grant");
+    });
+  std::ifstream configInput(configPath);
+  ndnsf::di::NativeJson runtimeJson;
+  configInput >> runtimeJson;
+  const auto& publicKeyFiles = runtimeJson.at("offer_admission").at("public_key_files");
+  BOOST_REQUIRE_EQUAL(publicKeyFiles.size(), 1U);
+  const auto keyId = publicKeyFiles.begin().key();
+  std::ifstream keyInput(files.root() / publicKeyFiles.begin().value().get<std::string>());
+  const std::string keyPem((std::istreambuf_iterator<char>(keyInput)),
+                           std::istreambuf_iterator<char>());
+  auto admission = std::make_shared<ndnsf::di::NativeOfferAdmission>(
+    runtimeJson.at("offer_admission").at("policy").dump(),
+    std::map<std::string, std::string>{{keyId, keyPem}},
+    runtimeJson.at("offer_admission").at("candidate_digest").get<std::string>());
+  // Declare Runtime after all borrowed fixture dependencies so normal scope
+  // destruction releases Runtime/ServiceUser before Face and KeyChain.
   auto runtime = Runtime::open(config);
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    runtime, fixtureUser, std::move(grants), std::move(admission));
   auto prepared = runtime->user().prepare();
   std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
   ndnsf::di::NativeJson oracle;
@@ -326,6 +541,8 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   BOOST_CHECK_EQUAL(prepared.manifest().taskName, "task");
   BOOST_CHECK_EQUAL(prepared.manifest().canonicalGraphDigest, files.canonicalGraphDigest);
   BOOST_CHECK(prepared.receipt().origin == ndnsf::di::PreparationReceipt::Origin::Fetched);
+  BOOST_CHECK_EQUAL(repoLookups.load(), 1U);
+  BOOST_CHECK_EQUAL(repoIngests.load(), 1U);
   ndnsf::di::PrepareOptions invalid;
   invalid.timeout = std::chrono::milliseconds(-1);
   BOOST_CHECK_EXCEPTION(runtime->user().prepare("default", invalid), DiError,
@@ -359,6 +576,8 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   auto asyncPrepared = asyncHandle.result(std::chrono::seconds(5));
   BOOST_CHECK(asyncHandle.status() == ndnsf::di::PreparationStatus::Ready);
   BOOST_CHECK_EQUAL(asyncPrepared.manifest().modelName, "yolo26n");
+  BOOST_CHECK_EQUAL(repoLookups.load(), 1U);
+  BOOST_CHECK_EQUAL(repoIngests.load(), 1U);
   runtime->close();
   BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
