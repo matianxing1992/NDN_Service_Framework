@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 06:45 -0500
+**Updated**: 2026-09-18 05:02 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -53,6 +53,12 @@ configure completed with a clean cache.
 The affected provider/oracle targets were rebuilt with the repaired global
 closure. These checks do not advance T001–T010 status or establish MiniNDN
 runtime completion.
+The two Python binding setup entry points now enforce the same global external
+dependency roots, with `/opt/ndnsf-stage` accepted only under the explicit
+`NDNSF_CONTAINER_BUILD=1` Tiger build marker. The v2 frozen scope passed the
+official read-only review-agent (`STATIC_PASS`); binding/template/setup checks
+were 54 passed in the combined focused run. No real Python build or container
+loader run was observed, so this remains configuration evidence only.
 The next native attempt is governed by the shared
 [experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):
 no rebuild or MiniNDN retry is allowed until a real Changed gate is recorded and

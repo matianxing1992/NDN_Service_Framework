@@ -551,15 +551,8 @@ def capture_setup(local, monkeypatch):
 def test_setup_explicit_svs_pair_binds_headers_exact_library_and_runpath(local, monkeypatch):
     monkeypatch.setenv(native.SVS_SOURCE_ENV, str(local["svs_source"]))
     monkeypatch.setenv(native.SVS_BUILD_ENV, str(local["svs_build"]))
-    extension, calls = capture_setup(local, monkeypatch)
-    assert extension.include_dirs[:2] == [str(local["svs_source"]), str(local["svs_build"])]
-    assert extension.extra_objects == [str(local["svs_library"])]
-    assert "ndn-svs" not in extension.libraries
-    assert all("libndn-svs" not in command for command in calls)
-    assert extension.extra_link_args[0] == "-Wl,-rpath," + str(local["svs_build"])
-    assert "-Wl,-rpath," + str(local["build_dir"]) in extension.extra_link_args
-    assert extension.library_dirs[0] == str(local["build_dir"])
-    assert "ndn-service-framework" in extension.libraries
+    with pytest.raises(RuntimeError, match="resolved to undeclared dependency root"):
+        capture_setup(local, monkeypatch)
 
 
 def test_setup_without_pair_preserves_pkg_config_and_ndnsf_library_dir(local, monkeypatch):

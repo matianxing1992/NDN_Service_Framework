@@ -53,7 +53,12 @@ ABI 混用风险，不会解决当前的同 SONAME `libndn-cxx` 混用问题。
 NDN-CXX、NDN-SVS、NAC-ABE、OpenSSL、NDNSD、protobuf、ONNX Runtime、GTK 和
 GStreamer 的 include/library/compiler/linker 路径，若选中了仓库的
 `.local-boost171`、`/tmp` 或未声明根就在 configure 阶段退出。两个 Python binding 的 `setup.py` 对
-`pkg-config`、`NDNSF_LIBRARY_DIR` 和 `NDNSF_RUNTIME_RPATH` 执行同样的历史目录检查。
+`pkg-config` 以及显式 NDN-SVS/NAC-ABE 前缀执行全局根检查，并对
+`NDNSF_LIBRARY_DIR` 和 `NDNSF_RUNTIME_RPATH` 执行历史目录检查；后两者可指向当前
+APP 自身的候选库目录，但不能借此带入外部依赖 checkout。
+容器 Python binding 构建必须显式设置 `NDNSF_CONTAINER_BUILD=1`；该标记才会把
+`/opt/ndnsf-stage` 加入 APP 专用依赖根。宿主构建即使机器上存在同名目录也不会
+自动获得这个例外。
 安装脚本会清除外部 `PKG_CONFIG_PATH`、编译器搜索路径、linker flags 和
 `LD_LIBRARY_PATH`，再以 `/usr/local` 配置每个 Waf/CMake 依赖；已安装的 OpenABE
 也必须能从这个前缀解析，不能只因为 `ldconfig` 中出现同名 SONAME 就跳过核验。

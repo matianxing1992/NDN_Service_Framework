@@ -10,6 +10,98 @@ from setuptools import Extension, find_packages, setup
 
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = Path(__file__).resolve().parent
+HISTORICAL_LOCAL_PREFIX = (ROOT / ".local-boost171").resolve()
+GLOBAL_DEPENDENCY_ROOTS = tuple(
+    Path(value).resolve()
+    for value in (
+        "/usr",
+        "/usr/local",
+        "/opt/ndn-base",
+        "/opt/onnxruntime-1.26.0",
+    )
+)
+
+
+def dependency_roots() -> tuple[Path, ...]:
+    roots = list(GLOBAL_DEPENDENCY_ROOTS)
+    if os.environ.get("NDNSF_CONTAINER_BUILD") == "1":
+        roots.append(Path("/opt/ndnsf-stage"))
+    return tuple(roots)
+
+
+def reject_historical_local_paths(paths: list[str], owner: str) -> None:
+    """Fail closed when host binding discovery selects the retired tree."""
+    for value in paths:
+        if not value:
+            continue
+        path = Path(value).expanduser().resolve()
+        if path == HISTORICAL_LOCAL_PREFIX or HISTORICAL_LOCAL_PREFIX in path.parents:
+            raise RuntimeError(
+                f"{owner} resolved to retired {HISTORICAL_LOCAL_PREFIX}; "
+                "use the canonical host NDN-CXX/NFD prefix or a complete "
+                "isolated runtime closure"
+            )
+
+
+def reject_historical_local_link_flags(flags: list[str], owner: str) -> None:
+    """Reject RPATH-like linker flags that name the retired tree."""
+    historical = str(HISTORICAL_LOCAL_PREFIX)
+    path_values = []
+    for flag in flags:
+        value = str(flag)
+        if historical in value or ".local-boost171/" in value:
+            raise RuntimeError(
+                f"{owner} resolved to retired {HISTORICAL_LOCAL_PREFIX}; "
+                "use the canonical host NDN-CXX/NFD prefix or a complete "
+                "isolated runtime closure"
+            )
+        if not value.startswith("-Wl,"):
+            continue
+        parts = value[4:].split(",")
+        for index, part in enumerate(parts):
+            if part in ("-rpath", "-rpath-link", "-R") and index + 1 < len(parts):
+                path_values.append(parts[index + 1])
+            elif part.startswith("-rpath="):
+                path_values.append(part.split("=", 1)[1])
+            elif part.startswith("-R") and part != "-R":
+                path_values.append(part[2:])
+    reject_historical_local_paths(path_values, owner)
+
+
+def reject_non_global_dependency_paths(paths: list[str], owner: str) -> None:
+    """Reject external dependency paths outside the declared global roots."""
+    for value in paths:
+        if not value:
+            continue
+        if str(value).startswith("$ORIGIN"):
+            raise RuntimeError(
+                f"{owner} contains $ORIGIN; container-only runtime paths must not "
+                "enter host dependency discovery"
+            )
+        path = Path(value).expanduser().resolve()
+        roots = dependency_roots()
+        if not any(path == root or root in path.parents for root in roots):
+            root_list = ", ".join(str(root) for root in roots)
+            raise RuntimeError(
+                f"{owner} resolved to undeclared dependency root {path}; "
+                f"allowed global roots: {root_list}"
+            )
+
+
+def linker_path_values(flags: list[str]) -> list[str]:
+    values: list[str] = []
+    for flag in flags:
+        if not flag.startswith("-Wl,"):
+            continue
+        parts = flag[4:].split(",")
+        for index, part in enumerate(parts):
+            if part in ("-rpath", "-rpath-link", "-R") and index + 1 < len(parts):
+                values.append(parts[index + 1])
+            elif part.startswith("-rpath="):
+                values.append(part.split("=", 1)[1])
+            elif part.startswith("-R") and part != "-R":
+                values.append(part[2:])
+    return values
 
 
 def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -51,6 +143,8 @@ def build_extension() -> Extension:
                      build / "libndn-svs.so"):
             if not path.is_file():
                 raise RuntimeError("NDNSF_NDN_SVS pair is missing required file: " + str(path))
+        reject_non_global_dependency_paths([str(source), str(build)],
+                                           "NDNSF_NDN_SVS source/build")
         explicit_includes.extend([str(source), str(build)])
         extra_objects.append(str(build / "libndn-svs.so"))
     nac = os.environ.get("NDNSF_NAC_ABE_PREFIX", "")
@@ -59,6 +153,7 @@ def build_extension() -> Extension:
         for relative in ("include/nac-abe/consumer.hpp", "lib/libnac-abe.so"):
             if not (nac / relative).is_file():
                 raise RuntimeError("NDNSF_NAC_ABE_PREFIX is missing required file: " + str(nac / relative))
+        reject_non_global_dependency_paths([str(nac)], "NDNSF_NAC_ABE_PREFIX")
         explicit_includes.insert(0, str(nac / "include"))
         extra_objects.append(str(nac / "lib/libnac-abe.so"))
 
@@ -70,6 +165,11 @@ def build_extension() -> Extension:
         *([] if source else ["libndn-svs"]),
         "libnac-abe",
     )
+    reject_historical_local_paths([*include_dirs, *library_dirs], "pkg-config")
+    reject_non_global_dependency_paths([*include_dirs, *library_dirs], "pkg-config")
+    reject_historical_local_link_flags(extra_link_args, "pkg-config")
+    reject_non_global_dependency_paths(linker_path_values(extra_link_args),
+                                       "pkg-config linker paths")
 
     env_library_dir = os.environ.get("NDNSF_LIBRARY_DIR")
     local_build = ROOT / "build"
@@ -85,6 +185,8 @@ def build_extension() -> Extension:
         ]
         if not candidate_dirs:
             raise RuntimeError("NDNSF_LIBRARY_DIR contains no library directory")
+        reject_historical_local_paths([str(path) for path in candidate_dirs],
+                                      "NDNSF_LIBRARY_DIR")
         for path in candidate_dirs:
             if not path.is_dir():
                 raise RuntimeError("NDNSF_LIBRARY_DIR does not exist: " + str(path))
@@ -95,6 +197,10 @@ def build_extension() -> Extension:
     runtime_rpath = os.environ.get("NDNSF_RUNTIME_RPATH")
     if runtime_rpath:
         runtime_dirs = [value for value in runtime_rpath.split(os.pathsep) if value]
+        reject_historical_local_paths(runtime_dirs, "NDNSF_RUNTIME_RPATH")
+        reject_historical_local_link_flags(
+            [f"-Wl,-rpath,{value}" for value in runtime_dirs],
+            "NDNSF_RUNTIME_RPATH")
         extra_link_args = [
             *[f"-Wl,-rpath,{value}" for value in runtime_dirs],
             *[value for value in extra_link_args
