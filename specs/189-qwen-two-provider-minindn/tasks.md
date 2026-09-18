@@ -58,7 +58,12 @@ dependency roots, with `/opt/ndnsf-stage` accepted only under the explicit
 `NDNSF_CONTAINER_BUILD=1` Tiger build marker. The v2 frozen scope passed the
 official read-only review-agent (`STATIC_PASS`); binding/template/setup checks
 were 54 passed in the combined focused run. No real Python build or container
-loader run was observed, so this remains configuration evidence only.
+loader run was observed, so that review remained configuration evidence only.
+Since then the validated r3 tree installed Core/DI into `/usr/local`, the root
+`ndnsf` binding and Repo `_py_repoclient` binding were built against
+`/usr/local/lib`, and both extension `ldd` closures were checked. This proves
+host install/loader consistency only; it does not advance any task or establish
+container/runtime qualification.
 The next native attempt is governed by the shared
 [experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):
 no rebuild or MiniNDN retry is allowed until a real Changed gate is recorded and

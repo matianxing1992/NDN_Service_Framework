@@ -39,6 +39,19 @@ test -d "$BUILD" || mkdir -p "$BUILD"
 ./waf -o "$BUILD" build -j4
 ```
 
+安装一个已经配置并验证过的构建树时，必须从该树目录执行 Waf；不要在仓库根目录
+再次传 `-o`，因为 Waf 会按最近的锁定配置选择输出树，可能误启动另一棵全量编译：
+
+```bash
+(cd "$BUILD" && sudo -n ../waf install)
+sudo -n ldconfig
+```
+
+安装前先确认 `$BUILD/.lock-waf_linux_build` 的 `out_dir`、Boost 配对和全局依赖根
+与本批证据一致。若只需补装生成的 pkg-config 元数据，可在同一目录使用
+`--targets=ndnsf-distributed-inference.pc,libndn-service-framework.pc`，并设置
+`NDNSF_SKIP_DEV_PIP_INSTALL=1` 避免触发无关的 editable 安装。
+
 如果发现依赖缺失或 ABI 过旧，先用维护的安装脚本把依赖安装到全局目录，再重新
 配置；不得通过 `--*-prefix` 临时指向 checkout 或 `.codex-tmp` 绕过闭包检查。
 

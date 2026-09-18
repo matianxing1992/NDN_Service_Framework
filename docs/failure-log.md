@@ -6989,3 +6989,18 @@ configuration tree. It began an unintended full compile in
 artifact was accepted. Raw command output is `/tmp/spec189-global-r3-marker-build.log`. This is a
 Waf output-selection/tooling boundary, not a product or protocol result. The global-r3 tree was
 then reconfigured explicitly and the intended affected-target build completed successfully.
+
+2026-09-18 Spec189 host global-install probe: invoking `./waf -o
+build-spec189-b189-3-global-r3 install` from the repository root did not select that already
+configured tree; Waf entered `build-spec189-global-policy-config-v3` and began a fresh compile.
+The timeout stopped it at 4/108 with no installation or accepted artifact. The follow-up probes
+with `--no-lock-in-out` and `--no-lock-in-run/--no-lock-in-top` showed the same locked-output
+behavior; raw logs are `/tmp/spec189-install-probe.log`, `/tmp/spec189-waf-r3-probe.log` and
+`/tmp/spec189-waf-r3-probe2.log`. This is a build-tool invocation boundary, not a product result.
+
+2026-09-18 Spec189 r3 global install permission boundary: running `../waf install` from the
+correct `build-spec189-b189-3-global-r3` directory as the unprivileged user reached the intended
+tree but failed writing `/usr/local/lib/libndn-service-framework.so.0.1.0` with `PermissionError`.
+Raw output is `/tmp/spec189-waf-cd-probe.log`. The authorized `sudo -n` retry from that same tree
+installed Core/DI and the Python binding successfully; the permission failure is retained only as
+the first boundary of the failed attempt.
