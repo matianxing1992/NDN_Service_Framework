@@ -59,6 +59,12 @@ def test_runtime_probe_normalizes_uid_lookup_before_native_import(monkeypatch, c
 def local(tmp_path, monkeypatch):
     root = tmp_path / "checkout with spaces"
     build_dir = root / "build-system-j2"
+    # This fixture models installed global roots without writing under /usr;
+    # production defaults remain /usr and /usr/local.
+    monkeypatch.setattr(
+        native, "GLOBAL_DEPENDENCY_ROOTS",
+        ("/usr", "/usr/local", str(tmp_path)),
+    )
 
     def put(relative, contents=b"fixture\n"):
         path = root / relative
@@ -82,6 +88,15 @@ def local(tmp_path, monkeypatch):
         put(name)
     core = put("build-system-j2/" + native.LIBRARY + ".0.1.0", b"core-v1")
     (build_dir / native.LIBRARY).symlink_to(core.name)
+    put("build-system-j2/libndnsf-distributed-inference.so", b"di-v1")
+    global_dir = tmp_path / "global-lib"
+    global_dir.mkdir()
+    global_core = global_dir / (native.LIBRARY + ".0.1.0")
+    global_core.write_bytes(core.read_bytes())
+    (global_dir / native.LIBRARY).symlink_to(global_core.name)
+    global_di = global_dir / "libndnsf-distributed-inference.so"
+    global_di.write_bytes((build_dir / "libndnsf-distributed-inference.so").read_bytes())
+    monkeypatch.setattr(native, "GLOBAL_NATIVE_LIBRARY_DIR", global_dir)
     extension = put("pythonWrapper/ndnsf/_ndnsf.fixture.so", b"extension-v1")
     provider = put("build-system-j2/examples/di-native-provider", b"provider-v1")
     provider.chmod(0o755)
@@ -92,19 +107,33 @@ def local(tmp_path, monkeypatch):
     put(svs_source / "ndn-svs/detail.hpp", b"selected internal header")
     put(svs_build / "config.hpp", b"selected generated configuration")
     svs_library = put(svs_build / native.SVS_LIBRARY, b"selected svs library")
+    cxx_dir = tmp_path / "selected-cxx"
+    cxx_dir.mkdir()
+    cxx_library = cxx_dir / "libndn-cxx.so.0.9.0"
+    cxx_library.write_bytes(b"selected cxx library")
+    nac_prefix = tmp_path / "selected-nac"
+    nac_prefix.joinpath("include/nac-abe").mkdir(parents=True)
+    nac_prefix.joinpath("lib").mkdir()
+    nac_prefix.joinpath("include/nac-abe/consumer.hpp").write_bytes(b"selected nac header")
+    nac_library = nac_prefix / "lib/libnac-abe.so"
+    nac_library.write_bytes(b"selected nac library")
     toolchain_root = tmp_path / "system-bin"
     for name in ("gcc", "g++", "ld"):
         put(toolchain_root / name, ("system tool " + name).encode())
     monkeypatch.setattr(native, "SETUP_TOOLCHAIN_ROOT", toolchain_root)
     put("build-system-j2/c4che/_cache.py", (
         native.SVS_SOURCE_ENV + " = " + repr(str(svs_source)) + "\n" +
-        native.SVS_BUILD_ENV + " = " + repr(str(svs_build)) + "\n").encode())
+        native.SVS_BUILD_ENV + " = " + repr(str(svs_build)) + "\n" +
+        "LIBPATH_NDN_CXX = " + repr([str(cxx_dir)]) + "\n" +
+        "LIBPATH_NAC_ABE = " + repr([str(nac_prefix / "lib")]) + "\n" +
+        native.NAC_PREFIX_ENV + " = " + repr(str(nac_prefix)) + "\n" +
+        "LINKFLAGS = " + repr(["-Wl,-rpath," + str(cxx_dir)]) + "\n").encode())
     python = put("system/python", b"python-v1")
     python.chmod(0o755)
     (python.parent / "python3").symlink_to(python.name)
     manifest = root / native.DEFAULT_MANIFEST
     calls = []
-    state = {"framework": core, "extension": extension,
+    state = {"framework": global_core, "extension": extension,
              "provider_dependency": dependency, "svs": svs_library,
              "provider_svs": svs_library, "linker": toolchain_root / "ld"}
     env = {"PATH": str(python.parent), "PYTHONPATH": str(root / "pythonWrapper"),
@@ -118,7 +147,8 @@ def local(tmp_path, monkeypatch):
             "extension": native.file_identity(state["extension"]),
             "mapped_libraries": {
                 str(p.resolve()): native.file_identity(p)
-                for p in (state["framework"], state["extension"], state["svs"], dependency)},
+                for p in (state["framework"], state["extension"], state["svs"],
+                          dependency, cxx_library, nac_library)},
         }
 
     def fake_run(command, *, cwd, env, capture=False, timeout=None):
@@ -136,15 +166,19 @@ def local(tmp_path, monkeypatch):
             return "ambient import log\nSPEC180_NATIVE_PROBE=" + json.dumps(runtime())
         if command[0] == "ldd":
             return ("libdependency.so => {} (0x1234)\n".format(state["provider_dependency"]) +
-                    "libndn-svs.so => {} (0x5678)\n".format(state["provider_svs"]))
+                    "libndn-svs.so => {} (0x5678)\n".format(state["provider_svs"]) +
+                    "libndn-cxx.so.0.9.0 => {} (0x9abc)\n".format(cxx_library) +
+                    "libnac-abe.so => {} (0xdef0)\n".format(nac_library))
         pytest.fail("Unexpected subprocess (no real builds allowed): " + repr(command))
 
     monkeypatch.setattr(native, "run", fake_run)
     return {"root": root, "build_dir": build_dir, "manifest": manifest,
             "python": str(python), "env": env, "calls": calls, "state": state,
-            "core": core, "extension": extension, "provider": provider,
+            "core": core, "global_core": global_core, "global_dir": global_dir,
+            "extension": extension, "provider": provider,
             "dependency": dependency, "put": put, "runtime": runtime,
             "svs_source": svs_source, "svs_build": svs_build, "svs_library": svs_library,
+            "cxx_library": cxx_library, "nac_library": nac_library,
             "toolchain_root": toolchain_root, "waf_dir": waf_dir}
 
 
@@ -165,10 +199,10 @@ def test_unified_build_targets_and_binding_cwd(local):
                             if "-print-prog-name=ld" not in c["command"]]
     assert waf["command"] == [str(local["root"] / "waf"), "-o",
                               str(local["build_dir"]), "build", "-j1",
-                              "--targets=ndn-service-framework,di-native-provider"]
+                              "--targets=" + native.TARGETS]
     assert setup["command"] == [local["python"], "setup.py", "build_ext", "--inplace", "--force"]
     assert setup["cwd"] == local["root"] / "pythonWrapper"
-    assert setup["env"]["NDNSF_LIBRARY_DIR"] == str(local["build_dir"])
+    assert setup["env"]["NDNSF_LIBRARY_DIR"] == str(local["global_dir"])
     assert setup["env"][native.SVS_SOURCE_ENV] == str(local["svs_source"])
     assert setup["env"][native.SVS_BUILD_ENV] == str(local["svs_build"])
     assert {key: probe["env"][key] for key in original_env} == original_env == local["env"]
@@ -176,7 +210,7 @@ def test_unified_build_targets_and_binding_cwd(local):
     assert data["scope"] == "HOST_LOCAL_ONLY"
     assert "scripts/spec180_native_build.py" in data["sources"]
     assert data["runtime"]["extension"]["realpath"] == str(local["extension"])
-    assert data["framework"]["realpath"] == str(local["core"])
+    assert data["framework"]["realpath"] == str(local["global_core"])
     assert data["ndn_svs"]["library"] == native.file_identity(local["svs_library"])
     assert data == json.loads(local["manifest"].read_text())
     assert verify(local) == data
@@ -259,8 +293,8 @@ def test_wrong_import_resolution_rejected_even_for_identical_bytes(local, kind):
 def test_extension_timestamp_does_not_excuse_replaced_core(local):
     build(local)
     unchanged_mtime = local["extension"].stat().st_mtime_ns
-    local["core"].write_bytes(b"unexpected core bytes")
-    with pytest.raises(native.IdentityError, match="FRAMEWORK_CHANGED"):
+    local["global_core"].write_bytes(b"unexpected core bytes")
+    with pytest.raises(native.IdentityError, match="GLOBAL_NATIVE_LIBRARY_STALE"):
         verify(local)
     assert local["extension"].stat().st_mtime_ns == unchanged_mtime
 
@@ -503,9 +537,219 @@ def test_helper_uses_waf_pair_instead_of_ambient_pair(local):
     assert local["env"][native.SVS_SOURCE_ENV] == "/wrong/source"
 
 
+def test_setup_dependency_environment_follows_waf_nac_and_rpath_pair(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        native, "GLOBAL_DEPENDENCY_ROOTS",
+        ("/usr", "/usr/local", str(tmp_path)),
+    )
+    build_dir = tmp_path / "build"
+    build_dir.joinpath("c4che").mkdir(parents=True)
+    nac_prefix = tmp_path / "nac"
+    nac_prefix.joinpath("include/nac-abe").mkdir(parents=True)
+    nac_prefix.joinpath("lib").mkdir()
+    nac_prefix.joinpath("lib/pkgconfig").mkdir()
+    nac_prefix.joinpath("include/nac-abe/consumer.hpp").write_text("header")
+    nac_prefix.joinpath("lib/libnac-abe.so").write_text("library")
+    svs_build = tmp_path / "svs-build"
+    svs_build.mkdir()
+    ambient = tmp_path / "ambient" / "pkgconfig"
+    ambient.mkdir(parents=True)
+    cxx_lib = tmp_path / "boost" / "lib"
+    cxx_lib.mkdir(parents=True)
+    cxx_lib.joinpath("pkgconfig").mkdir()
+    cxx_lib.joinpath("libndn-cxx.so.0.9.0").write_text("cxx")
+    cxx_lib.joinpath("pkgconfig/libndn-cxx.pc").write_text("cxx")
+    svs_build.joinpath("libndn-svs.pc").write_text("svs")
+    build_dir.joinpath("c4che/_cache.py").write_text(
+        native.NAC_PREFIX_ENV + " = " + repr(str(nac_prefix)) + "\n" +
+        "LINKFLAGS = " + repr([
+            "-Wl,-rpath," + str(nac_prefix / "lib"),
+            "-Wl,-rpath," + str(cxx_lib),
+        ]) + "\n")
+    result = native.setup_dependency_environment(
+        build_dir,
+        {"build_tree": str(svs_build)},
+            {native.PKG_CONFIG_ENV: str(ambient)},
+    )
+    assert result[native.NAC_PREFIX_ENV] == str(nac_prefix.resolve())
+    assert result["rpath"] == [
+        str(native.GLOBAL_NATIVE_LIBRARY_DIR.resolve()),
+        str(nac_prefix.joinpath("lib").resolve()),
+        str(svs_build.resolve()), str(cxx_lib.resolve()),
+    ]
+    assert result[native.PKG_CONFIG_ENV].split(":") == [
+        str(native.GLOBAL_NATIVE_LIBRARY_DIR.resolve() / "pkgconfig"),
+        str(nac_prefix.joinpath("lib/pkgconfig").resolve()),
+        str(svs_build.resolve()), str(cxx_lib.joinpath("pkgconfig").resolve()),
+        str(ambient.resolve()),
+    ]
+
+
+def test_setup_dependency_environment_rejects_ambient_nac_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(native, "GLOBAL_DEPENDENCY_ROOTS",
+                        ("/usr", "/usr/local", str(tmp_path)))
+    build_dir = tmp_path / "build"
+    build_dir.joinpath("c4che").mkdir(parents=True)
+    selected = tmp_path / "selected"
+    selected.joinpath("include/nac-abe").mkdir(parents=True)
+    selected.joinpath("lib").mkdir()
+    selected.joinpath("include/nac-abe/consumer.hpp").write_text("header")
+    selected.joinpath("lib/libnac-abe.so").write_text("library")
+    other = tmp_path / "other"
+    other.joinpath("include/nac-abe").mkdir(parents=True)
+    other.joinpath("lib").mkdir()
+    other.joinpath("include/nac-abe/consumer.hpp").write_text("header")
+    other.joinpath("lib/libnac-abe.so").write_text("library")
+    build_dir.joinpath("c4che/_cache.py").write_text(
+        native.NAC_PREFIX_ENV + " = " + repr(str(selected)) + "\n")
+    with pytest.raises(native.IdentityError, match="AMBIENT_NAC_ABE_PREFIX_MISMATCH"):
+        native.setup_dependency_environment(
+            build_dir, {"build_tree": str(tmp_path / "svs")},
+            {native.NAC_PREFIX_ENV: str(other)})
+
+
+def test_setup_dependency_environment_rejects_nac_without_waf_selection(tmp_path):
+    build_dir = tmp_path / "build"
+    build_dir.joinpath("c4che").mkdir(parents=True)
+    build_dir.joinpath("c4che/_cache.py").write_text("")
+    with pytest.raises(native.IdentityError,
+                       match="AMBIENT_NAC_ABE_PREFIX_WITHOUT_WAF"):
+        native.setup_dependency_environment(
+            build_dir, {"build_tree": str(tmp_path / "svs")},
+            {native.NAC_PREFIX_ENV: str(tmp_path / "ambient")})
+
+
+def test_selected_dependency_identities_follow_waf_runtime_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(native, "GLOBAL_DEPENDENCY_ROOTS",
+                        ("/usr", "/usr/local", str(tmp_path)))
+    build_dir = tmp_path / "build"
+    build_dir.joinpath("c4che").mkdir(parents=True)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    first_cxx = first / "libndn-cxx.so.0.9.0"
+    second_cxx = second / "libndn-cxx.so.0.9.0"
+    first_cxx.write_text("selected")
+    second_cxx.write_text("ambient")
+    nac = tmp_path / "nac"
+    nac.joinpath("include/nac-abe").mkdir(parents=True)
+    nac.joinpath("lib").mkdir()
+    nac.joinpath("include/nac-abe/consumer.hpp").write_text("header")
+    nac_lib = nac / "lib/libnac-abe.so"
+    nac_lib.write_text("nac")
+    build_dir.joinpath("c4che/_cache.py").write_text(
+        "LIBPATH_NDN_CXX = " + repr([str(second)]) + "\n" +
+        native.NAC_PREFIX_ENV + " = " + repr(str(nac)) + "\n")
+    environment = {"rpath": [str(first), str(second), str(nac / "lib")],
+                   native.NAC_PREFIX_ENV: str(nac)}
+    selected = native.selected_dependency_identities(build_dir, environment)
+    assert selected["libndn-cxx.so"]["realpath"] == str(first_cxx)
+    assert selected["libnac-abe.so"]["realpath"] == str(nac_lib)
+
+
+def test_selected_dependency_mapping_rejects_same_soname_replacement(tmp_path):
+    selected_path = tmp_path / "selected.so"
+    replacement_path = tmp_path / "replacement.so"
+    selected_path.write_text("selected")
+    replacement_path.write_text("replacement")
+    selected = {"libndn-cxx.so": native.file_identity(selected_path)}
+    mapping = {"libndn-cxx.so.0.9.0": native.file_identity(replacement_path)}
+    with pytest.raises(native.IdentityError,
+                       match="WRONG_RUNTIME_SELECTED_DEPENDENCY"):
+        native.validate_selected_dependency_mapping(
+            mapping, selected, "WRONG_RUNTIME_SELECTED_DEPENDENCY")
+
+
+def test_selected_dependency_identities_reject_alias_or_relative_cache_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(native, "GLOBAL_DEPENDENCY_ROOTS",
+                        ("/usr", "/usr/local", str(tmp_path)))
+    build_dir = tmp_path / "build"
+    build_dir.joinpath("c4che").mkdir(parents=True)
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    (selected / "libndn-cxx.so.0.9.0").write_text("cxx")
+    (selected / "libnac-abe.so").write_text("nac")
+    build_dir.joinpath("c4che/_cache.py").write_text(
+        "LIBPATH_NDN_CXX = " + repr([str(selected)]) + "\n" +
+        "LIBPATH_NAC-ABE = " + repr([str(selected)]) + "\n" +
+        "LIBPATH_NAC_ABE = " + repr([str(selected / "other")]) + "\n")
+    with pytest.raises(native.IdentityError, match="WAF_CACHE_PATH_ALIASES_MISMATCH"):
+        native.selected_dependency_identities(
+            build_dir, {"rpath": [str(selected)], native.NAC_PREFIX_ENV: None})
+
+
+def test_selected_dependency_identities_rejects_library_symlink_escape(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(native, "GLOBAL_DEPENDENCY_ROOTS", (str(tmp_path),))
+    build_dir = tmp_path / "build"
+    build_dir.joinpath("c4che").mkdir(parents=True)
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    outside = tmp_path.parent / "outside-cxx.so"
+    outside.write_text("outside")
+    (selected / "libndn-cxx.so.0.9.0").symlink_to(outside)
+    (selected / "libnac-abe.so").write_text("nac")
+    build_dir.joinpath("c4che/_cache.py").write_text(
+        "LIBPATH_NDN_CXX = " + repr([str(selected)]) + "\n" +
+        "LIBPATH_NAC_ABE = " + repr([str(selected)]) + "\n")
+    with pytest.raises(native.IdentityError, match="WAF_SELECTED_LIBNDN_CXX_OUTSIDE_GLOBAL_ROOT"):
+        native.selected_dependency_identities(
+            build_dir, {"rpath": [str(selected)], native.NAC_PREFIX_ENV: None})
+    build_dir.joinpath("c4che/_cache.py").write_text(
+        "LIBPATH_NDN_CXX = ['relative']\n" +
+        "LIBPATH_NAC-ABE = " + repr([str(selected)]) + "\n")
+    with pytest.raises(native.IdentityError, match="WAF_CACHE_PATH_NOT_ABSOLUTE"):
+        native.selected_dependency_identities(
+            build_dir, {"rpath": [str(selected)], native.NAC_PREFIX_ENV: None})
+
+
 def test_helper_rejects_missing_waf_pair_before_build(local):
     (local["build_dir"] / "c4che/_cache.py").write_text("CXX = ['/usr/bin/g++']\n")
     with pytest.raises(native.IdentityError, match="WAF_SVS_PAIR_REQUIRED"):
+        build(local)
+    assert local["calls"] == []
+
+
+def test_helper_rejects_external_cache_before_waf_compile(local):
+    (local["build_dir"] / "c4che/_cache.py").write_text(
+        native.SVS_SOURCE_ENV + " = " + repr(str(local["svs_source"])) + "\n" +
+        native.SVS_BUILD_ENV + " = " + repr(str(local["svs_build"])) + "\n" +
+        "LIBPATH_NDN_CXX = ['/tmp']\n" +
+        "LIBPATH_NAC_ABE = " + repr([str(local["nac_library"].parent)]) + "\n")
+    with pytest.raises(native.IdentityError, match="WAF_CACHE_LIBPATH_NDN_CXX_OUTSIDE_GLOBAL_ROOT"):
+        build(local)
+    assert local["calls"] == []
+
+
+def test_helper_rejects_component_cache_paths_before_waf_compile(local):
+    (local["build_dir"] / "c4che/_cache.py").write_text(
+        native.SVS_SOURCE_ENV + " = " + repr(str(local["svs_source"])) + "\n" +
+        native.SVS_BUILD_ENV + " = " + repr(str(local["svs_build"])) + "\n" +
+        "INCLUDES_NDN_CXX = ['/tmp']\n" +
+        "LINKFLAGS_NAC-ABE = ['-Wl,-rpath,/tmp']\n")
+    with pytest.raises(native.IdentityError, match="WAF_CACHE_INCLUDES_NDN_CXX_OUTSIDE_GLOBAL_ROOT"):
+        build(local)
+    assert local["calls"] == []
+
+
+def test_helper_rejects_generic_linkflag_search_path_before_waf_compile(local):
+    (local["build_dir"] / "c4che/_cache.py").write_text(
+        native.SVS_SOURCE_ENV + " = " + repr(str(local["svs_source"])) + "\n" +
+        native.SVS_BUILD_ENV + " = " + repr(str(local["svs_build"])) + "\n" +
+        "LINKFLAGS = ['-L/tmp']\n")
+    with pytest.raises(native.IdentityError, match="WAF_CACHE_LINKFLAGS_OUTSIDE_GLOBAL_ROOT"):
+        build(local)
+    assert local["calls"] == []
+
+
+def test_helper_rejects_escaped_global_install_before_waf_compile(local, tmp_path):
+    escaped = tmp_path.parent / "escaped-framework.so"
+    escaped.write_bytes((local["global_core"]).read_bytes())
+    installed = local["global_dir"] / native.LIBRARY
+    installed.unlink()
+    installed.symlink_to(escaped)
+    with pytest.raises(native.IdentityError, match="GLOBAL_NATIVE_LIBRARY_OUTSIDE_GLOBAL_ROOT"):
         build(local)
     assert local["calls"] == []
 
@@ -543,7 +787,14 @@ def capture_setup(local, monkeypatch):
         return "-I/usr/local/include -L/usr/local/lib -lndn-cxx -lndn-svs -lnac-abe"
 
     monkeypatch.setattr(subprocess, "check_output", pkg_config)
-    monkeypatch.setenv("NDNSF_LIBRARY_DIR", str(local["build_dir"]))
+    monkeypatch.setenv("NDNSF_LIBRARY_DIR", "/usr/local/lib")
+    monkeypatch.setenv(
+        "NDNSF_GLOBAL_NATIVE_DIGESTS",
+        json.dumps({
+            name: native.digest("/usr/local/lib/" + name)
+            for name in native.GLOBAL_NATIVE_LIBRARIES
+        }, sort_keys=True),
+    )
     runpy.run_path(str(SCRIPT.parents[1] / "pythonWrapper/setup.py"), run_name="__main__")
     return captured["ext_modules"][0], calls
 
@@ -562,8 +813,8 @@ def test_setup_without_pair_preserves_pkg_config_and_ndnsf_library_dir(local, mo
     assert extension.extra_objects == []
     assert "libndn-svs" in calls[0]
     assert "ndn-svs" in extension.libraries
-    assert extension.library_dirs[0] == str(local["build_dir"])
-    assert extension.extra_link_args[0] == "-Wl,-rpath," + str(local["build_dir"])
+    assert extension.library_dirs[0] == "/usr/local/lib"
+    assert extension.extra_link_args[0] == "-Wl,-rpath,/usr/local/lib"
 
 
 @pytest.mark.parametrize("missing", [native.SVS_SOURCE_ENV, native.SVS_BUILD_ENV])

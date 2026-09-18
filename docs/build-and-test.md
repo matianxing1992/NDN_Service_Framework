@@ -92,8 +92,10 @@ For an integration batch, use the existing tree and select the target explicitly
 Python packages for source-tree development:
 
 ```bash
-NDNSF_LIBRARY_DIR=/usr/local/lib python3 -m pip install -e ./pythonWrapper
-NDNSF_LIBRARY_DIR=/usr/local/lib python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
+export NDNSF_LIBRARY_DIR=/usr/local/lib
+export NDNSF_GLOBAL_NATIVE_DIGESTS="$(python3 -c 'import hashlib,json; names=("libndn-service-framework.so","libndnsf-distributed-inference.so"); print(json.dumps({n:hashlib.sha256(open("/usr/local/lib/"+n,"rb").read()).hexdigest() for n in names}, sort_keys=True))')"
+python3 -m pip install -e ./pythonWrapper
+python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedInference
 ```
 

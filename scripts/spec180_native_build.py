@@ -7,10 +7,13 @@ Use the same Python, cwd and environment as the later LOCAL tests, for example::
     python3 scripts/spec180_native_build.py build --build-dir build-system-j2
     python3 scripts/spec180_native_build.py verify --build-dir build-system-j2
 
-The Waf directory must already be configured. This tool does not configure,
-install, run a Provider/model, or qualify SIF/Tiger artifacts. Waf and setup.py
-remain the build authorities. Commands run sequentially; a lock prevents two
-instances of this entry point from building/verifying concurrently.
+The Waf directory must already be configured and its Core/DI outputs must have
+been installed under the host global `/usr/local/lib` root. This tool does not
+configure or install dependencies; run `sudo -n ./waf install` from the same
+configured tree first. It does not run a Provider/model or qualify SIF/Tiger
+artifacts. Waf and setup.py remain the build authorities. Commands run
+sequentially; a lock prevents two instances of this entry point from
+building/verifying concurrently.
 
 The manifest binds source/configuration bytes, both native outputs, the actual
 imported extension and libraries mapped by a fresh Python process. Extension
@@ -45,7 +48,7 @@ import sysconfig
 import tempfile
 
 
-SCHEMA = "spec180-host-local-native-v2"
+SCHEMA = "spec180-host-local-native-v3"
 # The binding links the native DI shared library as well as the framework.
 # The process qualification and cold ONNX path also consume the native
 # requester, authority and assembly worker.  Listing only the framework and
@@ -99,6 +102,10 @@ SETUP_TOOLCHAIN_ROOT = Path("/usr/bin")
 SETUP_FLAG_NAMES = ("CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS")
 GLOBAL_DEPENDENCY_ROOTS = ("/usr", "/usr/local", "/opt/onnxruntime",
                            "/opt/onnxruntime-1.26.0")
+# Host bindings and native consumers must load the installed NDNSF libraries.
+# The Waf build tree is a compilation output, never a runtime dependency root.
+GLOBAL_NATIVE_LIBRARY_DIR = Path("/usr/local/lib")
+GLOBAL_NATIVE_LIBRARIES = (LIBRARY, "libndnsf-distributed-inference.so")
 
 
 class IdentityError(RuntimeError):
@@ -117,6 +124,65 @@ def file_identity(path):
     path = Path(path).absolute()
     return {"path": str(path), "realpath": str(path.resolve(strict=True)),
             "sha256": digest(path)}
+
+
+def require_global_dependency_paths(paths, owner):
+    """Reject every external path that is not in the installed global closure."""
+    for value in paths:
+        if not value:
+            continue
+        raw = str(value)
+        if raw == "$ORIGIN" or raw.startswith("$ORIGIN/"):
+            raise IdentityError(owner + "_ORIGIN_NOT_ALLOWED")
+        resolved = Path(raw).expanduser().resolve()
+        if not any(resolved == Path(root) or Path(root) in resolved.parents
+                   for root in GLOBAL_DEPENDENCY_ROOTS):
+            raise IdentityError(owner + "_OUTSIDE_GLOBAL_ROOT: " + str(resolved))
+
+
+def installed_native_library_identities(build_dir):
+    """Require the just-built NDNSF libraries to be installed globally.
+
+    A successful Waf build alone is insufficient: binding or provider tests
+    must never fall back to a checkout/build-tree copy.  Compare bytes rather
+    than SONAMEs so a stale global install fails before setup.py or MiniNDN.
+    """
+    selected = {}
+    for name in GLOBAL_NATIVE_LIBRARIES:
+        built = build_dir / name
+        installed = GLOBAL_NATIVE_LIBRARY_DIR / name
+        if not built.is_file():
+            raise IdentityError("NATIVE_BUILD_OUTPUT_MISSING: " + str(built))
+        if not installed.is_file():
+            raise IdentityError("GLOBAL_NATIVE_LIBRARY_MISSING: " + str(installed))
+        built_identity = file_identity(built)
+        installed_identity = file_identity(installed)
+        if built_identity["sha256"] != installed_identity["sha256"]:
+            raise IdentityError(
+                "GLOBAL_NATIVE_LIBRARY_STALE: " + name +
+                " (run Waf install to refresh /usr/local/lib)")
+        selected[name] = installed_identity
+    return selected
+
+
+def require_installed_native_library_presence():
+    """Check the host install before invoking Waf or setup.py."""
+    for name in GLOBAL_NATIVE_LIBRARIES:
+        path = GLOBAL_NATIVE_LIBRARY_DIR / name
+        if not path.is_file():
+            raise IdentityError("GLOBAL_NATIVE_LIBRARY_MISSING: " + str(path))
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise IdentityError("GLOBAL_NATIVE_LIBRARY_UNRESOLVABLE: " + str(path)) from error
+        require_global_dependency_paths([str(resolved)], "GLOBAL_NATIVE_LIBRARY")
+
+
+def require_global_install_before_build(build_dir):
+    """Fail before compilation when an existing output proves the install stale."""
+    require_installed_native_library_presence()
+    if all((build_dir / name).is_file() for name in GLOBAL_NATIVE_LIBRARIES):
+        installed_native_library_identities(build_dir)
 
 
 def source_fingerprints(root):
@@ -272,22 +338,29 @@ def svs_identity(build_dir):
         headers = {str(p.relative_to(source)): file_identity(p)
                    for p in sorted((source / "ndn-svs").rglob("*"))
                    if p.is_file() and p.suffix in {".hpp", ".h", ".ipp", ".inl", ".tcc"}}
+        library_identity = file_identity(build_tree / SVS_LIBRARY)
+        require_global_dependency_paths([library_identity["realpath"]],
+                                        "WAF_SVS_INSTALLED_LIBRARY")
         return {"source_tree": str(source), "build_tree": str(build_tree),
                 "headers": headers, "configuration": file_identity(config_path),
-                "library": file_identity(build_tree / SVS_LIBRARY),
+                "library": library_identity,
                 "layout": "installed-global"}
     if any(not Path(value).is_absolute() for value in values.values()):
         raise IdentityError("WAF_SVS_PAIR_NOT_ABSOLUTE")
     source = Path(values[SVS_SOURCE_ENV]).resolve(strict=True)
     build_tree = Path(values[SVS_BUILD_ENV]).resolve(strict=True)
+    require_global_dependency_paths([source, build_tree], "WAF_SVS_PAIR")
     if not (source / "ndn-svs/svspubsub.hpp").is_file():
         raise IdentityError("WAF_SVS_HEADER_MISSING")
     headers = {str(p.relative_to(source)): file_identity(p)
                for p in sorted((source / "ndn-svs").rglob("*"))
                if p.is_file() and p.suffix in {".hpp", ".h", ".ipp", ".inl", ".tcc"}}
+    library_identity = file_identity(build_tree / SVS_LIBRARY)
+    require_global_dependency_paths([library_identity["realpath"]],
+                                    "WAF_SVS_LIBRARY")
     return {"source_tree": str(source), "build_tree": str(build_tree),
             "headers": headers, "configuration": file_identity(build_tree / "config.hpp"),
-            "library": file_identity(build_tree / SVS_LIBRARY),
+            "library": library_identity,
             "layout": "explicit-source-build"}
 
 
@@ -309,6 +382,76 @@ def _waf_cache_value(build_dir, key):
         raise IdentityError("WAF_CACHE_VALUE_INVALID: " + key) from error
 
 
+def linker_path_values(flags):
+    """Extract absolute loader/search paths from linker flag tokens."""
+    values = []
+    for flag in flags:
+        if not isinstance(flag, str):
+            continue
+        if flag.startswith("-Wl,"):
+            parts = flag[4:].split(",")
+            for index, part in enumerate(parts):
+                if part in ("-rpath", "-rpath-link", "-R", "-L") and index + 1 < len(parts):
+                    values.append(parts[index + 1])
+                elif part.startswith("-rpath="):
+                    values.append(part.split("=", 1)[1])
+                elif part.startswith("-R") and part != "-R":
+                    values.append(part[2:])
+                elif part.startswith("-L") and part != "-L":
+                    values.append(part[2:])
+        elif flag.startswith("-L") and flag != "-L":
+            values.append(flag[2:])
+    return values
+
+
+def _waf_cache_dependency_paths(build_dir):
+    """Validate every dependency path-bearing Waf cache family.
+
+    Checking only the generic LINKFLAGS/LIBPATH entries leaves component
+    specific INCLUDES_*, STLIBPATH_* and LINKFLAGS_* values free to reintroduce
+    a temporary or checkout DSO.  Parse the cache as literals and inspect all
+    path-bearing families before Waf is allowed to compile.
+    """
+    cache = build_dir / "c4che/_cache.py"
+    if not cache.is_file():
+        raise IdentityError("WAF_CACHE_MISSING")
+    for line in cache.read_text().splitlines():
+        match = re.fullmatch(r"([A-Z][A-Z0-9_-]*)\s*=\s*(.+)", line)
+        if not match:
+            continue
+        key, literal = match.groups()
+        if not (key.startswith(("INCLUDES_", "LIBPATH_", "STLIBPATH_",
+                                "LINKFLAGS_", "RPATH_"))
+                or key == "LINKFLAGS"):
+            continue
+        try:
+            value = ast.literal_eval(literal)
+        except (ValueError, SyntaxError) as error:
+            raise IdentityError("WAF_CACHE_VALUE_INVALID: " + key) from error
+        values = value if isinstance(value, (list, tuple)) else [value]
+        paths = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            if key.startswith(("INCLUDES_", "LIBPATH_", "STLIBPATH_")):
+                if item.startswith("-L"):
+                    # Waf's literal template values (for example -L%s) are
+                    # not selected search paths; concrete -L values are.
+                    if item[2:] in ("", "%s"):
+                        continue
+                    paths.append(item[2:])
+                else:
+                    paths.append(item)
+            else:
+                # Handle -Wl,-rpath/-rpath-link and -L forms in both the
+                # generic and component-specific linker flag lists.
+                paths.extend(path for path in linker_path_values([item])
+                             if "%s" not in path)
+                if item.startswith("/") or item.startswith("$ORIGIN"):
+                    paths.append(item)
+        require_global_dependency_paths(paths, "WAF_CACHE_" + key)
+
+
 def configured_nac_abe_prefix(build_dir):
     """Return the NAC-ABE prefix selected by the configured Waf tree."""
     value = _waf_cache_value(build_dir, NAC_PREFIX_ENV)
@@ -317,6 +460,7 @@ def configured_nac_abe_prefix(build_dir):
     if not isinstance(value, str) or not Path(value).is_absolute():
         raise IdentityError("WAF_NAC_ABE_PREFIX_INVALID")
     prefix = Path(value).resolve(strict=True)
+    require_global_dependency_paths([prefix], "WAF_NAC_ABE_PREFIX")
     for relative in ("include/nac-abe/consumer.hpp", "lib/libnac-abe.so"):
         if not (prefix / relative).is_file():
             raise IdentityError("WAF_NAC_ABE_INPUT_MISSING: " + str(prefix / relative))
@@ -334,6 +478,7 @@ def setup_dependency_environment(build_dir, svs, environ=None):
     paths after them for unrelated dependencies such as ndnsd.
     """
     source_environment = os.environ if environ is None else environ
+    _waf_cache_dependency_paths(build_dir)
     ambient_nac = source_environment.get(NAC_PREFIX_ENV, "")
     nac_prefix = configured_nac_abe_prefix(build_dir)
     if ambient_nac:
@@ -345,7 +490,10 @@ def setup_dependency_environment(build_dir, svs, environ=None):
             raise IdentityError("AMBIENT_NAC_ABE_PREFIX_INVALID") from error
         if ambient_path != nac_prefix:
             raise IdentityError("AMBIENT_NAC_ABE_PREFIX_MISMATCH")
-    rpath_dirs = [build_dir]
+    # Only installed global roots may participate in binding/runtime lookup.
+    # The build tree is intentionally excluded even though it contains the
+    # freshly compiled objects; callers must install them before this step.
+    rpath_dirs = [GLOBAL_NATIVE_LIBRARY_DIR]
     if nac_prefix is not None:
         rpath_dirs.append(nac_prefix / "lib")
     rpath_dirs.append(Path(svs["build_tree"]))
@@ -364,6 +512,7 @@ def setup_dependency_environment(build_dir, svs, environ=None):
                 rpath_dirs.append(rpath)
     rpath_dirs = list(dict.fromkeys(
         str(path.resolve()) for path in rpath_dirs if path.is_dir()))
+    require_global_dependency_paths(rpath_dirs, "WAF_RUNTIME_SEARCH")
 
     pkg_dirs = []
     for raw in rpath_dirs:
@@ -375,6 +524,7 @@ def setup_dependency_environment(build_dir, svs, environ=None):
     inherited = source_environment.get(PKG_CONFIG_ENV, "")
     pkg_dirs.extend(value for value in inherited.split(os.pathsep) if value)
     pkg_dirs = list(dict.fromkeys(pkg_dirs))
+    require_global_dependency_paths(pkg_dirs, "WAF_PKG_CONFIG_PATH")
     return {
         NAC_PREFIX_ENV: str(nac_prefix) if nac_prefix is not None else None,
         "rpath": rpath_dirs,
@@ -406,6 +556,7 @@ def selected_dependency_identities(build_dir, dependency_environment):
                 if not isinstance(value, str) or not Path(value).is_absolute():
                     raise IdentityError("WAF_CACHE_PATH_NOT_ABSOLUTE: " + key)
                 paths.append(Path(value))
+            require_global_dependency_paths(paths, "WAF_CACHE_" + key)
             aliases.append(paths)
         if len(aliases) > 1 and aliases[0] != aliases[1]:
             raise IdentityError("WAF_CACHE_PATH_ALIASES_MISMATCH: " + keys[0])
@@ -420,6 +571,8 @@ def selected_dependency_identities(build_dir, dependency_environment):
     if not cxx_candidates:
         raise IdentityError("WAF_NDN_CXX_LIBRARY_MISSING")
     selected["libndn-cxx.so"] = file_identity(cxx_candidates[0])
+    require_global_dependency_paths([selected["libndn-cxx.so"]["realpath"]],
+                                    "WAF_SELECTED_LIBNDN_CXX")
 
     nac_search = []
     nac_prefix = dependency_environment.get(NAC_PREFIX_ENV)
@@ -435,6 +588,8 @@ def selected_dependency_identities(build_dir, dependency_environment):
     if not nac_candidates:
         raise IdentityError("WAF_NAC_ABE_LIBRARY_MISSING")
     selected["libnac-abe.so"] = file_identity(nac_candidates[0])
+    require_global_dependency_paths([selected["libnac-abe.so"]["realpath"]],
+                                    "WAF_SELECTED_NAC_ABE")
     return selected
 
 
@@ -537,7 +692,8 @@ def probe_runtime(python, root, env):
     return json.loads(records[0])
 
 
-def validate_runtime(runtime, root, build_dir, selected=None):
+def validate_runtime(runtime, root, build_dir, selected=None,
+                     installed_native=None):
     expected = root / "pythonWrapper/ndnsf" / (
         "_ndnsf" + runtime["python"]["ext_suffix"])
     # Check lexical path and resolved path: symlinks into another build are
@@ -549,9 +705,11 @@ def validate_runtime(runtime, root, build_dir, selected=None):
     check_equal(extension, file_identity(expected), "EXTENSION_CHANGED_DURING_IMPORT")
     framework = [value for path, value in runtime["mapped_libraries"].items()
                  if Path(path).name.startswith(LIBRARY)]
-    built = file_identity(build_dir / LIBRARY)
-    if Path(built["realpath"]).parent != build_dir:
-        raise IdentityError("FRAMEWORK_OUTPUT_OUTSIDE_BUILD_DIR")
+    built = (installed_native or {}).get(LIBRARY)
+    if built is None:
+        built = file_identity(GLOBAL_NATIVE_LIBRARY_DIR / LIBRARY)
+    if Path(built["realpath"]).parent != GLOBAL_NATIVE_LIBRARY_DIR:
+        raise IdentityError("FRAMEWORK_OUTPUT_OUTSIDE_GLOBAL_INSTALL")
     if len(framework) != 1 or framework[0]["realpath"] != built["realpath"]:
         raise IdentityError("WRONG_FRAMEWORK_LIBRARY: " +
                             ", ".join(lib["realpath"] for lib in framework))
@@ -605,7 +763,8 @@ def provider_identity(root, build_dir, env, selected=None):
                                  capture=True, timeout=60))
     for name, library in dependencies.items():
         if name.startswith(LIBRARY):
-            check_equal(library["realpath"], str((build_dir / LIBRARY).resolve()),
+            check_equal(library["realpath"],
+                        str((GLOBAL_NATIVE_LIBRARY_DIR / LIBRARY).resolve()),
                         "WRONG_PROVIDER_FRAMEWORK_LIBRARY")
     if selected:
         validate_selected_dependency_mapping(
@@ -620,6 +779,7 @@ def read_manifest(path):
             or data.get("scope") != "HOST_LOCAL_ONLY"):
         raise IdentityError("WRONG_MANIFEST_SCOPE")
     for key in ("sources", "configuration", "framework", "runtime", "provider", "ndn_svs",
+                "global_native_libraries",
                 "setup_toolchain", "setup_build_flags", "waf_tool",
                 "selected_dependencies"):
         if not isinstance(data.get(key), dict):
@@ -695,6 +855,16 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
     config = config_fingerprints(build_dir)
     waf_tool = waf_tool_identity(root, env)
     svs = svs_identity(build_dir)
+    # Do not spend a native compile when the required global install is
+    # absent.  The caller must install the matching dependency closure first.
+    require_global_install_before_build(build_dir)
+    # Validate every configured external dependency before Waf is invoked.
+    # A stale c4che/pkg-config/RPATH must fail without compiling against it;
+    # the same identities are checked again after Waf to detect changes while
+    # the build is running.
+    dependency_environment = setup_dependency_environment(build_dir, svs, env)
+    selected_dependencies = selected_dependency_identities(
+        build_dir, dependency_environment)
     flags = setup_build_flags(env)
     previous = None
     if manifest.exists():
@@ -713,16 +883,19 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
     check_equal(source_fingerprints(root), sources, "SOURCES_CHANGED_DURING_BUILD")
     check_equal(config_fingerprints(build_dir), config, "CONFIG_CHANGED_DURING_BUILD")
     check_equal(svs_identity(build_dir), svs, "SVS_CHANGED_DURING_BUILD")
+    installed_native = installed_native_library_identities(build_dir)
     toolchain = setup_toolchain_identity(root, env)
-    framework = file_identity(build_dir / LIBRARY)
-    dependency_environment = setup_dependency_environment(build_dir, svs, env)
-    selected_dependencies = selected_dependency_identities(
-        build_dir, dependency_environment)
+    framework = installed_native[LIBRARY]
+    check_equal(setup_dependency_environment(build_dir, svs, env),
+                dependency_environment, "DEPENDENCY_ENV_CHANGED_DURING_BUILD")
+    check_equal(selected_dependency_identities(build_dir, dependency_environment),
+                selected_dependencies, "SELECTED_DEPENDENCIES_CHANGED_DURING_BUILD")
     reusable = False
     if binding == "auto" and previous:
         try:
             runtime = probe_runtime(python, root, env)
-            validate_runtime(runtime, root, build_dir, selected_dependencies)
+            validate_runtime(runtime, root, build_dir, selected_dependencies,
+                             installed_native)
             validate_svs_mapping(svs, runtime["mapped_libraries"], "WRONG_RUNTIME_NDN_SVS")
             reusable = binding_reusable(previous, sources, config, runtime, framework,
                                         svs, toolchain, flags, waf_tool)
@@ -731,9 +904,12 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
     commands = [{"argv": command, "cwd": str(root), "WAFDIR": waf_tool["directory"]}]
     if not reusable:
         command = [python, "setup.py", "build_ext", "--inplace", "--force"]
-        build_env = dict(env, NDNSF_LIBRARY_DIR=str(build_dir),
+        build_env = dict(env, NDNSF_LIBRARY_DIR=str(GLOBAL_NATIVE_LIBRARY_DIR),
                          NDNSF_NDN_SVS_SOURCE_TREE=svs["source_tree"],
                          NDNSF_NDN_SVS_BUILD_TREE=svs["build_tree"])
+        build_env["NDNSF_GLOBAL_NATIVE_DIGESTS"] = json.dumps(
+            {name: value["sha256"] for name, value in installed_native.items()},
+            sort_keys=True)
         # The configured Waf pair owns these ABI-sensitive choices.  An
         # ambient setup invocation may otherwise select /usr/local's same-
         # SONAME libraries, leaving Python's direct dependencies inconsistent
@@ -751,15 +927,18 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
         build_env.update(toolchain["environment"])
         run(command, cwd=root / "pythonWrapper", env=build_env)
         commands.append({"argv": command, "cwd": str(root / "pythonWrapper"),
-                         "NDNSF_LIBRARY_DIR": str(build_dir),
+                         "NDNSF_LIBRARY_DIR": str(GLOBAL_NATIVE_LIBRARY_DIR),
                          NAC_PREFIX_ENV: build_env.get(NAC_PREFIX_ENV),
                          PKG_CONFIG_ENV: build_env.get(PKG_CONFIG_ENV),
                          RUNTIME_RPATH_ENV: build_env.get(RUNTIME_RPATH_ENV),
+                         "NDNSF_GLOBAL_NATIVE_DIGESTS": build_env.get(
+                             "NDNSF_GLOBAL_NATIVE_DIGESTS"),
                          **toolchain["environment"],
                          **flags,
                          SVS_SOURCE_ENV: svs["source_tree"], SVS_BUILD_ENV: svs["build_tree"]})
     runtime = probe_runtime(python, root, env)
-    validate_runtime(runtime, root, build_dir, selected_dependencies)
+    validate_runtime(runtime, root, build_dir, selected_dependencies,
+                     installed_native)
     validate_svs_mapping(svs, runtime["mapped_libraries"], "WRONG_RUNTIME_NDN_SVS")
     provider = provider_identity(root, build_dir, env, selected_dependencies)
     validate_svs_mapping(svs, provider["libraries"], "WRONG_PROVIDER_NDN_SVS")
@@ -768,10 +947,12 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
     check_equal(svs_identity(build_dir), svs, "SVS_CHANGED_DURING_BUILD")
     check_equal(setup_toolchain_identity(root, env), toolchain, "SETUP_TOOLCHAIN_CHANGED_DURING_BUILD")
     check_equal(waf_tool_identity(root, env), waf_tool, "WAF_TOOL_CHANGED_DURING_BUILD")
-    check_equal(file_identity(build_dir / LIBRARY), framework, "FRAMEWORK_CHANGED_DURING_BUILD")
+    check_equal(file_identity(GLOBAL_NATIVE_LIBRARY_DIR / LIBRARY), framework,
+                "GLOBAL_FRAMEWORK_CHANGED_DURING_BUILD")
     data = {"schema": SCHEMA, "scope": "HOST_LOCAL_ONLY", "root": str(root),
             "build_dir": str(build_dir), "sources": sources, "configuration": config,
             "framework": framework, "runtime": runtime, "provider": provider, "ndn_svs": svs,
+            "global_native_libraries": installed_native,
             "setup_toolchain": toolchain,
             "selected_dependencies": selected_dependencies,
             "setup_build_flags": flags,
@@ -793,14 +974,19 @@ def verify(root, build_dir, manifest, python, env):
     dependency_environment = setup_dependency_environment(build_dir, svs, env)
     selected_dependencies = selected_dependency_identities(
         build_dir, dependency_environment)
+    installed_native = installed_native_library_identities(build_dir)
+    check_equal(installed_native, data.get("global_native_libraries", {}),
+                "GLOBAL_NATIVE_INSTALL_CHANGED")
     check_equal(selected_dependencies, data.get("selected_dependencies", {}),
                 "SELECTED_DEPENDENCIES_CHANGED")
     check_equal(setup_toolchain_identity(root, env), data["setup_toolchain"], "STALE_SETUP_TOOLCHAIN")
-    check_equal(file_identity(build_dir / LIBRARY), data["framework"], "FRAMEWORK_CHANGED")
+    check_equal(file_identity(GLOBAL_NATIVE_LIBRARY_DIR / LIBRARY),
+                data["framework"], "GLOBAL_FRAMEWORK_CHANGED")
     check_equal(file_identity(build_dir / "examples/di-native-provider"),
                 data["provider"]["artifact"], "PROVIDER_CHANGED")
     runtime = probe_runtime(python, root, env)
-    validate_runtime(runtime, root, build_dir, selected_dependencies)
+    validate_runtime(runtime, root, build_dir, selected_dependencies,
+                     installed_native)
     validate_svs_mapping(svs, runtime["mapped_libraries"], "WRONG_RUNTIME_NDN_SVS")
     check_equal(runtime, data["runtime"], "RUNTIME_IDENTITY_CHANGED")
     provider = provider_identity(root, build_dir, env, selected_dependencies)
@@ -811,7 +997,8 @@ def verify(root, build_dir, manifest, python, env):
                 "CONFIG_CHANGED_DURING_VERIFY")
     check_equal(waf_tool_identity(root, env), data["waf_tool"], "WAF_TOOL_CHANGED_DURING_VERIFY")
     check_equal(svs_identity(build_dir), svs, "SVS_CHANGED_DURING_VERIFY")
-    check_equal(file_identity(build_dir / LIBRARY), data["framework"], "FRAMEWORK_CHANGED")
+    check_equal(file_identity(GLOBAL_NATIVE_LIBRARY_DIR / LIBRARY),
+                data["framework"], "GLOBAL_FRAMEWORK_CHANGED")
     check_equal(file_identity(data["runtime"]["extension"]["path"]),
                 data["runtime"]["extension"], "EXTENSION_CHANGED")
     check_equal(file_identity(build_dir / "examples/di-native-provider"),

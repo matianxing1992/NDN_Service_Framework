@@ -56,9 +56,13 @@ ABI 混用风险，不会解决当前的同 SONAME `libndn-cxx` 混用问题。
 NDN-CXX、NDN-SVS、NAC-ABE、OpenSSL、NDNSD、protobuf、ONNX Runtime、GTK 和
 GStreamer 的 include/library/compiler/linker 路径，若选中了仓库的
 `.local-boost171`、`/tmp` 或未声明根就在 configure 阶段退出。两个 Python binding 的 `setup.py` 对
-`pkg-config` 以及显式 NDN-SVS/NAC-ABE 前缀执行全局根检查，并对
-`NDNSF_LIBRARY_DIR` 和 `NDNSF_RUNTIME_RPATH` 执行历史目录检查；后两者可指向当前
-APP 自身的候选库目录，但不能借此带入外部依赖 checkout。
+`pkg-config`、显式 NDN-SVS/NAC-ABE 前缀以及 `NDNSF_LIBRARY_DIR` 执行全局根检查；
+宿主 `NDNSF_LIBRARY_DIR` 必须是唯一的 `/usr/local/lib` 安装目录，构建树、checkout、
+`/tmp`、`.codex-tmp` 和 per-run install 前缀都会被拒绝。容器 APP 只有在显式
+`NDNSF_CONTAINER_BUILD=1` 时，才可使用声明的 `/opt/ndnsf-stage/lib` 等镜像内根。
+`NDNSF_RUNTIME_RPATH` 也不能把宿主绑定到临时依赖目录。
+维护的 MiniNDN/本地实验启动器同样只设置 `/usr/local/lib`，不会继承调用者的
+`LD_LIBRARY_PATH`，因此 checkout、per-run 或旧构建目录不能在运行时重新进入闭包。
 容器 Python binding 构建必须显式设置 `NDNSF_CONTAINER_BUILD=1`；该标记才会把
 容器 base/APP SDK 根加入依赖闭包。宿主构建即使机器上存在同名目录也不会自动
 获得这个例外。容器模板的 `PKG_CONFIG_PATH` 不再包含 `ndnsf-build-work` 这类
@@ -99,7 +103,17 @@ SIF 内不使用宿主 `/usr/local/lib`。base SIF 将稳定 NDN-CXX/NFD 和系�
 
 ## Verification boundary
 
-Host-local runs should use an explicit path similar to:
+Host-local builds must install the matching Waf outputs before building either
+Python binding. Run this from the same configured tree that produced the native
+outputs; a successful compile in a checkout is not an installed dependency:
+
+```bash
+env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR \
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH \
+  /usr/bin/sudo -n ./waf install -j4
+```
+
+The binding and later local runs then use only the installed root:
 
 ```bash
 PYTHON_WRAPPER="/absolute/path/to/pythonWrapper"
@@ -108,6 +122,7 @@ for path in "$PYTHON_WRAPPER" /usr/local/lib /usr/lib/x86_64-linux-gnu; do
 done
 export NDNSF_LIBRARY_DIR=/usr/local/lib
 export LD_LIBRARY_PATH="/usr/local/lib:/opt/onnxruntime/lib:/usr/lib/x86_64-linux-gnu"
+export NDNSF_GLOBAL_NATIVE_DIGESTS="$(python3 -c 'import hashlib,json; names=("libndn-service-framework.so","libndnsf-distributed-inference.so"); print(json.dumps({n:hashlib.sha256(open("/usr/local/lib/"+n,"rb").read()).hexdigest() for n in names}, sort_keys=True))')"
 ```
 
 Then inspect the extension, every transitive DI/SVS/NAC library, and `/usr/local/bin/nfd`:
@@ -118,7 +133,12 @@ ldd /usr/local/bin/nfd
 sha256sum /usr/local/lib/libndn-cxx.so.0.9.0
 ```
 
-The maintained YOLO runner performs the same identity check before creating NFD. A
-failure is a host dependency/preflight boundary, not a protocol result. Historical
-Spec evidence may mention `.local-boost171`; those records remain unchanged and are not
-current dependency policy.
+The maintained YOLO runner performs the same identity check before creating NFD. The
+maintained `scripts/spec180_native_build.py` also compares freshly built Core/DI bytes
+with `/usr/local/lib` and refuses to invoke Waf when the global install, Waf cache,
+pkg-config directory, selected DSO realpath, or RPATH is missing, stale, or outside
+the global closure; it passes `NDNSF_GLOBAL_NATIVE_DIGESTS` to both binding builds. Direct
+`setup.py` or pip invocation must provide the same receipt variable. A failure is a
+host dependency/preflight boundary, not a protocol result.
+Historical Spec evidence may mention `.local-boost171`; those records remain unchanged
+and are not current dependency policy.

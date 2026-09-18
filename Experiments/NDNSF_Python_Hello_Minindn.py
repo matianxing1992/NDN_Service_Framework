@@ -130,7 +130,7 @@ def python_cmd(script: str, *argv: str) -> str:
         "cd", shell_quote(REPO), "&&",
         "PYTHONPATH=" + shell_quote(REPO / "pythonWrapper"),
         "NDNSF_BINARY_DIR=" + shell_quote(REPO / "build/examples"),
-        "NDNSF_LIBRARY_DIR=" + shell_quote(REPO / "build"),
+        "NDNSF_LIBRARY_DIR=/usr/local/lib",
         "exec", shell_quote(sys.executable),
         shell_quote(REPO / "examples/python" / script),
     ]
@@ -188,13 +188,13 @@ def main() -> int:
         env = perf.app_env(output_dir, session, perf_args)
         env["PYTHONPATH"] = str(REPO / "pythonWrapper")
         env["NDNSF_BINARY_DIR"] = str(REPO / "build/examples")
-        env["NDNSF_LIBRARY_DIR"] = str(REPO / "build")
+        env["NDNSF_LIBRARY_DIR"] = "/usr/local/lib"
 
         controller_cmd = python_cmd(
             "hello_controller.py",
             "--policy-file", "examples/hello.policies",
             "--binary-dir", "build/examples",
-            "--library-dir", "build",
+            "--library-dir", "/usr/local/lib",
         )
         start(ndn.net[args.controller_node], "python-controller", controller_cmd, env, output_dir, processes)
         time.sleep(args.controller_wait_s)
@@ -202,7 +202,7 @@ def main() -> int:
         provider_cmd = python_cmd(
             "hello_provider.py",
             "--binary-dir", "build/examples",
-            "--library-dir", "build",
+            "--library-dir", "/usr/local/lib",
         )
         provider_proc, provider_log = start(
             ndn.net[args.provider_node], "python-provider", provider_cmd, env, output_dir, processes)
@@ -214,7 +214,7 @@ def main() -> int:
             "hello_user.py",
             "--list-services",
             "--binary-dir", "build/examples",
-            "--library-dir", "build",
+            "--library-dir", "/usr/local/lib",
         )
         list_proc, list_log = start(ndn.net[args.user_node], "python-user-list-services",
                                     list_cmd, env, output_dir, processes)
@@ -230,7 +230,7 @@ def main() -> int:
             "--ack-timeout-ms", str(args.ack_timeout_ms),
             "--timeout-ms", str(args.timeout_ms),
             "--binary-dir", "build/examples",
-            "--library-dir", "build",
+            "--library-dir", "/usr/local/lib",
         )
         user_proc, user_log = start(ndn.net[args.user_node], "python-user", user_cmd, env,
                                     output_dir, processes)

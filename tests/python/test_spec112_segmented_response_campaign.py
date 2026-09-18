@@ -89,7 +89,7 @@ class Spec112SegmentedCampaignTest(unittest.TestCase):
     def test_forced_environment_and_repeated_fault_plan(self) -> None:
         env = campaign.role_environment({"LD_LIBRARY_PATH": "/existing"}, REPO)
         self.assertEqual(env["NDNSF_DISABLE_RESPONSE_LARGE_DATA_REFERENCE"], "1")
-        self.assertIn(str(REPO.parent / "ndn-svs/build"), env["LD_LIBRARY_PATH"])
+        self.assertEqual(env["LD_LIBRARY_PATH"], "/usr/local/lib")
         self.assertTrue(env["SPEC112_FORCED_INLINE_SVS"] == "1")
         self.assertEqual(env["NDNSF_SVS_ASYNC_PUBLISH"], "1")
         sync_env = campaign.role_environment({}, REPO, svs_sync_publish=True)

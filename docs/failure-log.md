@@ -7025,3 +7025,13 @@ Raw logs remain under
 `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r23/`.
 The 1.5 GiB temporary `/tmp/ndnsf-large-data` wire file was removed after all
 processes exited to restore disk space; no raw log was removed.
+
+2026-09-18 Spec189 global-closure helper v6: the pre-Waf cache gate rejected
+the configured Waf template `RPATH_ST=-L%s` as if it were a concrete external
+path (`WAF_CACHE_RPATH_ST_OUTSIDE_GLOBAL_ROOT`). No Waf target or binding was
+compiled in this attempt. The raw output is
+`.codex-tmp/spec189-global-policy-review/helper-v6.log`; the scanner was
+repaired to skip only this literal template while continuing to reject
+concrete non-global `-L` and loader paths. The subsequent v7 helper build,
+verify, Repo binding build and candidate preflight passed; this failure is a
+tooling-gate boundary, not a product or protocol result.

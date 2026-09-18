@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 06:58 -0500
+**Updated**: 2026-09-18 08:02 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -80,6 +80,17 @@ and no task advances to complete. The next native attempt must first use
 provider-side timing/error evidence and the C++ post-grant regression; it may
 not treat the stream gap as the root cause or run the final qualification
 repeat.
+
+The global-closure gate was hardened and re-reviewed after this checkpoint:
+the host helper now rejects component-specific Waf cache paths, escaped
+installed Core/DI symlinks and generic `-L`/loader paths before Waf; both
+bindings require `/usr/local/lib` plus the installed digest receipt, and the
+maintained MiniNDN launchers no longer inherit checkout library paths. The
+frozen v7 review returned `STATIC_PASS`; 142 focused policy tests passed, the
+root binding built and independently verified with `SPEC180_NATIVE_IDENTITY_OK`,
+the Repo binding built and linked to the same global closure, and the Qwen
+candidate preflight returned `status=PASS`. These are dependency/loader gates
+only; T001–T010 and the post-grant MiniNDN boundary remain unchanged.
 
 ## Task checklist
 

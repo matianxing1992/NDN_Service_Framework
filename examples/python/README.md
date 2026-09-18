@@ -67,7 +67,7 @@ python3 -m pip install -e ./NDNSF-DistributedInference
 ./waf configure
 ./waf build
 export NDNSF_BINARY_DIR=$PWD/build/examples
-export NDNSF_LIBRARY_DIR=$PWD/build
+export NDNSF_LIBRARY_DIR=/usr/local/lib
 ```
 
 If the C++ binaries are installed into `$PATH`, `NDNSF_BINARY_DIR` is not
