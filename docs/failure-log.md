@@ -1,5 +1,610 @@
 # Failure Log and Evidence Index
 
+## 2026-09-18 — Spec189 B189-3 host NAC-ABE ABI boundary
+
+The first B189-3 incremental C++ build configured successfully but stopped in
+`ndn-service-framework/ServiceController.cpp` because `/usr/local` supplied an
+older NAC-ABE header/library pair. The compile reported missing
+`KpAttributeAuthority` methods (`getPublicParametersVersion`,
+`setPublicParametersVersion`, `getPublicParametersWire`, `removePolicy`,
+`replacePolicy`, `rotateKeyGeneration`). No Spec189 source or runtime selector
+was reached. The failed output is `build-spec189-b189-3/`; the selected target
+set used `-j4`. Evidence and the exact digests are recorded in
+`specs/189-qwen-two-provider-minindn/evidence/b189-build-20260918.md`.
+This is a dependency ABI boundary, not a product or protocol PASS/FAIL. The
+retry uses the matching explicit local NAC-ABE install prefix and a fresh
+build output.
+
+The attempted retry with that local prefix reached 38/207 compilation tasks,
+then was intentionally stopped when the host policy was tightened to require
+global installed dependencies. It produced no test or runtime result. The
+matching NAC-ABE, ONNX full-protobuf and tokenizer bridge artifacts are now
+installed under `/usr/local`; the next configure/build will use that global
+closure only.
+
+The first global-only retry then stopped at `ServiceProvider.cpp` because the
+global NDN-SVS header lacked `SVSPubSub::subscribeToProducerWithCatchUp`,
+although the current source/build pair contained it. No selector or oracle
+linked. The matching NDN-SVS library, headers and generated configuration have
+now been installed under `/usr/local`; the next retry remains a fresh
+global-closure build.
+
+That retry subsequently reached the new Spec189 marker code and stopped at
+`ProtectedRuntime.cpp`: `logRuntimeEvidence` was used without its owning
+`RuntimeTiming.hpp` declaration being included. The repair is limited to that
+include and requires read-only static re-review before another build; no
+runtime result was produced.
+
+## 2026-09-17 — Spec188 B188-1 r8 runtime fixture boundary
+
+r8 源码首次 canonical Repo selector 运行在 `Spec188RepoFileBackend` 先失败：夹具把普通
+payload manifest 传给 `putManifest`，生产后端按契约返回
+`repo-file-manifest-payload-required`，因此没有到达同代 identity-conflict 断言。该边界是
+测试夹具与已收紧 production API 的不一致，不是放宽普通 manifest 写入的理由。原始运行日志
+`.codex-tmp/spec188-b188-1-r8-runtime-20260917/Spec188RepoFileBackend.log` 已保留；同轮
+MemoryBudget、TieredCache 和 Range selector 分别返回 0。夹具已改用合法 segmented metadata
+manifest 并在断言后清理，修复后必须重新静态复审、构建和串行运行完整 selector 组。
+
+## 2026-09-17 — Spec188 B188-1 r8 static repair review
+
+r7 的 erase 顺序与 physical-usage recovery 缺陷已修复，并在冻结快照
+`.codex-tmp/spec188-b188-1-r8-review-20260917/` 上由官方只读
+`review-agent` 复审为 `STATIC_PASS`。快照基线为
+`6a1aaf507fa1129d2453e1b727628c22db9c17f6`，`files.sha256` SHA-256 为
+`684c8160bea4d6a0882e36b59313afbaa8e8d824c92365a9193c12adaa1a6f73`；随后组合审查也为
+`STATIC_PASS`，确认可进入统一 Repo build/test。该结果仅关闭静态门；r8 源码尚未构建，
+fsync/ENOSPC/ambiguous cleanup 动态注入、ASan/TSan 仍未观测，T002/T003 和 B188-1 继续
+`PARTIAL`。
+
+## 2026-09-17 — Spec188 B188-1 r7 static review boundary
+
+官方只读 `review-agent` 对 B188-1 Repo/Core/filesystem 快照返回
+`STATIC_FAIL`。冻结快照文件集合 SHA-256 为
+`4f12a4cda41ad813d0f5ff2b87e342a38d3abcdb257b57f202e4e23ebd2930a8e`，`FILES`
+SHA-256 为 `f28d5b3151dfd34b75413c0838871eecca7cd1ac9d1cbd34e5e45b76829cac13`。
+首个控制边界是 `FilesystemRepoStoreBackend::erase` 的删除顺序：payload 先于
+manifest 删除时，metadata 删除失败可能留下可见但不可读的 manifest。第二个边界是
+`RepoCore::putDataPacket` 与 `handleStore` 的普通写入失败路径未刷新 physical usage，
+cleanup residue 会使 capacity 视图低估。当前没有新编译或运行结果；T002/T003 和
+B188-1 保持 `PARTIAL`。原始审查快照与报告仍在本地 `.codex-tmp/`，修复后必须重新冻结、
+复审并在新记录中关联测试候选身份。
+
+## 2026-09-17 — Preliminary-evidence wording PDF check
+
+摘要措辞重建后的首次 shell 验证用未换行的整句匹配 PDF 提取文本，因换行而提前退出；
+该首界是文本检查器匹配方式，不是论文构建或内容错误。保留的临时提取文本以
+`/tmp/ndnsf-execution-eng.*`、`/tmp/ndnsf-execution-chn.*` 和
+`/tmp/ndnsf-execution-cmp.*` 开头；改用分段、容错匹配后正文和对照检查通过。
+
+## 2026-09-17 — Authorization wording comparison validator invocation
+
+摘要授权措辞修正后的 comparison 验证首轮省略了 `--render` 输出目录，导致
+`validate_inline_comparison.py` 仅返回参数错误；该首界是命令调用，不是正文或对照内容。
+原始构建和日志保留于 `/tmp/ndnsf-challenge-comparison.GhgtXL/`。补充独立 render 目录后，
+344个新版／349个旧版单元、100页 inline comparison 和页面边界检查均 PASS；持久记录见
+`docs/PAPER/proposal-defense/authorization-wording-validation-20260917.json`。
+
+## 2026-09-17 — Authorization wording rebuild working-directory invocation
+
+统一 RQ1 评价术语后的第一次重编译命令从已进入 `proposal-defense` 的工作目录再次拼接
+`docs/PAPER/proposal-defense/en`，首界是路径解析，未产生论文输出；空的临时目录为
+`/tmp/ndnsf-challenge-wording-final.68mtRp/`。随后从正确的
+`proposal-defense/en` 与 `proposal-defense/ch` 目录独立编译通过，并重新生成对照稿。
+
+## 2026-09-17 — Proposal abstract rebuild boundaries
+
+摘要边界修正后的首次独立编译使用仓库根作为工作目录，临时 `-outdir` 找不到
+`uofm.cls`；输出保留在 `/tmp/ndnsf-abstract-fix-en.log`、
+`/tmp/ndnsf-abstract-fix-ch.log`。改用各语言目录及独立输出目录后编译通过。
+随后重建 comparison 时，旧的 side-by-side helper 仍固定旧版50页和历史 hash，
+因此拒绝当前69页稿；该 helper 未被强行放宽。使用已维护的 paragraph/alignment
+生成路径重新生成129页左右对照和100页 inline comparison，覆盖检查 PASS。
+
+## 2026-09-17 — Proposal notes closeout PDF path resolution
+
+第44页讲稿空格修正后的 PPTX 重建首轮在 pdftohtml 输入解析失败：转换器将仓库相对
+`--pdf` 路径相对于 slides 目录再次展开，形成重复路径。首界是工具输入路径，
+不是 PDF 内容、PPTX 布局或产品运行。原始输出保留于
+`/tmp/ndnsf-minimal-closeout-20260917-rrUno4/pptx-build.log`，首次构建目录不覆盖。
+使用绝对 PDF／notes 路径和独立 `retry/ndnsf-build` 目录后 PASS，成功输出为同目录
+`pptx-build-retry.log`；新旧 PPTX 仅第44页备注 XML 改变，53页画面资源不变。
+同轮只读 pre-commit 仍因已有 index 的 `.specify/memory/constitution.md:16` 阻塞，
+未绕过或修改 index；见同目录 `checkpoint-preflight.log`。
+
+## 2026-09-17 — Minimal-revision checkpoint remains blocked
+
+只读 pre-commit 预检返回1，首个命中 `.specify/memory/constitution.md:16`；
+输出 `/tmp/ndnsf-minimal-revision-20260917-ZZjNNc/checkpoint-preflight.log`。
+文档检查通过，未修改用户 index、未绕过 hook，无新 commit 或 push。
+验收见 [minimal checklist](PAPER/proposal-defense/minimal-revision-checklist-20260917.md)。
+
+## 2026-09-17 — Minimal-revision preservation reader boundary
+
+首轮保留检查错误地将共享 `protocol-overview.tex` 当作本轮归档中的章节文件展开，
+触发 KeyError；正文构建不受影响。首次路径复现输出保留于
+`/tmp/ndnsf-minimal-revision-20260917-ZZjNNc/preservation-first.log`。
+限定递归范围为归档已包含的 EN/CH chapters；共享图的 input 引用在前后图块比较中
+原样保留，不声称本轮重新验证共享图的历史来源。
+修复后57项检查通过，持久结果见 `PAPER/proposal-defense/minimal-revision-validation-20260917.json`。
+
+## 2026-09-17 — Minimal-revision comparison anchor collision
+
+正文结构收敛后的 paired comparison 首次重建在 `align()` 的重复新文锚点断言失败。
+“expected answers”和“hypothesis”两条规则同时指向 `RQ1 evaluates...`；首界是
+配对配置，不是正文编译或实验。保留
+`/tmp/ndnsf-minimal-revision-20260917-ZZjNNc/paired.log` 与首次输出目录。
+移除重复的人工锚点，保留一对一覆盖断言，随后使用独立 `paired-r2/` 重建。
+见 [minimal checklist](PAPER/proposal-defense/minimal-revision-checklist-20260917.md)。
+
+最终 `paired-final/` 与 `inline-final/` 重建通过；344新／349旧单元完整覆盖，
+持久结果见 `PAPER/proposal-defense/minimal-comparison-validation-20260917.json`。
+
+## 2026-09-17 — Comparison yellow color validation
+
+首轮 `#FFD600` 经 PDF 导出／提取成为 `#FFD500`，严格色值分类误报旧文缺失；
+逐页文字和源文件比较确认仅颜色变化。首轮证据保留在
+`/tmp/ndnsf-comparison-yellow-WO2cYO/build/inline-validation.json` 和 `validation.log`。
+改用纯亮黄色 `#FFFF00`，保留严格检查，在独立 `build-final/` 目录重建。
+最终覆盖与颜色检查 PASS，102页逐页文字不变；结果见同目录 `validation-final.log`。
+
+## 2026-09-17 — Proposal clarity checkpoint remains blocked
+
+只读 pre-commit 预检返回1，首个命中 `.specify/memory/constitution.md:16`。
+原始输出 `/tmp/ndnsf-proposal-clarity-20260917-MTvlYK/checkpoint-preflight.log`。
+本轮正文与构建检查 PASS；不修改用户 index、不绕过 hook，没有新 commit 或 push。
+见 [clarity review](PAPER/proposal-defense/clarity-review-20260917.md)。
+
+## 2026-09-17 — Proposal clarity preservation check
+
+首轮静态保留检查因解释成本公式时新增一次内联 `$T$` 而返回 FAIL；公式自身、
+实验数字、引用、图及代码未改。原始记录：
+`/tmp/ndnsf-proposal-clarity-20260917-MTvlYK/clarity-validation-first.json`。
+将重复符号改为“同一区间”，不放宽数学保留检查；重新构建后复验。
+此为文档检查边界，不是产品测试失败。记录见
+[clarity review](PAPER/proposal-defense/clarity-review-20260917.md)。
+
+## 2026-09-17 — RQ1 concise revision checkpoint blocked
+
+只读 pre-commit 预检仍返回1，首个命中 `.specify/memory/constitution.md:16`；
+原始输出 `/tmp/ndnsf-cost-concise-20260917-n6qe0H/checkpoint-preflight.log`。
+未改用户 index、未绕过 hook、无新 commit 或 push。文档精简记录见
+[cost-model re-audit](PAPER/proposal-defense/cost-model-audit-20260917.md)。
+
+## 2026-09-17 — RQ1 re-audit checkpoint remains blocked
+
+只读 pre-commit 预检仍返回1，首个命中 `.specify/memory/constitution.md:16`。
+本轮输出 `/tmp/ndnsf-cost-audit-20260917-leEAIK/checkpoint-preflight.log`。
+未绕过 hook、未修改用户 index，无新 checkpoint commit 或 push；文档验收单独记录。
+见 [cost-model re-audit](PAPER/proposal-defense/cost-model-audit-20260917.md)。
+
+## 2026-09-17 — RQ1 audit notes renderer boundary
+
+讲稿首轮错用 XeLaTeX；T1/inputenc 前言下弯引号缺字，不能交付。
+首次日志 `/tmp/ndnsf-cost-audit-20260917-leEAIK/notes-build.log`，失败构建保留于
+`notes-xelatex-failed/`；改回生成器原有 pdfLaTeX 流程，不修改论文论证或产品代码。
+见 [re-audit](PAPER/proposal-defense/cost-model-audit-20260917.md)。
+
+
+## 2026-09-17 — RQ1 cost-model checkpoint remains blocked
+
+文档、slides和两类对照稿已修复并通过检查；全index pre-commit预检仍返回1，
+首个命中 `.specify/memory/constitution.md:16`。原始输出在
+`/tmp/ndnsf-cost-model-20260917-69eQBu/checkpoint-preflight.log`。
+未绕过hook、未改用户index，本轮未提交。文档 `DOCUMENT_PASS` 与提交 `BLOCKED`
+分开记录，见[cost-model review](PAPER/proposal-defense/cost-model-review-20260917.md)。
+
+## 2026-09-17 — RQ1 cost-model comparison extraction boundary
+
+成本模型的中英文论文已构建且镜像一致；旧版对照构建在新版 PDF 的字符覆盖断言失败：
+`AssertionError: ('Source extraction coverage', 1)`。首界为对照工具的 PDF 提取，
+不是论文编译或产品实验。原始证据：
+`/tmp/ndnsf-cost-model-20260917-69eQBu/paired-build.log`。
+须定位遗漏字符及版面边界后修复，不得删除覆盖断言。文档单元暂为 `PARTIAL`，
+旧版对照仍保留前轮产物；产品状态不变。同轮第20页表格间距已作视觉修订，
+旧截图与PPTX保留于该run的 `lo-r1/`、`render-r1/` 和 `*-r1.pptx`。
+
+定位为公式三个求和符号的字体fallback不一致：`get_text('dict')`默认保留CID，
+`get_textbox()`默认产生替换字符。真实源PDF回归先失败（`math-regression-red.log`），
+修复统一提取flags，保留原PDF矢量公式及原字符覆盖断言；随后运行完整对照回归。
+
+关闭：20项测试通过，paired重建为134页，inline重建为103页且内容／边界检查通过。
+原失败产物仍保留；这只关闭文档工具缺陷，不产生产品或实验资格结论。
+
+## 2026-09-17 — Contribution revision checkpoint remains blocked
+
+最终文档验证及布局修复已通过，仍因既有全index pre-commit规则无法建立checkpoint。
+首个命中 `.specify/memory/constitution.md:16`；原始输出保存在
+`/tmp/ndnsf-contribution-revision-20260917-oPAr8a/checkpoint-preflight.log`。
+未绕过hook、未改用户index，HEAD仍 `d5b241e6`。文档 `DOCUMENT_PASS` 与
+提交 `BLOCKED` 分开记录；详见[revision](PAPER/proposal-defense/contribution-revision-20260917.md)。
+
+## 2026-09-17 — Contribution slide wording/layout regression
+
+第二轮将第34页收束语改为proposal口径后，最终验证器发现
+`Overfull vbox (0.90697pt too high)`；不是文字缺失或协议结果。
+该轮产物已复制到交付位置，因此必须修复并重新覆盖验证，不能保留 `PASS` 声明。
+失败JSON和TeX日志分别保留于本轮run的 `validation-r2-layout-failed.json`、
+`slides-r2-layout-failed.log`。缩短该页收束语后重建PDF、notes、PPTX及回转验证。
+
+## 2026-09-17 — Proposal contribution comparison dependency boundary
+
+三项贡献修订的 inline 对照构建在上游 paired 构建尚未写出
+`main_comparison-report.json` 时启动，返回 `FileNotFoundError`。首界是文档流水线
+依赖顺序，不是论文或协议失败。原始失败日志保留于
+`/tmp/ndnsf-contribution-revision-20260917-oPAr8a/inline-build.log`。
+上游随后完成：131页，349个旧单元和334个新单元；重试须确认报告存在并使用新目录。
+本轮 slides 初稿另发现 2.74728pt vbox 超出，收紧第7页文字/间距后最终编译无
+Overfull；第一次编译日志已被同路径最终构建覆盖，不声称保留了该原始日志。
+详见[contribution revision](PAPER/proposal-defense/contribution-revision-20260917.md)。
+
+## 2026-09-17 — Proposal criteria checkpoint preflight blocked
+
+文档构建、对照和PPTX核验通过后，只读执行当前 pre-commit 检查返回1，
+首个命中仍为 `.specify/memory/constitution.md:16` 的既有全index引用。
+原始输出：`/tmp/ndnsf-proposal-criteria-20260917-cGu4YP/checkpoint-preflight.log`。
+没有绕过hook、没有改动用户index或尝试混合提交；HEAD仍为 `d5b241e6`。
+文档交付有效，checkpoint仍 `BLOCKED`；本轮修改留在工作树，详见
+[criteria review](PAPER/proposal-defense/proposal-criteria-review-20260917.md#checkpoint-boundary)。
+
+## 2026-09-17 — Proposal criteria validator frame-count boundary
+
+首轮验证器把有标题的 frame 字典长度当总页数，漏计无标题 titlepage，
+报告 49/49，尽管 PDF 与 PPTX 均为 50 页。首界是验证脚本计数，不是 slides 缺页。
+保留 `/tmp/ndnsf-proposal-criteria-20260917-cGu4YP/criteria-validation-first-failed.json`；
+修正为独立计数 `begin{frame}`，结果页正文对照仍按标题逐项进行。
+文档证据归档见 [criteria review](PAPER/proposal-defense/proposal-criteria-review-20260917.md)。
+
+## 2026-09-17 — Proposal criteria build layout/configuration boundary
+
+首轮论文 latexmk 继承 auxdir 配置，与显式 outdir 不同，故未把该轮当最终构建；
+改为显式设置一致的 auxdir/outdir，保留首轮日志。slides 首轮新评价表末尾
+出现 0.1362pt Overfull vbox，缩短总结并减少 1mm 间距后重新渲染。
+原始日志：`/tmp/ndnsf-proposal-criteria-20260917-cGu4YP/*-driver.log`。
+
+## 2026-09-17 — Proposal criteria patch anchor mismatch
+
+双语补丁中的中文表题与实际源文不符，apply_patch 在写入前拒绝整批；
+后续评价补丁错误假定中文也有英文的 samepage 环境，亦在写入前拒绝；
+改为分别读取并匹配各语言锚点，不假设布局标记相同。
+复查英文新短语不存在、中文原文仍在，确认未部分应用。首界为文本锚点，
+不是内容或编译失败。改用实际表题并分开应用双语补丁；原稿备份位于
+`/tmp/ndnsf-proposal-criteria-20260917-cGu4YP/before.tar`。
+
+## 2026-09-16 — Tiger proposal checkpoint blocked
+
+四入口论文、50页slides/PPTX/讲稿/LibreOffice回转及19项对照工具测试通过；
+95页括号版和123页左右版保留320新/349旧单元。本轮48路径已暂存，119个
+已授权proposal待提交路径的普通checkpoint仍被全index引用hook拒绝，首个命中
+`.specify/memory/constitution.md:16`。未绕过，无新commit或push；HEAD为`d5b241e6`。
+日志：`/tmp/ndnsf-proposal-tiger-plan-20260916-vvOwy9/checkpoint.log`；
+证据：[Tiger proposal plan](PAPER/proposal-defense/tiger-evaluation-plan-20260916.md)。
+
+## 2026-09-16 — Tiger proposal report anchor mismatch
+
+更新报告时补丁中的临时路径误带空格，apply_patch拒绝整个修改，未改变文件；
+首界仅为文本锚点。按原文状态行缩小匹配后重试，不重跑已通过的编译或实验。
+证据：[Tiger proposal plan](PAPER/proposal-defense/tiger-evaluation-plan-20260916.md)。
+
+## 2026-09-16 — Skill-guided proposal checkpoint blocked
+
+四入口论文、50页slides/PPTX/讲稿/LibreOffice回转、19项工具测试及对照完整性通过。
+本轮50路径已暂存；包含前轮授权proposal待提交内容的117路径普通checkpoint仍被既有
+全index引用hook拒绝，首个命中`.specify/memory/constitution.md:16`。
+未绕过、无新commit或push，HEAD为`d5b241e6`。原始日志：
+`/tmp/ndnsf-proposal-skill-review-20260916-mDGrXA/checkpoint.log`；
+证据：[skill review](PAPER/proposal-defense/proposal-skill-review-20260916.md)。
+
+## 2026-09-16 — Proposal skill-review report patch anchor mismatch
+
+报告更新补丁的临时目录行误带前导空格，apply_patch拒绝匹配，文件未改变；
+首界是补丁锚点，不是编译或文档内容检查失败。保留本条错误记录，下一次
+只匹配实际存在的状态行。证据：[skill review](PAPER/proposal-defense/proposal-skill-review-20260916.md)。
+
+## 2026-09-16 — Proposal-language documentation checkpoint blocked
+
+四入口论文、50页slides／PPTX／讲稿／LibreOffice回转、19项工具测试及对照完整性通过。
+59个明确路径已暂存；普通checkpoint仍被既有全index开发助手引用hook拒绝，
+首个命中`.specify/memory/constitution.md:16`，无新commit／push，未绕过；HEAD为`d5b241e6`。
+日志：`/tmp/ndnsf-proposal-language-20260916-N4R7eE/checkpoint.log`；
+证据：[language review](PAPER/proposal-defense/language-review-20260916.md)。产品状态不变。
+
+## 2026-09-16 — Language-review comparison fixed-coordinate clipping
+
+段落对照首轮在N0109／N0111检测到缺字并拒绝通过，括号生成随之拒绝非PASS输入。
+首界是两面板提取使用固定纵坐标；正文分页调整后图和表下移，正式PDF无缺字。
+保留`/tmp/ndnsf-proposal-language-20260916-N4R7eE/paired.log`、`paired/`与`inline.log`；
+下一步按图注与绘图边界定位并回归纵向位移，不放宽完整性检查。
+证据：[language review](PAPER/proposal-defense/language-review-20260916.md)。
+
+## 2026-09-16 — Language-review notes alias copy path
+
+讲稿同步在slides工作目录内使用仓库相对路径，`cp`报cannot stat，35min源未更新；
+TeX编译成功，首界仅为复制路径。改用明确的slides内路径后核对源与PDF一致性。
+记录：[language review](PAPER/proposal-defense/language-review-20260916.md)；
+run：`/tmp/ndnsf-proposal-language-20260916-N4R7eE/`。不改变产品状态。
+
+## 2026-09-16 — Proposal-register documentation checkpoint blocked
+
+四入口论文、50页slides／讲稿／可编辑PPTX／LibreOffice回转及19项对照工具测试通过。
+57个明确路径已暂存，普通checkpoint被既有全index开发助手引用hook拒绝，首个命中
+`.specify/memory/constitution.md:16`。无新commit或push，未绕过hook；HEAD仍为`d5b241e6`。
+原始日志：`/tmp/ndnsf-proposal-register-20260916-532JHS/checkpoint.log`；
+证据：[proposal register review](PAPER/proposal-defense/proposal-register-review-20260916.md)。
+不改变产品任务状态；解决无关暂存项／hook策略需要独立授权，不扩大本轮修改范围。
+
+
+## 2026-09-16 — Latest-design proposal checkpoint blocked
+
+四入口论文、50页slides、讲稿／可编辑PPTX／LibreOffice回转、19项对照工具测试通过；
+53个明确文档路径已暂存。普通checkpoint被既有全index开发助手引用hook拒绝，
+首个命中`.specify/memory/constitution.md:16`；没有绕过或新commit，HEAD仍为`d5b241e6`。
+原始输出：`/tmp/ndnsf-design-sync-20260916-oD8E9i/checkpoint.log`。
+证据：[design sync](PAPER/proposal-defense/design-sync-20260916.md)。文档状态DOCUMENT_PASS，
+Spec187产品状态不变；并行源码及全index清理均不在本轮授权范围。
+
+
+## 2026-09-16 — Design-sync read-only checker backup-path error
+
+首轮只读检查误将已存在的备份目录写成`/tmp/ndnsf-design-sync-20260916-oD8E9i/raw/docs/`，
+实际为同一run下的`docs/`，触发FileNotFoundError；未影响源码、编译或产品状态。
+通过目录检查确认后改正检查器输入。详见[design sync](PAPER/proposal-defense/design-sync-20260916.md)。
+
+
+## 2026-09-16 — Proposal paper/slides synchronization checkpoint blocked
+
+四入口论文、50页slides、讲稿、可编辑PPTX及LibreOffice回转检查通过；
+19项对照工具测试通过，94页括号版和117页左右版更新完成。48个明确路径已暂存，
+普通checkpoint被既有全index开发助手引用hook拒绝，首个命中
+`.specify/memory/constitution.md:16`；未绕过、无新commit或push。
+原始输出`/tmp/ndnsf-paper-slides-sync-20260916-AsSp5o/checkpoint-r2.log`；
+详见[audit sync](PAPER/proposal-defense/audit-sync-20260916.md)。
+文档状态DOCUMENT_PASS；不改变产品或研究资格状态。
+
+
+## 2026-09-16 — Proposal audit-sync new report paths ignored
+
+已通过文档检查后的首次显式暂存遇到`docs/PAPER`忽略规则，新建报告和检查器
+未纳入index；随后的普通checkpoint因新路径未登记失败，记录于
+`/tmp/ndnsf-paper-slides-sync-20260916-AsSp5o/checkpoint.log`。
+仅对本轮三个明确的新文档／检查文件使用`git add -f`后重试，不扩大提交范围。
+
+
+## 2026-09-16 — Proposal synchronization validator frame-count assumption
+
+新增检查脚本首轮只统计带标题参数的frame，漏掉titlepage，错误期待50个匹配；
+产物仍为50页。首界为检查器解析假设，不是排版失败。保留
+`/tmp/ndnsf-paper-slides-sync-20260916-AsSp5o/sync-validation.log`；
+修复为含可选参数及无标题frame的解析后另存重试日志。
+
+
+## 2026-09-16 — Proposal slide export notes-path failure
+
+本轮PDF转PPTX首轮在讲稿注入前失败：相对`--notes-tex`被按slides目录再次解析，
+导致`FileNotFoundError`，不是论文、协议或实验失败。原始输出保留在
+`/tmp/ndnsf-paper-slides-sync-20260916-AsSp5o/export.log`；原始正式PPTX未覆盖。
+下一次使用讲稿绝对路径和新的`ndnsf-build-r2`工作目录。
+
+
+## 2026-09-16 — Proposal necessity-review checkpoint blocked
+
+95项修改必要性分类、五处双语局部修订、四入口构建／镜像文字／修改页视觉、
+11+8工具测试及349旧／307新单元完整性检查通过。39路径普通checkpoint仍被
+既有全index开发助手引用hook拒绝，首个命中`.specify/memory/constitution.md:16`。
+原始输出：`/tmp/ndnsf-necessity-review-20260916-77CAZE/checkpoint.log`。
+未绕过hook、无新commit；交付保存并暂存，文档状态DOCUMENT_PASS，不是产品实验。
+记录收尾首次patch因本文件并行新增条目导致旧上下文不匹配，在写入前被拒；
+重读后只追加自身条目。记录：[necessity review](PAPER/proposal-defense/necessity-review-20260916.md)。
+
+## 2026-09-16 — Qwen3-0.6B local preparation timeout
+
+The current-source Qwen3-0.6B replay `qwen06b-local-real-r9` reached Controller,
+Authority and all three Provider readiness, then stopped before request execution with
+`PREPARATION_TIMEOUT` / `DI_NATIVE_ONNX_ASSEMBLY_TIMEOUT`. No Selection, Provider
+execution, terminal response or numerical oracle was observed; this remains an
+unqualified preparation failure. Raw root-owned output is retained at
+`results/spec184-qwen06b-local/qwen06b-local-real-r9/`; durable context is recorded in
+[`qwen06b-local-real-replay-20260916.md`](../specs/184-native-di-closure/evidence/qwen06b-local-real-replay-20260916.md).
+The 1.5 GB external initializer and its canonical copy remain preserved; no retry is
+started while the local YOLO path is the active validation target.
+
+## 2026-09-16 — Qwen native requester rebuild missing ONNX C++ prefix
+
+为验证当前 requester/Conversation 修订，本机复用 `build-spec187-local-nac-r1` 并以
+系统 `/usr/bin/g++ -B/usr/bin -j4` 只选择 `DI_NativeRequester`。Waf 在
+`NativeOnnxRecipeAssembler.cpp` 编译阶段首先报
+`fatal error: onnx/checker.h: No such file or directory`（`rc=1`）。配置指向
+`.codex-tmp/spec182-t001-dependencies/onnx-install`，该路径缺少 ONNX 1.17
+full-protobuf headers、`libonnx.a` 和 `libonnx_proto.a`；找到的 Python wheel 头文件
+不能替代 C++ 静态库闭包。原始输出保留在
+`.codex-tmp/spec187-qwen-budget-build-r1-20260916.log`，详细上下文见
+[`Qwen native rebuild evidence`](../specs/184-native-di-closure/evidence/qwen06b-local-real-replay-20260916.md)。
+这是构建依赖首界，不是 Qwen 协议或 MiniNDN 结果；没有下载依赖、复制 1.5 GiB
+initializer 或重跑全量运行，T007 仍 `PARTIAL`。
+
+## 2026-09-16 — Requirement traceability Chinese label mismatch
+
+R1/R2局部修订的英文构建完成；中文构建退出零但最终日志仍有
+`chap:applications`未定义，现有中文标签实际为`chap:applications-ch`。
+首个边界是交叉引用，不是产品或协议失败；未交付该PDF。原始输出保留在
+`/tmp/ndnsf-comment-fixes-20260916-qQkKkU/ch-root/`与`ch-root.log`，修正后
+用新`ch-root-r2/`重建。记录：
+[targeted revision](PAPER/proposal-defense/comment-fixes-20260916.md)。
+四入口最终构建、镜像文字及修改页视觉检查通过。随后对照生成因旧源哈希门禁
+拒绝；保留同目录`paired.log`，未覆盖对照。核对已授权的四文件变更与主题后
+再更新预期哈希，不绕过或删除门禁。
+对照r2在完整标题门禁拒绝：旧固定页号24的图表裁剪误覆盖移页后的Participants
+标题；`paired-r2.log`及`test-paired.log`保留。改为标题内容识别并增加回归检查，
+以新目录重跑；不取消标题完整性检查。
+最终四入口构建／镜像文字／全文边界及修改页视觉检查通过；段落工具11/11、
+括号工具8/8通过，117页左右版与94页括号版完整保留349旧／304新单元。
+上述文档失败已解决；未运行产品实验，不改变当前Spec资格状态。
+首次checkpoint因旧资源从先前暂存新增项移除后已不是Git已知路径而拒绝；
+`checkpoint.log`保留，新资源和交付暂存未丢失，旧资源有备份。重试仅传当前
+存在的明确交付路径，不扩大范围。
+第二次准备脚本在Git调用前因系统Python不支持`str.removeprefix`退出，保留
+`checkpoint-r2.log`；改为前缀切片后重试，不改变交付范围。
+第三次42路径普通checkpoint被既有全index引用hook拒绝，首个命中
+`.specify/memory/constitution.md:16`；`checkpoint-r3.log`保留。无新commit，
+未绕过hook；交付保存并暂存，文档检查仍为DOCUMENT_PASS。
+
+## 2026-09-16 — Advisor-comment audit extraction boundary
+
+只读检查旧新对照JSON时误将`units`列表当字典调用`.items()`，在读取内容前失败。
+未修改论文、未运行实验；已先记录
+`/tmp/ndnsf-advisor-audit-20260916-KXNkID/extraction-boundary.md`，随后按实际列表
+结构复核。最终19批注及95项修改理由覆盖检查通过，P18/P19仍需文字补强；
+这不是协议失败，也不将评论审查计为产品验收。
+持久记录：[comment-change audit](PAPER/proposal-defense/comment-change-audit-20260916.md)。
+两个新增审计文件的限定路径checkpoint再次被既有全index hook拒绝，首个命中
+`.specify/memory/constitution.md:16`；同目录`checkpoint.log`保留。文件已保存并
+暂存，无新commit、未绕过；不改变审计结论或产品验收状态。
+
+## 2026-09-16 — Inline comparison validation counter
+
+括号金色旧文对照的首次三遍XeLaTeX构建成功，但验证器使用`Counter(dict)`
+而不是`Counter(dict.keys())`，导致旧文单元计数误报。已修复验证器，未覆盖
+正式对照，保留`/tmp/ndnsf-inline-comparison-20260916-MtEJNq/validation-r1.log`。
+修复后`validation-r2.log`通过，全文颜色通道/顺序/边界无遗漏；93页渲染与
+7页放大检查完成，交付更新为单栏金色括号旧文格式，正式论文不变。
+限定34路径普通checkpoint被既有全index引用扫描拒绝，首个命中
+`.specify/memory/constitution.md:16`；同目录`checkpoint.log`保留。无新commit，
+未绕过hook；交付已保存并暂存，文档检查结果保持通过。
+记录：[inline comparison](PAPER/proposal-defense/inline-comparison-review-20260916.md)。
+
+## 2026-09-16 — Semantic comparison mirror bibliography mismatch
+
+四个 LaTeX 入口均编译成功，但逐页文字检查发现根目录与 en 镜像的第61页
+NSC书目不同。首个边界是独立的 `en/ref.bib`、`ch/ref.bib` 未同步，
+不是正文或实验失败；不能以编译成功替代镜像一致性检查。
+原日志保留于 `/tmp/ndnsf-semantic-audit-20260916-KmL5Nl/validation-r1.log`。
+同步两个书目副本后重建镜像，使用全新 `render-r2/` 验证。
+镜像逐页文字一致性通过；最终 `render-final/` 保存229页渲染与20页放大图，
+正文/对照提取和边界检查通过。未发生产品或实验失败。
+限定28路径普通checkpoint再次被既有全index引用扫描拒绝，首个命中
+`.specify/memory/constitution.md:16`；同目录 `checkpoint.log` 保留输出。
+无新commit，未绕过hook；交付文件保存并暂存，文档验收结果不变。
+持久记录：[semantic comparison review](PAPER/proposal-defense/semantic-comparison-review-20260916.md)。
+
+## 2026-09-16 — Paragraph comparison layout API boundary
+
+逐段PDF工具r1在文本框测量时因PyMuPDF `Story.place()`返回tuple而非Rect退出，
+未生成PDF、未修改论文；显式Rect转换后使用全新r2目录。
+记录：[paragraph comparison](PAPER/proposal-defense/paragraph-comparison-review-20260916.md)。
+原始目录：`/tmp/ndnsf-paragraph-comparison-20260916-mV1e0G/r1/`。
+r2为整页截图高度超限，未写正式PDF；按可用高度等比例放置，保留r2.log并使用r3。
+r3逐框文字门禁发现PDF Form隐藏文字外溢（非可见正文重叠），正式文件未覆盖；
+清除图形裁剪框外的隐藏文字后进入r4，原报告与PDF完整保留。
+r4文字门禁通过但结构审查发现零高度表格线被Rect并集忽略；改用坐标min/max，
+重新检查整表图形范围，不将文字PASS当作结构/视觉PASS。
+最终114页对照、全644单元覆盖、逐框文字/字符顺序、7项工具测试和全页渲染检查通过。
+限定6路径的普通checkpoint仍被全index钩子拒绝，首个命中`.specify/memory/constitution.md:16`；
+原目录`checkpoint.log`保留完整输出，未生成commit、未绕过；正式对照已更新、文件暂存。
+
+## 2026-09-16 — Proposal slide synchronization tooling
+
+P4添加NDN全称后出现2.21pt、随后1.31pt vbox溢出，压缩重复结语后消除；
+讲稿长行0.36pt溢出以两入口raggedright修复。首次PPTX导出因临时构建目录basename
+不是`ndnsf-*`在写入前被所有权检查拒绝，不放宽检查，改用全新专用目录。
+原日志/快照：`/tmp/ndnsf-slide-sync-20260916-XDVHiC/`；持久记录：
+[slide sync](PAPER/proposal-defense/slides/research-structure-sync-20260916.md)。
+这是文档工具与排版边界，没有运行或判断产品实验；待最终回渲检查。
+首轮LibreOffice回渲发现P4/P8表格横线与上一段文字过近，机器文字一致性不能代替
+视觉检查。保留`lo/`和`lo-render/`首次结果，修正TeX段落/间距后使用新目录重新导出。
+同类间距覆盖P29/P37–39/P45；P29额外5.52pt溢出通过精简引导句解决。
+最终四份LaTeX日志无溢出/未定义引用/缺字，PPTX为1021/1021文本片段和50页notes；
+LibreOffice全部页面检查通过。`render-release`/`lo-release-render`及精简validation为最终证据。
+限定11个slides路径的普通`git commit --only`仍被全index钩子拒绝，首个命中
+`.specify/memory/constitution.md:16`；`checkpoint.log`保留于同一临时目录。无新commit，未绕过。
+
+## 2026-09-16 — Proposal change review retrieval/edit boundaries
+
+本轮首次Context Mode guard query缺`--require`，补精确项目标识后通过；压缩后timeline
+查询因无显式session-event source/category被hook阻止，未用于状态判断。另一次多文件
+patch因hunk顺序在写入前拒绝，按文件顺序重组后成功。以上均非产品/协议失败。
+以完整Origin、修订前快照及当前LaTeX/PDF为依据，四入口编译和文档检查最终PASS。
+持久记录：[change-value review](PAPER/proposal-defense/change-value-review-20260916.md)；
+原始构建/快照/渲染目录：`/tmp/ndnsf-change-audit-20260916-temOPI/`。
+本轮普通checkpoint再次被全index扫描拒绝，首个命中仍为
+`.specify/memory/constitution.md:16`；日志保留于上述目录`checkpoint.log`。
+38个论文文档路径暂存待提交；未生成commit，未绕过、不计作实验结果。
+
+## 2026-09-16 — Proposal coverage checkpoint blocked
+
+四入口论文构建、保留内容检查及PDF审查通过后，普通checkpoint仍被全index引用扫描拒绝。
+首个命中`.specify/memory/constitution.md:16`，未生成commit，未绕过hook。
+日志`/tmp/ndnsf-proposal-coverage-20260916-sV2398/checkpoint.log`；持久范围/结果见
+[coverage revision](PAPER/proposal-defense/coverage-restoration-20260916.md#checkpoint-boundary)。
+这不是产品或文档编译失败；文档已保存，源码/PDF明确暂存待提交。
+
+## 2026-09-16 — Proposal coverage source-query option
+
+CodeGraph 首次 explore 因不支持 `--max-nodes` 在参数解析阶段退出；help 确认
+`--max-files` 为该版本接受的边界选项。未启动产品测试，后续使用正确参数。
+见 [coverage revision](PAPER/proposal-defense/coverage-restoration-20260916.md#tool-boundary)。
+
+## 2026-09-16 — Optional proposal comparison helper environment
+
+本轮摘要 checkpoint 也被既有 pre-commit 全 index 引用扫描拒绝，首个命中
+`.specify/memory/constitution.md:16`；日志 `/tmp/ndnsf-abstract-20260916-r1/checkpoint.log`。
+未绕过钩子，已验证的文档保持待提交。
+
+摘要修订期间试探 `build_pdf_comparison.py --help`，系统 Python 因
+`ModuleNotFoundError: No module named 'fitz'` 在 import 阶段退出，未触碰对照 PDF。
+未重试该额外转换；本次采用已存在的 LaTeX/Poppler 工具完成摘要构建和渲染。
+精简记录及后续环境入口见 [abstract review](PAPER/proposal-defense/abstract-review-20260916.md#validation)。
+这是可选文档工具依赖边界，不是论文编译或产品验证失败。
+
+## 2026-09-16 — Spec187 r50 MiniNDN startup environment boundaries (RESOLVED)
+
+r50 第一次重放在 MiniNDN 启动前被 `STATE_ROOT_OWNER_MISMATCH` 拒绝；修正为
+root-owned state/output 后，最小化 sudo 环境缺少 `SHELL`，MiniNet 的
+`popen(shell=True)` 控制进程得到 `KeyError`。两次都没有进入 ACK、Selection 或
+Provider，请求链不计失败。原始日志和输出分别保留在
+`.codex-tmp/spec187-local-yolo-r50.log`、`results/spec187-local-yolo-r50/`。
+
+补齐完整运行环境后，r51 在同一依赖身份和 candidate-bound 输入上完成 Y-A，
+`SPEC180_CASE_RESULT status=PASS`，终端响应与 7,267-byte native result 已观察；
+详见 [current-source local confirmation](../specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md#2026-09-16-current-source-local-miniindn-confirmation)。
+
+## 2026-09-16 — Spec187 segmented-input selector used stale NDN-SVS runtime (RESOLVED)
+
+直接运行 `RequestScopedSelection/SelectedProviderReceivesSegmentedEncryptedInput`
+时，命令未将匹配的 `/home/tianxing/NDN/ndn-svs/build-spec187-local` 放在动态库
+搜索路径首位，`ldd` 实际解析到旧的 `/home/tianxing/NDN/ndn-svs/build`；测试夹具
+因此在请求发布边界失败，未产生协议结论。原始日志为
+`.codex-tmp/spec187-segmented-input-r1/selector-rerun-20260916.log`。
+
+修正库搜索顺序后同一 C++ selector 返回 `rc=0`、`No errors detected`，日志为
+`.codex-tmp/spec187-segmented-input-r1/selector-rerun-20260916-matched.log`。
+该边界属于运行时依赖身份选择，不能归因于输入分段实现。
+
+## 2026-09-16 — Spec187 local MiniNDN dependency identity boundary (RESOLVED)
+
+重新生成 native receipt 后，运行时探针首先在 Python import 阶段发现框架要求的
+`subscribeToProducerWithCatchUp` 未由 Waf 选择的旧 NDN-SVS 二进制导出；这是
+头文件/运行库不一致，未启动 MiniNDN，不能算协议结果。原始构建与失败边界保留于
+`.codex-tmp/spec187-framework-svs-reconfigure-20260916-r1-build.log`。
+
+使用同一 SVS 源码 `9f2d8a4`、本机 Boost 1.71/ndn-cxx 重新构建
+`build-spec187-local`，重新配置 Spec187 受影响目标并以 `-j4` 完成 `205/205`
+（12m2.718s）；Python binding 与 native identity verify 均通过。修复后的实际
+`libndn-svs`、`libndn-cxx` 和 `libnac-abe` 路径与摘要见
+[B187 dependency-aligned replay](../specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md#2026-09-16-c-svs-dependency-aligned-minindn-replay)。
+
+在新依赖身份上，当前源码 MiniNDN `Y-A` 两次独立运行均返回
+`SPEC180_CASE_RESULT status=PASS`，C++ selector 写出 terminal
+`SPEC187_NATIVE_REQUEST_PASS`；这两次结果不改变仍未执行的 SIF/APP、negative path
+和 Tiger 资格状态。
+
+## 2026-09-16 — UAV editable export checkpoint hook boundary
+
+四页 PPTX 导出、文本/对象检查和全页 LibreOffice/Poppler 渲染通过后，普通
+`git commit` 被既有 `.git/hooks/pre-commit` 拒绝（exit 1）：
+`Commit blocked: development-assistant files or references remain in the Git index.`
+钩子默认扫描整个 index，既有 `.specify/memory/constitution.md:16` 等引用触发拒绝。
+未重试、未绕过钩子，交付文件保留待提交；不是产品或 PPTX 验证失败。
+精简证据及产物摘要见 [UAV export review](NDNSF-UAV/slides/UPDATES_UAV-review.md#editable-powerpoint-export--2026-09-16)。
+
 ## 2026-09-16 — Spec187 authority handoff source closure
 
 新的 authority source handoff 首次使用现有依赖工作区时，在 `HANDOFF_SOURCE_UNTRACKED:examples/example-trust-anchor.cert` 处拒绝，未创建 bundle、未启动构建。该文件是依赖 checkout 的本机生成身份资料；原始记录 `.codex-tmp/spec187-authority-20260916/prepare-r1.log` 与 `prepare-r1.failure.json` 保留。改用三个锁定 revision 的干净 detached worktree 后，source handoff 成功；不放宽 untracked-source 门。
@@ -5532,6 +6137,28 @@ SHA256=`1ca6d5017d0ffd0d8990bbd23dfb033fcc7cb1122432c0ca49af5042c210e020`。
 SegmentFetcher 在 handler 前完成组装。相关结果见
 `specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md`。
 
+2026-09-16 B187-LOCAL-YOLO repeated replay：复用同一 candidate-bound
+config/input、native selector 和匹配的 NDN-SVS build。第一次使用普通用户创建的
+state/output 根，在 MiniNDN 启动前以 `STATE_ROOT_OWNER_MISMATCH` 返回 78，原始日志
+`.codex-tmp/spec187-local-yolo-1789595123000000000.log` 保留；修正目录 owner 后
+同一 run 完成 ACK、Selection、Provider execution 和 terminal response，退出码 0，
+native result 7,267 bytes，未留下子进程。该重试再次确认 host MiniNDN 正向链；SIF、
+APP、negative path 和 Tiger 未执行。持久证据见
+`specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md`。
+
+2026-09-16 B184-QWEN-REAL local replay：真实 Qwen3-0.6B 候选的 r1–r4 依次暴露
+conversation input contract、tensor bundle rank/shape 和 wrapper/native digest CLI
+边界，均已保留原始 run。修正 bundle 为 Int64 `input_ids`、rank 2、shape `[1,n]` 后，
+r5 中 Controller、Authority 和三个 Provider 均 ready，Provider 发出 V3 offer；
+Requester 随后在 `ACK_CLOSED` 以 `DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED` 结束，
+未到 Selection、Provider execution 或 terminal response。请求 deadline 为 180 s，
+本次不计 Qwen PASS，首个待诊断边界为 post-ACK canonical source/initializer
+publication/assembly 的耗时与资源。原始记录位于
+`results/spec184-qwen06b-local/qwen06b-local-real-r5/`，持久说明见
+`specs/184-native-di-closure/evidence/qwen06b-local-real-replay-20260916.md`。
+
+2026-09-16 B187-LOCAL-YOLO corrected-dependency replay：r42 的旧 NDN-SVS 环境被确认不是当前协议边界；复用同一 candidate-bound 输入并将依赖路径固定到 `ndn-svs/build-spec187-local` 后，新的 root-owned run `spec187-local-yolo-1789593707473878369` 返回 `SPEC180_CASE_RESULT status=PASS`，观察到 `ACK_CLOSED`、`SELECTION_COMMITTED`、`SELECTION_ACCEPTED`、`PROVIDER_EXECUTION_COMPLETED`、1,601 个分段输入、7,267-byte 终端结果和完整子进程清理。原始记录 `.codex-tmp/spec187-local-yolo-1789593707473878369.log` 与 `results/spec187-local-yolo-1789593707473878369/` 保留。本机 Y-A 正向链通过；未运行 SIF/APP、negative path 或 Tiger，不改变 T001/T003 的 `PARTIAL` 或 T004 的 `WAITING_EXTERNAL_INPUT`。
+
 该回归只闭合了 C++ DummyFace 的分段发布/组装边界；当前源码 MiniNDN r42 的
 Controller `corrupted size vs. prev_size` 控制面崩溃仍是独立未修复边界，不能以本次
 selector 结果替代当前源码 MiniNDN、SIF/APP 或 Tiger qualification。
@@ -5541,3 +6168,824 @@ selector 结果替代当前源码 MiniNDN、SIF/APP 或 Tiger qualification。
 `.specify/memory/*` 文档引用并返回 exit 1，未绕过门禁。暂存内容已保存到
 `.codex-tmp/preexisting-index-20260916.patch`；该边界不影响前述 C++ 构建与 selector
 结果。
+
+2026-09-16 B187-LOCAL-YOLO current-source replay：旧 native receipt 先以
+`STALE_SOURCES` 拒绝；重新配置首次因锁定 Rust cargo 缺失失败，补入封存 Rust 1.90
+工具链后配置成功。一次长编译被外部会话终止，随后发现并删除唯一零字节
+`OnnxRuntimeModelRunner.cpp.7.o`；受影响 Native/DI 目标重链成功，最终
+`SPEC180_NATIVE_IDENTITY_OK`。第一次直接链接暴露 `registerOnnxRuntimeBackend` 未解析，
+边界归因于中断留下的零字节对象，未作为协议失败。原始记录保留在
+`.codex-tmp/spec187-local-yolo-current-build-20260916.log`、
+`.codex-tmp/spec187-local-yolo-current-configure-20260916.log`、
+`.codex-tmp/spec187-local-yolo-current-configure-r2-20260916.log`、
+`.codex-tmp/spec187-local-yolo-current-native-build-r3-20260916.log`、
+`.codex-tmp/spec187-local-yolo-current-native-build-r4-20260916.log` 和
+`.codex-tmp/spec187-local-yolo-current-waf-r5-20260916.log`。
+
+官方 `review-agent` 对 exact-SIF 输出根修复返回 `STATIC_PASS`；host MiniNDN 输出根
+仍允许外部目录。r52/r53 在 MiniNDN 前分别因 `OUTPUT_ROOT_NOT_EMPTY` 拒绝，保留原始
+记录 `.codex-tmp/spec187-local-yolo-r52.log`、`.codex-tmp/spec187-local-yolo-r53.log`。
+随后使用全新 root-owned run-id `spec187-local-yolo-1789592534950657908` 完成本机
+Y-A：退出码 0，C++ 日志观察到 ACK_CLOSED、SELECTION_COMMITTED、SELECTION_ACCEPTED、
+PROVIDER_EXECUTION_COMPLETED、终端响应和 `SPEC187_NATIVE_REQUEST_PASS`；
+6,555,271-byte 输入分为 1,601 个 4,096-byte Data segments，结果 7,267 bytes，
+所有子进程均完成清理。该结果是当前源码的 host MiniNDN 正向 PASS，不是 SIF/APP、
+negative path 或 Tiger qualification；详见
+`specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md`。
+2026-09-16 B187-C++-LARGE-DATA fixture boundary：新增分段发布 selector 首次使用
+完整 `useSigningKeyChainForTest` 时，在没有 authority 的 LocalMock 中同步获取 NAC
+公共参数并以 `Failed to fetch public parameters after multiple attempts` 失败，原始
+日志 `.codex-tmp/spec187-large-data-publisher-20260916-r2.log` 保留。该失败发生在
+测试签名前置，不是生产分段协议结果。改用只绑定签名 KeyChain 的测试钩子，并把
+事件泵 timeout 改为负值后，selector 以 `rc=0`、`28/28` assertions 通过；证据见
+[B187 C++ large-data publisher](../specs/187-yolo-minindn-sif-app/evidence/b187-large-data-publisher-cpp-20260916.md)。
+全量 unit/integration 构建的既有首边界仍是缺失 ONNX C++ 头文件，未被本 selector
+绕过；Qwen、SIF/APP、negative path 和 Tiger 未执行。
+
+2026-09-16 B184-QWEN-NATIVE-REBUILD dependency/ABI boundaries：复用现有构建树构建
+`DI_NativeRequester` 首次在 `NativeOnnxRecipeAssembler.cpp` 因缺少
+`onnx/checker.h` 退出，原始 `.codex-tmp/spec187-qwen-budget-build-r1-20260916.log`；
+从封存 base SIF 恢复 `/opt/onnx`、离线重建 tokenizer bridge 后，requester `106/106` 和
+当前 `integration-tests` `127/127` 构建通过。旧 integration-tests 运行时若将
+`.local-boost171/lib` 置于 NAC-ABE 新前缀之前，会加载旧 `libnac-abe.so` 并因缺少
+`AttributeAuthority::getPublicParametersVersion()` 在进程启动时退出，原始
+`.codex-tmp/spec187-qwen-cpp-focused-r1-20260916.log`；按正确顺序以
+`install-spec187-nac-r1/lib` 优先后，`Spec182GrantClientFlow/*` 4/4（34 assertions）和
+`Spec170NdnsfDiCoreFlow/Spec184DurableOutcome` 1/1（10 assertions）通过，日志为
+`.codex-tmp/spec187-qwen-cpp-focused-r4-20260916.log` 和 `r5`。这些是依赖/运行时 ABI
+边界与本机 C++ selector 结果，未启动真实 Qwen、未取得 MiniNDN 数值结果，不能提升 T007。
+
+2026-09-16 B184-QWEN native regression target boundary：当前源码
+`RequestScopedSelection/*` 4/4（6,570 assertions）通过，`NativeYoloMergeDecodesAndOrdersDependencyTensors`
+21/21 与 `NativeProviderIssuesCanonicalPreparationOfferV3` 10/10 通过；同次运行
+`Spec175NativeAssembly/*` 的另外 5 项在 fixture 前置检查处因
+`DI_NativeOnnxAssemblyWorker binary not found` 退出。原始记录
+`.codex-tmp/spec187-qwen-cpp-yolo-focused-r2-20260916.log`。本轮构建边界只包含
+`DI_NativeRequester` 与 `integration-tests`，所以这 5 项为 `UNOBSERVED`/目标未构建，
+不是协议或模型失败；未为此启动全量构建或 1.5 GiB Qwen assembly。
+
+2026-09-16 B184-QWEN assembly-worker candidate boundary resolved：设置
+`NDNSF_SPEC182_BIN_DIR=build-spec187-local-nac-r1` 后，当前源码
+`Spec175NativeAssembly/*` 7/7、141 assertions 通过；此前 5 项的
+`DI_NativeOnnxAssemblyWorker binary not found` 仅为测试候选目录未配置。原始日志
+`.codex-tmp/spec187-qwen-assembly-worker-focused-r1-20260916.log`。该结果确认 ORT
+加载和 1/2/4-provider assembly fixture 可运行，未启动真实 1.5 GiB Qwen assembly。
+
+2026-09-16 B184-QWEN real r10 resource boundary：当前 requester、assembly worker 和真实
+Qwen3-0.6B material 启动 MiniNDN 后，Controller/Authority/three Providers ready 并发出
+`DI_PLACEMENT_V3_OFFER`；requester 未产生任何 terminal marker。运行期间 requester RSS
+约 9.1 GiB、swap 接近 8 GiB，可用内存约 0.5 GiB；为保护主机停止，run record
+`results/spec184-qwen06b-local/qwen06b-local-real-r10-current/run-record.json` 记为
+`minindn=PASS`（仅启动）、`workload=FAIL`、return code `-15`，停止瞬间记录的
+`OWNED_PROCESS_ALIVE` 已在随后清理确认。首个诊断边界为 canonical source/initializer、
+encrypted envelope、SegmentFetcher assembled buffer、assembly worker 输入及 requester IMS
+的整对象持有和复制放大；这不是 6.55 MB request input 单 Data，已有 segmented-input
+selector/YOLO 正向证据。保留原始 run、模型和构建树；资源修复和小对象 C++ 回归前不再
+启动真实 Qwen。
+
+2026-09-17 B184-QWEN ownership repair focused exit：官方 review-agent 对
+`sourceRefFor`、move 传递和 `CanonicalSourceScrubber` 返回 `STATIC_PASS`；复用当前
+构建树以 `/usr/bin/g++ -B/usr/bin -j4` 构建 `DI_NativeRequester` `106/106` 成功。随后
+`RequestScopedSelection/SelectedProviderReceivesSegmentedEncryptedInput` `1/1`
+（6,570 assertions）及 `Spec175NativeAssembly/*` `7/7`（141 assertions）通过，日志为
+`.codex-tmp/spec187-memory-ownership-segment-selector-r1-20260917.log` 和
+`.codex-tmp/spec187-memory-ownership-assembly-selectors-r1-20260917.log`。该结果只关闭
+小对象 C++ ownership/segmentation 回归，不改变 r10 的真实 Qwen `RESOURCE_BOUNDARY`，
+未重启 1.5 GiB 模型。
+
+2026-09-17 B184-QWEN selector setup boundary：重建后首次把
+`Spec182OnnxWorkerProtocol/*` 传给 `integration-tests`；该 suite 属于
+`unit-tests`，Boost.Test 在执行断言前返回
+`no test cases matching filter or all test cases were disabled`。原始输出
+`.codex-tmp/spec187-memory-ownership-worker-selector-r1-20260917.log` 已保留。
+这是目标选择错误，不是产品、协议或模型运行结果；下一步构建并运行正确的
+`unit-tests` selector。
+
+2026-09-17 B184-QWEN segmented-worker regression boundaries and focused exit：首次完整
+`unit-tests` 链接因 `tests/wscript` 漏列 `ndn-service-framework/OperationRuntime.cpp`
+在最终链接阶段出现 `OperationRuntime`/`OperationSubscription` 未定义；补入该源后
+增量 `203/203` 构建成功。首次把 `Spec182OnnxWorkerProtocol/*` 传给
+`integration-tests` 返回 `no test cases matching filter`，首次大数据筛选遗漏
+`GenericDynamicApi/` 套件同样返回 `rc=200`；另一次分段 selector 使用拼错的
+NAC-ABE 路径在装载阶段返回 `127`。这些边界均未进入产品断言，原始日志保留在
+`.codex-tmp/spec187-memory-ownership-worker-selector-r1-20260917.log`、
+`.codex-tmp/spec187-memory-ownership-large-data-selector-r1-20260917.log` 和
+`.codex-tmp/spec187-memory-ownership-segment-selector-r2-20260917.log`。
+
+修正测试目标、夹具二进制和库路径后，C++ `Spec182OnnxWorkerProtocol/*` `30/30`、
+`GenericDynamicApi/PreparedAndMessages/LargeDataPublicationEmitsBoundedFinalizedSegments`
+`1/1`、`Spec175NativeAssembly/*` `7/7` 与
+`RequestScopedSelection/SelectedProviderReceivesSegmentedEncryptedInput` `1/1` 均
+`rc=0`。这只关闭本地 worker/分段回归；真实 Qwen r10 的
+`RESOURCE_BOUNDARY`、SIF/APP、negative path 与 Tiger 资格状态不变。构建和正确
+selector 日志分别为 `.codex-tmp/spec187-memory-ownership-unit-build-r2-20260917.log`、
+`.codex-tmp/spec187-memory-ownership-worker-tools-build-r1-20260917.log`、
+`.codex-tmp/spec187-memory-ownership-worker-selector-r2-20260917.log`、
+`.codex-tmp/spec187-memory-ownership-large-data-selector-r2-20260917.log`、
+`.codex-tmp/spec187-memory-ownership-assembly-selector-r2-20260917.log` 和
+`.codex-tmp/spec187-memory-ownership-segment-selector-r3-20260917.log`。
+
+2026-09-17 B184-QWEN checkpoint boundary：按规则尝试只提交本次独立的
+`tests/wscript` 一行源闭合修复，但既有 pre-commit 全量扫描 Git index 中其他会话的
+`.specify/memory` 开发辅助引用并返回 `exit=1`；未使用 `--no-verify`，没有新 commit，
+也没有改变其他暂存内容。原始输出为
+`.codex-tmp/spec187-memory-ownership-checkpoint-r1-20260917.log`，SHA-256
+`47d747b672fd3dfdf392739c5b566c51c2b0bd8c868cb5bc57f05b794df6b886`。
+
+2026-09-17 B184-QWEN large-fetch ownership regression：首次运行
+`Spec175NativeAssembly/*` 在 fixture preflight 因未设置
+`NDNSF_SPEC182_BIN_DIR` 返回 `rc=201`，未进入五个 assembly worker 用例；原始日志为
+`.codex-tmp/spec187-large-fetch-selector-20260917-r1.log`。设置当前 worker
+目录并预加载匹配 NAC-ABE 后，`Spec175NativeAssembly/*` `7/7` 和
+`RequestScopedSelection/SelectedProviderReceivesSegmentedEncryptedInput` `1/1`
+均 `rc=0`。该 setup 边界不计为产品失败；真实 Qwen r10 的
+`RESOURCE_BOUNDARY` 未重跑。受影响构建及 selector 日志见
+`specs/184-native-di-closure/evidence/qwen06b-local-real-replay-20260916.md`。
+2026-09-17 large-fetch ownership checkpoint boundary：隔离 `ServiceProvider.cpp`
+checkpoint 仍被既有 pre-commit 全索引门禁拒绝；索引中的其他会话
+`.specify/memory/*` development-assistant 引用触发拒绝。未使用 `--no-verify`，
+没有新 commit；源码、构建和 C++ selector 证据保持在工作区及 `.codex-tmp/`。
+
+2026-09-17 B184-QWEN r11 preflight boundary：以 root 启动新 Qwen replay 时遗漏维护的
+`PYTHONPATH`，`canonical_source_info` 无法导入 ONNX，返回
+`MODEL_ONNX_VALIDATOR_UNAVAILABLE`；MiniNDN、请求链和模型均未启动。补入同一
+repository wheel 路径后 user/root import 均通过；r11 run 保留为
+`NOT_EVALUATED`，不得计作失败请求或 PASS。wrapper 原始输出的 SHA-256 为
+`10161caf848a0a88ce4bad47ecbd971191e9bf26723711300dee62dfcc3029db`；下一次使用新
+run ID 重试，r10 `RESOURCE_BOUNDARY` 保持不变。
+
+2026-09-17 B184-QWEN r12 preflight boundary：root 环境把
+`LD_PRELOAD=libnac-abe.so` 传给 `ldd -r`，造成 ldd 自递归；r12 在 MiniNDN 前被
+停止，run record 保留 `NOT_EVALUATED`。无 preload 的 `ldd -r` 探测成功，原始输出
+`.codex-tmp/ldd-preflight-no-preload-r12.log`，SHA-256
+`696c0e079fd9090ed0b0bd04c7110694b49f59d86495b8bdd7b1950a7cb46272`。
+
+2026-09-17 B184-QWEN r13 resource boundary：去掉 root preload 后 MiniNDN 的
+Controller、Authority、三个 Provider 和 requester 均启动；约 119.1 秒时进程树
+RSS 达到约 7.1 GiB、`MemAvailable` 低于 2 GiB 安全线，随后以 root 权限停止独立
+进程组。未观察 Selection、Provider execution、terminal response 或 numerical oracle；
+wrapper 在外部停止前未完成 cleanup，run record 保留 `RUNNING`，分类为
+`RESOURCE_BOUNDARY` 而不是 PASS。监控原始日志为
+`.codex-tmp/spec187-qwen-r13-monitor-20260917.log`，SHA-256
+`3b8349630563308e6a7ea765f0f15a6562395c6c95cf3f39d6d66f75624c7bb6`。停止后磁盘仍约
+43 GiB 可用、`MemAvailable` 约 8.2 GiB，所有模型和结果文件均保留。
+
+2026-09-17 B184-QWEN large-fetch WireEncode repair：review-agent 对冻结的
+`ServiceUser.cpp` 快照返回 `STATIC_PASS`；将完整 `WireEncode()` 复制改为共享
+`ndn::Block` 分段后，受影响 native closure `233/233` 构建成功，分段 selector
+`1/1`、`Spec175NativeAssembly/*` `7/7` 通过。运行 RSS、取消延迟和真实 Qwen
+workload 仍未观测；下一次 replay 必须使用新 run ID 并保留资源监控。原始日志见
+`.codex-tmp/spec187-large-fetch-wire-block-build-20260917-r1.log`、
+`.codex-tmp/spec187-large-fetch-wire-block-segment-selector-20260917-r1.log` 和
+`.codex-tmp/spec187-large-fetch-wire-block-assembly-selector-20260917-r1.log`。
+
+2026-09-17 B184-QWEN r14 monitored resource boundary：使用 WireEncode 共享
+`ndn::Block` 修复和去除 root preload 后，MiniNDN 的 Controller、Authority、三个
+Provider 和 requester 均启动，Provider 均发出签名 V3 offer；约 117.0 秒时监控记录
+进程树 RSS `6,737,232 KB`、`MemAvailable=1,651,808 KB`、swap
+`3,966,452 KB`，低于 2 GiB 安全线，随后 wrapper 返回 `rc=137`。requester 只记录
+`CANCELLED`，没有 Selection、Provider execution、terminal response 或 numerical
+oracle；run record 保留 `RUNNING` 是因为外部停止先于 wrapper cleanup，分类为
+`RESOURCE_BOUNDARY`。监控器留下的精确 r14 role PIDs 已另行终止并核验退出；停止后
+`MemAvailable` 约 7.5 GiB，磁盘约 43 GiB 可用。原始监控为
+`.codex-tmp/spec187-qwen-r14-monitor-20260917.log`（SHA-256
+`57230b6a303986e1b99ed6c14b96f0c1cc2892fb9be38ab45430d1b1ba38a77b`）；该结果不计为
+T007 PASS。下一次修复必须改变大对象发布的内存边界（有界或 file-backed segment
+serving）并先通过 C++ 资源探针；不得只提高阈值、重复同一 in-memory publisher，或
+删除模型、当前构建和原始证据来制造资源 PASS。
+
+2026-09-17 Spec188 B188-1 first selector run：定向构建已完成 `46/46`，但首次运行暴露三
+个夹具/环境边界，未进入 Spec188 产品资格。`Spec188RepoFileBackend` 因 selector 构造的
+`ArtifactReference.publisherIdentity="repo"` 不是 canonical absolute NDN name，返回
+`artifact-invalid-name`；`Spec188RepoMemoryBudget` 因 filesystem authority 的父目录尚未
+建立，ownership lock 返回 `repo-persistence-lock-open: No such file or directory`；既有
+`DistributedRepoTieredCacheTest` 在同一 sqlite path 同时创建多个 authoritative owner，
+返回 `repo-persistence-owned`。原始运行日志保留于
+`.codex-tmp/spec188-b188-1-20260917/Spec188RepoFileBackend.log`、
+`.codex-tmp/spec188-b188-1-20260917/Spec188RepoMemoryBudget.log` 和
+`.codex-tmp/spec188-b188-1-20260917/DistributedRepoTieredCacheTest.log`；本轮分类为
+`FIXTURE_BOUNDARY`，不得计作产品 PASS。下一次重试使用新日志并核对 canonical publisher、
+父目录初始化和独立 authority 生命周期。
+
+2026-09-17 Spec188 B188-1 second selector run：重建 `6/46` affected tasks 成功；
+`Spec188RepoFileBackend` 已通过 `SPEC188_REPO_FILE_BACKEND_OK`。`Spec188RepoMemoryBudget`
+首个小对象写入超过其 filesystem vector compatibility threshold（80-byte fixture 对
+64-byte threshold），返回 `repo-large-object-vector-path-disabled`；这是 selector 配置
+边界，range path 尚未开始。既有 `DistributedRepoTieredCacheTest` 在 lru store 存活时再
+创建 oversized store，共用 sqlite authority lock，返回 `repo-persistence-owned`；这是
+新增 ownership gate 后测试未隔离独立 authoritative lifetimes 的夹具边界。原始日志保留于
+`.codex-tmp/spec188-b188-1-20260917-r2/Spec188RepoFileBackend.log`、
+`.codex-tmp/spec188-b188-1-20260917-r2/Spec188RepoMemoryBudget.log` 和
+`.codex-tmp/spec188-b188-1-20260917-r2/DistributedRepoTieredCacheTest.log`；本轮分类为
+`FIXTURE_BOUNDARY`，不得计作产品 PASS。下一次使用新日志并核对 threshold boundary 与
+每个 compatibility selector 的独立 authority path。
+
+2026-09-17 Spec188 B188-1 ASan/UBSan preflight/build boundary：隔离 sanitizer 配置通过
+系统 g++ 的 address/undefined 支持检查，但仓库全局 Waf 配置要求 pinned Rust tokenizer
+cargo；本机该依赖缺失，首次配置在 `Pinned Rust cargo is missing` 停止。为仅观察 Repo
+targets，配置阶段使用 `/tmp/spec188-fake-rust` 占位 cargo（不进入任何 product target），
+随后实际 sanitizer build 仍展开共享 Core 依赖；在 `13/46` 编译、`-j2` 时
+`MemFree` 约 250 MB 且持续 swap-in/out（约 `48/100`），因此主动停止。原始配置/构建日志
+为 `.codex-tmp/spec188-b188-1-asan-20260917-r2/configure.log`（SHA-256
+`66aafa631665e308d128eb356c7dc895eecaed0ee76d52df88c418e47d694333`）和
+`.codex-tmp/spec188-b188-1-asan-20260917-r2/build.log`（SHA-256
+`acb071b125b071f8c4fb9bfbf09b99316ba352baf6f6fcb90b1ef577a48d2599`）。本轮分类为
+`RESOURCE_BOUNDARY`/`TOOLCHAIN_BOUNDARY`，无 sanitizer 运行结果，B188-1 保持 `PARTIAL`。
+2026-09-17 Spec188 B188-3 initial targeted build：`../waf build
+--targets=spec188-model-preparation-publication -j4` 在 selector fixture 编译阶段停止，
+因为 `spec188-model-preparation-publication.t.cpp` 未包含 `ServiceUser.hpp` 与
+`ndn-cxx/name.hpp`，导致 `PreparedServiceRequest`、`LargeDataPublishResult` 和
+`ndn::Name` 类型不完整。未生成 selector、未运行行为测试；本轮分类为
+`FIXTURE_BOUNDARY`，原始边界记录见
+`.codex-tmp/spec188-b188-3-20260917/build-initial-failure.log`，修复后必须使用新日志和
+新快照重试。
+
+2026-09-17 Spec188 B188-3 initial selector：定向构建已成功，但从既有 build tree 启动
+`spec188-model-preparation-publication` 时，两个测试均在夹具初始化阶段因仓库相对路径
+找不到 `tests/fixtures/spec182/dependency-probes/extraction-vectors.json` 而停止；没有
+进入 publication/cache 行为断言。本轮分类为 `FIXTURE_BOUNDARY`，原始记录见
+`.codex-tmp/spec188-b188-3-20260917/selector-initial-failure.log`；修复后使用新日志重试。
+
+2026-09-17 Spec188 B188-3 selector retry 2：fixture 路径修复后进入 native role-contract
+校验，但 fixture 漏填 `role.adapterVersion=1`，与 candidate splitter 版本不一致，生产
+路径返回 `DI_NATIVE_ROLE_BINDING_MISMATCH`，仍未进入 transport publication。该轮分类为
+`FIXTURE_BOUNDARY`，原始记录见 `.codex-tmp/spec188-b188-3-20260917/selector-retry2-failure.log`；
+修复后使用新快照/新运行日志。
+
+2026-09-17 Spec188 B188-3 regression selector：新 publication selector 已通过后，从
+`build-spec187-local-nac-r1` 直接启动既有 `spec185-preparation`，15 项测试在旧 fixture/oracle
+路径初始化阶段失败，未进入 publisher 行为断言。该轮分类为 `FIXTURE_BOUNDARY`，原始日志
+见 `.codex-tmp/spec188-b188-3-20260917/spec185-preparation-build-cwd-failure.log`；按其
+既有契约从仓库根目录重跑。
+
+2026-09-17 Spec188 B188-4 T006 initial targeted build：`spec188-prepared-request-projection`
+在 selector fixture 编译阶段停止，原因是 `NativeModelRef` 不能直接赋值
+`NativeModelDescriptor`。未生成 selector、未运行 request projection 行为断言；本轮分类为
+`FIXTURE_BOUNDARY`，原始日志见
+`.codex-tmp/spec188-b188-4-20260917-t006/build.log`（SHA-256
+`173077755dde199930762d5e450ed8fb4dc76051ae596acd49897696ddb2ad73`）。修复为显式基类赋值后
+使用新快照和新构建日志重试。
+
+2026-09-17 Spec188 B188-4 T006 stale consumer regression：T006 selector 已以新库通过，但
+直接启动旧的 `spec185-preparation` 二进制时，在首个冷准备用例发生 SIGSEGV（rc=201）。
+新增 `NativeModelDescriptor::artifactReference` 改变了公共结构布局，旧测试目标未随头文件
+重新编译，不能作为产品/回归结果；原始日志见
+`.codex-tmp/spec188-b188-4-20260917-t006/spec185-preparation-regression.log`（SHA-256
+`88a2015ab7fc924ff90557ee21181f0cbab1d3538fac2b8e46003376983c2908`）。下一步重新编译受
+影响的 DI library 和 `spec185-preparation` consumer 后重跑。
+
+2026-09-17 Spec188 B188-4 T007 targeted build v2：组合静态门通过后，`ServiceUser.cpp`
+在 `ndn::Buffer(tagSize, 0)` 处因 ndn-cxx Buffer 仅支持单参数 size 构造而编译失败；未生成
+T007 selector、未运行行为测试。本轮分类为 `COMPILE_BOUNDARY`，原始日志见
+`.codex-tmp/spec188-b188-4-20260917-t007/build-v2.log`（SHA-256
+`cf42732055425789b87832181b5507627d019848520db5a538f6866c18aab2f5`）。修复为
+`ndn::Buffer(tagSize)` 后必须重新冻结快照、静态复审并使用新构建日志重试。
+
+2026-09-17 Spec188 B188-4 T007 targeted build v3：T007 生产代码已通过编译，但 selector
+夹具将 `std::string` 直接传给只接受 `const char*` 的 `ScopedEnvironmentValue`，在测试目标
+编译阶段停止，未生成 selector/未运行行为测试。本轮分类为 `FIXTURE_BOUNDARY`，原始日志见
+`.codex-tmp/spec188-b188-4-20260917-t007/build-v3.log`（SHA-256
+`da2910d3abb53b541674b74ed46dda68729d58d61c558425a4e505a7b33f7bf1`）。修复为保持路径字符串
+生命周期并传递 `c_str()`，随后重新静态复审。
+
+2026-09-17 Spec188 B188-4 T007 static review v2：官方 review-agent 在不可变快照
+`.codex-tmp/spec188-b188-4-20260917-t007/t007-v2.patch` 发现摘要仍复制完整 plaintext，
+且 publication 后异常可能泄漏 reservation/file、旧 TTL 回调可能误删替换对象；本轮分类为
+`STATIC_BOUNDARY`，未构建或运行。v3 修复了分块摘要、统一回滚和 publication identity，复审
+又发现未注册 publication 的 committed file 未删除；v4 最终 `STATIC_PASS`。各快照、SHA 和
+审查回执保留在 `specs/188-model-preparation-disk-backed-memory/evidence/b188-request-serving.md`。
+
+2026-09-17 Spec188 B188-4 composition static review v1：官方 review-agent 只读审查发现
+`tasks.md` 将已实现 T007 保留为 `NOT_STARTED`，且 request-serving evidence 使用截断的 T006
+快照 SHA，无法独立核对组合身份；本轮分类为 `DOCUMENTATION_BOUNDARY`，未构建或运行。已将
+T007 更新为 `PARTIAL`、补全 T006 SHA 与 composition durable hash，并以 v2 快照复审通过。
+2026-09-17 Spec188 B188-4 T007 selector v5：修复 selector freshness 后，发布结果成功但
+`face.receive` 未观察到任何 file-backed segment；metrics 的 publication/read/hit 均为零，
+未进入解密重组断言。本轮分类为 `RUNTIME_BOUNDARY`，原始日志见
+`.codex-tmp/spec188-b188-4-20260917-t007/selector-v5.log`（SHA-256
+`0ca51e899b9000cce7be8e4c9d5ad48f3b812bf6e487b7dcacd9437750e1fec7`）。下一次增加完整
+ FinalBlock 驱动的 segment fetch 与 envelope decrypt oracle，并核对 selector 的 Interest
+dispatch；不得把当前失败记为 serving PASS。
+
+2026-09-17 Spec188 B188-4 T007 selector v6：T007 selector 仍未收到 segment Interest，
+metrics read/hit 为零。生产静态路径未进入 `onInterest`；根因是 LocalMock 夹具将三参数
+`setInterestFilter` 解析为需要 NFD prefix registration 的 `RegisteredPrefixHandle`，Dummy
+Face 没有 forwarder，因此本地 filter 没有安装。原始日志见
+`.codex-tmp/spec188-b188-4-20260917-t007/selector-v6.log`（SHA-256
+`2c73d9fa998820486b55386c4a9df970ddc57b8012dd47374be2bb2511333d22`）。已改为显式两参数
+`InterestFilter` overload 并保存 `ScopedInterestFilterHandle`，修复后需重新静态审查、构建和运行。
+
+2026-09-17 Spec188 B188-5 T009 static review v1：官方 review-agent 发现新增 cache lifecycle
+用例未被 `di-prepared-process.t.cpp` 的 repeatable native matrix 选中，旧前缀仍指向
+`Spec185ProviderAssembly/<case>`；本轮分类为 `STATIC_BOUNDARY`，未构建或运行。随后将
+matrix 改为 `Spec185ProviderAssembly/Spec188ProviderReferenceAssembly/<case>`，并把外层
+`ProviderOnlyRuntimeServesAndDrainsNativeRegistration` 单独选取；v3 快照复审通过。
+
+2026-09-17 Spec188 B188-5 T009 selector build-cwd boundary：`spec185-provider-assembly`
+完整目标构建已通过，但从 `build-spec187-local-nac-r1` 目录运行 Provider selector 时，
+`NdnsfIntegrationEnvironment` 找不到相对路径 `examples/trust-any.conf`，嵌套 selector
+返回 201，外层 drain selector 也返回 201；没有进入 Provider 产品断言。原始日志为
+`.codex-tmp/spec188-b188-5-20260917-t009/selector-v1.log`（SHA-256
+`430db8f95aa94a587c25ca025f1a2fdff3bea3633b02dbd478c3ac3aa0cb193a`），分类为
+`FIXTURE_BOUNDARY`。从仓库根目录使用同一二进制和新日志重跑后 13/13 + 1/1 通过。
+
+2026-09-17 Spec188 B188-5 T009 runtime checkpoint：静态 v3 通过、完整 DI closure `-j4`
+构建通过，根目录 Provider selector 嵌套 13/13、外层 drain 1/1 通过；T009 两个新用例与
+Provider drain 各独立运行两次也通过。构建日志 `.codex-tmp/spec188-b188-5-20260917-t009/build-v1.log`
+SHA-256 `52378c22970bbc08aa77215129b97986f756a555a7e62c89d0cf1ca44e661a8a`，selector 日志
+`.codex-tmp/spec188-b188-5-20260917-t009/selector-v2.log` SHA-256
+`d84b03b8aa3195d962a716409841e5498419390aeb1cc49554c39a593610ae28`，重复日志
+`.codex-tmp/spec188-b188-5-20260917-t009/selector-repeat-v1.log` SHA-256
+`57b11aa0da103b72e9ce8fa9e29e7e5c219005a1464befbb5031d68156618cf8`。本轮只计 T009
+lifecycle focused evidence；真实 revoke、assembly-failure cleanup、非协作阻塞 I/O 取消、
+ ASan/UBSan、TSan、range 长对象和临时物化删除时序仍未观测，B188-5 保持 `PARTIAL`。
+
+2026-09-17 Spec188 B188-6 T010 static review：官方 review-agent 对不可变快照
+`.codex-tmp/spec188-b188-6-20260917-t010/t010.patch`（SHA-256
+`3bba3cfe73ce09ee730440013ddd10ea6527d49d186002da1de5ae75ba4ed95b`）审查通过，未发现
+P0-P3 控制性缺陷。审查确认 A/B/C identity 与 digest、custom source deleter、maxEntries=1
+eviction、lease pin/release、stop cleanup 及 repeatable matrix 接线；ModelPreparationCache/
+Repo/publisher/runner/input 跨层 accounting、约 1.5 GB initializer、RSS/disk/residue 和
+sanitizer 仍是未观测边界，未因静态通过而计为完成。
+
+2026-09-17 Spec188 B188-6 T010 compile-link：受影响的 `spec185-provider-assembly` DI
+closure 使用 `/usr/bin/g++ -B/usr/bin`、`-j4` 构建通过，耗时 22.49 s，峰值 RSS
+1,236,236 KiB，exit 0。原始日志 `.codex-tmp/spec188-b188-6-20260917-t010/build-v1.log`
+SHA-256 `ebc4acb8bda0cd8698e05f90d27c248877825b452d5e1a579499354506d528f9`。
+
+2026-09-17 Spec188 B188-6 T010 runtime checkpoint：从仓库根目录使用同一构建二进制，
+`Spec185ProviderAssembly/Spec188ProviderReferenceAssembly` nested selector 14/14、
+outer Provider drain 1/1 通过；T010 owner probe 独立重复 2/2 通过，观察到 A→B→C 两次
+eviction 后 source destructor 计数以及 stop 后第三次析构，active leases 归零。首次运行日志
+`.codex-tmp/spec188-b188-6-20260917-t010/selector-v1.log` SHA-256
+`4b34fef9318c220cdc1273f797fe06e1cadc9ad147ae0f9def63eb4fcc271eaa`，重复日志
+`.codex-tmp/spec188-b188-6-20260917-t010/selector-repeat-v1.log` SHA-256
+`2c38a382b20522dde11be634427bbd6ef51eed16be02035a41fb7d3ca763f76e`。本轮仅证明
+ProviderArtifactCache owner/eviction focused behavior；跨层 counters、1.5GB RSS/swap/disk/
+residue、真实 source closure、TTL/admission、ASan/UBSan 与 TSan 尚未运行，T010/B188-6 保持
+`PARTIAL`。
+
+2026-09-17 Spec188 B188-7 T011 preflight：首次重复运行传入的 `--repeat-root`
+不在维护的 `results/` 根下，runner 在启动 MiniNDN 前返回
+`REPEAT_ROOT_OUTSIDE_RESULTS`；本轮没有协议结果，原始日志
+`.codex-tmp/spec188-b188-7-20260917-t011-v11/minindn-repeat-v14.log` SHA-256
+`caf07f1a56f6733b2f99b01c536ed2d39bd319357029980e6056ee0b9864bb2d`，分类为
+`FIXTURE_BOUNDARY`。修正 output root 后使用新的 run directory 重试，不覆盖该失败记录。
+
+2026-09-17 Spec188 B188-7 dependency closure：Waf 默认排除历史
+`.local-boost171`，runner 在 host 模式拒绝从该目录加载 `libndn-cxx`；冻结快照
+`.codex-tmp/spec188-native-dependency-closure-review-v1.snapshot` SHA-256
+`e3e4477217a785723a51870f460da5b17a5f01865f7f46a0351448be7690cd93` 经官方
+review-agent `STATIC_PASS`。受影响 DI closure 用 `/usr/bin/g++ -B/usr/bin`、`-j4`
+构建和 verify 通过；native build log SHA-256
+`5ad1410a73ae3bf3d908af28f7359021def4840f2d60d592ced1afc81a1f62c1`，耗时 5:33.57，
+peak RSS 6,728,764 KiB，Swaps 0。该记录只证明依赖边界和构建，不证明 Spec188
+产品完成。
+
+2026-09-17 Spec188 B188-7 T011 runtime：受控 `/usr/local` NDN-CXX host 闭合下，
+`Spec188YoloRepeat` 两轮 MiniNDN 均有 ACK、Selection、Provider execution、terminal
+response、clean child exit，summary SHA-256
+`df8661cecb4965decf97af0034c34bf75ee5e6e589992dbea5d8f26bfe868428`，wrapper log
+SHA-256 `5fd2179f75ead5aa98aa2a14a77b5fcd45faa166dc91f6f63f426f93121e0baa`。但两轮
+`user.log` 都出现 `LARGE_DATA_PUBLISH_SEGMENTS` 和
+`LARGE_DATA_PUBLISH_FILE_BACKED`，所以请求时仍重复发布 canonical source/initializer；
+这是 T005/T011 的生产接线缺口，不能把协议链 focused PASS 提升为
+`zero model republication` 或资格 PASS。T011/B188-7 保持 `PARTIAL`，T012/T013
+未开始；完整边界见 `specs/188-model-preparation-disk-backed-memory/evidence/b188-local-validation.md`。
+
+2026-09-17 Spec188 B188-7 runner regression：完整 Python runner 回归首次为 104/105，
+唯一失败是既有 `test_initialize_keychains_uses_case_identity_parent` 仍传裸
+`object()`；生产方法在调用 legacy keychain 后按契约访问 `ndn.net.hosts` 重写节点
+TPM locator，失败发生在测试夹具边界，没有启动 MiniNDN。修复为带空 `net.hosts` 的
+最小 stub 后，冻结快照 `.codex-tmp/spec188-b188-7-t011-test-fixture-review-v1.patch`
+SHA-256 `f46e81d34d03eb4123e8e53c526e425300a7ac12f624d73f1ffeff2c88c90c43`，官方只读
+review-agent 返回 `STATIC_PASS`；完整回归 105/105 PASS。该修复不改变生产代码，
+原失败不计产品行为结果。
+
+2026-09-17 Spec188 B188-3 T005 Spec185 consumer regression：重建 `spec185-preparation`
+后，首次运行只剩一个失败，`Runtime::prepare` 在新的 prepare-time publication 边界报告
+`DI_NATIVE_ENCRYPTED_PUBLICATION_FAILED: NAC-ABE produced no wrapped large-data MessageKey`。
+根因是旧回归夹具没有绑定本地 `REQUEST-LARGE` wrapped-key 状态；原始日志
+`.codex-tmp/spec188-b188-3-t005/spec185-preparation-regression-v1.log`（exit 201，SHA-256
+`0d40450f1464e1fae3f7d03f85406f1bedcf4325305188898cac208df7f04f8f`）已保留。
+
+2026-09-17 Spec188 B188-3 T005 fixture repair v1：加入 LocalMock ServiceUser、grant/admission
+绑定及预置 wrapped key 后，官方静态门发现两个夹具边界：未驱动借用 Face 的 `io_context`，且
+Runtime/ServiceUser 可能晚于借用 Face/KeyChain 析构；v2 复审修复 poll/join 和声明顺序。
+随后重建回归报告 `wrapped large-data key disappeared before publication`，原始日志
+`.codex-tmp/spec188-b188-3-t005/spec185-preparation-regression-v2.log`（exit 201，SHA-256
+`e97ec622a577eaad08522fdaa84cd4694185e597ab9d6f7fe1760e27d59f4640`）。根因是 LocalMock
+`prepareHybridSendKeyForTest()` 仍只写旧标记，没有建立新 refcount 所需的 service/byId 索引；
+该失败仍保留为 fixture boundary。
+
+2026-09-17 Spec188 B188-3 T005 final validation：`prepareHybridSendKeyForTest()` 写入
+service-scoped wrapped-key placeholder 后，v3 静态复审 `STATIC_PASS`；受影响 DI closure
+`spec185-preparation,spec188-model-preparation-publication` 使用 `/usr/bin/g++ -B/usr/bin`
+和 `-j2` 构建成功，`spec185-preparation` 24/24 与 T005 selector 5/5 均 exit 0。最终日志和
+限制见 `specs/188-model-preparation-disk-backed-memory/evidence/b188-preparation.md`；真实
+Repo ingest/lease、TSan、跨进程 Controller/NFD 仍未观测，不能提升 T005/B188-3 状态。
+
+2026-09-17 Spec188 host dependency guard static review：v1/v2/v3 冻结快照分别被官方
+`review-agent` 要求补齐 linker flag/RPATH 检查、Waf runtime-RPATH 接线和符号链接别名解析；
+原始快照 `.codex-tmp/spec188-host-ndncxx-guard-20260917.patch`（SHA-256
+`a63de99421e96d52ca70ebf70444d52d509d1e41fcb01e13b6a6c2add8d459ed`）、`-v2.patch`
+（`09b3fc288791421987688459d028a2fc3ddba42c0209c55d788138ae545dd33b`）和 `-v3.patch`
+（`49deb50b343d68180f79445186c16ae5135bf1eb61ae033ed5473c5df5cc7562`）保持不变。v4
+快照（`9f8a38782ff03c4c45b79f48c826b65bc85c346ed4065ad7de97c5d49a88ac6f`）补齐
+`-Wl,-rpath`、`-rpath-link`、`-R` 及 realpath 解析后通过
+`STATIC_PASS`，未构建或启动实验；完整当前证据见
+`specs/188-model-preparation-disk-backed-memory/evidence/host-dependency-closure-20260917.md`。
+
+2026-09-17 Spec188 B188-1 sanitizer boundary：第一次 ASan/UBSan Repo 构建虽然带有
+sanitizer flags，但复用的 Waf cache 含 `.local-boost171` RPATH，且默认 `ldd` 会加载
+`/usr/local` 的普通 Core；该结果不计入验收，日志保留在
+`.codex-tmp/spec188-b188-1-asan-20260917-r5/build-repo-j1.log`。第二棵 canonical
+`-Og -g3` 树在高内存的 `ServiceUser.cpp` 阶段停止；日志为
+`.codex-tmp/spec188-b188-1-asan-canonical-o0-20260917-r3/build.log`。两次边界都没有
+伪造 PASS。
+
+随后以默认禁用历史 prefix、系统 Boost 1.71、`/usr/local` NDN-CXX/NFD、`-O0 -g0`
+和 `-j1` 重新配置 `build-spec188-b188-1-asan-canonical-o0g0`；46/46 构建成功，
+三个 Repo C++ selector 在候选构建树优先的 `LD_LIBRARY_PATH` 下串行通过且无 ASan/UBSan
+报告。构建日志 SHA-256 及 selector 日志 SHA-256 见
+`specs/188-model-preparation-disk-backed-memory/evidence/b188-repo-file.md`；
+TSan、磁盘/权限故障注入和多 pinned 压力仍未运行。
+
+2026-09-17 Spec188 B188-1 TSan preflight：使用 canonical host 依赖和 GCC 9.4.0
+配置 `--with-sanitizer=thread` 时，Waf 的 compiler capability check 返回 `no`，随后
+以 `thread sanitizer is not supported by the current compiler` 退出，未生成任何对象。
+该边界归类为 `TOOLCHAIN_LIMITATION`；配置日志为
+`.codex-tmp/spec188-b188-1-tsan-canonical-o0g0-20260917-r1/configure.log`。
+按显式路径尝试建立本地 checkpoint 时，仓库既有 index 中的 development-assistant
+文件触发 pre-commit 拒绝（commit log SHA-256
+`ccdaaebc57a41f9445fb2e4b4560d743d1918f36291294b3f3882213bc97a9c2`）；未绕过、未提交。
+
+2026-09-17 Spec188 host dependency guard positive control：使用 `/usr/local` pkg-config、
+匹配的 NDN-SVS source/build、NAC-ABE prefix 和系统 Boost 1.71 配置时，Waf 的 NDN-CXX、
+SVS、NAC-ABE、Boost linkage 检查均通过；随后在独立的 pinned Rust cargo 缺失处退出，
+没有进入编译或运行。原始日志 `.codex-tmp/spec188-host-canonical-configure-20260917-final.log`
+SHA-256 `9399cb3668e27e59364d07aec078830a99c73658cc2b5e4ecba359cc844a683c`，分类为
+`TOOLCHAIN_PRECHECK`，不能把该次配置记为完整 configure PASS。
+
+2026-09-17 Spec188 B188-1 multi-pinned selector launch boundary：在 canonical
+build tree 内首次重建命令误用 `./waf`，该目录没有 waf wrapper，exit 127；随后从仓库根
+启动 selector 时引用了构建树内 `$PWD/.codex-tmp` 的日志目录，目录不存在，exit 1，
+均未开始产品执行。原始输出保留于
+`.codex-tmp/spec188-b188-1-pinned-stress-20260917-r6/result.txt`；修正为仓库根证据目录
+和 `../waf` 后，受影响目标构建 exit 0，sanitizer selector exit 0，结果见
+`specs/188-model-preparation-disk-backed-memory/evidence/b188-repo-file.md`。
+
+2026-09-17 Spec188 B188-1 fault selector first boundary：用 `UINT64_MAX` 作为 manifest
+size 的 sanitizer 反例先在 ArtifactReference hard limit 处返回
+`artifact-limit-exceeded`，没有到达 Repo disk reservation；原始日志为
+`.codex-tmp/spec188-b188-1-faults-20260917-r2/selector-asan.log`（SHA-256
+`823884be2d4ad6a8d142a6019892533793b1c9c5435fa6efe5f84cce008fb73d`）。修正为不超过
+1-PiB hard limit 的 `1ULL << 50` 后，reservation、permission atomic failure 和
+orphan recovery 均在 normal 与 ASan/UBSan selector 通过；该首边界不计作产品失败。
+
+2026-09-17 Spec188 B188-1 normal build launch boundary：首次 normal 构建命令把工作目录
+写成不存在的大小写路径 `/home/tianxing/NDN/NDN-service-framework/...`，统一 exec 未启动
+并返回 `No such file or directory`。修正为实际仓库路径后，`../waf build
+--targets=Spec188RepoFileBackend -j4` 在 `build-spec187-local-nac-r1` 完成，结果见
+`.codex-tmp/spec188-b188-1-faults-20260917-r3/result.txt`。
+
+2026-09-17 Spec188 documentation check command boundary：沿用过时的
+`scripts/verify-spec-kit-sync.py` 路径导致 Python exit 2（文件不存在）；实际同步校验器位于
+`skills/speckit-code-design/scripts/verify-spec-kit-sync.py`。使用正确入口并传入仓库、entrypoint
+和 personal skill 要求后，结果为 `PASS: 11/11 local entrypoints; personal shared skill=present`；
+该路径错误不影响产品构建或运行结果。
+
+2026-09-17 Spec188 B188-2 range sanitizer closure：canonical
+`Spec188RepoRangeTransfer` 使用系统 Boost 1.71、`/usr/local` NDN-CXX/NFD 和 `-j1`
+构建 exit 0，selector exit 0，未见 ASan/UBSan 报告；输出中的
+`fullCopyFallbacks=1` 来自随后故意执行的 legacy vector rejection，range 断言发生在该
+probe 前且为 0。原始记录在
+`.codex-tmp/spec188-b188-2-range-20260917-r1/result.txt`，parser-fuzz、远端异步和真实
+磁盘故障仍未运行。
+
+2026-09-17 Spec188 B188-2 parser-fuzz closure：未改动的 normal `unit-tests` binary
+运行 C++ `Spec182ObservedOffer/Spec184NativeParserFuzz`，完成 512 个确定性截断、翻转、
+前后缀和结构变异，exit 0、`*** No errors detected`。日志 SHA-256
+`d493d12b3b4c3444b338b2b036c75db449cbe38460f233f2b0d4f09205d18be`；该结果只覆盖 native
+decoder parser lane，remote async/fault lane 仍未运行。
+
+2026-09-17 Spec188 B188-3 canonical prepare sanitizer link boundary：canonical
+`spec188-model-preparation-publication` 的首次 ASan/UBSan 构建使用仅用于 Repo 观察的
+0 字节 `/tmp/spec188-fake-rust` tokenizer archive，DI 共享库最终链接报
+`ndi_token_*` undefined reference，未生成 selector 或运行结果；原始日志为
+`.codex-tmp/spec188-b188-3-preparation-20260917-r1/build-asan.log`（SHA-256
+`9bb5f472b8bb9ab7e4338b329c279e4cb7ee88d62fb27474efe094b51078fec8`）。该边界分类为
+`BUILD_INPUT_BOUNDARY`，不能归类为产品失败或 PASS。改用现有已验证的 pinned tokenizer
+archive（SHA-256 `9e482640470ee560b89cf341b19d9a6f4a82aad97b7cd2d20ed44d9d85a1b463`）
+重新配置后，target build exit 0，ASan/UBSan selector 5/5 exit 0；结果日志分别为
+`.codex-tmp/spec188-b188-3-preparation-20260917-r1/build-asan-retry.log`（SHA-256
+`eaaf000e6e7e2f6d63a0c2aad779f84c3587b08fa35d7e2837fabe6292e62fa7`) 与
+`.codex-tmp/spec188-b188-3-preparation-20260917-r1/selector-asan.log`（SHA-256
+`fcdb2cf980ad10a2a14252e3ddfe420593c3eacf8412a76ab4000ea6f2cc750e`）。
+
+2026-09-17 Spec188 host dependency closure correction：`/usr/local` 没有匹配本机 Boost 1.71
+的头文件/库对；主机应使用 `/usr/include` 与 `/usr/lib/x86_64-linux-gnu` 的系统 Boost，
+同时让 NDN-CXX/NFD、NDN-SVS 和 NAC-ABE 的传递 `libndn-cxx` 解析到同一个 `/usr/local`
+真实文件。T007 旧 ASan selector 混用 `build-spec187-local` 的 SVS 与 `.local-boost171`
+NDN-CXX，最终在 `ServiceUser` 析构出现 invalid SVS vptr；该边界保留为
+`ABI_BUILD_RUNTIME_BOUNDARY`，原始日志 SHA-256
+`33564813cdb0d18fb2f846d8262c889a8eb743637f65c76d2e7d5174b8ed67fc`，不计作产品失败。
+按系统 Boost 1.71 和 `/usr/local` NDN-CXX 重建匹配 SVS 后，DI canonical closure 107/107
+exit 0（日志 SHA-256 `6ee6da0b47f212b14099b52d9517c95bd00e6f1c7edaa097c069a61cc61dcaad`）；
+T005/T006/T007 对应 ASan/UBSan selector 分别 5/5、3/3、2/2 通过。仍不代表 Repo
+prepare/lease、完整 Core-NDN request、TSan、MiniNDN 或 SIF/Tiger 资格完成。
+
+2026-09-17 Spec188 T005 Runtime Repo owner build boundaries：canonical `spec185-runtime` 首次
+重建在 `di-runtime.t.cpp` 处因 `NDNSF-DistributedRepo/include` 未加入 target include path
+退出（`.codex-tmp/spec188-t005-repo-loader-20260917/build-r4-canonical.log`，exit 1，
+SHA-256 `b45167352113a46e82c4cabb5e2dd833f245c2a9fec90d67e8cd798756657abc`）；补齐 include
+并经 r5 静态复审后，测试 fixture 的 most-vexing-parse 又在编译处退出（`build-r5-canonical.log`，
+exit 1，SHA-256 `2e3d58fdde51a9285e310a8303cdaf60955c13b8e54a8844eeb093ae1a3adf35`）。两者均为
+构建接线/测试代码边界，不是产品或 ABI 失败；r6 经官方 review-agent `STATIC_PASS` 后，
+matching closure 构建 exit 0，RepoCore lookup/miss-ingest 与 typed lifecycle selector 均通过。
+
+2026-09-17 Spec188 T005 API/PDF documentation gate：`Design/build-api-reference.py
+--changed-only` 成功生成 current API inventory/Markdown（328 files、17,742 entries；日志
+`.codex-tmp/spec188-t005-repo-loader-20260917/build-api-reference-changed.log`，SHA-256
+`180190c674de9e556d7b7035462ffc41a8c7bb4b8795604a0af6a7e76878fc53`），并重建 current/target
+PDF（run `.codex-tmp/design-pdf-20260917T213510931391Z`）。随后 `Design/verify.py` 在
+`verify-api-reference.py` 子门退出 1：当前工作树包含并行 Spec188 源码漂移、新增 Repo 文件未纳入
+实现覆盖清单、source snapshot/behavior coverage 与 provenance 不一致（日志 SHA-256
+`54309d5bdee97424ca8001fe9a76954719e575fffa60649a34cf655c6f7b1e83`）。这是文档身份/覆盖门
+边界，不是 C++ Repo selector 失败；API/PDF 仅记为生成成功、完整文档 qualification 未通过。
+
+提交 `6a1aaf50` 后重新生成 current inventory 并重建 PDF（`.codex-tmp/design-pdf-20260917T214100268780Z`），
+`Design/verify.py` 仍在同一 API 子门退出；post-checkpoint verify 日志 SHA-256
+`54309d5bdee97424ca8001fe9a76954719e575fffa60649a34cf655c6f7b1e83`。
+
+2026-09-17 Spec188 B188-1 r9 canonical repair checkpoint：fixture 修复后的 immutable
+task/composition 快照分别经官方 `review-agent` 返回 `STATIC_PASS`；canonical
+`Spec188RepoFileBackend`、`Spec188RepoMemoryBudget`、`DistributedRepoTieredCacheTest`
+三项 B188-1 C++ selector 在同一候选优先、系统 Boost 1.71、`/usr/local` NDN-CXX/SVS/NFD
+闭合下串行运行，ASan/UBSan 无报告，均 exit 0。`Spec188RepoRangeTransfer` 作为同轮额外
+selector 亦 exit 0。构建命令、峰值 RSS、selector 输出和 SHA-256 见
+`specs/188-model-preparation-disk-backed-memory/evidence/b188-repo-file.md#r9-repair-composition-and-canonical-runtime--2026-09-17`。
+这次结果关闭 B188-1 当前 compile-link/focused-runtime lane，但不覆盖真实
+ENOSPC/short-write/cancel、erase/fsync ambiguous fault 或 TSan；T002/T003/B188-1 仍为
+`PARTIAL`。这是一条成功检查点记录，不把 focused selector 提升为 MiniNDN、SIF 或 Tiger qualification。
+
+2026-09-17 Spec188 B188-3 checkpoint boundary：当前 provider 代码、测试和证据完成本批 focused
+检查后，使用显式 Spec188 路径创建本地 checkpoint 时被仓库既有 pre-commit development-assistant
+index 门禁拒绝；`.specify/memory` 及相关 references 已在 index 中但不属于本批。未使用
+`--no-verify`、reset 或清理无关改动，源码和证据保持未提交，后续重新划分 coherent checkpoint。
+
+2026-09-17 Spec188 B188-3 current-provider selector launch boundary：第一次从仓库根启动
+`spec185-runtime` 时，重定向目标使用了只存在于 build tree 的相对 `.codex-tmp` 目录，shell 在
+创建测试进程前以 exit `1` 失败；没有进入 C++ selector 或产品断言。该次只记为 harness/path
+边界，已在 `evidence/b188-preparation.md` 登记；修正为仓库根 evidence 目录后才允许重试。
+
+2026-09-18 Spec188 B188-3/T005 and B188-7/T011 current-candidate gate：本轮先保留三条
+边界失败再重试。未用 root 运行 MiniNDN 的 r1 在启动前以 `Mininet must run as root` 退出，
+归类为 host preflight；root r2 因 request envelope key 仍归普通用户所有而在
+`REQUEST_ENVELOPE_KEY_OWNER_MISMATCH` 退出，归类为 fixture ownership preflight；修正 key
+所有权后 r6 才进入两轮产品运行并返回 `SPEC188_REPEAT_RESULT status=PASS runs=2`。
+另一次 r4 target rebuild 因测试断言错误地对 `PreparedModel` 解引用而在 C++ 编译处退出，
+不是产品或 ABI 失败；修正为 `Spec185PreparedModelTestAccess::source(prepared)` 后，受影响
+target 使用 `-j2`、25.378 s 构建通过。r6 的 wrapper 日志 SHA-256 为
+`5fd2179f75ead5aa98aa2a14a77b5fcd45faa166dc91f6f63f426f93121e0baa`，repeat summary SHA-256 为
+`049903877024cb353862605767f466f59f1871bb3fe498ff4834db0db6c4f699`；上述 preflight/compile
+边界均未被计为产品 PASS 或失败，真实 C++/MiniNDN 结果记录在 Spec188 B188-3/B188-7 evidence。
+2026-09-18 Spec188 T006 same-handle validation boundaries：第一次重跑命令把已经绝对化的
+build path 再次拼接到仓库根，selector 在启动前以 `SELECTOR_INVALID`/exit `78` 返回，没有
+创建 MiniNDN 运行；另一次 manifest wrapper 使用了不存在的旧子命令
+`verify-local-runtime`，只在工具参数解析处 exit `2`。两次都归类为 harness/tooling boundary，
+未计入产品运行结果。修正路径和命令后，受影响 target `-j2` 构建 exit `0`，`verify` 返回
+`SPEC180_NATIVE_IDENTITY_OK`，随后 r8 root MiniNDN 完成两轮、每轮同一 prepared handle 两次
+request，wrapper `status=PASS runs=2`；证据见 `evidence/b188-request-serving.md`。
+2026-09-18 Spec188 T015/T016 delivery boundary: Spec188-scoped convergence review r5 returned
+`STATIC_PASS` after correcting stale CodeGraph and task/evidence status records. The local bounded
+core and current candidate YOLO evidence remain valid, while the repository-wide Design/PDF verifier
+still sees unrelated parallel source drift; that boundary is recorded as `UNOBSERVED`, not PASS.
+T016 handoff is now recorded at
+`specs/187-yolo-minindn-sif-app/evidence/spec188-handoff-20260918.md` with
+`WAITING_EXTERNAL_INPUT` for SIF/Tiger. No new native build, SIF build, upload or Tiger run was started.
+
+2026-09-18 Spec189 B189-3 two-provider runner r01: the frozen candidate was rejected before
+MiniNDN startup with `PROVIDER_BINARY_DIGEST_MISMATCH` because the command-line expected
+`di-native-provider` digest contained one extra character. No Controller, Authority, Provider, or
+requester process was started. Raw launcher log is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r01/launcher.log`, SHA-256
+`b1fd445096e5f0786ffe9c189cfabe32a2077871f471176d5ba9994e19e7e38e`. This is a harness identity
+preflight boundary; retry only after recomputing all candidate binary digests.
+
+2026-09-18 Spec189 B189-3 two-provider runner r02: after the binary digest was corrected, the
+runner stopped before MiniNDN startup at `MODEL_CANONICAL_SOURCE_NOT_IMMUTABLE`. The canonical ONNX
+graph and external initializer were mode `0664`; the runner rejects writable sources before creating
+a hard link into the run directory. Raw launcher log is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r02/launcher.log`, SHA-256
+`19b3d017526dc7c7630ff240b2657d210581f4c79254073956efc399bd14441a`. This is a candidate-file
+preflight boundary; no native process or MiniNDN network was started.
+
+2026-09-18 Spec189 B189-3 two-provider runner r03: after the candidate files were made read-only,
+the runner materialized the requester configuration and canonical hard links, then stopped at
+`BUILD_RECEIPT_DIGEST_REQUIRED` in its final identity fence because no receipt digest was supplied.
+No MiniNDN process was started. Raw launcher log is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r03/launcher.log`, SHA-256
+`4450117cec97109bb11480e9145bcebe6621250a5e8f244db3172bc70fd716d9`. The matching receipt digest
+is `e722219b33afc680b387a7c7aeef40d12c357377098df35fffd3192b079e6f80`.
+
+2026-09-18 Spec189 B189-3 two-provider runner r04: the real MiniNDN topology started successfully;
+Controller, Authority, Provider-0 and Provider-1 reached ready markers and both providers emitted
+signed `DI_PLACEMENT_V3_OFFER` decisions for their assigned stages. The C++ requester then stopped
+at `ACK_CLOSED` with `native state mapping differs from the source boundary`. The canonical ONNX
+object contained only `input_ids`, `attention_mask` and `position_ids`, while the staged Qwen
+artifacts and catalog state contract require dynamic `past_key.*`/`present_key.*` tensors. This is
+a native preparation/protocol boundary, not a readiness or wrapper result. Requester log:
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r04/requester-0.log`, SHA-256
+`1ce55cc631af6d7543076fc3479f95ae8fab85ed896518423153502306431e52`; launcher log SHA-256
+`0b3480b3affa56837d802169f9f57eb7cca931aca33f3284f6e9d5f06df8bf1a`.
+
+2026-09-18 Spec189 B189-3 two-provider runner r05: with the dynamic-KV canonical graph, the real
+MiniNDN topology again reached both signed provider offers and passed the prior state-boundary check.
+The requester stopped at `ACK_CLOSED` with `cooperative extension deadline exceeded`; the generated
+request contract still fixed `max_policy_ms` at 5 seconds, which is too small for source-bound
+planning over the 7,343-node graph. Requester log is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r05/requester-0.log`, SHA-256
+`4f9d60f3e3a1a506e3b75cfd649060b091d887e546892393c9593d638d43a4ed`. This is a bounded native
+planning-budget boundary, not a product execution or qualification PASS.
+
+2026-09-18 Spec189 B189-1 dynamic canonical re-export d01: the temporary exporter stopped before
+model loading with `ModuleNotFoundError: llm_pipeline_lib` because `.codex-tmp` was omitted from its
+module path. Raw log is `.codex-tmp/spec189-qwen-two-provider-20260918/canonical-dynamic-export.log`.
+This is an exporter harness path boundary; no model artifact or native runtime result was produced.
+
+2026-09-18 Spec189 B189-3 two-provider runner r06: after the dynamic-KV graph and a bounded
+60-second native policy budget, the real MiniNDN topology reached Controller/Authority readiness,
+both role-specific Provider preparation markers, and signed `DI_PLACEMENT_V3_OFFER` decisions. The
+C++ requester entered `Runtime.open -> User.prepare -> PreparedModel.request` but stopped at
+`NATIVE_STREAM_FAILED` because the Provider rejected the request-scoped stream grant. No ONNX
+execution, cross-Provider hidden-state handoff, terminal stream event, or checkpoint was observed.
+Requester log is `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r06/requester-0.log`,
+SHA-256 `8bb808e73251e152741913f10955f290fbdc05dbd2359149fcbb291a1ec1fc27`. This is a native
+stream-grant binding boundary; the next candidate includes diagnostic logs before retrying.
+
+2026-09-18 Spec189 B189-3 two-provider runner r07: Core/DI targets were rebuilt after adding
+diagnostic rejection logs to `ServiceProvider::initializeStreamPublisher`. The rebuilt provider
+reached the same signed two-provider offers and preparation markers, but the requester again
+returned `NATIVE_STREAM_FAILED` with `request-scoped stream grant rejected`. The default child log
+level did not emit the new diagnostic line, so the exact verifier subreason remains unobserved;
+the next retry enables `NDNSF_NDN_LOG=*=ERROR`. Requester log SHA-256 is
+`8bb808e73251e152741913f10955f290fbdc05dbd2359149fcbb291a1ec1fc27` (same bytes as r06), and
+Provider-0/Provider-1 log hashes are `cbc7ac22076611e870a29a1d9dc19e77d1103328dc325f95a012b2f3ac8fed77`
+and `931543ac88c9d848f7441c2908df0459b636500f647ad7e25da5ae79a937316f`. This is not execution
+or qualification PASS.
+
+2026-09-18 Spec189 B189-3 two-provider runner r08: the retry with `NDNSF_NDN_LOG=*=ERROR` did not
+reach stream verification. Requester preparation stopped at `PREPARATION_FAILED` with `large-data
+file publication has insufficient reserved disk space`; stale 1.5 GB request-publication wire
+files from failed earlier runs occupied `/tmp/ndnsf-large-data`. No Provider stream-grant decision
+was observed. Requester log SHA-256 is
+`b44420c55349cf8e7cbaccd5e28f2dab73b96d720841f010a41c3252a2de85ab`; the stale files were removed
+only after all run processes had exited. This is a local resource/preparation boundary, not a
+product or qualification PASS.
+
+2026-09-18 Spec189 B189-3 two-provider runner r09: after clearing the stale publication file and
+running with `NDNSF_NDN_LOG=*=ERROR`, the requester again entered the native request route and
+failed with `NATIVE_STREAM_FAILED` / `request-scoped stream grant rejected`. Both Providers had
+reached role-specific preparation and signed `DI_PLACEMENT_V3_OFFER` decisions. The rebuilt
+Provider still emitted no diagnostic subreason, so the exact verifier branch remains unobserved;
+no execution or hidden-state handoff was observed. Requester log SHA-256 is
+`8bb808e73251e152741913f10955f290fbdc05dbd2359149fcbb291a1ec1fc27`; Provider logs are
+`0fdc8ee0897a9b5e2357122848d458cf4490f8a9465261709939a4bb0611c073` and
+`12bc0e0d31f7bacecf235edeeed351e150345cd3ac3043df73d45c1f83ac662d`. This is not a product or
+qualification PASS.
+
+2026-09-18 Spec189 B189-3 two-provider runner r11 preflight: the retry command supplied raw
+hexadecimal digests while the maintained runner contract requires the `sha256:` prefix. It
+stopped immediately with `MODEL_STAGE_MANIFEST_DIGEST_MISMATCH`; no run directory, MiniNDN
+process, Controller, Authority, Provider, or requester was started. Raw invocation record is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r11-preflight/launcher.log`.
+Its SHA-256 is `ef99cc72170e02b1df1aed66b8cddb32b7749d52539ec20d1acae8de94c79d0e`. This is a
+command-contract boundary, not a product or protocol result; retry with the exact prefixed
+candidate digests.
+
+2026-09-18 Spec189 B189-3 two-provider runner r12: after the request-scoped collaboration grant
+fix, the real topology reached both role-specific preparation markers and signed placement offers,
+then the C++ requester stopped at `NATIVE_STREAM_FAILED` with `Provider lacks controller-authorized
+collaboration role /LLM/Pipeline/Stage/0`. The generated controller policy incorrectly used the
+application root (`/example/ndnsf-qwen06b`) as the role permission prefix instead of the service
+name (`/AI/LLM/Pipeline/QwenNative/ROLE/...`). No ONNX execution, hidden-state handoff, terminal
+event, or checkpoint was observed. Requester log is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r12/requester-0.log`; Provider
+logs retain the signed offers. This is an experiment policy wiring boundary; fix the generated
+policy before retrying, and do not classify the offers as product PASS.
+
+2026-09-18 Spec189 B189-3 two-provider runner r13: after correcting the service-scoped role
+policy, both Providers passed ACK/Selection and entered collaboration execution. Both then
+failed while loading the protected-grant operator credential with
+`DI_PROTECTED_GRANT_REJECTED: operator file cannot be opened`; the requester observed
+`stream event gap exceeded retry budget`. The Qwen runner supplied `authority-public.pem` but
+did not generate the required sibling `trust-root-registry-v1.json` and registry public-key
+closure consumed by `NativeProtectedGrantCredentials`. No ONNX execution, hidden-state handoff,
+terminal event, or checkpoint was observed. Requester/Provider log SHA-256 values are
+`aabe3820403570ff39f3e7f42672237f3ebce1eeacc9d378217cc1de9cd1e0c0`,
+`6ce536f8194292211326c6d7d7fb523c82bd10f94bd6444e63f56b8a015fc9d1`, and
+`d97c7f3aea8fc169bfe79b72dd5dc33a67d90fa87d3ca6b22ec80b62816bd1d0`. This is a candidate
+operator-credential closure boundary, not a product or qualification PASS.
+
+2026-09-18 Spec189 B189-3 two-provider runner r14 preflight: the command contained a mistyped
+canonical external-initializer digest and stopped at `MODEL_CANONICAL_INITIALIZER_DIGEST_MISMATCH`.
+No run directory, MiniNDN process, Controller, Authority, Provider, or requester was started.
+Raw invocation record is `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r14-preflight/launcher.log`.
+This is a command identity boundary, not a product or protocol result; the next invocation reads
+all candidate digests directly from files.
+
+2026-09-18 Spec189 B189-3 two-provider runner r16 preflight: the diagnostic retry supplied a
+mistyped `DI_NativeOnnxAssemblyWorker` digest and stopped at
+`ASSEMBLY_WORKER_BINARY_DIGEST_MISMATCH`. No MiniNDN process, Controller, Authority, Provider or
+requester started. Raw invocation record is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r16-preflight/launcher.log`,
+SHA-256 `3aed922f546539326d7ffa089096aaafe5d9589d27df0d377310f5ea22c46490`. This is a command
+identity boundary, not a product or protocol result.
+
+2026-09-18 Spec189 B189-3 two-provider runner r15: after adding the authority public-key registry
+and rebuilding the Provider, both Providers passed signed ACK/Selection and emitted
+`NDNSF_DI_GRANT_VERIFICATION` with `boundary=BEFORE_ASSEMBLY`. Provider-1 then failed on the first
+protected inter-Provider dataflow operation with `protected dataflow is not authorized for this
+role/endpoint`; the requester reported `NATIVE_STREAM_FAILED` / `stream event gap exceeded retry
+budget`. Provider-0 had no successful publish event. No ONNX execution, hidden-state handoff,
+terminal event, or checkpoint was observed. Raw logs are retained under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r15/`; rebuilt provider SHA-256
+is `c56a680a6dbd4409bf3a17d8dd25ff69a8c87a1cca6b04c2da5989dde230d459`. This is a protected
+dataflow authorization boundary, not a product or qualification PASS.
+
+2026-09-18 Spec189 B189-3 two-provider runner r17 preflight: the corrected command reached the
+canonical ONNX identity check but root Python lacked the user-installed `onnx`/`numpy` modules and
+stopped with `canonical ONNX identity requires onnx and numpy`. No MiniNDN process started. Raw
+invocation record is `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r17-preflight/launcher.log`,
+SHA-256 `ad02acf7e144f9699408cc4b07d7e7be041fe721dbc23c72eb21e5ffb76144f6`. This is a local
+preflight environment boundary, not a product or protocol result; preserve the user module path
+when running the root experiment.
+
+2026-09-18 Spec189 B189-3 two-provider runner r18: preserving the user Python site-packages let
+the real MiniNDN topology reach signed ACK/Selection and protected-grant verification on both
+Providers. Provider-1 then rejected its first fetch; the diagnostic showed an empty endpoint digest
+with `role=/LLM/Pipeline/Stage/1`, `producer=/LLM/Pipeline/Stage/0`, `consumer=/LLM/Pipeline/Stage/1`,
+`allowed=0`, and `peer_present=0`. The native generation coordinator rebuilt a legacy plan edge
+instead of reusing the authenticated V3 endpoint. Requester returned `NATIVE_STREAM_FAILED` /
+`stream event gap exceeded retry budget`; no ONNX execution, hidden-state handoff, terminal event,
+or checkpoint occurred. Log SHA-256 values are `02fd269cb7e2f4797cc1804d5d3aae2d1d1bccdccc9de97c75c4e774b5d24c14`,
+`90060c414841010cef7129f1dc19a2e85d4164ec72d61bc22f3b3e95dcbfcc9f`, and
+`abd42fd41bb1fdc7c3dc8cb34514e3974d0efd32f4438cb05853dd51dfe3de2f`. This is a confirmed
+production projection boundary, not a product or qualification PASS.
+
+2026-09-18 Spec189 B189-3 two-provider runner r19: after the coordinator was changed to reuse the
+authenticated V3 role projection, both Providers again reached ACK/Selection and protected-grant
+verification. The empty-endpoint rejection did not recur, but no dependency fetch/publish, assembly,
+ONNX execution, terminal event, or checkpoint marker was emitted before the requester stopped with
+`NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`. Provider logs ended after grant
+verification and shutdown, leaving the next first boundary unobserved. Requester/Provider log
+SHA-256 values are `cba00bff2663f65967c01cde1952e37716f4c4837d455e093f61a4e5285eeea8`,
+`213754fa508971f49553bf204f929e2827835eca73e6ab6db13f57e46511c14b`, and
+`716e1110d1efcbef3f64b22b998ccad91116d3cb91588402ff66e529b10dc8a9`. This is not a product or
+qualification PASS; enable native runtime timing for the next retry.
+
+2026-09-18 Spec189 B189-3 two-provider runner r20 preflight: the timing/DependencyObjectTrace
+retry stopped before MiniNDN startup at `ASSEMBLY_WORKER_BINARY_DIGEST_MISMATCH`; no process or
+protocol result was produced. Raw invocation record is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-r20-preflight/launcher.log`,
+SHA-256 `b617219169a4dcaaf879e3929c93833e3f4f04aaf53d1a8b8f5754ef6563ddab`. The next invocation
+reads the assembly-worker digest directly.
+
+2026-09-18 Spec189 B189-3 two-provider runner r21: the corrected candidate-derived assembly-worker
+digest and runtime/dependency diagnostics allowed the real topology to reach signed ACK/Selection
+and `NDNSF_DI_GRANT_VERIFICATION` with `boundary=BEFORE_ASSEMBLY` on both Providers. Neither
+Provider emitted dependency-fetch, assembly-start, runner-ready, execution-completed or terminal
+markers before the requester stopped with `NATIVE_STREAM_FAILED` / `stream event gap exceeded retry
+budget`. The logs identify protected-grant verification as the last observed boundary, but do not
+identify whether coordinator entry, dependency fetch, callback delivery or stream transport failed
+next. No ONNX execution, hidden-state handoff, terminal response, checkpoint or cleanup baseline was
+observed. Requester/Provider log SHA-256 values are
+`42c94ea5f83bf28a325382c762652407b7fd01d55e9cca6ea17e8f0ce1f4ecea`,
+`761d393b7de74cece91a145509d9faf9cf2680b6a7e4bd3bc8630e363ec9bd2c` and
+`cff5f5af426ef0db28c22f83e0d52744d950b072bb277c4649fa097d50f1a0d6`. This is a runtime
+observability/protocol boundary, not product or qualification PASS. The next retry must emit
+provider-side post-grant markers and classify the first missing marker instead of treating the
+requester stream gap as the root cause.
+
+2026-09-18 Spec189 host dependency-policy configure: the first fresh configure stopped before
+the runtime-RPATH gate because `/usr/local/lib/pkgconfig/libnac-abe.pc` still named the retired
+`/home/tianxing/NDN/nac-abe-integration-182/install-spec187-nac-r1` prefix. Waf correctly rejected
+that global metadata boundary; no product target was built. The matching NAC-ABE source/build pair
+was reconfigured and installed with `CMAKE_INSTALL_PREFIX=/usr/local`, after which
+`pkg-config --variable=prefix libnac-abe` returned `/usr/local` and the installed library's
+loader closure resolved without checkout paths.
+
+The same configure audit found a malformed global NDNSD pkg-config record:
+`/usr/local/lib/pkgconfig/ndnsd.pc` advertised `-I/usr/local/includeabc`, a
+nonexistent directory. It was replaced from the NDNSD installation template with
+`-I/usr/local/include`; a fresh global configure then completed with no
+`includeabc`, checkout, temporary or retired-prefix entries in the Waf cache.
+
+2026-09-18 Spec189 host dependency-policy build invocation: an initial attempt passed `-o` to
+`waf build` after the most recent configure had locked the output to the explicit container-RPATH
+configuration tree. It began an unintended full compile in
+`build-spec189-global-policy-config-container-v1`; the process was terminated before any test or
+artifact was accepted. Raw command output is `/tmp/spec189-global-r3-marker-build.log`. This is a
+Waf output-selection/tooling boundary, not a product or protocol result. The global-r3 tree was
+then reconfigured explicitly and the intended affected-target build completed successfully.

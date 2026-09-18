@@ -116,24 +116,18 @@ from freshly cloned repositories:
 sudo ./install_ndnsf_stack.sh --force-dependencies
 ```
 
-### OpenABE and OpenSSL note
+### OpenABE and global dependency closure
 
-NAC-ABE depends on OpenABE. The upstream OpenABE code is sensitive to OpenSSL
-versions and is known to work most reliably with OpenSSL 1.1.x. Ubuntu 20.04
-ships OpenSSL 1.1, but Ubuntu 22.04 and 24.04 ship OpenSSL 3 by default. To
-avoid replacing the system OpenSSL, the installer builds OpenABE with its
-private OpenSSL 1.1 dependency when `libopenabe` is missing. The private OpenABE
-installation is placed under:
+NAC-ABE depends on OpenABE. The installer may build OpenABE's private OpenSSL
+and Relic sources inside the dependency checkout, but the resulting OpenABE,
+NAC-ABE and all other NDNSF host libraries are installed under the canonical
+`/usr/local` prefix. The checkout is a build input only; it must not appear in
+`LD_LIBRARY_PATH`, RPATH or `pkg-config` results. Missing or ABI-incompatible
+dependencies must be installed and verified before configuring NDNSF; do not
+work around them with a temporary prefix.
 
-```text
-dependencies/local/openabe
-```
-
-This keeps OpenABE/NAC-ABE compatible on newer Ubuntu releases without changing
-the OpenSSL used by system tools such as `apt`, `git`, `curl`, or Python.
-
-For source-tree development, or when you do not want to install C++ libraries
-and headers system-wide, use:
+For source-tree development while keeping the host dependency closure intact,
+use:
 
 ```bash
 ./install_ndnsf_stack.sh --no-system-install

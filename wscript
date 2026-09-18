@@ -7,6 +7,25 @@ VERSION = '0.1.0'
 APPNAME = 'ndn-service-framework'
 GIT_TAG_PREFIX = 'ndn-service-framework-'
 
+# Host builds consume one installed dependency closure.  Container builds may
+# use their declared SDK roots, but checkout, /tmp and .codex-tmp prefixes are
+# never valid library inputs.
+GLOBAL_DEPENDENCY_PREFIXES = (
+    '/usr', '/usr/local', '/opt/ndn-base', '/opt/onnx', '/opt/onnxruntime',
+    '/opt/onnxruntime-1.26.0')
+
+
+def _require_global_dependency_prefix(path, owner):
+    resolved = os.path.realpath(path)
+    if not any(resolved == root or resolved.startswith(root + os.sep)
+               for root in GLOBAL_DEPENDENCY_PREFIXES):
+        raise RuntimeError(
+            f'{owner} must use an installed global dependency root; '
+            f'rejected {resolved}. Install it under /usr/local or the '
+            'declared container SDK root instead of using a temporary '
+            'checkout prefix')
+    return resolved
+
 
 def _resolve_compiler_toolchain(cxx, env=None, expected_root='/usr/bin'):
     """Resolve one compiler/binutils closure, independent of ``PATH``."""
@@ -57,74 +76,25 @@ def _resolve_compiler_toolchain(cxx, env=None, expected_root='/usr/bin'):
 
 
 def _ensure_tokenizer_bridge(conf):
-    """Build the pinned Rust tokenizer staticlib (spec182 T007-A) once and
-    expose it as the TOKENIZER_BRIDGE uselib.
-
-    The frozen dependency contract statically links the Rust engine into the
-    DI shared library; the C ABI is a private implementation detail and is
-    never dlopen'd or installed.  Cargo runs against the pinned toolchain
-    recorded in the spec182 case manifest (.codex-tmp spec182-t001-
-    dependencies rust-prefix/cargo-home), in its own target directory, with
-    --locked --offline at -j2, and is only re-invoked when a crate source is
-    newer than the archive (configure re-runs keep it current).
-    """
-    top = conf.path.abspath()
-    pinned = os.path.join(top, '.codex-tmp', 'spec182-t001-dependencies')
-    rust_prefix = os.environ.get('NDNSF_RUST_PREFIX', '').strip() \
-        or os.path.join(pinned, 'rust-prefix')
-    cargo = os.path.join(rust_prefix, 'bin', 'cargo')
-    if not os.path.isfile(cargo) or not os.access(cargo, os.X_OK):
-        conf.fatal(f'Pinned Rust cargo is missing: {cargo} '
-                   '(set NDNSF_RUST_PREFIX)')
-    cargo_home = os.environ.get('NDNSF_CARGO_HOME', '').strip() \
-        or os.path.join(pinned, 'cargo-home')
-    if not os.path.isdir(cargo_home):
-        conf.fatal(f'Pinned Rust cargo home is missing: {cargo_home} '
-                   '(set NDNSF_CARGO_HOME)')
-    target_dir = os.environ.get('NDNSF_TOKENIZER_BRIDGE_TARGET', '').strip() \
-        or os.path.join(pinned, 'tokenizer-bridge-target')
-    crate_dir = os.path.join(
-        top, 'NDNSF-DistributedInference', 'cpp', 'adapters', 'qwen',
-        'tokenizer-bridge')
-    archive = os.path.join(target_dir, 'release',
-                           'libndnsf_tokenizer_bridge.a')
-
-    def stale():
-        if not os.path.isfile(archive):
-            return True
-        archive_mtime = os.path.getmtime(archive)
-        for name in ('Cargo.toml', 'Cargo.lock'):
-            if os.path.getmtime(os.path.join(crate_dir, name)) > archive_mtime:
-                return True
-        for dirpath, _, files in os.walk(os.path.join(crate_dir, 'src')):
-            for name in files:
-                if name.endswith('.rs') and \
-                        os.path.getmtime(os.path.join(dirpath, name)) > archive_mtime:
-                    return True
-        return False
-
-    if stale():
-        conf.start_msg('Building pinned Rust tokenizer staticlib')
-        build_env = dict(os.environ)
-        build_env['PATH'] = os.path.join(rust_prefix, 'bin') + \
-            os.pathsep + build_env.get('PATH', '')
-        build_env['CARGO_HOME'] = cargo_home
-        proc = subprocess.run(
-            [cargo, 'build', '--release', '--locked', '-j2', '--offline',
-             '--target-dir', target_dir,
-             '--manifest-path', os.path.join(crate_dir, 'Cargo.toml')],
-            env=build_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True)
-        if proc.returncode != 0 or not os.path.isfile(archive):
-            conf.end_msg('failed', color='RED')
-            tail = '\n'.join(proc.stdout.splitlines()[-25:])
-            conf.fatal(f'Pinned Rust tokenizer staticlib build failed:\n{tail}')
-        conf.end_msg(os.path.relpath(archive, top))
+    """Use the installed Rust tokenizer bridge; never build from a checkout."""
+    configured = os.environ.get('NDNSF_TOKENIZER_BRIDGE_ARCHIVE', '').strip()
+    candidates = ([configured] if configured else []) + [
+        '/usr/local/lib/libndnsf_tokenizer_bridge.a',
+        '/opt/ndn-base/lib/libndnsf_tokenizer_bridge.a']
+    archive = next((os.path.realpath(path) for path in candidates
+                    if path and os.path.isfile(path)), None)
+    if archive is None:
+        conf.fatal(
+            'Installed Rust tokenizer bridge is missing; install '
+            'libndnsf_tokenizer_bridge.a under /usr/local/lib or the '
+            'declared container SDK lib directory before configuring')
+    _require_global_dependency_prefix(os.path.dirname(archive),
+                                      'tokenizer bridge')
+    target_dir = os.path.dirname(archive)
     conf.env.STLIB_TOKENIZER_BRIDGE = ['ndnsf_tokenizer_bridge']
-    conf.env.STLIBPATH_TOKENIZER_BRIDGE = [os.path.join(target_dir, 'release')]
+    conf.env.STLIBPATH_TOKENIZER_BRIDGE = [target_dir]
     conf.env.NDNSF_TOKENIZER_BRIDGE_ARCHIVE = archive
-    conf.msg('Pinned Rust tokenizer staticlib',
-             os.path.relpath(archive, top))
+    conf.msg('Installed Rust tokenizer staticlib', archive)
 
 
 def _pin_compiler_toolchain(conf):
@@ -192,12 +162,18 @@ def options(opt):
     optgrp.add_option('--ndn-svs-build-tree', default='',
                       help='Explicit matching NDN-SVS build tree containing libndn-svs.so')
     optgrp.add_option('--disable-local-dependency-prefix', action='store_true',
+                      dest='disable_local_dependency_prefix', default=True,
+                      help='Do not add the repository .local-boost171 prefix to dependency discovery (default)')
+    optgrp.add_option('--enable-local-dependency-prefix', action='store_false',
+                      dest='disable_local_dependency_prefix', default=True,
+                      help='Deprecated; global dependency policy rejects this option')
+    optgrp.add_option('--nac-abe-prefix', default='/usr/local',
+                      help='Installed NAC-ABE root (host default: /usr/local)')
+    optgrp.add_option('--onnx-prefix', default='/usr/local',
+                      help='Installed ONNX 1.17 full-protobuf root (host default: /usr/local)')
+    optgrp.add_option('--allow-container-runtime-rpath', action='store_true',
                       default=False,
-                      help='Do not add the repository .local-boost171 prefix to dependency discovery')
-    optgrp.add_option('--nac-abe-prefix', default='',
-                      help='Explicit NAC-ABE prefix; keeps headers and library on one build')
-    optgrp.add_option('--onnx-prefix', default='',
-                      help='Explicit ONNX 1.17 full-protobuf prefix (headers and libs)')
+                      help='Allow $ORIGIN runtime RPATH for an explicit container SDK build')
 
 
 def configure(conf):
@@ -246,6 +222,73 @@ def configure(conf):
 
     local_prefix = os.path.join(conf.path.abspath(), '.local-boost171')
     local_pkg_config_path = os.path.join(local_prefix, 'lib', 'pkgconfig')
+
+    if not conf.options.disable_local_dependency_prefix:
+        conf.fatal('The retired .local-boost171 dependency tree is not allowed; '
+                   'install one global host dependency closure instead')
+
+    def reject_non_global_paths(paths, owner, allow_origin=False):
+        """Reject checkout, temporary, and undeclared dependency roots."""
+        if isinstance(paths, str):
+            paths = [paths]
+        for value in paths:
+            if not value:
+                continue
+            raw = os.path.expanduser(str(value))
+            # Container APPs intentionally use a relative loader token such as
+            # ``$ORIGIN/../../lib``.  It is meaningful only in an explicit
+            # runtime RPATH and is never accepted from dependency pkg-config
+            # flags, where it could hide an arbitrary checkout.
+            if allow_origin and (raw == '$ORIGIN' or raw.startswith('$ORIGIN/')):
+                continue
+            real = os.path.realpath(raw)
+            try:
+                _require_global_dependency_prefix(real, owner)
+            except RuntimeError as error:
+                conf.fatal(str(error))
+
+    def check_dependency_paths(owner, *keys):
+        for key in keys:
+            reject_non_global_paths(getattr(conf.env, key, []) or [], owner)
+
+    def dependency_flag_paths(flags):
+        """Extract filesystem paths from pkg-config/compiler/linker flags."""
+        paths = []
+        if isinstance(flags, str):
+            flags = [flags]
+        values = [str(flag) for flag in flags]
+        index = 0
+        while index < len(values):
+            value = values[index]
+            if value in ('-I', '-isystem', '-L') and index + 1 < len(values):
+                paths.append(values[index + 1])
+                index += 2
+                continue
+            for prefix in ('-I', '-isystem', '-L'):
+                if value.startswith(prefix) and value != prefix:
+                    paths.append(value[len(prefix):])
+                    break
+            if value.startswith('-Wl,'):
+                parts = value[4:].split(',')
+                for part_index, part in enumerate(parts):
+                    if part in ('-rpath', '-rpath-link', '-R') and part_index + 1 < len(parts):
+                        paths.append(parts[part_index + 1])
+                    elif part.startswith('-rpath='):
+                        paths.append(part.split('=', 1)[1])
+                    elif part.startswith('-R') and part != '-R':
+                        paths.append(part[2:])
+            index += 1
+        return paths
+
+    def reject_non_global_link_flags(flags, owner, allow_origin=False):
+        reject_non_global_paths(dependency_flag_paths(flags), owner,
+                                allow_origin=allow_origin)
+
+    def check_dependency_link_flags(owner, *keys):
+        for key in keys:
+            reject_non_global_link_flags(
+                getattr(conf.env, key, []) or [], owner)
+
     pkg_config_paths = []
     if os.environ.get('PKG_CONFIG_PATH'):
         pkg_config_paths.append(os.environ['PKG_CONFIG_PATH'])
@@ -260,28 +303,28 @@ def configure(conf):
         # older NDN-SVS, instead of the libraries they were just linked with.
         conf.env.append_value(
             'LINKFLAGS', f'-Wl,-rpath,{os.path.join(local_prefix, "lib")}')
-    nac_abe_prefix = os.path.realpath(conf.options.nac_abe_prefix) \
-        if conf.options.nac_abe_prefix else ''
-    if nac_abe_prefix:
-        nac_header = os.path.join(nac_abe_prefix, 'include', 'nac-abe', 'consumer.hpp')
-        nac_library = os.path.join(nac_abe_prefix, 'lib', 'libnac-abe.so')
-        nac_pc = os.path.join(nac_abe_prefix, 'lib', 'pkgconfig')
-        if not os.path.isfile(nac_header):
-            conf.fatal(f'Explicit NAC-ABE header is missing: {nac_header}')
-        if not os.path.isfile(nac_library):
-            conf.fatal(f'Explicit NAC-ABE library is missing: {nac_library}')
-        if os.path.isdir(nac_pc):
-            pkg_config_paths.insert(0, nac_pc)
+    for configured_path in pkg_config_paths:
+        for entry in configured_path.split(os.pathsep):
+            if entry:
+                _require_global_dependency_prefix(entry, 'PKG_CONFIG_PATH')
+    nac_abe_prefix = _require_global_dependency_prefix(
+        conf.options.nac_abe_prefix, 'NAC-ABE')
+    nac_header = os.path.join(nac_abe_prefix, 'include', 'nac-abe', 'consumer.hpp')
+    nac_library = os.path.join(nac_abe_prefix, 'lib', 'libnac-abe.so')
+    nac_pc = os.path.join(nac_abe_prefix, 'lib', 'pkgconfig')
+    if not os.path.isfile(nac_header):
+        conf.fatal(f'Installed NAC-ABE header is missing: {nac_header}')
+    if not os.path.isfile(nac_library):
+        conf.fatal(f'Installed NAC-ABE library is missing: {nac_library}')
+    if os.path.isdir(nac_pc):
+        pkg_config_paths.insert(0, nac_pc)
     # Spec 182 unified the DI ONNX world on the official 1.17 full-protobuf
     # build (ONNX_USE_LITE_PROTO=OFF).  The vendored lite trio is gone, so the
     # onnx adapter sources always need these headers and archives; fail early
-    # with the same explicitness as the NAC-ABE prefix instead of letting
-    # every later target die on a missing header.
-    onnx_prefix = os.path.realpath(conf.options.onnx_prefix) \
-        if conf.options.onnx_prefix else ''
-    if not onnx_prefix:
-        conf.fatal('Official ONNX 1.17 full-protobuf prefix is required '
-                   '(--onnx-prefix)')
+    # from the installed global root instead of letting every later target die
+    # on a missing header.
+    onnx_prefix = _require_global_dependency_prefix(
+        conf.options.onnx_prefix, 'ONNX')
     onnx_checker = os.path.join(onnx_prefix, 'include', 'onnx', 'checker.h')
     onnx_shape_inference = os.path.join(
         onnx_prefix, 'include', 'onnx', 'shape_inference', 'implementation.h')
@@ -290,7 +333,7 @@ def configure(conf):
     for onnx_required in [onnx_checker, onnx_shape_inference,
                           onnx_lib, onnx_proto_lib]:
         if not os.path.isfile(onnx_required):
-            conf.fatal(f'Explicit ONNX file is missing: {onnx_required}')
+            conf.fatal(f'Installed ONNX file is missing: {onnx_required}')
     conf.env.INCLUDES_ONNX = [os.path.join(onnx_prefix, 'include')]
     conf.env.LIBPATH_ONNX = [os.path.join(onnx_prefix, 'lib')]
     conf.env.LIB_ONNX = ['onnx', 'onnx_proto']
@@ -300,6 +343,8 @@ def configure(conf):
 
     conf.check_cfg(package='libndn-cxx', args=['libndn-cxx >= 0.8.0', '--cflags', '--libs'],
                    uselib_store='NDN_CXX', pkg_config_path=pkg_config_path)
+    check_dependency_paths('libndn-cxx', 'INCLUDES_NDN_CXX', 'LIBPATH_NDN_CXX')
+    check_dependency_link_flags('libndn-cxx', 'LINKFLAGS_NDN_CXX')
 
     # The Boost stacktrace/OpenSSL combination used by the pinned Ubuntu
     # toolchain exposes libdl symbols through libndn-cxx's transitive
@@ -312,6 +357,8 @@ def configure(conf):
     
     conf.check_cfg(package='libndn-svs', args=['libndn-svs >= 0.1.0', '--cflags', '--libs'],
                        uselib_store='NDN_SVS', pkg_config_path=pkg_config_path)
+    check_dependency_paths('libndn-svs', 'INCLUDES_NDN_SVS', 'LIBPATH_NDN_SVS')
+    check_dependency_link_flags('libndn-svs', 'LINKFLAGS_NDN_SVS')
 
     # Experimental NDN-SVS development commonly precedes installation.  A
     # header-only override is unsafe: it compiles against the new API but may
@@ -325,6 +372,8 @@ def configure(conf):
     if bool(svs_source_tree) != bool(svs_build_tree):
         conf.fatal('--ndn-svs-source-tree and --ndn-svs-build-tree must be supplied together')
     if svs_source_tree:
+        _require_global_dependency_prefix(svs_source_tree, 'NDN-SVS source')
+        _require_global_dependency_prefix(svs_build_tree, 'NDN-SVS build')
         svs_header = os.path.join(svs_source_tree, 'ndn-svs', 'svspubsub.hpp')
         svs_library = os.path.join(svs_build_tree, 'libndn-svs.so')
         if not os.path.isfile(svs_header):
@@ -341,12 +390,9 @@ def configure(conf):
         conf.msg('Explicit NDN-SVS source/build pair',
                  f'{svs_source_tree} -> {svs_library}')
 
-    # An isolated NDN-SVS prefix may coexist with an older installation under
-    # /usr/local.  libndn-cxx's pkg-config metadata also contributes
-    # /usr/local/include, so the generic use='NDN_CXX NDN_SVS ...' ordering
-    # would otherwise compile against the old SVS headers while linking the
-    # isolated library.  Put the selected SVS include and runtime directories
-    # first to keep headers, link input, and runtime SONAME resolution aligned.
+    # A container may explicitly point at its own declared SDK build tree.  A
+    # host build normally leaves these options empty and consumes the global
+    # installed NDN-SVS pair from pkg-config.
     svs_includes = list(conf.env.INCLUDES_NDN_SVS or [])
     conf.env.INCLUDES_NDN_CXX = svs_includes + [
         path for path in list(conf.env.INCLUDES_NDN_CXX or [])
@@ -400,11 +446,13 @@ int main() {
 
     conf.check_cfg(package='libnac-abe', args=['--cflags', '--libs'], uselib_store='NAC-ABE',
                    pkg_config_path=pkg_config_path)
+    check_dependency_paths('libnac-abe', 'INCLUDES_NAC-ABE', 'INCLUDES_NAC_ABE',
+                           'LIBPATH_NAC-ABE', 'LIBPATH_NAC_ABE')
+    check_dependency_link_flags('libnac-abe', 'LINKFLAGS_NAC-ABE')
 
     # libndn-cxx commonly contributes /usr/local/include and /usr/local/lib.
-    # When an explicit NAC-ABE prefix is selected, put both halves of that
-    # dependency ahead of the installed copy; otherwise a new header can be
-    # compiled while the old shared object is linked (or vice versa).
+    # Keep the installed NAC-ABE header/library pair together even when a
+    # container SDK root is selected explicitly.
     if nac_abe_prefix:
         nac_includes = [os.path.join(nac_abe_prefix, 'include')]
         # ``use='NAC-ABE'`` consumes the hyphenated Waf keys generated by
@@ -413,14 +461,14 @@ int main() {
         # use; otherwise an explicit prefix still falls through to the stale
         # /usr/local headers.
         for key in ('INCLUDES_NAC-ABE', 'INCLUDES_NAC_ABE'):
-            old = list(conf.env[key] or [])
-            conf.env[key] = nac_includes + [path for path in old
-                                            if path not in nac_includes]
+            # Both spellings are compatibility aliases.  They must describe
+            # the same selected prefix; retaining the check_cfg fallback in
+            # only the hyphenated key would let a consumer silently compile
+            # against a different installed header tree.
+            conf.env[key] = list(nac_includes)
         nac_libpaths = [os.path.join(nac_abe_prefix, 'lib')]
         for key in ('LIBPATH_NAC-ABE', 'LIBPATH_NAC_ABE'):
-            old = list(conf.env[key] or [])
-            conf.env[key] = nac_libpaths + [path for path in old
-                                            if path not in nac_libpaths]
+            conf.env[key] = list(nac_libpaths)
         conf.env.INCLUDES_NDN_CXX = nac_includes + [
             path for path in list(conf.env.INCLUDES_NDN_CXX or [])
             if path not in nac_includes]
@@ -431,7 +479,7 @@ int main() {
         conf.env.LINKFLAGS = [nac_rpath] + [
             flag for flag in list(conf.env.LINKFLAGS or []) if flag != nac_rpath]
         conf.env.NDNSF_NAC_ABE_PREFIX = nac_abe_prefix
-        conf.msg('Explicit NAC-ABE prefix', nac_abe_prefix)
+        conf.msg('Installed NAC-ABE prefix', nac_abe_prefix)
 
     # A layered application may link against staged builder inputs, but its
     # published ELF objects must resolve only through their APP-relative path
@@ -443,6 +491,24 @@ int main() {
     runtime_rpath = os.environ.get('NDNSF_RUNTIME_RPATH', '')
     if runtime_rpath:
         runtime_paths = [path for path in runtime_rpath.split(os.pathsep) if path]
+        origin_paths = [path for path in runtime_paths
+                        if path == '$ORIGIN' or path.startswith('$ORIGIN/')]
+        if origin_paths and not conf.options.allow_container_runtime_rpath:
+            conf.fatal(
+                'NDNSF_RUNTIME_RPATH contains $ORIGIN; pass '
+                '--allow-container-runtime-rpath only for a declared container '
+                'SDK build, never for a host build')
+        if origin_paths and not any(
+                path.startswith('/opt/ndn-base/') or path == '/opt/ndn-base'
+                for path in runtime_paths):
+            conf.fatal(
+                'A container $ORIGIN runtime RPATH must also name the declared '
+                '/opt/ndn-base SDK root')
+        reject_non_global_paths(runtime_paths, 'NDNSF_RUNTIME_RPATH',
+                                allow_origin=bool(origin_paths))
+        reject_non_global_link_flags(
+            [f'-Wl,-rpath,{path}' for path in runtime_paths],
+            'NDNSF_RUNTIME_RPATH', allow_origin=True)
         existing_linkflags = [
             flag for flag in list(conf.env.LINKFLAGS or [])
             if not flag.startswith('-Wl,-rpath,')
@@ -496,6 +562,21 @@ int main() {
     conf.env.HAVE_GSTREAMER = bool(
         conf.env.CXXFLAGS_GSTREAMER or conf.env.INCLUDES_GSTREAMER or
         conf.env.LIB_GSTREAMER or conf.env.LIBPATH_GSTREAMER)
+
+    # Every dependency-discovery result must remain inside the installed host
+    # closure.  Checking only the three primary NDNSF libraries is insufficient:
+    # OpenSSL, NDNSD, protobuf, ONNX Runtime, GTK and GStreamer .pc files can
+    # inject their own include, library or RPATH flags.
+    for uselib in ('NDN_CXX', 'NDN_SVS', 'NAC-ABE', 'NAC_ABE', 'OPENSSL',
+                   'NDNSD', 'PROTOBUF', 'ONNXRUNTIME', 'GTKMM', 'GSTREAMER'):
+        for key_prefix in ('INCLUDES_', 'LIBPATH_', 'STLIBPATH_',
+                           'CXXFLAGS_', 'CFLAGS_', 'LINKFLAGS_'):
+            key = key_prefix + uselib
+            if key_prefix in ('INCLUDES_', 'LIBPATH_', 'STLIBPATH_'):
+                check_dependency_paths(key, key)
+            else:
+                reject_non_global_link_flags(
+                    getattr(conf.env, key, []) or [], key)
 
     boost_libs = ['system', 'filesystem']
     if conf.env.WITH_TESTS:

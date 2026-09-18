@@ -1,0 +1,26 @@
+# Spec189 static-review snapshot manifest
+
+Base: `HEAD 6a1aaf507fa1129d2453e1b727628c22db9c17f6`
+Scope SHA-256: `28dadc53d2b2a44cf77ce8c44e36627b8e41644c5ae88dd5b4d41685ae2ffb54`
+
+- `skills/speckit-code-design/SKILL.md` SHA-256 `4de61010d37bcc135e85bb9cf0c0ce90775922c7a92b56610d560a12fabf820f`
+- `skills/speckit-code-design/references/batch-quality-gates.md` SHA-256 `08bb7431984cba703bb7a7f96c4024d09681529db4e48cdce548d440f5667159`
+- `skills/speckit-code-design/references/experiment-static-review-loop.md` SHA-256 `e587e06af27ec0b80f011ec574dc5e7c9d1538fd6b527ea62f5a2c5ba53d21d2`
+- `skills/speckit-code-design/references/pre-test-static-review.md` SHA-256 `2ac9b07aa65a6a8e88f2a37a146439b193401241431d756a087e679955d3e95c`
+- `skills/speckit-code-design/scripts/verify-spec-kit-sync.py` SHA-256 `582c2e1570bb46bbdba76b6d1d6d5a9900871260e470ca85e82e12f9814b1769`
+- `specs/189-qwen-two-provider-minindn/batch-execution.md` SHA-256 `35cafece1cdd071e31a1ccc17c493a850ee6fe2a7843383a75f3dd4a28ce562a`
+- `specs/189-qwen-two-provider-minindn/checklists/requirements.md` SHA-256 `1b518ae63a05c475f9a666ea73e32cd0e0f55967f02b1989800f2e2b759ef19b`
+- `specs/189-qwen-two-provider-minindn/contracts/model-preparation.md` SHA-256 `ebe5164cbb6ee660248c2fd5a69f19709e159773e599d72105631e5428c20600`
+- `specs/189-qwen-two-provider-minindn/contracts/placement.md` SHA-256 `a038890d51fd089156427529cc883b8d918510ec1ee8db00c55806a332a2788a`
+- `specs/189-qwen-two-provider-minindn/data-model.md` SHA-256 `35866fc0fcfa3ed145d307685267762bbac9d9b67a86e444b7a207f10002c2ba`
+- `specs/189-qwen-two-provider-minindn/evidence/b189-convergence.md` SHA-256 `465cb95822c733b484d88e4a93007d1e3cb685f76fa150d500c0914ebca4b9bf`
+- `specs/189-qwen-two-provider-minindn/evidence/b189-execution.md` SHA-256 `f837117ff5768f3212fed55e82c31b55f3646a2d1b01a85fb1fb917e2a00f7b1`
+- `specs/189-qwen-two-provider-minindn/evidence/b189-placement.md` SHA-256 `e49b09e0b792e70b8823ba37d709de0a7f8c935f238163a1f33202cd88776128`
+- `specs/189-qwen-two-provider-minindn/evidence/b189-prepare.md` SHA-256 `4d98278f0e9e81b6da85f978dd8e1c87205be72db91ade515b5d111d4bd15b45`
+- `specs/189-qwen-two-provider-minindn/evidence/b189-resource.md` SHA-256 `361772fba1bd0709626baa1ed6138d83f0521710c5e5879a3a9a73845dbbe3dd`
+- `specs/189-qwen-two-provider-minindn/plan.md` SHA-256 `353b5448c3638fd5bbc28818e315666fd228b12797224538c7ccb26c63575e97`
+- `specs/189-qwen-two-provider-minindn/quickstart.md` SHA-256 `d0e53bb7ca22583b6a5200786856e43dc4a39f2b9feca22673c716be96809a19`
+- `specs/189-qwen-two-provider-minindn/research.md` SHA-256 `583c0d8ee1046f2476d00681cdae649f6b01cd166440e86ea958d369a68de9db`
+- `specs/189-qwen-two-provider-minindn/spec.md` SHA-256 `edd2ef598097b4ba603d41c6ca8a4aa20dc0cb2d98f2f2fdcd01aa85cd00fed7`
+- `specs/189-qwen-two-provider-minindn/tasks.md` SHA-256 `053ad1dd45f7d79d8746538b64393af1e426f2387dfbe13971755199d70eacd8`
+- `specs/189-qwen-two-provider-minindn/traceability.md` SHA-256 `5f2e89829be7fbde15ba4eb3bc78e36bf3e90370836d0428ae26a3d7197a95b8`
