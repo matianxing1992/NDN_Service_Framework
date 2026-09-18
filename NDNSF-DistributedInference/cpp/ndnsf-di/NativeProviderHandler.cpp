@@ -321,6 +321,39 @@ applyNativeProviderExecutionControl(
 
 namespace {
 
+struct LocalGenerationStateNames
+{
+  std::vector<std::string> inputs;
+  std::vector<std::string> outputs;
+};
+
+LocalGenerationStateNames
+localGenerationStateNames(const NativeSelectionProjectionV3& projection)
+{
+  const auto contains = [] (const auto& tensors, const std::string& name) {
+    return std::any_of(tensors.begin(), tensors.end(),
+                       [&name] (const auto& tensor) {
+                         return tensor.name == name;
+                       });
+  };
+  LocalGenerationStateNames result;
+  for (const auto& name : projection.generationContract.stateInputNames) {
+    if (contains(projection.assembly.expectedInputs, name)) {
+      result.inputs.push_back(name);
+    }
+  }
+  for (const auto& name : projection.generationContract.stateOutputNames) {
+    if (contains(projection.assembly.expectedOutputs, name)) {
+      result.outputs.push_back(name);
+    }
+  }
+  if (result.inputs.empty() || result.inputs.size() != result.outputs.size()) {
+    throw std::invalid_argument(
+      "authenticated generation state contract does not match local role");
+  }
+  return result;
+}
+
 std::vector<uint8_t>
 bufferToVector(const ndn::Buffer& buffer)
 {
@@ -458,6 +491,31 @@ bool
 nativeTraceEnabled()
 {
   return runtimeTimingEnabled() || std::getenv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE") != nullptr;
+}
+
+void
+logProviderStageMarker(const char* stage,
+                       const std::string& requestId,
+                       const std::string& provider,
+                       const std::string& role,
+                       const std::string& planDigest,
+                       const char* status = "observed",
+                       const std::string& reason = {},
+                       const std::string& attemptEpoch = {})
+{
+  std::ostringstream record;
+  record << "NDNSF_DI_PROVIDER_STAGE"
+         << " stage=" << stage
+         << " status=" << status
+         << " requestId=" << requestId
+         << " provider=" << provider
+         << " role=" << role
+         << " planDigest=" << planDigest
+         << " attemptEpoch=" << attemptEpoch;
+  if (!reason.empty()) {
+    record << " reason=" << reason;
+  }
+  logRuntimeEvidence(record.str());
 }
 
 std::string
@@ -1506,8 +1564,6 @@ trustedDecodeStateTemplateFor(
   const auto& assembly = projection.assembly;
   const auto& generation = projection.generationContract;
   if (!generation.enabled || generation.tokenizerDigest.empty() ||
-      generation.stateInputNames.empty() ||
-      generation.stateInputNames.size() != generation.stateOutputNames.size() ||
       providerBootId.empty() || projection.provider.empty() ||
       projection.requestId.empty() || projection.attempt == 0 ||
       projection.executionRole.layerBegin >
@@ -1517,16 +1573,17 @@ trustedDecodeStateTemplateFor(
     throw std::invalid_argument(
       "DI_PROVIDER_DECODE_STATE_AUTHORITY_INCOMPLETE");
   }
+  const auto localState = localGenerationStateNames(projection);
 
   std::vector<std::string> stateContracts;
   std::vector<std::string> stateComponentDigests;
-  stateContracts.reserve(generation.stateInputNames.size() * 2);
-  stateComponentDigests.reserve(generation.stateInputNames.size());
-  for (std::size_t index = 0; index < generation.stateInputNames.size(); ++index) {
+  stateContracts.reserve(localState.inputs.size() * 2);
+  stateComponentDigests.reserve(localState.inputs.size());
+  for (std::size_t index = 0; index < localState.inputs.size(); ++index) {
     const auto input = stateTensorContractIdentity(
-      assembly, generation.stateInputNames[index], true);
+      assembly, localState.inputs[index], true);
     const auto output = stateTensorContractIdentity(
-      assembly, generation.stateOutputNames[index], false);
+      assembly, localState.outputs[index], false);
     stateContracts.push_back(input);
     stateContracts.push_back(output);
     stateComponentDigests.push_back(digestIdentityFields(
@@ -1703,11 +1760,12 @@ generationConfigFromAuthenticatedRequest(
   };
   if (projection && projection->generationContract.enabled) {
     const auto& sealed = projection->generationContract;
+    const auto localState = localGenerationStateNames(*projection);
     result.enabled = true;
     result.maxEpochs = sealed.maxGeneratedTokens;
     result.tokenInputName = sealed.tokenInputName;
-    result.stateInputNames = sealed.stateInputNames;
-    result.stateOutputNames = sealed.stateOutputNames;
+    result.stateInputNames = localState.inputs;
+    result.stateOutputNames = localState.outputs;
     result.eosTokenIds = std::set<std::int64_t>(
       sealed.eosTokenIds.begin(), sealed.eosTokenIds.end());
     result.samplingDigest = sealed.samplingDigest;
@@ -1763,6 +1821,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     std::string activatedRole;
     std::size_t expectedProviderRoles = 1;
     bool completedLocalPlan = false;
+    bool executionStopped = false;
+    bool selectionObserved = false;
+    std::string stageRequestId;
+    std::string stagePlanDigest;
+    std::string stageAttemptEpoch;
     std::shared_ptr<ProtectedRuntime> protectedRuntime;
     std::function<void()> waitConversationPromotion;
     std::function<void()> rollbackConversationPromotion;
@@ -1908,6 +1971,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         generationConfigFromAuthenticatedRequest(config, selectionProjection);
       const std::string requestPlanDigest = selectionProjection
         ? selectionProjection->planDigest : config.planDigest;
+      selectionObserved = selectionProjection.has_value();
+      stageRequestId = selectionProjection
+        ? selectionProjection->requestId : ctx.sessionId();
+      stagePlanDigest = requestPlanDigest;
+      stageAttemptEpoch = selectionProjection
+        ? std::to_string(selectionProjection->attempt) : "";
       auto groupCoordinator = config.groupCoordinator;
       if (config.groupCoordinatorFactory) {
         groupCoordinator = config.groupCoordinatorFactory(ctx, assignmentFields);
@@ -1932,10 +2001,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         if (const auto error = validateProtectedRuntimeBinding(
               *selectionProjection, *protectedRuntime, groupCoordinator,
               config.providerBootId, fencingToken)) {
+          logProviderStageMarker("GRANT_REJECTED", stageRequestId,
+                                 ctx.localProvider().toUri(), role,
+                                 requestPlanDigest, "failed", *error,
+                                 stageAttemptEpoch);
           protectedRuntime->cancel(*error);
           ctx.fail(*error);
           return;
         }
+        logProviderStageMarker("GRANT_VERIFIED", stageRequestId,
+                               ctx.localProvider().toUri(), role,
+                               requestPlanDigest, "observed", {},
+                               stageAttemptEpoch);
       }
       std::shared_ptr<DependencyIo> io =
         std::make_shared<NdnsfCollaborationDependencyIo>(
@@ -2245,7 +2322,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                            protectedRuntime, executionGuard,
                            expectedBackend, expectedDevice, expectedArtifact,
                            role, reportStatus, readinessOperationId,
-                           preparationStatusSequence] {
+                           preparationStatusSequence, stageAttemptEpoch] {
+            logProviderStageMarker("ASSEMBLY_STARTED", projection.requestId,
+                                   ctx.localProvider().toUri(), role,
+                                   projection.planDigest, "observed", {},
+                                   stageAttemptEpoch);
             if (executionGuard) executionGuard();
             auto spec = preparationFactory(ctx, projection, protectedRuntime);
             if (const auto error = validateNativePreparedRunnerSpec(
@@ -2264,6 +2345,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   expectedArtifact)) {
               throw std::runtime_error(*error);
             }
+            logProviderStageMarker("RUNNER_READY", projection.requestId,
+                                   ctx.localProvider().toUri(), role,
+                                   projection.planDigest, "observed", {},
+                                   stageAttemptEpoch);
             reportStatus(readinessOperationId, "ensure-deployment", "DONE",
                          preparationStatusSequence->fetch_add(
                            1, std::memory_order_relaxed) + 1,
@@ -2684,6 +2769,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           return;
         }
       }
+      if (selectionProjection) {
+        logProviderStageMarker("EXECUTION_ENTERED", stageRequestId,
+                               ctx.localProvider().toUri(), role,
+                               requestPlanDigest, "observed", {},
+                               stageAttemptEpoch);
+      }
       const auto submittedSteady = std::chrono::steady_clock::now();
       const auto submittedEpoch = epochMs();
       logProviderCapacity(ctx.sessionId(),
@@ -2760,6 +2851,33 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.role = role;
         coordinatorConfig.initialInputs = std::move(initialInputs);
         coordinatorConfig.prepareRunner = prepareRunner;
+        if (selectionProjection) {
+          const auto projection = *selectionProjection;
+          const auto assignmentForCoordinator = assignment;
+          const auto providerName = ctx.localProvider().toUri();
+          coordinatorConfig.roleSpecFactory =
+            [projection, assignmentForCoordinator, providerName] (std::size_t sequence) {
+              auto projected = roleSpecFromSelectionProjectionV3(
+                projection, providerName);
+              // Generation control edges are added by the requester planner
+              // after the cross-Provider V3 projection is sealed. Preserve
+              // those exact TOKEN_FEEDBACK edges, but never reintroduce the
+              // legacy reconstruction of protected pipeline edges.
+              const auto control = roleSpecFor(
+                projection.plan, projection.executionRole.roleId,
+                projection.requestId, assignmentForCoordinator, providerName,
+                sequence);
+              for (const auto& edge : control.inputs) {
+                if (edge.operationKind == "TOKEN_FEEDBACK")
+                  projected.inputs.push_back(edge);
+              }
+              for (const auto& edge : control.outputs) {
+                if (edge.operationKind == "TOKEN_FEEDBACK")
+                  projected.outputs.push_back(edge);
+              }
+              return projected;
+            };
+        }
         coordinatorConfig.executionGuard = executionGuard;
         coordinatorConfig.finalResponseScope = config.finalResponseScope;
         coordinatorConfig.maxEpochs = authenticatedGeneration.maxEpochs;
@@ -2844,6 +2962,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         streamedEventsPublished.store(
           coordinated.eventsPublished, std::memory_order_relaxed);
         finalPayload = coordinated.finalPayload;
+        executionStopped = coordinated.stoppedByUpstream;
         if (selectionProjection->conversationTurnBinding) {
           if (!coordinated.finalizedRole ||
               !coordinated.finalizedRole->candidateDecodeStateIdentity) {
@@ -3332,6 +3451,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         if (waitConversationPromotion) {
           waitConversationPromotion();
         }
+        if (selectionProjection) {
+          logProviderStageMarker("EXECUTION_COMPLETED", stageRequestId,
+                                 ctx.localProvider().toUri(), role,
+                                 requestPlanDigest,
+                                 executionStopped ? "stopped" : "observed",
+                                 executionStopped ? "upstream-stop" : "",
+                                 stageAttemptEpoch);
+          if (!executionStopped) {
+            logProviderStageMarker("TERMINAL", stageRequestId,
+                                   ctx.localProvider().toUri(), role,
+                                   requestPlanDigest, "observed", {},
+                                   stageAttemptEpoch);
+          }
+        }
       }
       else {
         if (terminalRole) {
@@ -3339,6 +3472,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           // failed invocation, not a successful role completion.  Completing
           // it here would leave the user waiting for an End/Response that can
           // never be produced.
+          if (selectionProjection) {
+            logProviderStageMarker("EXECUTION_COMPLETED", stageRequestId,
+                                   ctx.localProvider().toUri(), role,
+                                   requestPlanDigest, "failed",
+                                   "DI_FINAL_RESPONSE_MISSING",
+                                   stageAttemptEpoch);
+            logProviderStageMarker("TERMINAL", stageRequestId,
+                                   ctx.localProvider().toUri(), role,
+                                   requestPlanDigest, "failed",
+                                   "DI_FINAL_RESPONSE_MISSING",
+                                   stageAttemptEpoch);
+          }
           ctx.fail("DI_FINAL_RESPONSE_MISSING");
         }
         else {
@@ -3348,6 +3493,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           // final role and the shared streamed lifecycle.
           if (waitConversationPromotion) {
             waitConversationPromotion();
+          }
+          if (selectionProjection) {
+            logProviderStageMarker("EXECUTION_COMPLETED", stageRequestId,
+                                   ctx.localProvider().toUri(), role,
+                                   requestPlanDigest,
+                                   executionStopped ? "stopped" : "observed",
+                                   executionStopped ? "upstream-stop" : "",
+                                   stageAttemptEpoch);
           }
           ctx.completeRole();
         }
@@ -3381,6 +3534,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
 	               << " role=" << ctx.role()
 	               << " reason=" << exc.what();
 	        logRuntimeError(record.str());
+	      }
+      if (selectionObserved) {
+        logProviderStageMarker("TERMINAL", stageRequestId,
+                               ctx.localProvider().toUri(), ctx.role(),
+                               stagePlanDigest, "failed", exc.what(),
+                               stageAttemptEpoch);
 	      }
 	      ctx.fail(exc.what());
 	    }

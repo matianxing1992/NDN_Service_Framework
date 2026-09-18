@@ -30,7 +30,9 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py"
 PROFILE_SCHEMA = "ndnsf-di-qwen06b-local-experiment-v1"
 RUN_SCHEMA = "ndnsf-di-qwen06b-local-run-v2"
-MODEL_SOURCE_MAX_BYTES = 1 << 20
+# The real Qwen3-0.6B canonical external initializer is about 1.5 GiB.  Keep
+# a finite admission bound while allowing that artifact through the wrapper.
+MODEL_SOURCE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 RUN_ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,47}$")
 NODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PHASES = ("machine", "candidate", "model", "bundle", "minindn", "workload", "cleanup")
@@ -303,6 +305,7 @@ def load_model_inputs(stage_manifest: Path, stage_root: Path | None,
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     manifest, stages = module.load_stage_manifest(stage_manifest, stage_root)
+    module.qwen_state_successor_pairs(stages)
     tokenizer_raw = Path(str(manifest.get("tokenizer", ""))).expanduser()
     candidates = [tokenizer_raw]
     if not tokenizer_raw.is_absolute():
@@ -325,6 +328,62 @@ def load_model_inputs(stage_manifest: Path, stage_root: Path | None,
                                                        canonical_initializer)}
 
 
+def node_mapping_info(path: Path | None,
+                      stages: list[dict[str, Any]],
+                      source_node_count: int | None = None) -> dict[str, Any]:
+    """Validate the semantic-to-source mapping required by native assembly."""
+    if path is None:
+        return {"status": "WAITING_EXTERNAL_INPUT",
+                "reason": "MODEL_NODE_MAPPING_REQUIRED"}
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        return {"status": "FAIL", "reason": "MODEL_NODE_MAPPING_MISSING",
+                "path": str(path)}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return {"status": "FAIL", "reason": "MODEL_NODE_MAPPING_INVALID",
+                "path": str(path), "error": type(exc).__name__}
+    mapping = payload.get("mapping", payload) if isinstance(payload, dict) else None
+    if not isinstance(mapping, dict) or not stages:
+        return {"status": "FAIL", "reason": "MODEL_NODE_MAPPING_COVER_INVALID",
+                "path": str(path)}
+    layer_range = stages[-1].get("layerRange")
+    if isinstance(layer_range, dict):
+        layer_end = int(layer_range.get("endExclusive", -1))
+    elif isinstance(layer_range, list) and len(layer_range) == 2:
+        layer_end = int(layer_range[1])
+    else:
+        layer_end = -1
+    expected = {"embedding", "final-norm-head"} | {
+        f"layer-{index:02d}" for index in range(max(0, layer_end))}
+    if set(mapping) != expected:
+        return {"status": "FAIL", "reason": "MODEL_NODE_MAPPING_COVER_INVALID",
+                "path": str(path), "expectedKeys": len(expected),
+                "actualKeys": len(mapping)}
+    if any(not isinstance(indices, list) or not indices or
+           any(not isinstance(index, int) or index < 0 for index in indices)
+           for indices in mapping.values()):
+        return {"status": "FAIL", "reason": "MODEL_NODE_MAPPING_INDEX_INVALID",
+                "path": str(path)}
+    declared_nodes = payload.get("source_nodes") if isinstance(payload, dict) else None
+    if (not isinstance(declared_nodes, int) or declared_nodes <= 0 or
+            (source_node_count is not None and declared_nodes != source_node_count)):
+        return {"status": "FAIL", "reason": "MODEL_NODE_MAPPING_SOURCE_COUNT_INVALID",
+                "path": str(path), "declaredSourceNodes": declared_nodes,
+                "sourceNodeCount": source_node_count}
+    mapped_indices = [index for indices in mapping.values() for index in indices]
+    if (len(mapped_indices) != declared_nodes or
+            len(set(mapped_indices)) != declared_nodes or
+            set(mapped_indices) != set(range(declared_nodes))):
+        return {"status": "FAIL", "reason": "MODEL_NODE_MAPPING_INDEX_COVER_INVALID",
+                "path": str(path), "declaredSourceNodes": declared_nodes}
+    return {"status": "PASS", "path": str(path),
+            "sha256": sha256_file(path), "keys": len(mapping),
+            "mappedSourceNodes": len(mapped_indices),
+            "sourceNodes": declared_nodes}
+
+
 def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: str) -> dict[str, Any]:
     topology = Path(profile["topologyFile"])
     if not topology.is_file():
@@ -338,16 +397,28 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
                "binaries": {}}
     if missing_nodes:
         machine.update(status="FAIL", reason="TOPOLOGY_NODE_MISSING")
-    for name, raw in (("controller", profile["controllerBinary"]),
-                      ("authority", profile["authorityBinary"]),
-                      ("requester", profile["requesterBinary"]),
-                      ("provider", profile["providerBinary"]),
-                      ("assemblyWorker", profile["assemblyWorkerBinary"])):
+    binary_specs = (("controller", profile["controllerBinary"]),
+                    ("authority", profile["authorityBinary"]),
+                    ("requester", profile["requesterBinary"]),
+                    ("provider", profile["providerBinary"]),
+                    ("assemblyWorker", profile["assemblyWorkerBinary"]),
+                    ("oracle", str(Path(profile["buildDir"]) /
+                                   "examples/spec189-two-provider-oracle")))
+    for name, raw in binary_specs:
         machine["binaries"][name] = binary_check(Path(raw))
     if any(item["status"] != "PASS" for item in machine["binaries"].values()):
         machine.update(status="FAIL", reason="NATIVE_BINARY_PREFLIGHT")
+    build_receipt_path = Path(profile["buildDir"]) / "spec180-native-build.json"
+    if build_receipt_path.is_file():
+        machine["buildReceipt"] = {"path": str(build_receipt_path.resolve()),
+                                    "sha256": sha256_file(build_receipt_path)}
+    else:
+        machine["buildReceipt"] = {"path": str(build_receipt_path.resolve()),
+                                    "status": "FAIL", "reason": "MISSING"}
+        machine.update(status="FAIL", reason="NATIVE_BUILD_RECEIPT_PREFLIGHT")
     canonical_source_arg = getattr(args, "canonical_source", None)
     canonical_initializer_arg = getattr(args, "canonical_initializer", None)
+    node_mapping_arg = getattr(args, "node_mapping", None)
     canonical_source = (canonical_source_arg.resolve()
                         if canonical_source_arg else None)
     canonical_initializer = (canonical_initializer_arg.resolve()
@@ -355,6 +426,10 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
     model = load_model_inputs(args.stage_manifest.resolve(),
                               args.stage_root.resolve() if args.stage_root else None,
                               canonical_source, canonical_initializer)
+    node_mapping = node_mapping_info(
+        node_mapping_arg.resolve() if node_mapping_arg else None,
+        model["stages"],
+        model["canonicalSource"].get("nodeCount"))
     candidate_payload = {
         "schema": "ndnsf-di-qwen06b-app-manifest-v1",
         "application": "Qwen3-0.6B-native-MiniNDN",
@@ -363,9 +438,7 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
                     "profileId": profile["profileId"]},
         "topology": {"path": str(topology), "sha256": machine["topologySha256"]},
         "buildDir": profile["buildDir"],
-        "buildReceipt": ({"path": str(Path(profile["buildDir"]) / "spec180-native-build.json"),
-                          "sha256": sha256_file(Path(profile["buildDir"]) / "spec180-native-build.json")}
-                         if (Path(profile["buildDir"]) / "spec180-native-build.json").is_file() else None),
+        "buildReceipt": machine["buildReceipt"],
         "binaries": {name: {"path": item["path"], "sha256": item.get("sha256")}
                      for name, item in machine["binaries"].items()},
         "modelManifest": {"path": str(args.stage_manifest.resolve()),
@@ -375,12 +448,15 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
                     "sha256": stage["sha256"], "bytes": stage["bytes"]}
                    for stage in model["stages"]],
         "canonicalSource": model["canonicalSource"],
+        "nodeMapping": node_mapping,
     }
     candidate_digest = canonical_digest(candidate_payload)
     candidate = {**candidate_payload, "candidateId": "qwen06b-" + candidate_digest[7:19],
                  "candidateDigest": candidate_digest}
     model_status = model["canonicalSource"].get("status")
-    status = "PASS" if machine["status"] == "PASS" and model_status == "PASS" else "FAIL"
+    status = ("PASS" if machine["status"] == "PASS" and
+              model_status == "PASS" and node_mapping["status"] == "PASS"
+              else "FAIL")
     return {"schema": RUN_SCHEMA, "profileId": profile["profileId"],
             "profileSha256": profile_sha, "machine": machine,
             "model": {"manifestSha256": model["manifestSha256"],
@@ -391,7 +467,8 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
             "candidate": candidate, "status": status}
 
 
-def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path) -> list[str]:
+def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path,
+                candidate: dict[str, Any] | None = None) -> list[str]:
     command = [sys.executable, str(RUNNER),
                "--stage-manifest", str(args.stage_manifest.resolve()),
                "--stage-root", str(args.stage_root.resolve()),
@@ -401,10 +478,40 @@ def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path
                "--rounds", str(args.rounds), "--max-new-tokens", str(args.max_new_tokens),
                "--run-root", str(run_dir / "workload"), "--nlsr-wait-s", str(args.nlsr_wait_s),
                "--startup-timeout-s", str(args.startup_timeout_s)]
+    if candidate:
+        command.extend(["--stage-manifest-sha256", candidate["modelManifest"]["sha256"],
+                        "--tokenizer-sha256", candidate["tokenizer"]["sha256"],
+                        "--topology-sha256", candidate["topology"]["sha256"]])
+        build_receipt = candidate.get("buildReceipt")
+        if build_receipt and build_receipt.get("sha256"):
+            command.extend(["--build-receipt-sha256", build_receipt["sha256"]])
+        for name, option in (("controller", "--controller-binary-sha256"),
+                             ("authority", "--authority-binary-sha256"),
+                             ("requester", "--requester-binary-sha256"),
+                             ("provider", "--provider-binary-sha256"),
+                             ("assemblyWorker", "--assembly-worker-binary-sha256"),
+                             ("oracle", "--oracle-binary-sha256")):
+            digest = candidate.get("binaries", {}).get(name, {}).get("sha256")
+            if digest:
+                command.extend([option, digest])
+        oracle_path = candidate.get("binaries", {}).get("oracle", {}).get("path")
+        if oracle_path:
+            command.extend(["--oracle-binary", oracle_path])
     if getattr(args, "canonical_source", None):
         command.extend(["--canonical-source", str(args.canonical_source.resolve())])
+        if candidate and candidate.get("canonicalSource", {}).get("sha256"):
+            command.extend(["--canonical-source-sha256",
+                            candidate["canonicalSource"]["sha256"]])
     if getattr(args, "canonical_initializer", None):
         command.extend(["--canonical-initializer", str(args.canonical_initializer.resolve())])
+        initializer = (candidate or {}).get("canonicalSource", {}).get("initializer", {})
+        if initializer.get("sha256"):
+            command.extend(["--canonical-initializer-sha256", initializer["sha256"]])
+    if getattr(args, "node_mapping", None):
+        command.extend(["--node-mapping", str(args.node_mapping.resolve())])
+        mapping = (candidate or {}).get("nodeMapping", {}).get("sha256")
+        if mapping:
+            command.extend(["--node-mapping-sha256", mapping])
     if args.input_token_ids:
         command.extend(["--input-token-ids", args.input_token_ids])
     if args.delta_token_ids:
@@ -454,6 +561,8 @@ def parse_args() -> argparse.Namespace:
                         help="canonical ONNX graph object used by native post-ACK assembly")
     parser.add_argument("--canonical-initializer", type=Path, default=None,
                         help="optional external canonical ONNX initializer object")
+    parser.add_argument("--node-mapping", type=Path, required=True,
+                        help="authenticated semantic-to-canonical ONNX node mapping JSON")
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--rounds", type=int, default=2)
@@ -500,7 +609,8 @@ def main() -> int:
                   "candidateId": check["candidate"]["candidateId"],
                   "candidateDigest": check["candidate"]["candidateDigest"],
                   "profileId": profile["profileId"], "profileSha256": profile_sha,
-                  "command": command_for(args, profile, run_dir), "status": "NOT_EVALUATED"}
+                  "command": command_for(args, profile, run_dir, check["candidate"]),
+                  "status": "NOT_EVALUATED"}
         bundle = {"schema": "ndnsf-di-qwen06b-bundle-v1", "runId": args.run_id,
                   "candidateDigest": launch["candidateDigest"],
                   "profileSha256": profile_sha, "command": launch["command"],
