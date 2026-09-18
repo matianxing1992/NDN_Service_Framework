@@ -178,6 +178,27 @@ logDependencyObject(const std::string& sessionId,
   logRuntimeEvidence(record.str());
 }
 
+void
+logDependencyStageMarker(const char* status,
+                          const std::string& sessionId,
+                          const DependencyEdge& edge,
+                          const std::string& provider)
+{
+  std::ostringstream record;
+  record << "NDNSF_DI_PROVIDER_STAGE"
+         << " stage=DEPENDENCY_FETCH"
+         << " status=" << status
+         // The coordinator session is attempt-scoped (request/attempt),
+         // while the provider-stage identity is the authenticated request
+         // identity shared by Selection and the other stage markers.
+         << " requestId=" << (edge.requestId.empty() ? sessionId : edge.requestId)
+         << " provider=" << provider
+         << " role=" << edge.consumerRole
+         << " planDigest=" << edge.planDigest
+         << " attemptEpoch=" << edge.attemptEpoch;
+  logRuntimeEvidence(record.str());
+}
+
 } // namespace
 
 NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo(
@@ -206,6 +227,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
       edge.scope);
   }
   return std::async(std::launch::async, [this, sessionId, edge] {
+    logDependencyStageMarker("begin", sessionId, edge,
+                             m_ctx.localProvider().toUri());
     if (m_protectedRuntime) {
       m_protectedRuntime->authorizeDataflow(
         ProtectedDataflowDirection::Fetch, edge.endpointDigest,
@@ -525,6 +548,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         validateCanonicalYoloMergeInput(edge, bundle);
         logDependencyObject(sessionId, edge, "fetch-exact-ndn",
                             bundle.payload.size(), "ok");
+        logDependencyStageMarker("complete", sessionId, edge,
+                                 m_ctx.localProvider().toUri());
         return bundle;
       }
       const bool localProducer = producerMember != nullptr &&
@@ -659,6 +684,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
       validateCanonicalYoloMergeInput(edge, bundle);
       logDependencyObject(sessionId, edge, "fetch-ndnsf-data-v1",
                           bundle.payload.size(), "ok");
+      logDependencyStageMarker("complete", sessionId, edge,
+                               m_ctx.localProvider().toUri());
       return bundle;
     }
     if (const auto* trace = std::getenv("NDNSF_DI_RUNTIME_TIMING");
@@ -688,6 +715,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
     bundle.expectedBytes = edge.expectedBytes;
     validateCanonicalYoloMergeInput(edge, bundle);
     logDependencyObject(sessionId, edge, "fetch", bundle.payload.size(), "ok");
+    logDependencyStageMarker("complete", sessionId, edge,
+                             m_ctx.localProvider().toUri());
     return bundle;
   });
 }
