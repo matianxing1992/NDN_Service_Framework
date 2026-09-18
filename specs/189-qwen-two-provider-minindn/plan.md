@@ -9,8 +9,8 @@
 本次收敛准备/规划边界、Repo producer/consumer 接线、事件判据与资源门顺序；
 保留已验代码，不重做 Spec185/188，不扩张 SIF/Tiger。
 
-当前 Repo adapter 已有层 payload/冷热 receipt 测试，但真实 requester 的 Repo 配置
-和 assembler 的层材料消费未闭合；旧路径仍获取完整 initializer。
+Repo adapter 已有层 payload/冷热 receipt 测试；requester protected range-store
+配置草稿尚未验收，assembler 层材料消费未闭合，仍获取完整 initializer。
 r25 FAIL 已观察 assembly entry，未证明两 Provider 成功执行。
 见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
 
@@ -45,10 +45,14 @@ prepare 不固定最终 Provider 分区，不构造两段 runner；其他分区�
 
 ### AD-02: durable reference and availability
 
-真实 requester 接入 Runtime repository publisher/source owner。
+requester 经 Runtime 注入通用 ciphertext range store；Core 保持加密、签名与
+NDN serving，Repo 负责持久范围存储。不能将 plain Repo publisher 直接替代
+生产 encrypted fetch 的对端，见 [binding](contracts/model-preparation.md#protected-repo-integration-binding)。
 prepare 返回前证明持久提交与可读性；模型源和临时 buffer 可释放，handle 持有 reference/lease。
 Repo service 在请求期间有明确 owner，缓存符合预算；不可达/丢失明确报错，
 request 不隐式重新发布或携带模型 payload。
+publisher receipt cache 不得无界持有 serving lease；保留决策归现有
+ModelPreparationCache 预算与淘汰，活动 package/request 持有必要 owner。
 
 ### AD-03: ACK determines partition; Selection authorizes materialization
 
@@ -75,8 +79,9 @@ fetch 不同，assembly 和等待输入可交错，首段没有 upstream。
 
 ### AD-06: safety before expensive work
 
-T008 前置所有真实模型准备/发布/MiniNDN；受控小 fixture 验证 stop 和 owner/drain，
-T009 才采完整模型峰值。RESOURCE_BOUNDARY 是诊断，不是协议失败或完成。
+T008 的 host guard/受控 stop 前置所有真实模型准备/发布/MiniNDN；
+新 native counters 随 T003/T006 的 owner 接入，不能倒过来阻断其小 fixture。
+T009 前核对完整采样，运行中记录峰值。RESOURCE_BOUNDARY 是诊断，不是协议失败或完成。
 
 ### AD-07: candidate separate from run identity
 
@@ -108,6 +113,8 @@ Waf 原生 install 与附带 Python editable hook 分开记录；后者失败不
 唯一成员注册表见 [batch-execution.md](batch-execution.md)；
 顺序 B189-0 → B189-4 → B189-1 → B189-2 → B189-3 → B189-5。
 7 个活动任务及旧 ID 合并映射见 [tasks.md](tasks.md)。
+B189-1a protected storage、B189-1b atomic preparation 各有独立验证出口，
+在同一能力任务/证据内顺序执行，不等全部 T003 完成才首次构建。
 
 每小任务完整编码/fixture/调用方/build registration 后冻结五 lane review，
 修复复审，再同批组合审查，最后一次增量构建和规定 C++ 测试。
@@ -139,4 +146,5 @@ T006/T007 范围组装/handoff 组合验证 → T009 同 handle 两请求及独�
 
 所有真实验收与文档交付完成才结束 Spec189；分类失败仍 PARTIAL。
 实现中的 API/行为变化按 Design/MANAGEMENT.md 同步当前/目标契约及 PDF；
-本轮只修正目标计划，未实现新公开 API 或改变生产行为。
+本轮审计只修正文档；已有未验证 range-store/lease API 草稿保持 PARTIAL，
+其源码/API/中文契约与 PDF 同步属于 B189-1a 交付，不冒充已验当前设计。

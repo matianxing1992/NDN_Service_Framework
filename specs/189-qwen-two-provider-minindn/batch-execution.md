@@ -25,6 +25,27 @@
 
 ## Review and closure
 
+## Bounded execution units
+
+能力任务不增加；B189-1 两个独立出口按子批执行，共用原证据文件，各自完成
+小任务静态门、组合审查、增量构建和 C++ 测试，不为了合批跨过稳定出口。
+
+| Sequence | Unit | Concrete exit | Explicit boundary |
+| --- | --- | --- | --- |
+| 1 | B189-4 safety entry | 已验 host guard/受控停止与小型 lifecycle | 新 native counters 随所属组件交付；T009 前补齐，T008 暂不勾选 |
+| 2 | B189-1a / T003 | ServiceUser→Repo ciphertext commit→原 NDN 分段读取/解密；真实 package/cache eviction 后释放 serving/key lease | `spec189-encrypted-repo`、既有 bounded publisher/Runtime selectors；不加入 atomic schema/ORT/handoff；草稿尚未通过 |
+| 3 | B189-1b / T003 | 原子层/shared manifest、protected 可达性、source release、同 handle 零发布 | producer/schema negatives；冻结供 T006 使用的最小 manifest；prepare 不固定两个 partition |
+| 4 | B189-2 / T005 | 真实 ACK/Selection/no-fetch ingress | 保留已验授权机制，仅补接线与反例 |
+| 5 | B189-3 / T006,T007 | 选定材料、有界 assembly、NDN handoff、因果/独立输出 oracle | 计数器在 owner 一并交付，达到出口即验证 |
+| 6 | B189-5 / T009 | 全部计数器接入后两次独立 MiniNDN，各自 prepare-once/two-request | 不扩张全局依赖迁移、SIF/Tiger 或广泛性能工程 |
+
+B189-1a 通过只关闭共享接缝，不授予 T003 DONE；B189-1b 通过也不授予
+Provider/MiniNDN PASS。五 lane 继承 B189-1，每个出口记录实际覆盖文件与 selector。
+使用一个 Repo 后端和一个 Core protected serving 路径；不新增明文网络兼容分支、
+Qwen 特供协议或第二套缓存淘汰策略。
+
+### Review procedure
+
 逐任务提供 ID、design binding、batch base、精确 diff 与五 lane；
 冻结待审范围，或制作包含相关 untracked 文件的不可变快照，不混入无关脏文件。
 官方 review-agent 只读，修复后复审受影响不变量；同批最后组合审查。

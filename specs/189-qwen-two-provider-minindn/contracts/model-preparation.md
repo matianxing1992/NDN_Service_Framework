@@ -37,7 +37,7 @@ request 不隐式重发或退回 whole-model。旧 schema 明确拒绝或走受�
 并把返回 receipt 当作网络可用。现有组件测试保留，但不能证明加密产物持久发布。
 
 T003 生产路径复用 `NativeCanonicalArtifactPublisher::Transport` 与 ServiceUser 的
-分段签名/serving；在 Core 存储边界增加 `EncryptedLargeDataRangeStore`（TARGET），
+分段签名/serving；在 Core 存储边界增加 `EncryptedLargeDataRangeStore`（TARGET，已有未验草稿），
 由 Repo adapter 复用 `RepoCore::putRange/commitRanges/abortRanges/getRange`。
 Core 负责确定 name、AES-GCM/AAD、wrapped key 和 Data 签名，store 只接收已经加密的
 envelope，按同一 name/digest/size 持久提交并返回有界范围读取 owner。
@@ -55,8 +55,30 @@ lease 覆盖 serving 元数据与 wrapped-key 引用，不只是磁盘文件；c
 已有授权失效语义停止新请求。新增 C++ 反例覆盖越过原 TTL、源 owner 释放、正常读取、
 取消/失败 rollback 和最后 lease 释放。不得仅延长 TTL 或改环境变量掩盖所有权缺口。
 
-先完成这一共享 protected publication 接缝，再将原子层/shared tensors 沿同一路径
-发布；仅增加 source lookup/ingest 是 PARTIAL，不作为 T003 稳定出口或完整替代方案。
+先在 B189-1a 独立验证共享 protected publication 接缝，再于 B189-1b 将原子层/shared
+tensors 沿同一路径发布。前者可关闭子批但 T003 仍 PARTIAL；source lookup/ingest
+不作为 T003 完整替代方案。
+
+成功 receipt 的 publisher cache 不能永久强持 serving lease；由既有 preparation
+cache 的预算/淘汰决定空闲保留，活动 package/request 保住读取能力。最后 handle
+释放不一定立即删除预算内缓存，但 eviction/close 后必须可回收；增加真实 publisher
+参与的 C++ 反例，不只检查手动 token reset。持久提交保证本次存活 owner 下可读，
+不承诺进程重启后恢复密钥/serving；跨重启恢复不属于本 Spec，不能为此增建服务。
+
+### Bounded commit and identity ownership
+
+B189-1a 草稿静态审查发现同步 commit 在 Core I/O 路径执行大文件 hash/写盘，且
+没有取消参数；必须在既有受控 worker 生命周期内执行重型存储/加密工作，
+只把必要 Core 状态安装/响应操作投递到 I/O。传递现有 cancellation/deadline，
+窗口间检查并有 join/drain；不能只在大文件处理前后检查，也不能靠调大 timeout。
+慢盘测试验证 I/O heartbeat、取消返回和 worker drain；不宣称能立即中断任意 OS 磁盘调用。
+
+lease 必须绑定 committed object identity，而非仅 name/size。若允许删除后同名重建，
+旧 lease 不得读取/删除替代对象；复用 Repo 的 generation/事务所有权或等价原子
+identity-checked read/remove，不能只在 adapter 中先比较摘要再无条件 remove。
+失败回滚仅处理本次拥有的 staging/committed object，不能删除其他发布者的数据。
+小型 C++ 反例覆盖同名替代、部分提交失败、取消、旧 lease 释放和预算淘汰。
+上述属于共享存储正确性，不新增独立任务或新 Repo 服务。
 
 Repo 只替换材料存储/获取边界，不削弱已有 NAC-ABE/grant、签名或内容完整性校验。
 manifest 与原子/shared 材料沿现有保护接口发布，Provider 只能在有效 Selection/grant

@@ -6,8 +6,8 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 14:26 -0500 — T003 source borrowing and installed DI identity corrected.
-**Baseline**: `c8823291` plus pre-existing workspace implementation; not a clean qualified candidate.
+**Updated**: 2026-09-18 14:50 -0500 — execution and ownership audit; production acceptance unchanged.
+**Baseline**: `eedbbfd3` plus pre-existing implementation and unvalidated protected-store draft; not a clean qualified candidate.
 
 T003 源借用修复已静态通过；增量构建 56.712s。初次 native heap corruption 已定位为
 installed DI 的旧 ABI（publication 304 vs 360 bytes），全局安装同步后两个 C++ selectors
@@ -20,7 +20,8 @@ installed DI 的旧 ABI（publication 304 vs 360 bytes），全局安装同步�
 保留全局依赖与定向构建、Repo 冷热发布/事务/层 payload fixture、同一 PreparedModel
 两请求的 publication-counter selector、placement/cache selector、已注册 C++ 日志 oracle。
 它们是组件证据，不能拼成真实 Qwen 全链 PASS。
-真实 requester 未显式接入 Repo publisher，旧 assembler 仍获取完整 initializer；
+requester 已有 encrypted range-store 注入草稿，尚未静态/构建/运行验收；
+不能注入 plain Repo publisher 替代 protected publication。旧 assembler 仍获取完整 initializer；
 分层 producer/consumer 尚未闭合。日志 oracle 的严格事件总序也需修正。
 
 本轮审计见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
@@ -32,6 +33,13 @@ T001 映射已关闭；T008 direct/launcher guard 已复审，39 host checks 通
 25 FR、链接/锚点及 diff 检查通过，详情见上述审计记录。产品验收保持 PARTIAL。
 
 ## Execution Progress
+
+7 项是能力任务，不按数量计算产品百分比。T003 两个独立执行出口见
+[bounded execution units](batch-execution.md#bounded-execution-units)，当前下一步为 B189-1a。
+每个出口验证后立即记录，不等整项 T003 写完才第一次构建。
+本轮文档 v2 已获 DOCUMENTATION_STATIC_PASS；结构/25 FR/链接与技能同步检查通过，
+见 [follow-up verification](evidence/spec189-static-audit-20260918.md#follow-up-verification)。
+生产草稿仍 STATIC_FAIL，本轮未构建或运行模型。
 
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
@@ -94,6 +102,9 @@ T001 映射已关闭；T008 direct/launcher guard 已复审，39 host checks 通
 3. 小型 C++ fixture 验证 Face/io_context/worker/callback owner 与 drain；
    受控阈值触发 host guard，禁止以真实 OOM 测保护。Python 仅测采样/进程控制。
 4. 完整模型峰值/正常 drain 交 T009，避免安全门依赖尚不能安全运行的 full model。
+5. 前置安全出口只要求 host guard、受控停止和已有小型 owner/drain fixture。
+   新 native counters 随 T003/T006 的实际 owner 实现并测试，T009 前必须接入采样；
+   不能因它们尚未实现而阻止 T003 小 fixture。T008 最终勾选仍需完整计数器证据。
 
 **Acceptance**: guard 先于昂贵工作生效，受控停止正确分类且无 child/fixture 泄漏；
 finally/kill 本身不等于 lifecycle PASS。
@@ -107,6 +118,17 @@ finally/kill 本身不等于 lifecycle PASS。
 `NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp`、
 `examples/DI_NativeRequester.cpp`；已有 Repo/PreparedModel C++ selectors；
 `evidence/b189-prepare.md`。按实际定义路径修改，不复制 Qwen API。
+
+共享 protected 接缝另涉及 `ndn-service-framework/ServiceUser.{hpp,cpp}`、
+`EncryptedLargeDataRangeStore.hpp` 和 Repo `RepoEncryptedLargeDataStore.hpp`。
+先按 B189-1a 验证接缝，再按 B189-1b 实现原子材料；Core 不依赖 DI/Repo 类型。
+`NativeCanonicalArtifactPublisher::CacheState::prepared` 当前强存 receipt；新增 serving
+lease 后须消除无预算永久 pin。复用 ModelPreparationCache 预算/淘汰作为唯一保留策略，
+publisher 不成为第二个无界强 owner，活动 handle/request 仍保证可读。
+C++ 反例必须走真实 publisher→package→淘汰路径，不能只手动 reset Core token。
+当前 protected 草稿静态结果为 NOT_STATIC_PASS：还须将重型 commit 从 Core I/O
+移到受控 worker 并传递取消/deadline，给 Repo read/remove/rollback 加对象身份 fence。
+具体出口与反例见 [bounded commit](contracts/model-preparation.md#bounded-commit-and-identity-ownership)。
 
 1. pinned canonical graph/initializer 生成拓扑无关原子层与 shared tensor 引用。
    层→节点/权重范围由 graph 推导并校验；embedding/final/tied weights 按内容去重。

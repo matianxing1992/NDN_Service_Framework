@@ -4,6 +4,9 @@
 
 从 [tasks.md](tasks.md) Current Checkpoint 开始，按
 B189-0 → B189-4 → B189-1 → B189-2 → B189-3 → B189-5 执行。
+当前 B189-0 已关闭；B189-4 host 安全入口有定向证据。下一步 B189-1a
+protected storage 修复/验收，再 B189-1b atomic preparation，各自批末测试。
+新 native counters 随 T003/T006 交付，T009 前统一核对，不能形成安全门循环依赖。
 不重做已验证组件，不把它们当 full-path PASS。
 实际命令在实现批次唯一 evidence 中冻结；本页不发明尚不支持的新 CLI。
 

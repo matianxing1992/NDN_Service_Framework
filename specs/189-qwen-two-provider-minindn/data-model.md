@@ -33,3 +33,6 @@ UNPREPARED → PREPARING → REPO_COMMITTED → READY_REFERENCE。
 前段输出先于后段消费，末段返回 terminal，全体 owner drain 后结束。
 异常/cancel/resource stop 进入失败清理，不因分类完整成为 PASS。
 READY handle/持久缓存可在预算内供后续复用；drain 不等于删除持久模型。
+请求终态检查 active request/worker/临时窗口；idle runner、prepared material 与
+serving/key pins 按 cache owner 单独计费。最后 handle 释放加 eviction，或 Runtime
+close/drain 后核对相应 owner 的 baseline。publisher receipt 索引不得形成无界强保留。

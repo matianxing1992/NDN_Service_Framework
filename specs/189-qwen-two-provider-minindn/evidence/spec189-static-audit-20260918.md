@@ -1,5 +1,58 @@
 # Spec189 Static Audit and Progress Reclassification
 
+## Execution and ownership follow-up
+
+**Updated**: 2026-09-18 14:50 -0500
+**Scope**: `eedbbfd3` + current dirty source; documentation repair only.
+
+实际仍为 1/7 capability tasks DONE（T001 仅 mapping），不是 14% 产品完成。
+r25 run-record 仍 FAIL；原生 source-borrow r3 日志 Runtime prepare 38 assertions
+通过，不能据此授予双 Provider 资格。protected Repo 13-file 草稿保持未验，未改源码。
+
+| Finding | Evidence / consequence | Repair |
+| --- | --- | --- |
+| HIGH: receipt retention | NativeCanonicalArtifactPublisher.cpp 成功 emplace 到 CacheState::prepared，新增 servingLeases 随 receipt 强存；正常成功项没有 eviction 路径，手动 Core token reset 测试不能证明 package 回收 | T003 要求 preparation cache 统一预算/淘汰；真实 publisher/package eviction 反例，禁止第二个无界 owner |
+| MEDIUM: batch inflation | T003 同时纳入 Core protected store、原子模型生产和复用；contract 曾拒绝共享接缝作为稳定出口 | B189-1a/1b 分别审查/验证，共用 T003 与唯一证据；不增加行政任务，不削弱 T003 总验收 |
+| MEDIUM: prerequisite ambiguity | T008 前置但要求后续 T003/T006 才能提供的 native counters | host safety entry 前置，小 fixture 可继续；新 counters 归实际 owner，T009 前完整核对 |
+| MEDIUM: contradictory resource criterion | FR-015 请求终态全部 baseline 与 AD-04/数据模型 warm cache 复用冲突 | active request 与 idle cache 分账；eviction/close 后核对保留 owner，绝不以永久 pin 解释正常缓存 |
+| MEDIUM: stale wiring statement | requester 已存在 encrypted_repository/encryptedRangeStore 草稿；直接接 plain publisher 与 assembler encrypted fetch 不兼容 | 更新 current/target，保留 Core 加密/签名/serving、Repo 范围存储职责；草稿未运行，仍 PARTIAL |
+
+**Scope reduction**: 保留先前 10→7 的合并成果；不另建 Qwen Repo、第二协议/serializer、
+跨重启 key/serving 恢复、全局依赖再迁移或新报告框架。现有 host guard 不重做。
+原子层 producer/consumer、授权、独立输出与真实重复验收均不可删除。
+
+**Five lanes**: callers=Runtime/requester 注入草稿；implementation=publisher receipt/cache
+与 assembler 整 initializer 路径；test=新 protected Core fixture 与实际 package eviction
+缺口、历史 r3 selector；build=本轮文档不构建，后续 Core/DI ABI 受影响目标必须全局同步；
+migration/evidence=tasks/plan/spec/contract/data-model/quickstart/traceability 一致性。
+CodeGraph broad query 混入 .codex-tmp 快照，已用维护源码精确查询核对，不以索引推断通过。
+**Four miss classes**: static=上述问题；compile-link=本轮未运行；runtime-test=保留历史
+r25 FAIL 与 r3 focused PASS；unobserved=当前草稿、原子材料、真实输出/峰值/reuse/drain。
+**Closure decision**: OPEN_FOR_NEXT_BATCH；下一步 B189-1a 修复/复审/原生验证，
+不是重新开始 Spec189，也不立即重跑完整模型。
+
+### Protected draft review disposition
+
+官方只读 review-agent 对 `.codex-tmp/spec189-protected-repo-review-v1/` 的
+13-file snapshot（diff SHA-256 `3d4d009cfb0dae9483267adba99603c61102735945a10db99712a6519cacafa8`）
+返回 STATIC_FAIL：同步 commit 阻塞 Core I/O 且缺取消控制；receipt cache 强持 lease；
+按 name 读/删缺少防同名替代的 identity fence（条件性风险，未证明当前 run 已触发）。
+已纳入 B189-1a 契约/反例，未改冻结源码，不能开始该草稿 runtime 验收。
+现有双 provider 失败与这些新草稿风险不能混为同一已证实根因。
+
+### Follow-up verification
+
+官方 `/home/tianxing/.codex/skills/review-agent/SKILL.md` SHA-256
+`07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`；
+只读代理复核 HEAD `eedbbfd3` 至九份 Spec 文档完整 diff 及周边契约，
+冻结 v2 patch SHA-256 `d442b80584642c041f1babd45dae18bd6d8fdeb661fa5585c0a1f3b590888266`，
+返回 DOCUMENTATION_STATIC_PASS；本段为其后追加的验证记录，不改变受审契约。
+源码 13 文件逐一 SHA 与原冻结 manifest 一致，仍 STATIC_FAIL。
+结构检查 PASS（7 tasks / 1 DONE / 25 FR / 6 SC；ID 不连续是保留合并历史的已解释 warning）；
+11/11 技能入口/个人共享副本同步、前置文档、相对路径和 diff 检查通过。
+Context Mode authority 刷新后 project/active health 通过。没有新增 native build、
+模型运行、MiniNDN 或功能 PASS。仅提交本轮文档；原有源码/Design 草稿继续留在工作区。
+
 **Updated**: 2026-09-18 02:22 -0500
 **Mode**: full / post-test-adversarial
 **Verdict**: `BLOCKED_FOR_NATIVE_EXECUTION`

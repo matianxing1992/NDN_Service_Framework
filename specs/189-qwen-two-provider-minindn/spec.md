@@ -127,7 +127,7 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 - **FR-012**: The two-provider path MUST carry a real hidden-state handoff or an explicitly named production pipeline equivalent between providers.
 - **FR-013**: A successful final response MUST pass a C++ assertion against an independent fixed-input reference (shape/finite and frozen tolerance or top-token); a digest alone is identity evidence. Execution failures MUST be classified and MUST NOT satisfy success.
 - **FR-014**: Cancellation, assembly failure, provider stop and Core close MUST drain Face/io_context/timer/callback dependencies before fixture destruction.
-- **FR-015**: Runner, lease and temporary materialization counters MUST return to baseline after terminal response or classified stop.
+- **FR-015**: Active request/worker leases and temporary materialization MUST drain after terminal response or classified stop. Retained prepared materials and idle runners MUST have an explicit bounded cache owner and separate counters; after final handle release plus eviction, or Runtime close/drain, their counters MUST return to the declared baseline. Cache retention MUST NOT create an unbounded second ownership path.
 - **FR-016**: The experiment MUST sample RSS, MemAvailable, swap, disk free, Repo resident bytes and child states at named lifecycle points.
 - **FR-017**: A resource guard MUST stop before unsafe host exhaustion and MUST classify the result as `RESOURCE_BOUNDARY` with the first observed metric.
 - **FR-018**: A successful run MUST record peak resource values and post-drain values under the same candidate tuple.
