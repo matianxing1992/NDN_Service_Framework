@@ -391,11 +391,16 @@ def linker_path_values(flags):
         if flag.startswith("-Wl,"):
             parts = flag[4:].split(",")
             for index, part in enumerate(parts):
-                if part in ("-rpath", "-rpath-link", "-R", "-L") and index + 1 < len(parts):
+                if part in ("-rpath", "-rpath-link", "-R", "-L",
+                            "--rpath", "--rpath-link") and index + 1 < len(parts):
                     values.append(parts[index + 1])
                 elif part.startswith("-rpath="):
                     values.append(part.split("=", 1)[1])
+                elif part.startswith(("-rpath-link=", "--rpath=", "--rpath-link=")):
+                    values.append(part.split("=", 1)[1])
                 elif part.startswith("-R") and part != "-R":
+                    values.append(part[2:])
+                elif part.startswith("-L") and part != "-L":
                     values.append(part[2:])
                 elif part.startswith("-L") and part != "-L":
                     values.append(part[2:])
