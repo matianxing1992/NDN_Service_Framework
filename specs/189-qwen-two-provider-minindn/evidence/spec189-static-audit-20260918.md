@@ -125,6 +125,19 @@ current r21 evidence.
 
 ## Architecture and progress correction
 
+### Progress reconciliation — 2026-09-18 13:53 -0500
+
+文档修订已在 `2ee71559` 落地，T001 接线映射在 `42add32c` 关闭；当前为
+1/7 任务完成（仅映射），不能解读为产品完成比例。T008 的 host supervisor
+有未提交实现，仍未验收；本轮同步 tasks 与 batch 的 IN_PROGRESS 状态，
+保留其余生产代码和测试改动，不将工作区草稿视为已通过。
+追踪表区间写法使结构工具漏识别四个 FR，改为显式 ID 后 25/25 均识别。
+结构检查 PASS、11/11 技能入口及个人副本同步 PASS、限定文档 diff 检查 PASS；
+剩余 ID 不连续警告来自明确保留的合并历史，不重新编号。
+没有新增构建、原生测试或 MiniNDN 结果；后续仍按 T008 → T003 → T005 →
+T006/T007 → T009 执行。不得以持续增加 guard 功能代替模型 producer/consumer 接线；
+T008 达到已定义的小 fixture 安全出口即转下一批，实际模型峰值归 T009。
+
 **Date**: 2026-09-18
 **Review baseline**: HEAD `76b26e2c` plus pre-existing working tree.
 **Scope**: source-aware audit and Spec documentation repair; no product code/build/run.

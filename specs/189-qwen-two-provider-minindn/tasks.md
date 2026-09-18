@@ -6,8 +6,8 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 — architecture/progress audit; documentation only.
-**Baseline**: `76b26e2c` plus pre-existing workspace implementation; not a clean tested candidate.
+**Updated**: 2026-09-18 13:53 -0500 — audit reconciliation; T001 closed, T008 implementation unverified.
+**Baseline**: `42add32c` plus pre-existing workspace implementation; not a clean tested candidate.
 
 尚无 `QWEN_TWO_PROVIDER_PASS`。r25 run-record 仍 FAIL；Provider 日志已出现
 `EXECUTION_ENTERED` / `ASSEMBLY_STARTED`，不能继续称“执行入口完全未观察到”。
@@ -21,7 +21,8 @@
 
 本轮审计见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
 旧详细 checkpoint 保留在上述 Git 基线和原批次证据；本表取代十任务线性调度。
-本轮没有运行模型、构建或改变产品状态。
+审计没有运行模型或构建。随后 T001 映射已关闭；T008 host supervisor 有未提交实现，
+仍待审查/测试，直接入口、native counter/drain 未闭合，不能据此授予资源保护 PASS。
 文档修订已获冻结 v2 的 DOCUMENTATION_STATIC_PASS；11/11 技能入口、7 task ID、
 25 FR、链接/锚点及 diff 检查通过，详情见上述审计记录。产品验收保持 PARTIAL。
 
@@ -30,7 +31,7 @@
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
-| [T008 Guard before model runs](#t008) | NOT_STARTED | T001 | preflight、持续采样、受控 stop 和原生 drain。[resource](evidence/b189-resource.md) |
+| [T008 Guard before model runs](#t008) | IN_PROGRESS | T001 | 2026-09-18 13:29 -0500：实现维护 launcher 的前置/持续 host guard；native counter/drain 与直接入口覆盖仍待完成。[resource](evidence/b189-resource.md) |
 | [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 原子层发布、真实 requester 接线、同 handle 复用。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | Repo consumer、有界组装、owner/cancel。[execution](evidence/b189-execution.md) |
