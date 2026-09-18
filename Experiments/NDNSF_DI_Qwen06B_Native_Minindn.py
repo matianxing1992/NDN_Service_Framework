@@ -35,6 +35,8 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.hazmat.backends import default_backend
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "Experiments"))
+from native_resource_guard import run_guarded, validate_limits
 ROLE_PREFIX = "/LLM/Pipeline/Stage/"
 SERVICE = "/AI/LLM/Pipeline/QwenNative"
 GROUP = "/example/ndnsf-qwen06b/group"
@@ -294,7 +296,7 @@ def validate_native_output(path: Path) -> dict:
     return {"tokenCount": len(token_ids), "tokenIds": token_ids}
 
 
-def main() -> int:
+def main(argv=None, *, _supervised=False) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage-manifest", type=Path, required=True)
     parser.add_argument("--stage-root", type=Path, default=None)
@@ -316,7 +318,42 @@ def main() -> int:
     parser.add_argument("--negative-parent", action="store_true")
     parser.add_argument("--nlsr-wait-s", type=float, default=8.0)
     parser.add_argument("--startup-timeout-s", type=float, default=60.0)
-    args = parser.parse_args()
+    parser.add_argument("--resource-limits-json", default="{}",
+                        help="host resource limits as a JSON object; defaults match LocalExperiment")
+    args = parser.parse_args(argv)
+    limits = validate_limits(json.loads(args.resource_limits_json))
+    if not _supervised:
+        run_root = (args.run_root.expanduser().resolve() if args.run_root else
+                    Path(tempfile.mkdtemp(prefix="ndnsf-qwen06b-minindn-", dir="/tmp")))
+        run_root.mkdir(parents=True, exist_ok=True)
+        run_root.chmod(0o700)
+        worker_args = list(sys.argv[1:] if argv is None else argv)
+        if args.run_root is None:
+            worker_args.extend(["--run-root", str(run_root)])
+        # Internal worker entry has no public bypass switch. The outer process
+        # owns resource admission before model hashing/materialization begins.
+        worker = [sys.executable, "-c",
+                  "import runpy,sys; path=sys.argv[1]; sys.argv=sys.argv[1:]; "
+                  "scope=runpy.run_path(path); "
+                  "raise SystemExit(scope['main'](_supervised=True))",
+                  str(Path(__file__).resolve()), *worker_args]
+        try:
+            receipt_fd = os.open(run_root / "supervisor.json",
+                                 os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            print("NATIVE_HOST_GUARD_STOP " + json.dumps({
+                "boundary": "EVIDENCE_CONFLICT", "cleanup": "NOT_STARTED",
+                "returncode": None, "remainingProcesses": []}, sort_keys=True))
+            return 1
+        with os.fdopen(receipt_fd, "w", encoding="utf-8") as receipt:
+            result = run_guarded(worker, cwd=ROOT, stdout=None,
+                                 sample_path=run_root / "resource-samples.jsonl", limits=limits)
+            json.dump(result, receipt, sort_keys=True, indent=2)
+            receipt.write("\n")
+        if result["boundary"] or result["cleanup"] != "PASS":
+            print("NATIVE_HOST_GUARD_STOP " + json.dumps(result, sort_keys=True))
+            return 1
+        return result["returncode"] if result["returncode"] is not None else 1
     if os.geteuid() != 0:
         raise SystemExit("MININDN_REQUIRES_ROOT: run this script with sudo -E")
     if args.rounds < 1 or args.rounds > 8:
