@@ -7182,3 +7182,14 @@ or against the new Spec189 material producer. Raw outputs are
 `.codex-tmp/spec189-b189-1b-selector-cancel-queued-r2.log`,
 `.codex-tmp/spec189-b189-1b-selector-cancel-source-r2.log` and
 `.codex-tmp/spec189-b189-1b-selector-core-io-r2.log`.
+
+2026-09-18 Spec189 B189-1b consumer/load: the corrected selected-material reader passed
+the read-only review-agent (r3), then the affected `unit-tests` target built from the
+global tree with `-j4` in 2m09.500s (peak RSS 1,688,652 KiB; no swap). The four-case
+`Spec189RepoPublication` selector passed, including root/index loading, selected node and
+shared dependency reads, bounded materialization, non-canonical order rejection and
+corrupted-object rejection. This is a Repo-side consumer seam only; protected encrypted
+serving, CollaborationContext/Provider wiring, dynamic cancellation injection and real
+Qwen preparation remain unobserved. Raw logs are
+`.codex-tmp/spec189-b189-1b-consumer-build-r1.log` and
+`.codex-tmp/spec189-b189-1b-consumer-selector-r1.log`.

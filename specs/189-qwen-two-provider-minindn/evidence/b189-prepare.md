@@ -542,3 +542,44 @@ or Qwen preparation requirements.
 **Closure**: B189-1b producer is locally verified, but B189-1b as a whole and T003 remain
 **PARTIAL**. The next bounded unit is the reference-only Repo consumer and bounded native
 assembly; no full-model or MiniNDN qualification should be claimed before that path is wired.
+
+## B189-1b selected consumer/load unit — 2026-09-18
+
+The second frozen consumer snapshot
+`.codex-tmp/spec189-b189-1b-consumer-review-r3.diff`
+(`f473380ac6e1e3b70fa76434f055be42fd0354b8843df380de1b5227ab5753f8`)
+passed the official read-only review-agent (`STATIC_PASS`). The review confirmed that
+root metadata, material reference and payload digest/size are cross-bound; shared
+initializer aliases remain legal only when their reference identities agree; selected
+dependencies are complete; owner/deadline/read-budget checks run before each range; and
+node selection is strictly canonical-order. Protected encrypted serving and the actual
+requester/provider call chain remain outside this unit.
+
+From the same global build tree:
+
+```text
+../waf build --targets=unit-tests -j4  PASS (2m09.500s; peak RSS 1,688,652 KiB; no swap)
+unit-tests --run_test=Spec189RepoPublication --log_level=test_suite  PASS (4 cases)
+```
+
+The selector publishes a material manifest, loads the root/index and only node `0` plus
+its explicit shared dependencies, confirms the selected payload set is smaller than the
+published set, materializes a bounded model, rejects `{1,0}` non-canonical selection order,
+and rejects a corrupted material object. Raw logs are
+`.codex-tmp/spec189-b189-1b-consumer-build-r1.log` and
+`.codex-tmp/spec189-b189-1b-consumer-selector-r1.log`.
+
+## Five-lane result and closure decision r6
+
+- production entry/callers: **covered** for the Repo-side selected material reader;
+- implementation/wire: **covered** for authenticated root/index/object selection and bounded
+  model materialization;
+- test/harness/oracle: **covered** by four C++ Repo cases, including order and corruption
+  negatives; protected cancellation/lease injection remains **UNOBSERVED**;
+- build/source closure: **covered** by the global `unit-tests` target build;
+- migration/evidence: **PARTIAL** — the reader is a Repo adapter seam, not yet wired into the
+  protected CollaborationContext/Provider assembly path or a real Qwen candidate.
+
+**Closure**: the B189-1b producer and Repo consumer units are locally verified, but B189-1b
+and T003 remain **PARTIAL** until the protected provider ingress consumes this selection and
+the real Qwen prepare receipt is observed. T006 assembly/handoff remains the next batch.

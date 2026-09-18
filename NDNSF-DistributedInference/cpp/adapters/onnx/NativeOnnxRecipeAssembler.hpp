@@ -51,6 +51,10 @@ struct NativeCanonicalSource
     std::string templatePayloadId;
     std::vector<MaterialReference> references;
     std::vector<MaterialPayload> payloads;
+    // Producers set this true.  A post-Selection consumer carries the
+    // authenticated reference index with only the selected payload bytes;
+    // the canonical JSON/digest remains the producer's full index.
+    bool payloadsComplete = true;
 
     std::string canonicalJson() const;
     void validate() const;
@@ -59,6 +63,10 @@ struct NativeCanonicalSource
   std::vector<std::uint8_t> modelBytes;
   std::optional<std::vector<std::uint8_t>> initializerBytes;
   std::shared_ptr<const MaterialManifest> materialManifest;
+  // Bytes fetched after Selection.  They are deliberately separate from the
+  // producer-owned manifest payload list so a Provider cannot imply that the
+  // complete model was downloaded.
+  std::vector<MaterialPayload> materialPayloads;
 
   /**
    * Immutable placement packages produced by the preparation boundary.  The
@@ -184,6 +192,18 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
 std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
 deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
                                       const NativeAssemblyControl& control);
+
+/** Parse an authenticated producer manifest without materializing payloads. */
+std::shared_ptr<NativeCanonicalSource::MaterialManifest>
+parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes);
+
+/** Rebuild one selected role model from the template, selected nodes and
+ * explicit shared initializer payloads.  No complete source/initializer is
+ * required by this operation. */
+std::vector<std::uint8_t>
+materializeNativeCanonicalModel(const NativeCanonicalSource& source,
+                                const std::vector<std::uint64_t>& nodeIndices,
+                                const NativeAssemblyControl& control);
 
 /** Validate a prepared material manifest against the authenticated ONNX source. */
 void validateNativeCanonicalMaterialManifest(

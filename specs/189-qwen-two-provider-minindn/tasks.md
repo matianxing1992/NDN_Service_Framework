@@ -6,7 +6,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 17:18 -0500 — B189-1b producer re-review passed; the affected `unit-tests` target built with `-j4`, and the material publication selector, encrypted Repo selector and bounded publisher selector passed. The consumer/load path and real Qwen preparation remain open; three older Spec182 publisher lifecycle selectors remain unresolved. See [B189 prepare evidence](evidence/b189-prepare.md) and [failure log](../../docs/failure-log.md).
+**Updated**: 2026-09-18 17:49 -0500 — B189-1b producer and Repo-side selected consumer passed static review, the affected `unit-tests` target built with `-j4`, and four Repo C++ cases passed. Protected Provider ingress, real Qwen preparation and assembly remain open; three older Spec182 publisher lifecycle selectors remain unresolved. See [B189 prepare evidence](evidence/b189-prepare.md) and [failure log](../../docs/failure-log.md).
 **Baseline**: `3e53fec5` plus pre-existing implementation and unvalidated protected-store draft; not a clean qualified candidate.
 
 B189-1a publisher weak-pin、Repo identity fence 和 Core worker/cancel/key release
@@ -55,7 +55,7 @@ counter 接入属于 T003/T006 的实际 owner，不能另开重复的 T008 实�
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
 | [T008 Guard before model runs](#t008) | PARTIAL | T001 | 2026-09-18 14:11 -0500：direct/launcher guard 39 checks PASS；4 native lifecycle cases 三轮 PASS；真实 counter 采样/全链 drain 未验。T003 小 fixture 可继续，full model 仍受门禁。[resource](evidence/b189-resource.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 2026-09-18 17:18 -0500：B189-1b producer static/build/fixture PASS；consumer/load、真实 Qwen source release 与后续 ACK/assembly 仍待完成。[prepare](evidence/b189-prepare.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 2026-09-18 17:49 -0500：B189-1b producer 与 Repo-side selected consumer static/build/fixture PASS；protected Provider ingress、真实 Qwen source release 与后续 ACK/assembly 仍待完成。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | Repo consumer、有界组装、owner/cancel。[execution](evidence/b189-execution.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 因果 oracle、NDN hidden-state handoff、独立输出判据。[execution](evidence/b189-execution.md) |

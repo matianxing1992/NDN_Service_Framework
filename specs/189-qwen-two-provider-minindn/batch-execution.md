@@ -7,7 +7,7 @@
 | --- | --- | --- | --- | --- | --- |
 | 1 | B189-0 | T001 | 剩余真实接线与 candidate/验证边界 | DONE (mapping only) | evidence/b189-convergence.md |
 | 2 | B189-4 | T008 | full-model 前 guard/受控 stop/drain | PARTIAL (safety entry closed; live counters owned by T003/T006 and pending) | evidence/b189-resource.md |
-| 3 | B189-1 | T003 (former T002,T004) | 原子材料 Repo publication + 同 handle reuse | PARTIAL (B189-1a closed; B189-1b producer verified, consumer open) | evidence/b189-prepare.md |
+| 3 | B189-1 | T003 (former T002,T004) | 原子材料 Repo publication + 同 handle reuse | PARTIAL (B189-1a closed; B189-1b producer/Repo consumer verified, protected ingress open) | evidence/b189-prepare.md |
 | 4 | B189-2 | T005 | ACK 后规划与生产 Selection/no-fetch fence | PARTIAL | evidence/b189-placement.md |
 | 5 | B189-3 | T006,T007 | 范围组装、NDN handoff、C++ 输出/因果判据 | PARTIAL | evidence/b189-execution.md |
 | 6 | B189-5 | T009 (former T010) | 两独立 MiniNDN 成功，各自同 handle 两请求 | PARTIAL | evidence/b189-convergence.md |
@@ -34,7 +34,7 @@
 | --- | --- | --- | --- |
 | 1 | B189-4 safety entry | 已验 host guard/受控停止与小型 lifecycle | 新 native counters 随所属组件交付；T009 前补齐，T008 暂不勾选；不再为 counters 创建重复任务 |
 | 2 | B189-1a / T003 | ServiceUser→Repo ciphertext commit→原 NDN 分段读取/解密；真实 package/cache eviction 后释放 serving/key lease | `spec189-encrypted-repo`、既有 bounded publisher/Runtime selectors；不加入 atomic schema/ORT/handoff；worker/cancel/key 静态门、组合构建及 14 个 C++ selectors 已通过 |
-| 3 | B189-1b / T003 | 原子层/shared manifest、protected 可达性、source release、同 handle 零发布 | producer/schema selector 已通过；Repo consumer/load、prepare-to-assembly handoff 和真实 Qwen manifest 仍待完成；prepare 不固定两个 partition |
+| 3 | B189-1b / T003 | 原子层/shared manifest、protected 可达性、source release、同 handle 零发布 | producer 与 Repo consumer selector 已通过；protected ingress、prepare-to-assembly handoff 和真实 Qwen manifest 仍待完成；prepare 不固定两个 partition |
 | 4 | B189-2 / T005 | 真实 ACK/Selection/no-fetch ingress | 保留已验授权机制，仅补接线与反例 |
 | 5 | B189-3 / T006,T007 | 选定材料、有界 assembly、NDN handoff、因果/独立输出 oracle | 计数器在 owner 一并交付，达到出口即验证 |
 | 6 | B189-5 / T009 | 全部计数器接入后两次独立 MiniNDN，各自 prepare-once/two-request | 不扩张全局依赖迁移、SIF/Tiger 或广泛性能工程 |
