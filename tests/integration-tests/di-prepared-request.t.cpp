@@ -2985,6 +2985,14 @@ BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
     BOOST_CHECK(cancellationBoundary);
   }
   std::cerr << "SPEC189_HANDLE_BEFORE_STATUS\n";
+  BOOST_CHECK_EXCEPTION(prepared.request(Input::inlineBytes({0x05, 0x06}), options), DiError,
+                        [] (const DiError& error) {
+                          std::cerr << "SPEC189_CLOSED_REQUEST_ERROR code=" << error.code()
+                                    << " domain=" << error.domain()
+                                    << " boundary=" << error.boundary() << "\n";
+                          return error.code() == "CLIENT_CLOSED" &&
+                                 error.boundary() == "request";
+                        });
   BOOST_REQUIRE(cancellationBoundary ||
                 first.status() == RequestStatus::Cancelled ||
                 first.status() == RequestStatus::Failed);
