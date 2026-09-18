@@ -36,6 +36,8 @@ struct NativePreparedCanonicalPublication
   std::string canonicalManifestJson;
   std::string manifestDigest;
   std::string artifactProfileDigest;
+  std::vector<std::string> layerDataNames;
+  std::vector<std::string> layerManifestDigests;
   std::vector<std::string> rollbackDataNames;
   std::vector<NativePublicationKeyReference> rollbackKeyReferences;
   std::string rollbackKeyId;

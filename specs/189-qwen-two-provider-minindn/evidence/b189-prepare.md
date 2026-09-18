@@ -163,3 +163,58 @@ Selection, Provider execution, hidden-state handoff, MiniNDN completion and
 **Closure**: T003 remains **PARTIAL**. The corrected lifecycle boundary is
   locally verified, but the batch still lacks a connected layer-payload owner
   and full Qwen preparation evidence.
+
+## Prepare-time Repo layer owner r3 — 2026-09-18 11:01 -0500
+
+The layer-payload owner is now connected to the native prepare input. Each
+`NativeCanonicalSource::LayerPayload` carries a stage index, contiguous layer
+range, payload digest and owned bytes. `RepoSourceProvider::publish` rejects
+count, range, stage, or byte-digest mismatches before staging; the cold path
+commits each immutable layer object before the manifest and records
+`layerReferences` with the exact Repo name, range, digest and size. The hot
+path rechecks every referenced layer object and returns the same receipt.
+Layer names are included in the receipt and rollback list, while transient
+source ownership is still released only after the outer preparation package
+has committed.
+
+The transaction lock is owned by `RepoCore`, so separate
+`RepoSourceProvider` instances sharing one Repo cannot abort each other's
+range reservations. Failure cleanup removes only objects committed by the
+current transaction. Legacy manifests without layers remain reusable; a C++
+selector covers this compatibility path, layer corruption, count mismatch,
+cancellation and cold/hot reuse.
+
+Immutable snapshot `.codex-tmp/spec189-t003-layer-owner-review-v3.diff`
+(`b9fc1efff86ccb47387e8169954b4854af368b76452fff747bc9a256749ca5dc`) passed
+the official read-only review-agent (`STATIC_PASS`, no P0/P1/P2). The review
+did not observe partial-commit fault injection, ASan/TSan or large-payload
+pressure.
+
+Using the canonical global dependency identity and the reconfigured
+`build-spec189-b189-3-global-r3/` tree:
+
+```text
+../waf build --targets=unit-tests -j4  PASS (1m27.718s)
+unit-tests --run_test=Spec189RepoPublication --log_level=test_suite  PASS (3 cases)
+unit-tests --run_test=Spec185Runtime/PrepareSuccessUsesTheProductionRuntimeEntry --log_level=test_suite  PASS
+```
+
+Raw logs: `.codex-tmp/spec189-t003-layer-owner-review-v3-build.log`,
+`.codex-tmp/spec189-t003-layer-owner-review-v3-selector.log` and
+`.codex-tmp/spec189-t003-layer-owner-review-v3-runtime.log`. The first reused
+tree target-config failure is indexed in `docs/failure-log.md` and recorded at
+`.codex-tmp/spec189-t003-layer-owner-review-v1/initial-target-boundary.log`.
+
+## Five-lane result and closure decision r3
+
+- production entry/callers: **covered** for prepare-time Repo layer publication;
+- implementation/wire: **covered** for the generic native layer-owner boundary;
+- test/harness/oracle: **covered** by the three-case C++ Repo selector and Runtime regression;
+- build/source closure: **covered** by the global `unit-tests` build and registered Repo sources;
+- migration/evidence: **PARTIAL** — the real Qwen exporter/catalog still has not supplied
+  these payloads through native `Runtime::prepare`.
+
+**Closure**: T003 remains **PARTIAL**. The Repo layer owner is implemented and
+locally verified, but T002/T003 cannot advance to complete until the pinned
+Qwen candidate is consumed by the production preparation path and its real
+manifest/lease receipt is observed.

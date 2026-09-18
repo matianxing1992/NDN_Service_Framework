@@ -66,6 +66,13 @@ struct PublicationInput
   PublicationInput()
   {
     source.modelBytes = {0x01, 0x02, 0x03, 0x04};
+    source.layerPayloads = {
+      {0, 0, 14, {""}, {0x11, 0x12, 0x13}},
+      {1, 14, 28, {""}, {0x21, 0x22, 0x23, 0x24}}};
+    source.layerPayloads[0].digest = nativePlanningDigest(
+      source.layerPayloads[0].bytes.data(), source.layerPayloads[0].bytes.size());
+    source.layerPayloads[1].digest = nativePlanningDigest(
+      source.layerPayloads[1].bytes.data(), source.layerPayloads[1].bytes.size());
     model.descriptor.modelName = "qwen-fixture";
     model.descriptor.contentDigest = nativePlanningDigest("model-identity");
     model.canonicalSourceDigest = nativePlanningDigest(source.modelBytes.data(),
@@ -75,6 +82,8 @@ struct PublicationInput
     model.canonicalInitializerBytes = 0;
     model.canonicalInitializerObjectDigest.clear();
     options.artifactRoot = "/spec189/di/artifacts";
+    options.layerManifestDigests = {source.layerPayloads[0].digest,
+                                    source.layerPayloads[1].digest};
   }
 };
 
@@ -95,6 +104,12 @@ BOOST_AUTO_TEST_CASE(PreparePublicationCommitsAndReusesCanonicalReceipt)
   BOOST_REQUIRE_EQUAL(firstStats.publicationHits, 0U);
   BOOST_REQUIRE(fixture.repo->has(first.rootDataName));
   BOOST_REQUIRE(fixture.repo->has(first.sourceDataName));
+  BOOST_REQUIRE_EQUAL(first.layerDataNames.size(), 2U);
+  BOOST_REQUIRE_EQUAL_COLLECTIONS(first.layerManifestDigests.begin(), first.layerManifestDigests.end(),
+                                  input.options.layerManifestDigests.begin(),
+                                  input.options.layerManifestDigests.end());
+  BOOST_REQUIRE(fixture.repo->has(first.layerDataNames.at(0)));
+  BOOST_REQUIRE(fixture.repo->has(first.layerDataNames.at(1)));
   BOOST_CHECK_EQUAL(first.manifestDigest, nativePlanningDigest(first.canonicalManifestJson));
 
   const auto second = provider->publish(
@@ -104,6 +119,7 @@ BOOST_AUTO_TEST_CASE(PreparePublicationCommitsAndReusesCanonicalReceipt)
   BOOST_CHECK_EQUAL(secondStats.publicationHits, 1U);
   BOOST_CHECK_EQUAL(second.rootDataName, first.rootDataName);
   BOOST_CHECK_EQUAL(second.sourceDataName, first.sourceDataName);
+  BOOST_CHECK(second.layerDataNames == first.layerDataNames);
   BOOST_CHECK_EQUAL(fixture.repo->getManifest(first.rootDataName).size,
                     first.canonicalManifestJson.size());
 
@@ -121,12 +137,20 @@ BOOST_AUTO_TEST_CASE(PreparePublicationCommitsAndReusesCanonicalReceipt)
   provider->rollback(first);
   BOOST_CHECK(fixture.repo->has(first.rootDataName));
   BOOST_CHECK(fixture.repo->has(first.sourceDataName));
+  BOOST_CHECK(fixture.repo->has(first.layerDataNames.at(0)));
+  BOOST_CHECK(fixture.repo->has(first.layerDataNames.at(1)));
 
-  auto layered = input.options;
-  layered.layerManifestDigests = {nativePlanningDigest("layer-0")};
+  auto corruptedLayer = input;
+  corruptedLayer.source.layerPayloads[1].bytes[0] ^= 0xff;
   BOOST_CHECK_THROW(provider->publish(
-    "qwen-key", "/service", input.model, input.source, layered, input.control),
-    RepositorySourceError);
+    "qwen-key", "/service", corruptedLayer.model, corruptedLayer.source,
+    corruptedLayer.options, corruptedLayer.control), RepositorySourceError);
+
+  auto mismatchedLayer = input;
+  mismatchedLayer.options.layerManifestDigests.pop_back();
+  BOOST_CHECK_THROW(provider->publish(
+    "qwen-key", "/service", mismatchedLayer.model, mismatchedLayer.source,
+    mismatchedLayer.options, mismatchedLayer.control), RepositorySourceError);
 }
 
 BOOST_AUTO_TEST_CASE(CancelledPrepareDoesNotLeaveRepoObjects)
@@ -140,6 +164,24 @@ BOOST_AUTO_TEST_CASE(CancelledPrepareDoesNotLeaveRepoObjects)
     "qwen-key", "/service", input.model, input.source, input.options, input.control),
     std::runtime_error);
   BOOST_CHECK(fixture.repo->list().empty());
+}
+
+BOOST_AUTO_TEST_CASE(LegacyCanonicalReceiptWithoutLayersStillReuses)
+{
+  RepoFixture fixture;
+  PublicationInput input;
+  input.source.layerPayloads.clear();
+  input.options.layerManifestDigests.clear();
+  auto provider = std::make_shared<RepoSourceProvider>(fixture.repo);
+
+  const auto first = provider->publish(
+    "legacy-key", "/service", input.model, input.source, input.options, input.control);
+  const auto second = provider->publish(
+    "legacy-key", "/service", input.model, input.source, input.options, input.control);
+  BOOST_CHECK(second.layerDataNames.empty());
+  BOOST_CHECK(second.layerManifestDigests.empty());
+  BOOST_CHECK_EQUAL(provider->stats().publicationHits, 1U);
+  BOOST_CHECK(fixture.repo->has(first.rootDataName));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

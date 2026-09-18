@@ -23,7 +23,7 @@
 | --- | --- | --- | --- | --- |
 | [T001 Freeze candidate and production path](#t001) | PARTIAL | — | candidate/artifact identity frozen; preflight, caller map, build/source closure and handoff identity still pending | 2026-09-18 02:22 -05:00 |
 | [T002 Prepare Qwen graph and split packages](#t002) | PARTIAL | T001 | real Qwen graph, initializer and two stage artifacts checked; native prepare oracle pending | 2026-09-18 02:22 -05:00 |
-| [T003 Publish/reuse layer references in Repo](#t003) | PARTIAL | T002 | canonical source/initializer/root cold/hot Repo receipt and C++ ownership/corruption/cancellation checks pass; v7 static repair and r5 C++ regression pass; real layer payload publication remains unconnected | 2026-09-18 09:45 -05:00 |
+| [T003 Publish/reuse layer references in Repo](#t003) | PARTIAL | T002 | native layer payload owner, cold/hot layer receipt, legacy reuse, digest/range/cancellation checks and shared Repo transaction lock pass; real Qwen production prepare receipt remains pending | 2026-09-18 11:01 -05:00 |
 | [T004 Project payload-free request](#t004) | NOT_STARTED | T003 | request wire parser/oracle and oversized-model negative pending | 2026-09-18 00:00 -05:00 |
 | [T005 Produce real two-provider ACK/Selection](#t005) | PARTIAL | T004 | real signed offers/Selection observed; C++ placement oracle and no-fetch proof pending | 2026-09-18 02:22 -05:00 |
 | [T006 Fetch and assemble selected layers](#t006) | PARTIAL | T005 | grant verification and endpoint fix observed; fetch/assembly/runner counters and regression pending | 2026-09-18 02:22 -05:00 |
@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 10:37 -0500
+**Updated**: 2026-09-18 11:01 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -128,6 +128,16 @@ override negatives were rejected before compile, and the focused policy set
 returned `148 passed`. Evidence is in the [B189 build evidence](evidence/b189-build-20260918.md)
 under “Host-global dependency identity gate”. This does not advance any task;
 the C++ post-grant execution boundary and MiniNDN qualification remain pending.
+
+The T003 layer owner is now connected at the native Repo boundary. `NativeCanonicalSource`
+can carry digest-bound stage/range payloads; `RepoSourceProvider` commits those payloads
+before the manifest, verifies them on a hot lookup, and returns their stable names in the
+prepared receipt. A RepoCore-owned transaction lock closes the cross-adapter staging/abort
+race, and cleanup removes only objects committed by the current publication. The v3 immutable
+review returned `STATIC_PASS`; the global `unit-tests` target rebuilt with `-j4` in 1m27.718s,
+the three-case `Spec189RepoPublication` selector passed, and the production Runtime prepare
+regression passed. This is still a generic owner/fixture result: the pinned Qwen candidate has
+not yet supplied real layer payloads through `Runtime::prepare`, so T002/T003 remain `PARTIAL`.
 
 ## Task checklist
 

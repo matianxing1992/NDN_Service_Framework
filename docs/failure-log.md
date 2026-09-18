@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-18 — Spec189 T003 reused build-tree target configuration boundary
+
+The first T003 layer-owner build stopped before compilation because the reused
+Waf tree had been configured with `with_tests=False`; Waf therefore reported
+`Could not find a task generator for the name 'unit-tests'`. This is a build
+tree configuration boundary, not a source or runtime result. The raw boundary
+record is `.codex-tmp/spec189-t003-layer-owner-review-v1/initial-target-boundary.log`.
+The same tree was reconfigured with `--with-tests --with-examples` and the
+canonical `/usr` Boost plus `/usr/local` NDNSF/ONNX dependency identity; the
+subsequent `unit-tests` build and focused selectors passed.
+
 ## 2026-09-18 — Spec189 B189-1 Repo publication test fixture boundary
 
 The first focused `Spec189RepoPublication` run stopped before publication because

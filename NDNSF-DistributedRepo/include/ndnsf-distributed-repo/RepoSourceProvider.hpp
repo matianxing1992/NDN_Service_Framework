@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -221,6 +222,7 @@ public:
     const ndnsf::di::NativeRequestControl& control) const override
   {
     control.requireActive();
+    auto repoPublicationLock = m_repo->acquirePublicationLock();
     std::lock_guard<std::mutex> publicationLock(m_publicationMutex);
     if (modelKey.empty() || serviceName.empty() || source.modelBytes.empty())
       throw ndnsf::di::RepositorySourceError(
@@ -235,13 +237,28 @@ public:
           ndnsf::di::nativePlanningDigest(source.initializerBytes->data(),
                                           source.initializerBytes->size()) !=
             model.canonicalInitializerObjectDigest)))
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "repository artifact source differs from inspected identity");
+    if (options.layerManifestDigests.size() != source.layerPayloads.size())
       throw ndnsf::di::RepositorySourceError(
         ndnsf::di::RepositorySourceError::Kind::Unavailable,
-        "repository artifact source differs from inspected identity");
-    if (!options.layerManifestDigests.empty())
-      throw ndnsf::di::RepositorySourceError(
-        ndnsf::di::RepositorySourceError::Kind::Unavailable,
-        "repository layer publication is not connected to a durable layer payload owner");
+        "repository layer manifest and payload counts differ");
+
+    std::set<std::uint64_t> stages;
+    std::uint64_t previousEnd = 0;
+    for (std::size_t i = 0; i < source.layerPayloads.size(); ++i) {
+      const auto& layer = source.layerPayloads[i];
+      if (layer.bytes.empty() || layer.layerBegin >= layer.layerEnd ||
+          !stages.insert(layer.stageIndex).second ||
+          (i != 0 && layer.layerBegin != previousEnd) ||
+          layer.digest != options.layerManifestDigests[i] ||
+          ndnsf::di::nativePlanningDigest(layer.bytes.data(), layer.bytes.size()) != layer.digest)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "repository layer payload identity is invalid");
+      previousEnd = layer.layerEnd;
+    }
 
     const auto suffix = model.canonicalSourceDigest.substr(7);
     const auto root = options.artifactRoot + "/prepared/" + suffix;
@@ -258,10 +275,18 @@ public:
       receipt.canonicalManifestJson = manifestJson;
       receipt.manifestDigest = ndnsf::di::nativePlanningDigest(manifestJson);
       receipt.artifactProfileDigest = options.artifactProfileDigest;
+      receipt.layerManifestDigests = options.layerManifestDigests;
+      for (const auto& layer : source.layerPayloads) {
+        const auto layerName = root + "/layers/" + std::to_string(layer.stageIndex) + "-" +
+          std::to_string(layer.layerBegin) + "-" + std::to_string(layer.layerEnd);
+        receipt.layerDataNames.push_back(layerName);
+      }
       receipt.rollbackOwned = false;
       receipt.rollbackDataNames = {sourceName};
       if (source.initializerBytes)
         receipt.rollbackDataNames.push_back(initializerName);
+      receipt.rollbackDataNames.insert(receipt.rollbackDataNames.end(),
+                                       receipt.layerDataNames.begin(), receipt.layerDataNames.end());
       receipt.rollbackDataNames.push_back(rootName);
       receipt.validate();
       return receipt;
@@ -305,7 +330,9 @@ public:
               model.canonicalGraphDigest ||
             metadata.value("packageManifestDigest", std::string{}) !=
               options.packageManifestDigest ||
-            layerDigests != options.layerManifestDigests)
+            layerDigests != options.layerManifestDigests ||
+            rootJson.value("layerReferences", ndnsf::di::NativeJson::array()).size() !=
+              source.layerPayloads.size())
           rejectConflict();
 
         const auto checkObject = [&] (const std::string& name,
@@ -336,6 +363,23 @@ public:
         if (source.initializerBytes)
           checkObject(initializerName, model.canonicalInitializerObjectDigest,
                       model.canonicalInitializerBytes);
+        if (!source.layerPayloads.empty()) {
+          const auto& layerReferences = rootJson.at("layerReferences");
+          for (std::size_t i = 0; i < source.layerPayloads.size(); ++i) {
+            const auto& layer = source.layerPayloads[i];
+            const auto& reference = layerReferences.at(i);
+            const auto layerName = root + "/layers/" + std::to_string(layer.stageIndex) + "-" +
+              std::to_string(layer.layerBegin) + "-" + std::to_string(layer.layerEnd);
+            if (reference.value("stageIndex", std::uint64_t{~0U}) != layer.stageIndex ||
+                reference.value("layerBegin", std::uint64_t{~0U}) != layer.layerBegin ||
+                reference.value("layerEnd", std::uint64_t{~0U}) != layer.layerEnd ||
+                reference.value("dataName", std::string{}) != layerName ||
+                reference.value("digest", std::string{}) != layer.digest ||
+                reference.value("bytes", std::uint64_t{0}) != layer.bytes.size())
+              rejectConflict();
+            checkObject(layerName, layer.digest, layer.bytes.size());
+          }
+        }
         checkObject(rootName, ndnsf::di::nativePlanningDigest(manifestJson),
                     manifestJson.size());
       }
@@ -350,9 +394,11 @@ public:
       return receipt;
     }
 
+    std::vector<std::string> committedNames;
     const auto putRanges = [&] (const std::string& objectName,
                                 const std::vector<std::uint8_t>& bytes,
                                 const std::string& objectType) {
+      const bool existedBefore = m_repo->has(objectName);
       ndnsf_distributed_repo::RepoObjectManifest manifest;
       manifest.objectName = objectName;
       manifest.objectType = objectType;
@@ -372,12 +418,22 @@ public:
       }
       control.requireActive();
       m_repo->commitRanges(manifest);
+      if (!existedBefore)
+        committedNames.push_back(objectName);
     };
 
     try {
       putRanges(sourceName, source.modelBytes, "ndnsf-di-canonical-source");
       if (source.initializerBytes)
         putRanges(initializerName, *source.initializerBytes, "ndnsf-di-canonical-initializer");
+      std::vector<std::string> layerNames;
+      layerNames.reserve(source.layerPayloads.size());
+      for (const auto& layer : source.layerPayloads) {
+        const auto layerName = root + "/layers/" + std::to_string(layer.stageIndex) + "-" +
+          std::to_string(layer.layerBegin) + "-" + std::to_string(layer.layerEnd);
+        putRanges(layerName, layer.bytes, "ndnsf-di-canonical-layer");
+        layerNames.push_back(layerName);
+      }
       ndnsf::di::NativeJson metadata{
         {"modelKey", modelKey}, {"serviceName", serviceName},
         {"canonicalSourceDataName", sourceName},
@@ -393,8 +449,18 @@ public:
         {"artifactProfileDigest", options.artifactProfileDigest},
         {"modelIdentityDigest", model.descriptor.contentDigest},
         {"modelName", model.descriptor.modelName}, {"metadata", std::move(metadata)}};
-      if (!options.layerManifestDigests.empty())
+      if (!options.layerManifestDigests.empty()) {
         rootJson["layerManifestDigests"] = options.layerManifestDigests;
+        auto references = ndnsf::di::NativeJson::array();
+        for (std::size_t i = 0; i < source.layerPayloads.size(); ++i) {
+          const auto& layer = source.layerPayloads[i];
+          references.push_back({
+            {"stageIndex", layer.stageIndex}, {"layerBegin", layer.layerBegin},
+            {"layerEnd", layer.layerEnd}, {"dataName", layerNames[i]},
+            {"digest", layer.digest}, {"bytes", layer.bytes.size()}});
+        }
+        rootJson["layerReferences"] = std::move(references);
+      }
       const auto manifestJson = ndnsf::di::nativeCanonicalJson(rootJson);
       const std::vector<std::uint8_t> rootBytes(manifestJson.begin(), manifestJson.end());
       putRanges(rootName, rootBytes, "ndnsf-di-canonical-manifest");
@@ -403,10 +469,17 @@ public:
     catch (...) {
       try { m_repo->abortRanges(sourceName); } catch (...) {}
       try { m_repo->abortRanges(initializerName); } catch (...) {}
+      for (const auto& layer : source.layerPayloads) {
+        try {
+          m_repo->abortRanges(root + "/layers/" + std::to_string(layer.stageIndex) + "-" +
+                              std::to_string(layer.layerBegin) + "-" + std::to_string(layer.layerEnd));
+        }
+        catch (...) {}
+      }
       try { m_repo->abortRanges(rootName); } catch (...) {}
-      try { m_repo->remove(sourceName); } catch (...) {}
-      try { m_repo->remove(initializerName); } catch (...) {}
-      try { m_repo->remove(rootName); } catch (...) {}
+      for (const auto& name : committedNames) {
+        try { m_repo->remove(name); } catch (...) {}
+      }
       throw;
     }
   }
