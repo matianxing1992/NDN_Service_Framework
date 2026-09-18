@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 05:02 -0500
+**Updated**: 2026-09-18 06:58 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -64,10 +64,22 @@ Since then the validated r3 tree installed Core/DI into `/usr/local`, the root
 `/usr/local/lib`, and both extension `ldd` closures were checked. This proves
 host install/loader consistency only; it does not advance any task or establish
 container/runtime qualification.
-The next native attempt is governed by the shared
-[experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):
-no rebuild or MiniNDN retry is allowed until a real Changed gate is recorded and
-the frozen changed scope passes read-only review-agent re-review.
+The installed-global SVS fallback was reviewed as a frozen Changed gate and
+returned `STATIC_PASS`; the maintained build helper then generated a fresh
+`spec180-native-build.json` using the host `/usr`/`/usr/local`/ONNX Runtime
+closure. `LocalExperiment.py check` returned `PASS` for the complete candidate
+tuple. A first prepared run (r22) was rejected before startup because its
+profile listed three nodes for a two-stage manifest. The corrected r23 run
+started the real topology and reached signed ACK/Selection plus protected-grant
+verification on both Providers, then failed at the requester stream with
+`NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`. MiniNDN
+startup and cleanup passed, but no post-grant execution marker was observed.
+The 1.5 GiB temporary wire file was removed after process exit; raw logs and
+manifests remain in the run directory. B189-3 stays `BLOCKED_FOR_NATIVE_EXECUTION`
+and no task advances to complete. The next native attempt must first use
+provider-side timing/error evidence and the C++ post-grant regression; it may
+not treat the stream gap as the root cause or run the final qualification
+repeat.
 
 ## Task checklist
 

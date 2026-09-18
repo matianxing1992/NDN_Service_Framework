@@ -136,7 +136,18 @@ def validate_runtime_rpath(values: list[str], owner: str) -> None:
         raise RuntimeError(
             f"{owner} with $ORIGIN must also name the declared /opt/ndn-base "
             "SDK root")
-    reject_non_global_dependency_paths(concrete, owner)
+    # NDNSF_LIBRARY_DIR is the explicit application-output boundary.  It may
+    # contain the just-built framework/DI artifacts; external pkg-config and
+    # NAC/SVS/Boost inputs still have to remain under the installed global
+    # roots.  Do not silently authorize any other checkout or scratch path.
+    candidate_values = os.environ.get("NDNSF_LIBRARY_DIR", "")
+    candidate_dirs = {
+        str(Path(item).expanduser().resolve())
+        for item in candidate_values.split(os.pathsep) if item
+    }
+    dependency_values = [value for value in concrete
+                         if str(Path(value).expanduser().resolve()) not in candidate_dirs]
+    reject_non_global_dependency_paths(dependency_values, owner)
 
 
 def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -174,8 +185,14 @@ def explicit_ndn_svs_pair():
     if not source:
         return None
     source, build = Path(source).expanduser().resolve(), Path(build).expanduser().resolve()
-    for path in (source / "ndn-svs/svspubsub.hpp", build / "config.hpp",
-                 build / "libndn-svs.so"):
+    config_path = build / "config.hpp"
+    library_path = build / "libndn-svs.so"
+    # The installed host closure keeps the generated config beside the public
+    # headers under /usr/local/include/ndn-svs and the library under
+    # /usr/local/lib. Do not require a checkout build tree to build a binding.
+    if not config_path.is_file() and (source / "ndn-svs/config.hpp").is_file():
+        config_path = source / "ndn-svs/config.hpp"
+    for path in (source / "ndn-svs/svspubsub.hpp", config_path, library_path):
         if not path.is_file():
             raise RuntimeError("NDNSF_NDN_SVS pair is missing required file: " + str(path))
     reject_non_global_dependency_paths([str(source), str(build)],

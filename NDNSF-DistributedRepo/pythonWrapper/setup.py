@@ -136,7 +136,14 @@ def validate_runtime_rpath(values: list[str], owner: str) -> None:
         raise RuntimeError(
             f"{owner} with $ORIGIN must also name the declared /opt/ndn-base "
             "SDK root")
-    reject_non_global_dependency_paths(concrete, owner)
+    candidate_values = os.environ.get("NDNSF_LIBRARY_DIR", "")
+    candidate_dirs = {
+        str(Path(item).expanduser().resolve())
+        for item in candidate_values.split(os.pathsep) if item
+    }
+    dependency_values = [value for value in concrete
+                         if str(Path(value).expanduser().resolve()) not in candidate_dirs]
+    reject_non_global_dependency_paths(dependency_values, owner)
 
 
 def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -176,14 +183,17 @@ def build_extension() -> Extension:
     explicit_includes, extra_objects = [], []
     if source:
         source, build = Path(source).resolve(), Path(build).resolve()
-        for path in (source / "ndn-svs/svspubsub.hpp", build / "config.hpp",
-                     build / "libndn-svs.so"):
+        config_path = build / "config.hpp"
+        library_path = build / "libndn-svs.so"
+        if not config_path.is_file() and (source / "ndn-svs/config.hpp").is_file():
+            config_path = source / "ndn-svs/config.hpp"
+        for path in (source / "ndn-svs/svspubsub.hpp", config_path, library_path):
             if not path.is_file():
                 raise RuntimeError("NDNSF_NDN_SVS pair is missing required file: " + str(path))
         reject_non_global_dependency_paths([str(source), str(build)],
                                            "NDNSF_NDN_SVS source/build")
         explicit_includes.extend([str(source), str(build)])
-        extra_objects.append(str(build / "libndn-svs.so"))
+        extra_objects.append(str(library_path))
     nac = os.environ.get("NDNSF_NAC_ABE_PREFIX", "")
     if nac:
         nac = Path(nac).resolve()

@@ -303,13 +303,51 @@ qualification PASS.
 
 No two-provider native execution or hidden-state handoff has been observed. A single ONNX Runtime session or a preloaded runner would not satisfy this batch.
 
+### Attempt two-provider-global-r22 — stage-node profile boundary (2026-09-18)
+
+The immutable bundle was prepared from the global-closure candidate, but the
+maintained runner rejected the profile before MiniNDN startup because the
+profile listed three `stageNodes` while the candidate manifest contained two
+stages. No Controller, Authority, Provider, requester, or network namespace
+was started. The run record and preflight remain under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r22/`;
+cleanup status was `PASS`. This is a runner/profile contract boundary, not a
+protocol result.
+
+### Attempt two-provider-global-r23 — post-grant stream boundary (2026-09-18)
+
+After aligning the profile to the two-stage manifest, the real MiniNDN
+topology reached `PASS` machine/candidate/model/bundle preflight, Controller
+and Authority readiness, and both role-specific Provider readiness markers.
+Both Providers emitted signed `DI_PLACEMENT_V3_OFFER` decisions and
+`NDNSF_DI_GRANT_VERIFICATION` with `boundary=BEFORE_ASSEMBLY`. The requester
+entered `Runtime.open -> User.prepare -> PreparedModel.request` and then
+returned `NATIVE_STREAM_FAILED` with
+`stream event gap exceeded retry budget`. No
+`EXECUTION_ENTERED`, `DEPENDENCY_FETCH`, `ASSEMBLY_STARTED`, `RUNNER_READY`,
+`EXECUTION_COMPLETED`, terminal response, ONNX execution, or hidden-state
+handoff was observed. MiniNDN startup was `PASS`, workload was `FAIL`, and
+cleanup was `PASS`.
+
+Raw run directory:
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r23/`.
+The retained requester/provider log SHA-256 values are
+`aabe3820403570ff39f3e7f42672237f3ebce1eeacc9d378217cc1de9cd1e0c0`,
+`e8a2b6bd97f28a78ebc7645ac7d70f3fe030e3f2d4198174d16516ff74237f64`, and
+`f2b9fe2931c07889585cafc3fc5c9833823de39c84bbe2ec3c55a0cc14523f7e`.
+The first observed post-grant boundary is still unresolved between Provider
+coordination, protected dataflow preparation, callback delivery, and the Core
+stream transport; the requester gap is not treated as the root cause. The
+1.5 GiB `/tmp/ndnsf-large-data` wire file was removed only after all run
+processes exited; the raw logs and manifests remain.
+
 ## Five-lane coverage
 
 | Lane | State | Current evidence / gap |
 | --- | --- | --- |
 | production entry/callers | `covered-partial` | requester/provider reached `Runtime.open → User.prepare → PreparedModel.request`; post-grant execution caller not observed |
 | implementation/wire | `covered-partial` | V3 endpoint projection fix and policy/credential fixes are in source; fetch/assembly/terminal wire remains unobserved |
-| test/harness/oracle | `gap` | no C++ full-path oracle or endpoint-preservation regression has run |
+| test/harness/oracle | `gap` | C++ post-grant selector passed, but no full-path oracle or endpoint-preservation regression has run |
 | build/source closure | `covered-partial` | affected DI targets built with the recorded receipt; Spec189 selector symbol map is incomplete |
 | migration/evidence | `covered-partial` | immutable candidate and r01-r21 logs retained; repeat and cleanup evidence absent |
 
@@ -320,8 +358,8 @@ post-grant boundary, fetch, assembly, execution, handoff, terminal and drain).
 
 ## Closure decision
 
-`OPEN_FOR_NEXT_BATCH` with trigger: the C++ endpoint-preservation regression
-and post-grant Provider marker sequence are implemented and reviewed, then a
-fresh run identifies the first post-grant boundary or observes the complete
+`OPEN_FOR_NEXT_BATCH` with trigger: enable provider-side timing/error evidence
+for the post-grant handoff, run the C++ endpoint-preservation regression, and
+then identify the first missing marker or observe the complete
 fetch/assembly/execute/terminal sequence. Current status is
 `BLOCKED_FOR_NATIVE_EXECUTION`.

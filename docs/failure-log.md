@@ -7004,3 +7004,24 @@ tree but failed writing `/usr/local/lib/libndn-service-framework.so.0.1.0` with 
 Raw output is `/tmp/spec189-waf-cd-probe.log`. The authorized `sudo -n` retry from that same tree
 installed Core/DI and the Python binding successfully; the permission failure is retained only as
 the first boundary of the failed attempt.
+
+2026-09-18 Spec189 B189-3 two-provider-global-r22: the immutable candidate
+bundle passed local preflight, but the maintained MiniNDN runner rejected the
+profile before startup because `stageNodes` contained three nodes while the
+two-stage manifest contained two stages. No protocol process or network
+namespace was started; cleanup was `PASS`. This is a runner/profile contract
+boundary, not a product result. The corrected profile was assigned to r23.
+
+2026-09-18 Spec189 B189-3 two-provider-global-r23: the corrected global-closure
+candidate started the real MiniNDN topology. Controller, Authority and both
+Providers became ready; both Providers emitted signed Placement V3 offers and
+`NDNSF_DI_GRANT_VERIFICATION` at `boundary=BEFORE_ASSEMBLY`. The requester then
+returned `NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`.
+No `EXECUTION_ENTERED`, dependency fetch, assembly, runner-ready, execution
+completion, terminal event or ONNX hidden-state handoff was observed. MiniNDN
+startup and cleanup were `PASS`, workload was `FAIL`; this is the first
+unresolved post-grant stream/coordination boundary, not a qualification PASS.
+Raw logs remain under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r23/`.
+The 1.5 GiB temporary `/tmp/ndnsf-large-data` wire file was removed after all
+processes exited to restore disk space; no raw log was removed.
