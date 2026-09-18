@@ -92,6 +92,16 @@ def test_container_stage_dependency_root_requires_explicit_marker(monkeypatch, s
     checker(["/opt/ndnsf-stage"], "container prefix")
 
 
+def test_container_base_dependency_root_requires_explicit_marker(monkeypatch, setup_path):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    checker = namespace["reject_non_global_dependency_paths"]
+    with pytest.raises(RuntimeError, match="undeclared dependency root"):
+        checker(["/opt/ndn-base"], "container base")
+    monkeypatch.setenv("NDNSF_CONTAINER_BUILD", "1")
+    checker(["/opt/ndn-base"], "container base")
+
+
 def test_historical_local_runtime_rpath_is_rejected(monkeypatch, setup_path):
     """A runtime-only override must not reintroduce the retired tree."""
     monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
@@ -179,6 +189,7 @@ def test_runtime_rpath_override_targets_pair_locations(monkeypatch, tmp_path, se
     (candidate / "libndnsf-distributed-inference.so").touch()
     captured: dict[str, object] = {}
     monkeypatch.setenv("NDNSF_LIBRARY_DIR", str(candidate))
+    monkeypatch.setenv("NDNSF_CONTAINER_BUILD", "1")
     monkeypatch.setenv("NDNSF_RUNTIME_RPATH", "$ORIGIN/../../lib:/opt/ndn-base/lib")
     monkeypatch.setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
 
@@ -192,6 +203,42 @@ def test_runtime_rpath_override_targets_pair_locations(monkeypatch, tmp_path, se
     assert runpaths == ["$ORIGIN/../../lib", "/opt/ndn-base/lib"]
     assert str(candidate) not in runpaths
     assert all("/opt/ndnsf-di/current" not in value for value in runpaths)
+
+
+def test_host_runtime_rpath_rejects_temp_root(monkeypatch, tmp_path, setup_path):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    monkeypatch.setenv("NDNSF_RUNTIME_RPATH", str(tmp_path))
+    with pytest.raises(RuntimeError, match="undeclared dependency root"):
+        namespace["build_extension"]()
+
+
+def test_host_origin_runtime_rpath_requires_container_marker(monkeypatch, setup_path):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    monkeypatch.setenv("NDNSF_RUNTIME_RPATH", "$ORIGIN/../../lib:/opt/ndn-base/lib")
+    with pytest.raises(RuntimeError, match="NDNSF_CONTAINER_BUILD=1"):
+        namespace["build_extension"]()
+
+
+def test_host_pkg_config_path_rejects_temp_root(monkeypatch, tmp_path, setup_path):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    pkgconfig = tmp_path / "pkgconfig"
+    pkgconfig.mkdir()
+    monkeypatch.setenv("PKG_CONFIG_PATH", str(pkgconfig))
+    with pytest.raises(RuntimeError, match="undeclared dependency root"):
+        namespace["pkg_config"]("libndn-cxx")
+
+
+def test_host_pkg_config_libdir_rejects_temp_root(monkeypatch, tmp_path, setup_path):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    pkgconfig = tmp_path / "pkgconfig-libdir"
+    pkgconfig.mkdir()
+    monkeypatch.setenv("PKG_CONFIG_LIBDIR", str(pkgconfig))
+    with pytest.raises(RuntimeError, match="undeclared dependency root"):
+        namespace["pkg_config"]("libndn-cxx")
 
 
 @pytest.mark.parametrize("candidate", [os.pathsep, os.pathsep * 2])
