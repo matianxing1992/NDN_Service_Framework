@@ -66,11 +66,16 @@ def reject_historical_local_link_flags(flags: list[str], owner: str) -> None:
             continue
         parts = value[4:].split(",")
         for index, part in enumerate(parts):
-            if part in ("-rpath", "-rpath-link", "-R") and index + 1 < len(parts):
+            if part in ("-rpath", "-rpath-link", "-R", "-L",
+                        "--rpath", "--rpath-link") and index + 1 < len(parts):
                 path_values.append(parts[index + 1])
             elif part.startswith("-rpath="):
                 path_values.append(part.split("=", 1)[1])
+            elif part.startswith(("-rpath-link=", "--rpath=", "--rpath-link=")):
+                path_values.append(part.split("=", 1)[1])
             elif part.startswith("-R") and part != "-R":
+                path_values.append(part[2:])
+            elif part.startswith("-L") and part != "-L":
                 path_values.append(part[2:])
     reject_historical_local_paths(path_values, owner)
 
@@ -102,11 +107,16 @@ def linker_path_values(flags: list[str]) -> list[str]:
             continue
         parts = flag[4:].split(",")
         for index, part in enumerate(parts):
-            if part in ("-rpath", "-rpath-link", "-R") and index + 1 < len(parts):
+            if part in ("-rpath", "-rpath-link", "-R", "-L",
+                        "--rpath", "--rpath-link") and index + 1 < len(parts):
                 values.append(parts[index + 1])
             elif part.startswith("-rpath="):
                 values.append(part.split("=", 1)[1])
+            elif part.startswith(("-rpath-link=", "--rpath=", "--rpath-link=")):
+                values.append(part.split("=", 1)[1])
             elif part.startswith("-R") and part != "-R":
+                values.append(part[2:])
+            elif part.startswith("-L") and part != "-L":
                 values.append(part[2:])
     return values
 

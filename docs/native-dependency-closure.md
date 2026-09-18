@@ -79,6 +79,17 @@ pkg-config/linker flags 不接受该 token。容器仍必须同时声明 `/opt/n
 及其运行时依赖安装到全局前缀，不能把 `$DEPS_DIR/local` 当作运行时或构建前缀。
 当前脚本将 `/usr/local` 作为 Waf、CMake 和 OpenABE 的显式安装前缀；
 `dependencies/` 下的 checkout 只用于编译，不会被写入运行时搜索路径。
+`install_ndnsf_stack.sh` 对 `libndn-cxx`、`ndnsd`、`libndn-svs` 和 `libnac-abe`
+执行最低版本和安装 prefix 检查，并验证 OpenABE、ONNX full-protobuf 与 tokenizer
+bridge 的实际文件都解析到 `/usr/local/lib`。缺失或过旧的 pkg-config 依赖会触发源码
+重建；无法由该脚本重建的 ONNX/tokenizer 文件会直接阻止继续；
+`--no-dependencies` 也不能绕过闭包检查。安装 Core/DI 后，脚本从同一 `/usr/local/lib`
+计算摘要回执再构建两个 Python binding，因而不会把未安装的 checkout 产物当作依赖。
+安装器不会复用未知来源的 Waf cache：默认每次用清理后的 `/usr/bin/gcc`、`/usr/bin/g++`
+、`/usr/bin/ld`、`/usr/bin/ar` 及 `/usr/bin/pkg-config`，并清除 `PKGCONFIG`、
+`LD/AR/AS/RANLIB/NM/STRIP` 等工具覆盖和未污染的 linker 环境重新 configure；
+`--no-configure` 被拒绝。`--check-dependencies` 也只调用 canonical
+`/usr/bin/pkg-config`，不会受 PATH 中的 shim 影响。
 
 ## Current host build confirmation
 

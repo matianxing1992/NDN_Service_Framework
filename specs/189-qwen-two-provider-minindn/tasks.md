@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 08:02 -0500
+**Updated**: 2026-09-18 08:31 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -91,6 +91,17 @@ root binding built and independently verified with `SPEC180_NATIVE_IDENTITY_OK`,
 the Repo binding built and linked to the same global closure, and the Qwen
 candidate preflight returned `status=PASS`. These are dependency/loader gates
 only; T001–T010 and the post-grant MiniNDN boundary remain unchanged.
+The installation entry point is now covered by the same policy: missing or
+old global packages are rebuilt into `/usr/local`, unresolved ONNX/OpenABE/
+tokenizer files stop the run, the Waf cache is never reused without a fresh
+configure, and both binding builds receive the installed Core/DI digest
+receipt. The Waf/native-build/binding linker parsers reject normal, compact
+and equals-form encoded `/tmp` paths; the v11 frozen review returned
+`STATIC_PASS`, `--check-dependencies` passed, seven encoded-path negative
+selectors passed, and the affected native build plus independent verify both
+returned `SPEC180_NATIVE_IDENTITY_OK`; the focused policy/regression set was
+`148 passed`. This remains a dependency-policy checkpoint only; no Spec189
+task is complete and the post-grant MiniNDN boundary is unchanged.
 
 ## Task checklist
 

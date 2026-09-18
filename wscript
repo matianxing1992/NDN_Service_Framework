@@ -284,11 +284,16 @@ def configure(conf):
             if value.startswith('-Wl,'):
                 parts = value[4:].split(',')
                 for part_index, part in enumerate(parts):
-                    if part in ('-rpath', '-rpath-link', '-R') and part_index + 1 < len(parts):
+                    if part in ('-rpath', '-rpath-link', '-R', '-L',
+                                '--rpath', '--rpath-link') and part_index + 1 < len(parts):
                         paths.append(parts[part_index + 1])
                     elif part.startswith('-rpath='):
                         paths.append(part.split('=', 1)[1])
+                    elif part.startswith(('-rpath-link=', '--rpath=', '--rpath-link=')):
+                        paths.append(part.split('=', 1)[1])
                     elif part.startswith('-R') and part != '-R':
+                        paths.append(part[2:])
+                    elif part.startswith('-L') and part != '-L':
                         paths.append(part[2:])
             index += 1
         return paths

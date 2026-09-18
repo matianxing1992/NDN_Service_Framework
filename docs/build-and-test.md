@@ -8,8 +8,11 @@
 NDN-SVS、NAC-ABE、ONNX full-protobuf 和 tokenizer bridge；仓库、`/tmp` 与
 `.local-boost171` 都不能作为 host 库输入。
 `install_ndnsf_stack.sh` 会把 Waf/CMake/OpenABE 依赖明确配置为
-`/usr/local`；`dependencies/` 只保存可重建的源码 checkout，不得出现在
-`LD_LIBRARY_PATH`、RPATH 或 pkg-config 输入中。
+`/usr/local`，并在配置前检查包版本、pkg-config prefix 和实际库文件；缺失、过旧
+或解析到 checkout/临时目录时会先停止，默认流程会从 `dependencies/` 的源码 checkout
+重建并安装到 `/usr/local`。`dependencies/` 只保存可重建的源码 checkout，不得出现在
+`LD_LIBRARY_PATH`、RPATH 或 pkg-config 输入中。`--no-dependencies` 只禁止脚本抓取和
+编译依赖源码，仍会因全局闭包不完整而退出，不能绕过这条规则。
 如果环境变量自带旧的 `PKG_CONFIG_PATH`，Waf 和两个 binding 会在发现其实际路径后
 拒绝 `.local-boost171`；应清理环境或显式指定完整、同一 ABI 的隔离前缀。
 
@@ -26,17 +29,44 @@ Useful variants:
 ```bash
 sudo ./install_ndnsf_stack.sh --with-minindn-deps
 sudo ./install_ndnsf_stack.sh --with-system-tests-deps
-./install_ndnsf_stack.sh --no-dependencies --no-system-install
+./install_ndnsf_stack.sh --check-dependencies
 ```
+
+`--no-dependencies` 可用于已知全局依赖已经满足时跳过源码重建；它仍会执行闭包
+检查。`--no-system-install` 只适合明确的 C++ build-only 诊断，脚本会在 Python
+binding 阶段停止，不会把 checkout 产物当成完整安装。安装器每次都会用清理后的
+系统工具链重新执行 Waf configure；`--no-configure` 会被拒绝，避免复用未知来源
+的旧 cache。
 
 ## Build From Source
 
 ```bash
 BUILD="$PWD/build-current"
 test -d "$BUILD" || mkdir -p "$BUILD"
-./waf -o "$BUILD" configure \
+env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR \
+  -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+  -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH \
+  -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH -u LDSHARED -u WAFDIR \
+  -u PKGCONFIG -u LD -u AR -u AS -u RANLIB -u NM -u STRIP \
+  -u OBJCOPY -u OBJDUMP -u READELF \
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin" PKGCONFIG=/usr/bin/pkg-config \
+  CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+  AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
+  NM=/usr/bin/nm STRIP=/usr/bin/strip \
+  ./waf -o "$BUILD" configure \
+  --nac-abe-prefix=/usr/local --onnx-prefix=/usr/local \
   --with-examples --with-tests
-./waf -o "$BUILD" build -j4
+env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR \
+  -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+  -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH \
+  -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH -u LDSHARED -u WAFDIR \
+  -u PKGCONFIG -u LD -u AR -u AS -u RANLIB -u NM -u STRIP \
+  -u OBJCOPY -u OBJDUMP -u READELF \
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin" PKGCONFIG=/usr/bin/pkg-config \
+  CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+  AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
+  NM=/usr/bin/nm STRIP=/usr/bin/strip \
+  ./waf -o "$BUILD" build -j4
 ```
 
 安装一个已经配置并验证过的构建树时，必须从该树目录执行 Waf；不要在仓库根目录
@@ -97,6 +127,11 @@ export NDNSF_GLOBAL_NATIVE_DIGESTS="$(python3 -c 'import hashlib,json; names=("l
 python3 -m pip install -e ./pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedInference
+
+两个 C++ binding 的 `setup.py` 只接受已经安装的 `/usr/local/lib` Core/DI
+库，并要求 `NDNSF_GLOBAL_NATIVE_DIGESTS` 与该安装逐字节一致；上面的命令仅适用于
+已完成 `./waf install` 且当前 shell 已设置该摘要回执的环境。直接从 checkout
+构建 `.so` 或通过 `NDNSF_LIBRARY_DIR` 指向构建树都会被拒绝。
 ```
 
 ## Regression Tests

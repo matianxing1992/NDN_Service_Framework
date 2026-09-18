@@ -733,11 +733,16 @@ def test_helper_rejects_component_cache_paths_before_waf_compile(local):
     assert local["calls"] == []
 
 
-def test_helper_rejects_generic_linkflag_search_path_before_waf_compile(local):
+@pytest.mark.parametrize("flag", [
+    "-L/tmp", "-Wl,-L,/tmp", "-Wl,-L/tmp",
+    "-Wl,--rpath,/tmp", "-Wl,--rpath=/tmp", "-Wl,--rpath-link=/tmp",
+    "-Wl,-rpath-link=/tmp",
+])
+def test_helper_rejects_generic_linkflag_search_path_before_waf_compile(local, flag):
     (local["build_dir"] / "c4che/_cache.py").write_text(
         native.SVS_SOURCE_ENV + " = " + repr(str(local["svs_source"])) + "\n" +
         native.SVS_BUILD_ENV + " = " + repr(str(local["svs_build"])) + "\n" +
-        "LINKFLAGS = ['-L/tmp']\n")
+        "LINKFLAGS = [" + repr(flag) + "]\n")
     with pytest.raises(native.IdentityError, match="WAF_CACHE_LINKFLAGS_OUTSIDE_GLOBAL_ROOT"):
         build(local)
     assert local["calls"] == []
