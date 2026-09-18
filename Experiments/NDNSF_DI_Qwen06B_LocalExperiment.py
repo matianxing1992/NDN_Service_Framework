@@ -27,6 +27,10 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "Experiments") not in sys.path:
+    sys.path.insert(0, str(ROOT / "Experiments"))
+from native_resource_guard import run_guarded, validate_limits
+
 RUNNER = ROOT / "Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py"
 PROFILE_SCHEMA = "ndnsf-di-qwen06b-local-experiment-v1"
 RUN_SCHEMA = "ndnsf-di-qwen06b-local-run-v2"
@@ -84,7 +88,7 @@ def load_profile(path: Path) -> tuple[dict[str, Any], str]:
     unknown = sorted(set(payload) - {
         "schema", "profileId", "topologyFile", "stageNodes", "controllerNode",
         "userNode", "buildDir", "controllerBinary", "authorityBinary",
-        "requesterBinary", "providerBinary", "assemblyWorkerBinary", "outputRoot",
+        "requesterBinary", "providerBinary", "assemblyWorkerBinary", "outputRoot", "resourceLimits",
     })
     if unknown:
         raise ValueError("PROFILE_UNKNOWN_FIELDS:" + ",".join(unknown))
@@ -100,6 +104,7 @@ def load_profile(path: Path) -> tuple[dict[str, Any], str]:
         if not isinstance(payload[field], str) or not NODE_RE.fullmatch(payload[field]):
             raise ValueError(f"PROFILE_{field.upper()}_INVALID")
     profile = dict(payload)
+    profile["resourceLimits"] = validate_limits(payload.get("resourceLimits"))
     for field in ("topologyFile", "buildDir", "controllerBinary", "authorityBinary",
                   "requesterBinary", "providerBinary", "assemblyWorkerBinary", "outputRoot"):
         if field in profile:
@@ -434,6 +439,8 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
         "schema": "ndnsf-di-qwen06b-app-manifest-v1",
         "application": "Qwen3-0.6B-native-MiniNDN",
         "runner": {"path": str(RUNNER), "sha256": sha256_file(RUNNER)},
+        "resourceGuard": {"sha256": sha256_file(ROOT / "Experiments/native_resource_guard.py"),
+                          "limits": validate_limits(profile.get("resourceLimits"))},
         "profile": {"path": str(args.profile.resolve()), "sha256": profile_sha,
                     "profileId": profile["profileId"]},
         "topology": {"path": str(topology), "sha256": machine["topologySha256"]},
@@ -669,9 +676,18 @@ def main() -> int:
     log = run_dir / "logs/runner.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    with log.open("w", encoding="utf-8") as stream:
-        completed = subprocess.run(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT,
-                                   check=False)
+    try:
+        with log.open("x", encoding="utf-8") as stream:
+            supervision = run_guarded(
+                command, cwd=ROOT, stdout=stream,
+                sample_path=run_dir / "resource-samples.jsonl",
+                limits=profile["resourceLimits"])
+    except (OSError, ValueError) as exc:
+        supervision = {"returncode": None,
+                       "boundary": ("EVIDENCE_CONFLICT" if isinstance(exc, FileExistsError)
+                                    else "RESOURCE_SUPERVISOR_ERROR:" + type(exc).__name__),
+                       "cleanup": "NOT_STARTED", "remainingProcesses": []}
+    record["resourceGuard"] = supervision
     child_record = run_dir / "workload/run-record.json"
     child_status = None
     if child_record.is_file():
@@ -681,20 +697,34 @@ def main() -> int:
             child_status = None
     failure_marker = first_failure_marker(run_dir / "workload")
     startup_ready = startup_markers_observed(run_dir / "workload")
-    if completed.returncode == 0 and child_status == "PASS":
+    if supervision["boundary"]:
+        boundary = supervision["boundary"]
+        record["phases"]["minindn"] = {
+            "status": "PASS" if startup_ready else "NOT_EVALUATED",
+            "finishedAt": now()}
+        record["phases"]["workload"] = {"status": "NOT_EVALUATED", "reason": boundary}
+        record["status"] = ("RESOURCE_BOUNDARY" if boundary.startswith("RESOURCE_BOUNDARY:")
+                            else "FAIL")
+    elif supervision["returncode"] == 0 and child_status == "PASS":
         record["phases"]["minindn"] = {"status": "PASS", "finishedAt": now()}
         record["phases"]["workload"] = {"status": "PASS", "childRecord": str(child_record),
                                           "elapsedSeconds": round(time.monotonic() - started, 3)}
         record["status"] = "PASS"
     else:
         record["phases"]["minindn"] = {"status": "PASS" if startup_ready else "FAIL", "finishedAt": now(),
-                                        "returncode": completed.returncode, "log": str(log)}
+                                        "returncode": supervision["returncode"], "log": str(log)}
         record["phases"]["workload"] = {"status": "FAIL" if startup_ready else "NOT_EVALUATED",
                                           "reason": ("NATIVE_REQUEST_FAILED:" + failure_marker
                                                      if startup_ready and failure_marker
                                                      else "MININDN_START_OR_REQUEST_FAILED")}
         record["status"] = "FAIL"
     cleanup = process_census(run_dir)
+    if supervision["cleanup"] != "PASS":
+        cleanup = {"status": supervision["cleanup"],
+                   "reason": ("RESOURCE_GUARD_CHILD_RESIDUE" if supervision["remainingProcesses"]
+                              else supervision["boundary"] or "RESOURCE_GUARD_CLEANUP_UNOBSERVED"),
+                   "remainingProcesses": supervision["remainingProcesses"],
+                   "census": cleanup}
     record["phases"]["cleanup"] = cleanup
     if cleanup["status"] != "PASS":
         record["status"] = "FAIL"
