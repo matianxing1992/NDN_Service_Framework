@@ -98,13 +98,12 @@ SIF 内不使用宿主 `/usr/local/lib`。base SIF 将稳定 NDN-CXX/NFD 和系�
 Host-local runs should use an explicit path similar to:
 
 ```bash
-BUILD="/absolute/path/to/build"
 PYTHON_WRAPPER="/absolute/path/to/pythonWrapper"
-for path in "$BUILD" "$PYTHON_WRAPPER" \
-            /usr/local/lib /usr/lib/x86_64-linux-gnu; do
+for path in "$PYTHON_WRAPPER" /usr/local/lib /usr/lib/x86_64-linux-gnu; do
   test -d "$path" || { echo "missing absolute dependency directory: $path" >&2; exit 2; }
 done
-export LD_LIBRARY_PATH="$BUILD:/usr/local/lib:$PYTHON_WRAPPER:/opt/onnxruntime/lib:/usr/lib/x86_64-linux-gnu"
+export NDNSF_LIBRARY_DIR=/usr/local/lib
+export LD_LIBRARY_PATH="/usr/local/lib:/opt/onnxruntime/lib:/usr/lib/x86_64-linux-gnu"
 ```
 
 Then inspect the extension, every transitive DI/SVS/NAC library, and `/usr/local/bin/nfd`:

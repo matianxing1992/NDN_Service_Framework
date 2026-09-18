@@ -68,11 +68,13 @@ installed or discoverable. The wrapper searches for binaries in this order:
 4. the process `$PATH`;
 5. `repo_root/build/examples` only when `repo_root` is explicitly passed.
 
-When running against an uninstalled source-tree build, use:
+When running against current source-tree binaries, keep native libraries on
+the installed global host closure and point only binary discovery at the
+source-tree output:
 
 ```bash
 export NDNSF_BINARY_DIR=/path/to/ndn-service-framework/build/examples
-export NDNSF_LIBRARY_DIR=/path/to/ndn-service-framework/build
+export NDNSF_LIBRARY_DIR=/usr/local/lib
 ```
 
 `ServiceProvider` and `ServiceUser` use the compiled Python extension instead
@@ -323,14 +325,14 @@ envelope; the normal retrieval mechanism is still segmented Data by exact name.
 
 ## Source-Tree Development
 
-For development without installing C++ binaries system-wide, build the examples
-and point the wrapper at the build output:
+For development, build the examples locally but keep native libraries on the
+installed global host closure:
 
 ```bash
 ./waf configure
 ./waf build
 export NDNSF_BINARY_DIR=$PWD/build/examples
-export NDNSF_LIBRARY_DIR=$PWD/build
+export NDNSF_LIBRARY_DIR=/usr/local/lib
 ```
 
 ## Dry Run

@@ -92,8 +92,8 @@ For an integration batch, use the existing tree and select the target explicitly
 Python packages for source-tree development:
 
 ```bash
-python3 -m pip install -e ./pythonWrapper
-python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
+NDNSF_LIBRARY_DIR=/usr/local/lib python3 -m pip install -e ./pythonWrapper
+NDNSF_LIBRARY_DIR=/usr/local/lib python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedInference
 ```
 
