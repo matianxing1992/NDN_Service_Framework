@@ -3,6 +3,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 
+#include <optional>
+
 namespace ndnsf::di {
 
 struct Spec185PreparedModelTestAccess;
@@ -28,25 +30,43 @@ public:
   NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
     const NativeAssemblyControl& control);
   std::shared_ptr<const NativeAdapterRegistry> adapters() const;
+  /** Borrow the verified source for in-place identity checks without copying
+   * multi-gigabyte canonical initializer buffers. The catalog must outlive
+   * the returned reference. */
+  const NativeCanonicalSource& sourceRefFor(const NativeModelDescriptor& model) const;
   /** Return a copy of the verified owned source for preparation identity checks. */
   NativeCanonicalSource sourceFor(const NativeModelDescriptor& model) const;
+  /** Return the immutable publication profile frozen with the model entry. */
+  NativeCanonicalPublicationOptions publicationFor(const NativeModelDescriptor& model) const;
   NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
     const NativeRequestControl& control) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName) const;
+  std::shared_ptr<NativeRequestPreparation> makePreparation(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
+    std::optional<NativePreparedCanonicalPublication> preparedPublication) const;
+
+  NativePreparedCanonicalPublication preparePublication(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
+    const NativeModelDescriptor& model, const NativeRequestControl& control) const;
 
 private:
+  friend class ModelPreparationCache;
   friend class NativeCanonicalCatalogTestAccess;
   friend struct Spec185PreparedModelTestAccess;
   using PublisherFactory = std::function<NativeCanonicalArtifactPublisher(
     NativeCanonicalPublicationOptions, NativeCanonicalArtifactPublisher::SourcePort)>;
   std::shared_ptr<NativeRequestPreparation> makePreparation(PublisherFactory factory) const;
+  std::shared_ptr<NativeRequestPreparation> makePreparation(PublisherFactory factory,
+    std::optional<NativePreparedCanonicalPublication> preparedPublication) const;
   struct State;
   // Test-only lifetime probe. The returned weak pointer observes the exact
   // catalog source owner; it is never used by production request paths.
   std::weak_ptr<const NativeCanonicalSource> sourceLifetimeForTest(
     const NativeModelDescriptor& model) const;
+  /** Drop the transient preparation source after publication/package creation. */
+  void releaseTransientSource() const noexcept;
   std::shared_ptr<const State> m_state;
 };
 

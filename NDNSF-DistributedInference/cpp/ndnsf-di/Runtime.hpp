@@ -3,6 +3,7 @@
 
 #include "ndn-service-framework/OperationRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
@@ -19,6 +20,9 @@
 #include <vector>
 
 namespace ndnsf::di {
+
+class RepositorySourceProvider;
+class RepositoryArtifactPublisher;
 
 using Milliseconds = std::chrono::milliseconds;
 using Subscription = ndn_service_framework::OperationSubscription;
@@ -56,7 +60,13 @@ struct RuntimeConfig
   std::size_t maxPreparedBytes = 536870912;
   std::size_t maxPreparedEntries = 8;
   Milliseconds preparationJobTimeout{300000};
+  /** Compatibility seam retained for existing embedders during migration. */
   RepositorySourceLoader repositorySourceLoader;
+  /** Preferred production Repo owner; appended to preserve aggregate order. */
+  std::shared_ptr<const RepositorySourceProvider> repositorySourceProvider;
+  /** Optional prepare-time durable artifact owner. A request never calls this
+   * boundary; it receives only the committed reference. */
+  std::shared_ptr<const RepositoryArtifactPublisher> repositoryArtifactPublisher;
 };
 
 /** v1 accepts the empty profile or the explicit default profile only. */
@@ -105,6 +115,44 @@ public:
   enum class Kind { Unavailable, Timeout, Cancelled, Closed };
 
   RepositorySourceError(Kind kind, std::string message);
+};
+
+/** Immutable request context passed to a native repository source owner. */
+struct RepositorySourceRequest
+{
+  std::string modelKey;
+  std::string catalogConfigurationJson;
+  std::uint64_t maxSourceBytes = 0;
+  std::chrono::steady_clock::time_point deadline{};
+};
+
+/** Production source-owner boundary for Runtime preparation. */
+class RepositorySourceProvider
+{
+public:
+  using Fallback = std::function<NativeCanonicalSource(const RepositorySourceRequest&)>;
+
+  virtual ~RepositorySourceProvider() = default;
+  virtual NativeCanonicalSource load(const RepositorySourceRequest& request,
+                                     const Fallback& fallback) const = 0;
+};
+
+/** Durable publication owner for Runtime::prepare. Loading verified source
+ * bytes and committing a reusable artifact receipt are separate contracts. */
+class RepositoryArtifactPublisher
+{
+public:
+  virtual ~RepositoryArtifactPublisher() = default;
+
+  virtual NativePreparedCanonicalPublication publish(
+    const std::string& modelKey,
+    const std::string& serviceName,
+    const NativeInspectedModel& model,
+    const NativeCanonicalSource& source,
+    const NativeCanonicalPublicationOptions& options,
+    const NativeRequestControl& control) const = 0;
+
+  virtual void rollback(const NativePreparedCanonicalPublication& publication) const noexcept = 0;
 };
 
 namespace detail { struct RuntimeState; struct RuntimeTestAccess; }

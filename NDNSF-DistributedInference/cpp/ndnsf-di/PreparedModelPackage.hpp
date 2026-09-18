@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,11 @@ struct PreparedModelPackage
   // Opaque Runtime identity used to reject a placement handle borrowed from a
   // different Runtime state. It carries no request or authorization data.
   std::shared_ptr<void> runtimeBinding;
+  /** Reference-only source identity emitted by PreparedModel::request. */
+  std::optional<NativeModelArtifactReference> modelReference;
+  /** Prepare-time canonical publication receipt; request binding only derives
+   * role names from it and never performs another Core publication. */
+  std::optional<NativePreparedCanonicalPublication> preparedPublication;
 };
 
 } // namespace ndnsf::di

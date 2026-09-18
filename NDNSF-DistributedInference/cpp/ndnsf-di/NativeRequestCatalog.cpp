@@ -1,7 +1,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
+
+#include <algorithm>
+#include <cstring>
 
 namespace ndnsf::di {
 NativeRequestCatalog NativeRequestCatalog::load(const std::string& configurationJson,
@@ -33,6 +37,12 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   }
   else if (sourceConfig.contains("initializer_digest"))
     throw std::invalid_argument("pinned initializer object is missing");
+  if (source.initializerBytes && model.descriptor.modelFormat == "onnx") {
+    // The catalog pins the fetched external object above. Assembly recipes
+    // bind a separate digest over normalized ONNX initializer contents.
+    model.canonicalInitializerDigest = canonicalOnnxSourceIdentity(
+      source, control).initializerDigest;
+  }
   const auto& recipe = root.at("recipe");
   entry.recipe = {recipe.at("artifact_profile_digest"), recipe.at("assembler_descriptor_digest"),
     recipe.at("backend_abi"), recipe.at("precision"), recipe.at("quantization"), recipe.at("layout"),
@@ -52,19 +62,48 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   else throw std::invalid_argument("unsupported request input format");
   if (root.contains("conversation_input")) {
     const auto& conversationInput = root.at("conversation_input");
-    if (!conversationInput.is_object() ||
-        conversationInput.value("kind", std::string{}) != "OPAQUE_BYTE_TOKEN_IDS")
+    if (!conversationInput.is_object())
       throw std::invalid_argument("unsupported native conversation input encoder");
-    // This operator-pinned fixture contract derives one canonical token from
-    // each encoded byte.  Callers cannot supply or replace this encoder; it is
-    // captured by the immutable adapter registry during preparation.
-    entry.conversationTokenEncoder = [] (const std::vector<std::uint8_t>& bytes) {
-      std::vector<std::int64_t> tokens;
-      tokens.reserve(bytes.size());
-      for (const auto byte : bytes)
-        tokens.push_back(static_cast<std::int64_t>(byte));
-      return tokens;
-    };
+    const auto kind = conversationInput.value("kind", std::string{});
+    if (kind == "OPAQUE_BYTE_TOKEN_IDS") {
+      // This operator-pinned fixture contract derives one canonical token from
+      // each encoded byte.  Callers cannot supply or replace this encoder; it
+      // is captured by the immutable adapter registry during preparation.
+      entry.conversationTokenEncoder = [] (const std::vector<std::uint8_t>& bytes) {
+        std::vector<std::int64_t> tokens;
+        tokens.reserve(bytes.size());
+        for (const auto byte : bytes)
+          tokens.push_back(static_cast<std::int64_t>(byte));
+        return tokens;
+      };
+    }
+    else if (kind == "TENSOR_BUNDLE_TOKEN_IDS") {
+      const auto tensorName = conversationInput.value("tensor_name", "input_ids");
+      if (tensorName.empty())
+        throw std::invalid_argument("tensor-bundle conversation input tensor name is empty");
+      // The native request payload is an authenticated tensor bundle.  A
+      // tensor-bundle encoder must derive the same token suffix as the
+      // execution coordinator, rather than hashing transport framing bytes.
+      entry.conversationTokenEncoder = [tensorName] (const std::vector<std::uint8_t>& bytes) {
+        if (!isEncodedTensorBundle(bytes))
+          throw std::invalid_argument("conversation input is not an encoded tensor bundle");
+        const auto tensors = decodeTensorBundle(bytes);
+        const auto found = std::find_if(tensors.begin(), tensors.end(),
+          [&tensorName] (const auto& tensor) { return tensor.name == tensorName; });
+        if (found == tensors.end() || found->elementType != TensorElementType::Int64 ||
+            found->shape.empty() || found->payload.empty() ||
+            found->payload.size() % sizeof(std::int64_t) != 0)
+          throw std::invalid_argument("conversation input token tensor is invalid");
+        std::vector<std::int64_t> tokens(found->payload.size() / sizeof(std::int64_t));
+        std::memcpy(tokens.data(), found->payload.data(), found->payload.size());
+        if (std::any_of(tokens.begin(), tokens.end(), [] (const auto token) { return token < 0; }))
+          throw std::invalid_argument("conversation input token ID is negative");
+        return tokens;
+      };
+    }
+    else {
+      throw std::invalid_argument("unsupported native conversation input encoder");
+    }
   }
   NativeRequestCatalog result;
   const auto& split = root.at("splitter");
