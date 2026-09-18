@@ -79,7 +79,8 @@ fetch 不同，assembly 和等待输入可交错，首段没有 upstream。
 
 ### AD-06: safety before expensive work
 
-T008 的 host guard/受控 stop 前置所有真实模型准备/发布/MiniNDN；
+T008 的 host guard/受控 stop 前置所有真实模型准备/发布/MiniNDN；其 safety entry
+已可独立复用，剩余 counters 由 T003/T006 的真实 owner 交付，不新增行政批次。
 新 native counters 随 T003/T006 的 owner 接入，不能倒过来阻断其小 fixture。
 T009 前核对完整采样，运行中记录峰值。RESOURCE_BOUNDARY 是诊断，不是协议失败或完成。
 

@@ -2,6 +2,106 @@
 
 **Status**: IN_PROGRESS / NOT_NATIVE_PASS
 
+## B189-1a worker and key ownership — 2026-09-18 15:42 -0500
+
+官方只读 `review-agent` 已完成冻结十文件复审，结论为 `STATIC_PASS`（无 P0/P1/P2
+控制性缺陷）。复审核对了 worker、取消、key owner、RAII join、rollback 和 fixture
+接线；没有运行构建或测试，因此这里只关闭静态门，不关闭运行出口。
+本轮 Core/DI 实现已补齐草稿并冻结十文件送审：
+
+- `publishEncryptedLargeDataFromWorker` 复用同一 Core implementation，强制文件路径；
+  hash/encrypt/range commit 在调用 worker，key/NAC/IMS 与 scheduler 投递到 Face。
+  同步等待小型 I/O callback 结算，不遗弃捕获局部状态的 callback；调用方必须保持
+  User/Face 存活和运行。DI prepare 的发起线程 join 发布 worker 后才释放 preparation
+  ticket；其他共享 waiter 可提前取消。旧 request-time publication 保持原调度入口。
+- 原 NativeRequestControl 经 transport 到 Core/store，hash/encrypt/write 的有界窗口及
+  commit 前后检查；不声称可立即中断任意 OS fsync。独占事务 rollback 仍使用已审身份 fence。
+- file publication 接管 wrapped-key reference，正常 TTL/lease GC、失败与 abort 都由
+  RAII 释放。Core 生命周期失效 state 避免晚到 token 引用已析构 crypto。
+  受保护文件发布前在 I/O 安装小型 wrapped-key data，避免并发发布借用尚不可达的 key。
+  receipt 标记 fileBacked，Runtime/DI 回滚沿用；一次移除 source/initializer/root 文件，
+  不再对文件 owner 已管理的 key 重复手工扣引用。旧非文件发布保留原控制路径。
+- C++ fixture 增加慢 store 下 I/O heartbeat、取消/worker drain、hash/write/postcommit
+  rollback；TTL 和取消后释放 fixture seed，再检查真正 wrapped-key 引用消失；
+  现有真实 Core publisher case 追加 prepare worker 路径。fixture 在断言退出时先 drain，
+  无法 drain 则进程失败，禁止销毁仍被 worker 使用的 Face。
+
+**Remaining**: 真实 ModelPreparationCache/package owner 释放反例；
+组合门后统一 scoped build/install/C++ selectors；设计/API 同步。尚无新增 native PASS，
+未运行模型/SIF/Tiger，未提交此未验混合源码单元。
+**Review trace**: 官方 `/home/tianxing/.codex/skills/review-agent/SKILL.md`，
+SHA-256 `07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`；
+冻结范围为上节列出的十个文件，复审期间未改动待审范围。
+**Four miss classes**: static=worker/cancel/key scope 已覆盖；compile-link/runtime-test=
+本轮未运行；unobserved=cache/package 反例、组合构建以及最终两 Provider 资格。
+**Closure decision**: OPEN_FOR_NEXT_BATCH，保留实际全 Spec 目标。
+
+## B189-1a ownership repair — 2026-09-18 15:10 -0500
+
+Base `3e53fec5`，本轮继续实现，保留其余工作区改动。
+
+- Publisher receipt 索引改为 weak serving pins；命中时原子获取全部 pins，失效则删除，
+  插入时清理过期项。package/request 仍是强 owner，publisher 不再延长材料寿命。
+  新增 `Spec182CanonicalPublisher/PreparedReceiptIndexDoesNotRetainServingLeases`，
+  覆盖存活复用、释放、下一 prepare 重新发布；transport seam 不等于实际 package 淘汰验收。
+  官方只读 reviewer 对三文件冻结返回局部 STATIC_PASS：hpp `5f2b1af1...b84a7e`、
+  cpp `6aa68d29...4019a22`、fixture `468512ab...841bf`；未构建/运行。
+- Repo adapter 每次提交生成唯一 operationId；RepoCore 增加锁内身份绑定的
+  `getRangeIfCurrent/removeIfCurrent/abortRangesIfOwned`，以及独占新对象的
+  `putRangeIfAbsent/commitRangesIfOwned`。保留已有 name-only API 和共同实现，
+  防止 has 检查后抢占、旧 lease 误读/删除替代对象或回滚他人 reservation。
+  新 C++ cases：`OldLeaseCannotReadOrDeleteSameNameReplacement`（含相同 bytes）、
+  `StaleTransactionCannotAbortOrOverwriteAnotherReservation`。四文件已冻结送审。
+
+仍须完成：Core 大文件 hash/encrypt/Repo commit 移出 I/O，窗口级取消与 owner drain；
+正常 serving 过期时 wrapped-key 引用释放；真实 publisher/package/cache eviction fixture；
+组合静态门、匹配全局 Core/Repo/DI ABI 的统一构建和 C++ 测试、API/设计文档同步。
+这些未完成项不是已知源码修复的替代项；B189-1a/T003 仍 PARTIAL，未运行完整模型。
+当前约 34 GiB 空闲，未启动竞争构建或额外模型进程。
+
+**Five lanes**: caller=prepare receipt/cache 与 ServiceUser range-store；implementation=
+weak pin/RepoCore mutex 内事务身份；test=上述 C++ cases，真实 package eviction gap；
+build=既有 unit-tests 与 spec189-encrypted-repo 注册，未构建；migration/evidence=
+保留前置脏源码、原 API，新增 API 尚待文档/ABI交付。
+**Four miss classes**: static=修复 retention/identity，worker/cancel/key release 待做；
+compile-link=未运行；runtime-test=未运行；unobserved=完整 B189-1a 与真实 MiniNDN。
+**Closure decision**: OPEN_FOR_NEXT_BATCH；不将局部静态通过计为功能完成。
+
+**Review trace**: 官方 skill 路径/SHA 沿用上一条审计（`07079efd...f92228`）。
+retention 三文件完整 SHA-256：hpp
+`5f2b1af12632bdc188b446bab49689239341d8a2bc93ff91ca8b2f3f66b84a7e`；cpp
+`6aa68d29407ae9c09f175708b0fd3d3a451334d0108e5338b13cfb9374019a22`；fixture
+`468512ab5af9b199eaa5d717cb3ea7217f84842a1520d0a25640b6a6b61841bf`。
+identity 四文件完整 SHA-256：RepoCore.hpp
+`d66b246bec48f3182330fbf2fe71f197dd49ecffcd5459723dde33b9b88e670f`；RepoCore.cpp
+`91c2b533f697893425d6b324ad4066246f3e53963e5ff5470be9cd5708fa37e5`；adapter
+`873f815525f208f094c48782247d5637dd7528cac76476ac2907ffcb3c8ed7a2`；fixture
+`c0d03f99451d787c33e220cad2a1e1588a47acc897b977f81246b6d4daa1d590`。
+源码范围保持冻结，审查 trace 不代表编译或运行通过；未提交尚未批末验收的混合源码单元。
+
+## Protected range-store implementation — IN_PROGRESS
+
+Design binding: Core 新增 `EncryptedLargeDataRangeStore::commitFile(name,path,size)`
+和 `EncryptedLargeDataRangeSource::{size,read}`，只处理 ciphertext。
+Repo adapter 用 1 MiB window 计算摘要并执行 putRange/commitRanges/getRange；独占
+新加密 name，重复 name 拒绝且不删除旧对象。返回 shared source 是读取/GC lease；
+最后一个 source owner 释放后删除本次独占提交对象，失败 abort staging。
+ServiceUser 保留原名字、AAD、wrapped key、签名与 segment/final-block；提交成功后
+删除原 spool，不双份保留密文。新增 retainWhileLeased 参数默认 false，DI prepare
+publisher 显式 true，并把 serving pin 放入 NativePreparedCanonicalPublication。
+Core 的到期回调在 pin 存活时推迟回收，最后 pin 释放后在下一次检查回收。
+RuntimeConfig 的 encryptedRangeStore 在两条 Core transport 创建路径注入。
+requester 可配置 encrypted_repository，维护 MiniNDN 配置启用；未切换到 plain
+RepoSourceProvider publisher。原子层/shared material producer/consumer 仍是下一出口。
+
+命名/所有权边界不变；Core/DI public layout 和方法 ABI 已变化，测试前必须重建
+受影响消费者并全局安装匹配库。新 C++ target `spec189-encrypted-repo` 覆盖真实
+ServiceUser→Repo→Interest分段读取、签名/解密、越过 TTL、最后 lease 回收及重名拒绝。
+同批复用 spec188-bounded-large-data-publisher 和 Runtime prepare selectors。
+这些改动尚未通过静态门或测试；当前设计/API 文档同步仍待完成，保持 PARTIAL。
+Core 文件含先前未提交的 file-backed/segmented publication 前置实现，必须将其
+作为实际源码上下文审查；不将工作区其他文件加入本冻结范围或据此提交。
+
 ## T003 publication source ownership — 2026-09-18
 
 ### Next protected production binding

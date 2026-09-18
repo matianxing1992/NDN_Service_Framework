@@ -1,5 +1,23 @@
 # Spec189 Static Audit and Progress Reclassification
 
+## B189-1a follow-up — 2026-09-18 15:42 -0500
+
+官方只读 `review-agent` 对 B189-1a 冻结的十个文件完成复审，返回
+`STATIC_PASS`，未发现 P0/P1/P2 控制性缺陷。该复审覆盖重型 hash/encrypt/Repo
+commit 的 worker 边界、取消窗口、Repo rollback identity、wrapped-key RAII release、
+准备线程 join/drain 以及 C++ fixture 的 owner 顺序。它没有运行构建、测试或模型。
+
+因此，原先“同步大提交、无取消、name-only identity、publisher 强 pin”的静态缺陷
+已经有对应修复和复审记录；原始 `STATIC_FAIL` 记录保留为历史边界，不再描述当前
+B189-1a 状态。当前唯一必要的 B189-1a 缺口是走真实 `ModelPreparationCache`/
+`PreparedModelPackage` owner 的回收反例，然后执行组合构建和 C++ runtime selectors。
+原子材料 producer/consumer 仍属于后续 B189-1b，不能提前混入本批或把静态通过写成
+T003 完成。
+
+**Review trace**: `/home/tianxing/.codex/skills/review-agent/SKILL.md`, SHA-256
+`07079efd0dc76f05fade424e5dfb048dce1de2df7626e1a4f56292a4f3f92228`; frozen ten-file
+scope; no build or write by the reviewer. **Closure decision**: `OPEN_FOR_NEXT_BATCH`.
+
 ## Execution and ownership follow-up
 
 **Updated**: 2026-09-18 14:50 -0500

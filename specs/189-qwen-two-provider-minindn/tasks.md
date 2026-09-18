@@ -6,8 +6,12 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 14:50 -0500 — execution and ownership audit; production acceptance unchanged.
-**Baseline**: `eedbbfd3` plus pre-existing implementation and unvalidated protected-store draft; not a clean qualified candidate.
+**Updated**: 2026-09-18 15:42 -0500 — B189-1a worker/cancel/key static gate passed; no new runtime PASS.
+**Baseline**: `3e53fec5` plus pre-existing implementation and unvalidated protected-store draft; not a clean qualified candidate.
+
+B189-1a publisher weak-pin、Repo identity fence 和 Core worker/cancel/key release
+均已获官方只读 `STATIC_PASS`；真实 package owner 反例仍待补，尚未构建或运行。
+尚未组合构建/测试；详见 [prepare evidence](evidence/b189-prepare.md)。
 
 T003 源借用修复已静态通过；增量构建 56.712s。初次 native heap corruption 已定位为
 installed DI 的旧 ABI（publication 304 vs 360 bytes），全局安装同步后两个 C++ selectors
@@ -37,15 +41,19 @@ T001 映射已关闭；T008 direct/launcher guard 已复审，39 host checks 通
 7 项是能力任务，不按数量计算产品百分比。T003 两个独立执行出口见
 [bounded execution units](batch-execution.md#bounded-execution-units)，当前下一步为 B189-1a。
 每个出口验证后立即记录，不等整项 T003 写完才第一次构建。
+T008 的 host guard 和小型 lifecycle safety entry 已达到其前置出口；剩余 native
+counter 接入属于 T003/T006 的实际 owner，不能另开重复的 T008 实现批次，T008
+只在 T009 前以完整采样和 drain 证据收口。
 本轮文档 v2 已获 DOCUMENTATION_STATIC_PASS；结构/25 FR/链接与技能同步检查通过，
 见 [follow-up verification](evidence/spec189-static-audit-20260918.md#follow-up-verification)。
-生产草稿仍 STATIC_FAIL，本轮未构建或运行模型。
+受保护接缝草稿已通过 B189-1a 静态门；原子材料 producer/consumer 仍未审查，
+本轮未构建或运行模型。
 
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
 | [T008 Guard before model runs](#t008) | PARTIAL | T001 | 2026-09-18 14:11 -0500：direct/launcher guard 39 checks PASS；4 native lifecycle cases 三轮 PASS；真实 counter 采样/全链 drain 未验。T003 小 fixture 可继续，full model 仍受门禁。[resource](evidence/b189-resource.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 2026-09-18 14:26 -0500：同步/异步发布去除源深拷贝，两个 C++ selectors 三轮 PASS；实际 protected Repo 接线、原子层及 real-Qwen 复用待完成。[prepare](evidence/b189-prepare.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 2026-09-18 15:42 -0500：B189-1a worker/cancel/key 通过静态门；package owner fixture、组合构建/测试及 B189-1b 原子层待完成。保留 source-borrow 两 selector 三轮历史 PASS。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | Repo consumer、有界组装、owner/cancel。[execution](evidence/b189-execution.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 因果 oracle、NDN hidden-state handoff、独立输出判据。[execution](evidence/b189-execution.md) |
@@ -122,12 +130,14 @@ finally/kill 本身不等于 lifecycle PASS。
 共享 protected 接缝另涉及 `ndn-service-framework/ServiceUser.{hpp,cpp}`、
 `EncryptedLargeDataRangeStore.hpp` 和 Repo `RepoEncryptedLargeDataStore.hpp`。
 先按 B189-1a 验证接缝，再按 B189-1b 实现原子材料；Core 不依赖 DI/Repo 类型。
-`NativeCanonicalArtifactPublisher::CacheState::prepared` 当前强存 receipt；新增 serving
-lease 后须消除无预算永久 pin。复用 ModelPreparationCache 预算/淘汰作为唯一保留策略，
-publisher 不成为第二个无界强 owner，活动 handle/request 仍保证可读。
+`NativeCanonicalArtifactPublisher::CacheState::prepared` 当前只保留 receipt 和 weak
+serving pins；`PreparedModelPackage`/活动 request 才是强 owner。复用
+ModelPreparationCache 预算/淘汰作为唯一保留策略，publisher 不成为第二个无界强 owner，
+活动 package/request 仍保证可读。B189-1a 只验证受保护接缝和真实 package/cache owner
+反例；B189-1b 才冻结原子材料 schema，不把未来 schema 当作当前 API。
 C++ 反例必须走真实 publisher→package→淘汰路径，不能只手动 reset Core token。
-当前 protected 草稿静态结果为 NOT_STATIC_PASS：还须将重型 commit 从 Core I/O
-移到受控 worker 并传递取消/deadline，给 Repo read/remove/rollback 加对象身份 fence。
+B189-1a 当前 worker/cancel/key 与 Repo identity 静态门已通过；仍须以真实
+package/cache owner 反例和组合 runtime 验证受保护接缝，不能把静态通过写成 T003 完成。
 具体出口与反例见 [bounded commit](contracts/model-preparation.md#bounded-commit-and-identity-ownership)。
 
 1. pinned canonical graph/initializer 生成拓扑无关原子层与 shared tensor 引用。
