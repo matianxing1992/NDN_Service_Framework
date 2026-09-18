@@ -6,7 +6,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 15:42 -0500 — B189-1a worker/cancel/key static gate passed; no new runtime PASS.
+**Updated**: 2026-09-18 16:18 -0500 — B189-1a composition build and scoped C++ selectors passed; B189-1b remains open.
 **Baseline**: `3e53fec5` plus pre-existing implementation and unvalidated protected-store draft; not a clean qualified candidate.
 
 B189-1a publisher weak-pin、Repo identity fence 和 Core worker/cancel/key release
@@ -21,6 +21,8 @@ installed DI 的旧 ABI（publication 304 vs 360 bytes），全局安装同步�
 `EXECUTION_ENTERED` / `ASSEMBLY_STARTED`，不能继续称“执行入口完全未观察到”。
 尚未证明 runner ready、两段执行、有效终态及资源回收闭合。stream gap 是症状，不能单独认定根因。
 
+本轮 B189-1a 组合构建 342 tasks / 7m8.097s，package-owner selector 3 次、Repo
+protected selectors 6 次、bounded publisher 2 次及 Runtime prepare 1 次均 PASS；
 保留全局依赖与定向构建、Repo 冷热发布/事务/层 payload fixture、同一 PreparedModel
 两请求的 publication-counter selector、placement/cache selector、已注册 C++ 日志 oracle。
 它们是组件证据，不能拼成真实 Qwen 全链 PASS。
@@ -53,7 +55,7 @@ counter 接入属于 T003/T006 的实际 owner，不能另开重复的 T008 实�
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
 | [T008 Guard before model runs](#t008) | PARTIAL | T001 | 2026-09-18 14:11 -0500：direct/launcher guard 39 checks PASS；4 native lifecycle cases 三轮 PASS；真实 counter 采样/全链 drain 未验。T003 小 fixture 可继续，full model 仍受门禁。[resource](evidence/b189-resource.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 2026-09-18 15:42 -0500：B189-1a worker/cancel/key 通过静态门；package owner fixture、组合构建/测试及 B189-1b 原子层待完成。保留 source-borrow 两 selector 三轮历史 PASS。[prepare](evidence/b189-prepare.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 2026-09-18 16:18 -0500：B189-1a 组合构建与 14 个 C++ selector PASS；B189-1b 原子层、真实 Qwen source release 与后续 ACK/assembly 仍待完成。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | Repo consumer、有界组装、owner/cancel。[execution](evidence/b189-execution.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 因果 oracle、NDN hidden-state handoff、独立输出判据。[execution](evidence/b189-execution.md) |

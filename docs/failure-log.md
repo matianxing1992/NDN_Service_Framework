@@ -1,5 +1,41 @@
 # Failure Log and Evidence Index
 
+## 2026-09-18 — Spec189 B189-1a runtime working-directory and spool boundary
+
+第一次运行 B189-1a selectors 时从 build 目录启动，package fixture 找不到相对路径
+`tests/fixtures/spec182/*`，Repo/publisher fixture 找不到
+`examples/trust-any.conf`；切换到仓库根后这三组均通过。Runtime selector 的另一个
+首次边界是旧的 root-owned `/tmp/ndnsf-large-data`（755），导致
+`cannot create large-data staging file: Permission denied`。为本次运行设置专用、可写
+的 `NDNSF_REQUEST_LARGE_DATA_DIR` 后通过。原始日志在
+`.codex-tmp/spec189-b189-1a-runs-20260918-r1/` 与
+`.codex-tmp/spec189-b189-1a-runs-20260918-r2/`。这些是测试入口和宿主 spool 权限
+边界，不是协议 PASS/FAIL；后续 selectors 必须从仓库根运行并使用受控临时目录。
+
+## 2026-09-18 — Spec189 B189-1a encrypted Repo fixture header boundary
+
+After the preparation target include/link repair, the next scoped build stopped
+while compiling `tests/integration-tests/spec189-encrypted-repo-publication.t.cpp`:
+`makeFilesystemRepoStore` is declared by
+`ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp`, while the fixture only
+included the abstract `RepoStoreBackend.hpp`. This is a test header-closure
+failure before linking or execution. The raw boundary is
+`.codex-tmp/spec189-b189-1a-build-20260918-r2.log`; the repair is the one added
+fixture include, pending static re-review.
+
+## 2026-09-18 — Spec189 B189-1a scoped build include boundary
+
+The first B189-1a composition build stopped during compilation at
+`tests/unit-tests/di-runtime.t.cpp:11`: the reused `spec185-preparation` target did
+not expose `NDNSF-DistributedRepo/include`, so
+`ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp` could not be found. This
+is a Waf include/source-closure failure before linking or any test execution, not
+a package-owner or native behavior result. The raw log is
+`.codex-tmp/spec189-b189-1a-build-20260918.log`; the changed gate is the two
+preparation target include/link lists in `tests/wscript`. A read-only re-review
+confirmed that both the header include and `ndnsf-distributed-repo` link
+dependency are now present; no retry has run yet.
+
 ## 2026-09-18 — Spec189 T003 Runtime prepare native heap failure
 
 After the source-borrow increment built successfully in 56.712 s, the focused

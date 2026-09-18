@@ -2,6 +2,86 @@
 
 **Status**: IN_PROGRESS / NOT_NATIVE_PASS
 
+## B189-1a composition build and C++ selectors — 2026-09-18 16:18 -0500
+
+静态修复后的组合构建已通过：使用既有 build tree
+`build-spec189-b189-3-global-r3/`、`/usr/bin/python3 ../waf build`、`-j4`，目标为
+`unit-tests,spec189-encrypted-repo,spec188-bounded-large-data-publisher,
+spec185-preparation,spec185-preparation-t004,spec185-runtime`；342 tasks，耗时
+`7m8.097s`，峰值 RSS 约 1.687 GiB，未观察 swap。原始日志为
+[b189-b1a-build-r3](../../../.codex-tmp/spec189-b189-1a-build-20260918-r3.log)。
+
+按目标分别安装并核对全局 ABI：Core 和 DI 采用 filtered Waf targets
+`ndn-service-framework`、`ndnsf-distributed-inference`；Repo 在本仓库仍是静态
+库，没有额外的 Repo `.so` 可安装。`/usr/local/lib` 与 build tree 的 Core SHA-256
+均为 `529c798d651e86e24ee7eb28af6dbf6cb7478b0c6dedae3a50e6eebaedc534f8`，DI
+均为 `c4f99b715478c9e06078fc6cdb9fe33a5fea647d9f48d2d928a71969210d3`；`ldd`
+确认 selectors 从 `/usr/local/lib` 加载 Core/DI、系统 Boost 1.71 及
+`/opt/onnxruntime/lib`。Waf 附带 Python editable hook 仍因缺少
+`NDNSF_GLOBAL_NATIVE_DIGESTS` 拒绝；这不计 Python binding PASS，native 安装和
+ABI 核对独立成立。安装原始日志分别在
+`.codex-tmp/spec189-install-core-20260918-r2.log`、
+`.codex-tmp/spec189-install-repo-20260918.log` 和
+`.codex-tmp/spec189-install-di-20260918.log`。
+
+从仓库根目录运行的 C++ selectors 全部返回零：
+
+- `PreparedPackageOwnsPublicationLeaseUntilCacheEviction` 连续 3 次 PASS；覆盖真实
+  publisher→ModelPreparationCache→PreparedModel owner、预算阻止替换、释放后淘汰
+  以及 serving lease 消失。
+- `Spec189EncryptedRepo` 的 worker/cancel/key、TTL lease、duplicate/invalid、旧
+  lease replacement、stale transaction 和 cancellation rollback 六个 cases 各 1 次
+  PASS。
+- `Spec188BoundedLargeDataPublisher` 的 windowed file-backed 与 invalid-retention
+  两个 cases 各 1 次 PASS。
+- `Spec185Runtime/PrepareSuccessUsesTheProductionRuntimeEntry` 在显式可写的
+  `NDNSF_REQUEST_LARGE_DATA_DIR` 下 1 次 PASS，证明 Repo-backed prepare 的生产入口
+  可达；没有运行模型或 MiniNDN。
+
+第一次从 build 目录运行时，package fixture 因相对 oracle 路径失败，Repo/publisher
+因 `examples/trust-any.conf` 找不到失败；从仓库根重跑后通过。Runtime 首次还命中
+此前 `sudo` 创建的 root-owned `/tmp/ndnsf-large-data`（755），产生
+`Permission denied`；使用本次专用可写目录重跑通过。原始失败日志保留在
+`.codex-tmp/spec189-b189-1a-runs-20260918-r1/` 和
+`.codex-tmp/spec189-b189-1a-runs-20260918-r2/`，这些是运行入口/环境边界，不能
+分类为产品协议失败。
+
+**Four miss classes**: static=B189-1a worker/cancel/key、Repo identity 和真实
+package/cache owner 均已通过只读门；compile-link=组合目标及依赖闭包 PASS；
+runtime-test=上述 14 个 C++ selector PASS；unobserved=原子 layer/shared schema、
+真正 Qwen source release、ACK/Selection、两 Provider assembly/handoff/output、
+完整 resource counters 及 MiniNDN 仍未观察。**Closure decision**:
+`B189-1a CLOSED; T003 PARTIAL; OPEN_FOR_B189-1b`。
+
+## B189-1a scoped build r2 — 2026-09-18 15:53 -0500
+
+前一处 preparation target 的 include/link 修正已通过编译并链接
+`spec185-preparation`；随后在编译 `spec189-encrypted-repo-publication.t.cpp` 时发现
+fixture 调用 `makeFilesystemRepoStore` 却没有包含声明它的
+`FilesystemRepoStoreBackend.hpp`。这是测试 header closure 错误，仍未进入链接或运行。
+原始日志：[b189-1a-build-20260918-r2.log](../../../.codex-tmp/spec189-b189-1a-build-20260918-r2.log)。
+修复候选只增加该 fixture 的一个明确头文件，待静态复审后重试。
+**Four miss classes**: static=已定位测试头文件缺口，修复待审；compile-link=编译边界；
+runtime-test=未运行；unobserved=组合运行及最终资格。**Closure decision**:
+`OPEN_FOR_NEXT_BATCH`。
+
+## B189-1a scoped build attempt — 2026-09-18 15:52 -0500
+
+组合构建首个边界在编译 `di-runtime.t.cpp` 时停止：复用的
+`spec185-preparation`/`spec185-preparation-t004` target 没有注册
+`../NDNSF-DistributedRepo/include`，找不到
+`ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp`。这是构建 source closure
+错误，未进入链接或测试，不能归因于 package owner 或 native 行为。
+原始日志：[b189-1a-build-20260918.log](../../../.codex-tmp/spec189-b189-1a-build-20260918.log)。
+修复候选只涉及 `tests/wscript` 两个既有 target 的 include 列表；待静态复审后重试。
+**Four miss classes**: static=已定位构建注册缺口，修复待审；compile-link=首个编译边界；
+runtime-test=未运行；unobserved=组合运行及最终资格。**Closure decision**:
+`OPEN_FOR_NEXT_BATCH`，保留首个失败边界。
+
+补充复审确认两个 target 的 Repo header include 与 `ndnsf-distributed-repo` link
+dependency 均已闭合（`tests/wscript:195-196,209-210`）；该 source/link 修正通过
+官方只读静态门，待同一 scoped build 重试。
+
 ## B189-1a worker and key ownership — 2026-09-18 15:42 -0500
 
 官方只读 `review-agent` 已完成冻结十文件复审，结论为 `STATIC_PASS`（无 P0/P1/P2
