@@ -11,6 +11,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RepoRuntimeBoundaryTest(unittest.TestCase):
+    def test_repo_install_hook_targets_repo_binding(self) -> None:
+        wscript = (ROOT / "NDNSF-DistributedRepo/wscript").read_text()
+        self.assertIn("find_dir('NDNSF-DistributedRepo')", wscript)
+        self.assertIn("repo_root.find_dir('pythonWrapper')", wscript)
+        self.assertNotIn("bld.path.find_dir('pythonWrapper')", wscript)
+
     def test_standalone_cpp_network_app_is_not_built_or_present(self) -> None:
         wscript = (ROOT / "NDNSF-DistributedRepo/wscript").read_text()
         self.assertNotIn("DistributedRepoNodeApp", wscript)

@@ -8,7 +8,8 @@ import sys
 def _install_py_repoclient(bld):
     if bld.cmd != 'install':
         return
-    wrapper = bld.path.find_dir('pythonWrapper')
+    repo_root = bld.path.find_dir('NDNSF-DistributedRepo')
+    wrapper = repo_root.find_dir('pythonWrapper') if repo_root is not None else None
     if wrapper is None:
         return
     # Development convenience only: an editable pip install into the caller's
