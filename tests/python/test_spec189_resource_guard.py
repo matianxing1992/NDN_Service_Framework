@@ -189,3 +189,36 @@ def test_supervisor_sigterm_cancels_and_drains(tmp_path):
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=5)
+
+
+def test_direct_cli_admission_precedes_model_or_root_checks(tmp_path):
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py"),
+         "--stage-manifest", str(tmp_path / "missing-model.json"),
+         "--node-mapping", str(tmp_path / "missing-mapping.json"),
+         "--run-root", str(tmp_path / "run"),
+         "--resource-limits-json", json.dumps(limits(minAvailableBytes=2**62))],
+        text=True, capture_output=True, timeout=10)
+    assert completed.returncode == 1, completed.stderr
+    receipt = json.loads((tmp_path / "run/supervisor.json").read_text())
+    assert receipt["boundary"] == "RESOURCE_BOUNDARY:MemAvailable"
+    assert receipt["returncode"] is None
+    assert not (tmp_path / "run/requester").exists()
+    assert not (tmp_path / "run/run-record.json").exists()
+    assert (tmp_path / "run").stat().st_mode & 0o777 == 0o700
+    assert (tmp_path / "run/supervisor.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_direct_cli_preserves_previous_receipt(tmp_path):
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    receipt = run_root / "supervisor.json"
+    receipt.write_text("prior evidence\n")
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py"),
+         "--stage-manifest", "missing", "--node-mapping", "missing",
+         "--run-root", str(run_root)], text=True, capture_output=True, timeout=10)
+    assert completed.returncode == 1
+    assert '"boundary": "EVIDENCE_CONFLICT"' in completed.stdout
+    assert receipt.read_text() == "prior evidence\n"
+    assert not (run_root / "resource-samples.jsonl").exists()

@@ -2,6 +2,53 @@
 
 **Status**: IN_PROGRESS / T008
 
+## Direct entry and native lifecycle — 2026-09-18 14:11 -0500
+
+**Baseline**: `638268bc` 加既有未提交 Native_Minindn 实现；只提交本轮增量，
+不将其余既有实现混入 checkpoint。直接入口在 root/model 检查及模型物化之前运行
+同一 supervisor；run root 0700，receipt exclusive 0600，冲突明确失败并保留旧证据。
+LocalExperiment 传入同一有效 resourceLimits。内部 worker 无用户 CLI 绕过开关。
+
+**Review trace**: 同一官方只读 agent，技能路径/hash 同下节。初审发现入口证据目录
+权限与旧 receipt 冲突分类，修复并增加反例；v2 完整组合 STATIC_PASS。
+冻结目录 `.codex-tmp/spec189-t008-direct-review-v2/`：native.patch SHA-256
+`3f9ffad2758cafc7f2982ad42c5827a02ad046db0c90f76c725a473c9fcc3f06`，
+caller-test.patch `afe1407bd826cf1eca3939e6166bad3faa5ade1773df2f5393943e3cce0ae886`。
+三份改动源码均 cmp 与测试候选一致。native.patch 基于原有脏文件快照，非整个 HEAD diff。
+五 lane：direct/main+LocalExperiment caller covered；runpy worker/同一 guard covered；
+实际 CLI admission/权限/conflict 反例 covered；Python closure+现有 native targets covered；
+receipt 身份/不覆盖及原有脏改动隔离 covered。原生计数采样仍 gap。
+
+**Validation**: 同下节两个 pytest 文件共 39 passed / 6.63 秒。
+在 `build-spec189-b189-3-global-r3` 内，以 system-first PATH、`/usr/bin/python3 ../waf
+build --targets=spec185-runtime,spec185-provider-assembly -j4` 完成构建，2m27.504s。
+复用全局依赖及现有构建树；Provider selector 首次编译其既有完整 DI source closure，
+没有另建全树。g++ 9.4.0 / ld 2.34；监测初始少量 swap-out，后续无持续 swap-in/out。
+
+每个 selector 连续运行三次（外层 timeout 45s），均成功：
+
+- `spec185-runtime --run_test=Spec185Runtime/RuntimeCloseDrainAndAsyncNotificationAreSafe:Spec185Runtime/RuntimeDrainAsyncDoesNotImplicitlyClose`：每次 2 cases / 53 assertions。
+- `spec185-provider-assembly --run_test=Spec185ProviderAssembly/Spec188ProviderReferenceAssembly/ProviderArtifactCacheStop*`：每次 2 cases / 9 assertions。
+
+binary SHA-256：runtime `032ce99298f7235fbbfafcdd8e76a8d710c2f572ed58af25585f1a31a1e8797a`；
+provider `c6fe60dc44324cbbf7a68e6b20d79174e0c6777a59cdf18a3f14b1ce7d14d535`。
+原始日志 `.codex-tmp/spec189-t008-direct-validation-r1/`，包括 build、pytest、
+vmstat、runtime-1..3 和 provider-1..3。只证明对应 C++ owner/drain 组件，不证明
+真实 MiniNDN 全部进程的 Repo/materialization/runner 回收或完整 Qwen 成功。
+
+**Four miss classes**: static=上述权限/conflict 两项已闭合；compile-link=成功，
+保留既有 NativeRequestPlanner missing-field-initializers 警告，不据此认定行为失败；
+runtime-test=39 host checks 和 4 native cases × 3 均 PASS；
+unobserved=真实 producer/consumer native counters、模型峰值及完整实验。
+**Batch growth decision / Closure decision**: direct guard 与小 lifecycle 出口关闭；
+T008 仍 PARTIAL，下一步可按 T003 的小 fixture 接通 Repo producer/consumer，
+并把已有 counter owner 接入真实路径；full-model 仍必须补齐 T008 全部要求。
+
+磁盘：Git 报告临时 pack garbage 42.35 GiB；确认无 live pack/gc 后仅删除
+48 个超过 24 小时的 `tmp_pack_*`（32.52 GiB）。正式 pack/index、模型和原始日志保留。
+可用空间恢复约 34 GiB，`git fsck --connectivity-only --no-dangling` exit 0。
+清单与检查日志 `.codex-tmp/spec189-t008-disk-cleanup/`；不执行 Git prune 或历史重写。
+
 ## Host supervisor validation — 2026-09-18 13:57 -0500
 
 **Baseline**: `2424c24c`；本节取代下方 host guard 未开始的历史状态，T008 整体仍 PARTIAL。
@@ -43,6 +90,14 @@ compile-link=N/A；runtime-test=本轮 host tests 无失败；unobserved=直接�
 Context active 索引在文档变化后曾 stale，已重建且 health 通过；源码/证据仍以仓库为准。
 
 ## Design binding — host supervisor
+
+Direct-entry extension: `Native_Minindn.main(argv=None, *, _supervised=False)` 在
+模型读取前调用同一 run_guarded，内部 worker 使用 Python runpy 调用，非新增用户 CLI
+绕过开关。新增 `--resource-limits-json` 承接外层 profile 同一阈值；直接入口默认值
+保持一致。supervision 单独记录且不得覆盖 child 的原生运行记录。外层 launcher
+保留其 run-level guard，内层负责直接调用安全；二者停止均只处理各自后代。
+新增 host CLI 测试以缺失模型路径和必定失败的受控资源阈值证明 admission 先于模型读取，
+不启动 root MiniNDN。原生 lifecycle 使用既有 C++ fixture 验证，仍不替代 counters。
 
 Allocation: T008 首个可独立验证出口为维护 LocalExperiment→native launcher 的
 进程保护；不是 C++ 生命周期或完整 T008 PASS。新增

@@ -484,7 +484,8 @@ def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path
                "--build", profile["buildDir"], "--controller-binary", profile["controllerBinary"],
                "--rounds", str(args.rounds), "--max-new-tokens", str(args.max_new_tokens),
                "--run-root", str(run_dir / "workload"), "--nlsr-wait-s", str(args.nlsr_wait_s),
-               "--startup-timeout-s", str(args.startup_timeout_s)]
+               "--startup-timeout-s", str(args.startup_timeout_s),
+               "--resource-limits-json", json.dumps(profile["resourceLimits"], sort_keys=True)]
     if candidate:
         command.extend(["--stage-manifest-sha256", candidate["modelManifest"]["sha256"],
                         "--tokenizer-sha256", candidate["tokenizer"]["sha256"],

@@ -6,8 +6,8 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 13:57 -0500 — T008 host supervisor focused validation.
-**Baseline**: `42add32c` plus pre-existing workspace implementation; not a clean tested candidate.
+**Updated**: 2026-09-18 14:11 -0500 — T008 direct guard and native lifecycle focused validation.
+**Baseline**: `638268bc` plus pre-existing workspace implementation; not a clean qualified candidate.
 
 尚无 `QWEN_TWO_PROVIDER_PASS`。r25 run-record 仍 FAIL；Provider 日志已出现
 `EXECUTION_ENTERED` / `ASSEMBLY_STARTED`，不能继续称“执行入口完全未观察到”。
@@ -21,8 +21,9 @@
 
 本轮审计见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
 旧详细 checkpoint 保留在上述 Git 基线和原批次证据；本表取代十任务线性调度。
-T001 映射已关闭；T008 host supervisor 已静态复审并通过 37 个 host/launcher 检查。
-直接入口、native counter/drain 未闭合，T008 仍 PARTIAL；未运行模型或原生构建。
+T001 映射已关闭；T008 direct/launcher guard 已复审，39 host checks 通过；
+两个 C++ 目标 -j4 构建成功，4 个 lifecycle 用例三轮通过。真实路径 native counters
+及完整资源回收仍待验证，T008 保持 PARTIAL；未运行模型。磁盘现约 34 GiB 可用。
 文档修订已获冻结 v2 的 DOCUMENTATION_STATIC_PASS；11/11 技能入口、7 task ID、
 25 FR、链接/锚点及 diff 检查通过，详情见上述审计记录。产品验收保持 PARTIAL。
 
@@ -31,7 +32,7 @@ T001 映射已关闭；T008 host supervisor 已静态复审并通过 37 个 host
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
-| [T008 Guard before model runs](#t008) | PARTIAL | T001 | 2026-09-18 13:57 -0500：host guard 冻结复审通过，37 checks PASS；native counter/drain 与直接入口覆盖仍待完成。[resource](evidence/b189-resource.md) |
+| [T008 Guard before model runs](#t008) | PARTIAL | T001 | 2026-09-18 14:11 -0500：direct/launcher guard 39 checks PASS；4 native lifecycle cases 三轮 PASS；真实 counter 采样/全链 drain 未验。T003 小 fixture 可继续，full model 仍受门禁。[resource](evidence/b189-resource.md) |
 | [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 原子层发布、真实 requester 接线、同 handle 复用。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | Repo consumer、有界组装、owner/cancel。[execution](evidence/b189-execution.md) |
