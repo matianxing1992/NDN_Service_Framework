@@ -122,3 +122,96 @@ endpoint regression selector are implemented and reviewed, then a fresh run
 observes either the first provider-side failure boundary or the complete
 fetch/assembly/execute/terminal sequence. No task may be marked `[x]` from the
 current r21 evidence.
+
+## Architecture and progress correction
+
+**Date**: 2026-09-18
+**Review baseline**: HEAD `76b26e2c` plus pre-existing working tree.
+**Scope**: source-aware audit and Spec documentation repair; no product code/build/run.
+Earlier r21 sections above are historical. This section supersedes their current-progress
+and mandatory total-order recommendations; original logs and selector results remain intact.
+
+### Findings and dispositions
+
+| ID | Severity / confidence | Source or evidence | Disposition |
+| --- | --- | --- | --- |
+| RA-01 | HIGH / confirmed design conflict | old spec FR-002/SC-001, data-model layerRefs[2], plan AD-01 | 固定两个 prepare package 混淆原子准备与 ACK 后分区。T003 发布拓扑无关 layer/shared 材料；T005 规划两个范围；T006 组装最终模型。 |
+| RA-02 | HIGH / confirmed wiring gap | Runtime.cpp:1335-1351,1465 onward; DI_NativeRequester.cpp:237-260; NativeCanonicalArtifactPublisher.cpp:631-654; NativeCanonicalOnnxAssembler.cpp:278-381 | Runtime 有可注入 Repo publisher，但实际 requester 没有设置它。fallback 发布整 graph/initializer，assembler 获取整 initializer 并持有 buffer/vector。必须接通同一 Repo producer/consumer，磁盘缓存本身不足；T003/T006 修复。不能误称模型在 request payload 中，发布发生在 prepare。 |
+| RA-03 | HIGH / confirmed oracle conflict | examples/Spec189TwoProviderOracle.cpp:192-205; NativeProviderHandler.cpp prepareRunner/execute/input paths | checker 强制 dependency fetch 在 assembly 前且所有角色都有；实际流程存在不同顺序和首段直用请求输入。T007 按角色/attempt 的因果偏序，区分模型材料与 tensor fetch；不强迫生产代码迎合错误 checker。 |
+| RA-04 | MEDIUM / confirmed fixture defect | tests/integration-tests/spec189-placement-oracle.t.cpp:103-106; NativeGrantVerifier.cpp canonicalNativeGrantName | synthetic name 拼接可有双斜线，cache selector 未走 grant parser；旧“canonical naming used”声明更正。T005 修正 CPU/backend/ABI fixture 并测试生产 ingress；原 selector 通过仅保留组件意义。 |
+| RA-05 | HIGH / confirmed plan and harness gap | old T008 depends T007; Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py main lifecycle | 资源保护在完整模型执行之后，没有维护的连续 sampler/guard。T008 前置 full-model prepare/run，小 fixture 验证停止；T009 才补实际峰值，消除循环门禁。 |
+| RA-06 | HIGH / confirmed acceptance weakness | old SC-003/SC-006 and T009 acceptance; data-model state sequence | “分类失败”不能作为完成；输出 digest 不是独立正确性证明。T009 同 live handle 两请求及新 run-id 独立成功重复，T007 增加固定输入独立 reference；cache reuse 不要求每请求重建 runner。 |
+| RA-07 | MEDIUM / confirmed scope inflation | old ten-task linear graph, plan AD-06 | T002/T004→T003、T010→T009，共七活动任务；保留所有负例，删除独立领卡/重复构建要求。candidate 内容身份与 run-id 分离，只有受影响证据重验。 |
+
+原生 Repo header 位于
+`NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp`：
+已有 layer payload/冷热 receipt/事务实现与测试不能被说成“全无实现”；
+问题是本实验实际 producer/consumer 未走完该路径。也不应重新修复已变更的旧 source-retention
+问题而不先核对当前 releaseTransientSource/lease 所有权。
+
+### Latest raw boundary
+
+Raw root: `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r25/`。
+`run-record.json` status=FAIL；本轮 sudo 只读核对 root-owned workload 日志：
+
+| File | SHA-256 | Observed stages |
+| --- | --- | --- |
+| workload/provider-0.log | 9fc45427b8960350af3ed9950b27148607004bc55b7e3bd0224c97dde67791fa | GRANT_VERIFIED, EXECUTION_ENTERED, ASSEMBLY_STARTED |
+| workload/provider-1.log | 2e8280b8c666792f3f31c4281cebe9ed3d152d3f48ea6dd339021883729d7851 | GRANT_VERIFIED, EXECUTION_ENTERED, DEPENDENCY_FETCH |
+| workload/requester-0.log | e8ea14a23f5da538fbe16993ee15a7ae5b22eaee2ce2fecead02f3f1e7399b6c | 仍服务 di-canonical-initializer segmented Data |
+
+Provider-0 日志请求该 initializer 的 segment 367；这证明旧数据路径被使用，
+不证明完整下载结束、具体内存峰值或超时根因。
+两 Provider 均无 RUNNER_READY / EXECUTION_COMPLETED stage；终态成功尚未证明。
+r21/r23 “未见执行入口”不能继续当最新进度，r25 也不是当前脏工作区的 qualification。
+
+### Retained evidence and execution order
+
+保留 b189-build 的依赖/loader证据、b189-prepare 的 Repo 组件检查、
+b189-placement 的 wire/handle/cache selector 结果，以及已有 C++ oracle 注册。
+不重做未变工作；新 schema/consumer/授权变化只复测受影响闭包。
+
+下一步 T001 短收敛真实接线 → T008 安全门 → T003 准备/发布/复用 →
+T005 生产选择门 → T006/T007 范围组装与 handoff → T009 真实重复验收。
+七活动任务仍未完整验收，不勾选任何任务。
+每批保留逐任务静态门和批末组合审查/统一测试；不新增字段级行政任务。
+
+### Review and verification
+
+主代理使用 speckit-audit/speckit-code-design 和 CodeGraph 复核源码，
+已授权的官方 review-agent 子会话只读核对。
+初审引用 r21 的陈旧结论由主代理以 r25 原始日志纠正，不能机械接受审查结论。
+冻结文档差异复审与文档检查结果追加于此。
+
+Context Mode project health 通过，初始 active health 因 AGENTS 的过期
+`specs/003-native-di-real-minindn/plan.md` 指针失败；本轮以仓库/source/raw evidence
+为权威并修复 managed pointer。检索工具健康不代表产品状态。
+设计记录只追加本轮条目，不提交该文件原有并行修改，不覆盖冻结 Design PDF/API。
+
+Four miss classes: static=RA-01/02/03/04/05/06/07；
+compile-link=no build this audit；
+runtime-test=historical r25 FAIL retained；
+unobserved=full-model output, peak, same-handle real reuse and drain.
+
+**Closure**: DOCUMENTATION_STATIC_PASS; product remains PARTIAL.
+
+### Final document validation
+
+- 官方只读 review-agent 审完 v1 组合 diff，指出 current/target 边界、真实类型路径、
+  oracle source/target 区分、固定 fetch/runner 计数和合并映射表述；修正后复审 v2
+  返回 DOCUMENTATION_STATIC_PASS，无剩余控制性文档问题。
+- Base: `76b26e2c`。v1 patch SHA-256:
+  `4f7a2fd9c8ffd5b63046e968915bbd6432ccdc7d0f9b1904b12658de438404ce`；
+  v2: `e453fc0a52a56712ecbe70858634aba48a39dc0590d8edc24f559ae183a40068`。
+  原始冻结 patch 分别保留于 `.codex-tmp/spec189-plan-audit-review-v1/docs.patch`
+  和 `spec189-plan-audit-review-v2/docs.patch`（后者同属 `.codex-tmp/`）。
+  本段和 tasks 的验证结果句是审查返回后追加的结果记录，不更改受审契约。
+- `verify-spec-kit-sync.py --require-entrypoints --require-personal`: PASS 11/11。
+  定向文档检查：7 个活动 task ID、25 个 FR、相关链接/锚点和纠正的源码路径均 PASS；
+  所有产品任务仍未勾选。`git diff --cached --check` PASS。
+- Context Mode authority 已重建索引，project 与 active health 均通过；原始工具输出在
+  `.codex-tmp/spec189-plan-audit-review-v2/{sync.log,context-index.log,context-active.json}`。
+  AGENTS.md 是本机 `.git/info/exclude` 忽略的未跟踪文件，已修正指针但不强制纳入 Git；
+  `.specify/feature.json` 原有变更保留不入本 checkpoint。
+- 只提交 Spec 文档、failure-log 本轮追补和 Design 记录本轮 7 行；原有 Design 及
+  源码/技能/实验脏文件不混入。未运行 C++ 构建、模型推理、MiniNDN、SIF 或 Tiger。

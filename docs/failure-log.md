@@ -7078,3 +7078,15 @@ was produced. Raw output is `.codex-tmp/spec189-t005-placement-build-r1.log`.
 This is a Waf output-tree selection boundary; retry from the already configured
 `build-spec189-b189-3-global-r3` directory, without changing the source or
 accepting this attempt as compile evidence.
+
+2026-09-18 Spec189 architecture/progress audit: r25 remains FAIL. Provider-0
+reached GRANT_VERIFIED/EXECUTION_ENTERED/ASSEMBLY_STARTED and was requesting
+canonical initializer segments; Provider-1 reached EXECUTION_ENTERED and
+DEPENDENCY_FETCH, with no RUNNER_READY/EXECUTION_COMPLETED marker on either.
+The stream gap alone is not a root cause. Raw run:
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r25/`.
+The audit also found a prepare/partition design conflict, an unclosed real
+Repo producer/consumer path, an incorrect total-order log oracle and a late
+resource guard. See [audit correction](../specs/189-qwen-two-provider-minindn/evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction).
+No new runtime attempt occurred. Resume with the narrowed integration map and
+resource guard, then Repo wiring; preserve all unobserved execution/output gaps.

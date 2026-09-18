@@ -1,154 +1,136 @@
 # Implementation Plan: Qwen 0.6B Two-Provider MiniNDN Full-Path Validation
 
-**Branch**: `189-qwen-two-provider-minindn` | **Date**: 2026-09-18 | **Spec**: [spec.md](spec.md)
+**Branch**: `Experimental` | **Feature**: `189-qwen-two-provider-minindn` | **Date**: 2026-09-18
+**Spec**: [spec.md](spec.md) | **Status**: IN_PROGRESS
 
 ## Summary
 
-Spec189 adds a real, separately auditable Qwen3-0.6B two-provider experiment. `prepare` is the durable model boundary: it validates the canonical graph and initializer, performs the layer split once, publishes immutable manifest/layer references to Repo, and returns a reusable `PreparedModel` handle. Every later `request` carries only that reference and input. Core ACK/Selection binds the request to two provider placements; only after Selection do providers fetch their assigned layer packages and assemble native runners.
+目标仍是在本机 12 GB 上完成 Qwen3-0.6B 两 CPU Provider 的真实 MiniNDN 请求。
+本次收敛准备/规划边界、Repo producer/consumer 接线、事件判据与资源门顺序；
+保留已验代码，不重做 Spec185/188，不扩张 SIF/Tiger。
 
-The experiment is a diagnostic/product-target gate, not a replacement for Spec188's bounded core. It must use the maintained C++ authority/requester/provider targets and MiniNDN harness. Python is limited to process orchestration, host sampling and evidence collection.
+当前 Repo adapter 已有层 payload/冷热 receipt 测试，但真实 requester 的 Repo 配置
+和 assembler 的层材料消费未闭合；旧路径仍获取完整 initializer。
+r25 FAIL 已观察 assembly entry，未证明两 Provider 成功执行。
+见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
 
 ## Technical Context
 
-**Language/Version**: C++ production/runtime and selectors; Python 3 orchestration only
-
-**Primary Dependencies**: NDNSF Core, NDNSF-DI, NDNSF-Repo, ndn-cxx/NFD, NDN-SVS, NAC-ABE, ONNX full-protobuf/Runtime CPU, MiniNDN. Host validation uses one installed global dependency closure: Boost 1.71 from the system pair and the remaining direct NDNSF libraries/archives from `/usr/local`; a checkout or `.codex-tmp` prefix is a preflight failure.
-
-**Storage**: native Repo manifest plus immutable canonical graph, initializer and two layer packages; local filesystem staging is an implementation detail and is not a request payload
-
-**Testing**: named C++ selectors (`DI_NativeArtifactAuthority`, `DI_NativeRequester`, `di-native-provider`, `DI_NativeOnnxAssemblyWorker`), C++ full-path oracle, MiniNDN two-provider runner, resource sampler, optional ASan/UBSan
-
-**Target Platform**: current Linux host, 6 logical CPUs, 12 GiB RAM; root MiniNDN execution with `/usr/sbin:/sbin` in PATH
-
-**Project Type**: native distributed-inference runtime experiment with Repo-backed model preparation
-
-**Performance Goals**: one prepare can be reused by multiple requests; no request-time canonical publication; two providers are active for one request; resource guard prevents unsafe host exhaustion
-
-**Constraints**: exact Qwen3-0.6B snapshot, two providers only, two-stage initial split (0–14 and 14–28), no synthetic ACK/Selection, no preloaded whole-model runner, no SIF/Tiger dispatch
-
-**Scale/Scope**: one local input and one repeat under a fresh run id; full numerical quality campaign and cluster scale are out of scope
+- C++ owns preparation/publication/authorization/assembly/execution and behavior assertions.
+- Python owns MiniNDN orchestration/host sampling/offline conversion only.
+- 全局依赖按 [declared closure](../../docs/native-dependency-closure.md)；
+  本机 Boost 为 /usr/include + /usr/lib/x86_64-linux-gnu 1.71，其余按声明全局根（含 ORT）。
+  缺失/不兼容才安装，禁止 checkout/.codex-tmp 前缀覆盖。
+- 复用已验 Waf tree，受影响 target 增量构建默认 -j4，swap 压力按仓库规则降并发。
+  不为每个新 selector 复制整套 DI 编译闭包。
+- 两 Provider，固定短输入与少量 token；独立正确性判据必需，广泛质量评测不在范围内。
 
 ## Constitution Check
 
-PASS for the planned local experiment, subject to these gates:
-
-- Native preparation, Repo publication, wire/placement, provider execution, lifecycle and output assertions are C++ owned.
-- Each logical batch has a stable observable exit, immutable review snapshot, five-lane coverage record and first-failure evidence.
-- MiniNDN is downstream of code-aware convergence and affected C++ build/source closure.
-- SIF/Tiger is not started by this Spec and cannot be inferred from a local run.
-- A resource stop is an observed diagnostic boundary, not a PASS or a protocol failure.
+设计修订遵循 C++ ownership、真实调用链、全局依赖与静态门；产品仍 PARTIAL。
+文档一致性 PASS 不能替代 native/MiniNDN runtime。
 
 ## Architecture Decisions
 
-### AD-01: `prepare` owns durable model publication
+### AD-01: topology-independent preparation
 
-The public preparation entry resolves the pinned Qwen snapshot, creates the canonical graph/initializer identity, splits the 28 layers into two immutable packages, validates digests and writes one Repo manifest/reference. The returned handle owns only identity and lease/reference state. A second request reuses the committed manifest; it does not publish the model again.
+native prepare 验证 canonical graph/config/initializer，生成原子层和 shared tensor
+内容索引，发布可经正常 Repo 路径读取的材料，commit 后返回现有 PreparedModel。
+prepare 不固定最终 Provider 分区，不构造两段 runner；其他分区计划可复用同一材料。
+本 Spec 只验两个 Provider，不增加其他拓扑验收。
 
-### AD-02: `request` is reference-only
+复用 Repo manifest/payload owner/文件后端/事务，最小版本化扩展表达 layer→
+对象或受验证 byte-range、digest/size/shared dependencies。
+不新增 PreparedQwenModel 公开 API、Qwen 专用 Repo 或第二 serializer。
 
-`PreparedModel::request(Input, RequestOptions)` encodes model reference, manifest digest, protection epoch, input reference and request metadata. It rejects full-model bytes and arbitrary model URLs. The request does not cause Repo ingest or canonical source publication.
+### AD-02: durable reference and availability
 
-### AD-03: authorization and placement precede heavy fetch
+真实 requester 接入 Runtime repository publisher/source owner。
+prepare 返回前证明持久提交与可读性；模型源和临时 buffer 可释放，handle 持有 reference/lease。
+Repo service 在请求期间有明确 owner，缓存符合预算；不可达/丢失明确报错，
+request 不隐式重新发布或携带模型 payload。
 
-The Core ACK/Selection path binds two provider identities and exact ranges to the prepared manifest. Providers may inspect summaries before Selection, but only a valid Selection can authorize package fetch and runner creation. Cache reuse is allowed only after rechecking request identity, grant/epoch and placement.
+### AD-03: ACK determines partition; Selection authorizes materialization
 
-### AD-04: each Provider owns only its selected materialization
+真实 ACK offers 后由 planner 选择范围/Provider，signed Selection/grant 绑定
+manifest、role/range、attempt/epoch、plan digest。初始 profile 可约束 [0,14)/[14,28)，
+不改变 prepare 材料。无效/未选 placement 在重型 fetch/runner 前拒绝。
+fixture 使用已有 canonical typed identity 与签名入口，不手拼替代授权。
 
-Provider-0 owns layers 0–14 and Provider-1 owns layers 14–28 for the initial candidate. Each provider verifies package digest/range/role, assembles an ONNX runner from its package, executes, and releases the runner/lease after terminal or cancellation. No provider receives a hidden whole-model fixture.
+### AD-04: selected materialization and bounded cache
 
-### AD-05: hidden-state handoff is an explicit production boundary
+Provider 仅读选中原子层及显式 shared tensors，有界读/文件物化后组装 ONNX。
+禁止整 initializer 下载后切片与预加载整模型 runner。
+不可变内容可共享，授权每请求验证；KV/会话/runner owner 与 Repo 持久材料分离。
+cold/warm runner 创建数可以不同，但资源回收与计费必须可解释。
 
-The plan must identify the current production handoff symbol and wire fields. If the existing requester/provider path cannot carry hidden state between the two stage runners, the C++ task records `PROTOCOL_BOUNDARY` and stops; it must not replace the path with a Python or in-process shortcut.
+### AD-05: causal events and independent output
 
-### AD-06: evidence identity is immutable
+使用已有 Core/NDN hidden-state dependency；模型材料 fetch 与 upstream tensor
+fetch 不同，assembly 和等待输入可交错，首段没有 upstream。
+按 [causal contract](contracts/placement.md) 验证，不假设跨 Provider 日志全序。
+已注册 Waf target `spec189-two-provider-oracle`（源码
+`examples/Spec189TwoProviderOracle.cpp`，输出 `<build>/examples/spec189-two-provider-oracle`）是 C++ 日志/身份 checker，
+需修正事件假设并配合独立输出 reference。计算 digest 本身不能证明推理正确。
 
-The candidate tuple includes source commit, ABI/library hashes, build tree, model files, canonical graph/initializer/layer digests, profile, selector hashes, topology and run id. Changing any tuple member invalidates all later evidence.
+### AD-06: safety before expensive work
 
-### AD-07: post-grant execution has explicit observable exits
+T008 前置所有真实模型准备/发布/MiniNDN；受控小 fixture 验证 stop 和 owner/drain，
+T009 才采完整模型峰值。RESOURCE_BOUNDARY 是诊断，不是协议失败或完成。
 
-`ACK`/`Selection` and protected-grant verification are admission evidence, not
-execution evidence. Each Provider must expose the ordered exits
-`GRANT_VERIFIED`, `EXECUTION_ENTERED`, `DEPENDENCY_FETCH`, `ASSEMBLY_STARTED`,
-`RUNNER_READY`, `EXECUTION_COMPLETED` and `TERMINAL`. A requester-side
-`stream event gap` is only a transport symptom; classification must name the
-first missing Provider exit or preserve the result as `UNOBSERVED`.
+### AD-07: candidate separate from run identity
+
+不可变 candidate 包含 source content、global ABI、binaries、model/manifest、
+profile/topology/oracle；commit/build path 是 provenance。
+run-id/request id/运行期 key/path 独立记录并绑定 candidate。
+只重验变更影响的后继证据，文档改动或新 run-id 不使有效 build/model 证据失效。
 
 ## Production paths and design-to-code binding
 
-| Binding | Production symbols / files to inspect | Required proof |
+| Binding | Actual source / caller | Remaining proof |
 | --- | --- | --- |
-| `Q189-PREP` | `Runtime::prepare`, `NativeCanonicalPreparationCatalog`, `NativeCanonicalArtifactPublisher`, `PreparedModel` | one Repo commit, reusable reference-only handle, no source retention beyond declared owner |
-| `Q189-REPO` | `RepositorySourceProvider`, `RepoCore`/file backend, `RepoTypes` manifest/reference | graph/initializer/layer digest and range lookup; duplicate prepare is a hot hit |
-| `Q189-WIRE` | `NativeRequestEnvelope`, `NativeRequestPreparation`, Core request/ACK/Selection path | request has reference only; ACK then signed two-placement Selection |
-| `Q189-ASSEMBLY` | `NativeCanonicalOnnxAssembler`, `NativeOnnxAssemblyWorker`, `di-native-provider` | selected range only, digest-before-ORT, runner creation count and cleanup |
-| `Q189-HANDOFF` | requester/provider handoff symbols discovered with CodeGraph and `nm -C` | hidden-state identity/range/attempt binding; no local shortcut |
-| `Q189-ORACLE` | `DI_NativeArtifactAuthority`, `DI_NativeRequester`, `DI_NativeOnnxAssemblyWorker`, `di-native-provider`, MiniNDN wrapper | C++ event sequence and terminal output/failure |
-| `Q189-EVIDENCE` | `Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`, evidence checker and `.codex-tmp` run dir | resource samples, child cleanup, immutable tuple and first boundary |
-
-`Q189-ORACLE` is currently a design binding, not an existing target: the
-production binaries listed above are not an independent Spec189 C++ oracle.
-Before B189-3 can close, the oracle source must be registered in
-`tests/wscript` or `examples/wscript`, linked against the same DI source
-closure, and run with named assertions for endpoint identity, provider stages,
-terminal output and drain.
+| Q189-PREP | Runtime::prepare, NativeCanonicalPreparationCatalog/Publisher, DI_NativeRequester | 原子 Qwen 材料发布与真实 Repo 可达性 |
+| Q189-REPO | NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp; RepoCore | receipt/事务/文件对象接入实际 producer/consumer |
+| Q189-WIRE | PreparedModel, NativeRequestPreparation/Envelope, Core ACK/Selection, NativeProviderHandler | 同 handle 复用、ACK 后规划、生产 ingress no-fetch |
+| Q189-ASSEMBLY | NativeCanonicalOnnxAssembler, NativeOnnxAssemblyWorker, provider factory | 选定材料替代整 initializer fetch |
+| Q189-HANDOFF | NativeEpochCoordinator, NativeProviderHandler, Core dependency path | endpoint/attempt/tensor 绑定与 terminal/drain |
+| Q189-ORACLE | examples/Spec189TwoProviderOracle.cpp + existing native selectors | 因果与独立输出校验；CLI 不等于 oracle |
+| Q189-EVIDENCE | Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py and maintained launcher | guard、同 handle 两请求、新 run-id 重复成功 |
 
 ## Logical Batch Quality Plan
 
-| Batch ID | Stable observable exit | Members | Dependencies | Shared selector/owner | Five-lane coverage scope | Risk/profile/invariant | Result record |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `B189-0` | source, model, ABI, split and handoff contract frozen | T001 | Spec189 docs | main agent + CodeGraph | production callers, contracts, selectors, Waf targets, evidence paths | medium / none / no implementation | `evidence/b189-convergence.md` |
-| `B189-1` | prepare commits one reusable two-layer Repo reference | T002,T003 | B189-0 | `DI_NativeArtifactAuthority` C++ selector | `Runtime::prepare`, publisher/Repo wire, C++ fixture/oracle, affected build closure, manifest evidence | high / asan-ubsan / one commit and source release | `evidence/b189-prepare.md` |
-| `B189-2` | request→ACK→Selection creates two valid placement bindings | T004,T005 | B189-1 | `DI_NativeRequester` plus Core controller; C++ wire oracle | envelope fields, ACK/Selection callers, parser/oracle, target/source map, placement evidence | high / none / no fetch before Selection | `evidence/b189-placement.md` |
-| `B189-3` | `GRANT_VERIFIED → EXECUTION_ENTERED → FETCH → ASSEMBLY → RUNNER_READY → EXECUTE → TERMINAL` on two native Providers | T006,T007 | B189-2 | `di-native-provider`, `DI_NativeOnnxAssemblyWorker`, C++ end-to-end selector | provider callers, package/NDN handoff, C++ driver/oracle, link closure, execution evidence | critical / asan-ubsan where feasible / two runner and one terminal | `evidence/b189-execution.md` |
-| `B189-4` | resource guard and deterministic cleanup classify success/stop | T008 | B189-3 | C++ counters + Python sampler | ownership symbols, cleanup wire, C++ lifecycle oracle, runner build, resource evidence | critical / none or asan-ubsan / no stale lease/runner | `evidence/b189-resource.md` |
-| `B189-5` | immutable candidate evidence and repeat verdict are consistent | T009,T010 | B189-4 | evidence checker + same native selectors | all five lanes and hash/event checks; no cross-candidate reuse | high / none / verdict requires full event sequence | `evidence/b189-convergence.md` |
+唯一成员注册表见 [batch-execution.md](batch-execution.md)；
+顺序 B189-0 → B189-4 → B189-1 → B189-2 → B189-3 → B189-5。
+7 个活动任务及旧 ID 合并映射见 [tasks.md](tasks.md)。
 
-Batch growth decision: stop each batch at the stated exit. Do not add SIF, cluster, broad model quality, general Repo redesign, or unrelated Python facade work to save a build. A changed handoff, source closure, or provider protocol creates a new batch and invalidates later evidence.
+每小任务完整编码/fixture/调用方/build registration 后冻结五 lane review，
+修复复审，再同批组合审查，最后一次增量构建和规定 C++ 测试。
+等待期间不实现依赖该门的下一任务；批次达稳定出口即测试，不无限扩张。
+T008/T006 的 small-fixture owner/cancel 适用 ASan/UBSan；
+依赖不支持时记录限制并运行具体 owner/counter 反例，不能省略生命周期测试。
+12 GB full-model run 不强制 sanitizer。
 
-### Audit correction after r01-r21
+## Evidence reuse and invalidation
 
-The first real runs exposed that the original B189-3 exit was too coarse. The
-next B189-3 attempt must first pass candidate preflight for service-scoped role
-policy, protected-grant registry/key closure, dynamic KV shape, graph-size
-budget, privileged Python modules, run-scoped disk reservation and derived
-digests. It must then freeze the post-grant marker sequence from AD-07. This
-does not claim that the current production path emits all markers; adding and
-testing the missing markers is part of T006/T007.
-
-### Experiment retry review cadence
-
-Every new MiniNDN or native-selector attempt uses the shared
-[experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md).
-For the next retry, freeze r21 and the candidate tuple, classify the first
-missing Provider exit, and record the Changed gate covering the C++ endpoint
-regression, post-grant markers, C++ oracle registration or resource guard.
-The review-agent then reads an immutable snapshot of the changed caller,
-configuration/policy, fixture/oracle, build/source closure and negative path.
-Only a clean re-review permits the affected target to be rebuilt and the
-bounded experiment to be rerun. Retry-only changes do not advance B189-3.
-
-## Immutable candidate and invalidation matrix
-
-| Plane | Identity | Invalidates | Restart gate |
-| --- | --- | --- | --- |
-| Source | Experimental commit + changed-file digest | all native binaries/evidence | B189-0 |
-| ABI | compiler/binutils, Boost 1.71, NDN-CXX/SVS/NAC-ABE/ORT SONAME and hashes | all linked targets | B189-0 |
-| Model | Qwen snapshot/revision, tokenizer/config, graph/initializer/layer digests | Repo manifest, placement and runs | B189-1 |
-| Split | layer count, ranges, stage schemas and tensor contracts | both provider packages and Selection | B189-1 |
-| Profile | nodes, budgets, input and resource floors | MiniNDN/resource evidence | B189-2 |
-| Harness | script, selector, topology and oracle | run result | B189-2 |
+| Change | Retain | Recheck |
+| --- | --- | --- |
+| Docs/task order | 有效组件/build/model 证据 | 文档链接、任务依赖与验收一致性 |
+| Material schema | 全局依赖与无关 Core | producer/consumer/schema negatives/受影响 MiniNDN |
+| Placement/grant | 兼容 Repo 内容 | ingress/no-fetch/两 Provider 绑定 |
+| Assembly/handoff | 未变 prepare 和依赖证据 | 原生 selector、输出/因果/lifecycle/full path |
+| Global ABI | 无关文档与模型源 | 受影响目标/绑定/loader 及 downstream |
+| New run-id | 同一 candidate | 新运行证据，不重编或重导出 |
 
 ## Formal validation order
 
-1. Read newest failure boundary, architecture guide and current Spec189 docs; inspect actual symbols with CodeGraph.
-2. Freeze each task snapshot and run read-only review-agent before dependent implementation.
-3. Run candidate preflight: derive all digests from the frozen record, validate the policy/credential/module closure, inspect ONNX state names and graph-size budget, reserve run-scoped publication space and reject residue.
-4. Build only affected native targets with the matching installed global dependency closure; verify real paths and SHA-256 before compilation. Use `-j4` unless `vmstat` shows sustained swap, then use `-j2`.
-5. Run the named C++ selectors and record static/build/runtime/unobserved misses separately.
-6. Run MiniNDN as root with a unique run id and resource guard. The Python wrapper may stop processes, but the C++ oracle decides product behavior.
-7. Repeat only with a new run id after the first result is durably recorded; do not reuse a previous PASS across an invalidated candidate.
-8. Stop before SIF/Tiger. A local `QWEN_TWO_PROVIDER_PASS` is necessary evidence for a future downstream candidate, not that candidate itself.
+T001 收敛接线 → T008 安全出口 → T003 prepare/Repo/request → T005 选择门 →
+T006/T007 范围组装/handoff 组合验证 → T009 同 handle 两请求及独立重复。
+每次失败保留原始边界，遵守
+[experiment retry loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md)；
+日志级别/timeout 改变不算功能修复，诊断运行必须注明目的。
 
 ## Closure rule
 
-Spec189 is complete only when B189-0 through B189-5 have durable evidence, the real C++/MiniNDN path observes prepare/Repo commit, ACK, Selection, both placement-bound Provider fetch/assembly/execute paths, terminal response and cleanup, and the repeat run agrees under the same immutable candidate tuple. A resource/protocol/fixture boundary keeps the corresponding task `PARTIAL`, `BLOCKED` or `UNQUALIFIED`; it cannot be converted into PASS by a stage export or focused component selector. The current r21 state is `BLOCKED_FOR_NATIVE_EXECUTION` until the first post-grant Provider boundary is observable.
+所有真实验收与文档交付完成才结束 Spec189；分类失败仍 PARTIAL。
+实现中的 API/行为变化按 Design/MANAGEMENT.md 同步当前/目标契约及 PDF；
+本轮只修正目标计划，未实现新公开 API 或改变生产行为。

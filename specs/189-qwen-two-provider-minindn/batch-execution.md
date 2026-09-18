@@ -1,40 +1,42 @@
 # Spec189 Batch Execution Register
 
-This is the execution entrypoint for the five batches in [plan.md](plan.md). Every batch has one stable exit and one evidence record. The official read-only review-agent is required for each task snapshot and for the batch composition review before the shared build/test.
+唯一成员注册表；保留历史 batch ID/证据路径，序号不再代表执行时间。
+7 个活动任务；T002/T004 合并到 T003，T010 合并到 T009，合并不算完成。
 
-| Batch | Members | Stable exit | C++ selector / harness | Status | Evidence |
+| Order | Batch | Members | Stable exit | Status | Unique result record |
 | --- | --- | --- | --- | --- | --- |
-| B189-0 | T001 | source/model/ABI/split/handoff contract and candidate preflight frozen | CodeGraph + `rg`, `nm -C`, `readelf` map | PARTIAL | `evidence/b189-convergence.md` |
-| B189-1 | T002,T003 | prepare commits reusable two-layer Repo reference | `DI_NativeArtifactAuthority` and Repo C++ selector | PARTIAL | `evidence/b189-prepare.md` |
-| B189-2 | T004,T005 | ACK and signed two-provider Selection validated | `DI_NativeRequester` + Core controller | PARTIAL | `evidence/b189-placement.md` |
-| B189-3 | T006,T007 | `GRANT_VERIFIED → EXECUTION_ENTERED → FETCH → ASSEMBLY → RUNNER_READY → EXECUTE → TERMINAL` | `di-native-provider`, `DI_NativeOnnxAssemblyWorker`, Spec189 C++ oracle | BLOCKED | `evidence/b189-execution.md` |
-| B189-4 | T008 | resource guard and drain classify run | C++ counters + Python sampler | NOT_STARTED | `evidence/b189-resource.md` |
-| B189-5 | T009,T010 | repeat evidence and verdict identity consistent | evidence checker + same native selectors | NOT_STARTED | `evidence/b189-convergence.md` |
+| 1 | B189-0 | T001 | 剩余真实接线与 candidate/验证边界 | PARTIAL | evidence/b189-convergence.md |
+| 2 | B189-4 | T008 | full-model 前 guard/受控 stop/drain | NOT_STARTED | evidence/b189-resource.md |
+| 3 | B189-1 | T003 (former T002,T004) | 原子材料 Repo publication + 同 handle reuse | PARTIAL | evidence/b189-prepare.md |
+| 4 | B189-2 | T005 | ACK 后规划与生产 Selection/no-fetch fence | PARTIAL | evidence/b189-placement.md |
+| 5 | B189-3 | T006,T007 | 范围组装、NDN handoff、C++ 输出/因果判据 | PARTIAL | evidence/b189-execution.md |
+| 6 | B189-5 | T009 (former T010) | 两独立 MiniNDN 成功，各自同 handle 两请求 | PARTIAL | evidence/b189-convergence.md |
 
-## Dynamic gate card
+## Five-lane coverage and dynamic checks
 
-Each batch evidence must freeze source/build/ABI/model/profile identity, output path, selector, repeat budget and resource floors. Host builds must use the installed global dependency closure documented in [`docs/native-dependency-closure.md`](../../docs/native-dependency-closure.md); temporary dependency prefixes are a preflight failure. Before `Run`, derive digests from the frozen candidate, validate policy/credential/interpreter closure, inspect the ONNX state contract and reject stale run-scoped publication residue. Run `Freeze → Preflight → Sample → Run → Classify`. Record static, compile/link, runtime/test and unobserved misses separately. For B189-3, `GRANT_VERIFIED` is not an execution exit; the provider-side marker sequence must identify the next boundary. A resource stop is not a protocol PASS.
+| Batch | Production/callers | Implementation/wire | Test/oracle | Build/source closure | Migration/evidence | Dynamic profile |
+| --- | --- | --- | --- | --- | --- | --- |
+| B189-0 | producer/consumer/handoff map | 原子材料/placement | 已有 selector 清单 | 复用 global receipt | 已验/待改/retired ID | none: docs/preflight |
+| B189-4 | worker/runner owner | cancel/drain/stop | C++ lifecycle + host guard | 仅受影响目标 | resource stop/cleanup | bounded stop; small-fixture ASan/UBSan if supported |
+| B189-1 | Runtime/requester/Repo | manifest/schema/lease/envelope | 已有 Repo/PreparedModel + real receipt | unit/integration 原闭包 | 冷热/source release | owner counters; optional fixture sanitizer |
+| B189-2 | Core/planner/provider ingress | signed grant/Selection | 生产 ingress negatives + placement selector | 不复制整套 DI | CPU/canonical identity/no-fetch | none: exact boundary counters |
+| B189-3 | assembler/provider/coordinator | Repo material/tensor handoff | assembly/endpoint/lifecycle + existing C++ oracle | 同 installable DI 闭包 | bytes/runner/output/drain | cancel/failure owner probes; small-fixture sanitizer |
+| B189-5 | maintained native processes | 完整真实链 | C++ causal/output assertions | frozen tested binaries | reuse/repeat identities | 1-second samples/deadlines/stop |
 
-## Batch growth decision
+## Review and closure
 
-Stop at the stable exit. Do not add SIF/Tiger, general Repo redesign, broad generation quality or unrelated binding work to a batch. A changed caller, wire state, source closure or hard acceptance dependency starts a new batch and invalidates dependent evidence.
+逐任务提供 ID、design binding、batch base、精确 diff 与五 lane；
+冻结待审范围，或制作包含相关 untracked 文件的不可变快照，不混入无关脏文件。
+官方 review-agent 只读，修复后复审受影响不变量；同批最后组合审查。
+主代理核对 actual tested candidate 与 snapshot，再统一增量构建/C++ 测试。
 
-## Audit checkpoint
+唯一结果记录包含实际 selector/命令/并发/耗时、快照、动态检查适用性、
+static / compile-link / runtime-test / unobserved 漏检和 closure decision。
+达到出口即测试，不为字段或日志单独增加行政任务，不无限扩批。
 
-The r01-r21 audit found that static review could have caught the V3 endpoint
-projection loss, service-scope policy mismatch, missing operator registry
-closure, repeated manual digest hazards and missing preflight checks. The exact
-r21 post-grant runtime boundary remains dynamic and is recorded in
-[the static audit](evidence/spec189-static-audit-20260918.md). The next batch
-must implement the missing post-grant markers and the C++ endpoint regression
-before another full MiniNDN retry.
+## Retry and resource gate
 
-### Retry static-review gate
-
-Each retry also follows the shared
-[experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):
-preserve the prior raw attempt, name the first missing marker, declare the
-Changed gate, freeze the complete candidate/diff snapshot, and obtain
-read-only review-agent re-review before building or rerunning. If no real
-caller, configuration, C++ fixture/oracle, build closure, resource guard or
-negative-path check changed, the attempt remains `BLOCKED`/`PARTIAL`.
+T008 前置所有 full-model prepare/MiniNDN，不能在执行后补录。
+遵守 [retry loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md)；
+保留 first proven boundary，修复、复审受影响范围后复测。
+当前 r25 FAIL 已观察 assembly entry，runner/output 尚无证明，不能写 PASS。

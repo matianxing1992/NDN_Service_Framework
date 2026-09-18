@@ -1,21 +1,25 @@
 # Research: Qwen Two-Provider Full Path
 
-## Decision: prepare-time Repo publication
+## Decision: preparation separate from placement
 
-The model is split and published once during `prepare`; requests carry only a reference. This follows the user-facing lifecycle and removes request-time publication of a 1.5-GB initializer. It also lets multiple requests reuse the same immutable manifest while retaining per-request authorization and runner state.
+prepare 负责拓扑无关原子模型材料和 Repo 可达性；ACK 后规划分区、
+Selection 后组装最终 ONNX。预导出两段只可作对照，不能替代真实链。
 
-## Decision: Selection gates materialization
+## Decision: close the existing producer and consumer
 
-Providers do not prefetch layer bytes before authenticated Selection. The manifest and digest are safe summaries; layer fetch and runner creation are placement-bound effects.
+Repo adapter layer payload/冷热 fixture 不代表真实 requester 已接线。
+canonical assembler 整 initializer 读取必须改为消费同一 Repo 选定材料，
+否则磁盘缓存不能消除 Provider 的整模型副本。
+不另建 Qwen API、serializer 或隐式临时 fallback。
 
-## Decision: C++ owns native behavior
+## Decision: reuse component evidence
 
-The requester, provider, assembly worker and output oracle are native C++ targets. Python launches MiniNDN, samples host resources and records evidence only.
-
-## Decision: two stages first
-
-The initial candidate uses Qwen3-0.6B's 28 layers split into ranges `0..14` and `14..28`. Any split change invalidates the manifest, stage artifacts, profile and evidence.
+保留全局 dependency closure 和已有 C++ checks。
+T002/T004 合并 T003、T010 合并 T009，T008 安全门前移。
+组件与两 Provider 正式资格分开，避免字段级任务/重复编译 executable。
 
 ## Known boundary
 
-Prior Qwen runs stopped around 6.7 GiB process RSS / 1.65 GiB MemAvailable before Selection/provider execution. That evidence is a resource boundary, not a protocol result. Spec189 must determine whether prepare-time Repo publication and placement-bound assembly remove that peak; it must not hide the boundary with a smaller model or preloaded runner.
+r25 为 FAIL，已观察 assembly entry，旧数据路径仍有 di-canonical-initializer。
+stream gap 不足以确定根因。本轮未测新峰值；12 GB 是否足够须由有界材料化后的
+真实运行证明。见 [audit](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。

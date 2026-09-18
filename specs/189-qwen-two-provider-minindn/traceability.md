@@ -1,51 +1,27 @@
 # Spec189 Traceability
 
-| Requirement / Story | Owning tasks | Batch | Production entry / C++ oracle | Evidence |
-| --- | --- | --- | --- | --- |
-| US1 / FR-001..FR-005 | T001,T002,T003 | B189-0,B189-1 | `Runtime::prepare`, `NativeCanonicalPreparationCatalog`, `DI_NativeArtifactAuthority` | `evidence/b189-prepare.md` |
-| US2 / FR-006..FR-009 | T004,T005 | B189-2 | `NativeRequestEnvelope`, Core ACK/Selection, `DI_NativeRequester` | `evidence/b189-placement.md` |
-| US3 / FR-010..FR-015 | T006,T007 | B189-3 | `NativeCanonicalOnnxAssembler`, `NativeOnnxAssemblyWorker`, `di-native-provider` | `evidence/b189-execution.md` |
-| US4 / FR-016..FR-019 | T008 | B189-4 | native lease/runner counters plus maintained resource wrapper | `evidence/b189-resource.md` |
-| US5 / FR-020..FR-025 | T009,T010 | B189-5 | C++ event oracle, evidence checker and global dependency preflight | `evidence/b189-convergence.md`, `evidence/b189-build-20260918.md` |
+本表使用活动任务 ID；旧 T002/T004→T003、T010→T009 是合并，不是 PASS。
+五 lane 与动态 profile 见 [batch-execution.md](batch-execution.md)。
 
-## Functional requirement detail
+| Requirements | Active tasks | Batch | Production proof / evidence |
+| --- | --- | --- | --- |
+| FR-001 | T001,T003 | B189-0,B189-1 | pinned snapshot/config/tokenizer/digests；b189-prepare.md |
+| FR-002..FR-005 | T003 | B189-1 | native prepare 原子材料、Repo commit/可达性/owner/hot reuse；b189-prepare.md |
+| FR-006 | T003 | B189-1 | production PreparedModel reference-only、同 handle 两请求零发布；b189-prepare.md（旧组件证据保留 b189-placement.md） |
+| FR-007..FR-009 | T005 | B189-2 | 真实 ACK 后规划、signed Selection、生产 no-fetch negatives；b189-placement.md |
+| FR-010..FR-011 | T006 | B189-3 | Repo selected/shared materials→有界 native assembly；b189-execution.md |
+| FR-012..FR-013 | T007,T009 | B189-3,B189-5 | NDN handoff、独立 C++ 输出 reference；b189-execution.md / b189-convergence.md |
+| FR-014..FR-015 | T008,T006,T007,T009 | B189-4,B189-3,B189-5 | fixture owner/drain、真实 runner/lease/materialization baseline；b189-resource.md / b189-execution.md |
+| FR-016..FR-018 | T008,T009 | B189-4,B189-5 | 前置资源 guard、1-second sample、受控停止及真实峰值；b189-resource.md / b189-convergence.md |
+| FR-019 | T009 | B189-5 | 两次完整成功、各自同 handle 复用；b189-convergence.md |
+| FR-020..FR-021 | T001,T009 | B189-0,B189-5 | candidate/run 身份分离，stale candidate preflight rejection；b189-convergence.md |
+| FR-022 | T003,T005,T006,T007,T008,T009 | B189-1..B189-5 | C++ native assertions / Python orchestration；对应唯一批次记录 |
+| FR-023..FR-024 | T009 | B189-5 | raw logs/four miss classes/no SIF/Tiger；b189-convergence.md |
+| FR-025 | T001,T009 | B189-0,B189-5 | 已验全局依赖闭包复用；b189-build-20260918.md / b189-convergence.md |
 
-| ID | Task | Production proof |
-| --- | --- | --- |
-| FR-001 | T001,T002 | pinned snapshot/revision and file hash manifest |
-| FR-002 | T002 | native graph/initializer/range validation |
-| FR-003 | T003 | Repo commit and zero request-time publication counters |
-| FR-004 | T003,T004 | prepared handle reference/lease ownership inspection |
-| FR-005 | T003 | duplicate prepare C++ selector |
-| FR-006 | T004 | `NativeRequestEnvelope` parser oracle |
-| FR-007 | T005 | Core ACK event before Selection/fetch |
-| FR-008 | T005 | signed two-placement Selection fields |
-| FR-009 | T005 | no-fetch/range/digest negative cases |
-| FR-010 | T006 | provider package digest/range/role verification |
-| FR-011 | T006 | native assembly from selected packages |
-| FR-012 | T007 | production hidden-state handoff identity |
-| FR-013 | T007 | C++ terminal output digest/top-token oracle |
-| FR-014 | T007,T008 | cancellation/close join-drain selector |
-| FR-015 | T006,T008 | runner/lease/materialization counters |
-| FR-016 | T008,T009 | lifecycle resource samples |
-| FR-017 | T008 | deterministic resource guard classification |
-| FR-018 | T008,T010 | peak/post-drain metrics and repeat comparison |
-| FR-019 | T009,T010 | full event sequence required for PASS |
-| FR-020 | T001,T010 | immutable candidate tuple |
-| FR-021 | T001,T009 | pre-dispatch identity rejection |
-| FR-022 | T007,T009 | C++ oracle / Python orchestration boundary |
-| FR-023 | T009,T010 | raw log and four miss-class evidence |
-| FR-024 | T009,T010 | no SIF/Tiger dispatch |
-| FR-025 | T001,T009 | global dependency closure and install/build identity gates |
+## Success criteria
 
-## Five-lane coverage
-
-Each batch evidence records:
-
-1. **Production entry/callers** — CodeGraph and exact source paths for prepare, request, Core and Provider.
-2. **Implementation/wire** — manifest/reference, ACK/Selection and placement/handoff fields.
-3. **Test/harness/oracle** — named C++ target/selector; Python only launches external facilities.
-4. **Build/source closure** — Waf target, source list, ABI hashes, `nm -C`, `readelf` and `ldd` checks.
-5. **Migration/evidence** — immutable candidate tuple, raw logs, resource samples, verdict and first boundary.
-
-Unknown lanes remain `gap`; static review or artifact export cannot close them.
+SC-001 → T003,T009；SC-002 → T005,T009；SC-003 → T006,T007,T009；
+SC-004 → T008,T006,T009；SC-005 → T008,T009；SC-006 → T009。
+所有旧 negative/recovery obligation 保留在归属任务，不另建字段级任务。
+已有 selector PASS 只关闭其实际覆盖范围，不能代替最终 SC。

@@ -1,38 +1,36 @@
 # Spec189 Quickstart
 
-Run from the repository root. Read `docs/failure-log.md`, `docs/architecture-reading-guide.md`, this Spec189 `spec.md`, `plan.md`, `tasks.md`, and the newest evidence before starting.
+## Resume
 
-## 1. Candidate freeze
+从 [tasks.md](tasks.md) Current Checkpoint 开始，按
+B189-0 → B189-4 → B189-1 → B189-2 → B189-3 → B189-5 执行。
+不重做已验证组件，不把它们当 full-path PASS。
+实际命令在实现批次唯一 evidence 中冻结；本页不发明尚不支持的新 CLI。
 
-Use a unique run directory under `.codex-tmp/spec189-qwen-two-provider-<timestamp>/`. Record:
+## Safe preparation
 
-- Experimental source commit and changed-file digest;
-- compiler/binutils, system Boost 1.71, NDN-CXX/SVS/NAC-ABE/ORT library hashes;
-- Qwen snapshot/revision, tokenizer/config, canonical graph, external initializer and both layer package hashes;
-- profile, topology, two provider nodes, memory/disk floors and selector hashes.
+核对 failure-log、最新 raw run、global receipt/binary hash。
+T008 的 preflight/持续采样/受控停止先于真实模型准备。
+复用 canonical source；native prepare 发布原子层/shared 材料，
+Repo commit 且可读后返回 PreparedModel，不预装最终两段 runner。
 
-The stage manifest must describe exactly two stages and ranges `0..14` and `14..28`. Do not use a historical result or a preloaded runner.
+## Build and check
 
-## 2. Prepare and verify Repo publication
+复用已验 build tree/全局依赖，受影响 target 增量构建默认 -j4。
+保留现有 Repo/PreparedModel/placement/assembly selectors；
+Waf target `spec189-two-provider-oracle` 已存在（源码 `examples/Spec189TwoProviderOracle.cpp`，
+产物 `<build>/examples/spec189-two-provider-oracle`），但事件假设待修正。
+每小任务静态门、批末组合审查后统一 C++ 构建测试，CLI 本身不是 oracle。
 
-Run the maintained native authority/prepare path (the exact command is frozen in `tasks.md` after CodeGraph verifies the current CLI). Its C++ output must include `PREPARE`, `REPO_COMMIT`, `MANIFEST_DIGEST`, `LAYER_REF_0`, `LAYER_REF_1` and `PREPARE_SOURCE_RELEASED` markers. A stage-export-only output is `NOT_READY`.
+## Run and repeat
 
-## 3. Build affected C++ targets
+前置 runtime 出口及安全门通过后，用维护的 MiniNDN runner，
+root PATH 含 /usr/sbin:/sbin，两个 CPU Provider，唯一 run directory。
+同 requester 进程 prepare 一次，同 handle 连续两独立 request；
+各自走 ACK→planner→Selection→Repo 范围材料→native assembly→NDN handoff→
+独立输出校验→drain。事件按因果偏序，不按 Provider 日志全序。
 
-Use the matching existing Waf build tree and the smallest affected closure. Default to `-j4`; reduce to `-j2` only after observing sustained swap or host stalls. Build/verify `DI_NativeArtifactAuthority`, `DI_NativeRequester`, `DI_NativeOnnxAssemblyWorker`, `di-native-provider`, `App_ServiceController` and the new Spec189 C++ oracle target. Record `nm -C`/`readelf` definitions and `ldd` identities.
-
-## 4. Run real MiniNDN
-
-Run as root with `/usr/sbin:/sbin` in PATH, one active subject, a unique run id and a resource sampler. The maintained Python script may launch the C++ authority/requester/providers and stop them, but must not inject a synthetic ACK/Selection or call ORT directly. The event order must be:
-
-```text
-PREPARE → REPO_COMMIT → REQUEST_REFERENCE_ONLY → ACK → SELECTION_2_PROVIDERS
-→ PROVIDER_0_FETCH/ASSEMBLE/EXECUTE → PROVIDER_1_FETCH/ASSEMBLE/EXECUTE
-→ TERMINAL → DRAINED
-```
-
-On a memory floor, timeout, protocol mismatch, child leak or digest failure, stop deterministically and write the first boundary. Do not call it PASS.
-
-## 5. Repeat and classify
-
-After the first run is durable, repeat with a new run id and the same immutable candidate tuple. `QWEN_TWO_PROVIDER_PASS` requires both runs to agree on the full event sequence, terminal oracle and cleanup. Otherwise leave the task `PARTIAL`, `RESOURCE_BOUNDARY`, `PROTOCOL_BOUNDARY` or `UNQUALIFIED`.
+保存 publication 零增量、资源峰值/post-drain 与实际结果；
+保持 candidate 内容摘要，新 run-id 重复上述场景。
+两次均成功才 QWEN_TWO_PROVIDER_PASS；分类失败仍 PARTIAL。
+不启动 SIF/Tiger。

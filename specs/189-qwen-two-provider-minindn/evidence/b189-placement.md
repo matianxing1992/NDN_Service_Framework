@@ -109,12 +109,12 @@ Raw logs are `.codex-tmp/spec189-t005-placement-build-r2.log` and
 
 | Lane | Result |
 | --- | --- |
-| static | `STATIC_PASS`; role identity is prepared before placement, production validator is called, and canonical grant naming is used |
+| static | Historical v5 `STATIC_PASS`, corrected by the architecture audit: role identity and validator coverage exist, but synthetic grant naming is not canonical production grant verification; affected fixture remains open in T005 |
 | compile-link | `PASS`; registered target built from the existing global-r3 tree with the complete DI integration source closure and `-j4` |
 | runtime-test | `PASS`; `Spec189PlacementOracle/TwoProviderSelectionKeepsPreSelectionEffectsZero` passed as a C++ selector |
 | integration/wiring | `PASS`; `tests/wscript` registers the target and the selector uses the signed offer fixture, production placement and cache APIs |
 | unobserved | real Core ACK/Selection, parser/ProtectedRuntime/Provider admission, and network no-fetch-before-Selection remain unobserved |
 
 This is a focused placement/cache-layer result, not full T005 completion. The
-real two-provider MiniNDN run still stops after protected-grant verification
-before `EXECUTION_ENTERED`, so T005 and B189-2 remain `PARTIAL`/`NOT_ACCEPTED`.
+latest r25 logs include execution entry and Provider-0 assembly entry, but no
+runner/output completion. T005 and B189-2 remain `PARTIAL`/`NOT_ACCEPTED`.

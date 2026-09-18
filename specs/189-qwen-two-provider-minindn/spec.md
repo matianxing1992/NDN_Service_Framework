@@ -1,6 +1,6 @@
 # Feature Specification: Qwen 0.6B Two-Provider MiniNDN Full-Path Validation
 
-**Feature Branch**: `189-qwen-two-provider-minindn`
+**Development Branch**: `Experimental` | **Feature**: `189-qwen-two-provider-minindn`
 
 **Created**: 2026-09-18
 
@@ -10,16 +10,16 @@
 
 ## Purpose and scope
 
-Spec189 只处理一个可判定目标：在当前 6-core/12-GB 主机上，使用真实 Qwen3-0.6B 和两个 native CPU Provider，完成一次可重复的完整请求，或在第一个明确边界停止并保留可复核证据。它不重做 Spec188 已验证的 bounded prepare/request/YOLO 工作，也不自动构建 SIF、上传 TigerCluster 或运行 QWEN 集群资格。
+Spec189 只处理一个可判定目标：在当前 6-core/12-GB 主机上，使用真实 Qwen3-0.6B 和两个 native CPU Provider，完成可重复的完整成功请求。失败时在第一个明确边界停止并保留证据，但失败分类不满足完成条件。它不重做 Spec188 已验证的 bounded prepare/request/YOLO 工作，也不自动构建 SIF、上传 TigerCluster 或运行 QWEN 集群资格。
 
 目标调用链固定为：
 
 ```text
 Qwen snapshot
-  → native prepare: graph/initializer identity + layer split
-  → Repo manifest and placement-addressable layer packages
+  → native prepare: graph/initializer identity + topology-independent atomic layer/shared materials
+  → Repo manifest and reusable atomic material references
   → payload-free request
-  → Core ACK
+  → Core ACK → partition planning
   → authenticated Selection with two placement entries
   → Provider-0/Provider-1 fetch only assigned layer ranges
   → C++ assembly and CPU execution
@@ -37,12 +37,12 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 
 **Why this priority**: 没有 prepare-time、可复用的分层制品，request 会再次复制或发布整模型，正是原始多 Provider CPU 失败的来源。
 
-**Independent Test**: C++ `DI_NativeArtifactAuthority`/Repo selector 由真实 Qwen candidate 驱动，检查 manifest、graph identity、initializer digest、两个 layer ranges、commit count 和 source ownership；失败时检查 staging cleanup。
+**Independent Test**: C++ `DI_NativeArtifactAuthority`/Repo selector 由真实 Qwen candidate 驱动，检查 manifest、graph identity、initializer digest、原子层/shared 索引、commit count 和 source ownership；失败时检查 staging cleanup。
 
 **Acceptance Scenarios**:
 
-1. **Given** a local Qwen snapshot and an immutable source identity, **When** `prepare` runs, **Then** one committed manifest references canonical graph/initializer and exactly two placement-addressable layer packages.
-2. **Given** the same identity is prepared again, **When** the second prepare runs, **Then** Repo returns the existing manifest/reference without a second full publication and creates only the request lease.
+1. **Given** a local Qwen snapshot and an immutable source identity, **When** `prepare` runs, **Then** one committed manifest references topology-independent atomic layer/shared materials; final partitioning occurs after ACK.
+2. **Given** the same identity is prepared again, **When** the second prepare runs, **Then** Repo returns the existing manifest/reference without a second full publication or binding a Provider placement; execution leases are owned by their requests.
 3. **Given** graph, initializer, config, layer-range or digest mismatch, **When** prepare validates, **Then** it rejects before ACK and leaves no READY manifest or staging residue.
 
 ### User Story 2 - Bind ACK and Selection to two placements (Priority: P1)
@@ -69,7 +69,7 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 
 **Acceptance Scenarios**:
 
-1. **Given** a valid two-provider Selection, **When** one request executes, **Then** both providers fetch only their assigned layer packages, each runner is created once, and a terminal result is returned.
+1. **Given** a valid two-provider Selection, **When** one request executes, **Then** both providers fetch only their assigned layer packages, each selected range has a valid runner (a verified warm cache may reuse it), and a terminal result is returned.
 2. **Given** the first provider returns a hidden-state handoff, **When** the second provider receives it, **Then** it validates attempt/model/placement identity before execution and returns a terminal result with a named output digest/top-token oracle.
 3. **Given** assembly, ONNX, NDN handoff or CPU execution fails, **When** the request terminates, **Then** the C++ oracle reports the first failure boundary and both providers drain without stale runners.
 
@@ -79,7 +79,7 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 
 **Why this priority**: 当前主机只有 12 GB RAM，必须区分“协议接通”和“内存峰值仍不可运行”。
 
-**Independent Test**: C++ counters are authoritative for Repo/runner ownership; Python only samples host/process metrics and enforces a bounded stop. At least one normal run and one reduced-input boundary are recorded under the same candidate identity.
+**Independent Test**: C++ counters are authoritative for Repo/runner ownership; Python only samples host/process metrics and enforces a bounded stop. A controlled small-fixture stop validates the guard before full-model work; the final real run records normal peak/drain metrics. Any changed profile/threshold is recorded with its own identity.
 
 **Acceptance Scenarios**:
 
@@ -105,34 +105,34 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 
 | Story / FR | Production entry / callers | Observable outcome | Independent oracle / C++ selector | Negative / recovery boundary | Dynamic profile / invariant | Evidence owner / path | Batch / Coverage reference |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| US1 / FR-001..FR-005 | `Runtime::prepare`, `NativeCanonicalPreparationCatalog`, `NativeCanonicalArtifactPublisher`, Repo owner | one manifest plus two layer references; no payload in handle | `DI_NativeArtifactAuthority`, Repo C++ selector | digest/range mismatch, staging abort, duplicate prepare | asan-ubsan; commit/source-owner counts | `evidence/b189-prepare.md` | B189-1 |
-| US2 / FR-006..FR-009 | `DI_NativeRequester`, Core controller/ACK/Selection path | payload-free request and two signed placements | C++ ACK/Selection oracle in `spec189-qwen-two-provider` | no offer, stale epoch, unselected provider, overlap/out-of-range | none; placement and wire invariants | `evidence/b189-placement.md` | B189-2 |
-| US3 / FR-010..FR-015 | `di-native-provider`, `DI_NativeOnnxAssemblyWorker`, Core handoff | two assigned fetches, two runners, hidden-state handoff, terminal result | C++ `di-native-provider`/assembly worker plus MiniNDN selector | assembly/ORT failure, handoff mismatch, cancellation, provider stop | asan-ubsan where feasible; runner/lease/drain counts | `evidence/b189-execution.md` | B189-3 |
+| US1 / FR-001..FR-005 | `Runtime::prepare`, `NativeCanonicalPreparationCatalog`, `NativeCanonicalArtifactPublisher`, Repo owner | one manifest plus topology-independent material references; no payload in handle | `DI_NativeArtifactAuthority`, Repo C++ selector | digest/range mismatch, staging abort, duplicate prepare | asan-ubsan; commit/source-owner counts | `evidence/b189-prepare.md` | B189-1 |
+| US2 / FR-006..FR-009 | `DI_NativeRequester`, Core controller/ACK/Selection path | payload-free request and two signed placements | production-ingress C++ assertions plus existing `spec189-two-provider-oracle` | no offer, stale epoch, unselected provider, overlap/out-of-range | none; placement and wire invariants | `evidence/b189-placement.md` | B189-2 |
+| US3 / FR-010..FR-015 | `di-native-provider`, `DI_NativeOnnxAssemblyWorker`, Core handoff | selected/shared material fetch and assembly, measured cold/warm runner reuse, hidden-state handoff and valid terminal result | existing assembly/handoff C++ selectors plus corrected Spec189 event checker and independent output assertions | assembly/ORT failure, handoff mismatch, cancellation, provider stop | small-fixture asan-ubsan where feasible; runner/lease/drain counts | `evidence/b189-execution.md` | B189-3 |
 | US4 / FR-016..FR-019 | experiment runner and native ownership counters | measured peak, safety stop, zero post-drain residue | C++ counters; Python host sampler only | memory floor, swap pressure, disk floor, child leak | resource guard; post-drain zero invariant | `evidence/b189-resource.md` | B189-4 |
 | US5 / FR-020..FR-025 | maintained scripts, evidence checker and global dependency preflight | immutable tuple, event sequence, first boundary, verdict and one installed native closure | C++ oracle output plus evidence checker and dependency identity checks | stale identity, timeout, partial logs, missing/ABI-incompatible global dependency | host `/usr` + `/usr/local` closure; no checkout or temporary prefix | `evidence/b189-convergence.md`, `evidence/b189-build-20260918.md` | B189-5 |
 
 ## Functional Requirements
 
 - **FR-001**: The candidate MUST use the pinned local Qwen3-0.6B snapshot and record model revision, config digest, tokenizer digest and file hashes.
-- **FR-002**: Native `prepare` MUST validate canonical graph identity, initializer digest/size, layer count and exactly two non-overlapping layer ranges before creating a READY reference.
-- **FR-003**: Repo publication MUST commit a manifest and placement-addressable layer packages; request-time publication of canonical graph/initializer MUST be zero on a warm prepared handle.
+- **FR-002**: Native `prepare` MUST validate canonical graph identity, initializer digest/size, layer count, atomic material coverage and shared dependencies before creating a READY reference; it MUST NOT fix the final Provider partition.
+- **FR-003**: Repo publication MUST durably commit a versioned manifest and topology-independent atomic materials reachable through the normal Repo path; request-time publication of canonical graph/initializer MUST be zero on a warm prepared handle.
 - **FR-004**: The prepared handle MUST contain reference/lease identity only; it MUST NOT retain the complete model payload solely for a future request.
 - **FR-005**: Duplicate prepare MUST be idempotent for immutable identity and MUST expose commit/lookup counters to the C++ oracle.
 - **FR-006**: The request envelope MUST contain model reference, manifest digest, epoch, input reference and options only; it MUST reject embedded full-model bytes.
 - **FR-007**: ACK MUST be emitted by the real Core path and MUST precede Selection and Provider layer fetch.
 - **FR-008**: Selection MUST bind two provider identities, layer ranges, manifest digest, authorization epoch and attempt identity.
 - **FR-009**: Unselected, stale, overlapping or out-of-range placement MUST fail before Repo layer fetch and runner creation.
-- **FR-010**: Provider-0 and Provider-1 MUST fetch only their assigned packages and MUST verify package digest, role, range and manifest identity before ORT load.
+- **FR-010**: Provider-0 and Provider-1 MUST fetch only their selected atomic materials and explicitly declared shared dependencies and MUST verify package digest, role, range and manifest identity before ORT load.
 - **FR-011**: The native assembly path MUST create runners from the selected layer packages, not from a preloaded whole-model fixture.
 - **FR-012**: The two-provider path MUST carry a real hidden-state handoff or an explicitly named production pipeline equivalent between providers.
-- **FR-013**: The final response MUST include a terminal status and a C++-computed output digest/top-token oracle for the test input, or a classified execution failure.
+- **FR-013**: A successful final response MUST pass a C++ assertion against an independent fixed-input reference (shape/finite and frozen tolerance or top-token); a digest alone is identity evidence. Execution failures MUST be classified and MUST NOT satisfy success.
 - **FR-014**: Cancellation, assembly failure, provider stop and Core close MUST drain Face/io_context/timer/callback dependencies before fixture destruction.
 - **FR-015**: Runner, lease and temporary materialization counters MUST return to baseline after terminal response or classified stop.
 - **FR-016**: The experiment MUST sample RSS, MemAvailable, swap, disk free, Repo resident bytes and child states at named lifecycle points.
 - **FR-017**: A resource guard MUST stop before unsafe host exhaustion and MUST classify the result as `RESOURCE_BOUNDARY` with the first observed metric.
 - **FR-018**: A successful run MUST record peak resource values and post-drain values under the same candidate tuple.
 - **FR-019**: No run may claim `QWEN_TWO_PROVIDER_PASS` unless prepare, Repo commit, ACK, Selection, both provider executions, terminal response and cleanup are all observed.
-- **FR-020**: The candidate tuple MUST include source commit/digest, ABI/library hashes, model files, canonical/initializer/layer digests, profile, selector binary hashes, build tree and run id.
+- **FR-020**: The immutable candidate MUST bind source content, ABI/library hashes, model/material digests, profile/topology and binary/oracle hashes. Commit/build path are provenance; run id and request/key/path identities MUST be recorded separately and bound to that candidate.
 - **FR-021**: The dispatch gate MUST reject stale or mismatched candidate inputs before creating MiniNDN nodes or mutating NDN state.
 - **FR-022**: Python MUST only orchestrate external facilities, process lifecycle and host sampling; native behavior assertions MUST be C++.
 - **FR-023**: Every failed or stopped run MUST preserve raw logs and a durable evidence record with `static`, `compile/link`, `runtime/test` and `unobserved` miss classes.
@@ -141,18 +141,18 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 
 ## Success Criteria
 
-- **SC-001**: A fresh candidate produces one verified Repo manifest with exactly two non-overlapping placement ranges and zero request-time full-model publication.
+- **SC-001**: A fresh prepare produces one verified Repo manifest of topology-independent materials. The same live handle serves two independent requests with zero additional model publication; ACK-driven plans bind two non-overlapping ranges.
 - **SC-002**: The real Core path emits ACK and Selection that the C++ oracle binds to both provider identities and the manifest digest.
-- **SC-003**: Both native CPU Providers fetch, assemble and execute their assigned ranges, and one terminal result reaches the requester, or the first boundary is classified with raw evidence.
+- **SC-003**: Both native CPU Providers fetch, assemble and execute their assigned ranges, and one independently validated successful terminal result reaches the requester; classified failure does not meet this criterion.
 - **SC-004**: Successful completion leaves no active runner, lease, callback or temporary layer window beyond the declared baseline.
 - **SC-005**: Resource evidence includes at least 1-second samples around prepare, ACK, Selection, provider fetch, execution, terminal and drain; a safety stop is deterministic.
-- **SC-006**: Replaying the same immutable candidate with a new run id either reproduces the same terminal class or exposes a newly classified boundary without reusing a prior PASS.
+- **SC-006**: Two independent runs of the same immutable candidate, each with prepare-once/two-request reuse in one live requester, MUST both pass output, resource and cleanup checks. Failed repeats remain incomplete.
 
 ## Non-goals and assumptions
 
 - SIF creation, TigerCluster upload, Slurm execution, remote qualification and production deployment are Spec189 non-goals.
-- Qwen text-generation quality beyond the named one-input C++ oracle is not claimed; numerical parity is a follow-up after the transport/placement chain closes.
-- The existing two-stage split (layers 0–14 and 14–28) is the initial experiment shape; changing the split invalidates the candidate tuple.
+- Qwen text-generation quality beyond the named one-input C++ oracle is not claimed; a bounded independent correctness reference is required here; broad numerical/quality campaigns remain out of scope.
+- The initial ACK-stage policy constrains ranges [0,14) and [14,28). Changing placement policy invalidates affected execution evidence, not compatible topology-independent prepared material.
 - The host may fail the resource gate; that is a valid diagnostic result and does not become a protocol PASS.
 - Existing Spec188 evidence remains historical/bounded evidence and cannot be reused as Spec189 full-path evidence.
 
@@ -166,13 +166,7 @@ Python module closure, run-scoped publication space and candidate-derived
 digests. The production review must also compare authenticated V3 dependency
 endpoint digests with the edges consumed by the generation coordinator.
 
-After protected-grant verification, each Provider must expose the ordered
-runtime exits `EXECUTION_ENTERED`, `DEPENDENCY_FETCH`, `ASSEMBLY_STARTED`,
-`RUNNER_READY`, `EXECUTION_COMPLETED` and `TERMINAL`. A requester-side
-`stream event gap` alone is not a first-failure classification; when the next
-Provider exit is absent, the result remains `UNOBSERVED` until a C++ selector or
-fresh run identifies that boundary. ACK, Selection and grant verification do
-not count as native execution.
+Provider events MUST satisfy the [causal contract](contracts/placement.md), not a total log-line order. Model assembly and upstream tensor fetch can interleave; the first stage has no upstream fetch. Execution requires verified authorization, runner and input; the terminal role returns the final result and all participants drain. A requester stream gap is a symptom, not a root-cause classification. Missing markers remain UNOBSERVED. ACK/Selection/grant verification alone never proves execution.
 
 Every bounded retry follows the shared
 [experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):
@@ -188,3 +182,5 @@ gate.
 - 2026-09-18: r01-r21 audit: the V3 endpoint projection bug was corrected, but the first post-grant execution boundary remains unobserved. Added mandatory candidate preflight, provider-side execution markers and C++ endpoint-preservation regression before the next MiniNDN retry. Current status remains `IN_PROGRESS`.
 - 2026-09-18: Added the shared experiment static re-review loop to every bounded retry; Spec189 now requires a real Changed gate and immutable review snapshot before rebuilding or rerunning.
 - 2026-09-18: 固化本机原生构建依赖规则：缺失或 ABI 不匹配的库先安装到全局声明根并记录真实路径与摘要，禁止临时 checkout、`/tmp`、`.codex-tmp` 和每次运行的依赖前缀进入构建或运行闭包。
+
+- 2026-09-18: 架构/进度复审：prepare 改为拓扑无关原子材料，ACK 后规划；资源门前移，十任务合并为七个活动任务，保留所有必要负例；修正事件总序、candidate/run 身份与失败完成条件。r25 仍 FAIL，文档修订不构成功能 PASS。
