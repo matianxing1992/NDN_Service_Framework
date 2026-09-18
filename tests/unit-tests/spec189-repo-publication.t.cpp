@@ -2,11 +2,13 @@
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
 #include <boost/test/unit_test.hpp>
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -18,6 +20,15 @@ namespace {
 
 using namespace ndnsf::di;
 using namespace ndnsf_distributed_repo;
+
+std::vector<std::uint8_t> unhex(const std::string& text)
+{
+  std::vector<std::uint8_t> result;
+  result.reserve(text.size() / 2);
+  for (std::size_t i = 0; i < text.size(); i += 2)
+    result.push_back(static_cast<std::uint8_t>(std::stoul(text.substr(i, 2), nullptr, 16)));
+  return result;
+}
 
 struct RepoFixture
 {
@@ -182,6 +193,67 @@ BOOST_AUTO_TEST_CASE(LegacyCanonicalReceiptWithoutLayersStillReuses)
   BOOST_CHECK(second.layerManifestDigests.empty());
   BOOST_CHECK_EQUAL(provider->stats().publicationHits, 1U);
   BOOST_CHECK(fixture.repo->has(first.rootDataName));
+}
+
+BOOST_AUTO_TEST_CASE(MaterialManifestPublishesWithOwnedTransactionsAndRejectsCorruption)
+{
+  RepoFixture fixture;
+  std::ifstream stream("tests/fixtures/spec182/dependency-probes/extraction-vectors.json");
+  BOOST_REQUIRE(stream.good());
+  const auto vectors = NativeJson::parse(stream);
+  const auto& row = vectors.at("cases").at(1);
+  NativeCanonicalSource source;
+  source.modelBytes = unhex(row.at("modelHex").get<std::string>());
+  source.initializerBytes = unhex(row.at("initializerHex").get<std::string>());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  NativeAssemblyControl assemblyControl{
+    deadline, [] {}, 1U << 20, 1U << 20};
+  source.materialManifest = deriveNativeCanonicalMaterialManifest(source, assemblyControl);
+  const auto identity = canonicalOnnxSourceIdentity(source, assemblyControl);
+
+  NativeInspectedModel model;
+  model.descriptor.modelName = "qwen-material-fixture";
+  model.descriptor.contentDigest = nativePlanningDigest("qwen-material-model");
+  model.canonicalSourceDigest = nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size());
+  model.canonicalSourceBytes = source.modelBytes.size();
+  model.canonicalGraphDigest = identity.graphDigest;
+  model.canonicalInitializerBytes = source.initializerBytes->size();
+  model.canonicalInitializerObjectDigest = nativePlanningDigest(
+    source.initializerBytes->data(), source.initializerBytes->size());
+  model.canonicalInitializerDigest = identity.initializerDigest;
+
+  NativeCanonicalPublicationOptions options;
+  options.artifactRoot = "/spec189/di/material-artifacts";
+  options.packageManifestDigest = nativePlanningDigest("qwen-material-package");
+  options.artifactProfileDigest = nativePlanningDigest("qwen-material-profile");
+  options.maxPublicationBytes = 1U << 20;
+  NativeRequestControl control{
+    "/spec189/material-request", 1, deadline, {}};
+  RepoSourceProvider provider(fixture.repo);
+  const auto first = provider.publish(
+    "qwen-material-key", "/service", model, source, options, control);
+  BOOST_REQUIRE(!first.materialManifestDataName.empty());
+  BOOST_REQUIRE(!first.materialPayloadIds.empty());
+  BOOST_REQUIRE_EQUAL(first.materialPayloadIds.size(), first.materialDataNames.size());
+  BOOST_REQUIRE_EQUAL(first.materialPayloadIds.size(), first.materialDigests.size());
+  BOOST_REQUIRE(fixture.repo->has(first.materialManifestDataName));
+  for (const auto& name : first.materialDataNames)
+    BOOST_REQUIRE(fixture.repo->has(name));
+  BOOST_REQUIRE(fixture.repo->has(first.rootDataName));
+
+  const auto second = provider.publish(
+    "qwen-material-key", "/service", model, source, options, control);
+  BOOST_CHECK_EQUAL(provider.stats().publicationHits, 1U);
+  BOOST_CHECK_EQUAL(second.materialManifestDataName, first.materialManifestDataName);
+  BOOST_CHECK(second.materialDataNames == first.materialDataNames);
+
+  const auto original = fixture.repo->get(first.materialDataNames.front());
+  fixture.repo->put(first.materialDataNames.front(), {0xaa, 0xbb}, "foreign-material");
+  BOOST_CHECK_THROW(provider.publish(
+    "qwen-material-key", "/service", model, source, options, control),
+    RepositorySourceError);
+  BOOST_CHECK(fixture.repo->has(first.rootDataName));
+  BOOST_CHECK(fixture.repo->get(first.materialDataNames.front()) != original);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

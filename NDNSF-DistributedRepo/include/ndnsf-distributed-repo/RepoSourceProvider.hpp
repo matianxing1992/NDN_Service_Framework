@@ -12,9 +12,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -239,7 +241,22 @@ public:
             model.canonicalInitializerObjectDigest)))
         throw ndnsf::di::RepositorySourceError(
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
-          "repository artifact source differs from inspected identity");
+        "repository artifact source differs from inspected identity");
+    if (source.materialManifest) {
+      ndnsf::di::validateNativeCanonicalMaterialManifest(
+        source, *source.materialManifest, ndnsf::di::NativeAssemblyControl{
+          control.deadline, [&control] { control.requireActive(); },
+          std::max(model.canonicalSourceBytes, model.canonicalInitializerBytes),
+          options.maxPublicationBytes != 0 ? options.maxPublicationBytes
+                                           : std::numeric_limits<std::uint64_t>::max()});
+      if (source.materialManifest->sourceDigest != model.canonicalSourceDigest ||
+          source.materialManifest->graphDigest != model.canonicalGraphDigest ||
+          (!model.canonicalInitializerDigest.empty() &&
+           source.materialManifest->initializerDigest != model.canonicalInitializerDigest))
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "repository material manifest differs from inspected identity");
+    }
     if (options.layerManifestDigests.size() != source.layerPayloads.size())
       throw ndnsf::di::RepositorySourceError(
         ndnsf::di::RepositorySourceError::Kind::Unavailable,
@@ -265,6 +282,39 @@ public:
     const auto sourceName = root + "/source";
     const auto initializerName = root + "/initializer";
     const auto rootName = root + "/manifest";
+    const auto materialManifestName = root + "/material-manifest";
+    std::vector<std::string> materialPayloadIds;
+    std::vector<std::string> materialNames;
+    std::vector<std::string> materialDigests;
+    if (source.materialManifest) {
+      materialPayloadIds.reserve(source.materialManifest->payloads.size());
+      materialNames.reserve(source.materialManifest->payloads.size());
+      materialDigests.reserve(source.materialManifest->payloads.size());
+      for (const auto& payload : source.materialManifest->payloads) {
+        materialPayloadIds.push_back(payload.payloadId);
+        materialNames.push_back(root + "/materials/" + payload.payloadId);
+        materialDigests.push_back(payload.digest);
+      }
+    }
+    const auto checkPublicationBudget = [&] (std::uint64_t rootBytes) {
+      if (options.maxPublicationBytes == 0)
+        return;
+      std::uint64_t total = rootBytes;
+      const auto add = [&] (std::uint64_t bytes) {
+        if (bytes > options.maxPublicationBytes - std::min(total, options.maxPublicationBytes))
+          throw ndnsf::di::RepositorySourceError(
+            ndnsf::di::RepositorySourceError::Kind::Unavailable,
+            "repository publication exceeds the configured material budget");
+        total += bytes;
+      };
+      add(source.modelBytes.size());
+      if (source.initializerBytes) add(source.initializerBytes->size());
+      for (const auto& layer : source.layerPayloads) add(layer.bytes.size());
+      if (source.materialManifest) {
+        for (const auto& payload : source.materialManifest->payloads) add(payload.bytes.size());
+        add(source.materialManifest->canonicalJson().size());
+      }
+    };
     ++m_publicationCalls;
 
     const auto makeReceipt = [&] (const std::string& manifestJson) {
@@ -272,6 +322,12 @@ public:
       receipt.sourceDataName = sourceName;
       receipt.initializerDataName = source.initializerBytes ? initializerName : std::string{};
       receipt.rootDataName = rootName;
+      receipt.materialManifestDataName = source.materialManifest ? materialManifestName : std::string{};
+      receipt.materialManifestDigest = source.materialManifest
+        ? ndnsf::di::nativePlanningDigest(source.materialManifest->canonicalJson()) : std::string{};
+      receipt.materialPayloadIds = materialPayloadIds;
+      receipt.materialDataNames = materialNames;
+      receipt.materialDigests = materialDigests;
       receipt.canonicalManifestJson = manifestJson;
       receipt.manifestDigest = ndnsf::di::nativePlanningDigest(manifestJson);
       receipt.artifactProfileDigest = options.artifactProfileDigest;
@@ -287,6 +343,10 @@ public:
         receipt.rollbackDataNames.push_back(initializerName);
       receipt.rollbackDataNames.insert(receipt.rollbackDataNames.end(),
                                        receipt.layerDataNames.begin(), receipt.layerDataNames.end());
+      receipt.rollbackDataNames.insert(receipt.rollbackDataNames.end(),
+                                       receipt.materialDataNames.begin(), receipt.materialDataNames.end());
+      if (!receipt.materialManifestDataName.empty())
+        receipt.rollbackDataNames.push_back(receipt.materialManifestDataName);
       receipt.rollbackDataNames.push_back(rootName);
       receipt.validate();
       return receipt;
@@ -295,6 +355,7 @@ public:
     if (m_repo->has(rootName)) {
       const auto rootBytes = m_repo->get(rootName);
       const auto manifestJson = std::string(rootBytes.begin(), rootBytes.end());
+      checkPublicationBudget(manifestJson.size());
       const auto rejectConflict = [] {
         throw ndnsf::di::RepositorySourceError(
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
@@ -328,6 +389,14 @@ public:
               model.canonicalInitializerBytes ||
             metadata.value("canonicalGraphDigest", std::string{}) !=
               model.canonicalGraphDigest ||
+            metadata.value("materialManifestDataName", std::string{}) !=
+              (source.materialManifest ? materialManifestName : std::string{}) ||
+            metadata.value("materialManifestDigest", std::string{}) !=
+              (source.materialManifest
+                 ? ndnsf::di::nativePlanningDigest(source.materialManifest->canonicalJson())
+                 : std::string{}) ||
+            metadata.value("materialObjects", ndnsf::di::NativeJson::array()).size() !=
+              materialPayloadIds.size() ||
             metadata.value("packageManifestDigest", std::string{}) !=
               options.packageManifestDigest ||
             layerDigests != options.layerManifestDigests ||
@@ -380,6 +449,23 @@ public:
             checkObject(layerName, layer.digest, layer.bytes.size());
           }
         }
+        if (source.materialManifest) {
+          checkObject(materialManifestName,
+            ndnsf::di::nativePlanningDigest(source.materialManifest->canonicalJson()),
+            source.materialManifest->canonicalJson().size());
+          const auto& materialObjects = metadata.at("materialObjects");
+          if (!materialObjects.is_array() || materialObjects.size() != materialPayloadIds.size())
+            rejectConflict();
+          for (std::size_t i = 0; i < materialPayloadIds.size(); ++i) {
+            const auto& object = materialObjects.at(i);
+            if (object.value("payloadId", std::string{}) != materialPayloadIds[i] ||
+                object.value("dataName", std::string{}) != materialNames[i] ||
+                object.value("digest", std::string{}) != materialDigests[i] ||
+                object.value("bytes", std::uint64_t{0}) != source.materialManifest->payloads[i].bytes.size())
+              rejectConflict();
+            checkObject(materialNames[i], materialDigests[i], source.materialManifest->payloads[i].bytes.size());
+          }
+        }
         checkObject(rootName, ndnsf::di::nativePlanningDigest(manifestJson),
                     manifestJson.size());
       }
@@ -394,11 +480,22 @@ public:
       return receipt;
     }
 
-    std::vector<std::string> committedNames;
+    std::vector<RepoObjectManifest> ownedManifests;
+    std::random_device random;
+    const auto operationPrefix = std::string("ndnsf-di-") + suffix + "-" +
+      std::to_string(random()) + "-" + std::to_string(random()) + "-" +
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    std::uint64_t publicationBytes = 0;
     const auto putRanges = [&] (const std::string& objectName,
                                 const std::vector<std::uint8_t>& bytes,
                                 const std::string& objectType) {
-      const bool existedBefore = m_repo->has(objectName);
+      if (options.maxPublicationBytes != 0 &&
+          (bytes.size() > options.maxPublicationBytes -
+             std::min<std::uint64_t>(publicationBytes, options.maxPublicationBytes)))
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "repository publication exceeds the configured material budget");
+      publicationBytes += bytes.size();
       ndnsf_distributed_repo::RepoObjectManifest manifest;
       manifest.objectName = objectName;
       manifest.objectType = objectType;
@@ -406,20 +503,70 @@ public:
       manifest.size = bytes.size();
       manifest.segmentCount = 1;
       manifest.generation = 0;
-      constexpr std::uint64_t window = 1U << 20;
-      for (std::uint64_t offset = 0; offset < manifest.size;) {
-        control.requireActive();
-        const auto length = std::min(window, manifest.size - offset);
-        std::vector<std::uint8_t> part(
-          bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-          bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
-        m_repo->putRange(manifest, {offset, length}, part);
-        offset += length;
+      manifest.operationId = operationPrefix + "-" + std::to_string(ownedManifests.size());
+      if (m_repo->has(objectName)) {
+        const auto current = m_repo->getManifest(objectName);
+        if (current.objectName != manifest.objectName || current.objectType != manifest.objectType ||
+            current.sha256 != manifest.sha256 || current.size != manifest.size ||
+            current.segmentCount != manifest.segmentCount)
+          throw ndnsf::di::RepositorySourceError(
+            ndnsf::di::RepositorySourceError::Kind::Unavailable,
+            "repository publication object conflicts with an existing object");
+        std::vector<std::uint8_t> existing;
+        existing.reserve(static_cast<std::size_t>(current.size));
+        constexpr std::uint64_t readWindow = 1U << 20;
+        for (std::uint64_t offset = 0; offset < current.size;) {
+          control.requireActive();
+          const auto length = std::min(readWindow, current.size - offset);
+          const auto part = m_repo->getRange(objectName, {offset, length});
+          if (part.size() != length)
+            throw ndnsf::di::RepositorySourceError(
+              ndnsf::di::RepositorySourceError::Kind::Unavailable,
+              "repository existing object range is incomplete");
+          existing.insert(existing.end(), part.begin(), part.end());
+          offset += length;
+        }
+        if (existing.size() != bytes.size() ||
+            ndnsf::di::nativePlanningDigest(existing.data(), existing.size()) !=
+              "sha256:" + current.sha256)
+          throw ndnsf::di::RepositorySourceError(
+            ndnsf::di::RepositorySourceError::Kind::Unavailable,
+            "repository existing object content differs from its manifest");
+        return;
       }
-      control.requireActive();
-      m_repo->commitRanges(manifest);
-      if (!existedBefore)
-        committedNames.push_back(objectName);
+      constexpr std::uint64_t window = 1U << 20;
+      try {
+        bool firstRange = true;
+        for (std::uint64_t offset = 0; offset < manifest.size;) {
+          control.requireActive();
+          const auto length = std::min(window, manifest.size - offset);
+          std::vector<std::uint8_t> part(
+            bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+            bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
+          if (firstRange) {
+            m_repo->putRangeIfAbsent(manifest, {offset, length}, part);
+            firstRange = false;
+          }
+          else {
+            m_repo->putRange(manifest, {offset, length}, part);
+          }
+          offset += length;
+        }
+        control.requireActive();
+        const auto committed = m_repo->commitRangesIfOwned(manifest);
+        ownedManifests.push_back(committed);
+        if (committed.objectName != manifest.objectName ||
+            committed.sha256 != manifest.sha256 || committed.size != manifest.size ||
+            committed.segmentCount != manifest.segmentCount ||
+            committed.operationId != manifest.operationId)
+          throw ndnsf::di::RepositorySourceError(
+            ndnsf::di::RepositorySourceError::Kind::Unavailable,
+            "repository commit returned an unexpected manifest");
+      }
+      catch (...) {
+        try { m_repo->abortRangesIfOwned(manifest); } catch (...) {}
+        throw;
+      }
     };
 
     try {
@@ -434,6 +581,16 @@ public:
         putRanges(layerName, layer.bytes, "ndnsf-di-canonical-layer");
         layerNames.push_back(layerName);
       }
+      if (source.materialManifest) {
+        for (std::size_t i = 0; i < source.materialManifest->payloads.size(); ++i)
+          putRanges(materialNames[i], source.materialManifest->payloads[i].bytes,
+                    "ndnsf-di-canonical-material");
+        const auto materialManifestJson = source.materialManifest->canonicalJson();
+        const std::vector<std::uint8_t> materialManifestBytes(
+          materialManifestJson.begin(), materialManifestJson.end());
+        putRanges(materialManifestName, materialManifestBytes,
+                  "ndnsf-di-canonical-material-manifest");
+      }
       ndnsf::di::NativeJson metadata{
         {"modelKey", modelKey}, {"serviceName", serviceName},
         {"canonicalSourceDataName", sourceName},
@@ -444,6 +601,19 @@ public:
         {"canonicalInitializerBytes", model.canonicalInitializerBytes},
         {"canonicalGraphDigest", model.canonicalGraphDigest},
         {"packageManifestDigest", options.packageManifestDigest}};
+      if (source.materialManifest) {
+        metadata["materialManifestDataName"] = materialManifestName;
+        metadata["materialManifestDigest"] =
+          ndnsf::di::nativePlanningDigest(source.materialManifest->canonicalJson());
+        metadata["materialIdentityDigest"] = source.materialManifest->manifestDigest;
+        auto materialObjects = ndnsf::di::NativeJson::array();
+        for (std::size_t i = 0; i < materialPayloadIds.size(); ++i)
+          materialObjects.push_back({{"payloadId", materialPayloadIds[i]},
+                                     {"dataName", materialNames[i]},
+                                     {"digest", materialDigests[i]},
+                                     {"bytes", source.materialManifest->payloads[i].bytes.size()}});
+        metadata["materialObjects"] = std::move(materialObjects);
+      }
       ndnsf::di::NativeJson rootJson{
         {"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
         {"artifactProfileDigest", options.artifactProfileDigest},
@@ -467,18 +637,8 @@ public:
       return makeReceipt(manifestJson);
     }
     catch (...) {
-      try { m_repo->abortRanges(sourceName); } catch (...) {}
-      try { m_repo->abortRanges(initializerName); } catch (...) {}
-      for (const auto& layer : source.layerPayloads) {
-        try {
-          m_repo->abortRanges(root + "/layers/" + std::to_string(layer.stageIndex) + "-" +
-                              std::to_string(layer.layerBegin) + "-" + std::to_string(layer.layerEnd));
-        }
-        catch (...) {}
-      }
-      try { m_repo->abortRanges(rootName); } catch (...) {}
-      for (const auto& name : committedNames) {
-        try { m_repo->remove(name); } catch (...) {}
+      for (const auto& manifest : ownedManifests) {
+        try { m_repo->removeIfCurrent(manifest); } catch (...) {}
       }
       throw;
     }
