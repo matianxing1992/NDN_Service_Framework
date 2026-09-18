@@ -53,3 +53,29 @@ This is deliberately a **wire-only** C++ gate. It does not exercise
 `PreparedModel::request`, a prepared lease, Repo publication counters, or the
 real two-provider ACK/Selection path. T004 is therefore `PARTIAL`, and B189-2
 remains `NOT_ACCEPTED` until the production-handle and placement evidence run.
+
+## T004 production PreparedModel gate — 2026-09-18
+
+The production-handle selector `spec189-prepared-request` now uses the
+maintained `Runtime::open → bindInProcessRuntime → User::prepare →
+PreparedModel::request` path. The selector injects the concrete
+`RepoSourceProvider` through both source-provider and artifact-publisher
+interfaces, so preparation performs one cold source lookup, one fallback
+ingest, and one durable publication into a private filesystem Repo. It then
+submits two requests from the same prepared handle and checks that both IDs are
+distinct while `lookups`, `missIngests`, and `publicationCalls` remain
+unchanged. The Repo source is present before either request. Runtime close and
+drain complete with the fixture's observed cancellation/failed terminal state.
+
+The frozen review snapshot after the macro-visibility, self-contained-fixture,
+and private-directory fixes received `STATIC_PASS` in review r13; compile-link and runtime evidence
+are separate. The target linked the complete DI source closure and
+`ndnsf-distributed-repo` with the existing global dependency tree. The final
+incremental build completed in 28.394 seconds (`.codex-tmp/spec189-t004-
+prepared-build-r9.log`), and the C++ selector passed in 0.733 seconds with no
+test errors (`.codex-tmp/spec189-t004-prepared-selector-r8.log`).
+
+This closes the production PreparedModel/Repo reuse sub-check for T004. It
+does not prove stale/released-handle negatives, real Core ACK/Selection, or
+the two-provider no-fetch-before-Selection boundary; T004 and B189-2 remain
+`PARTIAL`/`NOT_ACCEPTED`.

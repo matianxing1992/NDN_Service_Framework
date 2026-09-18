@@ -24,7 +24,7 @@
 | [T001 Freeze candidate and production path](#t001) | PARTIAL | — | candidate/artifact identity frozen; registered example/source closure and global loader checks recorded; candidate handoff identity and real prepare receipt still pending | 2026-09-18 11:20 -05:00 |
 | [T002 Prepare Qwen graph and split packages](#t002) | PARTIAL | T001 | real Qwen graph, initializer and two stage artifacts checked; native prepare oracle pending | 2026-09-18 02:22 -05:00 |
 | [T003 Publish/reuse layer references in Repo](#t003) | PARTIAL | T002 | native layer payload owner, cold/hot layer receipt, legacy reuse, digest/range/cancellation checks and shared Repo transaction lock pass; real Qwen production prepare receipt remains pending | 2026-09-18 11:01 -05:00 |
-| [T004 Project payload-free request](#t004) | PARTIAL | T003 | wire-only C++ reference/URL/oversized negatives pass; PreparedModel/Repo reuse and production request counters remain pending | 2026-09-18 11:35 -05:00 |
+| [T004 Project payload-free request](#t004) | PARTIAL | T003 | wire-only negatives and production PreparedModel/Repo reuse selector pass; stale/released-handle negatives and real ACK/Selection counters remain pending | 2026-09-18 12:32 -05:00 |
 | [T005 Produce real two-provider ACK/Selection](#t005) | PARTIAL | T004 | real signed offers/Selection observed; C++ placement oracle and no-fetch proof pending | 2026-09-18 02:22 -05:00 |
 | [T006 Fetch and assemble selected layers](#t006) | PARTIAL | T005 | grant verification and endpoint fix observed; fetch/assembly/runner counters and regression pending | 2026-09-18 02:22 -05:00 |
 | [T007 Execute hidden-state handoff and terminal oracle](#t007) | PARTIAL | T006 | Spec189 C++ oracle is registered, globally built and has positive/negative selector checks; real hidden-state handoff and terminal run pending | 2026-09-18 04:05 -05:00 |
@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 11:35 -0500
+**Updated**: 2026-09-18 12:32 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -45,6 +45,12 @@ boundary, not at ACK/Selection. The build/selector evidence is in
 [B189 build evidence](evidence/b189-build-20260918.md); the durable audit and
 r21 logs are in [static audit](evidence/spec189-static-audit-20260918.md) and
 [execution evidence](evidence/b189-execution.md). No task is complete.
+The T004 production-handle selector now has separate C++ compile-link and
+runtime evidence in [placement evidence](evidence/b189-placement.md): one
+Repo-backed prepare publication followed by two request IDs with unchanged
+Repo lookup/ingest/publication counters. This remains a focused sub-check;
+stale-handle negatives and the real two-provider ACK/Selection boundary are
+still open.
 The host dependency closure is now enforced for all Waf-discovered direct
 libraries and linker flags; stale NAC-ABE pkg-config metadata was repaired in
 `/usr/local`, and the host/container `$ORIGIN` configure gates were exercised.

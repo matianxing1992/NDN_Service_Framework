@@ -17,6 +17,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoCore.hpp"
+#include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndnsf-integration-fixture.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
@@ -2847,5 +2850,148 @@ BOOST_AUTO_TEST_CASE(PreparedRequestValidatesProtectedReferenceMetadata)
   runtime->close();
   BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
+
+#if defined(SPEC189_REQUEST_SELECTOR)
+struct Spec189RepoOwnerFixture
+{
+  std::filesystem::path root;
+  std::string objectName;
+  std::shared_ptr<ndnsf_distributed_repo::RepoCore> repo;
+  std::shared_ptr<const ndnsf_distributed_repo::RepoSourceProvider> concreteProvider;
+  std::shared_ptr<const ndnsf::di::RepositorySourceProvider> sourceProvider;
+
+  Spec189RepoOwnerFixture() = default;
+  Spec189RepoOwnerFixture(const Spec189RepoOwnerFixture&) = delete;
+  Spec189RepoOwnerFixture& operator=(const Spec189RepoOwnerFixture&) = delete;
+  Spec189RepoOwnerFixture(Spec189RepoOwnerFixture&& other) noexcept
+    : root(std::move(other.root)), objectName(std::move(other.objectName)),
+      repo(std::move(other.repo)), concreteProvider(std::move(other.concreteProvider)),
+      sourceProvider(std::move(other.sourceProvider))
+  {
+    other.root.clear();
+  }
+  Spec189RepoOwnerFixture& operator=(Spec189RepoOwnerFixture&&) = delete;
+
+  ~Spec189RepoOwnerFixture()
+  {
+    sourceProvider.reset();
+    concreteProvider.reset();
+    repo.reset();
+    std::error_code error;
+    if (!root.empty()) {
+      std::filesystem::remove_all(root, error);
+      BOOST_CHECK_MESSAGE(!error,
+                          "Spec189 Repo fixture root cleanup failed: " + error.message());
+      error.clear();
+      std::filesystem::remove(root.string() + ".authority.lock", error);
+      BOOST_CHECK_MESSAGE(!error,
+                          "Spec189 Repo fixture lock cleanup failed: " + error.message());
+    }
+  }
+};
+
+Spec189RepoOwnerFixture
+makeSpec189RepoOwner(const RuntimeFixture& fixture)
+{
+  const auto config = nativeParseJson(readTextFile(fixture.configPath));
+  const auto& source = config.at("catalog").at("source");
+  const auto sourceName = source.at("data_name").get<std::string>();
+  const auto sourceFile = source.value("file", std::string{});
+  if (sourceName.empty() || sourceFile.empty())
+    throw std::runtime_error("Spec189 fixture source identity is incomplete");
+  const auto sourcePath = (fixture.configPath.parent_path() / sourceFile).lexically_normal();
+  if (!std::filesystem::is_regular_file(sourcePath))
+    throw std::runtime_error("Spec189 fixture source fallback is unavailable: " +
+                             sourcePath.string());
+
+  Spec189RepoOwnerFixture owner;
+  owner.root = fixture.root / ("repo-source-" + std::to_string(::getpid()));
+  std::filesystem::create_directories(owner.root);
+  std::error_code permissionsError;
+  std::filesystem::permissions(owner.root, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace,
+                               permissionsError);
+  if (permissionsError)
+    throw std::runtime_error("Spec189 Repo fixture permissions failed: " +
+                             permissionsError.message());
+  owner.objectName = sourceName;
+  ndnsf_distributed_repo::StorageCapability capability;
+  capability.repoNode = "/spec189/local-repo";
+  capability.freeBytes = 64U * 1024U * 1024U;
+  capability.repoMode = "persistent";
+  auto store = ndnsf_distributed_repo::makeFilesystemRepoStore(
+    owner.root.string(), 16U * 1024U * 1024U, 1U * 1024U * 1024U,
+    "spec189-local");
+  owner.repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
+    std::move(capability), std::move(store));
+  owner.concreteProvider = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
+    owner.repo);
+  owner.sourceProvider = owner.concreteProvider;
+  return owner;
+}
+
+BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
+{
+  RuntimeFixture fixture;
+  InProcessRuntimeBinding binding;
+  auto config = runtimeConfig(fixture);
+  auto repoOwner = makeSpec189RepoOwner(fixture);
+  config.repositorySourceProvider = repoOwner.sourceProvider;
+  config.repositoryArtifactPublisher = repoOwner.concreteProvider;
+  auto runtime = Runtime::open(std::move(config));
+  binding = bindInProcessRuntime(fixture, runtime);
+  auto prepared = runtime->user().prepare();
+  const auto repoProvider = repoOwner.concreteProvider;
+  const auto prepareStats = repoProvider->stats();
+  BOOST_REQUIRE_EQUAL(prepareStats.lookups, 1U);
+  BOOST_REQUIRE_EQUAL(prepareStats.missIngests, 1U);
+  BOOST_REQUIRE_EQUAL(prepareStats.publicationCalls, 1U);
+  BOOST_REQUIRE_MESSAGE(repoOwner.repo->has(repoOwner.objectName),
+                        "Spec189 prepare did not persist the canonical source");
+
+  RequestOptions options;
+  options.timeout = std::chrono::milliseconds(500);
+  options.ackTimeout = std::chrono::milliseconds(50);
+  std::cerr << "SPEC189_HANDLE_BEFORE_FIRST\n";
+  const auto first = prepared.request(Input::inlineBytes({0x01, 0x02}), options);
+  std::cerr << "SPEC189_HANDLE_AFTER_FIRST\n";
+  const auto second = prepared.request(Input::inlineBytes({0x03, 0x04}), options);
+  std::cerr << "SPEC189_HANDLE_AFTER_SECOND\n";
+  BOOST_REQUIRE(!first.id().empty());
+  BOOST_REQUIRE(!second.id().empty());
+  BOOST_REQUIRE_NE(first.id(), second.id());
+  const auto requestStats = repoProvider->stats();
+  BOOST_REQUIRE_EQUAL(requestStats.lookups, prepareStats.lookups);
+  BOOST_REQUIRE_EQUAL(requestStats.missIngests, prepareStats.missIngests);
+  BOOST_REQUIRE_EQUAL(requestStats.publicationCalls, prepareStats.publicationCalls);
+
+  // The production PreparedModel path owns request identity and submits only
+  // application input. Runtime::close supplies the cancellation fence so the
+  // selector remains independent of provider execution while still exercising
+  // Runtime::prepare/request and client teardown.
+  bool cancellationBoundary = false;
+  try {
+    std::cerr << "SPEC189_HANDLE_BEFORE_CLOSE\n";
+    runtime->close();
+    std::cerr << "SPEC189_HANDLE_AFTER_CLOSE\n";
+    BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+    std::cerr << "SPEC189_HANDLE_AFTER_DRAIN\n";
+  }
+  catch (const DiError& error) {
+    // A request cancelled while NativeRequestPreparation owns the dispatch
+    // ticket reports this typed boundary; it is an observed fixture outcome,
+    // not an unhandled exception in the selector.
+    cancellationBoundary = error.code() == "DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED";
+    BOOST_CHECK(cancellationBoundary);
+  }
+  std::cerr << "SPEC189_HANDLE_BEFORE_STATUS\n";
+  BOOST_REQUIRE(cancellationBoundary ||
+                first.status() == RequestStatus::Cancelled ||
+                first.status() == RequestStatus::Failed);
+  BOOST_REQUIRE(cancellationBoundary ||
+                second.status() == RequestStatus::Cancelled ||
+                second.status() == RequestStatus::Failed);
+}
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()
