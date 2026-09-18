@@ -18,6 +18,21 @@ struct NativeCanonicalSource
 {
   std::vector<std::uint8_t> modelBytes;
   std::optional<std::vector<std::uint8_t>> initializerBytes;
+
+  /**
+   * Immutable placement packages produced by the preparation boundary.  The
+   * bytes are owned only until the publication receipt is committed; request
+   * execution must use the Repo names recorded in that receipt.
+   */
+  struct LayerPayload
+  {
+    std::uint64_t stageIndex = 0;
+    std::uint64_t layerBegin = 0;
+    std::uint64_t layerEnd = 0;
+    std::string digest;
+    std::vector<std::uint8_t> bytes;
+  };
+  std::vector<LayerPayload> layerPayloads;
 };
 
 using NativeCertifiedRecipe = NativeSelectionRoleV3;

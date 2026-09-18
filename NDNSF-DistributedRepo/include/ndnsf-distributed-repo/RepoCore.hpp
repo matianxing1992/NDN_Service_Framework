@@ -73,6 +73,16 @@ public:
 
   std::vector<uint8_t> handleDelete(const std::vector<uint8_t>& request);
 
+  /**
+   * Serialize a multi-object publication transaction that uses the bounded
+   * range API.  The lock is owned by this RepoCore instance, so independent
+   * RepoSourceProvider adapters cannot abort one another's staging reservation.
+   */
+  std::unique_lock<std::mutex> acquirePublicationLock() const
+  {
+    return std::unique_lock<std::mutex>(m_publicationMutex);
+  }
+
 private:
   void refreshCapabilityUsage();
 
@@ -89,6 +99,7 @@ private:
   StorageCapability m_capability;
   uint64_t m_capacityBytes = 0;
   mutable std::mutex m_mutex;
+  mutable std::mutex m_publicationMutex;
   std::shared_ptr<RepoStoreBackend> m_store;
   uint64_t m_catalogEpoch = 0;
   std::vector<RepoCatalogEntry> m_catalogChanges;
