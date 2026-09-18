@@ -10,7 +10,7 @@ struct NativeCanonicalPreparationCatalog::State
     NativeCanonicalRolePreparer roles;
     NativeCanonicalPublicationOptions publication;
   };
-  std::map<std::string, Record> records;
+  mutable std::map<std::string, Record> records;
   std::shared_ptr<const NativeAdapterRegistry> adapters;
 
   const Record& find(const NativeModelDescriptor& model) const
@@ -32,7 +32,8 @@ struct NativeCanonicalPreparationCatalog::State
         model.modelManifestDigest != pinned.modelManifestDigest ||
         model.canonicalGraphDigest != pinned.canonicalGraphDigest ||
         model.canonicalInitializerBytes != pinned.canonicalInitializerBytes ||
-        model.canonicalInitializerObjectDigest != pinned.canonicalInitializerObjectDigest)
+        model.canonicalInitializerObjectDigest != pinned.canonicalInitializerObjectDigest ||
+        model.canonicalInitializerDigest != pinned.canonicalInitializerDigest)
       throw std::invalid_argument("native catalog source identity is not registered");
     return record;
   }
@@ -67,6 +68,10 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     if (static_cast<bool>(group.conversationTokenEncoder) != entryHasConversationTokenEncoder)
       throw std::invalid_argument("native catalog conversation tokenization is inconsistent");
     group.models.push_back(model);
+    if (entry.publication.artifactProfileDigest.empty())
+      entry.publication.artifactProfileDigest = entry.recipe.artifactProfileDigest;
+    else if (entry.publication.artifactProfileDigest != entry.recipe.artifactProfileDigest)
+      throw std::invalid_argument("native publication profile differs from role recipe");
     const auto key = model.canonicalJson();
     State::Record record{std::move(entry.model),
       std::make_shared<const NativeCanonicalSource>(std::move(entry.source)), std::move(roles), std::move(entry.publication)};
@@ -89,6 +94,15 @@ std::shared_ptr<const NativeAdapterRegistry> NativeCanonicalPreparationCatalog::
   return m_state->adapters;
 }
 
+const NativeCanonicalSource&
+NativeCanonicalPreparationCatalog::sourceRefFor(const NativeModelDescriptor& model) const
+{
+  const auto source = m_state->find(model).source;
+  if (!source)
+    throw std::runtime_error("native preparation source is no longer resident");
+  return *source;
+}
+
 std::weak_ptr<const NativeCanonicalSource>
 NativeCanonicalPreparationCatalog::sourceLifetimeForTest(
   const NativeModelDescriptor& model) const
@@ -96,11 +110,28 @@ NativeCanonicalPreparationCatalog::sourceLifetimeForTest(
   return m_state->find(model).source;
 }
 
+void
+NativeCanonicalPreparationCatalog::releaseTransientSource() const noexcept
+{
+  if (!m_state)
+    return;
+  for (auto& item : m_state->records)
+    item.second.source.reset();
+}
+
 NativeCanonicalSource NativeCanonicalPreparationCatalog::sourceFor(
   const NativeModelDescriptor& model) const
 {
-  const auto& source = *m_state->find(model).source;
-  return source;
+  const auto source = m_state->find(model).source;
+  if (!source)
+    throw std::runtime_error("native preparation source is no longer resident");
+  return *source;
+}
+
+NativeCanonicalPublicationOptions
+NativeCanonicalPreparationCatalog::publicationFor(const NativeModelDescriptor& model) const
+{
+  return m_state->find(model).publication;
 }
 
 NativeSplitCandidate NativeCanonicalPreparationCatalog::bindStateContracts(const NativeInspectedModel& model,
@@ -121,25 +152,70 @@ std::shared_ptr<NativeRequestPreparation> NativeCanonicalPreparationCatalog::mak
   });
 }
 
-std::shared_ptr<NativeRequestPreparation> NativeCanonicalPreparationCatalog::makePreparation(PublisherFactory factory) const
+std::shared_ptr<NativeRequestPreparation>
+NativeCanonicalPreparationCatalog::makePreparation(
+  std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
+  std::optional<NativePreparedCanonicalPublication> preparedPublication) const
+{
+  return makePreparation([user = std::move(user), serviceName = std::move(serviceName)](
+    auto options, auto source) {
+    return NativeCanonicalArtifactPublisher(user, serviceName, std::move(options), std::move(source));
+  }, std::move(preparedPublication));
+}
+
+NativePreparedCanonicalPublication
+NativeCanonicalPreparationCatalog::preparePublication(
+  std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
+  const NativeModelDescriptor& model, const NativeRequestControl& control) const
+{
+  const auto& record = m_state->find(model);
+  NativeCanonicalArtifactPublisher publisher(user, std::move(serviceName), record.publication,
+    [state = m_state](const auto& inspected, const auto& requestControl) {
+      requestControl.requireActive();
+      const auto source = state->find(inspected).source;
+      if (!source)
+        throw std::runtime_error("native preparation source is no longer resident");
+      return source;
+    });
+  return publisher.prepare(record.model, control);
+}
+
+std::shared_ptr<NativeRequestPreparation>
+NativeCanonicalPreparationCatalog::makePreparation(PublisherFactory factory) const
+{
+  return makePreparation(std::move(factory), {});
+}
+
+std::shared_ptr<NativeRequestPreparation>
+NativeCanonicalPreparationCatalog::makePreparation(
+  PublisherFactory factory, std::optional<NativePreparedCanonicalPublication> preparedPublication) const
 {
   const auto state = m_state;
   auto publishers = std::make_shared<std::map<std::string, NativeCanonicalArtifactPublisher>>();
   for (const auto& item : state->records) {
     const auto source = [state](const NativeInspectedModel& model, const NativeRequestControl& control) {
       control.requireActive();
-      return state->find(model).source;
+      const auto source = state->find(model).source;
+      if (!source)
+        throw std::runtime_error("native preparation source is no longer resident");
+      return source;
     };
     publishers->emplace(item.first, factory(item.second.publication, source));
   }
+  if (preparedPublication)
+    preparedPublication->validate();
   return std::make_shared<NativeRequestPreparation>(state->adapters,
     [state](const NativePreparedInput& input, const NativeModelDescriptor& model) {
       input.validate();
       return state->find(model).model;
     },
-    [state, publishers](const auto& model, const auto& candidate, const auto& roles, const auto& control) {
+    [state, publishers, preparedPublication = std::move(preparedPublication)](
+      const auto& model, const auto& candidate, const auto& roles, const auto& control) {
       control.requireActive();
       state->find(model);
+      if (preparedPublication)
+        return publishers->at(model.descriptor.canonicalJson()).bindPrepared(
+          model, candidate, roles, *preparedPublication, control);
       return publishers->at(model.descriptor.canonicalJson())(model, candidate, roles, control);
     },
     [state](const auto& model, const auto& candidate, const auto& control) {

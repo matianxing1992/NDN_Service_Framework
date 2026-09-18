@@ -31,6 +31,7 @@ struct PreparationSpec
   std::string taskContractDigest;
   std::string inputLayoutDigest;
   std::string configurationDigest;
+  std::string publicationServiceName;
   std::uint64_t maxSourceBytes = 0;
   std::uint64_t maxAssembledBytes = 0;
 
@@ -47,6 +48,17 @@ struct PreparationSpec
   using SourceLoader = std::function<NativeCanonicalSource(
     const PreparationSpec&, std::chrono::steady_clock::time_point)>;
   SourceLoader loadSource;
+  /** Runtime-owned prepare-time publication port. It returns names/digests,
+   * never source bytes, and is optional for offline cache-only fixtures. */
+  using PublicationPreparer = std::function<NativePreparedCanonicalPublication(
+    const NativeCanonicalPreparationCatalog&, const NativeInspectedModel&,
+    const NativeRequestControl&)>;
+  using PublicationRollback = std::function<void(
+    const NativePreparedCanonicalPublication&)>;
+  PublicationPreparer preparePublication;
+  PublicationRollback rollbackPublication;
+  /** Optional durable Repo publication owner selected by Runtime. */
+  std::shared_ptr<const RepositoryArtifactPublisher> repositoryArtifactPublisher;
   /** Owner cancellation fence checked between every native preparation phase. */
   std::function<bool()> cancelled;
   /** Acquire an owner commit guard held through READY publication/return. */

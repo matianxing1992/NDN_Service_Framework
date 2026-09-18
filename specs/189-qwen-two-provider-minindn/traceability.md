@@ -6,7 +6,7 @@
 | US2 / FR-006..FR-009 | T004,T005 | B189-2 | `NativeRequestEnvelope`, Core ACK/Selection, `DI_NativeRequester` | `evidence/b189-placement.md` |
 | US3 / FR-010..FR-015 | T006,T007 | B189-3 | `NativeCanonicalOnnxAssembler`, `NativeOnnxAssemblyWorker`, `di-native-provider` | `evidence/b189-execution.md` |
 | US4 / FR-016..FR-019 | T008 | B189-4 | native lease/runner counters plus maintained resource wrapper | `evidence/b189-resource.md` |
-| US5 / FR-020..FR-024 | T009,T010 | B189-5 | C++ event oracle and evidence checker | `evidence/b189-convergence.md` |
+| US5 / FR-020..FR-025 | T009,T010 | B189-5 | C++ event oracle, evidence checker and global dependency preflight | `evidence/b189-convergence.md`, `evidence/b189-build-20260918.md` |
 
 ## Functional requirement detail
 
@@ -36,6 +36,7 @@
 | FR-022 | T007,T009 | C++ oracle / Python orchestration boundary |
 | FR-023 | T009,T010 | raw log and four miss-class evidence |
 | FR-024 | T009,T010 | no SIF/Tiger dispatch |
+| FR-025 | T001,T009 | global dependency closure and install/build identity gates |
 
 ## Five-lane coverage
 

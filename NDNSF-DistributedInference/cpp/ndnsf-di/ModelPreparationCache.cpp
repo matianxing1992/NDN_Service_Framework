@@ -189,8 +189,15 @@ class CacheJoinReaper
 public:
   static CacheJoinReaper& instance()
   {
-    static CacheJoinReaper reaper;
-    return reaper;
+    // A cache worker may be the last owner of RuntimeState and therefore
+    // destroy the cache while the process is already tearing down shared
+    // libraries.  A function-local object would then be destroyed before a
+    // late self-join handoff reaches enqueue(), leaving that worker with a
+    // dangling reaper pointer.  Keep the reaper process-lived; its worker
+    // thread and queue are reclaimed by process termination after all cache
+    // workers have either joined or been handed off.
+    static CacheJoinReaper* reaper = new CacheJoinReaper;
+    return *reaper;
   }
 
   void enqueue(std::thread worker) noexcept
@@ -425,11 +432,11 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   // graph.  This catches a semantic graph accidentally being used as source
   // identity and also validates any pinned initializer object.
   const auto sourceIdentity = inspectNativeOnnxSourceGraph(
-    catalog.preparation->sourceFor(descriptor), descriptor, control);
+    catalog.preparation->sourceRefFor(descriptor), descriptor, control);
   if (sourceIdentity.canonicalIdentity.graphDigest != catalog.model.canonicalGraphDigest)
     throw std::invalid_argument("prepared model canonical graph identity differs");
   if (catalog.model.canonicalInitializerBytes != 0 &&
-      sourceIdentity.canonicalIdentity.initializerDigest != catalog.model.canonicalInitializerObjectDigest)
+      sourceIdentity.canonicalIdentity.initializerDigest != catalog.model.canonicalInitializerDigest)
     throw std::invalid_argument("prepared model initializer identity differs");
   const auto adapter = catalog.preparation->adapters()->find(descriptor.adapterId);
   if (!adapter || adapter->adapterVersion() != descriptor.adapterVersion)
@@ -439,6 +446,27 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     throw std::runtime_error("DI_NATIVE_PREPARATION_UNSUPPORTED_CAPABILITY");
 
   const auto catalogDigest = nativePlanningDigest(spec.catalogConfigurationJson);
+  const NativeJson catalogRoot = nativeParseJson(spec.catalogConfigurationJson);
+  const NativeJson runtimeRoot = nativeParseJson(spec.configurationJson);
+  const auto& catalogRecipe = catalogRoot.at("recipe");
+  const auto artifactRoot = catalogRoot.at("publication").at("artifact_root").get<std::string>();
+  auto serviceName = runtimeRoot.at("request").value("service", std::string{});
+  if (serviceName.empty()) {
+    const auto separator = artifactRoot.find('/', 1);
+    serviceName = artifactRoot.substr(0, separator == std::string::npos ? artifactRoot.size() : separator);
+  }
+  NativeModelArtifactReference modelReference{
+    artifactRoot,
+    catalog.model.canonicalSourceName,
+    catalog.model.modelManifestDigest,
+    catalog.model.canonicalSourceDigest,
+    catalog.model.canonicalSourceBytes,
+    catalog.model.canonicalGraphDigest,
+    catalogRecipe.at("protection_epoch").get<std::string>(),
+    "/SERVICE" + serviceName,
+    nativePlanningDigest(nativeCanonicalJson(catalogRecipe)),
+    1};
+  modelReference.validate();
   const NativeJson capabilityInput{{"schema", "native-input-v1"},
                                    {"digest", descriptor.adapter.inputSchemaDigest}};
   const NativeJson capabilityOutput{{"schema", "native-result-v1"},
@@ -481,6 +509,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   addSize(retained, catalog.model.modelManifestDigest.size());
   addSize(retained, catalog.model.canonicalGraphDigest.size());
   addSize(retained, catalog.model.canonicalInitializerObjectDigest.size());
+  addSize(retained, catalog.model.canonicalInitializerDigest.size());
   addSize(retained, manifest.modelName.size() + manifest.modelRevision.size() +
                     manifest.modelDigest.size() + manifest.taskName.size() +
                     manifest.canonicalGraphDigest.size() + manifest.planningGraphDigest.size() +
@@ -501,6 +530,40 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   if (spec.maxSourceBytes > std::numeric_limits<std::size_t>::max() ||
       spec.maxAssembledBytes > std::numeric_limits<std::size_t>::max())
     throw std::runtime_error("DI_NATIVE_PREPARATION_SIZE_OVERFLOW");
+  // Publication is an external side effect.  Reject a package that cannot
+  // fit before invoking the publisher, so a budget failure cannot leave
+  // source/root objects orphaned after an otherwise successful commit.
+  auto projectedRetained = retained;
+  addSize(projectedRetained, static_cast<std::size_t>(spec.maxSourceBytes));
+  addSize(projectedRetained, static_cast<std::size_t>(spec.maxAssembledBytes));
+  addSize(projectedRetained, spec.configurationJson.size());
+  addSize(projectedRetained, spec.catalogConfigurationJson.size());
+  addSize(projectedRetained, std::size_t{256} * 1024);
+  if (projectedRetained > m_maxBytes)
+    throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_BUDGET_EXCEEDED");
+  if (spec.cancelled && spec.cancelled())
+    throw std::runtime_error("DI_NATIVE_PREPARATION_CANCELLED");
+  std::optional<NativePreparedCanonicalPublication> preparedPublication;
+  const auto rollbackPublication = [&] {
+    if (preparedPublication && spec.rollbackPublication) {
+      try { spec.rollbackPublication(*preparedPublication); }
+      catch (...) {}
+    }
+  };
+  struct PublicationRollbackGuard
+  {
+    std::function<void()> rollback;
+    bool committed = false;
+    ~PublicationRollbackGuard() { if (!committed && rollback) rollback(); }
+  } publicationGuard{rollbackPublication};
+  if (spec.preparePublication) {
+    NativeRequestControl publicationControl{
+      "prepare/" + spec.key, 1, deadline, spec.cancelled};
+    preparedPublication = spec.preparePublication(*catalog.preparation,
+                                                  catalog.model, publicationControl);
+    publicationControl.requireActive();
+    preparedPublication->validate();
+  }
   addSize(retained, static_cast<std::size_t>(spec.maxSourceBytes));
   addSize(retained, static_cast<std::size_t>(spec.maxAssembledBytes));
   addSize(retained, spec.configurationJson.size());
@@ -511,11 +574,21 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   auto registration = std::make_shared<const FrozenPreparationRegistration>(
     FrozenPreparationRegistration{spec.key, spec.baseDirectory, spec.configurationJson,
       spec.configurationDigest, spec.taskName, spec.taskContractDigest, spec.inputLayoutDigest});
+  const auto preparation = catalog.preparation;
+  const bool releaseTransientSource = preparedPublication.has_value();
   auto package = std::make_shared<PreparedModelPackage>(
     PreparedModelPackage{std::move(catalog), std::move(registration), manifest,
                          std::move(capabilities), keyDigest, retained,
                          std::make_shared<NativePreSplitFirstPlacement>(),
-                         spec.runtimeBinding});
+                         spec.runtimeBinding, std::move(modelReference),
+                         preparedPublication});
+  // Catalog construction and prepare-time publication may transiently need
+  // the canonical bytes. The published package carries only identity,
+  // receipt and lease state; release the source owner before returning it so
+  // eviction accounting cannot be bypassed by a hidden catalog reference.
+  if (releaseTransientSource)
+    preparation->releaseTransientSource();
+  publicationGuard.committed = true;
   return package;
 }
 
@@ -618,6 +691,14 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
   }
   const auto started = std::chrono::steady_clock::now();
   std::shared_ptr<const PreparedModelPackage> package;
+  bool publicationCommitted = false;
+  const auto rollbackPackagePublication = [&] {
+    if (publicationCommitted || !package || !package->preparedPublication ||
+        !spec.rollbackPublication)
+      return;
+    try { spec.rollbackPublication(*package->preparedPublication); }
+    catch (...) {}
+  };
   try {
     package = buildPackage(spec, deadline);
     requireActive(deadline, spec.cancelled);
@@ -630,7 +711,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
         throw std::runtime_error(std::chrono::steady_clock::now() >= deadline
           ? "DI_NATIVE_PREPARATION_TIMEOUT" : "DI_NATIVE_PREPARATION_CANCELLED");
     }
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     auto found = m_entries.find(key);
     if (spec.jobGeneration != 0 && found != m_entries.end() &&
         found->second.generation > spec.jobGeneration) {
@@ -638,11 +719,14 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
       auto lease = found->second.lease;
       m_reservedBytes -= reservation;
       reservationHeld = false;
-      return PreparedModel(found->second.package,
+      auto result = PreparedModel(found->second.package,
         PreparationReceipt{PreparationReceipt::Origin::CacheHit,
           found->second.package->preparationKeyDigest,
           found->second.package->catalog.model.modelManifestDigest,
           std::chrono::milliseconds(0)}, acquireLease(lease), spec.clientFactory);
+      lock.unlock();
+      rollbackPackagePublication();
+      return result;
     }
     if (spec.jobGeneration != 0 && policy != CachePolicy::Refresh) {
       const auto jobs = m_jobs.find(key);
@@ -650,10 +734,17 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
           jobs->second.refresh->generation > spec.jobGeneration) {
         m_reservedBytes -= reservation;
         reservationHeld = false;
+        // This package is the valid result of the caller's own preparation.
+        // A newer refresh may supersede the cache entry, but returning this
+        // package after rolling back its publication would leave its receipt
+        // unusable.  Keep the publication committed for this live result.
         const auto digest = package->catalog.model.modelManifestDigest;
-        return PreparedModel(std::move(package),
+        auto result = PreparedModel(package,
           PreparationReceipt{PreparationReceipt::Origin::Fetched, key, digest, elapsed}, {},
           spec.clientFactory);
+        publicationCommitted = true;
+        lock.unlock();
+        return result;
       }
     }
     const auto prior = found == m_entries.end() ? std::size_t{0} : found->second.package->retainedBytes;
@@ -728,6 +819,10 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     m_chargedBytes = newCharged;
     m_reservedBytes -= reservation;
     reservationHeld = false;
+    // The package is now owned by the cache.  Any later allocation failure
+    // while constructing the return receipt must not roll back its durable
+    // publication and leave the cached package unusable.
+    publicationCommitted = true;
     const auto origin = policy == CachePolicy::Refresh
       ? PreparationReceipt::Origin::Refreshed : PreparationReceipt::Origin::Fetched;
     const auto manifestDigest = package->catalog.model.modelManifestDigest;
@@ -735,6 +830,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
       manifestDigest, elapsed}, acquireLease(lease), spec.clientFactory);
   }
   catch (...) {
+    rollbackPackagePublication();
     if (reservationHeld) {
       std::lock_guard<std::mutex> lock(m_mutex);
       m_reservedBytes -= reservation;

@@ -23,7 +23,7 @@
 | --- | --- | --- | --- | --- |
 | [T001 Freeze candidate and production path](#t001) | PARTIAL | — | candidate/artifact identity frozen; preflight, caller map, build/source closure and handoff identity still pending | 2026-09-18 02:22 -05:00 |
 | [T002 Prepare Qwen graph and split packages](#t002) | PARTIAL | T001 | real Qwen graph, initializer and two stage artifacts checked; native prepare oracle pending | 2026-09-18 02:22 -05:00 |
-| [T003 Publish/reuse layer references in Repo](#t003) | NOT_STARTED | T002 | one committed manifest, duplicate prepare and source-release C++ evidence pending | 2026-09-18 00:00 -05:00 |
+| [T003 Publish/reuse layer references in Repo](#t003) | PARTIAL | T002 | canonical source/initializer/root cold/hot Repo receipt and C++ ownership/corruption/cancellation checks pass; v7 static repair and r5 C++ regression pass; real layer payload publication remains unconnected | 2026-09-18 09:45 -05:00 |
 | [T004 Project payload-free request](#t004) | NOT_STARTED | T003 | request wire parser/oracle and oversized-model negative pending | 2026-09-18 00:00 -05:00 |
 | [T005 Produce real two-provider ACK/Selection](#t005) | PARTIAL | T004 | real signed offers/Selection observed; C++ placement oracle and no-fetch proof pending | 2026-09-18 02:22 -05:00 |
 | [T006 Fetch and assemble selected layers](#t006) | PARTIAL | T005 | grant verification and endpoint fix observed; fetch/assembly/runner counters and regression pending | 2026-09-18 02:22 -05:00 |
@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 08:31 -0500
+**Updated**: 2026-09-18 09:45 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -102,6 +102,24 @@ selectors passed, and the affected native build plus independent verify both
 returned `SPEC180_NATIVE_IDENTITY_OK`; the focused policy/regression set was
 `148 passed`. This remains a dependency-policy checkpoint only; no Spec189
 task is complete and the post-grant MiniNDN boundary is unchanged.
+
+The prepare-time Repo boundary was then added and statically reviewed in an
+immutable v3 snapshot; v4 re-reviewed the private filesystem fixture root.
+`unit-tests` rebuilt successfully with the explicit Repo source closure. The
+Spec189 Repo selector passed its two C++ cases, and the existing production
+`Runtime::prepare` Repo-owner regression passed from the repository root. The
+adapter now serializes cold/hot publication, verifies committed payload bytes,
+preserves durable hot receipts on rollback, and rejects non-empty layer
+references until a layer payload owner is connected. This advances T003 only to
+`PARTIAL`; no Qwen layer publication, two-provider Selection, Provider
+execution, handoff, or MiniNDN qualification has been observed.
+The v7 immutable review then found no remaining P0/P1/P2 issue after repairing
+superseded-result publication lifetime, external rollback lock ordering and the
+cache-insertion exception window. The affected `unit-tests` target rebuilt with
+`-j2` in 27.326 seconds; the two-case `Spec189RepoPublication` selector and
+`Spec185Runtime/PrepareSuccessUsesTheProductionRuntimeEntry` both passed from
+the repository root. T003 remains `PARTIAL` because layer payload ownership and
+real Qwen preparation are still absent.
 
 ## Task checklist
 

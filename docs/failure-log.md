@@ -1,5 +1,28 @@
 # Failure Log and Evidence Index
 
+## 2026-09-18 — Spec189 B189-1 Repo publication test fixture boundary
+
+The first focused `Spec189RepoPublication` run stopped before publication because
+the test created its filesystem Repo root below `/tmp`; the parent permissions made
+the root group-writable and `FilesystemRepoStoreBackend` correctly rejected it as
+`repo-file-root-not-private`. This was a fixture permission boundary, not a Repo
+publication result. The raw output is `.codex-tmp/spec189-b189-3-unit-repo-r3.log`.
+The fixture now explicitly applies owner-only `0700` permissions and fails closed if
+that operation fails. The v4 immutable static review returned `STATIC_PASS`, the
+incremental `unit-tests` build completed, and the corrected Repo selector plus the
+production Runtime prepare regression passed from the repository root. No MiniNDN,
+SIF or qualification result is inferred.
+
+## 2026-09-18 — Spec189 B189-1 unit target source closure boundary
+
+The first B189-1 `unit-tests` link attempt stopped after compiling because the
+target did not include the RepoCore, RepoClient, RepoNode and filesystem Repo backend
+definitions used by the Repo-backed C++ fixture. This was a Waf source-closure
+boundary, not a runtime result. The active `tests/wscript` closure now lists those
+sources explicitly; the subsequent global-dependency build and incremental rebuild
+linked successfully. The source-closure change and validation are recorded in
+`specs/189-qwen-two-provider-minindn/evidence/b189-prepare.md`.
+
 ## 2026-09-18 — Spec189 B189-3 host NAC-ABE ABI boundary
 
 The first B189-3 incremental C++ build configured successfully but stopped in

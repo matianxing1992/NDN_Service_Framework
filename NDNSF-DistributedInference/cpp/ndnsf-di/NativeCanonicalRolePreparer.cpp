@@ -66,6 +66,8 @@ NativeCanonicalRolePreparer::NativeCanonicalRolePreparer(NativeInspectedModel mo
   bounded.maxAssembledBytes = std::min(control.maxAssembledBytes, p.maxAssembledBytes);
   m_sourceGraph = inspectNativeOnnxSourceGraph(source, m_model.descriptor, bounded);
   if (m_sourceGraph.canonicalIdentity.graphDigest != m_model.canonicalGraphDigest ||
+      (m_model.canonicalInitializerBytes != 0 &&
+       m_sourceGraph.canonicalIdentity.initializerDigest != m_model.canonicalInitializerDigest) ||
       m_sourceGraph.graph.nodes.size() > p.maxNodes)
     throw std::invalid_argument("native role canonical source identity or node bound differs");
   checkOnnxAssemblerDescriptorBinding(p.assemblerDescriptorDigest, source, bounded);
@@ -163,7 +165,8 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
       model.canonicalGraphDigest != m_model.canonicalGraphDigest || model.canonicalSourceName != m_model.canonicalSourceName ||
       model.canonicalSourceDigest != m_model.canonicalSourceDigest || model.canonicalSourceBytes != m_model.canonicalSourceBytes ||
       model.canonicalInitializerBytes != m_model.canonicalInitializerBytes ||
-      model.canonicalInitializerObjectDigest != m_model.canonicalInitializerObjectDigest)
+      model.canonicalInitializerObjectDigest != m_model.canonicalInitializerObjectDigest ||
+      model.canonicalInitializerDigest != m_model.canonicalInitializerDigest)
     throw std::invalid_argument("native role preparation model differs from frozen source");
   candidate.validate(m_model.graph);
   const auto metadata = nativeParseJson(m_sourceGraph.graphMetadataJson);

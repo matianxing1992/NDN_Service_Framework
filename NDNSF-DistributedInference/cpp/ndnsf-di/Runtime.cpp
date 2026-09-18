@@ -236,7 +236,9 @@ struct FrozenConfig
 };
 
 PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& key,
-                                 RuntimeConfig::RepositorySourceLoader repositorySourceLoader = {})
+                                 RuntimeConfig::RepositorySourceLoader repositorySourceLoader = {},
+                                 std::shared_ptr<const RepositorySourceProvider> repositorySourceProvider = {},
+                                 std::shared_ptr<const RepositoryArtifactPublisher> repositoryArtifactPublisher = {})
 {
   const auto root = nativeParseJson(frozen.canonicalJson);
   const auto& request = root.at("request");
@@ -255,6 +257,7 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
   spec.inputLayoutDigest = inputLayoutDigest;
   spec.configurationDigest = frozen.configurationDigest;
   spec.publicationServiceName = request.value("service", std::string{});
+  spec.repositoryArtifactPublisher = std::move(repositoryArtifactPublisher);
   if (spec.publicationServiceName.empty()) {
     const auto artifactRoot = catalog.at("publication").at("artifact_root").get<std::string>();
     const auto separator = artifactRoot.find('/', 1);
@@ -270,28 +273,37 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
   };
   spec.maxSourceBytes = positiveLimit("max_source_bytes");
   spec.maxAssembledBytes = positiveLimit("max_assembled_bytes");
-  spec.loadSource = [repositorySourceLoader = std::move(repositorySourceLoader)] (
+  spec.loadSource = [repositorySourceLoader = std::move(repositorySourceLoader),
+                     repositorySourceProvider = std::move(repositorySourceProvider)] (
                       const PreparationSpec& current,
                       std::chrono::steady_clock::time_point deadline) {
     try {
       if (std::chrono::steady_clock::now() >= deadline)
         throw DiError("PREPARATION_TIMEOUT", "local", "preparation", "preparation deadline expired");
+      const RepositorySourceRequest request{
+        current.key, current.catalogConfigurationJson, current.maxSourceBytes, deadline};
+      const auto localFallback = [&current] (const RepositorySourceRequest&) {
+        const auto catalog = nativeParseJson(current.catalogConfigurationJson);
+        const auto& source = catalog.at("source");
+        const auto sourceFile = requiredString(source, "file");
+        NativeCanonicalSource result;
+        const auto modelPath = (current.baseDirectory / sourceFile).lexically_normal();
+        const auto model = readOperatorFile(modelPath, current.maxSourceBytes);
+        result.modelBytes.assign(model.begin(), model.end());
+        if (source.contains("initializer_file")) {
+          const auto initializerFile = requiredString(source, "initializer_file");
+          const auto initializerPath = (current.baseDirectory / initializerFile).lexically_normal();
+          const auto initializer = readOperatorFile(initializerPath, current.maxSourceBytes);
+          result.initializerBytes.emplace(initializer.begin(), initializer.end());
+        }
+        return result;
+      };
+      if (repositorySourceProvider)
+        return repositorySourceProvider->load(request, localFallback);
       if (repositorySourceLoader)
         return repositorySourceLoader(current.key, current.catalogConfigurationJson,
-                                      current.maxSourceBytes, deadline);
-      const auto catalog = nativeParseJson(current.catalogConfigurationJson);
-      const auto& source = catalog.at("source");
-      const auto sourceFile = requiredString(source, "file");
-      NativeCanonicalSource result;
-      const auto modelPath = (current.baseDirectory / sourceFile).lexically_normal();
-      const auto model = readOperatorFile(modelPath, current.maxSourceBytes);
-      result.modelBytes.assign(model.begin(), model.end());
-      if (source.contains("initializer_file")) {
-        const auto initializerFile = requiredString(source, "initializer_file");
-        const auto initializerPath = (current.baseDirectory / initializerFile).lexically_normal();
-        const auto initializer = readOperatorFile(initializerPath, current.maxSourceBytes);
-        result.initializerBytes.emplace(initializer.begin(), initializer.end());
-      }
+                                     current.maxSourceBytes, deadline);
+      auto result = localFallback(request);
       if (std::chrono::steady_clock::now() >= deadline)
         throw DiError("PREPARATION_TIMEOUT", "local", "preparation", "preparation deadline expired");
       return result;
@@ -1316,12 +1328,20 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
   }
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
-  auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader);
+  auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader,
+                              m_state->config.repositorySourceProvider,
+                              m_state->config.repositoryArtifactPublisher);
   spec.runtimeBinding = m_state->runtimeBinding;
   const auto publicationServiceName = spec.publicationServiceName;
-  spec.preparePublication = [state = m_state, publicationServiceName](
+  spec.preparePublication = [state = m_state, modelKey, publicationServiceName](
     const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
     const NativeRequestControl& control) {
+    if (state->config.repositoryArtifactPublisher) {
+      const auto source = catalog.sourceFor(model.descriptor);
+      return state->config.repositoryArtifactPublisher->publish(
+        modelKey, publicationServiceName, model, source,
+        catalog.publicationFor(model.descriptor), control);
+    }
     ensureRuntimeCoreTransport(state);
     std::shared_ptr<ndn_service_framework::ServiceUser> user;
     {
@@ -1331,6 +1351,10 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
     return catalog.preparePublication(user, publicationServiceName, model.descriptor, control);
   };
   spec.rollbackPublication = [state = m_state](const NativePreparedCanonicalPublication& publication) {
+    if (state->config.repositoryArtifactPublisher) {
+      state->config.repositoryArtifactPublisher->rollback(publication);
+      return;
+    }
     std::shared_ptr<ndn_service_framework::ServiceUser> user;
     {
       std::lock_guard<std::mutex> lock(state->mutex);
@@ -1434,12 +1458,20 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
   }
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
-  auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader);
+  auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader,
+                              m_state->config.repositorySourceProvider,
+                              m_state->config.repositoryArtifactPublisher);
   spec.runtimeBinding = m_state->runtimeBinding;
   const auto publicationServiceName = spec.publicationServiceName;
-  spec.preparePublication = [state = m_state, publicationServiceName](
+  spec.preparePublication = [state = m_state, modelKey, publicationServiceName](
     const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
     const NativeRequestControl& control) {
+    if (state->config.repositoryArtifactPublisher) {
+      const auto source = catalog.sourceFor(model.descriptor);
+      return state->config.repositoryArtifactPublisher->publish(
+        modelKey, publicationServiceName, model, source,
+        catalog.publicationFor(model.descriptor), control);
+    }
     ensureRuntimeCoreTransport(state);
     std::shared_ptr<ndn_service_framework::ServiceUser> user;
     {
@@ -1449,6 +1481,10 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
     return catalog.preparePublication(user, publicationServiceName, model.descriptor, control);
   };
   spec.rollbackPublication = [state = m_state](const NativePreparedCanonicalPublication& publication) {
+    if (state->config.repositoryArtifactPublisher) {
+      state->config.repositoryArtifactPublisher->rollback(publication);
+      return;
+    }
     std::shared_ptr<ndn_service_framework::ServiceUser> user;
     {
       std::lock_guard<std::mutex> lock(state->mutex);
@@ -1954,7 +1990,8 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   auto coreOwner = std::make_shared<detail::CoreRuntimeOwner>();
   coreOwner->face = std::make_shared<ndn::Face>(coreOwner->io);
   const auto primary = freezeConfig(primaryPath, coreOwner->face.get(),
-                                    static_cast<bool>(config.repositorySourceLoader));
+                                    static_cast<bool>(config.repositorySourceLoader) ||
+                                      static_cast<bool>(config.repositorySourceProvider));
   try {
     // Runtime owns the KeyChain and creates the Core transport identities
     // once per Runtime. When the process supplies an NDN PIB/TPM pair (the
@@ -2049,7 +2086,8 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
     }
     const auto modelPath = (state->baseDirectory / registration.nativeConfigPath).lexically_normal();
     const auto frozen = freezeConfig(modelPath, coreOwner->face.get(),
-                                     static_cast<bool>(config.repositorySourceLoader));
+                                     static_cast<bool>(config.repositorySourceLoader) ||
+                                       static_cast<bool>(config.repositorySourceProvider));
     if (!sameTrustDomain(primary, frozen))
       throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "identity",
                     "registered model configuration crosses the Runtime trust domain");
