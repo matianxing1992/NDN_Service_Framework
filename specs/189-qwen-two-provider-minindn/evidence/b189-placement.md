@@ -81,3 +81,40 @@ This closes the production PreparedModel/Repo reuse sub-check for T004. It
 does not prove stale-manifest negatives, real Core ACK/Selection, or
 the two-provider no-fetch-before-Selection boundary; T004 and B189-2 remain
 `PARTIAL`/`NOT_ACCEPTED`.
+
+## T005 C++ placement and cache-layer gate — 2026-09-18
+
+The new target `spec189-placement-oracle` uses the production
+`NativePreSplitFirstPlacement::proposeRoles`,
+`validateNativeRolePlacement`, and `ProviderArtifactCache` implementations.
+The fixture is derived from the signed V3 offer oracle and supplies two
+rank-cover roles. The selector verifies that placement assigns distinct
+Providers, preserves the selected layer ranges and artifact identities, and
+passes the production placement validator. It then submits a non-empty but
+incomplete grant-bound projection and confirms that the cache rejects it before
+the builder (`builds == 0`). Complete projections for the two selected
+Providers each build one exact layer and release a valid cache lease.
+
+The static review used the immutable v5 snapshot
+`.codex-tmp/spec189-t005-placement-review-v5/patch.diff`, SHA-256
+`a73c81455ac92175345f9a19698369c189cfa2683c2c25c5e65fcdba25ea0dce`; the
+official read-only review-agent returned `STATIC_PASS` with no P0/P1/P2. The
+first build invocation from the repository root selected the wrong locked Waf
+tree and is recorded in `b189-build-20260918.md` and `docs/failure-log.md`; no
+compile was accepted from that attempt. The retry from
+`build-spec189-b189-3-global-r3` with `-j4` compiled and linked 108 tasks in
+128.435 seconds. The focused C++ selector passed in 17.213 ms with no errors.
+Raw logs are `.codex-tmp/spec189-t005-placement-build-r2.log` and
+`.codex-tmp/spec189-t005-placement-run-r1.log`.
+
+| Lane | Result |
+| --- | --- |
+| static | `STATIC_PASS`; role identity is prepared before placement, production validator is called, and canonical grant naming is used |
+| compile-link | `PASS`; registered target built from the existing global-r3 tree with the complete DI integration source closure and `-j4` |
+| runtime-test | `PASS`; `Spec189PlacementOracle/TwoProviderSelectionKeepsPreSelectionEffectsZero` passed as a C++ selector |
+| integration/wiring | `PASS`; `tests/wscript` registers the target and the selector uses the signed offer fixture, production placement and cache APIs |
+| unobserved | real Core ACK/Selection, parser/ProtectedRuntime/Provider admission, and network no-fetch-before-Selection remain unobserved |
+
+This is a focused placement/cache-layer result, not full T005 completion. The
+real two-provider MiniNDN run still stops after protected-grant verification
+before `EXECUTION_ENTERED`, so T005 and B189-2 remain `PARTIAL`/`NOT_ACCEPTED`.

@@ -25,7 +25,7 @@
 | [T002 Prepare Qwen graph and split packages](#t002) | PARTIAL | T001 | real Qwen graph, initializer and two stage artifacts checked; native prepare oracle pending | 2026-09-18 02:22 -05:00 |
 | [T003 Publish/reuse layer references in Repo](#t003) | PARTIAL | T002 | native layer payload owner, cold/hot layer receipt, legacy reuse, digest/range/cancellation checks and shared Repo transaction lock pass; real Qwen production prepare receipt remains pending | 2026-09-18 11:01 -05:00 |
 | [T004 Project payload-free request](#t004) | PARTIAL | T003 | wire-only negatives, production PreparedModel/Repo reuse, and closed-client negative pass; stale-manifest and real ACK/Selection counters remain pending | 2026-09-18 12:45 -05:00 |
-| [T005 Produce real two-provider ACK/Selection](#t005) | PARTIAL | T004 | real signed offers/Selection observed; C++ placement oracle and no-fetch proof pending | 2026-09-18 02:22 -05:00 |
+| [T005 Produce real two-provider ACK/Selection](#t005) | PARTIAL | T004 | C++ placement/validator and cache-layer grant gate pass; real Core ACK/Selection and production no-fetch boundary remain pending | 2026-09-18 13:10 -05:00 |
 | [T006 Fetch and assemble selected layers](#t006) | PARTIAL | T005 | grant verification and endpoint fix observed; fetch/assembly/runner counters and regression pending | 2026-09-18 02:22 -05:00 |
 | [T007 Execute hidden-state handoff and terminal oracle](#t007) | PARTIAL | T006 | Spec189 C++ oracle is registered, globally built and has positive/negative selector checks; real hidden-state handoff and terminal run pending | 2026-09-18 04:05 -05:00 |
 | [T008 Measure resource and drain ownership](#t008) | NOT_STARTED | T007 | RSS/swap/disk guard, cancellation and zero-residue evidence pending | 2026-09-18 00:00 -05:00 |
@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 12:45 -0500
+**Updated**: 2026-09-18 13:10 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -51,6 +51,14 @@ Repo-backed prepare publication followed by two request IDs with unchanged
 Repo lookup/ingest/publication counters. This remains a focused sub-check;
 stale-manifest negative and the real two-provider ACK/Selection boundary are
 still open.
+The T005 C++ selector now passes its static gate, compile/link, and focused
+runtime check. It uses the production `proposeRoles`,
+`validateNativeRolePlacement`, and `ProviderArtifactCache` paths to prove a
+two-provider rank-cover proposal, rejection of an incomplete grant-bound
+projection before the builder, and one exact build per selected Provider. This
+is a cache-layer/placement sub-check only: it does not replace the real Core
+ACK/Selection path or prove a network Provider no-fetch fence. T005 and B189-2
+therefore remain `PARTIAL`/`NOT_ACCEPTED`.
 The host dependency closure is now enforced for all Waf-discovered direct
 libraries and linker flags; stale NAC-ABE pkg-config metadata was repaired in
 `/usr/local`, and the host/container `$ORIGIN` configure gates were exercised.

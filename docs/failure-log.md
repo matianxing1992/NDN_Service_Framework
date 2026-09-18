@@ -7069,3 +7069,12 @@ repaired to skip only this literal template while continuing to reject
 concrete non-global `-L` and loader paths. The subsequent v7 helper build,
 verify, Repo binding build and candidate preflight passed; this failure is a
 tooling-gate boundary, not a product or protocol result.
+
+2026-09-18 Spec189 T005 placement-selector build invocation: running `./waf
+build --targets=spec189-placement-oracle -j4` from the repository root entered the
+locked default `/home/tianxing/NDN/ndn-service-framework/build` tree, which has no
+`spec189-placement-oracle` task generator. No source compilation or test artifact
+was produced. Raw output is `.codex-tmp/spec189-t005-placement-build-r1.log`.
+This is a Waf output-tree selection boundary; retry from the already configured
+`build-spec189-b189-3-global-r3` directory, without changing the source or
+accepting this attempt as compile evidence.
