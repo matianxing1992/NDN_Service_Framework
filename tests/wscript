@@ -294,6 +294,24 @@ def build(bld):
         bld.path.parent.ant_glob(
             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
 
+    # Spec189 T004 production-handle request gate.  It reuses the maintained
+    # in-process Runtime fixture; the wire-only selector above remains the
+    # direct envelope oracle.  Keep this after the complete DI source closure
+    # is defined so Waf configuration is deterministic.
+    bld.program(target='../spec189-prepared-request',
+                name='spec189-prepared-request',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ndnsf-distributed-repo ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
+                         'SPEC189_REQUEST_SELECTOR'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec185 B0C DI delegation selector.  Link the production
     # NativeInferenceClient and the complete DI source closure.  The target
     # includes the Core-only fail-closed checks plus real Provider-backed ACK,
