@@ -25,6 +25,20 @@ OPENABE_PREFIX="$GLOBAL_DEPENDENCY_PREFIX"
 GLOBAL_LIBRARY_DIR="$GLOBAL_DEPENDENCY_PREFIX/lib"
 SYSTEM_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 PKG_CONFIG_BIN="/usr/bin/pkg-config"
+# Host SDKs may have a versioned global prefix, but they must still be
+# installed outside the repository and visible to every consumer.  ONNX
+# Runtime is the only NDNSF dependency currently using such a versioned SDK;
+# all NDN/NDNSF outputs remain in /usr/local.
+GLOBAL_SDK_ROOTS=("/usr" "/usr/local" "/opt/onnxruntime" "/opt/onnxruntime-1.26.0")
+BOOST_INCLUDE_DIR="/usr/include"
+BOOST_LIBRARY_DIR="/usr/lib/x86_64-linux-gnu"
+BOOST_VERSION_NUMBER="107100"
+GLOBAL_IDENTITY_DIR="/usr/local/share/ndnsf"
+GLOBAL_IDENTITY_FILE="$GLOBAL_IDENTITY_DIR/global-dependency-identity.json"
+GLOBAL_IDENTITY_LIBRARIES=(
+  "libndn-cxx.so" "libndnsd.so" "libndn-svs.so" "libnac-abe.so"
+  "libopenabe.so" "libonnxruntime.so"
+)
 
 # Minimum installed package metadata accepted by this host workflow.  A
 # missing/older package or a package outside /usr/local is rebuilt and
@@ -85,6 +99,13 @@ Notes:
     NFD/NLSR builds.
   - The script checks pkg-config names: libndn-cxx, ndnsd, libndn-svs, and
     libnac-abe.
+  - The host Boost 1.71 headers and libraries must be the matching system pair
+    /usr/include and /usr/lib/x86_64-linux-gnu. A repository or temporary Boost
+    tree is rejected before configure.
+  - The installed ONNX Runtime pkg-config closure must resolve to the declared
+    global /opt/onnxruntime SDK (the versioned /opt/onnxruntime-1.26.0 target
+    may be its real directory). Missing or stale ONNX Runtime stops the script;
+    it is never replaced with a model checkout or temporary prefix.
   - If libopenabe is missing, OpenABE is built from dependencies/openabe and
     installed globally under /usr/local before NAC-ABE. The resulting
     libopenabe/relic/OpenSSL closure is checked through the system loader; a
@@ -235,6 +256,7 @@ run_waf_clean() {
     -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH -u LDSHARED -u WAFDIR \
     -u PKGCONFIG -u LD -u AR -u AS -u RANLIB -u NM -u STRIP \
     -u OBJCOPY -u OBJDUMP -u READELF \
+    -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
     PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" \
     CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
@@ -244,7 +266,7 @@ run_waf_clean() {
 
 require_system_toolchain() {
   local tool
-  for tool in gcc g++ ld ar as ranlib nm strip "$PKG_CONFIG_BIN"; do
+  for tool in gcc g++ ld ar as ranlib nm strip readelf "$PKG_CONFIG_BIN"; do
     if [[ "$tool" == /* ]]; then
       [[ -x "$tool" ]] || { echo "Missing canonical host tool: $tool" >&2; exit 1; }
     else
@@ -253,10 +275,256 @@ require_system_toolchain() {
   done
 }
 
+has_global_boost() {
+  local version_line
+  if [[ ! -f "$BOOST_INCLUDE_DIR/boost/version.hpp" ]]; then
+    return 1
+  fi
+  version_line="$(/usr/bin/grep -E '^#define[[:space:]]+BOOST_VERSION[[:space:]]+' \
+    "$BOOST_INCLUDE_DIR/boost/version.hpp" | /usr/bin/awk '{print $3}' | /usr/bin/head -n 1)"
+  if [[ "$version_line" != "$BOOST_VERSION_NUMBER" ]]; then
+    return 1
+  fi
+  for library in libboost_system.so libboost_filesystem.so libboost_unit_test_framework.so; do
+    local path="$BOOST_LIBRARY_DIR/$library"
+    if [[ ! -e "$path" ]]; then
+      return 1
+    fi
+    local resolved
+    resolved="$(/usr/bin/readlink -f "$path" 2>/dev/null || true)"
+    if [[ "$resolved" != "$BOOST_LIBRARY_DIR/"* ]]; then
+      return 1
+    fi
+    local soname="${library}.1.71.0"
+    if ! /usr/bin/readelf -d "$resolved" 2>/dev/null |
+        /usr/bin/grep -Fq "Library soname: [$soname]"; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+require_global_boost() {
+  local version_line
+  if ! has_global_boost; then
+    version_line="$(/usr/bin/grep -E '^#define[[:space:]]+BOOST_VERSION[[:space:]]+' \
+      "$BOOST_INCLUDE_DIR/boost/version.hpp" 2>/dev/null | /usr/bin/awk '{print $3}' | /usr/bin/head -n 1 || true)"
+    if [[ ! -f "$BOOST_INCLUDE_DIR/boost/version.hpp" ]]; then
+      echo "Installed Boost headers are missing: $BOOST_INCLUDE_DIR/boost/version.hpp" >&2
+    elif [[ "$version_line" != "$BOOST_VERSION_NUMBER" ]]; then
+      echo "Installed Boost version is ${version_line:-unknown}; expected $BOOST_VERSION_NUMBER" >&2
+    else
+      echo "Installed Boost libraries are missing or resolve outside $BOOST_LIBRARY_DIR" >&2
+    fi
+    echo "Install/rebuild the system Boost pair before configuring; no temporary prefix is allowed." >&2
+    exit 1
+  fi
+  echo "==> Global Boost 1.71 ($BOOST_INCLUDE_DIR, $BOOST_LIBRARY_DIR)"
+}
+
+is_global_sdk_prefix() {
+  local raw="$1"
+  local resolved
+  resolved="$(/usr/bin/readlink -f "$raw" 2>/dev/null || true)"
+  local root
+  for root in "${GLOBAL_SDK_ROOTS[@]}"; do
+    root="$(/usr/bin/readlink -f "$root" 2>/dev/null || true)"
+    if [[ -n "$resolved" && ( "$resolved" == "$root" || "$resolved" == "$root"/* ) ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_global_sdk_pkg() {
+  local package="$1"
+  local minimum="$2"
+  local library="$3"
+  local version prefix
+  if ! env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" --exists "$package"; then
+    echo "Global SDK dependency is missing: $package >= $minimum" >&2
+    echo "Install/rebuild it globally before continuing; no checkout or temporary prefix is allowed." >&2
+    exit 1
+  fi
+  version="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" --modversion "$package" 2>/dev/null || true)"
+  if [[ "$(printf '%s\n' "$minimum" "$version" | /usr/bin/sort -V | /usr/bin/head -n 1)" != "$minimum" ]]; then
+    echo "Global SDK dependency is too old: $package $version (need >= $minimum)" >&2
+    echo "Install/rebuild it globally; do not point the build at a temporary prefix." >&2
+    exit 1
+  fi
+  prefix="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" --variable=prefix "$package" 2>/dev/null || true)"
+  if ! is_global_sdk_prefix "$prefix"; then
+    echo "$package resolves outside the declared global SDK roots: $prefix" >&2
+    exit 1
+  fi
+  require_global_pkg_flags "$package"
+  local libdir library_path resolved_library
+  libdir="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" --variable=libdir "$package" 2>/dev/null || true)"
+  library_path="$libdir/$library"
+  resolved_library="$(/usr/bin/readlink -f "$library_path" 2>/dev/null || true)"
+  if [[ -z "$libdir" ]] || ! is_global_sdk_prefix "$libdir" || \
+     [[ ! -e "$library_path" ]] || ! is_global_sdk_prefix "$resolved_library"; then
+    echo "Global SDK library is missing or outside its prefix: $libdir/$library" >&2
+    exit 1
+  fi
+  echo "==> Global SDK dependency $package $version ($prefix)"
+}
+
+global_dependency_identity_receipt() {
+  local onnx_libdir
+  onnx_libdir="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" \
+    --variable=libdir onnxruntime 2>/dev/null || true)"
+  [[ -n "$onnx_libdir" ]] || {
+    echo "Cannot determine the global ONNX Runtime library directory" >&2
+    return 1
+  }
+  "$PYTHON_BIN" - "$GLOBAL_LIBRARY_DIR" "$onnx_libdir" <<'PY'
+import hashlib
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[1])
+onnx_root = pathlib.Path(sys.argv[2])
+paths = {
+    "libndn-cxx.so": root / "libndn-cxx.so",
+    "libndnsd.so": root / "libndnsd.so",
+    "libndn-svs.so": root / "libndn-svs.so",
+    "libnac-abe.so": root / "libnac-abe.so",
+    "libopenabe.so": root / "libopenabe.so",
+    "libonnxruntime.so": onnx_root / "libonnxruntime.so",
+}
+entries = {}
+for name, path in paths.items():
+    if not path.is_file():
+        raise SystemExit(f"missing global dependency library: {path}")
+    resolved = path.resolve()
+    output = subprocess.check_output(
+        ["/usr/bin/readelf", "-d", str(resolved)], text=True)
+    match = re.search(r"Library soname: \[([^]]+)\]", output)
+    entries[name] = {
+        "path": str(path),
+        "realpath": str(resolved),
+        "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+        "soname": match.group(1) if match else "",
+    }
+print(json.dumps({"schema": 1, "libraries": entries}, sort_keys=True))
+PY
+}
+
+write_global_dependency_identity() {
+  local receipt temp_file
+  receipt="$(global_dependency_identity_receipt)" || exit 1
+  sudo_run install -d -m 0755 "$GLOBAL_IDENTITY_DIR"
+  temp_file="$GLOBAL_IDENTITY_DIR/.global-dependency-identity.json.$$"
+  if [[ "${EUID}" -eq 0 ]]; then
+    printf '%s\n' "$receipt" > "$temp_file"
+    chmod 0644 "$temp_file"
+    mv -f "$temp_file" "$GLOBAL_IDENTITY_FILE"
+  else
+    printf '%s\n' "$receipt" | sudo -n tee "$temp_file" >/dev/null
+    sudo -n chmod 0644 "$temp_file"
+    sudo -n mv -f "$temp_file" "$GLOBAL_IDENTITY_FILE"
+  fi
+  echo "==> Global dependency identity receipt: $GLOBAL_IDENTITY_FILE"
+}
+
+require_global_dependency_identity() {
+  local onnx_libdir
+  [[ -f "$GLOBAL_IDENTITY_FILE" ]] || {
+    echo "Global dependency identity receipt is missing: $GLOBAL_IDENTITY_FILE" >&2
+    echo "Run the installer to install/rebuild the global dependency closure." >&2
+    exit 1
+  }
+  onnx_libdir="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" \
+    --variable=libdir onnxruntime 2>/dev/null || true)"
+  "$PYTHON_BIN" - "$GLOBAL_IDENTITY_FILE" "$GLOBAL_LIBRARY_DIR" "$onnx_libdir" <<'PY'
+import hashlib
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+receipt_path = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+onnx_root = pathlib.Path(sys.argv[3])
+try:
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+except (OSError, ValueError) as error:
+    raise SystemExit(f"cannot read global dependency identity receipt: {error}")
+if receipt.get("schema") != 1 or not isinstance(receipt.get("libraries"), dict):
+    raise SystemExit(f"invalid global dependency identity receipt: {receipt_path}")
+expected_paths = {
+    "libndn-cxx.so": root / "libndn-cxx.so",
+    "libndnsd.so": root / "libndnsd.so",
+    "libndn-svs.so": root / "libndn-svs.so",
+    "libnac-abe.so": root / "libnac-abe.so",
+    "libopenabe.so": root / "libopenabe.so",
+    "libonnxruntime.so": onnx_root / "libonnxruntime.so",
+}
+for name, path in expected_paths.items():
+    entry = receipt["libraries"].get(name)
+    if not isinstance(entry, dict):
+        raise SystemExit(f"identity receipt missing {name}")
+    actual = path.resolve()
+    if not path.is_file() or str(entry.get("path")) != str(path) or \
+            str(entry.get("realpath")) != str(actual):
+        raise SystemExit(f"global dependency realpath changed for {name}: {path}")
+    digest = hashlib.sha256(actual.read_bytes()).hexdigest()
+    if digest != entry.get("sha256"):
+        raise SystemExit(f"global dependency digest changed for {name}: {path}")
+    output = subprocess.check_output(["/usr/bin/readelf", "-d", str(actual)], text=True)
+    match = re.search(r"Library soname: \[([^]]+)\]", output)
+    actual_soname = match.group(1) if match else ""
+    if actual_soname != entry.get("soname"):
+        raise SystemExit(f"global dependency SONAME changed for {name}: {path}")
+PY
+}
+
+has_global_dependency_identity() {
+  require_global_dependency_identity >/dev/null 2>&1
+}
+
+has_global_onnx_identity() {
+  local onnx_libdir
+  [[ -f "$GLOBAL_IDENTITY_FILE" ]] || return 1
+  onnx_libdir="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" \
+    --variable=libdir onnxruntime 2>/dev/null || true)"
+  "$PYTHON_BIN" - "$GLOBAL_IDENTITY_FILE" "$onnx_libdir" <<'PY' >/dev/null
+import hashlib
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+entry = receipt.get("libraries", {}).get("libonnxruntime.so")
+path = pathlib.Path(sys.argv[2]) / "libonnxruntime.so"
+if not isinstance(entry, dict) or str(entry.get("path")) != str(path):
+    raise SystemExit(1)
+resolved = path.resolve()
+if not path.is_file() or str(entry.get("realpath")) != str(resolved):
+    raise SystemExit(1)
+if not any(str(resolved).startswith(root + "/")
+           for root in ("/opt/onnxruntime", "/opt/onnxruntime-1.26.0")):
+    raise SystemExit(1)
+if hashlib.sha256(resolved.read_bytes()).hexdigest() != entry.get("sha256"):
+    raise SystemExit(1)
+output = subprocess.check_output(["/usr/bin/readelf", "-d", str(resolved)], text=True)
+match = re.search(r"Library soname: \[([^]]+)\]", output)
+if (match.group(1) if match else "") != entry.get("soname"):
+    raise SystemExit(1)
+PY
+}
+
 is_pkg_installed() {
   local package="$1"
   local minimum="${2:-0}"
-  local version prefix
+  local version prefix libdir library library_path resolved_library
   if ! env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" --exists "$package"; then
     return 1
   fi
@@ -266,7 +534,18 @@ is_pkg_installed() {
   fi
   prefix="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" --variable=prefix "$package" 2>/dev/null)" || return 1
   prefix="$(/usr/bin/readlink -f "$prefix" 2>/dev/null || true)"
-  [[ "$prefix" == "$GLOBAL_DEPENDENCY_PREFIX" || "$prefix" == "$GLOBAL_DEPENDENCY_PREFIX"/* ]]
+  [[ "$prefix" == "$GLOBAL_DEPENDENCY_PREFIX" || "$prefix" == "$GLOBAL_DEPENDENCY_PREFIX"/* ]] || return 1
+  case "$package" in
+    libndn-cxx) library="libndn-cxx.so" ;;
+    ndnsd) library="libndnsd.so" ;;
+    libndn-svs) library="libndn-svs.so" ;;
+    libnac-abe) library="libnac-abe.so" ;;
+    *) return 0 ;;
+  esac
+  libdir="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" --variable=libdir "$package" 2>/dev/null)" || return 1
+  library_path="$libdir/$library"
+  resolved_library="$(/usr/bin/readlink -f "$library_path" 2>/dev/null || true)"
+  [[ -f "$library_path" && "$resolved_library" == "$GLOBAL_LIBRARY_DIR"/* ]]
 }
 
 require_global_pkg_flags() {
@@ -278,7 +557,8 @@ import subprocess
 import sys
 
 roots = tuple(pathlib.Path(item).resolve()
-              for item in ("/usr", "/usr/local", "/lib", "/lib64"))
+              for item in ("/usr", "/usr/local", "/lib", "/lib64",
+                           "/opt/onnxruntime", "/opt/onnxruntime-1.26.0"))
 env = dict(os.environ)
 env.pop("PKG_CONFIG_PATH", None)
 env.pop("PKG_CONFIG_LIBDIR", None)
@@ -360,14 +640,17 @@ require_global_file() {
 }
 
 require_global_external_closure() {
+  require_global_boost
   require_global_pkg "libndn-cxx" "$MIN_NDNCXX_VERSION" "libndn-cxx.so"
   require_global_pkg "ndnsd" "$MIN_NDNSD_VERSION" "libndnsd.so"
   require_global_pkg "libndn-svs" "$MIN_NDNSVS_VERSION" "libndn-svs.so"
   require_global_pkg "libnac-abe" "$MIN_NACABE_VERSION" "libnac-abe.so"
+  require_global_sdk_pkg "onnxruntime" "1.26.0" "libonnxruntime.so"
   require_global_file "$GLOBAL_LIBRARY_DIR/libopenabe.so"
   require_global_file "$GLOBAL_LIBRARY_DIR/libonnx.a"
   require_global_file "$GLOBAL_LIBRARY_DIR/libonnx_proto.a"
   require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
+  require_global_dependency_identity
 }
 
 native_digest_receipt() {
@@ -473,18 +756,30 @@ build_openabe_dependency() {
 
   dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" | tail -n 1)"
   echo "==> Building OpenABE from the dependency source tree"
-  run bash -lc "cd '$dir' && env \
-    -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
-    -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
-    -u CPLUS_INCLUDE_PATH bash -c '. ./env && make -C deps/openssl && \
-      make -C deps/relic && make -C deps/gtest && \
-      BISON=\$(command -v bison) FLEX=\$(command -v flex) make'"
+  run bash -lc "cd '$dir' && . ./env && \
+    unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS CXXFLAGS CPPFLAGS LDFLAGS \
+      LD_LIBRARY_PATH LIBRARY_PATH CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
+      BOOST_ROOT BOOST_INCLUDEDIR BOOST_LIBRARYDIR && \
+    export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+      AR=/usr/bin/ar RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
+      BOOST_ROOT= BOOST_INCLUDEDIR= BOOST_LIBRARYDIR= && \
+    make clean >/dev/null 2>&1 || true; \
+    make -C deps/openssl && make -C deps/relic && make -C deps/gtest && \
+    BISON=\$(command -v bison) FLEX=\$(command -v flex) make"
   echo "==> Installing OpenABE into the global prefix $OPENABE_PREFIX"
   sudo_run env \
     -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
-    -u CPLUS_INCLUDE_PATH bash -lc \
-    "cd '$dir' && . ./env && make INSTALL_PREFIX='$OPENABE_PREFIX' install"
+    -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+    PATH="$SYSTEM_PATH" CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+    AR=/usr/bin/ar RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
+    bash -lc \
+    "cd '$dir' && . ./env && unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS \
+      CXXFLAGS CPPFLAGS LDFLAGS LD_LIBRARY_PATH LIBRARY_PATH CPATH \
+      C_INCLUDE_PATH CPLUS_INCLUDE_PATH BOOST_ROOT BOOST_INCLUDEDIR \
+      BOOST_LIBRARYDIR && export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc \
+      CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
+      NM=/usr/bin/nm STRIP=/usr/bin/strip && make INSTALL_PREFIX='$OPENABE_PREFIX' install"
   sudo_run ldconfig
 }
 
@@ -493,7 +788,7 @@ build_waf_dependency() {
   local pkg="$2"
   local url="$3"
   local minimum="$4"
-  local dir
+  local dir build_dir
 
   if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
     echo "==> $name already installed ($pkg); skipping"
@@ -505,12 +800,31 @@ build_waf_dependency() {
   run bash -lc "cd '$dir' && \
     env -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
       -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
-      -u CPLUS_INCLUDE_PATH ./waf configure --prefix='$GLOBAL_DEPENDENCY_PREFIX' && \
+      -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+      PATH='$SYSTEM_PATH' PKGCONFIG='$PKG_CONFIG_BIN' \
+      CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar \
+      AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
+      ./waf distclean >/dev/null 2>&1 || true; \
     env -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
       -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
-      -u CPLUS_INCLUDE_PATH ./waf -j\$(nproc)"
+      -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+      PATH='$SYSTEM_PATH' PKGCONFIG='$PKG_CONFIG_BIN' \
+      CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar \
+      AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
+      ./waf configure --prefix='$GLOBAL_DEPENDENCY_PREFIX' && \
+    env -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
+      -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
+      -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+      PATH='$SYSTEM_PATH' PKGCONFIG='$PKG_CONFIG_BIN' \
+      CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar \
+      AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
+      ./waf -j4"
   echo "==> Installing dependency $name"
-  sudo_run bash -lc "cd '$dir' && ./waf install"
+  sudo_run env -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+    PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" \
+    CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar \
+    AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
+    bash -lc "cd '$dir' && ./waf install"
   sudo_run ldconfig
 }
 
@@ -519,7 +833,7 @@ build_cmake_dependency() {
   local pkg="$2"
   local url="$3"
   local minimum="$4"
-  local dir
+  local dir build_dir
 
   if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
     echo "==> $name already installed ($pkg); skipping"
@@ -527,10 +841,14 @@ build_cmake_dependency() {
   fi
 
   dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
+  build_dir="$dir/.ndnsf-global-build-${name//[^A-Za-z0-9]/_}-$$"
   echo "==> Building dependency $name"
   if [[ "$name" == "NAC-ABE" && -n "$OPENABE_PREFIX" && -f "$OPENABE_PREFIX/lib/libopenabe.so" ]]; then
     run bash -lc "cd '$dir' && env \
       -u PKG_CONFIG_PATH \
+      -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+      PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+      AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
       CMAKE_PREFIX_PATH='$OPENABE_PREFIX' \
       CMAKE_INCLUDE_PATH='$OPENABE_PREFIX/include' \
       CMAKE_LIBRARY_PATH='$OPENABE_PREFIX/lib' \
@@ -538,7 +856,9 @@ build_cmake_dependency() {
       CXXFLAGS='-I$OPENABE_PREFIX/include' \
       LDFLAGS='-L$OPENABE_PREFIX/lib -Wl,-rpath,$OPENABE_PREFIX/lib' \
       LD_LIBRARY_PATH='$OPENABE_PREFIX/lib' \
-      cmake -S . -B build \
+      cmake -S . -B '$build_dir' \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DCMAKE_LINKER=/usr/bin/ld -DCMAKE_AR=/usr/bin/ar -DCMAKE_RANLIB=/usr/bin/ranlib \
         -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' \
         -DCMAKE_BUILD_RPATH='$OPENABE_PREFIX/lib' \
         -DCMAKE_INSTALL_RPATH='$OPENABE_PREFIX/lib' && \
@@ -546,30 +866,53 @@ build_cmake_dependency() {
         -u CMAKE_LIBRARY_PATH -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH \
         -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
         -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
-        cmake --build build -j\$(nproc)"
+        -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+        PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+        AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
+        cmake --build '$build_dir' --parallel 4"
   else
     run bash -lc "cd '$dir' && env \
       -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH -u CMAKE_LIBRARY_PATH \
       -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH -u CXXFLAGS \
       -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
       -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
-      cmake -S . -B build \
+      -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+      PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+      AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
+      cmake -S . -B '$build_dir' \
+      -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+      -DCMAKE_LINKER=/usr/bin/ld -DCMAKE_AR=/usr/bin/ar -DCMAKE_RANLIB=/usr/bin/ranlib \
       -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' && \
       env -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH \
         -u CMAKE_LIBRARY_PATH -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH \
         -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
         -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
-        cmake --build build -j\$(nproc)"
+        -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
+        PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+        AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
+        cmake --build '$build_dir' --parallel 4"
   fi
   echo "==> Installing dependency $name"
-  sudo_run bash -lc "cd '$dir' && cmake --install build"
+  sudo_run bash -lc "cd '$dir' && env -u BOOST_ROOT -u BOOST_INCLUDEDIR \
+    -u BOOST_LIBRARYDIR PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ \
+    LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
+    cmake --install '$build_dir'"
+  rm -rf "$build_dir"
   sudo_run ldconfig
 }
 
 install_external_dependencies() {
   echo "==> Checking external NDN dependencies"
   echo "==> Dependency source directory: $DEPS_DIR"
-  if [[ "$FORCE_DEPENDENCIES" == "1" ]] || \
+  if [[ -f "$GLOBAL_IDENTITY_FILE" ]] && ! has_global_dependency_identity; then
+    if ! has_global_onnx_identity; then
+      echo "Global ONNX Runtime identity changed; this installer cannot rebuild ONNX Runtime. Reinstall the canonical global SDK and refresh the identity receipt before continuing." >&2
+      exit 1
+    fi
+    echo "==> Global dependency identity is stale; rebuilding the installed closure"
+    FORCE_DEPENDENCIES=1
+  fi
+  if [[ "$FORCE_DEPENDENCIES" == "1" ]] || ! has_global_boost || \
      ! is_pkg_installed "libndn-cxx" "$MIN_NDNCXX_VERSION" || \
      ! is_pkg_installed "ndnsd" "$MIN_NDNSD_VERSION" || \
      ! is_pkg_installed "libndn-svs" "$MIN_NDNSVS_VERSION" || \
@@ -584,6 +927,7 @@ install_external_dependencies() {
   build_waf_dependency "ndn-svs" "libndn-svs" "$NDNSVS_REPO_URL" "$MIN_NDNSVS_VERSION"
   build_openabe_dependency
   build_cmake_dependency "NAC-ABE" "libnac-abe" "$NACABE_REPO_URL" "$MIN_NACABE_VERSION"
+  write_global_dependency_identity
   require_global_external_closure
 }
 
@@ -642,6 +986,7 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH -u LDSHARED -u WAFDIR \
     -u PKGCONFIG -u LD -u AR -u AS -u RANLIB -u NM -u STRIP \
     -u OBJCOPY -u OBJDUMP -u READELF \
+    -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
     PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" \
     CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \

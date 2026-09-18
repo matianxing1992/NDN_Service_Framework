@@ -1,7 +1,11 @@
 # -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
 
 from waflib import Context, Logs, Utils
-import os, subprocess
+import hashlib
+import json
+import os
+import re
+import subprocess
 
 VERSION = '0.1.0'
 APPNAME = 'ndn-service-framework'
@@ -17,6 +21,17 @@ HOST_GLOBAL_DEPENDENCY_PREFIXES = (
     '/usr', '/usr/local', '/opt/onnxruntime', '/opt/onnxruntime-1.26.0')
 CONTAINER_GLOBAL_DEPENDENCY_PREFIXES = (
     '/opt/ndn-base', '/opt/onnx', '/opt/ndnsf-stage', '/opt/ndnsf-di')
+# The development host has one supported Boost pair.  Keep this explicit so
+# Waf cannot silently select a checkout/staging copy or a second same-version
+# installation through BOOST_ROOT/BOOST_INCLUDEDIR/BOOST_LIBRARYDIR.
+HOST_BOOST_INCLUDE_DIR = '/usr/include'
+HOST_BOOST_LIBRARY_DIR = '/usr/lib/x86_64-linux-gnu'
+HOST_BOOST_VERSION = 107100
+HOST_DEPENDENCY_IDENTITY_FILE = (
+    '/usr/local/share/ndnsf/global-dependency-identity.json')
+HOST_DEPENDENCY_LIBRARIES = (
+    'libndn-cxx.so', 'libndnsd.so', 'libndn-svs.so', 'libnac-abe.so',
+    'libopenabe.so', 'libonnxruntime.so')
 
 
 def _global_dependency_prefixes():
@@ -38,6 +53,152 @@ def _require_global_dependency_prefix(path, owner):
             'declared container SDK root instead of using a temporary '
             f'checkout prefix (allowed roots: {allowed})')
     return resolved
+
+
+def _validate_boost_selection(conf):
+    """Pin Boost headers and libraries to the host's installed system pair."""
+    configured_include = str(getattr(conf.options, 'boost_includes', '') or '').strip()
+    configured_lib = str(getattr(conf.options, 'boost_libs', '') or '').strip()
+    environment_values = {
+        'BOOST_ROOT': os.environ.get('BOOST_ROOT', '').strip(),
+        'BOOST_INCLUDEDIR': os.environ.get('BOOST_INCLUDEDIR', '').strip(),
+        'BOOST_LIBRARYDIR': os.environ.get('BOOST_LIBRARYDIR', '').strip(),
+    }
+    requested = {
+        'BOOST_INCLUDEDIR': configured_include or environment_values['BOOST_INCLUDEDIR'],
+        'BOOST_LIBRARYDIR': configured_lib or environment_values['BOOST_LIBRARYDIR'],
+    }
+    for owner, value, expected in (
+            ('--boost-includes/BOOST_INCLUDEDIR', requested['BOOST_INCLUDEDIR'],
+             HOST_BOOST_INCLUDE_DIR),
+            ('--boost-libs/BOOST_LIBRARYDIR', requested['BOOST_LIBRARYDIR'],
+             HOST_BOOST_LIBRARY_DIR)):
+        if value and os.path.realpath(value) != os.path.realpath(expected):
+            conf.fatal(
+                f'{owner} selected {os.path.realpath(value)}; this host requires '
+                f'the installed system Boost pair {expected}. Install/rebuild '
+                'Boost globally instead of selecting a checkout or temporary prefix')
+    if environment_values['BOOST_ROOT']:
+        root = os.path.realpath(environment_values['BOOST_ROOT'])
+        if root != '/usr':
+            conf.fatal(
+                'BOOST_ROOT selected a non-system path: ' + root +
+                '; the host Boost pair is /usr/include and '
+                '/usr/lib/x86_64-linux-gnu; install/rebuild Boost globally '
+                'and unset BOOST_ROOT')
+
+    include_dir = os.path.realpath(HOST_BOOST_INCLUDE_DIR)
+    library_dir = os.path.realpath(HOST_BOOST_LIBRARY_DIR)
+    for owner, path in (('Boost headers', include_dir),
+                        ('Boost libraries', library_dir)):
+        try:
+            _require_global_dependency_prefix(path, owner)
+        except RuntimeError as error:
+            conf.fatal(str(error))
+        if not os.path.isdir(path):
+            conf.fatal(f'Installed {owner.lower()} directory is missing: {path}')
+    version_header = os.path.join(include_dir, 'boost', 'version.hpp')
+    if not os.path.isfile(version_header):
+        conf.fatal(
+            f'Installed Boost headers are missing: {version_header}; '
+            'install/rebuild the system Boost pair before configuring')
+    return include_dir, library_dir
+
+
+def _validate_boost_libraries(conf, library_dir, libraries):
+    """Require each selected Boost SONAME to stay in the pinned system dir."""
+    for library in libraries:
+        link_path = os.path.join(library_dir, f'libboost_{library}.so')
+        resolved = os.path.realpath(link_path)
+        if not os.path.isfile(link_path) or not os.path.isfile(resolved):
+            conf.fatal(
+                f'Installed Boost library is missing: {link_path}; '
+                'install/rebuild the system Boost pair before configuring')
+        try:
+            inside = os.path.commonpath([library_dir, resolved]) == library_dir
+        except ValueError:
+            inside = False
+        if not inside:
+            conf.fatal(
+                f'Boost library escapes the pinned system directory: '
+                f'{link_path} -> {resolved}')
+        expected_soname = f'libboost_{library}.so.1.71.0'
+        result = subprocess.run(
+            ['/usr/bin/readelf', '-d', resolved],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0 or (
+                f'Library soname: [{expected_soname}]' not in result.stdout):
+            conf.fatal(
+                f'Boost library has the wrong SONAME: {resolved}; expected '
+                f'{expected_soname}. Install/rebuild the system Boost pair')
+
+
+def _validate_global_dependency_identity(conf):
+    """Match installed dependency DSOs to the installer-issued identity receipt."""
+    if os.environ.get('NDNSF_CONTAINER_BUILD') == '1':
+        return
+    receipt_path = HOST_DEPENDENCY_IDENTITY_FILE
+    if not os.path.isfile(receipt_path):
+        conf.fatal(
+            f'Global dependency identity receipt is missing: {receipt_path}; '
+            'run install_ndnsf_stack.sh to install/rebuild the global closure')
+    try:
+        with open(receipt_path, encoding='utf-8') as stream:
+            receipt = json.load(stream)
+    except (OSError, ValueError) as error:
+        conf.fatal(f'Cannot read global dependency identity receipt: {error}')
+    libraries = receipt.get('libraries', {})
+    if receipt.get('schema') != 1 or not isinstance(libraries, dict):
+        conf.fatal(f'Invalid global dependency identity receipt: {receipt_path}')
+    for name in HOST_DEPENDENCY_LIBRARIES:
+        entry = libraries.get(name)
+        if not isinstance(entry, dict):
+            conf.fatal(f'Global dependency identity is missing {name}: {receipt_path}')
+        path = entry.get('path')
+        expected_realpath = entry.get('realpath')
+        expected_digest = entry.get('sha256')
+        expected_soname = entry.get('soname')
+        if (not all(isinstance(value, str) and value for value in
+                    (path, expected_realpath, expected_digest)) or
+                not isinstance(expected_soname, str)):
+            conf.fatal(f'Invalid identity entry for {name}: {receipt_path}')
+        if name == 'libonnxruntime.so':
+            allowed_paths = (
+                '/opt/onnxruntime/lib/libonnxruntime.so',
+                '/opt/onnxruntime-1.26.0/lib/libonnxruntime.so')
+        else:
+            allowed_paths = (f'/usr/local/lib/{name}',)
+        if path not in allowed_paths:
+            conf.fatal(
+                f'Global dependency identity path is outside the canonical '
+                f'root for {name}: {path}')
+        actual_realpath = os.path.realpath(path)
+        allowed_roots = ('/opt/onnxruntime', '/opt/onnxruntime-1.26.0') \
+            if name == 'libonnxruntime.so' else ('/usr/local',)
+        if not any(actual_realpath == root or
+                   actual_realpath.startswith(root + os.sep)
+                   for root in allowed_roots):
+            conf.fatal(
+                f'Global dependency realpath is outside the canonical root '
+                f'for {name}: {actual_realpath}')
+        if actual_realpath != expected_realpath or not os.path.isfile(actual_realpath):
+            conf.fatal(
+                f'Global dependency realpath changed for {name}: '
+                f'{path} -> {actual_realpath}; rerun the global installer')
+        actual_digest = hashlib.sha256(open(actual_realpath, 'rb').read()).hexdigest()
+        if actual_digest != expected_digest:
+            conf.fatal(
+                f'Global dependency digest changed for {name}: '
+                f'{actual_digest} != {expected_digest}; rerun the global installer')
+        result = subprocess.run(
+            ['/usr/bin/readelf', '-d', actual_realpath],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        match = re.search(r'Library soname: \[([^]]+)\]', result.stdout)
+        actual_soname = match.group(1) if match else ''
+        if result.returncode != 0 or actual_soname != expected_soname:
+            conf.fatal(
+                f'Global dependency SONAME changed for {name}: '
+                f'expected {expected_soname}; rerun the global installer')
 
 
 def _resolve_compiler_toolchain(cxx, env=None, expected_root='/usr/bin'):
@@ -190,6 +351,7 @@ def options(opt):
 
 
 def configure(conf):
+    _validate_global_dependency_identity(conf)
     conf.start_msg('Building static library')
     if conf.options.enable_static:
         conf.end_msg('yes')
@@ -564,8 +726,9 @@ int main() {
     conf.check_cfg(package="gtkmm-3.0", uselib_store="gtkmm", 
             args=['--cflags', '--libs'], pkg_config_path=pkg_config_path)
 
-    conf.check_cfg(package='onnxruntime', args=['--cflags', '--libs'],
-                   uselib_store='ONNXRUNTIME', mandatory=False,
+    conf.check_cfg(package='onnxruntime',
+                   args=['onnxruntime >= 1.26.0', '--cflags', '--libs'],
+                   uselib_store='ONNXRUNTIME', mandatory=True,
                    pkg_config_path=pkg_config_path)
     conf.env.HAVE_ONNXRUNTIME_CPP = bool(
         conf.env.CXXFLAGS_ONNXRUNTIME or
@@ -605,11 +768,31 @@ int main() {
                 reject_non_global_link_flags(
                     getattr(conf.env, key, []) or [], key)
 
+    boost_include_dir, boost_library_dir = _validate_boost_selection(conf)
     boost_libs = ['system', 'filesystem']
     if conf.env.WITH_TESTS:
         boost_libs.append('unit_test_framework')
 
-    conf.check_boost(lib=boost_libs, mt=True)
+    conf.check_boost(lib=boost_libs, mt=True,
+                    includes=boost_include_dir, libs=boost_library_dir)
+    if conf.env.BOOST_VERSION_NUMBER != HOST_BOOST_VERSION:
+        conf.fatal(
+            f'Installed Boost version {conf.env.BOOST_VERSION_NUMBER} is not '
+            f'the required host version {HOST_BOOST_VERSION}; install/rebuild '
+            'the system Boost pair instead of selecting another prefix')
+    selected_boost_includes = [os.path.realpath(path)
+                               for path in Utils.to_list(conf.env.INCLUDES_BOOST or [])]
+    selected_boost_libpaths = [os.path.realpath(path)
+                               for path in Utils.to_list(conf.env.LIBPATH_BOOST or [])]
+    if selected_boost_includes != [boost_include_dir]:
+        conf.fatal('Waf selected a non-canonical Boost include directory: ' +
+                   repr(selected_boost_includes))
+    if selected_boost_libpaths != [boost_library_dir]:
+        conf.fatal('Waf selected a non-canonical Boost library directory: ' +
+                   repr(selected_boost_libpaths))
+    _validate_boost_libraries(conf, boost_library_dir, boost_libs)
+    conf.env.NDNSF_BOOST_INCLUDE_DIR = boost_include_dir
+    conf.env.NDNSF_BOOST_LIBRARY_DIR = boost_library_dir
 
     conf.check_compiler_flags()
 
