@@ -14,6 +14,13 @@
 
 ## 索引
 
+### 2026-09-18 — Spec189 architecture and progress correction
+
+- **Status: PLANNED / PARTIAL**。本轮只修正 [Spec189](../specs/189-qwen-two-provider-minindn/plan.md) 的目标边界与任务，不修改生产代码或公开 API。prepare 从固定两段最终模型改为拓扑无关原子层/shared 材料与 Repo 可达性；ACK 后规划、Selection 后范围物化。复用现有 Runtime/PreparedModel/Repo，不新增 Qwen API。
+- **Current evidence**：基线 `76b26e2c` 加已有工作区实现；Repo 层 payload 与 PreparedModel 复用 selector 是组件证据，实际 requester/assembler 接线未闭合。r25 已到执行/组装入口，未通过完整模型运行。详见 [audit correction](../specs/189-qwen-two-provider-minindn/evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
+- **Tasks**：旧 T002/T004 合并 T003、T010 合并 T009；T008 资源门前移。当前/目标 PDF 的冻结 API/源码快照本轮不覆盖；本条登记的是 Spec 内部目标修正，不宣称 PDF 已包含未实现设计。后续 T003/T006 实现改变 API/行为时按 MANAGEMENT 同步中文契约、API 参考与双 PDF，T009 文档交付检查不得跳过。
+- **Validation boundary**：仅文档一致性与只读审查，无 native build、模型运行或 MiniNDN PASS；纯文档 checkpoint 不使未变二进制和模型证据失效。
+
 ### 2026-09-15 — Spec187 Two-layer Packaging
 
 - **NO_DESIGN_CHANGE / product APIs; PARTIAL / packaging**：用户确认 `base SIF + NDNSF`，外部依赖和 SDK 在现有 base 上增建，本仓库各模块归统一 NDNSF 层。此次改动仅构建脚本、技能与交付归属，不改变 C++/Python 产品 API、请求协议或对象生命周期，因此不刷新产品 API/PDF 快照。实现和验收见 [two-layer delivery](../Experiments/TigerCluster/docs/two-layer-delivery.md)、[Spec187 tasks](../specs/187-yolo-minindn-sif-app/tasks.md) 和 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)；base SDK 已真实验收并封存，NDNSF candidate 仍保持 PARTIAL。
