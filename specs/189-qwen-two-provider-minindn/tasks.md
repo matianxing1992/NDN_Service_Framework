@@ -29,7 +29,7 @@
 
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
-| [T001 Freeze integration boundary](#t001) | PARTIAL | — | 实际 producer/consumer/handoff 与测试候选映射；复用已验依赖。[convergence](evidence/b189-convergence.md) |
+| [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
 | [T008 Guard before model runs](#t008) | NOT_STARTED | T001 | preflight、持续采样、受控 stop 和原生 drain。[resource](evidence/b189-resource.md) |
 | [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 原子层发布、真实 requester 接线、同 handle 复用。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
@@ -39,7 +39,7 @@
 
 ## Task checklist
 
-- [ ] T001 [US1] Freeze the remaining production integration and candidate boundary.
+- [x] T001 [US1] Freeze the remaining production integration and candidate boundary.
 - [ ] T008 [US4] Verify resource admission, sampling and deterministic drain before full-model runs.
 - [ ] T003 [US1] Connect topology-independent Qwen preparation, Repo publication and reference-only reuse.
 - [ ] T005 [US2] Verify real ACK-driven planning and authenticated Selection at production ingress.

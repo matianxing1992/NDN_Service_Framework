@@ -5,7 +5,7 @@
 
 | Order | Batch | Members | Stable exit | Status | Unique result record |
 | --- | --- | --- | --- | --- | --- |
-| 1 | B189-0 | T001 | 剩余真实接线与 candidate/验证边界 | PARTIAL | evidence/b189-convergence.md |
+| 1 | B189-0 | T001 | 剩余真实接线与 candidate/验证边界 | DONE (mapping only) | evidence/b189-convergence.md |
 | 2 | B189-4 | T008 | full-model 前 guard/受控 stop/drain | NOT_STARTED | evidence/b189-resource.md |
 | 3 | B189-1 | T003 (former T002,T004) | 原子材料 Repo publication + 同 handle reuse | PARTIAL | evidence/b189-prepare.md |
 | 4 | B189-2 | T005 | ACK 后规划与生产 Selection/no-fetch fence | PARTIAL | evidence/b189-placement.md |

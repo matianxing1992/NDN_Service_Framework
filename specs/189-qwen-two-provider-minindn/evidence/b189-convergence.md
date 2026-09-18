@@ -3,6 +3,48 @@
 **Status**: IN_PROGRESS / BLOCKED_FOR_NATIVE_EXECUTION
 **Updated**: 2026-09-18 02:22 -0500
 
+## T001 integration boundary — 2026-09-18 13:29 -0500
+
+本节为当前 T001 边界，取代下方历史初建状态；产品仍 PARTIAL。
+基线 `2ee71559` 加现有未提交实现。CodeGraph explore 误匹配了 `.codex-tmp`
+历史快照，因此本轮使用精确生产路径核对，未把快照内容当当前源码。
+
+| Lane | State | Actual binding / remaining owner |
+| --- | --- | --- |
+| production/callers | covered | DI_NativeRequester.cpp:237-260 → User::prepare (Runtime.cpp:1332-1355) → configured RepositoryArtifactPublisher or canonical fallback；T003 接入实际 Repo owner；NativeCanonicalOnnxAssembler.cpp:305/353 consumer 由 T006 改为选定材料 |
+| implementation/wire | covered | NativeProviderHandler.cpp:2842-2875 建立 NativeEpochCoordinatorConfig，保留 V3 roleSpecFromSelectionProjectionV3 endpoint，另追加 TOKEN_FEEDBACK；NativeEpochCoordinator.cpp:992 使用 executePreparedRoleAsync 并等待结果。T005 负责 ingress，T006/T007 负责有界材料/真实 handoff，不另造协议 |
+| test/harness/oracle | covered | tests/unit-tests/spec189-repo-publication.t.cpp，tests/integration-tests/spec189-request-reference.t.cpp 与 spec189-placement-oracle.t.cpp；di-runtime.t.cpp / di-prepared-provider.t.cpp 提供 lifecycle 既有入口；examples/Spec189TwoProviderOracle.cpp 日志判据待 T007 修正。T008 host guard 属 Python 进程控制，native owner 断言仍用 C++ |
+| build/source closure | covered | examples/wscript 注册 DI_NativeRequester/DI_NativeArtifactAuthority/spec189-two-provider-oracle/di-native-provider；复用 global-r3 tree。2026-09-18 重查三个 binary 摘要仍匹配下方 r2 表；readelf RUNPATH=/usr/local/lib:$ORIGIN/..，ldd 的 NDN/DI 与 ORT 分别为 /usr/local 和 /opt/onnxruntime，无 missing library。nm 确认 installed libndnsf-distributed-inference.so 导出 User::prepare 与 PreparedModel::request；记录 .codex-tmp/spec189-t001-resume/di-symbols.log |
+| migration/evidence | covered | 原子层格式和旧 manifest 兼容由 T003 版本化；cold/warm 与 full-path 证据不混用。r25 FAIL/current boundary 见 architecture audit；候选不再假定与当前脏树一致 |
+
+候选源记录复用 `.codex-tmp/spec189-qwen-two-provider-20260918/candidate/stage-manifest.json`：
+revision `e6de91484c29aa9480d55605af694f39b081c455`、28 layers、float16，旧 stage
+范围 [0,14)/[14,28) 仅作转换输入/对照；`expectedTopToken=null`，必须由 T007
+补独立正确性 reference，不计已验。qwen_state_successor_pairs 校验动态 KV 名称/覆盖；
+现有 policy/key/module/digest preflight 复用，T003 改材料格式后更新实际配置来源。
+
+T008 固定安全策略入口为运行 profile（必须显式传给 native MiniNDN launcher），
+采样周期 1 秒，memory/disk 最低余量与 swap 增量阈值必须有限且正数；guard 覆盖
+准备/发布/请求到 cleanup。以受控阈值小 fixture 验证，实际峰值留 T009。
+本轮 df 仅 1.4 GB 可用，MemAvailable 约 6.4 GB，禁止启动 full-model 或竞争构建；
+后续安全门通过前先处理可重建产物容量。对受影响目标增量 -j4，不重编未变 Core/Repo。
+
+**Four miss classes**: static=识别 CodeGraph 快照污染并用精确源码纠正；
+compile-link=未构建；symbol inspection 最初误写 libndnsf-di.so，按 ldd 实际 SONAME
+改查 libndnsf-distributed-inference.so，属于工具路径误写而非链接失败；
+runtime-test=本轮无原生/模型运行；unobserved=T003/T005/T006/T007/T008/T009 的实际验收。
+
+**Batch growth decision**: T001 只关闭实施映射；不等待 real-Qwen receipt/执行后才关闭，
+这些已有明确后继 owner。**Closure decision**: CLOSED_FOR_VALIDATION for the documentation map;
+next trigger is T008 guard implementation, not a model run.
+
+**Review trace**: 官方只读 review-agent 已核对冻结 patch
+`.codex-tmp/spec189-t001-resume/review/diff.patch`，SHA-256
+`8bf86f92115cda9c2be17f4f612f1e0679602f725534244b2523cff1f2dcffc7`，确认 T001
+出口满足，可转 T008。数量歧义澄清：本轮重查 requester、provider、oracle 三个 binary，
+与下方四项历史表中的对应项匹配；authority 本轮未重新 hash，不冒称四项全重查。
+11/11 技能同步、Spec pointer 前置检查与 active Context health 通过；无新 build/runtime。
+
 Spec189 documents and the active pointer have been created. The structural
 checker passed and `verify-spec-kit-sync.py --require-entrypoints` passed
 (`11/11` local entrypoints plus personal shared skill). The candidate tuple,
