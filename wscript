@@ -7,23 +7,36 @@ VERSION = '0.1.0'
 APPNAME = 'ndn-service-framework'
 GIT_TAG_PREFIX = 'ndn-service-framework-'
 
-# Host builds consume one installed dependency closure.  Container builds may
-# use their declared SDK roots, but checkout, /tmp and .codex-tmp prefixes are
-# never valid library inputs.
-GLOBAL_DEPENDENCY_PREFIXES = (
-    '/usr', '/usr/local', '/opt/ndn-base', '/opt/onnx', '/opt/onnxruntime',
-    '/opt/onnxruntime-1.26.0')
+# Host builds consume one installed dependency closure.  The host ONNX Runtime
+# SDK is deliberately installed under /opt because it is a versioned system
+# SDK; all other host NDNSF dependencies use /usr or /usr/local.  Container
+# builds may use their declared SDK roots only after the image sets the explicit
+# NDNSF_CONTAINER_BUILD marker.  Checkout, /tmp, .codex-tmp and build-work
+# prefixes are never valid dependency inputs.
+HOST_GLOBAL_DEPENDENCY_PREFIXES = (
+    '/usr', '/usr/local', '/opt/onnxruntime', '/opt/onnxruntime-1.26.0')
+CONTAINER_GLOBAL_DEPENDENCY_PREFIXES = (
+    '/opt/ndn-base', '/opt/onnx', '/opt/ndnsf-stage', '/opt/ndnsf-di')
+
+
+def _global_dependency_prefixes():
+    roots = list(HOST_GLOBAL_DEPENDENCY_PREFIXES)
+    if os.environ.get('NDNSF_CONTAINER_BUILD') == '1':
+        roots.extend(CONTAINER_GLOBAL_DEPENDENCY_PREFIXES)
+    return tuple(roots)
 
 
 def _require_global_dependency_prefix(path, owner):
     resolved = os.path.realpath(path)
+    roots = _global_dependency_prefixes()
     if not any(resolved == root or resolved.startswith(root + os.sep)
-               for root in GLOBAL_DEPENDENCY_PREFIXES):
+               for root in roots):
+        allowed = ', '.join(roots)
         raise RuntimeError(
             f'{owner} must use an installed global dependency root; '
             f'rejected {resolved}. Install it under /usr/local or the '
             'declared container SDK root instead of using a temporary '
-            'checkout prefix')
+            f'checkout prefix (allowed roots: {allowed})')
     return resolved
 
 
@@ -290,6 +303,13 @@ def configure(conf):
                 getattr(conf.env, key, []) or [], owner)
 
     pkg_config_paths = []
+    pkg_config_libdir = os.environ.get('PKG_CONFIG_LIBDIR', '')
+    if pkg_config_libdir:
+        for entry in pkg_config_libdir.split(os.pathsep):
+            if entry:
+                _require_global_dependency_prefix(entry, 'PKG_CONFIG_LIBDIR')
+                if not os.path.isdir(entry):
+                    conf.fatal('PKG_CONFIG_LIBDIR contains a missing directory: ' + entry)
     if os.environ.get('PKG_CONFIG_PATH'):
         pkg_config_paths.append(os.environ['PKG_CONFIG_PATH'])
     else:
@@ -307,6 +327,8 @@ def configure(conf):
         for entry in configured_path.split(os.pathsep):
             if entry:
                 _require_global_dependency_prefix(entry, 'PKG_CONFIG_PATH')
+                if not os.path.isdir(entry):
+                    conf.fatal('PKG_CONFIG_PATH contains a missing directory: ' + entry)
     nac_abe_prefix = _require_global_dependency_prefix(
         conf.options.nac_abe_prefix, 'NAC-ABE')
     nac_header = os.path.join(nac_abe_prefix, 'include', 'nac-abe', 'consumer.hpp')

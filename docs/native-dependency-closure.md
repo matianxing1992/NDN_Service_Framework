@@ -1,9 +1,11 @@
 # Native Dependency Closure
 
 本机 NDNSF 构建只接受一套已安装的全局依赖闭包。依赖不从仓库、`/tmp`、
-`.codex-tmp` 或某次实验的 install 前缀直接消费；缺失或 ABI 过旧时先安装到
-本机全局目录，再重新配置和构建。历史证据中的临时前缀只用于解释当时的失败，
-不能作为当前构建输入。
+`.codex-tmp`、`ndnsf-build-work` 或某次实验的 install 前缀直接消费；缺失或 ABI
+过旧时先安装到本机全局目录，再重新配置和构建。历史证据中的临时前缀只用于解释
+当时的失败，不能作为当前构建输入。Waf 和两个 Python binding 都按这个规则
+拒绝 host 对 `/opt/ndn-base`、`/opt/onnx`、`/opt/ndnsf-stage` 等容器根的误用；
+只有显式 `NDNSF_CONTAINER_BUILD=1` 的容器构建才允许其声明的 SDK 根。
 
 本机的 Boost 1.71 与 `libndn-cxx` 不是同一个依赖层。Boost 头文件和库使用系统配对：
 `/usr/include` 与 `/usr/lib/x86_64-linux-gnu`。本机已安装的 NDN-CXX/NFD 使用
@@ -28,7 +30,7 @@ ABI 混用风险，不会解决当前的同 SONAME `libndn-cxx` 混用问题。
 | Boost 1.71 | `/usr/include`, `/usr/lib/x86_64-linux-gnu` | use the matching system pair |
 | NDN-CXX 0.9.0 and NFD | `/usr/local/include`, `/usr/local/lib` | one real `libndn-cxx.so.0.9.0` for the host request path |
 | NDN-SVS, NAC-ABE, ONNX full-protobuf, tokenizer bridge | `/usr/local/include`, `/usr/local/lib` | one installed header/library/archive pair; no checkout prefix |
-| ONNX Runtime 1.26 | `/opt/onnxruntime` (versioned target `/opt/onnxruntime-1.26.0`) | use the installed `onnxruntime.pc` closure; do not point at a model or build checkout |
+| ONNX Runtime 1.26 | `/opt/onnxruntime` (versioned target `/opt/onnxruntime-1.26.0`) | host global versioned SDK; use the installed `onnxruntime.pc` closure; do not point at a model or build checkout |
 | `.local-boost171` | historical checkout staging | never enter an ordinary host `LD_LIBRARY_PATH` or implicit Waf/pkg-config search |
 
 当前两份同 SONAME 的 `libndn-cxx.so.0.9.0` 字节不同：
@@ -49,7 +51,8 @@ ABI 混用风险，不会解决当前的同 SONAME `libndn-cxx` 混用问题。
 必须同时记录；只看 `import` 或 SONAME 不足以通过门禁。容器构建可以使用容器内的
 `/opt/ndn-base` 等声明 SDK 根，但那是容器自己的全局闭包，不是宿主临时路径。
 
-配置入口现在也对此做 fail-closed 处理：默认 host Waf 在 `pkg-config` 解析后检查
+配置入口现在也对此做 fail-closed 处理：默认 host Waf 在 `pkg-config` 解析前检查
+`PKG_CONFIG_PATH` 和 `PKG_CONFIG_LIBDIR`，并在解析后检查
 NDN-CXX、NDN-SVS、NAC-ABE、OpenSSL、NDNSD、protobuf、ONNX Runtime、GTK 和
 GStreamer 的 include/library/compiler/linker 路径，若选中了仓库的
 `.local-boost171`、`/tmp` 或未声明根就在 configure 阶段退出。两个 Python binding 的 `setup.py` 对
@@ -57,8 +60,9 @@ GStreamer 的 include/library/compiler/linker 路径，若选中了仓库的
 `NDNSF_LIBRARY_DIR` 和 `NDNSF_RUNTIME_RPATH` 执行历史目录检查；后两者可指向当前
 APP 自身的候选库目录，但不能借此带入外部依赖 checkout。
 容器 Python binding 构建必须显式设置 `NDNSF_CONTAINER_BUILD=1`；该标记才会把
-`/opt/ndnsf-stage` 加入 APP 专用依赖根。宿主构建即使机器上存在同名目录也不会
-自动获得这个例外。
+容器 base/APP SDK 根加入依赖闭包。宿主构建即使机器上存在同名目录也不会自动
+获得这个例外。容器模板的 `PKG_CONFIG_PATH` 不再包含 `ndnsf-build-work` 这类
+临时目录。
 安装脚本会清除外部 `PKG_CONFIG_PATH`、编译器搜索路径、linker flags 和
 `LD_LIBRARY_PATH`，再以 `/usr/local` 配置每个 Waf/CMake 依赖；已安装的 OpenABE
 也必须能从这个前缀解析，不能只因为 `ldconfig` 中出现同名 SONAME 就跳过核验。

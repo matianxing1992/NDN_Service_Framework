@@ -11,21 +11,24 @@ from setuptools import Extension, setup
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = ROOT
 HISTORICAL_LOCAL_PREFIX = (REPOSITORY_ROOT / ".local-boost171").resolve()
-GLOBAL_DEPENDENCY_ROOTS = tuple(
+HOST_GLOBAL_DEPENDENCY_ROOTS = tuple(
     Path(value).resolve()
     for value in (
         "/usr",
         "/usr/local",
-        "/opt/ndn-base",
         "/opt/onnxruntime-1.26.0",
     )
+)
+CONTAINER_GLOBAL_DEPENDENCY_ROOTS = tuple(
+    Path(value).resolve()
+    for value in ("/opt/ndn-base", "/opt/onnx", "/opt/ndnsf-stage", "/opt/ndnsf-di")
 )
 
 
 def dependency_roots() -> tuple[Path, ...]:
-    roots = list(GLOBAL_DEPENDENCY_ROOTS)
+    roots = list(HOST_GLOBAL_DEPENDENCY_ROOTS)
     if os.environ.get("NDNSF_CONTAINER_BUILD") == "1":
-        roots.append(Path("/opt/ndnsf-stage"))
+        roots.extend(CONTAINER_GLOBAL_DEPENDENCY_ROOTS)
     return tuple(roots)
 
 
@@ -104,14 +107,48 @@ def linker_path_values(flags: list[str]) -> list[str]:
     return values
 
 
+def validate_pkg_config_environment() -> None:
+    for variable in ("PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR"):
+        value = os.environ.get(variable, "")
+        if not value:
+            continue
+        paths = [Path(item).expanduser().resolve()
+                 for item in value.split(os.pathsep) if item]
+        reject_historical_local_paths([str(path) for path in paths], variable)
+        reject_non_global_dependency_paths([str(path) for path in paths], variable)
+        missing = [str(path) for path in paths if not path.is_dir()]
+        if missing:
+            raise RuntimeError(
+                f"{variable} contains missing directories: " + ", ".join(missing))
+
+
+def validate_runtime_rpath(values: list[str], owner: str) -> None:
+    origins = [value for value in values
+               if value == "$ORIGIN" or value.startswith("$ORIGIN/")]
+    concrete = [value for value in values if value not in origins]
+    if origins and os.environ.get("NDNSF_CONTAINER_BUILD") != "1":
+        raise RuntimeError(
+            f"{owner} contains $ORIGIN; container-only runtime paths require "
+            "NDNSF_CONTAINER_BUILD=1")
+    if origins and not any(
+            value == "/opt/ndn-base" or value.startswith("/opt/ndn-base/")
+            for value in concrete):
+        raise RuntimeError(
+            f"{owner} with $ORIGIN must also name the declared /opt/ndn-base "
+            "SDK root")
+    reject_non_global_dependency_paths(concrete, owner)
+
+
 def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
+    validate_pkg_config_environment()
     try:
         output = subprocess.check_output(
             ["pkg-config", "--cflags", "--libs", *packages],
             text=True,
         )
-    except Exception:
-        return [], [], [], []
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "pkg-config failed for " + ", ".join(packages)) from error
 
     include_dirs: list[str] = []
     library_dirs: list[str] = []
@@ -223,6 +260,8 @@ def build_extension() -> Extension:
     runtime_dirs = ([value for value in runtime_rpath.split(os.pathsep) if value]
                     if runtime_rpath else candidate_dirs)
     reject_historical_local_paths(runtime_dirs, "NDNSF_RUNTIME_RPATH")
+    if runtime_rpath:
+        validate_runtime_rpath(runtime_dirs, "NDNSF_RUNTIME_RPATH")
     reject_historical_local_link_flags(
         [f"-Wl,-rpath,{value}" for value in runtime_dirs],
         "NDNSF_RUNTIME_RPATH")
