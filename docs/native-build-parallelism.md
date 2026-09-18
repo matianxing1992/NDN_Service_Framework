@@ -25,6 +25,22 @@
 `integration-tests` 或受影响的 DI target。只有共享头、生成输入、构建配置、ABI 或依赖变化
 才扩大到 Core、Repo、UAV 等传递消费者，并在 Spec 证据中记录边界。
 
+安装也沿用同一个 target 边界。不要为了更新一个库从仓库根重新选择 Waf 输出树，也不要
+用无目标的 `install` 把所有已配置目标重新编译一遍；应从产生该库的已验证 build tree
+执行目标化构建和安装：
+
+```bash
+cd /absolute/path/to/build-spec189-b189-3-global-r3
+../waf build --targets=ndnsf-distributed-inference -j4
+sudo -n ../waf install --targets=ndnsf-distributed-inference -j4
+```
+
+Core、Repo 或绑定只有在其源码/ABI 确实受影响时才分别选择对应 target。ONNX Runtime
+是已安装的全局版本化 SDK（当前 `/opt/onnxruntime`），不是每次 DI 增量构建都要重新
+编译的仓库目标；DI 只重新链接受影响的 ONNX 使用者，并在安装后用 `sha256sum`、
+`readelf -d` 和 `ldd` 验证它仍解析到声明的全局 SDK。目标化安装不改变 ABI 一致性要求：
+共享头、依赖版本或 SONAME 变化时，必须扩大重建范围并重新安装所有传递消费者。
+
 ## Why Time and Memory Grow
 
 2026-09-08 用户强调只重建受影响模块。日常批次复用同一已验证配置的 build tree，
@@ -40,6 +56,18 @@ R1-B2 首轮只编 DI preparation 与其测试，次轮只编测试；Core/UAV �
 大型 C++ 单元的头文件解析、模板实例化和优化需要时间及内存；多个编译进程叠加后峰值会增长。
 链接和依赖顺序限制可并行部分。编辑器、索引器及其他应用也共享物理内存。
 因此 -j4 有望缩短可并行阶段，但不能保证相对 -j2 加速两倍，也不能保证内存峰值不超预算。
+
+## Native dependency closure
+
+The current host uses Boost 1.71 from `/usr/include` and
+`/usr/lib/x86_64-linux-gnu`, and the canonical installed `libndn-cxx`/NFD pair
+from `/usr/local`. The repository `.local-boost171` tree contains a different
+same-SONAME build and is historical staging; Waf ignores it by default and the
+host MiniNDN runner rejects it before startup. An explicit NDN-SVS or NAC-ABE
+development prefix may still be selected, but its transitive `libndn-cxx` must
+resolve to the same real file and digest as NFD. See
+[Native Dependency Closure](native-dependency-closure.md) for the identity table
+and `ldd`/SHA-256 checks.
 
 ## Observation and Limits
 

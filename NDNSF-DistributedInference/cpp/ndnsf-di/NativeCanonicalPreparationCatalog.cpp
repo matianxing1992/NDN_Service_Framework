@@ -57,6 +57,23 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
       static_cast<bool>(entry.conversationTokenEncoder);
     // Validate every model/source before making any publication port available.
     NativeCanonicalRolePreparer roles(entry.model, entry.source, entry.recipe, control, std::move(entry.nodes));
+    // Material derivation is part of the authenticated prepare boundary.  It
+    // records graph-template/node/shared-initializer objects before the
+    // transient source owner can be released; no Provider placement is chosen
+    // here.  A caller may supply a previously verified immutable package when
+    // a source was restored from a durable catalog.
+    if (!entry.source.materialManifest)
+      entry.source.materialManifest = deriveNativeCanonicalMaterialManifest(entry.source, control);
+    else
+      entry.source.materialManifest->validate();
+    if (!entry.source.materialManifest)
+      throw std::invalid_argument("native catalog material manifest is missing");
+    validateNativeCanonicalMaterialManifest(entry.source, *entry.source.materialManifest, control);
+    if (entry.source.materialManifest->sourceDigest != entry.model.canonicalSourceDigest ||
+        entry.source.materialManifest->graphDigest != entry.model.canonicalGraphDigest ||
+        (!entry.model.canonicalInitializerDigest.empty() &&
+         entry.source.materialManifest->initializerDigest != entry.model.canonicalInitializerDigest))
+      throw std::invalid_argument("native catalog material identity differs from inspected source");
     const auto& model = entry.model.descriptor;
     auto found = groups.find(model.adapterId);
     if (found == groups.end())
@@ -72,6 +89,10 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
       entry.publication.artifactProfileDigest = entry.recipe.artifactProfileDigest;
     else if (entry.publication.artifactProfileDigest != entry.recipe.artifactProfileDigest)
       throw std::invalid_argument("native publication profile differs from role recipe");
+    if (entry.publication.maxPublicationBytes == 0)
+      entry.publication.maxPublicationBytes = entry.recipe.maxAssembledBytes;
+    else if (entry.publication.maxPublicationBytes != entry.recipe.maxAssembledBytes)
+      throw std::invalid_argument("native publication budget differs from role recipe");
     const auto key = model.canonicalJson();
     State::Record record{std::move(entry.model),
       std::make_shared<const NativeCanonicalSource>(std::move(entry.source)), std::move(roles), std::move(entry.publication)};

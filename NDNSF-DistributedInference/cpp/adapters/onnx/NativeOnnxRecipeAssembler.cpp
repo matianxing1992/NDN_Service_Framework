@@ -210,6 +210,12 @@ std::string deterministicMessageBytes(const google::protobuf::MessageLite& messa
   return std::string(bytes.begin(), bytes.end());
 }
 
+std::vector<std::uint8_t> deterministicMessageVector(const google::protobuf::MessageLite& message)
+{
+  const auto wire = deterministicMessageBytes(message);
+  return std::vector<std::uint8_t>(wire.begin(), wire.end());
+}
+
 // Reverse DFS from one requested output tensor, stopping at graph input and
 // declared role-boundary names; node producers are exact matches on the node
 // output list, exactly like utils.py _dfs_search_reachable_nodes.  Every
@@ -1578,6 +1584,285 @@ std::uint32_t revisionOfInlinedModel(const onnx::ModelProto& model)
   }
   return revision;
 }
+
+NativeJson materialReferenceJson(const NativeCanonicalSource::MaterialReference& reference)
+{
+  NativeJson dependencies = NativeJson::array();
+  for (const auto& dependency : reference.dependencies)
+    dependencies.push_back(dependency);
+  return NativeJson{
+    {"bytes", reference.bytes},
+    {"dependencies", std::move(dependencies)},
+    {"digest", reference.digest},
+    {"kind", reference.kind},
+    {"logicalName", reference.logicalName},
+    {"nodeIndex", reference.nodeIndex},
+    {"payloadId", reference.payloadId},
+    {"sharedDigest", reference.sharedDigest}};
+}
+
+} // namespace
+
+std::string NativeCanonicalSource::MaterialManifest::canonicalJson() const
+{
+  NativeJson references = NativeJson::array();
+  for (const auto& reference : this->references)
+    references.push_back(materialReferenceJson(reference));
+  return nativeCanonicalJson(NativeJson{
+    {"graphDigest", graphDigest},
+    {"initializerDigest", initializerDigest},
+    {"references", std::move(references)},
+    {"schema", schema},
+    {"sourceDigest", sourceDigest},
+    {"templatePayloadId", templatePayloadId}});
+}
+
+void NativeCanonicalSource::MaterialManifest::validate() const
+{
+  const auto validDigest = [] (const std::string& value) {
+    return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+      std::all_of(value.begin() + 7, value.end(), [] (const char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+      });
+  };
+  if (schema != "ndnsf-di-canonical-material-manifest-v1" ||
+      !validDigest(sourceDigest) || !validDigest(graphDigest) ||
+      !validDigest(initializerDigest) || !validDigest(manifestDigest) ||
+      templatePayloadId.empty() ||
+      nativePlanningDigest(canonicalJson()) != manifestDigest || references.empty() ||
+      payloads.empty())
+    throw std::invalid_argument("native canonical material manifest is incomplete");
+
+  std::set<std::string> payloadIds;
+  std::map<std::string, const MaterialPayload*> payloadById;
+  for (const auto& payload : payloads) {
+    if (payload.payloadId.empty() || !validDigest(payload.digest) || payload.bytes.empty() ||
+        payload.bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        nativePlanningDigest(payload.bytes.data(), payload.bytes.size()) != payload.digest ||
+        !payloadIds.insert(payload.payloadId).second)
+      throw std::invalid_argument("native canonical material payload is invalid");
+    payloadById.emplace(payload.payloadId, &payload);
+  }
+  const auto templatePayload = payloadById.find(templatePayloadId);
+  if (templatePayload == payloadById.end())
+    throw std::invalid_argument("native canonical material template is missing");
+  std::set<std::string> referenceIds;
+  std::set<std::string> referencedPayloadIds;
+  for (const auto& reference : references) {
+    if (reference.payloadId.empty() || !payloadIds.count(reference.payloadId) ||
+        reference.kind.empty() || reference.logicalName.empty() || !validDigest(reference.digest) ||
+        reference.bytes == 0 ||
+        reference.digest != payloadById.at(reference.payloadId)->digest ||
+        reference.bytes != payloadById.at(reference.payloadId)->bytes.size() ||
+        !referenceIds.insert(reference.logicalName + "\x1f" + reference.kind).second)
+      throw std::invalid_argument("native canonical material reference is invalid");
+    referencedPayloadIds.insert(reference.payloadId);
+    if (reference.kind == "graph-template") {
+      if (reference.payloadId != templatePayloadId || reference.logicalName != "__template__" ||
+          reference.nodeIndex != 0 || !reference.dependencies.empty() || !reference.sharedDigest.empty())
+        throw std::invalid_argument("native canonical material template reference is invalid");
+    }
+    else if (reference.kind == "graph-node") {
+      if (reference.logicalName != "node/" + std::to_string(reference.nodeIndex) ||
+          !reference.sharedDigest.empty())
+        throw std::invalid_argument("native canonical material node reference is invalid");
+      for (const auto& dependency : reference.dependencies)
+        if (dependency.empty())
+          throw std::invalid_argument("native canonical material node dependency is invalid");
+    }
+    else if (reference.kind == "shared-initializer") {
+      if (!validDigest(reference.sharedDigest) || !reference.dependencies.empty() || reference.nodeIndex != 0)
+        throw std::invalid_argument("native canonical material initializer reference is invalid");
+    }
+    else {
+      throw std::invalid_argument("native canonical material reference kind is unsupported");
+    }
+  }
+  if (referencedPayloadIds.size() != payloadIds.size())
+    throw std::invalid_argument("native canonical material payload is unreferenced");
+}
+
+std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
+deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
+                                      const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  const auto model = ownedSourceModel(source, control);
+  const auto entries = buildTensorIndex(model);
+  auto result = std::make_shared<NativeCanonicalSource::MaterialManifest>();
+  std::uint64_t materialBytes = 0;
+  const auto accountMaterial = [&] (std::size_t bytes) {
+    materialBytes = checkedAdd(materialBytes, static_cast<std::uint64_t>(bytes));
+    if (control.maxAssembledBytes == 0 || materialBytes > control.maxAssembledBytes)
+      fail("MATERIAL_LIMIT");
+  };
+  result->sourceDigest = nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size());
+  result->graphDigest = sha256HexOf(graphFactsJson(model, entries));
+  result->initializerDigest = sha256HexOf(initializerContentJson(entries));
+
+  auto templateModel = model;
+  templateModel.mutable_graph()->clear_node();
+  templateModel.mutable_graph()->clear_initializer();
+  templateModel.mutable_graph()->clear_sparse_initializer();
+  templateModel.mutable_graph()->clear_quantization_annotation();
+  const auto templateBytes = deterministicMessageVector(templateModel);
+  accountMaterial(templateBytes.size());
+  NativeCanonicalSource::MaterialPayload templatePayload{
+    "graph-template", digest(templateBytes), templateBytes};
+  result->templatePayloadId = templatePayload.payloadId;
+  result->payloads.push_back(std::move(templatePayload));
+  result->references.push_back({
+    "graph-template", "graph-template", "__template__", 0,
+    result->payloads.back().digest, result->payloads.back().bytes.size(), {}, {}});
+
+  std::set<std::string> initializerNames;
+  std::map<std::string, std::string> initializerPayloadByDigest;
+  for (int i = 0; i < model.graph().initializer_size(); ++i) {
+    checkActive(control);
+    const auto& initializer = model.graph().initializer(i);
+    initializerNames.insert(initializer.name());
+    const auto bytes = deterministicMessageVector(initializer);
+    const auto payloadDigest = digest(bytes);
+    auto payloadId = std::string("initializer-") + payloadDigest.substr(7);
+    const auto existing = initializerPayloadByDigest.find(payloadDigest);
+    if (existing == initializerPayloadByDigest.end()) {
+      initializerPayloadByDigest.emplace(payloadDigest, payloadId);
+      accountMaterial(bytes.size());
+      result->payloads.push_back({payloadId, payloadDigest, bytes});
+    }
+    else {
+      payloadId = existing->second;
+    }
+    const auto normalized = std::find_if(entries.begin(), entries.end(),
+      [&initializer] (const auto& item) { return item.name == initializer.name(); });
+    if (normalized == entries.end())
+      failNormalization("INITIALIZER_ENCODING_INVALID");
+    result->references.push_back({
+      payloadId, "shared-initializer", initializer.name(), 0, payloadDigest,
+      bytes.size(), {}, normalized->contentDigest});
+  }
+
+  for (int i = 0; i < model.graph().node_size(); ++i) {
+    checkActive(control);
+    const auto& node = model.graph().node(i);
+    const auto bytes = deterministicMessageVector(node);
+    const auto payloadDigest = digest(bytes);
+    accountMaterial(bytes.size());
+    const auto payloadId = "node-" + std::to_string(i);
+    result->payloads.push_back({payloadId, payloadDigest, bytes});
+    std::vector<std::string> dependencies;
+    for (const auto& input : node.input()) {
+      if (initializerNames.count(input) != 0)
+        dependencies.push_back(input);
+    }
+    std::sort(dependencies.begin(), dependencies.end());
+    dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
+    result->references.push_back({
+      payloadId, "graph-node", "node/" + std::to_string(i),
+      static_cast<std::uint64_t>(i), payloadDigest, bytes.size(), dependencies, {}});
+    if ((i & 0x3f) == 0) control.requireActive();
+  }
+  control.requireActive();
+  const auto materialManifestJson = result->canonicalJson();
+  accountMaterial(materialManifestJson.size());
+  result->manifestDigest = nativePlanningDigest(result->canonicalJson());
+  result->validate();
+  return result;
+}
+
+void validateNativeCanonicalMaterialManifest(
+  const NativeCanonicalSource& source,
+  const NativeCanonicalSource::MaterialManifest& manifest,
+  const NativeAssemblyControl& control)
+{
+  manifest.validate();
+  std::uint64_t materialBudget = 0;
+  for (const auto& payload : manifest.payloads)
+    materialBudget = checkedAdd(materialBudget, payload.bytes.size());
+  materialBudget = checkedAdd(materialBudget, manifest.canonicalJson().size());
+  if (control.maxAssembledBytes == 0 || materialBudget > control.maxAssembledBytes)
+    fail("MATERIAL_LIMIT");
+  checkActive(control);
+  const auto model = ownedSourceModel(source, control);
+  const auto entries = buildTensorIndex(model);
+  if (manifest.sourceDigest != nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) ||
+      manifest.graphDigest != sha256HexOf(graphFactsJson(model, entries)) ||
+      manifest.initializerDigest != sha256HexOf(initializerContentJson(entries)))
+    throw std::invalid_argument("native canonical material manifest source identity differs");
+
+  const auto templateIt = std::find_if(manifest.references.begin(), manifest.references.end(),
+    [] (const auto& reference) { return reference.kind == "graph-template"; });
+  if (templateIt == manifest.references.end())
+    throw std::invalid_argument("native canonical material template reference is missing");
+  const auto templatePayloadIt = std::find_if(manifest.payloads.begin(), manifest.payloads.end(),
+    [&templateIt] (const auto& payload) { return payload.payloadId == templateIt->payloadId; });
+  if (templatePayloadIt == manifest.payloads.end())
+    throw std::invalid_argument("native canonical material template payload is missing");
+  onnx::ModelProto templateModel;
+  if (!templateModel.ParseFromArray(templatePayloadIt->bytes.data(),
+                                    static_cast<int>(templatePayloadIt->bytes.size())) ||
+      templateModel.graph().node_size() != 0 || templateModel.graph().initializer_size() != 0 ||
+      templateModel.graph().sparse_initializer_size() != 0 ||
+      templateModel.graph().quantization_annotation_size() != 0)
+    throw std::invalid_argument("native canonical material template does not match source");
+  auto expectedTemplate = model;
+  expectedTemplate.mutable_graph()->clear_node();
+  expectedTemplate.mutable_graph()->clear_initializer();
+  expectedTemplate.mutable_graph()->clear_sparse_initializer();
+  expectedTemplate.mutable_graph()->clear_quantization_annotation();
+  if (deterministicMessageVector(expectedTemplate) != templatePayloadIt->bytes)
+    throw std::invalid_argument("native canonical material template identity is invalid");
+
+  std::map<std::string, std::string> initializerDigestByName;
+  for (const auto& entry : entries)
+    initializerDigestByName.emplace(entry.name, entry.contentDigest);
+  std::set<std::string> coveredInitializers;
+  std::set<std::uint64_t> coveredNodes;
+  for (const auto& reference : manifest.references) {
+    checkActive(control);
+    const auto payload = std::find_if(manifest.payloads.begin(), manifest.payloads.end(),
+      [&reference] (const auto& item) { return item.payloadId == reference.payloadId; });
+    if (payload == manifest.payloads.end())
+      throw std::invalid_argument("native canonical material reference payload is missing");
+    if (reference.kind == "shared-initializer") {
+      const auto expected = initializerDigestByName.find(reference.logicalName);
+      if (expected == initializerDigestByName.end() || expected->second != reference.sharedDigest ||
+          !coveredInitializers.insert(reference.logicalName).second)
+        throw std::invalid_argument("native canonical material initializer binding is invalid");
+      const auto sourceInitializer = std::find_if(model.graph().initializer().begin(),
+        model.graph().initializer().end(), [&reference] (const auto& initializer) {
+          return initializer.name() == reference.logicalName;
+        });
+      onnx::TensorProto tensor;
+      if (!tensor.ParseFromArray(payload->bytes.data(), static_cast<int>(payload->bytes.size())) ||
+          sourceInitializer == model.graph().initializer().end() ||
+          deterministicMessageVector(tensor) != payload->bytes ||
+          deterministicMessageVector(*sourceInitializer) != payload->bytes)
+        throw std::invalid_argument("native canonical material initializer payload is invalid");
+    }
+    else if (reference.kind == "graph-node") {
+      if (reference.nodeIndex >= static_cast<std::uint64_t>(model.graph().node_size()) ||
+          !coveredNodes.insert(reference.nodeIndex).second)
+        throw std::invalid_argument("native canonical material node coverage is invalid");
+      onnx::NodeProto node;
+      if (!node.ParseFromArray(payload->bytes.data(), static_cast<int>(payload->bytes.size())) ||
+          deterministicMessageVector(node) != payload->bytes ||
+          deterministicMessageVector(model.graph().node(static_cast<int>(reference.nodeIndex))) != payload->bytes)
+        throw std::invalid_argument("native canonical material node payload is invalid");
+      std::set<std::string> expectedDependencies;
+      for (const auto& input : model.graph().node(static_cast<int>(reference.nodeIndex)).input())
+        if (initializerDigestByName.count(input) != 0) expectedDependencies.insert(input);
+      std::set<std::string> actualDependencies(reference.dependencies.begin(), reference.dependencies.end());
+      if (actualDependencies != expectedDependencies || actualDependencies.size() != reference.dependencies.size())
+        throw std::invalid_argument("native canonical material node dependencies are invalid");
+    }
+  }
+  if (coveredInitializers.size() != initializerDigestByName.size() ||
+      coveredNodes.size() != static_cast<std::size_t>(model.graph().node_size()))
+    throw std::invalid_argument("native canonical material coverage is incomplete");
+}
+
+namespace {
 
 } // namespace
 

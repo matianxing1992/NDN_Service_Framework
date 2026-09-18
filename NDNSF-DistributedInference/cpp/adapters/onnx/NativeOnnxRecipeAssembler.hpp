@@ -7,8 +7,10 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
+#include <map>
 #include <vector>
 
 namespace ndnsf::di {
@@ -16,8 +18,47 @@ namespace ndnsf::di {
 /** Owned canonical ONNX bytes; source authentication belongs to the fetching owner. */
 struct NativeCanonicalSource
 {
+  struct MaterialReference
+  {
+    std::string payloadId;
+    std::string kind;
+    std::string logicalName;
+    std::uint64_t nodeIndex = 0;
+    std::string digest;
+    std::uint64_t bytes = 0;
+    std::vector<std::string> dependencies;
+    std::string sharedDigest;
+  };
+
+  struct MaterialPayload
+  {
+    std::string payloadId;
+    std::string digest;
+    std::vector<std::uint8_t> bytes;
+  };
+
+  /** Versioned, topology-independent preparation materials.  The graph
+   * template contains model metadata and I/O declarations but no nodes or
+   * initializers; node and initializer payloads are immutable, addressable
+   * objects.  Provider placement is intentionally absent from this schema. */
+  struct MaterialManifest
+  {
+    std::string schema = "ndnsf-di-canonical-material-manifest-v1";
+    std::string sourceDigest;
+    std::string graphDigest;
+    std::string initializerDigest;
+    std::string manifestDigest;
+    std::string templatePayloadId;
+    std::vector<MaterialReference> references;
+    std::vector<MaterialPayload> payloads;
+
+    std::string canonicalJson() const;
+    void validate() const;
+  };
+
   std::vector<std::uint8_t> modelBytes;
   std::optional<std::vector<std::uint8_t>> initializerBytes;
+  std::shared_ptr<const MaterialManifest> materialManifest;
 
   /**
    * Immutable placement packages produced by the preparation boundary.  The
@@ -133,6 +174,22 @@ normalizedOnnxInitializerPayload(const std::vector<std::uint8_t>& serializedTens
 NativeOnnxIdentity
 canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
                             const NativeAssemblyControl& control);
+
+/**
+ * Derive the prepare-time material manifest from the authenticated canonical
+ * ONNX source.  This is a producer operation: it does not choose Provider
+ * ranges and it emits no final partition model.  The caller owns the returned
+ * bytes until the protected publisher commits every referenced object.
+ */
+std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
+deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
+                                      const NativeAssemblyControl& control);
+
+/** Validate a prepared material manifest against the authenticated ONNX source. */
+void validateNativeCanonicalMaterialManifest(
+  const NativeCanonicalSource& source,
+  const NativeCanonicalSource::MaterialManifest& manifest,
+  const NativeAssemblyControl& control);
 
 /**
  * Initializer-normalization revision (1 or 2) of a source model after

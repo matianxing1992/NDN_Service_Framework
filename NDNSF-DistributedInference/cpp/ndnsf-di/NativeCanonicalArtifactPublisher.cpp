@@ -7,11 +7,24 @@
 #include <condition_variable>
 #include <future>
 #include <ndn-cxx/name.hpp>
+#include <limits>
 #include <mutex>
 #include <optional>
+#include <set>
 
 namespace ndnsf::di {
 namespace {
+template<typename Work>
+auto onCoreIo(const std::shared_ptr<ndn_service_framework::ServiceUser>& user, Work work)
+  -> decltype(work())
+{
+  if (user->isOnIoThread()) return work();
+  auto task = std::make_shared<std::packaged_task<decltype(work())()>>(std::move(work));
+  auto result = task->get_future();
+  user->postToIo([task] { (*task)(); });
+  return result.get();
+}
+
 bool digest(const std::string& value)
 {
   return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
@@ -57,12 +70,63 @@ void NativePreparedCanonicalPublication::validate() const
     }
   };
   if (!validName(sourceDataName) || !validName(rootDataName) ||
+      (!materialManifestDataName.empty() && !validName(materialManifestDataName)) ||
       (!initializerDataName.empty() && !validName(initializerDataName)) ||
+      std::any_of(layerDataNames.begin(), layerDataNames.end(),
+                  [&validName](const auto& value) { return !validName(value); }) ||
+      layerDataNames.size() != layerManifestDigests.size() ||
+      materialDataNames.size() != materialDigests.size() ||
+      std::any_of(materialDataNames.begin(), materialDataNames.end(),
+                  [&validName](const auto& value) { return !validName(value); }) ||
+      std::any_of(materialDigests.begin(), materialDigests.end(),
+                  [](const auto& value) { return !digest(value); }) ||
+      (!materialManifestDataName.empty() && !digest(materialManifestDigest)) ||
+      std::any_of(layerManifestDigests.begin(), layerManifestDigests.end(),
+                  [](const auto& value) { return !digest(value); }) ||
       canonicalManifestJson.empty() || !digest(manifestDigest) ||
       (!artifactProfileDigest.empty() && !digest(artifactProfileDigest)) ||
       canonicalManifestJson.size() > 1024 * 1024 ||
       nativePlanningDigest(canonicalManifestJson) != manifestDigest)
     throw std::invalid_argument("native prepared canonical publication is incomplete");
+
+  const bool hasMaterial = !materialManifestDataName.empty() ||
+    !materialManifestDigest.empty() || !materialPayloadIds.empty() ||
+    !materialDataNames.empty() || !materialDigests.empty();
+  if (hasMaterial && (materialManifestDataName.empty() || materialPayloadIds.empty() ||
+      materialPayloadIds.size() != materialDataNames.size() ||
+      materialDataNames.size() != materialDigests.size()))
+    throw std::invalid_argument("native prepared material receipt is incomplete");
+  if (!hasMaterial && (!materialManifestDataName.empty() || !materialManifestDigest.empty() ||
+      !materialPayloadIds.empty() || !materialDataNames.empty() || !materialDigests.empty()))
+    throw std::invalid_argument("native prepared material receipt is inconsistent");
+  if (hasMaterial) {
+    std::set<std::string> payloadIds;
+    for (const auto& payloadId : materialPayloadIds)
+      if (payloadId.empty() || !payloadIds.insert(payloadId).second)
+        throw std::invalid_argument("native prepared material payload identity is invalid");
+    try {
+      const auto root = nativeParseJson(canonicalManifestJson);
+      const auto& metadata = root.at("metadata");
+      if (metadata.at("materialManifestDataName").get<std::string>() != materialManifestDataName ||
+          metadata.at("materialManifestDigest").get<std::string>() != materialManifestDigest)
+        throw std::invalid_argument("native prepared material manifest receipt differs from root");
+      const auto& objects = metadata.at("materialObjects");
+      if (!objects.is_array() || objects.size() != materialPayloadIds.size())
+        throw std::invalid_argument("native prepared material object list is incomplete");
+      for (std::size_t i = 0; i < objects.size(); ++i) {
+        if (objects.at(i).at("payloadId").get<std::string>() != materialPayloadIds[i] ||
+            objects.at(i).at("dataName").get<std::string>() != materialDataNames[i] ||
+            objects.at(i).at("digest").get<std::string>() != materialDigests[i])
+          throw std::invalid_argument("native prepared material object receipt differs from root");
+      }
+    }
+    catch (const std::invalid_argument&) {
+      throw;
+    }
+    catch (...) {
+      throw std::invalid_argument("native prepared material root metadata is invalid");
+    }
+  }
 }
 
 NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
@@ -72,14 +136,22 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
       [user](auto work) { if (!user) throw std::invalid_argument("missing Core publication owner");
                          user->postToIo(std::move(work)); },
       [user] { return user && user->isOnIoThread(); },
-      [user, serviceName] { return user->prepareServiceRequest(serviceName); },
-      [user](const auto& request, const auto& bytes, const auto& label) {
-        return user->publishEncryptedLargeData(request, bytes, label);
+      [user, serviceName] {
+        return onCoreIo(user, [user, serviceName] { return user->prepareServiceRequest(serviceName); });
+      },
+      [user](const auto& request, const auto& bytes, const auto& label, const auto& control) {
+        if (!user->isOnIoThread())
+          return user->publishEncryptedLargeDataFromWorker(
+            request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD,
+            [control] { control.requireActive(); });
+        return user->publishEncryptedLargeData(
+          request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, true,
+          [control] { control.requireActive(); });
       },
       [user](const auto& publications) {
         if (user)
-          user->abortLargeDataPublications(publications);
-      }}, serviceName, std::move(options), std::move(source))
+          onCoreIo(user, [&] { user->abortLargeDataPublications(publications); });
+      }, true}, serviceName, std::move(options), std::move(source))
 {
   if (!user) throw std::invalid_argument("missing Core publication owner");
 }
@@ -136,6 +208,7 @@ void NativeCanonicalArtifactPublisher::abortPreparedPublication(
   try {
     std::vector<ndn_service_framework::LargeDataPublishResult> publications;
     const auto addData = [&publication](ndn_service_framework::LargeDataPublishResult& result) {
+      result.fileBacked = !publication.servingLeases.empty();
       result.rollbackDataNames = publication.rollbackDataNames;
       if (!publication.sourceDataName.empty())
         result.rollbackDataNames.push_back(publication.sourceDataName);
@@ -194,8 +267,11 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepare(
     std::lock_guard<std::mutex> lock(m_cache->mutex);
     const auto completed = m_cache->prepared.find(key);
     if (completed != m_cache->prepared.end()) {
-      m_cache->cacheHits.fetch_add(1, std::memory_order_relaxed);
-      return completed->second;
+      if (auto receipt = completed->second.acquire()) {
+        m_cache->cacheHits.fetch_add(1, std::memory_order_relaxed);
+        return std::move(*receipt);
+      }
+      m_cache->prepared.erase(completed);
     }
     const auto pending = m_cache->preparedInFlight.find(key);
     if (pending != m_cache->preparedInFlight.end()) {
@@ -243,6 +319,11 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepare(
     return sharedControl->cancelled.load(std::memory_order_acquire);
   };
   std::thread worker;
+  struct JoinWorker
+  {
+    std::thread& worker;
+    ~JoinWorker() { if (worker.joinable()) worker.join(); }
+  } joinWorker{worker};
   try {
     worker = std::thread([owner = *this, model, key, promise, sharedControl,
                           publicationControl] () mutable {
@@ -256,7 +337,13 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepare(
           if (sharedControl->cancelled.load(std::memory_order_acquire))
             discarded = true;
           else {
-            const auto [it, inserted] = owner.m_cache->prepared.emplace(key, result);
+            for (auto entry = owner.m_cache->prepared.begin();
+                 entry != owner.m_cache->prepared.end();) {
+              if (entry->second.expired()) entry = owner.m_cache->prepared.erase(entry);
+              else ++entry;
+            }
+            const auto [it, inserted] = owner.m_cache->prepared.emplace(
+              key, CacheState::PreparedEntry(result));
             if (!inserted)
               throw std::runtime_error("duplicate prepared publication cache key");
             (void)it;
@@ -296,7 +383,9 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepare(
         catch (const std::future_error&) {}
       }
     });
-    worker.detach();
+    // The originating prepare retains its Runtime preparation ticket until
+    // this worker settles, including cancellation and I/O cleanup. Other
+    // shared waiters may leave early without destroying the external Face.
   }
   catch (...) {
     const auto error = std::current_exception();
@@ -579,9 +668,23 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
       source->initializerBytes.has_value() != (model.canonicalInitializerBytes != 0) ||
       (source->initializerBytes &&
        (source->initializerBytes->size() != model.canonicalInitializerBytes ||
-        nativePlanningDigest(source->initializerBytes->data(), source->initializerBytes->size()) !=
+       nativePlanningDigest(source->initializerBytes->data(), source->initializerBytes->size()) !=
           model.canonicalInitializerObjectDigest)))
     throw std::invalid_argument("native prepared publication source differs from inspection");
+  if (source->materialManifest) {
+    const auto sourceLimit = std::max(model.canonicalSourceBytes,
+                                      model.canonicalInitializerBytes);
+    const NativeAssemblyControl materialControl{
+      control.deadline, [&control] { control.requireActive(); }, sourceLimit,
+      m_options.maxPublicationBytes != 0 ? m_options.maxPublicationBytes
+                                         : std::numeric_limits<std::uint64_t>::max()};
+    validateNativeCanonicalMaterialManifest(*source, *source->materialManifest, materialControl);
+    if (source->materialManifest->sourceDigest != model.canonicalSourceDigest ||
+        source->materialManifest->graphDigest != model.canonicalGraphDigest ||
+        (!model.canonicalInitializerDigest.empty() &&
+         source->materialManifest->initializerDigest != model.canonicalInitializerDigest))
+      throw std::invalid_argument("native prepared publication material differs from inspection");
+  }
 
   auto state = std::make_shared<PreparedPublicationJob>();
   state->rollback = [owner = *this](const auto& publication) {
@@ -598,7 +701,10 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
       if (current->abandoned) throw std::runtime_error("DI_NATIVE_PUBLICATION_ABANDONED");
     };
     std::vector<ndn_service_framework::LargeDataPublishResult> publishedResults;
-    publishedResults.reserve(source->initializerBytes ? 3 : 2);
+    std::uint64_t publishedBytes = 0;
+    const auto materialManifest = source->materialManifest;
+    publishedResults.reserve((source->initializerBytes ? 3 : 2) +
+                             (materialManifest ? materialManifest->payloads.size() + 1 : 0));
     try {
       active();
       const auto request = transport.begin();
@@ -606,8 +712,14 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
         throw std::runtime_error("DI_NATIVE_PUBLICATION_REQUEST_MISMATCH");
       const auto publish = [&](const std::vector<std::uint8_t>& bytes, const std::string& label) {
         active();
+        const auto publicationLimit = options.maxPublicationBytes != 0
+          ? options.maxPublicationBytes : std::numeric_limits<std::uint64_t>::max();
+        if (bytes.size() > publicationLimit -
+            std::min<std::uint64_t>(publishedBytes, publicationLimit))
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+        publishedBytes += bytes.size();
         cache->publicationCalls.fetch_add(1, std::memory_order_relaxed);
-        auto result = transport.publish(request, bytes, label);
+        auto result = transport.publish(request, bytes, label, control);
         if (!result.success)
           throw std::runtime_error("DI_NATIVE_ENCRYPTED_PUBLICATION_FAILED: " + result.errorMessage);
         publishedResults.push_back(std::move(result));
@@ -634,6 +746,29 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
         metadata["canonicalInitializerBytes"] = model.canonicalInitializerBytes;
         metadata["canonicalInitializerObjectDigest"] = model.canonicalInitializerObjectDigest;
       }
+      NativeJson materialObjects = NativeJson::array();
+      if (materialManifest) {
+        for (const auto& payload : materialManifest->payloads) {
+          const auto dataName = publish(payload.bytes,
+            "di-material-" + payload.payloadId);
+          result.materialPayloadIds.push_back(payload.payloadId);
+          result.materialDataNames.push_back(dataName);
+          result.materialDigests.push_back(payload.digest);
+          materialObjects.push_back({{"payloadId", payload.payloadId},
+                                     {"dataName", dataName},
+                                     {"digest", payload.digest},
+                                     {"bytes", payload.bytes.size()}});
+        }
+        const auto materialManifestJson = materialManifest->canonicalJson();
+        const std::vector<std::uint8_t> manifestBytes(
+          materialManifestJson.begin(), materialManifestJson.end());
+        result.materialManifestDataName = publish(manifestBytes, "di-material-manifest");
+        result.materialManifestDigest = nativePlanningDigest(manifestBytes.data(), manifestBytes.size());
+        metadata["materialManifestDataName"] = result.materialManifestDataName;
+        metadata["materialManifestDigest"] = result.materialManifestDigest;
+        metadata["materialIdentityDigest"] = materialManifest->manifestDigest;
+        metadata["materialObjects"] = std::move(materialObjects);
+      }
       if (!options.packageManifestDigest.empty())
         metadata["packageManifestDigest"] = options.packageManifestDigest;
       NativeJson root{{"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
@@ -648,6 +783,8 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
                                                  result.canonicalManifestJson.end());
       result.rootDataName = publish(rootBytes, "di-canonical-root");
       for (const auto& published : publishedResults) {
+        if (published.servingLease)
+          result.servingLeases.push_back(published.servingLease);
         result.rollbackDataNames.insert(result.rollbackDataNames.end(),
                                         published.rollbackDataNames.begin(),
                                         published.rollbackDataNames.end());
@@ -672,7 +809,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
       throw;
     }
   };
-  m_transport.post([state] {
+  const auto complete = [state] {
     std::function<NativePreparedCanonicalPublication()> work;
     {
       std::lock_guard<std::mutex> lock(state->mutex);
@@ -700,7 +837,9 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
       return;
     }
     state->condition.notify_one();
-  });
+  };
+  if (m_transport.prepareOnWorker) complete();
+  else m_transport.post(complete);
   try {
     for (;;) {
       control.requireActive();
@@ -804,6 +943,7 @@ NativeUncachedPublication NativeCanonicalArtifactPublisher::publishUncached(
       if (current->abandoned) throw std::runtime_error("DI_NATIVE_PUBLICATION_ABANDONED");
     };
     std::vector<ndn_service_framework::LargeDataPublishResult> publishedResults;
+    std::uint64_t publishedBytes = 0;
     publishedResults.reserve(source->initializerBytes ? 3 : 2);
     try {
       active();
@@ -812,8 +952,14 @@ NativeUncachedPublication NativeCanonicalArtifactPublisher::publishUncached(
         throw std::runtime_error("DI_NATIVE_PUBLICATION_REQUEST_MISMATCH");
       const auto publish = [&](const std::vector<std::uint8_t>& bytes, const std::string& label) {
         active();
+        const auto publicationLimit = options.maxPublicationBytes != 0
+          ? options.maxPublicationBytes : std::numeric_limits<std::uint64_t>::max();
+        if (bytes.size() > publicationLimit -
+            std::min<std::uint64_t>(publishedBytes, publicationLimit))
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+        publishedBytes += bytes.size();
         cache->publicationCalls.fetch_add(1, std::memory_order_relaxed);
-        auto result = transport.publish(request, bytes, label);
+        auto result = transport.publish(request, bytes, label, control);
         // Capture the result before the second cancellation check.  If the
         // owner cancels in that exact window, the returned object still has a
         // complete rollback record.

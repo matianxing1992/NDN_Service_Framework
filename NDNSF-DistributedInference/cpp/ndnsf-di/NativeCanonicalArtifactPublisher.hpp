@@ -8,6 +8,7 @@
 #include <future>
 #include <map>
 #include <mutex>
+#include <optional>
 
 namespace ndnsf::di {
 
@@ -19,6 +20,9 @@ struct NativeCanonicalPublicationOptions
   std::vector<std::string> layerManifestDigests;
   // All roles produced from one catalog share this immutable profile identity.
   std::string artifactProfileDigest;
+  // Bounded serialized publication budget for source, material objects and
+  // manifest metadata. Zero is accepted only for legacy source-only callers.
+  std::uint64_t maxPublicationBytes = 0;
 };
 
 struct NativePublicationKeyReference
@@ -33,11 +37,20 @@ struct NativePreparedCanonicalPublication
   std::string sourceDataName;
   std::string initializerDataName;
   std::string rootDataName;
+  std::string materialManifestDataName;
+  std::string materialManifestDigest;
   std::string canonicalManifestJson;
   std::string manifestDigest;
   std::string artifactProfileDigest;
   std::vector<std::string> layerDataNames;
   std::vector<std::string> layerManifestDigests;
+  // Protected, topology-independent graph/node/tensor objects committed by
+  // B189-1b.  Names and digests are kept separate from legacy layer fields so
+  // old v1 receipts remain readable while new consumers require the material
+  // manifest before fetching any role bytes.
+  std::vector<std::string> materialPayloadIds;
+  std::vector<std::string> materialDataNames;
+  std::vector<std::string> materialDigests;
   std::vector<std::string> rollbackDataNames;
   std::vector<NativePublicationKeyReference> rollbackKeyReferences;
   std::string rollbackKeyId;
@@ -46,6 +59,8 @@ struct NativePreparedCanonicalPublication
   // not grant the failing caller ownership to remove already-committed
   // objects; transient Core publications keep the default true value.
   bool rollbackOwned = true;
+  // Package/request copies retain Core's serving pins after prepare returns.
+  std::vector<std::shared_ptr<void>> servingLeases;
 
   void validate() const;
 };
@@ -113,11 +128,12 @@ private:
     std::function<ndn_service_framework::PreparedServiceRequest()> begin;
     std::function<ndn_service_framework::LargeDataPublishResult(
       const ndn_service_framework::PreparedServiceRequest&, const std::vector<std::uint8_t>&,
-      const std::string&)> publish;
+      const std::string&, const NativeRequestControl&)> publish;
     // Best-effort transaction rollback for names published by one prepare.
     // The Core implementation may retain an orphan until its bounded expiry,
     // but it must never expose a committed root after rollback.
     std::function<void(const std::vector<ndn_service_framework::LargeDataPublishResult>&)> abort;
+    bool prepareOnWorker = false;
   };
   NativeCanonicalArtifactPublisher(Transport transport, std::string serviceName,
     NativeCanonicalPublicationOptions options, SourcePort source);
@@ -143,10 +159,43 @@ private:
       std::shared_future<NativePreparedCanonicalPublication> future;
       std::shared_ptr<SharedControl> control;
     };
+    struct PreparedEntry
+    {
+      NativePreparedCanonicalPublication receipt;
+      std::vector<std::weak_ptr<void>> leases;
+
+      explicit PreparedEntry(const NativePreparedCanonicalPublication& value)
+        : receipt(value)
+      {
+        for (const auto& lease : receipt.servingLeases)
+          leases.emplace_back(lease);
+        receipt.servingLeases.clear();
+      }
+
+      // A lookup acquires all pins before exposing the receipt. The publisher
+      // is an index, not another cache budget or publication lifetime owner.
+      std::optional<NativePreparedCanonicalPublication> acquire() const
+      {
+        auto result = receipt;
+        for (const auto& weak : leases) {
+          auto lease = weak.lock();
+          if (!lease)
+            return std::nullopt;
+          result.servingLeases.push_back(std::move(lease));
+        }
+        return result;
+      }
+      bool expired() const
+      {
+        for (const auto& lease : leases)
+          if (lease.expired()) return true;
+        return false;
+      }
+    };
     mutable std::mutex mutex;
     std::map<std::string, NativeArtifactBinding> completed;
     std::map<std::string, InFlight> inFlight;
-    std::map<std::string, NativePreparedCanonicalPublication> prepared;
+    std::map<std::string, PreparedEntry> prepared;
     std::map<std::string, PreparedInFlight> preparedInFlight;
     std::atomic<std::size_t> sourceVerifications{0};
     std::atomic<std::size_t> publicationCalls{0};

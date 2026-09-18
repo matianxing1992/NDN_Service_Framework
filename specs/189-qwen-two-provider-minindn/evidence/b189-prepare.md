@@ -460,3 +460,85 @@ tree target-config failure is indexed in `docs/failure-log.md` and recorded at
 locally verified, but T002/T003 cannot advance to complete until the pinned
 Qwen candidate is consumed by the production preparation path and its real
 manifest/lease receipt is observed.
+
+## B189-1b producer static gate and build retry r1 — 2026-09-18
+
+The frozen producer/durable publication snapshot
+`.codex-tmp/spec189-b189-1b-producer-review-r7.diff`
+(`cd1d1e4c9df3f9a13023740edf9989ff063a04cb2fc14a154279fd2c440e51cb`) passed
+the official read-only review-agent. The review covered material manifest
+identity, node/shared-initializer dependencies, aggregate publication budget,
+Repo `putRangeIfAbsent`/`commitRangesIfOwned` ownership, root-last visibility,
+and rollback fencing with unique operation IDs. It did not cover the material
+consumer, which remains a later B189 task.
+
+The first affected-target build was attempted once with `-j4` from the
+canonical global build tree and failed at compile/link setup before selectors:
+the publisher passed `NativeRequestControl` to the assembly validator and
+referenced a nonexistent request budget field. Raw output:
+`.codex-tmp/spec189-b189-1b-build-20260918-r1.log`. This is **COMPILE_FAIL**;
+no runtime result is accepted. The source fix adds an explicit publication
+budget carried from the role recipe and an owner-fence adapter; a fresh static
+review is required before retrying the build.
+
+## Five-lane result and closure decision r4
+
+- production entry/callers: **covered** for producer derivation and Repo durable publication;
+- implementation/wire: **covered** for the producer manifest and fenced object commits;
+- test/harness/oracle: **UNOBSERVED** after the compile failure;
+- build/source closure: **FAIL** for r1, with the first boundary recorded above;
+- migration/evidence: **PARTIAL** — material consumer/load and real Qwen preparation remain open.
+
+**Closure**: B189-1b remains **OPEN** and T003 remains **PARTIAL**. No PASS is
+claimed from the static gate alone.
+
+## B189-1b producer re-review, build and focused selectors — 2026-09-18
+
+The corrected producer/durable publication snapshot
+`.codex-tmp/spec189-b189-1b-producer-review-r10.diff`
+(`b657bef7332cbf7ceb0874215657d78edb998e1aa17b29e0830e885de35b933c`)
+passed the official read-only review-agent (`STATIC_PASS`). The review covered the
+material manifest identity checks, source/graph/node/shared-initializer consistency,
+aggregate publication budgets, Repo owned range transactions, root-last publication,
+and rollback fencing. The consumer/load path remains outside this gate.
+
+The affected target was rebuilt from `build-spec189-b189-3-global-r3`:
+
+```text
+../waf build --targets=unit-tests -j4  PASS (30.325s; r2)
+```
+
+The new C++ material selector was then run from the repository root:
+
+```text
+unit-tests --run_test=Spec189RepoPublication/MaterialManifestPublishesWithOwnedTransactionsAndRejectsCorruption --log_level=test_suite  PASS
+```
+
+It derives the manifest from the extraction fixture, publishes the material manifest,
+all material payloads and the root through the real `RepoSourceProvider`, verifies hot
+reuse, and rejects a corrupted material object without replacing the root. Static review
+did not cover injected mid-publication cancellation/exception or an independent event
+order observer. The selector is therefore focused producer evidence, not full rollback
+qualification. Raw build output is `.codex-tmp/spec189-b189-1b-material-selector-build-r1.log`;
+the four-case selector run is `.codex-tmp/spec189-b189-1b-selector-material-full-r2.log`.
+
+The same tree also recorded `Spec189EncryptedRepo` 6/6 PASS and
+`Spec188BoundedLargeDataPublisher` 2/2 PASS. The Runtime prepare selector passed with a
+writable `NDNSF_REQUEST_LARGE_DATA_DIR`; three older Spec182 publisher lifecycle selectors
+remain unresolved (source lease expiry, cancellation suppression, and the real-Core cache
+assertion) and are recorded in `docs/failure-log.md`. They do not close the Spec189 consumer
+or Qwen preparation requirements.
+
+## Five-lane result and closure decision r5
+
+- production entry/callers: **covered** for producer derivation and durable publication;
+- implementation/wire: **covered** for material manifest/payload publication and root metadata;
+- test/harness/oracle: **covered** for the focused producer selector, but injected rollback and
+  consumer/load behavior remain **UNOBSERVED**;
+- build/source closure: **covered** by the `unit-tests` `-j4` build and registered source;
+- migration/evidence: **PARTIAL** — `NativeCanonicalOnnxAssembler` still fetches the complete
+  source/initializer and no real Qwen candidate has consumed material references.
+
+**Closure**: B189-1b producer is locally verified, but B189-1b as a whole and T003 remain
+**PARTIAL**. The next bounded unit is the reference-only Repo consumer and bounded native
+assembly; no full-model or MiniNDN qualification should be claimed before that path is wired.

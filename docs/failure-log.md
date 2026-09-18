@@ -7154,3 +7154,31 @@ Repo producer/consumer path, an incorrect total-order log oracle and a late
 resource guard. See [audit correction](../specs/189-qwen-two-provider-minindn/evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction).
 No new runtime attempt occurred. Resume with the narrowed integration map and
 resource guard, then Repo wiring; preserve all unobserved execution/output gaps.
+
+2026-09-18 Spec189 B189-1b producer build r1: the static producer/durable
+publication gate passed, but the first affected-target build stopped at the
+DI publisher boundary. `NativeRequestControl` was passed where the material
+validator requires `NativeAssemblyControl`, and the publisher budget read a
+nonexistent `maxAssembledBytes` field. No selector or runtime result from this
+attempt is accepted. Raw output is
+`.codex-tmp/spec189-b189-1b-build-20260918-r1.log`; the source fix adds an
+explicit publication budget and request-owner adapter before retry.
+
+2026-09-18 Spec189 B189-1b producer build r2 and selector boundary: after the type and
+budget fixes, the affected `unit-tests` target built successfully from the canonical global
+tree with `-j4` in 30.325s; the material publication selector then passed. The encrypted Repo
+selector (6 cases) and bounded large-data publisher selector (2 cases) also passed. The Runtime
+prepare selector passed after assigning a writable `NDNSF_REQUEST_LARGE_DATA_DIR`. Three older
+Spec182 publisher lifecycle selectors still fail with a writable directory: source ownership
+does not expire at the expected point, cancellation still observes initializer/root work, and
+the real-Core cache assertion does not observe the expected cached data. These failures are
+retained as unresolved pre-existing publisher/lifecycle boundaries; they are not evidence for
+or against the new Spec189 material producer. Raw outputs are
+`.codex-tmp/spec189-b189-1b-build-20260918-r2.log`,
+`.codex-tmp/spec189-b189-1b-material-selector-build-r1.log`,
+`.codex-tmp/spec189-b189-1b-selector-repo-r1.log`,
+`.codex-tmp/spec189-b189-1b-selector-bounded-r1.log`,
+`.codex-tmp/spec189-b189-1b-selector-runtime-r2.log`,
+`.codex-tmp/spec189-b189-1b-selector-cancel-queued-r2.log`,
+`.codex-tmp/spec189-b189-1b-selector-cancel-source-r2.log` and
+`.codex-tmp/spec189-b189-1b-selector-core-io-r2.log`.
