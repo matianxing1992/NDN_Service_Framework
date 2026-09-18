@@ -30,6 +30,34 @@ request 不隐式重发或退回 whole-model。旧 schema 明确拒绝或走受�
 
 ## Protection and compatibility
 
+### Protected Repo integration binding
+
+2026-09-18 源码复核：`RepoSourceProvider::publish` 的 plain Repo object names
+不满足生产 assembler 的 `fetchEncryptedLargeData` 契约；不得仅注入该 publisher
+并把返回 receipt 当作网络可用。现有组件测试保留，但不能证明加密产物持久发布。
+
+T003 生产路径复用 `NativeCanonicalArtifactPublisher::Transport` 与 ServiceUser 的
+分段签名/serving；在 Core 存储边界增加 `EncryptedLargeDataRangeStore`（TARGET），
+由 Repo adapter 复用 `RepoCore::putRange/commitRanges/abortRanges/getRange`。
+Core 负责确定 name、AES-GCM/AAD、wrapped key 和 Data 签名，store 只接收已经加密的
+envelope，按同一 name/digest/size 持久提交并返回有界范围读取 owner。
+不让 Repo adapter 生成密钥、重写 name 或自行宣称受保护 receipt；不走明文降级。
+commit 返回前核对 manifest 与范围可读；失败只回滚本事务 staging，warm/shared
+对象不能删除，提交状态不明时先核对，不能直接 READY。
+
+`ServiceUser::replyFromLargeDataFile` 的现有分段响应应读取该 owner，保留同名
+segment/final-block/签名；RepoCore 的普通 getRange 本身不是 NDN producer。
+requester Runtime 明确持有 ServiceUser/Face/Repo owner，不以 Repo 文件存在代替网络可达。
+
+publication serving lease 必须随 `PreparedModelPackage`/活动请求的最后一个 owner
+释放；现有 file publication 默认 5 分钟 TTL 不能使仍存活的 prepared handle 失效。
+lease 覆盖 serving 元数据与 wrapped-key 引用，不只是磁盘文件；close/cancel 仍须按
+已有授权失效语义停止新请求。新增 C++ 反例覆盖越过原 TTL、源 owner 释放、正常读取、
+取消/失败 rollback 和最后 lease 释放。不得仅延长 TTL 或改环境变量掩盖所有权缺口。
+
+先完成这一共享 protected publication 接缝，再将原子层/shared tensors 沿同一路径
+发布；仅增加 source lookup/ingest 是 PARTIAL，不作为 T003 稳定出口或完整替代方案。
+
 Repo 只替换材料存储/获取边界，不削弱已有 NAC-ABE/grant、签名或内容完整性校验。
 manifest 与原子/shared 材料沿现有保护接口发布，Provider 只能在有效 Selection/grant
 下读取其授权集合；byte-range 索引必须保留加密对象的校验/解密边界，不能按任意

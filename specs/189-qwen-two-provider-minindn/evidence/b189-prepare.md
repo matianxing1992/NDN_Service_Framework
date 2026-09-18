@@ -4,6 +4,17 @@
 
 ## T003 publication source ownership — 2026-09-18
 
+### Next protected production binding
+
+只读 review-agent 复核确认 plain Repo publisher 与生产 encrypted fetch 不匹配；
+当前 receipt.validate 只检查 name/digest，不能提前拦截这种能力错配。T003 后续采用
+[protected binding](../contracts/model-preparation.md#protected-repo-integration-binding)：
+Core 保留加密、命名、签名与 wrapped-key；Repo 存加密 envelope 并提供有界 range owner；
+prepared package/request lease 保住 serving 与 key，替代仅靠 5 分钟 TTL。
+这仍是 TARGET，不计实现。没有选择“只接 source lookup 就完成”的较小替代方案。
+下一实现范围：Core ServiceUser 存储/retention 接缝、Repo range adapter、Runtime/
+requester 注入与 package lease；其后接同一接缝的原子材料 producer/consumer。
+
 **Updated**: 2026-09-18 14:26 -0500 — 源借用修复定向验收通过；T003 整体仍 PARTIAL。
 原生 DI 目标已安装到 /usr/local，build/installed SHA-256 均为
 `35b54b8fb28bf5c1fdd79c8814f2fc49a630c038e1c1e74e40c242f4d52b6238`。
