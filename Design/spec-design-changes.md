@@ -1,5 +1,12 @@
 # Spec 设计变更记录
 
+## Spec189 execution and ownership audit — 2026-09-18 14:50 -0500
+
+- **Status**: PARTIAL；本次仅修正 [Spec189 任务与批次](../specs/189-qwen-two-provider-minindn/batch-execution.md)，保留 7 个能力任务，T003 分 protected storage/atomic preparation 两个验证出口。
+- **Target clarification**: Core 保留 protected serving、Repo 提供身份绑定范围存储；publication lease 服从 preparation cache 预算/淘汰，避免 publisher 第二强 owner。重型 commit 不阻塞 Core I/O，取消/drain 与同名替代 fence 为 B189-1a 必要出口。
+- **Validation**: 请求 active owner 与 idle cache 分账；host guard 前置，native counters 随实际组件交付，真实重复验收前齐备。详见 [审计证据](../specs/189-qwen-two-provider-minindn/evidence/spec189-static-audit-20260918.md#execution-and-ownership-follow-up)。
+- **Current boundary**: 已有 protected-store 源码草稿 STATIC_FAIL，当前/目标 PDF 与 API 不在本审计中宣称已同步或通过；B189-1a 实现交付须按 MANAGEMENT.md 同步，T009 最终文档门保留。本轮没有修改产品源码、构建或运行模型。
+
 本文件回答“哪个 Spec，为什么，把哪个模块的什么设计从什么改成了什么，代码实现到哪里”。
 这里记录设计影响；Spec 的 tasks.md 与契约继续负责具体任务和验收。CHANGELOG.md 记录文档版本，两者互相引用。
 
