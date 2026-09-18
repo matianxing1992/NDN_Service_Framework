@@ -34,7 +34,7 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 09:45 -0500
+**Updated**: 2026-09-18 10:37 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
@@ -120,6 +120,14 @@ cache-insertion exception window. The affected `unit-tests` target rebuilt with
 `Spec185Runtime/PrepareSuccessUsesTheProductionRuntimeEntry` both passed from
 the repository root. T003 remains `PARTIAL` because layer payload ownership and
 real Qwen preparation are still absent.
+
+The host-global dependency identity gate is now complete as a policy unit:
+v9 static review returned `STATIC_PASS`, the installer identity receipt and
+canonical-root checks passed, normal Waf configure passed, the two Boost
+override negatives were rejected before compile, and the focused policy set
+returned `148 passed`. Evidence is in the [B189 build evidence](evidence/b189-build-20260918.md)
+under “Host-global dependency identity gate”. This does not advance any task;
+the C++ post-grant execution boundary and MiniNDN qualification remain pending.
 
 ## Task checklist
 

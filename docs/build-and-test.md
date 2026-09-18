@@ -4,17 +4,30 @@
 [Native Build Parallelism](native-build-parallelism.md)。其他主机单独核对资源，历史运行命令保持原记录。
 
 原生依赖和运行时路径按 [Native Dependency Closure](native-dependency-closure.md)
-执行：本机使用系统 Boost 1.71，以及 `/usr/local` 中统一安装的 NDN-CXX/NFD、
-NDN-SVS、NAC-ABE、ONNX full-protobuf 和 tokenizer bridge；仓库、`/tmp` 与
-`.local-boost171` 都不能作为 host 库输入。
+执行：本机使用固定的系统 Boost 1.71 配对（`/usr/include` 与
+`/usr/lib/x86_64-linux-gnu`），以及 `/usr/local` 中统一安装的 NDN-CXX/NFD、
+NDN-SVS、NAC-ABE、ONNX full-protobuf 和 tokenizer bridge；ONNX Runtime 只从
+全局版本化 SDK `/opt/onnxruntime`（当前真实目录 `/opt/onnxruntime-1.26.0`）加载。
+仓库、`/tmp` 与 `.local-boost171` 都不能作为 host 库输入。
 `install_ndnsf_stack.sh` 会把 Waf/CMake/OpenABE 依赖明确配置为
-`/usr/local`，并在配置前检查包版本、pkg-config prefix 和实际库文件；缺失、过旧
+`/usr/local`，固定 Waf 的 Boost 搜索目录，并在配置前检查包版本、pkg-config
+prefix 和实际库文件；缺失、过旧
 或解析到 checkout/临时目录时会先停止，默认流程会从 `dependencies/` 的源码 checkout
 重建并安装到 `/usr/local`。`dependencies/` 只保存可重建的源码 checkout，不得出现在
 `LD_LIBRARY_PATH`、RPATH 或 pkg-config 输入中。`--no-dependencies` 只禁止脚本抓取和
 编译依赖源码，仍会因全局闭包不完整而退出，不能绕过这条规则。
-如果环境变量自带旧的 `PKG_CONFIG_PATH`，Waf 和两个 binding 会在发现其实际路径后
-拒绝 `.local-boost171`；应清理环境或显式指定完整、同一 ABI 的隔离前缀。
+如果环境变量自带旧的 `PKG_CONFIG_PATH` 或 `BOOST_*` 覆盖，Waf 和两个 binding 会
+在发现其实际路径后拒绝 `.local-boost171`、checkout 和临时 SDK；应先把缺失或过旧
+依赖安装到上述全局根，再重新配置，不能用临时路径绕过门禁。
+安装器在构建依赖源码时会清除这些 `BOOST_*` 覆盖，并在安装前核对最终 realpath
+和 SONAME；依赖 Waf/CMake/OpenABE 构建固定 `/usr/bin` 工具链并使用新的构建状态，
+不复用 checkout 中可能带有旧编译器、RPATH 或 prefix 的 cache。Waf 强制
+`onnxruntime >= 1.26.0`，安装器还检查 `onnxruntime.pc` 指向的真实
+`libonnxruntime.so` 仍在 `/opt/onnxruntime` SDK 内，保证头文件、库和运行时加载使用
+同一系统配对。依赖安装完成后，脚本会更新
+`/usr/local/share/ndnsf/global-dependency-identity.json`；Waf 校验其中记录的真实路径、
+SONAME 和 SHA-256，替换同 SONAME 库后必须重新走全局安装流程。ONNX Runtime
+身份变化时安装器直接停止，先恢复或重新安装 canonical SDK 后才能继续。
 
 ## Install The Stack
 

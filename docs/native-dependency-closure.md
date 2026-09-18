@@ -7,8 +7,10 @@
 拒绝 host 对 `/opt/ndn-base`、`/opt/onnx`、`/opt/ndnsf-stage` 等容器根的误用；
 只有显式 `NDNSF_CONTAINER_BUILD=1` 的容器构建才允许其声明的 SDK 根。
 
-本机的 Boost 1.71 与 `libndn-cxx` 不是同一个依赖层。Boost 头文件和库使用系统配对：
-`/usr/include` 与 `/usr/lib/x86_64-linux-gnu`。本机已安装的 NDN-CXX/NFD 使用
+本机的 Boost 1.71 与 `libndn-cxx` 不是同一个依赖层。Boost 头文件和库固定使用
+系统配对：`/usr/include` 与 `/usr/lib/x86_64-linux-gnu`；Waf、安装器和 host
+binding 都拒绝 `BOOST_ROOT`、`BOOST_INCLUDEDIR`、`BOOST_LIBRARYDIR` 或
+`--boost-*` 选项把它改到其他目录。本机已安装的 NDN-CXX/NFD 使用
 `/usr/local/include` 与 `/usr/local/lib`。因此，“Boost 1.71”不需要通过仓库目录
 `.local-boost171` 来选择。
 
@@ -30,7 +32,7 @@ ABI 混用风险，不会解决当前的同 SONAME `libndn-cxx` 混用问题。
 | Boost 1.71 | `/usr/include`, `/usr/lib/x86_64-linux-gnu` | use the matching system pair |
 | NDN-CXX 0.9.0 and NFD | `/usr/local/include`, `/usr/local/lib` | one real `libndn-cxx.so.0.9.0` for the host request path |
 | NDN-SVS, NAC-ABE, ONNX full-protobuf, tokenizer bridge | `/usr/local/include`, `/usr/local/lib` | one installed header/library/archive pair; no checkout prefix |
-| ONNX Runtime 1.26 | `/opt/onnxruntime` (versioned target `/opt/onnxruntime-1.26.0`) | host global versioned SDK; use the installed `onnxruntime.pc` closure; do not point at a model or build checkout |
+| ONNX Runtime 1.26 | `/opt/onnxruntime` (versioned target `/opt/onnxruntime-1.26.0`) | host global versioned SDK; Waf and the installer require `onnxruntime >= 1.26.0`, the installed `onnxruntime.pc` closure and the real DSO under this SDK; do not point at a model or build checkout |
 | `.local-boost171` | historical checkout staging | never enter an ordinary host `LD_LIBRARY_PATH` or implicit Waf/pkg-config search |
 
 当前两份同 SONAME 的 `libndn-cxx.so.0.9.0` 字节不同：
@@ -79,12 +81,26 @@ pkg-config/linker flags 不接受该 token。容器仍必须同时声明 `/opt/n
 及其运行时依赖安装到全局前缀，不能把 `$DEPS_DIR/local` 当作运行时或构建前缀。
 当前脚本将 `/usr/local` 作为 Waf、CMake 和 OpenABE 的显式安装前缀；
 `dependencies/` 下的 checkout 只用于编译，不会被写入运行时搜索路径。
-`install_ndnsf_stack.sh` 对 `libndn-cxx`、`ndnsd`、`libndn-svs` 和 `libnac-abe`
-执行最低版本和安装 prefix 检查，并验证 OpenABE、ONNX full-protobuf 与 tokenizer
-bridge 的实际文件都解析到 `/usr/local/lib`。缺失或过旧的 pkg-config 依赖会触发源码
-重建；无法由该脚本重建的 ONNX/tokenizer 文件会直接阻止继续；
+`install_ndnsf_stack.sh` 先验证 Boost 1.71 的头库配对，再对
+`libndn-cxx`、`ndnsd`、`libndn-svs` 和 `libnac-abe` 执行最低版本和安装 prefix
+检查，并验证 OpenABE、ONNX full-protobuf 与 tokenizer bridge 的实际文件都解析到
+`/usr/local/lib`。ONNX Runtime 也必须通过全局 `onnxruntime.pc` 解析到
+`/opt/onnxruntime`（其真实版本目录可以是 `/opt/onnxruntime-1.26.0`）；Waf 同样以
+`pkg-config` 强制 `onnxruntime >= 1.26.0`，并检查真实 `libonnxruntime.so` 仍在该
+SDK 内；它不是模型目录或本次实验的临时依赖。缺失或过旧的 pkg-config 依赖会触发源码重建；
+无法由该脚本重建的 ONNX/ONNX Runtime/tokenizer 文件会直接阻止继续；
 `--no-dependencies` 也不能绕过闭包检查。安装 Core/DI 后，脚本从同一 `/usr/local/lib`
 计算摘要回执再构建两个 Python binding，因而不会把未安装的 checkout 产物当作依赖。
+依赖安装完成后还会写入 `/usr/local/share/ndnsf/global-dependency-identity.json`；其中
+记录 NDN-CXX、NDNSD、NDN-SVS、NAC-ABE、OpenABE 和 ONNX Runtime 的真实路径、SONAME
+及 SHA-256。直接运行 Waf 也必须匹配这份回执，文件被替换或 ABI 身份变化时先重新执行
+全局安装流程，不能只凭相同 SONAME 继续构建。ONNX Runtime 不由该脚本源码重建；
+一旦它的身份变化，安装器会停止并要求先恢复或重新安装 canonical SDK，不会把新 DSO
+直接登记为新的回执。
+依赖源码的 Waf/CMake/OpenABE 子构建会清除 `BOOST_ROOT`、`BOOST_INCLUDEDIR` 和
+`BOOST_LIBRARYDIR`，固定 `/usr/bin` 编译器/binutils，并使用新的 Waf/CMake
+构建状态，不复用源码 checkout 里的旧 cache；最终 Boost 符号链接目标和 SONAME
+也必须仍是系统 1.71 配对。
 安装器不会复用未知来源的 Waf cache：默认每次用清理后的 `/usr/bin/gcc`、`/usr/bin/g++`
 、`/usr/bin/ld`、`/usr/bin/ar` 及 `/usr/bin/pkg-config`，并清除 `PKGCONFIG`、
 `LD/AR/AS/RANLIB/NM/STRIP` 等工具覆盖和未污染的 linker 环境重新 configure；
@@ -100,9 +116,10 @@ bridge 的实际文件都解析到 `/usr/local/lib`。缺失或过旧的 pkg-con
 （例如带有 `.local-boost171` RPATH 的 ASan 树）不属于当前候选，不能通过修改
 `LD_LIBRARY_PATH` 临时复用；应重新配置并让 Waf 生成新的依赖闭包。
 
-这里的“统一”指同一进程内所有 NDN-CXX、NDN-SVS、NAC-ABE、ONNX 和 tokenizer
-bridge 使用全局安装的真实文件和摘要。本机 Boost 1.71 仍固定使用系统头文件和库
-目录；其余 NDNSF 直接依赖安装到 `/usr/local`。SIF 内部使用它自己的 base/APP
+这里的“统一”指同一进程内所有 NDN-CXX、NDN-SVS、NAC-ABE、ONNX、ONNX Runtime
+和 tokenizer bridge 使用全局安装的真实文件和摘要。本机 Boost 1.71 固定使用
+`/usr/include` 与 `/usr/lib/x86_64-linux-gnu`；NDNSF 直接依赖安装到 `/usr/local`，
+ONNX Runtime 只使用声明的版本化系统 SDK。SIF 内部使用它自己的 base/APP
 全局闭包，不能把宿主文件带进镜像。
 
 ## SIF boundary
