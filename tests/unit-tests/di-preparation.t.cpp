@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
@@ -13,10 +14,24 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
 namespace ndnsf::di {
+
+class NativeCanonicalPublisherTestAccess
+{
+public:
+  using Transport = NativeCanonicalArtifactPublisher::Transport;
+  static NativeCanonicalArtifactPublisher create(
+    Transport transport, NativeCanonicalPublicationOptions options,
+    NativeCanonicalArtifactPublisher::SourcePort source)
+  {
+    return NativeCanonicalArtifactPublisher(std::move(transport), "/service",
+                                            std::move(options), std::move(source));
+  }
+};
 
 // Test-only access keeps the production cache owner private while allowing
 // deterministic C++ fixtures to hold a job at its source barrier.
@@ -36,6 +51,7 @@ struct Spec185PreparationTestAccess
 namespace {
 
 using namespace ndnsf::di;
+using namespace ndn_service_framework;
 
 struct Fixture
 {
@@ -419,6 +435,85 @@ BOOST_AUTO_TEST_CASE(PinnedEntryBlocksEvictionUntilItsLeaseIsReleased)
   auto replacement = cache.prepare(other);
   BOOST_CHECK_EQUAL(cache.entryCount(), 1U);
   BOOST_CHECK(!replacement.manifest().preparationKeyDigest.empty());
+}
+
+BOOST_AUTO_TEST_CASE(PreparedPackageOwnsPublicationLeaseUntilCacheEviction)
+{
+  Fixture fixture;
+  auto publicationLease = std::make_shared<int>(189);
+  const std::weak_ptr<int> weakPublicationLease = publicationLease;
+  std::atomic<unsigned> publicationCalls{0};
+  NativeCanonicalPublisherTestAccess::Transport transport{
+    [] (std::function<void()> work) { work(); },
+    [] { return false; },
+    [] {
+      PreparedServiceRequest request;
+      request.requestId = "spec189-cache-owner";
+      request.serviceName = ndn::Name("/service");
+      return request;
+    },
+    [&publicationCalls, weakPublicationLease]
+      (const PreparedServiceRequest&, const std::vector<std::uint8_t>& bytes,
+       const std::string& label, const NativeRequestControl& control) {
+      control.requireActive();
+      publicationCalls.fetch_add(1, std::memory_order_relaxed);
+      ndn_service_framework::LargeDataPublishResult result;
+      result.success = true;
+      result.encrypted = true;
+      result.objectId = label;
+      result.encryptedDataName = ndn::Name("/fixture/encrypted").append(label).appendVersion(1);
+      result.plaintextSize = bytes.size();
+      result.contentDigest = nativePlanningDigest(bytes.data(), bytes.size());
+      result.manifestDigest = nativePlanningDigest("spec189-cache-owner-transport");
+      result.authorizationScope = "/SERVICE/service";
+      result.protectionEpoch = "spec189-cache-owner-epoch";
+      result.servingLease = weakPublicationLease.lock();
+      if (!result.servingLease) {
+        result.success = false;
+        result.errorMessage = "fixture publication lease expired";
+      }
+      return result;
+    },
+    [] (const std::vector<ndn_service_framework::LargeDataPublishResult>&) {},
+    true};
+  const NativeCanonicalPublicationOptions options{
+    "/fixture/NDNSF/DI/ARTIFACT", nativePlanningDigest("spec189-cache-owner-manifest"),
+    {}, nativePlanningDigest("spec189-cache-owner-profile")};
+  const auto source = std::make_shared<const NativeCanonicalSource>(fixture.source);
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    std::move(transport), options,
+    [source] (const NativeInspectedModel&, const NativeRequestControl&) { return source; });
+  auto published = fixture.spec;
+  published.preparePublication = [publisher = std::move(publisher)]
+    (const NativeCanonicalPreparationCatalog&, const NativeInspectedModel& model,
+     const NativeRequestControl& control) { return publisher.prepare(model, control); };
+
+  ModelPreparationCache cache(8 << 20, 1, std::chrono::seconds(5));
+  std::optional<PreparedModel> prepared{cache.prepare(published)};
+  BOOST_REQUIRE_EQUAL(publicationCalls.load(std::memory_order_relaxed), 2U);
+  BOOST_REQUIRE(!weakPublicationLease.expired());
+  publicationLease.reset();
+
+  // The application handle is the active owner.  A second package cannot evict
+  // it while that lease is live, even though the cache has one entry capacity.
+  auto replacement = fixture.catalog;
+  replacement["source"]["data_name"] = "/fixture/replacement-source";
+  auto replacementSpec = fixture.withCatalog(replacement);
+  BOOST_CHECK_EXCEPTION(cache.prepare(replacementSpec), std::runtime_error,
+                        [] (const std::runtime_error& error) {
+                          return std::string(error.what()).find("BUDGET_EXCEEDED") != std::string::npos;
+                        });
+  BOOST_CHECK(!weakPublicationLease.expired());
+
+  // Releasing the last PreparedModel view permits the cache to evict the
+  // package.  The replacement has no publication receipt, so the old serving
+  // lease must disappear with that package instead of being retained by the
+  // publisher or a hidden cache index.
+  prepared.reset();
+  auto evicted = cache.prepare(replacementSpec);
+  BOOST_CHECK(!evicted.manifest().preparationKeyDigest.empty());
+  BOOST_CHECK_EQUAL(publicationCalls.load(std::memory_order_relaxed), 2U);
+  BOOST_CHECK(weakPublicationLease.expired());
 }
 
 BOOST_AUTO_TEST_CASE(AsyncWaiterTimeoutUsesASeparateGateAndAllowsReentrantCancel)
