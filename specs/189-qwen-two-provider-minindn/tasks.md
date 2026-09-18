@@ -24,7 +24,7 @@
 | [T001 Freeze candidate and production path](#t001) | PARTIAL | — | candidate/artifact identity frozen; registered example/source closure and global loader checks recorded; candidate handoff identity and real prepare receipt still pending | 2026-09-18 11:20 -05:00 |
 | [T002 Prepare Qwen graph and split packages](#t002) | PARTIAL | T001 | real Qwen graph, initializer and two stage artifacts checked; native prepare oracle pending | 2026-09-18 02:22 -05:00 |
 | [T003 Publish/reuse layer references in Repo](#t003) | PARTIAL | T002 | native layer payload owner, cold/hot layer receipt, legacy reuse, digest/range/cancellation checks and shared Repo transaction lock pass; real Qwen production prepare receipt remains pending | 2026-09-18 11:01 -05:00 |
-| [T004 Project payload-free request](#t004) | NOT_STARTED | T003 | request wire parser/oracle and oversized-model negative pending | 2026-09-18 00:00 -05:00 |
+| [T004 Project payload-free request](#t004) | PARTIAL | T003 | wire-only C++ reference/URL/oversized negatives pass; PreparedModel/Repo reuse and production request counters remain pending | 2026-09-18 11:35 -05:00 |
 | [T005 Produce real two-provider ACK/Selection](#t005) | PARTIAL | T004 | real signed offers/Selection observed; C++ placement oracle and no-fetch proof pending | 2026-09-18 02:22 -05:00 |
 | [T006 Fetch and assemble selected layers](#t006) | PARTIAL | T005 | grant verification and endpoint fix observed; fetch/assembly/runner counters and regression pending | 2026-09-18 02:22 -05:00 |
 | [T007 Execute hidden-state handoff and terminal oracle](#t007) | PARTIAL | T006 | Spec189 C++ oracle is registered, globally built and has positive/negative selector checks; real hidden-state handoff and terminal run pending | 2026-09-18 04:05 -05:00 |
@@ -34,12 +34,12 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 11:20 -0500
+**Updated**: 2026-09-18 11:35 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
 through signed ACK/Selection and protected-grant verification. T001, T002,
-T003, T005, T006, T007 and T009 are `PARTIAL`; T004, T008 and T010 remain
+T003, T004, T005, T006, T007 and T009 are `PARTIAL`; T008 and T010 remain
 `NOT_STARTED`. B189-3 is `BLOCKED` at the missing post-grant execution
 boundary, not at ACK/Selection. The build/selector evidence is in
 [B189 build evidence](evidence/b189-build-20260918.md); the durable audit and

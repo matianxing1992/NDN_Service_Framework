@@ -20,8 +20,8 @@ runner creation before Selection.
 | --- | --- | --- |
 | production entry/callers | `covered-partial` | real requester and Core ACK/Selection path observed in r21 |
 | implementation/wire | `covered-partial` | signed assignments and Selection marker observed; payload parser and placement binding oracle absent |
-| test/harness/oracle | `gap` | no Spec189 C++ placement selector/target exists yet |
-| build/source closure | `gap` | no registered Spec189 oracle source/target map |
+| test/harness/oracle | `covered-partial` | `spec189-request-wire` now proves the reference-only envelope and negative wire cases; ACK/Selection and no-fetch oracle remain absent |
+| build/source closure | `covered-partial` | `tests/wscript` registers the wire-only selector; complete placement source map remains open |
 | migration/evidence | `covered-partial` | r04-r21 logs retained; acceptance and repeat remain open |
 
 ## Closure decision
@@ -29,3 +29,27 @@ runner creation before Selection.
 `OPEN_FOR_NEXT_BATCH` with trigger: register and run the C++ request/placement
 oracle, then preserve the no-fetch-before-Selection result. Existing ACK and
 Selection observations do not count as task completion.
+
+## T004 wire-only request gate — 2026-09-18 11:35 -0500
+
+The new C++ target `spec189-request-wire` calls the production
+`encodeNativeRequestEnvelope` and passed three cases:
+
+| Case | Result |
+| --- | --- |
+| repeated request envelope | stable model reference with all namespace/name/digest/size/epoch/scope fields; no model payload or URL; request and invocation identities differ |
+| arbitrary URL / invalid reference | rejected before encoding |
+| oversized inline payload | 16 MiB limit rejected before wire construction |
+
+Build used the existing globally configured tree with `-j4` and completed in
+16.778 seconds; logs are
+`.codex-tmp/spec189-t004-request-wire-build.log` and
+`.codex-tmp/spec189-t004-request-wire-selector.log`. The frozen static review
+snapshot `.codex-tmp/spec189-t004-request-review-r2/diff.patch` (SHA-256
+`8a074fa991d7aa35a7dc2ed64aa2510162c8f8863cdf8d483c3e946d7a0e7ef0`) received
+`STATIC_PASS` with no P0/P1/P2.
+
+This is deliberately a **wire-only** C++ gate. It does not exercise
+`PreparedModel::request`, a prepared lease, Repo publication counters, or the
+real two-provider ACK/Selection path. T004 is therefore `PARTIAL`, and B189-2
+remains `NOT_ACCEPTED` until the production-handle and placement evidence run.

@@ -239,6 +239,20 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec189 T004 wire-only request oracle.  This is deliberately separate
+    # from the historical Spec188 projection selector so its oversized and
+    # arbitrary-model-reference negatives have an independent source/build
+    # identity.  It does not claim PreparedModel/Repo runtime reuse.
+    bld.program(target='../spec189-request-wire',
+                name='spec189-request-wire',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec189-request-reference.t.cpp')],
+                includes=['..', '../ndn-service-framework'],
+                use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec188 B188-4 bounded file-backed large-data serving.  The selector
     # exercises the production ServiceUser interest path, exact signed
     # segments, retransmission window and publication-file cleanup.
