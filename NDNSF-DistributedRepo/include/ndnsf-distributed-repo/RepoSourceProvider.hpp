@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -44,6 +45,13 @@ public:
     std::size_t missIngests = 0;
     std::size_t publicationCalls = 0;
     std::size_t publicationHits = 0;
+  };
+
+  struct MaterialSelectionResult
+  {
+    std::shared_ptr<ndnsf::di::NativeCanonicalSource::MaterialManifest> manifest;
+    std::vector<ndnsf::di::NativeCanonicalSource::MaterialPayload> payloads;
+    std::uint64_t bytesRead = 0;
   };
 
   explicit RepoSourceProvider(std::shared_ptr<RepoCore> repo, Fallback fallback = {})
@@ -662,6 +670,191 @@ public:
   ndnsf::di::NativeCanonicalSource load(
     const ndnsf::di::RepositorySourceRequest& request) const
   { return load(request, m_fallback); }
+
+  /** Read the authenticated material index and only the node/shared payloads
+   * selected after ACK.  This is the Repo-side consumer seam; it never falls
+   * back to the complete canonical source or external initializer. */
+  MaterialSelectionResult loadMaterialSelection(
+    const std::string& rootDataName,
+    const std::string& expectedRootDigest,
+    const std::vector<std::uint64_t>& nodeIndices,
+    std::uint64_t maxBytes,
+    std::chrono::steady_clock::time_point deadline,
+    const std::function<void()>& ownerFence = {}) const
+  {
+    if (rootDataName.empty() || expectedRootDigest.empty() || nodeIndices.empty() || maxBytes == 0)
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        "material selection request is incomplete");
+    const auto requireDeadline = [&] {
+      if (ownerFence)
+        ownerFence();
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Timeout,
+          "material selection deadline expired");
+    };
+    std::uint64_t bytesRead = 0;
+    const auto readObject = [&] (const std::string& name,
+                                 const std::string& digest,
+                                 std::uint64_t expectedSize) {
+      requireDeadline();
+      const auto manifest = m_repo->getManifest(name);
+      if (!digest.empty() && "sha256:" + manifest.sha256 != digest)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "material object digest differs from root receipt");
+      if (expectedSize != 0 && manifest.size != expectedSize)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "material object size differs from root receipt");
+      if (manifest.size > maxBytes || bytesRead > maxBytes - manifest.size)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "material selection exceeds read budget");
+      std::vector<std::uint8_t> bytes;
+      bytes.reserve(static_cast<std::size_t>(manifest.size));
+      constexpr std::uint64_t kReadWindow = 1U << 20;
+      for (std::uint64_t offset = 0; offset < manifest.size;) {
+        requireDeadline();
+        const auto length = std::min(kReadWindow, manifest.size - offset);
+        const auto part = m_repo->getRange(name, {offset, length});
+        if (part.size() != length)
+          throw ndnsf::di::RepositorySourceError(
+            ndnsf::di::RepositorySourceError::Kind::Unavailable,
+            "material range read returned an unexpected size");
+        bytes.insert(bytes.end(), part.begin(), part.end());
+        offset += length;
+      }
+      if (ndnsf::di::nativePlanningDigest(bytes.data(), bytes.size()) != digest)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "material object payload digest differs from receipt");
+      bytesRead += manifest.size;
+      return bytes;
+    };
+
+    const auto rootBytes = readObject(rootDataName, expectedRootDigest, 0);
+    const auto root = ndnsf::di::nativeParseJson(
+      std::string(rootBytes.begin(), rootBytes.end()));
+    if (root.value("schema", std::string{}) != "ndnsf-di-canonical-model-manifest-v1" ||
+        root.value("state", std::string{}) != "ACTIVE" || !root.contains("metadata"))
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        "material root schema is invalid");
+    const auto& metadata = root.at("metadata");
+    const auto manifestName = metadata.value("materialManifestDataName", std::string{});
+    const auto manifestDigest = metadata.value("materialManifestDigest", std::string{});
+    const auto identityDigest = metadata.value("materialIdentityDigest", std::string{});
+    const auto objects = metadata.value("materialObjects", ndnsf::di::NativeJson::array());
+    if (manifestName.empty() || manifestDigest.empty() || identityDigest.empty() ||
+        !objects.is_array())
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        "material root references are incomplete");
+    std::map<std::string, ndnsf::di::NativeJson> objectById;
+    for (const auto& object : objects) {
+      const auto id = object.value("payloadId", std::string{});
+      if (id.empty() || objectById.count(id) != 0)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "material root payload identity is invalid");
+      objectById.emplace(id, object);
+    }
+    const auto manifestBytes = readObject(manifestName, manifestDigest, 0);
+    auto resultManifest = ndnsf::di::parseNativeCanonicalMaterialManifest(manifestBytes);
+    if (resultManifest->manifestDigest != identityDigest)
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        "material manifest identity differs from root receipt");
+
+    std::set<std::string> selectedIds{resultManifest->templatePayloadId};
+    std::set<std::string> selectedNodes;
+    std::set<std::string> selectedDependencies;
+    std::optional<std::uint64_t> previousNodeIndex;
+    for (const auto nodeIndex : nodeIndices) {
+      if (previousNodeIndex && nodeIndex <= *previousNodeIndex)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "selected material nodes are not in canonical order");
+      previousNodeIndex = nodeIndex;
+      const auto logicalName = "node/" + std::to_string(nodeIndex);
+      const auto* match = static_cast<const ndnsf::di::NativeCanonicalSource::MaterialReference*>(nullptr);
+      for (const auto& reference : resultManifest->references)
+        if (reference.kind == "graph-node" && reference.logicalName == logicalName) {
+          match = &reference;
+          break;
+        }
+      if (match == nullptr || !selectedNodes.insert(logicalName).second)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "selected material node is absent or duplicated");
+      selectedIds.insert(match->payloadId);
+      selectedDependencies.insert(match->dependencies.begin(), match->dependencies.end());
+    }
+    for (const auto& dependency : selectedDependencies) {
+      const ndnsf::di::NativeCanonicalSource::MaterialReference* match = nullptr;
+      for (const auto& reference : resultManifest->references) {
+        if (reference.kind == "shared-initializer" &&
+            reference.logicalName == dependency) {
+          if (match != nullptr)
+            throw ndnsf::di::RepositorySourceError(
+              ndnsf::di::RepositorySourceError::Kind::Unavailable,
+              "selected material dependency has duplicate references");
+          match = &reference;
+        }
+      }
+      if (match == nullptr)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "selected material dependency is absent from manifest");
+      selectedIds.insert(match->payloadId);
+    }
+    for (const auto& reference : resultManifest->references) {
+      if (reference.kind == "shared-initializer" &&
+          selectedDependencies.count(reference.logicalName) != 0)
+        selectedIds.insert(reference.payloadId);
+    }
+    for (const auto& payloadId : selectedIds) {
+      requireDeadline();
+      const auto object = objectById.find(payloadId);
+      if (object == objectById.end())
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "selected material payload is absent from root");
+      const auto dataName = object->second.value("dataName", std::string{});
+      const auto digest = object->second.value("digest", std::string{});
+      const auto expectedSize = object->second.value("bytes", std::uint64_t{0});
+      const auto* reference = static_cast<const ndnsf::di::NativeCanonicalSource::MaterialReference*>(nullptr);
+      for (const auto& candidate : resultManifest->references) {
+        if (candidate.payloadId == payloadId) {
+          if (reference != nullptr &&
+              (candidate.digest != reference->digest || candidate.bytes != reference->bytes))
+            throw ndnsf::di::RepositorySourceError(
+              ndnsf::di::RepositorySourceError::Kind::Unavailable,
+              "material payload references disagree");
+          if (reference == nullptr)
+            reference = &candidate;
+        }
+      }
+      if (dataName.empty() || digest.empty() || expectedSize == 0)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "selected material payload receipt is incomplete");
+      if (reference == nullptr || reference->digest != digest ||
+          reference->bytes != expectedSize)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "selected material payload differs from manifest reference");
+      auto bytes = readObject(dataName, digest, expectedSize);
+      resultManifest->payloads.push_back({payloadId, digest, std::move(bytes)});
+    }
+    resultManifest->payloadsComplete = false;
+    resultManifest->validate();
+    auto selectedPayloads = std::move(resultManifest->payloads);
+    resultManifest->payloads.clear();
+    return {std::move(resultManifest), std::move(selectedPayloads), bytesRead};
+  }
 
   Stats stats() const noexcept
   {

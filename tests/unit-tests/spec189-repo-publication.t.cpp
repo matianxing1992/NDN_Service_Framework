@@ -247,6 +247,27 @@ BOOST_AUTO_TEST_CASE(MaterialManifestPublishesWithOwnedTransactionsAndRejectsCor
   BOOST_CHECK_EQUAL(second.materialManifestDataName, first.materialManifestDataName);
   BOOST_CHECK(second.materialDataNames == first.materialDataNames);
 
+  // The post-ACK consumer reads the authenticated index and one selected node
+  // without falling back to the complete canonical source/initializer.
+  const auto selected = provider.loadMaterialSelection(
+    first.rootDataName, first.manifestDigest, {0}, 1U << 20,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10));
+  BOOST_REQUIRE(selected.manifest);
+  BOOST_REQUIRE(selected.manifest->payloads.empty());
+  BOOST_REQUIRE(!selected.payloads.empty());
+  BOOST_CHECK_LT(selected.payloads.size(), first.materialPayloadIds.size());
+  NativeCanonicalSource selectedSource;
+  selectedSource.materialManifest = selected.manifest;
+  selectedSource.materialPayloads = selected.payloads;
+  NativeAssemblyControl selectedControl{
+    std::chrono::steady_clock::now() + std::chrono::seconds(10), [] {}, 1U << 20, 1U << 20};
+  const auto selectedModel = materializeNativeCanonicalModel(
+    selectedSource, {0}, selectedControl);
+  BOOST_CHECK(!selectedModel.empty());
+  BOOST_CHECK_THROW(provider.loadMaterialSelection(
+    first.rootDataName, first.manifestDigest, {1, 0}, 1U << 20,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10)), RepositorySourceError);
+
   const auto original = fixture.repo->get(first.materialDataNames.front());
   fixture.repo->put(first.materialDataNames.front(), {0xaa, 0xbb}, "foreign-material");
   BOOST_CHECK_THROW(provider.publish(

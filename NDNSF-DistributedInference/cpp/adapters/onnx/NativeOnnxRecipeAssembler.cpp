@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -1628,9 +1629,9 @@ void NativeCanonicalSource::MaterialManifest::validate() const
   if (schema != "ndnsf-di-canonical-material-manifest-v1" ||
       !validDigest(sourceDigest) || !validDigest(graphDigest) ||
       !validDigest(initializerDigest) || !validDigest(manifestDigest) ||
-      templatePayloadId.empty() ||
+      templatePayloadId.empty() || (payloadsComplete && payloads.empty()) ||
       nativePlanningDigest(canonicalJson()) != manifestDigest || references.empty() ||
-      payloads.empty())
+      (payloadsComplete && payloads.empty()))
     throw std::invalid_argument("native canonical material manifest is incomplete");
 
   std::set<std::string> payloadIds;
@@ -1644,16 +1645,18 @@ void NativeCanonicalSource::MaterialManifest::validate() const
     payloadById.emplace(payload.payloadId, &payload);
   }
   const auto templatePayload = payloadById.find(templatePayloadId);
-  if (templatePayload == payloadById.end())
+  if (payloadsComplete && templatePayload == payloadById.end())
     throw std::invalid_argument("native canonical material template is missing");
   std::set<std::string> referenceIds;
   std::set<std::string> referencedPayloadIds;
   for (const auto& reference : references) {
-    if (reference.payloadId.empty() || !payloadIds.count(reference.payloadId) ||
+    if (reference.payloadId.empty() ||
+        (payloadsComplete && !payloadIds.count(reference.payloadId)) ||
         reference.kind.empty() || reference.logicalName.empty() || !validDigest(reference.digest) ||
         reference.bytes == 0 ||
-        reference.digest != payloadById.at(reference.payloadId)->digest ||
-        reference.bytes != payloadById.at(reference.payloadId)->bytes.size() ||
+        (payloadIds.count(reference.payloadId) &&
+         (reference.digest != payloadById.at(reference.payloadId)->digest ||
+          reference.bytes != payloadById.at(reference.payloadId)->bytes.size())) ||
         !referenceIds.insert(reference.logicalName + "\x1f" + reference.kind).second)
       throw std::invalid_argument("native canonical material reference is invalid");
     referencedPayloadIds.insert(reference.payloadId);
@@ -1678,8 +1681,13 @@ void NativeCanonicalSource::MaterialManifest::validate() const
       throw std::invalid_argument("native canonical material reference kind is unsupported");
     }
   }
-  if (referencedPayloadIds.size() != payloadIds.size())
+  if (payloadsComplete && referencedPayloadIds.size() != payloadIds.size())
     throw std::invalid_argument("native canonical material payload is unreferenced");
+  if (!payloadsComplete) {
+    for (const auto& payload : payloads)
+      if (!referencedPayloadIds.count(payload.payloadId))
+        throw std::invalid_argument("native canonical selected payload is unreferenced");
+  }
 }
 
 std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
@@ -1767,6 +1775,158 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
   accountMaterial(materialManifestJson.size());
   result->manifestDigest = nativePlanningDigest(result->canonicalJson());
   result->validate();
+  return result;
+}
+
+std::shared_ptr<NativeCanonicalSource::MaterialManifest>
+parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes)
+{
+  if (bytes.empty() || bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    throw std::invalid_argument("native canonical material manifest bytes are invalid");
+  const auto root = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+  if (!root.is_object())
+    throw std::invalid_argument("native canonical material manifest is not an object");
+  auto result = std::make_shared<NativeCanonicalSource::MaterialManifest>();
+  result->schema = root.value("schema", std::string{});
+  result->sourceDigest = root.value("sourceDigest", std::string{});
+  result->graphDigest = root.value("graphDigest", std::string{});
+  result->initializerDigest = root.value("initializerDigest", std::string{});
+  result->manifestDigest = digest(bytes);
+  if (!root.contains("templatePayloadId") || !root.at("templatePayloadId").is_string())
+    throw std::invalid_argument("native canonical material template is missing");
+  result->templatePayloadId = root.at("templatePayloadId").get<std::string>();
+  const auto references = root.value("references", NativeJson::array());
+  if (!references.is_array())
+    throw std::invalid_argument("native canonical material references are invalid");
+  for (const auto& item : references) {
+    if (!item.is_object())
+      throw std::invalid_argument("native canonical material reference is invalid");
+    NativeCanonicalSource::MaterialReference reference;
+    reference.payloadId = item.value("payloadId", std::string{});
+    reference.kind = item.value("kind", std::string{});
+    reference.logicalName = item.value("logicalName", std::string{});
+    reference.nodeIndex = item.value("nodeIndex", std::uint64_t{0});
+    reference.digest = item.value("digest", std::string{});
+    reference.bytes = item.value("bytes", std::uint64_t{0});
+    const auto dependencies = item.value("dependencies", NativeJson::array());
+    if (!dependencies.is_array())
+      throw std::invalid_argument("native canonical material dependencies are invalid");
+    for (const auto& dependency : dependencies)
+      if (!dependency.is_string())
+        throw std::invalid_argument("native canonical material dependency is invalid");
+      else
+        reference.dependencies.push_back(dependency.get<std::string>());
+    reference.sharedDigest = item.value("sharedDigest", std::string{});
+    result->references.push_back(std::move(reference));
+  }
+  // The reference index is authenticated by manifestDigest.  Payload bytes
+  // are deliberately supplied separately by the post-Selection reader.
+  result->payloadsComplete = false;
+  result->validate();
+  return result;
+}
+
+std::vector<std::uint8_t>
+materializeNativeCanonicalModel(const NativeCanonicalSource& source,
+                                const std::vector<std::uint64_t>& nodeIndices,
+                                const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  if (!source.materialManifest || nodeIndices.empty())
+    fail("MATERIAL_SELECTION");
+  source.materialManifest->validate();
+  std::map<std::string, const NativeCanonicalSource::MaterialPayload*> payloads;
+  for (const auto& payload : source.materialPayloads) {
+    if (payload.payloadId.empty() || payload.bytes.empty() ||
+        digest(payload.bytes) != payload.digest || payloads.count(payload.payloadId) != 0)
+      fail("MATERIAL_PAYLOAD");
+    payloads.emplace(payload.payloadId, &payload);
+  }
+  const auto referencesForPayload = [&] (const std::string& payloadId) {
+    std::vector<const NativeCanonicalSource::MaterialReference*> matches;
+    for (const auto& reference : source.materialManifest->references)
+      if (reference.payloadId == payloadId) matches.push_back(&reference);
+    return matches;
+  };
+  for (const auto& item : payloads) {
+    const auto matches = referencesForPayload(item.first);
+    if (matches.empty())
+      fail("MATERIAL_PAYLOAD");
+    for (const auto* match : matches)
+      if (match->digest != item.second->digest || match->bytes != item.second->bytes.size())
+        fail("MATERIAL_PAYLOAD");
+  }
+  const auto findReference = [&] (const std::string& kind,
+                                  const std::string& logicalName)
+    -> const NativeCanonicalSource::MaterialReference* {
+    for (const auto& reference : source.materialManifest->references)
+      if (reference.kind == kind && reference.logicalName == logicalName)
+        return &reference;
+    return nullptr;
+  };
+  const auto templateReference = findReference("graph-template", "__template__");
+  if (templateReference == nullptr)
+    fail("MATERIAL_TEMPLATE");
+  const auto templatePayload = payloads.find(templateReference->payloadId);
+  if (templatePayload == payloads.end())
+    fail("MATERIAL_TEMPLATE");
+  onnx::ModelProto model;
+  if (!model.ParseFromArray(templatePayload->second->bytes.data(),
+                            static_cast<int>(templatePayload->second->bytes.size())) ||
+      !model.has_graph() || model.graph().node_size() != 0 ||
+      model.graph().initializer_size() != 0)
+    fail("MATERIAL_TEMPLATE");
+
+  std::set<std::uint64_t> seenNodes;
+  std::set<std::string> dependencies;
+  std::optional<std::uint64_t> previousNodeIndex;
+  for (const auto nodeIndex : nodeIndices) {
+    checkActive(control);
+    if (previousNodeIndex && nodeIndex <= *previousNodeIndex)
+      fail("MATERIAL_SELECTION");
+    previousNodeIndex = nodeIndex;
+    if (!seenNodes.insert(nodeIndex).second)
+      fail("MATERIAL_SELECTION");
+    const auto* reference = findReference("graph-node", "node/" + std::to_string(nodeIndex));
+    if (reference == nullptr)
+      fail("MATERIAL_NODE");
+    const auto payload = payloads.find(reference->payloadId);
+    if (payload == payloads.end())
+      fail("MATERIAL_NODE");
+    onnx::NodeProto node;
+    if (!node.ParseFromArray(payload->second->bytes.data(),
+                             static_cast<int>(payload->second->bytes.size())))
+      fail("MATERIAL_NODE");
+    *model.mutable_graph()->add_node() = std::move(node);
+    dependencies.insert(reference->dependencies.begin(), reference->dependencies.end());
+  }
+  for (const auto& dependency : dependencies) {
+    const auto* match = findReference("shared-initializer", dependency);
+    if (match == nullptr || payloads.find(match->payloadId) == payloads.end())
+      fail("MATERIAL_INITIALIZER");
+  }
+  // Initializer references are emitted in canonical source order.  Preserve
+  // that order while fetching only dependencies of this selected role.
+  for (const auto& reference : source.materialManifest->references) {
+    checkActive(control);
+    if (reference.kind != "shared-initializer" ||
+        dependencies.count(reference.logicalName) == 0)
+      continue;
+    const auto payload = payloads.find(reference.payloadId);
+    if (payload == payloads.end())
+      fail("MATERIAL_INITIALIZER");
+    onnx::TensorProto initializer;
+    if (!initializer.ParseFromArray(payload->second->bytes.data(),
+                                    static_cast<int>(payload->second->bytes.size())))
+      fail("MATERIAL_INITIALIZER");
+    *model.mutable_graph()->add_initializer() = std::move(initializer);
+  }
+  if (model.graph().node_size() != static_cast<int>(nodeIndices.size()) ||
+      model.graph().node_size() > static_cast<int>(std::numeric_limits<int>::max()))
+    fail("MATERIAL_SELECTION");
+  const auto result = deterministicMessageVector(model);
+  if (control.maxAssembledBytes == 0 || result.size() > control.maxAssembledBytes)
+    fail("MATERIAL_LIMIT");
   return result;
 }
 
