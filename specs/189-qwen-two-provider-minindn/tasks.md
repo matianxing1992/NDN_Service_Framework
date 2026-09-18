@@ -137,6 +137,14 @@ returned `148 passed`. Evidence is in the [B189 build evidence](evidence/b189-bu
 under “Host-global dependency identity gate”. This does not advance any task;
 the C++ post-grant execution boundary and MiniNDN qualification remain pending.
 
+The host rule was tightened once more: the generic Waf Boost fallback now
+searches only `/usr/include` and `/usr/lib/x86_64-linux-gnu`, so an indirect
+`check_boost` call cannot select `/usr/local`, Homebrew, or checkout staging.
+The frozen v1 review returned `STATIC_PASS`; `py_compile`, installer syntax,
+`git diff --check`, `install_ndnsf_stack.sh --check-dependencies`, and a fresh
+system-first Waf configure passed. This is still dependency-policy evidence
+only and does not advance T001–T010.
+
 The T003 layer owner is now connected at the native Repo boundary. `NativeCanonicalSource`
 can carry digest-bound stage/range payloads; `RepoSourceProvider` commits those payloads
 before the manifest, verifies them on a hot lookup, and returns their stable names in the

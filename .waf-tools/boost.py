@@ -54,8 +54,12 @@ from waflib import Utils, Logs, Errors
 from waflib.Configure import conf
 from waflib.TaskGen import feature, after_method
 
-BOOST_LIBS = ['/usr/lib', '/usr/local/lib', '/opt/homebrew/lib', '/opt/local/lib', '/sw/lib', '/lib']
-BOOST_INCLUDES = ['/usr/include', '/usr/local/include', '/opt/homebrew/include', '/opt/local/include', '/sw/include']
+# NDNSF's host build has one supported Boost installation.  The root
+# wscript validates this pair before loading the tool; keep the fallback
+# lists equally strict so an indirect ``check_boost`` call cannot silently
+# select another same-version installation or a checkout staging directory.
+BOOST_LIBS = ['/usr/lib/x86_64-linux-gnu']
+BOOST_INCLUDES = ['/usr/include']
 
 BOOST_VERSION_FILE = 'boost/version.hpp'
 BOOST_VERSION_CODE = '''

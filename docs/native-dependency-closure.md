@@ -14,6 +14,9 @@ binding 都拒绝 `BOOST_ROOT`、`BOOST_INCLUDEDIR`、`BOOST_LIBRARYDIR` 或
 `/usr/local/include` 与 `/usr/local/lib`。因此，“Boost 1.71”不需要通过仓库目录
 `.local-boost171` 来选择。
 
+通用 `.waf-tools/boost.py` 的兜底搜索列表也只保留这对系统目录；它不会再回退到
+`/usr/local`、Homebrew 或其他 checkout/staging 目录。
+
 这里不把 Boost 强行搬到 `/usr/local`：该前缀当前提供的是已经安装的
 NDN-CXX/NFD，而本机匹配的 Boost 1.71 头文件和库只存在于系统配对目录。
 NDN-CXX 的安装前缀与 Boost 的安装前缀可以不同；需要保持一致的是同一构建和
