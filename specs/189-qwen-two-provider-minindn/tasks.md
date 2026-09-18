@@ -21,7 +21,7 @@
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [T001 Freeze candidate and production path](#t001) | PARTIAL | — | candidate/artifact identity frozen; preflight, caller map, build/source closure and handoff identity still pending | 2026-09-18 02:22 -05:00 |
+| [T001 Freeze candidate and production path](#t001) | PARTIAL | — | candidate/artifact identity frozen; registered example/source closure and global loader checks recorded; candidate handoff identity and real prepare receipt still pending | 2026-09-18 11:20 -05:00 |
 | [T002 Prepare Qwen graph and split packages](#t002) | PARTIAL | T001 | real Qwen graph, initializer and two stage artifacts checked; native prepare oracle pending | 2026-09-18 02:22 -05:00 |
 | [T003 Publish/reuse layer references in Repo](#t003) | PARTIAL | T002 | native layer payload owner, cold/hot layer receipt, legacy reuse, digest/range/cancellation checks and shared Repo transaction lock pass; real Qwen production prepare receipt remains pending | 2026-09-18 11:01 -05:00 |
 | [T004 Project payload-free request](#t004) | NOT_STARTED | T003 | request wire parser/oracle and oversized-model negative pending | 2026-09-18 00:00 -05:00 |
@@ -34,12 +34,12 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 11:01 -0500
+**Updated**: 2026-09-18 11:20 -0500
 
 Spec189 has real candidate artifacts, a globally closed and rebuilt affected DI
 target set, a registered C++ provider-stage oracle, and real MiniNDN runs
 through signed ACK/Selection and protected-grant verification. T001, T002,
-T005, T006, T007 and T009 are `PARTIAL`; T003, T004, T008 and T010 remain
+T003, T005, T006, T007 and T009 are `PARTIAL`; T004, T008 and T010 remain
 `NOT_STARTED`. B189-3 is `BLOCKED` at the missing post-grant execution
 boundary, not at ACK/Selection. The build/selector evidence is in
 [B189 build evidence](evidence/b189-build-20260918.md); the durable audit and
@@ -51,8 +51,10 @@ libraries and linker flags; stale NAC-ABE pkg-config metadata was repaired in
 The malformed global NDNSD include flag was also repaired and a fresh host
 configure completed with a clean cache.
 The affected provider/oracle targets were rebuilt with the repaired global
-closure. These checks do not advance T001–T010 status or establish MiniNDN
-runtime completion.
+closure. The registered Spec189 native example closure was also rebuilt and
+recorded in `evidence/b189-convergence.md`; it closes only the T001
+source/build sub-check. These checks do not establish MiniNDN runtime
+completion.
 The two Python binding setup entry points now enforce the same global external
 dependency roots, with `/opt/ndnsf-stage` accepted only under the explicit
 `NDNSF_CONTAINER_BUILD=1` Tiger build marker. The v2 frozen scope passed the
