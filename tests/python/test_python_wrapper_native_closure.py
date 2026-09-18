@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def isolated_build_environment(monkeypatch):
     for name in ("NDNSF_LIBRARY_DIR", "NDNSF_NAC_ABE_PREFIX",
                  "NDNSF_NDN_SVS_SOURCE_TREE", "NDNSF_NDN_SVS_BUILD_TREE",
-                 "NDNSF_RUNTIME_RPATH"):
+                 "NDNSF_RUNTIME_RPATH", "NDNSF_CONTAINER_BUILD"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -38,7 +38,12 @@ def test_explicit_nac_prefix_prevents_mixed_headers_and_library(monkeypatch, tmp
     monkeypatch.delenv("NDNSF_NDN_SVS_BUILD_TREE", raising=False)
     captured = {}
     monkeypatch.setattr(setuptools, "setup", lambda **kwargs: captured.update(kwargs))
-    namespace = runpy.run_path(str(setup_path)) if missing is None else None
+    if missing is None:
+        with pytest.raises(RuntimeError, match="resolved to undeclared dependency root"):
+            runpy.run_path(str(setup_path))
+        assert not captured
+        return
+    namespace = None
     if missing:
         with pytest.raises(RuntimeError, match="NDNSF_NAC_ABE_PREFIX is missing"):
             runpy.run_path(str(setup_path))
@@ -53,6 +58,61 @@ def test_explicit_nac_prefix_prevents_mixed_headers_and_library(monkeypatch, tmp
     assert str(prefix / "lib/libnac-abe.so") in extension.extra_objects
     assert "nac-abe" not in extension.libraries
     assert f"-Wl,-rpath,{prefix / 'lib'}" in extension.extra_link_args
+
+
+@pytest.mark.parametrize("bad_kind", ["library", "rpath", "undeclared"])
+def test_historical_local_ndn_cxx_pkg_config_is_rejected(monkeypatch, setup_path, bad_kind):
+    """A stale same-SONAME tree must not silently enter either binding."""
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    local = ROOT / ".local-boost171" / "lib"
+    if bad_kind == "library":
+        pkg_config = lambda *args: ([str(local / "include")], [str(local)],
+                                     ["ndn-cxx"], [])
+    elif bad_kind == "rpath":
+        pkg_config = lambda *args: (["/usr/local/include"], ["/usr/local/lib"],
+                                     ["ndn-cxx"], [f"-Wl,-rpath,{local}"])
+    else:
+        pkg_config = lambda *args: (["/tmp/ndnsf/include"], ["/usr/local/lib"],
+                                     ["ndn-cxx"], [])
+    namespace["build_extension"].__globals__["pkg_config"] = pkg_config
+    expected = ("resolved to undeclared dependency root"
+                if bad_kind == "undeclared" else "resolved to retired")
+    with pytest.raises(RuntimeError, match=expected):
+        namespace["build_extension"]()
+
+
+def test_container_stage_dependency_root_requires_explicit_marker(monkeypatch, setup_path):
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    checker = namespace["reject_non_global_dependency_paths"]
+    with pytest.raises(RuntimeError, match="undeclared dependency root"):
+        checker(["/opt/ndnsf-stage"], "container prefix")
+    monkeypatch.setenv("NDNSF_CONTAINER_BUILD", "1")
+    checker(["/opt/ndnsf-stage"], "container prefix")
+
+
+def test_historical_local_runtime_rpath_is_rejected(monkeypatch, setup_path):
+    """A runtime-only override must not reintroduce the retired tree."""
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    local = ROOT / ".local-boost171" / "lib"
+    monkeypatch.setenv("NDNSF_RUNTIME_RPATH", str(local))
+    with pytest.raises(RuntimeError, match="resolved to retired"):
+        namespace["build_extension"]()
+
+
+def test_historical_local_symlink_rpath_is_rejected(monkeypatch, tmp_path, setup_path):
+    """An alias to the retired tree must not bypass RPATH validation."""
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    namespace = runpy.run_path(str(setup_path), run_name="__main__")
+    alias = tmp_path / "ndn-cxx-alias"
+    alias.symlink_to(ROOT / ".local-boost171")
+    namespace["build_extension"].__globals__["pkg_config"] = lambda *args: (
+        ["/usr/local/include"], ["/usr/local/lib"], ["ndn-cxx"],
+        [f"-Wl,-rpath,{alias / 'lib'}"])
+    with pytest.raises(RuntimeError, match="resolved to retired"):
+        namespace["build_extension"]()
 
 
 def test_explicit_ndnsf_library_dir_is_an_exclusive_runtime_closure(
