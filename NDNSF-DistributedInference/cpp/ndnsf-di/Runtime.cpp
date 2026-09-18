@@ -1337,7 +1337,7 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
     const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
     const NativeRequestControl& control) {
     if (state->config.repositoryArtifactPublisher) {
-      const auto source = catalog.sourceFor(model.descriptor);
+      const auto& source = catalog.sourceRefFor(model.descriptor);
       return state->config.repositoryArtifactPublisher->publish(
         modelKey, publicationServiceName, model, source,
         catalog.publicationFor(model.descriptor), control);
@@ -1467,7 +1467,7 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
     const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
     const NativeRequestControl& control) {
     if (state->config.repositoryArtifactPublisher) {
-      const auto source = catalog.sourceFor(model.descriptor);
+      const auto& source = catalog.sourceRefFor(model.descriptor);
       return state->config.repositoryArtifactPublisher->publish(
         modelKey, publicationServiceName, model, source,
         catalog.publicationFor(model.descriptor), control);

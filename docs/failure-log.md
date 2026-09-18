@@ -1,5 +1,33 @@
 # Failure Log and Evidence Index
 
+## 2026-09-18 — Spec189 T003 Runtime prepare native heap failure
+
+After the source-borrow increment built successfully in 56.712 s, the focused
+`Spec185Runtime/PrepareSuccessUsesTheProductionRuntimeEntry` aborted with
+`double free or corruption (out)`; Boost reported its last checkpoint at
+`tests/unit-tests/di-runtime.t.cpp:497`, and the process ended with exit 139.
+The sequential prepared-request selector did not run. Raw evidence:
+`.codex-tmp/spec189-t003-source-borrow-r1/runtime.log`; active record:
+`specs/189-qwen-two-provider-minindn/evidence/b189-prepare.md`.
+This is an unresolved native fixture/runtime boundary, not MiniNDN evidence.
+Next diagnostic is a fresh debugger run with exception/signal stacks and actual
+loaded-library identities; no PASS or causal attribution until diagnosed.
+
+Diagnostic r2 reproduced the abort in NativePreparedCanonicalPublication's
+destructor. `ldd` loads `/usr/local/lib/libndnsf-distributed-inference.so`;
+GDB reports sizeof(publication)=304 for that installed library versus 360 for
+the current build. The installed DI hash is 76f37523..., current 35b54b8f...;
+Core library hashes match. This confirms a stale same-SONAME DI ABI boundary.
+Changed gate: install the just-built DI target globally and verify identical
+hashes before re-running; do not insert a temporary LD_LIBRARY_PATH.
+
+r3 closure: build/installed DI hashes match 35b54b8f... after native install;
+Runtime prepare (38 assertions) and production-handle Repo request (16 assertions)
+both passed three sequential repetitions. Raw logs are in
+`.codex-tmp/spec189-t003-source-borrow-r3/`. The auxiliary Python editable
+install hook was rejected for missing `NDNSF_GLOBAL_NATIVE_DIGESTS`; native
+installation is verified independently, and binding qualification is unclaimed.
+
 ## 2026-09-18 — Spec189 T003 reused build-tree target configuration boundary
 
 The first T003 layer-owner build stopped before compilation because the reused

@@ -6,8 +6,12 @@
 
 ## Current Checkpoint
 
-**Updated**: 2026-09-18 14:11 -0500 — T008 direct guard and native lifecycle focused validation.
-**Baseline**: `638268bc` plus pre-existing workspace implementation; not a clean qualified candidate.
+**Updated**: 2026-09-18 14:26 -0500 — T003 source borrowing and installed DI identity corrected.
+**Baseline**: `c8823291` plus pre-existing workspace implementation; not a clean qualified candidate.
+
+T003 源借用修复已静态通过；增量构建 56.712s。初次 native heap corruption 已定位为
+installed DI 的旧 ABI（publication 304 vs 360 bytes），全局安装同步后两个 C++ selectors
+连续三轮通过。真实受保护 Repo 接线与原子材料仍未完成。见 [prepare evidence](evidence/b189-prepare.md)。
 
 尚无 `QWEN_TWO_PROVIDER_PASS`。r25 run-record 仍 FAIL；Provider 日志已出现
 `EXECUTION_ENTERED` / `ASSEMBLY_STARTED`，不能继续称“执行入口完全未观察到”。
@@ -33,7 +37,7 @@ T001 映射已关闭；T008 direct/launcher guard 已复审，39 host checks 通
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
 | [T008 Guard before model runs](#t008) | PARTIAL | T001 | 2026-09-18 14:11 -0500：direct/launcher guard 39 checks PASS；4 native lifecycle cases 三轮 PASS；真实 counter 采样/全链 drain 未验。T003 小 fixture 可继续，full model 仍受门禁。[resource](evidence/b189-resource.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 原子层发布、真实 requester 接线、同 handle 复用。[prepare](evidence/b189-prepare.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 2026-09-18 14:26 -0500：同步/异步发布去除源深拷贝，两个 C++ selectors 三轮 PASS；实际 protected Repo 接线、原子层及 real-Qwen 复用待完成。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | Repo consumer、有界组装、owner/cancel。[execution](evidence/b189-execution.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 因果 oracle、NDN hidden-state handoff、独立输出判据。[execution](evidence/b189-execution.md) |

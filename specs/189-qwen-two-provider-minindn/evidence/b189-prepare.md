@@ -2,6 +2,57 @@
 
 **Status**: IN_PROGRESS / NOT_NATIVE_PASS
 
+## T003 publication source ownership — 2026-09-18
+
+**Updated**: 2026-09-18 14:26 -0500 — 源借用修复定向验收通过；T003 整体仍 PARTIAL。
+原生 DI 目标已安装到 /usr/local，build/installed SHA-256 均为
+`35b54b8fb28bf5c1fdd79c8814f2fc49a630c038e1c1e74e40c242f4d52b6238`。
+没有改变 Core（两侧 hash 相同），没有使用临时 loader 路径。r3 连续三轮：
+`spec185-runtime --run_test=Spec185Runtime/PrepareSuccessUsesTheProductionRuntimeEntry`
+每轮 1 case / 38 assertions；
+`spec189-prepared-request --run_test=Spec185PreparedRequest/Spec189PreparedHandleAllocatesReferenceOnlyRequests`
+每轮 1 case / 16 assertions，均 PASS。每个命令 timeout 60s；r3 日志独立保留。
+这证明对应小模型准备/同 handle 无新增发布行为，未测 Qwen 峰值或完整网络链。
+
+**Five lanes**: caller=User::prepare/prepareAsync；implementation=同步 const 引用与
+ModelPreparationCache 发布后 release；test=上述生产 Runtime selectors（异步 Repo 冷发布
+仅静态覆盖，未声称独立动态覆盖）；build=两个现有目标增量 -j4 / 56.712s 与 global
+installed identity；migration=无公开签名、wire、异常或所有权契约变化，仅消除内部拷贝。
+冻结 Runtime.cpp 与测试源码 cmp 一致。官方 skill 路径/hash 沿用 B189-4 review trace。
+**Four miss classes**: static=发布源深拷贝被发现并修复；compile-link=构建通过；
+runtime-test=旧 installed DI ABI 导致 heap corruption，更新全局库后三轮通过；
+unobserved=real Qwen 原子材料、受保护 Repo 可达性、完整峰值、全链资格。
+**Batch growth decision / Closure decision**: 本内存修复出口关闭；不扩为全局重构。
+T003 继续真实 protected producer/consumer 接线，不把本次 PASS 当 T003 DONE。
+
+原生 install 成功（8.929s），但 Waf 附带 Python editable hook 因未传
+`NDNSF_GLOBAL_NATIVE_DIGESTS` 被既有门禁拒绝；未授予 binding PASS，未更改门禁。
+原始安装输出 `.codex-tmp/spec189-t003-source-borrow-r3/install.log`，旧 DI 备份同目录。
+本修复保持 API/ABI/既有 source 生命周期契约，无新增设计接口或当前/目标 PDF 语义变更。
+
+r1 historical validation: STATIC_PASS (source-borrow patch SHA-256
+`91ba35350dc2aab920580afa5549930a31ac3aae4186ef3d71ef005d124be829`, official read-only
+review-agent)，-j4 scoped build 56.712 s 成功；Runtime prepare selector 发生
+`double free or corruption (out)`，24/25 assertions 后 abort，进程 exit 139。
+最后 checkpoint `di-runtime.t.cpp:497`，不代表故障源就在该行。
+`.codex-tmp/spec189-t003-source-borrow-r1/` 保留 build/runtime 原始日志；
+后续 prepared-request 未执行。下一步独立 debugger run 定位，未计通过或提交源码。
+
+r2 debugger 重现 publication 析构崩溃；当前测试实际加载 /usr/local 旧 DI。
+GDB `set language c++; p sizeof(ndnsf::di::NativePreparedCanonicalPublication)`：
+installed=304，current build=360；Core 库哈希相同。确认同 SONAME 的旧 DI ABI 问题，
+非只读借用分支（失败 fixture 实际走 Core fallback）。Changed gate：全局安装当前 DI，
+验证 loaded hash 与 build 一致后重测；保留旧库备份，不以临时路径绕过。
+
+Design binding: Runtime::User::prepare/prepareAsync 的 RepositoryArtifactPublisher
+分支目前调用 sourceFor()，在同步 publish 前深拷贝整个 canonical graph/initializer。
+改为 sourceRefFor() 的 const 借用；publisher 签名保持 const NativeCanonicalSource&，
+ModelPreparationCache 在 publish 返回且 package 建立后才 releaseTransientSource，
+publisher 不得把该引用保存到调用之外。消除同步/异步两条实际接线上的重复源 buffer，
+不宣称已接通真实实验 Repo，也不变更公开签名、wire 或 READY 条件。
+验证沿用生产 Runtime Repo prepare/同 handle request C++ selector，不新增镜像式测试。
+本单元无新增 API；受保护 wire→Repo adapter 与拓扑无关材料仍是 T003 后续必要接线。
+
 The real local Qwen3-0.6B snapshot was loaded and a two-stage artifact export was completed in
 `.codex-tmp/spec189-qwen-two-provider-20260918/`. The current external canonical graph includes
 the same dynamic `past_key.*`/`present_key.*` state family as the staged artifacts, passed

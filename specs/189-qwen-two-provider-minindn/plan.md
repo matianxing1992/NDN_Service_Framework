@@ -99,6 +99,12 @@ run-id/request id/运行期 key/path 独立记录并绑定 candidate。
 
 ## Logical Batch Quality Plan
 
+每批 native selector 运行前检查 `readelf`/`ldd` 实际加载的 DI/Core 库及 SHA-256。
+本机 global-first RUNPATH 会优先使用 `/usr/local`；若本批生成的共享库与全局库不同，
+先安装对应目标并核对一致，再测试。头文件结构变化但 SONAME 未变也必须执行此门。
+不通过临时 LD_LIBRARY_PATH 绕过，不因单一 DI 安装变化重编未变 Core/Repo。
+Waf 原生 install 与附带 Python editable hook 分开记录；后者失败不能写 binding PASS。
+
 唯一成员注册表见 [batch-execution.md](batch-execution.md)；
 顺序 B189-0 → B189-4 → B189-1 → B189-2 → B189-3 → B189-5。
 7 个活动任务及旧 ID 合并映射见 [tasks.md](tasks.md)。
