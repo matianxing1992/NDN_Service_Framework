@@ -16,7 +16,11 @@ INSTALL_SYSTEM_PACKAGES=1
 INSTALL_TEST_PACKAGES=0
 INSTALL_MININDN_PACKAGES=0
 INSTALL_NFD_NLSR_PACKAGES=0
-OPENABE_PREFIX=""
+# Every host-side NDNSF dependency is installed into one canonical prefix.
+# The source checkout below is only a build input; it must never become a
+# runtime or pkg-config dependency path.
+GLOBAL_DEPENDENCY_PREFIX="/usr/local"
+OPENABE_PREFIX="$GLOBAL_DEPENDENCY_PREFIX"
 
 NDNCXX_REPO_URL="${NDNCXX_REPO_URL:-https://github.com/matianxing1992/ndn-cxx.git}"
 NDNSD_REPO_URL="${NDNSD_REPO_URL:-https://github.com/matianxing1992/NDNSD.git}"
@@ -67,10 +71,10 @@ Notes:
     NFD/NLSR builds.
   - The script checks pkg-config names: libndn-cxx, ndnsd, libndn-svs, and
     libnac-abe.
-  - If libopenabe is missing, OpenABE is cloned into dependencies/openabe and
-    installed privately under dependencies/local/openabe. Its bundled OpenSSL
-    1.1.1-dev dependency is used for OpenABE/NAC-ABE without replacing the
-    system OpenSSL.
+  - If libopenabe is missing, OpenABE is built from dependencies/openabe and
+    installed globally under /usr/local before NAC-ABE. The resulting
+    libopenabe/relic/OpenSSL closure is checked through the system loader; a
+    private checkout prefix is not a runtime dependency.
   - Existing dependency source trees under --deps-dir are reused. Missing trees
     are cloned from the matianxing1992 GitHub repositories.
   - Repository URLs can be overridden with NDNCXX_REPO_URL, NDNSD_REPO_URL,
@@ -201,10 +205,21 @@ is_pkg_installed() {
 }
 
 has_openabe() {
-  [[ -n "$OPENABE_PREFIX" && -f "$OPENABE_PREFIX/lib/libopenabe.so" ]] && return 0
-  ldconfig -p 2>/dev/null | grep -q 'libopenabe\.so' && return 0
-  [[ -f /usr/local/lib/libopenabe.so ]] && return 0
-  return 1
+  [[ "$OPENABE_PREFIX" == "$GLOBAL_DEPENDENCY_PREFIX" ]] || return 1
+  local library="$GLOBAL_DEPENDENCY_PREFIX/lib/libopenabe.so"
+  [[ -f "$library" ]] || return 1
+  local resolved
+  resolved="$(readlink -f "$library")"
+  [[ "$resolved" == "$GLOBAL_DEPENDENCY_PREFIX/lib/"* ]] || return 1
+  # These C ABI exports are consumed by NAC-ABE.  A same-name library with an
+  # older or unrelated ABI must not silently satisfy the install preflight.
+  for symbol in OpenABEalloc OpenABEfree openSslInitialize; do
+    if ! nm -D --defined-only -C "$library" 2>/dev/null |
+        grep -Eq " ${symbol}\\("; then
+      return 1
+    fi
+  done
+  return 0
 }
 
 install_common_system_packages() {
@@ -266,7 +281,6 @@ ensure_source_tree() {
 
 build_openabe_dependency() {
   local dir
-  OPENABE_PREFIX="$DEPS_DIR/local/openabe"
 
   if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe; then
     echo "==> OpenABE already installed; skipping"
@@ -274,10 +288,20 @@ build_openabe_dependency() {
   fi
 
   dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" | tail -n 1)"
-  echo "==> Building OpenABE with private OpenSSL 1.1 dependency"
-  run bash -lc "cd '$dir' && . ./env && make -C deps/openssl && make -C deps/relic && make -C deps/gtest && BISON=\$(command -v bison) FLEX=\$(command -v flex) make"
-  echo "==> Installing OpenABE under $OPENABE_PREFIX"
-  run bash -lc "cd '$dir' && . ./env && make INSTALL_PREFIX='$OPENABE_PREFIX' install"
+  echo "==> Building OpenABE from the dependency source tree"
+  run bash -lc "cd '$dir' && env \
+    -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
+    -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
+    -u CPLUS_INCLUDE_PATH bash -c '. ./env && make -C deps/openssl && \
+      make -C deps/relic && make -C deps/gtest && \
+      BISON=\$(command -v bison) FLEX=\$(command -v flex) make'"
+  echo "==> Installing OpenABE into the global prefix $OPENABE_PREFIX"
+  sudo_run env \
+    -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
+    -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
+    -u CPLUS_INCLUDE_PATH bash -lc \
+    "cd '$dir' && . ./env && make INSTALL_PREFIX='$OPENABE_PREFIX' install"
+  sudo_run ldconfig
 }
 
 build_waf_dependency() {
@@ -293,7 +317,13 @@ build_waf_dependency() {
 
   dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
   echo "==> Building dependency $name"
-  run bash -lc "cd '$dir' && ./waf configure && ./waf -j\$(nproc)"
+  run bash -lc "cd '$dir' && \
+    env -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
+      -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
+      -u CPLUS_INCLUDE_PATH ./waf configure --prefix='$GLOBAL_DEPENDENCY_PREFIX' && \
+    env -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
+      -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
+      -u CPLUS_INCLUDE_PATH ./waf -j\$(nproc)"
   echo "==> Installing dependency $name"
   sudo_run bash -lc "cd '$dir' && ./waf install"
   sudo_run ldconfig
@@ -314,18 +344,36 @@ build_cmake_dependency() {
   echo "==> Building dependency $name"
   if [[ "$name" == "NAC-ABE" && -n "$OPENABE_PREFIX" && -f "$OPENABE_PREFIX/lib/libopenabe.so" ]]; then
     run bash -lc "cd '$dir' && env \
-      CMAKE_PREFIX_PATH='$OPENABE_PREFIX':\${CMAKE_PREFIX_PATH:-} \
-      CMAKE_INCLUDE_PATH='$OPENABE_PREFIX/include':\${CMAKE_INCLUDE_PATH:-} \
-      CMAKE_LIBRARY_PATH='$OPENABE_PREFIX/lib':\${CMAKE_LIBRARY_PATH:-} \
-      CXXFLAGS='-I$OPENABE_PREFIX/include '\${CXXFLAGS:-} \
-      LDFLAGS='-L$OPENABE_PREFIX/lib -Wl,-rpath,$OPENABE_PREFIX/lib '\${LDFLAGS:-} \
-      LD_LIBRARY_PATH='$OPENABE_PREFIX/lib':\${LD_LIBRARY_PATH:-} \
+      -u PKG_CONFIG_PATH \
+      CMAKE_PREFIX_PATH='$OPENABE_PREFIX' \
+      CMAKE_INCLUDE_PATH='$OPENABE_PREFIX/include' \
+      CMAKE_LIBRARY_PATH='$OPENABE_PREFIX/lib' \
+      CPPFLAGS='-I$OPENABE_PREFIX/include' \
+      CXXFLAGS='-I$OPENABE_PREFIX/include' \
+      LDFLAGS='-L$OPENABE_PREFIX/lib -Wl,-rpath,$OPENABE_PREFIX/lib' \
+      LD_LIBRARY_PATH='$OPENABE_PREFIX/lib' \
       cmake -S . -B build \
+        -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' \
         -DCMAKE_BUILD_RPATH='$OPENABE_PREFIX/lib' \
         -DCMAKE_INSTALL_RPATH='$OPENABE_PREFIX/lib' && \
-      cmake --build build -j\$(nproc)"
+      env -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH \
+        -u CMAKE_LIBRARY_PATH -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH \
+        -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
+        -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
+        cmake --build build -j\$(nproc)"
   else
-    run bash -lc "cd '$dir' && cmake -S . -B build && cmake --build build -j\$(nproc)"
+    run bash -lc "cd '$dir' && env \
+      -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH -u CMAKE_LIBRARY_PATH \
+      -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH -u CXXFLAGS \
+      -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
+      -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
+      cmake -S . -B build \
+      -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' && \
+      env -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH \
+        -u CMAKE_LIBRARY_PATH -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH \
+        -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
+        -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
+        cmake --build build -j\$(nproc)"
   fi
   echo "==> Installing dependency $name"
   sudo_run bash -lc "cd '$dir' && cmake --install build"
