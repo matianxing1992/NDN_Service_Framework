@@ -281,7 +281,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "hello_controller.py",
             "--policy-file", "examples/hello.policies",
             "--binary-dir", "build/examples",
-            "--library-dir", "build",
+            "--library-dir", "/usr/local/lib",
         )
         hello.start(ndn.net[args.controller_node], "controller", controller_cmd,
                     env, args.output_dir, processes)
@@ -290,7 +290,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         provider_cmd = hello.python_cmd(
             "segmented_response_provider.py",
             "--binary-dir", "build/examples",
-            "--library-dir", "build",
+            "--library-dir", "/usr/local/lib",
         )
         provider_proc, provider_log = hello.start(
             ndn.net[args.provider_node], "provider", provider_cmd,
@@ -317,7 +317,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "--ack-timeout-ms", str(args.ack_timeout_ms),
             "--timeout-ms", str(args.timeout_ms),
             "--binary-dir", "build/examples",
-            "--library-dir", "build",
+            "--library-dir", "/usr/local/lib",
         ]
         resume_file = args.output_dir / "provider-fault-resume"
         if plan["pauseAfterIndex"] is not None:

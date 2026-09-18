@@ -75,6 +75,7 @@ source-tree output:
 ```bash
 export NDNSF_BINARY_DIR=/path/to/ndn-service-framework/build/examples
 export NDNSF_LIBRARY_DIR=/usr/local/lib
+export NDNSF_GLOBAL_NATIVE_DIGESTS="$(python3 -c 'import hashlib,json; names=("libndn-service-framework.so","libndnsf-distributed-inference.so"); print(json.dumps({n:hashlib.sha256(open("/usr/local/lib/"+n,"rb").read()).hexdigest() for n in names}, sort_keys=True))')"
 ```
 
 `ServiceProvider` and `ServiceUser` use the compiled Python extension instead
@@ -82,7 +83,7 @@ of launching host binaries. During source-tree development, rebuild it with:
 
 ```bash
 cd pythonWrapper
-python3 setup.py build_ext --inplace
+NDNSF_LIBRARY_DIR=/usr/local/lib NDNSF_GLOBAL_NATIVE_DIGESTS="$NDNSF_GLOBAL_NATIVE_DIGESTS" python3 setup.py build_ext --inplace
 ```
 
 ## Reusable API
@@ -333,6 +334,7 @@ installed global host closure:
 ./waf build
 export NDNSF_BINARY_DIR=$PWD/build/examples
 export NDNSF_LIBRARY_DIR=/usr/local/lib
+export NDNSF_GLOBAL_NATIVE_DIGESTS="$(python3 -c 'import hashlib,json; names=("libndn-service-framework.so","libndnsf-distributed-inference.so"); print(json.dumps({n:hashlib.sha256(open("/usr/local/lib/"+n,"rb").read()).hexdigest() for n in names}, sort_keys=True))')"
 ```
 
 ## Dry Run

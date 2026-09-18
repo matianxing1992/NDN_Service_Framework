@@ -211,10 +211,10 @@ def role_environment(
     svs_sync_publish: bool = False,
 ) -> Dict[str, str]:
     env = dict(base)
-    library_parts = [str(repo_root.parent / "ndn-svs/build"), str(repo_root / "build")]
-    if env.get("LD_LIBRARY_PATH"):
-        library_parts.append(env["LD_LIBRARY_PATH"])
-    env["LD_LIBRARY_PATH"] = ":".join(library_parts)
+    # Do not inherit checkout/per-run library paths into the experiment.  The
+    # host closure is installed once under /usr/local/lib and is the only
+    # native search root for this process.
+    env["LD_LIBRARY_PATH"] = "/usr/local/lib"
     env["NDNSF_DISABLE_RESPONSE_LARGE_DATA_REFERENCE"] = "1"
     env["SPEC112_FORCED_INLINE_SVS"] = "1"
     # The runtime defaults to synchronous publication; both sides of the
@@ -222,7 +222,7 @@ def role_environment(
     env["NDNSF_SVS_ASYNC_PUBLISH"] = "0" if svs_sync_publish else "1"
     env["PYTHONPATH"] = str(repo_root / "pythonWrapper")
     env["NDNSF_BINARY_DIR"] = str(repo_root / "build/examples")
-    env["NDNSF_LIBRARY_DIR"] = str(repo_root / "build")
+    env["NDNSF_LIBRARY_DIR"] = "/usr/local/lib"
     return env
 
 

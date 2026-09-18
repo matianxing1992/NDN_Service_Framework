@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import shlex
 import subprocess
 from pathlib import Path
@@ -10,12 +12,14 @@ from setuptools import Extension, find_packages, setup
 
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = Path(__file__).resolve().parent
+HOST_NATIVE_LIBRARY_DIR = Path("/usr/local/lib")
 HISTORICAL_LOCAL_PREFIX = (ROOT / ".local-boost171").resolve()
 HOST_GLOBAL_DEPENDENCY_ROOTS = tuple(
     Path(value).resolve()
     for value in (
         "/usr",
         "/usr/local",
+        "/opt/onnxruntime",
         "/opt/onnxruntime-1.26.0",
     )
 )
@@ -146,6 +150,67 @@ def validate_runtime_rpath(values: list[str], owner: str) -> None:
     reject_non_global_dependency_paths(dependency_values, owner)
 
 
+def native_library_dirs() -> list[str]:
+    """Use one installed global NDNSF library root, never a checkout output."""
+    configured = os.environ.get("NDNSF_LIBRARY_DIR")
+    values = ([value for value in configured.split(os.pathsep) if value]
+              if configured is not None else [])
+    if configured is not None and not values:
+        raise RuntimeError("NDNSF_LIBRARY_DIR contains no library directory")
+    if not values:
+        values = [str(Path("/opt/ndnsf-stage/lib") if
+                  os.environ.get("NDNSF_CONTAINER_BUILD") == "1"
+                  else HOST_NATIVE_LIBRARY_DIR)]
+    dirs = [str(Path(value).expanduser().resolve()) for value in values]
+    reject_historical_local_paths(dirs, "NDNSF_LIBRARY_DIR")
+    reject_non_global_dependency_paths(dirs, "NDNSF_LIBRARY_DIR")
+    if len(set(dirs)) != 1:
+        raise RuntimeError(
+            "NDNSF_LIBRARY_DIR must name one installed global library root; "
+            "do not combine checkout or per-run prefixes")
+    if os.environ.get("NDNSF_CONTAINER_BUILD") != "1" \
+            and Path(dirs[0]) != HOST_NATIVE_LIBRARY_DIR:
+        raise RuntimeError(
+            "NDNSF_LIBRARY_DIR must be the canonical host install root "
+            f"{HOST_NATIVE_LIBRARY_DIR}; do not select another global root")
+    directory = Path(dirs[0])
+    if not directory.is_dir():
+        raise RuntimeError("NDNSF_LIBRARY_DIR does not exist: " + str(directory))
+    required = ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
+    missing = [name for name in required if not (directory / name).exists()]
+    if missing:
+        raise RuntimeError(
+            "NDNSF global install is incomplete; missing " + ", ".join(missing) +
+            ". Install the matching NDNSF libraries under the global root first")
+    for name in required:
+        target = (directory / name).resolve(strict=True)
+        reject_non_global_dependency_paths([str(target)],
+                                           "NDNSF_LIBRARY_DIR target")
+    return dirs
+
+
+def validate_native_library_digests(dirs: list[str]) -> None:
+    """Validate the installed-library receipt supplied by the build helper."""
+    raw = os.environ.get("NDNSF_GLOBAL_NATIVE_DIGESTS")
+    if not raw:
+        if os.environ.get("NDNSF_CONTAINER_BUILD") == "1":
+            return
+        raise RuntimeError(
+            "NDNSF_GLOBAL_NATIVE_DIGESTS is required for host binding builds; "
+            "derive it from the installed /usr/local/lib closure")
+    try:
+        expected = json.loads(raw)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("NDNSF_GLOBAL_NATIVE_DIGESTS is invalid JSON") from error
+    if not isinstance(expected, dict):
+        raise RuntimeError("NDNSF_GLOBAL_NATIVE_DIGESTS must be an object")
+    for name in ("libndn-service-framework.so", "libndnsf-distributed-inference.so"):
+        path = Path(dirs[0]) / name
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if expected.get(name) != digest:
+            raise RuntimeError("NDNSF global library digest mismatch: " + name)
+
+
 def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
     validate_pkg_config_environment()
     try:
@@ -218,29 +283,11 @@ def build_extension() -> Extension:
     reject_non_global_dependency_paths(linker_path_values(extra_link_args),
                                        "pkg-config linker paths")
 
-    env_library_dir = os.environ.get("NDNSF_LIBRARY_DIR")
-    local_build = ROOT / "build"
-    if not env_library_dir and local_build.exists():
-        library_dirs.insert(0, str(local_build))
-        extra_link_args.append(f"-Wl,-rpath,{local_build}")
-
-    if env_library_dir:
-        candidate_dirs = [
-            Path(value).expanduser().resolve()
-            for value in env_library_dir.split(os.pathsep)
-            if value
-        ]
-        if not candidate_dirs:
-            raise RuntimeError("NDNSF_LIBRARY_DIR contains no library directory")
-        reject_historical_local_paths([str(path) for path in candidate_dirs],
-                                      "NDNSF_LIBRARY_DIR")
-        for path in candidate_dirs:
-            if not path.is_dir():
-                raise RuntimeError("NDNSF_LIBRARY_DIR does not exist: " + str(path))
-            if not (path / "libndn-service-framework.so").is_file():
-                raise RuntimeError("NDNSF_LIBRARY_DIR does not contain libndn-service-framework: " + str(path))
-            library_dirs.insert(0, str(path))
-            extra_link_args.append(f"-Wl,-rpath,{path}")
+    candidate_dirs = native_library_dirs()
+    validate_native_library_digests(candidate_dirs)
+    for path in candidate_dirs:
+        library_dirs.insert(0, path)
+        extra_link_args.append(f"-Wl,-rpath,{path}")
     runtime_rpath = os.environ.get("NDNSF_RUNTIME_RPATH")
     if runtime_rpath:
         runtime_dirs = [value for value in runtime_rpath.split(os.pathsep) if value]

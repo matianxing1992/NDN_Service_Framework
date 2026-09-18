@@ -1707,8 +1707,9 @@ def app_env(output_dir, session_base, args):
             "NDN_LOG",
             "ndn_service_framework.*=TRACE:nacabe.*=TRACE:ndn.nacabe.*=TRACE")
     env = {
-        "LD_LIBRARY_PATH": "{}:{}".format(REPO_ROOT / "build",
-                                          os.environ.get("LD_LIBRARY_PATH", "")),
+        # Native libraries are loaded only from the canonical host install;
+        # a checkout build directory must never shadow that closure.
+        "LD_LIBRARY_PATH": "/usr/local/lib",
         "NDNSF_DISABLE_NDNSD": "1",
         "NDNSF_CONFIG": str(output_dir / "ndnsf.conf"),
         "NDNSF_SESSION_BASE": str(session_base),
