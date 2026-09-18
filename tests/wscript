@@ -312,6 +312,22 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec189 T005 placement/no-fetch oracle.  The selector uses the
+    # production placement strategy and ProviderArtifactCache; it proves that
+    # two distinct provider assignments exist and that no fetch/assembly
+    # builder runs before an authenticated Selection projection is present.
+    bld.program(target='../spec189-placement-oracle',
+                name='spec189-placement-oracle',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec189-placement-oracle.t.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS', 'SPEC189_PLACEMENT_SELECTOR'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec185 B0C DI delegation selector.  Link the production
     # NativeInferenceClient and the complete DI source closure.  The target
     # includes the Core-only fail-closed checks plus real Provider-backed ACK,
