@@ -68,14 +68,16 @@ unchanged. The Repo source is present before either request. Runtime close and
 drain complete with the fixture's observed cancellation/failed terminal state.
 
 The frozen review snapshot after the macro-visibility, self-contained-fixture,
-and private-directory fixes received `STATIC_PASS` in review r13; compile-link and runtime evidence
+and private-directory fixes received `STATIC_PASS` in review r16; compile-link and runtime evidence
 are separate. The target linked the complete DI source closure and
 `ndnsf-distributed-repo` with the existing global dependency tree. The final
 incremental build completed in 28.394 seconds (`.codex-tmp/spec189-t004-
-prepared-build-r9.log`), and the C++ selector passed in 0.733 seconds with no
-test errors (`.codex-tmp/spec189-t004-prepared-selector-r8.log`).
+prepared-build-r12.log`), and the C++ selector passed in 0.643 seconds with no
+test errors (`.codex-tmp/spec189-t004-prepared-selector-r11.log`). The selector
+also rejects a request submitted through the closed prepared client with
+`CLIENT_CLOSED` at the request boundary.
 
 This closes the production PreparedModel/Repo reuse sub-check for T004. It
-does not prove stale/released-handle negatives, real Core ACK/Selection, or
+does not prove stale-manifest negatives, real Core ACK/Selection, or
 the two-provider no-fetch-before-Selection boundary; T004 and B189-2 remain
 `PARTIAL`/`NOT_ACCEPTED`.
