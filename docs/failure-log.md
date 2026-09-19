@@ -7671,3 +7671,17 @@ digest while keeping canonicalSourceDataName absent; a second read-only review
 passed. The integration target rebuilt with Waf -j3 in 26.040s and the complete
 Spec175NativeAssembly suite passed 9/9. This closes the test-boundary mismatch
 only; real Qwen/MiniNDN qualification remains open.
+
+2026-09-19 Spec189 B189-3 admission-sequence retry r58: the v4 frozen
+Selection-scoped sequence repair passed official read-only review. The affected
+DI/unit/integration closure built successfully with Waf `-j3`; the C++
+lifecycle sequence 1→2→3 selector and the complete `Spec175NativeAssembly`
+suite passed 9/9 after the worker target was built. The fresh real
+`two-provider-global-r58` run reached both Provider `READY` states but stopped
+before ACK/Selection at `RESOURCE_BOUNDARY:diskFree`; the guard recorded free
+disk below its 4 GiB floor, while available memory remained above 4.24 GiB and
+swap used stayed zero. Cleanup passed and no `ASSEMBLY_ADMISSION`,
+`ASSEMBLY_STARTED`, runner, terminal output or protocol result was observed.
+This is a host disk boundary, not a Qwen/Repo/ORT/stream verdict. Preserve raw
+run data at `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r58/`
+and require a new disk-safe host state and run ID before retrying.

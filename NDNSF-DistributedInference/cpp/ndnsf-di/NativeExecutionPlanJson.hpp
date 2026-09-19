@@ -6,8 +6,10 @@
 
 #include <boost/property_tree/ptree_fwd.hpp>
 
+#include <atomic>
 #include <istream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -118,6 +120,10 @@ struct NativeSelectionProjectionV3
   std::optional<ConversationStateReferenceV1> conversationStateReference;
   std::optional<ConversationTurnBindingV1> conversationTurnBinding;
   NativeExecutionPlan plan;
+
+  // Runtime-only state. Excluded from canonical JSON; all runner rebuilds for
+  // this authenticated Selection share the same operation sequence.
+  std::shared_ptr<std::atomic<std::uint64_t>> assemblyProgressSequence;
 };
 
 std::vector<std::string>

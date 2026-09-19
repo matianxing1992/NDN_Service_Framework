@@ -15,6 +15,13 @@
 - **Evidence**：冻结修复快照获官方只读 `STATIC_PASS`；受影响 C++ closure 以 Waf `-j3` 重建，`Spec175InvocationStreamLifecycle` 15/15、`Spec175NativeAssembly` 9/9 通过。真实重跑及 terminal/output/drain 仍未完成，详见 [r56 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r56-20260919.md)。
 - **Documentation boundary**：B189-3 的下一个且唯一优先出口是用重建候选做一次真实 retry；在观察新的第一生产边界前，不扩张组件职责、不盲目增加 timeout，也不把本地回归提升为资格 PASS。
 
+## Spec189 Selection-scoped admission sequence — 2026-09-19
+
+- **Status**: `PARTIAL` / `NO_PUBLIC_API_CHANGE`。为修复 assembler/rebuild 重建时重复从 sequence 2 开始的问题，`NativeSelectionProjectionV3` 现在携带不参与 JSON/canonical digest 的 runtime-only shared atomic counter；同一 authenticated Selection 的 admission 与每次 runner factory copy 共享它。
+- **Design change**：`GRANT_VERIFIED` 后先报告 epoch 1、sequence 1 的 `ASSEMBLY_ADMISSION`，随后 assembler milestones 使用同一 counter 产生 sequence 2、3……。这保持 operation identity、授权和 Selection wire 不变，只闭合 Core 严格非零/单调序列约束。
+- **Evidence**：v4 冻结快照获官方只读 `STATIC_PASS`；受影响 closure 真实编译链接成功；C++ lifecycle 1→2→3 与 `Spec175NativeAssembly` 9/9 通过。r58 在 ACK/Selection 前触发 `RESOURCE_BOUNDARY:diskFree`，因此没有真实 admission/assembly 结论。见 [admission sequence/r58 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-admission-sequence-r58-20260919.md)。
+- **Documentation boundary**：该内部状态不构成 Qwen、MiniNDN、ORT、output 或 reuse PASS；T006/T007/T009 继续 `PARTIAL`/blocked。
+
 
 ## Spec189 execution and ownership audit — 2026-09-18 14:50 -0500
 

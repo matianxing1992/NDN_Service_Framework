@@ -198,11 +198,14 @@ the two-provider acceptance chain or turn a focused selector into `QWEN_TWO_PROV
 
 The fresh r56 candidate confirms the next design boundary: both Providers can reach
 authenticated `BEFORE_ASSEMBLY` grant verification while the requester still expires on a
-silent stream gap. The accepted repair is a provider-authenticated `ASSEMBLY_STARTED`
-milestone emitted before the first root-material fetch. It is an observability/liveness
-handoff, not a new authorization decision, timeout increase, or qualification result. The
-rebuilt C++ selectors pass locally; one fresh real candidate run must observe this marker
-before any additional component work is admitted. See [r56 evidence](evidence/b189-real-qwen-r56-20260919.md).
+silent stream gap. The accepted repair is a provider-authenticated
+`ASSEMBLY_ADMISSION` followed by `ASSEMBLY_STARTED`, emitted before the first
+root-material fetch. Both statuses share one Selection-scoped monotonic operation
+sequence so runner rebuilds cannot restart the operation at sequence two. This is an
+observability/liveness handoff, not a new authorization decision, timeout increase, or
+qualification result. The rebuilt C++ selectors pass locally; one fresh real candidate
+run must observe the marker before any additional component work is admitted. See
+[admission/r58 evidence](evidence/b189-admission-sequence-r58-20260919.md).
 
 Every bounded retry follows the shared
 [experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):

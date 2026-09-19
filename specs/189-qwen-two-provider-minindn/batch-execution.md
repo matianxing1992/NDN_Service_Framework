@@ -8,7 +8,7 @@
 | 1 | B189-0 | T001 | 剩余真实接线与 candidate/验证边界 | DONE (mapping only) | evidence/b189-convergence.md |
 | 2 | B189-1 | T003 (former T002,T004) | 原子材料 Repo publication + source release + B189-1c audit storage gates | PARTIAL (B189-1a protected local boundary and B189-1b producer/Repo consumer locally verified; F02/F05/F09 focused selectors pass but qualification remains open; protected ingress open) | evidence/b189-prepare.md; evidence/b189-protected-range-store-20260919.md; evidence/b189-f02-memory-20260919.md; evidence/b189-f05-quota-20260919.md; evidence/di-repo-design-static-audit-20260919.md |
 | 3 | B189-2 | T005 | ACK 后规划与生产 Selection/no-fetch fence | PARTIAL (production C++ ingress focused selectors pass; direct no-fetch counters and canonical Qwen manifest remain open) | evidence/b189-placement.md; evidence/b189-placement-production-20260919.md |
-| 4 | B189-3 | T006,T007 | 范围组装、NDN handoff、C++ 输出/因果判据 | PARTIAL (assembly-admission progress and corrected assembly suite 9/9 pass locally; fresh r56 reached grant verification but failed the stream-liveness boundary before the new marker; handoff/output open) | evidence/b189-execution.md; evidence/b189-material-consumer-20260919.md; evidence/b189-r4-progress-heartbeat-20260919.md; evidence/b189-real-qwen-r56-20260919.md |
+| 4 | B189-3 | T006,T007 | 范围组装、NDN handoff、C++ 输出/因果判据 | PARTIAL (Selection-scoped admission sequence and corrected assembly suite 9/9 pass locally; fresh r58 stopped before ACK/Selection at the disk resource guard; handoff/output open) | evidence/b189-execution.md; evidence/b189-material-consumer-20260919.md; evidence/b189-r4-progress-heartbeat-20260919.md; evidence/b189-admission-sequence-r58-20260919.md |
 | 5 | B189-5 | T009 (former T008,T010) | resource gate 后两独立 MiniNDN，各自同 handle 两请求 | BLOCKED_BY_B189-3 (must observe a post-repair assembly/terminal boundary before reuse/repeat qualification) | evidence/b189-convergence.md |
 
 ## Five-lane coverage and dynamic checks
@@ -40,10 +40,12 @@
 B189-1a 通过只关闭共享接缝，不授予 T003 DONE；B189-1b 通过也不授予
 Provider/MiniNDN PASS。资源门不再拥有独立任务状态；五 lane 继承所属批次，每个出口
 记录实际覆盖文件与 selector。
-The B189-3 local progress exit is now stable. Its next action is one fresh real
-candidate run using the rebuilt binaries; until that run reaches a new first
-boundary, do not add more component work, increase timeouts, or move T009
-forward. This is a scheduling constraint, not a product PASS.
+The B189-3 local admission exit is stable after the sequence-state repair. The
+next real run must first pass a disk-safe host guard; r58 stopped before
+ACK/Selection at `RESOURCE_BOUNDARY:diskFree`, so no stream or assembly
+conclusion can be drawn from it. Do not increase timeouts or move T009 forward
+until a new run reaches a post-Selection boundary. This is a scheduling
+constraint, not a product PASS.
 使用一个 Repo 后端和一个 Core protected serving 路径；不新增明文网络兼容分支、
 Qwen 特供协议或第二套缓存淘汰策略。
 

@@ -584,9 +584,22 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   progressMember.epoch = 1;
   progressMember.sequence = 1;
   progressMember.progressKnown = true;
-  progressMember.progress = 0.5;
+  progressMember.progress = 0.0;
   progressMember.detailsSchema = "ndnsf-di-preparation-progress-v1";
   progressStatus.memberStatuses.push_back(progressMember);
+  BOOST_CHECK(progressConsumer.observeAuthenticatedProgress(progressStatus));
+
+  // Assembly proper continues the same authenticated progress epoch after
+  // input/queue admission work.  Its next sequence must extend the operation
+  // rather than being rejected as a duplicate.
+  progressStatus.memberStatuses.front().sequence = 2;
+  progressStatus.memberStatuses.front().progress = 0.5;
+  BOOST_CHECK(progressConsumer.observeAuthenticatedProgress(progressStatus));
+
+  // A runner rebuild/retry reuses the request-scoped counter rather than
+  // restarting the same operation at sequence two.
+  progressStatus.memberStatuses.front().sequence = 3;
+  progressStatus.memberStatuses.front().progress = 0.75;
   BOOST_CHECK(progressConsumer.observeAuthenticatedProgress(progressStatus));
 
   // A second role hosted by the same Provider cannot extend the terminal

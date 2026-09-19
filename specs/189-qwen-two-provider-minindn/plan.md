@@ -200,7 +200,9 @@ T006/T007 范围组装/handoff 组合验证 → T009 同 handle 两请求及独�
 [experiment retry loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md)；
 日志级别/timeout 改变不算功能修复，诊断运行必须注明目的。
 
-当前 B189-3 的稳定出口是：authenticated `ASSEMBLY_STARTED` 在首个 root fetch
+当前 B189-3 的稳定出口是：Selection-scoped authenticated admission sequence 在
+首个 root fetch 前可持续递增，并由 assembler/rebuild 复用同一状态；
+`ASSEMBLY_STARTED` 仍是首个 root fetch
 之前可被 requester 接收，并且受影响 C++ selectors 通过。r56 已证明旧候选在
 grant verification 后会因 silent stream gap 停止；因此下一步只允许用重建后的
 candidate 做一次真实 retry，观察新的第一边界。该 retry 之前不再加入组件职责、

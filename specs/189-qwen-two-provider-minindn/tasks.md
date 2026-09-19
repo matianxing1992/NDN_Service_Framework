@@ -8,6 +8,16 @@
 
 ## Current Checkpoint
 
+**B189-3 admission-sequence repair / r58 checkpoint**: 2026-09-19 — the
+v4 frozen scope passed official read-only `STATIC_PASS`. A Selection-scoped
+runtime sequence counter now survives Provider runner-factory copies and
+rebuilds; local C++ lifecycle 1→2→3 and the complete assembly suite passed
+9/9 after building the worker from the repository root. The fresh
+`two-provider-global-r58` run stopped before ACK/Selection at
+`RESOURCE_BOUNDARY:diskFree`; cleanup passed, memory stayed above 4.24 GiB,
+and no protocol or model result was observed. T006/T007 remain `PARTIAL` and
+T009 remains blocked by B189-3. See [admission sequence/r58 evidence](evidence/b189-admission-sequence-r58-20260919.md).
+
 **B189-3 real Qwen r56 checkpoint**: 2026-09-19 — the fresh
 `two-provider-global-r56` candidate reached both Provider `READY`, ACK and
 `BEFORE_ASSEMBLY` grant verification, then the requester stopped with
@@ -267,8 +277,8 @@ adapter producer/consumer 和 Runtime protected publication 的本地出口已�
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
 | [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | material-backed publication budget/receipt path and focused C++ selector now pass; protected range-store/material-only consumer remain local boundaries. F02 actual ORT/RSS, F05 replacement/rollback beyond focused selector, F09 complete publication boundary, real Qwen source release and protected ingress remain open. [material publication](evidence/b189-material-publication-20260919.md); [prepare](evidence/b189-prepare.md); [protected range-store](evidence/b189-protected-range-store-20260919.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress handler/no-fetch 计数。[placement](evidence/b189-placement.md); [production ingress](evidence/b189-placement-production-20260919.md) |
-| [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer、aggregate budget、authenticated admission progress 与 assembly suite 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md); [r56 boundary](evidence/b189-real-qwen-r56-20260919.md) |
-| [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门和 assembly-admission progress 已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md); [r56 boundary](evidence/b189-real-qwen-r56-20260919.md) |
+| [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer、aggregate budget、Selection-scoped admission sequence 与 assembly suite 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md); [admission/r58 boundary](evidence/b189-admission-sequence-r58-20260919.md) |
+| [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门和持久 admission sequence 已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md); [admission/r58 boundary](evidence/b189-admission-sequence-r58-20260919.md) |
 | [T009 Qualify reuse and repeat](#t009) | PARTIAL | T003 + T005 + T006 + T007 | 同 handle 两请求、新 run-id 重复成功、F08 generation-guard、资源 guard、native counters 和 drain。[convergence](evidence/b189-convergence.md) |
 
 ## Task checklist

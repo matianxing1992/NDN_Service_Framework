@@ -8,7 +8,9 @@
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -52,7 +54,10 @@ std::function<void(const std::string& phase, double progress)>
 makeNativeAssemblyProgressReporter(
   ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
   const NativeSelectionProjectionV3& projection,
-  const std::string& adapterIdentity = "native");
+  const std::string& adapterIdentity = "native",
+  std::uint64_t epoch = 1,
+  std::uint64_t initialSequence = 0,
+  std::shared_ptr<std::atomic<std::uint64_t>> sequenceState = {});
 
 /**
  * Provider-owned read ports used by the post-Selection assembler.  The
