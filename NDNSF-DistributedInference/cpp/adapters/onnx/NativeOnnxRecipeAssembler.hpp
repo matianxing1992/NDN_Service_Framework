@@ -68,6 +68,17 @@ struct NativeCanonicalSource
   // complete model was downloaded.
   std::vector<MaterialPayload> materialPayloads;
 
+  // A post-Selection consumer may carry a role model rebuilt from the
+  // authenticated material index.  The indices remain the canonical source
+  // indices; the serialized model contains only the selected nodes.  These
+  // fields are internal assembly provenance and are never accepted from an
+  // application-facing request.
+  bool materializedRole = false;
+  std::vector<std::uint64_t> materializedNodeIndices;
+  std::string materializedSourceDigest;
+  std::string materializedGraphDigest;
+  std::string materializedInitializerDigest;
+
   /**
    * Immutable placement packages produced by the preparation boundary.  The
    * bytes are owned only until the publication receipt is committed; request

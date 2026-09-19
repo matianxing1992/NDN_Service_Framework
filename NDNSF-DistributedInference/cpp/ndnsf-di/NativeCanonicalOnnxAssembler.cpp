@@ -21,7 +21,9 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -332,6 +334,8 @@ prepareNativeCanonicalOnnxRole(
           if (source.initializerBytes) {
             NativePlaintextBufferGuard initializerGuard{*source.initializerBytes};
           }
+          for (auto& payload : source.materialPayloads)
+            std::fill(payload.bytes.begin(), payload.bytes.end(), 0);
         }
         source = {};
         scrubbed = true;
@@ -375,6 +379,160 @@ prepareNativeCanonicalOnnxRole(
     if (sourceDigest.empty() || expectedSourceBytes == 0) {
       throw std::runtime_error("DI_CANONICAL_SOURCE_METADATA_MISSING");
     }
+    NativeAssemblyControl assemblyControl;
+    const auto wallNow = nowMs();
+    const auto remainingRequestMs = projection.deadlineMs == 0 ?
+      options.assemblyTimeoutMs :
+      (projection.deadlineMs > wallNow ? projection.deadlineMs - wallNow : 0);
+    assemblyControl.deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(std::min<std::uint64_t>(
+        options.assemblyTimeoutMs, remainingRequestMs));
+    assemblyControl.maxSourceBytes = projection.assembly.maxSourceBytes;
+    assemblyControl.maxAssembledBytes = projection.assembly.maxAssembledBytes;
+    assemblyControl.requireActive = [&] {
+      requireActiveAssembly(options, projection.deadlineMs);
+    };
+    const auto materialManifestName = metadata
+      ? firstString(*metadata, {"materialManifestDataName", "material_manifest_data_name"})
+      : std::string();
+    const auto materialManifestDigest = metadata
+      ? firstString(*metadata, {"materialManifestDigest", "material_manifest_digest"})
+      : std::string();
+    const auto materialManifestBytes = metadata
+      ? firstUint64(*metadata, {"materialManifestBytes", "material_manifest_bytes"})
+      : 0;
+    const auto materialIdentityDigest = metadata
+      ? firstString(*metadata, {"materialIdentityDigest", "material_identity_digest"})
+      : std::string();
+    const bool materialMetadataPresent = !materialManifestName.empty() ||
+      !materialManifestDigest.empty() || !materialIdentityDigest.empty() ||
+      materialManifestBytes != 0 ||
+      (metadata && metadata->get_child_optional("materialObjects").has_value());
+
+    const auto fetchPlainObject = [&] (const std::string& name,
+                                       const std::string& digest,
+                                       std::uint64_t expectedBytes,
+                                       const char* kind) {
+      assemblyControl.requireActive();
+      const ndn::Name dataName(name);
+      logMaterialFetch(kind, dataName, "begin", nullptr, digest);
+      std::optional<ndn::Buffer> fetched;
+      try {
+        fetched = fetchers.fetchEncryptedLargeData(
+          dataName, ndn::Name(projection.plan.serviceName));
+      }
+      catch (...) {
+        logMaterialFetch(kind, dataName, "error", nullptr, digest);
+        throw;
+      }
+      logMaterialFetch(kind, dataName,
+                       fetched && !fetched->empty() ? "returned" : "empty",
+                       &fetched, digest);
+      if (!fetched || fetched->empty() || fetched->size() != expectedBytes ||
+          fetched->size() > projection.assembly.maxSourceBytes)
+        throw std::runtime_error(std::string("DI_CANONICAL_") + kind + "_UNAVAILABLE");
+      if (sha256Hex(*fetched) != digest)
+        throw std::runtime_error(std::string("DI_CANONICAL_") + kind + "_DIGEST_MISMATCH");
+      assemblyControl.requireActive();
+      logMaterialFetch(kind, dataName, "verified", &fetched, digest);
+      return std::vector<std::uint8_t>(fetched->begin(), fetched->end());
+    };
+
+    if (materialMetadataPresent) {
+      if (materialManifestName.empty() || materialManifestDigest.empty() ||
+          materialManifestBytes == 0 || materialIdentityDigest.empty() || !metadata ||
+          !metadata->get_child_optional("materialObjects"))
+        throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_MISSING");
+      if (materialManifestBytes > projection.assembly.maxSourceBytes ||
+          materialManifestBytes > projection.assembly.maxAssembledBytes)
+        throw std::runtime_error("DI_CANONICAL_MATERIAL_MANIFEST_UNAVAILABLE");
+      const auto manifestBytes = fetchPlainObject(
+        materialManifestName, materialManifestDigest,
+        materialManifestBytes,
+        "material-manifest");
+      auto materialManifest = parseNativeCanonicalMaterialManifest(manifestBytes);
+      if (materialManifest->manifestDigest != materialIdentityDigest ||
+          materialManifest->sourceDigest != sourceDigest ||
+          materialManifest->graphDigest != projection.assembly.graphDigest ||
+          materialManifest->initializerDigest != projection.assembly.canonicalInitializerDigest)
+        throw std::runtime_error("DI_CANONICAL_MATERIAL_IDENTITY_MISMATCH");
+
+      struct MaterialObjectReceipt {
+        std::string dataName;
+        std::string digest;
+        std::uint64_t bytes = 0;
+      };
+      std::map<std::string, MaterialObjectReceipt> objects;
+      for (const auto& item : *metadata->get_child_optional("materialObjects")) {
+        const auto id = item.second.get<std::string>("payloadId", "");
+        const auto dataName = item.second.get<std::string>("dataName", "");
+        const auto digest = item.second.get<std::string>("digest", "");
+        const auto bytes = item.second.get<std::uint64_t>("bytes", 0);
+        if (id.empty() || dataName.empty() || digest.empty() || bytes == 0 ||
+            !objects.emplace(id, MaterialObjectReceipt{dataName, digest, bytes}).second)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
+      }
+
+      std::set<std::string> selectedIds{materialManifest->templatePayloadId};
+      std::set<std::string> selectedDependencies;
+      for (const auto nodeIndex : projection.assembly.nodeIndices) {
+        const auto logicalName = "node/" + std::to_string(nodeIndex);
+        const auto found = std::find_if(materialManifest->references.begin(),
+          materialManifest->references.end(), [&] (const auto& reference) {
+            return reference.kind == "graph-node" && reference.logicalName == logicalName;
+          });
+        if (found == materialManifest->references.end())
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_NODE_MISSING");
+        selectedIds.insert(found->payloadId);
+        selectedDependencies.insert(found->dependencies.begin(), found->dependencies.end());
+      }
+      for (const auto& dependency : selectedDependencies) {
+        const auto found = std::find_if(materialManifest->references.begin(),
+          materialManifest->references.end(), [&] (const auto& reference) {
+            return reference.kind == "shared-initializer" &&
+                   reference.logicalName == dependency;
+          });
+        if (found == materialManifest->references.end())
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_INITIALIZER_MISSING");
+        selectedIds.insert(found->payloadId);
+      }
+      std::uint64_t selectedMaterialBytes = materialManifestBytes;
+      for (const auto& payloadId : selectedIds) {
+        assemblyControl.requireActive();
+        const auto object = objects.find(payloadId);
+        if (object == objects.end())
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISSING");
+        const auto reference = std::find_if(materialManifest->references.begin(),
+          materialManifest->references.end(), [&] (const auto& candidate) {
+            return candidate.payloadId == payloadId;
+          });
+        if (reference == materialManifest->references.end())
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_REFERENCE_MISSING");
+        if (reference->digest != object->second.digest ||
+            reference->bytes != object->second.bytes)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISMATCH");
+        if (selectedMaterialBytes > projection.assembly.maxAssembledBytes ||
+            object->second.bytes >
+              projection.assembly.maxAssembledBytes - selectedMaterialBytes)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
+        selectedMaterialBytes += object->second.bytes;
+        auto bytes = fetchPlainObject(object->second.dataName, object->second.digest,
+                                      object->second.bytes, "material-payload");
+        canonicalSource.materialPayloads.push_back({payloadId, object->second.digest,
+                                                     std::move(bytes)});
+      }
+      canonicalSource.materialManifest = std::move(materialManifest);
+      canonicalSource.materializedRole = true;
+      canonicalSource.materializedNodeIndices = projection.assembly.nodeIndices;
+      canonicalSource.materializedSourceDigest = sourceDigest;
+      canonicalSource.materializedGraphDigest = projection.assembly.graphDigest;
+      canonicalSource.materializedInitializerDigest =
+        projection.assembly.canonicalInitializerDigest;
+      canonicalSource.modelBytes = materializeNativeCanonicalModel(
+        canonicalSource, projection.assembly.nodeIndices, assemblyControl);
+      storeWhileAuthorized([&] { writeFileAtomic(sourceFile, canonicalSource.modelBytes); });
+    }
+    else {
     const ndn::Name sourceNameValue(sourceName);
     logMaterialFetch("source", sourceNameValue, "begin", nullptr, sourceDigest);
     std::optional<ndn::Buffer> source;
@@ -468,32 +626,39 @@ prepareNativeCanonicalOnnxRole(
       // covers this vector, including exceptions before worker startup.
       canonicalSource.initializerBytes = std::move(*initializer);
     }
+    }
 
     const auto modelName = root.get<std::string>("modelName", projection.plan.modelName);
     const auto modelDigest = root.get<std::string>("modelIdentityDigest", "");
     if (modelName.empty() || modelDigest.empty()) {
       throw std::runtime_error("DI_CANONICAL_ROOT_MODEL_IDENTITY_MISSING");
     }
-    NativeAssemblyControl assemblyControl;
-    const auto wallNow = nowMs();
-    const auto remainingRequestMs = projection.deadlineMs == 0 ?
-      options.assemblyTimeoutMs :
-      (projection.deadlineMs > wallNow ? projection.deadlineMs - wallNow : 0);
-    assemblyControl.deadline = std::chrono::steady_clock::now() +
-      std::chrono::milliseconds(std::min<std::uint64_t>(
-        options.assemblyTimeoutMs, remainingRequestMs));
-    assemblyControl.maxSourceBytes = projection.assembly.maxSourceBytes;
-    assemblyControl.maxAssembledBytes = projection.assembly.maxAssembledBytes;
-    assemblyControl.requireActive = [&] {
-      requireActiveAssembly(options, projection.deadlineMs);
-    };
     // OA02 worker transport: the certified recipe and the source bytes cross
     // the pipe, and the child's PASS claim is accepted only after the parent
     // revalidated the model bytes against the certified digest below.
     NativeCertifiedAssembly assembled;
     try {
+      auto workerRecipe = projection.assembly;
+      if (canonicalSource.materializedRole) {
+        if (canonicalSource.materializedNodeIndices != projection.assembly.nodeIndices ||
+            canonicalSource.materializedSourceDigest != sourceDigest ||
+            canonicalSource.materializedGraphDigest != projection.assembly.graphDigest ||
+            canonicalSource.materializedInitializerDigest !=
+              projection.assembly.canonicalInitializerDigest)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_PROVENANCE_MISMATCH");
+        const auto roleIdentity = canonicalOnnxSourceIdentity(canonicalSource, assemblyControl);
+        workerRecipe.graphDigest = roleIdentity.graphDigest;
+        workerRecipe.canonicalInitializerDigest = roleIdentity.initializerDigest;
+        workerRecipe.nodeIndices.clear();
+        for (std::size_t index = 0; index < canonicalSource.materializedNodeIndices.size(); ++index)
+          workerRecipe.nodeIndices.push_back(index);
+        if (workerRecipe.roleKind != "COMPONENT_SET")
+          workerRecipe.layerEnd = workerRecipe.nodeIndices.size();
+        workerRecipe.recipeDigest = nativePlanningDigest(
+          canonicalNativeOnnxRecipeJson(workerRecipe));
+      }
       assembled = runNativeOnnxAssemblyWorkerAt(
-        options.workerLocation, canonicalSource, projection.assembly,
+        options.workerLocation, canonicalSource, workerRecipe,
         assemblyControl);
     }
     catch (...) {
