@@ -163,6 +163,7 @@ public:
     };
 
     ndnsf::di::NativeCanonicalSource sourceValue;
+    bool sourceLoadedFromFallback = false;
     if (m_repo->has(objectName)) {
       sourceValue.modelBytes = readObject(objectName, expectedDigest, sourceSize);
     }
@@ -172,6 +173,7 @@ public:
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "repository source is absent and no fallback is configured");
       ++m_missIngests;
+      sourceLoadedFromFallback = true;
       sourceValue = sourceFallback(request);
       if (sourceValue.modelBytes.empty() ||
           sourceValue.modelBytes.size() > request.maxSourceBytes ||
@@ -204,19 +206,29 @@ public:
 
     if (!initializerDigest.empty()) {
       if (!m_repo->has(initializerName)) {
-        if (!sourceFallback)
-          throw ndnsf::di::RepositorySourceError(
-            ndnsf::di::RepositorySourceError::Kind::Unavailable,
-            "repository initializer is absent and no fallback is configured");
-        const auto fallbackValue = sourceFallback(request);
-        if (!fallbackValue.initializerBytes || fallbackValue.initializerBytes->empty() ||
-            fallbackValue.initializerBytes->size() > request.maxSourceBytes ||
-            ndnsf::di::nativePlanningDigest(fallbackValue.initializerBytes->data(),
-                                             fallbackValue.initializerBytes->size()) != initializerDigest)
+        std::optional<std::vector<std::uint8_t>> initializerBytes;
+        if (sourceLoadedFromFallback) {
+          // The first fallback already loaded and validated the complete
+          // canonical source. Reuse its initializer instead of reading the
+          // large source a second time on an external-data model.
+          initializerBytes = std::move(sourceValue.initializerBytes);
+        }
+        else {
+          if (!sourceFallback)
+            throw ndnsf::di::RepositorySourceError(
+              ndnsf::di::RepositorySourceError::Kind::Unavailable,
+              "repository initializer is absent and no fallback is configured");
+          auto fallbackValue = sourceFallback(request);
+          initializerBytes = std::move(fallbackValue.initializerBytes);
+        }
+        if (!initializerBytes || initializerBytes->empty() ||
+            initializerBytes->size() > request.maxSourceBytes ||
+            ndnsf::di::nativePlanningDigest(initializerBytes->data(),
+                                             initializerBytes->size()) != initializerDigest)
           throw ndnsf::di::RepositorySourceError(
             ndnsf::di::RepositorySourceError::Kind::Unavailable,
             "fallback initializer does not match pinned digest or size");
-        ingestObject(initializerName, *fallbackValue.initializerBytes, "canonical-initializer");
+        ingestObject(initializerName, *initializerBytes, "canonical-initializer");
       }
       sourceValue.initializerBytes = readObject(initializerName, initializerDigest, 0);
     }

@@ -6,6 +6,8 @@
 
 ## Current Checkpoint
 
+**Requester Repo checkpoint**: 2026-09-19 01:17 -05:00 — T003 source owner 首次 external initializer 重复读取已修复，r6 复审及增量构建通过；Repo C++ 5/5，私有 spool 下 Runtime production-entry 1/1。requester 接线已构建但新 DI 全局库尚未安装，两个调用方的混合改动尚未归档；真实跨节点读取/Qwen/MiniNDN 保持 PARTIAL。受保护 publication 继续走 Core ServiceUser；详见 [requester Repo evidence](evidence/b189-requester-repo-20260919.md)。
+
 **Updated**: 2026-09-18 17:49 -0500 — B189-1b producer and Repo-side selected consumer passed static review, the affected `unit-tests` target built with `-j4`, and four Repo C++ cases passed. Protected Provider ingress, real Qwen preparation and assembly remain open; three older Spec182 publisher lifecycle selectors remain unresolved. See [B189 prepare evidence](evidence/b189-prepare.md) and [failure log](../../docs/failure-log.md).
 **Baseline**: `3e53fec5` plus pre-existing implementation and unvalidated protected-store draft; not a clean qualified candidate.
 

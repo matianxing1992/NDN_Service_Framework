@@ -177,6 +177,57 @@ BOOST_AUTO_TEST_CASE(CancelledPrepareDoesNotLeaveRepoObjects)
   BOOST_CHECK(fixture.repo->list().empty());
 }
 
+BOOST_AUTO_TEST_CASE(RepoSourceMissReusesValidatedInitializer)
+{
+  RepoFixture fixture;
+  const std::vector<std::uint8_t> modelBytes{0x01, 0x02, 0x03, 0x04};
+  const std::vector<std::uint8_t> initializerBytes{0xa1, 0xa2, 0xa3};
+  const auto sourceName = std::string{"/spec189/source/qwen"};
+  const auto initializerName = sourceName + "/initializer";
+  const auto sourceDigest = nativePlanningDigest(modelBytes.data(), modelBytes.size());
+  const auto initializerDigest = nativePlanningDigest(
+    initializerBytes.data(), initializerBytes.size());
+  const NativeJson catalog = {
+    {"source", {
+      {"data_name", sourceName},
+      {"digest", sourceDigest},
+      {"bytes", modelBytes.size()},
+      {"initializer_data_name", initializerName},
+      {"initializer_digest", initializerDigest},
+    }},
+  };
+  RepositorySourceRequest request{
+    "default", nativeCanonicalJson(catalog), 1U << 20,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10)};
+  std::size_t fallbackCalls = 0;
+  const auto fallback = [&] (const RepositorySourceRequest&) {
+    ++fallbackCalls;
+    NativeCanonicalSource source;
+    source.modelBytes = modelBytes;
+    source.initializerBytes = initializerBytes;
+    return source;
+  };
+  RepoSourceProvider provider(fixture.repo);
+
+  const auto first = provider.load(request, fallback);
+  BOOST_CHECK_EQUAL(fallbackCalls, 1U);
+  BOOST_REQUIRE(first.initializerBytes.has_value());
+  BOOST_CHECK_EQUAL_COLLECTIONS(first.initializerBytes->begin(), first.initializerBytes->end(),
+                               initializerBytes.begin(), initializerBytes.end());
+  BOOST_REQUIRE(fixture.repo->has(sourceName));
+  BOOST_REQUIRE(fixture.repo->has(initializerName));
+
+  const auto second = provider.load(request, [&] (const RepositorySourceRequest&) {
+    ++fallbackCalls;
+    throw std::runtime_error("fallback must not run after Repo ingest");
+    return NativeCanonicalSource{};
+  });
+  BOOST_CHECK_EQUAL(fallbackCalls, 1U);
+  BOOST_REQUIRE(second.initializerBytes.has_value());
+  BOOST_CHECK_EQUAL_COLLECTIONS(second.initializerBytes->begin(), second.initializerBytes->end(),
+                               initializerBytes.begin(), initializerBytes.end());
+}
+
 BOOST_AUTO_TEST_CASE(LegacyCanonicalReceiptWithoutLayersStillReuses)
 {
   RepoFixture fixture;
