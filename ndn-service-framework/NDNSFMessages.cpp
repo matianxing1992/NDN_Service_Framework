@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <openssl/sha.h>
 #include <sstream>
+#include <utility>
 
 namespace ndn_service_framework {
 
@@ -2072,6 +2073,7 @@ void HybridMessageEnvelope::setEpochId(const std::string& epochId) { epochId_ = 
 void HybridMessageEnvelope::setMessageType(const std::string& messageType) { messageType_ = messageType; }
 void HybridMessageEnvelope::setNonce(const ndn::Buffer& nonce) { nonce_ = nonce; }
 void HybridMessageEnvelope::setCipherText(const ndn::Buffer& cipherText) { cipherText_ = cipherText; }
+void HybridMessageEnvelope::setCipherText(ndn::Buffer&& cipherText) { cipherText_ = std::move(cipherText); }
 void HybridMessageEnvelope::setAuthTag(const ndn::Buffer& authTag) { authTag_ = authTag; }
 void HybridMessageEnvelope::setWrappedMessageKey(const ndn::Buffer& wrappedMessageKey) { wrappedMessageKey_ = wrappedMessageKey; }
 

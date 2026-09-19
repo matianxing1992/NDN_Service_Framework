@@ -67,6 +67,8 @@ struct RuntimeConfig
   /** Optional prepare-time durable artifact owner. A request never calls this
    * boundary; it receives only the committed reference. */
   std::shared_ptr<const RepositoryArtifactPublisher> repositoryArtifactPublisher;
+  /** Ciphertext storage only; Core remains the protected Data producer. */
+  std::shared_ptr<ndn_service_framework::EncryptedLargeDataRangeStore> encryptedRangeStore;
 };
 
 /** v1 accepts the empty profile or the explicit default profile only. */

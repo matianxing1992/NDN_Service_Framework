@@ -70,6 +70,32 @@ RepoNode::get(const std::string& objectName) const
   return m_core.get(objectName);
 }
 
+void
+RepoNode::putRange(const RepoObjectManifest& manifest,
+                   RepoByteRange range,
+                   const std::vector<uint8_t>& bytes)
+{
+  m_core.putRange(manifest, range, bytes);
+}
+
+RepoObjectManifest
+RepoNode::commitRanges(const RepoObjectManifest& manifest)
+{
+  return m_core.commitRanges(manifest);
+}
+
+void
+RepoNode::abortRanges(const std::string& objectName)
+{
+  m_core.abortRanges(objectName);
+}
+
+std::vector<uint8_t>
+RepoNode::getRange(const std::string& objectName, RepoByteRange range) const
+{
+  return m_core.getRange(objectName, range);
+}
+
 RepoObjectManifest
 RepoNode::getManifest(const std::string& objectName) const
 {
@@ -137,6 +163,45 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
     });
 
   provider.addService(
+    makeRepoServiceName(m_servicePrefix, "STORE_RANGE"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleStoreRange(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "COMMIT_RANGES"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleCommitRanges(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "ABORT_RANGES"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleAbortRanges(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
     makeRepoServiceName(m_servicePrefix, "INSERT"),
     ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
@@ -169,6 +234,19 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
             const ndn_service_framework::RequestMessage& request) {
       try {
         return makeResponse(handleFetch(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "FETCH_RANGE"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleFetchRange(payloadOf(request)));
       }
       catch (const std::exception& e) {
         return makeError(e.what());
@@ -330,6 +408,15 @@ RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& reg
   registerLocalRepoService("STORE", [this] (const std::vector<uint8_t>& request) {
     return handleStore(request);
   });
+  registerLocalRepoService("STORE_RANGE", [this] (const std::vector<uint8_t>& request) {
+    return handleStoreRange(request);
+  });
+  registerLocalRepoService("COMMIT_RANGES", [this] (const std::vector<uint8_t>& request) {
+    return handleCommitRanges(request);
+  });
+  registerLocalRepoService("ABORT_RANGES", [this] (const std::vector<uint8_t>& request) {
+    return handleAbortRanges(request);
+  });
   registerLocalRepoService("INSERT", [this] (const std::vector<uint8_t>& request) {
     return handleInsert(request);
   });
@@ -338,6 +425,9 @@ RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& reg
   });
   registerLocalRepoService("FETCH", [this] (const std::vector<uint8_t>& request) {
     return handleFetch(request);
+  });
+  registerLocalRepoService("FETCH_RANGE", [this] (const std::vector<uint8_t>& request) {
+    return handleFetchRange(request);
   });
   registerLocalRepoService("MANIFEST", [this] (const std::vector<uint8_t>& request) {
     return handleManifest(request);
@@ -476,6 +566,25 @@ RepoNode::handleStore(const std::vector<uint8_t>& request)
 }
 
 std::vector<uint8_t>
+RepoNode::handleStoreRange(const std::vector<uint8_t>& request)
+{
+  return m_core.handleStoreRange(request);
+}
+
+std::vector<uint8_t>
+RepoNode::handleCommitRanges(const std::vector<uint8_t>& request)
+{
+  return m_core.handleCommitRanges(request);
+}
+
+std::vector<uint8_t>
+RepoNode::handleAbortRanges(const std::vector<uint8_t>& request)
+{
+  m_core.abortRanges(decodeRangeAbortRequest(request));
+  return toBytes("aborted");
+}
+
+std::vector<uint8_t>
 RepoNode::handleInsert(const std::vector<uint8_t>& request)
 {
   const auto reference = parseDataReferenceJson(toString(request));
@@ -529,6 +638,12 @@ std::vector<uint8_t>
 RepoNode::handleFetch(const std::vector<uint8_t>& request) const
 {
   return m_core.handleFetch(request);
+}
+
+std::vector<uint8_t>
+RepoNode::handleFetchRange(const std::vector<uint8_t>& request) const
+{
+  return m_core.handleFetchRange(request);
 }
 
 std::vector<uint8_t>

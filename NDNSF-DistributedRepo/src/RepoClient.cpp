@@ -96,6 +96,35 @@ RepoClient::get(const RepoNode& node, const std::string& objectName)
   return node.get(objectName);
 }
 
+void
+RepoClient::putRange(RepoNode& node,
+                     const RepoObjectManifest& manifest,
+                     RepoByteRange range,
+                     const std::vector<uint8_t>& bytes)
+{
+  node.putRange(manifest, range, bytes);
+}
+
+RepoObjectManifest
+RepoClient::commitRanges(RepoNode& node, const RepoObjectManifest& manifest)
+{
+  return node.commitRanges(manifest);
+}
+
+void
+RepoClient::abortRanges(RepoNode& node, const std::string& objectName)
+{
+  node.abortRanges(objectName);
+}
+
+std::vector<uint8_t>
+RepoClient::getRange(const RepoNode& node,
+                    const std::string& objectName,
+                    RepoByteRange range)
+{
+  return node.getRange(objectName, range);
+}
+
 RepoObjectManifest
 RepoClient::getManifest(const RepoNode& node, const std::string& objectName)
 {
@@ -334,6 +363,53 @@ RepoClient::localGet(ndn_service_framework::LocalServiceRegistry& registry,
   return localRequest(registry, repoServicePrefix, "FETCH", toBytes(objectName));
 }
 
+void
+RepoClient::localPutRange(ndn_service_framework::LocalServiceRegistry& registry,
+                          const ndn::Name& repoServicePrefix,
+                          const RepoObjectManifest& manifest,
+                          RepoByteRange range,
+                          const std::vector<uint8_t>& bytes)
+{
+  const auto response = localRequest(
+    registry, repoServicePrefix, "STORE_RANGE",
+    encodeRangeWriteRequest(manifest, range, bytes));
+  if (toString(response) != "accepted") {
+    throw std::runtime_error("local repo STORE_RANGE returned unexpected response");
+  }
+}
+
+RepoObjectManifest
+RepoClient::localCommitRanges(ndn_service_framework::LocalServiceRegistry& registry,
+                              const ndn::Name& repoServicePrefix,
+                              const RepoObjectManifest& manifest)
+{
+  return parseManifestJson(toString(localRequest(
+    registry, repoServicePrefix, "COMMIT_RANGES", encodeManifestRequest(manifest))));
+}
+
+void
+RepoClient::localAbortRanges(ndn_service_framework::LocalServiceRegistry& registry,
+                             const ndn::Name& repoServicePrefix,
+                             const std::string& objectName)
+{
+  const auto response = localRequest(
+    registry, repoServicePrefix, "ABORT_RANGES",
+    encodeRangeAbortRequest(objectName));
+  if (toString(response) != "aborted") {
+    throw std::runtime_error("local repo ABORT_RANGES returned unexpected response");
+  }
+}
+
+std::vector<uint8_t>
+RepoClient::localGetRange(ndn_service_framework::LocalServiceRegistry& registry,
+                          const ndn::Name& repoServicePrefix,
+                          const std::string& objectName,
+                          RepoByteRange range)
+{
+  return localRequest(registry, repoServicePrefix, "FETCH_RANGE",
+                      encodeRangeReadRequest(objectName, range));
+}
+
 RepoObjectManifest
 RepoClient::localGetManifest(ndn_service_framework::LocalServiceRegistry& registry,
                              const ndn::Name& repoServicePrefix,
@@ -565,6 +641,59 @@ RepoClient::requestStore(
 }
 
 ndn::Name
+RepoClient::requestStoreRange(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const RepoObjectManifest& manifest,
+  RepoByteRange range,
+  const std::vector<uint8_t>& bytes,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "STORE_RANGE"),
+    makeRequest(encodeRangeWriteRequest(manifest, range, bytes)),
+    timeoutMs,
+    std::move(onTimeout),
+    std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestCommitRanges(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const RepoObjectManifest& manifest,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "COMMIT_RANGES"),
+    makeRequest(encodeManifestRequest(manifest)),
+    timeoutMs,
+    std::move(onTimeout),
+    std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestAbortRanges(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const std::string& objectName,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "ABORT_RANGES"),
+    makeRequest(encodeRangeAbortRequest(objectName)),
+    timeoutMs,
+    std::move(onTimeout),
+    std::move(onResponse));
+}
+
+ndn::Name
 RepoClient::requestInsert(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
@@ -595,6 +724,24 @@ RepoClient::requestFetch(
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestFetchRange(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const std::string& objectName,
+  RepoByteRange range,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "FETCH_RANGE"),
+    makeRequest(encodeRangeReadRequest(objectName, range)),
+    timeoutMs,
+    std::move(onTimeout),
+    std::move(onResponse));
 }
 
 ndn::Name

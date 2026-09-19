@@ -35,6 +35,7 @@
 #include <atomic>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace ndnsf::di {
 namespace {
@@ -166,6 +167,27 @@ std::string readOperatorFile(const std::filesystem::path& path, std::size_t limi
   return bytes;
 }
 
+std::vector<std::uint8_t> readOperatorBytes(const std::filesystem::path& path,
+                                            std::size_t limit)
+{
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec || size == 0 || size > limit || size > std::numeric_limits<std::size_t>::max() ||
+      size > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max()))
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
+                  "configured operator file size is invalid");
+  std::ifstream input(path, std::ios::binary);
+  if (!input)
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
+                  "configured operator file cannot be opened");
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  if (!input.read(reinterpret_cast<char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size())))
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
+                  "configured operator file cannot be read");
+  return bytes;
+}
+
 std::shared_ptr<EVP_PKEY> loadEd25519PrivateKey(const std::filesystem::path& path)
 {
   SensitiveBuffer bytes(readOperatorFile(path, 65536));
@@ -288,13 +310,11 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
         const auto sourceFile = requiredString(source, "file");
         NativeCanonicalSource result;
         const auto modelPath = (current.baseDirectory / sourceFile).lexically_normal();
-        const auto model = readOperatorFile(modelPath, current.maxSourceBytes);
-        result.modelBytes.assign(model.begin(), model.end());
+        result.modelBytes = readOperatorBytes(modelPath, current.maxSourceBytes);
         if (source.contains("initializer_file")) {
           const auto initializerFile = requiredString(source, "initializer_file");
           const auto initializerPath = (current.baseDirectory / initializerFile).lexically_normal();
-          const auto initializer = readOperatorFile(initializerPath, current.maxSourceBytes);
-          result.initializerBytes.emplace(initializer.begin(), initializer.end());
+          result.initializerBytes = readOperatorBytes(initializerPath, current.maxSourceBytes);
         }
         return result;
       };
@@ -964,6 +984,7 @@ void ensureRuntimeCoreTransport(const std::shared_ptr<detail::RuntimeState>& sta
       state->coreOwner->requesterCertificate,
       state->coreOwner->authorityCertificate,
       primary->second.trustSchema.string(), *state->coreOwner->keyChain);
+    serviceUser->setEncryptedLargeDataRangeStore(state->config.encryptedRangeStore);
     serviceUser->init();
     serviceUser->fetchPermissionsFromController(
       ndn::Name(primary->second.coreAuthorityIdentity));
@@ -1031,6 +1052,7 @@ std::shared_ptr<NativeInferenceClient> makeRuntimeClient(
         state->coreOwner->requesterCertificate,
         state->coreOwner->authorityCertificate,
         primary->second.trustSchema.string(), *state->coreOwner->keyChain);
+      serviceUser->setEncryptedLargeDataRangeStore(state->config.encryptedRangeStore);
       serviceUser->init();
       // Runtime-owned requester identities need the same controller
       // permission/bootstrap wave as maintained native applications. Queue
@@ -1364,6 +1386,7 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
       return;
     std::vector<ndn_service_framework::LargeDataPublishResult> rollbacks;
     const auto addData = [&publication](auto& rollback) {
+      rollback.fileBacked = !publication.servingLeases.empty();
       rollback.rollbackDataNames = publication.rollbackDataNames;
       rollback.rollbackDataNames.push_back(publication.sourceDataName);
       if (!publication.initializerDataName.empty())
@@ -1494,6 +1517,7 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
       return;
     std::vector<ndn_service_framework::LargeDataPublishResult> rollbacks;
     const auto addData = [&publication](auto& rollback) {
+      rollback.fileBacked = !publication.servingLeases.empty();
       rollback.rollbackDataNames = publication.rollbackDataNames;
       rollback.rollbackDataNames.push_back(publication.sourceDataName);
       if (!publication.initializerDataName.empty())

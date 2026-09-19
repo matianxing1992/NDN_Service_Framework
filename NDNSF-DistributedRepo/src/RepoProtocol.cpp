@@ -13,14 +13,12 @@ namespace {
 constexpr size_t MAX_RANGE_MANIFEST_BYTES = 1U << 20;
 constexpr size_t MAX_RANGE_OBJECT_NAME_BYTES = 4096;
 constexpr size_t MAX_RANGE_FRAME_BYTES = 16U << 20;
+constexpr size_t MAX_STORE_MANIFEST_BYTES = 1U << 20;
 
 size_t
 readFramedLine(const std::vector<uint8_t>& request, size_t& cursor,
                const char* field)
 {
-  if (cursor > request.size()) {
-    throw std::invalid_argument(std::string("repo range request missing ") + field);
-  }
   const auto begin = request.begin() + static_cast<std::ptrdiff_t>(cursor);
   const auto end = std::find(begin, request.end(), '\n');
   if (end == request.end()) {
@@ -394,9 +392,28 @@ decodeStoreRequest(const std::vector<uint8_t>& request,
     throw std::invalid_argument("repo store request missing manifest length");
   }
   const std::string lengthText(request.begin(), newline);
-  const auto manifestSize = static_cast<size_t>(std::stoull(lengthText));
-  const auto manifestStart = static_cast<size_t>(std::distance(request.begin(), newline)) + 1;
-  if (request.size() < manifestStart + manifestSize) {
+  if (lengthText.empty() || lengthText.size() > 20) {
+    throw std::invalid_argument("repo store request invalid manifest length");
+  }
+  uint64_t manifestSizeValue = 0;
+  const auto parsed = std::from_chars(lengthText.data(),
+                                      lengthText.data() + lengthText.size(),
+                                      manifestSizeValue);
+  if (parsed.ec != std::errc{} ||
+      parsed.ptr != lengthText.data() + lengthText.size()) {
+    throw std::invalid_argument("repo store request invalid manifest length");
+  }
+  if (manifestSizeValue > MAX_STORE_MANIFEST_BYTES) {
+    throw std::invalid_argument("repo store request oversized manifest");
+  }
+  const auto newlineOffset = static_cast<size_t>(std::distance(request.begin(), newline));
+  if (newlineOffset == std::numeric_limits<size_t>::max()) {
+    throw std::invalid_argument("repo store request invalid manifest offset");
+  }
+  const auto manifestStart = newlineOffset + 1;
+  const auto manifestSize = static_cast<size_t>(manifestSizeValue);
+  if (manifestStart > request.size() ||
+      manifestSize > request.size() - manifestStart) {
     throw std::invalid_argument("repo store request truncated manifest");
   }
   const std::string manifestJson(
@@ -419,8 +436,11 @@ decodeRangeWriteRequest(const std::vector<uint8_t>& request,
   if (range.lengthBytes > MAX_RANGE_FRAME_BYTES) {
     throw std::invalid_argument("repo range write payload exceeds protocol window");
   }
-  if (manifestSize > MAX_RANGE_MANIFEST_BYTES || cursor > request.size() ||
-      manifestSize > request.size() - cursor) {
+  if (manifestSize > MAX_RANGE_MANIFEST_BYTES ||
+      manifestSize > request.size() - std::min(cursor, request.size())) {
+    throw std::invalid_argument("repo range write request truncated manifest");
+  }
+  if (cursor > request.size() || manifestSize > request.size() - cursor) {
     throw std::invalid_argument("repo range write request truncated manifest");
   }
   const std::string manifestJson(
@@ -595,6 +615,8 @@ parseCatalogStatusJson(const std::string& statusJson)
   status.catalogEpoch = extractJsonUInt(statusJson, "catalogEpoch", 0);
   status.objectCount = extractJsonUInt(statusJson, "objectCount", 0);
   status.acceptsBackupReplica = extractJsonBool(statusJson, "acceptsBackupReplica", true);
+  status.reconciliationRequired = extractJsonBool(
+    statusJson, "reconciliationRequired", false);
   return status;
 }
 
@@ -616,6 +638,8 @@ parseCacheStatusJson(const std::string& statusJson)
   status.oversizedBypasses = extractJsonUInt(statusJson, "oversizedBypasses", 0);
   status.backingReads = extractJsonUInt(statusJson, "backingReads", 0);
   status.backingWrites = extractJsonUInt(statusJson, "backingWrites", 0);
+  status.reconciliationRequired = extractJsonBool(
+    statusJson, "reconciliationRequired", false);
   return status;
 }
 

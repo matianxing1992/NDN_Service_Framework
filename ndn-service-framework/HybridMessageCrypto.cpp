@@ -202,6 +202,7 @@ HybridMessageCrypto::cacheWrappedSendKey(const ndn::Name& serviceName,
     m_wrappedSendKeys.insert(keyId);
     if (!serviceName.empty()) {
         m_wrappedSendKeyServices[keyId] = serviceName;
+        ++m_wrappedSendKeyReferences[keyId];
     }
 }
 
@@ -223,6 +224,53 @@ HybridMessageCrypto::shouldAttachWrappedKey(const std::string& keyId) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_wrappedSendKeys.find(keyId) == m_wrappedSendKeys.end();
+}
+
+bool
+HybridMessageCrypto::retainWrappedSendKey(const ndn::Name& serviceName,
+                                           const std::string& keyId)
+{
+    if (serviceName.empty() || keyId.empty()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto scope = m_wrappedSendKeyServices.find(keyId);
+    if (scope == m_wrappedSendKeyServices.end() || scope->second != serviceName ||
+        m_wrappedSendKeysById.find(keyId) == m_wrappedSendKeysById.end()) {
+        return false;
+    }
+    ++m_wrappedSendKeyReferences[keyId];
+    return true;
+}
+
+bool
+HybridMessageCrypto::eraseWrappedSendKey(const ndn::Name& serviceName,
+                                          const std::string& keyId)
+{
+    if (serviceName.empty() || keyId.empty()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto scope = m_wrappedSendKeyServices.find(keyId);
+    if (scope == m_wrappedSendKeyServices.end() || scope->second != serviceName) {
+        return false;
+    }
+    auto references = m_wrappedSendKeyReferences.find(keyId);
+    if (references != m_wrappedSendKeyReferences.end() && references->second > 1) {
+        --references->second;
+        return false;
+    }
+    if (references != m_wrappedSendKeyReferences.end()) {
+        m_wrappedSendKeyReferences.erase(references);
+    }
+    m_wrappedSendKeys.erase(keyId);
+    const auto wrapped = m_wrappedSendKeysById.find(keyId);
+    if (wrapped != m_wrappedSendKeysById.end()) {
+        std::fill(wrapped->second.begin(), wrapped->second.end(), 0);
+        m_wrappedSendKeysById.erase(wrapped);
+    }
+    m_wrappedSendKeyServices.erase(scope);
+    return true;
 }
 
 size_t
@@ -251,6 +299,7 @@ HybridMessageCrypto::invalidateService(const ndn::Name& serviceName)
             m_wrappedSendKeysById.erase(wrappedIt);
         }
         m_wrappedSendKeyServices.erase(keyId);
+        m_wrappedSendKeyReferences.erase(keyId);
         ++removed;
     }
 
@@ -281,6 +330,7 @@ HybridMessageCrypto::invalidateService(const ndn::Name& serviceName)
             m_wrappedSendKeysById.erase(wrappedIt);
         }
         it = m_wrappedSendKeyServices.erase(it);
+        m_wrappedSendKeyReferences.erase(keyId);
         ++removed;
     }
 

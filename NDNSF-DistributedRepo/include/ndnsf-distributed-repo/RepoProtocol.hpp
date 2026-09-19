@@ -24,11 +24,13 @@ std::vector<uint8_t>
 encodeStoreRequest(const RepoObjectManifest& manifest,
                    const std::vector<uint8_t>& payload);
 
+/** Encode one bounded range write without concatenating the object payload. */
 std::vector<uint8_t>
 encodeRangeWriteRequest(const RepoObjectManifest& manifest,
                         RepoByteRange range,
                         const std::vector<uint8_t>& bytes);
 
+/** Encode a bounded range read request. */
 std::vector<uint8_t>
 encodeRangeReadRequest(const std::string& objectName, RepoByteRange range);
 

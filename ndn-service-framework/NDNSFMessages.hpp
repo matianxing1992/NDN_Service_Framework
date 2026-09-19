@@ -598,6 +598,7 @@ public:
     void setMessageType(const std::string& messageType);
     void setNonce(const ndn::Buffer& nonce);
     void setCipherText(const ndn::Buffer& cipherText);
+    void setCipherText(ndn::Buffer&& cipherText);
     void setAuthTag(const ndn::Buffer& authTag);
     void setWrappedMessageKey(const ndn::Buffer& wrappedMessageKey);
 

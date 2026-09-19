@@ -1,6 +1,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <exception>
 #include <stdexcept>
 #include <utility>
@@ -214,6 +216,13 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
     }
     m_state = ProtectedRuntimeState::GrantVerified;
     recordGrantVerification(m_binding, "VERIFIED", "");
+    std::ostringstream verified;
+    verified << "NDNSF_DI_GRANT_VERIFIED"
+             << " requestId=" << m_binding.requestId
+             << " attemptEpoch=" << m_binding.attempt
+             << " provider=" << m_binding.provider
+             << " planDigest=" << m_binding.planDigest;
+    logRuntimeEvidence(verified.str());
   }
   catch (const std::exception& error) {
     m_terminalReason = error.what();
@@ -304,6 +313,23 @@ ProtectedRuntime::authorizeDataflow(ProtectedDataflowDirection direction,
       (m_grantConfig && m_grantConfig->shouldCancel && m_grantConfig->shouldCancel()) ||
       !isDigest(endpointDigest) || allowed.count(endpointDigest) != 1 ||
       !ownsRole || !peerMatches || producerRole.empty() || consumerRole.empty()) {
+    if (std::getenv("NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC") != nullptr) {
+      std::ostringstream record;
+      record << "NDNSF_DI_PROTECTED_DATAFLOW_REJECT"
+             << " direction=" << (direction == ProtectedDataflowDirection::Publish ? "publish" : "fetch")
+             << " role=" << m_binding.role
+             << " producer=" << producerRole
+             << " consumer=" << consumerRole
+             << " endpoint=" << endpointDigest
+             << " state=" << static_cast<int>(m_state)
+             << " authorized=" << (authorizedStateLocked() ? 1 : 0)
+             << " expired=" << (nowMs >= m_grantExpiresAtMs ? 1 : 0)
+             << " allowed=" << (allowed.count(endpointDigest) == 1 ? 1 : 0)
+             << " owns_role=" << (ownsRole ? 1 : 0)
+             << " peer_matches=" << (peerMatches ? 1 : 0)
+             << " peer_present=" << (peer != peers.end() ? 1 : 0);
+      std::cerr << record.str() << std::endl;
+    }
     m_terminalReason = "protected dataflow is not authorized for this role/endpoint";
     try { drainLocked(); } catch (...) {}
     m_state = ProtectedRuntimeState::FailedClosed;

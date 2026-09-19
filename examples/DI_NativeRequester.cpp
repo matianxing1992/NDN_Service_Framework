@@ -1,4 +1,8 @@
 #include "ndnsf-di/api.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
+#include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
+#include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -20,6 +24,8 @@ namespace {
 
 using namespace ndnsf::di;
 using boost::property_tree::ptree;
+
+constexpr std::uint64_t MAX_NATIVE_INPUT_BYTES = 16 * 1024 * 1024;
 
 volatile std::sig_atomic_t interrupted = 0;
 
@@ -234,16 +240,64 @@ run(int argc, char** argv)
 
   RuntimeConfig runtimeConfig;
   runtimeConfig.nativeConfigPath = configPath.string();
+  if (const auto repository = config.get_child_optional("repository")) {
+    auto path = std::filesystem::path(repository->get<std::string>("path"));
+    if (path.is_relative())
+      path = base / path;
+    if (!std::filesystem::exists(path)) {
+      std::filesystem::create_directories(path);
+      std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+    }
+    ndnsf_distributed_repo::StorageCapability capability;
+    capability.repoNode = "/local/canonical-model-materials";
+    capability.repoMode = "persistent";
+    capability.freeBytes = repository->get<std::uint64_t>("max_bytes", 4ULL << 30);
+    auto repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
+      std::move(capability), ndnsf_distributed_repo::makeFilesystemRepoStore(
+        path.string(), 1U << 20, 1U << 20, "native-requester-canonical"));
+    auto sourceOwner = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
+      std::move(repo));
+    runtimeConfig.repositorySourceProvider = sourceOwner;
+  }
+  if (const auto repository = config.get_child_optional("encrypted_repository")) {
+    auto path = std::filesystem::path(repository->get<std::string>("path"));
+    if (path.is_relative())
+      path = base / path;
+    if (!std::filesystem::exists(path)) {
+      std::filesystem::create_directories(path);
+      std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+    }
+    ndnsf_distributed_repo::StorageCapability capability;
+    capability.repoNode = "/local/encrypted-model-materials";
+    capability.repoMode = "persistent";
+    capability.freeBytes = repository->get<std::uint64_t>("max_bytes", 4ULL << 30);
+    auto repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
+      std::move(capability), ndnsf_distributed_repo::makeFilesystemRepoStore(
+        path.string(), 1U << 20, 1U << 20, "native-requester"));
+    runtimeConfig.encryptedRangeStore =
+      std::make_shared<ndnsf_distributed_repo::RepoEncryptedLargeDataStore>(std::move(repo));
+  }
   if (const auto limits = config.get_child_optional("limits")) {
     if (const auto value = limits->get_optional<std::uint64_t>("bootstrap_ms"))
       runtimeConfig.preparationJobTimeout = std::chrono::milliseconds(*value);
+    if (const auto value = limits->get_optional<std::uint64_t>("max_prepared_bytes")) {
+      if (*value > std::numeric_limits<std::size_t>::max())
+        throw std::invalid_argument("limits.max_prepared_bytes exceeds size_t");
+      runtimeConfig.maxPreparedBytes = static_cast<std::size_t>(*value);
+    }
+    if (const auto value = limits->get_optional<std::uint64_t>("max_prepared_entries")) {
+      if (*value > std::numeric_limits<std::size_t>::max())
+        throw std::invalid_argument("limits.max_prepared_entries exceeds size_t");
+      runtimeConfig.maxPreparedEntries = static_cast<std::size_t>(*value);
+    }
   }
+  PrepareOptions prepareOptions;
+  prepareOptions.timeout = runtimeConfig.preparationJobTimeout;
   auto runtime = Runtime::open(std::move(runtimeConfig));
   auto user = runtime->user();
-  PrepareOptions prepareOptions;
   const auto prepared = user.prepare("default", prepareOptions);
 
-  const auto payload = readBytes(argv[4], 4 * 1024 * 1024);
+  const auto payload = readBytes(argv[4], MAX_NATIVE_INPUT_BYTES);
   const auto optionsBytes = readOptions(request, base);
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(

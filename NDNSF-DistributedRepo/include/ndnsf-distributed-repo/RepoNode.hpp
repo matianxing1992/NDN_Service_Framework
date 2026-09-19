@@ -44,6 +44,17 @@ public:
 
   std::vector<uint8_t> get(const std::string& objectName) const;
 
+  void putRange(const RepoObjectManifest& manifest,
+                RepoByteRange range,
+                const std::vector<uint8_t>& bytes);
+
+  RepoObjectManifest commitRanges(const RepoObjectManifest& manifest);
+
+  void abortRanges(const std::string& objectName);
+
+  std::vector<uint8_t> getRange(const std::string& objectName,
+                                RepoByteRange range) const;
+
   RepoObjectManifest getManifest(const std::string& objectName) const;
 
   std::vector<RepoObjectManifest> list() const;
@@ -65,11 +76,19 @@ public:
 
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 
+  std::vector<uint8_t> handleStoreRange(const std::vector<uint8_t>& request);
+
+  std::vector<uint8_t> handleCommitRanges(const std::vector<uint8_t>& request);
+
+  std::vector<uint8_t> handleAbortRanges(const std::vector<uint8_t>& request);
+
   std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleFetch(const std::vector<uint8_t>& request) const;
+
+  std::vector<uint8_t> handleFetchRange(const std::vector<uint8_t>& request) const;
 
   std::vector<uint8_t> handleManifest(const std::vector<uint8_t>& request) const;
 

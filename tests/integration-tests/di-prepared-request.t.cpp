@@ -1168,13 +1168,15 @@ struct Spec185PreparedModelTestAccess
 
 } // namespace ndnsf::di
 
-#if defined(SPEC187_YOLO_SELECTOR)
+#if defined(SPEC188_YOLO_SELECTOR)
+BOOST_AUTO_TEST_SUITE(Spec188YoloRepeat)
+#elif defined(SPEC187_YOLO_SELECTOR)
 BOOST_AUTO_TEST_SUITE(Spec187YoloMiniNdn)
 #else
 BOOST_AUTO_TEST_SUITE(Spec185PreparedRequest)
 #endif
 
-#if defined(SPEC187_YOLO_SELECTOR)
+#if defined(SPEC187_YOLO_SELECTOR) || defined(SPEC188_YOLO_SELECTOR)
 namespace {
 
 std::filesystem::path
@@ -1307,6 +1309,84 @@ spec187RequireStage(const std::filesystem::path& directory,
   return *observed;
 }
 
+#if defined(SPEC188_YOLO_SELECTOR)
+struct Spec188RepoOwnerFixture
+{
+  std::filesystem::path root;
+  std::string objectName;
+  std::shared_ptr<ndnsf_distributed_repo::RepoCore> repo;
+  std::shared_ptr<const ndnsf::di::RepositorySourceProvider> provider;
+  bool ownsRoot = false;
+
+  Spec188RepoOwnerFixture() = default;
+  Spec188RepoOwnerFixture(const Spec188RepoOwnerFixture&) = delete;
+  Spec188RepoOwnerFixture& operator=(const Spec188RepoOwnerFixture&) = delete;
+
+  Spec188RepoOwnerFixture(Spec188RepoOwnerFixture&& other) noexcept
+    : root(std::move(other.root)), objectName(std::move(other.objectName)),
+      repo(std::move(other.repo)), provider(std::move(other.provider)),
+      ownsRoot(other.ownsRoot)
+  {
+    other.ownsRoot = false;
+  }
+
+  Spec188RepoOwnerFixture& operator=(Spec188RepoOwnerFixture&&) = delete;
+
+  ~Spec188RepoOwnerFixture()
+  {
+    if (!ownsRoot)
+      return;
+    provider.reset();
+    repo.reset();
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+    BOOST_CHECK_MESSAGE(!error,
+                        "Spec188 Repo fixture root cleanup failed: " + error.message());
+    error.clear();
+    std::filesystem::remove(root.string() + ".authority.lock", error);
+    BOOST_CHECK_MESSAGE(!error,
+                        "Spec188 Repo fixture lock cleanup failed: " + error.message());
+  }
+};
+
+Spec188RepoOwnerFixture
+spec188RepoOwner(const std::filesystem::path& configPath,
+                 const std::filesystem::path& outputDirectory)
+{
+  const auto config = nativeParseJson(readTextFile(configPath));
+  const auto& source = config.at("catalog").at("source");
+  const auto sourceName = source.at("data_name").get<std::string>();
+  BOOST_REQUIRE_MESSAGE(!sourceName.empty(),
+                        "Spec188 catalog source data_name is empty");
+  const auto sourceFile = source.value("file", std::string{});
+  BOOST_REQUIRE_MESSAGE(!sourceFile.empty(),
+                        "Spec188 candidate has no local source fallback");
+  const auto sourcePath = (configPath.parent_path() / sourceFile).lexically_normal();
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(sourcePath),
+                        "Spec188 candidate source fallback is unavailable: " +
+                        sourcePath.string());
+
+  Spec188RepoOwnerFixture fixture;
+  fixture.root = outputDirectory / ("repo-source-" + std::to_string(::getpid()));
+  fixture.ownsRoot = true;
+  std::filesystem::create_directories(fixture.root);
+  fixture.objectName = sourceName;
+
+  ndnsf_distributed_repo::StorageCapability capability;
+  capability.repoNode = "/spec188/local-repo";
+  capability.freeBytes = 64U * 1024U * 1024U;
+  capability.repoMode = "persistent";
+  auto store = ndnsf_distributed_repo::makeFilesystemRepoStore(
+    fixture.root.string(), 16U * 1024U * 1024U, 1U * 1024U * 1024U,
+    "spec188-yolo");
+  fixture.repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
+    std::move(capability), std::move(store));
+  fixture.provider = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
+    fixture.repo);
+  return fixture;
+}
+#endif
+
 bool
 spec187HasExecutionEvidence(const std::filesystem::path& directory,
                             const std::string& requestId,
@@ -1372,16 +1452,67 @@ BOOST_AUTO_TEST_CASE(NativeRequesterThroughMiniNdn)
 
   RuntimeConfig config;
   config.nativeConfigPath = configPath.string();
+#if defined(SPEC188_YOLO_SELECTOR)
+  auto repoOwner = spec188RepoOwner(configPath, outputPath.parent_path());
+  config.repositorySourceProvider = repoOwner.provider;
+#endif
   auto runtime = Runtime::open(std::move(config));
   auto prepared = runtime->user().prepare();
+#if defined(SPEC188_YOLO_SELECTOR)
+  const auto repoProvider =
+    std::dynamic_pointer_cast<const ndnsf_distributed_repo::RepoSourceProvider>(
+      repoOwner.provider);
+  BOOST_REQUIRE(repoProvider != nullptr);
+  const auto prepareStats = repoProvider->stats();
+  BOOST_REQUIRE_EQUAL(prepareStats.lookups, 1U);
+  BOOST_REQUIRE_EQUAL(prepareStats.missIngests, 1U);
+  BOOST_REQUIRE_MESSAGE(repoOwner.repo->has(repoOwner.objectName),
+                        "Spec188 prepare did not persist the candidate source");
+  const auto prepareManifest = repoOwner.repo->getManifest(repoOwner.objectName);
+  BOOST_REQUIRE_EQUAL(prepareManifest.objectName, repoOwner.objectName);
+  BOOST_REQUIRE_MESSAGE(prepareManifest.size > 0,
+                        "Spec188 prepared source manifest is empty");
+  const auto sourceLifetime =
+    ndnsf::di::Spec185PreparedModelTestAccess::source(prepared);
+  BOOST_REQUIRE_MESSAGE(sourceLifetime.expired(),
+                        "Spec188 receipt-backed prepare retained canonical source bytes");
+#endif
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(60000);
   options.ackTimeout = std::chrono::milliseconds(1500);
   const auto handle = prepared.request(Input::inlineBytes(spec187ReadInput(inputPath)), options);
   const auto result = handle.result(options.timeout);
+#if defined(SPEC188_YOLO_SELECTOR)
+  // Reuse the same prepared handle for a second real request.  This is the
+  // production reference-only repeat oracle: request identity and attempt
+  // state must be new, while the canonical source must not be looked up or
+  // published again.
+  const auto secondHandle =
+    prepared.request(Input::inlineBytes(spec187ReadInput(inputPath)), options);
+  const auto secondResult = secondHandle.result(options.timeout);
+#endif
+#if defined(SPEC188_YOLO_SELECTOR)
+  const auto requestStats = repoProvider->stats();
+  BOOST_REQUIRE_EQUAL(requestStats.lookups, prepareStats.lookups);
+  BOOST_REQUIRE_EQUAL(requestStats.missIngests, prepareStats.missIngests);
+#endif
   BOOST_REQUIRE_MESSAGE(!result.payload.empty(), "Spec187 native result payload is empty");
   BOOST_REQUIRE_MESSAGE(!result.planDigest.empty(), "Spec187 result has no plan digest");
   BOOST_REQUIRE_MESSAGE(!result.modelDigest.empty(), "Spec187 result has no model digest");
+#if defined(SPEC188_YOLO_SELECTOR)
+  BOOST_REQUIRE_MESSAGE(!secondHandle.id().empty(),
+                        "Spec188 same-handle repeat has no request id");
+  BOOST_REQUIRE_MESSAGE(!secondResult.payload.empty(),
+                        "Spec188 same-handle repeat result payload is empty");
+  BOOST_REQUIRE_MESSAGE(!secondResult.planDigest.empty(),
+                        "Spec188 same-handle repeat has no plan digest");
+  BOOST_REQUIRE_MESSAGE(!secondResult.modelDigest.empty(),
+                        "Spec188 same-handle repeat has no model digest");
+  BOOST_REQUIRE_MESSAGE(secondHandle.id() != handle.id(),
+                        "Spec188 same-handle repeat reused request identity");
+  BOOST_REQUIRE_MESSAGE(secondResult.modelDigest == result.modelDigest,
+                        "Spec188 same-handle repeat changed model identity");
+#endif
 
   const auto evidenceDirectory = outputPath.parent_path();
   const auto requestId = handle.id();
@@ -1409,6 +1540,35 @@ BOOST_AUTO_TEST_CASE(NativeRequesterThroughMiniNdn)
   BOOST_REQUIRE_MESSAGE(observed,
                         "missing correlated Spec187 execution evidence under " +
                         evidenceDirectory.string());
+
+#if defined(SPEC188_YOLO_SELECTOR)
+  const auto secondRequestId = secondHandle.id();
+  const auto secondAckEpoch = spec187RequireStage(
+    evidenceDirectory, "user", "NDNSF_DI_NATIVE_ACK_CLOSED",
+    {"requestId=" + secondRequestId, attempt});
+  const auto secondSelectionCommitEpoch = spec187RequireStage(
+    evidenceDirectory, "user", "NDNSF_DI_NATIVE_SELECTION_COMMITTED",
+    {"requestId=" + secondRequestId, attempt,
+     "planDigest=" + secondResult.planDigest});
+  const auto secondSelectionAcceptedEpoch = spec187RequireStage(
+    evidenceDirectory, "provider-", "NDNSF_DI_NATIVE_SELECTION_ACCEPTED",
+    {"requestId=" + secondRequestId, attempt, "provider=/",
+     "planDigest=" + secondResult.planDigest});
+  const auto secondExecutionCompletedEpoch = spec187RequireStage(
+    evidenceDirectory, "provider-", "NDNSF_DI_NATIVE_PROVIDER_EXECUTION_COMPLETED",
+    {"requestId=" + secondRequestId, "attemptEpoch=1", "provider=/",
+     "planDigest=" + secondResult.planDigest});
+  BOOST_REQUIRE_MESSAGE(
+    secondAckEpoch <= secondSelectionCommitEpoch &&
+      secondSelectionCommitEpoch <= secondSelectionAcceptedEpoch &&
+      secondSelectionAcceptedEpoch <= secondExecutionCompletedEpoch,
+    "Spec188 same-handle repeat stages are out of order");
+  BOOST_REQUIRE_MESSAGE(
+    spec187HasExecutionEvidence(evidenceDirectory, secondRequestId,
+                                 secondResult.planDigest),
+    "missing correlated same-handle repeat execution evidence under " +
+      evidenceDirectory.string());
+#endif
 
   std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
   BOOST_REQUIRE_MESSAGE(output.good(), "Spec187 output cannot be opened");
