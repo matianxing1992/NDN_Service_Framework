@@ -1,5 +1,28 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 real Qwen r48 materialization/liveness boundary
+
+The fresh run `two-provider-global-r48` used candidate
+`sha256:5445dac1deb3a5343785875f8e7b300f402d8200d8a87183fe6c411ddb1f9909`
+after carrying the requester stream options `interestLifetimeMs=5000` and
+`maxEventRetries=8` through the native projection. Bundle, candidate, machine,
+model, MiniNDN startup and cleanup phases passed; the workload failed with
+`MININDN_START_OR_REQUEST_FAILED`. Both Providers reached ACK, signed
+Selection, assignment fetch, grant verification and execution entry. Provider
+0 entered assembly, verified the root and material manifests, verified the
+3,992,638-byte material receipt, and continued a long selected-material fetch
+(481 material-bundle log events, 196 material-payload events) without reaching
+`RUNNER_READY`. Provider 1 retried the Stage/0 `hidden_states` dependency and
+failed its terminal dependency fetch at about 30 seconds. The requester then
+reported `NATIVE_STREAM_FAILED` because its stream-event-gap budget expired.
+No runner, stage output, successful terminal response or qualification was
+observed. This narrows the boundary to long post-Selection materialization and
+the dependency/stream liveness contract; it does not prove receipt corruption,
+ORT failure or a reason to increase timeouts blindly. Raw evidence is retained
+under `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r48/`;
+the durable record is
+`specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r48-20260919.md`.
+
 ## 2026-09-19 — Spec189 real Qwen r47 post-selection stream boundary
 
 The fresh run `two-provider-global-r47` used the unchanged global-r3 native

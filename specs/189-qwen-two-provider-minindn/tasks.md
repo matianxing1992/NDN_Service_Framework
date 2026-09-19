@@ -34,6 +34,21 @@ next boundary to the stream wait/heartbeat contract versus the provider receipt
 fetch; it does not prove a receipt or ORT failure and does not close T003/T006/
 T007/T009. See [r47 evidence](evidence/b189-real-qwen-r47-20260919.md).
 
+**B189-3 real Qwen r48 liveness checkpoint**: 2026-09-19 — after wiring
+`interestLifetimeMs=5000` and `maxEventRetries=8` through the native requester,
+a fresh run reached both Providers' ACK/Selection/grant/execution boundary.
+Stage/0 verified the root and material manifests and a 3,992,638-byte material
+receipt, then continued selected-material assembly without `RUNNER_READY`;
+Stage/1 retried the Stage/0 `hidden_states` dependency and failed its terminal
+dependency fetch at about 30 seconds. The requester subsequently reported
+`NATIVE_STREAM_FAILED`/stream-event-gap. Bundle, candidate, machine, model,
+MiniNDN startup and cleanup passed, but workload failed and no output or
+qualification was observed. This proves the wait options are carried into the
+real request and moves the first observed boundary to long post-Selection
+materialization versus the dependency/stream liveness windows; it does not
+justify a blind timeout increase or prove receipt/ORT failure. T003/T006/T007/
+T009 remain `PARTIAL`. See [r48 evidence](evidence/b189-real-qwen-r48-20260919.md).
+
 **B189-1b r21/r22 chunked-material checkpoint**: 2026-09-19 — external
 initializers are published as a bounded header plus ordered raw chunks and are
 reassembled by the native post-Selection consumer. Official read-only review
