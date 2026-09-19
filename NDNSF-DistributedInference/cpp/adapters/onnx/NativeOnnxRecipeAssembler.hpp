@@ -15,6 +15,33 @@
 
 namespace ndnsf::di {
 
+// Protected material bundles are deliberately bounded so a post-Selection
+// consumer can reserve the complete fetched object before touching the Repo.
+// A payload larger than this limit is rejected by the publisher rather than
+// silently creating an unbounded bundle.
+inline constexpr std::uint64_t NativeCanonicalMaterialBundleMaxBytes = 1U << 20;
+
+// The material-object index is carried by an authenticated receipt rather
+// than the inline authority root.  Prepare reserves this conservative bound
+// before publishing any object; the generated receipt must fit it as well.
+// Payload IDs and protected data names are producer-controlled strings, so a
+// fixed per-record allowance is preferable to discovering an overrun after a
+// publication prefix has become visible.
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptEnvelopeMaxBytes = 4U << 10;
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptRecordMaxBytes = 4U << 10;
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptPayloadIdMaxBytes = 512;
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptDataNameMaxBytes = 1024;
+// Receipt payload IDs and NDN URI names are restricted to printable
+// non-escaping tokens before serialization.  With two 71-byte digests, three
+// uint64 fields (20 decimal digits each), and this fixed key/punctuation
+// allowance, the per-record bound is proven below rather than guessed.
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptFixedRecordOverheadMaxBytes = 512;
+static_assert(NativeCanonicalMaterialReceiptPayloadIdMaxBytes +
+              NativeCanonicalMaterialReceiptDataNameMaxBytes +
+              2U * 71U + 3U * 20U +
+              NativeCanonicalMaterialReceiptFixedRecordOverheadMaxBytes <=
+              NativeCanonicalMaterialReceiptRecordMaxBytes);
+
 /** Owned canonical ONNX bytes; source authentication belongs to the fetching owner. */
 struct NativeCanonicalSource
 {

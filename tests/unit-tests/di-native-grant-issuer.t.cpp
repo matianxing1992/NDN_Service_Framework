@@ -117,6 +117,18 @@ BOOST_AUTO_TEST_CASE(PublishedManifestMustBindAnExplicitlyAuthorizedSource)
   BOOST_CHECK_EQUAL(keyReads, 1U);
 }
 
+// Migration boundary: legacy inline materialObjects roots above the ordinary
+// RequestMessage authority cap are intentionally rejected.  New preparation
+// receipts must use the authenticated material-receipt indirection instead.
+BOOST_AUTO_TEST_CASE(LegacyInlineRootAboveAuthorityCapIsRejectedBeforeRequestTransport)
+{
+  NativeGrantAuthorityRequest envelope;
+  envelope.request = request();
+  envelope.expiresAtMs = 60000;
+  envelope.publishedManifestJson.assign(NativeGrantInlineManifestMaxBytes + 1, 'x');
+  BOOST_CHECK_THROW(nativeGrantAuthorityRequestJson(envelope), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(SignedIssuerReachesIndependentProviderUnwrap)
 {
   const auto unsignedRequest = request();

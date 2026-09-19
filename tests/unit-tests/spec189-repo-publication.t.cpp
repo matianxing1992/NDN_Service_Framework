@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -290,6 +291,18 @@ BOOST_AUTO_TEST_CASE(MaterialManifestPublishesWithOwnedTransactionsAndRejectsCor
   BOOST_REQUIRE(fixture.repo->has(first.materialManifestDataName));
   for (const auto& name : first.materialDataNames)
     BOOST_REQUIRE(fixture.repo->has(name));
+  const std::set<std::string> materialBundles(first.materialDataNames.begin(),
+                                              first.materialDataNames.end());
+  BOOST_REQUIRE(!materialBundles.empty());
+  BOOST_CHECK_LE(materialBundles.size(), first.materialPayloadIds.size());
+  BOOST_REQUIRE_GT(first.materialPayloadIds.size(), 1U);
+  // RepoSourceProvider owns one bounded range-store object per material
+  // payload.  Protected NDN publication may coalesce payloads into bundles,
+  // but the Repo API keeps independently addressable objects for selection.
+  BOOST_CHECK_EQUAL(materialBundles.size(), first.materialPayloadIds.size());
+  for (const auto& name : materialBundles)
+    BOOST_CHECK_LE(fixture.repo->getManifest(name).size,
+                   NativeCanonicalMaterialBundleMaxBytes);
   BOOST_REQUIRE(fixture.repo->has(first.rootDataName));
 
   const auto second = provider.publish(

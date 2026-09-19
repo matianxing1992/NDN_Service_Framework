@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
@@ -10,6 +11,7 @@
 #include "ndnsf-integration-fixture.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
+#include <onnx/onnx_pb.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -716,6 +718,243 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
     BOOST_CHECK(std::find(fetches->begin(), fetches->end(), payloadNames.at(*it)) ==
                 fetches->end());
   }
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
+{
+  const auto fixture = findFixture();
+  BOOST_REQUIRE(!fixture.empty());
+  auto source = readBytes(fixture);
+  BOOST_REQUIRE(!source.empty());
+  // The role-0 fixture owns all of its 21 production nodes.  Add one
+  // well-formed, unreachable node so the receipt test has a real unselected
+  // payload while the selected role remains a checker-valid graph.
+  onnx::ModelProto augmentedModel;
+  BOOST_REQUIRE(augmentedModel.ParseFromArray(source.data(),
+                                               static_cast<int>(source.size())));
+  auto* unselectedNode = augmentedModel.mutable_graph()->add_node();
+  unselectedNode->set_name("spec189-unselected-material");
+  unselectedNode->set_op_type("Identity");
+  unselectedNode->add_input("float_zero");
+  unselectedNode->add_output("spec189-unselected-material");
+  std::string augmentedWire;
+  BOOST_REQUIRE(augmentedModel.SerializeToString(&augmentedWire));
+  source.assign(augmentedWire.begin(), augmentedWire.end());
+  NativeCanonicalSource materialSource;
+  NativeAssemblyControl manifestControl{
+    std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {},
+    1U << 20, 8U << 20};
+  materialSource.modelBytes = source;
+  materialSource.materialManifest = deriveNativeCanonicalMaterialManifest(
+    materialSource, manifestControl);
+  const auto identity = canonicalOnnxSourceIdentity(materialSource, manifestControl);
+  const auto manifestText = materialSource.materialManifest->canonicalJson();
+  const std::vector<std::uint8_t> manifestBytes(manifestText.begin(), manifestText.end());
+  const auto profileDigest = zeroDigest('b');
+  const ndn::Name rootName("/spec189/material/bundle-root");
+  const ndn::Name manifestName("/spec189/material/bundle-manifest");
+  const ndn::Name receiptName("/spec189/material/bundle-receipt");
+  const ndn::Name selectedBundleName("/spec189/material/bundle/selected");
+  const ndn::Name unselectedBundleName("/spec189/material/bundle/unselected");
+  // Use the fixture's certified role-0 node set.  The selected graph must be
+  // independently valid for the production worker's full ONNX checker; a
+  // prefix such as nodes {0, 1} is only a transport subset and is not a valid
+  // role model because it does not produce the declared role outputs.
+  const std::vector<std::uint64_t> certifiedRoleNodes{
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+  const std::set<std::uint64_t> selectedNodes(
+    certifiedRoleNodes.begin(), certifiedRoleNodes.end());
+  std::set<std::string> selectedIds{materialSource.materialManifest->templatePayloadId};
+  std::set<std::string> dependencies;
+  for (const auto nodeIndex : selectedNodes) {
+    const auto logicalName = "node/" + std::to_string(nodeIndex);
+    for (const auto& reference : materialSource.materialManifest->references) {
+      if (reference.kind == "graph-node" && reference.logicalName == logicalName) {
+        selectedIds.insert(reference.payloadId);
+        dependencies.insert(reference.dependencies.begin(), reference.dependencies.end());
+      }
+    }
+  }
+  for (const auto& dependency : dependencies) {
+    for (const auto& reference : materialSource.materialManifest->references) {
+      if (reference.kind == "shared-initializer" && reference.logicalName == dependency)
+        selectedIds.insert(reference.payloadId);
+    }
+  }
+  std::vector<std::vector<std::uint8_t>> bundles(2);
+  std::vector<std::size_t> bundleIndexByPayload;
+  std::map<std::string, std::size_t> offsets;
+  bundleIndexByPayload.reserve(materialSource.materialManifest->payloads.size());
+  for (const auto& payload : materialSource.materialManifest->payloads) {
+    const auto bundleIndex = selectedIds.count(payload.payloadId) != 0 ? 0U : 1U;
+    bundleIndexByPayload.push_back(bundleIndex);
+    offsets.emplace(payload.payloadId, bundles.at(bundleIndex).size());
+    bundles.at(bundleIndex).insert(bundles.at(bundleIndex).end(),
+                                   payload.bytes.begin(), payload.bytes.end());
+  }
+  BOOST_REQUIRE(!bundles.at(0).empty());
+  BOOST_REQUIRE(!bundles.at(1).empty());
+  for (const auto& bundle : bundles)
+    BOOST_REQUIRE_LE(bundle.size(), NativeCanonicalMaterialBundleMaxBytes);
+  const std::array<ndn::Name, 2> bundleNames{selectedBundleName, unselectedBundleName};
+  const std::array<std::string, 2> bundleDigests{digest(bundles.at(0)), digest(bundles.at(1))};
+  std::ostringstream materialObjects;
+  materialObjects << '[';
+  for (std::size_t index = 0; index < materialSource.materialManifest->payloads.size(); ++index) {
+    if (index != 0) materialObjects << ',';
+    const auto& payload = materialSource.materialManifest->payloads.at(index);
+    const auto bundleIndex = bundleIndexByPayload.at(index);
+    materialObjects << "{\"bundleBytes\":" << bundles.at(bundleIndex).size()
+                    << ",\"bundleDigest\":" << jsonQuote(bundleDigests.at(bundleIndex))
+                    << ",\"bundleOffset\":" << offsets.at(payload.payloadId)
+                    << ",\"bytes\":" << payload.bytes.size()
+                    << ",\"dataName\":" << jsonQuote(bundleNames.at(bundleIndex).toUri())
+                    << ",\"digest\":" << jsonQuote(payload.digest)
+                    << ",\"payloadId\":" << jsonQuote(payload.payloadId) << '}';
+  }
+  materialObjects << ']';
+  const auto receiptText = std::string("{\"graphDigest\":") +
+    jsonQuote(materialSource.materialManifest->graphDigest) +
+    ",\"materialIdentityDigest\":" +
+    jsonQuote(materialSource.materialManifest->manifestDigest) +
+    ",\"materialManifestDigest\":" + jsonQuote(digest(manifestBytes)) +
+    ",\"materialObjects\":" + materialObjects.str() +
+    ",\"schema\":\"ndnsf-di-canonical-material-receipt-v1\",\"sourceDigest\":" +
+    jsonQuote(materialSource.materialManifest->sourceDigest) + '}';
+  const std::vector<std::uint8_t> receiptBytes(receiptText.begin(), receiptText.end());
+  std::ostringstream metadata;
+  metadata << "{\"canonicalSourceBytes\":" << source.size()
+           << ",\"canonicalSourceDigest\":" << jsonQuote(
+             digest(source))
+           << ",\"materialIdentityDigest\":" << jsonQuote(
+             materialSource.materialManifest->manifestDigest)
+           << ",\"materialManifestBytes\":" << manifestBytes.size()
+           << ",\"materialManifestDataName\":" << jsonQuote(manifestName.toUri())
+           << ",\"materialManifestDigest\":" << jsonQuote(digest(manifestBytes))
+           << ",\"materialReceiptBytes\":" << receiptBytes.size()
+           << ",\"materialReceiptDataName\":" << jsonQuote(receiptName.toUri())
+           << ",\"materialReceiptDigest\":" << jsonQuote(digest(receiptBytes))
+           << '}';
+  const auto rootText = std::string("{\"artifactProfileDigest\":") +
+    jsonQuote(profileDigest) + ",\"metadata\":" + metadata.str() +
+    ",\"modelIdentityDigest\":" + jsonQuote(zeroDigest('a')) +
+    ",\"modelName\":\"spec175-tiny-causal-lm-v1\"," +
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\",\"state\":\"ACTIVE\"}";
+  const std::vector<std::uint8_t> rootBytes(rootText.begin(), rootText.end());
+  auto projection = makeProjection(digest(rootBytes), profileDigest,
+                                   identity.graphDigest, identity.initializerDigest);
+  projection.canonicalArtifactName = rootName.toUri();
+  projection.assembly.nodeIndices = certifiedRoleNodes;
+  projection.assembly.canonicalInitializerDigest = identity.initializerDigest;
+  projection.assembly.maxAssembledBytes = manifestBytes.size() + bundles.at(0).size() + (1U << 20);
+  projection.assembly.recipeDigest = recipeDigestFor(projection.assembly);
+
+  auto fetches = std::make_shared<std::vector<std::string>>();
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [rootName, rootBytes] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != rootName) return std::nullopt;
+    return ndn::Buffer(rootBytes.data(), rootBytes.size());
+  };
+  fetchers.fetchEncryptedLargeData = [=] (const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (service != ndn::Name("/LLM/Qwen")) return std::nullopt;
+    fetches->push_back(name.toUri());
+    if (name == manifestName)
+      return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
+    if (name == receiptName)
+      return ndn::Buffer(receiptBytes.data(), receiptBytes.size());
+    if (name == bundleNames.at(0))
+      return ndn::Buffer(bundles.at(0).data(), bundles.at(0).size());
+    if (name == bundleNames.at(1))
+      return ndn::Buffer(bundles.at(1).data(), bundles.at(1).size());
+    return std::nullopt;
+  };
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.workerLocation = testWorkerLocation();
+  options.cacheDir = (std::filesystem::temp_directory_path() /
+                      "spec189-material-consumer-bundle").string();
+  options.providerIdentity = projection.provider;
+  options.signManifest = [] (const std::string& bytes) {
+    return std::string("spec189-material-bundle-signature-") + digest(bytes);
+  };
+  std::error_code cleanupError;
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+  const auto prepared = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_REQUIRE(std::filesystem::is_regular_file(prepared.path));
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), manifestName.toUri()), 1U);
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), receiptName.toUri()), 1U);
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), selectedBundleName.toUri()), 1U);
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), unselectedBundleName.toUri()), 0U);
+  BOOST_CHECK(std::all_of(fetches->begin(), fetches->end(), [&] (const auto& name) {
+    return name == manifestName.toUri() || name == receiptName.toUri() ||
+      name == selectedBundleName.toUri();
+  }));
+  // The receipt is an authenticated continuation of the root binding, not a
+  // merely reachable index.  A root that points at a receipt with a foreign
+  // graph identity must fail before any selected bundle is assembled.
+  auto badReceiptJson = NativeJson::parse(receiptText);
+  badReceiptJson["graphDigest"] = zeroDigest('c');
+  const auto badReceiptText = nativeCanonicalJson(badReceiptJson);
+  const std::vector<std::uint8_t> badReceiptBytes(badReceiptText.begin(), badReceiptText.end());
+  auto badRootText = rootText;
+  const auto receiptDigestText = digest(receiptBytes);
+  const auto receiptDigestPosition = badRootText.find(receiptDigestText);
+  BOOST_REQUIRE_NE(receiptDigestPosition, std::string::npos);
+  badRootText.replace(receiptDigestPosition, receiptDigestText.size(), digest(badReceiptBytes));
+  const std::vector<std::uint8_t> badRootBytes(badRootText.begin(), badRootText.end());
+  auto badProjection = makeProjection(digest(badRootBytes), profileDigest,
+                                      identity.graphDigest, identity.initializerDigest);
+  badProjection.canonicalArtifactName = rootName.toUri();
+  badProjection.assembly.nodeIndices = projection.assembly.nodeIndices;
+  badProjection.assembly.canonicalInitializerDigest = identity.initializerDigest;
+  badProjection.assembly.maxAssembledBytes = projection.assembly.maxAssembledBytes;
+  badProjection.assembly.recipeDigest = recipeDigestFor(badProjection.assembly);
+  NativeCanonicalOnnxFetchers badFetchers = fetchers;
+  badFetchers.getArtifact = [rootName, badRootBytes] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != rootName) return std::nullopt;
+    return ndn::Buffer(badRootBytes.data(), badRootBytes.size());
+  };
+  badFetchers.fetchEncryptedLargeData = [=] (const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (service != ndn::Name("/LLM/Qwen")) return std::nullopt;
+    if (name == manifestName)
+      return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
+    if (name == receiptName)
+      return ndn::Buffer(badReceiptBytes.data(), badReceiptBytes.size());
+    if (name == bundleNames.at(0))
+      return ndn::Buffer(bundles.at(0).data(), bundles.at(0).size());
+    return std::nullopt;
+  };
+  auto badOptions = options;
+  badOptions.cacheDir = (std::filesystem::temp_directory_path() /
+                         "spec189-material-consumer-bad-receipt").string();
+  std::filesystem::remove_all(badOptions.cacheDir, cleanupError);
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(badFetchers, badProjection, badOptions), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("DI_CANONICAL_MATERIAL_RECEIPT_IDENTITY_MISMATCH") !=
+             std::string::npos;
+    });
+  std::filesystem::remove_all(badOptions.cacheDir, cleanupError);
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+
+  projection.assembly.maxAssembledBytes = manifestBytes.size() + receiptBytes.size() +
+                                          bundles.at(0).size() - 1;
+  projection.assembly.recipeDigest = recipeDigestFor(projection.assembly);
+  fetches->clear();
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(fetchers, projection, options), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED") !=
+             std::string::npos;
+    });
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), manifestName.toUri()), 1U);
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), receiptName.toUri()), 1U);
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), selectedBundleName.toUri()), 0U);
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), unselectedBundleName.toUri()), 0U);
   std::filesystem::remove_all(options.cacheDir, cleanupError);
 }
 

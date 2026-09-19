@@ -401,10 +401,22 @@ prepareNativeCanonicalOnnxRole(
     const auto materialIdentityDigest = metadata
       ? firstString(*metadata, {"materialIdentityDigest", "material_identity_digest"})
       : std::string();
+    const auto materialReceiptName = metadata
+      ? firstString(*metadata, {"materialReceiptDataName", "material_receipt_data_name"})
+      : std::string();
+    const auto materialReceiptDigest = metadata
+      ? firstString(*metadata, {"materialReceiptDigest", "material_receipt_digest"})
+      : std::string();
+    const auto materialReceiptBytes = metadata
+      ? firstUint64(*metadata, {"materialReceiptBytes", "material_receipt_bytes"})
+      : 0;
+    const bool inlineMaterialObjects = metadata &&
+      metadata->get_child_optional("materialObjects").has_value();
     const bool materialMetadataPresent = !materialManifestName.empty() ||
       !materialManifestDigest.empty() || !materialIdentityDigest.empty() ||
       materialManifestBytes != 0 ||
-      (metadata && metadata->get_child_optional("materialObjects").has_value());
+      inlineMaterialObjects || !materialReceiptName.empty() ||
+      !materialReceiptDigest.empty() || materialReceiptBytes != 0;
     if (!materialMetadataPresent && sourceName.empty())
       throw std::runtime_error("DI_CANONICAL_SOURCE_NAME_MISSING");
 
@@ -440,7 +452,12 @@ prepareNativeCanonicalOnnxRole(
     if (materialMetadataPresent) {
       if (materialManifestName.empty() || materialManifestDigest.empty() ||
           materialManifestBytes == 0 || materialIdentityDigest.empty() || !metadata ||
-          !metadata->get_child_optional("materialObjects"))
+          (!inlineMaterialObjects && (materialReceiptName.empty() ||
+                                      materialReceiptDigest.empty() ||
+                                      materialReceiptBytes == 0)) ||
+          (inlineMaterialObjects && (!materialReceiptName.empty() ||
+                                     !materialReceiptDigest.empty() ||
+                                     materialReceiptBytes != 0)))
         throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_MISSING");
       if (materialManifestBytes > projection.assembly.maxSourceBytes ||
           materialManifestBytes > projection.assembly.maxAssembledBytes)
@@ -456,19 +473,82 @@ prepareNativeCanonicalOnnxRole(
           materialManifest->initializerDigest != projection.assembly.canonicalInitializerDigest)
         throw std::runtime_error("DI_CANONICAL_MATERIAL_IDENTITY_MISMATCH");
 
+      boost::property_tree::ptree materialReceipt;
+      const boost::property_tree::ptree* materialObjects = nullptr;
+      std::uint64_t materialMetadataBytes = materialManifestBytes;
+      if (inlineMaterialObjects) {
+        materialObjects = &*metadata->get_child_optional("materialObjects");
+      }
+      else {
+        if (materialReceiptBytes > projection.assembly.maxSourceBytes ||
+            materialMetadataBytes > projection.assembly.maxAssembledBytes ||
+            materialReceiptBytes > projection.assembly.maxAssembledBytes - materialMetadataBytes)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_UNAVAILABLE");
+        const auto receiptBytes = fetchPlainObject(
+          materialReceiptName, materialReceiptDigest, materialReceiptBytes,
+          "material-receipt");
+        try {
+          std::istringstream receiptInput(std::string(receiptBytes.begin(), receiptBytes.end()));
+          boost::property_tree::read_json(receiptInput, materialReceipt);
+        }
+        catch (const std::exception&) {
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
+        }
+        if (materialReceipt.get<std::string>("schema", "") !=
+              "ndnsf-di-canonical-material-receipt-v1" ||
+            materialReceipt.get<std::string>("sourceDigest", "") != sourceDigest ||
+            materialReceipt.get<std::string>("graphDigest", "") != projection.assembly.graphDigest ||
+            materialReceipt.get<std::string>("materialIdentityDigest", "") != materialIdentityDigest ||
+            materialReceipt.get<std::string>("materialManifestDigest", "") != materialManifestDigest ||
+            !materialReceipt.get_child_optional("materialObjects"))
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_IDENTITY_MISMATCH");
+        materialObjects = &*materialReceipt.get_child_optional("materialObjects");
+        materialMetadataBytes += materialReceiptBytes;
+      }
+
       struct MaterialObjectReceipt {
         std::string dataName;
         std::string digest;
         std::uint64_t bytes = 0;
+        std::string bundleDigest;
+        std::uint64_t bundleBytes = 0;
+        std::uint64_t bundleOffset = 0;
       };
       std::map<std::string, MaterialObjectReceipt> objects;
-      for (const auto& item : *metadata->get_child_optional("materialObjects")) {
+      std::map<std::string, std::pair<std::string, std::uint64_t>> bundleIdentities;
+      std::map<std::string, bool> bundleKinds;
+      for (const auto& item : *materialObjects) {
         const auto id = item.second.get<std::string>("payloadId", "");
         const auto dataName = item.second.get<std::string>("dataName", "");
         const auto digest = item.second.get<std::string>("digest", "");
         const auto bytes = item.second.get<std::uint64_t>("bytes", 0);
+        const auto bundleDigest = item.second.get<std::string>("bundleDigest", "");
+        const auto bundleBytes = item.second.get<std::uint64_t>("bundleBytes", 0);
+        const auto bundleOffset = item.second.get<std::uint64_t>("bundleOffset", 0);
+        const bool bundleFieldsPresent = item.second.count("bundleDigest") != 0 ||
+          item.second.count("bundleBytes") != 0 || item.second.count("bundleOffset") != 0;
+        const bool hasBundle = bundleFieldsPresent;
+        if (bundleFieldsPresent && (!item.second.count("bundleDigest") ||
+                                    !item.second.count("bundleBytes") ||
+                                    !item.second.count("bundleOffset") ||
+                          bundleDigest.empty() || bundleBytes == 0 ||
+                          bundleBytes > NativeCanonicalMaterialBundleMaxBytes))
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_BUNDLE_RECEIPT_INVALID");
+        const auto kind = bundleKinds.find(dataName);
+        if (kind != bundleKinds.end() && kind->second != hasBundle)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_BUNDLE_KIND_MISMATCH");
+        bundleKinds[dataName] = hasBundle;
+        if (hasBundle) {
+          const auto identity = bundleIdentities.emplace(
+            dataName, std::make_pair(bundleDigest, bundleBytes));
+          if (!identity.second && identity.first->second !=
+              std::make_pair(bundleDigest, bundleBytes))
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_BUNDLE_IDENTITY_MISMATCH");
+        }
         if (id.empty() || dataName.empty() || digest.empty() || bytes == 0 ||
-            !objects.emplace(id, MaterialObjectReceipt{dataName, digest, bytes}).second)
+            !objects.emplace(id, MaterialObjectReceipt{dataName, digest, bytes,
+                                                       bundleDigest, bundleBytes,
+                                                       bundleOffset}).second)
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
       }
 
@@ -495,7 +575,9 @@ prepareNativeCanonicalOnnxRole(
           throw std::runtime_error("DI_CANONICAL_MATERIAL_INITIALIZER_MISSING");
         selectedIds.insert(found->payloadId);
       }
-      std::uint64_t selectedMaterialBytes = materialManifestBytes;
+      std::uint64_t selectedMaterialBytes = materialMetadataBytes;
+      std::map<std::string, std::vector<std::uint8_t>> fetchedBundles;
+      std::set<std::string> countedBundles;
       for (const auto& payloadId : selectedIds) {
         assemblyControl.requireActive();
         const auto object = objects.find(payloadId);
@@ -510,16 +592,54 @@ prepareNativeCanonicalOnnxRole(
         if (reference->digest != object->second.digest ||
             reference->bytes != object->second.bytes)
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISMATCH");
-        if (selectedMaterialBytes > projection.assembly.maxAssembledBytes ||
-            object->second.bytes >
-              projection.assembly.maxAssembledBytes - selectedMaterialBytes)
-          throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
-        selectedMaterialBytes += object->second.bytes;
-        auto bytes = fetchPlainObject(object->second.dataName, object->second.digest,
-                                      object->second.bytes, "material-payload");
+        std::vector<std::uint8_t> bytes;
+        if (!object->second.bundleDigest.empty()) {
+          if (countedBundles.find(object->second.dataName) == countedBundles.end()) {
+            if (object->second.bundleBytes > NativeCanonicalMaterialBundleMaxBytes ||
+                selectedMaterialBytes > projection.assembly.maxAssembledBytes ||
+                object->second.bundleBytes >
+                  projection.assembly.maxAssembledBytes - selectedMaterialBytes)
+              throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
+            selectedMaterialBytes += object->second.bundleBytes;
+            countedBundles.insert(object->second.dataName);
+          }
+          auto bundle = fetchedBundles.find(object->second.dataName);
+          if (bundle == fetchedBundles.end()) {
+            auto fetched = fetchPlainObject(object->second.dataName,
+                                            object->second.bundleDigest,
+                                            object->second.bundleBytes,
+                                            "material-bundle");
+            bundle = fetchedBundles.emplace(object->second.dataName, std::move(fetched)).first;
+          }
+          const auto& bundleBytes = bundle->second;
+          if (object->second.bundleOffset > bundleBytes.size() ||
+              object->second.bytes > bundleBytes.size() - object->second.bundleOffset)
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_BUNDLE_RANGE_INVALID");
+          bytes.assign(bundleBytes.begin() + static_cast<std::ptrdiff_t>(object->second.bundleOffset),
+                       bundleBytes.begin() + static_cast<std::ptrdiff_t>(
+                         object->second.bundleOffset + object->second.bytes));
+          if (sha256Hex(bytes) != object->second.digest)
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_PAYLOAD_DIGEST_MISMATCH");
+          const std::optional<ndn::Buffer> verified{
+            ndn::Buffer(bytes.begin(), bytes.end())};
+          logMaterialFetch("material-payload", ndn::Name(object->second.dataName),
+                           "verified", &verified, object->second.digest);
+        }
+        else {
+          if (selectedMaterialBytes > projection.assembly.maxAssembledBytes ||
+              object->second.bytes >
+                projection.assembly.maxAssembledBytes - selectedMaterialBytes)
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED");
+          selectedMaterialBytes += object->second.bytes;
+          bytes = fetchPlainObject(object->second.dataName, object->second.digest,
+                                   object->second.bytes, "material-payload");
+        }
         canonicalSource.materialPayloads.push_back({payloadId, object->second.digest,
                                                      std::move(bytes)});
       }
+      // The assembled source retains only selected slices; do not keep the
+      // shared bundle buffers alive through worker execution.
+      fetchedBundles.clear();
       canonicalSource.materialManifest = std::move(materialManifest);
       canonicalSource.materializedRole = true;
       canonicalSource.materializedNodeIndices = projection.assembly.nodeIndices;
