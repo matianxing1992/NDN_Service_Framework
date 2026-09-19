@@ -1,5 +1,28 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 real Qwen r49-r52 launch and stream-liveness boundaries
+
+r49 stopped at provider-binary digest preflight and r50 stopped at the missing
+tokenizer-digest preflight; neither reached MiniNDN. r51 reached startup but
+its cleanup environment omitted `/usr/local/bin`, so MiniNDN could not find
+`nfd-stop`; this is a launcher boundary, not a protocol result. The corrected
+r52 command passed preflight and startup. Both native Providers carried the
+repaired `900000 ms` dependency-fetch budget, reached ACK/Selection and grant
+verification, and Provider 0 created the post-Selection assembly staging root.
+The requester then failed before any provider terminal event with
+`NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`. The
+supervisor recorded `cleanup=PASS`; no runner, output, terminal response or
+qualification exists. Raw attempts are retained under
+`.codex-tmp/spec189-qwen-r49-launch.log`,
+`.codex-tmp/spec189-qwen-r50-launch.log`,
+`.codex-tmp/spec189-qwen-r51-launch.log` and
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r52/`;
+the durable analysis is
+`specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r49-r52-20260919.md`.
+The changed gate is the production stream-liveness contract during silent
+post-Selection assembly; a reviewed heartbeat/admission transition and C++
+counterexample are required before another retry.
+
 ## 2026-09-19 — Spec189 provider timeout wiring compile boundary
 
 The first repair attempt for the r48 dependency-fetch timeout wiring stopped at

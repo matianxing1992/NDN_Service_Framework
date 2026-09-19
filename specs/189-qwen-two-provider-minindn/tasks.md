@@ -8,6 +8,21 @@
 
 ## Current Checkpoint
 
+**B189-3 real Qwen r49-r52 liveness checkpoint**: 2026-09-19 — r49 and r50
+stopped at command preflight (provider digest, then tokenizer digest); r51
+reached MiniNDN cleanup but used a PATH without `/usr/local/bin`. The corrected
+r52 run passed preflight/startup, carried the repaired `900000 ms` dependency
+fetch budget into both native Providers, and reached both ACK decisions,
+Selection assignment publication, grant verification and post-Selection
+assembly staging. The requester still failed before a provider terminal event
+with `NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`;
+`cleanup=PASS`, but no runner, output, terminal response or qualification was
+observed. This confirms the timeout wiring is present but leaves a real
+stream-liveness versus silent assembly contract. No blind timeout increase is
+approved; next work must be a reviewed progress/heartbeat or bounded admission
+state transition with a C++ assertion and runtime-timing evidence. T003/T005/
+T006/T007/T009 remain `PARTIAL`. See [r49-r52 evidence](evidence/b189-real-qwen-r49-r52-20260919.md).
+
 **B189-3 provider dependency-timeout wiring checkpoint**: 2026-09-19 — the
 provider CLI's `--repo-fetch-timeout-ms` is now wired to a dedicated
 `dependencyFetchTimeoutMs`; readiness and conversation-control deadlines retain
