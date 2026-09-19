@@ -7685,3 +7685,15 @@ swap used stayed zero. Cleanup passed and no `ASSEMBLY_ADMISSION`,
 This is a host disk boundary, not a Qwen/Repo/ORT/stream verdict. Preserve raw
 run data at `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r58/`
 and require a new disk-safe host state and run ID before retrying.
+
+2026-09-19 Spec189 host-native MiniNDN retry r59: 808 rebuildable build
+intermediates were removed while the six native binary hashes and all raw
+r44–r58 evidence were retained. The host resource guard passed with disk above
+4 GiB, available memory above 1.5 GiB and no swap use. Both Providers reached
+READY, emitted ACK offers and GRANT_VERIFICATION, then the requester failed at
+`NATIVE_STREAM_FAILED / stream event gap exceeded retry budget` before
+`ASSEMBLY_ADMISSION`. Cleanup passed and no SIF/Apptainer/Tiger runtime was
+used. Preserve raw data at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r59/`;
+this is the next post-grant stream boundary, not a resource, Repo, ORT, model
+or qualification result.

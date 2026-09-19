@@ -8,6 +8,15 @@
 
 ## Current Checkpoint
 
+**B189-3 host-native r59 checkpoint**: 2026-09-19 — removed 808 rebuildable
+host build intermediates (4.3 GiB) while retaining raw r44–r59 evidence and
+the six native binary hashes. The host-native retry passed the resource guard;
+both Providers reached `READY`, ACK offers and `GRANT_VERIFICATION`, then the
+requester stopped at `NATIVE_STREAM_FAILED / stream event gap exceeded retry
+budget` before any assembly admission marker. Cleanup passed and no SIF,
+Apptainer or Tiger runtime was involved. T006/T007 remain `PARTIAL`; T009
+remains blocked. See [r59 evidence](evidence/b189-native-r59-20260919.md).
+
 **B189-3 admission-sequence repair / r58 checkpoint**: 2026-09-19 — the
 v4 frozen scope passed official read-only `STATIC_PASS`. A Selection-scoped
 runtime sequence counter now survives Provider runner-factory copies and
