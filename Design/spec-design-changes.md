@@ -22,6 +22,12 @@
 - **Evidence**：v4 冻结快照获官方只读 `STATIC_PASS`；受影响 closure 真实编译链接成功；C++ lifecycle 1→2→3 与 `Spec175NativeAssembly` 9/9 通过。r58 在 ACK/Selection 前触发 `RESOURCE_BOUNDARY:diskFree`，因此没有真实 admission/assembly 结论。见 [admission sequence/r58 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-admission-sequence-r58-20260919.md)。
 - **Documentation boundary**：该内部状态不构成 Qwen、MiniNDN、ORT、output 或 reuse PASS；T006/T007/T009 继续 `PARTIAL`/blocked。
 
+## Spec189 local MiniNDN runtime boundary — 2026-09-19
+
+- **Status**: `NO_DESIGN_CHANGE`。本机 Spec189 验收直接使用宿主机已安装的全局 NDNSF/Core/Repo/DI 依赖和本机构建的 C++ APP；SIF/Apptainer/TigerCluster 不属于本地 MiniNDN 前置条件。
+- **Evidence boundary**：r58 的 `RESOURCE_BOUNDARY:diskFree` 只表示宿主机工作区/运行时文件系统低于安全门；本轮没有启动或读取 SIF，也不能把该边界归因于 SIF 构建或容器内容。
+- **Delivery boundary**：SIF/Tiger 保留给后续独立交付和远端资格，不改变 Spec189 的本地 C++/MiniNDN 完成门。
+
 
 ## Spec189 execution and ownership audit — 2026-09-18 14:50 -0500
 

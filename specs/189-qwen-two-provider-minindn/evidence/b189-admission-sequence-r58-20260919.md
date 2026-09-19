@@ -4,6 +4,11 @@
 **Status**: `PARTIAL` / `RESOURCE_BOUNDARY`
 **Candidate**: `qwen06b-553e2d82160a`, run `two-provider-global-r58`
 
+**Runtime boundary**: This was a host-native MiniNDN run using the verified
+system/global NDNSF dependency closure and locally built C++ APP binaries. No
+SIF, Apptainer or TigerCluster runtime was invoked or required. The disk guard
+below therefore reports host workspace/runtime capacity only.
+
 ## Static gate
 
 The frozen review snapshot was

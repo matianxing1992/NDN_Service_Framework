@@ -36,4 +36,5 @@ root PATH 含 /usr/sbin:/sbin，两个 CPU Provider，唯一 run directory。
 保存 publication 零增量、资源峰值/post-drain 与实际结果；
 保持 candidate 内容摘要，新 run-id 重复上述场景。
 两次均成功才 QWEN_TWO_PROVIDER_PASS；分类失败仍 PARTIAL。
-不启动 SIF/Tiger。
+本地 MiniNDN 使用宿主机已安装的 NDNSF/Core/Repo/DI 库和本机构建的 C++ APP；
+不启动 SIF/Apptainer，也不把 SIF/Tiger 作为本地资格前置条件。

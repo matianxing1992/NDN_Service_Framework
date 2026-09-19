@@ -31,6 +31,9 @@ F06/F07 属于未用于本机 native protected 资格路径的兼容/本地 Pyth
 - 全局依赖按 [declared closure](../../docs/native-dependency-closure.md)；
   本机 Boost 为 /usr/include + /usr/lib/x86_64-linux-gnu 1.71，其余按声明全局根（含 ORT）。
   缺失/不兼容才安装，禁止 checkout/.codex-tmp 前缀覆盖。
+- 本地 MiniNDN 直接运行宿主机已安装的全局依赖和本机构建的 C++ APP；SIF/Apptainer/Tiger
+  只属于后续交付或远端资格，不是 Spec189 本地运行前置条件。`RESOURCE_BOUNDARY:diskFree`
+  指宿主机文件系统安全门，不是 SIF 构建或 SIF 内容失败。
 - 复用已验的仓库根 Waf tree（与 NDN-CXX 相同的 `waf`/`wscript` 入口），受影响 target
   增量构建默认 -j4，swap 压力按仓库规则降并发；构建树 selector 的 target-local RPATH
   必须优先于已安装的同 SONAME 库。
