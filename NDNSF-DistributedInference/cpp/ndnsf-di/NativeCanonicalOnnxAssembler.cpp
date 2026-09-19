@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
@@ -360,6 +361,50 @@ safeRole(std::string role)
 
 } // namespace
 
+std::function<void(const std::string& phase, double progress)>
+makeNativeAssemblyProgressReporter(
+  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+  const NativeSelectionProjectionV3& projection,
+  const std::string& adapterIdentity)
+{
+  const auto operationId = ctx.assignment().selectionDigest + ":" +
+    projection.assembly.selectedRole + ":assembly-progress";
+  const auto role = projection.assembly.selectedRole;
+  const auto requestId = projection.requestId;
+  const auto attempt = projection.attempt;
+  const auto planDigest = projection.planDigest;
+  const auto sequence = std::make_shared<std::atomic<std::uint64_t>>(0);
+  return [&ctx, operationId, role, requestId, attempt, planDigest,
+          adapterIdentity, sequence](const std::string& phase, double progress) {
+    if (phase.empty() || phase.size() > 128 || progress < 0.0 || progress > 1.0) {
+      throw std::invalid_argument("invalid native assembly progress");
+    }
+    ndn_service_framework::ServiceProvider::ServiceOperationStatus status;
+    status.operationId = operationId;
+    status.operation = "ensure-deployment";
+    status.role = role;
+    status.attempt = attempt == 0 ? 1 : attempt;
+    status.epoch = 1;
+    status.sequence = sequence->fetch_add(1, std::memory_order_relaxed) + 1;
+    status.state = "RUNNING";
+    status.progressKnown = true;
+    status.progress = progress;
+    const auto now = static_cast<std::uint64_t>(std::max<std::int64_t>(0,
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count()));
+    status.createdAtMs = now;
+    status.updatedAtMs = now;
+    status.expiresAtMs = now + 120000;
+    status.detailsSchema = "ndnsf-di-preparation-progress-v1";
+    const auto details = std::string("{\"phase\":\"") + phase +
+      "\",\"planDigest\":\"" + planDigest +
+      "\",\"adapter\":\"" + adapterIdentity + "\"}";
+    status.detailsPayload = ndn::Buffer(
+      reinterpret_cast<const std::uint8_t*>(details.data()), details.size());
+    ctx.reportOperationStatus(std::move(status));
+  };
+}
+
 NativeModelRunnerSpec
 prepareNativeCanonicalOnnxRole(
   const NativeCanonicalOnnxFetchers& fetchers,
@@ -417,6 +462,13 @@ prepareNativeCanonicalOnnxRole(
     }
     logRuntimeEvidence(record.str());
   };
+  const auto reportProgress = [&options, &projection] (const char* phase,
+                                                        double progress) {
+    requireActiveAssembly(options, projection.deadlineMs);
+    if (options.reportProgress) {
+      options.reportProgress(phase, progress);
+    }
+  };
   const ndn::Name rootName(projection.canonicalArtifactName);
   logMaterialFetch("root", rootName, "begin", nullptr,
                    projection.assembly.modelManifestDigest);
@@ -446,6 +498,7 @@ prepareNativeCanonicalOnnxRole(
   const auto rootPayloadBytes = rootPayload->size();
   logMaterialFetch("root", rootName, "verified", &rootPayload,
                    projection.assembly.modelManifestDigest);
+  reportProgress("ROOT_VERIFIED", 0.05);
 
   const auto rootPath = makeStagingDirectory(
     std::filesystem::path(options.cacheDir));
@@ -647,6 +700,7 @@ prepareNativeCanonicalOnnxRole(
       // release the transport copy before retaining selected payloads.
       manifestBytes.clear();
       manifestBytes.shrink_to_fit();
+      reportProgress("MATERIAL_MANIFEST_VERIFIED", 0.15);
 
       boost::property_tree::ptree materialReceipt;
       const boost::property_tree::ptree* materialObjects = nullptr;
@@ -687,6 +741,7 @@ prepareNativeCanonicalOnnxRole(
         receiptBytes.clear();
         receiptBytes.shrink_to_fit();
       }
+      reportProgress("MATERIAL_RECEIPT_VERIFIED", 0.25);
 
       struct MaterialObjectReceipt {
         std::string dataName;
@@ -780,6 +835,7 @@ prepareNativeCanonicalOnnxRole(
                                                      parseReservation);
       std::map<std::string, std::vector<std::uint8_t>> fetchedBundles;
       std::set<std::string> countedBundles;
+      std::size_t selectedMaterialIndex = 0;
       for (const auto& payloadId : selectedIds) {
         assemblyControl.requireActive();
         const auto object = selectedObjects.find(payloadId);
@@ -840,6 +896,11 @@ prepareNativeCanonicalOnnxRole(
         }
         canonicalSource.materialPayloads.push_back({payloadId, object->second.digest,
                                                      std::move(bytes)});
+        ++selectedMaterialIndex;
+        const double materialProgress = selectedIds.empty() ? 0.55 :
+          0.25 + 0.40 * static_cast<double>(selectedMaterialIndex) /
+            static_cast<double>(selectedIds.size());
+        reportProgress("MATERIAL_PAYLOAD_VERIFIED", materialProgress);
       }
       // The assembled source retains only selected slices; do not keep the
       // shared bundle buffers alive through worker execution.
@@ -855,6 +916,7 @@ prepareNativeCanonicalOnnxRole(
       canonicalSource.modelBytes = materializeNativeCanonicalModel(
         canonicalSource, projection.assembly.nodeIndices, assemblyControl);
       storeWhileAuthorized([&] { writeFileAtomic(sourceFile, canonicalSource.modelBytes); });
+      reportProgress("MODEL_MATERIALIZED", 0.75);
     }
     else {
     const ndn::Name sourceNameValue(sourceName);
@@ -884,6 +946,7 @@ prepareNativeCanonicalOnnxRole(
       throw std::runtime_error("DI_CANONICAL_SOURCE_DIGEST_MISMATCH");
     }
     logMaterialFetch("source", sourceNameValue, "verified", &source, sourceDigest);
+    reportProgress("SOURCE_VERIFIED", 0.40);
     // Transfer the fetched buffer into the canonical source instead of
     // retaining a second 1.5 GiB copy while the worker is running.
     canonicalSource.modelBytes = std::move(*source);
@@ -949,6 +1012,7 @@ prepareNativeCanonicalOnnxRole(
       // Move into the final canonical source owner.  sourceScrubber already
       // covers this vector, including exceptions before worker startup.
       canonicalSource.initializerBytes = std::move(*initializer);
+      reportProgress("INITIALIZER_VERIFIED", 0.55);
     }
     }
 
@@ -984,6 +1048,7 @@ prepareNativeCanonicalOnnxRole(
       assembled = runNativeOnnxAssemblyWorkerAt(
         options.workerLocation, canonicalSource, workerRecipe,
         assemblyControl);
+      reportProgress("WORKER_ASSEMBLY_VERIFIED", 0.90);
     }
     catch (...) {
       sourceScrubber.scrub();

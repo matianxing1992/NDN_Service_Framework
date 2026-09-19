@@ -7628,3 +7628,18 @@ the detailed checkpoint is
 `specs/189-qwen-two-provider-minindn/evidence/b189-onnx-fastpath-20260919.md`.
 The former r39 preparation-timeout boundary is reduced but not resolved into a
 product PASS; the next retry must diagnose the post-grant stream gap.
+
+2026-09-19 Spec189 B189-3 progress/heartbeat batch: the affected DI, unit,
+integration and assembly-worker targets built from global-r3 with Waf `-j3`.
+The focused C++ lifecycle, streamed same-provider multi-role, D2b and worker
+selectors passed. The complete `Spec175NativeAssembly` suite reached 8/9 cases;
+the existing `CollaborationContextBindsAssignmentRootBeforeSourceFetch` fixture
+expected `DI_CANONICAL_SOURCE_NAME_MISSING` but the unchanged source-validation
+ordering returns `DI_CANONICAL_SOURCE_METADATA_MISSING`. This is a fixture
+contract mismatch at the test boundary, not evidence of a progress implementation
+failure; it remains unqualified until the fixture/contract is reconciled. The
+first invocation from the build directory also failed before a test ran because
+the relative `examples/trust-any.conf` was unavailable; rerunning from the
+repository root reached the suite. Raw output is under
+`.codex-tmp/spec189-b189-3-r4-20260919/`; durable details are in
+`specs/189-qwen-two-provider-minindn/evidence/b189-r4-progress-heartbeat-20260919.md`.

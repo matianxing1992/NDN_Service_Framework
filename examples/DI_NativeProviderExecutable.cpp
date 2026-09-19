@@ -1762,6 +1762,9 @@ main(int argc, char** argv)
                   assemblyOptions.providerIdentity = assemblyProviderIdentity;
                   assemblyOptions.protectedRuntime = protectedRuntime;
                   assemblyOptions.workerLocation = assemblyWorkerLocation;
+                  assemblyOptions.reportProgress = makeNativeAssemblyProgressReporter(
+                    ctx, projection, projection.assembly.backend.empty()
+                      ? std::string("native") : projection.assembly.backend);
                   if (protectedRuntime) {
                     const auto& payload = ctx.assignment().assignmentPayload;
                     assemblyOptions.roleAssemblySpecDigest = nativeAssemblyDigestFromCanonicalProjection(

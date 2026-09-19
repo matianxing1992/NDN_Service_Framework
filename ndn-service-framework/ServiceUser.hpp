@@ -1563,7 +1563,8 @@ namespace ndn_service_framework{
             bool initializeStreamConsumer(const ndn::Name& providerName,
                                           const ndn::Name& serviceName,
                                           const ndn::Name& requestId,
-                                          const std::string& selectionDigest);
+                                          const std::string& selectionDigest,
+                                          const std::string& expectedProgressOperationId = {});
             void armStreamInactivityTimer(const ndn::Name& requestId,
                                           uint64_t interestLifetimeMs);
             void disarmStreamInactivityTimer(const ndn::Name& requestId);

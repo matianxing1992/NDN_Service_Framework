@@ -8,6 +8,19 @@
 
 ## Current Checkpoint
 
+**B189-3 progress/heartbeat checkpoint**: 2026-09-19 — the frozen v6
+`review-agent` snapshot passed `STATIC_PASS` for authenticated post-Selection
+assembly progress. The affected DI/unit/integration/assembly-worker closure
+rebuilt from global-r3 with Waf `-j3`; lifecycle (15/15), same-provider
+multi-role streamed, D2b streamed, and worker-backed assembly selectors passed.
+The full `Spec175NativeAssembly` suite reached 8/9: the remaining case is an
+existing fixture expectation mismatch (`DI_CANONICAL_SOURCE_NAME_MISSING` vs
+the unchanged source-validation result `DI_CANONICAL_SOURCE_METADATA_MISSING`),
+so the batch is `FOCUSED_CXX_PASS`, not a full suite PASS. No real Qwen/MiniNDN
+retry, terminal output, resource drain or qualification was run in this unit.
+See [progress/heartbeat evidence](evidence/b189-r4-progress-heartbeat-20260919.md)
+and [failure log](../../docs/failure-log.md).
+
 **B189-3 real Qwen r53 diagnostic checkpoint**: 2026-09-19 — a fresh run with
 runtime timing, assignment-fetch tracing, large-fetch timing and dependency
 object tracing enabled carried the repaired `900000 ms` dependency budget into

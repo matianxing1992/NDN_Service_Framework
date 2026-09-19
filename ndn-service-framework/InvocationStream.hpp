@@ -938,7 +938,8 @@ public:
                       CompletionCallback onComplete,
                       ErrorCallback onError,
                       RetryCallback onRetry,
-                      RetryAccountingCallback onRetryAccounting = {});
+                      RetryAccountingCallback onRetryAccounting = {},
+                      std::string expectedProgressOperationId = {});
 
   ~StreamEventConsumer();
 
@@ -953,6 +954,14 @@ public:
   void setAuthorizationCallback(AuthorizationCallback callback);
   bool accept(const ndn::Data& data);
   bool acceptResponse(const ResponseMessage& response);
+  /**
+   * Admit one Provider-signed, selection-bound assembly milestone.  The
+   * member operation identity and (epoch, sequence) are the freshness fence;
+   * wall-clock timestamps are intentionally not used because Providers may
+   * have independent clocks.  A fresh milestone re-arms the bounded gap
+   * budget without clearing an Interest that is already in flight.
+   */
+  bool observeAuthenticatedProgress(const SelectionExecutionStatus& status);
   void onInactivityTimeout(std::chrono::steady_clock::time_point now);
   void onRetryTimeout(const ndn::Name& timedOutName,
                       std::chrono::steady_clock::time_point now);
@@ -994,6 +1003,10 @@ private:
   ErrorCallback onError_;
   RetryCallback onRetry_;
   RetryAccountingCallback onRetryAccounting_;
+  // A Provider can host several roles.  Bind progress to the exact terminal
+  // operation selected for this stream instead of accepting any role's
+  // signed ensure-deployment status.
+  std::string expectedProgressOperationId_;
   AuthorizationCallback authorization_;
   BoundedStreamQueue<CallbackTask> callbackQueue_;
   std::thread callbackThread_;
@@ -1014,6 +1027,9 @@ private:
   uint64_t expectedCursor_ = 1;
   uint8_t retryCount_ = 0;
   std::chrono::steady_clock::time_point nextRetryAt_{};
+  std::string progressOperationId_;
+  uint64_t progressEpoch_ = 0;
+  uint64_t progressSequence_ = 0;
   bool started_ = false;
   bool prefetchStarted_ = false;
   bool failed_ = false;
