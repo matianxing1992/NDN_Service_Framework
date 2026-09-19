@@ -44,6 +44,7 @@ APP_ROOT = "/example/ndnsf-qwen06b"
 CONTROLLER = APP_ROOT + "/controller"
 AUTHORITY = APP_ROOT + "/authority"
 USER = APP_ROOT + "/user"
+PUBLICATION_ROOT_MARGIN_BYTES = 16 * 1024 * 1024
 
 
 def digest_bytes(value: bytes) -> str:
@@ -471,7 +472,13 @@ def main(argv=None, *, _supervised=False) -> int:
                    "protection_epoch": "epoch-1", "max_source_bytes": 1 << 20,
                    "max_assembled_bytes": 8 << 30, "max_nodes": 64},
         "publication": {"artifact_root": "/Model/Qwen3-0.6B/artifacts",
-                         "package_manifest_digest": manifest_digest},
+                         "package_manifest_digest": manifest_digest,
+                         # Prepare publishes one topology-independent material
+                         # set plus its authenticated root. This budget is
+                         # separate from each selected role's assembly limit.
+                         "max_publication_bytes": (max_source_bytes +
+                                                    max_assembled_bytes +
+                                                    PUBLICATION_ROOT_MARGIN_BYTES)},
         "input_format": "OPAQUE", "max_payload_bytes": 4 << 20,
         "splitter": {"kind": "QWEN", "layer_ranges": ranges,
                      "artifact_digests_by_role": {stage["role"]: stage["sha256"] for stage in stages},

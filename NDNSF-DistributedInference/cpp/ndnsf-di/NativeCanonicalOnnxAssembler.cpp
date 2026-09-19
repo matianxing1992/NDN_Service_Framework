@@ -365,9 +365,6 @@ prepareNativeCanonicalOnnxRole(
       ? firstString(*metadata, {"canonicalSourceDataName", "canonical_source_data_name",
                                "sourceDataName", "source_data_name"})
       : std::string();
-    if (sourceName.empty()) {
-      throw std::runtime_error("DI_CANONICAL_SOURCE_NAME_MISSING");
-    }
     const auto sourceDigest = metadata
       ? firstString(*metadata, {"canonicalSourceDigest", "canonical_source_digest",
                                "sourceDigest", "source_digest"})
@@ -408,6 +405,8 @@ prepareNativeCanonicalOnnxRole(
       !materialManifestDigest.empty() || !materialIdentityDigest.empty() ||
       materialManifestBytes != 0 ||
       (metadata && metadata->get_child_optional("materialObjects").has_value());
+    if (!materialMetadataPresent && sourceName.empty())
+      throw std::runtime_error("DI_CANONICAL_SOURCE_NAME_MISSING");
 
     const auto fetchPlainObject = [&] (const std::string& name,
                                        const std::string& digest,

@@ -3315,15 +3315,10 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
     }
     return bytes;
   };
-  BOOST_REQUIRE_MESSAGE(repo->has(publication.sourceDataName),
-                        "protected source envelope was not committed to Repo");
-  const auto manifest = repo->getManifest(publication.sourceDataName);
-  BOOST_CHECK_EQUAL(manifest.objectType, "encrypted-large-data-envelope");
-  const auto ciphertext = readRepoObject(publication.sourceDataName);
-  const auto plaintextText = readTextFile(fixture.root / "model.onnx");
-  const std::vector<std::uint8_t> plaintext(plaintextText.begin(), plaintextText.end());
-  BOOST_REQUIRE(!plaintext.empty());
-  BOOST_CHECK(ciphertext != plaintext);
+  // Material-backed preparation retains source identity in the root but does
+  // not commit a duplicate full source or initializer object.
+  BOOST_CHECK(publication.sourceDataName.empty());
+  BOOST_CHECK(publication.initializerDataName.empty());
   BOOST_CHECK(Spec185PreparedModelTestAccess::source(prepared).expired());
   BOOST_REQUIRE_MESSAGE(repo->has(publication.rootDataName),
                         "protected root envelope was not committed to Repo");
@@ -3338,8 +3333,11 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
   BOOST_CHECK_EQUAL(root.at("schema").get<std::string>(),
                     "ndnsf-di-canonical-model-manifest-v1");
   BOOST_CHECK_EQUAL(root.at("state").get<std::string>(), "ACTIVE");
-  BOOST_CHECK_EQUAL(root.at("metadata").at("canonicalSourceDataName").get<std::string>(),
-                    publication.sourceDataName);
+  BOOST_CHECK_EQUAL(root.at("metadata").at("materialBacked").get<bool>(), true);
+  BOOST_CHECK(!root.at("metadata").contains("canonicalSourceDataName"));
+  BOOST_CHECK(!root.at("metadata").contains("canonicalInitializerDataName"));
+  BOOST_CHECK(root.at("metadata").at("canonicalSourceDigest").is_string());
+  BOOST_CHECK(root.at("metadata").at("canonicalSourceBytes").is_number_unsigned());
   // B189-1b: the protected prepare boundary must commit the topology-
   // independent material manifest and every immutable graph/node payload.
   // The Repo stores encrypted envelopes, so plaintext manifest parsing belongs
@@ -3389,7 +3387,7 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
   }
   const auto objectCountAfterFirst = repo->list().size();
   BOOST_REQUIRE_GE(objectCountAfterFirst,
-                   publication.materialPayloadIds.size() + 3U);
+                   publication.materialPayloadIds.size() + 2U);
 
   auto secondPreparation = startPreparedModelObservation(runtime);
   pumpUntilPreparedModelReady(*binding.environment, secondPreparation,

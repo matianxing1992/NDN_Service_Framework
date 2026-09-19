@@ -1388,7 +1388,8 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
     const auto addData = [&publication](auto& rollback) {
       rollback.fileBacked = !publication.servingLeases.empty();
       rollback.rollbackDataNames = publication.rollbackDataNames;
-      rollback.rollbackDataNames.push_back(publication.sourceDataName);
+      if (!publication.sourceDataName.empty())
+        rollback.rollbackDataNames.push_back(publication.sourceDataName);
       if (!publication.initializerDataName.empty())
         rollback.rollbackDataNames.push_back(publication.initializerDataName);
     };
@@ -1519,7 +1520,8 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
     const auto addData = [&publication](auto& rollback) {
       rollback.fileBacked = !publication.servingLeases.empty();
       rollback.rollbackDataNames = publication.rollbackDataNames;
-      rollback.rollbackDataNames.push_back(publication.sourceDataName);
+      if (!publication.sourceDataName.empty())
+        rollback.rollbackDataNames.push_back(publication.sourceDataName);
       if (!publication.initializerDataName.empty())
         rollback.rollbackDataNames.push_back(publication.initializerDataName);
     };

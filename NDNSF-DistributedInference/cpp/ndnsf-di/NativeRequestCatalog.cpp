@@ -54,6 +54,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   if (entry.publication.packageManifestDigest != model.modelManifestDigest)
     throw std::invalid_argument("publication package differs from pinned manifest");
   entry.publication.layerManifestDigests = publication.value("layer_manifest_digests", std::vector<std::string>{});
+  entry.publication.maxPublicationBytes = publication.value(
+    "max_publication_bytes", std::uint64_t{0});
   entry.nodes = root.value("node_mapping", NativeCanonicalRolePreparer::NodeMap{});
   entry.maxPayloadBytes = root.at("max_payload_bytes").get<std::size_t>();
   const auto format = root.at("input_format").get<std::string>();
