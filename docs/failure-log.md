@@ -1,5 +1,45 @@
 # Failure Log and Evidence Index
 
+## 2026-09-18 — Spec189 focused ONNX assembly test boundaries
+
+The first focused rerun after the r9 static gate found two Python assembly
+boundaries before any MiniNDN process: the sequential identity helper omitted
+the external-data base directory, and the graph-only ONNX checker resolved the
+staged sidecar against the process CWD. Both were repaired, independently
+reviewed in r11/r13 snapshots, and the rerun passed `22 passed, 1 skipped`.
+The raw diagnostic record is
+`.codex-tmp/spec189-canonical-identity-focused-20260918/failures.md`; the
+successful real-Qwen identity resource record is
+`specs/189-qwen-two-provider-minindn/evidence/b189-resource.md`.
+
+## 2026-09-18 — Spec189 r27 canonical ONNX identity resource boundary
+
+The corrected global candidate reached real MiniNDN startup with the current
+Core/DI binaries and installed Python binding, but the host guard stopped the
+run before the requester launched. `canonical_onnx_identity` used
+`onnx.load(..., load_external_data=True)` for the 1.5-GB external initializer;
+the process reached about 4.2 GB RSS, drove swap-I/O above the 256 MiB limit,
+and was stopped as `RESOURCE_BOUNDARY:swapIo`. Cleanup passed and no protocol
+marker, ACK, Selection, provider fetch or execution result was observed. Raw
+evidence is under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r27/`.
+This is a host preflight/resource boundary, not a Qwen protocol failure or
+PASS. The changed gate is the maintained ONNX identity helper: load only the
+graph protobuf, materialize one external initializer at a time, hash it, and
+clear `raw_data` before the next tensor; it must pass static review and a
+focused identity regression before r28.
+
+## 2026-09-18 — Spec189 r26 Python binding ABI preflight boundary
+
+The first corrected global candidate stopped before MiniNDN because the stale
+checkout `_ndnsf` extension resolved against the newly installed Core and
+reported an undefined `ServiceUser::publishEncryptedLargeData` overload. No
+nodes or protocol state were started. The raw run directory is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r26/`.
+The binding was then rebuilt in place against the verified `/usr/local` Core/DI
+closure and imported successfully; this repairs the preflight boundary but is
+not a protocol result.
+
 ## 2026-09-18 — Spec189 B189-1a runtime working-directory and spool boundary
 
 第一次运行 B189-1a selectors 时从 build 目录启动，package fixture 找不到相对路径
@@ -7215,3 +7255,12 @@ successfully, but the run stopped after 13 samples at
 MiniNDN/workload were `NOT_EVALUATED`. The run record is
 `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r32/`.
 This is a host resource boundary, not a Qwen protocol result.
+
+2026-09-19 Spec189 Qwen r33 resource retry: after reducing the host swap
+configuration, prepare succeeded and the runner entered its sampling phases,
+but it still stopped before MiniNDN startup at `RESOURCE_BOUNDARY:swapIo`.
+Twenty-one samples reached about 275 MB swap-I/O delta with only about 310 MB
+RSS; cleanup was `PASS`, and MiniNDN/workload remained `NOT_EVALUATED`.
+Repeated runs with the same host paging baseline are therefore stopped rather
+than classified as native or protocol failures. Raw evidence is under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r33/`.
