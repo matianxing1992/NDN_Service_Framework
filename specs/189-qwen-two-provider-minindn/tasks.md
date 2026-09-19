@@ -8,6 +8,19 @@
 
 ## Current Checkpoint
 
+**B189-1c external initializer range fast-path checkpoint**: 2026-09-19 — the
+frozen ONNX assembler diff received official read-only `STATIC_PASS`. The shared
+external range validator and direct numeric-range digest path preserve exact
+identity semantics while avoiding a temporary large `TensorProto` and normalized
+copy; INT4/UINT4 retain the prior fallback. The global-r3 unit target rebuilt
+with `-j4` in 25.645s and `Spec182OnnxIdentity` passed 13/13. The affected DI,
+requester, provider, worker and oracle targets rebuilt with `-j4` in 4m22.913s.
+Real Qwen r44 reached both Provider ACK offers and `GRANT_VERIFICATION` with
+zero swap-I/O delta, then stopped at `NATIVE_STREAM_FAILED` / provider stream
+event-gap; cleanup passed and no terminal response or qualification was observed.
+This removes the former r39 preparation-timeout boundary but does not close T003,
+which remains `PARTIAL`. See [ONNX fast-path evidence](evidence/b189-onnx-fastpath-20260919.md).
+
 **B189-1b r21/r22 chunked-material checkpoint**: 2026-09-19 — external
 initializers are published as a bounded header plus ordered raw chunks and are
 reassembled by the native post-Selection consumer. Official read-only review

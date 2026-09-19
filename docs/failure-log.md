@@ -7512,3 +7512,20 @@ staging file: Permission denied (rc=201). Preserve
 Changed gate for fixture retry: explicitly select a private run-owned
 NDNSF_REQUEST_LARGE_DATA_DIR, verify its permissions, retain the same binary/source.
 This is not a remote Provider or MiniNDN protocol result.
+
+2026-09-19 Spec189 B189-1c external-initializer fast path: the frozen
+`NativeOnnxRecipeAssembler.cpp` range-digest change received official read-only
+`STATIC_PASS`; the unit target and affected DI production targets rebuilt with
+system-first Waf `-j4`, and `Spec182OnnxIdentity` passed 13/13. The maintained
+root MiniNDN run `two-provider-global-r44` reached Controller, Authority, both
+Providers, signed ACK offers and `GRANT_VERIFICATION` before the first boundary
+changed to `NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`.
+The supervisor drained all children (`cleanup=PASS`); peak aggregate RSS was
+`3619823616` bytes, minimum available memory `3538112512` bytes, and swap-I/O
+delta was zero. No terminal response, runner completion or qualification was
+observed. Raw run data remains under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r44/`;
+the detailed checkpoint is
+`specs/189-qwen-two-provider-minindn/evidence/b189-onnx-fastpath-20260919.md`.
+The former r39 preparation-timeout boundary is reduced but not resolved into a
+product PASS; the next retry must diagnose the post-grant stream gap.
