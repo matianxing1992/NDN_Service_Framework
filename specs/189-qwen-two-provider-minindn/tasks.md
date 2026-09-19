@@ -12,6 +12,8 @@
 
 **Protected range-store checkpoint**: 2026-09-19 04:52 -05:00 — B189-1a 的冻结范围通过官方只读 `STATIC_PASS`；受影响的 NDNSF targets 用仓库 Waf `-j4` 完成 compile/link，Repo range-store 6/6 C++ cases 和生产 Runtime protected publication 1/1 C++ case 通过，requester `--help` 入口通过。证据记录了 Core ciphertext publication、Repo generation/lease fence、worker cancellation/rollback、bounded reads、source release 和第二次 prepare 无对象增长。[protected range-store evidence](evidence/b189-protected-range-store-20260919.md) 只关闭本地 protected publication 接缝；T003、真实 Qwen、ACK/Selection、Provider、MiniNDN/Tiger 仍为 `PARTIAL`/open。根 NDNSF Waf 只负责 NDNSF 自有目标；NAC-ABE 由其自身 Waf 及已安装 SDK 负责，未递归构建。
 
+**B189-2 production-ingress checkpoint**: 2026-09-19 — 已在现有 global-r3 Waf tree 编译完整 `integration-tests` 目标（`-j4`，127 tasks，4:41.392，峰值 RSS 2,113,056 kB，0 swap），并运行真实 C++ `Spec170NdnsfDiCoreFlow` 生产入口 selectors：双 Provider D2b 请求到最终响应、ACK 后 post-Selection runner preparation、篡改 capability 拒绝均通过。该组用例证明 production handler 位于真实 ACK/Selection 后路径，但仍未直接记录未选 Provider 的 fetch/assembly 计数，也未使用真实 Qwen canonical manifest；因此只登记为 T005 的 `FOCUSED_CXX_PASS`，不关闭 T005/B189-2。详见 [production placement evidence](evidence/b189-placement-production-20260919.md)。
+
 **F02 focused checkpoint**: 2026-09-19 — T003-R1 的 production `MemorySnapshot`/terminal
 guard 通过 r2/r3 官方只读复审；仓库根 Waf tree 重新配置并以 `spec189-preparation-memory`
 完成 compile/link，修复 build-tree 与 `/usr/local` 同 SONAME 混链后 selector 通过 1/1。
@@ -97,7 +99,7 @@ adapter producer/consumer 和 Runtime protected publication 的本地出口已�
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
 | [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/range-store 与 material-only consumer 局部 C++ 通过；F02 focused owner/cancel selector 已通过但实际 ORT/RSS、F05 replacement/rollback beyond focused selector、F09 complete publication boundary、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md); [protected range-store](evidence/b189-protected-range-store-20260919.md) |
-| [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
+| [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress handler/no-fetch 计数。[placement](evidence/b189-placement.md); [production ingress](evidence/b189-placement-production-20260919.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer 与 aggregate budget 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md) |
 | [T009 Qualify reuse and repeat](#t009) | PARTIAL | T003 + T005 + T006 + T007 | 同 handle 两请求、新 run-id 重复成功、F08 generation-guard、资源 guard、native counters 和 drain。[convergence](evidence/b189-convergence.md) |

@@ -118,3 +118,44 @@ Raw logs are `.codex-tmp/spec189-t005-placement-build-r2.log` and
 This is a focused placement/cache-layer result, not full T005 completion. The
 latest r25 logs include execution entry and Provider-0 assembly entry, but no
 runner/output completion. T005 and B189-2 remain `PARTIAL`/`NOT_ACCEPTED`.
+
+## T005 production C++ ingress focused gate — 2026-09-19
+
+The existing production `Spec170NdnsfDiCoreFlow` fixture was rebuilt from the
+global-r3 Waf tree and exercised through the repository-root binary. It creates
+two Providers, sends a real request through the production request publisher,
+publishes ACK and encrypted Selection through the in-process SVS boundaries,
+and enters two `NativeProviderHandler` instances. The post-Selection variant
+uses the production `runnerPreparationFactory` seam and checks that the
+projection is bound to the local Provider, request, artifact and role before
+the runner is created. The tamper variant changes the request-scoped projected
+capability and requires the Provider lifecycle to fail without a response.
+
+| Selector | Result | Evidence |
+| --- | --- | --- |
+| `Spec170NdnsfDiCoreFlow/ProductionNativeHandlersRunD2bRequestToFinalResponse` | `PASS`, 1/1 | [d2b-production.log](../../../.codex-tmp/spec189-b189-2-placement-build-r1/d2b-production.log) |
+| `Spec170NdnsfDiCoreFlow/ProductionNativeHandlersPrepareRolesAfterSelection` | `PASS`, 1/1 | [d2b-post-selection.log](../../../.codex-tmp/spec189-b189-2-placement-build-r1/d2b-post-selection.log) |
+| `Spec170NdnsfDiCoreFlow/ProductionNativeHandlersRejectTamperedD2bCapability` | `PASS`, 1/1 | [d2b-tampered.log](../../../.codex-tmp/spec189-b189-2-placement-build-r1/d2b-tampered.log) |
+
+The complete `integration-tests` target linked successfully with the existing
+NDNSF source closure: 127 tasks, `-j4`, 4:41.392 wall time, peak RSS
+2,113,056 kB and zero swaps. The tested binary SHA-256 is
+`a2e92d09df0cbe60fd0a8a2d2f13119c565a007475f0fe6c38866be0490833ea`.
+`ldd` resolves Boost 1.71 from the system pair, NDN-CXX/NDN-SVS/NAC-ABE from
+`/usr/local`, and ONNX Runtime from `/opt/onnxruntime`; no `.local-boost171`
+library was loaded. The build log and identity record are
+[integration build](../../../.codex-tmp/spec189-b189-2-placement-build-r1/integration-build.log)
+and [integration identity](../../../.codex-tmp/spec189-b189-2-placement-build-r1/integration-identity.log).
+
+This is a `FOCUSED_CXX_PASS` for the production request/ACK/Selection/handler
+boundary. It is not T005 completion: the fixture does not expose a direct
+counter proving that an unselected Provider performed zero layer fetches or
+assembly before Selection, and it uses deterministic test runner material
+rather than the real Qwen canonical manifest. The real MiniNDN runs, protected
+candidate identity, selected-layer fetch counts and Provider assembly/output
+oracle remain unobserved; B189-2 and T005 stay `PARTIAL`/`NOT_ACCEPTED`.
+
+The first attempt used an incomplete Boost.Test filter and selected no test
+cases; that command is retained in
+[production-selection.log](../../../.codex-tmp/spec189-b189-2-placement-build-r1/production-selection.log)
+as an invocation-boundary record and was not treated as a protocol result.
