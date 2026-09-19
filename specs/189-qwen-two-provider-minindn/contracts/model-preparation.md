@@ -1,7 +1,9 @@
 # Contract: Reusable Qwen Preparation
 
-**Status**: TARGET / T003 pending. 当前 Repo adapter 已有组件实现；真实 requester 与
-范围材料 consumer 尚未闭合，fallback 仍发布完整 graph/initializer。
+**Status**: TARGET / T003 pending. 当前已有 protected publication 与 material-only
+consumer 的局部 C++ 实现和 selector；真实 requester→Core→Provider ingress、
+峰值预算与完整资格仍未闭合。旧审计中“consumer 尚未接入、必然 fallback”是历史快照
+事实，不能覆盖当前源码，也不能被局部 selector 反向升级为全链 PASS。
 以下是对现有公开入口的目标要求，不是当前行为声明。
 
 ## Required behavior
@@ -21,6 +23,20 @@ stageIndex=0/1 不能作为永久材料身份。读取单元有界，不能以�
 实际 requester 持有/连接 Repo service/source owner；测试 adapter 不代表实际接线。
 临时源 owner 可释放；handle 保留引用/lease。重复 prepare 命中完整 immutable identity，
 同 handle 后续 request publication 增量为零。使用文件后端及预算内 cache。
+
+## Audit follow-up ownership
+
+Preparation accounting is part of this contract: `source`, `initializer`, derived
+material payloads, encryption buffers and runner/ORT preparation buffers have distinct
+owners and counters. `releaseTransientSource()` proves only a post-publication release;
+it does not prove that the peak was bounded. T003 must retain a C++ size-scaled or failed
+preparation counterexample and leave the task `PARTIAL` until the real candidate profile
+has the same accounting.
+
+Repo writes used by the candidate must pass the shared committed/staged/reservation
+quota gate. Range reservations cannot be ignored by an ordinary vector/Data packet write,
+and replacement failure must preserve the old committed identity. F05 and F09 are
+production storage gates, not Python-only checks; their C++ selectors belong to T003.
 
 ## Failure behavior
 

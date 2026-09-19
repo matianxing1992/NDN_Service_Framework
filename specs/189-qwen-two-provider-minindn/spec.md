@@ -108,8 +108,11 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 | US1 / FR-001..FR-005 | `Runtime::prepare`, `NativeCanonicalPreparationCatalog`, `NativeCanonicalArtifactPublisher`, Repo owner | one manifest plus topology-independent material references; no payload in handle | `DI_NativeArtifactAuthority`, Repo C++ selector | digest/range mismatch, staging abort, duplicate prepare | asan-ubsan; commit/source-owner counts | `evidence/b189-prepare.md` | B189-1 |
 | US2 / FR-006..FR-009 | `DI_NativeRequester`, Core controller/ACK/Selection path | payload-free request and two signed placements | production-ingress C++ assertions plus existing `spec189-two-provider-oracle` | no offer, stale epoch, unselected provider, overlap/out-of-range | none; placement and wire invariants | `evidence/b189-placement.md` | B189-2 |
 | US3 / FR-010..FR-015 | `di-native-provider`, `DI_NativeOnnxAssemblyWorker`, Core handoff | selected/shared material fetch and assembly, measured cold/warm runner reuse, hidden-state handoff and valid terminal result | existing assembly/handoff C++ selectors plus corrected Spec189 event checker and independent output assertions | assembly/ORT failure, handoff mismatch, cancellation, provider stop | small-fixture asan-ubsan where feasible; runner/lease/drain counts | `evidence/b189-execution.md` | B189-3 |
-| US4 / FR-016..FR-019 | experiment runner and native ownership counters | measured peak, safety stop, zero post-drain residue | C++ counters; Python host sampler only | memory floor, swap pressure, disk floor, child leak | resource guard; post-drain zero invariant | `evidence/b189-resource.md` | B189-4 |
+| US4 / FR-016..FR-019 | experiment runner and native ownership counters owned by T003/T006 and consumed by the final runner | measured peak, safety stop, zero post-drain residue | C++ counters; Python host sampler only | memory floor, swap pressure, disk floor, child leak | resource guard; post-drain zero invariant | `evidence/b189-resource.md` | B189-1/B189-3/B189-5 cross-cutting gate |
 | US5 / FR-020..FR-025 | maintained scripts, evidence checker and global dependency preflight | immutable tuple, event sequence, first boundary, verdict and one installed native closure | C++ oracle output plus evidence checker and dependency identity checks | stale identity, timeout, partial logs, missing/ABI-incompatible global dependency | host `/usr` + `/usr/local` closure; no checkout or temporary prefix | `evidence/b189-convergence.md`, `evidence/b189-build-20260918.md` | B189-5 |
+| Audit gates / FR-027 | Runtime/ONNX preparation owner | category-level peak and cleanup evidence | named C++ preparation counter selector | coexistence, cancel, failed retry | source/material/encryption/ORT owner counters | `evidence/b189-prepare.md` | B189-1c / T003-R1 |
+| Audit gates / FR-028 | RepoCore range/vector/Data packet admission | one committed+staged+reservation quota | C++ mixed-write/replacement selector | quota overflow, replacement failure, reservation leak | old identity remains readable | `evidence/b189-prepare.md` | B189-1c / T003-R2 |
+| Audit gates / FR-029 | Conversation/PreparedModel handle owner | generation-safe installation and close | C++ terminal/next-turn barrier selector | stale turn cannot overwrite/cancel newer turn | one active owner and one terminal state | `evidence/b189-convergence.md` | B189-5 / T009-R1 |
 
 ## Functional Requirements
 
@@ -138,6 +141,10 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 - **FR-023**: Every failed or stopped run MUST preserve raw logs and a durable evidence record with `static`, `compile/link`, `runtime/test` and `unobserved` miss classes.
 - **FR-024**: Spec189 MUST not start SIF/Tiger work automatically; local evidence is a prerequisite for a later immutable delivery candidate.
 - **FR-025**: Host native builds MUST consume one installed global dependency closure: Boost 1.71 from the verified system pair and all other NDNSF direct libraries/archives from their declared global roots. Missing or ABI-incompatible dependencies MUST be installed and verified before configuration; checkout, `/tmp`, `.codex-tmp` and per-run dependency prefixes MUST be rejected as build or runtime inputs.
+- **FR-026**: Qwen-specific material names, layer maps, experiment profiles, resource thresholds and oracle fields MUST remain candidate-local. They MUST NOT become global Core/Repo defaults or public API fields unless a separate design change records the cross-Spec contract and migration.
+- **FR-027**: Native preparation MUST account for every model-sized representation it creates or retains, including source, initializer, material payloads, encryption buffers and ORT preparation buffers. The C++ evidence MUST expose the owner and peak contribution of each category; post-publication source release does not prove that the preparation peak is within the resource envelope.
+- **FR-028**: Every Repo publication path used by this candidate MUST apply one logical quota over committed bytes, staging bytes and outstanding range reservations. Replacement, cancellation and failed retries MUST release only the reservation/object identity owned by that operation; a successful disk-space check alone is insufficient.
+- **FR-029**: Conversation/PreparedModel handle installation and exceptional cleanup MUST be generation-guarded. A completed older turn MUST NOT overwrite or close a newer active turn, and the C++ regression MUST control the terminal/next-turn interleaving.
 
 ## Success Criteria
 
@@ -168,6 +175,27 @@ endpoint digests with the edges consumed by the generation coordinator.
 
 Provider events MUST satisfy the [causal contract](contracts/placement.md), not a total log-line order. Model assembly and upstream tensor fetch can interleave; the first stage has no upstream fetch. Execution requires verified authorization, runner and input; the terminal role returns the final result and all participants drain. A requester stream gap is a symptom, not a root-cause classification. Missing markers remain UNOBSERVED. ACK/Selection/grant verification alone never proves execution.
 
+## Audit reconciliation — 2026-09-19
+
+The [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) was taken
+against an earlier dirty-tree snapshot. Its findings remain durable evidence, but their
+status must be reconciled with the later source and selectors before another run:
+
+| Finding | Current Spec189 disposition | Scope and required proof |
+| --- | --- | --- |
+| F01 material consumer | `LOCAL_REPAIR_PRESENT / QUALIFICATION_OPEN` | The native consumer now reads an authenticated material manifest and selected payloads after Selection, with C++ bounds tests. Real protected Core→Provider ingress, two-provider assembly and cleanup are still required. |
+| F02 preparation peak | `OPEN / HIGH` | Source release after publication does not remove the prepare-time coexistence peak. T003 must measure category owners and bounded buffers; T009 must enforce the unchanged host gate. |
+| F03 snapshot/cursor race | `DEFERRED / CONDITIONAL` | Applies if this candidate uses catalog snapshot/delta synchronization. The current qualification path is protected material publication/read; no evidence may claim the generic catalog contract is repaired. |
+| F04 history-gap recovery | `DEFERRED / CONDITIONAL` | Same applicability boundary as F03; catalog sync would need an explicit snapshot-required/epoch-incarnation gate. |
+| F05 reservation accounting | `OPEN / IN-SCOPE` | Publication must test mixed range/vector writes and replacement under one logical quota. This is part of T003 before accepting the full candidate. |
+| F06 segmented compatibility replacement | `DEFERRED / LEGACY` | Not used by the native protected qualification path. The compatibility helper is not atomic evidence. |
+| F07 Python local durability | `DEFERRED / LEGACY` | Python orchestration is not evidence for native Repo durability or Qwen qualification. |
+| F08 turn owner race | `OPEN / IN-SCOPE` | Same-handle two-request qualification must include a C++ terminal/next-turn interleaving and generation-guarded close check in T009. |
+| F09 descriptor error path | `OPEN / IN-SCOPE` | The filesystem backend must have one owning fd and a C++ injected fsync/close failure check before accepting the publication candidate. |
+
+This reconciliation changes task ordering and evidence requirements; it does not lower
+the two-provider acceptance chain or turn a focused selector into `QWEN_TWO_PROVIDER_PASS`.
+
 Every bounded retry follows the shared
 [experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):
 freeze the candidate and raw attempt, classify the first missing production
@@ -184,3 +212,5 @@ gate.
 - 2026-09-18: 固化本机原生构建依赖规则：缺失或 ABI 不匹配的库先安装到全局声明根并记录真实路径与摘要，禁止临时 checkout、`/tmp`、`.codex-tmp` 和每次运行的依赖前缀进入构建或运行闭包。
 
 - 2026-09-18: 架构/进度复审：prepare 改为拓扑无关原子材料，ACK 后规划；资源门前移，十任务合并为七个活动任务，保留所有必要负例；修正事件总序、candidate/run 身份与失败完成条件。r25 仍 FAIL，文档修订不构成功能 PASS。
+- 2026-09-18 19:16 -0500: Spec189 收敛审计将资源 guard 从独立 T008 改为跨批次门，T008/T010 合并到 T009；同 handle 重用只在最终真实运行收口；Qwen profile/material/oracle 明确为候选局部契约，避免临时实验设计替代全局 API。当前仍无 `QWEN_TWO_PROVIDER_PASS`。
+- 2026-09-19: DI/Repo design audit reconciliation retained the historical F01–F09 findings, marked the later material-only consumer as a local repair rather than qualification, and added explicit preparation-peak, quota-accounting and generation-guard requirements. F03/F04/F06/F07 remain conditional or legacy follow-up items and are not silently treated as fixed.

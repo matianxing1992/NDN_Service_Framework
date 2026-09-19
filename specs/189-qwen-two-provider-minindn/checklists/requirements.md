@@ -20,8 +20,8 @@
 
 ## Batch and evidence quality
 
-- [x] B189-0 through B189-5 have stable exits and evidence owners; B189-4 safety now precedes full-model preparation.
-- [x] Former T002 and T004 obligations are owned by T003; former T010 obligations are owned by T009. None is counted complete by merging.
+- [x] B189-0 through B189-5 have stable exits and evidence owners; the resource gate is cross-cutting and precedes every full-model run.
+- [x] Former T002 and T004 obligations are owned by T003; former T008 and T010 obligations are owned by T009. None is counted complete by merging.
 - [x] prepare materials are topology-independent; ACK planning and Selection materialization are separate.
 - [x] Event causality, independent output checks and candidate/run identity are explicit.
 - [x] Every batch has five-lane coverage and four miss classes.

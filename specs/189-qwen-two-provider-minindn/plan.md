@@ -6,13 +6,22 @@
 ## Summary
 
 目标仍是在本机 12 GB 上完成 Qwen3-0.6B 两 CPU Provider 的真实 MiniNDN 请求。
-本次收敛准备/规划边界、Repo producer/consumer 接线、事件判据与资源门顺序；
-保留已验代码，不重做 Spec185/188，不扩张 SIF/Tiger。
+本次只收敛本机真实 Qwen 两 Provider 请求的剩余闭环：Repo producer/consumer
+接线、ACK/Selection 后的材料消费、事件判据和资源边界。保留已验代码，不重做
+Spec185/188，不扩张 SIF/Tiger。
 
-Repo adapter 已有层 payload/冷热 receipt 测试；requester protected range-store
-配置草稿尚未验收，assembler 层材料消费未闭合，仍获取完整 initializer。
-r25 FAIL 已观察 assembly entry，未证明两 Provider 成功执行。
+Repo adapter 已有层 payload/冷热 receipt 测试，Runtime protected publication 与
+assembler material-only consumer 已有局部 C++ 验证；requester source-owner 接线
+已构建，全局 DI/Core 安装身份已核对。真实 Qwen 下的跨节点材料读取、两 Provider
+执行、输出与 drain 仍未闭合，不能把组件结果提升为完整链路资格。
+r25 FAIL 已观察 assembly entry，未证明两 Provider 成功执行；后续资源边界与本轮
+组件结果以 tasks.md 及其证据为准。
 见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
+
+审计对账已将 F01 标为局部修复、资格仍开放；F02、F05、F08、F09 是当前候选的
+生产门，分别由 T003/T009 收口。F03/F04 只在采用 catalog snapshot/delta 时适用，
+F06/F07 属于未用于本机 native protected 资格路径的兼容/本地 Python 后端；它们保留
+为后续维护项，不能写成已修复，也不应把本次 Qwen 任务扩成通用 Repo 重构。
 
 ## Technical Context
 
@@ -24,6 +33,26 @@ r25 FAIL 已观察 assembly entry，未证明两 Provider 成功执行。
 - 复用已验 Waf tree，受影响 target 增量构建默认 -j4，swap 压力按仓库规则降并发。
   不为每个新 selector 复制整套 DI 编译闭包。
 - 两 Provider，固定短输入与少量 token；独立正确性判据必需，广泛质量评测不在范围内。
+
+## Audit correction — local candidate first
+
+本 Spec 的成功条件是一次本机可重复的真实请求；候选专用的 Qwen layer map、
+profile、resource budget、MiniNDN topology 和 `spec189-two-provider-oracle`
+都是本地验收输入，不是新的 NDNSF 全局 API、Core/Repo 默认值或长期协议。除非
+实际修改公开签名、跨模块数据契约或安全语义，否则不更新全局设计来承载这些
+临时字段；需要跨 Spec 的 API 变化必须另开设计变更，而不是在本 Spec 中顺手
+泛化。
+
+原生 C++ 负责 source identity、material manifest、prepare、授权、assembly 和
+行为断言。实验脚本中的 ONNX helper 只能做候选预检、资源采样和进程编排；它的
+digest 不是 native identity 的权威来源，native prepare 必须再次独立检查同一
+source。r27 的 Python identity 资源边界已修复，下一步先以新的受控 run 观察
+native prepare 的第一边界；若仍是 source 内存峰值，新增的是一个有界修复单元，
+不借机重写全局 Repo 或 DI 缓存架构。
+
+资源 guard 是每个 full-model run 的前置/伴随门，不再作为独立能力任务。小型
+guard/lifecycle 证据保留，native resident/runner counters 由其实际 owner
+（T003/T006）交付，最终在 T009 收口。
 
 ## Constitution Check
 
@@ -79,8 +108,8 @@ fetch 不同，assembly 和等待输入可交错，首段没有 upstream。
 
 ### AD-06: safety before expensive work
 
-T008 的 host guard/受控 stop 前置所有真实模型准备/发布/MiniNDN；其 safety entry
-已可独立复用，剩余 counters 由 T003/T006 的真实 owner 交付，不新增行政批次。
+Host guard/受控 stop 前置所有真实模型准备/发布/MiniNDN；其 safety entry 已可
+独立复用，但不再创建行政任务，剩余 counters 由 T003/T006 的真实 owner 交付。
 新 native counters 随 T003/T006 的 owner 接入，不能倒过来阻断其小 fixture。
 T009 前核对完整采样，运行中记录峰值。RESOURCE_BOUNDARY 是诊断，不是协议失败或完成。
 
@@ -90,6 +119,19 @@ T009 前核对完整采样，运行中记录峰值。RESOURCE_BOUNDARY 是诊断
 profile/topology/oracle；commit/build path 是 provenance。
 run-id/request id/运行期 key/path 独立记录并绑定 candidate。
 只重验变更影响的后继证据，文档改动或新 run-id 不使有效 build/model 证据失效。
+
+### AD-08: audit findings have explicit applicability and owners
+
+审计发现按当前 candidate path 分流：material-only consumer 的接线属于 T003/T006
+并必须经真实 protected ingress 验收；准备峰值和混合 quota 属于 T003 的生产反例；
+Conversation generation owner 属于 T009 的同 handle 两请求反例；filesystem fd 错误
+路径属于 T003 的发布错误门。catalog snapshot/history、segmented compatibility 和
+Python power-loss durability 不属于当前 native qualification 的默认路径，只有实际
+调用方进入候选后才提升依赖；不得用本 Spec 的局部 selector 代替这些通用契约。
+
+所有这些门都必须记录 `static`、`compile/link`、`runtime/test`、`unobserved` 四类
+状态；未完成的 audit follow-up 不得通过降低资源阈值、增加 timeout 或复制 digest
+来关闭。
 
 ## Production paths and design-to-code binding
 
@@ -102,6 +144,7 @@ run-id/request id/运行期 key/path 独立记录并绑定 candidate。
 | Q189-HANDOFF | NativeEpochCoordinator, NativeProviderHandler, Core dependency path | endpoint/attempt/tensor 绑定与 terminal/drain |
 | Q189-ORACLE | examples/Spec189TwoProviderOracle.cpp + existing native selectors | 因果与独立输出校验；CLI 不等于 oracle |
 | Q189-EVIDENCE | Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py and maintained launcher | guard、同 handle 两请求、新 run-id 重复成功 |
+| Q189-AUDIT-OWNER | RepoCore/FilesystemRepoStoreBackend、Runtime/Conversation、T003/T009 C++ selectors | F02/F05/F08/F09 的真实 owner、失败/并发反例和 resource accounting；F03/F04/F06/F07 仅在适用调用方接入后提升 |
 
 ## Logical Batch Quality Plan
 
@@ -112,17 +155,24 @@ run-id/request id/运行期 key/path 独立记录并绑定 candidate。
 Waf 原生 install 与附带 Python editable hook 分开记录；后者失败不能写 binding PASS。
 
 唯一成员注册表见 [batch-execution.md](batch-execution.md)；
-顺序 B189-0 → B189-4 → B189-1 → B189-2 → B189-3 → B189-5。
-7 个活动任务及旧 ID 合并映射见 [tasks.md](tasks.md)。
+顺序 B189-0 → B189-1 → B189-2 → B189-3 → B189-5。
+6 个活动任务及旧 ID 合并映射见 [tasks.md](tasks.md)。资源门随 B189-1/B189-3
+交付并在 B189-5 最终收口。
 B189-1a protected storage、B189-1b atomic preparation 各有独立验证出口，
 在同一能力任务/证据内顺序执行，不等全部 T003 完成才首次构建。
+
+B189-1c 是 T003 的审计 follow-up 出口：准备峰值分类计数、混合 reservation quota
+和 filesystem fd error ownership。它必须在真正的 protected candidate 之前完成；
+不能用旧 B189-1a/B189-1b 组件结果替代。T009 增加 generation-guarded same-handle
+交错门；F03/F04/F06/F07 只有实际调用方进入本候选时才加入依赖图。
 
 每小任务完整编码/fixture/调用方/build registration 后冻结五 lane review，
 修复复审，再同批组合审查，最后一次增量构建和规定 C++ 测试。
 等待期间不实现依赖该门的下一任务；批次达稳定出口即测试，不无限扩张。
-T008/T006 的 small-fixture owner/cancel 适用 ASan/UBSan；
+T006 的 small-fixture owner/cancel 适用 ASan/UBSan；
 依赖不支持时记录限制并运行具体 owner/counter 反例，不能省略生命周期测试。
-12 GB full-model run 不强制 sanitizer。
+12 GB full-model run 不强制 sanitizer。每次 full-model run 仍必须通过 guard，
+但不为 guard 单独建立批次或重复构建。
 
 ## Evidence reuse and invalidation
 
@@ -137,7 +187,7 @@ T008/T006 的 small-fixture owner/cancel 适用 ASan/UBSan；
 
 ## Formal validation order
 
-T001 收敛接线 → T008 安全出口 → T003 prepare/Repo/request → T005 选择门 →
+T001 收敛接线 → T003 prepare/Repo/request → T005 选择门 →
 T006/T007 范围组装/handoff 组合验证 → T009 同 handle 两请求及独立重复。
 每次失败保留原始边界，遵守
 [experiment retry loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md)；

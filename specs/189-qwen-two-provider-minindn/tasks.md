@@ -1,21 +1,38 @@
 # Tasks: Qwen 0.6B Two-Provider MiniNDN Full-Path Validation
 
+**Installer maintenance checkpoint**: 顶层安装入口已修正；12 项隔离测试、ShellCheck、Bash 语法与本机只读依赖检查通过。未运行完整安装或原生构建，不改变本 Spec 的 PARTIAL 状态。见 [installer audit](../../docs/install-stack-audit.md)。
+
 **Status**: IN_PROGRESS
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [batch-execution.md](batch-execution.md)
 **Rule**: Production C++ → C++ assertions → Python orchestration。每任务编码、fixture/调用方/构建注册完成后冻结静态审查；同批组合通过再统一增量构建测试。静态通过不是完成。
 
 ## Current Checkpoint
 
+**Audit reconciliation checkpoint**: 2026-09-19 — 已将 [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) 与当前源码重新对账：F01 的 material-only consumer 已有局部生产接线和 C++ selector，但真实 protected ingress 仍未验收；F02、F05、F08、F09 仍是本 Spec 的开放生产门；F03/F04/F06/F07 分别标为条件性或 legacy follow-up。新增 FR-027..FR-029、T003-R1..R3 与 T009-R1，未将任何任务勾选完成。[audit reconciliation](spec.md#audit-reconciliation--2026-09-19)
+
+**Causal oracle checkpoint**: 2026-09-19 01:37 -05:00 — T007 多次 runner preparation 独立日志 ID 与逐 ID 判据、正常 CLI 的材料/范围/末段 terminal 门已通过 r2 只读任务与组合审查；增量构建 2m54.872s，C++ 材料15例/阶段18例/CLI 5例通过，真实 Provider::serve 接线 selector 通过并记录配对 preparationId。七个输入匹配审查快照；独立模型输出、endpoint 因果、真实 MiniNDN/复用仍未完成，保持 PARTIAL。[causal oracle evidence](evidence/b189-causal-oracle-20260919.md)
+
 **Material oracle checkpoint**: 2026-09-19 01:25 -05:00 — T007 原子材料事件判据已通过只读任务/组合静态门，两个 oracle target 增量构建 23.813s，C++ parser 15 cases PASS；已核对审查/构建源码身份。共享 checker/test 独立归档，CLI 混合改动保留待整合；因果顺序、独立输出、同 handle 复用及真实 MiniNDN 仍未完成。[material oracle evidence](evidence/b189-material-oracle-20260919.md)
+
+**DI/Repo repair design analysis**: 2026-09-19 — 已复核并行新增的 material-only consumer，上一轮 F01 的“未接入”不再代表最新源码；局部 consumer PASS 与真实生产链资格仍区分。完成 [repair design analysis](evidence/di-repo-repair-design-analysis-20260919.md)，建议统一材料读取、存储提交/目录恢复、预算与 turn 所有权，并明确小修复和后续结构收敛的边界。仅分析，未改产品源码、未构建或运行实验、未修改任务完成状态；建议为 `PROPOSED`，不覆盖冻结目标。
 
 **Requester Repo checkpoint**: 2026-09-19 01:23 -05:00 — T003 source owner 首次 external initializer 重复读取已修复，r6 复审及增量构建通过；Repo C++ 5/5，私有 spool 下 Runtime production-entry 1/1。DI 全局安装已完成，DI/Core build/global SHA256 一致，requester 的全局动态链接路径已核对；两个调用方的混合改动尚未归档。真实跨节点读取/Qwen/MiniNDN 保持 PARTIAL。受保护 publication 继续走 Core ServiceUser；详见 [requester Repo evidence](evidence/b189-requester-repo-20260919.md)。
 
-**Updated**: 2026-09-18 17:49 -0500 — B189-1b producer and Repo-side selected consumer passed static review, the affected `unit-tests` target built with `-j4`, and four Repo C++ cases passed. Protected Provider ingress, real Qwen preparation and assembly remain open; three older Spec182 publisher lifecycle selectors remain unresolved. See [B189 prepare evidence](evidence/b189-prepare.md) and [failure log](../../docs/failure-log.md).
+**DI/Repo design audit checkpoint**: 2026-09-19 — 原审计是 13b79ad1 工作树时点的只读扫描，覆盖 372 个源码文件清单、173 个 Python AST 和准备/发布/组装、Repo 目录/容量/持久化、Conversation owner。后续 material-only consumer 已接入局部生产组装路径并通过 C++ selector，因此 F01 的“未接入”只保留为历史边界；准备峰值、混合写入预算、turn owner 和 fd 错误路径仍开放。F03/F04/F06/F07 不属于当前 native protected qualification 的默认调用方，保留条件性/legacy 状态。报告不是逐行全量审查或产品验收，保持 `PARTIAL / NOT_STATIC_PASS`；详见 [DI/Repo design static audit](evidence/di-repo-design-static-audit-20260919.md) 和 [repair design analysis](evidence/di-repo-repair-design-analysis-20260919.md)。
+
+**Updated**: 2026-09-18 19:45 -0500 — the file-backed ONNX assembly/resource subunit passed the r13 read-only static gate and focused validation (`22 passed, 1 skipped`); the real Qwen canonical identity scan passed with 3,689,700 kB peak RSS and zero swaps. The audit retired T008 as a standalone capability task: guard/lifecycle checks are cross-cutting gates owned by T003/T006 and closed by T009. The new single-target global install helper passed static review, its preflight and flags regression suite passed (`100 passed`), and `ndnsf-distributed-inference` built/installed in 11.899s with matching build/global SHA-256 and global ONNX Runtime linkage; no MiniNDN qualification is claimed. Protected Provider ingress, native Repo publication, ACK/Selection, two-provider execution and full cleanup remain open. See [B189 convergence evidence](evidence/b189-convergence.md), [target install evidence](evidence/b189-global-target-helper-20260918.md), [resource evidence](evidence/b189-resource.md), and [failure log](../../docs/failure-log.md).
+**Latest checkpoint**: 2026-09-19 — the strict native ONNX source-reuse fix received read-only `STATIC_PASS`; the affected DI/worker/unit targets built in `1m52.201s` with `-j2`, and the five focused ONNX selectors passed after building their worker tools (`11/11`, `5/5`, `9/9`, `11/11`, `30/30`). The combined selector was stopped at a host resource boundary. Real Qwen runs r30 through r33 all stopped at `RESOURCE_BOUNDARY:swapIo` before an interpretable two-provider workload result; MiniNDN/workload remain `NOT_EVALUATED`. r32 used the correct global profile after a separate stale-profile preflight rejection; r33 reached the running/drained sampling phases but still did not start MiniNDN. See [ONNX identity/resource evidence](evidence/b189-onnx-identity-resource-20260919.md).
+**Runner-preparation checkpoint**: 2026-09-19 — T006 generation/position metadata binding passed read-only `STATIC_PASS`; global-r3 `unit-tests` rebuilt with `-j1` in `28.600s`, and `NativePreparationContext*` passed 3/3. The regression covers stale adapter metadata removal and authenticated successor/position write-back. This is a metadata unit boundary only; real Provider ingress and ORT execution remain open. See [runner preparation evidence](evidence/b189-runner-preparation-20260919.md).
+**Materialization-worker checkpoint**: 2026-09-19 — T006 canonical source/initializer ownership and bounded worker framing passed final read-only `STATIC_PASS` after two review fixes. The affected DI/worker/unit build completed with `-j1`; focused C++ selectors passed `5/5`, `3/3`, `4/4`, and `30/30` (the last with an explicit worker binary directory). This remains a component boundary; protected Repo ingress, real two-Provider execution, output oracle, and drain are open. See [materialization worker evidence](evidence/b189-materialization-worker-20260919.md).
+**ONNX memory checkpoint**: 2026-09-19 — the direct-vector source reader and selective ONNX identity/shape materialization passed read-only `STATIC_PASS`. The global-r3 DI target installed successfully with `-j1` in `7m17.389s`; the unit-test target rebuilt in `5m56.704s`; `NativePreparationContext*` passed 3/3, the combined ONNX/assembly selector passed 18 cases, `Spec189*` passed 4 cases, and the selective shape regression passed. Qwen r36 still stopped after both Providers became ready at `RESOURCE_BOUNDARY:MemAvailable` (minimum `1557188608` vs floor `1610612736`, zero swap I/O, peak RSS `4591411200`); no workload or qualification result exists. See [ONNX memory/r36 evidence](evidence/b189-onnx-memory-r36-20260919.md) and [failure log](../../docs/failure-log.md).
+**Protected Runtime publication checkpoint**: 2026-09-19 — the new C++ selector passed read-only `STATIC_PASS`; after fixing the fixture spool and bounded Repo read oracle, `spec189-prepared-request` rebuilt from global-r3 with `-j1` in `29.085s`, and the two `Spec189*` cases passed from the repository root. The protected case used Runtime's default Core publisher with `RepoEncryptedLargeDataStore`, verified encrypted source/root/material manifests, per-payload receipt bindings, bounded material reads, source release and no second-prepare object growth. This closes only a local protected-publication boundary; ACK/Selection, Provider assembly, real Qwen execution, output oracle, resource drain and MiniNDN remain open. See [protected Runtime evidence](evidence/b189-protected-runtime-20260919.md) and [failure log](../../docs/failure-log.md).
+**Material consumer checkpoint**: 2026-09-19 — the T006 material-only consumer passed final read-only `STATIC_PASS` in r6. The global-r3 `integration-tests` target rebuilt with `-j1` in `3m37.037s`; the C++ selector passed its material-only positive path and aggregate-budget negative path, and the complete `Spec175NativeAssembly` suite passed 8/8 from the repository root. The consumer now reads only the authenticated manifest and selected payloads after Selection, with no source/initializer fallback and a pre-fetch aggregate budget. Production Core ACK/Selection ingress, real Qwen two-Provider execution, output oracle, drain and MiniNDN remain open. See [material consumer evidence](evidence/b189-material-consumer-20260919.md) and [failure log](../../docs/failure-log.md).
 **Baseline**: `3e53fec5` plus pre-existing implementation and unvalidated protected-store draft; not a clean qualified candidate.
 
 B189-1a publisher weak-pin、Repo identity fence 和 Core worker/cancel/key release
-均已获官方只读 `STATIC_PASS`；真实 package owner 反例仍待补，尚未构建或运行。
-尚未组合构建/测试；详见 [prepare evidence](evidence/b189-prepare.md)。
+均已获官方只读 `STATIC_PASS`；组合构建和 package/cache owner selectors 已通过。
+剩余的是 protected Repo source owner 在真实 Qwen prepare 中的接线和 B189-1b 原子
+材料 consumer，详见 [prepare evidence](evidence/b189-prepare.md)。
 
 T003 源借用修复已静态通过；增量构建 56.712s。初次 native heap corruption 已定位为
 installed DI 的旧 ABI（publication 304 vs 360 bytes），全局安装同步后两个 C++ selectors
@@ -36,44 +53,59 @@ requester 已有 encrypted range-store 注入草稿，尚未静态/构建/运行
 
 本轮审计见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
 旧详细 checkpoint 保留在上述 Git 基线和原批次证据；本表取代十任务线性调度。
-T001 映射已关闭；T008 direct/launcher guard 已复审，39 host checks 通过；
+T001 映射已关闭；host direct/launcher guard 已复审，39 host checks 通过；
 两个 C++ 目标 -j4 构建成功，4 个 lifecycle 用例三轮通过。真实路径 native counters
-及完整资源回收仍待验证，T008 保持 PARTIAL；未运行模型。磁盘现约 34 GiB 可用。
-文档修订已获冻结 v2 的 DOCUMENTATION_STATIC_PASS；11/11 技能入口、7 task ID、
-25 FR、链接/锚点及 diff 检查通过，详情见上述审计记录。产品验收保持 PARTIAL。
+及完整资源回收仍待验证；资源门由 T009 收口，未运行完整模型。磁盘现约 34 GiB 可用。
+文档修订已获冻结 v2 的 DOCUMENTATION_STATIC_PASS；11/11 技能入口、6 task ID、
+29 FR、链接/锚点及 diff 检查通过，详情见上述审计记录。产品验收保持 PARTIAL。
 
 ## Execution Progress
 
-7 项是能力任务，不按数量计算产品百分比。T003 两个独立执行出口见
-[bounded execution units](batch-execution.md#bounded-execution-units)，当前下一步为 B189-1a。
+6 项是能力任务，不按数量计算产品百分比。T003 三个独立执行出口见
+[bounded execution units](batch-execution.md#bounded-execution-units)，B189-1a 已关闭，
+当前下一步为 B189-1b。
 每个出口验证后立即记录，不等整项 T003 写完才第一次构建。
-T008 的 host guard 和小型 lifecycle safety entry 已达到其前置出口；剩余 native
-counter 接入属于 T003/T006 的实际 owner，不能另开重复的 T008 实现批次，T008
-只在 T009 前以完整采样和 drain 证据收口。
-本轮文档 v2 已获 DOCUMENTATION_STATIC_PASS；结构/25 FR/链接与技能同步检查通过，
+host guard 和小型 lifecycle safety entry 已达到其前置出口；剩余 native counter
+接入属于 T003/T006 的实际 owner，最终在 T009 以完整采样和 drain 证据收口，不再
+创建重复的资源行政批次。
+本轮文档 v2 已获 DOCUMENTATION_STATIC_PASS；结构/29 FR/链接与技能同步检查通过，
 见 [follow-up verification](evidence/spec189-static-audit-20260918.md#follow-up-verification)。
-受保护接缝草稿已通过 B189-1a 静态门；原子材料 producer/consumer 仍未审查，
+受保护接缝草稿已通过 B189-1a 静态门；Repo adapter producer/consumer focused
+selectors 已通过，protected Provider consumer/真实 Qwen 链路仍未审查，
 本轮未构建或运行模型。
 
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
-| [T008 Guard before model runs](#t008) | PARTIAL | T001 | 2026-09-18 14:11 -0500：direct/launcher guard 39 checks PASS；4 native lifecycle cases 三轮 PASS；真实 counter 采样/全链 drain 未验。T003 小 fixture 可继续，full model 仍受门禁。[resource](evidence/b189-resource.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001; T008 before full-model run | 2026-09-18 17:49 -0500：B189-1b producer 与 Repo-side selected consumer static/build/fixture PASS；protected Provider ingress、真实 Qwen source release 与后续 ACK/assembly 仍待完成。[prepare](evidence/b189-prepare.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/material-only consumer 局部 C++ 通过；F02 preparation peak、F05 reservation quota、F09 fd error ownership、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
-| [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | Repo consumer、有界组装、owner/cancel。[execution](evidence/b189-execution.md) |
-| [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 因果 oracle、NDN hidden-state handoff、独立输出判据。[execution](evidence/b189-execution.md) |
-| [T009 Qualify reuse and repeat](#t009) | PARTIAL | T008 + B189-1/2/3 runtime exits | 同 handle 两请求、新 run-id 重复成功、资源/drain。[convergence](evidence/b189-convergence.md) |
+| [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer 与 aggregate budget 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md) |
+| [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md) |
+| [T009 Qualify reuse and repeat](#t009) | PARTIAL | T003 + T005 + T006 + T007 | 同 handle 两请求、新 run-id 重复成功、F08 generation-guard、资源 guard、native counters 和 drain。[convergence](evidence/b189-convergence.md) |
 
 ## Task checklist
 
 - [x] T001 [US1] Freeze the remaining production integration and candidate boundary.
-- [ ] T008 [US4] Verify resource admission, sampling and deterministic drain before full-model runs.
 - [ ] T003 [US1] Connect topology-independent Qwen preparation, Repo publication and reference-only reuse.
 - [ ] T005 [US2] Verify real ACK-driven planning and authenticated Selection at production ingress.
-- [ ] T006 [US3] Fetch selected Repo materials and assemble bounded native CPU runners.
+- [ ] T006 [US4] Fetch selected Repo materials, assemble bounded native CPU runners, and expose native resource counters.
 - [ ] T007 [US3] Validate real handoff, causal events and independent terminal output.
-- [ ] T009 [US5] Qualify the complete MiniNDN path, same-handle reuse and independent repeat.
+- [ ] T009 [US5] Qualify the resource envelope, complete MiniNDN path, same-handle reuse and independent repeat.
+
+## Audit follow-up registry
+
+这些是现有能力任务下的稳定子出口，不是新的行政任务，也不改变 Spec189 的六项
+能力任务计数。每项都必须有 C++ production target/selector 和独立失败边界；未完成
+时保持所属 T 项 `PARTIAL`。
+
+| Subtask | Finding | Owner / dependency | Status | Exit evidence |
+| --- | --- | --- | --- | --- |
+| T003-R1 | F02 preparation peak | Runtime/ONNX preparation owner; before T009 full model | PLANNED | size-scaled C++ preparation counter, source/material/encryption/ORT categories, cancel/retry cleanup |
+| T003-R2 | F05 mixed quota reservation | RepoCore range/vector/Data packet admission; before protected candidate | PLANNED | C++ mixed-write/replacement/failure selector; committed+staged+reservation accounting |
+| T003-R3 | F09 fd error ownership | FilesystemRepoStoreBackend error path; before protected candidate | PLANNED | injected fsync/close failure, one-close ownership and preserved errno |
+| T009-R1 | F08 turn owner race | Conversation/PreparedModel handle installation; after T007 and before same-handle PASS | PLANNED | C++ barrier interleaving where older terminal/exception cannot overwrite or close newer turn |
+| F03/F04 follow-up | catalog snapshot/history gap | Only if catalog snapshot/delta becomes a candidate caller | DEFERRED | snapshot-required + incarnation/oldest-sequence C++/Python sync evidence |
+| F06/F07 follow-up | compatibility replacement/durability | Legacy helper/backend maintenance, not current native protected path | DEFERRED | separate compatibility task and failure model; no Spec189 PASS credit |
 
 ## Retired task IDs
 
@@ -84,6 +116,7 @@ counter 接入属于 T003/T006 的实际 owner，不能另开重复的 T008 实�
 | T002 | MERGED_INTO T003 | Qwen graph/config/digest 验证、原子层/shared 材料生成、staging cleanup |
 | T004 | MERGED_INTO T003 | reference-only、两请求无新增发布、stale/released/oversized negatives |
 | T010 | MERGED_INTO T009 | 独立重复、候选一致性、最终 verdict 与文档交付 |
+| T008 | MERGED_INTO T009 | host guard、受控 stop、native resident/runner counters、完整采样与 drain；小型 guard/lifecycle 证据保留在 resource record |
 
 <a id="t001"></a>
 ## T001 — Freeze integration boundary
@@ -102,26 +135,17 @@ counter 接入属于 T003/T006 的实际 owner，不能另开重复的 T008 实�
 **Acceptance**: 五 lane 的已验/待改/待测映射可执行，无循环依赖；
 不因文档修改/run-id 改变重新全量构建，不授予产品 PASS。
 
-<a id="t008"></a>
-## T008 — Guard before model runs
+## Retired T008 — cross-cutting gate
 
-**Write**: `Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py` 和已有 launcher、
-现有 C++ 生命周期 fixture；`evidence/b189-resource.md`。
+T008 不再作为独立能力任务。它保留的义务由实际 owner 承担：T003/T006 在各自
+selector 中交付 native resident/materialization/lease/runner counters 和取消回收
+反例，T009 在每次 full-model run 前调用现有 host guard，并在成功或分类停止后
+统一检查采样、child 状态和 drain。`evidence/b189-resource.md` 保留已有 39 个
+host checks、lifecycle fixture 和真实 identity 记录；这些证据不单独授予产品 PASS。
 
-1. 在真实模型准备/发布前检查 MemAvailable/disk；每秒采样 RSS、swap、disk、
-   child 状态及 native Repo resident/materialization/lease/runner counters。
-   阈值来自 profile，不静默放宽。
-2. 超阈值/deadline/child failure 走统一 bounded stop：取消、限时 drain、
-   必要时升级进程组终止；只清理本 run staging，保留有效 Repo 对象与证据。
-3. 小型 C++ fixture 验证 Face/io_context/worker/callback owner 与 drain；
-   受控阈值触发 host guard，禁止以真实 OOM 测保护。Python 仅测采样/进程控制。
-4. 完整模型峰值/正常 drain 交 T009，避免安全门依赖尚不能安全运行的 full model。
-5. 前置安全出口只要求 host guard、受控停止和已有小型 owner/drain fixture。
-   新 native counters 随 T003/T006 的实际 owner 实现并测试，T009 前必须接入采样；
-   不能因它们尚未实现而阻止 T003 小 fixture。T008 最终勾选仍需完整计数器证据。
-
-**Acceptance**: guard 先于昂贵工作生效，受控停止正确分类且无 child/fixture 泄漏；
-finally/kill 本身不等于 lifecycle PASS。
+资源门规则：阈值来自 immutable profile，超过阈值必须分类为 `RESOURCE_BOUNDARY`；
+只清理本 run staging，保留原始日志和有效 Repo 对象证据；`finally`/`kill` 本身
+不等于 lifecycle PASS。由于这部分不新增生产能力，不再为它单独建批次或重复编译。
 
 <a id="t003"></a>
 ## T003 — Prepare and reuse Repo materials
@@ -135,7 +159,8 @@ finally/kill 本身不等于 lifecycle PASS。
 
 共享 protected 接缝另涉及 `ndn-service-framework/ServiceUser.{hpp,cpp}`、
 `EncryptedLargeDataRangeStore.hpp` 和 Repo `RepoEncryptedLargeDataStore.hpp`。
-先按 B189-1a 验证接缝，再按 B189-1b 实现原子材料；Core 不依赖 DI/Repo 类型。
+先按 B189-1a 验证 protected Repo 接缝，再按 B189-1b 实现原子材料；Core 不依赖
+DI/Repo 类型。T003 不负责 ACK/Selection ingress，该边界属于 T005。
 `NativeCanonicalArtifactPublisher::CacheState::prepared` 当前只保留 receipt 和 weak
 serving pins；`PreparedModelPackage`/活动 request 才是强 owner。复用
 ModelPreparationCache 预算/淘汰作为唯一保留策略，publisher 不成为第二个无界强 owner，
@@ -146,6 +171,12 @@ B189-1a 当前 worker/cancel/key 与 Repo identity 静态门已通过；仍须�
 package/cache owner 反例和组合 runtime 验证受保护接缝，不能把静态通过写成 T003 完成。
 具体出口与反例见 [bounded commit](contracts/model-preparation.md#bounded-commit-and-identity-ownership)。
 
+**Audit follow-up exit B189-1c**：T003-R1 记录 source/initializer/material/encryption/ORT
+各类 peak owner 与取消/重试清理；T003-R2 让 range reservation、普通 vector/Data packet
+写入和 replacement 共用逻辑 quota；T003-R3 对 fsync/close failure 验证单一 fd owner。
+三个出口必须使用 C++ production selector，分别记录首个失败边界，不能由 Python
+脚本或磁盘剩余空间检查替代。
+
 1. pinned canonical graph/initializer 生成拓扑无关原子层与 shared tensor 引用。
    层→节点/权重范围由 graph 推导并校验；embedding/final/tied weights 按内容去重。
    不能把预导出的 [0,14)/[14,28) 最终模型当 prepare 格式。
@@ -155,14 +186,17 @@ package/cache owner 反例和组合 runtime 验证受保护接缝，不能把静
 3. 将实际 requester 接入 Runtime Repo publisher/source 生命周期；对象持久化、
    manifest commit 且正常 Repo 读取可达后才 READY。source owner 可释放，
    服务与活动 lease 存活；不可达/对象丢失明确失败，request 不隐式重发模型。
-4. 同 Runtime prepare 一次、同 handle 请求两次，publication/ingest 增量为零；
-   重复 prepare 命中完整 immutable identity。
+4. 同一 immutable identity 的重复 prepare 命中已有 manifest/reference，且不会
+   固定 Provider placement；同 handle 的两次请求和 publication/ingest 零增量由
+   T009 的真实 MiniNDN 资格统一证明，避免在 prepare selector 中重复模拟最终链路。
 5. 复用已通过 selector，仅补 real-Qwen receipt、源释放、stale manifest、
    digest/range/schema、staging rollback 和必要 envelope negatives。
    离线 snapshot→canonical 导出可复用，但不替代 native prepare/Repo。
 
-**Acceptance**: C++ production entry 验证真实 Repo 材料、commit/可达性及复用。
-完整 Qwen 操作先过 T008，小 fixture 可先运行；此处不要求两 Provider 执行成功。
+**Acceptance**: C++ production entry 验证真实 Repo 材料、commit/可达性、源释放和
+immutable prepare lookup。完整 Qwen run 由 T009 先通过资源门；此处不要求两
+Provider 执行成功，也不重复证明最终同 handle 两请求。F02/F05/F09 的 B189-1c
+出口未通过前，不能把完整候选标为 ready。
 
 <a id="t005"></a>
 ## T005 — Authenticate placement
@@ -224,30 +258,38 @@ package/cache owner 反例和组合 runtime 验证受保护接缝，不能把静
 最终真实 Qwen 资格仍由 T009 负责。
 
 <a id="t009"></a>
-## T009 — Qualify reuse and repeat
+## T009 [US4, US5] — Qualify resource envelope, reuse and repeat
 
-**Write**: 维护的 MiniNDN runner/C++ requester 复用入口及证据 checker；
+**Write**: 维护的 MiniNDN runner、单进程 C++ requester/driver 复用入口及证据 checker；
 raw logs 放唯一 `.codex-tmp` run 目录；`evidence/b189-convergence.md`；
 失败同步 failure-log。
 
-1. T008 与 B189-1/2/3 runtime 出口通过后，冻结实际源码内容、global ABI、模型/
+1. 在 T003/T005/T006/T007 runtime 出口通过后，冻结实际源码内容、global ABI、模型/
    manifest、profile/topology、binaries/oracle；自动派生摘要，检查 policy/key/module/disk。
 2. 两 CPU Provider，native prepare→Repo→ACK→planner/Selection→按需组装→
-   NDN handoff→有效输出→drain。同 requester 进程只 prepare 一次，用同 handle
-   做两个独立 request，publication 增量为零且两个结果均通过 C++ oracle。
+   NDN handoff→有效输出→drain。必须由一个长期存活的 C++ requester/driver
+   在同一 Runtime/PreparedModel handle 上先 prepare 一次，再提交两个独立
+   request；不能用脚本启动两个独立 requester 进程来替代。publication 增量为零，
+   两个结果均通过独立 C++ oracle。
 3. 原始证据落盘后保持同 candidate，用新 run-id 重复上述场景；
    request id/key/临时路径属于 run identity，不使 candidate 摘要变化。
-4. 比较 fetched bytes/cache/runner、RSS/Repo resident/物化峰值和 post-drain baseline。
+4. 每次运行先通过 host guard，再比较 fetched bytes/cache/runner、RSS/Repo resident/
+   物化峰值和 post-drain baseline。
    warm cache 可复用 runner；不能为凑计数而强制重建。
-5. 失败保留第一已证实边界/未知部分，修复复审受影响范围再复测。
+5. 失败保留第一已证实边界/未知部分，修复复审受影响范围再复测。T007 必须先
+   提供独立固定输入的 C++ numerical/output oracle；token schema、digest 或
+   CLI 日志不能替代它。
    实现引起的 API/行为变化按 Design/MANAGEMENT.md 同步契约/PDF/文档交付。
+6. T009-R1 用 C++ 屏障控制旧 turn terminal/exception、新 turn start 和 handle
+   installation；generation 不匹配时旧 turn 不得覆盖 active owner 或被 close 取消。
+   该门通过前不能把“同 handle 两请求”仅凭两个结果文件认定为复用 PASS。
 
 **Acceptance**: 两独立运行均成功，且各自同 handle 两请求/输出/资源/drain 齐全，
 才 `QWEN_TWO_PROVIDER_PASS` / [x]。classified failure 不算完成。无 SIF/Tiger/27B 工作。
 
 ## Logical Batches and Dependencies
 
-执行顺序：`B189-0 → B189-4 → B189-1 → B189-2 → B189-3 → B189-5`。
+执行顺序：`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
 保留历史 ID 稳定链接；序号不再代表时间。
 成员、五 lane、动态检查、唯一结果记录见 [batch-execution.md](batch-execution.md)。
 达到批次出口即验证，不为了少编译加入新职责。
