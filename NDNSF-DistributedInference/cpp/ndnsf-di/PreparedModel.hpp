@@ -100,6 +100,10 @@ struct StreamOptions
   bool enabled = true;
   bool allowReplacement = false;
   std::uint8_t maxReplacements = 0;
+  // Bounded silence budget while a Provider performs post-Selection
+  // material fetch and runner assembly before publishing the first event.
+  std::uint32_t interestLifetimeMs = 500;
+  std::uint8_t maxEventRetries = 3;
 };
 
 /** Request options projected from the verified model package. */

@@ -314,6 +314,23 @@ run(int argc, char** argv)
     options.outputMode = "TOKEN_STREAMING";
     StreamOptions streamOptions;
     streamOptions.enabled = true;
+    // A streamed request may be silent while a Provider performs the
+    // authenticated post-Selection material fetch and runner assembly.  Keep
+    // these values explicit in the requester contract instead of relying on
+    // the generic 3x500ms defaults.  StreamRequestOptions::validate() still
+    // enforces the protocol bounds before the request is published.
+    if (const auto value = request.get_optional<std::uint64_t>(
+          "interest_lifetime_ms")) {
+      if (*value > std::numeric_limits<std::uint32_t>::max())
+        throw std::invalid_argument("request.interest_lifetime_ms exceeds uint32");
+      streamOptions.interestLifetimeMs = static_cast<std::uint32_t>(*value);
+    }
+    if (const auto value = request.get_optional<std::uint64_t>(
+          "max_event_retries")) {
+      if (*value > std::numeric_limits<std::uint8_t>::max())
+        throw std::invalid_argument("request.max_event_retries exceeds uint8");
+      streamOptions.maxEventRetries = static_cast<std::uint8_t>(*value);
+    }
     streamOptions.allowReplacement = request.get<bool>("allow_replacement", false);
     const auto maxReplacements = request.get<unsigned>(
       "max_replacements", streamOptions.allowReplacement ? 1u : 0u);

@@ -678,6 +678,8 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
       native.outputMode = "TOKEN_STREAMING";
       native.stream->allowReplacement = options.stream->allowReplacement;
       native.stream->maxReplacements = options.stream->maxReplacements;
+      native.stream->interestLifetimeMs = options.stream->interestLifetimeMs;
+      native.stream->maxEventRetries = options.stream->maxEventRetries;
     }
   }
   else if (verifiedStreamingDefault) {
@@ -855,6 +857,7 @@ RequestHandle PreparedModel::requestInternal(
     throw DiError("RUNTIME_CLOSED", "local", "request", "native Runtime client is unavailable");
   NativeModelRef model;
   static_cast<NativeModelDescriptor&>(model) = m_package->catalog.model.descriptor;
+  model.artifactReference = m_package->modelReference;
   auto splitter = m_package->catalog.cooperativeSplitter;
   auto placement = options.placement ? options.placement->m_strategy : m_package->defaultPlacement;
   if (!splitter || !placement)
