@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 // Official ONNX 1.17 full-protobuf headers via the configured ONNX prefix.
 // onnx_pb.h defines ONNX_API (visibility) before it pulls in the generated
@@ -215,6 +216,62 @@ std::vector<std::uint8_t> modelBytesWithNestedExternal()
   std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
   BOOST_REQUIRE(model.SerializeToArray(bytes.data(), static_cast<int>(bytes.size())));
   return bytes;
+}
+
+std::vector<std::uint8_t> serialize(const google::protobuf::MessageLite& message);
+
+std::vector<std::uint8_t> modelBytesWithShapeValue(bool external, const std::string& opType)
+{
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  auto* opset = model.add_opset_import();
+  opset->set_domain("");
+  opset->set_version(13);
+  auto* graph = model.mutable_graph();
+  graph->set_name("spec189-shape-value");
+  auto* input = graph->add_input();
+  input->set_name("x");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(4);
+  auto* output = graph->add_output();
+  output->set_name("y");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  auto* node = graph->add_node();
+  node->set_op_type(opType);
+  node->add_input("x");
+  node->add_input("shape");
+  node->add_output("y");
+  onnx::TensorProto shape;
+  shape.set_name("shape");
+  shape.set_data_type(onnx::TensorProto::INT64);
+  shape.add_dims(2);
+  if (external) {
+    shape.set_data_location(onnx::TensorProto::EXTERNAL);
+    auto* location = shape.add_external_data();
+    location->set_key("location");
+    location->set_value("weights.bin");
+    auto* offset = shape.add_external_data();
+    offset->set_key("offset");
+    offset->set_value("0");
+    auto* length = shape.add_external_data();
+    length->set_key("length");
+    length->set_value("16");
+  }
+  else {
+    shape.add_int64_data(2);
+    shape.add_int64_data(2);
+  }
+  *graph->add_initializer() = std::move(shape);
+  return serialize(model);
+}
+
+NativeModelDescriptor shapeInspectionDescriptor()
+{
+  return fixture::completeModel({
+    "spec189-shape", nativePlanningDigest("spec189-shape-content"),
+    nativePlanningDigest("spec189-shape-semantics"), nativePlanningDigest("placeholder"),
+    "onnx", "float32", "spec189", "1"});
 }
 
 NativeAssemblyControl identityControl(std::uint64_t maxSourceBytes = 8 * 1024 * 1024)
@@ -985,6 +1042,97 @@ BOOST_AUTO_TEST_CASE(FunctionAttributeExternalsAreValidatedAndInlined)
     canonicalOnnxSourceIdentity(NativeCanonicalSource{serialize(model), std::nullopt}, control);
   BOOST_CHECK_EQUAL(externalIdentity.graphDigest, inlinedIdentity.graphDigest);
   BOOST_CHECK_EQUAL(externalIdentity.initializerDigest, inlinedIdentity.initializerDigest);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsDuplicateExternalMetadataAndInvalidDeepPayload)
+{
+  auto duplicate = [] {
+    onnx::TensorProto tensor;
+    tensor.set_name("weight");
+    tensor.set_data_type(onnx::TensorProto::FLOAT);
+    tensor.add_dims(1);
+    tensor.set_data_location(onnx::TensorProto::EXTERNAL);
+    auto* location = tensor.add_external_data();
+    location->set_key("location");
+    location->set_value("weights.bin");
+    auto* offset = tensor.add_external_data();
+    offset->set_key("offset");
+    offset->set_value("0");
+    auto* duplicateOffset = tensor.add_external_data();
+    duplicateOffset->set_key("offset");
+    duplicateOffset->set_value("0");
+    auto* length = tensor.add_external_data();
+    length->set_key("length");
+    length->set_value("4");
+    return tensor;
+  }();
+  const auto duplicateModel = serialize(singleInitializerModel(duplicate));
+  expectPrefix([&] {
+    canonicalOnnxSourceIdentity(
+      NativeCanonicalSource{duplicateModel, std::vector<std::uint8_t>(4, 0)},
+      identityControl());
+  }, "DI_NATIVE_ONNX_EXTERNAL_METADATA", "duplicate external metadata");
+
+  onnx::ModelProto deep;
+  const auto deepBytes = modelBytesWithNestedExternal();
+  BOOST_REQUIRE(deep.ParseFromArray(deepBytes.data(), static_cast<int>(deepBytes.size())));
+  auto* nestedWeight = deep.mutable_graph()->mutable_node(0)->mutable_attribute(0)
+    ->mutable_g()->mutable_initializer(0);
+  nestedWeight->mutable_external_data(2)->set_value("8");
+  expectPrefix([&] {
+    canonicalOnnxSourceIdentity(
+      NativeCanonicalSource{serialize(deep), std::vector<std::uint8_t>(8, 0)},
+      identityControl());
+  }, "DI_ONNX_INITIALIZER_ENCODING_INVALID", "invalid deep external payload length");
+}
+
+BOOST_AUTO_TEST_CASE(ShapeInferenceMaterializesSelectiveExternalValues)
+{
+  const auto control = identityControl();
+  const auto descriptor = shapeInspectionDescriptor();
+  const std::vector<std::uint8_t> shapeBytes{
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  const auto external = inspectNativeOnnxSourceGraph(
+    NativeCanonicalSource{modelBytesWithShapeValue(true, "Reshape"), shapeBytes},
+    descriptor, control);
+  const auto inlined = inspectNativeOnnxSourceGraph(
+    NativeCanonicalSource{modelBytesWithShapeValue(false, "Reshape"), std::nullopt},
+    descriptor, control);
+  BOOST_CHECK_EQUAL(external.canonicalIdentity.graphDigest, inlined.canonicalIdentity.graphDigest);
+  BOOST_CHECK_EQUAL(external.graph.graphDigest, inlined.graph.graphDigest);
+  BOOST_CHECK(external.graphMetadataJson.find("\"shape\":[2,2]") != std::string::npos);
+  BOOST_CHECK_EQUAL(external.graphMetadataJson, inlined.graphMetadataJson);
+  expectPrefix([&] {
+    inspectNativeOnnxSourceGraph(
+      NativeCanonicalSource{modelBytesWithShapeValue(true, "Spec189UnknownShapeOp"), shapeBytes},
+      descriptor, control);
+  }, "DI_NATIVE_ONNX_SHAPE_INPUT_UNSUPPORTED", "unknown external shape-input operator");
+
+  onnx::ModelProto captured;
+  const auto capturedBytes = modelBytesWithNestedExternal();
+  BOOST_REQUIRE(captured.ParseFromArray(capturedBytes.data(), static_cast<int>(capturedBytes.size())));
+  auto* capturedInitializer = captured.mutable_graph()->add_initializer();
+  capturedInitializer->set_name("captured");
+  capturedInitializer->set_data_type(onnx::TensorProto::FLOAT);
+  capturedInitializer->add_dims(1);
+  capturedInitializer->add_dims(1);
+  capturedInitializer->set_data_location(onnx::TensorProto::EXTERNAL);
+  auto* capturedLocation = capturedInitializer->add_external_data();
+  capturedLocation->set_key("location");
+  capturedLocation->set_value("weights.bin");
+  auto* capturedLength = capturedInitializer->add_external_data();
+  capturedLength->set_key("length");
+  capturedLength->set_value("4");
+  auto* nestedGraph = captured.mutable_graph()->mutable_node(0)->mutable_attribute(0)->mutable_g();
+  nestedGraph->clear_initializer();
+  nestedGraph->mutable_node(0)->set_op_type("Spec189UnknownShapeOp");
+  nestedGraph->mutable_node(0)->set_input(0, "captured");
+  expectPrefix([&] {
+    inspectNativeOnnxSourceGraph(
+      NativeCanonicalSource{serialize(captured), std::vector<std::uint8_t>{0, 0, 128, 63}},
+      descriptor, control);
+  }, "DI_NATIVE_ONNX_SHAPE_INPUT_UNSUPPORTED", "unknown captured external shape-input operator");
 }
 
 // Source-boundary and shape failures of the identity seam.

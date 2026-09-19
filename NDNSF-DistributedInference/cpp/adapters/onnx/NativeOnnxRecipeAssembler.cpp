@@ -22,9 +22,11 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -456,7 +458,9 @@ canonicalOnnxModelIdentity(const onnx::ModelProto& model,
 
 onnx::ModelProto
 ownedSourceModel(const NativeCanonicalSource& source,
-                 const NativeAssemblyControl& control);
+                 const NativeAssemblyControl& control,
+                 bool inlineExternal = true,
+                 std::uint64_t* materializedBudget = nullptr);
 
 NativeCertifiedAssembly
 assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
@@ -1177,10 +1181,12 @@ std::string validateAndPinLocation(const std::vector<onnx::TensorProto*>& tensor
   std::string pinnedLocation;
   for (auto* tensor : tensors) {
     if (tensor->data_location() != onnx::TensorProto::EXTERNAL) continue;
+    std::set<std::string> metadataKeys;
     std::string location;
     int locationEntries = 0;
     for (int i = 0; i < tensor->external_data_size(); ++i) {
       const auto& entry = tensor->external_data(i);
+      if (!metadataKeys.insert(entry.key()).second) fail("EXTERNAL_METADATA");
       if (entry.key() == "location") {
         location = entry.value();
         ++locationEntries;
@@ -1206,10 +1212,17 @@ std::string validateAndPinLocation(const std::vector<onnx::TensorProto*>& tensor
 }
 
 void inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
-                              const std::vector<std::uint8_t>& bytes)
+                              const std::vector<std::uint8_t>& bytes,
+                              const NativeAssemblyControl* control = nullptr,
+                              std::uint64_t* copiedBytes = nullptr)
 {
   for (auto* tensor : tensors) {
+    if (control != nullptr) checkActive(*control);
     if (tensor->data_location() != onnx::TensorProto::EXTERNAL) continue;
+    std::set<std::string> metadataKeys;
+    for (int i = 0; i < tensor->external_data_size(); ++i)
+      if (!metadataKeys.insert(tensor->external_data(i).key()).second)
+        fail("EXTERNAL_METADATA");
     const auto offsetText = [&] {
       for (int i = 0; i < tensor->external_data_size(); ++i) {
         const auto& entry = tensor->external_data(i);
@@ -1233,17 +1246,220 @@ void inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
       if (length > bytes.size() - offset || length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
         fail("EXTERNAL_RANGE");
     }
+    if (copiedBytes != nullptr) {
+      *copiedBytes = checkedAdd(*copiedBytes, length);
+      if (control != nullptr &&
+          (control->maxAssembledBytes == 0 || *copiedBytes > control->maxAssembledBytes))
+        fail("MATERIAL_LIMIT");
+    }
     tensor->set_raw_data(reinterpret_cast<const char*>(bytes.data() + offset),
                          static_cast<int>(length));
     tensor->clear_external_data();
     tensor->set_data_location(onnx::TensorProto::DEFAULT);
+    if (control != nullptr) checkActive(*control);
   }
+}
+
+onnx::TensorProto materializeExternalTensor(
+  const onnx::TensorProto& tensor,
+  const std::vector<std::uint8_t>* externalBytes,
+  const NativeAssemblyControl* control = nullptr)
+{
+  if (tensor.data_location() != onnx::TensorProto::EXTERNAL)
+    fail("EXTERNAL_BINDING");
+  if (externalBytes == nullptr)
+    fail("EXTERNAL_BINDING");
+  auto result = tensor;
+  std::vector<onnx::TensorProto*> tensors{&result};
+  inlineValidatedExternals(tensors, *externalBytes, control);
+  return result;
+}
+
+void inlineDeepExternals(onnx::ModelProto& model,
+                         const std::vector<std::uint8_t>& bytes,
+                         const NativeAssemblyControl* control,
+                         std::uint64_t* materializedBudget = nullptr)
+{
+  std::vector<onnx::TensorProto*> all;
+  collectModelTensors(model, all);
+  std::unordered_set<onnx::TensorProto*> topLevel;
+  topLevel.reserve(static_cast<std::size_t>(model.graph().initializer_size()));
+  for (int i = 0; i < model.graph().initializer_size(); ++i)
+    topLevel.insert(model.mutable_graph()->mutable_initializer(i));
+  std::vector<onnx::TensorProto*> deep;
+  std::vector<onnx::TensorProto*> externalDeep;
+  deep.reserve(all.size());
+  for (auto* tensor : all)
+    if (topLevel.count(tensor) == 0) {
+      deep.push_back(tensor);
+      if (tensor->data_location() == onnx::TensorProto::EXTERNAL)
+        externalDeep.push_back(tensor);
+    }
+  std::uint64_t localBudget = 0;
+  auto* copiedBytes = materializedBudget != nullptr ? materializedBudget : &localBudget;
+  inlineValidatedExternals(deep, bytes, control, copiedBytes);
+  for (auto* tensor : externalDeep) {
+    if (control != nullptr) checkActive(*control);
+    const auto serialized = deterministicMessageVector(*tensor);
+    normalizedOnnxInitializerPayload(serialized);
+    if (control != nullptr) checkActive(*control);
+  }
+}
+
+// Shape inference needs values only for a bounded set of operator parameters
+// (for example Reshape shape, Slice bounds, and TopK K).  Keep the large
+// weight initializers external and materialize only those named inputs in the
+// inference copy.  This preserves external/inline shape parity without
+// recreating the complete model-sized peak.
+void materializeShapeInferenceInitializers(
+  onnx::ModelProto& inferred,
+  const onnx::ModelProto& sourceModel,
+  const std::vector<std::uint8_t>* externalBytes,
+  const NativeAssemblyControl& control,
+  std::uint64_t* materializedBudget = nullptr)
+{
+  if (externalBytes == nullptr) return;
+  struct ShapePolicyKey {
+    std::string domain;
+    std::string opType;
+    std::int64_t opset = 0;
+    bool operator<(const ShapePolicyKey& other) const
+    {
+      return std::tie(domain, opType, opset) <
+        std::tie(other.domain, other.opType, other.opset);
+    }
+  };
+  std::map<std::string, std::int64_t> opsets;
+  for (const auto& opset : sourceModel.opset_import())
+    opsets[opset.domain()] = opset.version();
+  const auto opsetFor = [&] (const std::string& domain) {
+    const auto found = opsets.find(domain);
+    return found == opsets.end() ? std::int64_t{0} : found->second;
+  };
+  std::map<ShapePolicyKey, std::vector<int>> policies;
+  const auto shapePolicy = [&] (const char* domain, const char* op,
+                                std::initializer_list<int> indices) {
+    policies[{domain, op, opsetFor(domain)}] = std::vector<int>(indices);
+  };
+  const auto shapeIndependent = [&] (const char* domain, const char* op) {
+    shapePolicy(domain, op, {});
+  };
+  const auto shapeValue = [&] (const char* op, std::initializer_list<int> indices) {
+    shapePolicy("", op, indices);
+  };
+  shapeValue("Reshape", {1}); shapeValue("Expand", {1});
+  shapeValue("Gather", {1}); shapeValue("Tile", {1});
+  shapeValue("OneHot", {1}); shapeValue("TopK", {1});
+  shapeValue("Split", {1}); shapeValue("Squeeze", {1});
+  shapeValue("Unsqueeze", {1}); shapeValue("ConstantOfShape", {0});
+  shapeValue("Range", {0, 1, 2}); shapeValue("Slice", {1, 2, 3, 4});
+  shapeValue("Resize", {1, 2, 3}); shapeValue("Pad", {1});
+  shapeValue("CumSum", {1}); shapeValue("NonMaxSuppression", {2, 3, 4});
+  shapeValue("Compress", {1}); shapeValue("If", {0}); shapeValue("Loop", {0, 1});
+  for (const char* op : {"ReduceL1", "ReduceL2", "ReduceLogSum", "ReduceLogSumExp",
+                         "ReduceMax", "ReduceMean", "ReduceMin", "ReduceProd",
+                         "ReduceSum", "ReduceSumSquare"})
+    shapeValue(op, {1});
+  // Explicitly register the standard data-only operators used by Qwen and
+  // common ONNX transformer exports. An unknown op/domain with an external
+  // initializer input is rejected below instead of entering inference with
+  // an unproven graph-only value.
+  for (const char* op : {"Abs", "Add", "BatchNormalization", "Cast", "Clip", "Concat",
+                         "Conv", "ConvTranspose", "DequantizeLinear", "Div", "Dropout",
+                         "Einsum", "Equal", "Exp", "Flatten", "Gelu", "GemmaRotaryEmbedding",
+                         "Gemm", "Greater", "GreaterOrEqual", "Identity", "LayerNormalization",
+                         "Less", "LessOrEqual", "Log", "LogSoftmax", "MatMul", "Mul",
+                         "Neg", "Pow", "QLinearConv", "QLinearMatMul", "QuantizeLinear",
+                         "Relu", "RotaryEmbedding", "ScatterElements", "ScatterND", "Sigmoid",
+                         "Size", "Softmax", "Sqrt", "Sub", "Tanh", "Transpose", "Where"})
+    shapeIndependent("", op);
+  for (const char* domain : {"com.microsoft", "ai.onnx.contrib"})
+    for (const char* op : {"Attention", "FusedMatMul", "Gelu", "LayerNormalization",
+                           "RotaryEmbedding", "SkipLayerNormalization"})
+      shapeIndependent(domain, op);
+  std::unordered_set<std::string> externalInitializers;
+  for (const auto& initializer : sourceModel.graph().initializer())
+    if (initializer.data_location() == onnx::TensorProto::EXTERNAL)
+      externalInitializers.insert(initializer.name());
+  std::unordered_set<std::string> required;
+  std::function<void(const onnx::GraphProto&, bool)> scanGraph;
+  std::function<void(const google::protobuf::RepeatedPtrField<onnx::NodeProto>&,
+                     const std::unordered_set<std::string>&, bool)> scanNodes;
+  const auto addInput = [&] (const onnx::NodeProto& node, int index,
+                             const std::unordered_set<std::string>& localNames,
+                             bool root) {
+    if (index >= 0 && index < node.input_size() && !node.input(index).empty() &&
+        externalInitializers.count(node.input(index)) != 0 &&
+        (root || localNames.count(node.input(index)) == 0))
+      required.insert(node.input(index));
+  };
+  scanNodes = [&] (const google::protobuf::RepeatedPtrField<onnx::NodeProto>& nodes,
+                   const std::unordered_set<std::string>& localNames, bool root) {
+    for (const auto& node : nodes) {
+      const auto policy = policies.find({node.domain(), node.op_type(), opsetFor(node.domain())});
+      bool hasExternalInput = false;
+      for (const auto& input : node.input())
+        hasExternalInput = hasExternalInput ||
+          (externalInitializers.count(input) != 0 &&
+           (root || localNames.count(input) == 0));
+      if (policy == policies.end()) {
+        if (hasExternalInput) fail("SHAPE_INPUT_UNSUPPORTED");
+      }
+      else {
+        for (const auto index : policy->second) addInput(node, index, localNames, root);
+      }
+      for (const auto& attribute : node.attribute()) {
+        if (attribute.has_g()) scanGraph(attribute.g(), false);
+        for (const auto& graph : attribute.graphs()) scanGraph(graph, false);
+      }
+    }
+  };
+  scanGraph = [&] (const onnx::GraphProto& graph, bool root) {
+    std::unordered_set<std::string> localNames;
+    if (!root) {
+      for (const auto& initializer : graph.initializer()) localNames.insert(initializer.name());
+      for (const auto& input : graph.input()) localNames.insert(input.name());
+      for (const auto& node : graph.node())
+        for (const auto& output : node.output())
+          if (!output.empty()) localNames.insert(output);
+    }
+    scanNodes(graph.node(), localNames, root);
+  };
+  scanGraph(sourceModel.graph(), true);
+  for (const auto& function : sourceModel.functions()) {
+    std::unordered_set<std::string> localNames;
+    for (const auto& input : function.input()) localNames.insert(input);
+    for (const auto& output : function.output()) localNames.insert(output);
+    for (const auto& node : function.node())
+      for (const auto& output : node.output())
+        if (!output.empty()) localNames.insert(output);
+    scanNodes(function.node(), localNames, false);
+  }
+
+  std::uint64_t localBudget = 0;
+  auto* materializedBytes = materializedBudget != nullptr ? materializedBudget : &localBudget;
+  for (int i = 0; i < sourceModel.graph().initializer_size(); ++i) {
+    checkActive(control);
+    const auto& sourceInitializer = sourceModel.graph().initializer(i);
+    if (required.count(sourceInitializer.name()) == 0 ||
+        sourceInitializer.data_location() != onnx::TensorProto::EXTERNAL)
+      continue;
+    auto material = materializeExternalTensor(sourceInitializer, externalBytes, &control);
+    *materializedBytes = checkedAdd(*materializedBytes,
+                                   static_cast<std::uint64_t>(material.ByteSizeLong()));
+    if (control.maxAssembledBytes == 0 || *materializedBytes > control.maxAssembledBytes)
+      fail("MATERIAL_LIMIT");
+    *inferred.mutable_graph()->mutable_initializer(i) = std::move(material);
+  }
+  checkActive(control);
 }
 
 // Shared OA05-for-identity entry: source limits, parse, external binding and
 // memory-only inlining.  It deliberately does not full-check or shape-infer.
 onnx::ModelProto ownedSourceModel(const NativeCanonicalSource& source,
-                                  const NativeAssemblyControl& control)
+                                  const NativeAssemblyControl& control,
+                                  bool inlineExternal,
+                                  std::uint64_t* materializedBudget)
 {
   checkActive(control);
   if (control.maxSourceBytes == 0 ||
@@ -1272,7 +1488,10 @@ onnx::ModelProto ownedSourceModel(const NativeCanonicalSource& source,
   if (hasExternal != source.initializerBytes.has_value()) fail("EXTERNAL_BINDING");
   if (source.initializerBytes) {
     validateAndPinLocation(externalTensors);
-    inlineValidatedExternals(externalTensors, *source.initializerBytes);
+    if (inlineExternal)
+      inlineValidatedExternals(externalTensors, *source.initializerBytes, &control);
+    else
+      inlineDeepExternals(model, *source.initializerBytes, &control, materializedBudget);
   }
   checkActive(control);
   return model;
@@ -1357,32 +1576,55 @@ std::string sha256HexOf(const std::string& utf8)
 struct TensorIndexEntry
 {
   std::string name;
-  NormalizedInitializerPayload payload;
+  std::string dtype;
+  std::vector<std::int64_t> shape;
+  std::string byteOrder;
+  std::size_t byteLength = 0;
   std::string contentDigest;
   std::string sharedReference;
 };
 
-// python reference layout: sorted by tensor name; contentDigest of the
+// Python reference layout: sorted by tensor name; contentDigest of the
 // canonical bytes; sharedReference is the first (smallest) alias name when
-// more than one tensor shares the digest, else empty.
-std::vector<TensorIndexEntry> buildTensorIndex(const onnx::ModelProto& model)
+// more than one tensor shares the digest, else empty.  Top-level external
+// tensors stay graph-only in the model protobuf; a single temporary
+// TensorProto receives only its authenticated range, so the index never
+// retains a second complete initializer object. Deep attribute tensors have
+// already been materialized because their protobuf wire contributes to the
+// graph identity and template payload.
+std::vector<TensorIndexEntry> buildTensorIndex(
+  const onnx::ModelProto& model,
+  const std::vector<std::uint8_t>* externalBytes = nullptr,
+  const NativeAssemblyControl* control = nullptr)
 {
   std::vector<TensorIndexEntry> entries;
   entries.reserve(static_cast<std::size_t>(model.graph().initializer_size()));
   for (int i = 0; i < model.graph().initializer_size(); ++i) {
+    if (control != nullptr) checkActive(*control);
     const auto& initializer = model.graph().initializer(i);
     if (initializer.name().empty()) failNormalization("INITIALIZER_ENCODING_INVALID");
     TensorIndexEntry entry;
     entry.name = initializer.name();
-    std::vector<std::uint8_t> serialized(
-      static_cast<std::size_t>(initializer.ByteSizeLong()));
+    const auto* material = &initializer;
+    std::optional<onnx::TensorProto> externalMaterial;
+    if (initializer.data_location() == onnx::TensorProto::EXTERNAL) {
+      externalMaterial.emplace(materializeExternalTensor(initializer, externalBytes, control));
+      material = &*externalMaterial;
+    }
+    std::vector<std::uint8_t> serialized(static_cast<std::size_t>(material->ByteSizeLong()));
     if (!serialized.empty() &&
-        !initializer.SerializeToArray(serialized.data(),
-                                      static_cast<int>(serialized.size())))
+        !material->SerializeToArray(serialized.data(), static_cast<int>(serialized.size())))
       fail("SERIALIZE");
-    entry.payload = normalizedOnnxInitializerPayload(serialized);
-    entry.contentDigest = digest(entry.payload.content);
+    if (control != nullptr) checkActive(*control);
+    auto normalized = normalizedOnnxInitializerPayload(serialized);
+    if (control != nullptr) checkActive(*control);
+    entry.dtype = std::move(normalized.dtype);
+    entry.shape = std::move(normalized.shape);
+    entry.byteOrder = std::move(normalized.byteOrder);
+    entry.byteLength = normalized.content.size();
+    entry.contentDigest = digest(normalized.content);
     entries.push_back(std::move(entry));
+    if (control != nullptr) checkActive(*control);
   }
   std::stable_sort(entries.begin(), entries.end(),
             [] (const TensorIndexEntry& left, const TensorIndexEntry& right) {
@@ -1447,13 +1689,13 @@ std::string graphFactsJson(const onnx::ModelProto& model,
     if (i != 0) out.push_back(',');
     const auto& entry = entries[i];
     out += "{\"byteLength\":";
-    out += std::to_string(entry.payload.content.size());
+    out += std::to_string(entry.byteLength);
     out += ",\"byteOrder\":";
-    jsonString(out, entry.payload.byteOrder);
+    jsonString(out, entry.byteOrder);
     out += ",\"dtype\":";
-    jsonString(out, entry.payload.dtype);
+    jsonString(out, entry.dtype);
     out += ",\"shape\":";
-    appendShapeJson(out, entry.payload.shape);
+    appendShapeJson(out, entry.shape);
     out += ",\"sharedReference\":";
     jsonString(out, entry.sharedReference);
     out += ",\"tensorName\":";
@@ -1581,6 +1823,9 @@ std::uint32_t revisionOfInlinedModel(const onnx::ModelProto& model)
   for (int i = 0; i < model.graph().initializer_size(); ++i) {
     const auto& initializer = model.graph().initializer(i);
     if (initializer.data_type() == onnx::TensorProto::STRING) return 2;
+    if (initializer.data_location() == onnx::TensorProto::EXTERNAL &&
+        initializer.data_type() == onnx::TensorProto::BFLOAT16)
+      return 2;
     if (initializer.data_type() == onnx::TensorProto::BFLOAT16 &&
         !initializer.raw_data().empty())
       return 2;
@@ -1702,8 +1947,9 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
                                       const NativeAssemblyControl& control)
 {
   checkActive(control);
-  const auto model = ownedSourceModel(source, control);
-  const auto entries = buildTensorIndex(model);
+  const auto model = ownedSourceModel(source, control, false);
+  const auto entries = buildTensorIndex(
+    model, source.initializerBytes ? &*source.initializerBytes : nullptr, &control);
   auto result = std::make_shared<NativeCanonicalSource::MaterialManifest>();
   std::uint64_t materialBytes = 0;
   const auto accountMaterial = [&] (std::size_t bytes) {
@@ -1736,7 +1982,14 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
     checkActive(control);
     const auto& initializer = model.graph().initializer(i);
     initializerNames.insert(initializer.name());
-    const auto bytes = deterministicMessageVector(initializer);
+    const auto* material = &initializer;
+    std::optional<onnx::TensorProto> externalMaterial;
+    if (initializer.data_location() == onnx::TensorProto::EXTERNAL) {
+      externalMaterial.emplace(materializeExternalTensor(
+        initializer, source.initializerBytes ? &*source.initializerBytes : nullptr, &control));
+      material = &*externalMaterial;
+    }
+    const auto bytes = deterministicMessageVector(*material);
     const auto payloadDigest = digest(bytes);
     auto payloadId = std::string("initializer-") + payloadDigest.substr(7);
     const auto existing = initializerPayloadByDigest.find(payloadDigest);
@@ -1950,8 +2203,9 @@ void validateNativeCanonicalMaterialManifest(
   if (control.maxAssembledBytes == 0 || materialBudget > control.maxAssembledBytes)
     fail("MATERIAL_LIMIT");
   checkActive(control);
-  const auto model = ownedSourceModel(source, control);
-  const auto entries = buildTensorIndex(model);
+  const auto model = ownedSourceModel(source, control, false);
+  const auto entries = buildTensorIndex(
+    model, source.initializerBytes ? &*source.initializerBytes : nullptr, &control);
   if (manifest.sourceDigest != nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) ||
       manifest.graphDigest != sha256HexOf(graphFactsJson(model, entries)) ||
       manifest.initializerDigest != sha256HexOf(initializerContentJson(entries)))
@@ -2003,8 +2257,17 @@ void validateNativeCanonicalMaterialManifest(
       onnx::TensorProto tensor;
       if (!tensor.ParseFromArray(payload->bytes.data(), static_cast<int>(payload->bytes.size())) ||
           sourceInitializer == model.graph().initializer().end() ||
-          deterministicMessageVector(tensor) != payload->bytes ||
-          deterministicMessageVector(*sourceInitializer) != payload->bytes)
+          deterministicMessageVector(tensor) != payload->bytes)
+        throw std::invalid_argument("native canonical material initializer payload is invalid");
+      const auto* expectedInitializer = &*sourceInitializer;
+      std::optional<onnx::TensorProto> externalInitializer;
+      if (expectedInitializer->data_location() == onnx::TensorProto::EXTERNAL) {
+        externalInitializer.emplace(materializeExternalTensor(
+          *expectedInitializer,
+          source.initializerBytes ? &*source.initializerBytes : nullptr, &control));
+        expectedInitializer = &*externalInitializer;
+      }
+      if (deterministicMessageVector(*expectedInitializer) != payload->bytes)
         throw std::invalid_argument("native canonical material initializer payload is invalid");
     }
     else if (reference.kind == "graph-node") {
@@ -2035,7 +2298,7 @@ canonicalOnnxModelIdentity(const onnx::ModelProto& model,
                            const NativeAssemblyControl& control)
 {
   checkActive(control);
-  const auto entries = buildTensorIndex(model);
+  const auto entries = buildTensorIndex(model, nullptr, &control);
   NativeOnnxIdentity identity;
   identity.graphDigest = sha256HexOf(graphFactsJson(model, entries));
   identity.initializerDigest = sha256HexOf(initializerContentJson(entries));
@@ -2048,8 +2311,15 @@ NativeOnnxIdentity
 canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
                             const NativeAssemblyControl& control)
 {
-  const auto model = ownedSourceModel(source, control);
-  return canonicalOnnxModelIdentity(model, control);
+  const auto model = ownedSourceModel(source, control, false);
+  const auto entries = buildTensorIndex(
+    model, source.initializerBytes ? &*source.initializerBytes : nullptr, &control);
+  checkActive(control);
+  NativeOnnxIdentity identity;
+  identity.graphDigest = sha256HexOf(graphFactsJson(model, entries));
+  identity.initializerDigest = sha256HexOf(initializerContentJson(entries));
+  checkActive(control);
+  return identity;
 }
 
 NativeOnnxGraphInspection
@@ -2058,12 +2328,17 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
 {
   expectedModel.validate();
   if (expectedModel.modelFormat != "onnx") fail("GRAPH_MODEL_FORMAT");
-  const auto original = ownedSourceModel(source, control);
-  const auto entries = buildTensorIndex(original);
+  std::uint64_t materializedBudget = 0;
+  const auto original = ownedSourceModel(source, control, false, &materializedBudget);
+  const auto entries = buildTensorIndex(
+    original, source.initializerBytes ? &*source.initializerBytes : nullptr, &control);
   NativeOnnxGraphInspection result;
   result.canonicalIdentity = {sha256HexOf(graphFactsJson(original, entries)),
                               sha256HexOf(initializerContentJson(entries))};
   auto inferred = original;
+  materializeShapeInferenceInitializers(
+    inferred, original, source.initializerBytes ? &*source.initializerBytes : nullptr, control,
+    &materializedBudget);
   try { onnx::shape_inference::InferShapes(inferred); }
   catch (const std::exception&) {
     // Python infer_shapes returns a copy. A failed C++ inference may have
@@ -2214,7 +2489,7 @@ std::uint32_t
 onnxInitializerNormalizationRevision(const NativeCanonicalSource& source,
                                      const NativeAssemblyControl& control)
 {
-  const auto model = ownedSourceModel(source, control);
+  const auto model = ownedSourceModel(source, control, false);
   return revisionOfInlinedModel(model);
 }
 

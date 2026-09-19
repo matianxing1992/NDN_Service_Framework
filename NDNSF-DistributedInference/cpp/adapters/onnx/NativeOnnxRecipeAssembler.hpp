@@ -147,8 +147,11 @@ struct NativeOnnxGraphInspection
 };
 
 /** Inspect owned ONNX bytes using official shape inference and the maintained
- * adapter-bound planning schema. Reject a different expected graph identity;
- * source fetching/authentication belongs to the caller's native catalog owner.
+ * adapter-bound planning schema. Deep attribute tensors are materialized into
+ * the graph copy; large top-level external initializers remain range-bound and
+ * only shape-value inputs needed by inference are materialized under the
+ * assembly budget. Reject a different expected graph identity; source
+ * fetching/authentication belongs to the caller's native catalog owner.
  */
 NativeOnnxGraphInspection
 inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
@@ -173,10 +176,11 @@ normalizedOnnxInitializerPayload(const std::vector<std::uint8_t>& serializedTens
 
 /**
  * Owned-source canonical identity of one source model (OA05 + OA06 seam):
- * parse the given bytes, validate and inline external tensors strictly from
- * the passed memory (never from paths declared in the model), then compute
- * the graph digest and the ordered normalized-initializer digest on the
- * original, not shape-inferred, graph.  The model is not full-checked here;
+ * parse the given bytes, validate external metadata strictly from the passed
+ * memory (never from paths declared in the model), materialize deep attribute
+ * tensors and hash top-level ranges one at a time, then compute the graph
+ * digest and ordered normalized-initializer digest on the original, not
+ * shape-inferred, graph.  The model is not full-checked here;
  * checker and extractor runs arrive with the certified-extraction cards.
  */
 NativeOnnxIdentity
