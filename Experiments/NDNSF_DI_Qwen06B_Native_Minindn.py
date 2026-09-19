@@ -1161,6 +1161,11 @@ def main(argv=None, *, _supervised=False) -> int:
                      "generation_mode": "TOKEN_STREAMING", "tokenizer_digest": tokenizer_digest,
                      "input_layout_digest": digest_text("qwen06b-input-layout"),
                      "security_policy_digest": digest_text("qwen06b-security"),
+                     # Assembly and authenticated material fetch happen after
+                     # Selection and may be silent before the first token.
+                     # Keep the bounded stream wait explicit in the generated
+                     # native requester contract.
+                     "interest_lifetime_ms": 5000, "max_event_retries": 8,
                      "max_candidates": 1, "max_policy_ms": runtime_budgets["policy_ms"], "provider_names": provider_names,
                      "max_reentries": 1, "no_progress_ms": runtime_budgets["no_progress_ms"],
                      "timeout_ms": runtime_budgets["timeout_ms"],
