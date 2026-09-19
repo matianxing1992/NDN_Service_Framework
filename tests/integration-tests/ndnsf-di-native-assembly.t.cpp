@@ -472,6 +472,8 @@ BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
   BOOST_REQUIRE(!progressPhases.empty());
   BOOST_CHECK(progressRangeValid);
   BOOST_CHECK(std::find(progressPhases.begin(), progressPhases.end(),
+                        "ASSEMBLY_STARTED") != progressPhases.end());
+  BOOST_CHECK(std::find(progressPhases.begin(), progressPhases.end(),
                         "ROOT_VERIFIED") != progressPhases.end());
   BOOST_CHECK(std::find(progressPhases.begin(), progressPhases.end(),
                         "SOURCE_VERIFIED") != progressPhases.end());
