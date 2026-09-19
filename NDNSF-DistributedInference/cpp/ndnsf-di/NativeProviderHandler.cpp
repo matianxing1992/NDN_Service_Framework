@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
@@ -1974,6 +1975,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           selectionProjection->canonicalArtifactName =
             ctx.assignment().assignedArtifact.toUri();
         }
+        if (config.runnerPreparationFactory) {
+          // The counter belongs to this authenticated Selection, not to one
+          // assembler instance. Cache eviction and runner retries must keep
+          // the signed operation stream strictly monotonic.
+          selectionProjection->assemblyProgressSequence =
+            std::make_shared<std::atomic<std::uint64_t>>(0);
+        }
         // Model/backend allow-lists remain Provider configuration.  The
         // request-scoped roles and dependency graph come only from the sealed
         // Selection projection, as required by Placement V3.
@@ -2052,6 +2060,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                ctx.localProvider().toUri(), role,
                                requestPlanDigest, "observed", {},
                                stageAttemptEpoch);
+        if (selectionProjection && config.runnerPreparationFactory) {
+          const auto adapterIdentity = selectionProjection->assembly.backend.empty()
+            ? std::string("native") : selectionProjection->assembly.backend;
+          auto reportAdmission = makeNativeAssemblyProgressReporter(
+            ctx, *selectionProjection, adapterIdentity, 1, 0,
+            selectionProjection->assemblyProgressSequence);
+          reportAdmission("ASSEMBLY_ADMISSION", 0.0);
+        }
       }
       std::shared_ptr<DependencyIo> io =
         std::make_shared<NdnsfCollaborationDependencyIo>(

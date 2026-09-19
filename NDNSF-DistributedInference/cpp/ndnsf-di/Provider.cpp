@@ -1645,7 +1645,8 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
         options.protectedRuntime = protectedRuntime;
         options.reportProgress = makeNativeAssemblyProgressReporter(
           ctx, projection, projection.assembly.backend.empty()
-            ? std::string("native") : projection.assembly.backend);
+            ? std::string("native") : projection.assembly.backend,
+          1, 0, projection.assemblyProgressSequence);
         if (protectedRuntime) {
           const auto& payload = ctx.assignment().assignmentPayload;
           options.roleAssemblySpecDigest = nativeAssemblyDigestFromCanonicalProjection(

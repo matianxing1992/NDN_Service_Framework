@@ -365,7 +365,10 @@ std::function<void(const std::string& phase, double progress)>
 makeNativeAssemblyProgressReporter(
   ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
   const NativeSelectionProjectionV3& projection,
-  const std::string& adapterIdentity)
+  const std::string& adapterIdentity,
+  std::uint64_t epoch,
+  std::uint64_t initialSequence,
+  std::shared_ptr<std::atomic<std::uint64_t>> sequenceState)
 {
   const auto operationId = ctx.assignment().selectionDigest + ":" +
     projection.assembly.selectedRole + ":assembly-progress";
@@ -373,9 +376,11 @@ makeNativeAssemblyProgressReporter(
   const auto requestId = projection.requestId;
   const auto attempt = projection.attempt;
   const auto planDigest = projection.planDigest;
-  const auto sequence = std::make_shared<std::atomic<std::uint64_t>>(0);
+  const auto sequence = sequenceState
+    ? std::move(sequenceState)
+    : std::make_shared<std::atomic<std::uint64_t>>(initialSequence);
   return [&ctx, operationId, role, requestId, attempt, planDigest,
-          adapterIdentity, sequence](const std::string& phase, double progress) {
+          adapterIdentity, epoch, sequence](const std::string& phase, double progress) {
     if (phase.empty() || phase.size() > 128 || progress < 0.0 || progress > 1.0) {
       throw std::invalid_argument("invalid native assembly progress");
     }
@@ -384,7 +389,7 @@ makeNativeAssemblyProgressReporter(
     status.operation = "ensure-deployment";
     status.role = role;
     status.attempt = attempt == 0 ? 1 : attempt;
-    status.epoch = 1;
+    status.epoch = epoch;
     status.sequence = sequence->fetch_add(1, std::memory_order_relaxed) + 1;
     status.state = "RUNNING";
     status.progressKnown = true;
