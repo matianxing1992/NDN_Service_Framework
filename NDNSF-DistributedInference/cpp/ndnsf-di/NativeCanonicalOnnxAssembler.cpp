@@ -41,6 +41,149 @@ namespace ndnsf::di {
 namespace {
 
 constexpr std::uint64_t MaxAssemblyMetadataBytes = 65536;
+constexpr std::uint64_t MaxMaterialJsonDepth = 8;
+constexpr std::uint64_t MaxMaterialJsonTokens = 1U << 20;
+constexpr std::uint64_t MaxMaterialJsonStringBytes = 4096;
+constexpr std::uint64_t MaxMaterialReceiptObjects = 65536;
+constexpr std::uint64_t MaxInlineMaterialRootBytes = 4096;
+constexpr std::uint64_t MaterialManifestParseMultiplier = 8;
+constexpr std::uint64_t MaterialReceiptParseMultiplier = 16;
+
+void
+validateBoundedMaterialJson(const std::vector<std::uint8_t>& bytes,
+                            const char* error)
+{
+  if (bytes.empty())
+    throw std::runtime_error(error);
+  std::uint64_t tokens = 0;
+  std::uint64_t strings = 0;
+  std::uint64_t depth = 0;
+  std::uint64_t stringLength = 0;
+  bool inString = false;
+  bool escaped = false;
+  for (const auto byte : bytes) {
+    const auto ch = static_cast<char>(byte);
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch == '"') {
+        inString = false;
+        continue;
+      }
+      if (++stringLength > MaxMaterialJsonStringBytes)
+        throw std::runtime_error(error);
+      continue;
+    }
+    if (ch == '"') {
+      inString = true;
+      stringLength = 0;
+      if (++strings > MaxMaterialJsonTokens)
+        throw std::runtime_error(error);
+    }
+    else if (ch == '{' || ch == '[') {
+      if (++depth > MaxMaterialJsonDepth || ++tokens > MaxMaterialJsonTokens)
+        throw std::runtime_error(error);
+    }
+    else if (ch == '}' || ch == ']') {
+      if (depth == 0 || ++tokens > MaxMaterialJsonTokens)
+        throw std::runtime_error(error);
+      --depth;
+    }
+    else if (ch == ',' || ch == ':') {
+      if (++tokens > MaxMaterialJsonTokens)
+        throw std::runtime_error(error);
+    }
+  }
+  if (inString || escaped || depth != 0)
+    throw std::runtime_error(error);
+}
+
+bool
+isUnsignedDecimal(const std::string& value)
+{
+  return !value.empty() && std::all_of(value.begin(), value.end(), [] (const char ch) {
+    return ch >= '0' && ch <= '9';
+  });
+}
+
+void
+validateMaterialObjectRecords(const boost::property_tree::ptree& objects,
+                              const char* error)
+{
+  if (objects.size() > MaxMaterialReceiptObjects)
+    throw std::runtime_error(error);
+  for (const auto& item : objects) {
+    if (!item.first.empty() || item.second.size() > 7)
+      throw std::runtime_error(error);
+    std::set<std::string> seenKeys;
+    bool hasPayloadId = false;
+    bool hasDataName = false;
+    bool hasDigest = false;
+    bool hasBytes = false;
+    for (const auto& field : item.second) {
+      if (!field.second.empty())
+        throw std::runtime_error(error);
+      const auto& key = field.first;
+      const auto& value = field.second.data();
+      if (!seenKeys.insert(key).second)
+        throw std::runtime_error(error);
+      if (key == "payloadId") {
+        hasPayloadId = true;
+        if (value.empty() || value.size() > MaxMaterialJsonStringBytes) throw std::runtime_error(error);
+      }
+      else if (key == "dataName") {
+        hasDataName = true;
+        if (value.empty() || value.size() > MaxMaterialJsonStringBytes) throw std::runtime_error(error);
+      }
+      else if (key == "digest" || key == "bundleDigest") {
+        if (value.empty() || value.size() > 128) throw std::runtime_error(error);
+        if (key == "digest") hasDigest = true;
+      }
+      else if (key == "bytes" || key == "bundleBytes" || key == "bundleOffset") {
+        if (!isUnsignedDecimal(value) || value.size() > 20) throw std::runtime_error(error);
+        if (key == "bytes") hasBytes = true;
+      }
+      else {
+        throw std::runtime_error(error);
+      }
+    }
+    if (!hasPayloadId || !hasDataName || !hasDigest || !hasBytes)
+      throw std::runtime_error(error);
+  }
+}
+
+void
+validateMaterialReceiptTree(const boost::property_tree::ptree& receipt,
+                             const char* error)
+{
+  std::set<std::string> seenKeys;
+  for (const auto& field : receipt) {
+    if (!seenKeys.insert(field.first).second)
+      throw std::runtime_error(error);
+    if (field.first != "schema" && field.first != "sourceDigest" &&
+        field.first != "graphDigest" && field.first != "materialIdentityDigest" &&
+        field.first != "materialManifestDigest" && field.first != "materialObjects")
+      throw std::runtime_error(error);
+    if (field.first != "materialObjects" && !field.second.empty())
+      throw std::runtime_error(error);
+  }
+  for (const auto& required : {"schema", "sourceDigest", "graphDigest",
+                               "materialIdentityDigest", "materialManifestDigest",
+                               "materialObjects"}) {
+    if (seenKeys.count(required) == 0)
+      throw std::runtime_error(error);
+  }
+  const auto objects = receipt.get_child_optional("materialObjects");
+  if (!objects)
+    throw std::runtime_error(error);
+  validateMaterialObjectRecords(*objects, error);
+}
 
 std::uint64_t nowMs()
 {
@@ -290,13 +433,17 @@ prepareNativeCanonicalOnnxRole(
                    rootPayload && !rootPayload->empty() ? "returned" : "empty",
                    &rootPayload, projection.assembly.modelManifestDigest);
   if (!rootPayload || rootPayload->empty() || rootPayload->size() >
-      projection.assembly.maxSourceBytes) {
+      projection.assembly.maxSourceBytes ||
+      rootPayload->size() > MaxAssemblyMetadataBytes ||
+      rootPayload->size() > projection.assembly.maxAssembledBytes) {
     throw std::runtime_error("DI_CANONICAL_ROOT_UNAVAILABLE");
   }
   if (sha256Hex(std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end())) !=
       projection.assembly.modelManifestDigest) {
     throw std::runtime_error("DI_CANONICAL_ROOT_DIGEST_MISMATCH");
   }
+  validateBoundedMaterialJson(*rootPayload, "DI_CANONICAL_ROOT_SCHEMA_MISMATCH");
+  const auto rootPayloadBytes = rootPayload->size();
   logMaterialFetch("root", rootName, "verified", &rootPayload,
                    projection.assembly.modelManifestDigest);
 
@@ -351,6 +498,7 @@ prepareNativeCanonicalOnnxRole(
                       std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end()));
     });
     const auto root = readJson(rootFile, projection.assembly.maxSourceBytes);
+    rootPayload.reset();
     if (root.get<std::string>("schema", "") !=
           "ndnsf-di-canonical-model-manifest-v1" ||
         root.get<std::string>("state", "") != "ACTIVE") {
@@ -450,6 +598,11 @@ prepareNativeCanonicalOnnxRole(
     };
 
     if (materialMetadataPresent) {
+      // Inline object indices live in the authenticated root itself. Reject
+      // an oversized inline root before fetching the manifest or receipt;
+      // producers must publish a bounded receipt instead.
+      if (inlineMaterialObjects && rootPayloadBytes > MaxInlineMaterialRootBytes)
+        throw std::runtime_error("DI_CANONICAL_INLINE_MATERIAL_METADATA_TOO_LARGE");
       if (materialManifestName.empty() || materialManifestDigest.empty() ||
           materialManifestBytes == 0 || materialIdentityDigest.empty() || !metadata ||
           (!inlineMaterialObjects && (materialReceiptName.empty() ||
@@ -462,31 +615,56 @@ prepareNativeCanonicalOnnxRole(
       if (materialManifestBytes > projection.assembly.maxSourceBytes ||
           materialManifestBytes > projection.assembly.maxAssembledBytes)
         throw std::runtime_error("DI_CANONICAL_MATERIAL_MANIFEST_UNAVAILABLE");
-      const auto manifestBytes = fetchPlainObject(
+      const auto checkedMultiply = [] (const std::uint64_t value,
+                                       const std::uint64_t multiplier) {
+        if (multiplier != 0 && value > std::numeric_limits<std::uint64_t>::max() / multiplier)
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_UNAVAILABLE");
+        return value * multiplier;
+      };
+      const auto manifestParseReservation = checkedMultiply(
+        materialManifestBytes, MaterialManifestParseMultiplier);
+      const auto receiptParseReservation = checkedMultiply(
+        materialReceiptBytes, MaterialReceiptParseMultiplier);
+      if (receiptParseReservation > std::numeric_limits<std::uint64_t>::max() -
+          manifestParseReservation)
+        throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_UNAVAILABLE");
+      const auto parseReservation = manifestParseReservation + receiptParseReservation;
+      if (parseReservation < materialManifestBytes ||
+          parseReservation > projection.assembly.maxAssembledBytes)
+        throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_UNAVAILABLE");
+      auto manifestBytes = fetchPlainObject(
         materialManifestName, materialManifestDigest,
         materialManifestBytes,
         "material-manifest");
+      validateBoundedMaterialJson(manifestBytes, "DI_CANONICAL_MATERIAL_MANIFEST_INVALID");
       auto materialManifest = parseNativeCanonicalMaterialManifest(manifestBytes);
       if (materialManifest->manifestDigest != materialIdentityDigest ||
           materialManifest->sourceDigest != sourceDigest ||
           materialManifest->graphDigest != projection.assembly.graphDigest ||
           materialManifest->initializerDigest != projection.assembly.canonicalInitializerDigest)
         throw std::runtime_error("DI_CANONICAL_MATERIAL_IDENTITY_MISMATCH");
+      // The parsed manifest is the authenticated owner from this point on;
+      // release the transport copy before retaining selected payloads.
+      manifestBytes.clear();
+      manifestBytes.shrink_to_fit();
 
       boost::property_tree::ptree materialReceipt;
       const boost::property_tree::ptree* materialObjects = nullptr;
       std::uint64_t materialMetadataBytes = materialManifestBytes;
       if (inlineMaterialObjects) {
         materialObjects = &*metadata->get_child_optional("materialObjects");
+        validateMaterialObjectRecords(*materialObjects,
+                                      "DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
       }
       else {
         if (materialReceiptBytes > projection.assembly.maxSourceBytes ||
             materialMetadataBytes > projection.assembly.maxAssembledBytes ||
             materialReceiptBytes > projection.assembly.maxAssembledBytes - materialMetadataBytes)
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_UNAVAILABLE");
-        const auto receiptBytes = fetchPlainObject(
+        auto receiptBytes = fetchPlainObject(
           materialReceiptName, materialReceiptDigest, materialReceiptBytes,
           "material-receipt");
+        validateBoundedMaterialJson(receiptBytes, "DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
         try {
           std::istringstream receiptInput(std::string(receiptBytes.begin(), receiptBytes.end()));
           boost::property_tree::read_json(receiptInput, materialReceipt);
@@ -494,6 +672,8 @@ prepareNativeCanonicalOnnxRole(
         catch (const std::exception&) {
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
         }
+        validateMaterialReceiptTree(materialReceipt,
+                                    "DI_CANONICAL_MATERIAL_RECEIPT_INVALID");
         if (materialReceipt.get<std::string>("schema", "") !=
               "ndnsf-di-canonical-material-receipt-v1" ||
             materialReceipt.get<std::string>("sourceDigest", "") != sourceDigest ||
@@ -504,6 +684,8 @@ prepareNativeCanonicalOnnxRole(
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_IDENTITY_MISMATCH");
         materialObjects = &*materialReceipt.get_child_optional("materialObjects");
         materialMetadataBytes += materialReceiptBytes;
+        receiptBytes.clear();
+        receiptBytes.shrink_to_fit();
       }
 
       struct MaterialObjectReceipt {
@@ -563,6 +745,7 @@ prepareNativeCanonicalOnnxRole(
         if (found == materialManifest->references.end())
           throw std::runtime_error("DI_CANONICAL_MATERIAL_NODE_MISSING");
         selectedIds.insert(found->payloadId);
+        selectedIds.insert(found->chunkPayloadIds.begin(), found->chunkPayloadIds.end());
         selectedDependencies.insert(found->dependencies.begin(), found->dependencies.end());
       }
       for (const auto& dependency : selectedDependencies) {
@@ -574,23 +757,44 @@ prepareNativeCanonicalOnnxRole(
         if (found == materialManifest->references.end())
           throw std::runtime_error("DI_CANONICAL_MATERIAL_INITIALIZER_MISSING");
         selectedIds.insert(found->payloadId);
+        selectedIds.insert(found->chunkPayloadIds.begin(), found->chunkPayloadIds.end());
       }
-      std::uint64_t selectedMaterialBytes = materialMetadataBytes;
+      std::map<std::string, MaterialObjectReceipt> selectedObjects;
+      for (const auto& payloadId : selectedIds) {
+        const auto object = objects.find(payloadId);
+        if (object == objects.end())
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISSING");
+        selectedObjects.emplace(payloadId, object->second);
+      }
+      // The full receipt/index is no longer needed once selected identities
+      // have been copied.  This prevents unselected object metadata from
+      // overlapping the chunk buffers and model assembly working set.
+      objects.clear();
+      bundleIdentities.clear();
+      bundleKinds.clear();
+      materialReceipt.clear();
+      // Charge the transient parse/index representation before fetching any
+      // selected payload.  The full receipt is released below, but it must fit
+      // the same working-set ceiling while it is being authenticated.
+      std::uint64_t selectedMaterialBytes = std::max(materialMetadataBytes,
+                                                     parseReservation);
       std::map<std::string, std::vector<std::uint8_t>> fetchedBundles;
       std::set<std::string> countedBundles;
       for (const auto& payloadId : selectedIds) {
         assemblyControl.requireActive();
-        const auto object = objects.find(payloadId);
-        if (object == objects.end())
-          throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISSING");
+        const auto object = selectedObjects.find(payloadId);
         const auto reference = std::find_if(materialManifest->references.begin(),
           materialManifest->references.end(), [&] (const auto& candidate) {
-            return candidate.payloadId == payloadId;
+            return candidate.payloadId == payloadId ||
+              std::find(candidate.chunkPayloadIds.begin(), candidate.chunkPayloadIds.end(),
+                        payloadId) != candidate.chunkPayloadIds.end();
           });
         if (reference == materialManifest->references.end())
           throw std::runtime_error("DI_CANONICAL_MATERIAL_REFERENCE_MISSING");
-        if (reference->digest != object->second.digest ||
-            reference->bytes != object->second.bytes)
+        const bool chunkPayload = reference->payloadId != payloadId;
+        if ((!chunkPayload && (reference->digest != object->second.digest ||
+                               reference->bytes != object->second.bytes)) ||
+            (chunkPayload && object->second.bytes > NativeCanonicalMaterialBundleMaxBytes))
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISMATCH");
         std::vector<std::uint8_t> bytes;
         if (!object->second.bundleDigest.empty()) {
@@ -640,6 +844,7 @@ prepareNativeCanonicalOnnxRole(
       // The assembled source retains only selected slices; do not keep the
       // shared bundle buffers alive through worker execution.
       fetchedBundles.clear();
+      selectedObjects.clear();
       canonicalSource.materialManifest = std::move(materialManifest);
       canonicalSource.materializedRole = true;
       canonicalSource.materializedNodeIndices = projection.assembly.nodeIndices;

@@ -8,6 +8,22 @@
 
 ## Current Checkpoint
 
+**B189-1b r21/r22 chunked-material checkpoint**: 2026-09-19 — external
+initializers are published as a bounded header plus ordered raw chunks and are
+reassembled by the native post-Selection consumer. Official read-only review
+passed for the production/schema, C++ round-trip oracle, and receipt/inline
+boundary snapshots (r9/r11/r18). Root Waf `-j4` rebuilt the worker (26.348s),
+unit target (31.556s), and affected integration target (24.202s). The C++
+chunk round-trip selector and both receipt/selected-fetch selectors passed.
+The final combined `unit-tests,integration-tests,di-native-assembly-worker`
+Waf build after the last source change completed in 23.498s.
+The negative cases include parse-reservation budget exhaustion, receipt
+identity/duplicate-key rejection, and oversized inline root rejection before
+encrypted fetch. This is a local material/consumer boundary only; T003 remains
+`PARTIAL`, and real protected Qwen preparation, ACK/Selection, two-provider
+execution, output, drain, MiniNDN and Tiger qualification remain open. See
+[chunked material evidence](evidence/b189-material-publication-20260919.md).
+
 **B189-1b r20 local verification checkpoint**: 2026-09-19 — the material
 consumer fixture repair passed official read-only review r19
 (`STATIC_PASS`, snapshot SHA-256

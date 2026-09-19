@@ -48,6 +48,10 @@ struct NativeCanonicalSource
   struct MaterialReference
   {
     std::string payloadId;
+    // External initializers use one small TensorProto header plus ordered raw
+    // byte chunks.  The legacy single-payload form remains valid for inline
+    // initializers and existing manifests.
+    std::vector<std::string> chunkPayloadIds;
     std::string kind;
     std::string logicalName;
     std::uint64_t nodeIndex = 0;

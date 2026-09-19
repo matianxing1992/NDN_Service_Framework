@@ -159,3 +159,52 @@ drain, MiniNDN or Tiger qualification. The root NDNSF Waf compiles only
 NDNSF-owned Core/Repo/DI/examples/tests; NAC-ABE is an installed external SDK
 built by the NAC-ABE project build system and is not recursively built by the
 NDNSF Waf graph.
+
+## 2026-09-19 r21/r22 chunked-material and receipt-boundary verification
+
+The real Qwen source contains external initializers larger than the 1 MiB
+protected material-object limit. The canonical publisher now emits a small
+initializer header plus ordered, digest-bound raw chunks; the post-Selection
+consumer selects header/chunk IDs, verifies each chunk and reassembles the
+initializer only after Selection. Legacy single-payload references remain
+valid. The C++ unit fixture uses a 3 MiB+16 external initializer, derives four
+chunks, checks the per-object cap and compares the complete raw byte sequence
+after reassembly (including high-bit bytes).
+
+The final read-only review snapshots were:
+
+| Scope | Review result | Snapshot SHA-256 |
+| --- | --- | --- |
+| production chunk schema, parser, materializer, and integration fixture | `STATIC_PASS` (r9) | `0c834d7b038ef47f337a83750c1e074581c6a54c7742de215916be802a3cefbc` |
+| C++ chunk round-trip oracle budget/comparator | `STATIC_PASS` (r11) | `07521eac55adeca950a580283e5a103c242bb9e30beb4b60fdcfd105420bc69e` |
+| receipt-only root, selected budget gate, early inline cap | `STATIC_PASS` (r18) | `4f7a0e72b7c4967e4912988219fc27d4857c27d3b21c9a08e30ddec3a11331fb` |
+
+Using the global-r3 Waf tree, the worker target built with root Waf `-j4` in
+26.348s, the unit target rebuilt in 31.556s, and the affected integration
+target rebuilt in 24.202s. With
+`NDNSF_SPEC182_BIN_DIR=build-spec189-b189-3-global-r3`, these real C++
+selectors passed:
+
+| Selector | Result |
+| --- | --- |
+| `Spec182CanonicalPublisher/ExternalInitializerUsesBoundedChunksAndReassemblesAfterSelection` | PASS (1/1) |
+| `Spec175NativeAssembly/Spec189MaterialConsumerBoundsSelectedPayloadFetches` | PASS (1/1) |
+| `Spec175NativeAssembly/Spec189MaterialConsumerFetchesOneSelectedBundle` | PASS (1/1) |
+
+The final combined Waf command for `unit-tests`, `integration-tests`, and
+`di-native-assembly-worker` completed in 23.498s after the last source change.
+The final selector logs are retained under
+`.codex-tmp/spec189-material-consumer-r21/` (`final-selectors.log` SHA-256
+`8c5a4064dd64958ba0be8e657f4a08945b566a62951cf74b2703f628fd50adec`;
+`unit-selector-final.log` SHA-256
+`c03f83ce4e5e47519f1874ea5f3c596c81dfa056b595061cf511ffde20d2a4c8`).
+
+The integration fixture now uses the production root → manifest → authenticated
+receipt → selected payload flow. Its negative cases prove that a parse-reservation
+budget rejects the next selected payload, receipt identity/schema and duplicate
+keys fail at the receipt boundary, and an oversized inline root is rejected
+before any encrypted manifest/receipt fetch. These are local C++ assembly and
+transport-boundary results; they do not establish protected Qwen preparation,
+ACK/Selection, two-provider execution, terminal output or MiniNDN/Tiger
+qualification. The root Waf ownership boundary remains unchanged: NAC-ABE is
+provided by its own build system and installed SDK.

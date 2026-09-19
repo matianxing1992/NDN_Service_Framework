@@ -1,5 +1,24 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 chunk/receipt selector boundaries
+
+The first run after adding external-initializer chunks stopped at the test
+worker lookup because the integration selector was launched without its
+existing `NDNSF_SPEC182_BIN_DIR` override; the worker target existed in the
+global-r3 build tree. With the override, the first receipt migration exposed
+two test-contract boundaries: the small selected-payload negative used a
+pre-reservation budget and reached `DI_NATIVE_ONNX_MATERIAL_INITIALIZER`
+instead of the selected-payload budget gate, and the oversized inline-root
+fixture first fetched a manifest because its cap was checked too late. The
+fixture now uses `fetchBudget - 1`, the production cap is checked before
+manifest/receipt fetch, and the inline fixture is bounded below the root JSON
+scanner limit while remaining above the 4 KiB inline cap. The final r18
+snapshot passed read-only review; the worker, unit, and integration targets
+rebuilt with root Waf `-j4`, and the chunk round-trip plus both receipt/selected
+fetch C++ selectors passed. These were build/test-boundary failures, not
+MiniNDN or protocol qualification results. Durable evidence is in
+`specs/189-qwen-two-provider-minindn/evidence/b189-material-publication-20260919.md`.
+
 ## 2026-09-19 — Spec189 focused material selector fixture and contract boundaries
 
 The first run of `Spec175NativeAssembly/Spec189MaterialConsumerFetchesOneSelectedBundle`
