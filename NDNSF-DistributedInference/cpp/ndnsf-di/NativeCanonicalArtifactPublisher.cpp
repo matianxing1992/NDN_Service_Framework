@@ -81,6 +81,7 @@ void NativePreparedCanonicalPublication::validate() const
       std::any_of(materialDigests.begin(), materialDigests.end(),
                   [](const auto& value) { return !digest(value); }) ||
       (!materialManifestDataName.empty() && !digest(materialManifestDigest)) ||
+      (!materialManifestDataName.empty() && materialManifestBytes == 0) ||
       std::any_of(layerManifestDigests.begin(), layerManifestDigests.end(),
                   [](const auto& value) { return !digest(value); }) ||
       canonicalManifestJson.empty() || !digest(manifestDigest) ||
@@ -97,6 +98,7 @@ void NativePreparedCanonicalPublication::validate() const
       materialDataNames.size() != materialDigests.size()))
     throw std::invalid_argument("native prepared material receipt is incomplete");
   if (!hasMaterial && (!materialManifestDataName.empty() || !materialManifestDigest.empty() ||
+      materialManifestBytes != 0 ||
       !materialPayloadIds.empty() || !materialDataNames.empty() || !materialDigests.empty()))
     throw std::invalid_argument("native prepared material receipt is inconsistent");
   if (hasMaterial) {
@@ -108,7 +110,8 @@ void NativePreparedCanonicalPublication::validate() const
       const auto root = nativeParseJson(canonicalManifestJson);
       const auto& metadata = root.at("metadata");
       if (metadata.at("materialManifestDataName").get<std::string>() != materialManifestDataName ||
-          metadata.at("materialManifestDigest").get<std::string>() != materialManifestDigest)
+          metadata.at("materialManifestDigest").get<std::string>() != materialManifestDigest ||
+          metadata.at("materialManifestBytes").get<std::uint64_t>() != materialManifestBytes)
         throw std::invalid_argument("native prepared material manifest receipt differs from root");
       const auto& objects = metadata.at("materialObjects");
       if (!objects.is_array() || objects.size() != materialPayloadIds.size())
@@ -764,8 +767,10 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
           materialManifestJson.begin(), materialManifestJson.end());
         result.materialManifestDataName = publish(manifestBytes, "di-material-manifest");
         result.materialManifestDigest = nativePlanningDigest(manifestBytes.data(), manifestBytes.size());
+        result.materialManifestBytes = manifestBytes.size();
         metadata["materialManifestDataName"] = result.materialManifestDataName;
         metadata["materialManifestDigest"] = result.materialManifestDigest;
+        metadata["materialManifestBytes"] = result.materialManifestBytes;
         metadata["materialIdentityDigest"] = materialManifest->manifestDigest;
         metadata["materialObjects"] = std::move(materialObjects);
       }

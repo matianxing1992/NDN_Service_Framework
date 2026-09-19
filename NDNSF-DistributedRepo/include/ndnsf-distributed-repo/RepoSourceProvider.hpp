@@ -333,6 +333,8 @@ public:
       receipt.materialManifestDataName = source.materialManifest ? materialManifestName : std::string{};
       receipt.materialManifestDigest = source.materialManifest
         ? ndnsf::di::nativePlanningDigest(source.materialManifest->canonicalJson()) : std::string{};
+      receipt.materialManifestBytes = source.materialManifest
+        ? source.materialManifest->canonicalJson().size() : 0;
       receipt.materialPayloadIds = materialPayloadIds;
       receipt.materialDataNames = materialNames;
       receipt.materialDigests = materialDigests;
@@ -403,6 +405,8 @@ public:
               (source.materialManifest
                  ? ndnsf::di::nativePlanningDigest(source.materialManifest->canonicalJson())
                  : std::string{}) ||
+            metadata.value("materialManifestBytes", std::uint64_t{0}) !=
+              (source.materialManifest ? source.materialManifest->canonicalJson().size() : 0) ||
             metadata.value("materialObjects", ndnsf::di::NativeJson::array()).size() !=
               materialPayloadIds.size() ||
             metadata.value("packageManifestDigest", std::string{}) !=
@@ -613,6 +617,7 @@ public:
         metadata["materialManifestDataName"] = materialManifestName;
         metadata["materialManifestDigest"] =
           ndnsf::di::nativePlanningDigest(source.materialManifest->canonicalJson());
+        metadata["materialManifestBytes"] = source.materialManifest->canonicalJson().size();
         metadata["materialIdentityDigest"] = source.materialManifest->manifestDigest;
         auto materialObjects = ndnsf::di::NativeJson::array();
         for (std::size_t i = 0; i < materialPayloadIds.size(); ++i)

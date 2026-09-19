@@ -39,6 +39,7 @@ struct NativePreparedCanonicalPublication
   std::string rootDataName;
   std::string materialManifestDataName;
   std::string materialManifestDigest;
+  std::uint64_t materialManifestBytes = 0;
   std::string canonicalManifestJson;
   std::string manifestDigest;
   std::string artifactProfileDigest;
