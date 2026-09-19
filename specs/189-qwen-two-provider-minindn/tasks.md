@@ -8,6 +8,21 @@
 
 ## Current Checkpoint
 
+**B189-3 real Qwen r53 diagnostic checkpoint**: 2026-09-19 — a fresh run with
+runtime timing, assignment-fetch tracing, large-fetch timing and dependency
+object tracing enabled carried the repaired `900000 ms` dependency budget into
+both Providers. Both reached readiness, ACK decisions and `BEFORE_ASSEMBLY`
+grant verification; Provider 0 created an assembly staging `root.json`. The
+requester still failed with `NATIVE_STREAM_FAILED` / `stream event gap exceeded
+retry budget`, while the supervisor recorded `cleanup=PASS` and no remaining
+processes. No runner, output, terminal response or completed provider stage
+marker was observed; the enabled diagnostics did not expose a completed stage
+marker, so this is an observability/liveness boundary rather than proof of
+Provider idleness or ORT failure. No qualification is claimed. The next unit
+must be a reviewed authenticated progress/heartbeat or bounded admission-state
+transition with a C++ counterexample before another real retry. T003/T005/
+T006/T007/T009 remain `PARTIAL`. See [r53 diagnostic evidence](evidence/b189-real-qwen-r53-diagnostic-20260919.md).
+
 **B189-3 real Qwen r49-r52 liveness checkpoint**: 2026-09-19 — r49 and r50
 stopped at command preflight (provider digest, then tokenizer digest); r51
 reached MiniNDN cleanup but used a PATH without `/usr/local/bin`. The corrected

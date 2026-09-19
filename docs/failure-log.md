@@ -1,5 +1,27 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 real Qwen r53 diagnostic stream boundary
+
+The fresh `two-provider-global-r53` run enabled runtime timing, assignment
+fetch tracing, large-fetch timing and dependency-object tracing while reusing
+the reviewed global-r3 candidate. Both Providers carried the repaired
+`900000 ms` dependency-fetch budget, reached readiness, ACK decisions and
+`BEFORE_ASSEMBLY` grant verification, and Provider 0 created an assembly
+staging `root.json`. The requester then failed with
+`NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`. The
+supervisor recorded `returncode=1`, `cleanup=PASS`, and no remaining
+processes. No runner, output, terminal response, completed provider stage
+marker or qualification was observed; the diagnostics' missing stage markers
+are an observability gap, not evidence of successful execution or Provider
+idleness. This remains the post-Selection liveness/assembly boundary and
+does not justify a blind timeout increase. Raw evidence is retained under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r53/`;
+the durable record is
+`specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r53-diagnostic-20260919.md`.
+The changed gate is an authenticated progress/heartbeat or bounded
+admission-state transition with a C++ counterexample and static review before
+the next real retry.
+
 ## 2026-09-19 — Spec189 real Qwen r49-r52 launch and stream-liveness boundaries
 
 r49 stopped at provider-binary digest preflight and r50 stopped at the missing
