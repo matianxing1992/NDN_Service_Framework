@@ -21,6 +21,19 @@ event-gap; cleanup passed and no terminal response or qualification was observed
 This removes the former r39 preparation-timeout boundary but does not close T003,
 which remains `PARTIAL`. See [ONNX fast-path evidence](evidence/b189-onnx-fastpath-20260919.md).
 
+**B189-3 real Qwen r47 diagnostic checkpoint**: 2026-09-19 — a fresh run with
+provider assignment/fetch/runtime diagnostics reached the complete post-Selection
+entry boundary in one request. Both Providers fetched their assignments and
+reached `GRANT_VERIFIED` and `EXECUTION_ENTERED`; Stage/0 reached
+`ASSEMBLY_STARTED`, fetched and verified the root and material manifests, and
+began the authenticated material-receipt fetch. Stage/1 entered dependency fetch
+and retried the absent Stage/0 `hidden_states` manifest. The requester then
+expired its stream-event-gap retry budget before any receipt completion, runner
+ready marker, stage output or terminal response. Cleanup passed. This narrows the
+next boundary to the stream wait/heartbeat contract versus the provider receipt
+fetch; it does not prove a receipt or ORT failure and does not close T003/T006/
+T007/T009. See [r47 evidence](evidence/b189-real-qwen-r47-20260919.md).
+
 **B189-1b r21/r22 chunked-material checkpoint**: 2026-09-19 — external
 initializers are published as a bounded header plus ordered raw chunks and are
 reassembled by the native post-Selection consumer. Official read-only review

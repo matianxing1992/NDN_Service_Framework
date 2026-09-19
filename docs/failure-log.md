@@ -1,5 +1,24 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 real Qwen r47 post-selection stream boundary
+
+The fresh run `two-provider-global-r47` used the unchanged global-r3 native
+candidate and a new run id. Bundle, candidate, machine, MiniNDN startup and
+cleanup phases passed. Both Providers emitted ACK offers, received the signed
+Selection, fetched their assignment objects, verified the grant and entered
+execution. Provider 0 entered assembly and fetched/verified the root manifest
+and the 1,892,822-byte material manifest before beginning the authenticated
+material-receipt fetch. Provider 1 entered dependency fetch and retried the
+Stage/0 `hidden_states` tensor manifest while Stage/0 had not published it.
+The requester then failed with `NATIVE_STREAM_FAILED` because the stream-event-gap
+retry budget expired. No receipt completion, runner-ready marker, stage output,
+terminal response or qualification was observed. This is a narrowed
+post-Selection coordination/wait boundary, not a proven receipt, ORT or
+MiniNDN protocol failure. Raw evidence is retained under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r47/`; the
+durable record is
+`specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r47-20260919.md`.
+
 ## 2026-09-19 — Spec189 chunk/receipt selector boundaries
 
 The first run after adding external-initializer chunks stopped at the test
