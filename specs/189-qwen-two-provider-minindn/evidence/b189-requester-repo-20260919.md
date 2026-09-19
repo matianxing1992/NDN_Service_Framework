@@ -100,3 +100,26 @@ ORT 为 `/opt/onnxruntime/lib/libonnxruntime.so.1`。尚未安装新 DI 全局�
 requester 链接成功宣称完整候选可运行；MiniNDN 前必须单目标安装并核对加载摘要。
 requester/Python 调用方有既存并行修改，本 checkpoint 只收录独立 Repo/test 修复、
 本记录和本轮进度段，调用方待关联构建/部署单元统一归档。
+
+## Global installation follow-up
+
+2026-09-19 01:23 -05:00：已完成单目标安装并重新核对加载路径，前述“尚未安装”是
+该 checkpoint 时的历史状态，当前安装缺口已解除。
+
+```bash
+scripts/install-global-target.sh --build-dir build-spec189-b189-3-global-r3 \
+  --target ndnsf-distributed-inference --jobs 4
+```
+
+原始记录 `.codex-tmp/spec189-global-di-refresh-20260919-r1/install.log` 与
+`install.rc`（0）；Waf install 为 3.663s，不是完整构建耗时。依赖预检通过，Waf
+同时处理 Core 传递依赖；本命令没有重编 ONNX Runtime 或 Python bindings。
+
+| Library | Matching build/global SHA256 |
+| --- | --- |
+| DI | `18407813929c245e45bca93d352396fe181efc9327503c722e8edead14bee924` |
+| Core | `529c798d651e86e24ee7eb28af6dbf6cb7478b0c6dedae3a50e6eebaedc534f8` |
+
+requester 的 `ldd` 再次解析 DI/Core 到 `/usr/local/lib`、ORT 到
+`/opt/onnxruntime/lib`，没有 missing library。此项证明安装身份和动态链接解析，
+不证明真实跨节点读取、两 Provider 推理或 MiniNDN 资格。
