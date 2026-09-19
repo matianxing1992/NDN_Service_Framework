@@ -30,6 +30,7 @@ struct Marker
   std::string artifactDigest;
   std::string layerBegin;
   std::string layerEnd;
+  std::string preparationId;
   std::size_t line = 0;
 };
 
@@ -92,6 +93,7 @@ markers(const std::string& text)
     marker.artifactDigest = field(line, "artifactDigest");
     marker.layerBegin = field(line, "layerBegin");
     marker.layerEnd = field(line, "layerEnd");
+    marker.preparationId = field(line, "preparationId");
     marker.line = lineNumber;
     if (!marker.stage.empty()) {
       result.push_back(std::move(marker));

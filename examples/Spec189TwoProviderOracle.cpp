@@ -6,8 +6,11 @@
 // sequence, and rejects a generic requester timeout as a successful result.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "Spec189MaterialFetchOracle.hpp"
+#include "Spec189ProviderStageOracle.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -20,68 +23,17 @@
 
 namespace {
 
-struct Marker
-{
-  std::string stage;
-  std::string status;
-  std::string requestId;
-  std::string attemptEpoch;
-  std::string provider;
-  std::string role;
-  std::string planDigest;
-  std::size_t line = 0;
-};
+using namespace spec189::oracle;
 
-std::string
-readFile(const std::filesystem::path& path)
+std::vector<std::string>
+recordsContaining(const std::string& text, const std::string& needle)
 {
-  std::ifstream input(path);
-  if (!input) {
-    throw std::runtime_error("missing Spec189 log: " + path.string());
-  }
-  std::ostringstream content;
-  content << input.rdbuf();
-  return content.str();
-}
-
-std::string
-field(const std::string& line, const std::string& key)
-{
-  const auto prefix = key + "=";
-  const auto begin = line.find(prefix);
-  if (begin == std::string::npos) {
-    return {};
-  }
-  const auto valueBegin = begin + prefix.size();
-  const auto valueEnd = line.find_first_of(" \t\r\n", valueBegin);
-  return line.substr(valueBegin, valueEnd == std::string::npos
-                                 ? std::string::npos : valueEnd - valueBegin);
-}
-
-std::vector<Marker>
-markers(const std::string& text)
-{
-  std::vector<Marker> result;
+  std::vector<std::string> result;
   std::istringstream lines(text);
   std::string line;
-  std::size_t lineNumber = 0;
   while (std::getline(lines, line)) {
-    ++lineNumber;
-    if (line.find("NDNSF_DI_PROVIDER_STAGE") == std::string::npos) {
-      continue;
-    }
-    Marker marker;
-    marker.stage = field(line, "stage");
-    marker.status = field(line, "status");
-    marker.requestId = field(line, "requestId");
-    marker.attemptEpoch = field(line, "attemptEpoch");
-    marker.provider = field(line, "provider");
-    marker.role = field(line, "role");
-    marker.planDigest = field(line, "planDigest");
-    marker.line = lineNumber;
-    if (!marker.stage.empty()) {
-      result.push_back(std::move(marker));
-    }
+    if (line.find(needle) != std::string::npos)
+      result.push_back(std::move(line));
   }
   return result;
 }
@@ -114,23 +66,100 @@ recordContaining(const std::string& text, const std::string& needle)
   return {};
 }
 
-Marker
-requireStage(const std::vector<Marker>& observed,
-             const std::string& stage,
-             const std::string& log,
-             std::size_t afterLine = 0,
-             const std::string& expectedStatus = {})
+PlacementObservation
+validatePlacementProvider(const std::filesystem::path& path,
+                          const std::string& expectedProvider)
 {
-  const auto found = std::find_if(observed.begin(), observed.end(),
-    [&] (const Marker& marker) {
-      return marker.stage == stage && marker.line > afterLine &&
-        (expectedStatus.empty() || marker.status == expectedStatus);
-    });
-  if (found == observed.end()) {
-    throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=" + stage +
-                             " log=" + log);
+  const auto text = readFile(path);
+  const auto selectionLine = lineContaining(
+    text, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
+  if (selectionLine == 0) {
+    throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=SELECTION log=" +
+                             path.string());
   }
-  return *found;
+  const auto selectionRecord = recordContaining(
+    text, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
+  Marker selection;
+  selection.stage = "SELECTION";
+  selection.requestId = field(selectionRecord, "requestId");
+  selection.attemptEpoch = field(selectionRecord, "attemptEpoch");
+  selection.provider = field(selectionRecord, "provider");
+  selection.role = field(selectionRecord, "role");
+  selection.planDigest = field(selectionRecord, "planDigest");
+  selection.manifestDigest = field(selectionRecord, "manifestDigest");
+  selection.graphDigest = field(selectionRecord, "graphDigest");
+  selection.initializerDigest = field(selectionRecord, "initializerDigest");
+  selection.artifactDigest = field(selectionRecord, "artifactDigest");
+  selection.layerBegin = field(selectionRecord, "layerBegin");
+  selection.layerEnd = field(selectionRecord, "layerEnd");
+  selection.line = selectionLine;
+  for (const auto* value : {&selection.requestId, &selection.attemptEpoch,
+                            &selection.provider, &selection.role,
+                            &selection.planDigest, &selection.manifestDigest,
+                            &selection.graphDigest, &selection.initializerDigest,
+                            &selection.artifactDigest, &selection.layerBegin,
+                            &selection.layerEnd}) {
+    if (value->empty()) {
+      throw std::runtime_error(
+        "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION reason=missing-binding log=" +
+        path.string());
+    }
+  }
+  if (selection.provider != expectedProvider) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION reason=provider-mismatch log=" +
+      path.string());
+  }
+  std::uint64_t layerBegin = 0;
+  std::uint64_t layerEnd = 0;
+  try {
+    layerBegin = std::stoull(selection.layerBegin);
+    layerEnd = std::stoull(selection.layerEnd);
+  }
+  catch (const std::exception&) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION reason=invalid-range log=" +
+      path.string());
+  }
+  if (layerEnd <= layerBegin) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION reason=empty-range log=" +
+      path.string());
+  }
+
+  const auto observed = markers(text);
+  const std::vector<std::string> forbiddenBeforeSelection{
+    "EXECUTION_ENTERED", "DEPENDENCY_FETCH", "ASSEMBLY_STARTED",
+    "RUNNER_READY", "EXECUTION_COMPLETED", "TERMINAL"};
+  for (const auto& marker : observed) {
+    if (marker.line >= selectionLine)
+      break;
+    if (std::find(forbiddenBeforeSelection.begin(), forbiddenBeforeSelection.end(),
+                  marker.stage) != forbiddenBeforeSelection.end()) {
+      throw std::runtime_error(
+        "SPEC189_CPP_ORACLE_FAIL boundary=PRE_SELECTION_SIDE_EFFECT reason=" +
+        marker.stage + " log=" + path.string());
+    }
+  }
+  const auto grantRecords = recordsContaining(text, "NDNSF_DI_GRANT_VERIFIED");
+  std::size_t grantLine = 0;
+  for (const auto& record : grantRecords) {
+    const auto candidateLine = lineContaining(text, record);
+    if (candidateLine <= selectionLine ||
+        field(record, "requestId") != selection.requestId ||
+        field(record, "provider") != selection.provider ||
+        field(record, "planDigest") != selection.planDigest ||
+        field(record, "attemptEpoch") != selection.attemptEpoch)
+      continue;
+    grantLine = candidateLine;
+    break;
+  }
+  if (grantLine == 0) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=GRANT_VERIFIED reason=missing-or-before-selection log=" +
+      path.string());
+  }
+  return {std::move(selection), selectionLine, grantLine};
 }
 
 void
@@ -140,104 +169,123 @@ validateProvider(const std::filesystem::path& path,
                  std::string& planDigest,
                  bool& terminalSeen)
 {
-  const auto text = readFile(path);
-  const auto selectionLine = lineContaining(text, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
-  if (selectionLine == 0) {
-    throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=SELECTION log=" +
-                             path.string());
-  }
-  const auto observed = markers(text);
-  const auto grantLine = lineContaining(text, "NDNSF_DI_GRANT_VERIFIED");
-  if (grantLine == 0 || grantLine < selectionLine) {
-    throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=GRANT_VERIFIED log=" +
-                             path.string());
-  }
-  const auto selectionRecord = recordContaining(
-    text, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
-  const auto grantRecord = recordContaining(text, "NDNSF_DI_GRANT_VERIFIED");
-  const auto selectedRequestId = field(selectionRecord, "requestId");
-  const auto selectedAttemptEpoch = field(selectionRecord, "attemptEpoch");
-  const auto selectedPlanDigest = field(selectionRecord, "planDigest");
-  const auto selectedRole = field(selectionRecord, "role");
-  const auto selectedProvider = field(selectionRecord, "provider");
-  const auto grantedRequestId = field(grantRecord, "requestId");
-  const auto grantedAttemptEpoch = field(grantRecord, "attemptEpoch");
-  const auto grantedProvider = field(grantRecord, "provider");
-  const auto grantedPlanDigest = field(grantRecord, "planDigest");
-  if (selectedRequestId.empty() || selectedAttemptEpoch.empty() ||
-      selectedPlanDigest.empty() || selectedRole.empty() ||
-      selectedProvider != expectedProvider ||
-      grantedRequestId.empty() || grantedAttemptEpoch.empty() ||
-      grantedProvider != expectedProvider || grantedPlanDigest.empty() ||
-      grantedRequestId != selectedRequestId ||
-      grantedAttemptEpoch != selectedAttemptEpoch ||
-      grantedPlanDigest != selectedPlanDigest) {
+  const auto placement = validatePlacementProvider(path, expectedProvider);
+  const auto& selection = placement.selection;
+  if ((!requestId.empty() && requestId != selection.requestId) ||
+      (!planDigest.empty() && planDigest != selection.planDigest)) {
     throw std::runtime_error(
-      "SPEC189_CPP_ORACLE_FAIL boundary=IDENTITY reason=selection-grant-mismatch log=" +
-      path.string());
+      "SPEC189_CPP_ORACLE_FAIL boundary=IDENTITY reason=cross-provider-mismatch");
   }
-
-  const auto grantMarker = requireStage(
-    observed, "GRANT_VERIFIED", path.string(), grantLine, "observed");
-  if (grantMarker.provider != expectedProvider ||
-      grantMarker.role != selectedRole ||
-      grantMarker.requestId != selectedRequestId ||
-      grantMarker.attemptEpoch != selectedAttemptEpoch ||
-      grantMarker.planDigest != selectedPlanDigest) {
+  const bool terminal = validateProviderStages(
+    markers(readFile(path)), placement, expectedProvider);
+  // Spec189 freezes the Qwen3-0.6B candidate at 28 layers. Only its last
+  // selected range can provide the terminal model response.
+  if (selection.layerEnd == "28" && !terminal) {
     throw std::runtime_error(
-      "SPEC189_CPP_ORACLE_FAIL boundary=GRANT_VERIFIED reason=identity-mismatch log=" +
-      path.string());
+      "SPEC189_CPP_ORACLE_FAIL boundary=TERMINAL reason=tail-terminal-missing");
   }
+  if (selection.layerEnd != "28" && terminal) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=TERMINAL reason=non-tail-terminal");
+  }
+  requestId = selection.requestId;
+  planDigest = selection.planDigest;
+  terminalSeen = terminalSeen || terminal;
+}
 
-  const std::vector<std::string> sequence{
-    "EXECUTION_ENTERED", "DEPENDENCY_FETCH", "ASSEMBLY_STARTED",
-    "RUNNER_READY", "EXECUTION_COMPLETED"};
-  std::size_t previousLine = grantMarker.line;
-  for (const auto& stage : sequence) {
-    const auto marker = requireStage(
-      observed, stage, path.string(), previousLine,
-      stage == "DEPENDENCY_FETCH" ? "complete" : "observed");
-    if (marker.provider != expectedProvider || marker.role != selectedRole) {
-      throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=" + stage +
-                               " reason=provider-role-identity log=" + path.string());
-    }
-    if (stage == "EXECUTION_ENTERED" && marker.line == 0) {
-      throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=EXECUTION_ENTERED");
-    }
-    previousLine = marker.line;
-    if (marker.requestId.empty() || marker.attemptEpoch.empty() ||
-        marker.planDigest.empty()) {
-      throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=" + stage +
-                               " reason=missing-identity log=" + path.string());
-    }
-    if (requestId.empty()) requestId = selectedRequestId;
-    if (planDigest.empty()) planDigest = selectedPlanDigest;
-    if (marker.requestId != requestId ||
-        marker.attemptEpoch != selectedAttemptEpoch ||
-        marker.planDigest != planDigest ||
-        marker.requestId != selectedRequestId ||
-        marker.planDigest != selectedPlanDigest) {
-      throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=" + stage +
-                               " reason=identity-mismatch log=" + path.string());
-    }
+void
+validatePlacementOnly(const std::filesystem::path& root)
+{
+  const auto requester = readFile(root / "requester-0.log");
+  if (lineContaining(requester, "NDNSF_DI_NATIVE_SELECTION_COMMITTED") == 0) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION_COMMIT reason=missing-core-selection");
   }
-  const auto terminalIt = std::find_if(
-    observed.begin(), observed.end(), [&] (const Marker& marker) {
-      return marker.stage == "TERMINAL" && marker.line > previousLine;
-    });
-  if (terminalIt != observed.end()) {
-    const auto& terminal = *terminalIt;
-    if (terminal.provider != expectedProvider ||
-        terminal.role != selectedRole ||
-        terminal.requestId != selectedRequestId ||
-        terminal.attemptEpoch != selectedAttemptEpoch ||
-        terminal.planDigest != selectedPlanDigest) {
+  const auto assignmentRecords = recordsContaining(
+    requester, "NDNSF_COLLAB_ASSIGNMENT_SELECTED");
+  if (assignmentRecords.size() < 2) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=ACK_SELECTION reason=two-provider-selection-missing");
+  }
+  const auto first = validatePlacementProvider(
+    root / "provider-0.log", "/example/ndnsf-qwen06b/provider-0");
+  const auto second = validatePlacementProvider(
+    root / "provider-1.log", "/example/ndnsf-qwen06b/provider-1");
+  const auto& left = first.selection;
+  const auto& right = second.selection;
+  if (left.requestId != right.requestId || left.attemptEpoch != right.attemptEpoch ||
+      left.planDigest != right.planDigest || left.manifestDigest != right.manifestDigest ||
+      left.graphDigest != right.graphDigest ||
+      left.initializerDigest != right.initializerDigest ||
+      left.provider == right.provider || left.role == right.role) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION reason=two-provider-binding-mismatch");
+  }
+  const auto committedRecord = recordContaining(
+    requester, "NDNSF_DI_NATIVE_SELECTION_COMMITTED");
+  if (committedRecord.empty() ||
+      field(committedRecord, "requestId") != left.requestId ||
+      field(committedRecord, "attemptEpoch") != left.attemptEpoch ||
+      field(committedRecord, "planDigest") != left.planDigest) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION_COMMIT reason=identity-mismatch");
+  }
+  std::map<std::string, std::string> assignments;
+  for (const auto& record : assignmentRecords) {
+    if (field(record, "requestId") != left.requestId)
+      continue;
+    const auto provider = field(record, "providerName");
+    if (provider != left.provider && provider != right.provider)
+      continue;
+    const auto role = field(record, "role");
+    if (role.empty()) {
       throw std::runtime_error(
-        "SPEC189_CPP_ORACLE_FAIL boundary=TERMINAL reason=identity-mismatch log=" +
-        path.string());
+        "SPEC189_CPP_ORACLE_FAIL boundary=ACK_SELECTION reason=assignment-binding-fields-missing");
     }
-    terminalSeen = terminalSeen || terminal.status == "observed";
+    const auto [assignmentIt, inserted] = assignments.emplace(provider, role);
+    if (!inserted && assignmentIt->second != role) {
+      throw std::runtime_error(
+        "SPEC189_CPP_ORACLE_FAIL boundary=ACK_SELECTION reason=assignment-role-conflict");
+    }
   }
+  if (assignments.size() != 2 || assignments[left.provider] != left.role ||
+      assignments[right.provider] != right.role) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=ACK_SELECTION reason=assignment-binding-mismatch");
+  }
+  const auto leftBegin = std::stoull(left.layerBegin);
+  const auto leftEnd = std::stoull(left.layerEnd);
+  const auto rightBegin = std::stoull(right.layerBegin);
+  const auto rightEnd = std::stoull(right.layerEnd);
+  const auto& firstRange = leftBegin <= rightBegin ? left : right;
+  const auto& secondRange = leftBegin <= rightBegin ? right : left;
+  const auto firstBegin = std::stoull(firstRange.layerBegin);
+  const auto firstEnd = std::stoull(firstRange.layerEnd);
+  const auto secondBegin = std::stoull(secondRange.layerBegin);
+  const auto secondEnd = std::stoull(secondRange.layerEnd);
+  constexpr std::uint64_t expectedLayerCount = 28;
+  if (firstBegin != 0 || firstEnd != secondBegin || secondEnd != expectedLayerCount) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION reason=range-coverage-mismatch");
+  }
+  const auto leftFetches = validateMaterialFetches(
+    root / "provider-0.log", first, left.provider);
+  const auto rightFetches = validateMaterialFetches(
+    root / "provider-1.log", second, right.provider);
+  std::cout << "SPEC189_CPP_PLACEMENT_PASS "
+            << ndnsf::di::nativeCanonicalJson(ndnsf::di::NativeJson{
+                 {"requestId", left.requestId},
+                 {"attemptEpoch", left.attemptEpoch},
+                 {"planDigest", left.planDigest},
+                 {"manifestDigest", left.manifestDigest},
+                 {"graphDigest", left.graphDigest},
+                 {"providers", 2},
+                 {"preSelectionFetches", leftFetches.preSelection + rightFetches.preSelection},
+                 {"postSelectionFetches", leftFetches.postSelection + rightFetches.postSelection},
+                 {"layerCount", expectedLayerCount},
+                 {"provider0Range", ndnsf::di::NativeJson::array({leftBegin, leftEnd})},
+                 {"provider1Range", ndnsf::di::NativeJson::array({rightBegin, rightEnd})}})
+            << '\n';
 }
 
 } // namespace
@@ -246,15 +294,30 @@ int
 main(int argc, char** argv)
 {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: " << argv[0] << " --run-root DIRECTORY\n";
+    std::cout << "usage: " << argv[0]
+              << " [--placement-only] --run-root DIRECTORY\n";
     return 0;
   }
-  if (argc != 3 || std::string(argv[1]) != "--run-root") {
-    std::cerr << "usage: " << argv[0] << " --run-root DIRECTORY\n";
+  const bool placementOnly = argc == 4 && std::string(argv[1]) == "--placement-only";
+  const char* runRootArg = nullptr;
+  if (placementOnly && std::string(argv[2]) == "--run-root")
+    runRootArg = argv[3];
+  else if (!placementOnly && argc == 3 && std::string(argv[1]) == "--run-root")
+    runRootArg = argv[2];
+  if (runRootArg == nullptr) {
+    std::cerr << "usage: " << argv[0]
+              << " [--placement-only] --run-root DIRECTORY\n";
     return 2;
   }
   try {
-    const auto root = std::filesystem::absolute(argv[2]);
+    const auto root = std::filesystem::absolute(runRootArg);
+    if (placementOnly) {
+      validatePlacementOnly(root);
+      return 0;
+    }
+    // Full execution verdicts include the same authenticated placement and
+    // material checks as the diagnostic placement-only entry.
+    validatePlacementOnly(root);
     const auto requester = readFile(root / "requester-0.log");
     const auto requesterRecord = recordContaining(
       requester, "NATIVE_REQUEST_SUCCEEDED");

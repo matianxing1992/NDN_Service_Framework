@@ -279,11 +279,34 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 
+    # Spec189 full-path C++ oracle.  The MiniNDN runner supplies process logs;
+    # this selector owns the product assertion over the native provider stages
+    # and links the same canonical-JSON boundary as the DI production path.
+    bld.program(name='spec189-two-provider-oracle',
+                target='spec189-two-provider-oracle',
+                source=['Spec189TwoProviderOracle.cpp'],
+                includes=['..'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path='${BINDIR}')
+
     # Parser counterexamples share the exact checker used by the experiment CLI.
     # This target proves log validation only, never model/network qualification.
     bld.program(name='spec189-material-oracle-tests',
                 target='spec189-material-oracle-tests',
                 source=[bld.path.parent.find_node('tests/fixtures/spec189/material-fetch-oracle.cpp')],
+                includes=['..'],
+                install_path=None)
+
+    bld.program(name='spec189-provider-stage-oracle-tests',
+                target='spec189-provider-stage-oracle-tests',
+                source=[bld.path.parent.find_node('tests/fixtures/spec189/provider-stage-oracle.cpp')],
+                includes=['..'],
+                install_path=None)
+
+    bld.program(name='spec189-cli-oracle-tests',
+                target='spec189-cli-oracle-tests',
+                source=[bld.path.parent.find_node('tests/fixtures/spec189/cli-oracle.cpp')],
                 includes=['..'],
                 install_path=None)
 

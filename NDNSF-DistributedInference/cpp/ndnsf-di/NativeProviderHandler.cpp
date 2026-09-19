@@ -501,7 +501,8 @@ logProviderStageMarker(const char* stage,
                        const std::string& planDigest,
                        const char* status = "observed",
                        const std::string& reason = {},
-                       const std::string& attemptEpoch = {})
+                       const std::string& attemptEpoch = {},
+                       const std::string& preparationId = {})
 {
   std::ostringstream record;
   record << "NDNSF_DI_PROVIDER_STAGE"
@@ -514,6 +515,9 @@ logProviderStageMarker(const char* stage,
          << " attemptEpoch=" << attemptEpoch;
   if (!reason.empty()) {
     record << " reason=" << reason;
+  }
+  if (!preparationId.empty()) {
+    record << " preparationId=" << preparationId;
   }
   logRuntimeEvidence(record.str());
 }
@@ -1962,7 +1966,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                      std::chrono::system_clock::now().time_since_epoch()).count()
                << " provider=" << ctx.localProvider().toUri()
                << " role=" << role
-               << " planDigest=" << selectionProjection->planDigest;
+               << " planDigest=" << selectionProjection->planDigest
+               << " manifestDigest="
+               << selectionProjection->selectedRole.modelManifestDigest
+               << " graphDigest=" << selectionProjection->selectedRole.graphDigest
+               << " initializerDigest="
+               << selectionProjection->selectedRole.canonicalInitializerDigest
+               << " artifactDigest="
+               << selectionProjection->selectedRole.artifactDigest
+               << " layerBegin=" << selectionProjection->selectedRole.layerBegin
+               << " layerEnd=" << selectionProjection->selectedRole.layerEnd;
         logRuntimeEvidence(record.str());
       }
       const NativeExecutionPlan& executionPlan = selectionProjection
@@ -2299,6 +2312,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.assignment().selectionDigest + ":" + role + ":execution";
       const auto preparationStatusSequence =
         std::make_shared<std::atomic<std::uint64_t>>(0);
+      const auto runnerPreparationSequence =
+        std::make_shared<std::atomic<std::uint64_t>>(0);
       std::function<void()> executionGuard;
       if (protectedRuntime) {
         executionGuard = [protectedRuntime] {
@@ -2322,11 +2337,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                            protectedRuntime, executionGuard,
                            expectedBackend, expectedDevice, expectedArtifact,
                            role, reportStatus, readinessOperationId,
-                           preparationStatusSequence, stageAttemptEpoch] {
+                           preparationStatusSequence, runnerPreparationSequence,
+                           stageAttemptEpoch] {
+            const auto preparationId = std::to_string(
+              runnerPreparationSequence->fetch_add(1, std::memory_order_relaxed) + 1);
             logProviderStageMarker("ASSEMBLY_STARTED", projection.requestId,
                                    ctx.localProvider().toUri(), role,
                                    projection.planDigest, "observed", {},
-                                   stageAttemptEpoch);
+                                   stageAttemptEpoch, preparationId);
             if (executionGuard) executionGuard();
             auto spec = preparationFactory(ctx, projection, protectedRuntime);
             if (const auto error = validateNativePreparedRunnerSpec(
@@ -2348,7 +2366,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             logProviderStageMarker("RUNNER_READY", projection.requestId,
                                    ctx.localProvider().toUri(), role,
                                    projection.planDigest, "observed", {},
-                                   stageAttemptEpoch);
+                                   stageAttemptEpoch, preparationId);
             reportStatus(readinessOperationId, "ensure-deployment", "DONE",
                          preparationStatusSequence->fetch_add(
                            1, std::memory_order_relaxed) + 1,
