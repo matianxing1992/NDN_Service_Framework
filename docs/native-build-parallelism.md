@@ -35,6 +35,20 @@ cd /absolute/path/to/build-spec189-b189-3-global-r3
 sudo -n ../waf install --targets=ndnsf-distributed-inference -j4
 ```
 
+为避免手写环境清理和误选多个目标，维护入口还提供了等价的单目标命令：
+
+```bash
+scripts/install-global-target.sh \
+  --build-dir /absolute/path/to/build-spec189-b189-3-global-r3 \
+  --target ndnsf-distributed-inference
+```
+
+该入口先检查全局依赖回执及已配置 Waf cache/RPATH，再只构建并安装一个已经配置的
+Waf target；它不运行依赖源码重建，不执行 Repo 的 editable pip hook，也不重建
+Python binding。`libonnxruntime.so` 属于 `/opt/onnxruntime` 的外部版本化 SDK，
+不是这个 target；只有 SDK 版本或 ABI 改变时才单独更换它，并随后重建所有受影响
+的 NDNSF consumer。普通 DI 源码变化不应触发 ONNX Runtime 重编译。
+
 Core、Repo 或绑定只有在其源码/ABI 确实受影响时才分别选择对应 target。ONNX Runtime
 是已安装的全局版本化 SDK（当前 `/opt/onnxruntime`），不是每次 DI 增量构建都要重新
 编译的仓库目标；DI 只重新链接受影响的 ONNX 使用者，并在安装后用 `sha256sum`、

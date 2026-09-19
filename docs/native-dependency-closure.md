@@ -100,6 +100,12 @@ SDK 内；它不是模型目录或本次实验的临时依赖。缺失或过旧�
 全局安装流程，不能只凭相同 SONAME 继续构建。ONNX Runtime 不由该脚本源码重建；
 一旦它的身份变化，安装器会停止并要求先恢复或重新安装 canonical SDK，不会把新 DSO
 直接登记为新的回执。
+
+日常只修改 NDNSF 一个库时，不要调用无目标的完整安装器。使用已配置且通过全局闭包
+检查的 Waf build tree，运行 `scripts/install-global-target.sh --build-dir <tree>
+--target <one-target>`；它只重编、安装该 target，不重建 `libonnxruntime.so`，也不
+重装 Python binding。`libonnxruntime.so` 仍由 `/opt/onnxruntime` 的版本化 SDK 提供，
+只有 SDK 自身变化时才执行独立的 SDK 安装/替换及全局回执更新。
 依赖源码的 Waf/CMake/OpenABE 子构建会清除 `BOOST_ROOT`、`BOOST_INCLUDEDIR` 和
 `BOOST_LIBRARYDIR`，固定 `/usr/bin` 编译器/binutils，并使用新的 Waf/CMake
 构建状态，不复用源码 checkout 里的旧 cache；最终 Boost 符号链接目标和 SONAME

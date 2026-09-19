@@ -409,13 +409,37 @@ def linker_path_values(flags):
     return values
 
 
+def dependency_flag_paths(flags):
+    """Extract include/library/RPATH paths from compiler or linker flags."""
+    if isinstance(flags, str):
+        flags = [flags]
+    values = [str(flag) for flag in flags]
+    paths = []
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if value in ("-I", "-isystem", "-L") and index + 1 < len(values):
+            paths.append(values[index + 1])
+            index += 2
+            continue
+        for prefix in ("-I", "-isystem", "-L"):
+            if value.startswith(prefix) and value != prefix:
+                paths.append(value[len(prefix):])
+                break
+        if value.startswith("-Wl,"):
+            paths.extend(linker_path_values([value]))
+        index += 1
+    return paths
+
+
 def _waf_cache_dependency_paths(build_dir):
     """Validate every dependency path-bearing Waf cache family.
 
     Checking only the generic LINKFLAGS/LIBPATH entries leaves component
-    specific INCLUDES_*, STLIBPATH_* and LINKFLAGS_* values free to reintroduce
-    a temporary or checkout DSO.  Parse the cache as literals and inspect all
-    path-bearing families before Waf is allowed to compile.
+    specific INCLUDES_*, STLIBPATH_*, CXXFLAGS_*, CFLAGS_* and LINKFLAGS_*
+    values free to reintroduce a temporary or checkout DSO or header. Parse
+    the cache as literals and inspect all path-bearing families before Waf is
+    allowed to compile.
     """
     cache = build_dir / "c4che/_cache.py"
     if not cache.is_file():
@@ -426,14 +450,19 @@ def _waf_cache_dependency_paths(build_dir):
             continue
         key, literal = match.groups()
         if not (key.startswith(("INCLUDES_", "LIBPATH_", "STLIBPATH_",
-                                "LINKFLAGS_", "RPATH_"))
-                or key == "LINKFLAGS"):
+                                "CXXFLAGS_", "CFLAGS_", "LINKFLAGS_", "RPATH_"))
+                or key in ("CFLAGS", "CXXFLAGS", "LINKFLAGS")):
             continue
         try:
             value = ast.literal_eval(literal)
         except (ValueError, SyntaxError) as error:
             raise IdentityError("WAF_CACHE_VALUE_INVALID: " + key) from error
         values = value if isinstance(value, (list, tuple)) else [value]
+        if key.startswith(("CXXFLAGS_", "CFLAGS_")) or key in ("CFLAGS", "CXXFLAGS"):
+            paths = [path for path in dependency_flag_paths(values)
+                     if "%s" not in path]
+            require_global_dependency_paths(paths, "WAF_CACHE_" + key)
+            continue
         paths = []
         for item in values:
             if not isinstance(item, str):
@@ -1011,6 +1040,29 @@ def verify(root, build_dir, manifest, python, env):
     return data
 
 
+def preflight(root, build_dir, python, env):
+    """Validate a configured host Waf tree without requiring fresh outputs.
+
+    Target-scoped installation uses this before compiling one target.  It
+    checks the recorded Waf tool, the configured dependency paths/RPATH and
+    the selected NDN-CXX/NAC-ABE file identities, while deliberately allowing
+    the target's own build output to be stale or absent.
+    """
+    waf_tool = waf_tool_identity(root, env)
+    svs = svs_identity(build_dir)
+    dependency_environment = setup_dependency_environment(build_dir, svs, env)
+    selected = selected_dependency_identities(build_dir, dependency_environment)
+    toolchain = setup_toolchain_identity(root, env)
+    return {
+        "waf_tool": waf_tool,
+        "ndn_svs": svs,
+        "selected_dependencies": selected,
+        "runtime_search": dependency_environment["rpath"],
+        "setup_toolchain": toolchain,
+        "python": str(python),
+    }
+
+
 def verify_local_runtime(project_root, manifest_path=None, *,
                          python_executable=None, environ=None):
     """Runner API: read-only, before MiniNDN side effects; raise IdentityError.
@@ -1057,7 +1109,7 @@ def local_lock(build_dir):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("build", "verify"))
+    parser.add_argument("command", choices=("build", "verify", "preflight"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--build-dir", type=Path, default=Path("build-system-j2"))
     parser.add_argument("--manifest", type=Path,
@@ -1086,8 +1138,10 @@ def main(argv=None):
         if args.command == "build":
             with local_lock(build_dir):
                 build(root, build_dir, manifest, python, env, args.jobs, args.binding)
-        else:
+        elif args.command == "verify":
             verify(root, build_dir, manifest, python, env)
+        else:
+            preflight(root, build_dir, python, env)
         print("SPEC180_NATIVE_IDENTITY_OK " + str(manifest))
         return 0
     except (IdentityError, OSError, ValueError, KeyError, TypeError,

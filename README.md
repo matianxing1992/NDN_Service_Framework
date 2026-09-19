@@ -153,13 +153,25 @@ NACABE_REPO_URL=https://github.com/matianxing1992/NAC-ABE \
 sudo ./install_ndnsf_stack.sh --force-dependencies
 ```
 
-Manual C++-only installation is still possible:
+Manual C++-only installation is still possible. The unqualified installer is
+for a complete stack/dependency refresh; routine source changes should select
+one affected target from the already configured build tree:
 
 ```bash
-./waf configure
-./waf
-sudo ./waf install
+scripts/install-global-target.sh \
+  --build-dir /absolute/path/to/build-spec189-b189-3-global-r3 \
+  --target ndnsf-distributed-inference
 ```
+
+The target helper first checks the installed global dependency receipt and the
+configured Waf cache/RPATH, then builds one target. It does not install Python
+bindings or run the Repo editable-install hook. It does not rebuild ONNX Runtime.
+`libonnxruntime.so` is the
+external versioned SDK under `/opt/onnxruntime`; it is installed or replaced
+only when that SDK itself changes. After replacing it, reconfigure and rebuild
+all affected NDNSF consumers only after the canonical SDK provisioning step has
+updated the global dependency identity receipt; this helper fails closed until
+that receipt matches. The helper never installs Python bindings.
 
 Host builds require the compiler and binutils to come from one explicit
 toolchain root (default: `/usr/bin`). This prevents a Linuxbrew `ld`, `ar`, or
