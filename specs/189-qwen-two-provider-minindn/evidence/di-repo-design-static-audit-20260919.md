@@ -31,7 +31,7 @@ Provider assembly/execute、独立输出和 cleanup 的资格要求。
 | Finding | Revised status | Spec189 action |
 | --- | --- | --- |
 | F01 | `LOCAL_REPAIR_PRESENT / QUALIFICATION_OPEN` | T003/T006 保留真实 protected ingress、名称/字节审计和 full-path evidence；不重做已通过 consumer selector。 |
-| F02 | `OPEN / HIGH` | T003-R1 / B189-1c；测量 source、initializer、material、encryption、ORT preparation owners 和取消/重试清理。 |
+| F02 | `FOCUSED_CXX_PASS / QUALIFICATION_OPEN` | T003-R1 / B189-1c 已通过分类 owner/cancel selector；实际 ORT allocator/RSS、真实 Qwen peak 和完整 protected candidate 仍开放，见 [F02 evidence](b189-f02-memory-20260919.md)。 |
 | F03/F04 | `DEFERRED / CONDITIONAL` | 当前 Qwen native protected qualification 不调用 generic catalog snapshot/delta；若调用方进入 candidate，再创建 snapshot-required/incarnation repair。 |
 | F05 | `FOCUSED_CXX_PASS / QUALIFICATION_OPEN` | T003-R2 / B189-1c 已通过 mixed range/vector/Data admission selector；完整 replacement、失败回滚和 protected candidate 仍开放，见 [F05 evidence](b189-f05-quota-20260919.md)。 |
 | F06/F07 | `DEFERRED / LEGACY` | 当前 native protected path 不使用 segmented compatibility helper 或 Python power-loss backend；保留后续维护边界，不授予 Spec189 PASS。 |

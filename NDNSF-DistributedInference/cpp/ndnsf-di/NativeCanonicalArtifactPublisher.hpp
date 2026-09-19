@@ -40,6 +40,8 @@ struct NativePreparedCanonicalPublication
   std::string materialManifestDataName;
   std::string materialManifestDigest;
   std::uint64_t materialManifestBytes = 0;
+  /** Sum of plaintext bytes handed to the protected publication transport. */
+  std::uint64_t publishedBytes = 0;
   std::string canonicalManifestJson;
   std::string manifestDigest;
   std::string artifactProfileDigest;

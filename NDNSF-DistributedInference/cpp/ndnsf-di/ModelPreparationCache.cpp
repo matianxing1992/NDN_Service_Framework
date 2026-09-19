@@ -394,14 +394,32 @@ std::string ModelPreparationCache::makePreparationKey(const PreparationSpec& spe
 }
 
 std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
-  const PreparationSpec& spec, std::chrono::steady_clock::time_point deadline) const
+  const PreparationSpec& spec, std::chrono::steady_clock::time_point deadline,
+  PreparationSpec::MemorySnapshot* memorySnapshot) const
 {
+  if (!memorySnapshot)
+    throw std::invalid_argument("preparation memory snapshot is missing");
   requireActive(deadline, spec.cancelled);
   if (spec.configurationJson.empty() || spec.catalogConfigurationJson.empty() ||
       spec.maxSourceBytes == 0 || spec.maxAssembledBytes == 0 || !spec.loadSource)
     throw std::invalid_argument("preparation source/configuration is incomplete");
   validateSpecIdentity(spec);
 
+  auto& memory = *memorySnapshot;
+  memory.ortPreparationBudgetBytes = spec.maxAssembledBytes;
+  const auto updatePeak = [&] {
+    std::size_t total = 0;
+    const auto addSaturating = [&] (std::size_t value) {
+      total = value > std::numeric_limits<std::size_t>::max() - total
+        ? std::numeric_limits<std::size_t>::max() : total + value;
+    };
+    addSaturating(memory.sourceBytes);
+    addSaturating(memory.initializerBytes);
+    addSaturating(memory.materialBytes);
+    addSaturating(memory.encryptedPublicationBytes);
+    addSaturating(memory.ortPreparationBudgetBytes);
+    memory.peakBytes = std::max(memory.peakBytes, total);
+  };
   const auto runtime = nativeParseJson(spec.configurationJson);
   const auto& request = runtime.at("request");
 
@@ -411,6 +429,9 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     throw std::invalid_argument("canonical model source is empty or exceeds its bound");
   if (source.initializerBytes && source.initializerBytes->size() > spec.maxSourceBytes)
     throw std::invalid_argument("canonical initializer exceeds its bound");
+  memory.sourceBytes = source.modelBytes.size();
+  memory.initializerBytes = source.initializerBytes ? source.initializerBytes->size() : 0;
+  updatePeak();
 
   NativeAssemblyControl control{
     deadline,
@@ -427,6 +448,13 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
       !digest(catalog.model.canonicalSourceDigest) || !digest(catalog.model.modelManifestDigest) ||
       !digest(catalog.model.canonicalGraphDigest))
     throw std::invalid_argument("prepared model source identity is incomplete");
+
+  const auto& preparedSource = catalog.preparation->sourceRefFor(descriptor);
+  if (preparedSource.materialManifest) {
+    for (const auto& payload : preparedSource.materialManifest->payloads)
+      addSize(memory.materialBytes, payload.bytes.size());
+  }
+  updatePeak();
 
   // Validate the canonical ONNX graph separately from the adapter's planning
   // graph.  This catches a semantic graph accidentally being used as source
@@ -563,6 +591,8 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
                                                   catalog.model, publicationControl);
     publicationControl.requireActive();
     preparedPublication->validate();
+    memory.encryptedPublicationBytes = preparedPublication->publishedBytes;
+    updatePeak();
   }
   addSize(retained, static_cast<std::size_t>(spec.maxSourceBytes));
   addSize(retained, static_cast<std::size_t>(spec.maxAssembledBytes));
@@ -588,6 +618,10 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   // eviction accounting cannot be bypassed by a hidden catalog reference.
   if (releaseTransientSource)
     preparation->releaseTransientSource();
+  if (preparedPublication)
+    memory.encryptedPublicationBytes = preparedPublication->publishedBytes;
+  updatePeak();
+  memory.sourceOwnerReleased = releaseTransientSource;
   publicationGuard.committed = true;
   return package;
 }
@@ -690,6 +724,28 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     ++m_parseCount;
   }
   const auto started = std::chrono::steady_clock::now();
+  PreparationSpec::MemorySnapshot memory;
+  bool memoryCommitted = false;
+  bool memoryObserved = false;
+  const auto observeMemory = [&] () noexcept {
+    if (memoryObserved)
+      return;
+    memoryObserved = true;
+    memory.terminalCleanup = true;
+    if (!memoryCommitted)
+      memory.sourceOwnerReleased = true;
+    if (spec.memoryObserver) {
+      try { spec.memoryObserver(memory); }
+      catch (...) {
+        // Evidence callbacks cannot change preparation ownership or outcome.
+      }
+    }
+  };
+  struct MemoryObservationGuard
+  {
+    std::function<void()> observe;
+    ~MemoryObservationGuard() noexcept { observe(); }
+  } memoryObservationGuard{observeMemory};
   std::shared_ptr<const PreparedModelPackage> package;
   bool publicationCommitted = false;
   const auto rollbackPackagePublication = [&] {
@@ -698,9 +754,10 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
       return;
     try { spec.rollbackPublication(*package->preparedPublication); }
     catch (...) {}
+    memory.publicationRollbackAttempted = true;
   };
   try {
-    package = buildPackage(spec, deadline);
+    package = buildPackage(spec, deadline, &memory);
     requireActive(deadline, spec.cancelled);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - started);
@@ -743,6 +800,7 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
           PreparationReceipt{PreparationReceipt::Origin::Fetched, key, digest, elapsed}, {},
           spec.clientFactory);
         publicationCommitted = true;
+        memoryCommitted = true;
         lock.unlock();
         return result;
       }
@@ -823,6 +881,8 @@ PreparedModel ModelPreparationCache::prepareSingle(const PreparationSpec& spec,
     // while constructing the return receipt must not roll back its durable
     // publication and leave the cached package unusable.
     publicationCommitted = true;
+    memoryCommitted = true;
+    memory.cacheEntryCommitted = true;
     const auto origin = policy == CachePolicy::Refresh
       ? PreparationReceipt::Origin::Refreshed : PreparationReceipt::Origin::Fetched;
     const auto manifestDigest = package->catalog.model.modelManifestDigest;

@@ -202,6 +202,73 @@ BOOST_AUTO_TEST_CASE(ColdPreparationPublishesOnlyVerifiedImmutablePackage)
   BOOST_CHECK_EQUAL(fixture.fetches, 1U);
 }
 
+BOOST_AUTO_TEST_CASE(Spec189PreparationMemorySnapshotCoversOwnersAndCancellation)
+{
+  Fixture fixture;
+  std::vector<PreparationSpec::MemorySnapshot> samples;
+  fixture.spec.memoryObserver = [&samples] (const auto& sample) {
+    samples.push_back(sample);
+  };
+  fixture.spec.preparePublication = [] (const NativeCanonicalPreparationCatalog&,
+                                        const NativeInspectedModel&,
+                                        const NativeRequestControl&) {
+    NativePreparedCanonicalPublication publication;
+    publication.sourceDataName = "/fixture/source";
+    publication.rootDataName = "/fixture/root";
+    publication.canonicalManifestJson = "{}";
+    publication.manifestDigest = nativePlanningDigest("{}");
+    publication.publishedBytes = 123;
+    return publication;
+  };
+  fixture.spec.rollbackPublication = [] (const NativePreparedCanonicalPublication&) {};
+
+  ModelPreparationCache cache(8 << 20, 2, std::chrono::seconds(5));
+  (void) cache.prepare(fixture.spec);
+  BOOST_REQUIRE_EQUAL(samples.size(), 1U);
+  const auto& sample = samples.back();
+  BOOST_CHECK_EQUAL(sample.sourceBytes, fixture.source.modelBytes.size());
+  BOOST_CHECK_EQUAL(sample.initializerBytes, 0U);
+  BOOST_CHECK_GT(sample.materialBytes, 0U);
+  BOOST_CHECK_EQUAL(sample.encryptedPublicationBytes, 123U);
+  BOOST_CHECK_EQUAL(sample.ortPreparationBudgetBytes, fixture.spec.maxAssembledBytes);
+  BOOST_CHECK_GE(sample.peakBytes,
+                 sample.sourceBytes + sample.materialBytes +
+                 sample.encryptedPublicationBytes + sample.ortPreparationBudgetBytes);
+  BOOST_CHECK(sample.sourceOwnerReleased);
+  BOOST_CHECK(sample.cacheEntryCommitted);
+  BOOST_CHECK(!sample.publicationRollbackAttempted);
+  BOOST_CHECK(sample.terminalCleanup);
+
+  auto cancelled = fixture.spec;
+  auto cancel = std::make_shared<std::atomic<bool>>(false);
+  auto commitCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto rollbacks = std::make_shared<std::atomic<unsigned>>(0);
+  cancelled.cancelled = [cancel] { return cancel->load(std::memory_order_acquire); };
+  cancelled.acquireCommit = [cancel, commitCalls] (std::chrono::steady_clock::time_point) {
+    if (commitCalls->fetch_add(1, std::memory_order_acq_rel) == 0)
+      return std::shared_ptr<void>(std::make_shared<int>(0));
+    cancel->store(true, std::memory_order_release);
+    return std::shared_ptr<void>{};
+  };
+  cancelled.rollbackPublication = [rollbacks] (const NativePreparedCanonicalPublication&) {
+    rollbacks->fetch_add(1, std::memory_order_acq_rel);
+  };
+  std::vector<PreparationSpec::MemorySnapshot> cancelledSamples;
+  cancelled.memoryObserver = [&cancelledSamples] (const auto& sample) {
+    cancelledSamples.push_back(sample);
+  };
+  ModelPreparationCache cancelledCache(8 << 20, 2, std::chrono::seconds(5));
+  BOOST_CHECK_THROW(cancelledCache.prepare(cancelled), std::runtime_error);
+  BOOST_REQUIRE_EQUAL(cancelledSamples.size(), 1U);
+  BOOST_CHECK_EQUAL(rollbacks->load(std::memory_order_acquire), 1U);
+  BOOST_CHECK_EQUAL(cancelledCache.entryCount(), 0U);
+  BOOST_CHECK_EQUAL(cancelledCache.chargedBytes(), 0U);
+  BOOST_CHECK(!cancelledSamples.back().cacheEntryCommitted);
+  BOOST_CHECK(cancelledSamples.back().publicationRollbackAttempted);
+  BOOST_CHECK(cancelledSamples.back().terminalCleanup);
+  BOOST_CHECK(cancelledSamples.back().sourceOwnerReleased);
+}
+
 BOOST_AUTO_TEST_CASE(PreparationKeyIgnoresLocalSourceLocator)
 {
   Fixture fixture;

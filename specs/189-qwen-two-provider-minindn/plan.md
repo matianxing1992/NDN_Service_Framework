@@ -18,7 +18,8 @@ r25 FAIL 已观察 assembly entry，未证明两 Provider 成功执行；后续�
 组件结果以 tasks.md 及其证据为准。
 见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
 
-审计对账已将 F01 标为局部修复、资格仍开放；F02、F08 仍是当前候选的开放生产门，
+审计对账已将 F01 标为局部修复、资格仍开放；F02 已通过准备 owner/cancel 的 focused
+C++ selector、但实际 ORT/RSS 和完整候选资格仍开放；F08 仍是当前候选的开放生产门，
 F05/F09 已有 focused C++ selector 但仍需完整候选边界，分别由 T003/T009 收口。F03/F04 只在采用 catalog snapshot/delta 时适用，
 F06/F07 属于未用于本机 native protected 资格路径的兼容/本地 Python 后端；它们保留
 为后续维护项，不能写成已修复，也不应把本次 Qwen 任务扩成通用 Repo 重构。
@@ -30,7 +31,9 @@ F06/F07 属于未用于本机 native protected 资格路径的兼容/本地 Pyth
 - 全局依赖按 [declared closure](../../docs/native-dependency-closure.md)；
   本机 Boost 为 /usr/include + /usr/lib/x86_64-linux-gnu 1.71，其余按声明全局根（含 ORT）。
   缺失/不兼容才安装，禁止 checkout/.codex-tmp 前缀覆盖。
-- 复用已验 Waf tree，受影响 target 增量构建默认 -j4，swap 压力按仓库规则降并发。
+- 复用已验的仓库根 Waf tree（与 NDN-CXX 相同的 `waf`/`wscript` 入口），受影响 target
+  增量构建默认 -j4，swap 压力按仓库规则降并发；构建树 selector 的 target-local RPATH
+  必须优先于已安装的同 SONAME 库。
   不为每个新 selector 复制整套 DI 编译闭包。
 - 两 Provider，固定短输入与少量 token；独立正确性判据必需，广泛质量评测不在范围内。
 

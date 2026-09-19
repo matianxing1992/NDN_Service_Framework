@@ -8,7 +8,13 @@
 
 ## Current Checkpoint
 
-**Audit reconciliation checkpoint**: 2026-09-19 — 已将 [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) 与当前源码重新对账：F01 的 material-only consumer 已有局部生产接线和 C++ selector，但真实 protected ingress 仍未验收；F02、F08 仍开放，F05/F09 已有 focused C++ selector 但完整候选边界仍开放；F03/F04/F06/F07 分别标为条件性或 legacy follow-up。新增 FR-027..FR-029、T003-R1..R3 与 T009-R1，未将任何任务勾选完成。[audit reconciliation](spec.md#audit-reconciliation--2026-09-19)
+**Audit reconciliation checkpoint**: 2026-09-19 — 已将 [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) 与当前源码重新对账：F01 的 material-only consumer 已有局部生产接线和 C++ selector，但真实 protected ingress 仍未验收；F02 已有 focused C++ selector 但实际 ORT/RSS 与完整候选资格仍开放，F08 仍开放，F05/F09 已有 focused C++ selector 但完整候选边界仍开放；F03/F04/F06/F07 分别标为条件性或 legacy follow-up。新增 FR-027..FR-029、T003-R1..R3 与 T009-R1，未将任何任务勾选完成。[audit reconciliation](spec.md#audit-reconciliation--2026-09-19)
+
+**F02 focused checkpoint**: 2026-09-19 — T003-R1 的 production `MemorySnapshot`/terminal
+guard 通过 r2/r3 官方只读复审；仓库根 Waf tree 重新配置并以 `spec189-preparation-memory`
+完成 compile/link，修复 build-tree 与 `/usr/local` 同 SONAME 混链后 selector 通过 1/1。
+本证据只覆盖分类计数与 post-publication/pre-cache cancellation rollback；实际 ORT allocator/RSS、
+真实 Qwen 和完整资格仍开放。[F02 evidence](evidence/b189-f02-memory-20260919.md)
 
 **F09 focused checkpoint**: 2026-09-19 — T003-R3 的 FilesystemRepoStoreBackend
 `fsync`/`close`/directory-`fsync` 反例已完成 r4 只读 `STATIC_PASS`、`-j4` 单目标构建和
@@ -88,7 +94,7 @@ selectors 已通过，protected Provider consumer/真实 Qwen 链路仍未审查
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/material-only consumer 局部 C++ 通过；F02 preparation peak、F05 replacement/rollback beyond focused selector、F09 complete publication boundary、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/material-only consumer 局部 C++ 通过；F02 focused owner/cancel selector 已通过但实际 ORT/RSS、F05 replacement/rollback beyond focused selector、F09 complete publication boundary、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer 与 aggregate budget 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md) |
@@ -111,7 +117,7 @@ selectors 已通过，protected Provider consumer/真实 Qwen 链路仍未审查
 
 | Subtask | Finding | Owner / dependency | Status | Exit evidence |
 | --- | --- | --- | --- | --- |
-| T003-R1 | F02 preparation peak | Runtime/ONNX preparation owner; before T009 full model | PLANNED | size-scaled C++ preparation counter, source/material/encryption/ORT categories, cancel/retry cleanup |
+| T003-R1 | F02 preparation peak | Runtime/ONNX preparation owner; before T009 full model | FOCUSED_CXX_PASS / QUALIFICATION_OPEN | C++ selector records source/material/encryption/ORT budget categories and post-publication cancel/retry cleanup; actual ORT allocator/RSS and real Qwen remain open; [F02 evidence](evidence/b189-f02-memory-20260919.md) |
 | T003-R2 | F05 mixed quota reservation | RepoCore range/vector/Data packet admission; before protected candidate | FOCUSED_CXX_PASS | C++ mixed range/vector/Data selector passed; replacement/failure rollback and protected candidate remain open; [F05 evidence](evidence/b189-f05-quota-20260919.md) |
 | T003-R3 | F09 fd error ownership | FilesystemRepoStoreBackend error path; before protected candidate | FOCUSED_CXX_PASS | injected fsync/close failure, one-owner/no-duplicate-close and preserved manifest boundary; [F09 evidence](evidence/b189-f09-fd-owner-20260919.md) |
 | T009-R1 | F08 turn owner race | Conversation/PreparedModel handle installation; after T007 and before same-handle PASS | PLANNED | C++ barrier interleaving where older terminal/exception cannot overwrite or close newer turn |

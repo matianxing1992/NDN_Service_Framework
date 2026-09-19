@@ -12,6 +12,10 @@
 - Waf 使用 `./waf build -j4 --out="$BUILD_DIR"`，target 和 build 目录仍按当前任务冻结入口。
 - CMake 使用 `cmake --build "$BUILD_DIR" --parallel 4`；具体工具链/prefix 沿原生 preflight。
 - 同一 Waf 树只允许一个构建进程；也不同时启动多个各自 -j4 的原生依赖构建。
+- NDNSF 的 Core、Repo、DI、examples 和 native tests 都必须走仓库根
+  `waf`/`wscript` 图；上游依赖可以按其自身项目规则构建后安装到声明的全局闭包。
+  配置好的 Waf tree 为本地 selector 放置 target-local RUNPATH，优先于已安装的同
+  SONAME 库；每次运行 selector 前用 `readelf -d` 和 `ldd` 核对实际加载身份。
 - 观察 `MemAvailable` 和 `vmstat 1` 后续行的 `si/so`。持续换页或桌面明显卡顿时，
   当前进程由其执行者安全收尾/停止；只有确认持续换页或桌面卡顿时，下次调用才降为
   `-j2`，否则恢复默认 `-j4`；不为调并行度清空构建目录。
