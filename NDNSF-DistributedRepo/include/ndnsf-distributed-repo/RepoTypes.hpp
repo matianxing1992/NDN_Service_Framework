@@ -227,6 +227,7 @@ struct RepoCatalogStatus
   uint64_t catalogEpoch = 0;
   uint64_t objectCount = 0;
   bool acceptsBackupReplica = true;
+  bool reconciliationRequired = false;
 
   std::string toJson() const;
 };
@@ -258,6 +259,7 @@ struct RepoCacheStatus
   uint64_t oversizedBypasses = 0;
   uint64_t backingReads = 0;
   uint64_t backingWrites = 0;
+  bool reconciliationRequired = false;
 
   std::string toJson() const;
 };
@@ -274,6 +276,13 @@ struct StoredObject
 {
   RepoObjectManifest manifest;
   std::vector<uint8_t> payload;
+};
+
+/** Bounded byte range used by large-object repository backends. */
+struct RepoByteRange
+{
+  uint64_t offsetBytes = 0;
+  uint64_t lengthBytes = 0;
 };
 
 RepoDeploymentMode
@@ -328,6 +337,25 @@ public:
   virtual uint64_t usedBytes() const = 0;
 
   virtual RepoCacheStatus cacheStatus() const;
+
+  virtual void putRange(const RepoObjectManifest& manifest,
+                        RepoByteRange range,
+                        const std::vector<uint8_t>& bytes);
+
+  virtual void commitRanges(const RepoObjectManifest& manifest);
+
+  virtual std::vector<uint8_t>
+  getRange(const std::string& objectName, RepoByteRange range) const;
+
+  virtual RepoObjectManifest
+  getManifest(const std::string& objectName) const;
+
+  virtual bool supportsRange() const noexcept;
+  virtual uint64_t fullCopyFallbackCount() const noexcept;
+  virtual void pin(const std::string& objectName) const;
+  virtual void unpin(const std::string& objectName) const;
+  virtual void abortRanges(const std::string& objectName);
+  virtual bool supportsManifestLookup() const noexcept;
 };
 
 std::shared_ptr<RepoStoreBackend>

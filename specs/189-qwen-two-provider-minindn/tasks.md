@@ -8,12 +8,18 @@
 
 ## Current Checkpoint
 
-**Audit reconciliation checkpoint**: 2026-09-19 — 已将 [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) 与当前源码重新对账：F01 的 material-only consumer 已有局部生产接线和 C++ selector，但真实 protected ingress 仍未验收；F02、F05、F08、F09 仍是本 Spec 的开放生产门；F03/F04/F06/F07 分别标为条件性或 legacy follow-up。新增 FR-027..FR-029、T003-R1..R3 与 T009-R1，未将任何任务勾选完成。[audit reconciliation](spec.md#audit-reconciliation--2026-09-19)
+**Audit reconciliation checkpoint**: 2026-09-19 — 已将 [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) 与当前源码重新对账：F01 的 material-only consumer 已有局部生产接线和 C++ selector，但真实 protected ingress 仍未验收；F02、F08 仍开放，F05/F09 已有 focused C++ selector 但完整候选边界仍开放；F03/F04/F06/F07 分别标为条件性或 legacy follow-up。新增 FR-027..FR-029、T003-R1..R3 与 T009-R1，未将任何任务勾选完成。[audit reconciliation](spec.md#audit-reconciliation--2026-09-19)
 
 **F09 focused checkpoint**: 2026-09-19 — T003-R3 的 FilesystemRepoStoreBackend
 `fsync`/`close`/directory-`fsync` 反例已完成 r4 只读 `STATIC_PASS`、`-j4` 单目标构建和
 3/3 C++ selector 运行；F09 仅为 `FOCUSED_CXX_PASS`，不关闭 T003，也不替代 F02/F05
 或完整 publication/qualification。见 [F09 evidence](evidence/b189-f09-fd-owner-20260919.md)。
+
+**F05 focused checkpoint**: 2026-09-19 — T003-R2 的 RepoCore mixed quota
+selector 完成 r2 只读 `STATIC_PASS`、`-j4` 单目标构建和 2/2 C++ cases；range
+reservation 现在同时约束普通 vector 与 exact Data packet admission，abort 后可恢复。
+这只关闭 F05 的 focused selector，不关闭 replacement/失败回滚、T003 或 protected
+publication/qualification。见 [F05 evidence](evidence/b189-f05-quota-20260919.md)。
 
 **Causal oracle checkpoint**: 2026-09-19 01:37 -05:00 — T007 多次 runner preparation 独立日志 ID 与逐 ID 判据、正常 CLI 的材料/范围/末段 terminal 门已通过 r2 只读任务与组合审查；增量构建 2m54.872s，C++ 材料15例/阶段18例/CLI 5例通过，真实 Provider::serve 接线 selector 通过并记录配对 preparationId。七个输入匹配审查快照；独立模型输出、endpoint 因果、真实 MiniNDN/复用仍未完成，保持 PARTIAL。[causal oracle evidence](evidence/b189-causal-oracle-20260919.md)
 
@@ -82,7 +88,7 @@ selectors 已通过，protected Provider consumer/真实 Qwen 链路仍未审查
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/material-only consumer 局部 C++ 通过；F02 preparation peak、F05 reservation quota、F09 fd error ownership、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/material-only consumer 局部 C++ 通过；F02 preparation peak、F05 replacement/rollback beyond focused selector、F09 complete publication boundary、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer 与 aggregate budget 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md) |
@@ -106,7 +112,7 @@ selectors 已通过，protected Provider consumer/真实 Qwen 链路仍未审查
 | Subtask | Finding | Owner / dependency | Status | Exit evidence |
 | --- | --- | --- | --- | --- |
 | T003-R1 | F02 preparation peak | Runtime/ONNX preparation owner; before T009 full model | PLANNED | size-scaled C++ preparation counter, source/material/encryption/ORT categories, cancel/retry cleanup |
-| T003-R2 | F05 mixed quota reservation | RepoCore range/vector/Data packet admission; before protected candidate | PLANNED | C++ mixed-write/replacement/failure selector; committed+staged+reservation accounting |
+| T003-R2 | F05 mixed quota reservation | RepoCore range/vector/Data packet admission; before protected candidate | FOCUSED_CXX_PASS | C++ mixed range/vector/Data selector passed; replacement/failure rollback and protected candidate remain open; [F05 evidence](evidence/b189-f05-quota-20260919.md) |
 | T003-R3 | F09 fd error ownership | FilesystemRepoStoreBackend error path; before protected candidate | FOCUSED_CXX_PASS | injected fsync/close failure, one-owner/no-duplicate-close and preserved manifest boundary; [F09 evidence](evidence/b189-f09-fd-owner-20260919.md) |
 | T009-R1 | F08 turn owner race | Conversation/PreparedModel handle installation; after T007 and before same-handle PASS | PLANNED | C++ barrier interleaving where older terminal/exception cannot overwrite or close newer turn |
 | F03/F04 follow-up | catalog snapshot/history gap | Only if catalog snapshot/delta becomes a candidate caller | DEFERRED | snapshot-required + incarnation/oldest-sequence C++/Python sync evidence |

@@ -187,7 +187,7 @@ status must be reconciled with the later source and selectors before another run
 | F02 preparation peak | `OPEN / HIGH` | Source release after publication does not remove the prepare-time coexistence peak. T003 must measure category owners and bounded buffers; T009 must enforce the unchanged host gate. |
 | F03 snapshot/cursor race | `DEFERRED / CONDITIONAL` | Applies if this candidate uses catalog snapshot/delta synchronization. The current qualification path is protected material publication/read; no evidence may claim the generic catalog contract is repaired. |
 | F04 history-gap recovery | `DEFERRED / CONDITIONAL` | Same applicability boundary as F03; catalog sync would need an explicit snapshot-required/epoch-incarnation gate. |
-| F05 reservation accounting | `OPEN / IN-SCOPE` | Publication must test mixed range/vector writes and replacement under one logical quota. This is part of T003 before accepting the full candidate. |
+| F05 reservation accounting | `FOCUSED_CXX_PASS / QUALIFICATION_OPEN` | The C++ mixed range/vector/Data admission selector now uses one logical quota; replacement/failure rollback and the protected publication candidate remain open. See [F05 evidence](evidence/b189-f05-quota-20260919.md). |
 | F06 segmented compatibility replacement | `DEFERRED / LEGACY` | Not used by the native protected qualification path. The compatibility helper is not atomic evidence. |
 | F07 Python local durability | `DEFERRED / LEGACY` | Python orchestration is not evidence for native Repo durability or Qwen qualification. |
 | F08 turn owner race | `OPEN / IN-SCOPE` | Same-handle two-request qualification must include a C++ terminal/next-turn interleaving and generation-guarded close check in T009. |

@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace ndnsf_distributed_repo {
@@ -24,6 +25,9 @@ public:
 
   std::vector<uint8_t> get(const std::string& objectName) const;
 
+  /** Typed presence check used by native source owners; avoids parsing error text. */
+  bool has(const std::string& objectName) const;
+
   RepoObjectManifest getManifest(const std::string& objectName) const;
 
   std::vector<RepoObjectManifest> list() const;
@@ -31,6 +35,27 @@ public:
   bool remove(const std::string& objectName);
 
   RepoObjectManifest putManifest(const RepoObjectManifest& manifest);
+
+  // Bounded large-object authority path.  The manifest is published only by
+  // commitRanges after all ranges have been verified by the backend.
+  void putRange(const RepoObjectManifest& manifest,
+                RepoByteRange range,
+                const std::vector<uint8_t>& bytes);
+  RepoObjectManifest commitRanges(const RepoObjectManifest& manifest);
+  void abortRanges(const std::string& objectName);
+  std::vector<uint8_t> getRange(const std::string& objectName,
+                                RepoByteRange range) const;
+
+  /** Transaction-bound reads and cleanup. Check and action share m_mutex.
+   * expected.operationId must identify the unique publication transaction;
+   * callers must never reuse it for a replacement object. */
+  std::vector<uint8_t> getRangeIfCurrent(const RepoObjectManifest& expected,
+                                       RepoByteRange range) const;
+  bool removeIfCurrent(const RepoObjectManifest& expected);
+  bool abortRangesIfOwned(const RepoObjectManifest& expected);
+  void putRangeIfAbsent(const RepoObjectManifest& manifest, RepoByteRange range,
+                        const std::vector<uint8_t>& bytes);
+  RepoObjectManifest commitRangesIfOwned(const RepoObjectManifest& manifest);
 
   RepoObjectManifest putDataPacket(const std::string& dataName,
                                    const std::vector<uint8_t>& wire);
@@ -41,9 +66,15 @@ public:
 
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 
+  std::vector<uint8_t> handleStoreRange(const std::vector<uint8_t>& request);
+
+  std::vector<uint8_t> handleCommitRanges(const std::vector<uint8_t>& request);
+
   std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleFetch(const std::vector<uint8_t>& request) const;
+
+  std::vector<uint8_t> handleFetchRange(const std::vector<uint8_t>& request) const;
 
   std::vector<uint8_t> handleManifest(const std::vector<uint8_t>& request) const;
 
@@ -84,6 +115,10 @@ public:
   }
 
 private:
+  std::vector<uint8_t> deleteLocked(const std::string& objectName);
+  void putRangeLocked(const RepoObjectManifest&, RepoByteRange, const std::vector<uint8_t>&);
+  RepoObjectManifest commitRangesLocked(const RepoObjectManifest&);
+
   void refreshCapabilityUsage();
 
   void updateCapabilityUsage(uint64_t oldSize, uint64_t newSize);
@@ -95,6 +130,14 @@ private:
   void rememberCatalogChange(const RepoObjectManifest& manifest,
                              const std::string& state);
 
+  bool recoverAmbiguousCommit(const std::string& objectName,
+                              RepoObjectManifest& durable);
+
+  void refreshCapabilityUsageAfterCommit(uint64_t oldSize,
+                                         uint64_t newSize) noexcept;
+
+  void clearRangeReservation(const std::string& objectName);
+
 private:
   StorageCapability m_capability;
   uint64_t m_capacityBytes = 0;
@@ -102,7 +145,19 @@ private:
   mutable std::mutex m_publicationMutex;
   std::shared_ptr<RepoStoreBackend> m_store;
   uint64_t m_catalogEpoch = 0;
+  bool m_catalogReconciliationRequired = false;
   std::vector<RepoCatalogEntry> m_catalogChanges;
+
+  struct RangeReservation
+  {
+    std::string canonicalIdentity;
+    std::string digest;
+    uint64_t size = 0;
+    uint64_t generation = 0;
+    uint64_t additionalBytes = 0;
+  };
+  std::unordered_map<std::string, RangeReservation> m_rangeReservations;
+  uint64_t m_reservedRangeBytes = 0;
 };
 
 } // namespace ndnsf_distributed_repo

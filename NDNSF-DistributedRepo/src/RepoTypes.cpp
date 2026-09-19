@@ -1108,6 +1108,73 @@ RepoStoreBackend::cacheStatus() const
   return {};
 }
 
+void
+RepoStoreBackend::putRange(const RepoObjectManifest&, RepoByteRange,
+                           const std::vector<uint8_t>&)
+{
+  throw std::runtime_error("repo-range-write-not-supported");
+}
+
+void
+RepoStoreBackend::commitRanges(const RepoObjectManifest&)
+{
+  throw std::runtime_error("repo-range-commit-not-supported");
+}
+
+std::vector<uint8_t>
+RepoStoreBackend::getRange(const std::string& objectName,
+                           RepoByteRange range) const
+{
+  const auto object = get(objectName);
+  if (range.offsetBytes > object.payload.size() ||
+      range.lengthBytes > object.payload.size() - range.offsetBytes) {
+    throw std::out_of_range("repo-range-read-out-of-bounds");
+  }
+  return std::vector<uint8_t>(
+    object.payload.begin() + static_cast<std::ptrdiff_t>(range.offsetBytes),
+    object.payload.begin() + static_cast<std::ptrdiff_t>(
+      range.offsetBytes + range.lengthBytes));
+}
+
+RepoObjectManifest
+RepoStoreBackend::getManifest(const std::string& objectName) const
+{
+  return get(objectName).manifest;
+}
+
+bool
+RepoStoreBackend::supportsRange() const noexcept
+{
+  return false;
+}
+
+uint64_t
+RepoStoreBackend::fullCopyFallbackCount() const noexcept
+{
+  return 0;
+}
+
+void
+RepoStoreBackend::pin(const std::string&) const
+{
+}
+
+void
+RepoStoreBackend::unpin(const std::string&) const
+{
+}
+
+void
+RepoStoreBackend::abortRanges(const std::string&)
+{
+}
+
+bool
+RepoStoreBackend::supportsManifestLookup() const noexcept
+{
+  return false;
+}
+
 std::shared_ptr<RepoStoreBackend>
 makeSqliteRepoStore(const std::string& databasePath)
 {

@@ -6,7 +6,7 @@
 | Order | Batch | Members | Stable exit | Status | Unique result record |
 | --- | --- | --- | --- | --- | --- |
 | 1 | B189-0 | T001 | 剩余真实接线与 candidate/验证边界 | DONE (mapping only) | evidence/b189-convergence.md |
-| 2 | B189-1 | T003 (former T002,T004) | 原子材料 Repo publication + source release + B189-1c audit storage gates | PARTIAL (B189-1a closed; B189-1b producer/Repo consumer locally verified; F02/F05/F09 and protected ingress open) | evidence/b189-prepare.md; evidence/di-repo-design-static-audit-20260919.md |
+| 2 | B189-1 | T003 (former T002,T004) | 原子材料 Repo publication + source release + B189-1c audit storage gates | PARTIAL (B189-1a closed; B189-1b producer/Repo consumer locally verified; F05/F09 focused selectors pass; F02 and protected ingress open) | evidence/b189-prepare.md; evidence/b189-f05-quota-20260919.md; evidence/di-repo-design-static-audit-20260919.md |
 | 3 | B189-2 | T005 | ACK 后规划与生产 Selection/no-fetch fence | PARTIAL | evidence/b189-placement.md |
 | 4 | B189-3 | T006,T007 | 范围组装、NDN handoff、C++ 输出/因果判据 | PARTIAL (material-only consumer local exit passed; handoff/output open) | evidence/b189-execution.md; evidence/b189-material-consumer-20260919.md |
 | 5 | B189-5 | T009 (former T008,T010) | resource gate 后两独立 MiniNDN，各自同 handle 两请求 | PARTIAL | evidence/b189-convergence.md |
@@ -32,7 +32,7 @@
 | --- | --- | --- | --- |
 | 1 | B189-1a / T003 | ServiceUser→Repo ciphertext commit→原 NDN 分段读取/解密；真实 package/cache eviction 后释放 serving/key lease | `spec189-encrypted-repo`、既有 bounded publisher/Runtime selectors；不加入 atomic schema/ORT/handoff；worker/cancel/key 静态门、组合构建及 14 个 C++ selectors 已通过 |
 | 2 | B189-1b / T003 | 原子层/shared manifest、protected 可达性、source release | producer 与 Repo consumer selector 已通过；protected ingress、prepare-to-assembly handoff 和真实 Qwen manifest 仍待完成；prepare 不固定两个 partition |
-| 3 | B189-1c / T003 | preparation peak 分类、混合 quota reservation、filesystem fd error ownership | F09 focused C++ selector passed; F02/F05 remain open and no full-model candidate is frozen |
+| 3 | B189-1c / T003 | preparation peak 分类、混合 quota reservation、filesystem fd error ownership | F05/F09 focused C++ selectors passed; F02 and protected ingress remain open and no full-model candidate is frozen |
 | 4 | B189-2 / T005 | 真实 ACK/Selection/no-fetch ingress | 保留已验授权机制，仅补接线与反例 |
 | 5 | B189-3 / T006,T007 | 选定材料、有界 assembly、NDN handoff、因果/独立输出 oracle | material-only consumer/预算已验证；计数器、handoff、输出 oracle 在 owner 一并交付，达到出口即验证 |
 | 6 | B189-5 / T009 | 每次运行先过 host guard；两次独立 MiniNDN，各自 prepare-once/two-request、F08 generation guard、完整采样和 drain | 不扩张全局依赖迁移、SIF/Tiger 或广泛性能工程 |

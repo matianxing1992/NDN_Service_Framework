@@ -1,12 +1,56 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <limits>
 #include <stdexcept>
 #include <sstream>
 
 namespace ndnsf_distributed_repo {
 
 namespace {
+
+constexpr size_t MAX_RANGE_MANIFEST_BYTES = 1U << 20;
+constexpr size_t MAX_RANGE_OBJECT_NAME_BYTES = 4096;
+constexpr size_t MAX_RANGE_FRAME_BYTES = 16U << 20;
+
+size_t
+readFramedLine(const std::vector<uint8_t>& request, size_t& cursor,
+               const char* field)
+{
+  if (cursor > request.size()) {
+    throw std::invalid_argument(std::string("repo range request missing ") + field);
+  }
+  const auto begin = request.begin() + static_cast<std::ptrdiff_t>(cursor);
+  const auto end = std::find(begin, request.end(), '\n');
+  if (end == request.end()) {
+    throw std::invalid_argument(std::string("repo range request missing ") + field);
+  }
+  const auto lineLength = static_cast<size_t>(std::distance(begin, end));
+  if (lineLength == 0 || lineLength > 32) {
+    throw std::invalid_argument(std::string("repo range request invalid ") + field);
+  }
+  uint64_t value = 0;
+  const auto result = std::from_chars(
+    reinterpret_cast<const char*>(request.data() + cursor),
+    reinterpret_cast<const char*>(request.data() + cursor + lineLength), value);
+  if (result.ec != std::errc{} || result.ptr !=
+      reinterpret_cast<const char*>(request.data() + cursor + lineLength)) {
+    throw std::invalid_argument(std::string("repo range request invalid ") + field);
+  }
+  cursor += lineLength + 1;
+  if (value > std::numeric_limits<size_t>::max()) {
+    throw std::invalid_argument(std::string("repo range request oversized ") + field);
+  }
+  return static_cast<size_t>(value);
+}
+
+void
+appendFramedLine(std::vector<uint8_t>& encoded, uint64_t value)
+{
+  const auto text = std::to_string(value) + "\n";
+  encoded.insert(encoded.end(), text.begin(), text.end());
+}
 
 std::string
 extractJsonString(const std::string& json, const std::string& key)
@@ -265,6 +309,52 @@ encodeStoreRequest(const RepoObjectManifest& manifest,
 }
 
 std::vector<uint8_t>
+encodeRangeWriteRequest(const RepoObjectManifest& manifest,
+                        RepoByteRange range,
+                        const std::vector<uint8_t>& bytes)
+{
+  if (range.lengthBytes != bytes.size()) {
+    throw std::invalid_argument("repo range write payload length mismatch");
+  }
+  const auto manifestJson = manifest.toJson();
+  if (manifestJson.size() > MAX_RANGE_MANIFEST_BYTES) {
+    throw std::invalid_argument("repo range write manifest too large");
+  }
+  std::vector<uint8_t> encoded;
+  encoded.reserve(manifestJson.size() + bytes.size() + 96);
+  appendFramedLine(encoded, manifestJson.size());
+  appendFramedLine(encoded, range.offsetBytes);
+  appendFramedLine(encoded, range.lengthBytes);
+  encoded.insert(encoded.end(), manifestJson.begin(), manifestJson.end());
+  encoded.insert(encoded.end(), bytes.begin(), bytes.end());
+  return encoded;
+}
+
+std::vector<uint8_t>
+encodeRangeReadRequest(const std::string& objectName, RepoByteRange range)
+{
+  if (objectName.empty() || objectName.size() > MAX_RANGE_OBJECT_NAME_BYTES) {
+    throw std::invalid_argument("repo range read object name length invalid");
+  }
+  std::vector<uint8_t> encoded;
+  encoded.reserve(objectName.size() + 64);
+  appendFramedLine(encoded, objectName.size());
+  appendFramedLine(encoded, range.offsetBytes);
+  appendFramedLine(encoded, range.lengthBytes);
+  encoded.insert(encoded.end(), objectName.begin(), objectName.end());
+  return encoded;
+}
+
+std::vector<uint8_t>
+encodeRangeAbortRequest(const std::string& objectName)
+{
+  if (objectName.empty() || objectName.size() > MAX_RANGE_OBJECT_NAME_BYTES) {
+    throw std::invalid_argument("repo range abort object name length invalid");
+  }
+  return toBytes(objectName);
+}
+
+std::vector<uint8_t>
 encodeManifestRequest(const RepoObjectManifest& manifest)
 {
   return toBytes(manifest.toJson());
@@ -314,6 +404,61 @@ decodeStoreRequest(const std::vector<uint8_t>& request,
     manifestSize);
   manifest = parseManifestJson(manifestJson);
   payload.assign(request.begin() + manifestStart + manifestSize, request.end());
+}
+
+void
+decodeRangeWriteRequest(const std::vector<uint8_t>& request,
+                        RepoObjectManifest& manifest,
+                        RepoByteRange& range,
+                        std::vector<uint8_t>& bytes)
+{
+  size_t cursor = 0;
+  const auto manifestSize = readFramedLine(request, cursor, "manifest length");
+  range.offsetBytes = readFramedLine(request, cursor, "range offset");
+  range.lengthBytes = readFramedLine(request, cursor, "range length");
+  if (range.lengthBytes > MAX_RANGE_FRAME_BYTES) {
+    throw std::invalid_argument("repo range write payload exceeds protocol window");
+  }
+  if (manifestSize > MAX_RANGE_MANIFEST_BYTES || cursor > request.size() ||
+      manifestSize > request.size() - cursor) {
+    throw std::invalid_argument("repo range write request truncated manifest");
+  }
+  const std::string manifestJson(
+    reinterpret_cast<const char*>(request.data() + cursor), manifestSize);
+  cursor += manifestSize;
+  if (range.lengthBytes != request.size() - cursor) {
+    throw std::invalid_argument("repo range write request payload length mismatch");
+  }
+  manifest = parseManifestJson(manifestJson);
+  bytes.assign(request.begin() + static_cast<std::ptrdiff_t>(cursor), request.end());
+}
+
+void
+decodeRangeReadRequest(const std::vector<uint8_t>& request,
+                       std::string& objectName,
+                       RepoByteRange& range)
+{
+  size_t cursor = 0;
+  const auto objectNameSize = readFramedLine(request, cursor, "object name length");
+  range.offsetBytes = readFramedLine(request, cursor, "range offset");
+  range.lengthBytes = readFramedLine(request, cursor, "range length");
+  if (range.lengthBytes > MAX_RANGE_FRAME_BYTES) {
+    throw std::invalid_argument("repo range read exceeds protocol window");
+  }
+  if (objectNameSize == 0 || objectNameSize > MAX_RANGE_OBJECT_NAME_BYTES ||
+      cursor > request.size() || objectNameSize != request.size() - cursor) {
+    throw std::invalid_argument("repo range read request object name length invalid");
+  }
+  objectName.assign(reinterpret_cast<const char*>(request.data() + cursor), objectNameSize);
+}
+
+std::string
+decodeRangeAbortRequest(const std::vector<uint8_t>& request)
+{
+  if (request.empty() || request.size() > MAX_RANGE_OBJECT_NAME_BYTES) {
+    throw std::invalid_argument("repo range abort object name length invalid");
+  }
+  return toString(request);
 }
 
 RepoDataReference

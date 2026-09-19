@@ -25,6 +25,17 @@ encodeStoreRequest(const RepoObjectManifest& manifest,
                    const std::vector<uint8_t>& payload);
 
 std::vector<uint8_t>
+encodeRangeWriteRequest(const RepoObjectManifest& manifest,
+                        RepoByteRange range,
+                        const std::vector<uint8_t>& bytes);
+
+std::vector<uint8_t>
+encodeRangeReadRequest(const std::string& objectName, RepoByteRange range);
+
+std::vector<uint8_t>
+encodeRangeAbortRequest(const std::string& objectName);
+
+std::vector<uint8_t>
 encodeManifestRequest(const RepoObjectManifest& manifest);
 
 std::vector<uint8_t>
@@ -43,6 +54,20 @@ void
 decodeStoreRequest(const std::vector<uint8_t>& request,
                    RepoObjectManifest& manifest,
                    std::vector<uint8_t>& payload);
+
+void
+decodeRangeWriteRequest(const std::vector<uint8_t>& request,
+                        RepoObjectManifest& manifest,
+                        RepoByteRange& range,
+                        std::vector<uint8_t>& bytes);
+
+void
+decodeRangeReadRequest(const std::vector<uint8_t>& request,
+                       std::string& objectName,
+                       RepoByteRange& range);
+
+std::string
+decodeRangeAbortRequest(const std::vector<uint8_t>& request);
 
 RepoDataReference
 parseDataReferenceJson(const std::string& referenceJson);

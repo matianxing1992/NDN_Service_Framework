@@ -18,8 +18,8 @@ r25 FAIL 已观察 assembly entry，未证明两 Provider 成功执行；后续�
 组件结果以 tasks.md 及其证据为准。
 见 [audit correction](evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
 
-审计对账已将 F01 标为局部修复、资格仍开放；F02、F05、F08、F09 是当前候选的
-生产门，分别由 T003/T009 收口。F03/F04 只在采用 catalog snapshot/delta 时适用，
+审计对账已将 F01 标为局部修复、资格仍开放；F02、F08 仍是当前候选的开放生产门，
+F05/F09 已有 focused C++ selector 但仍需完整候选边界，分别由 T003/T009 收口。F03/F04 只在采用 catalog snapshot/delta 时适用，
 F06/F07 属于未用于本机 native protected 资格路径的兼容/本地 Python 后端；它们保留
 为后续维护项，不能写成已修复，也不应把本次 Qwen 任务扩成通用 Repo 重构。
 
