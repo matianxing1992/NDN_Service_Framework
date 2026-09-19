@@ -10,6 +10,8 @@
 
 **Audit reconciliation checkpoint**: 2026-09-19 — 已将 [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) 与当前源码重新对账：F01 的 material-only consumer 已有局部生产接线和 C++ selector，但真实 protected ingress 仍未验收；F02 已有 focused C++ selector 但实际 ORT/RSS 与完整候选资格仍开放，F08 仍开放，F05/F09 已有 focused C++ selector 但完整候选边界仍开放；F03/F04/F06/F07 分别标为条件性或 legacy follow-up。新增 FR-027..FR-029、T003-R1..R3 与 T009-R1，未将任何任务勾选完成。[audit reconciliation](spec.md#audit-reconciliation--2026-09-19)
 
+**Protected range-store checkpoint**: 2026-09-19 04:52 -05:00 — B189-1a 的冻结范围通过官方只读 `STATIC_PASS`；受影响的 NDNSF targets 用仓库 Waf `-j4` 完成 compile/link，Repo range-store 6/6 C++ cases 和生产 Runtime protected publication 1/1 C++ case 通过，requester `--help` 入口通过。证据记录了 Core ciphertext publication、Repo generation/lease fence、worker cancellation/rollback、bounded reads、source release 和第二次 prepare 无对象增长。[protected range-store evidence](evidence/b189-protected-range-store-20260919.md) 只关闭本地 protected publication 接缝；T003、真实 Qwen、ACK/Selection、Provider、MiniNDN/Tiger 仍为 `PARTIAL`/open。根 NDNSF Waf 只负责 NDNSF 自有目标；NAC-ABE 由其自身 Waf 及已安装 SDK 负责，未递归构建。
+
 **F02 focused checkpoint**: 2026-09-19 — T003-R1 的 production `MemorySnapshot`/terminal
 guard 通过 r2/r3 官方只读复审；仓库根 Waf tree 重新配置并以 `spec189-preparation-memory`
 完成 compile/link，修复 build-tree 与 `/usr/local` 同 SONAME 混链后 selector 通过 1/1。
@@ -87,14 +89,14 @@ host guard 和小型 lifecycle safety entry 已达到其前置出口；剩余 na
 创建重复的资源行政批次。
 本轮文档 v2 已获 DOCUMENTATION_STATIC_PASS；结构/29 FR/链接与技能同步检查通过，
 见 [follow-up verification](evidence/spec189-static-audit-20260918.md#follow-up-verification)。
-受保护接缝草稿已通过 B189-1a 静态门；Repo adapter producer/consumer focused
-selectors 已通过，protected Provider consumer/真实 Qwen 链路仍未审查，
-本轮未构建或运行模型。
+受保护接缝已通过 B189-1a 静态门、受影响目标构建及 C++ focused selectors；Repo
+adapter producer/consumer 和 Runtime protected publication 的本地出口已记录，
+但 protected Provider consumer/真实 Qwen 链路仍未审查，本轮未构建或运行模型。
 
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/material-only consumer 局部 C++ 通过；F02 focused owner/cancel selector 已通过但实际 ORT/RSS、F05 replacement/rollback beyond focused selector、F09 complete publication boundary、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/range-store 与 material-only consumer 局部 C++ 通过；F02 focused owner/cancel selector 已通过但实际 ORT/RSS、F05 replacement/rollback beyond focused selector、F09 complete publication boundary、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md); [protected range-store](evidence/b189-protected-range-store-20260919.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress no-fetch。[placement](evidence/b189-placement.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer 与 aggregate budget 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md) |
@@ -184,8 +186,9 @@ ModelPreparationCache 预算/淘汰作为唯一保留策略，publisher 不成�
 活动 package/request 仍保证可读。B189-1a 只验证受保护接缝和真实 package/cache owner
 反例；B189-1b 才冻结原子材料 schema，不把未来 schema 当作当前 API。
 C++ 反例必须走真实 publisher→package→淘汰路径，不能只手动 reset Core token。
-B189-1a 当前 worker/cancel/key 与 Repo identity 静态门已通过；仍须以真实
-package/cache owner 反例和组合 runtime 验证受保护接缝，不能把静态通过写成 T003 完成。
+B189-1a 当前 worker/cancel/key 与 Repo identity 静态门、组合构建和受保护
+package/cache owner runtime selector 已通过；这只关闭本地 protected publication
+接缝，不能把它写成 T003 完成。
 具体出口与反例见 [bounded commit](contracts/model-preparation.md#bounded-commit-and-identity-ownership)。
 
 **Audit follow-up exit B189-1c**：T003-R1 记录 source/initializer/material/encryption/ORT

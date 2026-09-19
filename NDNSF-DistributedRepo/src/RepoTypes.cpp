@@ -14,6 +14,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -23,6 +24,14 @@
 namespace ndnsf_distributed_repo {
 
 namespace {
+
+bool
+isAmbiguousCommitError(const std::exception& error)
+{
+  constexpr char prefix[] = "repo-file-ambiguous-commit:";
+  const std::string message = error.what();
+  return message.compare(0, sizeof(prefix) - 1, prefix) == 0;
+}
 
 std::string
 jsonQuote(const std::string& value)
@@ -262,6 +271,27 @@ public:
     return StoredObject{parseManifestJson(manifestText), std::move(payload)};
   }
 
+  RepoObjectManifest getManifest(const std::string& objectName) const override
+  {
+    sqlite3_stmt* stmt = nullptr;
+    prepare("SELECT manifest_json FROM objects WHERE object_name=?", &stmt);
+    StatementGuard guard(stmt);
+    bindText(stmt, 1, objectName);
+    const int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) {
+      throw std::out_of_range("repo object not found: " + objectName);
+    }
+    if (rc != SQLITE_ROW) {
+      throwSqlite("failed to fetch repo manifest");
+    }
+    return parseManifestJson(columnText(stmt, 0));
+  }
+
+  bool supportsManifestLookup() const noexcept override
+  {
+    return true;
+  }
+
   bool has(const std::string& objectName) const override
   {
     sqlite3_stmt* stmt = nullptr;
@@ -414,8 +444,10 @@ class TieredRepoStore : public RepoStoreBackend
 public:
   TieredRepoStore(std::shared_ptr<RepoStoreBackend> authoritativeStore,
                   uint64_t memoryCacheBytes,
-                  std::string authoritativeBackend)
+                  std::string authoritativeBackend,
+                  uint64_t largeObjectThreshold)
     : m_authoritativeStore(std::move(authoritativeStore))
+    , m_largeObjectThreshold(largeObjectThreshold)
   {
     if (m_authoritativeStore == nullptr) {
       throw std::invalid_argument("tiered repo authoritative store must not be null");
@@ -426,31 +458,103 @@ public:
       ? m_status.authoritativeBackend : "tiered";
     m_status.cachePolicy = memoryCacheBytes == 0 ? "disabled" : "lru";
     m_status.budgetBytes = memoryCacheBytes;
+    if (m_largeObjectThreshold == 0) {
+      throw std::invalid_argument("tiered repo large-object threshold must be positive");
+    }
   }
 
   void put(const RepoObjectManifest& manifest, std::vector<uint8_t> payload) override
   {
-    StoredObject cached{manifest, payload};
-    m_authoritativeStore->put(manifest, std::move(payload));
+    const bool cacheable = manifest.size <= m_largeObjectThreshold;
+    std::optional<StoredObject> cached;
+    if (cacheable) {
+      cached.emplace(StoredObject{manifest, payload});
+    }
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    try {
+      m_authoritativeStore->put(manifest, std::move(payload));
+    }
+    catch (const std::exception& e) {
+      if (isAmbiguousCommitError(e)) {
+        reconcileAmbiguousWrite(manifest.objectName);
+      }
+      throw;
+    }
+    auto durable = manifest;
+    bool lookupFailed = false;
+    try {
+      durable = m_authoritativeStore->getManifest(manifest.objectName);
+    }
+    catch (...) {
+      lookupFailed = true;
+    }
     std::lock_guard<std::mutex> lock(m_mutex);
-    ++m_status.backingWrites;
     invalidate(manifest.objectName);
-    admitNoThrow(std::move(cached));
+    try {
+      ++m_epochs[manifest.objectName];
+    }
+    catch (...) {
+      m_status.reconciliationRequired = true;
+    }
+    if (lookupFailed) {
+      m_status.reconciliationRequired = true;
+    }
+    ++m_status.backingWrites;
+    if (cached && !lookupFailed) {
+      cached->manifest = durable;
+      admitNoThrow(std::move(*cached));
+    }
+    else if (!cached && m_status.budgetBytes != 0) {
+      ++m_status.oversizedBypasses;
+    }
   }
 
   void putManifest(const RepoObjectManifest& manifest) override
   {
-    m_authoritativeStore->putManifest(manifest);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    try {
+      m_authoritativeStore->putManifest(manifest);
+    }
+    catch (const std::exception& e) {
+      if (isAmbiguousCommitError(e)) {
+        reconcileAmbiguousWrite(manifest.objectName);
+      }
+      throw;
+    }
+    auto durable = manifest;
+    bool lookupFailed = false;
+    try {
+      durable = m_authoritativeStore->getManifest(manifest.objectName);
+    }
+    catch (...) {
+      lookupFailed = true;
+    }
     std::lock_guard<std::mutex> lock(m_mutex);
+    invalidate(durable.objectName);
+    try {
+      ++m_epochs[durable.objectName];
+    }
+    catch (...) {
+      m_status.reconciliationRequired = true;
+    }
+    if (lookupFailed) {
+      m_status.reconciliationRequired = true;
+    }
     ++m_status.backingWrites;
-    invalidate(manifest.objectName);
-    admitNoThrow(StoredObject{manifest, {}});
+    if (m_status.budgetBytes != 0) {
+      // A manifest-only write never supplies payload bytes.  Do not populate
+      // a vector cache entry that could make a later get appear successful.
+      ++m_status.oversizedBypasses;
+    }
   }
 
   StoredObject get(const std::string& objectName) const override
   {
+    uint64_t observedEpoch = 0;
     {
       std::lock_guard<std::mutex> lock(m_mutex);
+      const auto epoch = m_epochs.find(objectName);
+      observedEpoch = epoch == m_epochs.end() ? 0 : epoch->second;
       const auto found = m_cache.find(objectName);
       if (found != m_cache.end()) {
         ++m_status.hits;
@@ -460,43 +564,173 @@ public:
       ++m_status.misses;
       ++m_status.backingReads;
     }
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
     auto object = m_authoritativeStore->get(objectName);
     auto result = object;
     {
       std::lock_guard<std::mutex> lock(m_mutex);
-      admitNoThrow(std::move(object));
+      const auto epoch = m_epochs.find(objectName);
+      if ((epoch == m_epochs.end() ? 0 : epoch->second) == observedEpoch &&
+          result.manifest.size <= m_largeObjectThreshold) {
+        admitNoThrow(std::move(object));
+      }
+      else if (m_status.budgetBytes != 0) {
+        ++m_status.oversizedBypasses;
+      }
     }
     return result;
   }
 
+  void putRange(const RepoObjectManifest& manifest, RepoByteRange range,
+                const std::vector<uint8_t>& bytes) override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    m_authoritativeStore->putRange(manifest, range, bytes);
+    std::lock_guard<std::mutex> lock(m_mutex);
+    invalidate(manifest.objectName);
+    try {
+      ++m_epochs[manifest.objectName];
+    }
+    catch (...) {
+      m_status.reconciliationRequired = true;
+    }
+    ++m_status.backingWrites;
+  }
+
+  void commitRanges(const RepoObjectManifest& manifest) override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    try {
+      m_authoritativeStore->commitRanges(manifest);
+    }
+    catch (const std::exception& e) {
+      if (isAmbiguousCommitError(e)) {
+        reconcileAmbiguousWrite(manifest.objectName);
+      }
+      throw;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    invalidate(manifest.objectName);
+    try {
+      ++m_epochs[manifest.objectName];
+    }
+    catch (...) {
+      m_status.reconciliationRequired = true;
+    }
+    ++m_status.backingWrites;
+  }
+
+  void abortRanges(const std::string& objectName) override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    m_authoritativeStore->abortRanges(objectName);
+    std::lock_guard<std::mutex> lock(m_mutex);
+    invalidate(objectName);
+    try {
+      ++m_epochs[objectName];
+    }
+    catch (...) {
+      m_status.reconciliationRequired = true;
+    }
+  }
+
+  std::vector<uint8_t> getRange(const std::string& objectName,
+                                RepoByteRange range) const override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    return m_authoritativeStore->getRange(objectName, range);
+  }
+
+  RepoObjectManifest getManifest(const std::string& objectName) const override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    return m_authoritativeStore->getManifest(objectName);
+  }
+
+  bool supportsManifestLookup() const noexcept override
+  {
+    return m_authoritativeStore->supportsManifestLookup();
+  }
+
+  bool supportsRange() const noexcept override
+  {
+    return m_authoritativeStore->supportsRange();
+  }
+
+  uint64_t fullCopyFallbackCount() const noexcept override
+  {
+    return m_authoritativeStore->fullCopyFallbackCount();
+  }
+
+  void pin(const std::string& objectName) const override
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    ++m_pins[objectName];
+  }
+
+  void unpin(const std::string& objectName) const override
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto found = m_pins.find(objectName);
+    if (found == m_pins.end()) {
+      return;
+    }
+    if (found->second <= 1) {
+      m_pins.erase(found);
+    }
+    else {
+      --found->second;
+    }
+  }
+
   bool has(const std::string& objectName) const override
   {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
     return m_authoritativeStore->has(objectName);
   }
 
   bool erase(const std::string& objectName) override
   {
-    const bool removed = m_authoritativeStore->erase(objectName);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    bool removed = false;
+    try {
+      removed = m_authoritativeStore->erase(objectName);
+    }
+    catch (const std::exception& e) {
+      if (isAmbiguousCommitError(e)) {
+        reconcileAmbiguousWrite(objectName);
+      }
+      throw;
+    }
     if (removed) {
       std::lock_guard<std::mutex> lock(m_mutex);
-      ++m_status.backingWrites;
       invalidate(objectName);
+      try {
+        ++m_epochs[objectName];
+      }
+      catch (...) {
+        m_status.reconciliationRequired = true;
+      }
+      ++m_status.backingWrites;
     }
     return removed;
   }
 
   size_t size() const override
   {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
     return m_authoritativeStore->size();
   }
 
   std::vector<RepoObjectManifest> listManifests() const override
   {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
     return m_authoritativeStore->listManifests();
   }
 
   uint64_t usedBytes() const override
   {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
     return m_authoritativeStore->usedBytes();
   }
 
@@ -510,6 +744,23 @@ public:
   }
 
 private:
+  void reconcileAmbiguousWrite(const std::string& objectName) noexcept
+  {
+    try {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      invalidate(objectName);
+      try {
+        ++m_epochs[objectName];
+      }
+      catch (...) {
+      }
+      m_status.reconciliationRequired = true;
+      ++m_status.backingWrites;
+    }
+    catch (...) {
+    }
+  }
+
   struct CacheEntry
   {
     StoredObject object;
@@ -566,17 +817,33 @@ private:
       return;
     }
 
+    if (m_pins.count(object.manifest.objectName) != 0) {
+      return;
+    }
+
     invalidate(object.manifest.objectName);
+    size_t inspected = 0;
     while (!m_lru.empty() &&
-           m_usedBytes > m_status.budgetBytes - chargeBytes) {
+           m_usedBytes > m_status.budgetBytes - chargeBytes &&
+           inspected < m_lru.size()) {
       const auto victimName = m_lru.front();
       const auto victim = m_cache.find(victimName);
+      if (m_pins.count(victimName) != 0) {
+        m_lru.splice(m_lru.end(), m_lru, m_lru.begin());
+        ++inspected;
+        continue;
+      }
       if (victim != m_cache.end()) {
         m_usedBytes -= victim->second.chargeBytes;
         m_cache.erase(victim);
       }
       m_lru.pop_front();
       ++m_status.evictions;
+      inspected = 0;
+    }
+    if (m_usedBytes > m_status.budgetBytes - chargeBytes) {
+      ++m_status.oversizedBypasses;
+      return;
     }
 
     const auto objectName = object.manifest.objectName;
@@ -596,8 +863,12 @@ private:
 
 private:
   std::shared_ptr<RepoStoreBackend> m_authoritativeStore;
+  uint64_t m_largeObjectThreshold;
+  mutable std::mutex m_authorityMutex;
   mutable std::mutex m_mutex;
   mutable std::unordered_map<std::string, CacheEntry> m_cache;
+  mutable std::unordered_map<std::string, uint64_t> m_epochs;
+  mutable std::unordered_map<std::string, uint64_t> m_pins;
   mutable std::list<std::string> m_lru;
   mutable uint64_t m_usedBytes = 0;
   mutable RepoCacheStatus m_status;
@@ -965,7 +1236,9 @@ RepoCatalogStatus::toJson() const
   os << "\"repoMode\":" << jsonQuote(repoMode) << ",";
   os << "\"catalogEpoch\":" << catalogEpoch << ",";
   os << "\"objectCount\":" << objectCount << ",";
-  os << "\"acceptsBackupReplica\":" << (acceptsBackupReplica ? "true" : "false");
+  os << "\"acceptsBackupReplica\":" << (acceptsBackupReplica ? "true" : "false") << ",";
+  os << "\"reconciliationRequired\":"
+     << (reconciliationRequired ? "true" : "false");
   os << "}";
   return os.str();
 }
@@ -1008,7 +1281,9 @@ RepoCacheStatus::toJson() const
   os << "\"invalidations\":" << invalidations << ",";
   os << "\"oversizedBypasses\":" << oversizedBypasses << ",";
   os << "\"backingReads\":" << backingReads << ",";
-  os << "\"backingWrites\":" << backingWrites;
+  os << "\"backingWrites\":" << backingWrites << ",";
+  os << "\"reconciliationRequired\":"
+     << (reconciliationRequired ? "true" : "false");
   os << "}";
   return os.str();
 }
@@ -1182,21 +1457,24 @@ makeSqliteRepoStore(const std::string& databasePath)
 }
 
 std::shared_ptr<RepoStoreBackend>
-makeTieredRepoStore(const std::string& databasePath, uint64_t memoryCacheBytes)
+makeTieredRepoStore(const std::string& databasePath, uint64_t memoryCacheBytes,
+                    uint64_t largeObjectThreshold)
 {
   return makeTieredRepoStore(makeSqliteRepoStore(databasePath),
                              memoryCacheBytes,
-                             "sqlite");
+                             "sqlite", largeObjectThreshold);
 }
 
 std::shared_ptr<RepoStoreBackend>
 makeTieredRepoStore(std::shared_ptr<RepoStoreBackend> authoritativeStore,
                     uint64_t memoryCacheBytes,
-                    std::string authoritativeBackend)
+                    std::string authoritativeBackend,
+                    uint64_t largeObjectThreshold)
 {
   return std::make_shared<TieredRepoStore>(std::move(authoritativeStore),
                                            memoryCacheBytes,
-                                           std::move(authoritativeBackend));
+                                           std::move(authoritativeBackend),
+                                           largeObjectThreshold);
 }
 
 } // namespace ndnsf_distributed_repo

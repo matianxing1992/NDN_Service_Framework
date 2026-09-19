@@ -7,6 +7,7 @@ namespace ndn_service_framework { class ServiceUser; }
 namespace ndnsf::di {
 
 class Runtime;
+class Provider;
 class NativeAuthenticatedGrantClient;
 class NativeOfferAdmission;
 
@@ -25,6 +26,10 @@ struct RuntimeTestAccess
     std::shared_ptr<ndn_service_framework::ServiceUser> user,
     std::shared_ptr<NativeAuthenticatedGrantClient> grants,
     std::shared_ptr<const NativeOfferAdmission> admission);
+
+  /** Replace the unopened Provider-only owner with a borrowed-face fixture. */
+  static void bindProviderOnlyFixture(
+    const std::shared_ptr<Runtime>& runtime, Provider provider);
 };
 
 } // namespace detail

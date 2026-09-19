@@ -18,6 +18,7 @@
 #include "RevocationState.hpp"
 #include "PolicyRefreshCoordinator.hpp"
 #include "RuntimeStatusStore.hpp"
+#include "EncryptedLargeDataRangeStore.hpp"
 
 #include <functional>
 #include <atomic>
@@ -231,6 +232,25 @@ namespace ndn_service_framework{
         std::string protectionEpoch;
         bool encrypted = true;
         std::string errorMessage;
+        // Local names and scoped wrapped-key identity retained for an aborting
+        // multi-object publication. These are never sent on the wire.
+        std::vector<std::string> rollbackDataNames;
+        std::string rollbackKeyId;
+        std::string rollbackServiceName;
+        // Optional owner-bound serving pin. Copies share one pin; no key or
+        // payload bytes are exposed. Timed publications leave this empty.
+        std::shared_ptr<void> servingLease;
+        bool fileBacked = false;
+    };
+
+    /** Bounded file-backed serving counters exposed only for native selectors.
+     * The counters describe the serving window, not a qualification result. */
+    struct LargeDataServingMetrics
+    {
+        size_t publicationCount = 0;
+        uint64_t segmentReadCount = 0;
+        uint64_t retransmissionHitCount = 0;
+        size_t peakWindowSegments = 0;
     };
 
     struct LargeDataReferenceRequestResult
@@ -664,13 +684,43 @@ namespace ndn_service_framework{
              * be rolled back through this synchronous API. Active publication
              * rejects objects whose estimated segment set exceeds the current
              * IMS staging capacity; larger artifacts require a bounded-window
-             * publication protocol.
+             * publication protocol. File-backed publications retain their
+             * local range source for the bounded
+             * ``NDNSF_REQUEST_LARGE_DATA_RETENTION_MS`` period; this is
+             * independent of the wire FreshnessPeriod so delayed Provider
+             * fetches do not observe a deleted request source.
              */
             LargeDataPublishResult publishEncryptedLargeData(
                 const PreparedServiceRequest& ctx,
                 const std::vector<uint8_t>& plaintext,
                 const std::string& objectLabel = "",
-                ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+                ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD,
+                bool retainWhileLeased = false,
+                const std::function<void()>& requireActive = {});
+
+            /** Blocking worker entry: caller keeps this User and its running
+             * Face alive through return. Hash/encryption/storage run here;
+             * key preparation and serving registration are marshalled to I/O.
+             * Never call on the Face thread. Cancellation is cooperative. */
+            LargeDataPublishResult publishEncryptedLargeDataFromWorker(
+                const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
+                const std::string& objectLabel,
+                ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD,
+                const std::function<void()>& requireActive = {});
+
+            /** Configure before the first publication, on the owning thread.
+             * The store handles ciphertext only; Core keeps naming/signing. */
+            void setEncryptedLargeDataRangeStore(
+                std::shared_ptr<EncryptedLargeDataRangeStore> store);
+
+            /** Remove locally staged data for an aborted multi-object
+             * publication.  This is a best-effort local transaction fence;
+             * packets already queued on Face may still expire naturally. */
+            void abortLargeDataPublications(
+                const std::vector<LargeDataPublishResult>& publications) noexcept;
+
+            /** Return bounded file-serving counters for a native selector. */
+            LargeDataServingMetrics getLargeDataServingMetricsForTest() const;
 
             using SignedAppDataHandler = std::function<void(const ndn::Data&)>;
             using SignedAppDataFailureHandler =
@@ -1263,6 +1313,16 @@ namespace ndn_service_framework{
 
             bool replyFromIMS(const ndn::Interest &interest);
 
+            // Large encrypted model objects may be too large for the
+            // process-local IMS.  The file-backed path serves one finalized
+            // segment per Interest while retaining the encrypted object on
+            // disk until its freshness deadline or ServiceUser destruction.
+            // Objects at or above the native streaming threshold use this
+            // path automatically; NDNSF_REQUEST_LARGE_FILE_BACKED forces it
+            // for smaller fixtures.  Smaller objects retain the legacy IMS
+            // path.
+            bool replyFromLargeDataFile(const ndn::Interest& interest);
+
             void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason);
 
             void onInterest(const ndn::InterestFilter &, const ndn::Interest &interest);
@@ -1729,6 +1789,8 @@ namespace ndn_service_framework{
             // Retry callbacks retain only a weak reference to this route owner.
             std::shared_ptr<ndn::ScopedRegisteredPrefixHandle> m_identityRegistration;
             std::vector<std::shared_ptr<ndn::ScopedRegisteredPrefixHandle>> m_serviceRegistrations;
+            std::vector<std::shared_ptr<ndn::ScopedInterestFilterHandle>>
+                m_testInterestFilters;
             ndn::Name identity;
             ndn::KeyChain m_keyChain;
             ndn::KeyChain* m_testSigningKeyChain = nullptr;
@@ -1792,7 +1854,20 @@ namespace ndn_service_framework{
             BoundedWorkerPool m_ackProcessingPool{"ServiceUser ACK processing"};
 
             ndn::InMemoryStorageFifo m_IMS;
-            std::mutex _cache_mutex;
+            mutable std::mutex _cache_mutex;
+            struct LargeDataFilePublication;
+            struct LargeDataKeyReleaseState;
+            std::shared_ptr<LargeDataKeyReleaseState> m_largeDataKeyReleaseState;
+            LargeDataPublishResult publishEncryptedLargeDataImpl(
+                const PreparedServiceRequest&, const std::vector<uint8_t>&,
+                const std::string&, ndn::time::milliseconds, bool,
+                const std::function<void()>&, bool marshalIo);
+            void expireLargeDataPublication(const std::string& publicationKey,
+                std::weak_ptr<LargeDataFilePublication> publication);
+            std::shared_ptr<EncryptedLargeDataRangeStore> m_largeDataRangeStore;
+            std::map<std::string, std::shared_ptr<LargeDataFilePublication>>
+                m_largeDataFiles;
+            std::uintmax_t m_largeDataReservedBytes = 0;
 
             OptionalServiceDiscovery m_ServiceDiscovery;
             ServiceAuthorizationTable m_authorizations;

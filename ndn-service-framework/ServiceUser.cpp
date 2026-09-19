@@ -1,14 +1,20 @@
 #include "ServiceUser.hpp"
+#include <future>
 
 #include <boost/asio/post.hpp>
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -16,6 +22,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <system_error>
 #include <thread>
 
 #include <fcntl.h>
@@ -32,6 +39,117 @@ namespace ndn_service_framework
 {
 
     NDN_LOG_INIT(ndn_service_framework.ServiceUser);
+
+    struct ServiceUser::LargeDataKeyReleaseState
+    {
+        std::mutex mutex;
+        HybridMessageCrypto* crypto = nullptr;
+        struct Lease
+        {
+            std::shared_ptr<LargeDataKeyReleaseState> state;
+            ndn::Name service;
+            std::string keyId;
+            Lease(std::shared_ptr<LargeDataKeyReleaseState> owner,
+                  ndn::Name scope, std::string id)
+                : state(std::move(owner)), service(std::move(scope)), keyId(std::move(id)) {}
+            ~Lease() noexcept
+            {
+                try {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (state->crypto) state->crypto->eraseWrappedSendKey(service, keyId);
+                }
+                catch (...) {}
+            }
+        };
+    };
+
+    struct ServiceUser::LargeDataFilePublication
+    {
+        ndn::Name baseName;
+        std::filesystem::path filePath;
+        std::uint64_t fileSize = 0;
+        std::uint64_t segmentCount = 0;
+        std::size_t maxSegmentBytes = 7000;
+        ndn::time::milliseconds freshness{ndn::DEFAULT_FRESHNESS_PERIOD};
+        std::ifstream stream;
+        std::mutex streamMutex;
+        std::size_t windowCapacity = 8;
+        std::map<std::uint64_t, std::shared_ptr<const ndn::Data>> window;
+        std::deque<std::uint64_t> windowOrder;
+        std::uint64_t segmentReadCount = 0;
+        std::uint64_t retransmissionHitCount = 0;
+        std::size_t peakWindowSegments = 0;
+        std::uintmax_t reservedBytes = 0;
+        std::shared_ptr<const EncryptedLargeDataRangeSource> rangeSource;
+        std::weak_ptr<void> servingLease;
+        std::shared_ptr<void> keyLease;
+
+        ~LargeDataFilePublication()
+        {
+            stream.close();
+            std::error_code error;
+            if (!filePath.empty()) {
+                std::filesystem::remove(filePath, error);
+            }
+        }
+
+        std::vector<std::uint8_t> readSegment(std::uint64_t segment) {
+            if (segment >= segmentCount) {
+                throw std::out_of_range("large-data file segment is out of range");
+            }
+            const auto offset = segment * maxSegmentBytes;
+            const auto length = static_cast<std::size_t>(std::min<std::uint64_t>(
+                maxSegmentBytes, fileSize - std::min(offset, fileSize)));
+            std::vector<std::uint8_t> content(length);
+            if (length == 0) {
+                return content;
+            }
+            std::lock_guard<std::mutex> lock(streamMutex);
+            ++segmentReadCount;
+            if (rangeSource) {
+                auto bytes = rangeSource->read(offset, length);
+                if (bytes.size() != length)
+                    throw std::runtime_error("short read from encrypted range store");
+                return bytes;
+            }
+            stream.clear();
+            stream.seekg(static_cast<std::streamoff>(offset));
+            stream.read(reinterpret_cast<char*>(content.data()),
+                        static_cast<std::streamsize>(length));
+            if (static_cast<std::size_t>(stream.gcount()) != length) {
+                throw std::runtime_error("short read from large-data file publication");
+            }
+            return content;
+        }
+
+        std::shared_ptr<const ndn::Data> findCached(std::uint64_t segment)
+        {
+            std::lock_guard<std::mutex> lock(streamMutex);
+            const auto it = window.find(segment);
+            if (it == window.end()) {
+                return nullptr;
+            }
+            ++retransmissionHitCount;
+            return it->second;
+        }
+
+        void cache(std::uint64_t segment, std::shared_ptr<const ndn::Data> data)
+        {
+            std::lock_guard<std::mutex> lock(streamMutex);
+            if (windowCapacity == 0) {
+                return;
+            }
+            if (window.find(segment) == window.end()) {
+                windowOrder.push_back(segment);
+            }
+            window[segment] = std::move(data);
+            while (windowOrder.size() > windowCapacity) {
+                window.erase(windowOrder.front());
+                windowOrder.pop_front();
+            }
+            peakWindowSegments = std::max(peakWindowSegments, window.size());
+        }
+    };
 
     namespace
     {
@@ -323,6 +441,99 @@ namespace ndn_service_framework
                      text == "no" || text == "off");
         }
 
+        bool
+        useFileBackedLargeData()
+        {
+            return isTruthyEnv("NDNSF_REQUEST_LARGE_FILE_BACKED");
+        }
+
+        std::filesystem::path
+        largeDataFileDirectory()
+        {
+            if (const char* raw = std::getenv("NDNSF_REQUEST_LARGE_DATA_DIR");
+                raw != nullptr && *raw != '\0') {
+                return std::filesystem::path(raw);
+            }
+            return std::filesystem::temp_directory_path() / "ndnsf-large-data";
+        }
+
+        std::uintmax_t
+        largeDataFileMinimumFreeBytes()
+        {
+            constexpr std::uintmax_t defaultMinimum = 256ULL * 1024ULL * 1024ULL;
+            const char* raw = std::getenv("NDNSF_REQUEST_LARGE_DATA_MIN_FREE_BYTES");
+            if (raw == nullptr || *raw == '\0') {
+                return defaultMinimum;
+            }
+            try {
+                std::string value(raw);
+                size_t consumed = 0;
+                const auto parsed = std::stoull(value, &consumed, 10);
+                if (consumed != value.size()) {
+                    throw std::invalid_argument("trailing characters");
+                }
+                return static_cast<std::uintmax_t>(parsed);
+            }
+            catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "NDNSF_REQUEST_LARGE_DATA_MIN_FREE_BYTES must be an integer");
+            }
+        }
+
+        size_t
+        largeDataWindowSegments()
+        {
+            constexpr size_t defaultWindow = 8;
+            constexpr size_t maximumWindow = 1024;
+            const char* raw = std::getenv("NDNSF_REQUEST_LARGE_WINDOW_SEGMENTS");
+            if (raw == nullptr || *raw == '\0') {
+                return defaultWindow;
+            }
+            try {
+                std::string value(raw);
+                size_t consumed = 0;
+                const auto parsed = std::stoull(value, &consumed, 10);
+                if (consumed != value.size() || parsed == 0 || parsed > maximumWindow) {
+                    throw std::invalid_argument("out of range");
+                }
+                return static_cast<size_t>(parsed);
+            }
+            catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "NDNSF_REQUEST_LARGE_WINDOW_SEGMENTS must be an integer in [1,1024]");
+            }
+        }
+
+        ndn::time::milliseconds
+        largeDataFileRetention()
+        {
+            // Wire FreshnessPeriod controls network cacheability.  A
+            // file-backed publication is also a request-scoped serving
+            // owner, so its local file must outlive the delayed ACK,
+            // Selection and Provider fetch path even when the wire freshness
+            // is zero.  Keep the default bounded and make longer deployments
+            // explicit rather than silently retaining files forever.
+            constexpr std::uint64_t defaultRetentionMs = 5ULL * 60ULL * 1000ULL;
+            constexpr std::uint64_t maximumRetentionMs = 24ULL * 60ULL * 60ULL * 1000ULL;
+            const char* raw = std::getenv("NDNSF_REQUEST_LARGE_DATA_RETENTION_MS");
+            if (raw == nullptr || *raw == '\0') {
+                return ndn::time::milliseconds(defaultRetentionMs);
+            }
+            try {
+                std::string value(raw);
+                size_t consumed = 0;
+                const auto parsed = std::stoull(value, &consumed, 10);
+                if (consumed != value.size() || parsed == 0 || parsed > maximumRetentionMs) {
+                    throw std::invalid_argument("out of range");
+                }
+                return ndn::time::milliseconds(parsed);
+            }
+            catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "NDNSF_REQUEST_LARGE_DATA_RETENTION_MS must be an integer in [1,86400000]");
+            }
+        }
+
         int
         intEnvOrDefault(const char* name, int fallback)
         {
@@ -335,6 +546,40 @@ namespace ndn_service_framework
             }
             catch (const std::exception&) {
                 return fallback;
+            }
+        }
+
+        /**
+         * Return the explicitly requested IMS capacity for large encrypted
+         * publications.  The default remains the historical bounded cache;
+         * a caller handling a genuinely large object must opt in and choose a
+         * finite value that its process can afford.  Silently falling back on
+         * malformed values would turn a capacity diagnosis into a late,
+         * partially published failure, so reject invalid overrides at
+         * construction time.
+         */
+        size_t
+        largeDataImsLimit()
+        {
+            constexpr size_t defaultLimit = 50000;
+            constexpr size_t maximumLimit = 1000000;
+            const char* raw = std::getenv("NDNSF_REQUEST_LARGE_IMS_LIMIT");
+            if (raw == nullptr || *raw == '\0') {
+                return defaultLimit;
+            }
+            try {
+                std::string value(raw);
+                size_t consumed = 0;
+                const auto parsed = std::stoull(value, &consumed, 10);
+                if (consumed != value.size() || parsed == 0 ||
+                    parsed > maximumLimit) {
+                    throw std::invalid_argument("out of range");
+                }
+                return static_cast<size_t>(parsed);
+            }
+            catch (const std::exception&) {
+                throw std::invalid_argument(
+                    "NDNSF_REQUEST_LARGE_IMS_LIMIT must be an integer in [1,1000000]");
             }
         }
 
@@ -743,12 +988,17 @@ namespace ndn_service_framework
         }
 
         std::string
-        sha256DigestString(const ndn::Buffer& payload)
+        sha256DigestString(ndn::span<const uint8_t> payload,
+                           const std::function<void()>& requireActive = {})
         {
             ndn::util::Sha256 digest;
-            if (!payload.empty()) {
-                digest << std::string(reinterpret_cast<const char*>(payload.data()),
-                                      payload.size());
+            constexpr size_t chunkSize = 1024 * 1024;
+            for (size_t offset = 0; offset < payload.size();) {
+                if (requireActive) requireActive();
+                const auto chunk = std::min(chunkSize, payload.size() - offset);
+                digest << std::string(reinterpret_cast<const char*>(payload.data() + offset),
+                                      chunk);
+                offset += chunk;
             }
             auto hex = digest.toString();
             std::transform(hex.begin(), hex.end(), hex.begin(),
@@ -756,6 +1006,230 @@ namespace ndn_service_framework
                                return static_cast<char>(std::tolower(value));
                            });
             return "sha256:" + hex;
+        }
+
+        std::string
+        sha256DigestString(const ndn::Buffer& payload)
+        {
+            return sha256DigestString(
+                ndn::span<const uint8_t>(payload.data(), payload.size()));
+        }
+
+        std::vector<uint8_t>
+        encodeVarNumber(uint64_t value)
+        {
+            if (value < 253) {
+                return {static_cast<uint8_t>(value)};
+            }
+            if (value <= 0xffff) {
+                return {0xfd, static_cast<uint8_t>(value >> 8),
+                        static_cast<uint8_t>(value)};
+            }
+            if (value <= 0xffffffffULL) {
+                return {0xfe, static_cast<uint8_t>(value >> 24),
+                        static_cast<uint8_t>(value >> 16),
+                        static_cast<uint8_t>(value >> 8),
+                        static_cast<uint8_t>(value)};
+            }
+            return {0xff, static_cast<uint8_t>(value >> 56),
+                    static_cast<uint8_t>(value >> 48),
+                    static_cast<uint8_t>(value >> 40),
+                    static_cast<uint8_t>(value >> 32),
+                    static_cast<uint8_t>(value >> 24),
+                    static_cast<uint8_t>(value >> 16),
+                    static_cast<uint8_t>(value >> 8),
+                    static_cast<uint8_t>(value)};
+        }
+
+        void
+        writeAll(int fd, const uint8_t* data, size_t size)
+        {
+            size_t written = 0;
+            while (written < size) {
+                const auto count = ::write(fd, data + written, size - written);
+                if (count <= 0) {
+                    throw std::system_error(errno, std::generic_category(),
+                                            "short write to large-data wire file");
+                }
+                written += static_cast<size_t>(count);
+            }
+        }
+
+        std::filesystem::path
+        streamEncryptLargeDataEnvelope(const ndn::Buffer& key,
+                                       ndn::span<const uint8_t> plaintext,
+                                       ndn::span<const uint8_t> associatedData,
+                                       HybridMessageEnvelope& envelope,
+                                       const ndn::Name& baseName,
+                                       size_t& wireBytes,
+                                       const std::function<void()>& requireActive = {})
+        {
+            if (key.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                throw std::runtime_error("invalid AES-GCM key size");
+            }
+            constexpr size_t nonceSize = HybridMessageCrypto::NONCE_SIZE;
+            constexpr size_t tagSize = HybridMessageCrypto::TAG_SIZE;
+            ndn::Buffer nonce(nonceSize);
+            if (RAND_bytes(nonce.data(), static_cast<int>(nonce.size())) != 1) {
+                throw std::runtime_error("RAND_bytes failed for large-data envelope");
+            }
+            envelope.setNonce(nonce);
+            envelope.setCipherText(ndn::Buffer{});
+            envelope.setAuthTag(ndn::Buffer(tagSize));
+            auto skeleton = envelope.WireEncode();
+            skeleton.parse();
+
+            size_t innerLength = 0;
+            for (const auto& element : skeleton.elements()) {
+                if (element.type() == tlv::CipherTextType) {
+                    innerLength += encodeVarNumber(element.type()).size() +
+                                   encodeVarNumber(plaintext.size()).size() +
+                                   plaintext.size();
+                }
+                else {
+                    innerLength += element.size();
+                }
+            }
+
+            const auto directory = largeDataFileDirectory();
+            std::error_code error;
+            std::filesystem::create_directories(directory, error);
+            if (error) {
+                throw std::system_error(error, "cannot create large-data directory");
+            }
+            const auto available = std::filesystem::space(directory, error).available;
+            if (error) {
+                throw std::system_error(error, "cannot inspect large-data filesystem");
+            }
+            const auto minimumFree = largeDataFileMinimumFreeBytes();
+            if (available < static_cast<std::uintmax_t>(plaintext.size()) + minimumFree) {
+                throw std::runtime_error(
+                    "large-data file publication has insufficient free disk space");
+            }
+            static std::atomic<uint64_t> sequence{0};
+            const auto uri = baseName.toUri();
+            const auto digest = sha256DigestString(ndn::Buffer(
+                reinterpret_cast<const uint8_t*>(uri.data()), uri.size()));
+            const auto stem = digest.size() > 7 ? digest.substr(7) : digest;
+            const auto finalPath = directory / ("ndnsf-large-data-" + stem + "-" +
+                                                std::to_string(getpid()) + "-" +
+                                                std::to_string(sequence.fetch_add(1)) + ".wire");
+            auto stagingPath = finalPath;
+            stagingPath += ".staging";
+            const int fd = ::open(stagingPath.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+            if (fd < 0) {
+                throw std::system_error(errno, std::generic_category(),
+                                         "cannot create large-data staging file");
+            }
+            EVP_CIPHER_CTX* cipher = nullptr;
+            bool closed = false;
+            auto cleanup = [&] {
+                if (cipher != nullptr) {
+                    EVP_CIPHER_CTX_free(cipher);
+                    cipher = nullptr;
+                }
+                if (!closed) {
+                    ::close(fd);
+                    closed = true;
+                }
+                std::error_code removeError;
+                std::filesystem::remove(stagingPath, removeError);
+            };
+            try {
+                auto emit = [&] (const std::vector<uint8_t>& bytes) {
+                    writeAll(fd, bytes.data(), bytes.size());
+                };
+                const auto topType = encodeVarNumber(skeleton.type());
+                const auto topLength = encodeVarNumber(innerLength);
+                emit(topType);
+                emit(topLength);
+
+                cipher = EVP_CIPHER_CTX_new();
+                if (cipher == nullptr ||
+                    EVP_EncryptInit_ex(cipher, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1 ||
+                    EVP_CIPHER_CTX_ctrl(cipher, EVP_CTRL_GCM_SET_IVLEN,
+                                        static_cast<int>(nonce.size()), nullptr) != 1 ||
+                    EVP_EncryptInit_ex(cipher, nullptr, nullptr, key.data(), nonce.data()) != 1) {
+                    throw std::runtime_error("AES-GCM streaming initialization failed");
+                }
+                int produced = 0;
+                if (!associatedData.empty() &&
+                    EVP_EncryptUpdate(cipher, nullptr, &produced,
+                                      associatedData.data(),
+                                      static_cast<int>(associatedData.size())) != 1) {
+                    throw std::runtime_error("AES-GCM streaming AAD failed");
+                }
+                std::vector<uint8_t> output(1024 * 1024);
+                ndn::Buffer tag(tagSize);
+                bool ciphertextEmitted = false;
+                for (const auto& element : skeleton.elements()) {
+                    if (element.type() != tlv::CipherTextType) {
+                        if (element.type() == tlv::AuthTagType) {
+                            if (!ciphertextEmitted) {
+                                throw std::runtime_error("large-data envelope missing ciphertext");
+                            }
+                            if (EVP_EncryptFinal_ex(cipher, output.data(), &produced) != 1 ||
+                                EVP_CIPHER_CTX_ctrl(cipher, EVP_CTRL_GCM_GET_TAG,
+                                                    static_cast<int>(tag.size()), tag.data()) != 1) {
+                                throw std::runtime_error("AES-GCM streaming finalization failed");
+                            }
+                            const auto type = encodeVarNumber(element.type());
+                            const auto length = encodeVarNumber(tag.size());
+                            emit(type);
+                            emit(length);
+                            emit(std::vector<uint8_t>(tag.begin(), tag.end()));
+                            envelope.setAuthTag(tag);
+                            continue;
+                        }
+                        writeAll(fd, element.data(), element.size());
+                        continue;
+                    }
+
+                    const auto type = encodeVarNumber(element.type());
+                    const auto length = encodeVarNumber(plaintext.size());
+                    emit(type);
+                    emit(length);
+                    size_t offset = 0;
+                    while (offset < plaintext.size()) {
+                        if (requireActive) requireActive();
+                        const auto chunk = std::min(output.size(), plaintext.size() - offset);
+                        if (EVP_EncryptUpdate(cipher, output.data(), &produced,
+                                              plaintext.data() + offset,
+                                              static_cast<int>(chunk)) != 1) {
+                            throw std::runtime_error("AES-GCM streaming encryption failed");
+                        }
+                        writeAll(fd, output.data(), static_cast<size_t>(produced));
+                        offset += chunk;
+                    }
+                    ciphertextEmitted = true;
+                }
+                if (!ciphertextEmitted) {
+                    throw std::runtime_error("large-data envelope has no ciphertext element");
+                }
+                if (requireActive) requireActive();
+                if (::fsync(fd) != 0) {
+                    throw std::system_error(errno, std::generic_category(),
+                                            "cannot fsync large-data wire file");
+                }
+                if (::close(fd) != 0) {
+                    closed = true;
+                    throw std::system_error(errno, std::generic_category(),
+                                            "cannot close large-data wire file");
+                }
+                closed = true;
+                EVP_CIPHER_CTX_free(cipher);
+                cipher = nullptr;
+                std::filesystem::rename(stagingPath, finalPath, error);
+                if (error) {
+                    throw std::system_error(error, "cannot commit large-data wire file");
+                }
+                wireBytes = static_cast<size_t>(std::filesystem::file_size(finalPath));
+                return finalPath;
+            }
+            catch (...) {
+                cleanup();
+                throw;
+            }
         }
 
         ndn::Name
@@ -1228,7 +1702,7 @@ namespace ndn_service_framework
                     nac_validator, encryptionCert, attrAuthorityCertificate),
         nacProducer(m_face, externalKeyChain ? *externalKeyChain : m_keyChain,
                     nac_validator, encryptionCert, attrAuthorityCertificate),
-        m_IMS(50000)
+        m_IMS(largeDataImsLimit())
     {
         ensureSameIdentity(encryptionCert, signingCert, "ServiceUser");
         if (!isRsaCertificate(encryptionCert)) {
@@ -1504,7 +1978,7 @@ namespace ndn_service_framework
         attrAuthorityCertificate(attrAuthorityCertificate),
         nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
-        m_IMS(50000),
+        m_IMS(largeDataImsLimit()),
         m_configManager("/tmp/ndnsf-service-user-local-mock.conf")
     {
         m_isLocalMock = true;
@@ -1554,12 +2028,11 @@ namespace ndn_service_framework
         const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
         const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
         auto registerContentFilter = [this](const ndn::Name& prefix) {
-            auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
-            m_serviceRegistrations.push_back(holder);
+            auto holder = std::make_shared<ndn::ScopedInterestFilterHandle>();
+            m_testInterestFilters.push_back(holder);
             *holder = m_face.setInterestFilter(
-                prefix,
-                std::bind(&ServiceUser::onInterest, this, _1, _2),
-                std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
+                ndn::InterestFilter(prefix),
+                std::bind(&ServiceUser::onInterest, this, _1, _2));
         };
         registerContentFilter(ndnsfFilter);
         registerContentFilter(ckFilter);
@@ -1623,7 +2096,12 @@ namespace ndn_service_framework
         const auto accessAttribute = std::string("/SERVICE") + serviceName.toUri();
         auto key = m_hybridMessageCrypto.getOrCreateSendKey(
             serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
-        m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+        // The LocalMock hook represents a key that Core/NAC has already
+        // wrapped.  Keep the service-scoped wrapped bytes and reference
+        // index in sync with production retain/release bookkeeping; the
+        // placeholder is never sent because shouldAttachWrappedKey() is false.
+        m_hybridMessageCrypto.cacheWrappedSendKey(
+            serviceName, key.keyId, ndn::Buffer{0x00});
         return key;
     }
 
@@ -1669,6 +2147,10 @@ namespace ndn_service_framework
 
     ServiceUser::~ServiceUser()
     {
+        if (m_largeDataKeyReleaseState) {
+            std::lock_guard<std::mutex> lock(m_largeDataKeyReleaseState->mutex);
+            m_largeDataKeyReleaseState->crypto = nullptr;
+        }
         // Invalidate pending failure/timer callbacks before tearing down state.
         // The scoped handle also unregisters a successfully installed route.
         m_identityRegistration.reset();
@@ -5086,8 +5568,42 @@ namespace ndn_service_framework
         const PreparedServiceRequest& ctx,
         const std::vector<uint8_t>& plaintext,
         const std::string& objectLabel,
-        ndn::time::milliseconds freshness)
+        ndn::time::milliseconds freshness,
+        bool retainWhileLeased,
+        const std::function<void()>& requireActive)
     {
+        return publishEncryptedLargeDataImpl(ctx, plaintext, objectLabel, freshness,
+                                              retainWhileLeased, requireActive, false);
+    }
+
+    LargeDataPublishResult ServiceUser::publishEncryptedLargeDataFromWorker(
+        const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
+        const std::string& objectLabel, ndn::time::milliseconds freshness,
+        const std::function<void()>& requireActive)
+    {
+        if (isOnIoThread())
+            throw std::logic_error("large-data worker publication cannot run on Face I/O");
+        return publishEncryptedLargeDataImpl(ctx, plaintext, objectLabel, freshness,
+                                              true, requireActive, true);
+    }
+
+    LargeDataPublishResult ServiceUser::publishEncryptedLargeDataImpl(
+        const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
+        const std::string& objectLabel, ndn::time::milliseconds freshness,
+        bool retainWhileLeased, const std::function<void()>& requireActive, bool marshalIo)
+    {
+        const auto onIo = [this, marshalIo](std::function<void()> work) {
+            if (!marshalIo || isOnIoThread()) {
+                work();
+                return;
+            }
+            auto task = std::make_shared<std::packaged_task<void()>>(std::move(work));
+            auto completed = task->get_future();
+            postToIo([task] { (*task)(); });
+            // Never abandon a callback capturing local state. The caller's
+            // owner/drain barrier keeps I/O alive until this call settles.
+            completed.get();
+        };
         LargeDataPublishResult result;
         if (ctx.serviceName.empty()) {
             result.errorMessage = "PreparedServiceRequest serviceName is empty";
@@ -5109,7 +5625,22 @@ namespace ndn_service_framework
         static constexpr std::size_t maxSegmentBytes = 7000;
         const bool activePut =
             !isTruthyEnv("NDNSF_REQUEST_LARGE_DISABLE_ACTIVE_PUT");
-        if (activePut &&
+        // A large object is served from a private wire file once it reaches
+        // the bounded streaming threshold.  The explicit environment switch
+        // is retained for fixtures and operators that need to exercise the
+        // file path with a smaller object.
+        static constexpr std::size_t fileBackedThresholdBytes = 1 * 1024 * 1024;
+        std::shared_ptr<EncryptedLargeDataRangeStore> rangeStore;
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            rangeStore = m_largeDataRangeStore;
+        }
+        const bool fileBackedRequested = rangeStore || retainWhileLeased ||
+            useFileBackedLargeData() || plaintext.size() >= fileBackedThresholdBytes;
+        const auto fileBackedRetention = fileBackedRequested ?
+            std::optional<ndn::time::milliseconds>(largeDataFileRetention()) :
+            std::nullopt;
+        if (activePut && !fileBackedRequested &&
             (m_IMS.getLimit() == 0 ||
              plaintext.size() > (m_IMS.getLimit() - 1) * maxSegmentBytes)) {
             result.errorMessage =
@@ -5120,15 +5651,26 @@ namespace ndn_service_framework
             "/SERVICE" + ctx.serviceName.toUri()
         };
 
+        bool wrappedKeyReferenceHeld = false;
+        std::string wrappedKeyId;
         try {
             const auto messageType = std::string("REQUEST-LARGE");
+            if (requireActive) requireActive();
             const auto accessAttribute = std::string("/SERVICE") + ctx.serviceName.toUri();
             ndn::nacabe::SPtrVector<ndn::Data> wrappedContentData;
             ndn::nacabe::SPtrVector<ndn::Data> wrappedCkData;
             ndn::Buffer wrappedMessageKey;
             bool hasWrappedMessageKey = false;
-            auto key = m_hybridMessageCrypto.getOrCreateSendKey(
-                ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
+            HybridMessageKey key;
+            onIo([&] {
+                if (!m_largeDataKeyReleaseState) {
+                    m_largeDataKeyReleaseState = std::make_shared<LargeDataKeyReleaseState>();
+                    m_largeDataKeyReleaseState->crypto = &m_hybridMessageCrypto;
+                }
+                key = m_hybridMessageCrypto.getOrCreateSendKey(
+                    ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
+            });
+            wrappedKeyId = key.keyId;
 
             // Keep the publication metadata in the native crypto owner.  A
             // DI caller may bind the returned object to its request, but it
@@ -5136,7 +5678,7 @@ namespace ndn_service_framework
             // in Python after this point.
             result.plaintextSize = plaintext.size();
             result.contentDigest = sha256DigestString(
-                ndn::Buffer(plaintext.begin(), plaintext.end()));
+                ndn::span<const uint8_t>(plaintext.data(), plaintext.size()), requireActive);
             result.authorizationScope = accessAttribute;
             result.protectionEpoch = key.epochId;
 
@@ -5145,6 +5687,7 @@ namespace ndn_service_framework
             envelope.setEpochId(key.epochId);
             envelope.setMessageType(messageType);
 
+            onIo([&] {
             if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
                 std::tie(wrappedContentData, wrappedCkData) =
                     (m_testNacProducer ? *m_testNacProducer : nacProducer).produce(key.keyName,
@@ -5154,28 +5697,243 @@ namespace ndn_service_framework
                 const auto wrapped = mergeDataContents(wrappedContentData);
                 wrappedMessageKey.assign(wrapped.begin(), wrapped.end());
                 if (wrappedMessageKey.empty()) {
-                    result.errorMessage = "NAC-ABE produced no wrapped large-data MessageKey";
-                    return result;
+                    throw std::runtime_error("NAC-ABE produced no wrapped large-data MessageKey");
                 }
                 envelope.setWrappedMessageKey(
                     ndn::Buffer(wrappedMessageKey.data(), wrappedMessageKey.size()));
                 hasWrappedMessageKey = true;
+                if (fileBackedRequested) {
+                m_hybridMessageCrypto.cacheWrappedSendKey(ctx.serviceName, key.keyId, wrappedMessageKey);
+                wrappedKeyReferenceHeld = true;
+                ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
+                std::lock_guard<std::mutex> lock(_cache_mutex);
+                for (const auto& data : wrappedContentData) m_IMS.insert(*data);
+                for (const auto& data : wrappedCkData) m_IMS.insert(*data);
+                }
             }
+            else if (!m_hybridMessageCrypto.retainWrappedSendKey(ctx.serviceName, key.keyId)) {
+                throw std::runtime_error("wrapped large-data key disappeared before publication");
+            }
+            });
+            wrappedKeyReferenceHeld = true;
 
             const std::string adText = encryptedDataName.toUri() + "|" +
                                        messageType + "|" + ctx.serviceName.toUri();
             const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()),
                                  adText.size());
+            std::vector<ndn::Name> stagedFullNames;
+            if (fileBackedRequested) {
+                const auto directory = largeDataFileDirectory();
+                std::error_code directoryError;
+                std::filesystem::create_directories(directory, directoryError);
+                if (directoryError) {
+                    throw std::system_error(directoryError,
+                                             "cannot create large-data directory");
+                }
+                const auto reservation = static_cast<std::uintmax_t>(plaintext.size()) +
+                                         64ULL * 1024ULL;
+                bool reservationHeld = false;
+                bool publicationRegistered = false;
+                std::filesystem::path filePath;
+                std::shared_ptr<LargeDataFilePublication> publication;
+                const auto publicationKey = encryptedDataName.toUri();
+                auto rollback = [&] {
+                    std::shared_ptr<LargeDataFilePublication> removedPublication;
+                    {
+                        std::lock_guard<std::mutex> lock(_cache_mutex);
+                        if (publicationRegistered) {
+                            const auto it = m_largeDataFiles.find(publicationKey);
+                            if (it != m_largeDataFiles.end() &&
+                                it->second == publication) {
+                                m_largeDataReservedBytes =
+                                    m_largeDataReservedBytes >= it->second->reservedBytes ?
+                                        m_largeDataReservedBytes - it->second->reservedBytes : 0;
+                                removedPublication = it->second;
+                                m_largeDataFiles.erase(it);
+                            }
+                            publicationRegistered = false;
+                        }
+                        else if (reservationHeld) {
+                            m_largeDataReservedBytes =
+                                m_largeDataReservedBytes >= reservation ?
+                                    m_largeDataReservedBytes - reservation : 0;
+                            reservationHeld = false;
+                        }
+                    }
+                    onIo([&] {
+                        std::lock_guard<std::mutex> lock(_cache_mutex);
+                        for (const auto& fullName : stagedFullNames)
+                            m_IMS.erase(fullName, false);
+                        stagedFullNames.clear();
+                    });
+                    if (!filePath.empty()) {
+                        std::error_code removeError;
+                        std::filesystem::remove(filePath, removeError);
+                    }
+                    // Keep destruction outside _cache_mutex so the stream and
+                    // file are released without re-entering the cache path.
+                    removedPublication.reset();
+                };
+                {
+                    std::lock_guard<std::mutex> lock(_cache_mutex);
+                    std::error_code spaceError;
+                    const auto available = std::filesystem::space(directory, spaceError).available;
+                    if (spaceError) {
+                        throw std::system_error(spaceError,
+                                                "cannot inspect large-data filesystem");
+                    }
+                    const auto minimumFree = largeDataFileMinimumFreeBytes();
+                    if (available < minimumFree ||
+                        m_largeDataReservedBytes > available - minimumFree ||
+                        reservation > available - minimumFree - m_largeDataReservedBytes) {
+                        throw std::runtime_error(
+                            "large-data file publication has insufficient reserved disk space");
+                    }
+                    m_largeDataReservedBytes += reservation;
+                    reservationHeld = true;
+                }
+                try {
+                    size_t encodedBytes = 0;
+                    filePath = streamEncryptLargeDataEnvelope(
+                        key.key, ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+                        ndn::span<const uint8_t>(ad.data(), ad.size()), envelope,
+                        encryptedDataName, encodedBytes, requireActive);
+                    const std::string manifestText =
+                        std::string("version=1\n") +
+                        "name=" + encryptedDataName.toUri() + "\n" +
+                        "object_id=" + result.objectId + "\n" +
+                        "plaintext_size=" + std::to_string(result.plaintextSize) + "\n" +
+                        "content_digest=" + result.contentDigest + "\n" +
+                        "authorization_scope=" + result.authorizationScope + "\n" +
+                        "protection_epoch=" + result.protectionEpoch + "\n" +
+                        "encrypted=1\n";
+                    result.manifestDigest = sha256DigestString(ndn::Buffer(
+                        reinterpret_cast<const uint8_t*>(manifestText.data()),
+                        manifestText.size()));
+                    const auto segmentCount = 1 + (encodedBytes - 1) / maxSegmentBytes;
+                    publication = std::make_shared<LargeDataFilePublication>();
+                    publication->baseName = encryptedDataName;
+                    publication->filePath = filePath;
+                    publication->fileSize = encodedBytes;
+                    publication->segmentCount = segmentCount;
+                    publication->maxSegmentBytes = maxSegmentBytes;
+                    publication->freshness = freshness;
+                    publication->windowCapacity = largeDataWindowSegments();
+                    publication->reservedBytes = reservation;
+                    if (rangeStore) {
+                        publication->rangeSource = rangeStore->commitFile(
+                            encryptedDataName.toUri(), filePath, encodedBytes, requireActive);
+                        if (!publication->rangeSource ||
+                            publication->rangeSource->size() != encodedBytes)
+                            throw std::runtime_error("invalid committed encrypted range source");
+                        std::filesystem::remove(filePath);
+                        publication->filePath.clear();
+                        filePath.clear();
+                        std::lock_guard<std::mutex> lock(_cache_mutex);
+                        m_largeDataReservedBytes -= reservation;
+                        reservationHeld = false;
+                        publication->reservedBytes = 0;
+                    }
+                    else {
+                        publication->stream.open(filePath, std::ios::binary);
+                        if (!publication->stream)
+                            throw std::runtime_error("cannot open committed large-data wire file");
+                    }
+                    publication->keyLease = std::make_shared<LargeDataKeyReleaseState::Lease>(
+                        m_largeDataKeyReleaseState, ctx.serviceName, key.keyId);
+                    wrappedKeyReferenceHeld = false; // ownership transferred exactly once
+                    result.fileBacked = true;
+                    if (retainWhileLeased) {
+                        result.servingLease = std::make_shared<unsigned char>(0);
+                        publication->servingLease = result.servingLease;
+                    }
+                    if (hasWrappedMessageKey) onIo([&] {
+                        // Wrapped-key packets remain small control Data and use
+                        // the existing IMS path; only the encrypted object body
+                        // is moved to the file-backed serving owner.
+                        {
+                            std::lock_guard<std::mutex> lock(_cache_mutex);
+                            for (const auto& data : wrappedContentData) {
+                                const auto fullName = data->getFullName();
+                                if (!m_IMS.find(fullName))
+                                    stagedFullNames.push_back(fullName);
+                                m_IMS.insert(*data);
+                            }
+                            for (const auto& data : wrappedCkData) {
+                                const auto fullName = data->getFullName();
+                                if (!m_IMS.find(fullName))
+                                    stagedFullNames.push_back(fullName);
+                                m_IMS.insert(*data);
+                            }
+                        }
+                    });
+                    if (requireActive) requireActive();
+                    {
+                        std::lock_guard<std::mutex> lock(_cache_mutex);
+                        const auto [it, inserted] = m_largeDataFiles.emplace(
+                            publicationKey, publication);
+                        if (!inserted) {
+                            throw std::runtime_error(
+                                "duplicate large-data publication name");
+                        }
+                        (void)it;
+                        publicationRegistered = true;
+                        reservationHeld = false;
+                    }
+                    const auto expiry = *fileBackedRetention;
+                    onIo([&] { m_scheduler.schedule(expiry, [this, publicationKey,
+                                                   weakPublication = std::weak_ptr<LargeDataFilePublication>(publication)] {
+                        expireLargeDataPublication(publicationKey, weakPublication);
+                    }); });
+                    result.encryptedDataName = encryptedDataName;
+                    for (const auto& data : wrappedContentData)
+                        result.rollbackDataNames.push_back(data->getFullName().toUri());
+                    for (const auto& data : wrappedCkData)
+                        result.rollbackDataNames.push_back(data->getFullName().toUri());
+                    if (publication->keyLease) {
+                        result.rollbackKeyId = key.keyId;
+                        result.rollbackServiceName = ctx.serviceName.toUri();
+                    }
+                    NDN_LOG_INFO("LARGE_DATA_PUBLISH_FILE_BACKED"
+                                 << " name=" << result.encryptedDataName.toUri()
+                                 << " plaintextBytes=" << plaintext.size()
+                                 << " envelopeBytes=" << encodedBytes
+                                 << " segments=" << segmentCount
+                                 << " window=" << publication->windowCapacity
+                                 << " retentionMs=" << expiry.count());
+                    result.success = true;
+                    return result;
+                }
+                catch (...) {
+                    rollback();
+                    throw;
+                }
+            }
             auto encrypted = hybridAesGcmEncrypt(
                 key.key,
                 ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
                 ndn::span<const uint8_t>(ad.data(), ad.size()));
             envelope.setNonce(encrypted.nonce);
-            envelope.setCipherText(encrypted.ciphertext);
+            // Transfer the multi-gigabyte ciphertext into the envelope.  The
+            // const-reference setter would retain a second full copy during
+            // WireEncode, which is unsafe for a real Qwen initializer.
+            envelope.setCipherText(std::move(encrypted.ciphertext));
             envelope.setAuthTag(encrypted.tag);
 
-            auto envelopeBlock = envelope.WireEncode();
-            ndn::Buffer encoded(envelopeBlock.begin(), envelopeBlock.end());
+            // Keep one shared wire buffer for segmentation.  A copied
+            // ndn::Block shares WireEncode's ConstBufferPtr, so this avoids
+            // the second multi-gigabyte vector that an assign(begin,end)
+            // conversion would allocate while the source package is live.
+            const auto envelopeBlock = envelope.WireEncode();
+            if (!envelopeBlock.hasWire() || envelopeBlock.size() == 0)
+                throw std::runtime_error("large-data hybrid envelope encoded no wire");
+            // Clear() resets the logical size but a vector may retain its
+            // multi-gigabyte capacity.  Move an empty buffer through the
+            // dedicated overload so the ciphertext allocation is released
+            // before Data packets are materialized.
+            const bool wrappedKeyAttached = envelope.hasWrappedMessageKey();
+            envelope.setCipherText(ndn::Buffer{});
+            envelope.Clear();
 
             const std::string manifestText =
                 std::string("version=1\n") +
@@ -5195,12 +5953,13 @@ namespace ndn_service_framework
             // model artifact retain the whole packet set until publication
             // finishes.  The encrypted envelope is already contiguous here;
             // materialize and release one signed packet at a time instead.
-            const auto segmentCount = encoded.empty() ? 0 :
-                1 + (encoded.size() - 1) / maxSegmentBytes;
+            const auto encodedBytes = envelopeBlock.size();
+            const auto segmentCount = 1 + (encodedBytes - 1) / maxSegmentBytes;
             if (segmentCount == 0) {
                 result.errorMessage = "large-data hybrid segmenter produced no segments";
                 return result;
             }
+
             auto& signingKeyChain =
                 m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
             std::unique_lock<std::mutex> stagingLock(_cache_mutex, std::defer_lock);
@@ -5231,7 +5990,6 @@ namespace ndn_service_framework
                     return result;
                 }
             }
-            std::vector<ndn::Name> stagedFullNames;
             try {
                 std::vector<ndn::Name> stagedNames;
                 if (activePut) {
@@ -5261,17 +6019,34 @@ namespace ndn_service_framework
                     stagedNames.reserve(segmentCount);
                 }
                 else if (hasWrappedMessageKey) {
-                    serveDataWithIMS(wrappedContentData, wrappedCkData);
+                    {
+                        std::lock_guard<std::mutex> lock(_cache_mutex);
+                        for (const auto& data : wrappedContentData) {
+                            const auto fullName = data->getFullName();
+                            if (!m_IMS.find(fullName))
+                                stagedFullNames.push_back(fullName);
+                            m_IMS.insert(*data);
+                        }
+                        for (const auto& data : wrappedCkData) {
+                            const auto fullName = data->getFullName();
+                            if (!m_IMS.find(fullName))
+                                stagedFullNames.push_back(fullName);
+                            m_IMS.insert(*data);
+                        }
+                    }
+                }
+                if (hasWrappedMessageKey && !activePut) {
                     m_hybridMessageCrypto.cacheWrappedSendKey(
                         ctx.serviceName, key.keyId, wrappedMessageKey);
+                    wrappedKeyReferenceHeld = true;
                     ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
                 }
                 for (std::size_t segment = 0; segment < segmentCount; ++segment) {
                     const auto offset = segment * maxSegmentBytes;
-                    const auto length = std::min(maxSegmentBytes, encoded.size() - offset);
+                    const auto length = std::min(maxSegmentBytes, encodedBytes - offset);
                     auto data = std::make_shared<ndn::Data>(
                         ndn::Name(encryptedDataName).appendSegment(segment));
-                    data->setContent(ndn::span<const uint8_t>(encoded.data() + offset, length));
+                    data->setContent(ndn::span<const uint8_t>(envelopeBlock.data() + offset, length));
                     data->setFinalBlock(
                         ndn::name::Component::fromSegment(segmentCount - 1));
                     data->setFreshnessPeriod(freshness);
@@ -5322,6 +6097,7 @@ namespace ndn_service_framework
                     if (hasWrappedMessageKey) {
                         m_hybridMessageCrypto.cacheWrappedSendKey(
                             ctx.serviceName, key.keyId, wrappedMessageKey);
+                        wrappedKeyReferenceHeld = true;
                         ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
                     }
                     stagingLock.unlock();
@@ -5344,19 +6120,109 @@ namespace ndn_service_framework
             }
 
             result.encryptedDataName = encryptedDataName;
+            for (const auto& fullName : stagedFullNames)
+                result.rollbackDataNames.push_back(fullName.toUri());
+            if (wrappedKeyReferenceHeld) {
+                result.rollbackKeyId = key.keyId;
+                result.rollbackServiceName = ctx.serviceName.toUri();
+            }
             NDN_LOG_INFO("LARGE_DATA_PUBLISH_SEGMENTS"
                       << " name=" << result.encryptedDataName.toUri()
                       << " plaintextBytes=" << plaintext.size()
-                      << " envelopeBytes=" << encoded.size()
+                      << " envelopeBytes=" << encodedBytes
                       << " segments=" << segmentCount
-                      << " wrappedKeyAttached=" << envelope.hasWrappedMessageKey()
+                      << " wrappedKeyAttached=" << wrappedKeyAttached
                       << " activePut=" << activePut);
             result.success = true;
         }
         catch (const std::exception& e) {
+            if (wrappedKeyReferenceHeld) {
+                m_hybridMessageCrypto.eraseWrappedSendKey(ctx.serviceName, wrappedKeyId);
+            }
             result.errorMessage = e.what();
         }
         return result;
+    }
+
+    void ServiceUser::setEncryptedLargeDataRangeStore(
+        std::shared_ptr<EncryptedLargeDataRangeStore> store)
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        if (!m_largeDataFiles.empty())
+            throw std::logic_error("cannot change range store after publication");
+        m_largeDataRangeStore = std::move(store);
+    }
+
+    void ServiceUser::expireLargeDataPublication(const std::string& publicationKey,
+        std::weak_ptr<LargeDataFilePublication> weakPublication)
+    {
+        std::shared_ptr<LargeDataFilePublication> removed;
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            const auto it = m_largeDataFiles.find(publicationKey);
+            const auto publication = weakPublication.lock();
+            if (it == m_largeDataFiles.end() || !publication || it->second != publication)
+                return;
+            if (!publication->servingLease.expired()) {
+                m_scheduler.schedule(ndn::time::seconds(1),
+                    [this, publicationKey, weakPublication] {
+                        expireLargeDataPublication(publicationKey, weakPublication);
+                    });
+                return;
+            }
+            m_largeDataReservedBytes -= publication->reservedBytes;
+            removed = publication;
+            m_largeDataFiles.erase(it);
+        }
+        // Backend release may perform disk I/O. Do not hold Core's cache lock.
+        removed.reset();
+    }
+
+    void ServiceUser::abortLargeDataPublications(
+        const std::vector<LargeDataPublishResult>& publications) noexcept
+    {
+        for (const auto& publication : publications) {
+            try {
+                std::lock_guard<std::mutex> lock(_cache_mutex);
+                for (const auto& value : publication.rollbackDataNames) {
+                    const ndn::Name prefix(value);
+                    if (!prefix.empty())
+                        m_IMS.erase(prefix, true);
+                }
+                if (!publication.encryptedDataName.empty())
+                    m_IMS.erase(publication.encryptedDataName, true);
+            }
+            catch (...) {
+                // Rollback is deliberately best effort; queued Face packets
+                // still expire at their normal freshness boundary.
+            }
+            std::vector<std::shared_ptr<LargeDataFilePublication>> removed;
+            {
+                std::lock_guard<std::mutex> lock(_cache_mutex);
+                for (auto it = m_largeDataFiles.begin(); it != m_largeDataFiles.end();) {
+                    const bool owned = it->first == publication.encryptedDataName.toUri() ||
+                        std::find(publication.rollbackDataNames.begin(), publication.rollbackDataNames.end(),
+                                  it->first) != publication.rollbackDataNames.end();
+                    if (!owned) { ++it; continue; }
+                    if (it->second) {
+                        m_largeDataReservedBytes =
+                            m_largeDataReservedBytes >= it->second->reservedBytes
+                              ? m_largeDataReservedBytes - it->second->reservedBytes : 0;
+                    }
+                    removed.push_back(it->second);
+                    it = m_largeDataFiles.erase(it);
+                }
+            }
+            const bool fileOwnedKey = publication.fileBacked || !removed.empty();
+            removed.clear();
+            if (!fileOwnedKey && !publication.rollbackKeyId.empty() && !publication.rollbackServiceName.empty()) {
+                try {
+                    m_hybridMessageCrypto.eraseWrappedSendKey(
+                        ndn::Name(publication.rollbackServiceName), publication.rollbackKeyId);
+                }
+                catch (...) {}
+            }
+        }
     }
 
     ndn::Name ServiceUser::publishSignedAppData(
@@ -11894,6 +12760,90 @@ void ServiceUser::finishRequestAckOnEventLoop(
         return false;
     }
 
+    bool ServiceUser::replyFromLargeDataFile(const ndn::Interest& interest)
+    {
+        std::shared_ptr<LargeDataFilePublication> publication;
+        const auto& interestName = interest.getName();
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            for (const auto& item : m_largeDataFiles) {
+                const auto& candidate = item.second;
+                if (!candidate || !candidate->baseName.isPrefixOf(interestName)) {
+                    continue;
+                }
+                // SegmentFetcher starts with the versioned base name and
+                // CanBePrefix, then requests explicit /seg=N names.  Serve
+                // segment zero for that discovery Interest so file-backed
+                // publications work with the standard segmented-data API.
+                if ((candidate->baseName.equals(interestName) &&
+                     interest.getCanBePrefix()) ||
+                    (interestName.size() == candidate->baseName.size() + 1 &&
+                     interestName.get(-1).isSegment())) {
+                    publication = candidate;
+                    break;
+                }
+            }
+        }
+        if (!publication) {
+            return false;
+        }
+
+        const auto segment = interestName.equals(publication->baseName) ?
+            std::uint64_t(0) : interestName.get(-1).toSegment();
+        try {
+            if (const auto cached = publication->findCached(segment)) {
+                m_face.put(*cached);
+                NDN_LOG_TRACE("Reply large-data segment from retransmission window: "
+                               << cached->getName());
+                return true;
+            }
+            auto data = std::make_shared<ndn::Data>(
+                ndn::Name(publication->baseName).appendSegment(segment));
+            data->setFreshnessPeriod(publication->freshness);
+            data->setFinalBlock(ndn::name::Component::fromSegment(
+                publication->segmentCount - 1));
+            data->setContent(publication->readSegment(segment));
+            auto& signingKeyChain =
+                m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+            signingKeyChain.sign(*data, m_signingInfo);
+            if (data->wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE) {
+                throw ndn::Face::OversizedPacketError(
+                    'D', data->getName(), data->wireEncode().size());
+            }
+            publication->cache(segment, data);
+            m_face.put(*data);
+            NDN_LOG_TRACE("Reply large-data segment from file: " << data->getName());
+        }
+        catch (const std::exception& error) {
+            NDN_LOG_ERROR("Failed to serve large-data file segment name="
+                          << interestName << " reason=" << error.what());
+        }
+        // The object is known to this user.  Do not fall through to IMS when
+        // a file read or signing error occurs, which could otherwise expose a
+        // stale packet under the same name.
+        return true;
+    }
+
+    LargeDataServingMetrics
+    ServiceUser::getLargeDataServingMetricsForTest() const
+    {
+        LargeDataServingMetrics metrics;
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        metrics.publicationCount = m_largeDataFiles.size();
+        for (const auto& item : m_largeDataFiles) {
+            const auto& publication = item.second;
+            if (!publication) {
+                continue;
+            }
+            std::lock_guard<std::mutex> publicationLock(publication->streamMutex);
+            metrics.segmentReadCount += publication->segmentReadCount;
+            metrics.retransmissionHitCount += publication->retransmissionHitCount;
+            metrics.peakWindowSegments = std::max(
+                metrics.peakWindowSegments, publication->peakWindowSegments);
+        }
+        return metrics;
+    }
+
     void ServiceUser::onPrefixRegisterFailure(const ndn::Name &prefix, const std::string &reason)
     {
         // log error
@@ -12124,6 +13074,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
     {
         NDN_LOG_DEBUG("Received Interest: " << interest.getName().toUri());
         if (handleProviderReadyInterest(interest)) {
+            return;
+        }
+        if (replyFromLargeDataFile(interest)) {
             return;
         }
         replyFromIMS(interest);

@@ -227,6 +227,8 @@ struct RepoCatalogStatus
   uint64_t catalogEpoch = 0;
   uint64_t objectCount = 0;
   bool acceptsBackupReplica = true;
+  // True when the durable manifest store is ahead of the in-memory delta
+  // journal and catalogSnapshot() is the reconciliation source of truth.
   bool reconciliationRequired = false;
 
   std::string toJson() const;
@@ -259,6 +261,8 @@ struct RepoCacheStatus
   uint64_t oversizedBypasses = 0;
   uint64_t backingReads = 0;
   uint64_t backingWrites = 0;
+  // The authority is durable but cache epoch bookkeeping needs a later
+  // reconciliation (for example after an allocation failure).
   bool reconciliationRequired = false;
 
   std::string toJson() const;
@@ -278,7 +282,11 @@ struct StoredObject
   std::vector<uint8_t> payload;
 };
 
-/** Bounded byte range used by large-object repository backends. */
+/**
+ * Bounded byte range used by large-object repository backends.  A backend
+ * may reject a range larger than its configured I/O window; callers must not
+ * assume that a range read materializes the complete object.
+ */
 struct RepoByteRange
 {
   uint64_t offsetBytes = 0;
@@ -338,6 +346,9 @@ public:
 
   virtual RepoCacheStatus cacheStatus() const;
 
+  // Large-object path.  Legacy vector backends keep the compatibility
+  // defaults below; concrete file-backed authorities override these methods
+  // so Core/Node/Client can transfer bounded ranges without full assembly.
   virtual void putRange(const RepoObjectManifest& manifest,
                         RepoByteRange range,
                         const std::vector<uint8_t>& bytes);
@@ -351,10 +362,19 @@ public:
   getManifest(const std::string& objectName) const;
 
   virtual bool supportsRange() const noexcept;
+
+  // Number of times a caller requested the legacy full-vector path for an
+  // object that is configured for bounded range transfer.
   virtual uint64_t fullCopyFallbackCount() const noexcept;
+
+  // Cache lease hooks.  The default is a no-op for non-caching authorities;
+  // tiered stores use the count to keep active entries out of eviction.
   virtual void pin(const std::string& objectName) const;
   virtual void unpin(const std::string& objectName) const;
+
   virtual void abortRanges(const std::string& objectName);
+
+  // True only when getManifest can be served without materializing payload.
   virtual bool supportsManifestLookup() const noexcept;
 };
 
@@ -362,12 +382,14 @@ std::shared_ptr<RepoStoreBackend>
 makeSqliteRepoStore(const std::string& databasePath);
 
 std::shared_ptr<RepoStoreBackend>
-makeTieredRepoStore(const std::string& databasePath, uint64_t memoryCacheBytes);
+makeTieredRepoStore(const std::string& databasePath, uint64_t memoryCacheBytes,
+                    uint64_t largeObjectThreshold = 1 * 1024 * 1024);
 
 std::shared_ptr<RepoStoreBackend>
 makeTieredRepoStore(std::shared_ptr<RepoStoreBackend> authoritativeStore,
                     uint64_t memoryCacheBytes,
-                    std::string authoritativeBackend = "custom");
+                    std::string authoritativeBackend = "custom",
+                    uint64_t largeObjectThreshold = 1 * 1024 * 1024);
 
 } // namespace ndnsf_distributed_repo
 

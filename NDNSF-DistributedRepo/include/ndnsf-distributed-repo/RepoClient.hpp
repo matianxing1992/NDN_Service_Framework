@@ -38,6 +38,20 @@ public:
   static std::vector<uint8_t> get(const RepoNode& node,
                                   const std::string& objectName);
 
+  static void putRange(RepoNode& node,
+                       const RepoObjectManifest& manifest,
+                       RepoByteRange range,
+                       const std::vector<uint8_t>& bytes);
+
+  static RepoObjectManifest commitRanges(RepoNode& node,
+                                         const RepoObjectManifest& manifest);
+
+  static void abortRanges(RepoNode& node, const std::string& objectName);
+
+  static std::vector<uint8_t> getRange(const RepoNode& node,
+                                       const std::string& objectName,
+                                       RepoByteRange range);
+
   static RepoObjectManifest getManifest(const RepoNode& node,
                                         const std::string& objectName);
 
@@ -140,6 +154,29 @@ public:
     ndn_service_framework::LocalServiceRegistry& registry,
     const ndn::Name& repoServicePrefix,
     const std::string& objectName);
+
+  static void localPutRange(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest,
+    RepoByteRange range,
+    const std::vector<uint8_t>& bytes);
+
+  static RepoObjectManifest localCommitRanges(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest);
+
+  static void localAbortRanges(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+
+  static std::vector<uint8_t> localGetRange(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    RepoByteRange range);
 
   static RepoObjectManifest localGetManifest(
     ndn_service_framework::LocalServiceRegistry& registry,
@@ -248,6 +285,32 @@ public:
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
 
+  static ndn::Name requestStoreRange(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest,
+    RepoByteRange range,
+    const std::vector<uint8_t>& bytes,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestCommitRanges(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestAbortRanges(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
   static ndn::Name requestInsert(
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& repoServicePrefix,
@@ -260,6 +323,15 @@ public:
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& repoServicePrefix,
     const std::string& objectName,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestFetchRange(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    RepoByteRange range,
     int timeoutMs,
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);

@@ -75,6 +75,10 @@ public:
                            ndn::Buffer& wrappedKey) const;
     bool shouldAttachWrappedKey(const std::string& keyId) const;
 
+    /** Remove one scoped wrapped send-key entry after a failed publication. */
+    bool eraseWrappedSendKey(const ndn::Name& serviceName, const std::string& keyId);
+    bool retainWrappedSendKey(const ndn::Name& serviceName, const std::string& keyId);
+
     /**
      * Evict all service-scoped send/receive/wrapped key material.  Unknown
      * unscoped legacy entries are retained rather than over-invalidated.
@@ -103,6 +107,7 @@ private:
     std::map<std::string, CachedKey> m_receiveKeys;
     std::map<std::string, ndn::Buffer> m_wrappedSendKeysById;
     std::map<std::string, ndn::Name> m_wrappedSendKeyServices;
+    std::map<std::string, std::size_t> m_wrappedSendKeyReferences;
     std::set<std::string> m_wrappedSendKeys;
 };
 

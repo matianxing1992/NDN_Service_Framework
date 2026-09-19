@@ -13,6 +13,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -80,7 +81,7 @@ hexDigest(const std::vector<uint8_t>& value)
 std::string
 sha256File(const std::string& path)
 {
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) {
     throwSystem("repo-artifact-read-failed", "open", path);
   }
@@ -95,6 +96,9 @@ sha256File(const std::string& path)
   for (;;) {
     const auto count = ::read(fd, buffer.data(), buffer.size());
     if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
       const int saved = errno;
       ::close(fd);
       errno = saved;
@@ -124,13 +128,48 @@ sha256File(const std::string& path)
 }
 
 void
+ensurePrivateDirectory(const fs::path& path)
+{
+  std::error_code error;
+  const auto status = fs::symlink_status(path, error);
+  if (!error && fs::exists(status)) {
+    if (fs::is_symlink(status) || !fs::is_directory(status)) {
+      throw std::runtime_error("repo-artifact-directory-invalid: " + path.string());
+    }
+  }
+  else if (error && error != std::errc::no_such_file_or_directory) {
+    throw std::runtime_error("repo-artifact-directory-stat-failed: " +
+                             error.message());
+  }
+  else if (!fs::exists(status)) {
+    fs::create_directories(path, error);
+    if (error) {
+      throw std::runtime_error("repo-artifact-directory-create-failed: " +
+                               error.message());
+    }
+  }
+  fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, error);
+  if (error) {
+    throw std::runtime_error("repo-artifact-directory-permissions-failed: " +
+                             error.message());
+  }
+}
+
+void
 writeAll(int fd, const uint8_t* bytes, size_t size, const std::string& path)
 {
   size_t written = 0;
   while (written < size) {
     const auto count = ::write(fd, bytes + written, size - written);
     if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
       throwSystem("repo-artifact-write-failed", "write", path);
+    }
+    if (count == 0) {
+      throw std::runtime_error("repo-artifact-write-failed: short write " +
+                               path);
     }
     written += static_cast<size_t>(count);
   }
@@ -146,7 +185,14 @@ pwriteAll(int fd, const uint8_t* bytes, size_t size, uint64_t offset,
       fd, bytes + written, size - written,
       static_cast<off_t>(offset + written));
     if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
       throwSystem("repo-artifact-write-failed", "pwrite", path);
+    }
+    if (count == 0) {
+      throw std::runtime_error("repo-artifact-write-failed: short write " +
+                               path);
     }
     written += static_cast<size_t>(count);
   }
@@ -162,6 +208,9 @@ preadAll(int fd, uint8_t* bytes, size_t size, uint64_t offset,
       fd, bytes + readBytes, size - readBytes,
       static_cast<off_t>(offset + readBytes));
     if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
       throwSystem("repo-artifact-read-failed", "pread", path);
     }
     if (count == 0) {
@@ -175,7 +224,7 @@ preadAll(int fd, uint8_t* bytes, size_t size, uint64_t offset,
 void
 fsyncDirectory(const fs::path& directory)
 {
-  const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) {
     throwSystem("repo-artifact-sync-failed", "open directory", directory.string());
   }
@@ -213,29 +262,40 @@ getU64(const std::vector<uint8_t>& input, size_t& cursor)
 std::vector<uint8_t>
 readSmallFile(const std::string& path)
 {
-  std::error_code error;
-  const auto size = fs::file_size(path, error);
-  if (error) {
-    if (error == std::errc::no_such_file_or_directory) {
-      return {};
-    }
-    throw std::runtime_error(
-      "repo-artifact-range-map-read-failed: " + path + ": " + error.message());
+  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0 && errno == ENOENT) {
+    return {};
   }
+  if (fd < 0) {
+    throwSystem("repo-artifact-range-map-read-failed", "open", path);
+  }
+  struct stat status {};
+  if (::fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) || status.st_size < 0) {
+    const int saved = errno;
+    ::close(fd);
+    errno = saved;
+    throwSystem("repo-artifact-range-map-read-failed", "stat", path);
+  }
+  const auto size = static_cast<uint64_t>(status.st_size);
   const uint64_t maximum = 4 + 8 + MAX_VERIFIED_RANGES * 16;
   if (size > maximum) {
+    ::close(fd);
     throw std::runtime_error(
       "repo-artifact-range-map-invalid: range map exceeds parser bound");
   }
   std::vector<uint8_t> bytes(static_cast<size_t>(size));
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) {
-    throwSystem("repo-artifact-range-map-read-failed", "open", path);
+  try {
+    if (!bytes.empty()) {
+      preadAll(fd, bytes.data(), bytes.size(), 0, path);
+    }
   }
-  if (!bytes.empty()) {
-    preadAll(fd, bytes.data(), bytes.size(), 0, path);
+  catch (...) {
+    ::close(fd);
+    throw;
   }
-  ::close(fd);
+  if (::close(fd) != 0) {
+    throwSystem("repo-artifact-range-map-read-failed", "close", path);
+  }
   return bytes;
 }
 
@@ -310,7 +370,7 @@ atomicWrite(const std::string& path, const std::vector<uint8_t>& bytes)
 {
   const std::string temporary = path + ".tmp";
   int fd = ::open(temporary.c_str(),
-                  O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+                  O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
   if (fd < 0) {
     throwSystem("repo-artifact-metadata-write-failed", "open", temporary);
   }
@@ -452,8 +512,10 @@ FilesystemArtifactPayloadStore::FilesystemArtifactPayloadStore(
     throw std::invalid_argument(
       "repo-artifact-range-limit-invalid: maxRangeBytes must be positive");
   }
-  fs::create_directories(fs::path(m_rootPath) / "staging");
-  fs::create_directories(fs::path(m_rootPath) / "payloads" / "sha256");
+  ensurePrivateDirectory(fs::path(m_rootPath));
+  ensurePrivateDirectory(fs::path(m_rootPath) / "staging");
+  ensurePrivateDirectory(fs::path(m_rootPath) / "payloads");
+  ensurePrivateDirectory(fs::path(m_rootPath) / "payloads" / "sha256");
 }
 
 const std::string&
@@ -466,8 +528,10 @@ std::string
 FilesystemArtifactPayloadStore::committedPath(const ArtifactReference& artifact) const
 {
   artifact.validate();
-  return (fs::path(m_rootPath) / "payloads" / artifact.digestAlgorithm /
-          artifact.contentDigest.substr(0, 2) / artifact.contentDigest).string();
+  const auto shard = fs::path(m_rootPath) / "payloads" / artifact.digestAlgorithm /
+                     artifact.contentDigest.substr(0, 2);
+  ensurePrivateDirectory(shard);
+  return (shard / artifact.contentDigest).string();
 }
 
 std::string
@@ -487,10 +551,21 @@ FilesystemArtifactPayloadStore::begin(const ArtifactReference& artifact,
   std::lock_guard<std::mutex> guard(m_mutex);
   artifact.validate();
   const auto path = stagingPath(artifact, generation);
-  if (fs::exists(committedPath(artifact))) {
+  const auto committed = committedPath(artifact);
+  std::error_code statusError;
+  const auto committedStatus = fs::symlink_status(committed, statusError);
+  if (statusError && statusError != std::errc::no_such_file_or_directory) {
+    throw std::runtime_error("repo-artifact-committed-stat-failed: " +
+                             statusError.message());
+  }
+  if (fs::is_symlink(committedStatus)) {
+    throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
+                             committed);
+  }
+  if (fs::exists(committedStatus)) {
     return;
   }
-  const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
   if (fd < 0) {
     throwSystem("repo-artifact-begin-failed", "open", path);
   }
@@ -524,7 +599,7 @@ FilesystemArtifactPayloadStore::writeRange(const ArtifactReference& artifact,
   artifact.validate();
   validateRange(artifact, range, bytes.size(), true, m_maxRangeBytes);
   const auto path = stagingPath(artifact, generation);
-  const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
+  const int fd = ::open(path.c_str(), O_WRONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) {
     throwSystem("repo-artifact-write-failed", "open", path);
   }
@@ -549,8 +624,18 @@ FilesystemArtifactPayloadStore::readRange(const ArtifactReference& artifact,
   artifact.validate();
   validateRange(artifact, range, 0, false, m_maxRangeBytes);
   const auto committed = committedPath(artifact);
-  const auto path = fs::exists(committed) ? committed : stagingPath(artifact, generation);
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  std::error_code committedError;
+  const auto committedStatus = fs::symlink_status(committed, committedError);
+  if (committedError && committedError != std::errc::no_such_file_or_directory) {
+    throw std::runtime_error("repo-artifact-committed-stat-failed: " +
+                             committedError.message());
+  }
+  if (fs::is_symlink(committedStatus)) {
+    throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
+                             committed);
+  }
+  const auto path = fs::exists(committedStatus) ? committed : stagingPath(artifact, generation);
+  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) {
     throwSystem("repo-artifact-read-failed", "open", path);
   }
@@ -587,7 +672,18 @@ FilesystemArtifactPayloadStore::verifiedRanges(const ArtifactReference& artifact
 {
   std::lock_guard<std::mutex> guard(m_mutex);
   artifact.validate();
-  if (fs::exists(committedPath(artifact))) {
+  const auto committed = committedPath(artifact);
+  std::error_code committedError;
+  const auto committedStatus = fs::symlink_status(committed, committedError);
+  if (committedError && committedError != std::errc::no_such_file_or_directory) {
+    throw std::runtime_error("repo-artifact-committed-stat-failed: " +
+                             committedError.message());
+  }
+  if (fs::is_symlink(committedStatus)) {
+    throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
+                             committed);
+  }
+  if (fs::exists(committedStatus)) {
     return artifact.sizeBytes == 0
              ? std::vector<ArtifactByteRange>{}
              : std::vector<ArtifactByteRange>{{0, artifact.sizeBytes}};
@@ -602,7 +698,7 @@ FilesystemArtifactPayloadStore::flush(const ArtifactReference& artifact,
 {
   std::lock_guard<std::mutex> guard(m_mutex);
   const auto path = stagingPath(artifact, generation);
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) {
     throwSystem("repo-artifact-sync-failed", "open", path);
   }
@@ -622,7 +718,18 @@ FilesystemArtifactPayloadStore::finalize(const ArtifactReference& artifact,
   std::lock_guard<std::mutex> guard(m_mutex);
   artifact.validate();
   const auto committed = committedPath(artifact);
-  if (fs::exists(committed)) {
+  std::error_code committedStatusError;
+  const auto committedStatus = fs::symlink_status(committed, committedStatusError);
+  if (committedStatusError &&
+      committedStatusError != std::errc::no_such_file_or_directory) {
+    throw std::runtime_error("repo-artifact-committed-stat-failed: " +
+                             committedStatusError.message());
+  }
+  if (fs::is_symlink(committedStatus)) {
+    throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
+                             committed);
+  }
+  if (fs::exists(committedStatus)) {
     if (sha256File(committed) != artifact.contentDigest) {
       throw std::runtime_error(
         "repo-artifact-committed-corrupt: committed payload digest mismatch");
@@ -630,7 +737,9 @@ FilesystemArtifactPayloadStore::finalize(const ArtifactReference& artifact,
     return;
   }
   const auto staging = stagingPath(artifact, generation);
-  const auto ranges = decodeRanges(rangePath(staging), artifact.sizeBytes);
+  const auto ranges = artifact.sizeBytes == 0
+    ? std::vector<ArtifactByteRange>{}
+    : decodeRanges(rangePath(staging), artifact.sizeBytes);
   const bool complete =
     artifact.sizeBytes == 0 ? ranges.empty()
                             : ranges.size() == 1 && ranges[0].offsetBytes == 0 &&
@@ -639,7 +748,7 @@ FilesystemArtifactPayloadStore::finalize(const ArtifactReference& artifact,
     throw std::runtime_error(
       "repo-artifact-incomplete: verified ranges do not cover the artifact");
   }
-  const int fd = ::open(staging.c_str(), O_RDONLY | O_CLOEXEC);
+  const int fd = ::open(staging.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) {
     throwSystem("repo-artifact-finalize-failed", "open", staging);
   }
@@ -681,7 +790,18 @@ FilesystemArtifactPayloadStore::isCommitted(const ArtifactReference& artifact,
 {
   std::lock_guard<std::mutex> guard(m_mutex);
   validateGeneration(generation);
-  return fs::exists(committedPath(artifact));
+  const auto committed = committedPath(artifact);
+  std::error_code statusError;
+  const auto status = fs::symlink_status(committed, statusError);
+  if (statusError && statusError != std::errc::no_such_file_or_directory) {
+    throw std::runtime_error("repo-artifact-committed-stat-failed: " +
+                             statusError.message());
+  }
+  if (fs::is_symlink(status)) {
+    throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
+                             committed);
+  }
+  return fs::exists(status);
 }
 
 void
