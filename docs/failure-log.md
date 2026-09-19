@@ -7193,3 +7193,25 @@ serving, CollaborationContext/Provider wiring, dynamic cancellation injection an
 Qwen preparation remain unobserved. Raw logs are
 `.codex-tmp/spec189-b189-1b-consumer-build-r1.log` and
 `.codex-tmp/spec189-b189-1b-consumer-selector-r1.log`.
+
+2026-09-19 Spec189 ONNX identity/resource retry r30-r31: the strict native
+assembly path was changed to parse and inline the canonical source once, then
+derive graph/initializer identity from that owned model. The read-only review
+and focused ONNX selectors passed. The maintained Qwen launcher still stopped
+at `RESOURCE_BOUNDARY:swapIo` before an interpretable two-provider workload:
+r30 reached MiniNDN/model preparation but not workload, while r31 stopped
+before MiniNDN startup after a new candidate build. Cleanup completed and no
+provider execution, terminal output, or qualification result was observed.
+The raw records remain under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r30/`
+and `two-provider-global-r31/`; see
+`specs/189-qwen-two-provider-minindn/evidence/b189-onnx-identity-resource-20260919.md`.
+
+2026-09-19 Spec189 Qwen r32 resource retry: an initial prepare invocation using
+the stale example profile was rejected at `NATIVE_BUILD_RECEIPT_PREFLIGHT` and
+did not create a run record. The corrected global profile then prepared
+successfully, but the run stopped after 13 samples at
+`RESOURCE_BOUNDARY:swapIo` before MiniNDN startup; cleanup was `PASS`, and
+MiniNDN/workload were `NOT_EVALUATED`. The run record is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r32/`.
+This is a host resource boundary, not a Qwen protocol result.
