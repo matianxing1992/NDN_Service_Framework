@@ -19,6 +19,18 @@ native = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(native)
 
 
+@pytest.mark.parametrize("flag", ["-I", "-isystem", "-L"])
+def test_dependency_flag_paths_rejects_split_temporary_path(tmp_path, flag):
+    cache = tmp_path / "build" / "c4che"
+    cache.mkdir(parents=True)
+    (cache / "_cache.py").write_text(
+        "CXXFLAGS_TEST = " + repr([flag, str(tmp_path / "temporary")]) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(native.IdentityError, match="WAF_CACHE_CXXFLAGS_TEST"):
+        native._waf_cache_dependency_paths(cache.parent)
+
+
 def test_runtime_probe_isolates_keychains_before_exec_without_repairing_paths(tmp_path, monkeypatch):
     original = {"PYTHONPATH": "/chosen/python", "LD_LIBRARY_PATH": "/chosen/lib",
                 "NDN_CLIENT_PIB": "pib-sqlite3:/operator/pib"}
