@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 B189-2 selector-recording invocation boundary
+
+The first post-review B189-2 selector command ran each C++ selector to
+completion (`*** No errors detected`), but the recording pipeline returned
+status 1 because the requested `.codex-tmp/spec189-b189-2-preselection-build-r1/`
+directory had not been created, so `tee` could not open its log. No protocol or
+assertion failure was inferred. The boundary is retained in
+`.codex-tmp/spec189-b189-2-preselection-build-r1/selector-invocation-boundary-r1.log`;
+after creating the directory, the three selectors were rerun with durable logs
+and all returned status 0. This is a test-harness recording boundary, not a
+T005 protocol result.
+
 ## 2026-09-19 — Spec189 F02 Waf build-tree RPATH boundary
 
 The first `spec189-preparation-memory` selector aborted with
