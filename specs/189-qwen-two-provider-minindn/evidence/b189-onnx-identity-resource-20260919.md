@@ -62,5 +62,11 @@ swap-I/O 增量约 280 MB，`minindn` 和 workload 均为 `NOT_EVALUATED`，clea
 `PASS`。该次结果确认当前阻断首先是主机资源基线/守门器边界，不能据此判断 native
 assembly 或两 provider 协议是否成功。
 
+随后 r33 在再次降低 swap 压力后成功完成 prepare，并进入 `admission/running/drained`
+采样；但仍在 MiniNDN 启动前触发 `RESOURCE_BOUNDARY:swapIo`。21 个样本的最高
+RSS 约 310 MB、swap-I/O 增量约 275 MB，cleanup 为 `PASS`，MiniNDN/workload
+仍为 `NOT_EVALUATED`。这证明守门器正在捕获主机换页，而不是模型执行结果；在
+获得稳定的低换页主机基线前不再重复相同 run。
+
 原始 run records 和 samples 保留在 `.codex-tmp/spec189-qwen-two-provider-20260918/`
 下，不入 Git。详见 [tasks checkpoint](../tasks.md) 和 [failure log](../../../docs/failure-log.md)。
