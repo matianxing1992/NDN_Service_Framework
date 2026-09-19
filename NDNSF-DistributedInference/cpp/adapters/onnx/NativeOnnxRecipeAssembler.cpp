@@ -34,10 +34,10 @@
 namespace ndnsf::di {
 namespace {
 
-std::string digest(const std::vector<std::uint8_t>& bytes)
+std::string digest(const std::uint8_t* data, std::size_t size)
 {
   unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256(bytes.data(), bytes.size(), hash);
+  SHA256(data, size, hash);
   std::ostringstream out;
   out << "sha256:";
   for (unsigned char value : hash) {
@@ -45,6 +45,11 @@ std::string digest(const std::vector<std::uint8_t>& bytes)
         << "0123456789abcdef"[value & 0x0f];
   }
   return out.str();
+}
+
+std::string digest(const std::vector<std::uint8_t>& bytes)
+{
+  return digest(bytes.data(), bytes.size());
 }
 
 void fail(const char* code)
@@ -1211,6 +1216,61 @@ std::string validateAndPinLocation(const std::vector<onnx::TensorProto*>& tensor
   return pinnedLocation;
 }
 
+struct ExternalByteRange
+{
+  std::uint64_t offset = 0;
+  std::uint64_t length = 0;
+};
+
+ExternalByteRange validatedExternalByteRange(const onnx::TensorProto& tensor,
+                                             const std::vector<std::uint8_t>& bytes)
+{
+  if (tensor.data_location() != onnx::TensorProto::EXTERNAL)
+    fail("EXTERNAL_BINDING");
+  std::set<std::string> metadataKeys;
+  std::string location;
+  int locationEntries = 0;
+  std::string offsetText;
+  std::string lengthText;
+  for (const auto& entry : tensor.external_data()) {
+    if (!metadataKeys.insert(entry.key()).second) fail("EXTERNAL_METADATA");
+    if (entry.key() == "location") {
+      location = entry.value();
+      ++locationEntries;
+    } else if (entry.key() == "offset") {
+      offsetText = entry.value();
+    } else if (entry.key() == "length") {
+      lengthText = entry.value();
+    }
+  }
+  if (locationEntries != 1 || location.empty() || location.front() == '/' ||
+      location.find('\\') != std::string::npos)
+    fail("EXTERNAL_LOCATION");
+  std::size_t component = 0;
+  while (component < location.size()) {
+    const auto slash = location.find('/', component);
+    const auto part = location.substr(component,
+                                      slash == std::string::npos ? std::string::npos
+                                                                 : slash - component);
+    if (part.empty() || part == "." || part == "..") fail("EXTERNAL_LOCATION");
+    if (slash == std::string::npos) break;
+    component = slash + 1;
+  }
+  const auto offset = offsetText.empty() ? 0 : parseUint(offsetText, "OFFSET");
+  if (offset > bytes.size()) fail("EXTERNAL_RANGE");
+  std::uint64_t length = bytes.size() - offset;
+  if (!lengthText.empty()) {
+    length = parseUint(lengthText, "LENGTH");
+    // ONNX 1.17 treats an explicit zero length as the remainder of the
+    // authenticated external file. Keep this rule identical to inlining.
+    if (length == 0) length = bytes.size() - offset;
+  }
+  if (length > bytes.size() - offset ||
+      length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+    fail("EXTERNAL_RANGE");
+  return {offset, length};
+}
+
 void inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
                               const std::vector<std::uint8_t>& bytes,
                               const NativeAssemblyControl* control = nullptr,
@@ -1219,41 +1279,15 @@ void inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
   for (auto* tensor : tensors) {
     if (control != nullptr) checkActive(*control);
     if (tensor->data_location() != onnx::TensorProto::EXTERNAL) continue;
-    std::set<std::string> metadataKeys;
-    for (int i = 0; i < tensor->external_data_size(); ++i)
-      if (!metadataKeys.insert(tensor->external_data(i).key()).second)
-        fail("EXTERNAL_METADATA");
-    const auto offsetText = [&] {
-      for (int i = 0; i < tensor->external_data_size(); ++i) {
-        const auto& entry = tensor->external_data(i);
-        if (entry.key() == "offset") return entry.value();
-      }
-      return std::string();
-    }();
-    const auto lengthText = [&] {
-      for (int i = 0; i < tensor->external_data_size(); ++i) {
-        const auto& entry = tensor->external_data(i);
-        if (entry.key() == "length") return entry.value();
-      }
-      return std::string();
-    }();
-    const auto offset = offsetText.empty() ? 0 : parseUint(offsetText, "OFFSET");
-    if (offset > bytes.size()) fail("EXTERNAL_RANGE");
-    std::uint64_t length = bytes.size() - offset;
-    if (!lengthText.empty()) {
-      length = parseUint(lengthText, "LENGTH");
-      if (length == 0) length = bytes.size() - offset;  // 1.17 loader rule
-      if (length > bytes.size() - offset || length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
-        fail("EXTERNAL_RANGE");
-    }
+    const auto range = validatedExternalByteRange(*tensor, bytes);
     if (copiedBytes != nullptr) {
-      *copiedBytes = checkedAdd(*copiedBytes, length);
+      *copiedBytes = checkedAdd(*copiedBytes, range.length);
       if (control != nullptr &&
           (control->maxAssembledBytes == 0 || *copiedBytes > control->maxAssembledBytes))
         fail("MATERIAL_LIMIT");
     }
-    tensor->set_raw_data(reinterpret_cast<const char*>(bytes.data() + offset),
-                         static_cast<int>(length));
+    tensor->set_raw_data(reinterpret_cast<const char*>(bytes.data() + range.offset),
+                         static_cast<int>(range.length));
     tensor->clear_external_data();
     tensor->set_data_location(onnx::TensorProto::DEFAULT);
     if (control != nullptr) checkActive(*control);
@@ -1608,6 +1642,31 @@ std::vector<TensorIndexEntry> buildTensorIndex(
     const auto* material = &initializer;
     std::optional<onnx::TensorProto> externalMaterial;
     if (initializer.data_location() == onnx::TensorProto::EXTERNAL) {
+      if (externalBytes == nullptr) fail("EXTERNAL_BINDING");
+      // External numeric raw_data is already the canonical little-endian
+      // payload.  Hash the authenticated range directly instead of creating
+      // a temporary TensorProto, serializing it, parsing it again and copying
+      // the raw bytes into a second normalization vector.  Nibble-packed
+      // INT4/UINT4 remain on the materialized path because normalization
+      // expands each nibble to one canonical byte.
+      if (initializer.data_type() != onnx::TensorProto::INT4 &&
+          initializer.data_type() != onnx::TensorProto::UINT4) {
+        const auto count = tensorElementCount(initializer);
+        const auto expected = rawByteLength(initializer.data_type(), count);
+        const auto range = validatedExternalByteRange(initializer, *externalBytes);
+        if (range.length != expected)
+          failNormalization("INITIALIZER_ENCODING_INVALID");
+        entry.dtype = dtypeLabel(initializer.data_type());
+        entry.shape.reserve(static_cast<std::size_t>(initializer.dims_size()));
+        for (const auto dim : initializer.dims()) entry.shape.push_back(dim);
+        entry.byteOrder = byteOrderOf(initializer.data_type());
+        entry.byteLength = static_cast<std::size_t>(expected);
+        entry.contentDigest = digest(externalBytes->data() + range.offset,
+                                     static_cast<std::size_t>(expected));
+        entries.push_back(std::move(entry));
+        if (control != nullptr) checkActive(*control);
+        continue;
+      }
       externalMaterial.emplace(materializeExternalTensor(initializer, externalBytes, control));
       material = &*externalMaterial;
     }
