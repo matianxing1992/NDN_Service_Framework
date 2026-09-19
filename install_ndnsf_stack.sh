@@ -62,7 +62,8 @@ Usage: ./install_ndnsf_stack.sh [options]
 Build and install the NDNSF stack in dependency order:
 
   1. Missing external NDN dependencies from matianxing1992 GitHub repos
-  2. NDNSF C++ core and bundled C++ subprojects through waf
+  2. NDNSF-owned C++ core, Repo/DI modules, examples, and native tests through
+     the repository waf; external dependencies use their own build entrypoints
   3. ndnsf Python wrapper
   4. py_repoclient Python binding for NDNSF-DistributedRepo
   5. ndnsf-distributed-inference Python package

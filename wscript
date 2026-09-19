@@ -643,6 +643,9 @@ int main() {
     conf.check(features='cxx cxxprogram', lib=['dl'], uselib_store='DL')
 
 
+    # NAC-ABE is an external project. Its own repository build installs the
+    # SDK; this NDNSF Waf graph only consumes the installed contract and never
+    # recurses into NAC-ABE sources or builds its targets.
     conf.check_cfg(package='libnac-abe', args=['--cflags', '--libs'], uselib_store='NAC-ABE',
                    pkg_config_path=pkg_config_path)
     check_dependency_paths('libnac-abe', 'INCLUDES_NAC-ABE', 'INCLUDES_NAC_ABE',

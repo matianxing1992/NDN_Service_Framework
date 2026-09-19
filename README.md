@@ -68,7 +68,9 @@ It installs the stack in dependency order:
 2. Check external dependencies with `pkg-config`.
 3. Clone, build, and install missing dependencies:
    `ndn-cxx`, `NDNSD`, `ndn-svs`, `OpenABE`, and `NAC-ABE`.
-4. Build the NDNSF C++ core and bundled C++ subprojects with `waf`.
+4. Build the NDNSF-owned C++ core, Repo/DI modules, examples, and native tests
+   with the repository `waf`; external dependencies build through their own
+   upstream entrypoints.
 5. Install the NDNSF Python wrapper package, `ndnsf`.
 6. Install the NDNSF-DistributedRepo Python binding, `py_repoclient`.
 7. Install the NDNSF-DistributedInference Python package.
@@ -181,9 +183,11 @@ pass its common root with `--toolchain-root`; do not mix roots.
 
 All NDNSF C++ libraries, Repo/DI subprojects, examples and native tests are
 configured and built through the repository-root `waf`/`wscript` graph, as in
-the NDN-CXX projects. A dependency may use its own upstream build system while
-being installed into the declared global closure, but NDNSF targets must not be
-compiled by ad-hoc `g++`, CMake, or a second hand-maintained source list. The
+the NDN-CXX projects. NAC-ABE and the other external dependencies remain
+owned by their own repositories and build systems; the NDNSF Waf graph only
+consumes their installed headers, libraries, and package metadata from the
+declared global closure. NDNSF targets must not be compiled by ad-hoc `g++`,
+CMake, or a second hand-maintained source list. The
 configured Waf tree gives in-tree selectors a target-local RUNPATH before the
 installed same-SONAME libraries; `readelf -d`/`ldd` must confirm that the tested
 binary loads the just-built NDNSF targets. Installed bindings and production
