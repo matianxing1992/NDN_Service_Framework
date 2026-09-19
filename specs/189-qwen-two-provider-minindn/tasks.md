@@ -14,6 +14,8 @@
 
 **B189-2 production-ingress checkpoint**: 2026-09-19 — 在现有 global-r3 Waf tree 对 `integration-tests` 的受影响源以 `-j4` 增量编译成功（39.072s，峰值 RSS 2,114,188 kB，0 swap），并运行真实 C++ `Spec170NdnsfDiCoreFlow` 生产入口 selectors：双 Provider D2b 请求到最终响应、ACK 后 post-Selection runner preparation、篡改 capability 拒绝均通过；post-Selection preparation factory 在手工 ACK/Selection 发布前两个 Provider 都为 0，发布后达到 provider0=2/provider1=1。该组用例证明 production handler 位于真实 ACK/Selection 后路径，但仍未直接记录未选 Provider 的 source fetch/assembly 计数，也未使用真实 Qwen canonical manifest；因此只登记为 T005 的 `FOCUSED_CXX_PASS`，不关闭 T005/B189-2。详见 [production placement evidence](evidence/b189-placement-production-20260919.md)。
 
+**B189-3/T007 rerun checkpoint**: 2026-09-19 — B189-3/T007 的冻结范围经官方只读 `STATIC_PASS` 后，使用正确的 `../waf` 入口在 `build-spec189-b189-3-global-r3` 以 `-j4` 完成六个受影响目标编译链接（16.228s）：`ndnsf-distributed-inference`、`spec185-provider-assembly`、两个 Spec189 oracle CLI/fixture target 和 material oracle。C++ material oracle 15/15、provider-stage oracle 18/18、CLI oracle 5/5 通过；真实 `Provider::serve` selector 通过并记录同一 `preparationId` 的 assembly/ready 配对。首次错误的 `waf` 路径调用已登记在 failure log，未计为产品失败。该出口仍保持 T007 `PARTIAL`：没有独立模型数值、特定 upstream endpoint/compute-start 因果、真实 Qwen 多 token、MiniNDN 或复用资格。[causal oracle evidence](evidence/b189-causal-oracle-20260919.md)
+
 **F02 focused checkpoint**: 2026-09-19 — T003-R1 的 production `MemorySnapshot`/terminal
 guard 通过 r2/r3 官方只读复审；仓库根 Waf tree 重新配置并以 `spec189-preparation-memory`
 完成 compile/link，修复 build-tree 与 `/usr/local` 同 SONAME 混链后 selector 通过 1/1。

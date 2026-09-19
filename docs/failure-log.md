@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 B189-3 oracle build invocation boundary
+
+The first B189-3 post-review build attempt was launched from
+`build-spec189-b189-3-global-r3` with `python3 waf`; that directory exposes the
+repository entry point as `../waf`, so Python exited before Waf configuration
+or compilation with `can't open file 'waf'`. The raw command result is retained
+in `.codex-tmp/spec189-b189-3-oracle-build-r2/build.log` and `build.rc`.
+This is a build invocation boundary, not a compile, link, runtime, or protocol
+result. The retry must use the canonical `../waf` entry point and preserve this
+attempt.
+
 ## 2026-09-19 — Spec189 B189-2 selector-recording invocation boundary
 
 The first post-review B189-2 selector command ran each C++ selector to
