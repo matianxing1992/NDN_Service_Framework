@@ -1,5 +1,23 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 real Qwen r56 pre-assembly stream boundary
+
+The fresh `two-provider-global-r56` run used the global-r3 candidate and passed
+candidate preflight, MiniNDN startup, both Provider readiness, ACK decisions and
+authenticated `BEFORE_ASSEMBLY` grant verification. The requester then failed
+with `NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`. Neither
+Provider emitted `ASSEMBLY_STARTED`, root/material verification, runner-ready,
+execution, terminal output or a stage result. Supervisor cleanup passed; the
+resource samples recorded zero swap-I/O delta and the run was not a resource
+boundary. This is the first proven stream-liveness boundary after grant
+verification, not an ORT, Repo or model correctness result. The durable record
+is [b189-real-qwen-r56-20260919](../specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r56-20260919.md),
+with raw logs under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r56/`.
+The changed gate is the reviewed authenticated `ASSEMBLY_STARTED` milestone
+emitted before root fetch; a fresh rebuilt-candidate run is required before
+adding more components or changing timeouts.
+
 ## 2026-09-19 — Spec189 real Qwen r53 diagnostic stream boundary
 
 The fresh `two-provider-global-r53` run enabled runtime timing, assignment

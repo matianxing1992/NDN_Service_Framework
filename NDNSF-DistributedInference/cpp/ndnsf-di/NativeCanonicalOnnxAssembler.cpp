@@ -470,6 +470,7 @@ prepareNativeCanonicalOnnxRole(
     }
   };
   const ndn::Name rootName(projection.canonicalArtifactName);
+  reportProgress("ASSEMBLY_STARTED", 0.0);
   logMaterialFetch("root", rootName, "begin", nullptr,
                    projection.assembly.modelManifestDigest);
   std::optional<ndn::Buffer> rootPayload;

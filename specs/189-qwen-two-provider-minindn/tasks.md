@@ -8,6 +8,21 @@
 
 ## Current Checkpoint
 
+**B189-3 real Qwen r56 checkpoint**: 2026-09-19 — the fresh
+`two-provider-global-r56` candidate reached both Provider `READY`, ACK and
+`BEFORE_ASSEMBLY` grant verification, then the requester stopped with
+`NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`. Neither
+Provider emitted `ASSEMBLY_STARTED`, `ROOT_VERIFIED`, `RUNNER_READY`, execution,
+terminal output or a stage result. Supervisor cleanup passed; resource samples
+showed zero swap-I/O delta and the run is not a resource boundary. This is the
+first proven post-grant stream-liveness boundary, not a Repo, ORT or model
+failure. The repaired candidate now reports authenticated `ASSEMBLY_STARTED`
+before root fetch; its immutable scope passed read-only review, rebuilt with
+Waf `-j3` in 35.411s, and the C++ lifecycle/assembly suites passed 15/15 and
+9/9. A fresh real run with the rebuilt binaries is the next gate; no further
+component expansion or timeout increase is planned before that run. See
+[r56 evidence](evidence/b189-real-qwen-r56-20260919.md).
+
 **B189-3 progress/heartbeat checkpoint**: 2026-09-19 — the frozen v6
 `review-agent` snapshot passed `STATIC_PASS` for authenticated post-Selection
 assembly progress. The affected DI/unit/integration/assembly-worker closure
@@ -252,8 +267,8 @@ adapter producer/consumer 和 Runtime protected publication 的本地出口已�
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
 | [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | material-backed publication budget/receipt path and focused C++ selector now pass; protected range-store/material-only consumer remain local boundaries. F02 actual ORT/RSS, F05 replacement/rollback beyond focused selector, F09 complete publication boundary, real Qwen source release and protected ingress remain open. [material publication](evidence/b189-material-publication-20260919.md); [prepare](evidence/b189-prepare.md); [protected range-store](evidence/b189-protected-range-store-20260919.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress handler/no-fetch 计数。[placement](evidence/b189-placement.md); [production ingress](evidence/b189-placement-production-20260919.md) |
-| [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer 与 aggregate budget 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md) |
-| [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md) |
+| [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer、aggregate budget、authenticated admission progress 与 assembly suite 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md); [r56 boundary](evidence/b189-real-qwen-r56-20260919.md) |
+| [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门和 assembly-admission progress 已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md); [r56 boundary](evidence/b189-real-qwen-r56-20260919.md) |
 | [T009 Qualify reuse and repeat](#t009) | PARTIAL | T003 + T005 + T006 + T007 | 同 handle 两请求、新 run-id 重复成功、F08 generation-guard、资源 guard、native counters 和 drain。[convergence](evidence/b189-convergence.md) |
 
 ## Task checklist
@@ -429,7 +444,8 @@ Provider 执行成功，也不重复证明最终同 handle 两请求。F02/F05/F
    保留 cancel/provider stop/stale handoff 反例，不扩张质量或 KV 性能工程。
 
 **Acceptance**: 原生 handoff 与独立输出判据可执行，checker 不误拒合法次序且拒绝异常；
-最终真实 Qwen 资格仍由 T009 负责。
+最终真实 Qwen 资格仍由 T009 负责。B189-3 的 assembly-admission progress 已有稳定
+C++ 出口；在下一次真实候选运行前，不再加入新的组件职责或仅为减少重试而调整超时。
 
 <a id="t009"></a>
 ## T009 [US4, US5] — Qualify resource envelope, reuse and repeat

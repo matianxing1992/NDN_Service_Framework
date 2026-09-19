@@ -8,6 +8,14 @@
 - **源码与证据**：`ndn-service-framework/InvocationStream.{hpp,cpp}`、`ServiceUser.{hpp,cpp}`、`NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.{hpp,cpp}`、`Provider.cpp`、`examples/DI_NativeProviderExecutable.cpp`；详见 [B189-R4 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r4-progress-heartbeat-20260919.md) 和 v6 review snapshot。
 - **文档同步边界**：本条登记当前源码行为和剩余验证；API Markdown/PDF 的完整生成与源码摘要刷新仍须在同一干净文档 checkpoint 按 `Design/MANAGEMENT.md` 完成，不能把工作树中的旧 API reference 当作已同步。
 
+## Spec189 pre-root assembly admission correction — 2026-09-19
+
+- **Status**: `PARTIAL`。r56 的真实候选已到 ACK/Selection 和 `BEFORE_ASSEMBLY` grant verification，但 requester 在 Provider 产生可观察 assembly 事件前因 stream gap 终止；这不是 ORT、Repo 或模型 PASS/FAIL 结论。
+- **Design change**：将第一个 authenticated `ASSEMBLY_STARTED` milestone 前移到 root-material fetch 之前，覆盖 post-grant 的静默 admission 窗口。该变化不新增授权决策、不提高 timeout，也不改变 Selection digest/operation binding。
+- **Evidence**：冻结修复快照获官方只读 `STATIC_PASS`；受影响 C++ closure 以 Waf `-j3` 重建，`Spec175InvocationStreamLifecycle` 15/15、`Spec175NativeAssembly` 9/9 通过。真实重跑及 terminal/output/drain 仍未完成，详见 [r56 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r56-20260919.md)。
+- **Documentation boundary**：B189-3 的下一个且唯一优先出口是用重建候选做一次真实 retry；在观察新的第一生产边界前，不扩张组件职责、不盲目增加 timeout，也不把本地回归提升为资格 PASS。
+
+
 ## Spec189 execution and ownership audit — 2026-09-18 14:50 -0500
 
 - **Status**: PARTIAL；本次仅修正 [Spec189 任务与批次](../specs/189-qwen-two-provider-minindn/batch-execution.md)，保留 7 个能力任务，T003 分 protected storage/atomic preparation 两个验证出口。

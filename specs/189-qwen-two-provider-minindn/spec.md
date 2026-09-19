@@ -196,6 +196,14 @@ status must be reconciled with the later source and selectors before another run
 This reconciliation changes task ordering and evidence requirements; it does not lower
 the two-provider acceptance chain or turn a focused selector into `QWEN_TWO_PROVIDER_PASS`.
 
+The fresh r56 candidate confirms the next design boundary: both Providers can reach
+authenticated `BEFORE_ASSEMBLY` grant verification while the requester still expires on a
+silent stream gap. The accepted repair is a provider-authenticated `ASSEMBLY_STARTED`
+milestone emitted before the first root-material fetch. It is an observability/liveness
+handoff, not a new authorization decision, timeout increase, or qualification result. The
+rebuilt C++ selectors pass locally; one fresh real candidate run must observe this marker
+before any additional component work is admitted. See [r56 evidence](evidence/b189-real-qwen-r56-20260919.md).
+
 Every bounded retry follows the shared
 [experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):
 freeze the candidate and raw attempt, classify the first missing production
@@ -214,3 +222,4 @@ gate.
 - 2026-09-18: 架构/进度复审：prepare 改为拓扑无关原子材料，ACK 后规划；资源门前移，十任务合并为七个活动任务，保留所有必要负例；修正事件总序、candidate/run 身份与失败完成条件。r25 仍 FAIL，文档修订不构成功能 PASS。
 - 2026-09-18 19:16 -0500: Spec189 收敛审计将资源 guard 从独立 T008 改为跨批次门，T008/T010 合并到 T009；同 handle 重用只在最终真实运行收口；Qwen profile/material/oracle 明确为候选局部契约，避免临时实验设计替代全局 API。当前仍无 `QWEN_TWO_PROVIDER_PASS`。
 - 2026-09-19: DI/Repo design audit reconciliation retained the historical F01–F09 findings, marked the later material-only consumer as a local repair rather than qualification, and added explicit preparation-peak, quota-accounting and generation-guard requirements. F03/F04/F06/F07 remain conditional or legacy follow-up items and are not silently treated as fixed.
+- 2026-09-19: r56 reached ACK/Selection/grant verification but failed the post-grant stream-liveness boundary before assembly. The design now freezes B189-3 at the authenticated pre-root `ASSEMBLY_STARTED` gate; no blind timeout increase or further component expansion precedes one rebuilt-candidate retry.
