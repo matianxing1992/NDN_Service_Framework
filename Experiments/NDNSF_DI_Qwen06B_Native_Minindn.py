@@ -1307,6 +1307,7 @@ def main(argv=None, *, _supervised=False) -> int:
                        f"--provider {shlex.quote(provider)} --group {shlex.quote(GROUP)} --controller {shlex.quote(CONTROLLER)} "
                        f"--trust-schema {shlex.quote(str(directory / 'trust-schema.conf'))} --roles {shlex.quote(stages[index]['role'])} "
                        f"--serve --run-for-ms {runtime_budgets['provider_run_ms']} --artifact-cache-dir {shlex.quote(str(directory / 'cache'))} "
+                       f"--repo-fetch-timeout-ms {runtime_budgets['timeout_ms']} "
                        f"--tokenizer-json {shlex.quote(str(tokenizer))} --selection-offer-key-file {shlex.quote(str(directory / 'offer-private.pem'))} "
                        "--offer-backend onnxruntime-cpu --offer-can-provision --offer-has-model")
             proc, log = start(node, f"provider-{index}", command, env)

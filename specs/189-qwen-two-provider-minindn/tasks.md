@@ -8,6 +8,18 @@
 
 ## Current Checkpoint
 
+**B189-3 provider dependency-timeout wiring checkpoint**: 2026-09-19 — the
+provider CLI's `--repo-fetch-timeout-ms` is now wired to a dedicated
+`dependencyFetchTimeoutMs`; readiness and conversation-control deadlines retain
+their independent bounded `fetchTimeoutMs`. Official read-only review of the
+final frozen snapshot passed `STATIC_PASS`. The existing global-r3 tree rebuilt
+the affected DI library, provider executable and unit-tests with repository Waf
+`-j4`; the timeout-budget C++ selectors passed, including an environment
+override regression proving that only dependency fetch changes. This closes a
+configuration-wiring defect exposed by r48; it does not establish a new Qwen
+run, runner, output, terminal response or qualification. T003/T006/T007/T009
+remain `PARTIAL`. See [provider timeout evidence](evidence/b189-provider-timeout-20260919.md).
+
 **B189-1c external initializer range fast-path checkpoint**: 2026-09-19 — the
 frozen ONNX assembler diff received official read-only `STATIC_PASS`. The shared
 external range validator and direct numeric-range digest path preserve exact

@@ -1,5 +1,17 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 provider timeout wiring compile boundary
+
+The first repair attempt for the r48 dependency-fetch timeout wiring stopped at
+the C++ compile boundary: `NativeProviderHandler.cpp` contained an anonymous
+namespace helper with the same name as the new public declaration, producing an
+ambiguous call. No link or runtime assertion ran. The immutable attempt is
+`.codex-tmp/spec189-provider-timeout-build-r1.log`; the source snapshot and
+repair evidence are recorded in
+`specs/189-qwen-two-provider-minindn/evidence/b189-provider-timeout-20260919.md`.
+The helper was renamed internally and wrapped once outside the anonymous
+namespace; r2/r3 builds and the two C++ timeout selectors then passed.
+
 ## 2026-09-19 — Spec189 real Qwen r48 materialization/liveness boundary
 
 The fresh run `two-provider-global-r48` used candidate

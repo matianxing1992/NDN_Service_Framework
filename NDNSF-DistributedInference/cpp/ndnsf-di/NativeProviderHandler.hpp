@@ -105,6 +105,9 @@ struct NativeProviderHandlerConfig
   // requester-encrypted without introducing a new NDNSF Core message type.
   std::string conversationStateKeyScope = "ndnsf-di-conversation-state-v1";
   bool requireExecutionAttemptBinding = false;
+  // Timeout for authenticated inter-Provider dependency reads only. It is
+  // independent from fetchTimeoutMs, which bounds readiness and control ACKs.
+  int dependencyFetchTimeoutMs = 30000;
   int fetchTimeoutMs = 30000;
   std::size_t maxSegmentSize = 7600;
   int freshnessMs = 60000;
@@ -149,6 +152,16 @@ struct NativeProviderHandlerConfig
     epochCoordinatorCompletionObserver;
   std::shared_ptr<NativeFailureObserver> nativeFailureObserver;
 };
+
+struct NativeProviderTimeoutBudget
+{
+  int dependencyFetchMs = 30000;
+  int readinessMs = 30000;
+  int conversationControlMs = 30000;
+};
+
+NativeProviderTimeoutBudget
+nativeProviderTimeoutBudget(const NativeProviderHandlerConfig& config);
 
 struct NativeProviderExecutionBindingResult
 {

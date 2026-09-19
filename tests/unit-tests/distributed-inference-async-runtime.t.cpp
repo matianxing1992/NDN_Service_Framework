@@ -1551,6 +1551,39 @@ BOOST_AUTO_TEST_CASE(NativeProviderHandlerRejectsMissingRunnerFactory)
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderTimeoutBudgetKeepsDataAndControlDeadlinesIndependent)
+{
+  NativeProviderHandlerConfig config;
+  config.dependencyFetchTimeoutMs = 900000;
+  config.fetchTimeoutMs = 5000;
+  const auto budget = nativeProviderTimeoutBudget(config);
+  BOOST_CHECK_EQUAL(budget.dependencyFetchMs, 900000);
+  BOOST_CHECK_EQUAL(budget.readinessMs, 5000);
+  BOOST_CHECK_EQUAL(budget.conversationControlMs, 5000);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderTimeoutEnvironmentOverrideStaysOnDependencyFetch)
+{
+  NativeProviderHandlerConfig config;
+  config.dependencyFetchTimeoutMs = 900000;
+  config.fetchTimeoutMs = 5000;
+  const char* previous = std::getenv("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS");
+  const std::string previousValue = previous == nullptr ? std::string() : previous;
+  const bool hadPrevious = previous != nullptr;
+  BOOST_REQUIRE_EQUAL(setenv("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS", "12000", 1), 0);
+  const auto budget = nativeProviderTimeoutBudget(config);
+  if (hadPrevious) {
+    BOOST_REQUIRE_EQUAL(setenv("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS",
+                              previousValue.c_str(), 1), 0);
+  }
+  else {
+    BOOST_REQUIRE_EQUAL(unsetenv("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS"), 0);
+  }
+  BOOST_CHECK_EQUAL(budget.dependencyFetchMs, 12000);
+  BOOST_CHECK_EQUAL(budget.readinessMs, 5000);
+  BOOST_CHECK_EQUAL(budget.conversationControlMs, 5000);
+}
+
 BOOST_AUTO_TEST_CASE(NativeProviderExecutionPolicyRejectsMixedFallback)
 {
   NativeProviderHandlerConfig dataDriven;
