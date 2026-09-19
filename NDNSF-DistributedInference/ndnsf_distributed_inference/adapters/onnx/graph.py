@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -168,6 +170,184 @@ def _sha256_canonical(value: Any) -> str:
     return "sha256:" + hashlib.sha256(wire).hexdigest()
 
 
+_EXTERNAL_RAW_DTYPE = {
+    # ONNX TensorProto enum -> (canonical dtype label, wire width, byte order,
+    # packed-nibble mode).  Do not derive these widths from NumPy: newer ONNX
+    # releases map BFLOAT16/FLOAT8/INT4 to implementation-dependent dtypes.
+    1: ("float32", 4, "little", ""),
+    2: ("uint8", 1, "na", ""),
+    3: ("int8", 1, "na", ""),
+    4: ("uint16", 2, "little", ""),
+    5: ("int16", 2, "little", ""),
+    6: ("int32", 4, "little", ""),
+    7: ("int64", 8, "little", ""),
+    9: ("bool", 1, "na", ""),
+    10: ("float16", 2, "little", ""),
+    11: ("float64", 8, "little", ""),
+    12: ("uint32", 4, "little", ""),
+    13: ("uint64", 8, "little", ""),
+    14: ("complex64", 8, "little", ""),
+    15: ("complex128", 16, "little", ""),
+    16: ("(numpy.uint16, [('bfloat16', '<u2')])", 2, "little", ""),
+    17: ("(numpy.uint8, [('e4m3fn', 'u1')])", 1, "na", ""),
+    18: ("(numpy.uint8, [('e4m3fnuz', 'u1')])", 1, "na", ""),
+    19: ("(numpy.uint8, [('e5m2', 'u1')])", 1, "na", ""),
+    20: ("(numpy.uint8, [('e5m2fnuz', 'u1')])", 1, "na", ""),
+    21: ("(numpy.uint8, [('uint4', 'u1')])", 1, "na", "uint4"),
+    22: ("(numpy.int8, [('int4', 'i1')])", 1, "na", "int4"),
+}
+
+
+def _checked_external_element_count(tensor: Any) -> tuple[tuple[int, ...], int]:
+    """Return a validated shape and element count for an external tensor."""
+    shape = tuple(int(value) for value in tensor.dims)
+    count = 1
+    max_int64 = (1 << 63) - 1
+    for dimension in shape:
+        if dimension < 0:
+            raise ValueError(f"negative external tensor dimension: {tensor.name}")
+        if count and dimension > max_int64 // count:
+            raise ValueError(f"external tensor shape overflow: {tensor.name}")
+        count *= dimension
+    return shape, count
+
+
+def _open_source_rooted_external(source_root: Path, relative: Path) -> int:
+    """Open an external object through a no-follow directory-FD walk."""
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    nonblock = getattr(os, "O_NONBLOCK", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    root_fd = os.open(source_root, os.O_RDONLY | cloexec | nofollow | directory)
+    current_fd = root_fd
+    try:
+        parts = relative.parts
+        if not parts:
+            raise ValueError("external tensor location is empty")
+        for index, part in enumerate(parts):
+            flags = os.O_RDONLY | cloexec | nofollow
+            if index + 1 < len(parts):
+                flags |= directory
+            else:
+                # Opening a FIFO without O_NONBLOCK can wait forever before
+                # fstat has a chance to reject it as a non-regular payload.
+                flags |= nonblock
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            if current_fd != root_fd:
+                os.close(current_fd)
+            current_fd = next_fd
+        os.close(root_fd)
+        return current_fd
+    except BaseException:
+        if current_fd != root_fd:
+            os.close(current_fd)
+        os.close(root_fd)
+        raise
+
+
+def _external_tensor_identity(
+    tensor: Any,
+    source_path: Path,
+    external_data_helper: Any,
+) -> tuple[str, tuple[int, ...], str, int, str]:
+    """Hash one external tensor with bounded memory and frozen wire rules."""
+    metadata: dict[str, str] = {}
+    for entry in tensor.external_data:
+        key = str(entry.key)
+        if key in metadata:
+            raise ValueError(f"duplicate external tensor metadata: {tensor.name}")
+        metadata[key] = str(entry.value)
+    location = metadata.get("location", "")
+    if not location or "\x00" in location:
+        raise ValueError(f"invalid external tensor location: {tensor.name}")
+    relative = Path(location)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"external tensor location escapes source root: {tensor.name}")
+    payload_path = (source_path.parent / relative).resolve()
+    try:
+        payload_path.relative_to(source_path.parent.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"external tensor location escapes source root: {tensor.name}") from exc
+
+    dtype_name, wire_width, byte_order, packing = _EXTERNAL_RAW_DTYPE.get(
+        int(tensor.data_type), ("", 0, "", ""))
+    if not dtype_name:
+        raise ValueError(f"unsupported external tensor data type: {tensor.name}")
+    shape, count = _checked_external_element_count(tensor)
+    expected_raw = ((count + 1) // 2 if packing else count * wire_width)
+    try:
+        offset = int(metadata.get("offset", "0") or 0)
+    except ValueError as exc:
+        raise ValueError(f"invalid external tensor offset: {tensor.name}") from exc
+    fd = _open_source_rooted_external(source_path.parent.resolve(), relative)
+    try:
+        initial_stat = os.fstat(fd)
+        if not stat.S_ISREG(initial_stat.st_mode):
+            raise ValueError(f"external tensor payload is not a regular file: {tensor.name}")
+        file_size = initial_stat.st_size
+    except BaseException:
+        os.close(fd)
+        raise
+    if offset < 0 or offset > file_size:
+        os.close(fd)
+        raise ValueError(f"invalid external tensor offset: {tensor.name}")
+    # ONNX's loader treats both omitted length and length=0 as "to EOF".
+    try:
+        declared_length = int(metadata.get("length", "0") or 0)
+    except ValueError as exc:
+        os.close(fd)
+        raise ValueError(f"invalid external tensor length: {tensor.name}") from exc
+    length = declared_length or (file_size - offset)
+    if length < 0 or offset + length > file_size:
+        os.close(fd)
+        raise ValueError(f"invalid external tensor length: {tensor.name}")
+    if length != expected_raw:
+        os.close(fd)
+        raise ValueError(
+            f"external tensor byte length mismatch: {tensor.name} "
+            f"expected {expected_raw}, got {length}")
+
+    digest = hashlib.sha256()
+    output_length = count if packing else length
+    normalized_written = 0
+    try:
+        with os.fdopen(fd, "rb", closefd=False) as payload:
+            payload.seek(offset)
+            remaining = length
+            while remaining:
+                chunk = payload.read(min(8 * 1024 * 1024, remaining))
+                if not chunk:
+                    raise ValueError(f"external tensor ended early: {tensor.name}")
+                if packing:
+                    normalized = bytearray()
+                    for value in chunk:
+                        low, high = value & 0x0F, value >> 4
+                        if packing == "int4":
+                            low = low - 16 if low & 0x08 else low
+                            high = high - 16 if high & 0x08 else high
+                        if normalized_written < count:
+                            normalized.append(low & 0xFF)
+                            normalized_written += 1
+                        if normalized_written < count:
+                            normalized.append(high & 0xFF)
+                            normalized_written += 1
+                    digest.update(normalized)
+                else:
+                    digest.update(chunk)
+                remaining -= len(chunk)
+        final_stat = os.fstat(fd)
+        if ((final_stat.st_dev, final_stat.st_ino, final_stat.st_size) !=
+                (initial_stat.st_dev, initial_stat.st_ino, initial_stat.st_size)):
+            raise ValueError(f"external tensor payload changed during read: {tensor.name}")
+    finally:
+        os.close(fd)
+    if packing and normalized_written != output_length:
+        raise ValueError(f"external tensor normalization truncated: {tensor.name}")
+    return dtype_name, shape, "sha256:" + digest.hexdigest(), (
+        count if packing else length), byte_order
+
+
 def canonical_onnx_identity(
     path: str | Path,
     *,
@@ -184,12 +364,20 @@ def canonical_onnx_identity(
     try:
         import numpy as np  # type: ignore
         import onnx  # type: ignore
+        from onnx import external_data_helper  # type: ignore
         from onnx import numpy_helper  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
             "canonical ONNX identity requires onnx and numpy") from exc
 
-    model = onnx.load(str(Path(path)), load_external_data=True)
+    source_path = Path(path).resolve()
+    # Do not ask ONNX to materialize every external initializer at once.  The
+    # Qwen candidate keeps about 1.5 GB of weights beside a small graph
+    # protobuf; external raw tensors are hashed below in bounded chunks and
+    # only inline/typed tensors use the NumPy fallback.  The resulting identity
+    # is unchanged because the same normalized tensor bytes are hashed in the
+    # same name order.
+    model = onnx.load(str(source_path), load_external_data=False)
 
     def proto_hex(value: Any) -> str:
         try:
@@ -203,21 +391,47 @@ def canonical_onnx_identity(
     for initializer in sorted(model.graph.initializer, key=lambda item: item.name):
         if not initializer.name:
             raise ValueError("ONNX initializer has no stable tensor name")
-        array = np.asarray(numpy_helper.to_array(initializer))
-        if array.dtype.byteorder == ">" or (
-                array.dtype.byteorder == "=" and not np.little_endian):
-            array = array.byteswap().view(array.dtype.newbyteorder("<"))
-        array = np.ascontiguousarray(array)
-        content_digest = "sha256:" + hashlib.sha256(array.tobytes(order="C")).hexdigest()
-        content_to_names.setdefault(content_digest, []).append(initializer.name)
-        tensor_index.append({
-            "tensorName": initializer.name,
-            "dtype": str(array.dtype.newbyteorder("<")),
-            "shape": [int(value) for value in array.shape],
-            "byteOrder": "little" if array.dtype.itemsize > 1 else "na",
-            "contentDigest": content_digest,
-            "byteLength": int(array.nbytes),
-        })
+        is_external = external_data_helper.uses_external_data(initializer)
+        array = None
+        array_bytes = None
+        try:
+            streamed = (_external_tensor_identity(
+                initializer, source_path, external_data_helper)
+                        if is_external else None)
+            if streamed is not None:
+                dtype_name, shape, content_digest, byte_length, byte_order = streamed
+            else:
+                if is_external:
+                    external_data_helper.load_external_data_for_tensor(
+                        initializer, str(source_path.parent))
+                array = np.asarray(numpy_helper.to_array(
+                    initializer, base_dir=str(source_path.parent)))
+                if array.dtype.byteorder == ">" or (
+                        array.dtype.byteorder == "=" and not np.little_endian):
+                    array = array.byteswap().view(array.dtype.newbyteorder("<"))
+                array = np.ascontiguousarray(array)
+                array_bytes = array.tobytes(order="C")
+                content_digest = "sha256:" + hashlib.sha256(array_bytes).hexdigest()
+                dtype_name = str(array.dtype.newbyteorder("<"))
+                shape = tuple(int(value) for value in array.shape)
+                byte_length = int(array.nbytes)
+                byte_order = "little" if array.dtype.itemsize > 1 else "na"
+            content_to_names.setdefault(content_digest, []).append(initializer.name)
+            tensor_index.append({
+                "tensorName": initializer.name,
+                "dtype": dtype_name,
+                "shape": list(shape),
+                "byteOrder": byte_order,
+                "contentDigest": content_digest,
+                "byteLength": byte_length,
+            })
+        finally:
+            # ``load_external_data_for_tensor`` stores the bytes in raw_data.
+            # Clear that field before moving to the next initializer so the
+            # canonical pass has one tensor-sized payload as its upper bound.
+            if is_external:
+                initializer.ClearField("raw_data")
+            del array_bytes, array
     for item in tensor_index:
         aliases = sorted(content_to_names[item["contentDigest"]])
         item["sharedReference"] = aliases[0] if len(aliases) > 1 else ""

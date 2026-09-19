@@ -127,6 +127,74 @@ class Spec170CanonicalLayersTest(unittest.TestCase):
             self.assertEqual(identity_a.graph_digest,
                              identity_changed.graph_digest)
 
+    def test_external_identity_streams_safe_subdirectory_and_zero_length(self):
+        import numpy as np
+        import onnx
+        from onnx import TensorProto, helper, numpy_helper
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "weights").mkdir()
+            initializer = numpy_helper.from_array(
+                np.asarray([[2.0]], dtype=np.float32), name="weight")
+            graph = helper.make_graph(
+                [helper.make_node("MatMul", ["x", "weight"], ["y"])],
+                "external-identity",
+                [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 1])],
+                [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 1])],
+                [initializer],
+            )
+            model = helper.make_model(graph)
+            inline = root / "inline.onnx"
+            inline.write_bytes(model.SerializeToString(deterministic=True))
+            external = root / "external.onnx"
+            onnx.save_model(
+                model, str(external), save_as_external_data=True,
+                all_tensors_to_one_file=True, location="weights/weights.bin",
+                size_threshold=0,
+            )
+            external_model = onnx.load(str(external), load_external_data=False)
+            for entry in external_model.graph.initializer[0].external_data:
+                if entry.key == "length":
+                    entry.value = "0"
+            external.write_bytes(external_model.SerializeToString(deterministic=True))
+
+            self.assertEqual(
+                canonical_onnx_identity(inline),
+                canonical_onnx_identity(external),
+            )
+
+    def test_external_identity_rejects_duplicate_or_escaping_metadata(self):
+        import numpy as np
+        import onnx
+        from onnx import TensorProto, helper, numpy_helper
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = helper.make_model(helper.make_graph(
+                [], "external-invalid", [], [], [numpy_helper.from_array(
+                    np.asarray([1.0], dtype=np.float32), name="weight")]))
+            external = root / "external.onnx"
+            onnx.save_model(
+                model, str(external), save_as_external_data=True,
+                all_tensors_to_one_file=True, location="weights.bin",
+                size_threshold=0,
+            )
+            document = onnx.load(str(external), load_external_data=False)
+            entries = document.graph.initializer[0].external_data
+            entries.add(key="location", value="weights.bin")
+            external.write_bytes(document.SerializeToString(deterministic=True))
+            with self.assertRaisesRegex(ValueError, "duplicate external tensor metadata"):
+                canonical_onnx_identity(external)
+
+            document = onnx.load(str(external), load_external_data=False)
+            entries = document.graph.initializer[0].external_data
+            entries[0].value = "../weights.bin"
+            del entries[1:]
+            external.write_bytes(document.SerializeToString(deterministic=True))
+            with self.assertRaisesRegex(ValueError, "escapes source root"):
+                canonical_onnx_identity(external)
+
     def test_root_last_idempotent_publication(self):
         payload = b"layer-0"
         manifest = canonical_layer_manifest(

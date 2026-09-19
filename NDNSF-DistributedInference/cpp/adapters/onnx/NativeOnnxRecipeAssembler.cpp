@@ -450,6 +450,14 @@ namespace {
 // child (certified recipe caps from the metadata, no-op onRound).  onRound is
 // invoked at every deadline/cancellation checkpoint exactly where the old
 // in-process chain called checkActive(control).
+NativeOnnxIdentity
+canonicalOnnxModelIdentity(const onnx::ModelProto& model,
+                           const NativeAssemblyControl& control);
+
+onnx::ModelProto
+ownedSourceModel(const NativeCanonicalSource& source,
+                 const NativeAssemblyControl& control);
+
 NativeCertifiedAssembly
 assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
                            const NativeCertifiedRecipe& recipe,
@@ -479,15 +487,18 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   validateContracts(recipe.expectedOutputs, outputNames);
   if (inputNames.empty() || outputNames.empty()) fail("IO_CONTRACT");
 
-  onnx::ModelProto original;
-  if (!original.ParseFromArray(source.modelBytes.data(),
-                              static_cast<int>(source.modelBytes.size())))
-    fail("PARSE");
+  NativeAssemblyControl sourceControl;
+  sourceControl.deadline = std::chrono::steady_clock::time_point::max();
+  sourceControl.requireActive = onRound;
+  sourceControl.maxSourceBytes = maxSourceBytes;
+  sourceControl.maxAssembledBytes = maxAssembledBytes;
+  // Reuse the strict owned-source path here.  It validates duplicate and
+  // consistent external metadata, traverses function/nested tensors, and
+  // applies the ONNX 1.17 length=0-to-EOF rule before returning the one model
+  // object that the checker, identity and extractor all share.
+  onnx::ModelProto original = ownedSourceModel(source, sourceControl);
   if (!original.has_graph() || original.graph().node_size() == 0 ||
       original.graph().node_size() > static_cast<int>(recipe.maxNodes)) fail("GRAPH");
-  const bool hasExternal = graphHasExternal(original.graph());
-  if (hasExternal != source.initializerBytes.has_value()) fail("EXTERNAL_BINDING");
-  if (source.initializerBytes) inlineGraph(*original.mutable_graph(), *source.initializerBytes);
 
   std::set<std::uint64_t> selected;
   for (const auto index : recipe.nodeIndices) {
@@ -514,22 +525,18 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
     fail("GRAPH");
   }
 
-  // The identity seam keeps its own control-shaped caps/cancellation checks;
-  // mirror this chain's budget into a local control so the worker child and
-  // the in-process entry share the exact same identity code path.
-  NativeAssemblyControl identityControl;
-  identityControl.deadline = std::chrono::steady_clock::time_point::max();
-  identityControl.requireActive = onRound;
-  identityControl.maxSourceBytes = maxSourceBytes;
-  identityControl.maxAssembledBytes = maxAssembledBytes;
-  const auto chainControl = [&]() -> const NativeAssemblyControl& {
-    return identityControl;
-  };
-
+  // The shared source control keeps the strict source, identity, and
+  // cancellation checks on one bounded path for the worker and in-process
+  // entries; no second source parse is needed here.
   // S4: the certified identity of the post-inline original must equal the
   // recipe digests; a mismatch means the recipe was sealed for different
   // source bytes (executor.py canonical ONNX digest mismatch errors).
-  const auto identity = canonicalOnnxSourceIdentity(source, chainControl());
+  // ``original`` already owns the authenticated, external-data-inlined model
+  // used by the checker and extractor.  Re-parsing ``source`` here would
+  // allocate a second protobuf graph plus another copy of the 1.5 GiB
+  // initializer before identity verification.  Derive the identity from the
+  // existing model so the worker's peak remains within the request envelope.
+  const auto identity = canonicalOnnxModelIdentity(original, sourceControl);
   if (identity.graphDigest != recipe.graphDigest ||
       identity.initializerDigest != recipe.canonicalInitializerDigest)
     fail("RECIPE");
@@ -2023,7 +2030,18 @@ void validateNativeCanonicalMaterialManifest(
 }
 
 namespace {
-
+NativeOnnxIdentity
+canonicalOnnxModelIdentity(const onnx::ModelProto& model,
+                           const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  const auto entries = buildTensorIndex(model);
+  NativeOnnxIdentity identity;
+  identity.graphDigest = sha256HexOf(graphFactsJson(model, entries));
+  identity.initializerDigest = sha256HexOf(initializerContentJson(entries));
+  checkActive(control);
+  return identity;
+}
 } // namespace
 
 NativeOnnxIdentity
@@ -2031,12 +2049,7 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
                             const NativeAssemblyControl& control)
 {
   const auto model = ownedSourceModel(source, control);
-  const auto entries = buildTensorIndex(model);
-  NativeOnnxIdentity identity;
-  identity.graphDigest = sha256HexOf(graphFactsJson(model, entries));
-  identity.initializerDigest = sha256HexOf(initializerContentJson(entries));
-  checkActive(control);
-  return identity;
+  return canonicalOnnxModelIdentity(model, control);
 }
 
 NativeOnnxGraphInspection
