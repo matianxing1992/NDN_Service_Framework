@@ -10083,11 +10083,15 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
     spec.requiredArtifact = ndn::Name(artifact);
     return spec;
   };
-  const std::vector<CollaborationRoleSpec> roles{
+  std::vector<CollaborationRoleSpec> roles{
       makeRole("/Backbone", "/artifact/backbone"),
       makeRole("/Head/Shard/0", "/artifact/head-0"),
       makeRole("/Head/Shard/1", "/artifact/head-1"),
       makeRole("/Merge", "/artifact/merge")};
+  // Deliberately put non-terminal roles before the terminal role.  The same
+  // Provider owns every role, so the user must scan the complete assignment
+  // before binding the stream consumer to /Merge.
+  roles.back().terminalResponseOwner = true;
 
   std::atomic<bool> requestReceived{false};
   std::atomic<bool> selectionObserved{false};
@@ -10095,6 +10099,8 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
   std::atomic<size_t> handlerExecutionCount{0};
   std::atomic<bool> responseReceived{false};
   std::atomic<bool> timedOut{false};
+  std::atomic<bool> streamedComplete{false};
+  std::atomic<bool> streamedError{false};
   std::atomic<size_t> observedAssignmentCount{0};
 
   environment.provider().addCollaborationHandler(
@@ -10126,8 +10132,8 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
       [&] (const ndn::Name& messageName, const ndn::Buffer& wire) {
         const auto parsedAck = parseRequestAckNameV2(messageName);
         const auto parsedResponse = parseResponseNameV2(messageName);
-        if (!parsedAck && !parsedResponse) {
-          return;
+        if (!parsedAck && !parsedResponse && !parseInvocationEventName(messageName)) {
+            return;
         }
         environment.providerPubSub().publish(
             messageName, ndn::span<const uint8_t>(wire.data(), wire.size()));
@@ -10206,6 +10212,21 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
         environment.markRequestPublished(scope);
       });
 
+  environment.enableProductionIngressForTest();
+  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+  const auto ackKey = environment.provider().prepareHybridSendKeyForTest(
+      serviceName, "ACK");
+  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(
+      serviceName, "RESPONSE");
+  environment.user().cacheHybridReceiveKeyForTest(
+      ackKey.keyId, ackKey.epochId, ackKey.key);
+  environment.user().cacheHybridReceiveKeyForTest(
+      responseKey.keyId, responseKey.epochId, responseKey.key);
+  const auto selectionKey = environment.user().prepareHybridSendKeyForTest(
+      serviceName, "SELECTION");
+  environment.provider().cacheHybridReceiveKeyForTest(
+      selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+
   CollaborationPlan plan;
   plan.ackCollectionTimeMs = 30;
   plan.timeoutMs = 1000;
@@ -10213,17 +10234,37 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
   plan.participantSelector = std::make_shared<SameProviderMultiRoleSelection>();
 
   const std::string requestPayload = "payload";
-  const auto requestId = environment.user().RequestCollaboration(
+  StreamRequestOptions streamOptions;
+  streamOptions.maxEvents = 1;
+  streamOptions.interestWindow = 1;
+  streamOptions.reorderCapacity = 1;
+  streamOptions.publisherQueueCapacity = 1;
+  streamOptions.retentionMs = 3000;
+  streamOptions.maxEventWireBytes = 4096;
+  const auto requestId = environment.user().BeginCollaboration(
       serviceName,
       ndn::Buffer(reinterpret_cast<const uint8_t*>(requestPayload.data()),
                   requestPayload.size()),
-      std::move(plan),
+      30,
+      1000,
+      [&] (const CollaborationAckClosure& closure) {
+        plan.participantSelector = std::make_shared<SameProviderMultiRoleSelection>();
+        BOOST_REQUIRE(environment.user().CommitCollaborationPlan(
+            closure.requestId, closure.digest, std::move(plan)));
+      },
       [&] (const ResponseMessage& response) {
         responseReceived = response.getStatus() &&
                            std::string(reinterpret_cast<const char*>(response.getPayload().data()),
                                        response.getPayload().size()) == "di-ready";
       },
-      [&] (const ndn::Name&) { timedOut = true; });
+      [&] (const ndn::Name&) { timedOut = true; },
+      ndn::Name("/same-provider-multi-role-stream"),
+      CollaborationAckCoverageHandler(),
+      RequestCapabilities(),
+      std::optional<StreamRequestOptions>(streamOptions),
+      [] (const ndn::Buffer&) {},
+      [&] (const ndn::Buffer&) { streamedComplete = true; },
+      [&] (const StreamedInvocationError&) { streamedError = true; });
   BOOST_REQUIRE(!requestId.empty());
 
   environment.pumpUntil([&] { return responseReceived || timedOut; });
@@ -10233,6 +10274,8 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
   BOOST_CHECK_EQUAL(handlerExecutionCount.load(), 1U);
   BOOST_CHECK_EQUAL(observedAssignmentCount.load(), roles.size());
   BOOST_CHECK(responseReceived);
+  BOOST_CHECK(streamedComplete);
+  BOOST_CHECK(!streamedError);
   BOOST_CHECK(!timedOut);
   environment.updateRequestResidue(scope, {});
   environment.resetRequest(scope);

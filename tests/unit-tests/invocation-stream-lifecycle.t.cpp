@@ -483,7 +483,11 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   binding.producer = provider;
   binding.producerBootId = "boot-stream-consumer";
   binding.attemptEpoch = 1;
-  binding.planDigest.fill(0x44);
+  const std::string progressSelectionDigest = "selection-digest-progress";
+  binding.planDigest = computeStreamSha256(
+    ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(progressSelectionDigest.data()),
+      progressSelectionDigest.size()));
   binding.generationId.fill(0x55);
   binding.streamEpoch = 1;
   binding.userToken = ndn::Buffer(
@@ -540,6 +544,84 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   BOOST_CHECK(silentErrorCode == StreamedInvocationErrorCode::EventTimeout);
   BOOST_CHECK(silentLifecycle->user().state() ==
               StreamUserLifecycleState::Failed);
+
+  // Authenticated post-Selection assembly progress re-arms only the bounded
+  // retry budget for the same Provider operation. A mismatched request,
+  // another Provider, or a stale sequence cannot keep a stream alive.
+  auto progressLifecycle = std::make_shared<StreamInvocationLifecycle>();
+  auto progressOptions = silentOptions;
+  progressOptions.maxEventRetries = 1;
+  size_t progressErrors = 0;
+  std::vector<ndn::Name> progressRetries;
+  StreamEventConsumer progressConsumer(
+    binding, progressOptions, eventKey, progressLifecycle,
+    [] (const ndn::Data&) { return true; },
+    [] (const InvocationEventMessage&) {},
+    [] (const ResponseMessage&) {},
+    [&] (const StreamedInvocationError&) { ++progressErrors; },
+    [&] (const ndn::Name& name) { progressRetries.push_back(name); },
+    {},
+    progressSelectionDigest + ":terminal:assembly-progress");
+  progressConsumer.start();
+  const auto progressNow = std::chrono::steady_clock::now();
+  progressConsumer.onInactivityTimeout(progressNow);
+  BOOST_REQUIRE_EQUAL(progressRetries.size(), 1);
+
+  SelectionExecutionStatus progressStatus;
+  progressStatus.providerName = provider;
+  progressStatus.serviceName = service;
+  progressStatus.requestId = requestId;
+  progressStatus.selectionDigest = progressSelectionDigest;
+  CollaborationMemberStatus progressMember;
+  progressMember.providerName = provider;
+  progressMember.serviceName = service;
+  progressMember.requestId = requestId;
+  progressMember.selectionDigest = progressStatus.selectionDigest;
+  progressMember.role = "terminal";
+  progressMember.operationId = "selection-digest-progress:terminal:assembly-progress";
+  progressMember.operation = "ensure-deployment";
+  progressMember.state = "RUNNING";
+  progressMember.epoch = 1;
+  progressMember.sequence = 1;
+  progressMember.progressKnown = true;
+  progressMember.progress = 0.5;
+  progressMember.detailsSchema = "ndnsf-di-preparation-progress-v1";
+  progressStatus.memberStatuses.push_back(progressMember);
+  BOOST_CHECK(progressConsumer.observeAuthenticatedProgress(progressStatus));
+
+  // A second role hosted by the same Provider cannot extend the terminal
+  // stream.  Provider/service/request/selection identity alone is not enough
+  // to select the user-facing response owner.
+  auto wrongRole = progressStatus;
+  wrongRole.memberStatuses.front().role = "worker";
+  wrongRole.memberStatuses.front().operationId =
+    "selection-digest-progress:worker:assembly-progress";
+  wrongRole.memberStatuses.front().sequence = 2;
+  BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(wrongRole));
+
+  auto wrongRequest = progressStatus;
+  wrongRequest.requestId = ndn::Name("/other-request");
+  BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(wrongRequest));
+  auto wrongProvider = progressStatus;
+  wrongProvider.providerName = ndn::Name("/other-provider");
+  BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(wrongProvider));
+  auto oldSelection = progressStatus;
+  oldSelection.selectionDigest = "selection-digest-before-replacement";
+  oldSelection.memberStatuses.front().selectionDigest = oldSelection.selectionDigest;
+  BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(oldSelection));
+
+  // The first timeout is the in-flight retry whose budget was refreshed by
+  // the authenticated milestone; a stale duplicate does not refresh again.
+  progressConsumer.onRetryTimeout(
+    makeInvocationEventName(binding, 1),
+    progressNow + std::chrono::milliseconds(1));
+  BOOST_REQUIRE_EQUAL(progressRetries.size(), 2);
+  BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(progressStatus));
+  progressConsumer.onRetryTimeout(
+    makeInvocationEventName(binding, 1),
+    progressNow + std::chrono::milliseconds(2));
+  BOOST_CHECK_EQUAL(progressErrors, 1U);
+  BOOST_CHECK(progressLifecycle->user().state() == StreamUserLifecycleState::Failed);
 
   auto providerLifecycle = std::make_shared<StreamInvocationLifecycle>();
   std::vector<PublishedStreamEvent> wire;

@@ -1848,7 +1848,8 @@ StreamEventConsumer::StreamEventConsumer(
   StreamBinding binding, StreamRequestOptions options, ndn::Buffer eventKey,
   std::shared_ptr<StreamInvocationLifecycle> lifecycle, VerifyCallback verify,
   EventCallback onEvent, CompletionCallback onComplete, ErrorCallback onError,
-  RetryCallback onRetry, RetryAccountingCallback onRetryAccounting)
+  RetryCallback onRetry, RetryAccountingCallback onRetryAccounting,
+  std::string expectedProgressOperationId)
   : binding_(std::move(binding))
   , options_(std::move(options))
   , eventKey_(std::move(eventKey))
@@ -1859,6 +1860,7 @@ StreamEventConsumer::StreamEventConsumer(
   , onError_(std::move(onError))
   , onRetry_(std::move(onRetry))
   , onRetryAccounting_(std::move(onRetryAccounting))
+  , expectedProgressOperationId_(std::move(expectedProgressOperationId))
   , callbackQueue_(options_.callbackQueueCapacity)
 {
   options_.validate();
@@ -2340,6 +2342,79 @@ StreamEventConsumer::acceptResponse(const ResponseMessage& response)
   if (onComplete_) {
     onComplete_(response);
   }
+  return true;
+}
+
+bool
+StreamEventConsumer::observeAuthenticatedProgress(
+  const SelectionExecutionStatus& status)
+{
+  const auto epochNow = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  if (binding_.deadlineEpochMs != 0 && epochNow >= binding_.deadlineEpochMs) {
+    return false;
+  }
+  if (!status.providerName.equals(binding_.producer) ||
+      !status.serviceName.equals(binding_.serviceName) ||
+      !status.requestId.equals(binding_.requestId) ||
+      status.selectionDigest.empty()) {
+    return false;
+  }
+  const auto selectionDigest = computeStreamSha256(
+    ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(status.selectionDigest.data()),
+      status.selectionDigest.size()));
+  if (selectionDigest != binding_.planDigest) {
+    return false;
+  }
+
+  const CollaborationMemberStatus* candidate = nullptr;
+  for (const auto& member : status.memberStatuses) {
+    if (!member.providerName.equals(binding_.producer) ||
+        !member.serviceName.equals(binding_.serviceName) ||
+        !member.requestId.equals(binding_.requestId) ||
+        member.selectionDigest != status.selectionDigest ||
+        member.operation != "ensure-deployment" ||
+        member.operationId.empty() || member.sequence == 0 ||
+        expectedProgressOperationId_.empty() ||
+        member.operationId != expectedProgressOperationId_ ||
+        member.state != "RUNNING" ||
+        member.detailsSchema != "ndnsf-di-preparation-progress-v1") {
+      continue;
+    }
+    if (candidate == nullptr || member.epoch > candidate->epoch ||
+        (member.epoch == candidate->epoch &&
+         member.sequence > candidate->sequence)) {
+      candidate = &member;
+    }
+  }
+  if (candidate == nullptr) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (failed_ || complete_ || observedEnd_) {
+    return false;
+  }
+  // One stream consumer belongs to one terminal Provider role.  Keep the
+  // first authenticated assembly operation as its source and ignore status
+  // members from other roles in the same collaboration snapshot.
+  if (!progressOperationId_.empty() &&
+      progressOperationId_ != candidate->operationId) {
+    return false;
+  }
+  if (progressOperationId_ == candidate->operationId &&
+      (candidate->epoch < progressEpoch_ ||
+       (candidate->epoch == progressEpoch_ &&
+        candidate->sequence <= progressSequence_))) {
+    return false;
+  }
+  progressOperationId_ = candidate->operationId;
+  progressEpoch_ = candidate->epoch;
+  progressSequence_ = candidate->sequence;
+  retryCount_ = 0;
+  nextRetryAt_ = std::chrono::steady_clock::time_point{};
   return true;
 }
 

@@ -2597,13 +2597,33 @@ namespace ndn_service_framework
             providerName,
             serviceName,
             selectionDigest,
-            [this, requestId, providerUri](
+            [this, requestId, providerName, providerUri, serviceName, selectionDigest](
                 const SelectionExecutionStatus& status) {
                 auto call = m_pendingCalls.find(requestId);
                 if (call == m_pendingCalls.end()) {
                     return;
                 }
+                // QuerySelectionStatus authenticates the Provider and binds
+                // service/selectionDigest, but the status payload also carries
+                // a request id.  Reject a cross-request snapshot before it can
+                // affect stream liveness or the diagnostic map.
+                if (!status.providerName.equals(providerName) ||
+                    !status.serviceName.equals(serviceName) ||
+                    !status.requestId.equals(requestId) ||
+                    status.selectionDigest != selectionDigest) {
+                    return;
+                }
+                const auto currentDigest =
+                    call->second.selectionDigestsByProvider.find(providerUri);
+                if (currentDigest == call->second.selectionDigestsByProvider.end() ||
+                    currentDigest->second != selectionDigest) {
+                    return;
+                }
                 call->second.selectionStatusesByProvider[providerUri] = status;
+                auto consumer = m_streamConsumers.find(requestId);
+                if (consumer != m_streamConsumers.end()) {
+                    consumer->second->observeAuthenticatedProgress(status);
+                }
             },
             [this, requestId, providerName, serviceName, providerUri, selectionDigest](
                 const ndn::Name&) {
@@ -10732,7 +10752,19 @@ namespace ndn_service_framework
             // budget after encryption, key wrapping, and signatures.  Keep
             // one durable request and one Selection phase, but publish one
             // bounded provider-specific projection per selected participant.
+            std::set<std::string> publishedProviderServices;
             for (const auto& selectedAck : pendingCall.customSelectedAcks) {
+                const auto providerServiceKey =
+                    selectedAck.providerName.toUri() + "|" +
+                    selectedAck.serviceName.toUri();
+                // A single Provider may own several collaboration roles.  Its
+                // assignments are already grouped into one opaque set, so
+                // publish one provider-scoped Selection and one digest/status
+                // stream instead of letting later role entries replace the
+                // terminal binding.
+                if (!publishedProviderServices.insert(providerServiceKey).second) {
+                    continue;
+                }
                 NDN_LOG_INFO("NDNSF_SELECTION_PROVIDER_PROJECTION requestId="
                              << selectedAck.requestId.toUri()
                              << " providerName=" << selectedAck.providerName.toUri()
@@ -12090,23 +12122,24 @@ void ServiceUser::finishRequestAckOnEventLoop(
         if (pendingIt != m_pendingCalls.end() &&
             pendingIt->second.isCollaboration) {
             isStreamGrantRecipient = false;
-            const auto participant = std::find_if(
-                pendingIt->second.collaborationCommittedParticipants.begin(),
-                pendingIt->second.collaborationCommittedParticipants.end(),
-                [&providerName] (const SelectedParticipant& selected) {
-                    return selected.provider.equals(providerName);
-                });
-            if (participant !=
-                pendingIt->second.collaborationCommittedParticipants.end()) {
+            for (const auto& participant :
+                 pendingIt->second.collaborationCommittedParticipants) {
+                if (!participant.provider.equals(providerName) ||
+                    !participant.service.equals(serviceName)) {
+                    continue;
+                }
                 const auto role = std::find_if(
                     pendingIt->second.collaborationPlan.roles.begin(),
                     pendingIt->second.collaborationPlan.roles.end(),
                     [&participant] (const CollaborationRoleSpec& candidate) {
-                        return candidate.role == participant->role;
+                        return candidate.role == participant.role &&
+                               candidate.service == participant.service;
                     });
-                isStreamGrantRecipient =
-                    role != pendingIt->second.collaborationPlan.roles.end() &&
-                    role->terminalResponseOwner;
+                if (role != pendingIt->second.collaborationPlan.roles.end() &&
+                    role->terminalResponseOwner) {
+                    isStreamGrantRecipient = true;
+                    break;
+                }
             }
         }
         if (pendingIt != m_pendingCalls.end() &&
@@ -12427,15 +12460,18 @@ void ServiceUser::finishRequestAckOnEventLoop(
         if (pendingIt != m_pendingCalls.end() &&
             pendingIt->second.streamOptions) {
             bool initializeForProvider = true;
+            std::string expectedProgressOperationId;
             if (pendingIt->second.isCollaboration) {
                 // A multi-role streamed collaboration has one terminal role.
                 // Every selected Provider still receives its own Selection,
                 // but only that role owns the user-side event/End consumer.
                 initializeForProvider = false;
                 const auto& plan = pendingIt->second.collaborationPlan;
+                const CollaborationRoleSpec* terminalRole = nullptr;
                 for (const auto& participant :
                      pendingIt->second.collaborationCommittedParticipants) {
-                    if (!participant.provider.equals(providerName)) {
+                    if (!participant.provider.equals(providerName) ||
+                        !participant.service.equals(serviceName)) {
                         continue;
                     }
                     const auto roleIt = std::find_if(
@@ -12448,13 +12484,27 @@ void ServiceUser::finishRequestAckOnEventLoop(
                         throw std::runtime_error(
                             "streamed collaboration participant role is not in plan");
                     }
-                    initializeForProvider = roleIt->terminalResponseOwner;
-                    break;
+                    if (roleIt->terminalResponseOwner) {
+                        if (terminalRole != nullptr &&
+                            terminalRole->role != roleIt->role) {
+                            throw std::runtime_error(
+                                "streamed collaboration has multiple terminal roles for one Provider");
+                        }
+                        terminalRole = &*roleIt;
+                    }
+                }
+                initializeForProvider = terminalRole != nullptr;
+                if (initializeForProvider) {
+                    expectedProgressOperationId =
+                        selectionDigest + ":" + terminalRole->role +
+                        ":assembly-progress";
                 }
             }
-            if (initializeForProvider &&
+            if (initializeForProvider && m_streamConsumers.find(requestId) ==
+                m_streamConsumers.end() &&
                 !initializeStreamConsumer(providerName, serviceName, requestId,
-                                           selectionDigest)) {
+                                           selectionDigest,
+                                           expectedProgressOperationId)) {
                 throw std::runtime_error(
                     "failed to initialize streamed event consumer");
             }
@@ -14187,7 +14237,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
     bool ServiceUser::initializeStreamConsumer(const ndn::Name& providerName,
                                                const ndn::Name& serviceName,
                                                const ndn::Name& requestId,
-                                               const std::string& selectionDigest)
+                                               const std::string& selectionDigest,
+                                               const std::string& expectedProgressOperationId)
     {
         auto pending = m_pendingCalls.find(requestId);
         if (pending == m_pendingCalls.end() || !pending->second.streamOptions ||
@@ -14396,7 +14447,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
             [state](const ndn::Name&) {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 ++state->metrics.retryCount;
-            });
+            },
+            expectedProgressOperationId);
         consumer->setAuthorizationCallback(
             [this, serviceName] {
                 return authorizeControllerTransition(

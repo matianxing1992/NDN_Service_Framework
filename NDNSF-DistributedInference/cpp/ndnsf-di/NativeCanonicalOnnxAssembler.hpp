@@ -30,6 +30,10 @@ struct NativeCanonicalOnnxAssemblerOptions
   std::string providerIdentity;
   std::uint64_t assemblyTimeoutMs = 30000;
   std::function<bool()> shouldCancel;
+  // Called only after an authenticated assembly milestone has completed.  The
+  // callback is request-owned; it must not outlive the synchronous assembly
+  // call and must preserve the Provider operation sequence it reports.
+  std::function<void(const std::string& phase, double progress)> reportProgress;
   std::function<std::string(const std::string& manifestBytes)> signManifest;
   std::shared_ptr<ProtectedRuntime> protectedRuntime;
   std::string roleAssemblySpecDigest;
@@ -38,6 +42,17 @@ struct NativeCanonicalOnnxAssemblerOptions
   // a non-empty sha256 is re-probed against the pinned binary on every spawn.
   NativeOnnxWorkerLocation workerLocation;
 };
+
+/**
+ * Build the Provider-signed progress reporter used by production assembly
+ * callers.  The reporter uses the existing per-operation epoch/sequence
+ * fields in SelectionExecutionStatus; it is not a wall-clock heartbeat.
+ */
+std::function<void(const std::string& phase, double progress)>
+makeNativeAssemblyProgressReporter(
+  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+  const NativeSelectionProjectionV3& projection,
+  const std::string& adapterIdentity = "native");
 
 /**
  * Provider-owned read ports used by the post-Selection assembler.  The

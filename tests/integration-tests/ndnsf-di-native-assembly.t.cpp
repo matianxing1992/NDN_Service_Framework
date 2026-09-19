@@ -453,6 +453,13 @@ BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
   options.signManifest = [] (const std::string&) {
     return std::string("fixture-signature-v1");
   };
+  std::vector<std::string> progressPhases;
+  bool progressRangeValid = true;
+  options.reportProgress = [&progressPhases, &progressRangeValid](
+      const std::string& phase, double progress) {
+    progressRangeValid = progressRangeValid && progress >= 0.0 && progress <= 1.0;
+    progressPhases.push_back(phase);
+  };
 
   const auto first = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
   BOOST_REQUIRE(std::filesystem::is_regular_file(first.path));
@@ -462,6 +469,14 @@ BOOST_AUTO_TEST_CASE(AssignmentBoundRootSourceAndCachePath)
   const auto second = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
   BOOST_CHECK_EQUAL(second.path, first.path);
   BOOST_CHECK(std::filesystem::is_regular_file(second.path));
+  BOOST_REQUIRE(!progressPhases.empty());
+  BOOST_CHECK(progressRangeValid);
+  BOOST_CHECK(std::find(progressPhases.begin(), progressPhases.end(),
+                        "ROOT_VERIFIED") != progressPhases.end());
+  BOOST_CHECK(std::find(progressPhases.begin(), progressPhases.end(),
+                        "SOURCE_VERIFIED") != progressPhases.end());
+  BOOST_CHECK(std::find(progressPhases.begin(), progressPhases.end(),
+                        "WORKER_ASSEMBLY_VERIFIED") != progressPhases.end());
 
   auto tamperedFetchers = fetchers;
   tamperedFetchers.fetchEncryptedLargeData = [source] (
