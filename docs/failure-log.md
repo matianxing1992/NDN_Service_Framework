@@ -1,5 +1,29 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 focused material selector fixture and contract boundaries
+
+The first run of `Spec175NativeAssembly/Spec189MaterialConsumerFetchesOneSelectedBundle`
+failed at the real worker with `DI_NATIVE_ONNX_GRAPH` because the test receipt
+selected only nodes 0 and 1, which did not produce the declared role output.
+The immutable fixture was repaired to retain certified role-0 nodes 0–20 and
+append one valid unreachable node 21 as an actual unselected material payload.
+The r19 snapshot passed the official read-only review; the affected
+`integration-tests` target rebuilt with root Waf `-j4`, and both the selected
+bundle and selected-payload budget selectors passed with the real
+`DI_NativeOnnxAssemblyWorker`. The failed run remains a test-fixture boundary,
+not a production protocol result. Durable details are in
+`specs/189-qwen-two-provider-minindn/evidence/b189-material-publication-20260919.md`.
+
+The first rerun of
+`Spec189RepoPublication/MaterialManifestPublishesWithOwnedTransactionsAndRejectsCorruption`
+then failed only because its assertion required fewer Repo data objects than
+material payloads. `RepoSourceProvider` intentionally stores one independently
+addressable range-store object per payload; bundle coalescing belongs to the
+protected NDN publisher. The assertion was corrected, r20 passed read-only
+review, `unit-tests` rebuilt with root Waf `-j4`, and the Repo selector passed.
+This was a stale test-contract boundary, not a Repo publication failure. The
+same run also passed the GrantIssuer and protected publisher selectors.
+
 ## 2026-09-19 — Spec189 r38 material-publication budget boundary
 
 The fresh root MiniNDN run `two-provider-global-r38` reached Controller,
@@ -29,6 +53,23 @@ and five related publisher regressions pass when selected directly. These
 failures are retained as fixture boundaries and are not converted into a
 product failure or PASS; the focused results and exact scope are in
 `specs/189-qwen-two-provider-minindn/evidence/b189-material-publication-20260919.md`.
+
+## 2026-09-19 — Spec189 r39 preparation-time boundary
+
+After the material-publication budget repair and a fresh global build receipt,
+run `spec189-v39-cpp-material-budget` reached Controller, Authority and both
+Providers and no longer hit `DI_NATIVE_PUBLICATION_MATERIAL_LIMIT`. The real
+requester instead ended with
+`NATIVE_REQUEST_STAGE_FAILED code=PREPARATION_TIMEOUT boundary=preparation`
+and `DI_NATIVE_PREPARATION_TIMEOUT` after spending the preparation window in
+the Qwen path. The supervisor recorded `cleanup=PASS`; no ACK, Selection,
+material fetch, assembly, runner, execution, terminal response or qualification
+verdict exists. Raw run data is retained under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r39/`;
+the durable evidence is
+`specs/189-qwen-two-provider-minindn/evidence/b189-material-publication-20260919.md`.
+This is a new production preparation boundary, not a PASS; the next retry
+must diagnose the preparation cost rather than only extending the timeout.
 
 ## 2026-09-19 — Spec189 B189-3 oracle build invocation boundary
 
@@ -7335,3 +7376,120 @@ RSS; cleanup was `PASS`, and MiniNDN/workload remained `NOT_EVALUATED`.
 Repeated runs with the same host paging baseline are therefore stopped rather
 than classified as native or protocol failures. Raw evidence is under
 `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r33/`.
+
+2026-09-19 Spec189 focused selector invocation boundary: running the existing
+`unit-tests --run_test=Spec189*` binary from inside the build directory caused
+`Spec189RepoPublication/MaterialManifestPublishesWithOwnedTransactionsAndRejectsCorruption`
+to fail its relative fixture open (`tests/fixtures/.../extraction-vectors.json`).
+No production assertion failed. Re-running the same selector from the repository
+root passed all 4 cases; the build-directory invocation is not accepted as test
+evidence.
+
+2026-09-19 Spec189 Qwen r35 resource boundary: with swap disabled and the
+correct frozen global-r3 candidate, the maintained runner entered real MiniNDN;
+Controller, Authority and both Providers became ready. During the requester
+preparation/model-loading phase the host guard observed
+`RESOURCE_BOUNDARY:MemAvailable`: the minimum available memory was
+`1453481984` bytes against the `1610612736`-byte floor, while swap-I/O delta
+remained zero. The largest process in the run group reached
+`4217356288` bytes RSS, cleanup was `PASS`, and no workload record or protocol
+verdict was produced. This is a host resource boundary, not a protocol result;
+the durable evidence is [Spec189 r35 resource boundary](../specs/189-qwen-two-provider-minindn/evidence/b189-resource-r35-20260919.md)
+and the raw trace remains under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r35/`.
+
+2026-09-19 Spec189 Qwen r36 resource boundary: the direct-vector source reader and
+selective ONNX identity/shape materialization had been built into the global
+candidate. The maintained runner again reached MiniNDN, Controller, Authority and
+both Provider readiness, then stopped during model preparation at
+`RESOURCE_BOUNDARY:MemAvailable` with a minimum of `1557188608` bytes against the
+`1610612736`-byte floor. Swap was disabled and both swap-used and swap-I/O deltas
+were zero; the largest process reached `4591411200` bytes RSS. Cleanup drained all
+processes, but no requester result, workload record, or qualification verdict was
+produced. This is a host resource boundary rather than a protocol failure or PASS.
+See [Spec189 ONNX/r36 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-onnx-memory-r36-20260919.md)
+and raw samples under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r36/`.
+
+2026-09-19 Spec189 protected Runtime selector r1-r3: the new C++ selector reached the
+production Runtime default publisher and committed protected Repo envelopes, but the
+first attempt stopped at a root-owned `/tmp/ndnsf-large-data` staging directory
+(`Permission denied`). After switching to a fixture-owned spool, the next attempt
+stopped at the test oracle's use of `RepoCore::get()`, which the configured filesystem
+backend intentionally rejects above its vector compatibility threshold with
+`repo-large-object-vector-path-disabled`. No production assertion or protocol result
+failed. The raw logs are
+`.codex-tmp/spec189-b189-2-selectors-20260919/protected-runtime-r1.log`,
+`protected-runtime-r2.log` and `protected-runtime-r3.log`; the selector is being
+repaired to use bounded `getRange()` reads before the next build.
+
+2026-09-19 Spec189 protected Runtime selector retry: after the fixture-owned spool and
+bounded `getRange()` oracle repairs passed the read-only review, the global-r3
+`spec189-prepared-request` target rebuilt in 32.795s with `-j1`; the two C++ Spec189
+cases then passed from the repository root. The result closes only the local protected
+publication selector boundary. ACK/Selection, Provider assembly, real Qwen execution,
+output oracle, resource drain and MiniNDN qualification remain unobserved.
+Raw logs are `.codex-tmp/spec189-b189-2-selectors-20260919/prepared-request-build-r5.log`
+and `.codex-tmp/spec189-b189-2-selectors-20260919/protected-runtime-batch-r1.log`.
+
+2026-09-19 Spec189 B189-1b protected material receipt retry: the selector was extended
+after read-only review to bind root material-manifest name/digest and every payload
+id/name/digest to the publication receipt, then perform a non-empty, at-most-1024-byte
+`RepoCore::getRange()` read for the material manifest and each payload. The affected
+`spec189-prepared-request` target rebuilt from global-r3 with `-j1` in 29.085s and both
+`Spec189*` C++ cases passed from the repository root. This closes the local protected
+atomic-material publication/readability boundary only; decrypted material, ACK/Selection,
+Provider assembly, real Qwen execution, output, drain and MiniNDN qualification remain
+unobserved. Logs: `.codex-tmp/spec189-b189-2-selectors-20260919/prepared-request-build-r6.log`,
+`protected-runtime-material-r1.log`, and `protected-runtime-material-batch-r1.log`.
+
+2026-09-19 Spec189 material-consumer selector r1: the DI integration target
+built successfully, but invoking `Spec189MaterialConsumerBoundsSelectedPayloadFetches`
+from `build-spec189-b189-3-global-r3/` stopped in the test fixture preflight because
+the worker locator did not include the current build root. No production assembler
+or protocol assertion ran. Raw output and the exact environment are preserved under
+`.codex-tmp/spec189-b189-material-selector-r1/`; the retry must set
+`NDNSF_SPEC182_BIN_DIR` to the configured build root.
+
+2026-09-19 Spec189 material-consumer full assembly suite r1: the new selector
+passed, but the suite invoked from the build directory stopped first in the
+existing `CollaborationContextBindsAssignmentRootBeforeSourceFetch` fixture when
+NDN-CXX could not open relative `examples/trust-any.conf`. The new material
+consumer and the remaining seven assembly cases reached completion in that run;
+the working-directory failure is not a production assertion. Raw output is
+`.codex-tmp/spec189-b189-material-selector-r2/full-suite.log`; retry from the
+repository root with the configured build root in `NDNSF_SPEC182_BIN_DIR`.
+
+2026-09-19 Spec189 material-consumer unit build r1: `unit-tests -j1` reached the
+new `spec189-repo-publication.t.cpp` translation unit and failed because the Repo
+metadata assignment referred to a `materialManifestBytes` local outside its scope.
+No unit executable was linked and no assertion ran. The exact compiler output is
+`.codex-tmp/spec189-b189-material-unit-build-r1/build.log`; after the one-line
+scope repair, the affected unit target built and `Spec189*` passed 4/4 from the
+repository root.
+
+2026-09-19 Spec189 requester Repo integration r1: the active incremental build was
+intentionally interrupted (rc=68) after additional static review found two Boost
+1.71 vector-printability violations in the new assertions and an avoidable initializer
+copy in the recovery branch. These were not compiler/runtime observations. Preserve
+`.codex-tmp/spec189-qwen-repo-requester-build-r1/build.log`; r5 changes the assertions
+to collection comparisons and moves the initializer. Changed gate and review identity:
+`specs/189-qwen-two-provider-minindn/evidence/b189-requester-repo-20260919.md`.
+Do not reuse the withdrawn r4 STATIC_PASS for validation.
+
+2026-09-19 Spec189 requester Repo r2 build FAIL (rc=1): DI_NativeRequester.cpp
+calls makeFilesystemRepoStore without including FilesystemRepoStoreBackend.hpp.
+This is a declaration/include failure, before requester linkage or runtime.
+Preserve `.codex-tmp/spec189-qwen-repo-requester-build-r2/build.log`.
+Changed gate: inspect factory declaration -> definition translation unit -> Repo
+library -> requester target use; see `evidence/b189-requester-repo-20260919.md`
+in Spec189. No MiniNDN run occurred.
+
+2026-09-19 Spec189 requester Repo runtime selector r1: corrected build passed and
+Spec189RepoPublication passed 5/5. PrepareSuccessUsesTheProductionRuntimeEntry
+then stopped at DI_NATIVE_ENCRYPTED_PUBLICATION_FAILED: cannot create large-data
+staging file: Permission denied (rc=201). Preserve
+`.codex-tmp/spec189-qwen-repo-requester-build-r3/runtime-test.log`.
+Changed gate for fixture retry: explicitly select a private run-owned
+NDNSF_REQUEST_LARGE_DATA_DIR, verify its permissions, retain the same binary/source.
+This is not a remote Provider or MiniNDN protocol result.

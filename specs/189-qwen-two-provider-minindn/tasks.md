@@ -8,6 +8,25 @@
 
 ## Current Checkpoint
 
+**B189-1b r20 local verification checkpoint**: 2026-09-19 — the material
+consumer fixture repair passed official read-only review r19
+(`STATIC_PASS`, snapshot SHA-256
+`92d475dfc3c1bf8a77150c52ac9696dccf4c7ea7d101635f996bceb28e416c6a`). The
+affected `integration-tests` target rebuilt with root Waf `-j4` in 22.803s;
+the real worker bundle selector and selected-payload budget selector passed.
+The related GrantIssuer and protected publisher selectors passed. The Repo
+publication selector first exposed a stale assertion that required fewer Repo
+objects than payloads; after the r20 review (`STATIC_PASS`, snapshot SHA-256
+`448a01c7e7848b46bd23caba73fcac3e7cd10a6ebd7f5466eaa1bf95cbb41aa1`),
+`unit-tests` rebuilt with root Waf `-j4` in 26.617s and the Repo, GrantIssuer,
+and publisher selectors passed. Repo keeps one independently addressable
+range-store object per material payload; protected NDN publication owns bundle
+coalescing. The root NDNSF Waf builds only NDNSF-owned targets and consumes
+the installed NAC-ABE SDK; NAC-ABE remains owned by its own build system.
+This closes only local material-publication/consumer evidence. T003, real
+Qwen preparation, ACK/Selection, Provider execution, MiniNDN/Tiger and
+qualification remain `PARTIAL`/open. See [material publication evidence](evidence/b189-material-publication-20260919.md).
+
 **B189-1b material-publication checkpoint**: 2026-09-19 — the r5 frozen
 material-backed publication diff received official read-only `STATIC_PASS`.
 The affected DI closure and the newly registered `spec189-canonical-publisher`
@@ -19,6 +38,13 @@ failures, which are recorded separately and are not counted as a product PASS.
 The previous real r38 run remains stopped at
 `PREPARATION_FAILED / DI_NATIVE_PUBLICATION_MATERIAL_LIMIT`; no MiniNDN or
 Qwen qualification is claimed. See [material publication evidence](evidence/b189-material-publication-20260919.md).
+
+**B189-1b r39 boundary**: 2026-09-19 — a fresh run using the repaired global
+candidate crossed the former publication-byte rejection but stopped at
+`PREPARATION_TIMEOUT / DI_NATIVE_PREPARATION_TIMEOUT` during real Qwen
+preparation. Cleanup passed; no ACK, Selection, Provider assembly, execution,
+terminal response or qualification was observed. T003 remains `PARTIAL`; the
+next action is to diagnose and reduce preparation cost before another retry.
 
 **Audit reconciliation checkpoint**: 2026-09-19 — 已将 [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) 与当前源码重新对账：F01 的 material-only consumer 已有局部生产接线和 C++ selector，但真实 protected ingress 仍未验收；F02 已有 focused C++ selector 但实际 ORT/RSS 与完整候选资格仍开放，F08 仍开放，F05/F09 已有 focused C++ selector 但完整候选边界仍开放；F03/F04/F06/F07 分别标为条件性或 legacy follow-up。新增 FR-027..FR-029、T003-R1..R3 与 T009-R1，未将任何任务勾选完成。[audit reconciliation](spec.md#audit-reconciliation--2026-09-19)
 

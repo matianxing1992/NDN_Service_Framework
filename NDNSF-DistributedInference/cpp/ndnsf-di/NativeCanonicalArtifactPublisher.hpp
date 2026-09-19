@@ -42,6 +42,9 @@ struct NativePreparedCanonicalPublication
   std::string materialManifestDataName;
   std::string materialManifestDigest;
   std::uint64_t materialManifestBytes = 0;
+  std::string materialReceiptDataName;
+  std::string materialReceiptDigest;
+  std::uint64_t materialReceiptBytes = 0;
   /** Sum of plaintext bytes handed to the protected publication transport. */
   std::uint64_t publishedBytes = 0;
   std::string canonicalManifestJson;
@@ -139,6 +142,11 @@ private:
     // but it must never expose a committed root after rollback.
     std::function<void(const std::vector<ndn_service_framework::LargeDataPublishResult>&)> abort;
     bool prepareOnWorker = false;
+    // Core's protected publication owner supplies a bounded URI budget.  Keep
+    // this after the historical aggregate fields so existing test transports
+    // that end with prepareOnWorker remain source-compatible.
+    std::uint64_t maxPublishedDataNameBytes =
+      NativeCanonicalMaterialReceiptDataNameMaxBytes;
   };
   NativeCanonicalArtifactPublisher(Transport transport, std::string serviceName,
     NativeCanonicalPublicationOptions options, SourcePort source);

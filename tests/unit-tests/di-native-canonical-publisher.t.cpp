@@ -127,11 +127,15 @@ struct TransportFixture
   std::vector<std::vector<std::uint8_t>> payloads;
   std::vector<std::string> requests;
   std::vector<std::string> labels;
+  std::size_t beginCalls = 0;
   std::function<void(LargeDataPublishResult&)> mutate;
   NativeCanonicalPublisherTestAccess::Transport transport()
   {
     return {[](auto job) { job(); }, [] { return false; },
-      [] { return PreparedServiceRequest{ndn::Name("/service"), ndn::Name("/publication-request")}; },
+      [this] {
+        ++beginCalls;
+        return PreparedServiceRequest{ndn::Name("/service"), ndn::Name("/publication-request")};
+      },
       [this](const PreparedServiceRequest& request, const std::vector<std::uint8_t>& bytes,
              const std::string& label, const NativeRequestControl&) {
         payloads.push_back(bytes); requests.push_back(request.requestId.toUri());
@@ -363,12 +367,24 @@ BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionB
   input.model.canonicalGraphDigest = identity.graphDigest;
   input.source->materialManifest = deriveNativeCanonicalMaterialManifest(
     *input.source, materialControl);
+  TransportFixture oversizedNameIo;
+  auto oversizedNameTransport = oversizedNameIo.transport();
+  oversizedNameTransport.maxPublishedDataNameBytes =
+    NativeCanonicalMaterialReceiptDataNameMaxBytes + 1;
+  BOOST_CHECK_THROW(NativeCanonicalPublisherTestAccess::create(
+    std::move(oversizedNameTransport), input.options, input.resolver()), std::invalid_argument);
+  BOOST_CHECK_EQUAL(oversizedNameIo.beginCalls, 0U);
+  BOOST_CHECK(oversizedNameIo.payloads.empty());
   std::uint64_t materialBytes = input.source->materialManifest->canonicalJson().size();
   for (const auto& payload : input.source->materialManifest->payloads)
     materialBytes += payload.bytes.size();
+  const auto receiptBudget = NativeCanonicalMaterialReceiptEnvelopeMaxBytes +
+    static_cast<std::uint64_t>(input.source->materialManifest->payloads.size()) *
+      NativeCanonicalMaterialReceiptRecordMaxBytes;
   constexpr std::uint64_t rootBudget = 16U * 1024U * 1024U;
-  BOOST_REQUIRE_LE(materialBytes, std::numeric_limits<std::uint64_t>::max() - rootBudget);
-  const auto publicationBudget = materialBytes + rootBudget;
+  BOOST_REQUIRE_LE(materialBytes, std::numeric_limits<std::uint64_t>::max() -
+                                  receiptBudget - rootBudget);
+  const auto publicationBudget = materialBytes + receiptBudget + rootBudget;
 
   input.options.maxPublicationBytes = publicationBudget - 1;
   TransportFixture rejectedIo;
@@ -385,6 +401,8 @@ BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionB
   BOOST_CHECK(receipt.sourceDataName.empty());
   BOOST_CHECK(receipt.initializerDataName.empty());
   BOOST_REQUIRE(!receipt.materialManifestDataName.empty());
+  BOOST_REQUIRE(!receipt.materialReceiptDataName.empty());
+  BOOST_CHECK_LE(receipt.materialReceiptBytes, receiptBudget);
   BOOST_REQUIRE(!receipt.rootDataName.empty());
   BOOST_CHECK(std::none_of(io.labels.begin(), io.labels.end(), [] (const auto& label) {
     return label == "di-canonical-source" || label == "di-canonical-initializer";

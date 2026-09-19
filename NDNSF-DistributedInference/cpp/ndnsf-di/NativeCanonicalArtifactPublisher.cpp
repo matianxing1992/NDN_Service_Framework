@@ -33,6 +33,21 @@ bool digest(const std::string& value)
     });
 }
 
+bool receiptToken(const std::string& value, std::size_t maxBytes, bool payloadId)
+{
+  if (value.empty() || value.size() > maxBytes)
+    return false;
+  return std::all_of(value.begin(), value.end(), [payloadId](const char c) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte < 0x21 || byte > 0x7e || c == '"' || c == '\\')
+      return false;
+    if (!payloadId)
+      return true;
+    return (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+      (byte >= '0' && byte <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+  });
+}
+
 struct PublicationJob
 {
   std::mutex mutex;
@@ -74,6 +89,7 @@ void NativePreparedCanonicalPublication::validate() const
     !materialDataNames.empty() || !materialDigests.empty();
   if ((!sourceDataName.empty() && !validName(sourceDataName)) || !validName(rootDataName) ||
       (!materialManifestDataName.empty() && !validName(materialManifestDataName)) ||
+      (!materialReceiptDataName.empty() && !validName(materialReceiptDataName)) ||
       (!initializerDataName.empty() && !validName(initializerDataName)) ||
       std::any_of(layerDataNames.begin(), layerDataNames.end(),
                   [&validName](const auto& value) { return !validName(value); }) ||
@@ -85,11 +101,15 @@ void NativePreparedCanonicalPublication::validate() const
                   [](const auto& value) { return !digest(value); }) ||
       (!materialManifestDataName.empty() && !digest(materialManifestDigest)) ||
       (!materialManifestDataName.empty() && materialManifestBytes == 0) ||
+      (!materialReceiptDataName.empty() && !digest(materialReceiptDigest)) ||
+      (!materialReceiptDataName.empty() && materialReceiptBytes == 0) ||
       std::any_of(layerManifestDigests.begin(), layerManifestDigests.end(),
                   [](const auto& value) { return !digest(value); }) ||
       canonicalManifestJson.empty() || !digest(manifestDigest) ||
       (!artifactProfileDigest.empty() && !digest(artifactProfileDigest)) ||
-      canonicalManifestJson.size() > 1024 * 1024 ||
+      // The authenticated material index is published as a separate receipt;
+      // the business root remains within the inline authority transport cap.
+      canonicalManifestJson.size() > 4 * 1024 ||
       nativePlanningDigest(canonicalManifestJson) != manifestDigest)
     throw std::invalid_argument("native prepared canonical publication is incomplete");
 
@@ -101,6 +121,7 @@ void NativePreparedCanonicalPublication::validate() const
     throw std::invalid_argument("native prepared material receipt is incomplete");
   if (!hasMaterial && (!materialManifestDataName.empty() || !materialManifestDigest.empty() ||
       materialManifestBytes != 0 ||
+      !materialReceiptDataName.empty() || !materialReceiptDigest.empty() || materialReceiptBytes != 0 ||
       !materialPayloadIds.empty() || !materialDataNames.empty() || !materialDigests.empty()))
     throw std::invalid_argument("native prepared material receipt is inconsistent");
   if (hasMaterial) {
@@ -115,14 +136,57 @@ void NativePreparedCanonicalPublication::validate() const
           metadata.at("materialManifestDigest").get<std::string>() != materialManifestDigest ||
           metadata.at("materialManifestBytes").get<std::uint64_t>() != materialManifestBytes)
         throw std::invalid_argument("native prepared material manifest receipt differs from root");
+      const bool hasReceipt = metadata.contains("materialReceiptDataName") ||
+        metadata.contains("materialReceiptDigest") || metadata.contains("materialReceiptBytes");
+      if (hasReceipt &&
+          (!metadata.contains("materialReceiptDataName") ||
+           !metadata.contains("materialReceiptDigest") ||
+           !metadata.contains("materialReceiptBytes") ||
+           metadata.at("materialReceiptDataName").get<std::string>() != materialReceiptDataName ||
+           metadata.at("materialReceiptDigest").get<std::string>() != materialReceiptDigest ||
+           metadata.at("materialReceiptBytes").get<std::uint64_t>() != materialReceiptBytes))
+        throw std::invalid_argument("native prepared material receipt differs from root");
+      if (!hasReceipt && !metadata.contains("materialObjects"))
+        throw std::invalid_argument("native prepared material object receipt is missing");
+      if (hasReceipt)
+        return;
       const auto& objects = metadata.at("materialObjects");
       if (!objects.is_array() || objects.size() != materialPayloadIds.size())
         throw std::invalid_argument("native prepared material object list is incomplete");
+      std::set<std::string> materialNames;
+      std::map<std::string, std::pair<std::string, std::uint64_t>> bundleIdentities;
+      std::map<std::string, bool> bundleKinds;
       for (std::size_t i = 0; i < objects.size(); ++i) {
         if (objects.at(i).at("payloadId").get<std::string>() != materialPayloadIds[i] ||
             objects.at(i).at("dataName").get<std::string>() != materialDataNames[i] ||
             objects.at(i).at("digest").get<std::string>() != materialDigests[i])
           throw std::invalid_argument("native prepared material object receipt differs from root");
+        const auto& object = objects.at(i);
+        const auto dataName = object.at("dataName").get<std::string>();
+        const bool hasBundle = object.contains("bundleDigest") ||
+          object.contains("bundleBytes") || object.contains("bundleOffset");
+        if (!materialNames.insert(dataName).second && !hasBundle)
+          throw std::invalid_argument("native prepared material object names are ambiguous");
+        if (hasBundle) {
+          const auto bundleDigest = object.value("bundleDigest", std::string{});
+          const auto bundleBytes = object.value("bundleBytes", std::uint64_t{0});
+        const auto bundleOffset = object.value("bundleOffset", std::uint64_t{0});
+        const auto payloadBytes = object.value("bytes", std::uint64_t{0});
+        if (!object.contains("bundleDigest") || !object.contains("bundleBytes") ||
+              !object.contains("bundleOffset") || !digest(bundleDigest) || bundleBytes == 0 ||
+              bundleBytes > NativeCanonicalMaterialBundleMaxBytes || payloadBytes == 0 ||
+              bundleOffset > bundleBytes || payloadBytes > bundleBytes - bundleOffset)
+            throw std::invalid_argument("native prepared material bundle receipt is invalid");
+          const auto identity = bundleIdentities.emplace(
+            dataName, std::make_pair(bundleDigest, bundleBytes));
+          if (!identity.second && identity.first->second !=
+              std::make_pair(bundleDigest, bundleBytes))
+            throw std::invalid_argument("native prepared material bundle identity differs");
+        }
+        const auto kind = bundleKinds.find(dataName);
+        if (kind != bundleKinds.end() && kind->second != hasBundle)
+          throw std::invalid_argument("native prepared material bundle kind differs");
+        bundleKinds[dataName] = hasBundle;
       }
     }
     catch (const std::invalid_argument&) {
@@ -156,7 +220,8 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
       [user](const auto& publications) {
         if (user)
           onCoreIo(user, [&] { user->abortLargeDataPublications(publications); });
-      }, true}, serviceName, std::move(options), std::move(source))
+      }, true, NativeCanonicalMaterialReceiptDataNameMaxBytes}, serviceName,
+      std::move(options), std::move(source))
 {
   if (!user) throw std::invalid_argument("missing Core publication owner");
 }
@@ -173,7 +238,9 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(Transport tra
       (!m_options.packageManifestDigest.empty() && !digest(m_options.packageManifestDigest)) ||
       (!m_options.artifactProfileDigest.empty() && !digest(m_options.artifactProfileDigest)) ||
       std::any_of(m_options.layerManifestDigests.begin(), m_options.layerManifestDigests.end(),
-                  [](const auto& value) { return !digest(value); }))
+                  [](const auto& value) { return !digest(value); }) ||
+      m_transport.maxPublishedDataNameBytes == 0 ||
+      m_transport.maxPublishedDataNameBytes > NativeCanonicalMaterialReceiptDataNameMaxBytes)
     throw std::invalid_argument("native canonical publication configuration is incomplete");
   m_serviceName = ndn::Name(m_serviceName).toUri();
   m_options.artifactRoot = ndn::Name(m_options.artifactRoot).toUri();
@@ -715,6 +782,24 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
     const bool materialBacked = static_cast<bool>(materialManifest);
     const auto materialManifestJson = materialManifest
       ? materialManifest->canonicalJson() : std::string{};
+    // A Qwen graph can contain thousands of small node payloads. Publishing
+    // every payload as an independently encrypted object makes prepare spend
+    // most of its deadline in per-object envelope work. The actual bundle is
+    // built and published one at a time below, so the publisher never holds a
+    // second copy of the complete material set. A single oversized payload is
+    // rejected explicitly; it must receive a versioned chunk representation
+    // before it can enter this bounded publication protocol.
+    if (materialBacked) {
+      for (const auto& payload : materialManifest->payloads) {
+        active();
+        if (payload.bytes.empty())
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_PAYLOAD_EMPTY");
+        if (payload.bytes.size() > NativeCanonicalMaterialBundleMaxBytes)
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_PAYLOAD_TOO_LARGE");
+        if (!receiptToken(payload.payloadId, NativeCanonicalMaterialReceiptPayloadIdMaxBytes, true))
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_RECEIPT_TOO_LARGE");
+      }
+    }
     // Root names are allocated by the protected transport, so reserve a
     // bounded framing allowance before any object is published. This keeps a
     // declared publication budget atomic instead of discovering exhaustion
@@ -738,13 +823,27 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
           materialManifestJson.size())
         throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
       knownPublicationBytes += materialManifestJson.size();
+      // The receipt contains one authenticated index record per payload.  Its
+      // conservative bound is part of the preflight reservation, so a
+      // configured maxPublicationBytes failure cannot publish a material
+      // prefix and discover the receipt cost only at the end.
+      if (materialManifest->payloads.size() >
+          (std::numeric_limits<std::uint64_t>::max() -
+           NativeCanonicalMaterialReceiptEnvelopeMaxBytes) /
+            NativeCanonicalMaterialReceiptRecordMaxBytes)
+        throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+      const auto receiptBudget = NativeCanonicalMaterialReceiptEnvelopeMaxBytes +
+        static_cast<std::uint64_t>(materialManifest->payloads.size()) *
+          NativeCanonicalMaterialReceiptRecordMaxBytes;
+      if (knownPublicationBytes > std::numeric_limits<std::uint64_t>::max() - receiptBudget)
+        throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+      knownPublicationBytes += receiptBudget;
     }
     if (knownPublicationBytes > std::numeric_limits<std::uint64_t>::max() - rootBudget ||
         (options.maxPublicationBytes != 0 &&
          knownPublicationBytes + rootBudget > options.maxPublicationBytes))
       throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
-    publishedResults.reserve((source->initializerBytes ? 3 : 2) +
-                             (materialManifest ? materialManifest->payloads.size() + 1 : 0));
+    publishedResults.reserve(source->initializerBytes ? 3 : 2);
     try {
       active();
       const auto request = transport.begin();
@@ -772,6 +871,8 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
             published.protectionEpoch.empty())
           throw std::runtime_error("DI_NATIVE_ENCRYPTED_PUBLICATION_INVALID");
         const auto name = published.encryptedDataName.toUri();
+        if (!receiptToken(name, transport.maxPublishedDataNameBytes, false))
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_RECEIPT_TOO_LARGE");
         active();
         return name;
       };
@@ -793,17 +894,55 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
       NativeJson materialObjects = NativeJson::array();
       if (materialManifest) {
         metadata["materialBacked"] = true;
-        for (const auto& payload : materialManifest->payloads) {
-          const auto dataName = publish(payload.bytes,
-            "di-material-" + payload.payloadId);
-          result.materialPayloadIds.push_back(payload.payloadId);
-          result.materialDataNames.push_back(dataName);
-          result.materialDigests.push_back(payload.digest);
-          materialObjects.push_back({{"payloadId", payload.payloadId},
-                                     {"dataName", dataName},
-                                     {"digest", payload.digest},
-                                     {"bytes", payload.bytes.size()}});
+        struct PendingMaterialPayload {
+          std::size_t index = 0;
+          std::size_t offset = 0;
+        };
+        std::vector<std::uint8_t> bundle;
+        std::vector<PendingMaterialPayload> pending;
+        std::vector<NativeJson> materialObjectRecords(materialManifest->payloads.size());
+        result.materialPayloadIds.resize(materialManifest->payloads.size());
+        result.materialDataNames.resize(materialManifest->payloads.size());
+        result.materialDigests.resize(materialManifest->payloads.size());
+        std::size_t bundleIndex = 0;
+        const auto flushBundle = [&] {
+          if (bundle.empty())
+            return;
+          active();
+          const auto dataName = publish(bundle,
+            "di-material-bundle-" + std::to_string(bundleIndex++));
+          const auto bundleDigest = nativePlanningDigest(bundle.data(), bundle.size());
+          const auto bundleBytes = static_cast<std::uint64_t>(bundle.size());
+          for (const auto& item : pending) {
+            const auto& payload = materialManifest->payloads.at(item.index);
+            result.materialPayloadIds.at(item.index) = payload.payloadId;
+            result.materialDataNames.at(item.index) = dataName;
+            result.materialDigests.at(item.index) = payload.digest;
+            materialObjectRecords.at(item.index) =
+              {{"payloadId", payload.payloadId},
+               {"dataName", dataName},
+               {"digest", payload.digest},
+               {"bytes", payload.bytes.size()},
+               {"bundleDigest", bundleDigest},
+               {"bundleBytes", bundleBytes},
+               {"bundleOffset", item.offset}};
+          }
+          bundle.clear();
+          pending.clear();
+        };
+        for (std::size_t index = 0; index < materialManifest->payloads.size(); ++index) {
+          active();
+          const auto& payload = materialManifest->payloads.at(index);
+          if (!bundle.empty() && payload.bytes.size() >
+              NativeCanonicalMaterialBundleMaxBytes - bundle.size())
+            flushBundle();
+          const auto offset = bundle.size();
+          bundle.insert(bundle.end(), payload.bytes.begin(), payload.bytes.end());
+          pending.push_back({index, offset});
         }
+        flushBundle();
+        for (auto& record : materialObjectRecords)
+          materialObjects.push_back(std::move(record));
         const std::vector<std::uint8_t> manifestBytes(
           materialManifestJson.begin(), materialManifestJson.end());
         result.materialManifestDataName = publish(manifestBytes, "di-material-manifest");
@@ -813,7 +952,24 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
         metadata["materialManifestDigest"] = result.materialManifestDigest;
         metadata["materialManifestBytes"] = result.materialManifestBytes;
         metadata["materialIdentityDigest"] = materialManifest->manifestDigest;
-        metadata["materialObjects"] = std::move(materialObjects);
+        const auto materialReceipt = nativeCanonicalJson(NativeJson{
+          {"graphDigest", materialManifest->graphDigest},
+          {"materialIdentityDigest", materialManifest->manifestDigest},
+          {"materialManifestDigest", result.materialManifestDigest},
+          {"materialObjects", std::move(materialObjects)},
+          {"schema", "ndnsf-di-canonical-material-receipt-v1"},
+          {"sourceDigest", materialManifest->sourceDigest}});
+        const std::vector<std::uint8_t> receiptBytes(materialReceipt.begin(), materialReceipt.end());
+        if (receiptBytes.size() > NativeCanonicalMaterialReceiptEnvelopeMaxBytes +
+            static_cast<std::uint64_t>(materialManifest->payloads.size()) *
+              NativeCanonicalMaterialReceiptRecordMaxBytes)
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+        result.materialReceiptDataName = publish(receiptBytes, "di-material-receipt");
+        result.materialReceiptDigest = nativePlanningDigest(receiptBytes.data(), receiptBytes.size());
+        result.materialReceiptBytes = receiptBytes.size();
+        metadata["materialReceiptDataName"] = result.materialReceiptDataName;
+        metadata["materialReceiptDigest"] = result.materialReceiptDigest;
+        metadata["materialReceiptBytes"] = result.materialReceiptBytes;
       }
       if (!options.packageManifestDigest.empty())
         metadata["packageManifestDigest"] = options.packageManifestDigest;

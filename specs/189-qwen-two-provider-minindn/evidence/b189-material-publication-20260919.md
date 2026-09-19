@@ -88,3 +88,74 @@ required; this checkpoint does not claim MiniNDN or Qwen two-provider PASS.
 The next exit is a fresh run id with the repaired publication configuration,
 after the updated DI library and build receipt are installed. The retained r38
 raw run is not reused.
+
+### r39 retry after the publication-budget repair
+
+The fresh run `spec189-v39-cpp-material-budget` used the updated global-r3
+receipt and current binary hashes. It reached Controller, Authority and both
+Providers, and it no longer emitted `DI_NATIVE_PUBLICATION_MATERIAL_LIMIT`.
+The requester then spent the configured preparation window in the real Qwen
+preparation path and terminated with:
+
+```text
+NATIVE_REQUEST_STAGE_FAILED code=PREPARATION_TIMEOUT boundary=preparation
+PREPARATION_TIMEOUT domain=local boundary=preparation message=DI_NATIVE_PREPARATION_TIMEOUT
+```
+
+The supervisor receipt records `cleanup=PASS`, `boundary=null`, and return code
+1. The first production boundary is therefore now a preparation-time budget,
+not the former publication-byte rejection. No ACK, Selection, material fetch,
+assembly, runner, execution, terminal response, or qualification verdict was
+observed. Raw logs and resource samples remain under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r39/`.
+The next retry must first explain or reduce this preparation cost; changing
+only the run id or timeout would not establish a product fix.
+
+## 2026-09-19 r19/r20 local C++ verification
+
+The focused integration fixture was corrected after the first positive bundle
+run exposed `DI_NATIVE_ONNX_GRAPH`: the earlier test selected only nodes 0 and
+1, which cannot produce the declared role output. The final fixture derives a
+source with the role-0 nodes 0–20 plus one valid unreachable `Identity` node at
+index 21. The worker therefore checks a valid selected role while the receipt
+contains a real unselected material payload. Snapshot r19 received official
+read-only `STATIC_PASS` with SHA-256
+`92d475dfc3c1bf8a77150c52ac9696dccf4c7ea7d101635f996bceb28e416c6a`.
+
+The affected integration target rebuilt through the repository-root Waf tree
+with `-j4` in 22.803s. From the repository root, with
+`NDNSF_SPEC182_BIN_DIR=build-spec189-b189-3-global-r3`, the following real C++
+selectors passed:
+
+| Selector | Result |
+| --- | --- |
+| `Spec175NativeAssembly/Spec189MaterialConsumerFetchesOneSelectedBundle` | PASS |
+| `Spec175NativeAssembly/Spec189MaterialConsumerBoundsSelectedPayloadFetches` | PASS |
+
+The positive selector used the real `DI_NativeOnnxAssemblyWorker`; it fetched
+the manifest, authenticated receipt, and selected bundle once, did not fetch
+the unselected bundle, and passed receipt-identity and aggregate-budget
+negative paths.
+
+The first Repo publication rerun exposed a test-contract error rather than a
+production failure: `RepoSourceProvider` intentionally commits one bounded,
+independently addressable range-store object per material payload, while the
+protected NDN publisher is the layer that coalesces payloads into bundles. The
+assertion was corrected and snapshot r20 received read-only `STATIC_PASS` with
+SHA-256 `448a01c7e7848b46bd23caba73fcac3e7cd10a6ebd7f5466eaa1bf95cbb41aa1`.
+The unit target rebuilt through root Waf `-j4` in 26.617s. These selectors then
+passed from the repository root:
+
+| Selector | Result |
+| --- | --- |
+| `Spec189RepoPublication/MaterialManifestPublishesWithOwnedTransactionsAndRejectsCorruption` | PASS |
+| `Spec182GrantIssuer/LegacyInlineRootAboveAuthorityCapIsRejectedBeforeRequestTransport` | PASS |
+| `Spec182CanonicalPublisher/MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionBudget` | PASS |
+
+This evidence confirms the local C++ material publication and selected-bundle
+boundaries only. It does not establish the real protected Qwen prepare,
+ACK/Selection, two-provider assembly/execution, terminal output, cleanup
+drain, MiniNDN or Tiger qualification. The root NDNSF Waf compiles only
+NDNSF-owned Core/Repo/DI/examples/tests; NAC-ABE is an installed external SDK
+built by the NAC-ABE project build system and is not recursively built by the
+NDNSF Waf graph.
