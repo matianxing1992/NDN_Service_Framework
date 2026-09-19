@@ -41,6 +41,7 @@ def build(bld):
         'src/ArtifactTransfer.cpp',
         'src/ArtifactTypes.cpp',
         'src/backends/FilesystemArtifactStore.cpp',
+        'src/backends/FilesystemRepoStoreBackend.cpp',
         'src/RepoClient.cpp',
         'src/RepoCore.cpp',
         'src/RepoNode.cpp',

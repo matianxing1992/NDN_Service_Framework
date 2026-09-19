@@ -191,7 +191,7 @@ status must be reconciled with the later source and selectors before another run
 | F06 segmented compatibility replacement | `DEFERRED / LEGACY` | Not used by the native protected qualification path. The compatibility helper is not atomic evidence. |
 | F07 Python local durability | `DEFERRED / LEGACY` | Python orchestration is not evidence for native Repo durability or Qwen qualification. |
 | F08 turn owner race | `OPEN / IN-SCOPE` | Same-handle two-request qualification must include a C++ terminal/next-turn interleaving and generation-guarded close check in T009. |
-| F09 descriptor error path | `OPEN / IN-SCOPE` | The filesystem backend must have one owning fd and a C++ injected fsync/close failure check before accepting the publication candidate. |
+| F09 descriptor error path | `FOCUSED_CXX_PASS / QUALIFICATION_OPEN` | The backend now has one owning fd and the injected fsync/close selector passes; rename/crash recovery and the complete publication candidate remain open. |
 
 This reconciliation changes task ordering and evidence requirements; it does not lower
 the two-provider acceptance chain or turn a focused selector into `QWEN_TWO_PROVIDER_PASS`.

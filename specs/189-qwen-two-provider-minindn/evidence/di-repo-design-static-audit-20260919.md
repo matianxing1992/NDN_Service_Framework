@@ -36,7 +36,7 @@ Provider assembly/execute、独立输出和 cleanup 的资格要求。
 | F05 | `OPEN / IN-SCOPE` | T003-R2 / B189-1c；统一 committed/staged/range reservation quota，覆盖 replacement 和失败回滚。 |
 | F06/F07 | `DEFERRED / LEGACY` | 当前 native protected path 不使用 segmented compatibility helper 或 Python power-loss backend；保留后续维护边界，不授予 Spec189 PASS。 |
 | F08 | `OPEN / IN-SCOPE` | T009-R1；C++ barrier 控制旧 terminal/exception 与新 turn owner 安装。 |
-| F09 | `OPEN / IN-SCOPE` | T003-R3 / B189-1c；fsync/close injected failure 验证 fd 单一 owner。 |
+| F09 | `FOCUSED_CXX_PASS / QUALIFICATION_OPEN` | T003-R3 / B189-1c 已通过 fsync/close injected failure、单一 owner 与可见性 selector；rename/crash recovery 和完整候选资格仍开放。 |
 
 这次对账不改变原始审计的 `PARTIAL / NOT_STATIC_PASS` 结论，也不把后续局部 selector
 改写成真实资格证据。对应需求、依赖和未完成出口已写入 [Spec189](../spec.md)、
