@@ -290,6 +290,20 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec189 T003-R1 preparation-owner accounting selector.  It records
+    # source/material/publication categories, the conservative ORT budget and
+    # terminal cleanup on a cancellation boundary through the production
+    # ModelPreparationCache path.
+    bld.program(target='../spec189-preparation-memory',
+                name='spec189-preparation-memory',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/di-preparation.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL DL TOKENIZER_BRIDGE ONNXRUNTIME',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec188 B188-4 bounded file-backed large-data serving.  The selector
     # exercises the production ServiceUser interest path, exact signed
     # segments, retransmission window and publication-file cleanup.

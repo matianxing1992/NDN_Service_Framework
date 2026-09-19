@@ -371,6 +371,16 @@ def configure(conf):
 
     conf.load(['compiler_cxx', 'gnu_dirs'])
 
+    # Keep the configured Waf build tree ahead of the installed NDNSF copy for
+    # in-tree tests and examples. ``gnu_dirs`` adds the install libdir to the
+    # global RPATH when the prefix is /usr/local; that makes a freshly linked
+    # selector load an older same-SONAME library from /usr/local before its
+    # own build-tree target. The installed global libdir is already in the
+    # host loader cache, while target-local ``rpath`` entries remain explicit.
+    installed_lib_rpath = f'-Wl,-rpath,{os.path.realpath(conf.env.LIBDIR)}'
+    conf.env.LINKFLAGS = [flag for flag in list(conf.env.LINKFLAGS or [])
+                          if flag != installed_lib_rpath]
+
     # GCC otherwise searches for ld through the build-time PATH even when CXX
     # is an absolute path.  A Linuxbrew directory ahead of /usr/bin can then
     # mix Homebrew ld with system GTK/UAV libraries.  Pin the compiler driver
@@ -664,9 +674,17 @@ int main() {
         conf.env.LIBPATH_NDN_CXX = nac_libpaths + [
             path for path in list(conf.env.LIBPATH_NDN_CXX or [])
             if path not in nac_libpaths]
-        nac_rpath = f'-Wl,-rpath,{os.path.join(nac_abe_prefix, "lib")}'
-        conf.env.LINKFLAGS = [nac_rpath] + [
-            flag for flag in list(conf.env.LINKFLAGS or []) if flag != nac_rpath]
+        nac_libdir = os.path.realpath(os.path.join(nac_abe_prefix, 'lib'))
+        nac_rpath = f'-Wl,-rpath,{nac_libdir}'
+        # /usr/local is the installed host loader root and is already in the
+        # loader cache. Keep it out of build-tree RPATH ordering; an explicit
+        # non-installed NAC-ABE prefix still needs its own runtime path.
+        if nac_libdir != os.path.realpath(conf.env.LIBDIR):
+            conf.env.LINKFLAGS = [nac_rpath] + [
+                flag for flag in list(conf.env.LINKFLAGS or []) if flag != nac_rpath]
+        else:
+            conf.env.LINKFLAGS = [
+                flag for flag in list(conf.env.LINKFLAGS or []) if flag != nac_rpath]
         conf.env.NDNSF_NAC_ABE_PREFIX = nac_abe_prefix
         conf.msg('Installed NAC-ABE prefix', nac_abe_prefix)
 

@@ -803,6 +803,7 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
           result.rollbackServiceName = published.rollbackServiceName;
         }
       }
+      result.publishedBytes = publishedBytes;
       result.validate();
       return result;
     }

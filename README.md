@@ -179,6 +179,16 @@ related tool earlier in `PATH` from being combined with system GTK/UAV
 libraries. For an intentional alternate toolchain, set `CXX` explicitly and
 pass its common root with `--toolchain-root`; do not mix roots.
 
+All NDNSF C++ libraries, Repo/DI subprojects, examples and native tests are
+configured and built through the repository-root `waf`/`wscript` graph, as in
+the NDN-CXX projects. A dependency may use its own upstream build system while
+being installed into the declared global closure, but NDNSF targets must not be
+compiled by ad-hoc `g++`, CMake, or a second hand-maintained source list. The
+configured Waf tree gives in-tree selectors a target-local RUNPATH before the
+installed same-SONAME libraries; `readelf -d`/`ldd` must confirm that the tested
+binary loads the just-built NDNSF targets. Installed bindings and production
+runtime candidates use the separately declared global/container runtime paths.
+
 On the current development host (6 logical CPUs, 12 GB RAM), use
 `./waf build -j4` for routine native builds. Keep one build process per Waf tree and do not
 stack independent native builds. Observe available memory and `vmstat 1`; if

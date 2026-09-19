@@ -23,6 +23,24 @@ namespace ndnsf::di {
 /** Input frozen by Runtime::open and consumed by the preparation owner. */
 struct PreparationSpec
 {
+  /** Size categories observed by a native test/evidence owner at prepare
+   * terminal. The callback is diagnostic only and must not affect admission. */
+  struct MemorySnapshot
+  {
+    std::size_t sourceBytes = 0;
+    std::size_t initializerBytes = 0;
+    std::size_t materialBytes = 0;
+    std::size_t encryptedPublicationBytes = 0;
+    std::size_t ortPreparationBudgetBytes = 0;
+    std::size_t peakBytes = 0;
+    bool sourceOwnerReleased = false;
+    bool cacheEntryCommitted = false;
+    /** True when rollback was invoked; the callback's remote deletion result
+     * is intentionally outside this diagnostic snapshot. */
+    bool publicationRollbackAttempted = false;
+    bool terminalCleanup = false;
+  };
+
   std::string key;
   std::filesystem::path baseDirectory;
   std::string configurationJson;
@@ -72,6 +90,8 @@ struct PreparationSpec
   std::uint64_t jobGeneration = 0;
   /** Release the Runtime-owned preparation ticket at job terminal state. */
   std::function<void()> onTerminal;
+  /** Optional C++ evidence hook; exceptions are swallowed by the owner. */
+  std::function<void(const MemorySnapshot&)> memoryObserver;
 };
 
 /**
@@ -105,7 +125,8 @@ private:
   struct PreparationJob;
 
   std::shared_ptr<const PreparedModelPackage> buildPackage(
-    const PreparationSpec& spec, std::chrono::steady_clock::time_point deadline) const;
+    const PreparationSpec& spec, std::chrono::steady_clock::time_point deadline,
+    PreparationSpec::MemorySnapshot* memory) const;
   PreparedModel prepareSingle(const PreparationSpec& spec, CachePolicy policy,
                               std::chrono::steady_clock::time_point deadline);
   std::shared_ptr<void> acquireLease(const std::shared_ptr<LeaseRecord>& lease);
