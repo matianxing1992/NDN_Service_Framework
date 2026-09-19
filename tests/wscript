@@ -277,6 +277,19 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec189 T003-R2 unified quota selector.  An outstanding range
+    # reservation must reduce admission capacity for both vector objects and
+    # exact NDN Data packets until that reservation is committed or aborted.
+    bld.program(target='../spec189-repo-quota',
+                name='spec189-repo-quota',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec189-repo-quota.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec188 B188-4 bounded file-backed large-data serving.  The selector
     # exercises the production ServiceUser interest path, exact signed
     # segments, retransmission window and publication-file cleanup.
