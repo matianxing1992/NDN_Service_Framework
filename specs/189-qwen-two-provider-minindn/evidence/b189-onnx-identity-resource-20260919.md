@@ -56,5 +56,11 @@ Python canonical identity 层的静态审查也已通过：外部文件采用 ro
 这两次运行不能作为模型执行失败或成功的证据；下一次运行必须使用新的 run-id，
 并先取得稳定的主机内存/swap 基线。
 
+在主机完成一次可逆 swap reset 后，r32 使用相同的新候选和正确的 global profile
+再次运行，但仍在 MiniNDN 启动前触发 `RESOURCE_BOUNDARY:swapIo`；13 个样本的
+swap-I/O 增量约 280 MB，`minindn` 和 workload 均为 `NOT_EVALUATED`，cleanup 为
+`PASS`。该次结果确认当前阻断首先是主机资源基线/守门器边界，不能据此判断 native
+assembly 或两 provider 协议是否成功。
+
 原始 run records 和 samples 保留在 `.codex-tmp/spec189-qwen-two-provider-20260918/`
 下，不入 Git。详见 [tasks checkpoint](../tasks.md) 和 [failure log](../../../docs/failure-log.md)。
