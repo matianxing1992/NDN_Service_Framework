@@ -69,7 +69,10 @@ void NativePreparedCanonicalPublication::validate() const
       return false;
     }
   };
-  if (!validName(sourceDataName) || !validName(rootDataName) ||
+  const bool hasMaterial = !materialManifestDataName.empty() ||
+    !materialManifestDigest.empty() || !materialPayloadIds.empty() ||
+    !materialDataNames.empty() || !materialDigests.empty();
+  if ((!sourceDataName.empty() && !validName(sourceDataName)) || !validName(rootDataName) ||
       (!materialManifestDataName.empty() && !validName(materialManifestDataName)) ||
       (!initializerDataName.empty() && !validName(initializerDataName)) ||
       std::any_of(layerDataNames.begin(), layerDataNames.end(),
@@ -90,9 +93,8 @@ void NativePreparedCanonicalPublication::validate() const
       nativePlanningDigest(canonicalManifestJson) != manifestDigest)
     throw std::invalid_argument("native prepared canonical publication is incomplete");
 
-  const bool hasMaterial = !materialManifestDataName.empty() ||
-    !materialManifestDigest.empty() || !materialPayloadIds.empty() ||
-    !materialDataNames.empty() || !materialDigests.empty();
+  if (!hasMaterial && sourceDataName.empty())
+    throw std::invalid_argument("native prepared source receipt is incomplete");
   if (hasMaterial && (materialManifestDataName.empty() || materialPayloadIds.empty() ||
       materialPayloadIds.size() != materialDataNames.size() ||
       materialDataNames.size() != materialDigests.size()))
@@ -436,11 +438,15 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPrepared(
   publication.validate();
   const auto root = NativeJson::parse(publication.canonicalManifestJson);
   const auto& metadata = root.at("metadata");
+  const bool materialBacked = metadata.value("materialBacked", false) ||
+    metadata.contains("materialManifestDataName");
+  const auto sourceName = metadata.value("canonicalSourceDataName", NativeJson{});
   if (root.value("modelIdentityDigest", NativeJson{}) != model.descriptor.contentDigest ||
       root.value("modelName", NativeJson{}) != model.descriptor.modelName ||
       metadata.value("canonicalSourceDigest", NativeJson{}) != model.canonicalSourceDigest ||
       metadata.value("canonicalSourceBytes", NativeJson{}) != model.canonicalSourceBytes ||
-      metadata.value("canonicalSourceDataName", NativeJson{}) != publication.sourceDataName ||
+      ((!materialBacked && (!sourceName.is_string() || sourceName.get<std::string>().empty())) ||
+       (sourceName.is_string() && sourceName.get<std::string>() != publication.sourceDataName)) ||
       publication.rootDataName.empty() ||
       root.value("artifactProfileDigest", NativeJson{}) != publication.artifactProfileDigest ||
       (!m_options.packageManifestDigest.empty() &&
@@ -706,6 +712,37 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
     std::vector<ndn_service_framework::LargeDataPublishResult> publishedResults;
     std::uint64_t publishedBytes = 0;
     const auto materialManifest = source->materialManifest;
+    const bool materialBacked = static_cast<bool>(materialManifest);
+    const auto materialManifestJson = materialManifest
+      ? materialManifest->canonicalJson() : std::string{};
+    // Root names are allocated by the protected transport, so reserve a
+    // bounded framing allowance before any object is published. This keeps a
+    // declared publication budget atomic instead of discovering exhaustion
+    // after a prefix of the receipt is already visible.
+    constexpr std::uint64_t rootBudget = 16U * 1024U * 1024U;
+    std::uint64_t knownPublicationBytes = materialBacked ? 0 : source->modelBytes.size();
+    if (!materialBacked && source->initializerBytes) {
+      if (knownPublicationBytes > std::numeric_limits<std::uint64_t>::max() -
+          source->initializerBytes->size())
+        throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+      knownPublicationBytes += source->initializerBytes->size();
+    }
+    if (materialBacked) {
+      for (const auto& payload : materialManifest->payloads) {
+        if (knownPublicationBytes > std::numeric_limits<std::uint64_t>::max() -
+            payload.bytes.size())
+          throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+        knownPublicationBytes += payload.bytes.size();
+      }
+      if (knownPublicationBytes > std::numeric_limits<std::uint64_t>::max() -
+          materialManifestJson.size())
+        throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
+      knownPublicationBytes += materialManifestJson.size();
+    }
+    if (knownPublicationBytes > std::numeric_limits<std::uint64_t>::max() - rootBudget ||
+        (options.maxPublicationBytes != 0 &&
+         knownPublicationBytes + rootBudget > options.maxPublicationBytes))
+      throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
     publishedResults.reserve((source->initializerBytes ? 3 : 2) +
                              (materialManifest ? materialManifest->payloads.size() + 1 : 0));
     try {
@@ -739,18 +776,23 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
         return name;
       };
       NativePreparedCanonicalPublication result;
-      result.sourceDataName = publish(source->modelBytes, "di-canonical-source");
       NativeJson metadata{{"canonicalSourceBytes", model.canonicalSourceBytes},
-        {"canonicalSourceDataName", result.sourceDataName},
         {"canonicalSourceDigest", model.canonicalSourceDigest}};
+      if (!materialBacked) {
+        result.sourceDataName = publish(source->modelBytes, "di-canonical-source");
+        metadata["canonicalSourceDataName"] = result.sourceDataName;
+      }
       if (source->initializerBytes) {
-        result.initializerDataName = publish(*source->initializerBytes, "di-canonical-initializer");
-        metadata["canonicalInitializerDataName"] = result.initializerDataName;
         metadata["canonicalInitializerBytes"] = model.canonicalInitializerBytes;
         metadata["canonicalInitializerObjectDigest"] = model.canonicalInitializerObjectDigest;
+        if (!materialBacked) {
+          result.initializerDataName = publish(*source->initializerBytes, "di-canonical-initializer");
+          metadata["canonicalInitializerDataName"] = result.initializerDataName;
+        }
       }
       NativeJson materialObjects = NativeJson::array();
       if (materialManifest) {
+        metadata["materialBacked"] = true;
         for (const auto& payload : materialManifest->payloads) {
           const auto dataName = publish(payload.bytes,
             "di-material-" + payload.payloadId);
@@ -762,7 +804,6 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
                                      {"digest", payload.digest},
                                      {"bytes", payload.bytes.size()}});
         }
-        const auto materialManifestJson = materialManifest->canonicalJson();
         const std::vector<std::uint8_t> manifestBytes(
           materialManifestJson.begin(), materialManifestJson.end());
         result.materialManifestDataName = publish(manifestBytes, "di-material-manifest");

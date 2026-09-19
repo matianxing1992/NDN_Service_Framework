@@ -1,5 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
 
+#include <limits>
+
 namespace ndnsf::di {
 
 struct NativeCanonicalPreparationCatalog::State
@@ -89,10 +91,25 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
       entry.publication.artifactProfileDigest = entry.recipe.artifactProfileDigest;
     else if (entry.publication.artifactProfileDigest != entry.recipe.artifactProfileDigest)
       throw std::invalid_argument("native publication profile differs from role recipe");
+    if (entry.publication.maxPublicationBytes == 0) {
+      // Publication is a prepare-time union, while maxAssembledBytes is a
+      // per-role post-Selection limit. Keep a finite default for callers
+      // that have not declared a candidate-local publication budget.
+      std::uint64_t sourceBytes = entry.model.canonicalSourceBytes;
+      if (entry.model.canonicalInitializerBytes >
+          std::numeric_limits<std::uint64_t>::max() - sourceBytes)
+        throw std::invalid_argument("native publication budget overflows");
+      sourceBytes += entry.model.canonicalInitializerBytes;
+      constexpr std::uint64_t rootMargin = 16U * 1024U * 1024U;
+      if (sourceBytes > std::numeric_limits<std::uint64_t>::max() - rootMargin ||
+          entry.recipe.maxAssembledBytes >
+          std::numeric_limits<std::uint64_t>::max() - sourceBytes - rootMargin)
+        throw std::invalid_argument("native publication budget overflows");
+      entry.publication.maxPublicationBytes =
+        entry.recipe.maxAssembledBytes + sourceBytes + rootMargin;
+    }
     if (entry.publication.maxPublicationBytes == 0)
-      entry.publication.maxPublicationBytes = entry.recipe.maxAssembledBytes;
-    else if (entry.publication.maxPublicationBytes != entry.recipe.maxAssembledBytes)
-      throw std::invalid_argument("native publication budget differs from role recipe");
+      throw std::invalid_argument("native publication budget is not positive");
     const auto key = model.canonicalJson();
     State::Record record{std::move(entry.model),
       std::make_shared<const NativeCanonicalSource>(std::move(entry.source)), std::move(roles), std::move(entry.publication)};

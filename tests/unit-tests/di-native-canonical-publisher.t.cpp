@@ -12,6 +12,9 @@
 
 #include <fstream>
 #include <future>
+#include <thread>
+#include <algorithm>
+#include <limits>
 #include <utility>
 
 namespace ndnsf::di {
@@ -91,6 +94,7 @@ struct Input
     if (external) {
       model.canonicalInitializerBytes = source->initializerBytes->size();
       model.canonicalInitializerObjectDigest = nativePlanningDigest(source->initializerBytes->data(), source->initializerBytes->size());
+      model.canonicalInitializerDigest = role.canonicalInitializerDigest;
     }
     candidate.model = model.descriptor; candidate.graphDigest = model.graph.graphDigest;
     candidate.splitter = {"fixture", "1", nativePlanningDigest("splitter")};
@@ -122,13 +126,16 @@ struct TransportFixture
 {
   std::vector<std::vector<std::uint8_t>> payloads;
   std::vector<std::string> requests;
+  std::vector<std::string> labels;
   std::function<void(LargeDataPublishResult&)> mutate;
   NativeCanonicalPublisherTestAccess::Transport transport()
   {
     return {[](auto job) { job(); }, [] { return false; },
       [] { return PreparedServiceRequest{ndn::Name("/service"), ndn::Name("/publication-request")}; },
-      [this](const PreparedServiceRequest& request, const std::vector<std::uint8_t>& bytes, const std::string& label) {
+      [this](const PreparedServiceRequest& request, const std::vector<std::uint8_t>& bytes,
+             const std::string& label, const NativeRequestControl&) {
         payloads.push_back(bytes); requests.push_back(request.requestId.toUri());
+        labels.push_back(label);
         LargeDataPublishResult result;
         result.success = true; result.encrypted = true; result.objectId = label;
         result.encryptedDataName = ndn::Name("/encrypted").append(label).appendVersion(1);
@@ -143,6 +150,36 @@ struct TransportFixture
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182CanonicalPublisher)
+BOOST_AUTO_TEST_CASE(PreparedReceiptIndexDoesNotRetainServingLeases)
+{
+  Input input; TransportFixture io;
+  std::vector<std::weak_ptr<void>> observed;
+  io.mutate = [&](LargeDataPublishResult& result) {
+    result.servingLease = std::make_shared<int>(1);
+    observed.emplace_back(result.servingLease);
+  };
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  auto first = publisher.prepare(input.model, input.control);
+  const auto publications = publisher.stats().publicationCalls;
+  BOOST_REQUIRE_GT(publications, 0U);
+  auto second = publisher.prepare(input.model, input.control);
+  BOOST_CHECK_EQUAL(publisher.stats().publicationCalls, publications);
+  first.servingLeases.clear();
+  for (const auto& pin : observed) BOOST_CHECK(!pin.expired());
+  second.servingLeases.clear();
+  // prepare() joins its receipt handoff through the returned future; the
+  // detached producer may still be releasing its local result briefly.
+  const auto until = Clock::now() + std::chrono::seconds(2);
+  while (Clock::now() < until &&
+         std::any_of(observed.begin(), observed.end(), [](const auto& p) { return !p.expired(); }))
+    std::this_thread::yield();
+  for (const auto& pin : observed) BOOST_CHECK(pin.expired());
+  auto renewed = publisher.prepare(input.model, input.control);
+  BOOST_CHECK_EQUAL(publisher.stats().publicationCalls, publications * 2);
+  BOOST_CHECK(!renewed.servingLeases.empty());
+}
+
 BOOST_AUTO_TEST_CASE(CatalogComposesOwnedInputInspectionRolesAndPublication)
 {
   for (bool external : {false, true}) {
@@ -315,6 +352,53 @@ BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
     BOOST_CHECK(result.artifactNameByRole.at("/role").find("/rank/") == std::string::npos);
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionBudget)
+{
+  Input input;
+  NativeAssemblyControl materialControl{
+    input.control.deadline, [&] { input.control.requireActive(); }, 1U << 20, 1U << 20};
+  const auto identity = canonicalOnnxSourceIdentity(*input.source, materialControl);
+  input.model.canonicalGraphDigest = identity.graphDigest;
+  input.source->materialManifest = deriveNativeCanonicalMaterialManifest(
+    *input.source, materialControl);
+  std::uint64_t materialBytes = input.source->materialManifest->canonicalJson().size();
+  for (const auto& payload : input.source->materialManifest->payloads)
+    materialBytes += payload.bytes.size();
+  constexpr std::uint64_t rootBudget = 16U * 1024U * 1024U;
+  BOOST_REQUIRE_LE(materialBytes, std::numeric_limits<std::uint64_t>::max() - rootBudget);
+  const auto publicationBudget = materialBytes + rootBudget;
+
+  input.options.maxPublicationBytes = publicationBudget - 1;
+  TransportFixture rejectedIo;
+  auto rejected = NativeCanonicalPublisherTestAccess::create(
+    rejectedIo.transport(), input.options, input.resolver());
+  BOOST_CHECK_THROW(rejected.prepare(input.model, input.control), std::runtime_error);
+  BOOST_CHECK(rejectedIo.payloads.empty());
+
+  input.options.maxPublicationBytes = publicationBudget;
+  TransportFixture io;
+  auto publisher = NativeCanonicalPublisherTestAccess::create(
+    io.transport(), input.options, input.resolver());
+  const auto receipt = publisher.prepare(input.model, input.control);
+  BOOST_CHECK(receipt.sourceDataName.empty());
+  BOOST_CHECK(receipt.initializerDataName.empty());
+  BOOST_REQUIRE(!receipt.materialManifestDataName.empty());
+  BOOST_REQUIRE(!receipt.rootDataName.empty());
+  BOOST_CHECK(std::none_of(io.labels.begin(), io.labels.end(), [] (const auto& label) {
+    return label == "di-canonical-source" || label == "di-canonical-initializer";
+  }));
+  const auto root = nativeParseJson(receipt.canonicalManifestJson);
+  BOOST_CHECK_EQUAL(root.at("metadata").at("materialBacked").get<bool>(), true);
+  BOOST_CHECK(!root.at("metadata").contains("canonicalSourceDataName"));
+  BOOST_CHECK(!root.at("metadata").contains("canonicalInitializerDataName"));
+  BOOST_CHECK_EQUAL(root.at("metadata").at("canonicalSourceDigest").get<std::string>(),
+                    input.model.canonicalSourceDigest);
+  BOOST_CHECK_EQUAL(root.at("metadata").at("canonicalSourceBytes").get<std::uint64_t>(),
+                    input.model.canonicalSourceBytes);
+  BOOST_REQUIRE(!io.labels.empty());
+  BOOST_CHECK_EQUAL(io.labels.back(), "di-canonical-root");
 }
 
 BOOST_AUTO_TEST_CASE(RejectsSourceAndCanonicalIdentityBeforePublication)
@@ -640,5 +724,17 @@ BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
   BOOST_CHECK_NE(user->getCachedDataContentForTest(name),
     ndn::Buffer(result.canonicalManifestJson.begin(), result.canonicalManifestJson.end()));
   BOOST_CHECK_NE(result.manifestDigest, input.model.modelManifestDigest);
+  // prepare uses the production worker entry rather than running the model
+  // hash/encryption/store inside the posted Face callback.
+  input.control.deadline = Clock::now() + std::chrono::seconds(10);
+  auto prepared = std::async(std::launch::async, [&] {
+    return publisher.prepare(input.model, input.control);
+  });
+  while (prepared.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready) {
+    face.getIoContext().restart(); face.getIoContext().poll();
+  }
+  const auto receipt = prepared.get();
+  BOOST_CHECK(!receipt.servingLeases.empty());
+  BOOST_CHECK(!receipt.rootDataName.empty());
 }
 BOOST_AUTO_TEST_SUITE_END()

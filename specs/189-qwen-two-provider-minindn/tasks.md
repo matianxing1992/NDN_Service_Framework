@@ -8,6 +8,18 @@
 
 ## Current Checkpoint
 
+**B189-1b material-publication checkpoint**: 2026-09-19 — the r5 frozen
+material-backed publication diff received official read-only `STATIC_PASS`.
+The affected DI closure and the newly registered `spec189-canonical-publisher`
+target built with root Waf using `-j4`; the focused material-backed publication
+assertion passed 1/1, related publisher regressions passed 5/5, and the
+protected request, placement, material, provider-stage and CLI C++ selectors
+passed. The existing full publisher suite still has four fixture/environment
+failures, which are recorded separately and are not counted as a product PASS.
+The previous real r38 run remains stopped at
+`PREPARATION_FAILED / DI_NATIVE_PUBLICATION_MATERIAL_LIMIT`; no MiniNDN or
+Qwen qualification is claimed. See [material publication evidence](evidence/b189-material-publication-20260919.md).
+
 **Audit reconciliation checkpoint**: 2026-09-19 — 已将 [DI/Repo static audit](evidence/di-repo-design-static-audit-20260919.md) 与当前源码重新对账：F01 的 material-only consumer 已有局部生产接线和 C++ selector，但真实 protected ingress 仍未验收；F02 已有 focused C++ selector 但实际 ORT/RSS 与完整候选资格仍开放，F08 仍开放，F05/F09 已有 focused C++ selector 但完整候选边界仍开放；F03/F04/F06/F07 分别标为条件性或 legacy follow-up。新增 FR-027..FR-029、T003-R1..R3 与 T009-R1，未将任何任务勾选完成。[audit reconciliation](spec.md#audit-reconciliation--2026-09-19)
 
 **Protected range-store checkpoint**: 2026-09-19 04:52 -05:00 — B189-1a 的冻结范围通过官方只读 `STATIC_PASS`；受影响的 NDNSF targets 用仓库 Waf `-j4` 完成 compile/link，Repo range-store 6/6 C++ cases 和生产 Runtime protected publication 1/1 C++ case 通过，requester `--help` 入口通过。证据记录了 Core ciphertext publication、Repo generation/lease fence、worker cancellation/rollback、bounded reads、source release 和第二次 prepare 无对象增长。[protected range-store evidence](evidence/b189-protected-range-store-20260919.md) 只关闭本地 protected publication 接缝；T003、真实 Qwen、ACK/Selection、Provider、MiniNDN/Tiger 仍为 `PARTIAL`/open。根 NDNSF Waf 只负责 NDNSF 自有目标；NAC-ABE 由其自身 Waf 及已安装 SDK 负责，未递归构建。
@@ -100,7 +112,7 @@ adapter producer/consumer 和 Runtime protected publication 的本地出口已�
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | protected publication/range-store 与 material-only consumer 局部 C++ 通过；F02 focused owner/cancel selector 已通过但实际 ORT/RSS、F05 replacement/rollback beyond focused selector、F09 complete publication boundary、真实 Qwen source release 与 protected ingress 仍待完成。[prepare](evidence/b189-prepare.md); [protected range-store](evidence/b189-protected-range-store-20260919.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | material-backed publication budget/receipt path and focused C++ selector now pass; protected range-store/material-only consumer remain local boundaries. F02 actual ORT/RSS, F05 replacement/rollback beyond focused selector, F09 complete publication boundary, real Qwen source release and protected ingress remain open. [material publication](evidence/b189-material-publication-20260919.md); [prepare](evidence/b189-prepare.md); [protected range-store](evidence/b189-protected-range-store-20260919.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress handler/no-fetch 计数。[placement](evidence/b189-placement.md); [production ingress](evidence/b189-placement-production-20260919.md) |
 | [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer 与 aggregate budget 已通过；生产 Core/Provider ingress、owner/cancel counters 和真实两 Provider assembly 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md) |
 | [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门已验；NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md) |

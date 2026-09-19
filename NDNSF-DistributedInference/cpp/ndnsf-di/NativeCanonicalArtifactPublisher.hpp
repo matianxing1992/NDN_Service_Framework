@@ -20,8 +20,10 @@ struct NativeCanonicalPublicationOptions
   std::vector<std::string> layerManifestDigests;
   // All roles produced from one catalog share this immutable profile identity.
   std::string artifactProfileDigest;
-  // Bounded serialized publication budget for source, material objects and
-  // manifest metadata. Zero is accepted only for legacy source-only callers.
+  // Bounded serialized publication budget for the complete prepare receipt.
+  // This is independent of a selected role's maxAssembledBytes: a
+  // topology-independent material set can be larger than any one role.
+  // Zero lets the catalog derive a bounded default.
   std::uint64_t maxPublicationBytes = 0;
 };
 

@@ -486,9 +486,16 @@ providerCanonicalSourceIdentity(
     ? metadata->get<std::string>("canonicalSourceDataName", "") : std::string{};
   const auto sourceDigest = metadata
     ? metadata->get<std::string>("canonicalSourceDigest", "") : std::string{};
-  if (sourceName.empty() || sourceDigest.empty())
+  const auto materialManifestName = metadata
+    ? metadata->get<std::string>("materialManifestDataName", "") : std::string{};
+  const bool materialBacked = metadata &&
+    (metadata->get<bool>("materialBacked", false) || !materialManifestName.empty());
+  if ((!materialBacked && sourceName.empty()) || sourceDigest.empty())
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_SOURCE_IDENTITY_MISSING");
-  return {sourceName, sourceDigest};
+  // Material-backed receipts intentionally omit a full source object. The
+  // canonical root remains the stable source identity for the provider cache;
+  // the digest still binds the assembled role to the inspected model.
+  return {sourceName.empty() ? projection.canonicalArtifactName : sourceName, sourceDigest};
 }
 
 class CountingProviderRunnerFactory final : public NativeModelRunnerFactory

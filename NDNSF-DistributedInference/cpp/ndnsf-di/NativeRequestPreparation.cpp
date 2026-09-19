@@ -108,6 +108,10 @@ void NativeInspectedModel::validate() const
       !digest(modelManifestDigest) || !digest(canonicalGraphDigest)) {
     throw std::invalid_argument("native inspected model source identity is incomplete");
   }
+  if (canonicalInitializerBytes != 0 &&
+      (!digest(canonicalInitializerObjectDigest) || !digest(canonicalInitializerDigest))) {
+    throw std::invalid_argument("native inspected model initializer identity is incomplete");
+  }
 }
 
 void NativeArtifactBinding::validate() const
@@ -383,12 +387,15 @@ std::vector<NativeSelectionRoleV3> NativeRequestPreparation::bindPublishedRoles(
   }
   const auto root = publicationRoot(artifacts);
   const auto& metadata = root.at("metadata");
+  const bool materialBacked = metadata.value("materialBacked", false) ||
+    metadata.contains("materialManifestDataName");
   const auto sourceName = metadata.value("canonicalSourceDataName", NativeJson{});
   const auto sourceBytes = metadata.value("canonicalSourceBytes", NativeJson{});
   if (root.value("modelIdentityDigest", NativeJson{}) != model.descriptor.contentDigest ||
       root.value("modelName", NativeJson{}) != model.descriptor.modelName ||
       metadata.value("canonicalSourceDigest", NativeJson{}) != model.canonicalSourceDigest ||
-      !sourceName.is_string() || !ndnName(sourceName.get<std::string>()) ||
+      (!materialBacked && (!sourceName.is_string() || !ndnName(sourceName.get<std::string>()))) ||
+      (materialBacked && sourceName.is_string() && !ndnName(sourceName.get<std::string>())) ||
       !model.canonicalSourceBytes ||
       !sourceBytes.is_number_unsigned() || sourceBytes != NativeJson(model.canonicalSourceBytes))
     throw std::invalid_argument("native published root differs from inspected model source");
@@ -401,7 +408,9 @@ std::vector<NativeSelectionRoleV3> NativeRequestPreparation::bindPublishedRoles(
     const auto name = metadata.value("canonicalInitializerDataName", NativeJson{});
     const auto size = metadata.value("canonicalInitializerBytes", NativeJson{});
     if (!model.canonicalInitializerBytes || !digest(model.canonicalInitializerObjectDigest) ||
-        !name.is_string() || !ndnName(name.get<std::string>()) ||
+        (!materialBacked && (!name.is_string() || !ndnName(name.get<std::string>()))) ||
+        (materialBacked && !name.is_null() &&
+          (!name.is_string() || !ndnName(name.get<std::string>()))) ||
         metadata.value("canonicalInitializerObjectDigest", NativeJson{}) != model.canonicalInitializerObjectDigest ||
         !size.is_number_unsigned() || size != NativeJson(model.canonicalInitializerBytes))
       throw std::invalid_argument("native published root differs from inspected initializer object");

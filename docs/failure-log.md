@@ -1,5 +1,35 @@
 # Failure Log and Evidence Index
 
+## 2026-09-19 — Spec189 r38 material-publication budget boundary
+
+The fresh root MiniNDN run `two-provider-global-r38` reached Controller,
+Authority and both Providers, then the requester stopped at the first native
+preparation boundary with
+`PREPARATION_FAILED / DI_NATIVE_PUBLICATION_MATERIAL_LIMIT`. The old publisher
+counted the full source, full initializer, material payloads, manifest and
+root against the per-role assembly budget, so the real Qwen candidate could
+not publish its material-backed topology. No ACK, Selection, Provider
+assembly, execution, terminal response or qualification verdict was produced.
+The raw run is retained under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r38/`;
+the repair and focused C++ evidence are recorded in
+`specs/189-qwen-two-provider-minindn/evidence/b189-material-publication-20260919.md`.
+This is a production preparation boundary, not a MiniNDN PASS or a provider
+protocol failure; a new run id is required after installing the repaired DI
+candidate.
+
+## 2026-09-19 — Spec189 canonical-publisher full-suite fixture boundaries
+
+The newly registered `spec189-canonical-publisher` target built successfully,
+but its full legacy suite reported four fixture/environment failures: two
+source-lifetime/cancellation assertions, one cancellation-after-source
+assertion, and one encrypted-publication fixture attempting to create a file
+under a root-owned temporary directory. The new material-backed budget test
+and five related publisher regressions pass when selected directly. These
+failures are retained as fixture boundaries and are not converted into a
+product failure or PASS; the focused results and exact scope are in
+`specs/189-qwen-two-provider-minindn/evidence/b189-material-publication-20260919.md`.
+
 ## 2026-09-19 — Spec189 B189-3 oracle build invocation boundary
 
 The first B189-3 post-review build attempt was launched from

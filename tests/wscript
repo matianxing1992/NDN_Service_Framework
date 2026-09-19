@@ -345,6 +345,22 @@ def build(bld):
         bld.path.parent.ant_glob(
             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
 
+    # Spec189 T003 material-publication ownership and budget selector.  Keep
+    # the publisher counterexamples on the same complete DI source closure as
+    # the production request selector so the protected publication path is
+    # compiled and linked as a real native test target.
+    bld.program(target='../spec189-canonical-publisher',
+                name='spec189-canonical-publisher',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/di-native-canonical-publisher.t.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ndnsf-distributed-repo ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS', 'SPEC189_PUBLICATION_SELECTOR'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec189 T004 production-handle request gate.  It reuses the maintained
     # in-process Runtime fixture; the wire-only selector above remains the
     # direct envelope oracle.  Keep this after the complete DI source closure
