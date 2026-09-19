@@ -598,18 +598,37 @@ runnerSpecForRole(const std::vector<NativeModelRunnerSpec>& specs,
 }
 
 int
+boundedProviderTimeoutMs(int configured)
+{
+  return std::max(50, configured);
+}
+
+int
 collaborationFetchTimeoutMs(int configured)
 {
   const char* value = std::getenv("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS");
   if (value == nullptr || std::string(value).empty()) {
-    return std::max(50, configured);
+    return boundedProviderTimeoutMs(configured);
   }
   char* end = nullptr;
   const long parsed = std::strtol(value, &end, 10);
   if (end == value || parsed <= 0) {
-    return std::max(50, configured);
+    return boundedProviderTimeoutMs(configured);
   }
   return static_cast<int>(std::max<long>(50, parsed));
+}
+
+NativeProviderTimeoutBudget
+makeNativeProviderTimeoutBudget(const NativeProviderHandlerConfig& config)
+{
+  // The deployment override applies to the collaboration data-plane fetch;
+  // the configured sources remain separate so a large model fetch budget
+  // cannot silently extend readiness or conversation control deadlines.
+  return {
+    collaborationFetchTimeoutMs(config.dependencyFetchTimeoutMs),
+    boundedProviderTimeoutMs(config.fetchTimeoutMs),
+    boundedProviderTimeoutMs(config.fetchTimeoutMs),
+  };
 }
 
 class NativeProviderHandlerState
@@ -1219,6 +1238,12 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
 
 } // namespace
 
+NativeProviderTimeoutBudget
+nativeProviderTimeoutBudget(const NativeProviderHandlerConfig& config)
+{
+  return makeNativeProviderTimeoutBudget(config);
+}
+
 std::optional<std::vector<uint8_t>>
 nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
                                    const ProviderRoleResult& result,
@@ -1819,6 +1844,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
   runtime.handler = [config = std::move(config), state = std::move(state)] (
 	           ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
 	           const ndn_service_framework::RequestMessage& request) mutable {
+    const auto timeoutBudget = nativeProviderTimeoutBudget(config);
     std::string activatedLeaseId;
     std::string activatedProviderEpoch;
     std::string activatedRequester;
@@ -2030,7 +2056,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       std::shared_ptr<DependencyIo> io =
         std::make_shared<NdnsfCollaborationDependencyIo>(
         ctx,
-        collaborationFetchTimeoutMs(config.fetchTimeoutMs),
+        timeoutBudget.dependencyFetchMs,
         config.maxSegmentSize,
         config.freshnessMs,
         groupCoordinator,
@@ -2515,7 +2541,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         std::map<std::string, std::string> observedRoleProviders;
         observedRoleProviders.emplace(role, ctx.localProvider().toUri());
         const auto barrierDeadline = std::chrono::steady_clock::now() +
-          std::chrono::milliseconds(collaborationFetchTimeoutMs(config.fetchTimeoutMs));
+          std::chrono::milliseconds(timeoutBudget.readinessMs);
         auto nextReadinessPublish = std::chrono::steady_clock::now() +
           std::chrono::milliseconds(250);
         while (observed.size() < expectedReadinessCount &&
@@ -3092,7 +3118,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             const auto nowForControl = static_cast<std::uint64_t>(
               std::max<long long>(0, epochMs()));
             const auto waitBudget = static_cast<std::uint64_t>(
-              std::max(1, collaborationFetchTimeoutMs(config.fetchTimeoutMs)));
+              std::max(1, timeoutBudget.conversationControlMs));
             const auto controlDeadline = std::min(
               turn.retentionDeadlineMs, nowForControl + waitBudget);
             const auto publishAck = [&](bool committed, const std::string& checkpointDigest) {

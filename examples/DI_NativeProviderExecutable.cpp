@@ -1716,6 +1716,12 @@ main(int argc, char** argv)
               config.spec180YnMutation = mutation;
             }
             config.executionPolicy = plan.executionPolicy;
+            // The executable option is the deployment-owned budget for
+            // authenticated inter-Provider dependency reads. It must not
+            // extend the independent readiness/control deadlines.
+            config.dependencyFetchTimeoutMs = options.repoFetchTimeoutMs;
+            std::cout << "NDNSF_DI_DEPENDENCY_FETCH_TIMEOUT_MS "
+                      << config.dependencyFetchTimeoutMs << std::endl;
             // Serving prepares a runner only after authenticated Selection.
             // Model adapters supply a spec; observations are bound once below.
             config.allowPreassembledV3Compatibility = false;
