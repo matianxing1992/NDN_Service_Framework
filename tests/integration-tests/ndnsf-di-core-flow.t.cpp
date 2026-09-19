@@ -4671,6 +4671,13 @@ runProductionNativeD2bCase(bool tamperCapability,
             environment.provider(1).getPendingRequestCountForTesting() == 1) ||
            timedOut;
   });
+  if (!streamed && usePostSelectionAssembly && !timedOut) {
+    // The request is pending and the deterministic ACK has not been
+    // published yet.  The production post-Selection preparation seam must
+    // remain untouched for both Providers until authenticated Selection.
+    BOOST_CHECK_EQUAL(preparationFactoryCalls[0].load(), 0U);
+    BOOST_CHECK_EQUAL(preparationFactoryCalls[1].load(), 0U);
+  }
   if (!streamed) {
   for (size_t index = 0; index < environment.providerCount(); ++index) {
     RequestAckMessage ack;
