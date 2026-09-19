@@ -13,11 +13,11 @@
 assembly progress. The affected DI/unit/integration/assembly-worker closure
 rebuilt from global-r3 with Waf `-j3`; lifecycle (15/15), same-provider
 multi-role streamed, D2b streamed, and worker-backed assembly selectors passed.
-The full `Spec175NativeAssembly` suite reached 8/9: the remaining case is an
-existing fixture expectation mismatch (`DI_CANONICAL_SOURCE_NAME_MISSING` vs
-the unchanged source-validation result `DI_CANONICAL_SOURCE_METADATA_MISSING`),
-so the batch is `FOCUSED_CXX_PASS`, not a full suite PASS. No real Qwen/MiniNDN
-retry, terminal output, resource drain or qualification was run in this unit.
+The first full `Spec175NativeAssembly` run exposed a fixture missing
+`metadata.canonicalSourceDigest`/`canonicalSourceBytes`; after read-only
+review, the test-only fixture correction rebuilt with `-j3` and the complete
+suite passed 9/9. No real Qwen/MiniNDN retry, terminal output, resource drain or
+qualification was run in this unit.
 See [progress/heartbeat evidence](evidence/b189-r4-progress-heartbeat-20260919.md)
 and [failure log](../../docs/failure-log.md).
 

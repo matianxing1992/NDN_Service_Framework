@@ -555,7 +555,9 @@ BOOST_AUTO_TEST_CASE(CollaborationContextBindsAssignmentRootBeforeSourceFetch)
   const auto profileDigest = zeroDigest('b');
   const auto rootJson = std::string(
     "{\"artifactProfileDigest\":\"") + profileDigest +
-    "\",\"modelIdentityDigest\":\"" + zeroDigest('a') +
+    "\",\"metadata\":{\"canonicalSourceDigest\":\"" + zeroDigest('c') +
+    "\",\"canonicalSourceBytes\":1},"
+    "\"modelIdentityDigest\":\"" + zeroDigest('a') +
     "\",\"modelName\":\"spec175-tiny-causal-lm-v1\","
     "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
     "\"state\":\"ACTIVE\"}";

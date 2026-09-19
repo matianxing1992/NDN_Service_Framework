@@ -7643,3 +7643,13 @@ the relative `examples/trust-any.conf` was unavailable; rerunning from the
 repository root reached the suite. Raw output is under
 `.codex-tmp/spec189-b189-3-r4-20260919/`; durable details are in
 `specs/189-qwen-two-provider-minindn/evidence/b189-r4-progress-heartbeat-20260919.md`.
+
+2026-09-19 Spec189 B189-3 fixture correction: read-only review identified that
+the source-name negative fixture omitted the metadata source digest/size fields,
+so the assembler correctly returned DI_CANONICAL_SOURCE_METADATA_MISSING before
+the intended DI_CANONICAL_SOURCE_NAME_MISSING assertion. The fixture was
+corrected to include numeric metadata.canonicalSourceBytes and the matching
+digest while keeping canonicalSourceDataName absent; a second read-only review
+passed. The integration target rebuilt with Waf -j3 in 26.040s and the complete
+Spec175NativeAssembly suite passed 9/9. This closes the test-boundary mismatch
+only; real Qwen/MiniNDN qualification remains open.

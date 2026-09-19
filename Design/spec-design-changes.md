@@ -4,7 +4,7 @@
 
 - **Status**: `PARTIAL`。B189-3 为 post-Selection assembly 增加了生产 C++ 进度回报和精确消费绑定：`NativeCanonicalOnnxAssemblerOptions::reportProgress` 在已认证里程碑回调，`StreamEventConsumer::observeAuthenticatedProgress` 只接受同一 request/provider/service、Selection digest、terminal-role operation、严格 epoch/sequence 和有效期限；`ServiceUser::initializeStreamConsumer` 传递 expected operation ID。
 - **设计原因**：r53 的真实运行已到 grant verification 和 assembly staging，但 requester 因 stream event gap 超时，日志没有可验证的中间阶段。generic heartbeat 不能证明 assembly；进度必须由生产 assembler 的真实 root/material/source/worker 里程碑产生，并由 requester 绑定到本次 Selection。
-- **当前/目标边界**：本地 C++ lifecycle、same-provider multi-role streamed fixture、D2b 和 worker-backed assembly selectors 已通过；完整 assembly suite 仍有一个既有 fixture 契约不一致，真实 Qwen/MiniNDN、terminal/output/drain 和跨 service 负例未完成。不得将本条提升为资格 PASS。
+- **当前/目标边界**：本地 C++ lifecycle、same-provider multi-role streamed fixture、D2b 和 worker-backed assembly selectors 已通过；初次 fixture 契约错误已由只读复审后的 test-only metadata 修复消除，完整 assembly suite 现为 9/9。真实 Qwen/MiniNDN、terminal/output/drain 和跨 service 负例未完成。不得将本条提升为资格 PASS。
 - **源码与证据**：`ndn-service-framework/InvocationStream.{hpp,cpp}`、`ServiceUser.{hpp,cpp}`、`NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.{hpp,cpp}`、`Provider.cpp`、`examples/DI_NativeProviderExecutable.cpp`；详见 [B189-R4 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r4-progress-heartbeat-20260919.md) 和 v6 review snapshot。
 - **文档同步边界**：本条登记当前源码行为和剩余验证；API Markdown/PDF 的完整生成与源码摘要刷新仍须在同一干净文档 checkpoint 按 `Design/MANAGEMENT.md` 完成，不能把工作树中的旧 API reference 当作已同步。
 

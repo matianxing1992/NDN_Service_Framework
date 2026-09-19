@@ -8,7 +8,7 @@
 | 1 | B189-0 | T001 | 剩余真实接线与 candidate/验证边界 | DONE (mapping only) | evidence/b189-convergence.md |
 | 2 | B189-1 | T003 (former T002,T004) | 原子材料 Repo publication + source release + B189-1c audit storage gates | PARTIAL (B189-1a protected local boundary and B189-1b producer/Repo consumer locally verified; F02/F05/F09 focused selectors pass but qualification remains open; protected ingress open) | evidence/b189-prepare.md; evidence/b189-protected-range-store-20260919.md; evidence/b189-f02-memory-20260919.md; evidence/b189-f05-quota-20260919.md; evidence/di-repo-design-static-audit-20260919.md |
 | 3 | B189-2 | T005 | ACK 后规划与生产 Selection/no-fetch fence | PARTIAL (production C++ ingress focused selectors pass; direct no-fetch counters and canonical Qwen manifest remain open) | evidence/b189-placement.md; evidence/b189-placement-production-20260919.md |
-| 4 | B189-3 | T006,T007 | 范围组装、NDN handoff、C++ 输出/因果判据 | PARTIAL (material-only consumer and authenticated progress local exits passed; handoff/output open; full assembly suite has one baseline fixture mismatch) | evidence/b189-execution.md; evidence/b189-material-consumer-20260919.md; evidence/b189-r4-progress-heartbeat-20260919.md |
+| 4 | B189-3 | T006,T007 | 范围组装、NDN handoff、C++ 输出/因果判据 | PARTIAL (material-only consumer and authenticated progress local exits passed; corrected assembly suite 9/9; handoff/output open) | evidence/b189-execution.md; evidence/b189-material-consumer-20260919.md; evidence/b189-r4-progress-heartbeat-20260919.md |
 | 5 | B189-5 | T009 (former T008,T010) | resource gate 后两独立 MiniNDN，各自同 handle 两请求 | PARTIAL | evidence/b189-convergence.md |
 
 ## Five-lane coverage and dynamic checks

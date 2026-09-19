@@ -45,16 +45,15 @@ integration-tests --run_test=Spec175NativeAssembly/AssignmentBoundRootSourceAndC
 ```
 
 这些用例覆盖了 progress 的 C++ 状态机、同 provider 多 role 的 non-terminal→terminal
-stream、assembler 的 ROOT/SOURCE/WORKER 里程碑和已选材料的真实 worker 路径。完整
-`Spec175NativeAssembly` 仍为 **8/9 PASS**：既有
-`CollaborationContextBindsAssignmentRootBeforeSourceFetch` fixture 期望
-`DI_CANONICAL_SOURCE_NAME_MISSING`，当前实际校验顺序先返回
-`DI_CANONICAL_SOURCE_METADATA_MISSING`。本单元 assembler 的 diff 只有 progress callback/
-`<atomic>` 和里程碑调用，HEAD 与工作树的两项 source 校验顺序一致，故该失败登记为
-基线 fixture 契约边界，未改动无关生产逻辑。完整套件原始输出见
-`.codex-tmp/spec189-b189-3-r4-20260919/full-native-assembly.log`；build-directory 首次
-运行缺少相对路径 `examples/trust-any.conf` 的启动失败也保留在该运行目录和
-`docs/failure-log.md`，随后从仓库根复测。
+stream、assembler 的 ROOT/SOURCE/WORKER 里程碑和已选材料的真实 worker 路径。第一次
+完整 `Spec175NativeAssembly` 从仓库根运行时为 **8/9 PASS**：fixture 缺少
+`metadata.canonicalSourceDigest`/`canonicalSourceBytes`，却期望
+`DI_CANONICAL_SOURCE_NAME_MISSING`；assembler 正确先返回
+`DI_CANONICAL_SOURCE_METADATA_MISSING`。只读复审确认这是 fixture 契约错误，test-only
+JSON 修复通过第二次复审；integration target 以 `-j3` 在 26.040s 重建，修复后的
+完整套件通过 **9/9**。初次和修复后的输出均保留在
+`.codex-tmp/spec189-b189-3-r4-20260919/`；build-directory 首次运行缺少相对路径
+`examples/trust-any.conf` 的启动失败也已保留，随后从仓库根复测。
 
 ## Five-lane result and closure
 
@@ -62,7 +61,7 @@ stream、assembler 的 ROOT/SOURCE/WORKER 里程碑和已选材料的真实 work
 | --- | --- |
 | Static | `STATIC_PASS` (review snapshot v6) |
 | Compile/link | `PASS` (`-j3`, affected DI/unit/integration/worker closure) |
-| Runtime-test | `FOCUSED_CXX_PASS`; full assembly suite `8/9`, one baseline fixture mismatch |
+| Runtime-test | PASS for corrected C++ assembly suite (9/9); no real Qwen/MiniNDN retry |
 | Protocol/qualification | `UNOBSERVED`; no real Qwen/MiniNDN retry in this unit |
 | Migration/evidence | `PARTIAL`; no cross-service negative and no two-Provider terminal/output proof |
 
