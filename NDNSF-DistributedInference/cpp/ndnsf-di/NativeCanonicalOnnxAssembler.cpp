@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
@@ -46,10 +47,10 @@ std::uint64_t nowMs()
 }
 
 std::string
-sha256Hex(const std::vector<std::uint8_t>& bytes)
+sha256Hex(ndn::span<const std::uint8_t> bytes)
 {
   ndn::util::Sha256 digest;
-  digest.update(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()));
+  digest.update(bytes);
   auto hex = digest.toString();
   // ndn-cxx formats this digest helper's hexadecimal text in uppercase, while the
   // cross-language assembly contract requires canonical lowercase SHA-256.
@@ -57,6 +58,12 @@ sha256Hex(const std::vector<std::uint8_t>& bytes)
     return static_cast<char>(std::tolower(ch));
   });
   return "sha256:" + hex;
+}
+
+std::string
+sha256Hex(const std::vector<std::uint8_t>& bytes)
+{
+  return sha256Hex(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()));
 }
 
 std::vector<std::uint8_t>
@@ -238,8 +245,48 @@ prepareNativeCanonicalOnnxRole(
   if (projection.canonicalArtifactName.empty()) {
     throw std::runtime_error("DI_PROVIDER_ASSEMBLY_ROOT_MISSING");
   }
+  const auto logMaterialFetch = [&projection] (const char* kind,
+                                                const ndn::Name& name,
+                                                const char* status,
+                                                const std::optional<ndn::Buffer>* payload = nullptr,
+                                                const std::string& expectedDigest = {}) {
+    std::ostringstream record;
+    record << "NDNSF_DI_PROVIDER_MATERIAL_FETCH"
+           << " requestId=" << projection.requestId
+           << " attemptEpoch=" << projection.attempt
+           << " provider=" << projection.provider
+           << " role=" << projection.selectedRole.selectedRole
+           << " planDigest=" << projection.planDigest
+           << " kind=" << kind
+           << " name=" << name.toUri()
+           << " status=" << status;
+    if (!expectedDigest.empty()) {
+      record << " expectedDigest=" << expectedDigest;
+    }
+    if (payload != nullptr && *payload) {
+      record << " bytes=" << (*payload)->size();
+      if (!(*payload)->empty()) {
+        record << " digest=" << sha256Hex(
+          ndn::span<const std::uint8_t>((*payload)->data(), (*payload)->size()));
+      }
+    }
+    logRuntimeEvidence(record.str());
+  };
   const ndn::Name rootName(projection.canonicalArtifactName);
-  const auto rootPayload = fetchers.getArtifact(rootName);
+  logMaterialFetch("root", rootName, "begin", nullptr,
+                   projection.assembly.modelManifestDigest);
+  std::optional<ndn::Buffer> rootPayload;
+  try {
+    rootPayload = fetchers.getArtifact(rootName);
+  }
+  catch (...) {
+    logMaterialFetch("root", rootName, "error", nullptr,
+                     projection.assembly.modelManifestDigest);
+    throw;
+  }
+  logMaterialFetch("root", rootName,
+                   rootPayload && !rootPayload->empty() ? "returned" : "empty",
+                   &rootPayload, projection.assembly.modelManifestDigest);
   if (!rootPayload || rootPayload->empty() || rootPayload->size() >
       projection.assembly.maxSourceBytes) {
     throw std::runtime_error("DI_CANONICAL_ROOT_UNAVAILABLE");
@@ -248,6 +295,8 @@ prepareNativeCanonicalOnnxRole(
       projection.assembly.modelManifestDigest) {
     throw std::runtime_error("DI_CANONICAL_ROOT_DIGEST_MISMATCH");
   }
+  logMaterialFetch("root", rootName, "verified", &rootPayload,
+                   projection.assembly.modelManifestDigest);
 
   const auto rootPath = makeStagingDirectory(
     std::filesystem::path(options.cacheDir));
@@ -269,6 +318,30 @@ prepareNativeCanonicalOnnxRole(
     }
     const auto rootFile = rootPath / "root.json";
     const auto sourceFile = rootPath / "canonical.onnx";
+    NativeCanonicalSource canonicalSource;
+    struct CanonicalSourceScrubber
+    {
+      NativeCanonicalSource& source;
+      bool scrubbed = false;
+
+      void scrub() noexcept
+      {
+        if (scrubbed) return;
+        {
+          NativePlaintextBufferGuard modelGuard{source.modelBytes};
+          if (source.initializerBytes) {
+            NativePlaintextBufferGuard initializerGuard{*source.initializerBytes};
+          }
+        }
+        source = {};
+        scrubbed = true;
+      }
+
+      ~CanonicalSourceScrubber()
+      {
+        scrub();
+      }
+    } sourceScrubber{canonicalSource};
     storeWhileAuthorized([&] {
       writeFileAtomic(rootFile,
                       std::vector<std::uint8_t>(rootPayload->begin(), rootPayload->end()));
@@ -302,10 +375,22 @@ prepareNativeCanonicalOnnxRole(
     if (sourceDigest.empty() || expectedSourceBytes == 0) {
       throw std::runtime_error("DI_CANONICAL_SOURCE_METADATA_MISSING");
     }
-    auto source = fetchers.fetchEncryptedLargeData(
-      ndn::Name(sourceName), ndn::Name(projection.plan.serviceName));
+    const ndn::Name sourceNameValue(sourceName);
+    logMaterialFetch("source", sourceNameValue, "begin", nullptr, sourceDigest);
+    std::optional<ndn::Buffer> source;
+    try {
+      source = fetchers.fetchEncryptedLargeData(
+        sourceNameValue, ndn::Name(projection.plan.serviceName));
+    }
+    catch (...) {
+      logMaterialFetch("source", sourceNameValue, "error", nullptr, sourceDigest);
+      throw;
+    }
     std::vector<std::uint8_t> emptyPayload;
     NativePlaintextBufferGuard sourcePayloadGuard{source ? *source : emptyPayload};
+    logMaterialFetch("source", sourceNameValue,
+                     source && !source->empty() ? "returned" : "empty", &source,
+                     sourceDigest);
     if (!source || source->empty() || source->size() != expectedSourceBytes ||
         source->size() > projection.assembly.maxSourceBytes) {
       if (source && source->size() != expectedSourceBytes) {
@@ -313,12 +398,14 @@ prepareNativeCanonicalOnnxRole(
       }
       throw std::runtime_error("DI_CANONICAL_SOURCE_UNAVAILABLE");
     }
-    auto sourceBytes = std::vector<std::uint8_t>(source->begin(), source->end());
-    NativePlaintextBufferGuard sourceGuard{sourceBytes};
-    if (sha256Hex(sourceBytes) != sourceDigest) {
+    if (sha256Hex(*source) != sourceDigest) {
       throw std::runtime_error("DI_CANONICAL_SOURCE_DIGEST_MISMATCH");
     }
-    storeWhileAuthorized([&] { writeFileAtomic(sourceFile, sourceBytes); });
+    logMaterialFetch("source", sourceNameValue, "verified", &source, sourceDigest);
+    // Transfer the fetched buffer into the canonical source instead of
+    // retaining a second 1.5 GiB copy while the worker is running.
+    canonicalSource.modelBytes = std::move(*source);
+    storeWhileAuthorized([&] { writeFileAtomic(sourceFile, canonicalSource.modelBytes); });
 
     // External initializers are a second authenticated canonical object.  The
     // graph object alone is not sufficient for ONNX Runtime assembly; keep
@@ -342,15 +429,28 @@ prepareNativeCanonicalOnnxRole(
       : 0;
     const bool anyInitializerMetadata = !initializerName.empty() ||
       !initializerDigest.empty() || expectedInitializerBytes != 0;
-    std::optional<std::vector<std::uint8_t>> initializerBytes;
     if (anyInitializerMetadata) {
       if (initializerName.empty() || initializerDigest.empty() ||
           expectedInitializerBytes == 0) {
         throw std::runtime_error("DI_CANONICAL_INITIALIZER_METADATA_MISSING");
       }
-      auto initializer = fetchers.fetchEncryptedLargeData(
-        ndn::Name(initializerName), ndn::Name(projection.plan.serviceName));
+      const ndn::Name initializerNameValue(initializerName);
+      logMaterialFetch("initializer", initializerNameValue, "begin", nullptr,
+                       initializerDigest);
+      std::optional<ndn::Buffer> initializer;
+      try {
+        initializer = fetchers.fetchEncryptedLargeData(
+          initializerNameValue, ndn::Name(projection.plan.serviceName));
+      }
+      catch (...) {
+        logMaterialFetch("initializer", initializerNameValue, "error", nullptr,
+                         initializerDigest);
+        throw;
+      }
       NativePlaintextBufferGuard initializerPayloadGuard{initializer ? *initializer : emptyPayload};
+      logMaterialFetch("initializer", initializerNameValue,
+                       initializer && !initializer->empty() ? "returned" : "empty",
+                       &initializer, initializerDigest);
       if (!initializer || initializer->empty() ||
           initializer->size() != expectedInitializerBytes ||
           initializer->size() > projection.assembly.maxSourceBytes) {
@@ -359,13 +459,14 @@ prepareNativeCanonicalOnnxRole(
         }
         throw std::runtime_error("DI_CANONICAL_INITIALIZER_UNAVAILABLE");
       }
-      auto fetchedInitializerBytes = std::vector<std::uint8_t>(
-        initializer->begin(), initializer->end());
-      NativePlaintextBufferGuard initializerGuard{fetchedInitializerBytes};
-      if (sha256Hex(fetchedInitializerBytes) != initializerDigest) {
+      if (sha256Hex(*initializer) != initializerDigest) {
         throw std::runtime_error("DI_CANONICAL_INITIALIZER_DIGEST_MISMATCH");
       }
-      initializerBytes = std::move(fetchedInitializerBytes);
+      logMaterialFetch("initializer", initializerNameValue, "verified", &initializer,
+                       initializerDigest);
+      // Move into the final canonical source owner.  sourceScrubber already
+      // covers this vector, including exceptions before worker startup.
+      canonicalSource.initializerBytes = std::move(*initializer);
     }
 
     const auto modelName = root.get<std::string>("modelName", projection.plan.modelName);
@@ -373,9 +474,6 @@ prepareNativeCanonicalOnnxRole(
     if (modelName.empty() || modelDigest.empty()) {
       throw std::runtime_error("DI_CANONICAL_ROOT_MODEL_IDENTITY_MISSING");
     }
-    NativeCanonicalSource canonicalSource;
-    canonicalSource.modelBytes = sourceBytes;
-    canonicalSource.initializerBytes = initializerBytes;
     NativeAssemblyControl assemblyControl;
     const auto wallNow = nowMs();
     const auto remainingRequestMs = projection.deadlineMs == 0 ?
@@ -392,9 +490,21 @@ prepareNativeCanonicalOnnxRole(
     // OA02 worker transport: the certified recipe and the source bytes cross
     // the pipe, and the child's PASS claim is accepted only after the parent
     // revalidated the model bytes against the certified digest below.
-    auto assembled = runNativeOnnxAssemblyWorkerAt(
-      options.workerLocation, canonicalSource, projection.assembly,
-      assemblyControl);
+    NativeCertifiedAssembly assembled;
+    try {
+      assembled = runNativeOnnxAssemblyWorkerAt(
+        options.workerLocation, canonicalSource, projection.assembly,
+        assemblyControl);
+    }
+    catch (...) {
+      sourceScrubber.scrub();
+      throw;
+    }
+    // The worker has returned the certified assembled bytes.  Release and
+    // cleanse the parent-side canonical graph/initializer before writing
+    // manifests and activating the runner; this bounds both resident set and
+    // plaintext lifetime.
+    sourceScrubber.scrub();
     auto modelBytes = std::move(assembled.modelBytes);
     NativePlaintextBufferGuard modelGuard{modelBytes};
     if (modelBytes.empty() || sha256Hex(modelBytes) != assembled.modelDigest) {
@@ -530,6 +640,24 @@ prepareNativeCanonicalOnnxRole(
       {"assemblySignature", signature},
       {"assembledFrom", "canonical-root-post-selection"},
     };
+    // Carry the authenticated generation contract into the runner spec. The
+    // provider-side preparation hook narrows the successor map to this local
+    // role before the runner is constructed; keeping the projection fields on
+    // the assembled spec prevents an adapter-local default from changing the
+    // signed dynamic-past or causal-position contract.
+    if (projection.generationContract.enabled) {
+      const auto& generation = projection.generationContract;
+      if (!generation.stateSuccessorMap.empty())
+        spec.metadata["stateSuccessorMap"] = generation.stateSuccessorMap;
+      if (!generation.positionInputPolicy.empty())
+        spec.metadata["positionInputPolicy"] = generation.positionInputPolicy;
+      if (!generation.attentionMaskInputName.empty())
+        spec.metadata["attentionMaskInputName"] = generation.attentionMaskInputName;
+      if (!generation.positionIdsInputName.empty())
+        spec.metadata["positionIdsInputName"] = generation.positionIdsInputName;
+      if (!generation.cachePositionInputName.empty())
+        spec.metadata["cachePositionInputName"] = generation.cachePositionInputName;
+    }
     if (protectedRole)
       spec.metadata["encryptedArtifactPath"] = encryptedArtifactPath.string();
     if (projection.dataflow.terminalResponseOwner) {

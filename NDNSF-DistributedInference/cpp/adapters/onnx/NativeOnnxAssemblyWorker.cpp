@@ -45,6 +45,9 @@
 namespace ndnsf::di {
 namespace {
 
+constexpr std::uint64_t MaxWorkerFramePayloadBytes = 2ULL * 1024 * 1024 * 1024;
+constexpr std::size_t WorkerPayloadReserveChunk = 16 * 1024 * 1024;
+
 void
 workerFail(const char* code)
 {
@@ -212,6 +215,29 @@ pushU32le(std::vector<std::uint8_t>& out, std::uint32_t value)
   for (int i = 0; i < 4; ++i) {
     out.push_back(static_cast<std::uint8_t>((value >> (8 * i)) & 0xff));
   }
+}
+
+bool
+appendWorkerPayload(std::vector<std::uint8_t>& target,
+                    const std::uint8_t* data, std::size_t size)
+{
+  if (target.size() > MaxWorkerFramePayloadBytes ||
+      size > MaxWorkerFramePayloadBytes - target.size()) {
+    return false;
+  }
+  if (target.capacity() - target.size() < size) {
+    const auto required = target.size() + size;
+    const auto growth = std::min<std::uint64_t>(
+      WorkerPayloadReserveChunk, MaxWorkerFramePayloadBytes - required);
+    try {
+      target.reserve(required + static_cast<std::size_t>(growth));
+    }
+    catch (const std::exception&) {
+      return false;
+    }
+  }
+  target.insert(target.end(), data, data + size);
+  return true;
 }
 
 } // namespace
@@ -1014,6 +1040,28 @@ NativeOnnxRequestDecoder::feed(const std::uint8_t* data, std::size_t size)
       m_metadataRemaining = m_header.metadataLength;
       m_modelRemaining = m_header.modelLength;
       m_initializerRemaining = m_header.initializerLength;
+      // The request frame is produced by a bounded parent, but the child
+      // still treats its pipe as untrusted input.  Apply a fixed total
+      // payload bound before accepting bytes.  Model and initializer storage
+      // grows in bounded chunks below; never reserve a header-declared GiB
+      // amount before the metadata recipe has been checked.
+      if (m_header.metadataLength > kNativeOnnxWorkerMaxMetadataBytes ||
+          m_header.modelLength > MaxWorkerFramePayloadBytes ||
+          m_header.initializerLength > MaxWorkerFramePayloadBytes ||
+          m_header.initializerLength > MaxWorkerFramePayloadBytes -
+            m_header.modelLength) {
+        m_result = Result::ProtocolError;
+        m_phase = Phase::Done;
+        return m_result;
+      }
+      try {
+        m_metadata.reserve(static_cast<std::size_t>(m_header.metadataLength));
+      }
+      catch (const std::exception&) {
+        m_result = Result::ProtocolError;
+        m_phase = Phase::Done;
+        return m_result;
+      }
       m_phase = Phase::Payload;
       continue;
     }
@@ -1043,7 +1091,11 @@ NativeOnnxRequestDecoder::feed(const std::uint8_t* data, std::size_t size)
         std::min<std::uint64_t>(m_modelRemaining,
                                 static_cast<std::uint64_t>(size)));
       if (take == 0) return Result::NeedMore;
-      m_model.insert(m_model.end(), data, data + take);
+      if (!appendWorkerPayload(m_model, data, take)) {
+        m_result = Result::ProtocolError;
+        m_phase = Phase::Done;
+        return m_result;
+      }
       data += take;
       size -= take;
       m_modelRemaining -= take;
@@ -1058,7 +1110,11 @@ NativeOnnxRequestDecoder::feed(const std::uint8_t* data, std::size_t size)
         std::min<std::uint64_t>(m_initializerRemaining,
                                 static_cast<std::uint64_t>(size)));
       if (take == 0) return Result::NeedMore;
-      m_initializer.insert(m_initializer.end(), data, data + take);
+      if (!appendWorkerPayload(m_initializer, data, take)) {
+        m_result = Result::ProtocolError;
+        m_phase = Phase::Done;
+        return m_result;
+      }
       data += take;
       size -= take;
       m_initializerRemaining -= take;
@@ -1605,11 +1661,40 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
     workerFail("RECIPE");
   }
   const std::string metadata = buildNativeOnnxWorkerRequestMetadata(recipe);
-  const std::vector<std::uint8_t> requestFrame = composeNativeOnnxWorkerRequest(
-    metadata, source.modelBytes,
-    source.initializerBytes ? *source.initializerBytes
-                            : std::vector<std::uint8_t>{},
-    source.initializerBytes.has_value());
+  // Keep the parent bounded while sending a large canonical initializer.  The
+  // old composer materialized metadata + model + initializer as one more
+  // contiguous vector before the nonblocking pipe could consume it.  Each
+  // part below points at storage owned by this synchronous call and is sent
+  // in order without an additional multi-gigabyte allocation.
+  std::array<std::uint8_t, 33> requestHeader{};
+  std::memcpy(requestHeader.data(), kNdnSf182RequestMagic,
+              sizeof(kNdnSf182RequestMagic));
+  const auto writeU64le = [&requestHeader](std::size_t offset,
+                                           std::uint64_t value) {
+    for (int i = 0; i < 8; ++i) {
+      requestHeader[offset + static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>((value >> (8 * i)) & 0xff);
+    }
+  };
+  writeU64le(8, static_cast<std::uint64_t>(metadata.size()));
+  writeU64le(16, static_cast<std::uint64_t>(source.modelBytes.size()));
+  writeU64le(24, static_cast<std::uint64_t>(
+    source.initializerBytes ? source.initializerBytes->size() : 0));
+  requestHeader[32] = source.initializerBytes.has_value() ? 1 : 0;
+  struct RequestPart
+  {
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;
+  };
+  const auto* initializer = source.initializerBytes ?
+    &*source.initializerBytes : nullptr;
+  const std::array<RequestPart, 4> requestParts{{
+    {requestHeader.data(), requestHeader.size()},
+    {reinterpret_cast<const std::uint8_t*>(metadata.data()), metadata.size()},
+    {source.modelBytes.data(), source.modelBytes.size()},
+    {initializer ? initializer->data() : nullptr,
+     initializer ? initializer->size() : 0},
+  }};
 
   // Preflight: the fixed binary must still be the registered one.
   const int probe = open(location.path.c_str(), O_RDONLY | O_CLOEXEC);
@@ -1629,6 +1714,7 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
   try {
     child.start(location, metadata.size());
 
+    std::size_t writePart = 0;
     std::size_t writeOffset = 0;
     bool writeDone = false;
     bool stdoutEof = false;
@@ -1655,6 +1741,18 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
 
       struct pollfd fds[3];
       std::size_t fdCount = 0;
+      if (!writeDone) {
+        while (writePart < requestParts.size() &&
+               writeOffset == requestParts[writePart].size) {
+          ++writePart;
+          writeOffset = 0;
+        }
+        if (writePart == requestParts.size()) {
+          writeDone = true;
+          close(child.toChild);
+          child.toChild = -1;
+        }
+      }
       if (!writeDone) {
         fds[fdCount].fd = child.toChild;
         fds[fdCount].events = POLLOUT;
@@ -1692,12 +1790,28 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
         if (events == 0) continue;
         if (fds[i].fd == child.toChild) {
           if ((events & POLLOUT) != 0) {
+            while (writePart < requestParts.size() &&
+                   writeOffset == requestParts[writePart].size) {
+              ++writePart;
+              writeOffset = 0;
+            }
+            if (writePart == requestParts.size()) {
+              writeDone = true;
+              close(child.toChild);
+              child.toChild = -1;
+              continue;
+            }
+            const auto& part = requestParts[writePart];
             const ssize_t written = write(child.toChild,
-                                          requestFrame.data() + writeOffset,
-                                          requestFrame.size() - writeOffset);
+                                          part.data + writeOffset,
+                                          part.size - writeOffset);
             if (written > 0) {
               writeOffset += static_cast<std::size_t>(written);
-              if (writeOffset == requestFrame.size()) {
+              if (writeOffset == part.size) {
+                ++writePart;
+                writeOffset = 0;
+              }
+              if (writePart == requestParts.size()) {
                 writeDone = true;
                 close(child.toChild);
                 child.toChild = -1;
