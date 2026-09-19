@@ -279,6 +279,14 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 
+    # Parser counterexamples share the exact checker used by the experiment CLI.
+    # This target proves log validation only, never model/network qualification.
+    bld.program(name='spec189-material-oracle-tests',
+                target='spec189-material-oracle-tests',
+                source=[bld.path.parent.find_node('tests/fixtures/spec189/material-fetch-oracle.cpp')],
+                includes=['..'],
+                install_path=None)
+
     di_native_session_sources = bld.path.parent.ant_glob([
         # Standalone DI process targets compile the request/session path
         # directly instead of linking the Core shared library.  Keep the
