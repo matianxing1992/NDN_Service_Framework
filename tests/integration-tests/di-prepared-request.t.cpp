@@ -19,10 +19,12 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
+#include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndnsf-integration-fixture.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
 #include <boost/test/unit_test.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -55,6 +57,7 @@
 namespace {
 
 using namespace ndnsf::di;
+using ndn_service_framework::test::ScopedEnvironmentValue;
 
 // The C-04 qualification contract gives each native case a 60-second bound.
 // Use that same bound for normal and sanitizer selectors: the Runtime drain
@@ -285,6 +288,94 @@ pumpUntilBooleanResultReady(
   }
   if (!observation->state->ready.load(std::memory_order_acquire))
     throw std::runtime_error("Spec185 boolean result pump deadline expired");
+}
+
+struct PreparedModelState
+{
+  std::mutex mutex;
+  std::optional<PreparedModel> value;
+  std::exception_ptr error;
+  std::atomic<bool> ready{false};
+};
+
+struct PreparedModelObservation
+{
+  std::shared_ptr<Runtime> runtime;
+  std::shared_ptr<PreparedModelState> state;
+  std::thread worker;
+
+  ~PreparedModelObservation() noexcept
+  {
+    if (worker.joinable()) {
+      try {
+        if (runtime)
+          runtime->close();
+        worker.join();
+      }
+      catch (...) { std::terminate(); }
+    }
+  }
+
+  PreparedModel get()
+  {
+    if (worker.joinable())
+      worker.join();
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->error)
+      std::rethrow_exception(state->error);
+    if (!state->value)
+      throw std::runtime_error("Spec189 prepared model observation is empty");
+    return std::move(*state->value);
+  }
+};
+
+std::shared_ptr<PreparedModelObservation>
+startPreparedModelObservation(const std::shared_ptr<Runtime>& runtime)
+{
+  auto observation = std::make_shared<PreparedModelObservation>();
+  observation->runtime = runtime;
+  observation->state = std::make_shared<PreparedModelState>();
+  const auto state = observation->state;
+  observation->worker = std::thread([state, runtime] {
+    try {
+      auto value = runtime->user().prepare();
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->value = std::move(value);
+      }
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->error = std::current_exception();
+    }
+    state->ready.store(true, std::memory_order_release);
+  });
+  return observation;
+}
+
+void
+pumpUntilPreparedModelReady(
+  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
+  const std::shared_ptr<PreparedModelObservation>& observation,
+  std::chrono::seconds budget)
+{
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while (!observation->state->ready.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline)
+    environment.pumpUntil([] { return false; });
+  if (!observation->state->ready.load(std::memory_order_acquire)) {
+    // A failed pump must release the production preparation wait before the
+    // owner joins its worker; otherwise the fixture would hang in destructor.
+    if (observation->runtime)
+      observation->runtime->close();
+    const auto cancelDeadline = std::chrono::steady_clock::now() +
+                                std::chrono::seconds(5);
+    while (!observation->state->ready.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < cancelDeadline)
+      environment.pumpUntil([] { return false; });
+  }
+  if (!observation->state->ready.load(std::memory_order_acquire))
+    throw std::runtime_error("Spec189 prepared model pump deadline expired");
 }
 
 void
@@ -2999,6 +3090,157 @@ BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
   BOOST_REQUIRE(cancellationBoundary ||
                 second.status() == RequestStatus::Cancelled ||
                 second.status() == RequestStatus::Failed);
+}
+
+BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
+{
+  RuntimeFixture fixture;
+  InProcessRuntimeBinding binding;
+  auto config = runtimeConfig(fixture);
+  const auto spool = fixture.root / "large-data";
+  std::filesystem::create_directories(spool);
+  std::filesystem::permissions(spool, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  ScopedEnvironmentValue fileBacked(
+    "NDNSF_REQUEST_LARGE_FILE_BACKED", "1");
+  ScopedEnvironmentValue dataDirectory(
+    "NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+
+  const auto repoRoot = fixture.root / "encrypted-repo";
+  std::filesystem::create_directories(repoRoot);
+  std::error_code permissionsError;
+  std::filesystem::permissions(repoRoot, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace,
+                               permissionsError);
+  BOOST_REQUIRE_MESSAGE(!permissionsError,
+                        "protected Repo fixture permissions failed: " +
+                          permissionsError.message());
+  ndnsf_distributed_repo::StorageCapability capability;
+  capability.repoNode = "/spec189/protected-repo";
+  capability.freeBytes = 64U * 1024U * 1024U;
+  capability.repoMode = "persistent";
+  auto repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
+    std::move(capability), ndnsf_distributed_repo::makeFilesystemRepoStore(
+      repoRoot.string(), 16U * 1024U, 1U * 1024U, "spec189-protected"));
+  auto protectedStore =
+    std::make_shared<ndnsf_distributed_repo::RepoEncryptedLargeDataStore>(repo);
+  config.encryptedRangeStore = protectedStore;
+
+  auto runtime = Runtime::open(std::move(config));
+  binding = bindInProcessRuntime(fixture, runtime);
+  // bindInProcessRuntime replaces Runtime's Core user with the fixture-owned
+  // ServiceUser. Reinstall the same protected store on that actual owner so
+  // this selector observes the production publisher's real storage boundary.
+  binding.user->setEncryptedLargeDataRangeStore(protectedStore);
+  auto firstPreparation = startPreparedModelObservation(runtime);
+  pumpUntilPreparedModelReady(*binding.environment, firstPreparation,
+                              std::chrono::seconds(30));
+  auto prepared = firstPreparation->get();
+  const auto package = Spec185PreparedModelTestAccess::package(prepared);
+  BOOST_REQUIRE(package);
+  BOOST_REQUIRE(package->preparedPublication.has_value());
+  const auto& publication = *package->preparedPublication;
+  const auto readRepoObject = [&repo] (const std::string& name) {
+    const auto manifest = repo->getManifest(name);
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(static_cast<std::size_t>(manifest.size));
+    constexpr std::uint64_t window = 1024;
+    for (std::uint64_t offset = 0; offset < manifest.size;) {
+      const auto length = std::min(window, manifest.size - offset);
+      const auto part = repo->getRange(name, {offset, length});
+      if (part.size() != length)
+        throw std::runtime_error("protected Repo range read returned a short payload");
+      bytes.insert(bytes.end(), part.begin(), part.end());
+      offset += length;
+    }
+    return bytes;
+  };
+  BOOST_REQUIRE_MESSAGE(repo->has(publication.sourceDataName),
+                        "protected source envelope was not committed to Repo");
+  const auto manifest = repo->getManifest(publication.sourceDataName);
+  BOOST_CHECK_EQUAL(manifest.objectType, "encrypted-large-data-envelope");
+  const auto ciphertext = readRepoObject(publication.sourceDataName);
+  const auto plaintextText = readTextFile(fixture.root / "model.onnx");
+  const std::vector<std::uint8_t> plaintext(plaintextText.begin(), plaintextText.end());
+  BOOST_REQUIRE(!plaintext.empty());
+  BOOST_CHECK(ciphertext != plaintext);
+  BOOST_CHECK(Spec185PreparedModelTestAccess::source(prepared).expired());
+  BOOST_REQUIRE_MESSAGE(repo->has(publication.rootDataName),
+                        "protected root envelope was not committed to Repo");
+  const auto rootManifest = repo->getManifest(publication.rootDataName);
+  const auto rootBytes = readRepoObject(publication.rootDataName);
+  BOOST_CHECK_EQUAL(rootManifest.objectType, "encrypted-large-data-envelope");
+  BOOST_CHECK_EQUAL("sha256:" + rootManifest.sha256,
+                    nativePlanningDigest(rootBytes.data(), rootBytes.size()));
+  // Repo stores ciphertext envelopes; the authenticated plaintext manifest is
+  // the immutable receipt returned by the Core publisher.
+  const auto root = nativeParseJson(publication.canonicalManifestJson);
+  BOOST_CHECK_EQUAL(root.at("schema").get<std::string>(),
+                    "ndnsf-di-canonical-model-manifest-v1");
+  BOOST_CHECK_EQUAL(root.at("state").get<std::string>(), "ACTIVE");
+  BOOST_CHECK_EQUAL(root.at("metadata").at("canonicalSourceDataName").get<std::string>(),
+                    publication.sourceDataName);
+  // B189-1b: the protected prepare boundary must commit the topology-
+  // independent material manifest and every immutable graph/node payload.
+  // The Repo stores encrypted envelopes, so plaintext manifest parsing belongs
+  // to the authenticated consumer; this selector verifies the receipt identity
+  // and that each protected object is reachable without using RepoCore::get().
+  BOOST_REQUIRE_MESSAGE(!publication.materialManifestDataName.empty(),
+                        "protected material manifest was not published");
+  BOOST_REQUIRE_EQUAL(publication.materialPayloadIds.size(),
+                      publication.materialDataNames.size());
+  BOOST_REQUIRE_EQUAL(publication.materialPayloadIds.size(),
+                      publication.materialDigests.size());
+  BOOST_REQUIRE(!publication.materialPayloadIds.empty());
+  BOOST_REQUIRE_MESSAGE(repo->has(publication.materialManifestDataName),
+                        "protected material manifest was not committed to Repo");
+  BOOST_CHECK_EQUAL(repo->getManifest(publication.materialManifestDataName).objectType,
+                    "encrypted-large-data-envelope");
+  const auto requireBoundedRepoRead = [&repo] (const std::string& name) {
+    const auto manifest = repo->getManifest(name);
+    if (manifest.size == 0)
+      throw std::runtime_error("protected Repo object has an empty manifest");
+    constexpr std::uint64_t window = 1024;
+    const auto length = std::min(window, manifest.size);
+    const auto bytes = repo->getRange(name, {0, length});
+    if (bytes.size() != length)
+      throw std::runtime_error("protected material range read returned a short payload");
+  };
+  requireBoundedRepoRead(publication.materialManifestDataName);
+  const auto& materialObjects = root.at("metadata").at("materialObjects");
+  BOOST_REQUIRE(materialObjects.is_array());
+  BOOST_REQUIRE_EQUAL(materialObjects.size(), publication.materialPayloadIds.size());
+  BOOST_CHECK_EQUAL(root.at("metadata").at("materialManifestDataName").get<std::string>(),
+                    publication.materialManifestDataName);
+  BOOST_CHECK_EQUAL(root.at("metadata").at("materialManifestDigest").get<std::string>(),
+                    publication.materialManifestDigest);
+  for (std::size_t i = 0; i < publication.materialPayloadIds.size(); ++i) {
+    BOOST_REQUIRE_MESSAGE(repo->has(publication.materialDataNames.at(i)),
+                          "protected material payload was not committed to Repo");
+    BOOST_CHECK_EQUAL(repo->getManifest(publication.materialDataNames.at(i)).objectType,
+                      "encrypted-large-data-envelope");
+    requireBoundedRepoRead(publication.materialDataNames.at(i));
+    BOOST_CHECK_EQUAL(materialObjects.at(i).at("payloadId").get<std::string>(),
+                      publication.materialPayloadIds.at(i));
+    BOOST_CHECK_EQUAL(materialObjects.at(i).at("dataName").get<std::string>(),
+                      publication.materialDataNames.at(i));
+    BOOST_CHECK_EQUAL(materialObjects.at(i).at("digest").get<std::string>(),
+                      publication.materialDigests.at(i));
+  }
+  const auto objectCountAfterFirst = repo->list().size();
+  BOOST_REQUIRE_GE(objectCountAfterFirst,
+                   publication.materialPayloadIds.size() + 3U);
+
+  auto secondPreparation = startPreparedModelObservation(runtime);
+  pumpUntilPreparedModelReady(*binding.environment, secondPreparation,
+                              std::chrono::seconds(30));
+  auto second = secondPreparation->get();
+  BOOST_CHECK(second.receipt().origin == PreparationReceipt::Origin::CacheHit ||
+              second.receipt().origin == PreparationReceipt::Origin::JoinedInFlight);
+  BOOST_CHECK_EQUAL(repo->list().size(), objectCountAfterFirst);
+
+  runtime->close();
+  BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
 }
 #endif
 
