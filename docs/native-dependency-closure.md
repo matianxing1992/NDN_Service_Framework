@@ -7,6 +7,11 @@
 拒绝 host 对 `/opt/ndn-base`、`/opt/onnx`、`/opt/ndnsf-stage` 等容器根的误用；
 只有显式 `NDNSF_CONTAINER_BUILD=1` 的容器构建才允许其声明的 SDK 根。
 
+NDNSF 根目录的 Waf 只描述和构建 NDNSF 自有目标；外部 NAC-ABE 不属于这张 Waf
+图。NAC-ABE 源码、构建和安装由 NAC-ABE 自己的构建系统负责，当前 canonical
+路径是其 CMake，仓库内 Waf 入口只作为 deprecated 兼容入口。NDNSF configure
+只核对并消费已安装的 NAC-ABE headers、pkg-config metadata 和 libraries。
+
 本机的 Boost 1.71 与 `libndn-cxx` 不是同一个依赖层。Boost 头文件和库固定使用
 系统配对：`/usr/include` 与 `/usr/lib/x86_64-linux-gnu`；Waf、安装器和 host
 binding 都拒绝 `BOOST_ROOT`、`BOOST_INCLUDEDIR`、`BOOST_LIBRARYDIR` 或

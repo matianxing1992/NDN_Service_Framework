@@ -36,7 +36,8 @@ exit 0, 1m25.86s, peak RSS 2,802,796 kB, zero swaps, and only the existing
 `-Wmaybe-uninitialized` warning at `ServiceUser.cpp:5883`.
 
 No NAC-ABE source was recursively built by NDNSF Waf. NAC-ABE remains an external
-installed SDK owned by its own build system; NDNSF Waf consumed the installed
+installed SDK owned by its own build system (canonical CMake; legacy Waf is
+deprecated); NDNSF Waf consumed the installed
 `/usr/local` closure. `readelf`/`ldd` showed system Boost 1.71, NDN-CXX/NDN-SVS
 from `/usr/local`, and ONNX Runtime from `/opt/onnxruntime`, with no missing
 library or `.local-boost171` path. The built artifact hashes were:
@@ -78,4 +79,4 @@ From the repository root, both selectors were run against the rechecked binaries
 **Closure decision**: the protected local publication/lease boundary is closed as a
 `FOCUSED_CXX_PASS`. T003 remains `PARTIAL`; B189-1b material handoff and the later
 production ingress and two-provider batches remain open. The NDNSF Waf dependency
-boundary is now documented separately from NAC-ABE's own Waf build.
+boundary is now documented separately from NAC-ABE's own build system.

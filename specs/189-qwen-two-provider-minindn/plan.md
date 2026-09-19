@@ -36,7 +36,8 @@ F06/F07 属于未用于本机 native protected 资格路径的兼容/本地 Pyth
   必须优先于已安装的同 SONAME 库。
   不为每个新 selector 复制整套 DI 编译闭包。
 - 根 NDNSF Waf 只编译 NDNSF 自有的 Core、Repo、DI、examples 和 tests；NAC-ABE 的源码、
-  Waf 构建和安装由 NAC-ABE 自己负责。NDNSF 只消费已安装且已核对的 NAC-ABE SDK，
+  构建和安装由 NAC-ABE 自己负责（当前 canonical 路径为 NAC-ABE 的 CMake，仓库内
+  Waf 入口仅为 deprecated 兼容入口）。NDNSF 只消费已安装且已核对的 NAC-ABE SDK，
   不在 NDNSF Waf 中递归构建或把 NAC-ABE checkout 当作临时依赖前缀。
 - 两 Provider，固定短输入与少量 token；独立正确性判据必需，广泛质量评测不在范围内。
 

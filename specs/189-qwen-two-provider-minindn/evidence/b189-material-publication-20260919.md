@@ -5,8 +5,9 @@
 This checkpoint covers the material-backed canonical publication repair found
 at the first real Qwen preparation boundary. The NDNSF Waf target builds only
 the NDNSF DI/Core/Repo-owned sources and test selectors. NAC-ABE is an
-installed external SDK built by the NAC-ABE project Waf; no NAC-ABE source was
-added to the NDNSF target or rebuilt here.
+installed external SDK built by the NAC-ABE project build system (canonical
+CMake; its repository Waf entry is deprecated); no NAC-ABE source was added to
+the NDNSF target or rebuilt here.
 
 The repair keeps the prepare/request contract topology-independent: a
 material-backed prepare publishes the root, material manifest, and material
@@ -157,8 +158,8 @@ boundaries only. It does not establish the real protected Qwen prepare,
 ACK/Selection, two-provider assembly/execution, terminal output, cleanup
 drain, MiniNDN or Tiger qualification. The root NDNSF Waf compiles only
 NDNSF-owned Core/Repo/DI/examples/tests; NAC-ABE is an installed external SDK
-built by the NAC-ABE project build system and is not recursively built by the
-NDNSF Waf graph.
+built by the NAC-ABE project build system (canonical CMake; legacy Waf is
+deprecated) and is not recursively built by the NDNSF Waf graph.
 
 ## 2026-09-19 r21/r22 chunked-material and receipt-boundary verification
 
