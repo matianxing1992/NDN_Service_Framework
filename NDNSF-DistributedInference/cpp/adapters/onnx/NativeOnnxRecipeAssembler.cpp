@@ -1843,7 +1843,7 @@ NativeJson materialReferenceJson(const NativeCanonicalSource::MaterialReference&
   NativeJson dependencies = NativeJson::array();
   for (const auto& dependency : reference.dependencies)
     dependencies.push_back(dependency);
-  return NativeJson{
+  NativeJson result{
     {"bytes", reference.bytes},
     {"dependencies", std::move(dependencies)},
     {"digest", reference.digest},
@@ -1852,6 +1852,16 @@ NativeJson materialReferenceJson(const NativeCanonicalSource::MaterialReference&
     {"nodeIndex", reference.nodeIndex},
     {"payloadId", reference.payloadId},
     {"sharedDigest", reference.sharedDigest}};
+  // Keep the v1 canonical JSON byte-compatible for legacy single-payload
+  // references.  The optional field is emitted only for chunked external
+  // initializers, so parsing an old manifest does not change its digest.
+  if (!reference.chunkPayloadIds.empty()) {
+    NativeJson chunks = NativeJson::array();
+    for (const auto& payloadId : reference.chunkPayloadIds)
+      chunks.push_back(payloadId);
+    result["chunkPayloadIds"] = std::move(chunks);
+  }
+  return result;
 }
 
 } // namespace
@@ -1901,7 +1911,12 @@ void NativeCanonicalSource::MaterialManifest::validate() const
     throw std::invalid_argument("native canonical material template is missing");
   std::set<std::string> referenceIds;
   std::set<std::string> referencedPayloadIds;
+  std::set<std::string> directReferencePayloadIds;
+  for (const auto& reference : references)
+    directReferencePayloadIds.insert(reference.payloadId);
+  std::set<std::string> allChunkPayloadIds;
   for (const auto& reference : references) {
+    const bool hasChunks = !reference.chunkPayloadIds.empty();
     if (reference.payloadId.empty() ||
         (payloadsComplete && !payloadIds.count(reference.payloadId)) ||
         reference.kind.empty() || reference.logicalName.empty() || !validDigest(reference.digest) ||
@@ -1912,14 +1927,24 @@ void NativeCanonicalSource::MaterialManifest::validate() const
         !referenceIds.insert(reference.logicalName + "\x1f" + reference.kind).second)
       throw std::invalid_argument("native canonical material reference is invalid");
     referencedPayloadIds.insert(reference.payloadId);
+    std::set<std::string> chunkIds;
+    for (const auto& chunkId : reference.chunkPayloadIds) {
+      if (chunkId.empty() || chunkId == reference.payloadId || !chunkIds.insert(chunkId).second ||
+          !allChunkPayloadIds.insert(chunkId).second ||
+          directReferencePayloadIds.count(chunkId) != 0 ||
+          (payloadsComplete && !payloadIds.count(chunkId)))
+        throw std::invalid_argument("native canonical material initializer chunk is invalid");
+      referencedPayloadIds.insert(chunkId);
+    }
     if (reference.kind == "graph-template") {
       if (reference.payloadId != templatePayloadId || reference.logicalName != "__template__" ||
-          reference.nodeIndex != 0 || !reference.dependencies.empty() || !reference.sharedDigest.empty())
+          reference.nodeIndex != 0 || !reference.dependencies.empty() || !reference.sharedDigest.empty() ||
+          hasChunks)
         throw std::invalid_argument("native canonical material template reference is invalid");
     }
     else if (reference.kind == "graph-node") {
       if (reference.logicalName != "node/" + std::to_string(reference.nodeIndex) ||
-          !reference.sharedDigest.empty())
+          !reference.sharedDigest.empty() || hasChunks)
         throw std::invalid_argument("native canonical material node reference is invalid");
       for (const auto& dependency : reference.dependencies)
         if (dependency.empty())
@@ -1973,7 +1998,7 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
   result->templatePayloadId = templatePayload.payloadId;
   result->payloads.push_back(std::move(templatePayload));
   result->references.push_back({
-    "graph-template", "graph-template", "__template__", 0,
+    "graph-template", {}, "graph-template", "__template__", 0,
     result->payloads.back().digest, result->payloads.back().bytes.size(), {}, {}});
 
   std::set<std::string> initializerNames;
@@ -1982,32 +2007,84 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
     checkActive(control);
     const auto& initializer = model.graph().initializer(i);
     initializerNames.insert(initializer.name());
-    const auto* material = &initializer;
-    std::optional<onnx::TensorProto> externalMaterial;
-    if (initializer.data_location() == onnx::TensorProto::EXTERNAL) {
-      externalMaterial.emplace(materializeExternalTensor(
-        initializer, source.initializerBytes ? &*source.initializerBytes : nullptr, &control));
-      material = &*externalMaterial;
-    }
-    const auto bytes = deterministicMessageVector(*material);
-    const auto payloadDigest = digest(bytes);
-    auto payloadId = std::string("initializer-") + payloadDigest.substr(7);
-    const auto existing = initializerPayloadByDigest.find(payloadDigest);
-    if (existing == initializerPayloadByDigest.end()) {
-      initializerPayloadByDigest.emplace(payloadDigest, payloadId);
-      accountMaterial(bytes.size());
-      result->payloads.push_back({payloadId, payloadDigest, bytes});
-    }
-    else {
-      payloadId = existing->second;
-    }
     const auto normalized = std::find_if(entries.begin(), entries.end(),
       [&initializer] (const auto& item) { return item.name == initializer.name(); });
     if (normalized == entries.end())
       failNormalization("INITIALIZER_ENCODING_INVALID");
-    result->references.push_back({
-      payloadId, "shared-initializer", initializer.name(), 0, payloadDigest,
-      bytes.size(), {}, normalized->contentDigest});
+    if (initializer.data_location() == onnx::TensorProto::EXTERNAL) {
+      // Do not serialize a 300+ MiB TensorProto just to publish one weight.
+      // Keep a small metadata header and address the authenticated raw range
+      // as bounded chunks.  Providers concatenate only the chunks selected
+      // by their role before constructing the final TensorProto.
+      if (!source.initializerBytes)
+        fail("EXTERNAL_BINDING");
+      auto header = initializer;
+      header.clear_raw_data();
+      header.clear_float_data();
+      header.clear_int32_data();
+      header.clear_string_data();
+      header.clear_int64_data();
+      header.clear_double_data();
+      header.clear_uint64_data();
+      header.clear_external_data();
+      header.set_data_location(onnx::TensorProto::DEFAULT);
+      const auto headerBytes = deterministicMessageVector(header);
+      const auto headerDigest = digest(headerBytes);
+      const auto headerPayloadId = std::string("initializer-header-") + headerDigest.substr(7);
+      accountMaterial(headerBytes.size());
+      result->payloads.push_back({headerPayloadId, headerDigest, headerBytes});
+
+      const auto offsetText = externalValue(initializer, "offset");
+      const auto lengthText = externalValue(initializer, "length");
+      const auto offset = offsetText.empty() ? std::uint64_t{0} : parseUint(offsetText, "OFFSET");
+      if (offset > source.initializerBytes->size())
+        fail("EXTERNAL_RANGE");
+      auto length = lengthText.empty()
+        ? static_cast<std::uint64_t>(source.initializerBytes->size()) - offset
+        : parseUint(lengthText, "LENGTH");
+      if (length == 0)
+        length = static_cast<std::uint64_t>(source.initializerBytes->size()) - offset;
+      if (length > source.initializerBytes->size() - offset)
+        fail("EXTERNAL_RANGE");
+
+      std::vector<std::string> chunkPayloadIds;
+      std::uint64_t consumed = 0;
+      std::uint64_t chunkIndex = 0;
+      while (consumed < length) {
+        checkActive(control);
+        const auto chunkBytes = static_cast<std::size_t>(std::min<std::uint64_t>(
+          NativeCanonicalMaterialBundleMaxBytes, length - consumed));
+        const auto begin = source.initializerBytes->begin() +
+          static_cast<std::ptrdiff_t>(offset + consumed);
+        std::vector<std::uint8_t> chunk(begin, begin + static_cast<std::ptrdiff_t>(chunkBytes));
+        const auto chunkDigest = digest(chunk);
+        const auto chunkPayloadId = headerPayloadId + "-chunk-" + std::to_string(chunkIndex++);
+        accountMaterial(chunk.size());
+        result->payloads.push_back({chunkPayloadId, chunkDigest, std::move(chunk)});
+        chunkPayloadIds.push_back(chunkPayloadId);
+        consumed += chunkBytes;
+      }
+      result->references.push_back({
+        headerPayloadId, std::move(chunkPayloadIds), "shared-initializer", initializer.name(), 0,
+        headerDigest, headerBytes.size(), {}, normalized->contentDigest});
+    }
+    else {
+      const auto bytes = deterministicMessageVector(initializer);
+      const auto payloadDigest = digest(bytes);
+      auto payloadId = std::string("initializer-") + payloadDigest.substr(7);
+      const auto existing = initializerPayloadByDigest.find(payloadDigest);
+      if (existing == initializerPayloadByDigest.end()) {
+        initializerPayloadByDigest.emplace(payloadDigest, payloadId);
+        accountMaterial(bytes.size());
+        result->payloads.push_back({payloadId, payloadDigest, bytes});
+      }
+      else {
+        payloadId = existing->second;
+      }
+      result->references.push_back({
+        payloadId, {}, "shared-initializer", initializer.name(), 0, payloadDigest,
+        bytes.size(), {}, normalized->contentDigest});
+    }
   }
 
   for (int i = 0; i < model.graph().node_size(); ++i) {
@@ -2026,7 +2103,7 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
     std::sort(dependencies.begin(), dependencies.end());
     dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
     result->references.push_back({
-      payloadId, "graph-node", "node/" + std::to_string(i),
+      payloadId, {}, "graph-node", "node/" + std::to_string(i),
       static_cast<std::uint64_t>(i), payloadDigest, bytes.size(), dependencies, {}});
     if ((i & 0x3f) == 0) control.requireActive();
   }
@@ -2063,6 +2140,14 @@ parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes)
       throw std::invalid_argument("native canonical material reference is invalid");
     NativeCanonicalSource::MaterialReference reference;
     reference.payloadId = item.value("payloadId", std::string{});
+    const auto chunks = item.value("chunkPayloadIds", NativeJson::array());
+    if (!chunks.is_array())
+      throw std::invalid_argument("native canonical material initializer chunks are invalid");
+    for (const auto& chunk : chunks) {
+      if (!chunk.is_string())
+        throw std::invalid_argument("native canonical material initializer chunk is invalid");
+      reference.chunkPayloadIds.push_back(chunk.get<std::string>());
+    }
     reference.kind = item.value("kind", std::string{});
     reference.logicalName = item.value("logicalName", std::string{});
     reference.nodeIndex = item.value("nodeIndex", std::uint64_t{0});
@@ -2104,18 +2189,29 @@ materializeNativeCanonicalModel(const NativeCanonicalSource& source,
   }
   const auto referencesForPayload = [&] (const std::string& payloadId) {
     std::vector<const NativeCanonicalSource::MaterialReference*> matches;
-    for (const auto& reference : source.materialManifest->references)
-      if (reference.payloadId == payloadId) matches.push_back(&reference);
+    for (const auto& reference : source.materialManifest->references) {
+      if (reference.payloadId == payloadId ||
+          std::find(reference.chunkPayloadIds.begin(), reference.chunkPayloadIds.end(),
+                    payloadId) != reference.chunkPayloadIds.end())
+        matches.push_back(&reference);
+    }
     return matches;
   };
   for (const auto& item : payloads) {
     const auto matches = referencesForPayload(item.first);
     if (matches.empty())
       fail("MATERIAL_PAYLOAD");
-    for (const auto* match : matches)
-      if (match->digest != item.second->digest || match->bytes != item.second->bytes.size())
+    for (const auto* match : matches) {
+      const bool chunkPayload = match->payloadId != item.first;
+      if ((!chunkPayload && (match->digest != item.second->digest ||
+                             match->bytes != item.second->bytes.size())) ||
+          (chunkPayload && item.second->bytes.size() > NativeCanonicalMaterialBundleMaxBytes))
         fail("MATERIAL_PAYLOAD");
+    }
   }
+  std::uint64_t retainedMaterialBytes = source.materialManifest->canonicalJson().size();
+  for (const auto& payload : source.materialPayloads)
+    retainedMaterialBytes = checkedAdd(retainedMaterialBytes, payload.bytes.size());
   const auto findReference = [&] (const std::string& kind,
                                   const std::string& logicalName)
     -> const NativeCanonicalSource::MaterialReference* {
@@ -2165,6 +2261,67 @@ materializeNativeCanonicalModel(const NativeCanonicalSource& source,
     if (match == nullptr || payloads.find(match->payloadId) == payloads.end())
       fail("MATERIAL_INITIALIZER");
   }
+  const auto materializeInitializer = [&] (const auto& reference) {
+    const auto header = payloads.find(reference.payloadId);
+    if (header == payloads.end())
+      fail("MATERIAL_INITIALIZER");
+    if (reference.chunkPayloadIds.empty()) {
+      onnx::TensorProto initializer;
+      if (!initializer.ParseFromArray(header->second->bytes.data(),
+                                     static_cast<int>(header->second->bytes.size())))
+        fail("MATERIAL_INITIALIZER");
+      if (reference.digest != header->second->digest || reference.bytes != header->second->bytes.size())
+        fail("MATERIAL_INITIALIZER");
+      return initializer;
+    }
+    onnx::TensorProto initializer;
+    if (!initializer.ParseFromArray(header->second->bytes.data(),
+                                   static_cast<int>(header->second->bytes.size())) ||
+        !initializer.raw_data().empty() || initializer.data_location() == onnx::TensorProto::EXTERNAL)
+      fail("MATERIAL_INITIALIZER");
+    std::uint64_t rawBytes = 0;
+    std::vector<std::uint8_t> raw;
+    for (const auto& chunkId : reference.chunkPayloadIds) {
+      checkActive(control);
+      const auto chunk = payloads.find(chunkId);
+      if (chunk == payloads.end() || chunk->second->bytes.size() > NativeCanonicalMaterialBundleMaxBytes)
+        fail("MATERIAL_INITIALIZER");
+      rawBytes = checkedAdd(rawBytes, chunk->second->bytes.size());
+    }
+    const auto modelBytesBeforeInitializer = static_cast<std::uint64_t>(model.ByteSizeLong());
+    const auto initializerHeaderBytes = static_cast<std::uint64_t>(initializer.ByteSizeLong());
+    const auto finalModelWithoutRaw = checkedAdd(modelBytesBeforeInitializer,
+                                                 initializerHeaderBytes);
+    // maxAssembledBytes is the material-backed working-set ceiling here:
+    // selected payloads remain owned by the source while the initializer is
+    // concatenated, copied into TensorProto, and serialized into the result.
+    // Include a small protobuf framing allowance before allocating raw.
+    constexpr std::uint64_t protobufFramingAllowance = 128;
+    const auto finalModelUpper = checkedAdd(
+      checkedAdd(finalModelWithoutRaw, rawBytes), protobufFramingAllowance);
+    const auto peakWithRawCopy = checkedAdd(
+      retainedMaterialBytes, checkedAdd(rawBytes, checkedAdd(finalModelUpper, finalModelUpper)));
+    if (rawBytes == 0 || rawBytes > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
+        control.maxAssembledBytes == 0 || peakWithRawCopy > control.maxAssembledBytes)
+      fail("MATERIAL_INITIALIZER");
+    raw.reserve(static_cast<std::size_t>(rawBytes));
+    for (const auto& chunkId : reference.chunkPayloadIds) {
+      checkActive(control);
+      const auto chunk = payloads.find(chunkId);
+      if (chunk == payloads.end())
+        fail("MATERIAL_INITIALIZER");
+      raw.insert(raw.end(), chunk->second->bytes.begin(), chunk->second->bytes.end());
+    }
+    initializer.set_raw_data(reinterpret_cast<const char*>(raw.data()), static_cast<int>(raw.size()));
+    raw.clear();
+    raw.shrink_to_fit();
+    initializer.set_data_location(onnx::TensorProto::DEFAULT);
+    const auto normalized = normalizedOnnxInitializerPayload(
+      deterministicMessageVector(initializer));
+    if (digest(normalized.content) != reference.sharedDigest)
+      fail("MATERIAL_INITIALIZER");
+    return initializer;
+  };
   // Initializer references are emitted in canonical source order.  Preserve
   // that order while fetching only dependencies of this selected role.
   for (const auto& reference : source.materialManifest->references) {
@@ -2175,17 +2332,16 @@ materializeNativeCanonicalModel(const NativeCanonicalSource& source,
     const auto payload = payloads.find(reference.payloadId);
     if (payload == payloads.end())
       fail("MATERIAL_INITIALIZER");
-    onnx::TensorProto initializer;
-    if (!initializer.ParseFromArray(payload->second->bytes.data(),
-                                    static_cast<int>(payload->second->bytes.size())))
-      fail("MATERIAL_INITIALIZER");
-    *model.mutable_graph()->add_initializer() = std::move(initializer);
+    *model.mutable_graph()->add_initializer() = materializeInitializer(reference);
   }
   if (model.graph().node_size() != static_cast<int>(nodeIndices.size()) ||
       model.graph().node_size() > static_cast<int>(std::numeric_limits<int>::max()))
     fail("MATERIAL_SELECTION");
   const auto result = deterministicMessageVector(model);
-  if (control.maxAssembledBytes == 0 || result.size() > control.maxAssembledBytes)
+  const auto finalWorkingSet = checkedAdd(
+    retainedMaterialBytes, checkedAdd(result.size(), model.ByteSizeLong()));
+  if (control.maxAssembledBytes == 0 || result.size() > control.maxAssembledBytes ||
+      finalWorkingSet > control.maxAssembledBytes)
     fail("MATERIAL_LIMIT");
   return result;
 }
@@ -2254,21 +2410,62 @@ void validateNativeCanonicalMaterialManifest(
         model.graph().initializer().end(), [&reference] (const auto& initializer) {
           return initializer.name() == reference.logicalName;
         });
-      onnx::TensorProto tensor;
-      if (!tensor.ParseFromArray(payload->bytes.data(), static_cast<int>(payload->bytes.size())) ||
-          sourceInitializer == model.graph().initializer().end() ||
-          deterministicMessageVector(tensor) != payload->bytes)
+      if (sourceInitializer == model.graph().initializer().end())
         throw std::invalid_argument("native canonical material initializer payload is invalid");
-      const auto* expectedInitializer = &*sourceInitializer;
-      std::optional<onnx::TensorProto> externalInitializer;
-      if (expectedInitializer->data_location() == onnx::TensorProto::EXTERNAL) {
-        externalInitializer.emplace(materializeExternalTensor(
-          *expectedInitializer,
-          source.initializerBytes ? &*source.initializerBytes : nullptr, &control));
-        expectedInitializer = &*externalInitializer;
+      auto expectedHeader = *sourceInitializer;
+      if (sourceInitializer->data_location() == onnx::TensorProto::EXTERNAL) {
+        expectedHeader.clear_raw_data();
+        expectedHeader.clear_float_data();
+        expectedHeader.clear_int32_data();
+        expectedHeader.clear_string_data();
+        expectedHeader.clear_int64_data();
+        expectedHeader.clear_double_data();
+        expectedHeader.clear_uint64_data();
+        expectedHeader.clear_external_data();
+        expectedHeader.set_data_location(onnx::TensorProto::DEFAULT);
       }
-      if (deterministicMessageVector(*expectedInitializer) != payload->bytes)
+      if (deterministicMessageVector(expectedHeader) != payload->bytes)
         throw std::invalid_argument("native canonical material initializer payload is invalid");
+      if (reference.chunkPayloadIds.empty()) {
+        if (sourceInitializer->data_location() == onnx::TensorProto::EXTERNAL) {
+          const auto materialized = materializeExternalTensor(
+            *sourceInitializer,
+            source.initializerBytes ? &*source.initializerBytes : nullptr, &control);
+          if (deterministicMessageVector(materialized) != payload->bytes)
+            throw std::invalid_argument("native canonical material initializer payload is invalid");
+        }
+        else if (deterministicMessageVector(*sourceInitializer) != payload->bytes) {
+          throw std::invalid_argument("native canonical material initializer payload is invalid");
+        }
+      }
+      else {
+        if (sourceInitializer->data_location() != onnx::TensorProto::EXTERNAL ||
+            !source.initializerBytes)
+          throw std::invalid_argument("native canonical material initializer chunks are invalid");
+        const auto offsetText = externalValue(*sourceInitializer, "offset");
+        const auto lengthText = externalValue(*sourceInitializer, "length");
+        const auto offset = offsetText.empty() ? std::uint64_t{0} : parseUint(offsetText, "OFFSET");
+        if (offset > source.initializerBytes->size())
+          throw std::invalid_argument("native canonical material initializer chunks are invalid");
+        auto length = lengthText.empty()
+          ? static_cast<std::uint64_t>(source.initializerBytes->size()) - offset
+          : parseUint(lengthText, "LENGTH");
+        if (length == 0)
+          length = static_cast<std::uint64_t>(source.initializerBytes->size()) - offset;
+        if (length > source.initializerBytes->size() - offset)
+          throw std::invalid_argument("native canonical material initializer chunks are invalid");
+        std::uint64_t total = 0;
+        for (const auto& chunkId : reference.chunkPayloadIds) {
+          const auto chunk = std::find_if(manifest.payloads.begin(), manifest.payloads.end(),
+            [&chunkId] (const auto& item) { return item.payloadId == chunkId; });
+          if (chunk == manifest.payloads.end() ||
+              chunk->bytes.size() > NativeCanonicalMaterialBundleMaxBytes)
+            throw std::invalid_argument("native canonical material initializer chunks are invalid");
+          total = checkedAdd(total, chunk->bytes.size());
+        }
+        if (total != length)
+          throw std::invalid_argument("native canonical material initializer chunks are incomplete");
+      }
     }
     else if (reference.kind == "graph-node") {
       if (reference.nodeIndex >= static_cast<std::uint64_t>(model.graph().node_size()) ||

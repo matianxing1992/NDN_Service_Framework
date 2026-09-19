@@ -598,6 +598,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
   const auto profileDigest = zeroDigest('b');
   const ndn::Name rootName("/spec189/material/root");
   const ndn::Name manifestName("/spec189/material/manifest");
+  const ndn::Name receiptName("/spec189/material/receipt");
   const ndn::Name sourceName("/spec189/material/source");
 
   std::map<std::string, std::vector<std::uint8_t>> payloads;
@@ -607,6 +608,26 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
     payloadNames.emplace(payload.payloadId,
       "/spec189/material/payload/" + payload.payloadId);
   }
+  std::ostringstream materialObjects;
+  materialObjects << '[';
+  for (std::size_t index = 0; index < materialSource.materialManifest->payloads.size(); ++index) {
+    if (index != 0) materialObjects << ',';
+    const auto& payload = materialSource.materialManifest->payloads[index];
+    materialObjects << "{\"bytes\":" << payload.bytes.size()
+                    << ",\"dataName\":" << jsonQuote(payloadNames.at(payload.payloadId))
+                    << ",\"digest\":" << jsonQuote(payload.digest)
+                    << ",\"payloadId\":" << jsonQuote(payload.payloadId) << '}';
+  }
+  materialObjects << ']';
+  const auto receiptText = std::string("{\"graphDigest\":") +
+    jsonQuote(materialSource.materialManifest->graphDigest) +
+    ",\"materialIdentityDigest\":" +
+    jsonQuote(materialSource.materialManifest->manifestDigest) +
+    ",\"materialManifestDigest\":" + jsonQuote(digest(manifestBytes)) +
+    ",\"materialObjects\":" + materialObjects.str() +
+    ",\"schema\":\"ndnsf-di-canonical-material-receipt-v1\",\"sourceDigest\":" +
+    jsonQuote(materialSource.materialManifest->sourceDigest) + '}';
+  const std::vector<std::uint8_t> receiptBytes(receiptText.begin(), receiptText.end());
   std::ostringstream metadata;
   metadata << "{\"canonicalSourceBytes\":" << source.size()
            << ",\"canonicalSourceDataName\":" << jsonQuote(sourceName.toUri())
@@ -616,16 +637,10 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
            << ",\"materialManifestBytes\":" << manifestBytes.size()
            << ",\"materialManifestDataName\":" << jsonQuote(manifestName.toUri())
            << ",\"materialManifestDigest\":" << jsonQuote(digest(manifestBytes))
-           << ",\"materialObjects\":[";
-  for (std::size_t index = 0; index < materialSource.materialManifest->payloads.size(); ++index) {
-    if (index != 0) metadata << ',';
-    const auto& payload = materialSource.materialManifest->payloads[index];
-    metadata << "{\"bytes\":" << payload.bytes.size()
-             << ",\"dataName\":" << jsonQuote(payloadNames.at(payload.payloadId))
-             << ",\"digest\":" << jsonQuote(payload.digest)
-             << ",\"payloadId\":" << jsonQuote(payload.payloadId) << '}';
-  }
-  metadata << "]}";
+           << ",\"materialReceiptBytes\":" << receiptBytes.size()
+           << ",\"materialReceiptDataName\":" << jsonQuote(receiptName.toUri())
+           << ",\"materialReceiptDigest\":" << jsonQuote(digest(receiptBytes))
+           << '}';
   const auto rootText = std::string("{\"artifactProfileDigest\":") +
     jsonQuote(profileDigest) + ",\"metadata\":" + metadata.str() +
     ",\"modelIdentityDigest\":" + jsonQuote(zeroDigest('a')) +
@@ -651,6 +666,8 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
     fetches->push_back(name.toUri());
     if (name == manifestName)
       return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
+    if (name == receiptName)
+      return ndn::Buffer(receiptBytes.data(), receiptBytes.size());
     for (const auto& [payloadId, payloadName] : payloadNames) {
       if (name == ndn::Name(payloadName)) {
         const auto& bytes = payloads.at(payloadId);
@@ -699,7 +716,8 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
   const auto first = selectedIds.begin();
   const auto second = std::next(first);
   const auto firstPayload = payloads.at(*first).size();
-  projection.assembly.maxAssembledBytes = manifestBytes.size() + firstPayload;
+  const auto parseReservation = 8U * manifestBytes.size() + 16U * receiptBytes.size();
+  projection.assembly.maxAssembledBytes = parseReservation + firstPayload;
   projection.assembly.recipeDigest = recipeDigestFor(projection.assembly);
   fetches->clear();
   options.cacheDir = (std::filesystem::temp_directory_path() /
@@ -710,8 +728,9 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
     [] (const std::runtime_error& error) {
       return std::string(error.what()).find("DI_CANONICAL_MATERIAL_BUDGET_EXCEEDED") !=
              std::string::npos;
-    });
+  });
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), manifestName.toUri()), 1U);
+  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), receiptName.toUri()), 1U);
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), payloadNames.at(*first)), 1U);
   BOOST_CHECK(std::find(fetches->begin(), fetches->end(), sourceName.toUri()) == fetches->end());
   for (auto it = second; it != selectedIds.end(); ++it) {
@@ -727,12 +746,34 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   BOOST_REQUIRE(!fixture.empty());
   auto source = readBytes(fixture);
   BOOST_REQUIRE(!source.empty());
-  // The role-0 fixture owns all of its 21 production nodes.  Add one
-  // well-formed, unreachable node so the receipt test has a real unselected
-  // payload while the selected role remains a checker-valid graph.
+  // The role-0 fixture owns all of its 21 production nodes.  Add one selected
+  // Identity over an external >1 MiB initializer so the production
+  // post-Selection path must fetch the header and every bounded raw chunk.
+  // Add one separate unreachable node so the receipt test also has a real
+  // unselected payload while the selected role remains checker-valid.
   onnx::ModelProto augmentedModel;
   BOOST_REQUIRE(augmentedModel.ParseFromArray(source.data(),
                                                static_cast<int>(source.size())));
+  constexpr std::size_t externalBytes = 2U * 1024U * 1024U + 16U;
+  auto* externalInitializer = augmentedModel.mutable_graph()->add_initializer();
+  externalInitializer->set_name("spec189_large_weight");
+  externalInitializer->set_data_type(onnx::TensorProto::FLOAT16);
+  externalInitializer->add_dims(static_cast<std::int64_t>(externalBytes / 2));
+  externalInitializer->set_data_location(onnx::TensorProto::EXTERNAL);
+  auto* location = externalInitializer->add_external_data();
+  location->set_key("location");
+  location->set_value("spec189-large.bin");
+  auto* offset = externalInitializer->add_external_data();
+  offset->set_key("offset");
+  offset->set_value("0");
+  auto* length = externalInitializer->add_external_data();
+  length->set_key("length");
+  length->set_value(std::to_string(externalBytes));
+  auto* selectedNode = augmentedModel.mutable_graph()->add_node();
+  selectedNode->set_name("spec189-selected-large-material");
+  selectedNode->set_op_type("Identity");
+  selectedNode->add_input("spec189_large_weight");
+  selectedNode->add_output("spec189_selected_large_material");
   auto* unselectedNode = augmentedModel.mutable_graph()->add_node();
   unselectedNode->set_name("spec189-unselected-material");
   unselectedNode->set_op_type("Identity");
@@ -744,8 +785,11 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   NativeCanonicalSource materialSource;
   NativeAssemblyControl manifestControl{
     std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {},
-    1U << 20, 8U << 20};
+    8U << 20, 8U << 20};
   materialSource.modelBytes = source;
+  materialSource.initializerBytes.emplace(externalBytes);
+  for (std::size_t index = 0; index < externalBytes; ++index)
+    (*materialSource.initializerBytes)[index] = static_cast<std::uint8_t>(index * 13U + 7U);
   materialSource.materialManifest = deriveNativeCanonicalMaterialManifest(
     materialSource, manifestControl);
   const auto identity = canonicalOnnxSourceIdentity(materialSource, manifestControl);
@@ -755,14 +799,12 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   const ndn::Name rootName("/spec189/material/bundle-root");
   const ndn::Name manifestName("/spec189/material/bundle-manifest");
   const ndn::Name receiptName("/spec189/material/bundle-receipt");
-  const ndn::Name selectedBundleName("/spec189/material/bundle/selected");
-  const ndn::Name unselectedBundleName("/spec189/material/bundle/unselected");
   // Use the fixture's certified role-0 node set.  The selected graph must be
   // independently valid for the production worker's full ONNX checker; a
   // prefix such as nodes {0, 1} is only a transport subset and is not a valid
   // role model because it does not produce the declared role outputs.
   const std::vector<std::uint64_t> certifiedRoleNodes{
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21};
   const std::set<std::uint64_t> selectedNodes(
     certifiedRoleNodes.begin(), certifiedRoleNodes.end());
   std::set<std::string> selectedIds{materialSource.materialManifest->templatePayloadId};
@@ -778,38 +820,24 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   }
   for (const auto& dependency : dependencies) {
     for (const auto& reference : materialSource.materialManifest->references) {
-      if (reference.kind == "shared-initializer" && reference.logicalName == dependency)
+      if (reference.kind == "shared-initializer" && reference.logicalName == dependency) {
         selectedIds.insert(reference.payloadId);
+        selectedIds.insert(reference.chunkPayloadIds.begin(), reference.chunkPayloadIds.end());
+      }
     }
   }
-  std::vector<std::vector<std::uint8_t>> bundles(2);
-  std::vector<std::size_t> bundleIndexByPayload;
-  std::map<std::string, std::size_t> offsets;
-  bundleIndexByPayload.reserve(materialSource.materialManifest->payloads.size());
+  std::map<std::string, std::string> payloadNames;
   for (const auto& payload : materialSource.materialManifest->payloads) {
-    const auto bundleIndex = selectedIds.count(payload.payloadId) != 0 ? 0U : 1U;
-    bundleIndexByPayload.push_back(bundleIndex);
-    offsets.emplace(payload.payloadId, bundles.at(bundleIndex).size());
-    bundles.at(bundleIndex).insert(bundles.at(bundleIndex).end(),
-                                   payload.bytes.begin(), payload.bytes.end());
+    payloadNames.emplace(payload.payloadId,
+      "/spec189/material/payload/" + payload.payloadId);
   }
-  BOOST_REQUIRE(!bundles.at(0).empty());
-  BOOST_REQUIRE(!bundles.at(1).empty());
-  for (const auto& bundle : bundles)
-    BOOST_REQUIRE_LE(bundle.size(), NativeCanonicalMaterialBundleMaxBytes);
-  const std::array<ndn::Name, 2> bundleNames{selectedBundleName, unselectedBundleName};
-  const std::array<std::string, 2> bundleDigests{digest(bundles.at(0)), digest(bundles.at(1))};
   std::ostringstream materialObjects;
   materialObjects << '[';
   for (std::size_t index = 0; index < materialSource.materialManifest->payloads.size(); ++index) {
     if (index != 0) materialObjects << ',';
     const auto& payload = materialSource.materialManifest->payloads.at(index);
-    const auto bundleIndex = bundleIndexByPayload.at(index);
-    materialObjects << "{\"bundleBytes\":" << bundles.at(bundleIndex).size()
-                    << ",\"bundleDigest\":" << jsonQuote(bundleDigests.at(bundleIndex))
-                    << ",\"bundleOffset\":" << offsets.at(payload.payloadId)
-                    << ",\"bytes\":" << payload.bytes.size()
-                    << ",\"dataName\":" << jsonQuote(bundleNames.at(bundleIndex).toUri())
+    materialObjects << "{\"bytes\":" << payload.bytes.size()
+                    << ",\"dataName\":" << jsonQuote(payloadNames.at(payload.payloadId))
                     << ",\"digest\":" << jsonQuote(payload.digest)
                     << ",\"payloadId\":" << jsonQuote(payload.payloadId) << '}';
   }
@@ -846,8 +874,72 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
                                    identity.graphDigest, identity.initializerDigest);
   projection.canonicalArtifactName = rootName.toUri();
   projection.assembly.nodeIndices = certifiedRoleNodes;
+  projection.assembly.maxSourceBytes = 8U << 20;
   projection.assembly.canonicalInitializerDigest = identity.initializerDigest;
-  projection.assembly.maxAssembledBytes = manifestBytes.size() + bundles.at(0).size() + (1U << 20);
+  std::uint64_t selectedPayloadBytes = 0;
+  for (const auto& payload : materialSource.materialManifest->payloads)
+    if (selectedIds.count(payload.payloadId) != 0)
+      selectedPayloadBytes += payload.bytes.size();
+  // Mirror the production material-backed peak reservation: the selected
+  // payloads stay owned while the chunked initializer is copied into a
+  // TensorProto and the final model is serialized.  Compute the model/header
+  // terms from the same manifest objects instead of hiding a large safety
+  // margin in this selector.
+  const auto templatePayload = std::find_if(
+    materialSource.materialManifest->payloads.begin(),
+    materialSource.materialManifest->payloads.end(),
+    [&] (const auto& payload) {
+      return payload.payloadId == materialSource.materialManifest->templatePayloadId;
+    });
+  BOOST_REQUIRE(templatePayload != materialSource.materialManifest->payloads.end());
+  onnx::ModelProto assemblyModel;
+  BOOST_REQUIRE(assemblyModel.ParseFromArray(templatePayload->bytes.data(),
+                                               static_cast<int>(templatePayload->bytes.size())));
+  for (const auto nodeIndex : certifiedRoleNodes) {
+    const auto nodeReference = std::find_if(
+      materialSource.materialManifest->references.begin(),
+      materialSource.materialManifest->references.end(),
+      [&] (const auto& reference) {
+        return reference.kind == "graph-node" &&
+          reference.logicalName == "node/" + std::to_string(nodeIndex);
+      });
+    BOOST_REQUIRE(nodeReference != materialSource.materialManifest->references.end());
+    const auto nodePayload = std::find_if(
+      materialSource.materialManifest->payloads.begin(),
+      materialSource.materialManifest->payloads.end(),
+      [&] (const auto& payload) { return payload.payloadId == nodeReference->payloadId; });
+    BOOST_REQUIRE(nodePayload != materialSource.materialManifest->payloads.end());
+    onnx::NodeProto node;
+    BOOST_REQUIRE(node.ParseFromArray(nodePayload->bytes.data(),
+                                      static_cast<int>(nodePayload->bytes.size())));
+    *assemblyModel.mutable_graph()->add_node() = std::move(node);
+  }
+  const auto initializerReference = std::find_if(
+    materialSource.materialManifest->references.begin(),
+    materialSource.materialManifest->references.end(),
+    [] (const auto& reference) {
+      return reference.kind == "shared-initializer" &&
+        reference.logicalName == "spec189_large_weight";
+    });
+  BOOST_REQUIRE(initializerReference != materialSource.materialManifest->references.end());
+  const auto initializerHeaderPayload = std::find_if(
+    materialSource.materialManifest->payloads.begin(),
+    materialSource.materialManifest->payloads.end(),
+    [&] (const auto& payload) { return payload.payloadId == initializerReference->payloadId; });
+  BOOST_REQUIRE(initializerHeaderPayload != materialSource.materialManifest->payloads.end());
+  onnx::TensorProto initializerHeader;
+  BOOST_REQUIRE(initializerHeader.ParseFromArray(initializerHeaderPayload->bytes.data(),
+                                                 static_cast<int>(initializerHeaderPayload->bytes.size())));
+  const auto finalModelWithoutRaw = static_cast<std::uint64_t>(assemblyModel.ByteSizeLong()) +
+                                    static_cast<std::uint64_t>(initializerHeader.ByteSizeLong());
+  const auto finalModelUpper = finalModelWithoutRaw + externalBytes + 128U;
+  const auto retainedMaterialBytes = manifestBytes.size() + selectedPayloadBytes;
+  const auto materialPeak = retainedMaterialBytes + externalBytes + 2U * finalModelUpper;
+  const auto parseReservation = 8U * manifestBytes.size() + 16U * receiptBytes.size();
+  const auto fetchBudget = std::max<std::uint64_t>(
+    manifestBytes.size() + receiptBytes.size(), parseReservation) + selectedPayloadBytes;
+  const auto requiredBudget = std::max<std::uint64_t>(fetchBudget, materialPeak);
+  projection.assembly.maxAssembledBytes = requiredBudget + 1024U;
   projection.assembly.recipeDigest = recipeDigestFor(projection.assembly);
 
   auto fetches = std::make_shared<std::vector<std::string>>();
@@ -865,10 +957,17 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
       return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
     if (name == receiptName)
       return ndn::Buffer(receiptBytes.data(), receiptBytes.size());
-    if (name == bundleNames.at(0))
-      return ndn::Buffer(bundles.at(0).data(), bundles.at(0).size());
-    if (name == bundleNames.at(1))
-      return ndn::Buffer(bundles.at(1).data(), bundles.at(1).size());
+    for (const auto& [payloadId, payloadName] : payloadNames) {
+      if (name != ndn::Name(payloadName))
+        continue;
+      const auto payload = std::find_if(
+        materialSource.materialManifest->payloads.begin(),
+        materialSource.materialManifest->payloads.end(),
+        [&] (const auto& item) { return item.payloadId == payloadId; });
+      if (payload == materialSource.materialManifest->payloads.end())
+        return std::nullopt;
+      return ndn::Buffer(payload->bytes.data(), payload->bytes.size());
+    }
     return std::nullopt;
   };
   NativeCanonicalOnnxAssemblerOptions options;
@@ -885,12 +984,12 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   BOOST_REQUIRE(std::filesystem::is_regular_file(prepared.path));
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), manifestName.toUri()), 1U);
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), receiptName.toUri()), 1U);
-  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), selectedBundleName.toUri()), 1U);
-  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), unselectedBundleName.toUri()), 0U);
-  BOOST_CHECK(std::all_of(fetches->begin(), fetches->end(), [&] (const auto& name) {
-    return name == manifestName.toUri() || name == receiptName.toUri() ||
-      name == selectedBundleName.toUri();
-  }));
+  for (const auto& payloadId : selectedIds)
+    BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), payloadNames.at(payloadId)), 1U);
+  for (const auto& payload : materialSource.materialManifest->payloads)
+    if (selectedIds.count(payload.payloadId) == 0)
+      BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(),
+                                   payloadNames.at(payload.payloadId)), 0U);
   // The receipt is an authenticated continuation of the root binding, not a
   // merely reachable index.  A root that points at a receipt with a foreign
   // graph identity must fail before any selected bundle is assembled.
@@ -924,8 +1023,17 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
       return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
     if (name == receiptName)
       return ndn::Buffer(badReceiptBytes.data(), badReceiptBytes.size());
-    if (name == bundleNames.at(0))
-      return ndn::Buffer(bundles.at(0).data(), bundles.at(0).size());
+    for (const auto& [payloadId, payloadName] : payloadNames) {
+      if (name != ndn::Name(payloadName))
+        continue;
+      const auto payload = std::find_if(
+        materialSource.materialManifest->payloads.begin(),
+        materialSource.materialManifest->payloads.end(),
+        [&] (const auto& item) { return item.payloadId == payloadId; });
+      if (payload == materialSource.materialManifest->payloads.end())
+        return std::nullopt;
+      return ndn::Buffer(payload->bytes.data(), payload->bytes.size());
+    }
     return std::nullopt;
   };
   auto badOptions = options;
@@ -941,8 +1049,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   std::filesystem::remove_all(badOptions.cacheDir, cleanupError);
   std::filesystem::remove_all(options.cacheDir, cleanupError);
 
-  projection.assembly.maxAssembledBytes = manifestBytes.size() + receiptBytes.size() +
-                                          bundles.at(0).size() - 1;
+  projection.assembly.maxAssembledBytes = fetchBudget - 1U;
   projection.assembly.recipeDigest = recipeDigestFor(projection.assembly);
   fetches->clear();
   BOOST_CHECK_EXCEPTION(
@@ -953,8 +1060,218 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
     });
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), manifestName.toUri()), 1U);
   BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), receiptName.toUri()), 1U);
-  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), selectedBundleName.toUri()), 0U);
-  BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(), unselectedBundleName.toUri()), 0U);
+  BOOST_CHECK(std::any_of(selectedIds.begin(), selectedIds.end(), [&] (const auto& payloadId) {
+    return std::count(fetches->begin(), fetches->end(), payloadNames.at(payloadId)) != 0;
+  }));
+  for (const auto& payload : materialSource.materialManifest->payloads)
+    if (selectedIds.count(payload.payloadId) == 0)
+      BOOST_CHECK_EQUAL(std::count(fetches->begin(), fetches->end(),
+                                   payloadNames.at(payload.payloadId)), 0U);
+
+  // A receipt may contain many unselected records.  Reject its transient
+  // parse/index reservation before fetching the manifest or any payload; this
+  // keeps the advertised working-set ceiling meaningful during validation.
+  auto oversizedReceiptJson = NativeJson::parse(receiptText);
+  auto& oversizedObjects = oversizedReceiptJson["materialObjects"];
+  for (std::size_t index = 0; index < 256; ++index) {
+    oversizedObjects.push_back({
+      {"bytes", 1U},
+      {"dataName", "/spec189/material/unused/" + std::to_string(index)},
+      {"digest", zeroDigest('f')},
+      {"payloadId", "unused-receipt-payload-" + std::to_string(index)}});
+  }
+  oversizedObjects.front()["unexpected"] = NativeJson{{"nested", "value"}};
+  const auto oversizedReceiptText = nativeCanonicalJson(oversizedReceiptJson);
+  const std::vector<std::uint8_t> oversizedReceiptBytes(
+    oversizedReceiptText.begin(), oversizedReceiptText.end());
+  auto oversizedRootJson = NativeJson::parse(rootText);
+  oversizedRootJson["metadata"]["materialReceiptBytes"] = oversizedReceiptBytes.size();
+  oversizedRootJson["metadata"]["materialReceiptDigest"] = digest(oversizedReceiptBytes);
+  const auto oversizedRootText = nativeCanonicalJson(oversizedRootJson);
+  const std::vector<std::uint8_t> oversizedRootBytes(
+    oversizedRootText.begin(), oversizedRootText.end());
+  auto oversizedProjection = makeProjection(
+    digest(oversizedRootBytes), profileDigest, identity.graphDigest, identity.initializerDigest);
+  oversizedProjection.canonicalArtifactName = rootName.toUri();
+  oversizedProjection.assembly.nodeIndices = projection.assembly.nodeIndices;
+  oversizedProjection.assembly.maxSourceBytes = projection.assembly.maxSourceBytes;
+  oversizedProjection.assembly.canonicalInitializerDigest = identity.initializerDigest;
+  const auto oversizedParseReservation = 8U * manifestBytes.size() +
+    16U * oversizedReceiptBytes.size();
+  oversizedProjection.assembly.maxAssembledBytes = oversizedParseReservation - 1U;
+  oversizedProjection.assembly.recipeDigest = recipeDigestFor(oversizedProjection.assembly);
+  auto oversizedFetches = std::make_shared<std::vector<std::string>>();
+  NativeCanonicalOnnxFetchers oversizedFetchers;
+  oversizedFetchers.getArtifact = [rootName, oversizedRootBytes] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != rootName) return std::nullopt;
+    return ndn::Buffer(oversizedRootBytes.data(), oversizedRootBytes.size());
+  };
+  oversizedFetchers.fetchEncryptedLargeData =
+    [=] (const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (service != ndn::Name("/LLM/Qwen")) return std::nullopt;
+    oversizedFetches->push_back(name.toUri());
+    if (name == manifestName)
+      return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
+    if (name == receiptName)
+      return ndn::Buffer(oversizedReceiptBytes.data(), oversizedReceiptBytes.size());
+    return std::nullopt;
+  };
+  auto oversizedOptions = options;
+  oversizedOptions.cacheDir = (std::filesystem::temp_directory_path() /
+                                "spec189-material-consumer-large-receipt").string();
+  std::filesystem::remove_all(oversizedOptions.cacheDir, cleanupError);
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(oversizedFetchers, oversizedProjection, oversizedOptions),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("DI_CANONICAL_MATERIAL_METADATA_UNAVAILABLE") !=
+             std::string::npos;
+    });
+  BOOST_CHECK(oversizedFetches->empty());
+  std::filesystem::remove_all(oversizedOptions.cacheDir, cleanupError);
+
+  auto schemaProjection = oversizedProjection;
+  schemaProjection.assembly.maxAssembledBytes = oversizedParseReservation + 1024U;
+  schemaProjection.assembly.recipeDigest = recipeDigestFor(schemaProjection.assembly);
+  oversizedFetches->clear();
+  auto schemaOptions = options;
+  schemaOptions.cacheDir = (std::filesystem::temp_directory_path() /
+                            "spec189-material-consumer-receipt-schema").string();
+  std::filesystem::remove_all(schemaOptions.cacheDir, cleanupError);
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(oversizedFetchers, schemaProjection, schemaOptions),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("DI_CANONICAL_MATERIAL_RECEIPT_INVALID") !=
+             std::string::npos;
+    });
+  BOOST_CHECK_EQUAL(std::count(oversizedFetches->begin(), oversizedFetches->end(),
+                               manifestName.toUri()), 1U);
+  BOOST_CHECK_EQUAL(std::count(oversizedFetches->begin(), oversizedFetches->end(),
+                               receiptName.toUri()), 1U);
+  std::filesystem::remove_all(schemaOptions.cacheDir, cleanupError);
+
+  const auto rootForReceipt = [&] (const std::vector<std::uint8_t>& candidateReceipt) {
+    auto json = NativeJson::parse(rootText);
+    json["metadata"]["materialReceiptBytes"] = candidateReceipt.size();
+    json["metadata"]["materialReceiptDigest"] = digest(candidateReceipt);
+    const auto wire = nativeCanonicalJson(json);
+    return std::vector<std::uint8_t>(wire.begin(), wire.end());
+  };
+  const auto runInvalidReceipt = [&] (const std::string& candidateReceiptText,
+                                     const std::string& cacheSuffix) {
+    const std::vector<std::uint8_t> candidateReceipt(
+      candidateReceiptText.begin(), candidateReceiptText.end());
+    const auto candidateRoot = rootForReceipt(candidateReceipt);
+    auto candidateProjection = makeProjection(
+      digest(candidateRoot), profileDigest, identity.graphDigest, identity.initializerDigest);
+    candidateProjection.canonicalArtifactName = rootName.toUri();
+    candidateProjection.assembly.nodeIndices = projection.assembly.nodeIndices;
+    candidateProjection.assembly.maxSourceBytes = projection.assembly.maxSourceBytes;
+    candidateProjection.assembly.canonicalInitializerDigest = identity.initializerDigest;
+    candidateProjection.assembly.maxAssembledBytes =
+      8U * manifestBytes.size() + 16U * candidateReceipt.size() +
+      selectedPayloadBytes + 1024U;
+    candidateProjection.assembly.recipeDigest = recipeDigestFor(candidateProjection.assembly);
+    oversizedFetches->clear();
+    NativeCanonicalOnnxFetchers candidateFetchers;
+    candidateFetchers.getArtifact = [rootName, candidateRoot] (const ndn::Name& name)
+      -> std::optional<ndn::Buffer> {
+      if (name != rootName) return std::nullopt;
+      return ndn::Buffer(candidateRoot.data(), candidateRoot.size());
+    };
+    candidateFetchers.fetchEncryptedLargeData =
+      [=] (const ndn::Name& name, const ndn::Name& service)
+      -> std::optional<ndn::Buffer> {
+      if (service != ndn::Name("/LLM/Qwen")) return std::nullopt;
+      oversizedFetches->push_back(name.toUri());
+      if (name == manifestName)
+        return ndn::Buffer(manifestBytes.data(), manifestBytes.size());
+      if (name == receiptName)
+        return ndn::Buffer(candidateReceipt.data(), candidateReceipt.size());
+      return std::nullopt;
+    };
+    auto candidateOptions = options;
+    candidateOptions.cacheDir = (std::filesystem::temp_directory_path() /
+                                 ("spec189-material-consumer-" + cacheSuffix)).string();
+    std::filesystem::remove_all(candidateOptions.cacheDir, cleanupError);
+    BOOST_CHECK_EXCEPTION(
+      prepareNativeCanonicalOnnxRole(candidateFetchers, candidateProjection, candidateOptions),
+      std::runtime_error,
+      [] (const std::runtime_error& error) {
+        return std::string(error.what()).find("DI_CANONICAL_MATERIAL_RECEIPT_INVALID") !=
+               std::string::npos;
+      });
+    BOOST_CHECK_EQUAL(std::count(oversizedFetches->begin(), oversizedFetches->end(),
+                                 manifestName.toUri()), 1U);
+    BOOST_CHECK_EQUAL(std::count(oversizedFetches->begin(), oversizedFetches->end(),
+                                 receiptName.toUri()), 1U);
+    std::filesystem::remove_all(candidateOptions.cacheDir, cleanupError);
+  };
+  auto duplicateRootReceipt = receiptText;
+  duplicateRootReceipt.insert(duplicateRootReceipt.rfind('}'),
+                              ",\"materialObjects\":[]");
+  runInvalidReceipt(duplicateRootReceipt, "duplicate-root-key");
+  auto duplicateObjectReceipt = receiptText;
+  const auto objectsStart = duplicateObjectReceipt.find("\"materialObjects\":[");
+  const auto firstObjectEnd = duplicateObjectReceipt.find('}', objectsStart);
+  BOOST_REQUIRE_NE(objectsStart, std::string::npos);
+  BOOST_REQUIRE_NE(firstObjectEnd, std::string::npos);
+  duplicateObjectReceipt.insert(firstObjectEnd, ",\"bytes\":1");
+  runInvalidReceipt(duplicateObjectReceipt, "duplicate-object-key");
+
+  auto oversizedInlineRootJson = NativeJson::parse(rootText);
+  auto& inlineMetadata = oversizedInlineRootJson["metadata"];
+  inlineMetadata.erase("materialReceiptBytes");
+  inlineMetadata.erase("materialReceiptDataName");
+  inlineMetadata.erase("materialReceiptDigest");
+  auto inlineObjects = NativeJson::array();
+  for (std::size_t index = 0; index < 32 && index < oversizedObjects.size(); ++index)
+    inlineObjects.push_back(oversizedObjects.at(index));
+  inlineMetadata["materialObjects"] = std::move(inlineObjects);
+  const auto oversizedInlineRootText = nativeCanonicalJson(oversizedInlineRootJson);
+  const std::vector<std::uint8_t> oversizedInlineRootBytes(
+    oversizedInlineRootText.begin(), oversizedInlineRootText.end());
+  auto oversizedInlineProjection = makeProjection(
+    digest(oversizedInlineRootBytes), profileDigest,
+    identity.graphDigest, identity.initializerDigest);
+  oversizedInlineProjection.canonicalArtifactName = rootName.toUri();
+  oversizedInlineProjection.assembly.nodeIndices = projection.assembly.nodeIndices;
+  oversizedInlineProjection.assembly.maxSourceBytes = 8U << 20;
+  oversizedInlineProjection.assembly.maxAssembledBytes = 16U << 20;
+  oversizedInlineProjection.assembly.canonicalInitializerDigest = identity.initializerDigest;
+  oversizedInlineProjection.assembly.recipeDigest =
+    recipeDigestFor(oversizedInlineProjection.assembly);
+  oversizedFetches->clear();
+  NativeCanonicalOnnxFetchers oversizedInlineFetchers;
+  oversizedInlineFetchers.getArtifact = [rootName, oversizedInlineRootBytes] (
+      const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    if (name != rootName) return std::nullopt;
+    return ndn::Buffer(oversizedInlineRootBytes.data(), oversizedInlineRootBytes.size());
+  };
+  oversizedInlineFetchers.fetchEncryptedLargeData =
+    [=] (const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (service != ndn::Name("/LLM/Qwen")) return std::nullopt;
+    oversizedFetches->push_back(name.toUri());
+    return std::nullopt;
+  };
+  auto oversizedInlineOptions = options;
+  oversizedInlineOptions.cacheDir = (std::filesystem::temp_directory_path() /
+                                     "spec189-material-consumer-inline-root").string();
+  std::filesystem::remove_all(oversizedInlineOptions.cacheDir, cleanupError);
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(oversizedInlineFetchers, oversizedInlineProjection,
+                                   oversizedInlineOptions),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find(
+               "DI_CANONICAL_INLINE_MATERIAL_METADATA_TOO_LARGE") != std::string::npos;
+    });
+  BOOST_CHECK(oversizedFetches->empty());
+  std::filesystem::remove_all(oversizedInlineOptions.cacheDir, cleanupError);
   std::filesystem::remove_all(options.cacheDir, cleanupError);
 }
 

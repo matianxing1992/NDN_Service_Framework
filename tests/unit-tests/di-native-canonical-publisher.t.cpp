@@ -10,6 +10,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
 
+#include <onnx/onnx_pb.h>
+
 #include <fstream>
 #include <future>
 #include <thread>
@@ -417,6 +419,82 @@ BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionB
                     input.model.canonicalSourceBytes);
   BOOST_REQUIRE(!io.labels.empty());
   BOOST_CHECK_EQUAL(io.labels.back(), "di-canonical-root");
+}
+
+BOOST_AUTO_TEST_CASE(ExternalInitializerUsesBoundedChunksAndReassemblesAfterSelection)
+{
+  NativeCanonicalSource source;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.mutable_graph()->set_name("spec189-chunked-initializer");
+  auto* input = model.mutable_graph()->add_input();
+  input->set_name("X");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT16);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* output = model.mutable_graph()->add_output();
+  output->set_name("Y");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT16);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* node = model.mutable_graph()->add_node();
+  node->set_op_type("MatMul");
+  node->add_input("X");
+  node->add_input("weight");
+  node->add_output("Y");
+  constexpr std::size_t rawBytes = 3U * 1024U * 1024U + 16U;
+  auto* initializer = model.mutable_graph()->add_initializer();
+  initializer->set_name("weight");
+  initializer->set_data_type(onnx::TensorProto::FLOAT16);
+  initializer->add_dims(static_cast<std::int64_t>(rawBytes / 2));
+  initializer->set_data_location(onnx::TensorProto::EXTERNAL);
+  auto* location = initializer->add_external_data();
+  location->set_key("location");
+  location->set_value("weights.bin");
+  auto* offset = initializer->add_external_data();
+  offset->set_key("offset");
+  offset->set_value("0");
+  auto* length = initializer->add_external_data();
+  length->set_key("length");
+  length->set_value(std::to_string(rawBytes));
+  source.initializerBytes.emplace(rawBytes);
+  for (std::size_t i = 0; i < rawBytes; ++i)
+    (*source.initializerBytes)[i] = static_cast<std::uint8_t>(i * 17U + 3U);
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  source.modelBytes.assign(wire.begin(), wire.end());
+
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 8U * 1024U * 1024U,
+    16U * 1024U * 1024U};
+  const auto manifest = deriveNativeCanonicalMaterialManifest(source, control);
+  BOOST_REQUIRE(manifest);
+  validateNativeCanonicalMaterialManifest(source, *manifest, control);
+  const auto reference = std::find_if(manifest->references.begin(), manifest->references.end(),
+    [] (const auto& item) { return item.kind == "shared-initializer"; });
+  BOOST_REQUIRE(reference != manifest->references.end());
+  BOOST_REQUIRE_EQUAL(reference->chunkPayloadIds.size(), 4U);
+  BOOST_CHECK(reference->bytes < NativeCanonicalMaterialBundleMaxBytes);
+  for (const auto& chunkId : reference->chunkPayloadIds) {
+    const auto payload = std::find_if(manifest->payloads.begin(), manifest->payloads.end(),
+      [&chunkId] (const auto& item) { return item.payloadId == chunkId; });
+    BOOST_REQUIRE(payload != manifest->payloads.end());
+    BOOST_CHECK_LE(payload->bytes.size(), NativeCanonicalMaterialBundleMaxBytes);
+  }
+
+  source.materialManifest = manifest;
+  source.materialPayloads = manifest->payloads;
+  const auto assembled = materializeNativeCanonicalModel(source, {0}, control);
+  onnx::ModelProto roundTrip;
+  BOOST_REQUIRE(roundTrip.ParseFromArray(assembled.data(), static_cast<int>(assembled.size())));
+  BOOST_REQUIRE_EQUAL(roundTrip.graph().initializer_size(), 1);
+  BOOST_CHECK_EQUAL(roundTrip.graph().initializer(0).raw_data().size(), rawBytes);
+  BOOST_REQUIRE_EQUAL(roundTrip.graph().initializer(0).raw_data().size(),
+                      source.initializerBytes->size());
+  BOOST_CHECK(std::equal(roundTrip.graph().initializer(0).raw_data().begin(),
+                         roundTrip.graph().initializer(0).raw_data().end(),
+                         source.initializerBytes->begin(),
+                         [] (const char actual, const std::uint8_t expected) {
+                           return static_cast<std::uint8_t>(static_cast<unsigned char>(actual)) == expected;
+                         }));
 }
 
 BOOST_AUTO_TEST_CASE(RejectsSourceAndCanonicalIdentityBeforePublication)
