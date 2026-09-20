@@ -1761,6 +1761,24 @@ qualification PASS. T003, T005, T006, T007, and T009 remain `PARTIAL`. The
 next real run requires a new run ID and a host state that stays below the
 owned-swap guard before retrying the post-Selection path.
 
+### Current Checkpoint — r143 MiniNDN routing-entry review and owned-swap boundary
+
+The fresh r143 installed-binary run reached both Provider `READY`, signed ACK
+offers, and `GRANT_VERIFICATION` at `BEFORE_ASSEMBLY`, then the unchanged host
+guard stopped it at `RESOURCE_BOUNDARY:ownedSwap` with
+`ownedSwapBytes=268681216` against `268435456`. Cleanup passed. No Selection,
+execution, runner, terminal response, numerical oracle, repeat, or qualification
+result exists; T003, T005, T006, T007, and T009 remain `PARTIAL`. Evidence is
+in [r143 routing and owned-swap evidence](evidence/b189-r143-routing-plan-owned-swap-20260920.md).
+
+The MiniNDN entry was then reviewed against the upstream NLSR and static-routing
+examples. Because Spec189 requires deterministic application-prefix routes, the
+entry now uses `Nfd + NdnRoutingHelper` only, removes the duplicate NLSR owner,
+retains `--nlsr-wait-s` as a compatibility alias for `--routing-wait-s`, and
+writes a validated node-to-APP plan. `py_compile`, `--help`, the node-plan
+helper, and `git diff --check` passed. This corrected entry has not yet been
+used for a new real run.
+
 执行顺序：`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
 保留历史 ID 稳定链接；序号不再代表时间。
 成员、五 lane、动态检查、唯一结果记录见 [batch-execution.md](batch-execution.md)。

@@ -74,7 +74,7 @@ MININDN_NFD_CS_SIZE = 32768
 # enough for a slow local MiniNDN launch while preventing a malformed CLI
 # value from turning the generated service envelope into an unbounded wait.
 MAX_STARTUP_TIMEOUT_S = 600.0
-MAX_NLSR_WAIT_S = 120.0
+MAX_ROUTING_WAIT_S = 120.0
 MAX_QWEN_ROUNDS = 8
 MAX_STAGE_COUNT = 32
 
@@ -137,7 +137,7 @@ def large_data_ims_limit(source_bytes: int, initializer_bytes: int) -> int:
 def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
                          rounds: int = 2, stage_count: int = 3,
                          startup_timeout_s: float = 60.0,
-                         nlsr_wait_s: float = 8.0) -> dict[str, int]:
+                         routing_wait_s: float = 8.0) -> dict[str, int]:
     """Scale preparation/request deadlines only for genuinely large objects.
 
     The old 30-second bootstrap is suitable for small fixtures but expires
@@ -149,10 +149,10 @@ def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
             rounds > MAX_QWEN_ROUNDS or stage_count < 1 or
             stage_count > MAX_STAGE_COUNT):
         raise ValueError("Qwen runtime budget inputs are outside supported bounds")
-    if (not math.isfinite(startup_timeout_s) or not math.isfinite(nlsr_wait_s) or
-            startup_timeout_s < 0 or nlsr_wait_s < 0 or
+    if (not math.isfinite(startup_timeout_s) or not math.isfinite(routing_wait_s) or
+            startup_timeout_s < 0 or routing_wait_s < 0 or
             startup_timeout_s > MAX_STARTUP_TIMEOUT_S or
-            nlsr_wait_s > MAX_NLSR_WAIT_S):
+            routing_wait_s > MAX_ROUTING_WAIT_S):
         raise ValueError(
             "Qwen startup budgets must be finite and within the supported bounds")
     total = source_bytes + initializer_bytes
@@ -176,7 +176,7 @@ def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
     # the first phase boundary.
     per_round_bootstrap_ms = 2 * bootstrap_ms
     process_timeout_s = (per_round_bootstrap_ms + timeout_ms + 120000 + 999) // 1000
-    startup_ms = int((nlsr_wait_s + startup_timeout_s * (2 + stage_count)) * 1000) + 999
+    startup_ms = int((routing_wait_s + startup_timeout_s * (2 + stage_count)) * 1000) + 999
     per_round_ms = per_round_bootstrap_ms + timeout_ms
     lifecycle_ms = startup_ms + rounds * per_round_ms + 120000
     service_ms = max(base_service_ms, lifecycle_ms)
@@ -678,6 +678,27 @@ def env_command(env: dict[str, str], command: str) -> str:
     return "env " + " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items()) + " " + command
 
 
+def mini_ndn_node_app_plan(topology_nodes: set[str], controller_node: str,
+                           user_node: str, stage_nodes: list[str],
+                           provider_names: list[str]) -> dict[str, list[str]]:
+    """Return and validate the explicit MiniNDN node-to-application plan."""
+    role_nodes = [controller_node, user_node, *stage_nodes]
+    if len(role_nodes) != len(set(role_nodes)):
+        raise RuntimeError("MiniNDN role nodes must be distinct")
+    missing = sorted(set(role_nodes) - topology_nodes)
+    if missing:
+        raise RuntimeError("topology is missing role nodes: " + ",".join(missing))
+    if len(stage_nodes) != len(provider_names):
+        raise RuntimeError("provider application plan does not match stage count")
+
+    plan = {node: ["Nfd"] for node in sorted(topology_nodes)}
+    plan[controller_node].extend(["App_ServiceController", "DI_NativeArtifactAuthority"])
+    plan[user_node].append("DI_NativeRequester")
+    for node, provider in zip(stage_nodes, provider_names):
+        plan[node].append(f"di-native-provider[{provider}]")
+    return plan
+
+
 def wait_for_marker(process, log: Path, markers: tuple[str, ...], timeout: float) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -760,7 +781,9 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--input-token-ids", default="")
     parser.add_argument("--delta-token-ids", default="0")
     parser.add_argument("--negative-parent", action="store_true")
-    parser.add_argument("--nlsr-wait-s", type=float, default=8.0)
+    parser.add_argument("--routing-wait-s", "--nlsr-wait-s", dest="routing_wait_s",
+                        type=float, default=8.0,
+                        help="static-route settle wait; --nlsr-wait-s is a legacy alias")
     parser.add_argument("--startup-timeout-s", type=float, default=60.0)
     parser.add_argument("--resource-limits-json", default="{}",
                         help="host resource limits as a JSON object; defaults match LocalExperiment")
@@ -1049,7 +1072,7 @@ def main(argv=None, *, _supervised=False) -> int:
     runtime_budgets = qwen_runtime_budgets(
         canonical_source_bytes, canonical_initializer_bytes,
         rounds=args.rounds, stage_count=len(stages),
-        startup_timeout_s=args.startup_timeout_s, nlsr_wait_s=args.nlsr_wait_s)
+        startup_timeout_s=args.startup_timeout_s, routing_wait_s=args.routing_wait_s)
     state_inputs = {
         stage["role"]: {name: [name] for name in stage.get("cacheInputs", [])}
         for stage in stages
@@ -1384,7 +1407,6 @@ def main(argv=None, *, _supervised=False) -> int:
     # MiniNDN and process orchestration starts here.
     from minindn.apps.app_manager import AppManager
     from minindn.apps.nfd import Nfd
-    from minindn.apps.nlsr import Nlsr
     from minindn.helpers.nfdc import Nfdc
     from minindn.helpers.ndn_routing_helper import NdnRoutingHelper
     from minindn.minindn import Minindn
@@ -1394,21 +1416,28 @@ def main(argv=None, *, _supervised=False) -> int:
     sys.argv = [sys.argv[0]]
     Minindn.cleanUp()
     ndn = Minindn(topoFile=str(args.topology.expanduser().resolve()))
+    node_app_plan = mini_ndn_node_app_plan(
+        {host.name for host in ndn.net.hosts}, args.controller_node,
+        args.user_node, stage_nodes, provider_names)
+    (run_root / "minindn-node-app-plan.json").write_text(
+        json.dumps(node_app_plan, indent=2, sort_keys=True) + "\n")
     processes = []
     try:
         ndn.start()
         AppManager(ndn, ndn.net.hosts, Nfd, csSize=MININDN_NFD_CS_SIZE,
                    logLevel="INFO")
-        AppManager(ndn, ndn.net.hosts, Nlsr, sync="psync", security=False,
-                   faceType="udp", nFaces=3, routingType="link-state", logLevel="INFO")
-        rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
+        # Mini-NDN's upstream examples use Nlsr and NdnRoutingHelper as
+        # alternative routing owners. This experiment needs deterministic
+        # application-prefix routes, so use the static helper only; starting
+        # Nlsr as well would duplicate UDP faces and FIB ownership.
+        rh = NdnRoutingHelper(ndn.net, Nfdc.PROTOCOL_UDP, "link-state")
         rh.addOrigin([ndn.net[args.controller_node]], [CONTROLLER, CONTROLLER + "/KEY", AUTHORITY, AUTHORITY + "/KEY"])
         rh.addOrigin([ndn.net[args.user_node]], [USER, USER + "/KEY"])
         for node, provider in zip(stage_nodes, provider_names):
             rh.addOrigin([ndn.net[node]], [provider, provider + "/KEY"])
         rh.addOrigin([ndn.net[args.user_node], *[ndn.net[node] for node in stage_nodes]], [GROUP])
         rh.calculateRoutes()
-        time.sleep(max(0.0, args.nlsr_wait_s))
+        time.sleep(max(0.0, args.routing_wait_s))
         for node in ndn.net.hosts:
             Nfdc.setStrategy(node, APP_ROOT, Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, GROUP, Nfdc.STRATEGY_MULTICAST)

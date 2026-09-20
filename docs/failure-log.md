@@ -9062,3 +9062,21 @@ model-output, or qualification result. Preserve the raw run at
 `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r142/`;
 durable details are in
 `specs/189-qwen-two-provider-minindn/evidence/b189-r142-owned-swap-boundary-20260920.md`.
+
+2026-09-20 Spec189 r143 MiniNDN entry review and owned-swap boundary: the run
+used the installed candidate and reached both Provider `READY`, signed ACK
+offers, and `GRANT_VERIFICATION` at `BEFORE_ASSEMBLY`. The supervisor then
+stopped it at `RESOURCE_BOUNDARY:ownedSwap` with
+`ownedSwapBytes=268681216` against `268435456`; cleanup passed and no child
+process remained. No Selection, execution, runner, terminal, numerical oracle,
+repeat, or qualification result exists. The run also confirmed that the prior
+entry started both NLSR and `NdnRoutingHelper`; MiniNDN upstream examples use
+these as alternative routing owners. The Python entry was corrected to use the
+deterministic static `Nfd + NdnRoutingHelper` path, retain the old wait option
+as a compatibility alias, and record/validate the node-to-APP plan. The
+corrected entry has passed `py_compile`, `--help`, the node-plan helper, and
+`git diff --check`, but has not yet been used for a fresh model run. Raw
+evidence remains at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r143/`;
+durable detail is in
+`specs/189-qwen-two-provider-minindn/evidence/b189-r143-routing-plan-owned-swap-20260920.md`.
