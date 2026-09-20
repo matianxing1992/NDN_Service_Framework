@@ -1743,6 +1743,24 @@ hard deadline/fetch budget, a smaller fetch budget must cap initial readiness,
 and a post-manifest segment stall must retain the no-progress failure. These
 are coverage improvements, not a qualification result.
 
+### Current Checkpoint — r142 owned-swap resource boundary
+
+The fresh installed-binary MiniNDN run `two-provider-global-r142` passed the
+host gate at startup and reached both Provider `READY` states, signed ACK
+offers, selection-assignment publication, and both `GRANT_VERIFICATION`
+records at `BEFORE_ASSEMBLY`. Provider-0 also created an active assembly
+staging root. Before any observable `EXECUTION_ENTERED`, `DEPENDENCY_FETCH`,
+`RUNNER_READY`, terminal output, or numerical oracle, the maintained host
+guard stopped the run at `RESOURCE_BOUNDARY:ownedSwap` after its owned-swap
+limit was exceeded. Supervisor cleanup was `PASS`; requester cancellation and
+Provider-1 socket EOF are shutdown consequences. The raw run and resource
+trace are retained in [r142 evidence](evidence/b189-r142-owned-swap-boundary-20260920.md).
+
+This is a host resource boundary, not a protocol/Repo/ORT/model result or
+qualification PASS. T003, T005, T006, T007, and T009 remain `PARTIAL`. The
+next real run requires a new run ID and a host state that stays below the
+owned-swap guard before retrying the post-Selection path.
+
 执行顺序：`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
 保留历史 ID 稳定链接；序号不再代表时间。
 成员、五 lane、动态检查、唯一结果记录见 [batch-execution.md](batch-execution.md)。

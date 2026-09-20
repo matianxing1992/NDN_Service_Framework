@@ -9046,3 +9046,19 @@ This remains a focused C++ regression boundary; no real installed r141 run or
 qualification result is claimed. Raw evidence is under
 `.codex-tmp/spec189-r141-initial-readiness-regression/`, with durable details
 in `specs/189-qwen-two-provider-minindn/evidence/b189-r141-initial-readiness-progress-20260920.md`.
+
+2026-09-20 Spec189 r142 installed MiniNDN run: the fresh two-provider Qwen
+candidate passed the startup resource gate and reached both Provider `READY`,
+signed ACK offers, selection-assignment publication, and both
+`GRANT_VERIFICATION` records at `BEFORE_ASSEMBLY`. Provider-0 created an
+active assembly staging root, but before any observable `EXECUTION_ENTERED`,
+`DEPENDENCY_FETCH`, `RUNNER_READY`, terminal response, or numerical oracle,
+the supervisor stopped the run at `RESOURCE_BOUNDARY:ownedSwap`. The final
+running sample reached `ownedSwapBytes=285523968` against the
+`268435456`-byte limit; cleanup was `PASS` and no child process remained.
+Requester `CANCELLED` and Provider-1 socket EOF were shutdown consequences.
+This is a host resource boundary, not a protocol, Repo, authorization, ORT,
+model-output, or qualification result. Preserve the raw run at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r142/`;
+durable details are in
+`specs/189-qwen-two-provider-minindn/evidence/b189-r142-owned-swap-boundary-20260920.md`.
