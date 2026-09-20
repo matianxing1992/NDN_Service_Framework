@@ -270,7 +270,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         const auto hardDeadline = started + std::chrono::milliseconds(
           edge.hardDeadlineMs);
         auto fetchExact = [this, &edge, &hardDeadline, producerMember](
-                            const ndn::Name& name) {
+                            const ndn::Name& name,
+                            bool initialProducerReadiness) {
           if (m_groupCoordinator->terminal()) {
             throw std::runtime_error(
               "NDNSF_DATA_V1 group is terminal before exact fetch");
@@ -279,10 +280,19 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
           if (remaining == 0) {
             throw std::runtime_error("NDNSF_DATA_V1 hard deadline expired");
           }
+          // Before the producer publishes its first manifest, no transport
+          // progress can be observed by the consumer.  That readiness wait is
+          // bounded by the request hard deadline and fetch budget, but must not
+          // consume the post-publication no-progress window.  Once the
+          // manifest is available, every segment fetch is subject to the
+          // ordinary no-progress bound.
+          const auto fetchBudget = initialProducerReadiness
+            ? static_cast<std::uint64_t>(m_fetchTimeoutMs)
+            : std::min<std::uint64_t>(
+                edge.noProgressDeadlineMs,
+                static_cast<std::uint64_t>(m_fetchTimeoutMs));
           const auto bounded = static_cast<int>(std::min<std::uint64_t>(
-            remaining,
-            std::min<std::uint64_t>(edge.noProgressDeadlineMs,
-                                    static_cast<std::uint64_t>(m_fetchTimeoutMs))));
+            remaining, fetchBudget));
           auto content = m_ctx.fetchSignedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,
             name,
@@ -304,7 +314,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
 
         const auto expectedConsumers = edge.consumerRoles.empty()
           ? std::vector<std::string>{edge.consumerRole} : edge.consumerRoles;
-        const auto manifestWire = fetchExact(ndn::Name(edge.manifestDataName));
+        const auto manifestWire = fetchExact(
+          ndn::Name(edge.manifestDataName), true);
         auto manifest = decodeTensorObjectManifest(manifestWire);
         std::size_t parsedProducerRank = 0;
         try {
@@ -392,7 +403,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         ciphertextDigests.reserve(manifest.segmentCount);
         for (std::size_t index = 0; index < manifest.segmentCount; ++index) {
           const auto dataName = exactTensorSegmentName(edge, index);
-          const auto wire = fetchExact(dataName);
+          const auto wire = fetchExact(dataName, false);
           if (wire.size() > capability.maxInflightBytes - fetchedBytes) {
             throw std::runtime_error("exact tensor ciphertext exceeds inflight bound");
           }
