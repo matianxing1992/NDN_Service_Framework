@@ -1784,6 +1784,17 @@ for a new real Qwen run. The read-only review-agent
 `c03260d2`, found no P0/P1/P2 issue, and returned `STATIC_PASS`; only optional
 P3 dependency/FIB diagnostics remain.
 
+The first fresh run with this corrected entry, `two-provider-global-r144`,
+started the five-node MiniNDN topology and reached both Provider `READY`,
+signed ACK offers, and `GRANT_VERIFICATION` at `BEFORE_ASSEMBLY`. It then
+stopped at `RESOURCE_BOUNDARY:ownedSwap` with
+`ownedSwapBytes=271720448` against `268435456`; cleanup passed. No requester
+Selection, assembly, execution, terminal response, numerical oracle, repeat,
+or qualification result exists. Evidence is in
+[r144 static-routing owned-swap evidence](evidence/b189-r144-static-routing-owned-swap-20260920.md).
+T003, T005, T006, T007, and T009 remain `PARTIAL`; the next run must use a
+new run ID and a host state that stays below the unchanged resource limits.
+
 执行顺序：`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
 保留历史 ID 稳定链接；序号不再代表时间。
 成员、五 lane、动态检查、唯一结果记录见 [batch-execution.md](batch-execution.md)。

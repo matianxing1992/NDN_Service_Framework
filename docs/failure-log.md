@@ -9080,3 +9080,20 @@ evidence remains at
 `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r143/`;
 durable detail is in
 `specs/189-qwen-two-provider-minindn/evidence/b189-r143-routing-plan-owned-swap-20260920.md`.
+
+2026-09-20 Spec189 r144 fresh installed MiniNDN run with the corrected static
+routing entry: all five NFD instances, Controller, Authority, and both
+Providers started. Both Providers reached `READY`, emitted signed ACK offers,
+and verified grants at `BEFORE_ASSEMBLY`; NFD face counters showed real request
+traffic. The host guard then stopped the run at
+`RESOURCE_BOUNDARY:ownedSwap`; maximum owned swap was `271720448` against
+`268435456`, and cleanup was `PASS` with no remaining child. The requester was
+`CANCELLED` as a shutdown consequence. No requester ACK closure, Selection,
+assembly, execution, runner, terminal response, numerical oracle, repeat, or
+qualification result exists. Minimum available memory was `5501882368` bytes
+and minimum disk free was `32500576256` bytes; the resource trace also reached
+`swapIoDeltaBytes=870912000`, but the maintained supervisor boundary is
+`ownedSwap`. Preserve raw evidence at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r144/`;
+durable detail is in
+`specs/189-qwen-two-provider-minindn/evidence/b189-r144-static-routing-owned-swap-20260920.md`.
