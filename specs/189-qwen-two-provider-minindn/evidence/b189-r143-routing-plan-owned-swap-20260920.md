@@ -73,8 +73,11 @@ response、数值 oracle、repeat/drain 和资格 PASS。
 - `compile/link`: not applicable to this Python-only entry change; no C++
   rebuild was performed.
 - `runtime/test`: `py_compile`, `--help`, node-app-plan helper, and
-  `git diff --check` passed. The real r143 run reached READY/ACK/grant but
-  stopped at the host owned-swap boundary.
+  `git diff --check` passed. After the checkpoint, a five-node MiniNDN smoke
+  using `AI_Lab.conf`, `Nfd`, and `NdnRoutingHelper` published
+  `/spec189/smoke` from `memphis` and observed it in `neu`'s FIB; cleanup
+  passed. The real r143 run reached READY/ACK/grant but stopped at the host
+  owned-swap boundary.
 - `unobserved`: the corrected static-routing candidate has not yet completed a
   fresh MiniNDN run, and the full two-Provider execution/terminal/oracle path
   remains open.

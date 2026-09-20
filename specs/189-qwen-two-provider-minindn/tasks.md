@@ -1776,8 +1776,10 @@ examples. Because Spec189 requires deterministic application-prefix routes, the
 entry now uses `Nfd + NdnRoutingHelper` only, removes the duplicate NLSR owner,
 retains `--nlsr-wait-s` as a compatibility alias for `--routing-wait-s`, and
 writes a validated node-to-APP plan. `py_compile`, `--help`, the node-plan
-helper, and `git diff --check` passed. This corrected entry has not yet been
-used for a new real run.
+helper, and `git diff --check` passed. A five-node MiniNDN smoke then confirmed
+that the static route `/spec189/smoke` published by `memphis` is visible in
+`neu`'s FIB and that cleanup passes. This corrected entry has not yet been used
+for a new real Qwen run.
 
 执行顺序：`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
 保留历史 ID 稳定链接；序号不再代表时间。
