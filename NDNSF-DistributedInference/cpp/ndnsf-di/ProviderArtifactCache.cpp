@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstdio>
 #include <limits>
 #include <mutex>
 #include <sstream>
@@ -22,6 +23,14 @@ std::string frame(const std::string& value)
 std::runtime_error cacheError(const char* code, const std::string& message)
 {
   return std::runtime_error(std::string(code) + ": " + message);
+}
+
+void
+reportArtifactCleanupFailure(const char* phase) noexcept
+{
+  std::fprintf(stderr,
+               "NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED phase=%s\n",
+               phase == nullptr ? "unknown" : phase);
 }
 
 void requireControlActive(const NativeRequestControl& control)
@@ -57,7 +66,7 @@ struct ProviderArtifactLease::Release
     if (!callback)
       return;
     try { callback(); }
-    catch (...) {}
+    catch (...) { reportArtifactCleanupFailure("lease-release-exception"); }
   }
 };
 
@@ -102,8 +111,11 @@ struct ProviderArtifactCache::Shared
     std::string key;
     std::shared_ptr<const PreparedProviderArtifact> artifact;
     std::shared_ptr<const NativeModelRunnerSpec> runnerSpec;
+    std::function<void()> cleanup;
+    bool invalidated = false;
     std::uint64_t chargedBytes = 0;
     std::uint64_t activeLeases = 0;
+    std::uint64_t generation = 0;
     std::uint64_t lastUse = 0;
   };
 
@@ -137,9 +149,56 @@ struct ProviderArtifactCache::Shared
   std::uint64_t coldBuilds = 0;
   std::uint64_t templateHits = 0;
   std::uint64_t activeLeases = 0;
-  std::map<std::string, Entry> entries;
-  std::map<std::string, std::shared_ptr<Job>> jobs;
+    std::map<std::string, Entry> entries;
+    std::map<std::string, std::shared_ptr<Job>> jobs;
+    std::vector<std::function<void()>> deferredCleanups;
 };
+
+std::string retiredEntryKey(const std::string& cacheKey, std::uint64_t sequence)
+{
+  // The canonical key is length-framed and cannot contain this control-byte
+  // suffix as a complete key produced by canonicalKey().  Retiring the map
+  // node lets a replacement generation be built while an old lease still
+  // releases against the old entry and keeps its disk cleanup pinned.
+  return cacheKey + std::string("\x01invalidated/") + std::to_string(sequence);
+}
+
+template<typename Entry>
+void cleanupEntry(Entry& entry) noexcept
+{
+  if (!entry.cleanup)
+    return;
+  try { entry.cleanup(); }
+  catch (...) { reportArtifactCleanupFailure("cache-entry-exception"); }
+  entry.cleanup = {};
+}
+
+void scheduleCleanup(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
+                     ProviderArtifactCache::Shared::Entry& entry) noexcept
+{
+  if (!entry.cleanup)
+    return;
+  try {
+    shared->deferredCleanups.emplace_back(std::move(entry.cleanup));
+  }
+  catch (...) {
+    // A failed allocation must not strand an owned ciphertext directory.
+    cleanupEntry(entry);
+  }
+}
+
+void drainDeferredCleanups(const std::shared_ptr<ProviderArtifactCache::Shared>& shared) noexcept
+{
+  std::vector<std::function<void()>> callbacks;
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    callbacks.swap(shared->deferredCleanups);
+  }
+  for (auto& callback : callbacks) {
+    try { if (callback) callback(); }
+    catch (...) { reportArtifactCleanupFailure("deferred-cache-exception"); }
+  }
+}
 
 ProviderArtifactLease ProviderArtifactCache::makeLease(
   const std::shared_ptr<Shared>& shared, const std::string& cacheKey, bool cacheHit)
@@ -149,16 +208,33 @@ ProviderArtifactLease ProviderArtifactCache::makeLease(
     throw cacheError("DI_PROVIDER_ARTIFACT_INVALID", "cache lease entry is missing");
   auto& entry = found->second;
   auto release = std::make_shared<ProviderArtifactLease::Release>();
-  const auto entryKey = entry.key;
-  release->callback = [shared, entryKey] {
-    std::lock_guard<std::mutex> lock(shared->mutex);
-    const auto found = shared->entries.find(entryKey);
-    if (found == shared->entries.end())
-      return;
-    if (found->second.activeLeases != 0)
-      --found->second.activeLeases;
-    if (shared->activeLeases != 0)
-      --shared->activeLeases;
+  // Capture a generation number rather than the canonical map key.  A pinned
+  // invalidated generation may be retired under an internal key while a
+  // replacement generation reuses the canonical key.
+  const auto generation = entry.generation;
+  release->callback = [shared, generation] {
+    std::function<void()> cleanup;
+    {
+      std::lock_guard<std::mutex> lock(shared->mutex);
+      const auto found = std::find_if(shared->entries.begin(), shared->entries.end(),
+        [generation] (const auto& item) {
+          return item.second.generation == generation;
+        });
+      if (found == shared->entries.end())
+        return;
+      if (found->second.activeLeases != 0)
+        --found->second.activeLeases;
+      if (shared->activeLeases != 0)
+        --shared->activeLeases;
+      if (found->second.activeLeases == 0 &&
+          (shared->stopped || found->second.invalidated)) {
+        shared->chargedBytes -= found->second.chargedBytes;
+        cleanup = std::move(found->second.cleanup);
+        shared->entries.erase(found);
+      }
+    }
+    try { if (cleanup) cleanup(); }
+    catch (...) { reportArtifactCleanupFailure("lease-cleanup-exception"); }
   };
   ++entry.activeLeases;
   ++shared->activeLeases;
@@ -232,11 +308,17 @@ void publish(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
   if (result.runnerSpec) {
     auto metadataOnly = std::make_shared<NativeModelRunnerSpec>(*result.runnerSpec);
     metadataOnly->path.clear();
-    metadataOnly->metadata.erase("encryptedArtifactPath");
+    metadataOnly->lifetime.reset();
+    // A protected artifact is backed by the immutable ciphertext file written
+    // by the assembler.  Keep that descriptor so a cache hit can reopen the
+    // ciphertext on demand; retaining the bytes themselves would make the
+    // cache budget lie about the provider's resident set.
     entry.runnerSpec = std::move(metadataOnly);
   }
+  entry.cleanup = result.cleanup;
   entry.chargedBytes = chargedBytes;
-  entry.lastUse = shared->sequence + 1;
+  entry.generation = ++shared->sequence;
+  entry.lastUse = entry.generation;
   const auto [inserted, didInsert] = shared->entries.emplace(key, std::move(entry));
   if (!didInsert)
     throw cacheError("DI_PROVIDER_ARTIFACT_KEY_MISMATCH", "cache key was published concurrently");
@@ -267,6 +349,8 @@ void publish(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
     shared->chargedBytes += evictedBytes;
     throw;
   }
+  for (auto& old : evicted)
+    scheduleCleanup(shared, old.mapped());
   inserted->second.lastUse = ++shared->sequence;
   shared->chargedBytes += chargedBytes;
   ++shared->coldBuilds;
@@ -349,7 +433,8 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
     std::unique_lock<std::mutex> lock(shared->mutex);
     if (shared->stopped)
       throw cacheError("RUNTIME_CLOSED", "provider artifact cache is stopped");
-    if (const auto found = shared->entries.find(cacheKey); found != shared->entries.end()) {
+    if (const auto found = shared->entries.find(cacheKey);
+        found != shared->entries.end() && !found->second.invalidated) {
       constexpr std::uint64_t CiphertextFramingBudget = 65536;
       const auto overhead = projection.assembly.protectionEpoch == "plaintext-v1"
         ? 0 : CiphertextFramingBudget;
@@ -446,6 +531,7 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
         // preselected, unleased nodes; these operations cannot throw.
         for (const auto victim : victims) {
           shared->chargedBytes -= victim->second.chargedBytes;
+          scheduleCleanup(shared, victim->second);
           shared->entries.erase(victim);
         }
         shared->reservedBytes += reservation;
@@ -457,6 +543,8 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
       creator = true;
     }
   }
+
+  drainDeferredCleanups(shared);
 
   if (!creator) {
     std::unique_lock<std::mutex> lock(shared->mutex);
@@ -513,13 +601,15 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
     return job->cancelled;
   };
   bool published = false;
+  ProviderArtifactCache::BuildResult result;
   try {
     requireControlActive(jobControl);
-    const auto result = build(jobControl);
+    result = build(jobControl);
     std::unique_lock<std::mutex> lock(shared->mutex);
     if (shared->stopped || job->cancelled)
       throw cacheError("DI_PROVIDER_ARTIFACT_CANCELLED", "cache job was cancelled");
     publish(shared, cacheKey, result, job->reservedBytes);
+    result.cleanup = {};
     if (shared->reservedBytes >= job->reservedBytes)
       shared->reservedBytes -= job->reservedBytes;
     job->reservedBytes = 0;
@@ -536,6 +626,7 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
     }
     auto lease = makeLease(shared, cacheKey, false);
     lock.unlock();
+    drainDeferredCleanups(shared);
     if (control.cancelled && control.cancelled()) {
       lease = {};
       throw cacheError("DI_PROVIDER_ARTIFACT_CANCELLED", "creator waiter was cancelled");
@@ -545,24 +636,79 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
   catch (...) {
     if (published)
       throw;
-    std::lock_guard<std::mutex> lock(shared->mutex);
-    if (shared->reservedBytes >= job->reservedBytes)
-      shared->reservedBytes -= job->reservedBytes;
-    job->reservedBytes = 0;
-    if (job->creatorActive) {
-      job->creatorActive = false;
-      if (job->waiters != 0)
-        --job->waiters;
+    {
+      std::lock_guard<std::mutex> lock(shared->mutex);
+      if (shared->reservedBytes >= job->reservedBytes)
+        shared->reservedBytes -= job->reservedBytes;
+      job->reservedBytes = 0;
+      if (job->creatorActive) {
+        job->creatorActive = false;
+        if (job->waiters != 0)
+          --job->waiters;
+      }
+      if (!job->stopRequested && !job->error)
+        job->error = std::current_exception();
+      job->done = true;
+      const auto currentJob = shared->jobs.find(cacheKey);
+      if (currentJob != shared->jobs.end() && currentJob->second == job)
+        shared->jobs.erase(currentJob);
+      job->condition.notify_all();
     }
-    if (!job->stopRequested && !job->error)
-      job->error = std::current_exception();
-    job->done = true;
-    const auto currentJob = shared->jobs.find(cacheKey);
-    if (currentJob != shared->jobs.end() && currentJob->second == job)
-      shared->jobs.erase(currentJob);
-    job->condition.notify_all();
+    if (result.cleanup) {
+      try { result.cleanup(); }
+      catch (...) {}
+    }
+    drainDeferredCleanups(shared);
     throw;
   }
+}
+
+void ProviderArtifactCache::invalidate(const ProviderArtifactKey& key) noexcept
+{
+  const auto shared = m_shared;
+  if (!shared)
+    return;
+  std::string cacheKey;
+  try {
+    cacheKey = key.canonicalKey();
+  }
+  catch (...) {
+    return;
+  }
+  if (cacheKey.empty())
+    return;
+  std::function<void()> cleanup;
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    const auto found = shared->entries.find(cacheKey);
+    if (found == shared->entries.end())
+      return;
+    found->second.invalidated = true;
+    if (found->second.activeLeases == 0) {
+      shared->chargedBytes -= found->second.chargedBytes;
+      cleanup = std::move(found->second.cleanup);
+      shared->entries.erase(found);
+    }
+    else {
+      // Keep the active generation addressable by its existing leases while
+      // freeing the canonical key for a fresh build flight.  Retiring a node
+      // is best effort under this noexcept invalidation fence: if an internal
+      // key allocation fails, the old entry remains invalidated and pinned,
+      // so no caller can observe it as a valid cache hit.
+      auto retired = shared->entries.extract(found);
+      try {
+        auto replacementKey = retiredEntryKey(cacheKey, ++shared->sequence);
+        retired.key() = std::move(replacementKey);
+        shared->entries.insert(std::move(retired));
+      }
+      catch (...) {
+        if (!retired.empty())
+          shared->entries.insert(std::move(retired));
+      }
+    }
+  }
+  try { if (cleanup) cleanup(); }
+  catch (...) {}
 }
 
 void ProviderArtifactCache::stop() noexcept
@@ -570,7 +716,7 @@ void ProviderArtifactCache::stop() noexcept
   const auto shared = m_shared;
   if (!shared)
     return;
-  std::lock_guard<std::mutex> lock(shared->mutex);
+  std::unique_lock<std::mutex> lock(shared->mutex);
   if (shared->stopped)
     return;
   shared->stopped = true;
@@ -592,15 +738,22 @@ void ProviderArtifactCache::stop() noexcept
   }
   shared->reservedBytes = 0;
   shared->jobs.clear();
-  for (auto it = shared->entries.begin(); it != shared->entries.end();) {
-    if (it->second.activeLeases == 0) {
-      shared->chargedBytes -= it->second.chargedBytes;
-      it = shared->entries.erase(it);
-    }
-    else {
-      ++it;
-    }
+  for (;;) {
+    auto it = std::find_if(shared->entries.begin(), shared->entries.end(),
+      [] (const auto& item) { return item.second.activeLeases == 0; });
+    if (it == shared->entries.end())
+      break;
+    shared->chargedBytes -= it->second.chargedBytes;
+    auto cleanup = std::move(it->second.cleanup);
+    shared->entries.erase(it);
+    // Do not collect callbacks in a possibly exhausted vector, and never run
+    // an arbitrary filesystem callback while holding the cache mutex.
+    lock.unlock();
+    try { if (cleanup) cleanup(); }
+    catch (...) {}
+    lock.lock();
   }
+  lock.unlock();
 }
 
 ProviderArtifactCacheCounters ProviderArtifactCache::counters() const noexcept
