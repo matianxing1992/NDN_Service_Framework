@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -126,6 +127,54 @@ std::string manifest(const NativeAssembledEntryContext& value,
     value.storageProfileDigest + "\"}";
 }
 
+void eraseDirectoryFd(int fd);
+
+void eraseEntryFd(int fd, const std::string& name, bool ignoreMissing)
+{
+  struct stat st{};
+  if (::fstatat(fd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
+    if (ignoreMissing && errno == ENOENT) return;
+    throw rejected("plaintext entry stat failed");
+  }
+  if (S_ISDIR(st.st_mode)) {
+    const int child = ::openat(fd, name.c_str(),
+                               O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (child < 0) throw rejected("plaintext child directory open failed");
+    try { eraseDirectoryFd(child); }
+    catch (...) { ::close(child); throw; }
+    ::close(child);
+    if (::unlinkat(fd, name.c_str(), AT_REMOVEDIR) != 0)
+      throw rejected("plaintext directory removal failed");
+  }
+  else {
+    if (S_ISREG(st.st_mode)) {
+      const int file = ::openat(fd, name.c_str(),
+                                O_WRONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+      if (file < 0) throw rejected("plaintext file open failed");
+      struct stat opened{};
+      if (::fstat(file, &opened) != 0 || opened.st_ino != st.st_ino ||
+          opened.st_dev != st.st_dev || !S_ISREG(opened.st_mode)) {
+        ::close(file); throw rejected("plaintext allocation changed");
+      }
+      std::array<unsigned char, 65536> zero{};
+      off_t offset = 0;
+      while (offset < opened.st_size) {
+        const auto count = ::pwrite(file, zero.data(),
+          std::min<off_t>(zero.size(), opened.st_size - offset), offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) { ::close(file); throw rejected("plaintext overwrite failed"); }
+        offset += count;
+      }
+      const bool flushed = ::fsync(file) == 0;
+      ::close(file);
+      if (!flushed) throw rejected("plaintext flush failed");
+    }
+    // Symlinks are removed as directory entries; their targets are never opened.
+    if (::unlinkat(fd, name.c_str(), 0) != 0)
+      throw rejected("plaintext unlink failed");
+  }
+}
+
 void eraseDirectoryFd(int fd)
 {
   const int copy = ::dup(fd);
@@ -137,43 +186,7 @@ void eraseDirectoryFd(int fd)
     const std::string name(entry->d_name);
     if (name == "." || name == "..") continue;
     try {
-      struct stat st{};
-      if (::fstatat(fd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0) {
-        throw rejected("plaintext entry stat failed");
-      }
-      if (S_ISDIR(st.st_mode)) {
-        const int child = ::openat(fd, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-        if (child < 0) throw rejected("plaintext child directory open failed");
-        try { eraseDirectoryFd(child); }
-        catch (...) { ::close(child); throw; }
-        ::close(child);
-        if (::unlinkat(fd, name.c_str(), AT_REMOVEDIR) != 0) throw rejected("plaintext directory removal failed");
-      }
-      else {
-        if (S_ISREG(st.st_mode)) {
-          const int file = ::openat(fd, name.c_str(), O_WRONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-          if (file < 0) throw rejected("plaintext file open failed");
-          struct stat opened{};
-          if (::fstat(file, &opened) != 0 || opened.st_ino != st.st_ino ||
-              opened.st_dev != st.st_dev || !S_ISREG(opened.st_mode)) {
-            ::close(file); throw rejected("plaintext allocation changed");
-          }
-          std::array<unsigned char, 65536> zero{};
-          off_t offset = 0;
-          while (offset < opened.st_size) {
-            const auto count = ::pwrite(file, zero.data(),
-              std::min<off_t>(zero.size(), opened.st_size - offset), offset);
-            if (count < 0 && errno == EINTR) continue;
-            if (count <= 0) { ::close(file); throw rejected("plaintext overwrite failed"); }
-            offset += count;
-          }
-          const bool flushed = ::fsync(file) == 0;
-          ::close(file);
-          if (!flushed) throw rejected("plaintext flush failed");
-        }
-        // Symlinks are removed as directory entries; their targets are never opened.
-        if (::unlinkat(fd, name.c_str(), 0) != 0) throw rejected("plaintext unlink failed");
-      }
+      eraseEntryFd(fd, name, false);
     }
     catch (const std::exception& error) { failure = error.what(); }
   }
@@ -186,9 +199,11 @@ struct DirectoryLease
   int fd = -1;
   std::filesystem::path path;
   struct stat identity{};
+  std::mutex mutex;
   ~DirectoryLease() { if (fd >= 0) ::close(fd); }
   void erase()
   {
+    std::lock_guard<std::mutex> lock(mutex);
     if (fd < 0) return;
     ::lseek(fd, 0, SEEK_SET);
     eraseDirectoryFd(fd);
@@ -201,6 +216,18 @@ struct DirectoryLease
     }
     else if (errno != ENOENT) throw rejected("plaintext directory stat failed");
     ::close(fd); fd = -1;
+  }
+
+  void eraseFile(const std::filesystem::path& file)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (fd < 0) return;
+    if (file.parent_path() != path || file.filename().empty() ||
+        file.filename() == "." || file.filename() == ".." ||
+        file.filename().string().find('/') != std::string::npos) {
+      throw rejected("plaintext file is not a direct child of its lease");
+    }
+    eraseEntryFd(fd, file.filename().string(), true);
   }
 };
 } // namespace
@@ -312,7 +339,7 @@ std::vector<std::uint8_t> openNativeAssembledEntry(
   return crypt(false, key, nonce, cipher, aad);
 }
 
-void registerNativePlaintextDirectory(
+NativePlaintextFileEraser registerNativePlaintextDirectoryWithFileEraser(
   ProtectedRuntime& runtime, const std::filesystem::path& directory, const std::string& leaseId)
 {
   auto lease = std::make_shared<DirectoryLease>();
@@ -323,5 +350,12 @@ void registerNativePlaintextDirectory(
     throw rejected("plaintext staging directory is not private");
   }
   runtime.registerHostPlaintextLease(leaseId, [lease] { lease->erase(); });
+  return [lease] (const std::filesystem::path& file) { lease->eraseFile(file); };
+}
+
+void registerNativePlaintextDirectory(
+  ProtectedRuntime& runtime, const std::filesystem::path& directory, const std::string& leaseId)
+{
+  (void)registerNativePlaintextDirectoryWithFileEraser(runtime, directory, leaseId);
 }
 } // namespace ndnsf::di

@@ -583,6 +583,7 @@ prepareNativeCanonicalOnnxRole(
   bool protectedArtifactOwned = false;
   std::filesystem::path finalArtifactDirectory;
   bool finalArtifactDirectoryOwned = false;
+  NativePlaintextFileEraser eraseProtectedSourceFile;
   const auto storeWhileAuthorized = [&] (auto&& operation) {
     if (protectedRole) {
       // Cancellation uses the same mutex. Never recreate a staging path
@@ -596,8 +597,9 @@ prepareNativeCanonicalOnnxRole(
   };
   try {
     if (protectedRole) {
-      registerNativePlaintextDirectory(*options.protectedRuntime, rootPath,
-                                       "assembly-" + rootPath.filename().string());
+      eraseProtectedSourceFile = registerNativePlaintextDirectoryWithFileEraser(
+        *options.protectedRuntime, rootPath,
+        "assembly-" + rootPath.filename().string());
     }
     const auto rootFile = rootPath / "root.json";
     const auto sourceFile = rootPath / "canonical.onnx";
@@ -1167,10 +1169,14 @@ prepareNativeCanonicalOnnxRole(
       // remove it before sealing/decrypting the assembled artifact so the
       // protected path does not retain a full extra model-sized plaintext
       // file beside its ciphertext and request-scoped runner file.
-      std::error_code sourceCleanupError;
-      std::filesystem::remove(sourceFile, sourceCleanupError);
-      if (sourceCleanupError)
-        throw std::runtime_error("DI_NATIVE_ASSEMBLY_SOURCE_STAGING_CLEANUP_FAILED");
+      try {
+        eraseProtectedSourceFile(sourceFile);
+      }
+      catch (const std::exception& error) {
+        throw std::runtime_error(
+          std::string("DI_NATIVE_ASSEMBLY_SOURCE_STAGING_CLEANUP_FAILED: ") +
+          error.what());
+      }
     }
     auto modelBytes = std::move(assembled.modelBytes);
     NativePlaintextBufferGuard modelGuard{modelBytes};
