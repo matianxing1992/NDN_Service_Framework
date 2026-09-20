@@ -1,5 +1,12 @@
 # Spec 设计变更记录
 
+## Spec189 initial producer-readiness deadline boundary — 2026-09-20
+
+- **Status**: `PARTIAL` / `NO_PUBLIC_API_CHANGE`。r140 暴露了一个生产时序边界：Provider-1 在 Provider-0 发布首个 placement-bound tensor manifest 前开始精确获取，但首个 manifest Interest 也被 `noProgressDeadlineMs` 截断。当前修复让 `NdnsfCollaborationDependencyIo::prefetchInput` 的首个 V3 manifest 等待使用 request hard deadline 与 dependency fetch budget；manifest 成功后，segment fetch 仍受原有 no-progress 与 fetch budget 约束。
+- **Design boundary**: 不增加 hard deadline，不绕过 terminal/cancel，不改变 grant、ACK、Selection、`NDNSF_DATA_V1` wire 或 manifest 校验。变化只区分“producer 尚未发布首个 manifest”的 readiness wait 与“manifest 已发布后的 segment progress”；未宣称真实 Qwen/MiniNDN 或 qualification PASS。
+- **Source / evidence**: `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp`；新增 C++ `V3DependencyIoWaitsForInitialProducerReadiness` 先以 `noProgress=100 ms` 重现旧实现失败，再在生产修复后通过；同一 V3 selector 的既有 manifest/segment 回归也通过。详见 [r141 initial-readiness evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r141-initial-readiness-progress-20260920.md)。
+- **Documentation boundary**: `prefetchInput` 的声明、参数和返回类型不变，因此本单元不生成新的 API signature/PDF 输入；当前行为、失败边界和下一次真实 run 要求由本条、Spec contract、tasks 与 evidence 同步记录。
+
 ## Spec189 protected source-staging cleanup boundary — 2026-09-20
 
 - **Status**: `PARTIAL` / internal native resource-ownership repair。受保护的

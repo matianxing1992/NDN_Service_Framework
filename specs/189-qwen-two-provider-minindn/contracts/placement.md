@@ -26,6 +26,12 @@ Selection 验证前可读 summary，不能重型 fetch/创建 runner。
 - events 绑定 request/attempt/provider/role/plan，不依赖跨进程日志行号总序，
   不要求前段 Provider 另发末段 terminal。
 
+当前 `NDNSF_DATA_V1` V3 实现的 deadline 边界：consumer 首次获取 producer 的
+placement-bound manifest 属于 producer-readiness wait，受 request hard deadline
+和 dependency fetch budget 共同约束；manifest 到达后，各 segment fetch 才使用
+`noProgressDeadlineMs` 的 post-publication progress 窗口。该边界不放宽 hard
+deadline、terminal/cancel 或 manifest 校验，也不构成真实 Qwen/MiniNDN 资格证据。
+
 现有 Spec189TwoProviderOracle 的
 EXECUTION_ENTERED → DEPENDENCY_FETCH → ASSEMBLY_STARTED 固定序必须修正。
 日志缺失是 unobserved，不足以推断代码未执行或 timeout 根因。

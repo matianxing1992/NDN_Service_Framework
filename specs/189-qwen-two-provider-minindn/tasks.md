@@ -1713,6 +1713,36 @@ Evidence: [r140 MiniNDN exact-fetch boundary](evidence/b189-r140-minindn-exact-f
 T003, T005, T006, T007, and T009 remain `PARTIAL`; the next repair must
 review the initial dependency deadline/progress contract and use a new run ID.
 
+### Current Checkpoint — r141 initial producer-readiness repair
+
+The r140 boundary was reduced to a precise C++ regression: a consumer started
+the first exact V3 manifest fetch before the producer had published that
+manifest, while the existing fetch budget also applied the post-publication
+`noProgressDeadlineMs`. The new
+`V3DependencyIoWaitsForInitialProducerReadiness` integration case first failed
+against the old implementation after the delayed producer publication
+(`critical check published has failed`, selector rc `201`). The production
+repair now bounds that first manifest fetch by the request hard deadline and
+dependency fetch budget; subsequent segment fetches retain the
+`noProgressDeadlineMs` bound.
+
+The affected `integration-tests` target rebuilt `127/127`. The new regression
+then passed, and the existing V3 manifest/segment case plus the new case passed
+as a two-case selector with `No errors detected`. Raw build and selector output
+is retained under
+`.codex-tmp/spec189-r141-initial-readiness-regression/`; the immutable static
+review snapshot is under
+`.codex-tmp/spec189-r141-initial-readiness-regression/static-review-20260920/`.
+This is a focused C++ repair only: no new installed candidate or real r141
+MiniNDN run has yet observed manifest publication, runner readiness, terminal
+output, numerical oracle, repeat, or qualification. T003, T005, T006, T007,
+and T009 remain `PARTIAL`.
+The frozen source review returned `STATIC_PASS` with no blocker. Its P2
+follow-ups remain unobserved: an unpublished manifest must terminate at the
+hard deadline/fetch budget, a smaller fetch budget must cap initial readiness,
+and a post-manifest segment stall must retain the no-progress failure. These
+are coverage improvements, not a qualification result.
+
 执行顺序：`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
 保留历史 ID 稳定链接；序号不再代表时间。
 成员、五 lane、动态检查、唯一结果记录见 [batch-execution.md](batch-execution.md)。

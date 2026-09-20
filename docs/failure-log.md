@@ -9030,3 +9030,19 @@ ORT, or missing-name verdict. Raw evidence remains at
 `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r140/`;
 durable details are in
 `specs/189-qwen-two-provider-minindn/evidence/b189-r140-minindn-exact-fetch-boundary-20260920.md`.
+
+2026-09-20 Spec189 r141 initial-readiness regression: the first test-only
+compile attempt stopped before linking because the new integration case used
+unqualified test helper namespaces; no assertion ran. The repaired test then
+built the affected `integration-tests` target `127/127`. Against the old
+production implementation, the C++ regression started consumer prefetch,
+delayed producer manifest publication by 250 ms, and failed at
+`critical check published has failed` with selector rc `201`; this confirmed
+the existing 100 ms no-progress window was incorrectly applied before the
+producer's first manifest. The production repair changed only the initial
+manifest budget selection. The repaired case passed, and the existing V3
+manifest/segment case plus the new case passed `2/2` with `No errors detected`.
+This remains a focused C++ regression boundary; no real installed r141 run or
+qualification result is claimed. Raw evidence is under
+`.codex-tmp/spec189-r141-initial-readiness-regression/`, with durable details
+in `specs/189-qwen-two-provider-minindn/evidence/b189-r141-initial-readiness-progress-20260920.md`.

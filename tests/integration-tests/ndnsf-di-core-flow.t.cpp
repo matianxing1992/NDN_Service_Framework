@@ -2533,6 +2533,169 @@ BOOST_AUTO_TEST_CASE(V3DependencyIoPublishesManifestThenReconstructsExactSegment
   BOOST_CHECK_EQUAL(reconstructed->expectedBytes, original.payload.size());
 }
 
+BOOST_AUTO_TEST_CASE(V3DependencyIoWaitsForInitialProducerReadiness)
+{
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.providerCount = 2;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() ==
+                ndn_service_framework::test::EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+
+  auto& producerFace = environment.providerFace(0);
+  auto& consumerFace = environment.providerFace(1);
+  auto& producer = environment.provider(0);
+  auto& consumer = environment.provider(1);
+  auto forwardInterest = consumerFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) { producerFace.receive(interest); });
+  auto forwardData = producerFace.onSendData.connect(
+      [&] (const ndn::Data& data) { consumerFace.receive(data); });
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  const ndn::Name requestId("/request/v3-readiness-wait");
+  const std::string planDigest = sha('1');
+  const std::string groupId = "group-v3-readiness";
+  const std::string sourceLayout = sha('2');
+  const std::string targetLayout = sha('3');
+  const std::string tensorDigest = sha('4');
+
+  GroupOperationV1 operation;
+  operation.operationIndex = 7;
+  operation.kind = "PIPELINE_TRANSFER";
+  operation.producerRanks = {"0"};
+  operation.consumerRanks = {"1"};
+  operation.tensorLayoutDigest = sourceLayout;
+  operation.maxBytes = 256;
+  operation.maxSegments = 8;
+
+  auto producerCoordinator =
+      std::make_shared<ProviderGroupCoordinator>(makeD2bCoordinatorOptions());
+  const auto capability = producerCoordinator->createCapability(
+      requestId.toUri(), "attempt-1", planDigest, groupId, 3,
+      {{producer.getName().toUri(), 0, "offer-producer",
+        producer.getName().toUri()},
+       {consumer.getName().toUri(), 1, "offer-consumer",
+        consumer.getName().toUri()}},
+      {operation}, 1024, 100, 2000);
+  auto consumerCoordinator =
+      std::make_shared<ProviderGroupCoordinator>(makeD2bCoordinatorOptions());
+  consumerCoordinator->installCapability(
+      capability,
+      producerCoordinator->epochKeyForProvider(producer.getName().toUri()),
+      true);
+
+  NativeTensorEndpointV3 endpoint;
+  endpoint.producerNamespace = producer.getName().toUri();
+  endpoint.requester = profile.userIdentity.toUri();
+  endpoint.requestId = requestId.toUri();
+  endpoint.attempt = 1;
+  endpoint.planDigest = planDigest;
+  endpoint.groupId = groupId;
+  endpoint.groupEpoch = "3";
+  endpoint.operation = operation.kind;
+  endpoint.round = operation.operationIndex;
+  endpoint.sourceKind = "ROLE";
+  endpoint.producerRole = "S0R0";
+  endpoint.producerRank = 0;
+  endpoint.consumerRole = "S1R0";
+  endpoint.consumerRoles = {"S1R0"};
+  endpoint.tensorId = "hidden";
+  endpoint.tensorDigest = tensorDigest;
+  endpoint.layoutDigest = sourceLayout;
+  endpoint.targetLayoutDigest = targetLayout;
+  endpoint.microbatch = 0;
+  endpoint.segmentCount = operation.maxSegments;
+  endpoint.manifestDigest = sha('5');
+  endpoint.securityProfile = "NDNSF_DATA_V1";
+  endpoint.noProgressDeadlineMs = capability.noProgressMs;
+  endpoint.hardDeadlineMs = capability.hardDeadlineMs;
+  endpoint.endpointDigest = sha('6');
+
+  DependencyEdge edge;
+  edge.scope = groupId;
+  edge.producerRole = endpoint.producerRole;
+  edge.consumerRole = endpoint.consumerRole;
+  edge.consumerRoles = endpoint.consumerRoles;
+  edge.plannedDataName = tensorObjectNamePrefix(endpoint);
+  edge.tensors = {endpoint.tensorId};
+  edge.requestId = endpoint.requestId;
+  edge.attemptEpoch = endpoint.attempt;
+  edge.useNdnsfDataV1 = true;
+  edge.collectiveOperationIndex = operation.operationIndex;
+  edge.collectiveProducerRank = "0";
+  edge.collectiveSourceLayoutDigest = sourceLayout;
+  edge.collectiveTargetLayoutDigest = targetLayout;
+  edge.collectiveTensorDigest = tensorDigest;
+  edge.transportScope = groupId;
+  edge.producerProvider = producer.getName().toUri();
+  edge.declaredByV3 = true;
+  edge.manifestDataName = tensorObjectManifestName(endpoint);
+  edge.maxSegments = endpoint.segmentCount;
+  edge.endpointDigest = endpoint.endpointDigest;
+  edge.planDigest = planDigest;
+  edge.manifestContractDigest = endpoint.manifestDigest;
+  edge.tensorDigest = tensorDigest;
+  edge.layoutDigest = sourceLayout;
+  edge.securityProfile = endpoint.securityProfile;
+  edge.operationKind = operation.kind;
+  edge.round = operation.operationIndex;
+  edge.microbatch = 0;
+  edge.noProgressDeadlineMs = capability.noProgressMs;
+  edge.hardDeadlineMs = capability.hardDeadlineMs;
+
+  ServiceProvider::CollaborationAssignment producerAssignment;
+  producerAssignment.role = endpoint.producerRole;
+  producerAssignment.service = profile.serviceName;
+  ServiceProvider::CollaborationAssignment consumerAssignment;
+  consumerAssignment.role = endpoint.consumerRole;
+  consumerAssignment.service = profile.serviceName;
+  ServiceProvider::CollaborationContext producerContext(
+      producer, profile.userIdentity, requestId, RequestMessage(),
+      producerAssignment);
+  ServiceProvider::CollaborationContext consumerContext(
+      consumer, profile.userIdentity, requestId, RequestMessage(),
+      consumerAssignment);
+
+  const TensorBundle original{
+      "hidden", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+                 10, 11, 12, 13, 14, 15, 16, 17, 18}, 0, 0};
+  NdnsfCollaborationDependencyIo producerIo(
+      producerContext, 2000, 7, 60000, producerCoordinator);
+  NdnsfCollaborationDependencyIo consumerIo(
+      consumerContext, 2000, 7, 60000, consumerCoordinator);
+
+  auto fetched = consumerIo.prefetchInput("session-v3-readiness", edge);
+  const auto publishAt = std::chrono::steady_clock::now() + 250ms;
+  bool published = false;
+  std::exception_ptr publicationError;
+  environment.pumpUntil([&] {
+    if (!published && std::chrono::steady_clock::now() >= publishAt) {
+      try {
+        producerIo.publishOutput("session-v3-readiness", edge, original);
+      }
+      catch (...) {
+        publicationError = std::current_exception();
+      }
+      published = true;
+    }
+    return fetched.wait_for(0ms) == std::future_status::ready;
+  });
+  BOOST_REQUIRE(published);
+  BOOST_REQUIRE(!publicationError);
+
+  std::optional<TensorBundle> reconstructed;
+  BOOST_REQUIRE_NO_THROW(reconstructed = fetched.get());
+  BOOST_REQUIRE(reconstructed);
+  BOOST_CHECK_EQUAL_COLLECTIONS(
+      reconstructed->payload.begin(), reconstructed->payload.end(),
+      original.payload.begin(), original.payload.end());
+  BOOST_CHECK_EQUAL(reconstructed->expectedSegments, 3U);
+  BOOST_CHECK_EQUAL(reconstructed->expectedBytes, original.payload.size());
+}
+
 BOOST_AUTO_TEST_CASE(AsyncDataflowRunsThreeStagePipelineAndRejectsMissingOutput)
 {
   const DependencyEdge input{"input", "", "stage0", "/input", 1, 4};
