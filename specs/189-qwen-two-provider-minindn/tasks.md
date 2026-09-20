@@ -64,6 +64,19 @@ cache cleanup callback, and emits
 `NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED`; a corrected immutable snapshot
 and read-only review are required before build.
 
+**Evidence maintenance after push**: 2026-09-20 — after checkpoint
+`d13d6045` was pushed to `origin/Experimental`, 104 old run-scoped
+`encrypted-repo`, `canonical-repo`, and Provider cache directories were removed
+from the local `.codex-tmp` workspace. The removed payload/cache set was about
+`41 GiB`; old run logs, JSON, certificates, and resource samples were retained,
+and the complete r139 run root was retained at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r139/`.
+The remaining Spec189 runs directory is about `4.9 GiB`, and root free space
+rose from about `4.1 GiB` to `42 GiB`. This is local evidence maintenance only:
+no protocol result or task checkbox changes, T005/T006/T007/T009 remain
+`PARTIAL`, and no Codex conversation files or Git refs were modified.
+Details are in [run artifact cleanup evidence](evidence/b189-run-artifact-cleanup-20260920.md).
+
 **B189-3 r119 range-source focused-check boundary**: 2026-09-20 — the first
 focused selector invocation after the bounded publication repair used the
 wrong worker fixture directory (`/usr/local/bin` instead of

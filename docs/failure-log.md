@@ -56,6 +56,21 @@ exception, transfers the protected artifact-directory lifetime through
 `NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED` on best-effort cleanup failures;
 the corrected snapshot and review are still required before the next build.
 
+## 2026-09-20 — Spec189 local run-artifact cleanup after pushed checkpoint
+
+After checkpoint `d13d6045` was pushed to `origin/Experimental`, local
+maintenance removed 104 old run-scoped `encrypted-repo`, `canonical-repo`, and
+Provider cache directories from
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/`. The removed payload/cache
+set was approximately `41 GiB`. Old run logs, JSON, certificates, and resource
+samples were retained; the complete r139 run root was retained. The runs root
+now occupies approximately `4.9 GiB`, and root filesystem free space increased
+from approximately `4.1 GiB` to `42 GiB`. This changes no protocol boundary or
+qualification status. Git history cleanup was deliberately not attempted
+because the remaining large local objects include Codex turn-diff refs and
+unattributed unreachable objects; no Codex refs or conversation files were
+modified. See [run artifact cleanup evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-run-artifact-cleanup-20260920.md).
+
 ## 2026-09-20 — Spec189 r135 native stream-gap boundary
 
 r135 crossed the staging disk gate and used the exact installed native
