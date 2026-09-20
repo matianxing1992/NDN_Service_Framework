@@ -9014,3 +9014,19 @@ against the default `/tmp` staging directory failed with `Permission denied`;
 the private `0700` staging rerun passed. This is a focused build/test and
 installation boundary, not a MiniNDN, Qwen, terminal, or qualification result.
 Evidence: `specs/189-qwen-two-provider-minindn/evidence/b189-r140-focused-build-secure-erase-20260920.md`.
+
+2026-09-20 Spec189 real installed r140: the host resource gate passed, the
+requester closed ACK and committed Selection, both Providers accepted the
+same plan and verified their grants before assembly, and Provider-0 reached
+assembly start. Provider-1 then entered dependency fetch for Provider-0's
+placement-bound tensor manifest and exhausted 356 exact signed-data attempts
+with `error=deadline`; Provider-0 had not published that exact manifest while
+it was still materializing large selected materials. The run was manually
+stopped after this first classified production boundary, so the supervisor
+records `CANCELLED` with cleanup `PASS`; no runner, terminal response,
+numerical oracle, repeat request, or qualification result exists. This is an
+upstream-readiness/deadline boundary, not a resource, authorization, Repo,
+ORT, or missing-name verdict. Raw evidence remains at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r140/`;
+durable details are in
+`specs/189-qwen-two-provider-minindn/evidence/b189-r140-minindn-exact-fetch-boundary-20260920.md`.

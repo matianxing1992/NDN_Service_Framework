@@ -1700,6 +1700,19 @@ Evidence: [r140 focused build and secure-erase](evidence/b189-r140-focused-build
 This is not a MiniNDN/Qwen or qualification result; T003, T005, T006, T007,
 and T009 remain `PARTIAL`.
 
+The subsequent real installed MiniNDN run `two-provider-global-r140` passed
+the host resource gate, ACK closure, Selection commit, both Provider
+Selection acceptance records, and both `GRANT_VERIFICATION` boundaries. It
+reached Provider-0 assembly start and Provider-1 dependency fetch, then
+Provider-1 exhausted 356 exact signed-data attempts with `error=deadline`
+before Provider-0 published the requested tensor manifest. The run was then
+operator-stopped while Provider-0 was still materializing; supervisor cleanup
+passed. This is a classified upstream-readiness/deadline boundary, not a
+resource, authorization, Repo, ORT, numerical-output, or qualification PASS.
+Evidence: [r140 MiniNDN exact-fetch boundary](evidence/b189-r140-minindn-exact-fetch-boundary-20260920.md).
+T003, T005, T006, T007, and T009 remain `PARTIAL`; the next repair must
+review the initial dependency deadline/progress contract and use a new run ID.
+
 执行顺序：`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
 保留历史 ID 稳定链接；序号不再代表时间。
 成员、五 lane、动态检查、唯一结果记录见 [batch-execution.md](batch-execution.md)。
