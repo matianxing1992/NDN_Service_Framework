@@ -1,5 +1,1181 @@
 # Failure Log and Evidence Index
 
+## 2026-09-20 — Spec189 r139 disk-free boundary after authenticated Selection
+
+r139 used the repaired launcher, the exact installed native candidate, fresh
+run/external roots, and `NDNSF_NDN_LOG='*=TRACE'` together with the existing
+Selection/status/timeline diagnostics. The unchanged host guard stopped at
+`RESOURCE_BOUNDARY:diskFree` and cleanup passed. The 315-sample record had
+minimum available memory `2534084608`, minimum disk free `4123873280`,
+aggregate RSS peak `8117018624`, owned-swap peak `156700672`, and swap-I/O
+delta `458199040`. The raw stop record is
+`.codex-tmp/spec189-r139-launch.log`; the raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r139/`.
+
+Unlike r135--r138, r139 provides durable evidence through authenticated
+Selection: the requester emitted `NDNSF_DI_NATIVE_ACK_CLOSED` and
+`NDNSF_DI_NATIVE_SELECTION_COMMITTED`; both Providers emitted signed
+Selection acceptance and `GRANT_VERIFICATION` at `BEFORE_ASSEMBLY`. Provider-0
+entered placement-bound role validation, dependency preparation, reported
+assembly admission, and `ASSEMBLY_STARTED`; both Providers emitted the native
+`EXECUTION_ENTERED` marker. The requester received repeated signed
+`SELECTION_STATUS_QUERY` replies (Provider-0: 841, Provider-1: 275), so the
+earlier absence of status visibility is no longer the first boundary.
+
+The host guard interrupted the run while Provider-0 retained a
+`752097499`-byte staging `canonical.onnx` and a `752308868`-byte protected
+assembly cipher. No `RUNNER_READY`, `EXECUTION_COMPLETED`, terminal response,
+second request, or independent C++ oracle result was recorded. The requester
+ended with `NATIVE_REQUEST_STAGE_FAILED code=CANCELLED boundary=request` as a
+consequence of the guard stop; Provider-1's connection-reset shutdown is also
+cleanup fallout. This is a real Selection/assembly-admission and resource
+boundary, not a two-provider qualification PASS. T005/T006/T007/T009 remain
+`PARTIAL`; the next changed gate is bounded review of the r139 materialization
+and resource ownership before another fresh guarded run, without raising any
+limit or deleting raw evidence.
+
+After r139, the preserved Provider-0 staging `canonical.onnx` was independently
+verified as digest
+`sha256:258f367628b69a66eccf0973386b2eb80e2fce74cd64c2172d4f00a6e06abb94`
+and atomically hard-linked to the existing canonical staging inode `4853426`.
+The r139 path and bytes remain available, the inode now has `11` links, and
+root ext4 free space is `4875534336` bytes. The unique `752308868`-byte
+protected ciphertext and all raw logs remain untouched. This is
+space-preserving evidence maintenance only and does not change the r139
+boundary or qualification status.
+
+The first read-only re-review of the r139 resource-boundary repair used
+immutable snapshot `.codex-tmp/spec189-r139-source-staging-review-v1/` and
+returned `NOT_STATIC_PASS`: the snapshot omitted the changed
+`NativeModelRunner.hpp` dependency, the protected cleanup catch could mask the
+first assembly error with `ProtectedRuntime::cancel()`, and the artifact/cache
+owner handoff and cleanup failures needed explicit coverage. No rebuild or
+rerun followed that review. The bounded repair now preserves the first
+exception, transfers the protected artifact-directory lifetime through
+`NativeModelRunnerSpec` into the cache cleanup callback, and emits
+`NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED` on best-effort cleanup failures;
+the corrected snapshot and review are still required before the next build.
+
+## 2026-09-20 — Spec189 r135 native stream-gap boundary
+
+r135 crossed the staging disk gate and used the exact installed native
+candidate. Both Providers reached READY, emitted signed `ACK_DECISION` offers,
+and recorded `GRANT_VERIFICATION` at `BEFORE_ASSEMBLY`. The first native round
+then failed at the requester stream boundary:
+`NATIVE_STREAM_FAILED boundary=stream`, with Core message
+`stream event gap exceeded retry budget`. The 348-sample resource stream
+ended in `drained`; minimum available memory was `2122010624`, minimum disk
+free `4563804160`, aggregate RSS peak `8165933056`, owned-swap peak
+`117878784`, and swap-I/O delta `117878784`. This was not a host guard stop.
+
+Provider-0 left a protected assembly cache cipher and ORT profile, but the
+preserved logs contain no authenticated Selection, complete runner/execution,
+terminal response, repeat request, or C++ oracle result. The first confirmed
+boundary is the Core stream event-gap retry budget after provider grant
+verification; the cache artifacts do not promote that boundary to assembly or
+protocol PASS. Raw output is `.codex-tmp/spec189-r135-launch.log`; raw run
+root is `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r135/`.
+The next changed gate is trace-enabled observation of Selection-status and
+authenticated preparation-progress delivery on a fresh run. Timeout, retry,
+guard, and protocol limits remain unchanged.
+
+Before the trace retry, the preserved r135 Repo payload was independently
+verified as the canonical initializer digest and atomically hard-linked to
+canonical inode `4377094`. The original r135 path and bytes remain, now mode
+`444`; the shared inode has `86` links and host free space is `7570694144`
+bytes. This is space-preserving evidence maintenance and does not change the
+r135 stream boundary or qualify the run.
+
+## 2026-09-20 — Spec189 r136 trace run disk-free boundary
+
+r136 used the trace-enabled command and again started both Providers, but the
+unchanged host guard stopped the fresh run at `RESOURCE_BOUNDARY:diskFree`.
+The 283-sample record ended in `drained`: minimum available memory
+`5972131840`, minimum disk free `3786682368`, aggregate RSS peak `4455481344`,
+owned-swap peak `103866368`, and swap-I/O delta `103866368`; cleanup was
+`PASS`. The requester trace recorded `43` stream-retry expressions and `42`
+timeout callbacks for the Provider-1 event prefix. Provider logs had no
+Selection-status/progress trace and only the pre-assembly grant boundary;
+Provider-0 retained a `752097499`-byte staging `canonical.onnx` and root
+metadata. No Selection/assembly completion, terminal response, repeat request,
+or C++ oracle result exists. Raw output is `.codex-tmp/spec189-r136-launch.log`;
+raw run root is `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r136/`.
+This is a host disk boundary that interrupted the trace experiment, not a
+protocol result. The next attempt must preserve this run, verify exact payload
+identity before any space-preserving deduplication, and add lifecycle tracing;
+guard and stream limits remain unchanged.
+
+The preserved r136 Repo payload was independently SHA-256 verified as the
+canonical initializer and atomically hard-linked to inode `4377094`; its
+original path and bytes remain, now mode `444`. The shared inode has `88`
+links and host free space is `5289746432` bytes. The non-matching-sized r136
+`canonical.onnx` staging artifact remains untouched. This is space-preserving
+evidence maintenance only; r137 still requires fresh trace and resource
+evidence.
+
+Before r137, the nine preserved `752097499`-byte `canonical.onnx` staging
+paths were independently verified against digest
+`sha256:258f367628b69a66eccf0973386b2eb80e2fce74cd64c2172d4f00a6e06abb94`.
+The r112 path was retained as inode `4853426`; the other eight historical
+paths, including r136, were atomically hard-linked to that inode. All paths
+and bytes remain available, the anchor now has `9` links, and root ext4 free
+space is `11306508288` bytes. No open deleted file was found. This is
+space-preserving evidence maintenance only and does not change r136's
+`diskFree` boundary or qualify any protocol stage.
+
+## 2026-09-20 — Spec189 r137 native stream-gap boundary
+
+r137 used a fresh run root, the unchanged installed candidate, the unchanged
+resource/stream limits, and the prior selection/assignment diagnostics. The
+parent command also set `NDNSF_TIMELINE_TRACE=1`, but the maintained Qwen
+launcher did not propagate timeline-trace variables through `env_for()`;
+therefore that observation control was not active in the child processes. The
+launcher was repaired to forward `NDNSF_TIMELINE_TRACE`, its sample-rate
+companion, and `NDNSF_STREAM_PACKET_TIMELINE_TRACE`; the Python syntax check
+passed.
+
+The run passed MiniNDN startup, both Provider READY/ACK decisions, and both
+`GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY` checks. Provider-0 then reached
+native assembly and retained a protected `752308868`-byte model cipher and a
+`961277`-byte ORT profile. The requester recorded `89` stream-retry trace
+lines for the Provider-1 event prefix and ended the first native round with
+`NATIVE_STREAM_FAILED: stream event gap exceeded retry budget`. Provider-1
+produced no Selection/assembly artifact. The 347-sample resource stream ended
+`drained`: minimum available memory `2480660480`, minimum disk free
+`6009753600`, aggregate RSS peak `8092606464`, owned-swap peak `197283840`,
+and swap-I/O delta `590598144`; the host guard did not stop the run and
+cleanup was `PASS`. There is no authenticated Selection, complete runner,
+execution, terminal response, repeat request, or C++ oracle result. Raw
+launcher output is `.codex-tmp/spec189-r137-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r137/`.
+This is a native stream boundary, not a protocol/model qualification PASS.
+The next changed gate is the repaired launcher trace propagation on a fresh
+run; timeout, retry, guard, and protocol limits remain unchanged.
+
+## 2026-09-20 — Spec189 r138 trace-propagation disk boundary
+
+r138 was a fresh run after the launcher repair and verified that
+`NDNSF_TIMELINE_TRACE`, its sample-rate companion, and
+`NDNSF_STREAM_PACKET_TIMELINE_TRACE` reached both Provider environments. The
+run again passed MiniNDN startup, both Provider READY/ACK decisions, and both
+`GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY` checks. Provider-0 fetched a
+`752097499`-byte staging `canonical.onnx`; no authenticated Selection,
+assembly completion, runner, execution, terminal response, repeat request, or
+C++ oracle result was observed. The unchanged host guard stopped at
+`RESOURCE_BOUNDARY:diskFree`; 287 samples recorded minimum available memory
+`5828329472`, minimum disk free `3729842176`, aggregate RSS peak
+`4453687296`, owned-swap peak `103759872`, and swap-I/O delta `296140800`.
+Cleanup was `PASS`, and the requester recorded cancellation at the request
+boundary. Raw launcher output is `.codex-tmp/spec189-r138-launch.log`; raw
+run root is `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r138/`.
+This is a host disk boundary before Selection, not a protocol/model
+qualification PASS. The next changed gate is exact space-preserving
+deduplication of the newly verified initializer and staging payloads, then a
+fresh run with the same limits.
+
+After r138, both r137/r138 canonical Repo initializer payload paths were
+independently verified as digest
+`sha256:413814d6166b5958623e45c085c502f56498e45769c93de45b8c16c2f61c62dd`
+and retained on initializer inode `4377094`, now with `93` links. The r138
+`canonical.onnx` staging path was independently verified as digest
+`sha256:258f367628b69a66eccf0973386b2eb80e2fce74cd64c2172d4f00a6e06abb94`
+and retained on inode `4853426`, now with `10` links. All paths and bytes
+remain available; no open deleted file was found, and root ext4 free space is
+`7488299008` bytes. This is space-preserving evidence maintenance only and
+does not change the r138 disk boundary or qualify any stage.
+
+A further exact SHA-256 check found the r131 canonical Repo initializer
+payload at the same digest; it was atomically hard-linked to initializer inode
+`4377094`. The original r131 path and bytes remain, the inode now has `94`
+links, and root ext4 free space is `8991244288` bytes. The r91/r122/r132
+`.part` files had different digests and were deliberately left untouched.
+This remains space-preserving evidence maintenance only.
+
+## 2026-09-20 — Spec189 r134 disk-free boundary and staging-artifact review
+
+r134 restored the canonical initializer's required read-only mode and entered
+MiniNDN with a fresh run root. Both Providers reached READY, but the unchanged
+host guard stopped at `RESOURCE_BOUNDARY:diskFree` before requester
+ACK/Selection. The 39-sample stream recorded minimum available memory
+`6469636096`, minimum disk free `3847790592`, aggregate RSS peak
+`3527966720`, owned-swap peak `53248`, and swap-I/O delta `54505472`; cleanup
+was `PASS`. There is no grant verification, ACK/Selection, assembly, runner,
+execution, terminal, repeat request, or oracle result. Raw output is
+`.codex-tmp/spec189-r134-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r134/`.
+This is a host artifact-placement boundary, not a protocol or qualification
+result.
+
+The preserved candidate currently contains a 1,503,264,768-byte r134 Repo
+staging `.part` artifact, with equivalent large artifacts in earlier failed
+runs. Before r135, each candidate is checked for exact digest identity against
+the independently verified canonical initializer; only byte-preserving hard
+link deduplication of exact matches is allowed. No raw log, run record, source,
+installed binary, or host guard limit is removed or changed.
+
+The r134 staging `.part` was verified as the canonical initializer
+(`sha256:413814d6166b5958623e45c085c502f56498e45769c93de45b8c16c2f61c62dd`,
+1,503,264,768 bytes) and atomically hard-linked to canonical inode `4377094`.
+The same operation was applied only to exact-match r126/r127/r129 payload
+paths; the r91 and r132 staging artifacts had different digests and were left
+untouched. All original paths remain present and byte-addressable, the shared
+inode has `84` links, and host free space is `9853657088` bytes. This is
+space-preserving evidence maintenance; it does not change the r134 boundary
+or establish a protocol result.
+
+## 2026-09-20 — Spec189 r132 disk-free boundary and space-preserving artifact review
+
+The r132 fresh installed-runtime run entered MiniNDN and both Providers
+reached `NDNSF_DI_NATIVE_PROVIDER_READY`, but the unchanged host guard stopped
+at `RESOURCE_BOUNDARY:diskFree` before requester ACK/Selection. Its 44 samples
+recorded minimum available memory `6371221504`, minimum disk free
+`3850231808`, aggregate RSS peak `3521368064`, owned swap `0`, and swap-I/O
+delta peak `117432320`; cleanup was `PASS`. There is no grant verification,
+Selection, assembly, runner, execution, terminal, repeat request, or oracle
+result. Raw output is `.codex-tmp/spec189-r132-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r132/`.
+This is a host artifact-placement boundary, not a protocol or qualification
+result.
+
+The preserved candidate had two 1,503,264,768-byte canonical initializer
+paths with the same independently verified SHA-256
+`413814d6166b5958623e45c085c502f56498e45769c93de45b8c16c2f61c62dd`. Both
+paths and mode `600` were retained while they were converted to shared inode
+`4377094`; no raw run, source, installed binary, or guard limit was removed.
+Root free space increased by `1503268864` bytes. The next fresh attempt uses
+the unchanged candidate and run root r133.
+
+The first r133 invocation stopped before MiniNDN at
+`MODEL_CANONICAL_INITIALIZER_SOURCE_NOT_IMMUTABLE`: the hard-link operation
+had changed the shared canonical initializer inode to mode `600`, but the
+launcher requires no write bits on the source. No process or request chain
+started. Raw output is `.codex-tmp/spec189-r133-launch.log`. Restore
+read-only mode on that already verified shared inode, then retry with a fresh
+run root; this is an invocation/file-attribute boundary only.
+
+## 2026-09-20 — Spec189 r132 source-release compile boundary
+
+The first r132 targeted build for the bounded worker source-release repair
+stopped during compilation: `NativeCanonicalByteBuffer` has no `scrub()`
+member; that helper belongs to `MaterialPayload`. No binary was linked and no
+selector or MiniNDN process ran. Raw output is
+`.codex-tmp/spec189-r132-targeted-build-source-release.log`. The repair is
+limited to using `OPENSSL_cleanse` on `initializerBytes->asVector()` before
+resetting the buffer; rerun the same affected build before any installation or
+experiment retry.
+
+The first r132 focused-selector command then used the non-existent Boost.Test
+filter `Spec189CanonicalMaterialConsumer/*` and stopped at test setup with no
+matching test cases. The separate ONNX extraction/assembly/activation/Repo
+selector entered its assertion bodies and passed all `30` cases. This is a
+selector invocation boundary, not a source or protocol result. Raw outputs are
+`.codex-tmp/spec189-r132-material-selector-source-release.log` and
+`.codex-tmp/spec189-r132-onnx-repo-selector-source-release.log`; enumerate the
+actual test tree and rerun only the missing material consumer selector.
+
+The exact r132 material selector then entered two cases but failed
+`ExternalInitializerUsesBoundedChunksAndReassemblesAfterSelection`: the
+payload cleanup path zeroed a shared initializer backing still owned by the
+source, and the post-Selection round-trip comparison observed different
+bytes. The ONNX extraction/assembly/activation/Repo selector separately passed
+all `30` cases. This is a C++ ownership assertion boundary, not a MiniNDN
+result. The bounded repair makes `MaterialPayload::scrub()` leave shared
+backing/range views intact and scrub only payload-owned bytes; rebuild and
+rerun the exact material selector before installation.
+
+r132c passed the affected targeted build `538/538`, the exact material
+consumer selector `2/2`, and the ONNX extraction/assembly/activation/Repo
+selector `30/30`. These are focused C++ gates only; no installed-runtime or
+MiniNDN qualification status changes. Raw outputs are
+`.codex-tmp/spec189-r132c-targeted-build-shared-scrub.log`,
+`.codex-tmp/spec189-r132c-material-selector-shared-scrub.log`, and
+`.codex-tmp/spec189-r132c-onnx-repo-selector-shared-scrub.log`.
+
+r132c then installed the affected DI library, Provider, assembly worker,
+requester, and C++ oracle. Build/install SHA-256 pairs matched exactly, and
+the installed `ldd` closure had no unresolved, build-tree, or `.codex-tmp`
+dependency. This is an installed-runtime identity gate only; the next step is
+a fresh guarded MiniNDN run. Evidence is
+`.codex-tmp/spec189-r132c-runtime-identity-v3.log` and
+`.codex-tmp/spec189-r132c-ldd-closure.log`.
+
+## 2026-09-20 — Spec189 r131 certified-chain source-resident resource boundary
+
+The r131 fresh installed-runtime run used dynamically computed exact hashes for
+the requester, Providers, worker, oracle, controller, authority, tokenizer,
+and receipt. MiniNDN startup passed; both Providers reached READY and emitted
+signed `ACK_DECISION`, and both emitted
+`NDNSF_DI_GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`. The unchanged host
+guard then stopped at `RESOURCE_BOUNDARY:ownedSwap` before requester
+ACK/Selection. Its 303 samples recorded minimum available memory
+`1645875200`, minimum disk free `4884680704`, aggregate RSS peak
+`8443310080`, owned-swap peak `405467136`, and swap-I/O delta peak
+`968613888`; cleanup was `PASS`. The requester only recorded `CANCELLED`.
+There is no Selection, assembly/runner, execution, terminal, repeat request,
+or C++ oracle result. This is a native worker source-residency resource
+boundary, not a protocol, model, or qualification PASS.
+
+Raw launcher output is `.codex-tmp/spec189-r131-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r131/`;
+durable detail is in
+[b189-r119-range-source-focused-check-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r119-range-source-focused-check-20260920.md).
+The next changed gate is a reviewed worker-only release of the request source
+buffers after `ownedSourceModel()` has copied and authenticated them; guard
+limits and protocol contracts remain unchanged.
+
+## 2026-09-20 — Spec189 r119 range-source focused-check boundary
+
+The first r119 focused-selector invocation did not validate the new
+range-backed publication repair because `NDNSF_SPEC182_BIN_DIR=/usr/local/bin`
+did not contain the worker fixture produced by the build; the material
+consumer and ONNX activation cases stopped before their assertion bodies. The
+Repo publication case did execute and returned
+`repo-publication-identity-mismatch`: external initializer range-view payloads
+were still measured and written through `MaterialPayload::bytes.size()`.
+The repair now attaches a verified Repo range source to loaded initializers,
+uses bounded `copyBytes()` in publication, and uses `byteSize()` for Repo
+metadata. Raw selector output is
+`.codex-tmp/spec189-r119-material-selector.log` and
+`.codex-tmp/spec189-r119-onnx-repo-selector.log`; durable detail is
+[b189-r119-range-source-focused-check-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r119-range-source-focused-check-20260920.md).
+This is a focused validation boundary, not a MiniNDN or protocol result. The
+next retry must rebuild, set `NDNSF_SPEC182_BIN_DIR=build-spec189-oracle`, and
+rerun the named C++ selectors.
+
+The follow-up r119 rebuild passed `434/434`; with the correct fixture path the
+material consumer selector passed `2/2` and the ONNX selectors entered their
+assertion bodies. The Repo selector then exposed two source boundaries:
+`RepoSourceMissReusesValidatedInitializer` returned
+`repo-publication-identity-mismatch` from the strict range identity helper,
+and `MaterialManifestPublishesWithOwnedTransactionsAndRejectsCorruption`
+returned `DI_NATIVE_ONNX_MATERIAL_INITIALIZER` because selected external
+initializer references did not fetch their authenticated chunks. The raw
+follow-up logs are `.codex-tmp/spec189-r119-material-selector-v2.log` and
+`.codex-tmp/spec189-r119-onnx-repo-selector-v2.log`; the changed gate remains
+the C++ Repo material range/selection path. Repair both before installation or
+MiniNDN retry.
+
+The next r119 rerun passed the material consumer `2/2`, ONNX extraction,
+assembly, activation, and the Repo source-range check. The remaining Repo
+post-Selection case stopped at `selected material payload differs from
+manifest reference`: external initializer chunks are authenticated through a
+shared-initializer reference, while each chunk's digest/size is recorded in
+the root's authenticated `materialObjects`; the selector still required a
+direct manifest reference for every chunk. Repair this binding before
+installation or MiniNDN retry. Raw output is
+`.codex-tmp/spec189-r119-onnx-repo-selector-v3.log`.
+
+The r119 chunk-reference repair passed the affected native build `434/434`.
+The material consumer selector passed `2/2`, and the combined ONNX extraction,
+assembly, activation, and Repo publication selectors completed with
+`*** No errors detected`; the Repo source-range and post-Selection chunk
+fetches both entered their assertions. This is not a MiniNDN protocol or
+qualification result. No task checkbox changes; the next gate is installed
+runtime provenance and a fresh guarded MiniNDN run. Raw output is
+`.codex-tmp/spec189-r119-material-selector-v4.log`,
+`.codex-tmp/spec189-r119-onnx-repo-selector-v4.log`, and
+`.codex-tmp/spec189-r119-build-range-source-v4.log`.
+
+The first fresh installed-runtime retry r120 stopped before MiniNDN while
+building provider key-prefix metadata: `provider key prefix unavailable:
+/example/ndnsf-qwen06b/provider-0`. The preserved r120 PIB contains the key;
+the launcher was invoked through `/usr/bin/python3` under `sudo env` without
+the user-site `ndn` package, and its optional `ndn.encoding` decode import was
+caught. This is an invocation/Python-environment boundary, not a protocol,
+resource, or model result. Raw output is `.codex-tmp/spec189-r120-launch.log`;
+raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r120/`.
+Retry with the same candidate and explicit digests plus the verified
+user-site `PYTHONPATH`.
+
+The r121 retry used the verified `PYTHONPATH`, installed binaries, and a fresh
+run root. It passed launcher key initialization, MiniNDN startup, both
+Provider readiness/offer decisions, and both
+`NDNSF_DI_GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY` checks. The unchanged
+host guard then stopped at `RESOURCE_BOUNDARY:MemAvailable` before requester
+ACK/Selection. It sampled 298 records: minimum available memory was
+`1003737088` bytes, maximum owned swap was `524922880` bytes, maximum
+swap-I/O delta was `1107390464` bytes, and aggregate RSS peaked at
+`9811668992` bytes. At the threshold the assembly worker child was about
+`5112135680` bytes RSS and its provider parent about `2050000000` bytes RSS.
+Cleanup passed and no process remained. The requester recorded
+`CANCELLED`; there is no ACK_CLOSED/Selection, runner, execution, terminal,
+repeat round, or oracle result. This is a native parent/worker memory
+ownership boundary, not a protocol or qualification result. The next repair
+must release parent-side model and initializer buffers only after the worker
+request pipe is fully written. Raw output is
+`.codex-tmp/spec189-r121-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r121/`;
+durable detail is in
+[b189-r121 resource evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r119-range-source-focused-check-20260920.md).
+
+The bounded r122 repair adds an optional `sourceToReleaseAfterWrite` argument
+to the OA02 worker transport. Existing four-argument callers remain
+non-destructive; production `NativeCanonicalOnnxAssembler` releases the
+parent model/initializer/material source only after the complete request frame
+has entered the pipe. The affected targeted build passed `538/538`; the
+material consumer selector passed `2/2`, and the combined ONNX extraction,
+native assembly, activation, and Repo publication selector passed `30` cases.
+The five installed runtime targets have exact build/installed SHA-256 equality;
+the corrected closure check found no unresolved or build-tree dependency.
+These gates do not qualify the protocol or model. The next attempt is a fresh
+guarded MiniNDN run root with the same candidate inputs.
+
+The fresh r122 run entered MiniNDN and both Providers reached
+`NDNSF_DI_NATIVE_PROVIDER_READY`, but before requester ACK/Selection the
+unchanged host guard stopped at `RESOURCE_BOUNDARY:diskFree`. Across 45
+samples, disk free reached `4001157120` bytes against the
+`4294967296`-byte limit; available memory stayed above `6973997056` bytes,
+aggregate RSS peaked at `3527479296` bytes, owned swap at `4096` bytes, and
+swap-I/O delta at `180342784` bytes. Cleanup passed and no process remained.
+No requester ACK/Selection, grant verification, assembly, runner, execution,
+terminal, repeat round, or oracle result exists. This is a host disk-budget
+boundary, not a protocol, model, or resource PASS. Raw output is
+`.codex-tmp/spec189-r122-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r122/`;
+durable detail is in
+[b189-r122 disk evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r119-range-source-focused-check-20260920.md).
+
+The disk review found the root filesystem at 98% use. The validated r118 and
+r121 Repo payload copies were byte-identical to the canonical initializer and
+were replaced with hard links to the same immutable inode; their original
+paths and bytes remain available and approximately `2.2G` of duplicate blocks
+was released. The r122 incomplete staging `.part` digest differed and was
+left untouched. Root free space then measured `7007141888` bytes. This was a
+space-preserving artifact operation; it changed no code, installed binary,
+guard limit, or durable failure boundary. The next attempt may use a fresh
+r123 run root with the same candidate inputs.
+
+The first r123 invocation stopped before MiniNDN because the oracle digest
+argument omitted a `4`; preflight returned
+`SPEC189_ORACLE_BINARY_DIGEST_MISMATCH`. The verified build/installed digest
+is `sha256:ef12b58e7fb2e3b0f0643ab7afafe02a3786456150c178a00402a3adef7b9086`.
+No process or request chain was started. This is an invocation boundary, not a
+source, protocol, resource, or model result. Raw output is
+`.codex-tmp/spec189-r123-launch.log`.
+
+The corrected r124 invocation entered MiniNDN with the same installed
+candidate, but before requester ACK/Selection the unchanged guard stopped at
+`RESOURCE_BOUNDARY:diskFree`; cleanup passed and no process remained. The
+r124 run root accumulated approximately `4.0G`, dominated by the requester
+encrypted Repo payload set, while available memory stayed healthy. No grant
+verification, assembly, layer fetch, runner, execution, terminal, repeat
+round, or oracle result exists. This is a host artifact-placement boundary,
+not a protocol, model, or qualification result. Raw output is
+`.codex-tmp/spec189-r124-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r124/`;
+durable detail is in
+[b189-r124 disk evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r119-range-source-focused-check-20260920.md).
+
+The bounded runner repair adds optional `--encrypted-repository-path`
+placement; the default remains under the run root, and an explicit path must
+be a new or empty directory outside that root. Focused Python regression and
+guard tests passed `44` cases and `py_compile` passed. The next candidate uses
+the separately checked `/dev/shm/ndnsf-spec189-r125/encrypted-repo` path; no
+guard threshold or production ownership contract changes.
+
+The r125 candidate entered MiniNDN with that external tmpfs ciphertext path.
+Both Providers reached READY, signed ACK decisions, and
+`NDNSF_DI_GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`; Provider-0 entered
+assembly staging and fetched canonical ONNX, so the earlier root-disk boundary
+was crossed. The unchanged host guard then stopped at
+`RESOURCE_BOUNDARY:ownedSwap`: across 284 samples, available memory reached a
+minimum of `2282303488`, root disk free a minimum of `5001625600`, aggregate
+RSS a maximum of `6933381120`, and owned swap a maximum of `302174208` against
+the unchanged `268435456` limit. Swap-I/O delta reached `774483968`.
+Cleanup passed and no process remained. No `RUNNER_READY`, execution,
+terminal, repeat request, or oracle result exists. This is a host tmpfs/swap
+resource boundary, not a protocol or qualification result. Raw output is
+`.codex-tmp/spec189-r125-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r125/`;
+durable detail is
+[b189-r125 resource evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r119-range-source-focused-check-20260920.md).
+
+After preserving r125, 24 canonical initializer payload paths were individually
+SHA-256 verified and converted to hard links to the immutable source, without
+deleting paths or bytes. Root ext4 free space increased from about
+`5001428992` to `20034101248` bytes. This is a space-preserving artifact
+operation; guard limits and source/runtime behavior were unchanged. The next
+retry uses ext4-backed run-scoped ciphertext in a fresh r126 root.
+
+The r126 candidate used an ext4-backed external ciphertext directory and
+crossed the r125 tmpfs/swap boundary. Both Providers reached READY, signed ACK
+decisions, and `NDNSF_DI_GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`;
+Provider-0 fetched canonical ONNX into assembly staging. The unchanged host
+guard then stopped at `RESOURCE_BOUNDARY:MemAvailable`: across 299 samples,
+available memory reached a minimum of `1174708224`, root disk free a minimum
+of `16242237440`, aggregate RSS a maximum of `8260157440`, owned swap a
+maximum of `105701376`, and swap-I/O delta a maximum of `1005477888`.
+Cleanup passed and no process remained. No `RUNNER_READY`, execution,
+terminal, repeat request, or oracle result exists. This is a host working-set
+boundary after real Repo/fetch admission, not a protocol or qualification
+result. Raw output is `.codex-tmp/spec189-r126-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r126/`;
+durable detail is
+[b189-r126 resource evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r119-range-source-focused-check-20260920.md).
+The next changed gate is the MiniNDN-only NFD Content Store size; guard limits
+and production ownership remain unchanged.
+
+The bounded r127 preparation changes only the MiniNDN runner: it passes
+`csSize=4096` to NFD rather than the MiniNDN default 65536 entries, limiting
+per-forwarder retention of multi-GiB canonical/large-data objects while the
+authenticated Repo remains the source of truth. Python/guard regression tests
+passed `44` cases, runner `py_compile` passed, and `git diff --check` passed.
+No guard threshold, production NFD default, or native Repo/DI ownership
+contract changed. The next changed gate is a fresh ext4-backed r127 MiniNDN
+run.
+
+r127 used the bounded `MININDN_NFD_CS_SIZE=4096` setting. The Providers
+reached READY, signed ACK decisions, and
+`NDNSF_DI_GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`, but the unchanged
+guard stopped at `RESOURCE_BOUNDARY:MemAvailable`: minimum available memory
+was `1493688320`, minimum disk free `12460199936`, aggregate RSS peaked at
+`8255197184`, owned swap at `238215168`, and swap-I/O delta at `960897024`.
+Cleanup passed and no process remained. The assembly worker reached about
+`6283599872` RSS, so the low CS setting reduced NFD retention but amplified
+worker fetch memory. No runner, execution, terminal, repeat request, or oracle
+result exists; this is not a protocol or qualification result. Raw output is
+`.codex-tmp/spec189-r127-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r127/`.
+The next changed gate is an intermediate MiniNDN NFD CS size with guard limits
+unchanged.
+
+The next bounded candidate uses `MININDN_NFD_CS_SIZE=32768`, with the same
+ext4-backed storage, candidate identities, and unchanged resource guard.
+
+The first r128 invocation stopped before MiniNDN with
+`MODEL_TOKENIZER_DIGEST_MISMATCH`. A direct read-only check of the tokenizer
+selected from the stage manifest returns
+`sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4`;
+there is no runtime or protocol result. Raw output is
+`.codex-tmp/spec189-r128-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r128/`.
+This is an invocation boundary; r129 uses the exact verified digest.
+
+r129 used the verified tokenizer digest, ext4-backed encrypted Repo, and
+`MININDN_NFD_CS_SIZE=32768`. Both Providers reached READY, signed ACK
+decisions, and `NDNSF_DI_GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`; the
+Provider-0 assembly staging fetched canonical ONNX. The unchanged guard then
+stopped at `RESOURCE_BOUNDARY:MemAvailable`: minimum available memory was
+`1170264064`, minimum disk free `8675835904`, aggregate RSS peaked at
+`8783286272`, owned swap at `105500672`, and swap-I/O delta at `740933632`.
+Cleanup passed and no process remained. The assembly worker reached about
+`5636308992` RSS while its Provider parent reached about `1333473280`; no
+`RUNNER_READY`, execution, terminal, repeat request, or oracle result exists.
+This is a native worker working-set boundary, not a protocol or qualification
+result. Raw output is `.codex-tmp/spec189-r129-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r129/`.
+The next changed gate is the reviewed C++ certified-chain ownership repair.
+
+The reviewed r130 repair moves the authenticated original protobuf into S5
+shape inference and retains only compact certified node bytes for S6 comparison,
+avoiding a full inlined-initializer deep copy. Targeted build `538/538`,
+material selector `2/2`, and ONNX/Repo selector `30` cases passed. Exact
+build/installed hashes match for requester, Provider, worker, oracle, and DI
+library; installed `ldd` has no unresolved, build-tree, or `.codex-tmp`
+dependency. Raw outputs are `.codex-tmp/spec189-r130-targeted-build-move-original.log`,
+`.codex-tmp/spec189-r130-material-selector-move-original.log`,
+`.codex-tmp/spec189-r130-onnx-repo-selector-move-original.log`, and
+`.codex-tmp/spec189-r130-runtime-identity.log`. These are focused/install
+gates only; the next attempt is a fresh guarded MiniNDN run.
+
+The first r130 invocation stopped before MiniNDN with
+`ASSEMBLY_WORKER_BINARY_DIGEST_MISMATCH`; the manually supplied worker digest
+had a character transposition. A read-only build/installed check confirms
+`sha256:1a97d902e0c9a2e5d8acbaf34046a9a92ae6a77d9d494a27671b2deb75b3f4b6`.
+No process or request chain started. Raw output is
+`.codex-tmp/spec189-r130-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r130/`.
+This is an invocation boundary; r131 reads the exact installed hashes.
+
+## 2026-09-20 — Spec189 r118 resource boundary
+
+r118 used all current system-installed native binaries and passed candidate
+identity, MiniNDN startup, both Provider offer decisions, and both
+`NDNSF_DI_GRANT_VERIFICATION` checks at `BEFORE_ASSEMBLY`. The unchanged host
+guard stopped at `RESOURCE_BOUNDARY:MemAvailable`: minimum available memory
+was `1080655872` bytes against `1610612736`, maximum owned swap was
+`329965568` against `268435456`, swap-I/O delta reached `1314488320` against
+`268435456`, and aggregate sampled RSS reached `9308581888` bytes. Cleanup
+passed and no process remained. No requester ACK/Selection, assembly, runner,
+execution, terminal, repeat round, or oracle result exists. Raw output is
+`.codex-tmp/spec189-r118-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r118/`;
+durable detail is
+[b189-r118-resource-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r118-resource-boundary-20260920.md).
+This is a host resource boundary, not a resource PASS or protocol
+qualification. Do not raise limits; the next changed gate is native
+preparation/assembly memory attribution and bounded ownership repair.
+
+## 2026-09-20 — Spec189 r117 digest invocation boundary
+
+After current system binaries were installed, r117 stopped before MiniNDN
+because the command supplied a mistyped digest for
+`candidate/stage-manifest-qwen-v2.json`: `sha256:4c90126bb974...` instead of
+the verified
+`sha256:4c90126bf974a91abeb555f57b25a786afcf68a11b45976f8a1d15ee1df9c097`.
+The launcher returned `MODEL_STAGE_MANIFEST_DIGEST_MISMATCH`; its preserved
+supervisor reports `boundary: null`, `cleanup: PASS`, `returncode: 1`, and no
+remaining processes. Raw output is `.codex-tmp/spec189-r117-launch.log`; raw
+run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r117/`;
+durable detail is
+[b189-r117-digest-invocation-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r117-digest-invocation-boundary-20260920.md).
+This is a command boundary, not a product or protocol result.
+
+## 2026-09-20 — Spec189 r116 preparation-source boundary
+
+r116 passed candidate identity checks and MiniNDN Controller/Authority startup,
+but the requester stopped before ACK/Selection at
+`PREPARATION_SOURCE_UNAVAILABLE`: `fallback initializer does not match pinned
+digest or size`. Both Provider logs are empty. The r116 config and published
+source manifest pin initializer digest
+`sha256:413814d6166b5958623e45c085c502f56498e45769c93de45b8c16c2f61c62dd`,
+and the preserved fallback file has the same SHA-256 and size as the candidate
+file. The maintained supervisor reports `boundary: null`, `cleanup: PASS`,
+`returncode: 1`, and no remaining processes. Raw output is
+`.codex-tmp/spec189-r116-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r116/`;
+durable detail is
+[b189-r116-preparation-source-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r116-preparation-source-boundary-20260920.md).
+This is a preparation/provenance boundary, not a resource or protocol result.
+The changed gate is installed requester/library provenance or the preparation
+fallback contract; install current targets and retry with a fresh run root.
+
+## 2026-09-20 — Spec189 r115 manifest preflight boundary
+
+The first r115 launch supplied the older
+`candidate/stage-manifest-qwen-r99.json`, which lacks the required
+`eosTokenIds` field. Candidate preflight stopped with
+`MODEL_EOS_TOKEN_IDS_REQUIRED` before MiniNDN startup. The preserved
+supervisor reports `boundary: null`, `cleanup: PASS`, `returncode: 1`, and no
+remaining processes. Raw output is `.codex-tmp/spec189-r115-launch.log`; the
+run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r115/`;
+durable detail is
+[b189-r115-manifest-preflight-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r115-manifest-preflight-boundary-20260920.md).
+This is a launch-argument boundary, not a protocol or model result. Retry
+with a fresh run root and the prepared `stage-manifest-qwen-v2.json` whose
+digest is
+`sha256:4c90126bf974a91abeb555f57b25a786afcf68a11b45976f8a1d15ee1df9c097`.
+
+## 2026-09-20 — Spec189 r115 materialized-role graph repair checkpoint
+
+r115 completed the focused repair for the r114 native graph boundary. The
+post-selection compact role now carries an authenticated `materializedRole`
+recipe field; the full canonical-source checker is skipped only for that
+materialized path, while shape inference, boundary extraction, assembled-model
+checking, and ORT session creation remain required. The build passed `434/434`,
+the material selectors passed `2/2`, the ONNX selectors passed `25/25`, all
+affected global targets installed, and native receipt verification passed.
+Receipt SHA-256 is
+`71cefd68e6bdf9ccdb58bb389e00f188b604a16b732e127239884a985052886b`.
+Durable detail is
+[b189-r115-materialized-role-graph-repair-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r115-materialized-role-graph-repair-20260920.md).
+This is a focused source/build/install checkpoint only; no MiniNDN or model
+qualification result is claimed. The next changed gate is the fresh r115
+installed-runtime two-Provider run.
+
+## 2026-09-20 — Spec189 r114 native graph boundary
+
+r114 passed the changed installed candidate identity, MiniNDN startup, ACK
+closure, Selection, both Provider grant checks, and Provider-0
+`ASSEMBLY_STARTED`. It also crossed the r112 resource boundary: the unchanged
+guard did not stop the run, `supervisor.json` reports `boundary: null`,
+`cleanup: PASS`, `returncode: 1`, and no remaining processes; maximum owned
+swap was `161386496` bytes against the `268435456`-byte limit and maximum RSS
+was `6426677248` bytes. Provider-0 then failed after material fetch at
+`DI_NATIVE_ONNX_GRAPH` (`1789919182.202545`). Provider-1's exact-Data terminal
+and the requester `NATIVE_STREAM_FAILED` are downstream. No runner, successful
+ONNX execution, terminal response, repeat round, or oracle result exists. Raw
+launcher output is `.codex-tmp/spec189-r114-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r114/`;
+durable detail is
+[b189-r114-native-graph-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r114-native-graph-boundary-20260920.md).
+The changed gate is exact native graph-substage diagnosis; do not raise the
+resource limit or classify this as a qualification PASS.
+
+## 2026-09-20 — Spec189 r113 material-backing release repair checkpoint
+
+r113 repairs the native materializer working set exposed by r112: after all
+selected graph nodes and initializers are authenticated and copied into the
+protobuf model, selected `MaterialPayload` backing is scrubbed and released
+before final model serialization. The conservative assembly budget is
+unchanged. The affected build passed `434/434`, the material consumer
+selectors passed `2/2`, and `Spec182OnnxActivation` passed `9/9` with the
+explicit fixture directory. The affected global targets were installed and
+the refreshed native receipt verified with SHA-256
+`d548b4cb6356d6210ff79591b7f4f45a7d76f98231ac281c1f40550a549cdd4f`. This is
+a focused source/build/install checkpoint only; MiniNDN results are pending.
+Durable detail is
+[b189-r113-material-backing-release-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r113-material-backing-release-20260920.md).
+
+## 2026-09-20 — Spec189 r113 focused-selector invocation boundary
+
+The first r113 focused-selector command followed a successful `434/434`
+native build but omitted `NDNSF_SPEC182_BIN_DIR=build-spec189-oracle`. The
+integration selector could not locate `DI_NativeOnnxAssemblyWorker`, and the
+activation selector could not locate the Spec182 worker fixtures; no selector
+assertion body completed. This is an incomplete validation invocation, not a
+source or MiniNDN failure. Raw logs are
+`.codex-tmp/spec189-r113-material-selector.log` and
+`.codex-tmp/spec189-r113-onnx-activation.log`; durable detail is
+[b189-r113-selector-invocation-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r113-selector-invocation-boundary-20260920.md).
+Rerun with the explicit fixture directory before installing the candidate.
+
+## 2026-09-20 — Spec189 r112 owned-swap resource boundary
+
+r112 passed candidate identity, MiniNDN startup, ACK, Selection, and both
+Provider grant checks. Provider-0 reached `ASSEMBLY_STARTED`; Provider-1
+entered `DEPENDENCY_FETCH` and later emitted a downstream failed `TERMINAL`
+while Provider-0 was still assembling. The maintained guard stopped the
+supervised request at `RESOURCE_BOUNDARY:ownedSwap`: the first over-limit
+sample was `ownedSwapBytes=271503360` against the unchanged
+`maxOwnedSwapBytes=268435456`, with RSS `5762756608` bytes and
+`swapIoDeltaBytes=634826752`. Cleanup passed and the final sample drained to
+zero owned swap. No runner, successful ONNX execution, terminal response,
+second round, or oracle result exists. Raw launcher output is
+`.codex-tmp/spec189-r112-launch.log`; raw run root is
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r112/`;
+durable detail is
+[b189-r112-owned-swap-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r112-owned-swap-boundary-20260920.md).
+The next changed gate is a read-only native assembly memory review; do not
+raise the resource limit or reuse the run root as a substitute for that gate.
+
+## 2026-09-20 — Spec189 r111 digest-format preflight boundary
+
+r111 stopped before MiniNDN startup with
+`MODEL_STAGE_MANIFEST_DIGEST_MISMATCH`. The launcher’s `digest_file()` returns
+`sha256:<hex>`, but the command supplied the stage-manifest identity as bare
+hexadecimal text; the same format is required for the other explicit
+identities. No process, protocol, resource, model, or oracle result exists.
+The preserved supervisor reports `returncode=1`, `boundary=null`,
+`cleanup=PASS`, and no remaining processes; the final resource sample has
+zero owned swap. Raw output is `.codex-tmp/spec189-r111-launch.log`; raw run
+root is `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r111/`;
+durable detail is
+[b189-r111-digest-format-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r111-digest-format-boundary-20260920.md).
+Retry only with a fresh run root and `sha256:`-prefixed identities.
+
+## 2026-09-20 — Spec189 r110 material-template repair checkpoint
+
+r110 repaired the r109 first production boundary in
+`materializeNativeCanonicalModel`: template and node graph parsing now reads
+the authenticated `MaterialPayload` through `data()` and `byteSize()`, which
+supports the shared backing/range representation. The affected native build
+passed `434/434`, the material consumer selectors passed `2/2`,
+`Spec182OnnxActivation` passed `9/9`, explicit global installation passed,
+and the refreshed native receipt verified with SHA-256
+`a1128c3fe7001c3b996bfefa5246c9ae518866edf4385478865f0ab6ddc20ef0`.
+This is a focused source/build/install checkpoint only; it does not establish
+a MiniNDN protocol or qualification result. Durable detail is
+[b189-r110-material-template-repair-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r110-material-template-repair-20260920.md).
+The next changed gate is a fresh installed-runtime MiniNDN run with a new run
+root.
+
+## 2026-09-20 — Spec189 r109 material-template boundary
+
+The repaired installed runtime passed candidate preflight, MiniNDN startup,
+ACK, Selection, Provider grant verification, and `ASSEMBLY_STARTED`. Provider-0
+verified 4,633 material payloads and 817 bundles, then reported
+`DI_NATIVE_ONNX_MATERIAL_TEMPLATE` because the shared-range payload stored
+bytes in `MaterialPayload::backing` while the template decode still accessed
+the legacy `.bytes` member. Provider-1's signed exact-Data dependency failure
+followed Provider-0 termination and is downstream. The resource guard did not
+stop the run; `supervisor.json` reports `returncode=1`, `boundary=null`,
+`cleanup=PASS`, and no remaining processes; the final sample is drained with
+zero owned swap. Raw output is `.codex-tmp/spec189-r109-launch.log`; raw run
+root is `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r109/`;
+durable detail is [b189-r109-material-template-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r109-material-template-boundary-20260920.md).
+The next changed gate is the materialized template/node decode compatibility;
+do not classify this as a budget or ORT result.
+
+## 2026-09-20 — Spec189 r108 canonical-source preflight boundary
+
+The r108 changed-candidate launch stopped before MiniNDN because its command
+supplied `candidate/canonical/canonical-qwen-external.onnx`, while the
+verified canonical source is in the campaign-level `canonical/` directory.
+The launcher reported `MODEL_CANONICAL_SOURCE_MISSING`; no process, protocol,
+resource, model, or oracle result exists. Raw output is
+`.codex-tmp/spec189-r108-launch.log`; durable detail is
+[b189-r108-canonical-source-preflight-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r108-canonical-source-preflight-20260920.md).
+This is a launch-argument boundary; retry with a fresh run root and the
+verified source path.
+
+## 2026-09-20 — Spec189 r106 native material-budget boundary
+
+The fresh installed-runtime MiniNDN run passed candidate preflight, startup,
+ACK, Selection, Provider grant verification, and native assembly admission on
+both Providers. Provider-0 verified 5,453 material payloads totalling
+`1511365303` bytes, then reported `DI_NATIVE_ONNX_MATERIAL_INITIALIZER` at
+the native initializer materialization boundary. The current candidate
+declares `max_assembled_bytes=1571325451`, while the assembler's bounded
+working-set check also charges retained material, the reconstructed raw
+initializer, and final-model copies. Provider-1's signed exact-Data fetch
+failure followed Provider-0 termination and is downstream. The resource guard
+did not stop the run; `supervisor.json` records `returncode=1`,
+`boundary=null`, `cleanup=PASS`, and no remaining processes. No runner, ONNX
+execution, terminal response, second-round result, or oracle result exists.
+Raw output is `.codex-tmp/spec189-r106-launch.log`; raw evidence is under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r106/`;
+durable detail is [b189-r106-native-material-budget-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r106-native-material-budget-20260920.md).
+The next changed gate is the planner/native-assembler per-role assembly budget
+contract; do not retry with only a new run ID or timeout.
+
+## 2026-09-20 — Spec189 r107 native material-budget repair checkpoint
+
+r107 repaired the r106 gate in the C++ consumer and Qwen profile: selected
+external initializer chunks now retain authenticated shared bundle ranges
+instead of duplicating every bundle, and scrub clears shared backing
+allocations; the profile derives `max_assembled_bytes` from the assembler's
+conservative working-set upper bound. The affected build and install checks
+passed, `Spec175NativeAssembly/Spec189MaterialConsumer*` passed 2/2, and
+`Spec182OnnxActivation` passed 9/9. The combined publisher selector still
+stops at the known staging-file `Permission denied` environment boundary; it
+does not establish a product failure or qualification. Receipt verification
+passed with SHA-256
+`6a3c8f5fa690f71161d4db389d0d23b2b54b3b769890a936b6a226b49baaa7f1`.
+No MiniNDN runtime result is claimed; the next attempt must use a fresh
+changed candidate and run root.
+
+## 2026-09-20 — Spec189 r105 installed-runtime preflight boundary
+
+The fresh two-node dispatch passed the stage-count gate but stopped before
+MiniNDN at `MODEL_NODE_MAPPING_MISSING`: the command referenced the nonexistent
+`candidate/qwen-node-mapping.json` while the candidate contains
+`candidate/node-mapping.json`. No process, protocol, resource, or model result
+exists. Raw output is `.codex-tmp/spec189-r105-launch.log`; verify the
+existing mapping digest and use a new run root for the next attempt.
+
+## 2026-09-20 — Spec189 r104 installed-runtime preflight boundary
+
+The first fresh installed-runtime dispatch stopped before MiniNDN because the
+launcher defaulted to three stage nodes while the authenticated Qwen v2 stage
+manifest contains two stages. It reported `--stage-nodes count must match
+stage manifest and contain no duplicates`; no process, protocol, resource, or
+model result exists. Raw output is `.codex-tmp/spec189-r104-launch.log`. Retry
+with the explicit two-node stage list and unchanged candidate, installed
+binary, and resource identities.
+
+## 2026-09-20 — Spec189 r103 assembly-timeout wiring checkpoint
+
+r102 source/timing diagnosis showed that the standalone native Provider
+executable did not assign `NativeCanonicalOnnxAssemblerOptions.assemblyTimeoutMs`;
+the assembler therefore started its 30,000 ms default before the roughly
+179-second synchronous Qwen material fetch. r103 adds an explicit finite
+`--assembly-timeout-ms` option and effective-value log, keeps it separate from
+dependency/readiness/control budgets, passes the large-model value from the
+Qwen profile, and lets the launcher use explicit installed binary paths. The
+affected C++ build passed, the complete activation selector passed 9/9 after
+its worker fixtures were built, and the affected runtime targets were
+installed and linked against the canonical global closure. This is a focused
+source/build/install checkpoint only; no new MiniNDN protocol result or
+qualification exists. Durable detail: [r103 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r103-assembly-timeout-wiring-20260920.md).
+
+## 2026-09-20 — Spec189 r103 worker-fixture build boundary
+
+The retry build for the missing Spec182 worker fixtures stopped before
+compilation because the existing explicit build-tree directory
+`build-spec189-oracle/tests/standalone/spec182-worker-tools` is owned by
+`root:root` from an earlier root experiment. This is a build-environment
+permission boundary, not a source or product result. Raw output is
+`.codex-tmp/spec189-r103-worker-fixtures-build.log`; repair only that exact
+build subdirectory ownership before repeating the named fixture build.
+
+## 2026-09-20 — Spec189 r103 focused-selector invocation boundary
+
+The affected `di-native-provider` and `unit-tests` targets built successfully
+after the explicit assembly-budget wiring. The first
+`Spec182OnnxActivation` invocation passed seven cases but could not run the
+blocking-worker and signal-kill cases because the command had not built the
+separate `spec182-worker-tool-block` and `spec182-worker-tool-sigkill`
+fixtures. This is a validation-command boundary, not a product failure. Raw
+output is `.codex-tmp/spec189-r103-onnx-activation.log`; build those explicit
+fixtures before repeating the selector.
+
+## 2026-09-20 — Spec189 r102 native assembly-timeout boundary
+
+r102 passed candidate and installed-runtime preflight, reached requester
+Selection commit, and had both Providers record Selection acceptance,
+`GRANT_VERIFIED`, and `ASSEMBLY_ADMISSION_REPORTED`. Provider-0 then entered
+`ASSEMBLY_STARTED`, fetched and verified material, and failed at the first
+native production boundary with `DI_NATIVE_ONNX_ASSEMBLY_TIMEOUT`. Provider-1
+was in `DEPENDENCY_FETCH` and failed to fetch Provider-0's signed exact Data
+after that upstream failure. The requester also reported a stream event gap,
+but that is downstream of the Provider failure in this run. The resource guard
+did not stop the run; `supervisor.json` reports `cleanup=PASS`, `returncode=1`,
+and no remaining processes. No successful runner, execution, terminal response,
+two-round output, or oracle result exists. Raw evidence is under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r102/`;
+durable evidence is
+[b189-r102-native-assembly-timeout-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r102-native-assembly-timeout-20260920.md).
+Source/timing diagnosis shows that Provider-0 entered assembly at
+`1789912424.051127`, verified its last material payload at
+`1789912603.290546`, and failed at `1789912603.579023`. The executable's
+runner factory left `NativeCanonicalOnnxAssemblerOptions.assemblyTimeoutMs` at
+its 30,000 ms default, while `NativeCanonicalOnnxAssembler` started that
+deadline before the synchronous material fetches. The fetch completed after
+the deadline, so the worker entry gate reported the timeout. This is a
+production timeout-wiring defect; it is not a host guard stop or proof of an
+ONNX computation failure. The next changed gate is an explicit, independently
+logged finite assembly budget followed by a fresh full-chain run.
+
+## 2026-09-20 — Spec189 r101 native stream-gap boundary
+
+r101 passed the repaired candidate preflight and started real MiniNDN. Both C++
+Providers reached `READY`, emitted `ACK_DECISION`, and recorded
+`GRANT_VERIFIED` before assembly; Repo publication produced the run-scoped
+encrypted manifests. The first native request then failed at the requester
+`stream` boundary with `NATIVE_STREAM_FAILED` / `stream event gap exceeded
+retry budget`. `supervisor.json` records `returncode=1`, `boundary=null`, and
+`cleanup=PASS`; the guard did not stop it for owned swap. No Selection,
+placement-bound fetch, assembly, runner, execution, terminal response, or
+oracle result was recorded. Raw evidence is under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r101/`;
+durable evidence is
+[b189-r101-native-stream-gap-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r101-native-stream-gap-20260920.md).
+
+## 2026-09-20 — Spec189 r101 install invocation boundary
+
+The first r101 candidate-install invocation passed the shell script to Python
+and stopped with `SyntaxError` before build/install or MiniNDN. Raw output is
+`.codex-tmp/spec189-r101-install.log`; no protocol result exists. Retry with
+the script interpreter.
+
+## 2026-09-20 — Spec189 r100 EOS-token preflight boundary
+
+The r100 launcher passed the repaired stage-manifest family/schema check but
+stopped before MiniNDN at `MODEL_EOS_TOKEN_IDS_REQUIRED`. The old manifest
+does not carry the prepared Qwen stop-token contract. No topology, Provider,
+Repo, ACK, Selection, model or resource result exists. Raw output is
+`.codex-tmp/spec189-r100-launch.log`; durable evidence is
+[b189-r100-eos-token-preflight-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r100-eos-token-preflight-boundary-20260920.md).
+
+## 2026-09-20 — Spec189 r99 stage-manifest family preflight boundary
+
+The refreshed-candidate r99 launcher stopped before MiniNDN in
+`load_stage_manifest` because the supplied stage manifest lacked the required
+explicit `modelFamily`. The native receipt, binary/input digest arguments and
+root/resource preflight had already been supplied; no Provider, Repo, ACK,
+Selection, model or resource result exists. Raw output is
+`.codex-tmp/spec189-r99-launch.log`; durable evidence is
+[b189-r99-stage-manifest-family-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r99-stage-manifest-family-boundary-20260920.md).
+
+## 2026-09-20 — Spec189 r99 native binding compile boundary
+
+The maintained native-build helper rebuilt the Waf/examples closure but its
+forced Python binding compile stopped at `di_bindings.cpp:688`: the new
+`NativeCanonicalByteBuffer` type does not accept the old iterator-pair
+`optional.emplace` call. No MiniNDN process or protocol result was produced.
+The raw output is `.codex-tmp/spec189-r99-native-build-refresh.log`; durable
+evidence is
+[b189-r99-native-build-binding-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r99-native-build-binding-boundary-20260920.md).
+
+## 2026-09-20 — Spec189 r99 native identity stale-source boundary
+
+The zero-copy material-range change passed focused C++ selectors and the
+target-scoped `ndnsf-distributed-inference` install completed. The immediate
+maintained native identity verification then stopped before MiniNDN with
+`SPEC180_NATIVE_IDENTITY_REJECTED: STALE_SOURCES`; the existing build receipt
+had not been refreshed after the source change. No protocol, model, or
+resource result was produced. Raw logs are `.codex-tmp/spec189-r99-install.log`
+and `.codex-tmp/spec189-r99-native-verify.log`; durable evidence is
+[b189-r99-native-verify-stale-sources-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-r99-native-verify-stale-sources-20260920.md).
+
+## 2026-09-20 — Spec189 r98 owned-swap resource boundary
+
+The fresh r98 invocation passed the candidate identity, root, PATH and digest
+preflight gates, started MiniNDN, and brought both native Providers to
+`READY`, `ACK_DECISION`, and `GRANT_VERIFIED(BEFORE_ASSEMBLY)`. The maintained
+host guard then stopped the run at `RESOURCE_BOUNDARY:ownedSwap` because the
+run exceeded the declared 256 MiB owned-swap limit. Cleanup passed with no
+remaining processes. No requester log, signed ACK acceptance, Selection,
+selected-material fetch, assembly, runner, terminal response, token or repeat
+result was observed. Raw output is `.codex-tmp/spec189-r98-launch.log`; the
+durable boundary is recorded in
+[b189-native-r98-owned-swap-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r98-owned-swap-boundary-20260920.md).
+
+## 2026-09-20 — Spec189 r97 digest-format preflight boundary
+
+The root r97 invocation passed the host resource guard but stopped before
+MiniNDN at `MODEL_STAGE_MANIFEST_DIGEST_MISMATCH`. The raw file digest was
+correct; the command passed bare hexadecimal values while the maintained
+launcher requires `sha256:<hex>`. No topology, ACK, Selection, Repo, Provider,
+model or terminal result was observed. Raw output is
+`.codex-tmp/spec189-r97-launch.log`; durable evidence is
+[b189-native-r97-digest-format-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r97-digest-format-boundary-20260920.md).
+
+## 2026-09-20 — Spec189 r96 MiniNDN root privilege boundary
+
+The fresh r96 invocation passed the restored host resource guard, then stopped
+before MiniNDN startup because the maintained launcher requires root and
+returned `MININDN_REQUIRES_ROOT: run this script with sudo -E`. No topology,
+ACK, Selection, Repo, Provider, model or terminal result was observed. Raw
+output is `.codex-tmp/spec189-r96-launch.log`; durable evidence is
+[b189-native-r96-launcher-root-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r96-launcher-root-boundary-20260920.md).
+
+## 2026-09-20 — Spec189 r95 host SwapFree boundary
+
+The fresh r95 invocation crossed the r94 PATH repair but the preceding host
+resource preparation had disabled the swapfile. The maintained guard stopped
+before MiniNDN at `RESOURCE_BOUNDARY:SwapFree` because its declared minimum is
+512 MiB free swap. Cleanup passed with no remaining processes; no topology,
+ACK, Selection, Repo, Provider, model or terminal result was observed. Raw
+output is `.codex-tmp/spec189-r95-launch.log`; durable evidence is
+[b189-native-r95-resource-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r95-resource-boundary-20260920.md).
+
+## 2026-09-20 — Spec189 r94 host swap-I/O boundary
+
+The fresh r94 invocation crossed the repaired installed-runtime PATH gate and
+then stopped before MiniNDN startup at `RESOURCE_BOUNDARY:swapIo`. Cleanup
+passed with no remaining processes; no topology, ACK, Selection, Repo,
+Provider, model or terminal result was observed. Raw launcher output is
+`.codex-tmp/spec189-r94-launch.log`, with the run directory at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r94/`.
+The durable boundary and next host-resource gate are recorded in
+[b189-native-r94-resource-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r94-resource-boundary-20260920.md).
+
+## 2026-09-20 — Spec189 r93 MiniNDN maintenance PATH boundary
+
+The fresh r93 invocation passed candidate and binary identity checks but stopped
+before MiniNDN startup when `Minindn.cleanUp()` could not find `nfd-stop`.
+The command-local PATH omitted the installed `/usr/local/bin`; no topology,
+Repo, ACK, Selection, Provider or model path started. Raw output is
+`.codex-tmp/spec189-r93-launch.log`; durable boundary and retry details are in
+[b189-native-r93-preflight-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r93-preflight-boundary-20260920.md).
+
+
+## 2026-09-20 — Spec189 r92 launcher digest preflight
+
+The fresh r92 invocation stopped before MiniNDN with
+`CONTROLLER_BINARY_DIGEST_REQUIRED`. The installed candidate, model inputs and
+source identity were not changed; the command had omitted the required digests
+for the installed binaries and build receipt. No process, Repo publication,
+ACK, Selection, Provider or model path started. The raw output is
+`.codex-tmp/spec189-r92-launch.log`, and the durable boundary/retry record is
+[b189-native-r92-preflight-boundary-20260920](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r92-preflight-boundary-20260920.md).
+
+
+## 2026-09-20 — Spec189 r91 installed-candidate disk boundary
+
+The fresh installed candidate passed digest/identity preflight, started MiniNDN, and
+both native Providers reached `NDNSF_DI_NATIVE_PROVIDER_READY`. Before the requester
+produced an ACK or Selection, the host guard stopped the run at
+`RESOURCE_BOUNDARY:diskFree` when free space fell to `4,018,909,184` bytes, below the
+4 GiB safety floor. Cleanup passed and no protocol, Repo, Provider, ONNX, terminal or
+model result was observed. The raw run is retained at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r91/`; launcher
+output is `.codex-tmp/spec189-r8-qwen-r91.log` and its result is
+`.codex-tmp/spec189-r8-qwen-r91.result`. This is a host resource boundary, not a
+product failure. The next retry needs a new run ID and materially larger free-space
+margin; lowering the guard or extending the timeout is not a repair. Durable analysis:
+[B189 r8/r91 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-memory-lifecycle-r8-and-r91-20260920.md).
+
+## 2026-09-20 — Spec189 memory lifecycle audit and selector boundary
+
+静态审查定位了两处可提前释放的大对象：prepare publication 中已被 material
+manifest 覆盖的完整 source/initializer，以及 Provider role model 物化后仍保留的
+selected material payloads/manifest。当前改动使用不可变 source snapshot 和 worker 前
+释放；DI 与 `spec189-canonical-publisher` 编译成功，两个新增定向 selector 通过。
+初次完整 selector 还在 cancellation/source-lifetime 断言和 real-Core fixture 的
+`/tmp` staging `Permission denied` 处失败；完整记录见
+[b189 memory lifecycle static audit](../specs/189-qwen-two-provider-minindn/evidence/b189-memory-lifecycle-static-20260920.md)。
+真实 r84 仍停在 `RESOURCE_BOUNDARY:swapIo`，未观察 ACK、Selection、Provider runner
+或 terminal。
+
+同批复测随后关闭了 cancellation/source-lifetime 两个 C++ 反例：shared waiter 继续复用
+owner 已取消的 in-flight publication，延迟 work 在 drain 后释放 source；source 后取消只
+发布一个对象并完成一次 rollback。完整 selector 现在只剩 real-Core fixture 的 `/tmp`
+staging `Permission denied`，这是本机 staging 环境边界，不是协议或模型资格结果；该失败
+仍保持未通过并保留原始终端输出。
+
+使用 run-scoped 可写目录并将 fixture 对齐当前 file-backed ownership 契约后，完整
+`Spec182CanonicalPublisher` 14/14 通过；默认 root-owned `/tmp` 目录的权限失败仍保留为
+宿主配置边界。原始成功输出为
+`.codex-tmp/spec189-memory-cancel-review-r2/full-selector-writable-staging-r2.log`。
+这只证明本地 C++ Core publication fixture，不是加密发布或 MiniNDN 资格 PASS。
+
+## 2026-09-20 — Spec189 shared-chain versus Qwen-specific boundary reconciliation
+
+对照 Spec188 的 YOLO 本地成功与 Spec189 的真实 Qwen 运行后，确认两者共用的
+prepare/Repo/request/ACK/Selection/grant ingress 并非当前主要阻断：r47/r70 已观察
+Qwen 的 ACK、signed Selection、授权验证和 selected-material fetch。r30–r33 在
+MiniNDN 启动前因 `RESOURCE_BOUNDARY:swapIo` 停止，属于宿主资源门；不能分类为协议、
+模型或 Provider 执行结果。
+
+r70 使用旧候选越过 assembly admission 后，Provider-0 继续读取选中材料、Provider-1
+等待上游 hidden-state；terminal stream consumer 只绑定 terminal Provider 的 progress，
+因此在另一个 Provider 仍组装/等待时触发 `NATIVE_STREAM_FAILED`。这是跨 Provider
+progress 聚合缺陷，解释了为什么轻量 YOLO 能通过而分阶段 LLM 尚未越过 runner/terminal，
+不是 Qwen/ORT 已被证明失败。当前源码和 C++ selectors 已加入 per-provider/role
+authenticated progress binding，但尚未用包含修复的全新安装候选重跑；T006/T007/T009
+继续 `PARTIAL`。
+
+持久证据：[r47](../specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r47-20260919.md)、
+[r70](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r70-progressed-stream-boundary-20260919.md)、
+[resource boundary](../specs/189-qwen-two-provider-minindn/evidence/b189-onnx-identity-resource-20260919.md)。
+
+## 2026-09-19 — Spec189 real Qwen r64 post-grant stream boundary
+
+The fresh system-native r64 candidate passed preflight, MiniNDN startup, both
+Provider readiness, ACK/Selection and authenticated grant verification. It then
+stopped with `NATIVE_STREAM_FAILED` / `stream event gap exceeded retry budget`
+before `ASSEMBLY_STARTED`; resource and cleanup gates passed, with no runner,
+ORT, terminal output or model token. Raw evidence is retained under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r64/`;
+durable analysis is
+[b189-native-r64-stream-boundary-20260919](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r64-stream-boundary-20260919.md).
+
+## 2026-09-19 — Spec189 real Qwen r63 controller digest preflight
+
+The fresh r63 launcher passed the stage identity and two-node cardinality
+checks, then stopped before MiniNDN at `CONTROLLER_BINARY_DIGEST_MISMATCH`.
+The installed binary and its manifest were unchanged; the hand-typed argument
+was missing one character. No process, Repo ingest, ACK, Selection, Provider or
+model path started. Raw evidence is retained under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r63/`;
+durable analysis is
+[b189-native-r63-preflight-boundary-20260919](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r63-preflight-boundary-20260919.md).
+
+## 2026-09-19 — Spec189 real Qwen r62 stage-node cardinality preflight
+
+The corrected stage-manifest digest passed, but r62 stopped before MiniNDN at
+`--stage-nodes count must match stage manifest and contain no duplicates`: the
+candidate declares two stages while the launcher default has three nodes. No
+process, Repo ingest, ACK, Selection, Provider or model path started. Raw
+evidence remains under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r62/`;
+durable analysis is
+[b189-native-r62-preflight-boundary-20260919](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r62-preflight-boundary-20260919.md).
+
+## 2026-09-19 — Spec189 real Qwen r61 stale stage-manifest digest
+
+The fresh r61 launcher stopped before MiniNDN at
+`MODEL_STAGE_MANIFEST_DIGEST_MISMATCH`. No process, Repo ingest, ACK, Selection,
+Provider or model path started. The candidate file was unchanged; its actual
+digest is `sha256:139d91c63f6c2d51644c712d6eb6880949060820c839df96218554fb8a68ebd2`.
+Raw run evidence is retained under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r61/`;
+durable analysis is
+[b189-native-r61-preflight-boundary-20260919](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r61-preflight-boundary-20260919.md).
+
+## 2026-09-19 — Spec189 real Qwen r60 disk resource boundary
+
+The system-installed native candidate passed binary/linker preflight, but the
+fresh `two-provider-global-r60` MiniNDN attempt stopped at
+`NATIVE_HOST_GUARD_STOP` with `RESOURCE_BOUNDARY:diskFree` before ACK/Selection.
+Cleanup passed and the complete raw run remains under
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r60/`.
+The dominant new storage was the Repo canonical initializer staging object;
+the run-local immutable source itself was hard-linked. This is a host resource
+boundary, not a protocol, Repo, Provider, ORT or model result. The four GiB
+guard remains in force; 43 canonical initializer paths and 12 confirmed Repo
+payload paths were deduplicated as hard links while the identity-mismatching r60
+staging `.part` was retained. Durable analysis:
+[b189-native-r60-disk-boundary-20260919](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r60-disk-boundary-20260919.md),
+with the cleanup manifest at
+`.codex-tmp/spec189-native-build-cleanup-20260919-r2/manifest-deduplicate-immutable-initializers-r60.json`.
+
 ## 2026-09-19 — Spec189 real Qwen r56 pre-assembly stream boundary
 
 The fresh `two-provider-global-r56` run used the global-r3 candidate and passed
@@ -7697,3 +8873,78 @@ used. Preserve raw data at
 `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r59/`;
 this is the next post-grant stream boundary, not a resource, Repo, ORT, model
 or qualification result.
+
+2026-09-19 Spec189 T006-R1 first compile attempt: the new C++ reporter-contract
+selector failed before linking because `NativeSelectionProjectionV3` and
+`makeNativeAssemblyProgressReporter` were referenced without their
+`ndnsf::di::` namespace inside the generic API test. The raw output is
+`.codex-tmp/spec189-native-build-cleanup-20260919-r2/build-t006-r1.log`.
+The repair was limited to explicit namespace qualification, passed a second
+read-only review, and the rerun compiled 302/302 targets and passed the focused
+selector plus the complete 15-case CollaborationStatus suite. This was a test
+compile boundary, not a production protocol result; the active Spec evidence
+is `specs/189-qwen-two-provider-minindn/evidence/b189-t006-r1-progress-sequence-20260919.md`.
+
+2026-09-19 Spec189 host-native r65 launch: the reviewed provider diagnostic
+candidate passed its build and C++ selector gates, but the first real-run
+command supplied a truncated `--node-mapping-sha256` value. The launcher
+stopped at `MODEL_NODE_MAPPING_DIGEST_MISMATCH` before MiniNDN and cleanup
+passed. The raw run is retained at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r65/`;
+the exact unchanged digest and the next run ID are recorded in
+`specs/189-qwen-two-provider-minindn/evidence/b189-native-r65-preflight-boundary-20260919.md`.
+
+2026-09-19 Spec189 host-native r66 launch: exact candidate digests passed,
+but the root Python environment did not expose the maintained `ndn.encoding`
+module. The runner caught that import failure while decoding Provider PIB keys
+and stopped at `provider key prefix unavailable` before MiniNDN. Cleanup passed
+and the raw run remains at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r66/`.
+The next retry must provide the explicit MiniNDN/pyndn `PYTHONPATH`; this is a
+runner environment boundary, not a native protocol result.
+
+2026-09-19 Spec189 host-native r67: the exact candidate digests and explicit
+MiniNDN/pyndn `PYTHONPATH` passed preflight and the real MiniNDN topology
+started. Both Providers reached READY, emitted ACK offers and
+`GRANT_VERIFICATION`, but the requester stopped at
+`NATIVE_STREAM_FAILED / stream event gap exceeded retry budget` before
+`ASSEMBLY_ADMISSION`. No assembly, runner, handoff, output or numerical result
+was observed. Supervisor cleanup and resource floors passed with no swap use.
+The raw run remains at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r67/`;
+this is the current post-grant stream boundary and not a qualification result.
+
+2026-09-19 Spec189 host-native r68: the same verified candidate was retried
+with explicit Python paths plus `NDNSF_DI_RUNTIME_TIMING=1` and assignment-fetch
+trace. The real topology again reached Provider READY, ACK and
+`GRANT_VERIFICATION`, then the requester failed at
+`NATIVE_STREAM_FAILED / stream event gap exceeded retry budget` before
+`ASSEMBLY_ADMISSION`. Cleanup and resource floors passed. The diagnostic toggle
+did not change the boundary; raw evidence remains at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r68/`.
+
+2026-09-19 Spec189 host-native r69: the logger-enabled retry was stopped by
+the immutable host guard at `RESOURCE_BOUNDARY:diskFree` before ACK/Selection.
+Cleanup passed and no swap was used. Raw logs, supervisor and resource records
+remain at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r69/`.
+Afterward, only duplicated 1.5 GiB initializer/payload staging files from
+rebuildable run directories were removed; canonical model inputs were retained.
+
+2026-09-19 Spec189 host-native r70: the verified r65 candidate passed the
+resource and launch gates and reached a deeper production boundary. The
+requester closed ACK and committed Selection; Provider 1 reached
+`GRANT_VERIFIED`, `ASSEMBLY_ADMISSION_REPORTED`, `EXECUTION_ENTERED` and
+`DEPENDENCY_FETCH`, while Provider 0 emitted repeated authenticated selected
+material `begin/returned/verified` records. The requester then stopped at
+`NATIVE_STREAM_FAILED / stream event gap exceeded retry budget` while the
+Providers were still assembling/fetching; no runner, terminal response or
+model token was observed. Supervisor cleanup passed and no resource-boundary
+failure was recorded. The raw run remains at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r70/`;
+durable details are in
+`specs/189-qwen-two-provider-minindn/evidence/b189-native-r70-progressed-stream-boundary-20260919.md`.
+The next changed gate is the reviewed Core binding that lets a collaboration
+terminal consumer re-arm its bounded stream gap from any committed selected
+Provider's exact progress operation, while retaining provider/member identity
+and operation freshness checks.

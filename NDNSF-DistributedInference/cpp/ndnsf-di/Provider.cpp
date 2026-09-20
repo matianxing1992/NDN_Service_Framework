@@ -29,10 +29,13 @@
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <condition_variable>
+#include <cerrno>
+#include <cstdio>
 #include <fstream>
 #include <cstdlib>
 #include <future>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -41,6 +44,7 @@
 #include <unistd.h>
 #include <utility>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 namespace ndnsf::di {
 
@@ -66,6 +70,113 @@ struct ProviderConfig::Impl
 };
 
 namespace {
+
+void
+reportArtifactCleanupFailure(const char* phase) noexcept
+{
+  std::fprintf(stderr,
+               "NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED phase=%s\n",
+               phase == nullptr ? "unknown" : phase);
+}
+
+struct ProviderArtifactCleanupGuard
+{
+  std::function<void()> callback;
+  ~ProviderArtifactCleanupGuard() noexcept
+  {
+    if (!callback)
+      return;
+    try { callback(); }
+    catch (...) { reportArtifactCleanupFailure("provider-guard-exception"); }
+  }
+  std::function<void()> release() noexcept { return std::move(callback); }
+};
+
+struct ProviderArtifactDirectoryRegistry;
+
+struct ProviderArtifactDirectoryOwner
+{
+  std::shared_ptr<ProviderArtifactDirectoryRegistry> registry;
+  std::string key;
+  std::filesystem::path directory;
+
+  ~ProviderArtifactDirectoryOwner() noexcept;
+};
+
+struct ProviderArtifactDirectoryRegistry
+{
+  std::mutex mutex;
+  std::map<std::string, std::weak_ptr<ProviderArtifactDirectoryOwner>> owners;
+};
+
+std::shared_ptr<ProviderArtifactDirectoryRegistry>
+providerArtifactDirectoryRegistry()
+{
+  static const auto registry = std::make_shared<ProviderArtifactDirectoryRegistry>();
+  return registry;
+}
+
+ProviderArtifactDirectoryOwner::~ProviderArtifactDirectoryOwner() noexcept
+{
+  std::lock_guard<std::mutex> lock(registry->mutex);
+  const auto found = registry->owners.find(key);
+  const auto current = found == registry->owners.end()
+    ? std::shared_ptr<ProviderArtifactDirectoryOwner>{} : found->second.lock();
+  if (current && current.get() != this)
+    return;
+  try {
+    std::error_code cleanupError;
+    withNativeArtifactDirectoryFinalization(directory.string(), [&] {
+      std::filesystem::remove_all(directory, cleanupError);
+    });
+    if (cleanupError)
+      reportArtifactCleanupFailure("provider-directory");
+  }
+  catch (...) {
+    reportArtifactCleanupFailure("provider-directory-exception");
+  }
+  if (found != registry->owners.end())
+    registry->owners.erase(found);
+}
+
+std::shared_ptr<ProviderArtifactDirectoryOwner>
+retainProviderArtifactDirectory(const std::filesystem::path& directory)
+{
+  const auto normalized = std::filesystem::absolute(directory).lexically_normal();
+  const auto key = normalized.string();
+  const auto registry = providerArtifactDirectoryRegistry();
+  std::lock_guard<std::mutex> lock(registry->mutex);
+  if (const auto found = registry->owners.find(key);
+      found != registry->owners.end()) {
+    if (auto existing = found->second.lock())
+      return existing;
+    registry->owners.erase(found);
+  }
+  auto owner = std::make_shared<ProviderArtifactDirectoryOwner>();
+  owner->registry = registry;
+  owner->key = key;
+  owner->directory = normalized;
+  registry->owners.emplace(key, owner);
+  return owner;
+}
+
+std::filesystem::path
+requireProviderArtifactPathUnderCacheRoot(const std::filesystem::path& cacheDir,
+                                          const std::filesystem::path& artifact)
+{
+  std::error_code error;
+  const auto cacheRoot = std::filesystem::canonical(cacheDir, error);
+  if (error)
+    throw std::runtime_error("DI_PROVIDER_ARTIFACT_CACHE_ROOT_INVALID");
+  const auto physicalArtifact = std::filesystem::canonical(artifact, error);
+  if (error)
+    throw std::runtime_error("DI_PROVIDER_ARTIFACT_PATH_INVALID");
+  const auto relative = physicalArtifact.lexically_relative(cacheRoot);
+  if (relative.empty() || relative.is_absolute() || relative.begin() == relative.end() ||
+      relative.begin()->string() == "..")
+    throw std::runtime_error("DI_PROVIDER_ARTIFACT_PATH_INVALID");
+  return physicalArtifact;
+}
 
 [[noreturn]] void invalid(const std::string& message)
 {
@@ -403,17 +514,34 @@ providerCachedModelPath(const std::string& cacheDir,
 std::vector<std::uint8_t>
 providerReadBounded(const std::filesystem::path& path, std::uint64_t maxBytes)
 {
-  std::error_code ec;
-  const auto size = std::filesystem::file_size(path, ec);
-  if (ec || size == 0 || size > maxBytes)
+  struct stat expected{};
+  if (::lstat(path.c_str(), &expected) != 0 || !S_ISREG(expected.st_mode) ||
+      expected.st_size <= 0 || static_cast<std::uint64_t>(expected.st_size) > maxBytes)
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
-  std::ifstream input(path, std::ios::binary);
-  if (!input)
+  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0)
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
-  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-  if (!input.read(reinterpret_cast<char*>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size())))
+  struct stat opened{};
+  const bool sameFile = ::fstat(fd, &opened) == 0 && S_ISREG(opened.st_mode) &&
+    opened.st_dev == expected.st_dev && opened.st_ino == expected.st_ino &&
+    opened.st_size == expected.st_size;
+  if (!sameFile) {
+    ::close(fd);
     throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
+  }
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(opened.st_size));
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    const auto count = ::read(fd, bytes.data() + offset, bytes.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0) {
+      ::close(fd);
+      throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
+    }
+    offset += static_cast<std::size_t>(count);
+  }
+  ::close(fd);
   return bytes;
 }
 
@@ -1687,13 +1815,28 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 1, std::chrono::duration_cast<Milliseconds>(
                   jobControl.deadline - std::chrono::steady_clock::now()).count()));
               auto built = prepareNativeCanonicalOnnxRole(ctx, projection, options);
+              ProviderArtifactCleanupGuard cleanupGuard;
+              if (protectedRuntime) {
+                auto directoryOwner = built.lifetime;
+                if (!directoryOwner)
+                  throw std::runtime_error("DI_PROVIDER_ARTIFACT_DIRECTORY_OWNER_MISSING");
+                cleanupGuard.callback = [directoryOwner = std::move(directoryOwner)] { (void)directoryOwner; };
+                built.lifetime.reset();
+                const auto path = built.metadata.find("encryptedArtifactPath");
+                if (path == built.metadata.end() || path->second.empty())
+                  throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
+                const auto ciphertextPath = requireProviderArtifactPathUnderCacheRoot(
+                  options.cacheDir, path->second);
+              }
               metrics->sourceFetches.fetch_add(1, std::memory_order_relaxed);
               metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
               auto artifact = std::make_shared<PreparedProviderArtifact>();
               artifact->encryptedObjectName = protectedRuntime
                 ? "local-protected-assembled-ciphertext"
                 : "local-immutable-assembled-artifact";
-              artifact->ciphertextDigest = built.metadata.at("assembledModelDigest");
+              artifact->ciphertextDigest = protectedRuntime
+                ? built.metadata.at("encryptedArtifactDigest")
+                : built.metadata.at("assembledModelDigest");
               artifact->formatVersion = "ndnsf-di-native-assembled-artifact-v1";
               artifact->canonicalMetadataJson =
                 std::string("{\"schema\":\"ndnsf-di-provider-artifact-v1\","
@@ -1709,27 +1852,56 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 const auto encryptedPath = built.metadata.find("encryptedArtifactPath");
                 if (encryptedPath == built.metadata.end() || encryptedPath->second.empty())
                   throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
-                auto ciphertext = std::make_shared<std::vector<std::uint8_t>>(
-                  providerReadBounded(encryptedPath->second,
-                    projection.assembly.maxAssembledBytes + 65536));
-                artifact->ciphertextBytes = ciphertext->size();
-                artifact->ciphertext = std::move(ciphertext);
+                const auto ciphertextPath = requireProviderArtifactPathUnderCacheRoot(
+                  options.cacheDir, encryptedPath->second);
+                std::error_code sizeError;
+                const auto ciphertextBytes = std::filesystem::file_size(ciphertextPath, sizeError);
+                if (sizeError || ciphertextBytes == 0 ||
+                    ciphertextBytes > projection.assembly.maxAssembledBytes + 65536)
+                  throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
+                // Keep only the content-addressed path in the immutable runner
+                // template.  The cache lease reads it when a request needs a
+                // plaintext staging file, so idle entries do not retain a
+                // second copy of the assembled model in the Runtime heap.
+                artifact->ciphertextBytes = ciphertextBytes;
               }
               else {
-                artifact->ciphertextBytes = std::filesystem::file_size(built.path);
+                // Plaintext assembled artifacts are owned by this cache entry
+                // too.  Tie the directory lifetime to eviction/invalidation
+                // so the cache budget cannot drop while a full model.onnx
+                // remains resident on disk without an owner.
+                const auto modelPath = requireProviderArtifactPathUnderCacheRoot(
+                  options.cacheDir, built.path);
+                const auto directory = modelPath.parent_path();
+                auto owner = retainProviderArtifactDirectory(directory);
+                cleanupGuard.callback = [owner = std::move(owner)] { (void)owner; };
+                artifact->ciphertextBytes = std::filesystem::file_size(modelPath);
               }
+              auto runner = std::make_shared<const NativeModelRunnerSpec>(std::move(built));
               return ProviderArtifactCache::BuildResult{
-                std::move(artifact),
-                std::make_shared<const NativeModelRunnerSpec>(std::move(built))};
+                std::move(artifact), std::move(runner), cleanupGuard.release()};
             });
           if (!lease.runnerSpec())
             throw std::runtime_error("DI_PROVIDER_ARTIFACT_RUNNER_TEMPLATE_MISSING");
           spec = *lease.runnerSpec();
+          // The runner opens the assembled path after this factory returns.
+          // Keep the cache lease in the runner's copied spec until that
+          // construction has completed (and for the lifetime of any runner
+          // that continues to use the file).  ProviderArtifactCache strips
+          // this field from its own metadata-only template.
           if (protectedRuntime) {
-            if (!lease->ciphertext)
-              throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
             const auto staging = providerProtectedStaging(cacheDir);
             try {
+              const auto path = lease.runnerSpec()->metadata.find("encryptedArtifactPath");
+              if (path == lease.runnerSpec()->metadata.end() || path->second.empty())
+                throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
+              const auto ciphertextPath = requireProviderArtifactPathUnderCacheRoot(
+                options.cacheDir, path->second);
+              const auto ciphertext = providerReadBounded(
+                ciphertextPath, projection.assembly.maxAssembledBytes + 65536);
+              if (sha256TensorBytes(ciphertext) != lease->ciphertextDigest)
+                throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_DIGEST_MISMATCH");
+              spec.metadata["encryptedArtifactPath"] = ciphertextPath.string();
               registerNativePlaintextDirectory(
                 *protectedRuntime, staging,
                 "provider-artifact-" + std::to_string(::getpid()));
@@ -1743,26 +1915,30 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
               NativePlaintextBufferGuard plaintextGuard{plaintext};
               protectedRuntime->withContentKey(providerNowMs(), [&] (const auto& key) {
                 plaintext = openNativeAssembledEntry(
-                  key, *lease->ciphertext, context,
+                  key, ciphertext, context,
                   projection.assembly.maxAssembledBytes);
                 providerWriteFile(staging / "model.onnx", plaintext);
               });
               spec.path = (staging / "model.onnx").string();
             }
             catch (...) {
+              artifactCache->invalidate(key);
               std::error_code ignored;
               std::filesystem::remove_all(staging, ignored);
               throw;
             }
           }
           else {
-            spec.path = providerCachedModelPath(
-              cacheDir, projection, lease->ciphertextDigest).string();
-            if (!std::filesystem::is_regular_file(spec.path))
+            const auto cachedModelPath = requireProviderArtifactPathUnderCacheRoot(
+              options.cacheDir,
+              providerCachedModelPath(cacheDir, projection, lease->ciphertextDigest));
+            spec.path = cachedModelPath.string();
+            if (!std::filesystem::is_regular_file(cachedModelPath))
               throw std::runtime_error("DI_PROVIDER_ARTIFACT_MATERIALIZATION_MISSING");
           }
           if (lease.cacheHit())
             metrics->templateHits.fetch_add(1, std::memory_order_relaxed);
+          spec.lifetime = std::make_shared<ProviderArtifactLease>(std::move(lease));
         }
       }
       if (projection.assembly.mergeKind == "NATIVE_POSTPROCESS")

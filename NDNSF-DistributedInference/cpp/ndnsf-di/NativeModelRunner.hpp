@@ -22,6 +22,10 @@ struct NativeModelRunnerSpec
   std::string backend;
   std::string path;
   std::map<std::string, std::string> metadata;
+  // Optional owner kept by a runner while it opens/uses request-backed
+  // material.  Cache publication clears this field from the immutable
+  // metadata template so an entry cannot pin its own lease indefinitely.
+  std::shared_ptr<const void> lifetime;
 };
 
 /**

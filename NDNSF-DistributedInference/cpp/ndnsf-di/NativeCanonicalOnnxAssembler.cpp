@@ -6,6 +6,8 @@
 
 #include <ndn-cxx/util/sha256.hpp>
 
+#include <openssl/crypto.h>
+
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 
@@ -17,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <fcntl.h>
 #include <fstream>
@@ -41,6 +44,14 @@ namespace ndnsf::di {
 
 namespace {
 
+void
+reportArtifactCleanupFailure(const char* phase) noexcept
+{
+  std::fprintf(stderr,
+               "NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED phase=%s\n",
+               phase == nullptr ? "unknown" : phase);
+}
+
 constexpr std::uint64_t MaxAssemblyMetadataBytes = 65536;
 constexpr std::uint64_t MaxMaterialJsonDepth = 8;
 constexpr std::uint64_t MaxMaterialJsonTokens = 1U << 20;
@@ -49,6 +60,12 @@ constexpr std::uint64_t MaxMaterialReceiptObjects = 65536;
 constexpr std::uint64_t MaxInlineMaterialRootBytes = 4096;
 constexpr std::uint64_t MaterialManifestParseMultiplier = 8;
 constexpr std::uint64_t MaterialReceiptParseMultiplier = 16;
+
+// Final artifact directories are content-addressed but may be reached by
+// distinct request/cache keys.  Serialize the short finalization window so a
+// failed creator cannot remove a directory while another creator is writing
+// the same immutable model.
+std::mutex nativeAssemblyFinalizationMutex;
 
 void
 validateBoundedMaterialJson(const std::vector<std::uint8_t>& bytes,
@@ -348,6 +365,28 @@ makeStagingDirectory(const std::filesystem::path& cacheDir)
   return std::filesystem::path(created);
 }
 
+void
+requireAssemblyDirectoryUnderCacheRoot(const std::filesystem::path& cacheDir,
+                                       const std::filesystem::path& directory)
+{
+  std::error_code error;
+  const auto cacheRoot = std::filesystem::canonical(cacheDir, error);
+  if (error)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_ROOT_INVALID");
+  const auto physicalDirectory = std::filesystem::weakly_canonical(directory, error);
+  if (error)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_PATH_INVALID");
+  const auto relative = physicalDirectory.lexically_relative(cacheRoot);
+  if (relative.empty() || relative.is_absolute() || relative.begin() == relative.end() ||
+      relative.begin()->string() == "..")
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_PATH_INVALID");
+  if (std::filesystem::exists(directory)) {
+    const auto existing = std::filesystem::canonical(directory, error);
+    if (error || existing != physicalDirectory)
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_PATH_INVALID");
+  }
+}
+
 std::string
 safeRole(std::string role)
 {
@@ -358,6 +397,38 @@ safeRole(std::string role)
   }
   return role.empty() ? "role" : role;
 }
+
+} // namespace
+
+void
+withNativeArtifactDirectoryFinalization(const std::string& directory,
+                                        const std::function<void()>& action)
+{
+  std::lock_guard<std::mutex> lock(nativeAssemblyFinalizationMutex);
+  action();
+}
+
+namespace {
+
+struct NativeAssemblyArtifactDirectoryOwner
+{
+  std::filesystem::path directory;
+
+  ~NativeAssemblyArtifactDirectoryOwner() noexcept
+  {
+    try {
+      std::error_code cleanupError;
+      withNativeArtifactDirectoryFinalization(directory.string(), [&] {
+        std::filesystem::remove_all(directory, cleanupError);
+      });
+      if (cleanupError)
+        reportArtifactCleanupFailure("assembler-directory");
+    }
+    catch (...) {
+      reportArtifactCleanupFailure("assembler-directory-exception");
+    }
+  }
+};
 
 } // namespace
 
@@ -508,6 +579,10 @@ prepareNativeCanonicalOnnxRole(
 
   const auto rootPath = makeStagingDirectory(
     std::filesystem::path(options.cacheDir));
+  std::filesystem::path protectedArtifactDirectory;
+  bool protectedArtifactOwned = false;
+  std::filesystem::path finalArtifactDirectory;
+  bool finalArtifactDirectoryOwned = false;
   const auto storeWhileAuthorized = [&] (auto&& operation) {
     if (protectedRole) {
       // Cancellation uses the same mutex. Never recreate a staging path
@@ -541,7 +616,7 @@ prepareNativeCanonicalOnnxRole(
             NativePlaintextBufferGuard initializerGuard{*source.initializerBytes};
           }
           for (auto& payload : source.materialPayloads)
-            std::fill(payload.bytes.begin(), payload.bytes.end(), 0);
+            payload.scrub();
         }
         source = {};
         scrubbed = true;
@@ -839,7 +914,10 @@ prepareNativeCanonicalOnnxRole(
       // the same working-set ceiling while it is being authenticated.
       std::uint64_t selectedMaterialBytes = std::max(materialMetadataBytes,
                                                      parseReservation);
-      std::map<std::string, std::vector<std::uint8_t>> fetchedBundles;
+      // Keep one authenticated bundle allocation and expose selected chunks as
+      // shared ranges.  Copying every 1 MiB chunk into materialPayloads would
+      // retain the bundle cache and a second full initializer at the same time.
+      std::map<std::string, std::shared_ptr<std::vector<std::uint8_t>>> fetchedBundles;
       std::set<std::string> countedBundles;
       std::size_t selectedMaterialIndex = 0;
       for (const auto& payloadId : selectedIds) {
@@ -859,6 +937,9 @@ prepareNativeCanonicalOnnxRole(
             (chunkPayload && object->second.bytes > NativeCanonicalMaterialBundleMaxBytes))
           throw std::runtime_error("DI_CANONICAL_MATERIAL_RECEIPT_MISMATCH");
         std::vector<std::uint8_t> bytes;
+        std::shared_ptr<const std::vector<std::uint8_t>> backing;
+        std::size_t backingOffset = 0;
+        std::size_t backingSize = 0;
         if (!object->second.bundleDigest.empty()) {
           if (countedBundles.find(object->second.dataName) == countedBundles.end()) {
             if (object->second.bundleBytes > NativeCanonicalMaterialBundleMaxBytes ||
@@ -875,19 +956,23 @@ prepareNativeCanonicalOnnxRole(
                                             object->second.bundleDigest,
                                             object->second.bundleBytes,
                                             "material-bundle");
-            bundle = fetchedBundles.emplace(object->second.dataName, std::move(fetched)).first;
+            auto owned = std::make_shared<std::vector<std::uint8_t>>(std::move(fetched));
+            bundle = fetchedBundles.emplace(object->second.dataName, std::move(owned)).first;
           }
           const auto& bundleBytes = bundle->second;
-          if (object->second.bundleOffset > bundleBytes.size() ||
-              object->second.bytes > bundleBytes.size() - object->second.bundleOffset)
+          if (object->second.bundleOffset > bundleBytes->size() ||
+              object->second.bytes > bundleBytes->size() - object->second.bundleOffset)
             throw std::runtime_error("DI_CANONICAL_MATERIAL_BUNDLE_RANGE_INVALID");
-          bytes.assign(bundleBytes.begin() + static_cast<std::ptrdiff_t>(object->second.bundleOffset),
-                       bundleBytes.begin() + static_cast<std::ptrdiff_t>(
-                         object->second.bundleOffset + object->second.bytes));
-          if (sha256Hex(bytes) != object->second.digest)
+          backing = bundle->second;
+          backingOffset = static_cast<std::size_t>(object->second.bundleOffset);
+          backingSize = static_cast<std::size_t>(object->second.bytes);
+          if (sha256Hex(ndn::span<const std::uint8_t>(
+                bundleBytes->data() + backingOffset, backingSize)) != object->second.digest)
             throw std::runtime_error("DI_CANONICAL_MATERIAL_PAYLOAD_DIGEST_MISMATCH");
           const std::optional<ndn::Buffer> verified{
-            ndn::Buffer(bytes.begin(), bytes.end())};
+            ndn::Buffer(bundleBytes->begin() + static_cast<std::ptrdiff_t>(backingOffset),
+                        bundleBytes->begin() + static_cast<std::ptrdiff_t>(
+                          backingOffset + backingSize))};
           logMaterialFetch("material-payload", ndn::Name(object->second.dataName),
                            "verified", &verified, object->second.digest);
         }
@@ -901,7 +986,8 @@ prepareNativeCanonicalOnnxRole(
                                    object->second.bytes, "material-payload");
         }
         canonicalSource.materialPayloads.push_back({payloadId, object->second.digest,
-                                                     std::move(bytes)});
+                                                     std::move(bytes), std::move(backing),
+                                                     backingOffset, backingSize});
         ++selectedMaterialIndex;
         const double materialProgress = selectedIds.empty() ? 0.55 :
           0.25 + 0.40 * static_cast<double>(selectedMaterialIndex) /
@@ -1048,12 +1134,22 @@ prepareNativeCanonicalOnnxRole(
           workerRecipe.nodeIndices.push_back(index);
         if (workerRecipe.roleKind != "COMPONENT_SET")
           workerRecipe.layerEnd = workerRecipe.nodeIndices.size();
+        workerRecipe.materializedRole = true;
         workerRecipe.recipeDigest = nativePlanningDigest(
           canonicalNativeOnnxRecipeJson(workerRecipe));
+        // The role model and its provenance have now been materialized.  The
+        // selected payloads and full manifest are no longer needed by the
+        // worker; release them before crossing the worker boundary so the
+        // assembled model is not accompanied by another copy of the selected
+        // material.  materializedNodeIndices and the digest fields remain as
+        // the compact provenance needed for the recipe above and for audit.
+        std::vector<NativeCanonicalSource::MaterialPayload>{}.swap(
+          canonicalSource.materialPayloads);
+        canonicalSource.materialManifest.reset();
       }
       assembled = runNativeOnnxAssemblyWorkerAt(
         options.workerLocation, canonicalSource, workerRecipe,
-        assemblyControl);
+        assemblyControl, &canonicalSource);
       reportProgress("WORKER_ASSEMBLY_VERIFIED", 0.90);
     }
     catch (...) {
@@ -1065,6 +1161,17 @@ prepareNativeCanonicalOnnxRole(
     // manifests and activating the runner; this bounds both resident set and
     // plaintext lifetime.
     sourceScrubber.scrub();
+    if (protectedRole) {
+      // The worker consumed the authenticated source from memory. The
+      // canonical.onnx staging file is no longer an input to finalization;
+      // remove it before sealing/decrypting the assembled artifact so the
+      // protected path does not retain a full extra model-sized plaintext
+      // file beside its ciphertext and request-scoped runner file.
+      std::error_code sourceCleanupError;
+      std::filesystem::remove(sourceFile, sourceCleanupError);
+      if (sourceCleanupError)
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_SOURCE_STAGING_CLEANUP_FAILED");
+    }
     auto modelBytes = std::move(assembled.modelBytes);
     NativePlaintextBufferGuard modelGuard{modelBytes};
     if (modelBytes.empty() || sha256Hex(modelBytes) != assembled.modelDigest) {
@@ -1112,15 +1219,28 @@ prepareNativeCanonicalOnnxRole(
     if (digest.rfind("sha256:", 0) != 0 || digest.size() != 71) {
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_MODEL_IDENTITY_INVALID");
     }
+    std::unique_lock<std::mutex> finalizationLock(nativeAssemblyFinalizationMutex);
     const auto finalDir = std::filesystem::path(options.cacheDir) /
       (protectedRole ? "protected" : "assembled") /
       safeRole(projection.assembly.selectedRole) /
       (protectedRole ? rootPath.filename().string() : digest.substr(7));
+    requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, finalDir);
+    const bool finalDirWasAbsent = !std::filesystem::exists(finalDir);
     std::filesystem::create_directories(finalDir);
+    if (finalDirWasAbsent) {
+      finalArtifactDirectory = finalDir;
+      finalArtifactDirectoryOwned = true;
+    }
+    requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, finalDir);
+    if (protectedRole && finalDirWasAbsent) {
+      protectedArtifactDirectory = finalDir;
+      protectedArtifactOwned = true;
+    }
     auto finalModel = finalDir / "model.onnx";
     const auto finalManifest = finalDir / "manifest.json";
     const auto finalSignature = finalDir / "manifest.signature";
     std::filesystem::path encryptedArtifactPath;
+    std::string encryptedArtifactDigest;
     if (protectedRole) {
       // Source and native assembly buffers are already owned by the staging-directory lease.
       // Ciphertext alone is retained in the final cache; ORT reads a fresh
@@ -1134,14 +1254,21 @@ prepareNativeCanonicalOnnxRole(
         sealed = sealNativeAssembledEntry(key, modelBytes, context);
       });
       const auto cipherPath = finalDir / "model.onnx.cipher";
+      encryptedArtifactDigest = sha256Hex(sealed);
       writeFileAtomic(cipherPath, sealed);
       encryptedArtifactPath = cipherPath;
-      const auto stored = readFile(cipherPath, projection.assembly.maxAssembledBytes + MaxAssemblyMetadataBytes);
+      // The file write is the durable handoff.  Move the already sealed
+      // buffer into the authentication pass instead of rereading a second
+      // full ciphertext allocation from disk.
+      auto stored = std::move(sealed);
+      OPENSSL_cleanse(modelBytes.data(), modelBytes.size());
+      std::vector<std::uint8_t>().swap(modelBytes);
       std::vector<std::uint8_t> plaintext;
       NativePlaintextBufferGuard plaintextGuard{plaintext};
       options.protectedRuntime->withContentKey(nowMs(), [&] (const auto& key) {
         plaintext = openNativeAssembledEntry(key, stored, context,
                                              projection.assembly.maxAssembledBytes);
+        std::vector<std::uint8_t>().swap(stored);
         // Keep both authority and directory lifetime through the plaintext
         // write; a cancellation after decryption must not recreate its lease.
         finalModel = rootPath / "model.onnx";
@@ -1220,6 +1347,13 @@ prepareNativeCanonicalOnnxRole(
     }
     if (protectedRole)
       spec.metadata["encryptedArtifactPath"] = encryptedArtifactPath.string();
+    if (protectedRole)
+      spec.metadata["encryptedArtifactDigest"] = encryptedArtifactDigest;
+    if (protectedRole) {
+      auto directoryOwner = std::make_shared<NativeAssemblyArtifactDirectoryOwner>();
+      directoryOwner->directory = finalDir;
+      spec.lifetime = std::move(directoryOwner);
+    }
     if (projection.dataflow.terminalResponseOwner) {
       // The V3 dataflow contract is the authority for terminal ownership.
       // Bind the assembled ONNX output to the same sealed scope consumed by
@@ -1230,18 +1364,37 @@ prepareNativeCanonicalOnnxRole(
     }
     requireActiveAssembly(options, projection.deadlineMs);
     if (!protectedRole) std::filesystem::remove_all(rootPath);
+    // The Provider cache receives the runner metadata and installs its own
+    // eviction cleanup only after this function returns successfully.
+    protectedArtifactOwned = false;
+    finalArtifactDirectoryOwned = false;
     return spec;
   }
   catch (...) {
+    const auto failure = std::current_exception();
     if (protectedRole) {
-      options.protectedRuntime->cancel("native assembly failed");
+      try {
+        options.protectedRuntime->cancel("native assembly failed");
+      }
+      catch (...) {
+        // Preserve the first assembly/cleanup boundary. ProtectedRuntime
+        // zeroization remains best effort here; replacing the source-staging
+        // or artifact error with a later zeroization exception hides the
+        // production failure that selected the cleanup path.
+      }
       // Registration itself can fail before the empty directory gains a
       // lease. Remove only an empty directory here; leases own all wiping.
       std::error_code ignored;
+      if (protectedArtifactOwned && !protectedArtifactDirectory.empty())
+        std::filesystem::remove_all(protectedArtifactDirectory, ignored);
       std::filesystem::remove(rootPath, ignored);
     }
     else std::filesystem::remove_all(rootPath);
-    throw;
+    if (finalArtifactDirectoryOwned && !finalArtifactDirectory.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove_all(finalArtifactDirectory, ignored);
+    }
+    std::rethrow_exception(failure);
   }
 }
 

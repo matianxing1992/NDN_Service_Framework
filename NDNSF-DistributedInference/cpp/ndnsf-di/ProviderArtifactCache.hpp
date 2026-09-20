@@ -58,8 +58,9 @@ struct PreparedProviderArtifact
   std::string formatVersion;
   std::string canonicalMetadataJson;
   std::uint64_t ciphertextBytes = 0;
-  // Protected artifacts may be retained as ciphertext in memory.  The cache
-  // never stores a plaintext path or mutable runner state.
+  // Optional compatibility/test payload.  The production Provider keeps
+  // protected ciphertext on disk and stores only its immutable path in the
+  // runner metadata, so idle cache entries do not retain model-sized buffers.
   std::shared_ptr<const std::vector<std::uint8_t>> ciphertext;
 };
 
@@ -129,9 +130,14 @@ public:
   struct BuildResult
   {
     std::shared_ptr<const PreparedProviderArtifact> artifact;
-    // Optional immutable runner metadata.  ProviderArtifactCache clears its
-    // path before publication; each request reconstructs a fresh path/context.
+    // Optional immutable runner metadata.  The plaintext runner path is
+    // cleared before publication; protected ciphertext paths remain as
+    // content-addressed descriptors for lazy request-scoped reads.
     std::shared_ptr<const NativeModelRunnerSpec> runnerSpec;
+    // Optional cleanup for immutable on-disk material owned by this entry.
+    // It runs only after the entry has no active leases and never handles
+    // request-scoped plaintext.
+    std::function<void()> cleanup;
   };
   using BuildWithRunner = std::function<BuildResult(const NativeRequestControl&)>;
 
@@ -153,6 +159,10 @@ public:
     const NativeSelectionProjectionV3& projection,
     const NativeRequestControl& control,
     BuildWithRunner build);
+
+  // Mark an immutable entry unusable after a failed path/digest/authentication
+  // check.  Active leases defer removal until their final release.
+  void invalidate(const ProviderArtifactKey& key) noexcept;
 
   void stop() noexcept;
   ProviderArtifactCacheCounters counters() const noexcept;

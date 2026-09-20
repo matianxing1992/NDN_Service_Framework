@@ -73,6 +73,15 @@ struct NativeCanonicalOnnxFetchers
     fetchEncryptedLargeData;
 };
 
+/**
+ * Serialize final artifact-directory cleanup with assembler finalization.
+ * The guard is process-local and covers content-addressed directories shared
+ * by multiple Provider cache keys.
+ */
+void
+withNativeArtifactDirectoryFinalization(const std::string& directory,
+                                        const std::function<void()>& action);
+
 NativeModelRunnerSpec
 prepareNativeCanonicalOnnxRole(
   const NativeCanonicalOnnxFetchers& fetchers,

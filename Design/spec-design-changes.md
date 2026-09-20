@@ -1,5 +1,141 @@
 # Spec 设计变更记录
 
+## Spec189 protected source-staging cleanup boundary — 2026-09-20
+
+- **Status**: `PARTIAL` / internal native resource-ownership repair。受保护的
+  Post-Selection assembly 在 worker 已消费并校验 canonical source 后，先释放
+  `canonical.onnx` staging 文件，再进入 ciphertext sealing 和 request-scoped
+  plaintext materialization；删除失败显式报错，不静默假设资源已回收。受保护
+  artifact directory 以 runner-spec lifetime 转交 Provider cache，覆盖 assembler
+  返回到 cache owner 安装之间的异常窗口；首个异常仍保留，zeroization/cleanup
+  失败写入稳定诊断 marker。
+- **Design boundary**: 只减少 protected assembly 的磁盘 working set；不改变
+  source/initializer/graph/recipe digest、grant、ACK、Selection、placement、
+  runner、terminal 或 ciphertext schema。非 protected plaintext 路径保持原有
+  finalization cleanup。r139 首个生产边界仍是 host `diskFree`，该变更待受影响
+  C++ selector、安装身份和新的 guarded MiniNDN run 验证。
+- **Source / evidence**: `NativeCanonicalOnnxAssembler.cpp`、`Provider.cpp`、
+  `ProviderArtifactCache.cpp`、`NativeModelRunner.hpp`；r139 raw run 和
+  resource summary 记录于 Spec189 evidence/failure log。受影响 C++ selector、
+  build/install identity 和新 guarded MiniNDN run 仍待验证；此次变更不能把
+  r139 或 focused selector 结果提升为产品资格 PASS。
+
+## Spec189 worker post-parse source release boundary — 2026-09-20
+
+- **Status**: `PARTIAL` / internal worker working-set repair. After OA04
+  `ownedSourceModel()` has parsed, validated, and copied the authenticated
+  source into the child-owned ONNX model, the worker may scrub and release its
+  request model/initializer buffers before continuing S4-S7. The in-process
+  OA01 entry remains non-destructive.
+- **Design boundary**: this changes only child-local plaintext lifetime and
+  resident memory. It does not change S1-S7 checks, recipe/identity digests,
+  ORT loading, worker framing, grant, ACK/Selection, placement, or terminal
+  contracts. The release is after the source-consuming call returns; failure
+  before that point retains normal exception cleanup.
+- **Source / evidence**: `NativeOnnxRecipeAssembler.cpp` and
+  `NativeOnnxAssemblyWorker.cpp`; r131 remains a
+  `RESOURCE_BOUNDARY:ownedSwap` with no protocol or qualification result.
+  The r132c affected build `538/538`, material selector `2/2`, and
+  ONNX/Repo selector `30/30` passed; installed-runtime identity must still
+  pass before the next guarded MiniNDN retry.
+
+## Spec189 worker certified-chain move boundary — 2026-09-20
+
+- **Status**: `PARTIAL` / internal native working-set repair。OA04 certified
+  chain 在 S5 shape inference 前保留经过认证 node 的 deterministic bytes，
+  然后 move authenticated `original` into `inferred`，不再深拷贝包含完整
+  external initializer 的 protobuf model。
+- **Design boundary**: 只减少 worker 内部重复 source/model allocation；S1–S7
+  checks、recipe/node coverage、identity digest、ORT session、worker framing、
+  grant/ACK/Selection/placement/terminal contract 不变。r129 仍在真实
+  MiniNDN assembly 前被 host `MemAvailable` guard 停止，不能提升资格。
+- **Source / evidence**: `NativeOnnxRecipeAssembler.cpp`；r130 targeted
+  build `538/538`、material selector `2/2`、ONNX/Repo selector `30` cases
+  are the focused gates. 下一步是安装受影响 worker/DI targets 并以新 run root
+  做 guarded MiniNDN retry。
+
+## Spec189 worker parent-source release boundary — 2026-09-20
+
+- **Status**: `PARTIAL` / internal native API ownership adjustment。OA02
+  worker transport 新增可选 `sourceToReleaseAfterWrite` 参数；生产
+  `NativeCanonicalOnnxAssembler` 在请求帧完全写入 anonymous pipe 后 scrub
+  并释放父 Provider 的 model/initializer/material source，既有默认调用保持
+  non-destructive。该写入完成屏障之后子 worker 已拥有唯一仍需的请求副本。
+- **Design boundary**: 只改变 assembly parent/child 的 resident working-set
+  与明文生命周期，不改变 recipe digest、grant、ACK、Selection、placement、
+  terminal 或 worker framing。若写入未完成，source 仍保持有效；失败路径继续
+  由 worker transport 和 assembler cleanup 负责回收。r121 的宿主资源边界尚未
+  通过，不能提升 Spec189 资格。
+- **Source / evidence**: `NativeOnnxAssemblyWorker.{hpp,cpp}`、
+  `NativeCanonicalOnnxAssembler.cpp`；详见 [r121 resource evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r119-range-source-focused-check-20260920.md)。
+  下一步是 affected C++ selectors、installed identity check 和全新 guarded
+  MiniNDN retry。
+
+## Spec189 native runner/artifact cleanup boundary — 2026-09-20
+
+- **Status**: `PARTIAL` / internal native API change。`NativeModelRunnerSpec` 新增
+  `std::shared_ptr<const void> lifetime`，由活动 runner 持有请求/缓存材料；cache
+  publication 会清除 metadata template 的 owner，避免缓存条目把自己的 lease 永久
+  固定。`NativeCanonicalOnnxAssembler` 暴露进程内
+  `withNativeArtifactDirectoryFinalization(directory, action)`，Provider owner cleanup
+  与 assembler finalization 共享同一收尾锁，并在 canonical physical path 下执行。
+- **Design boundary**: 该修复只约束 native artifact 的所有权、淘汰和同进程目录收尾，
+  不改变 grant、ACK、Selection、placement、Repo wire 或模型输出协议。跨独立进程共享
+  cache directory 仍未提供锁，不能宣称跨进程并发安全。
+- **Source / evidence**: `NativeModelRunner.hpp`、`Provider.cpp`、
+  `ProviderArtifactCache.cpp`、`NativeCanonicalOnnxAssembler.{hpp,cpp}`；详见
+  [B189 r8/r91 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-memory-lifecycle-r8-and-r91-20260920.md)。
+  冻结范围官方 `review-agent` 返回 `STATIC_PASS`，DI target closure 与 focused C++
+  selectors 通过；真实 Qwen r91 在两个 Provider ready 后因宿主 disk-free guard 停止，
+  因此仍为 `PARTIAL`。
+- **Documentation boundary**: API Markdown/JSON/PDF 的完整生成必须在干净文档
+  checkpoint 重新运行；本条不能把工作树中的旧 API snapshot 视为已同步。
+
+## Spec189 native memory release boundary — 2026-09-20
+
+- **Status**: `PARTIAL` / internal API ownership adjustment。prepare publication 在
+  material manifest 已认证后以不可变 `shared_ptr` 快照替换 full source；Post-Selection
+  role model 物化后释放 selected material payloads/manifest。`sourceRefFor` 返回 owning
+  immutable view，避免 catalog 原地清空造成并发读者失效。
+- **Design boundary**: 这只改变 native working-set 和 source ownership，不改变模型摘要、
+  grant、ACK、Selection、placement 或 terminal 协议；必须保留 PreparedModel/provider
+  lease、ORT session/conversation state 和 protected Repo lease 到终态。
+- **Source / evidence**: `NativeCanonicalPreparationCatalog.{hpp,cpp}`、
+  `NativeCanonicalOnnxAssembler.cpp`、`ModelPreparationCache.cpp`、`Runtime.cpp`；详见
+  [memory lifecycle audit](../specs/189-qwen-two-provider-minindn/evidence/b189-memory-lifecycle-static-20260920.md)。
+  DI/selector compile-link 与两个定向 C++ selector 通过；冻结范围的官方
+  `review-agent` 复审为 `STATIC_PASS / TESTS_DEFERRED`。完整 selector 仍有既有
+  cancellation/staging fixture 失败，不提升 Spec189 产品验收。
+
+## Object handles and replica locators — 2026-09-19
+
+- **Status**: DOCUMENTATION_ONLY / NO_PUBLIC_API_CHANGE。用户接受 R6；适用 G3–G5、R1–R6、D2–D3。Repo 管理引用与副本定位，网络部署提供可达路由，DI 保持材料身份及执行范围。
+- **Boundary**: handle 不授予权限、不延长 lease、不默认包含明文密钥；位置迁移不改变对象摘要。具体序列化、签名者规则、位置刷新和真实 NFD 取数尚待下层设计与验收；未更改源码、API 清单或冻结 PDF。
+- **Validation**: 高层文档链接和限定 diff 检查；没有构建或运行实验。下一步定义 handle/位置记录契约及源离线、副本切换、过期位置的验收。
+
+## Repo modes and DI ownership — 2026-09-19
+
+- **Status**: DOCUMENTATION_ONLY / NO_PUBLIC_API_CHANGE；用户接受两模式方向，新增高层 R5，适用 G1–G6、R1–R5、D1–D4。
+- **Owner**: Repo 管理存储、模式准入与读取生命周期；DI 管理准备材料、placement、缓存和 KV 语义。应用主动获取后本地缓存不视为远端 INSERT；显式 server 归档不视为 in-app 自动复制。
+- **Evidence**: [两模式审查](repo-two-mode-analysis-20260919.md)，本轮核对 PreparedModel.cpp 的 repository input 和 ModelPreparationCache.cpp 的持有/退役 lease。高层链接、diff 与模式/DI 边界检查通过；没有运行测试或提升 Spec189 资格。
+- **Remaining**: 统一写入/恢复/修复入口门控及服务路径验收待后续实施；当前 API/PDF 和冻结目标不因高层原则调整而改写为已实现。
+
+## Reusable base and complete runtime SIF — 2026-09-19
+
+- **Status**: DOCUMENTATION_ONLY / NO_PUBLIC_API_CHANGE。用户要求将可复用 base 与后续 NDNSF 更新流程纳入 [高层设计 S1–S3](highlevel-design.md#sif-构建与复用约束)，采用已声明外部依赖/SDK base 加容器内构建的 NDNSF，输出新的完整 SIF。
+- **Boundary**: 不原地修改 base；依赖/工具链/ABI 变化重新验证 base，普通源码更新复用依赖。最终运行不依赖外置应用包或相邻 base；沿用维护入口和 Apptainer 1.5.3。本轮未改源码/API/冻结目标 PDF、未启动构建或实验。
+
+## Build/install and MiniNDN constraints — 2026-09-19
+
+- **Status**: DOCUMENTATION_ONLY / NO_PUBLIC_API_CHANGE。用户新增 [B1–B3、M1–M3](highlevel-design.md#编译安装与-minindn-实验约束)，明确 NDNSF 根 Waf 与外部依赖构建系统的责任，以及所有 MiniNDN 运行的系统安装边界。
+- **Impact**: 使用构建树被测程序的现有启动器必须迁移后才能满足新约束；本轮仅更新文档，不启动构建、安装或实验。原始记录保留，运行目录仍可保存配置和数据。
+
+## High-level design baseline — 2026-09-19
+
+- **Status**: DOCUMENTATION_ONLY / NO_PUBLIC_API_CHANGE。按用户要求提炼 [highlevel-design.md](highlevel-design.md)，为四模块确立可引用的 G1–G6 与模块原则；当前摘要与必须保持的约束分开。
+- **Scope**: README、MANAGEMENT 和架构阅读入口增加原则检查。保留现有未验收项和冻结目标，不将建议修复写为当前已实现；当前/目标 PDF 输入未变，本轮不重建。
+- **Validation**: 四模块各 500–1000 字，链接及限定 diff 检查通过；后续代码修改须说明适用原则和证据。本条是文档治理交付，不关闭 Spec189 的任何产品任务。
+
 ## Spec189 authenticated assembly progress handoff — 2026-09-19
 
 - **Status**: `PARTIAL`。B189-3 为 post-Selection assembly 增加了生产 C++ 进度回报和精确消费绑定：`NativeCanonicalOnnxAssemblerOptions::reportProgress` 在已认证里程碑回调，`StreamEventConsumer::observeAuthenticatedProgress` 只接受同一 request/provider/service、Selection digest、terminal-role operation、严格 epoch/sequence 和有效期限；`ServiceUser::initializeStreamConsumer` 传递 expected operation ID。
@@ -15,6 +151,13 @@
 - **Evidence**：冻结修复快照获官方只读 `STATIC_PASS`；受影响 C++ closure 以 Waf `-j3` 重建，`Spec175InvocationStreamLifecycle` 15/15、`Spec175NativeAssembly` 9/9 通过。真实重跑及 terminal/output/drain 仍未完成，详见 [r56 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-real-qwen-r56-20260919.md)。
 - **Documentation boundary**：B189-3 的下一个且唯一优先出口是用重建候选做一次真实 retry；在观察新的第一生产边界前，不扩张组件职责、不盲目增加 timeout，也不把本地回归提升为资格 PASS。
 
+## Spec189 provider-specific collaboration progress binding — 2026-09-19
+
+- **Status**: `PARTIAL`。r70 真实运行已到 authenticated assembly admission 和 selected-material fetch，但 terminal stream consumer 在非 terminal Provider 继续组装时仍因 stream gap 终止。
+- **Design change**: streamed collaboration progress now binds exact `{providerName, providerSelectionDigest, operationId}` tuples. Selection digests are Provider-specific because each key envelope is recipient-bound; freshness `(epoch, sequence)` is tracked per tuple so worker-to-terminal progress handoff is accepted while stale duplicates remain rejected. Legacy single-Provider consumers retain their exact operation binding.
+- **Evidence**: r70 boundary is recorded in [native-r70 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r70-progressed-stream-boundary-20260919.md). The repair requires the reviewed C++ selector and a new candidate run; no qualification PASS is claimed.
+- **Documentation boundary**: this entry records the current repair contract and its open validation. Generated API Markdown/PDF remains a separate MANAGEMENT checkpoint and must not be inferred from this working-tree entry.
+
 ## Spec189 Selection-scoped admission sequence — 2026-09-19
 
 - **Status**: `PARTIAL` / `NO_PUBLIC_API_CHANGE`。为修复 assembler/rebuild 重建时重复从 sequence 2 开始的问题，`NativeSelectionProjectionV3` 现在携带不参与 JSON/canonical digest 的 runtime-only shared atomic counter；同一 authenticated Selection 的 admission 与每次 runner factory copy 共享它。
@@ -28,6 +171,17 @@
 - **Evidence boundary**：r58 的 `RESOURCE_BOUNDARY:diskFree` 只表示宿主机工作区/运行时文件系统低于安全门；本轮没有启动或读取 SIF，也不能把该边界归因于 SIF 构建或容器内容。
 - **Delivery boundary**：SIF/Tiger 保留给后续独立交付和远端资格，不改变 Spec189 的本地 C++/MiniNDN 完成门。
 
+## Spec189 causal evidence checker — 2026-09-19
+
+- **Status**: NO_PUBLIC_API_CHANGE / PARTIAL。仅增加 Provider 内部日志 `preparationId`（request/role owner 下每次 runner preparation 调用身份），不改变公开签名、授权、模型数据、operation status sequence 或 wire。
+- **Evidence**: [causal oracle evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-causal-oracle-20260919.md)。C++ checker 按 ID 配对多 epoch 的 assembly/ready，并让正常 CLI 必经材料与末段终态门；这不是模型正确性或 MiniNDN 资格。
+- **Documentation boundary**: 不将日志判据视为新目标 API，不覆盖冻结当前/目标 PDF；完整 Spec189 交付仍按原设计同步门验收。
+
+## Spec189 DI/Repo repair analysis — 2026-09-19
+
+- **Status**: NO_DESIGN_CHANGE。本轮仅评估静态审查问题的修复选项，建议为 PROPOSED，未修改产品源码、公开 API 或冻结目标。
+- **Evidence**: [repair design analysis](../specs/189-qwen-two-provider-minindn/evidence/di-repo-repair-design-analysis-20260919.md)。已区分新 material-only consumer 的局部验证与真实生产链资格，未将旧的“尚未接入”结论延续为当前事实。
+- **Next**: 用户接受边界后再形成实施契约；本轮不重新生成当前/目标 PDF，不宣称设计同步或产品验收完成。
 
 ## Spec189 execution and ownership audit — 2026-09-18 14:50 -0500
 
@@ -56,6 +210,58 @@
 - **Current evidence**：基线 `76b26e2c` 加已有工作区实现；Repo 层 payload 与 PreparedModel 复用 selector 是组件证据，实际 requester/assembler 接线未闭合。r25 已到执行/组装入口，未通过完整模型运行。详见 [audit correction](../specs/189-qwen-two-provider-minindn/evidence/spec189-static-audit-20260918.md#architecture-and-progress-correction)。
 - **Tasks**：旧 T002/T004 合并 T003、T010 合并 T009；T008 资源门前移。当前/目标 PDF 的冻结 API/源码快照本轮不覆盖；本条登记的是 Spec 内部目标修正，不宣称 PDF 已包含未实现设计。后续 T003/T006 实现改变 API/行为时按 MANAGEMENT 同步中文契约、API 参考与双 PDF，T009 文档交付检查不得跳过。
 - **Validation boundary**：仅文档一致性与只读审查，无 native build、模型运行或 MiniNDN PASS；纯文档 checkpoint 不使未变二进制和模型证据失效。
+
+### 2026-09-17 — Spec188 Model Preparation and Disk-Backed Artifact Memory Control
+
+- **2026-09-17 progress gate reset / PARTIAL**：进度审计把本地产品出口进一步限定为 T005、T006、T008、T009、T010、T011；T014–T016 只在 native core 通过后作为 delivery gate，T002/T003/T004/T007/T012/T013 继续作为 follow-up。当前 `RepoSourceProvider::load()` 的完整 vector 组装、缺少默认 owner 注入和 current-candidate zero-republication 仍是开放证据缺口；没有新增 API、生产机制或 PASS。详见 [progress audit r3](../specs/188-model-preparation-disk-backed-memory/evidence/progress-audit-20260917-r3.md)。
+
+- **PLANNED / NDNSF-DI + NDNSF-Repo**：依据当前源码和 Spec185/187 evidence，登记模型制品从 request-time publication 改为 `Runtime::prepare(ModelRef)` 阶段的目标边界。当前 `NativeCanonicalPreparationCatalog`/`NativeCanonicalArtifactPublisher` 仍可能在请求准备中持有和发布完整 source/initializer；`RepoCore`/`RepoNode`/`RepoClient`/`TieredRepoStore` 仍有 vector、BLOB、concat 和 cache copy 路径。目标增加 typed `ArtifactReference`、file-backed/range Repo、bounded hot windows、lease/pin 计量和 authenticated Selection 后 Provider assembly。
+- **Before/after**：before，模型 bytes 可在 request-time publisher、encrypted envelope、NDN segment/IMS、Repo `StoredObject::payload`、runtime executor 和 Provider runner 多处同时存活；after（target only），prepare 幂等落盘并返回 reference/lease，request 不再携带或重复发布模型，Repo/Provider 只按范围读取并分别计量 immutable artifact、transfer、materialization、runner 和 input 内存。应用输入 `Input::repository(DataRef)` 保持独立，不被改成模型传输接口。
+- **Contracts/tasks**：[Spec188](../specs/188-model-preparation-disk-backed-memory/spec.md)、[model reference](../specs/188-model-preparation-disk-backed-memory/contracts/model-reference.md)、[file-backed Repo](../specs/188-model-preparation-disk-backed-memory/contracts/file-backed-repo.md)、[memory budget](../specs/188-model-preparation-disk-backed-memory/contracts/memory-budget.md)、[tasks](../specs/188-model-preparation-disk-backed-memory/tasks.md)。Spec 状态为 `IN_PROGRESS`；T005 当前为 `PARTIAL`，已接入 `RuntimeConfig::repositorySourceProvider` 与 RepoCore-backed `RepoSourceProvider`，但 provider 仍返回完整 `NativeCanonicalSource` vector，lease 计量、当前 caller 注入和完整请求链仍未闭合。B188-1 r7 发现的 erase 顺序和 physical-usage recovery 缺陷已修复，并在 r8/r9 任务及组合静态门和 C++ selector 中通过；T002/T003 仍为 `PARTIAL`，扩展故障和 TSan 未观测。
+- **Source/evidence**：当前事实来自 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.cpp`、`NativeCanonicalArtifactPublisher.cpp`、`NativeRequestPreparation.cpp`、`Runtime.cpp`、`Runtime.hpp`、`ServiceUser.cpp`、`NDNSFMessages.cpp` 以及 `NDNSF-DistributedRepo` 的 RepoCore/Node/Client/TieredStore。当前 provider 的 C++ selector、matching host dependency closure 和复审记录见 [B188-3 current evidence](../specs/188-model-preparation-disk-backed-memory/evidence/b188-preparation.md#current-t005-provider-implementation-and-static-gate--2026-09-17)；r14 YOLO publication 行属于旧候选，当前 provider-bound YOLO 尚未重跑。API 清单已用 `build-api-reference.py --changed-only` 生成，但当前 source snapshot/PDF provenance 因并行工作树漂移保持未验证，不能宣称文档门禁通过。
+- **Scope correction / PARTIAL**：本轮审计确认核心目标仍是 prepare→reference request→authenticated assembly/drain→YOLO 两轮本地链路；Qwen 完整推理、1.5 GB OS 级压力、TSan/parser-fuzz、远端/跨进程故障和 broad mutation matrix 从核心完成门移为 `FOLLOW_UP`/`UNOBSERVED`。保留原任务编号、历史证据和失败边界，不改变当前/目标设计快照，也不把任何未执行验证写成 PASS。详见 [scope audit](../specs/188-model-preparation-disk-backed-memory/evidence/scope-audit-20260917.md)。
+- **Progress/code-reality correction / PARTIAL**：复核确认 RepoCore callback 只属于测试注入边界，`PreparedModelPackage` 仍通过 `NativeCanonicalPreparationCatalog` 保留 source，且 YOLO 两轮仍记录 `LARGE_DATA_PUBLISH_*`；下一批只推进真实 Repo owner/reference/lease 与 zero republication。Provider/Memory/YOLO selector 已按实际 Waf target/suite 修正，未新增 API 或核心机制。详见 [progress audit](../specs/188-model-preparation-disk-backed-memory/evidence/progress-audit-20260917.md)。
+- **2026-09-17 r7/r8/r9 Repo repair and validation**：B188-1 r7 发现 manifest-first erase 与 physical-usage recovery 缺陷；当前已修复并由 r8/r9 冻结快照的任务及组合 `review-agent` 复审为 `STATIC_PASS`。r9 canonical affected closure 和三个 Repo C++ selector 在 ASan/UBSan 下通过；真实 ENOSPC/short-write/cancel、erase/fsync ambiguous fault 与 TSan 仍未观测，T002/T003 继续为 `PARTIAL`，不得将 focused PASS 写成产品完成。
+
+- **2026-09-17 T005 provider wiring / PARTIAL**：当前工作区把 prepare-time Repo owner 从测试 callback
+  扩展为 `RuntimeConfig::repositorySourceProvider` 与 RepoCore-backed `RepoSourceProvider`。
+  Before，Runtime 只能通过兼容 `RepositorySourceLoader` 或本地 file 取得 source；after，首选 provider
+  以 typed presence、manifest-first bounded range read/write、一次 miss ingest、digest/size/deadline
+  校验接入 `Runtime::prepare`，并在带 receipt 的 publication 后释放 catalog transient source。
+  旧 loader 与无 receipt source owner 保留为兼容边界。此为实际 API/ownership 变化，已完成 v4
+  `review-agent` `STATIC_PASS`；随后 canonical ASan/UBSan `spec185-runtime` build exit `0`，
+  provider miss-ingest/hot-hit、typed lifecycle-error 和完整 Runtime selectors 分别为 1/1、1/1、11/11。
+  lease 计量、真实 request/YOLO zero-republication 和完整动态故障矩阵仍未验收；Spec188/T005 保持
+  `PARTIAL`。受影响契约见
+  [model reference](../specs/188-model-preparation-disk-backed-memory/contracts/model-reference.md)。
+
+- **2026-09-18 T005/T011 code-reality reclassification / PARTIAL**：复核确认 `RepoSourceProvider::load()`
+  虽使用 bounded range I/O，仍将块组装为完整 `NativeCanonicalSource` vector；因此不能把 range
+  selector 当作 prepare 内存上界证明。当前 `Runtime::open` 和 `spec188-yolo-repeat` 也没有默认注入
+  Repo owner，r14 的 `LARGE_DATA_PUBLISH_*` 只能作为旧候选历史证据。该条只修正当前/历史文档分界，
+  不改变 API 或生产代码；下一步是 provider-bound current-candidate selector、lease/copy counter
+  和两轮 YOLO zero-republication 验证。
+
+- **2026-09-17 scope reset / PARTIAL**：再次审计确认 Spec188 的最短产品目标是当前
+  `User::prepare(modelKey, PrepareOptions)` → Repo owner/receipt/lease → reference-only request
+  → authenticated Provider assembly/drain → 两轮当前候选 YOLO。原先把通用
+  `RepoCore`/`RepoNode`/`RepoClient` 大对象重构、完整 segmented serving、8 路 prepare、GB 级
+  RSS/swap、Qwen 数值推理、扩展故障和 SIF/Tiger 放在同一完成门，已改为 `FOLLOW_UP`/外部门；
+  T002/T003/T004/T007 的 focused 结果保留为复用基础。`prepare(ModelRef)` 修正为当前真实公开
+  入口，不新增第二套 API。此为 Spec 范围和契约文档修正，没有把任何运行结果提升为 PASS；证据见
+  [scope audit r2](../specs/188-model-preparation-disk-backed-memory/evidence/scope-audit-20260917-r2.md)。
+
+- **2026-09-18 scope-convergence review / PARTIAL**：在 T005–T011 和 T014 的 bounded local
+  exits 已有证据后，Spec188 的活动计划收敛为 Core、Delivery、Follow-up 三层，删除重复的
+  scope-reset 叙述，保留历史 evidence 和 task ID 以便追踪。当前 `RepoSourceProvider::load()`
+  仍把 range 块组装成完整 `NativeCanonicalSource`，所以本 Spec 只声明 receipt/lease/owner、
+  reference-only request、authenticated assembly/drain 和本机 YOLO zero republication；不声明
+  GB 级内存上界。T015 使用 Spec188-scoped source/API/profile manifest；全仓库 Design/source
+  baseline/PDF 若受其他并行 Spec 影响，记录为 `UNOBSERVED`，不吸收无关改动。当前/目标设计继续
+  分离，T015 的 scoped convergence 和 T016 本地 handoff 已完成，SIF/Tiger 保持外部边界与
+  `WAITING_EXTERNAL_INPUT`。详见 Spec188 的
+  [plan](../specs/188-model-preparation-disk-backed-memory/plan.md)、[tasks](../specs/188-model-preparation-disk-backed-memory/tasks.md)
+  和 [convergence evidence](../specs/188-model-preparation-disk-backed-memory/evidence/b188-convergence.md)。
 
 ### 2026-09-15 — Spec187 Two-layer Packaging
 
@@ -373,3 +579,24 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 - 源码与证据：`ndn-service-framework/ServiceUser.cpp`、`ServiceProvider.cpp`、`tests/integration-tests/request-scoped-selection.t.cpp`；[segmented regression](../specs/187-yolo-minindn-sif-app/evidence/b187-local-yolo-recheck-20260916.md#2026-09-16-c-segmented-request-regression)。
 - 验证：官方 `review-agent` snapshot `review-segmented-input-20260916-r3` 返回 `STATIC_PASS`；`build-spec187-local-nac-r1` integration target `-j4` `rc=0`；`RequestScopedSelection/*` 与 `RequestScopedResponseConfidentiality/*` 第二次整套均 `rc=0`。长输入断言 1,601 segments、统一 FinalBlock、最大 wire <8,800 bytes 和完整组装后 handler。缺段/乱序/错误 FinalBlock/超时负例仍未运行。
 - 当前/目标边界：C++ DummyFace 分段边界已通过；当前源码 MiniNDN r42 Controller native crash、SIF/APP 与 Tiger qualification 仍独立 `PARTIAL`，不因本条升级。
+
+## D-189：Qwen two-provider MiniNDN full-path gate
+
+- 日期 / Spec / 任务与契约：2026-09-18；[Spec189](../specs/189-qwen-two-provider-minindn/spec.md)；T001–T010；`Q189-PREP`、`Q189-REPO`、`Q189-WIRE`、`Q189-ASSEMBLY`、`Q189-HANDOFF`。
+- 原设计与变化：Spec188 的 bounded core 以 YOLO 两轮作为本地出口，Qwen 只保留为 follow-up resource probe，不能证明最初的多 Provider CPU 目标。Spec189 独立规定真实 Qwen3-0.6B 的 `prepare → Repo manifest/layer publication → reference-only request → ACK → Selection → placement-bound Provider fetch/assembly/execute → terminal → drain` 全链；prepare 一次发布、后续 request 复用 reference，不能使用 stage export、单 Provider ORT、预置 runner 或 synthetic ACK/Selection 替代。
+- 当前已实现部分 / 目标未实现部分：本机已生成并校验两阶段 ONNX、external canonical graph 和 initializer，哈希及大小见 [B189-1 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-prepare.md)。native prepare/Repo commit、真实 ACK/Selection、两个 Provider 的 C++ handoff/execute、MiniNDN 和 repeat 尚未运行，Spec189 保持 `IN_PROGRESS`。
+- 兼容性、迁移或撤回影响：不修改 Spec188 已关闭的 bounded core 结论；`.specify/feature.json` 和 `AGENTS.md` 的 active pointer/rules 指向 Spec189。任意模型、split、ABI、profile、selector 或 handoff 变化都使后续证据失效。
+- 源码范围 / 文档定位：`specs/189-qwen-two-provider-minindn/{spec,plan,tasks,batch-execution,contracts,quickstart}.md`；通用实验规则写入 `AGENTS.md` 的 `Real multi-provider model experiment contract`。
+- 验证：`verify-spec-kit-sync.py --require-entrypoints` 返回 `PASS: 11/11`；ONNX checker 和 ORT CPU session 通过；这些仅是制品准备证据，不是 native/MiniNDN PASS。原始导出日志保留在 `.codex-tmp/spec189-qwen-two-provider-20260918/`。
+- 状态 / 下一步：`PARTIAL` / `IN_PROGRESS`；先执行 B189-0 的 CodeGraph/ABI/handoff 冻结，再按 T002/T003 让 native prepare 把已验证制品发布到 Repo，随后才可运行双 Provider MiniNDN。
+
+### D-189-PROGRESS：跨 Provider progress 与 Qwen/YOLO 验收边界
+
+- 日期 / Spec / 任务与契约 ID：2026-09-20 04:34 -0500；[Spec189](../specs/189-qwen-two-provider-minindn/spec.md)；T006/T007/T009；FR-030、SC-007。
+- 模块 / 当前与目标章节：Core `ServiceUser`/`InvocationStream` collaboration stream consumer、NDNSF-DI Provider assembly progress；Spec189 当前资格边界。
+- 原设计 / 新设计 / 修改原因：原运行时只按 terminal Provider 的 progress 续命，Qwen 的非 terminal Provider 在 selected-material assembly 或 hidden-state 等待期间会触发 stream gap。现行契约按 committed Selection 接受每个 `{providerName, providerSelectionDigest, role operationId}`，并分别检查 `(epoch, sequence)` 新鲜度；YOLO 的轻量 `NATIVE_POSTPROCESS` 结果不再作为 Qwen 两 Provider 资格证据。
+- 当前已实现部分 / 目标未实现部分：r47/r70 已证明 Qwen 进入 ACK、Selection、grant verification 和 selected-material fetch；progress binding 的 C++ 状态机与 focused selectors 已通过。新安装候选的真实 MiniNDN runner、hidden-state handoff、terminal output、cleanup 和重复请求仍未完成。
+- 兼容性、迁移或撤回影响：单 Provider 继续使用一个精确 operation binding；不改变 ACK/Selection wire 或授权语义。宿主机 `swapIo`/`diskFree` 仍作为独立 `RESOURCE_BOUNDARY`，不能与协议失败合并。
+- 源码范围 / 文档提交定位：`ndn-service-framework/ServiceUser.cpp`、`ndn-service-framework/InvocationStream.cpp/.hpp`、`specs/189-qwen-two-provider-minindn/{spec,plan,tasks,batch-execution,traceability}.md`；证据为 [r4 progress heartbeat](../specs/189-qwen-two-provider-minindn/evidence/b189-r4-progress-heartbeat-20260919.md) 与 [r70 boundary](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r70-progressed-stream-boundary-20260919.md)。
+- 验证命令、结果与持久证据：C++ progress/lifecycle selectors 已通过并获只读 `STATIC_PASS`；r70 仍使用旧候选并保持 `PARTIAL`，必须用新安装候选重跑，不能由静态或 YOLO 结果升级。
+- 状态 / 剩余验收 / 下一步：`PARTIAL`；先完成 affected Core/DI 安装身份核对，再进行一次新的真实 MiniNDN run；只有越过 stream gap 后才继续材料、runner、handoff 或 terminal 边界。

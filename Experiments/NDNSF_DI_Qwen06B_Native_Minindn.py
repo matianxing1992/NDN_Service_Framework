@@ -5,9 +5,11 @@ The Python process owns only topology, identities, files, and child-process
 lifecycle.  Request planning, grants, Provider admission, ONNX execution,
 streaming, and conversation checkpoints stay in the C++ executables.
 
-The staged ONNX files are role artifacts.  A canonical ONNX source object must
-be supplied explicitly with ``--canonical-source``; the runner never creates a
-JSON metadata payload in its place.
+    The staged ONNX files are exporter-side contract fixtures.  A canonical ONNX
+    source object must be supplied explicitly with ``--canonical-source``; after
+    prepare publishes that source, ACK/Selection binds the roles and each Provider
+    fetches the selected material and assembles its runner.  The runner never
+    treats a pre-exported stage path as a Provider startup artifact.
 """
 
 from __future__ import annotations
@@ -46,6 +48,11 @@ APP_ROOT = "/example/ndnsf-qwen06b"
 CONTROLLER = APP_ROOT + "/controller"
 AUTHORITY = APP_ROOT + "/authority"
 USER = APP_ROOT + "/user"
+MODEL_FAMILY = "qwen"
+MODEL_URI = "/Model/Qwen3/0.6B"
+STATE_PREFIX = "qwen"
+TOPIC_PREFIX = "/NDNSF/DI/QWEN"
+ARTIFACT_ROOT = "/Artifact/Qwen3-0.6B"
 NATIVE_CONVERSATION_JOURNAL_MAX_BYTES = 64 * 1024 * 1024
 # ModelPreparationCache reserves one source slot for the ONNX graph and one
 # for a separate external initializer, then adds the assembled package and
@@ -59,6 +66,10 @@ LARGE_DATA_DEFAULT_IMS_LIMIT = 50000
 LARGE_DATA_IMS_MARGIN_SEGMENTS = 8192
 LARGE_DATA_IMS_MAX_LIMIT = 1000000
 LARGE_MODEL_THRESHOLD_BYTES = 256 * 1024 * 1024
+# MiniNDN-only bounded Content Store capacity.  The real Qwen Repo/fetch path
+# must not replicate multi-GiB canonical objects in every forwarder; eviction
+# remains allowed because the authenticated Repo is the source of truth.
+MININDN_NFD_CS_SIZE = 32768
 # Keep operator-controlled startup waits finite.  These values are generous
 # enough for a slow local MiniNDN launch while preventing a malformed CLI
 # value from turning the generated service envelope into an unbounded wait.
@@ -169,19 +180,26 @@ def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
     per_round_ms = per_round_bootstrap_ms + timeout_ms
     lifecycle_ms = startup_ms + rounds * per_round_ms + 120000
     service_ms = max(base_service_ms, lifecycle_ms)
+    # Keep the provider's complete post-Selection assembly budget explicit.
+    # It is independently wired from the dependency/readiness/control budgets,
+    # while this large-model candidate uses the same finite envelope as one
+    # native request so material fetch and worker assembly can both complete.
+    assembly_timeout_ms = timeout_ms
     return {"bootstrap_ms": bootstrap_ms, "timeout_ms": timeout_ms,
+            "assembly_timeout_ms": assembly_timeout_ms,
             "ack_timeout_ms": ack_timeout_ms, "no_progress_ms": no_progress_ms,
             "policy_ms": policy_ms,
             "process_timeout_s": process_timeout_s, "provider_run_ms": service_ms,
             "authority_run_ms": service_ms, "retention_ms": service_ms}
 
 
-def qwen_state_successor_pairs(stages: list[dict]) -> list[tuple[str, str]]:
+def state_successor_pairs(stages: list[dict], state_prefix: str = "qwen") -> list[tuple[str, str]]:
     """Validate and derive semantic past->present pairs for every stage.
 
     A positional zip is unsafe: a manifest can keep the same input/output
     sets while swapping a key or value tensor.  Qwen's state contract is
     name-based and every layer must carry one key and one value successor.
+    ``state_prefix`` also covers the standard Llama contract used by SmolLM2.
     """
     pairs: list[tuple[str, str]] = []
     previous_end = 0
@@ -234,6 +252,11 @@ def qwen_state_successor_pairs(stages: list[dict]) -> list[tuple[str, str]]:
             pairs.extend([(past["key"][layer], present["key"][layer]),
                           (past["value"][layer], present["value"][layer])])
     return pairs
+
+
+def qwen_state_successor_pairs(stages: list[dict]) -> list[tuple[str, str]]:
+    """Compatibility wrapper for the historical Qwen profile."""
+    return state_successor_pairs(stages, "qwen")
 
 
 def materialize_input(source: Path, destination: Path, expected_digest: str | None,
@@ -302,6 +325,34 @@ def materialize_input(source: Path, destination: Path, expected_digest: str | No
         if not destination_existed:
             destination.unlink(missing_ok=True)
         raise
+
+
+def resolve_encrypted_repository_path(run_root: Path, requested: Path | None) -> Path:
+    """Resolve the run-scoped encrypted Repo directory without changing the default.
+
+    The host guard samples the filesystem containing ``run_root``.  A caller
+    may therefore place only the large, regenerated ciphertext Repo on a
+    separately validated temporary filesystem; the run root still owns all
+    logs, config, identities, and durable evidence.  The external directory
+    must be new or empty so one run cannot consume another runs ciphertext.
+    """
+    default = (run_root / "requester/encrypted-repo").resolve()
+    if requested is None:
+        return default
+    path = requested.expanduser().resolve()
+    try:
+        path.relative_to(run_root.resolve())
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_MUST_BE_OUTSIDE_RUN_ROOT")
+    if path.exists():
+        if not path.is_dir() or any(path.iterdir()):
+            raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_NOT_EMPTY")
+    else:
+        path.mkdir(parents=True, exist_ok=False)
+    path.chmod(0o700)
+    return path
 
 
 def require_file_digest(path: Path, expected_digest: str | None, label: str) -> str:
@@ -421,6 +472,12 @@ def tensor_bundle(token_ids: list[int]) -> bytes:
 
 def load_stage_manifest(path: Path, stage_root: Path | None):
     manifest = json.loads(path.read_text(encoding="utf-8"))
+    schema = str(manifest.get("schema", ""))
+    family = str(manifest.get("modelFamily", ""))
+    if family not in {"qwen", "llama"}:
+        raise ValueError("stage manifest requires an explicit modelFamily")
+    if schema != f"ndnsf-di-{family}-onnx-service-manifest-v1":
+        raise ValueError("stage manifest family/schema mismatch")
     stages = manifest.get("stages")
     if (not isinstance(stages, list) or len(stages) < 2 or
             len(stages) > MAX_STAGE_COUNT):
@@ -452,18 +509,35 @@ def load_stage_manifest(path: Path, stage_root: Path | None):
     return manifest, resolved
 
 
+def manifest_eos_token_ids(model_manifest: dict) -> list[int]:
+    """Require the prepared tokenizer/config to define the stop contract."""
+    values = model_manifest.get("eosTokenIds")
+    if isinstance(values, int):
+        values = [values]
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ValueError("MODEL_EOS_TOKEN_IDS_REQUIRED")
+    try:
+        result = [int(value) for value in values]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("MODEL_EOS_TOKEN_IDS_INVALID") from exc
+    if any(value < 0 for value in result):
+        raise ValueError("MODEL_EOS_TOKEN_IDS_INVALID")
+    return result
+
+
 def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dict],
                             max_tokens: int, tokenizer_digest: str):
-    state_pairs = qwen_state_successor_pairs(stages)
+    eos_token_ids = manifest_eos_token_ids(model_manifest)
+    state_pairs = state_successor_pairs(stages, STATE_PREFIX)
     roles = [str(stage["role"]) for stage in stages]
     dependencies = []
     for index in range(len(roles) - 1):
         dependencies.append({
             "producers": [roles[index]], "consumers": [roles[index + 1]],
             "keyScope": f"pipeline-stage-{index}-to-{index + 1}",
-            "topicPrefix": "/NDNSF/DI/QWEN",
+            "topicPrefix": TOPIC_PREFIX,
             "objectNameTemplate": (
-                "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/"
+                f"{{producerProvider}}{TOPIC_PREFIX}/{{sessionId}}/"
                 "{producerRole}/{consumerRole}/{sequence}"),
             "expectedSegments": 0, "expectedBytes": 0, "required": True,
             "segmentNaming": {"mode": "ndn-segment-component",
@@ -478,10 +552,10 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
         output_names = list(stage["outputNames"])
         if index > 0 and "hidden_states" in input_names:
             input_names[input_names.index("hidden_states")] = (
-                f"qwen_s{index - 1}_hidden_states_out")
+                f"{STATE_PREFIX}_s{index - 1}_hidden_states_out")
         if index < len(stages) - 1 and "hidden_states_out" in output_names:
             output_names[output_names.index("hidden_states_out")] = (
-                f"qwen_s{index}_hidden_states_out")
+                f"{STATE_PREFIX}_s{index}_hidden_states_out")
         metadata = {
             "inputNames": ",".join(input_names),
             "outputNames": ",".join(output_names),
@@ -496,7 +570,7 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
                 if a in cache_inputs and b in cache_outputs),
             "kvOutputTensors": ",".join(cache_outputs),
             "kvOutputScope": "kv-state",
-            "positionInputPolicy": "qwen-causal-position-v1",
+            "positionInputPolicy": f"{MODEL_FAMILY}-causal-position-v1",
             "attentionMaskInputName": "attention_mask",
             "positionIdsInputName": "position_ids",
             "outputBundleScope": "final-response" if index == len(stages) - 1 else f"pipeline-stage-{index}-to-{index + 1}",
@@ -505,27 +579,33 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
             "stateInputNames": ",".join(cache_inputs),
             "stateOutputNames": ",".join(cache_outputs),
             "maxGeneratedTokens": str(max_tokens),
-            "eosTokenIds": "151645",
+            "eosTokenIds": ",".join(str(item) for item in eos_token_ids),
             "tokenizerDigest": tokenizer_digest,
         }
         if index > 0:
-            for name in (f"qwen_s{index - 1}_hidden_states_out",
+            for name in (f"{STATE_PREFIX}_s{index - 1}_hidden_states_out",
                          "attention_mask", "position_ids"):
                 metadata[f"inputScope.{name}"] = f"pipeline-stage-{index - 1}-to-{index}"
         artifacts.append({
             "role": stage["role"], "path": stage["path"],
-            "artifact": f"/Artifact/Qwen3-0.6B/Stage/{index}",
+            "artifact": f"{ARTIFACT_ROOT}/Stage/{index}",
             "filename": Path(stage["path"]).name, "kind": "model",
+            # This digest identifies the exporter-side stage contract only.
+            # Provider materialization is bound to the authenticated role
+            # projection and assembled from the canonical source after
+            # Selection; it must never use this local path as a runner input.
+            "exportArtifactDigest": stage["sha256"],
+            "materialization": "post-selection-canonical-assembly",
             "backend": "onnxruntime", "metadata": metadata,
         })
     model_name = str(model_manifest["model"])
     revision = str(model_manifest.get("modelRevision", ""))
-    model_uri = "/Model/Qwen3/0.6B"
+    model_uri = MODEL_URI
     plan = {"version": 2, "services": [{
         "schemaVersion": 2, "service": SERVICE, "model": model_uri,
         "modelRepository": model_name, "modelRevision": revision,
-        "dtype": model_manifest.get("dtype", "float32"), "modelFamily": "qwen",
-        "modelFormat": "onnx", "plannerKind": "native-qwen-layer",
+        "dtype": model_manifest.get("dtype", "float32"), "modelFamily": MODEL_FAMILY,
+        "modelFormat": "onnx", "plannerKind": f"native-{MODEL_FAMILY}-layer",
         "runtimeBackend": "onnxruntime", "executionPolicy": "DATA_DRIVEN_V2",
         "roles": roles, "dependencies": dependencies,
     }]}
@@ -533,11 +613,11 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
         "name": SERVICE, "model": model_uri, "modelRepository": model_name,
         "modelRevision": revision, "dtype": model_manifest.get("dtype", "float32"),
         "roles": roles, "dependencies": dependencies, "artifacts": artifacts,
-        "modelFamily": "qwen", "modelFormat": "onnx",
-        "plannerKind": "native-qwen-layer", "runtimeBackend": "onnxruntime",
+        "modelFamily": MODEL_FAMILY, "modelFormat": "onnx",
+        "plannerKind": f"native-{MODEL_FAMILY}-layer", "runtimeBackend": "onnxruntime",
     }]}
-    plan_path = output / "native-qwen-execution-plan.json"
-    manifest_path = output / "native-qwen-service-manifest.json"
+    plan_path = output / f"native-{MODEL_FAMILY}-execution-plan.json"
+    manifest_path = output / f"native-{MODEL_FAMILY}-service-manifest.json"
     plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     manifest_path.write_text(json.dumps(service_manifest, indent=2, sort_keys=True) + "\n")
     return plan_path, manifest_path
@@ -582,7 +662,12 @@ def env_for(home: Path, node: str) -> dict[str, str]:
     # MiniNDN process through the maintained launcher instead of relying on a
     # host environment leak.
     for key in ("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE",
-                "NDNSF_COLLAB_LARGE_FETCH_TIMING"):
+                "NDNSF_COLLAB_LARGE_FETCH_TIMING",
+                "NDNSF_SELECTION_STATUS_TRACE",
+                "SPEC175_TRACE",
+                "NDNSF_TIMELINE_TRACE",
+                "NDNSF_TIMELINE_TRACE_SAMPLE_RATE",
+                "NDNSF_STREAM_PACKET_TIMELINE_TRACE"):
         value = os.environ.get(key, "")
         if value:
             env[key] = value
@@ -624,6 +709,10 @@ def validate_native_output(path: Path) -> dict:
 def main(argv=None, *, _supervised=False) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage-manifest", type=Path, required=True)
+    parser.add_argument("--model-family", choices=("qwen", "llama"), default="qwen",
+                        help="native planner family; llama is used for SmolLM2")
+    parser.add_argument("--model-name", default=None,
+                        help="model identity from the prepared manifest")
     parser.add_argument("--stage-manifest-sha256", default=None)
     parser.add_argument("--stage-root", type=Path, default=None)
     parser.add_argument("--canonical-source", type=Path, default=None,
@@ -648,6 +737,14 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--build-receipt-sha256", default=None)
     parser.add_argument("--controller-binary", type=Path, default=ROOT / "build-spec184-b5-candidate/examples/App_ServiceController")
     parser.add_argument("--controller-binary-sha256", default=None)
+    parser.add_argument("--authority-binary", type=Path, default=None,
+                        help="installed NativeArtifactAuthority executable")
+    parser.add_argument("--requester-binary", type=Path, default=None,
+                        help="installed NativeRequester executable")
+    parser.add_argument("--provider-binary", type=Path, default=None,
+                        help="installed native Provider executable")
+    parser.add_argument("--assembly-worker-binary", type=Path, default=None,
+                        help="installed native ONNX assembly worker executable")
     parser.add_argument("--authority-binary-sha256", default=None)
     parser.add_argument("--requester-binary-sha256", default=None)
     parser.add_argument("--provider-binary-sha256", default=None)
@@ -656,6 +753,8 @@ def main(argv=None, *, _supervised=False) -> int:
                         help="Spec189 C++ full-path oracle executable")
     parser.add_argument("--oracle-binary-sha256", default=None)
     parser.add_argument("--run-root", type=Path, default=None)
+    parser.add_argument("--encrypted-repository-path", type=Path, default=None,
+                        help="optional empty run-scoped ciphertext Repo directory on a separate filesystem")
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--max-new-tokens", type=int, default=2)
     parser.add_argument("--input-token-ids", default="")
@@ -666,6 +765,28 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--resource-limits-json", default="{}",
                         help="host resource limits as a JSON object; defaults match LocalExperiment")
     args = parser.parse_args(argv)
+    global SERVICE, GROUP, APP_ROOT, CONTROLLER, AUTHORITY, USER
+    global MODEL_FAMILY, MODEL_URI, STATE_PREFIX, TOPIC_PREFIX, ARTIFACT_ROOT
+    if args.model_family == "llama":
+        smollm_model_uris = {
+            "HuggingFaceTB/SmolLM2-135M": "/Model/SmolLM2/135M",
+            "HuggingFaceTB/SmolLM2-360M": "/Model/SmolLM2/360M",
+        }
+        if args.model_name not in smollm_model_uris:
+            raise SystemExit(
+                "SMOLLM2_MODEL_REQUIRED: use HuggingFaceTB/SmolLM2-135M "
+                "or HuggingFaceTB/SmolLM2-360M")
+        MODEL_FAMILY = "llama"
+        MODEL_URI = smollm_model_uris[args.model_name]
+        STATE_PREFIX = "llama"
+        TOPIC_PREFIX = "/NDNSF/DI/LLAMA"
+        ARTIFACT_ROOT = "/Artifact/SmolLM2"
+        SERVICE = "/AI/LLM/Pipeline/SmolLM2Native"
+        GROUP = "/example/ndnsf-smollm2/group"
+        APP_ROOT = "/example/ndnsf-smollm2"
+        CONTROLLER = APP_ROOT + "/controller"
+        AUTHORITY = APP_ROOT + "/authority"
+        USER = APP_ROOT + "/user"
     limits = validate_limits(json.loads(args.resource_limits_json))
     if not _supervised:
         run_root = (args.run_root.expanduser().resolve() if args.run_root else
@@ -710,7 +831,13 @@ def main(argv=None, *, _supervised=False) -> int:
     stage_manifest_path = args.stage_manifest.expanduser().resolve()
     require_file_digest(stage_manifest_path, args.stage_manifest_sha256, "MODEL_STAGE_MANIFEST")
     model_manifest, stages = load_stage_manifest(stage_manifest_path, args.stage_root)
-    qwen_state_successor_pairs(stages)
+    manifest_family = str(model_manifest.get("modelFamily", ""))
+    if manifest_family != MODEL_FAMILY:
+        raise SystemExit(
+            f"MODEL_FAMILY_MANIFEST_MISMATCH: expected {MODEL_FAMILY}, "
+            f"got {manifest_family}")
+    eos_token_ids = manifest_eos_token_ids(model_manifest)
+    state_successor_pairs(stages, STATE_PREFIX)
     stage_nodes = [item.strip() for item in args.stage_nodes.split(",") if item.strip()]
     if len(stage_nodes) != len(stages) or len(set(stage_nodes)) != len(stage_nodes):
         raise SystemExit("--stage-nodes count must match stage manifest and contain no duplicates")
@@ -739,6 +866,18 @@ def main(argv=None, *, _supervised=False) -> int:
     if args.tokenizer_sha256 and tokenizer_digest != args.tokenizer_sha256:
         raise SystemExit("MODEL_TOKENIZER_DIGEST_MISMATCH")
     build = args.build.expanduser().resolve()
+    authority_binary = (args.authority_binary.expanduser().resolve()
+                        if args.authority_binary is not None
+                        else (build / "examples/DI_NativeArtifactAuthority").resolve())
+    requester_binary = (args.requester_binary.expanduser().resolve()
+                        if args.requester_binary is not None
+                        else (build / "examples/DI_NativeRequester").resolve())
+    provider_binary = (args.provider_binary.expanduser().resolve()
+                       if args.provider_binary is not None
+                       else (build / "examples/di-native-provider").resolve())
+    assembly_worker_binary = (args.assembly_worker_binary.expanduser().resolve()
+                              if args.assembly_worker_binary is not None
+                              else (build / "DI_NativeOnnxAssemblyWorker").resolve())
     oracle_binary = (args.oracle_binary.expanduser().resolve()
                      if args.oracle_binary is not None
                      else (build / "examples/spec189-two-provider-oracle").resolve())
@@ -747,15 +886,19 @@ def main(argv=None, *, _supervised=False) -> int:
         require_file_digest(receipt, args.build_receipt_sha256, "BUILD_RECEIPT")
     for path, expected, label in (
         (args.controller_binary, args.controller_binary_sha256, "CONTROLLER_BINARY"),
-        (build / "examples/DI_NativeArtifactAuthority", args.authority_binary_sha256, "AUTHORITY_BINARY"),
-        (build / "examples/DI_NativeRequester", args.requester_binary_sha256, "REQUESTER_BINARY"),
-        (build / "examples/di-native-provider", args.provider_binary_sha256, "PROVIDER_BINARY"),
-        (build / "DI_NativeOnnxAssemblyWorker", args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
+        (authority_binary, args.authority_binary_sha256, "AUTHORITY_BINARY"),
+        (requester_binary, args.requester_binary_sha256, "REQUESTER_BINARY"),
+        (provider_binary, args.provider_binary_sha256, "PROVIDER_BINARY"),
+        (assembly_worker_binary, args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
         (oracle_binary, args.oracle_binary_sha256, "SPEC189_ORACLE_BINARY"),
     ):
         require_file_digest(path, expected, label)
     revision = str(model_manifest.get("modelRevision", ""))
-    model_name = "Qwen3-0.6B"
+    model_name = args.model_name or str(model_manifest.get("model", ""))
+    if not model_name:
+        raise SystemExit("MODEL_NAME_REQUIRED")
+    if MODEL_FAMILY == "llama" and model_manifest.get("model") != model_name:
+        raise SystemExit("SMOLLM2_MODEL_MANIFEST_IDENTITY_MISMATCH")
     ranges = []
     for stage in stages:
         layer_range = stage.get("layerRange")
@@ -767,18 +910,18 @@ def main(argv=None, *, _supervised=False) -> int:
             raise ValueError(f"stage layerRange is invalid: {stage.get('role')}")
     precision = str(model_manifest.get("dtype", "float32")).lower()
     if precision not in {"float16", "float32"}:
-        raise SystemExit(f"unsupported Qwen precision: {precision}")
+        raise SystemExit(f"unsupported {MODEL_FAMILY} precision: {precision}")
     graph_digest = qwen_graph_digest(model_name, revision, precision, ranges)
     adapter = {
-        "name": "qwen", "version": "1", "state_digest": digest_text("qwen-native-state"),
-        "abi": "qwen-native-onnxruntime-cpu-v1", "model_formats": ["onnx"],
+        "name": MODEL_FAMILY, "version": "1", "state_digest": digest_text(f"{MODEL_FAMILY}-native-state"),
+        "abi": f"{MODEL_FAMILY}-native-onnxruntime-cpu-v1", "model_formats": ["onnx"],
         "tasks": ["text-generation"], "backends": ["onnxruntime"], "precisions": [precision],
-        "input_schema_digest": digest_text("qwen-input-schema"),
-        "options_schema_digest": digest_text("qwen-options-schema"),
-        "result_schema_digest": digest_text("qwen-result-schema"),
-        "graph_schema_digest": digest_text("qwen-graph-schema"),
-        "split_schema_digest": digest_text("qwen-split-schema"),
-        "state_schema_digest": digest_text("qwen-state-schema"),
+        "input_schema_digest": digest_text(f"{MODEL_FAMILY}-input-schema"),
+        "options_schema_digest": digest_text(f"{MODEL_FAMILY}-options-schema"),
+        "result_schema_digest": digest_text(f"{MODEL_FAMILY}-result-schema"),
+        "graph_schema_digest": digest_text(f"{MODEL_FAMILY}-graph-schema"),
+        "split_schema_digest": digest_text(f"{MODEL_FAMILY}-split-schema"),
+        "state_schema_digest": digest_text(f"{MODEL_FAMILY}-state-schema"),
         "graph_inspectable": True, "splittable": True, "deterministic_analysis": True,
     }
     model_descriptor = {
@@ -885,12 +1028,16 @@ def main(argv=None, *, _supervised=False) -> int:
         canonical_initializer_input.stat().st_size
         if canonical_initializer_input is not None else 0,
     ) + 64 * 1024 * 1024
-    # An extracted role can retain every tensor from the inlined canonical
-    # model.  Bound assembly by the complete graph plus external initializer,
-    # rather than assuming the largest stage is the assembled model size.
-    max_assembled_bytes = (canonical_source_input.stat().st_size +
-                           (canonical_initializer_input.stat().st_size
-                            if canonical_initializer_input is not None else 0) +
+    # NativeCanonicalOnnxRecipeAssembler bounds the initializer materialization
+    # peak as retained selected material + the raw initializer + two final-model
+    # upper bounds.  Use source/initializer sizes as conservative upper bounds
+    # for those terms; the old final-model-only value rejected the real Qwen
+    # candidate after all selected material had already been authenticated.
+    source_bytes_for_budget = canonical_source_input.stat().st_size
+    initializer_bytes_for_budget = (canonical_initializer_input.stat().st_size
+                                    if canonical_initializer_input is not None else 0)
+    max_assembled_bytes = (3 * source_bytes_for_budget +
+                           4 * initializer_bytes_for_budget +
                            64 * 1024 * 1024)
     max_prepared_bytes = preparation_cache_budget(
         max_source_bytes, max_assembled_bytes)
@@ -915,18 +1062,18 @@ def main(argv=None, *, _supervised=False) -> int:
     all_state_outputs = [name for stage in stages for name in stage.get("cacheOutputs", [])]
     catalog = {
         "schema": "ndnsf-di-native-request-catalog-v1", "model": model_descriptor,
-        "source": {"data_name": "/catalog/qwen06b/source", "digest": source_digest,
+        "source": {"data_name": f"/catalog/{MODEL_FAMILY}/source", "digest": source_digest,
                     "model_manifest_digest": manifest_digest,
                     "canonical_graph_digest": canonical_source_digest,
                     **({"initializer_digest": initializer_digest}
                        if initializer_digest else {})},
-        "recipe": {"artifact_profile_digest": digest_text("qwen06b-profile"),
-                   "assembler_descriptor_digest": digest_text("qwen06b-assembler"),
+        "recipe": {"artifact_profile_digest": digest_text(f"{MODEL_FAMILY}-profile"),
+                   "assembler_descriptor_digest": digest_text(f"{MODEL_FAMILY}-assembler"),
                    "backend_abi": "onnxruntime-cpu-v1", "precision": precision,
                    "quantization": "none", "layout": "native", "padding": "none",
                    "protection_epoch": "epoch-1", "max_source_bytes": max_source_bytes,
                    "max_assembled_bytes": max_assembled_bytes, "max_nodes": 10000},
-        "publication": {"artifact_root": "/Model/Qwen3-0.6B/artifacts",
+        "publication": {"artifact_root": MODEL_URI + "/artifacts",
                          "package_manifest_digest": manifest_digest,
                          # Prepare publishes one topology-independent material
                          # set plus its authenticated root. This budget is
@@ -941,7 +1088,7 @@ def main(argv=None, *, _supervised=False) -> int:
         # real request fail at the input boundary before ACK/Selection.
         "conversation_input": {"kind": "TENSOR_BUNDLE_TOKEN_IDS",
                                 "tensor_name": "input_ids"},
-        "splitter": {"kind": "QWEN", "layer_ranges": ranges,
+        "splitter": {"kind": MODEL_FAMILY.upper(), "model_family": MODEL_FAMILY, "layer_ranges": ranges,
                      "artifact_digests_by_role": {stage["role"]: stage["sha256"] for stage in stages},
                      "weight_bytes_by_role": {stage["role"]: stage["bytes"] for stage in stages},
                      "roles": [stage["role"] for stage in stages],
@@ -1052,8 +1199,8 @@ def main(argv=None, *, _supervised=False) -> int:
                               "keyLocatorPrefix": prefix,
                               "signerKeyId": offer_id,
                               "certificateName": prefix + "/ID-CERT"})
-    candidate_digest = digest_text("qwen06b-offer-policy")
-    offer_policy = {"schema": "spec180-provider-offer-trust-v1", "candidateId": "qwen06b-local",
+    candidate_digest = digest_text(f"{MODEL_FAMILY}-offer-policy")
+    offer_policy = {"schema": "spec180-provider-offer-trust-v1", "candidateId": f"{MODEL_FAMILY}-local",
                     "candidateDigest": candidate_digest, "trustSchema": APP_ROOT + "/trust",
                     "entries": offer_entries}
     authority_cfg = {
@@ -1094,10 +1241,10 @@ def main(argv=None, *, _supervised=False) -> int:
         "schemaVersion": 1,
         "status": "CONFIGURED",
         "artifactPolicyAuthority": {
-            "acceptedModelFamilies": ["/Model/Qwen3/0.6B"],
+            "acceptedModelFamilies": [MODEL_URI],
             "authorityId": AUTHORITY,
             "grantSchema": "ndnsf-di-key-grant-v1",
-            "keyId": "qwen06b-artifact-policy-ed25519-local",
+            "keyId": f"{MODEL_FAMILY}-artifact-policy-ed25519-local",
             "protectionEpochs": ["epoch-1"],
             "publicKeyAlgorithm": "ed25519",
             "publicKeyPath": "authority-public.pem",
@@ -1111,12 +1258,13 @@ def main(argv=None, *, _supervised=False) -> int:
         (directory / "plan.json").write_text(stage_plan.read_text())
         # Serving providers advertise role metadata and wait for the
         # authenticated Selection projection to bind a concrete artifact.
-        # Keeping exporter-local `path` fields here would make the native
-        # provider reject the manifest as a preassembled startup artifact.
+        # Remove exporter-local paths at this boundary: stage ONNX files are
+        # contract fixtures, never preassembled Provider startup artifacts.
         provider_manifest = json.loads(service_manifest.read_text())
         for service in provider_manifest.get("services", []):
             for artifact in service.get("artifacts", []):
                 artifact.pop("path", None)
+                artifact["materialization"] = "post-selection-canonical-assembly"
         (directory / "manifest.json").write_text(
             json.dumps(provider_manifest, indent=2, sort_keys=True) + "\n")
         (directory / "trust-schema.conf").write_text((ROOT / "examples/trust-schema.conf").read_text())
@@ -1126,6 +1274,8 @@ def main(argv=None, *, _supervised=False) -> int:
         (directory / "offer-private.pem").write_bytes(provider_keys[index][2].read_bytes())
         (directory / "recipient-private.pem").write_bytes(provider_keys[index][0].read_bytes())
         (directory / "recipient-key-map.json").write_text(json.dumps({provider: str(directory / "recipient-private.pem")}))
+    encrypted_repository_path = resolve_encrypted_repository_path(
+        run_root, args.encrypted_repository_path)
     requester_cfg = {
         "schema": "ndnsf-di-native-requester-v1",
         "catalog": {**catalog, "source": {**catalog["source"], "file": source_path.name,
@@ -1147,7 +1297,7 @@ def main(argv=None, *, _supervised=False) -> int:
         # do not share cache accounting or cleanup.
         "repository": {"path": str(run_root / "requester/canonical-repo"),
                         "max_bytes": 4 << 30},
-        "encrypted_repository": {"path": str(run_root / "requester/encrypted-repo"),
+        "encrypted_repository": {"path": str(encrypted_repository_path),
                                  "max_bytes": 4 << 30},
         "limits": {"bootstrap_ms": runtime_budgets["bootstrap_ms"],
                     "large_data_ims_limit": large_data_ims,
@@ -1157,10 +1307,10 @@ def main(argv=None, *, _supervised=False) -> int:
                     "max_prepared_entries": 8},
         "request": {"service": SERVICE, "task": "text-generation",
                      "adapter_composition_digest": adapter_digest,
-                     "task_descriptor_digest": digest_text("qwen06b-task"),
+                     "task_descriptor_digest": digest_text(f"{MODEL_FAMILY}-task"),
                      "generation_mode": "TOKEN_STREAMING", "tokenizer_digest": tokenizer_digest,
-                     "input_layout_digest": digest_text("qwen06b-input-layout"),
-                     "security_policy_digest": digest_text("qwen06b-security"),
+                     "input_layout_digest": digest_text(f"{MODEL_FAMILY}-input-layout"),
+                     "security_policy_digest": digest_text(f"{MODEL_FAMILY}-security"),
                      # Assembly and authenticated material fetch happen after
                      # Selection and may be silent before the first token.
                      # Keep the bounded stream wait explicit in the generated
@@ -1172,12 +1322,12 @@ def main(argv=None, *, _supervised=False) -> int:
                      "ack_timeout_ms": runtime_budgets["ack_timeout_ms"],
                      "options_file": "options.json"},
         "conversation": {"schema": "ndnsf-di-native-conversation-v1",
-                          "journal": {"state_root": "conversation-state", "identity": "qwen06b-user",
+                          "journal": {"state_root": "conversation-state", "identity": f"{MODEL_FAMILY}-user",
                                       "keys": [{"id": "active", "file": "conversation.key"}],
                                       "quota_bytes": NATIVE_CONVERSATION_JOURNAL_MAX_BYTES},
                           "owner": {"requester_identity": USER, "service_name": SERVICE,
-                                    "security_domain_digest": digest_text("qwen06b-security")},
-                          "turn": {"conversation_id": "qwen06b-minindn-conversation",
+                                    "security_domain_digest": digest_text(f"{MODEL_FAMILY}-security")},
+                          "turn": {"conversation_id": f"{MODEL_FAMILY}-minindn-conversation",
                                    "parent_context_epoch": 0, "service_name": SERVICE,
                                    "plan_role_map_digest": role_map_digest,
                                    "retention_deadline_ms": int(time.time() * 1000) + runtime_budgets["retention_ms"],
@@ -1195,15 +1345,15 @@ def main(argv=None, *, _supervised=False) -> int:
         "useCache": True, "outputMode": "TOKEN_STREAMING",
         "generationId": "0123456789abcdef0123456789abcdef",
         "maxNewTokens": args.max_new_tokens, "tokenizerDigest": tokenizer_digest,
-        "eosTokenIds": [151645], "sampling": {"mode": "Greedy", "temperature": 0.0,
+        "eosTokenIds": eos_token_ids, "sampling": {"mode": "Greedy", "temperature": 0.0,
         "topK": 1, "topP": 1.0, "repetitionPenalty": 1.0, "seed": 18406},
         "stopStrings": [], "tokenInputName": "input_ids",
         "stateInputNames": all_state_inputs,
         "stateOutputNames": all_state_outputs,
         "stateSuccessorMap": ",".join(
             f"{input_name}={output_name}"
-            for input_name, output_name in qwen_state_successor_pairs(stages)),
-        "positionInputPolicy": "qwen-causal-position-v1",
+            for input_name, output_name in state_successor_pairs(stages, STATE_PREFIX)),
+        "positionInputPolicy": f"{MODEL_FAMILY}-causal-position-v1",
         "attentionMaskInputName": "attention_mask",
         "positionIdsInputName": "position_ids",
     }, indent=2, sort_keys=True) + "\n")
@@ -1219,10 +1369,10 @@ def main(argv=None, *, _supervised=False) -> int:
     require_file_digest(receipt, args.build_receipt_sha256, "BUILD_RECEIPT")
     for path, expected, label in (
         (args.controller_binary, args.controller_binary_sha256, "CONTROLLER_BINARY"),
-        (build / "examples/DI_NativeArtifactAuthority", args.authority_binary_sha256, "AUTHORITY_BINARY"),
-        (build / "examples/DI_NativeRequester", args.requester_binary_sha256, "REQUESTER_BINARY"),
-        (build / "examples/di-native-provider", args.provider_binary_sha256, "PROVIDER_BINARY"),
-        (build / "DI_NativeOnnxAssemblyWorker", args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
+        (authority_binary, args.authority_binary_sha256, "AUTHORITY_BINARY"),
+        (requester_binary, args.requester_binary_sha256, "REQUESTER_BINARY"),
+        (provider_binary, args.provider_binary_sha256, "PROVIDER_BINARY"),
+        (assembly_worker_binary, args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
         (oracle_binary, args.oracle_binary_sha256, "SPEC189_ORACLE_BINARY"),
     ):
         require_file_digest(path, expected, label)
@@ -1247,7 +1397,8 @@ def main(argv=None, *, _supervised=False) -> int:
     processes = []
     try:
         ndn.start()
-        AppManager(ndn, ndn.net.hosts, Nfd, logLevel="INFO")
+        AppManager(ndn, ndn.net.hosts, Nfd, csSize=MININDN_NFD_CS_SIZE,
+                   logLevel="INFO")
         AppManager(ndn, ndn.net.hosts, Nlsr, sync="psync", security=False,
                    faceType="udp", nFaces=3, routingType="link-state", logLevel="INFO")
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
@@ -1268,7 +1419,6 @@ def main(argv=None, *, _supervised=False) -> int:
                             stdout=handle, stderr=subprocess.STDOUT)
             processes.append((proc, handle, log))
             return proc, log
-        build = args.build.expanduser().resolve()
         authority_env = env_for(homes[args.controller_node], args.controller_node)
         # Bind Controller's fenced generation store to this immutable run.
         # The default global /tmp path can retain a stale writer lock after a
@@ -1292,7 +1442,7 @@ def main(argv=None, *, _supervised=False) -> int:
         # Controller::start() can finish its reciprocal probe.
         wait_for_marker(controller_proc, controller_log, ("ServiceController started",), args.startup_timeout_s)
         time.sleep(0.5)
-        authority_cmd = (f"{shlex.quote(str(build / 'examples/DI_NativeArtifactAuthority'))} "
+        authority_cmd = (f"{shlex.quote(str(authority_binary))} "
                          f"--config {shlex.quote(str(authority_dir / 'authority.json'))}")
         authority_proc, authority_log = start(args.controller_node, "authority", authority_cmd, authority_env)
         wait_for_marker(authority_proc, authority_log, ("NATIVE_GRANT_AUTHORITY_READY",), args.startup_timeout_s)
@@ -1301,13 +1451,14 @@ def main(argv=None, *, _supervised=False) -> int:
             env = env_for(homes[node], node)
             env.update({"SPEC181_GRANT_AUTHORITY_PUBLIC_KEY": str(directory / "authority-public.pem"),
                         "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(directory / "recipient-key-map.json"),
-                        "NDNSF_DI_WORKER_BINARY": str(build / "DI_NativeOnnxAssemblyWorker")})
-            command = (f"{shlex.quote(str(build / 'examples/di-native-provider'))} --plan {shlex.quote(str(directory / 'plan.json'))} "
+                        "NDNSF_DI_WORKER_BINARY": str(assembly_worker_binary)})
+            command = (f"{shlex.quote(str(provider_binary))} --plan {shlex.quote(str(directory / 'plan.json'))} "
                        f"--manifest {shlex.quote(str(directory / 'manifest.json'))} --service {shlex.quote(SERVICE)} "
                        f"--provider {shlex.quote(provider)} --group {shlex.quote(GROUP)} --controller {shlex.quote(CONTROLLER)} "
                        f"--trust-schema {shlex.quote(str(directory / 'trust-schema.conf'))} --roles {shlex.quote(stages[index]['role'])} "
                        f"--serve --run-for-ms {runtime_budgets['provider_run_ms']} --artifact-cache-dir {shlex.quote(str(directory / 'cache'))} "
                        f"--repo-fetch-timeout-ms {runtime_budgets['timeout_ms']} "
+                       f"--assembly-timeout-ms {runtime_budgets['assembly_timeout_ms']} "
                        f"--tokenizer-json {shlex.quote(str(tokenizer))} --selection-offer-key-file {shlex.quote(str(directory / 'offer-private.pem'))} "
                        "--offer-backend onnxruntime-cpu --offer-can-provision --offer-has-model")
             proc, log = start(node, f"provider-{index}", command, env)
@@ -1318,7 +1469,7 @@ def main(argv=None, *, _supervised=False) -> int:
         # retain the historical default, so this opt-in cannot enlarge every
         # process in a deployment.
         requester_env["NDNSF_REQUEST_LARGE_IMS_LIMIT"] = str(large_data_ims)
-        requester_cmd = (f"{shlex.quote(str(build / 'examples/DI_NativeRequester'))} --config {shlex.quote(str(requester_dir / 'config.json'))} "
+        requester_cmd = (f"{shlex.quote(str(requester_binary))} --config {shlex.quote(str(requester_dir / 'config.json'))} "
                          f"--input {shlex.quote(str(requester_dir / 'input.bin'))} --output {shlex.quote(str(requester_dir / 'output-0.bin'))}")
         first_proc, first_log = start(args.user_node, "requester-0", requester_cmd, requester_env)
         first_proc.wait(timeout=runtime_budgets["process_timeout_s"])
@@ -1339,7 +1490,7 @@ def main(argv=None, *, _supervised=False) -> int:
             (requester_dir / f"options-{round_index}.json").write_text(json.dumps({
                 "useCache": True, "outputMode": "TOKEN_STREAMING", "generationId": generation_id,
                 "maxNewTokens": args.max_new_tokens, "tokenizerDigest": tokenizer_digest,
-                "eosTokenIds": [151645], "sampling": {"mode": "Greedy", "temperature": 0.0,
+                "eosTokenIds": eos_token_ids, "sampling": {"mode": "Greedy", "temperature": 0.0,
                 "topK": 1, "topP": 1.0, "repetitionPenalty": 1.0, "seed": 18406 + round_index},
                 "tokenInputName": "input_ids"}, indent=2, sort_keys=True))
             cfg_path = requester_dir / f"config-{round_index}.json"; cfg_path.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
@@ -1374,7 +1525,7 @@ def main(argv=None, *, _supervised=False) -> int:
                 "SPEC189_CPP_ORACLE_PASS" not in oracle_output):
             raise RuntimeError(
                 f"SPEC189_CPP_ORACLE_FAIL rc={oracle_result.returncode}: {oracle_log}")
-        record = {"schema": "ndnsf-di-qwen06b-native-minindn-run-v1", "model": model_name,
+        record = {"schema": f"ndnsf-di-{MODEL_FAMILY}-native-minindn-run-v1", "model": model_name,
                   "revision": revision, "stageManifest": str(stage_manifest_path),
                   "stageManifestDigest": manifest_digest, "tokenizerDigest": tokenizer_digest,
                   "topology": str(args.topology.expanduser().resolve()), "stageNodes": stage_nodes,
@@ -1387,7 +1538,7 @@ def main(argv=None, *, _supervised=False) -> int:
                                 "status": "PASS"},
                   "status": "PASS"}
         (run_root / "run-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-        print("NDNSF_DI_QWEN06B_NATIVE_MININDN_PASS " + json.dumps(record, sort_keys=True))
+        print(f"NDNSF_DI_{MODEL_FAMILY.upper()}_NATIVE_MININDN_PASS " + json.dumps(record, sort_keys=True))
         return 0
     finally:
         for proc, handle, _ in reversed(processes):
