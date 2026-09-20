@@ -4,8 +4,10 @@
 
 - **Status**: `PARTIAL` / internal native resource-ownership repair。受保护的
   Post-Selection assembly 在 worker 已消费并校验 canonical source 后，先释放
-  `canonical.onnx` staging 文件，再进入 ciphertext sealing 和 request-scoped
-  plaintext materialization；删除失败显式报错，不静默假设资源已回收。受保护
+  `canonical.onnx` staging 文件；该早期释放现在复用受保护目录的 pinned fd，
+  对普通文件执行覆盖、`fsync`、`unlink`，再进入 ciphertext sealing 和
+  request-scoped plaintext materialization；删除失败显式报错，不静默假设资源已
+  回收。受保护
   artifact directory 以 runner-spec lifetime 转交 Provider cache，覆盖 assembler
   返回到 cache owner 安装之间的异常窗口；首个异常仍保留，zeroization/cleanup
   失败写入稳定诊断 marker。
@@ -16,9 +18,16 @@
   C++ selector、安装身份和新的 guarded MiniNDN run 验证。
 - **Source / evidence**: `NativeCanonicalOnnxAssembler.cpp`、`Provider.cpp`、
   `ProviderArtifactCache.cpp`、`NativeModelRunner.hpp`；r139 raw run 和
-  resource summary 记录于 Spec189 evidence/failure log。受影响 C++ selector、
-  build/install identity 和新 guarded MiniNDN run 仍待验证；此次变更不能把
-  r139 或 focused selector 结果提升为产品资格 PASS。
+  resource summary 记录于 Spec189 evidence/failure log。v2 read-only review
+  报告了早期 `std::filesystem::remove` 绕过 secure erase 的 P1；当前修复把
+  eraser 绑定到同一目录 lease fd。受影响 C++ selector、build/install identity
+  和新 guarded MiniNDN run 仍待验证；此次变更不能把 r139 或 focused selector
+  结果提升为产品资格 PASS。
+- v3 read-only review 进一步发现 early eraser 与最终 lease drain 共享 fd
+  但没有共享锁，以及 range-backed material 校验仍直接读取空 `data()`。
+  当前修复为目录 lease 的早期擦除和最终 drain 增加同一互斥，并让模板/节点
+  校验先生成 `copyBytes()`。v4 immutable snapshot 已获 `STATIC_PASS`；仍需
+  focused selector、安装身份和 guarded run。
 
 ## Spec189 worker post-parse source release boundary — 2026-09-20
 

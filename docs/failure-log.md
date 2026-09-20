@@ -1,5 +1,45 @@
 # Failure Log and Evidence Index
 
+## 2026-09-20 — Spec189 r139 source-staging secure-erase review boundary
+
+The second read-only review of the r139 materialization/resource-owner repair
+used immutable snapshot `.codex-tmp/spec189-r139-source-staging-review-v2/` and
+returned `NOT_STATIC_PASS` with one P1. The protected success path removed
+`canonical.onnx` through `std::filesystem::remove`, bypassing the registered
+directory lease's fd-based overwrite, `fsync`, and `unlink`; the source model's
+disk blocks could therefore remain recoverable. No build, install, MiniNDN run,
+or task completion followed that review.
+
+The repair binds an early-file eraser to the same pinned directory fd returned
+by the protected lease registration. It reuses the fd-based secure entry
+cleanup, permits only the authenticated direct child, preserves the source
+staging failure marker, and leaves the final lease drain responsible for the
+remaining directory. A new immutable snapshot/review is required before the
+affected C++ build. T005/T006/T007/T009 remain `PARTIAL`.
+
+## 2026-09-20 — Spec189 v3 static-review race and range-view boundary
+
+The third read-only review used immutable snapshot
+`.codex-tmp/spec189-r139-source-staging-review-v3/` and returned
+`NOT_STATIC_PASS`. It found a P1 because the early file eraser and the final
+`ProtectedRuntime` lease drain could access and close the same directory fd
+without a shared lease lock. It also found a P2: range-backed template/node
+payloads expose a null `data()` pointer, while validation passed that pointer to
+protobuf instead of materializing the bounded range.
+
+No build, install, MiniNDN run, or task completion followed the review. The
+repair adds one mutex around both early erase and final drain, and makes the
+template/node validators use `copyBytes()` before parsing and identity checks.
+A new immutable snapshot/review is required before the affected C++ build.
+T005/T006/T007/T009 remain `PARTIAL`.
+
+The fourth immutable snapshot
+`.codex-tmp/spec189-r139-source-staging-review-v4/` then passed
+`STATIC_PASS`. Its 20 current-file hashes and diff hash matched base HEAD
+`78e1a4ca`; no actionable P0-P3 finding remained. This is only the static gate:
+the affected C++ build, installed-runtime identity, focused selectors, and the
+guarded MiniNDN qualification are still pending.
+
 ## 2026-09-20 — Spec189 r139 disk-free boundary after authenticated Selection
 
 r139 used the repaired launcher, the exact installed native candidate, fresh
@@ -8963,3 +9003,14 @@ The next changed gate is the reviewed Core binding that lets a collaboration
 terminal consumer re-arm its bounded stream gap from any committed selected
 Provider's exact progress operation, while retaining provider/member identity
 and operation freshness checks.
+
+2026-09-20 Spec189 r140 focused secure-erase candidate: the v4 immutable
+source-staging snapshot passed read-only `STATIC_PASS` after repairing the
+protected-source erase path, lease ordering, and range-backed material
+validation. The affected native closure built `556/556` with Waf `-j4`; the
+material, canonical publisher, ONNX activation, and protected-directory C++
+selectors passed `2/2`, `14/14`, `9/9`, and `1/1`. An initial publisher selector
+against the default `/tmp` staging directory failed with `Permission denied`;
+the private `0700` staging rerun passed. This is a focused build/test and
+installation boundary, not a MiniNDN, Qwen, terminal, or qualification result.
+Evidence: `specs/189-qwen-two-provider-minindn/evidence/b189-r140-focused-build-secure-erase-20260920.md`.

@@ -64,6 +64,32 @@ cache cleanup callback, and emits
 `NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED`; a corrected immutable snapshot
 and read-only review are required before build.
 
+The second read-only re-review used immutable snapshot
+`.codex-tmp/spec189-r139-source-staging-review-v2/` and found one P1: the
+protected success path used `std::filesystem::remove(sourceFile)`, bypassing
+the pinned-directory fd's overwrite/fsync/unlink cleanup. No build or rerun was
+performed. The repair now returns a file eraser bound to the registered
+directory lease fd, reuses the same secure entry cleanup for early
+`canonical.onnx` release, rejects non-direct children, and preserves the
+stable source-staging failure marker. A new immutable snapshot and read-only
+review are required before the affected build.
+
+The third read-only re-review used immutable snapshot
+`.codex-tmp/spec189-r139-source-staging-review-v3/` and found a P1 race between
+the returned early eraser and the final runtime lease drain, plus a P2 in the
+range-backed template/node validation path that passed `data()` (which is null
+for a range source) to protobuf. No build or rerun was performed. The repair
+serializes early erase and final drain with one directory-lease mutex and
+materializes validation views through `copyBytes()`. A new immutable snapshot
+and read-only review are required before the affected build.
+
+The fourth immutable snapshot
+`.codex-tmp/spec189-r139-source-staging-review-v4/` passed the read-only review
+with `STATIC_PASS`: all 20 current-file hashes and the diff hash matched
+`base-head` `78e1a4ca`, and no actionable P0-P3 finding remained. The review did
+not build, install, run MiniNDN, or qualify Spec189. The affected C++ build and
+focused selectors are now the next gate.
+
 **Evidence maintenance after push**: 2026-09-20 — after checkpoint
 `d13d6045` was pushed to `origin/Experimental`, 104 old run-scoped
 `encrypted-repo`, `canonical-repo`, and Provider cache directories were removed
@@ -1659,6 +1685,20 @@ raw logs 放唯一 `.codex-tmp` run 目录；`evidence/b189-convergence.md`；
 才 `QWEN_TWO_PROVIDER_PASS` / [x]。classified failure 不算完成。无 SIF/Tiger/27B 工作。
 
 ## Logical Batches and Dependencies
+
+### Current Checkpoint — r140 focused secure-erase candidate
+
+The v4 immutable source snapshot passed read-only `STATIC_PASS` after the
+protected-source erase, lease-ordering, and range-backed material repairs. The
+affected native closure then built `556/556` with Waf `-j4`; focused C++
+selectors passed material `2/2`, canonical publisher `14/14`, ONNX activation
+`9/9`, and protected-directory cleanup `1/1`. Six affected targets were
+installed and their dependency closure was checked with `ldd`. The first
+publisher selector failure against the default `/tmp` staging directory was a
+permission boundary; the rerun with a private `0700` staging directory passed.
+Evidence: [r140 focused build and secure-erase](evidence/b189-r140-focused-build-secure-erase-20260920.md).
+This is not a MiniNDN/Qwen or qualification result; T003, T005, T006, T007,
+and T009 remain `PARTIAL`.
 
 执行顺序：`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
 保留历史 ID 稳定链接；序号不再代表时间。
