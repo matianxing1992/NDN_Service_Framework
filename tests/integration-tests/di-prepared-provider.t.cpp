@@ -194,6 +194,12 @@ providerAssemblyDigest(const std::vector<std::uint8_t>& bytes)
   return "sha256:" + value;
 }
 
+std::string
+zeroDigest(char value)
+{
+  return "sha256:" + std::string(64, value);
+}
+
 NativeOnnxWorkerLocation
 providerAssemblyWorker()
 {
@@ -1372,6 +1378,76 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheColdHitUsesExactArtifact)
   cold = {};
   BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
   std::filesystem::remove_all(cacheDir, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDigest)
+{
+  auto projection = makeProviderAssemblyProjection(
+    zeroDigest('a'), zeroDigest('b'), zeroDigest('c'), zeroDigest('d'));
+  projection.plan.modelName = "spec189-cache-fixture";
+  projection.assembly.artifactDigest = zeroDigest('e');
+  projection.assembly.protectionEpoch = "plaintext-v1";
+
+  const auto root = std::filesystem::temp_directory_path() /
+                    "spec189-stable-provider-cache";
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  const std::vector<std::uint8_t> modelBytes{'c', 'a', 'c', 'h', 'e', 'd'};
+  const auto modelDigest = providerAssemblyDigest(modelBytes);
+  const auto roleDirectory = root / "assembled" / "_LLM_Pipeline_Stage_0" /
+                             modelDigest.substr(7);
+  std::filesystem::create_directories(roleDirectory);
+  std::ofstream(roleDirectory / "model.onnx", std::ios::binary)
+    .write(reinterpret_cast<const char*>(modelBytes.data()),
+           static_cast<std::streamsize>(modelBytes.size()));
+  const auto manifest = std::string(
+    "{\"schema\":\"ndnsf-di-assembled-onnx-v1\","
+    "\"modelName\":\"spec189-cache-fixture\","
+    "\"modelDigest\":\"" + zeroDigest('f') + "\","
+    "\"assembledModelDigest\":\"" + modelDigest + "\","
+    "\"modelManifestDigest\":\"" + projection.assembly.modelManifestDigest + "\","
+    "\"artifactProfileDigest\":\"" + projection.assembly.artifactProfileDigest + "\","
+    "\"graphDigest\":\"" + projection.assembly.graphDigest + "\","
+    "\"role\":\"" + projection.assembly.selectedRole + "\","
+    "\"roleKind\":\"" + projection.assembly.roleKind + "\","
+    "\"artifactDigest\":\"" + projection.assembly.artifactDigest + "\","
+    "\"canonicalInitializerDigest\":\"" +
+      projection.assembly.canonicalInitializerDigest + "\","
+    "\"rank\":0,\"layerBegin\":0,\"layerEnd\":2,"
+    "\"recipeDigest\":\"" + projection.assembly.recipeDigest + "\","
+    "\"adapterDescriptorDigest\":\"" +
+      projection.assembly.adapterDescriptorDigest + "\","
+    "\"assemblerDescriptorDigest\":\"" +
+      projection.assembly.assemblerDescriptorDigest + "\","
+    "\"backendAbi\":\"" + projection.assembly.backendAbi + "\","
+    "\"precision\":\"" + projection.assembly.precision + "\","
+    "\"quantization\":\"" + projection.assembly.quantization + "\","
+    "\"layout\":\"" + projection.assembly.layout + "\","
+    "\"padding\":\"" + projection.assembly.padding + "\","
+    "\"nodeCount\":21,\"signer\":\"" + projection.provider + "\"}");
+  std::ofstream(roleDirectory / "manifest.json") << manifest;
+  std::ofstream(roleDirectory / "manifest.signature") << "fixture-signature";
+
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = root.string();
+  options.providerIdentity = projection.provider;
+  std::string progressPhase;
+  options.reportProgress = [&progressPhase] (const std::string& phase, double) {
+    progressPhase = phase;
+  };
+  const auto loaded = tryLoadNativeCanonicalOnnxRoleFromCache(projection, options);
+  BOOST_REQUIRE(loaded);
+  BOOST_CHECK_EQUAL(loaded->path, (roleDirectory / "model.onnx").string());
+  BOOST_CHECK_EQUAL(loaded->metadata.at("assembledModelDigest"), modelDigest);
+  BOOST_CHECK_EQUAL(loaded->metadata.at("assembledFrom"),
+                    "canonical-root-post-selection-cache");
+  BOOST_CHECK_EQUAL(progressPhase, "CACHE_HIT");
+
+  std::ofstream(roleDirectory / "model.onnx", std::ios::binary | std::ios::trunc)
+    << "tampered";
+  BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(projection, options));
+  BOOST_CHECK(!std::filesystem::exists(roleDirectory));
+  std::filesystem::remove_all(root, cleanupError);
 }
 
 BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubstitution)

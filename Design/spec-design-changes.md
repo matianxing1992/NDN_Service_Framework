@@ -616,3 +616,14 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 - 源码范围 / 文档提交定位：`ndn-service-framework/ServiceUser.cpp`、`ndn-service-framework/InvocationStream.cpp/.hpp`、`specs/189-qwen-two-provider-minindn/{spec,plan,tasks,batch-execution,traceability}.md`；证据为 [r4 progress heartbeat](../specs/189-qwen-two-provider-minindn/evidence/b189-r4-progress-heartbeat-20260919.md) 与 [r70 boundary](../specs/189-qwen-two-provider-minindn/evidence/b189-native-r70-progressed-stream-boundary-20260919.md)。
 - 验证命令、结果与持久证据：C++ progress/lifecycle selectors 已通过并获只读 `STATIC_PASS`；r70 仍使用旧候选并保持 `PARTIAL`，必须用新安装候选重跑，不能由静态或 YOLO 结果升级。
 - 状态 / 剩余验收 / 下一步：`PARTIAL`；先完成 affected Core/DI 安装身份核对，再进行一次新的真实 MiniNDN run；只有越过 stream gap 后才继续材料、runner、handoff 或 terminal 边界。
+
+### D-189-CACHE：Selection 后 stable-root immutable assembled artifact reuse
+
+- 日期 / Spec / 任务与契约 ID：2026-09-20；[Spec189](../specs/189-qwen-two-provider-minindn/spec.md)；T003/T006/T007；FR-010、FR-015、`Q189-ASSEMBLY`。
+- 模块 / 当前与目标章节：`NativeCanonicalOnnxAssembler`、`Provider`、Spec189 placement/cache contract；Selection 后 Provider materialization 与 bounded cache。
+- 原设计 / 新设计 / 修改原因：原实现只有 Provider 进程内 `ProviderArtifactCache`，实验入口又把 artifact root 放在每个 run 下，导致重启后即使已有完整 assembled model 也会重新 fetch/copy/assemble。当前增加 stable system root 扫描：先验证当前 authenticated Selection/grant，再按 role 读取 manifest，逐块校验实际 `model.onnx` SHA-256 与完整 immutable identity，命中后直接复用现有路径。篡改/缺失/半写入 entry 回到 cold path；protected grant-bound ciphertext 不跨请求复用。
+- 当前已实现部分 / 目标未实现部分：C++ loader、Provider production wiring、stable Qwen launcher root 与 focused digest/tamper regression 已实现并通过 focused selector；完整 MiniNDN warm hit、两 Provider execute、terminal、repeat、资源峰值与 qualification 仍未观测。
+- 兼容性、迁移或撤回影响：不新增 llama adapter，不改变 ONNX input/KV/logits contract、ACK/Selection/grant wire 或 KV state；旧 run-scoped cache 不自动迁移，缺少新 manifest identity 的 entry 只会 cold miss。回退时删除 loader/wiring 并恢复 run-scoped launcher path，不影响现有 authenticated cold path。
+- 源码范围 / 文档提交定位：`NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.{hpp,cpp}`、`Provider.cpp`、`examples/DI_NativeProviderExecutable.cpp`、`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`、`tests/integration-tests/di-prepared-provider.t.cpp`、`di-prepared-process.t.cpp`；对应 Spec189 plan/tasks/placement contract。
+- 验证命令、结果与持久证据：`./waf build --targets=spec185-provider-assembly -j4` `rc=0`；`NDNSF_SPEC182_BIN_DIR=build-spec189-oracle build-spec189-oracle/spec185-provider-assembly --run_test='Spec185ProviderAssembly/Spec188ProviderReferenceAssembly/ProductionAssemblerCache*' --log_level=test_suite` 两 case `rc=0`；首次未设置 worker 环境的 invocation boundary 见 [cache selector evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-cache-selector-worker-path-20260920.md)。
+- 状态 / 剩余验收 / 下一步：`PARTIAL`；先核对安装候选并以稳定 root 运行一次 warm/cold 对照，确认 Provider 记录 cache hit 且不出现重复 material fetch/assembly，再继续真实 MiniNDN full-path gate。

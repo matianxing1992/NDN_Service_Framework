@@ -83,6 +83,11 @@ def digest_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def provider_cache_namespace(provider: str) -> str:
+    """Return a stable, filesystem-safe namespace for one Provider identity."""
+    return "provider-" + hashlib.sha256(provider.encode("utf-8")).hexdigest()
+
+
 def digest_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -774,6 +779,10 @@ def main(argv=None, *, _supervised=False) -> int:
                         help="Spec189 C++ full-path oracle executable")
     parser.add_argument("--oracle-binary-sha256", default=None)
     parser.add_argument("--run-root", type=Path, default=None)
+    parser.add_argument(
+        "--artifact-cache-root", type=Path,
+        default=Path("/var/tmp/ndnsf-di-native-artifacts"),
+        help="stable host cache root; provider subdirectories are derived from the provider identity")
     parser.add_argument("--encrypted-repository-path", type=Path, default=None,
                         help="optional empty run-scoped ciphertext Repo directory on a separate filesystem")
     parser.add_argument("--rounds", type=int, default=2)
@@ -1005,6 +1014,9 @@ def main(argv=None, *, _supervised=False) -> int:
         run_root = args.run_root.expanduser().resolve()
         run_root.mkdir(parents=True, exist_ok=True)
     run_root.chmod(0o700)
+    artifact_cache_root = args.artifact_cache_root.expanduser().resolve()
+    if artifact_cache_root == run_root or run_root in artifact_cache_root.parents:
+        raise SystemExit("ARTIFACT_CACHE_ROOT_MUST_NOT_BE_RUN_SCOPED")
     (run_root / "requester").mkdir()
     source_path = run_root / "requester/canonical-source.onnx"
     mapping_path = run_root / "requester/node-mapping.json"
@@ -1485,7 +1497,8 @@ def main(argv=None, *, _supervised=False) -> int:
                        f"--manifest {shlex.quote(str(directory / 'manifest.json'))} --service {shlex.quote(SERVICE)} "
                        f"--provider {shlex.quote(provider)} --group {shlex.quote(GROUP)} --controller {shlex.quote(CONTROLLER)} "
                        f"--trust-schema {shlex.quote(str(directory / 'trust-schema.conf'))} --roles {shlex.quote(stages[index]['role'])} "
-                       f"--serve --run-for-ms {runtime_budgets['provider_run_ms']} --artifact-cache-dir {shlex.quote(str(directory / 'cache'))} "
+                       f"--serve --run-for-ms {runtime_budgets['provider_run_ms']} --artifact-cache-dir "
+                       f"{shlex.quote(str(artifact_cache_root / provider_cache_namespace(provider)))} "
                        f"--repo-fetch-timeout-ms {runtime_budgets['timeout_ms']} "
                        f"--assembly-timeout-ms {runtime_budgets['assembly_timeout_ms']} "
                        f"--tokenizer-json {shlex.quote(str(tokenizer))} --selection-offer-key-file {shlex.quote(str(directory / 'offer-private.pem'))} "

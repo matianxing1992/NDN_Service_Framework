@@ -1775,7 +1775,13 @@ main(int argc, char** argv)
                       return signNativeAssemblyManifest(
                         keyChain, providerCert, manifestBytes);
                     };
-                  spec = prepareNativeCanonicalOnnxRole(ctx, projection, assemblyOptions);
+                  if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
+                        projection, assemblyOptions)) {
+                    spec = *cached;
+                  }
+                  else {
+                    spec = prepareNativeCanonicalOnnxRole(ctx, projection, assemblyOptions);
+                  }
                 }
                 bindNativeRunnerPreparationContext(spec, projection,
                   {assemblyProviderIdentity, providerBootId, providerStartedAtMs, assemblyCacheDir});
