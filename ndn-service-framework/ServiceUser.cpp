@@ -6705,6 +6705,10 @@ namespace ndn_service_framework
                     throw std::runtime_error(
                         "failed to initialize Targeted streamed consumer");
                 }
+                if (const auto consumerIt = m_streamConsumers.find(requestId);
+                    consumerIt != m_streamConsumers.end()) {
+                    consumerIt->second->prefetchWindow();
+                }
             }
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
@@ -12531,6 +12535,14 @@ void ServiceUser::finishRequestAckOnEventLoop(
                       << " error=" << e.what());
             throw;
         }
+        // Do not express the initial exact event window before this Selection
+        // is published. A Provider cannot publish the first event until it
+        // receives Selection; otherwise the bounded Interest retry budget can
+        // fail a request while it is still waiting at the admission boundary.
+        if (const auto consumerIt = m_streamConsumers.find(requestId);
+            consumerIt != m_streamConsumers.end()) {
+            consumerIt->second->prefetchWindow();
+        }
         if (pendingIt != m_pendingCalls.end()) {
             pendingIt->second.selectionPublishedAtUs = nowMicroseconds();
             addUniqueName(pendingIt->second.selectionPublishedProviders, providerName);
@@ -12734,6 +12746,14 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " selectedCount=" << selectedAcks.size()
                   << " messageName=" << selectionName.toUri());
         PublishMessage(selectionName, selectionNameWithoutPrefix, selectionMessage);
+
+        // The compact collaboration Selection is the same admission gate as
+        // the per-provider path: arm exact event Interests only after the
+        // aggregate Selection is on the wire.
+        if (const auto consumerIt = m_streamConsumers.find(requestId);
+            consumerIt != m_streamConsumers.end()) {
+            consumerIt->second->prefetchWindow();
+        }
 
         pendingIt->second.selectionPublishedAtUs = nowMicroseconds();
         for (const auto& selectedAck : selectedAcks) {
@@ -14457,10 +14477,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
         *consumerSlot = consumer;
         consumer->start();
         m_streamConsumers[requestId] = consumer;
-        // Prime the bounded exact-name window before the Provider can publish
-        // the first event.  This is an initial fetch, not a retry, and must
-        // not consume maxEventRetries or wait for the inactivity timer.
-        consumer->prefetchWindow();
+        // The caller primes the bounded exact-name window after authenticated
+        // Selection has been published. Targeted requests call it immediately
+        // after this method returns because they already have their binding;
+        // ordinary and collaboration requests must not arm Interests while
+        // the Provider is still waiting for Selection.
         // The initial exact Interests already have authoritative NDN timeout
         // callbacks.  Do not arm a second inactivity timer here: before the
         // first event arrives it would race those callbacks and consume the
