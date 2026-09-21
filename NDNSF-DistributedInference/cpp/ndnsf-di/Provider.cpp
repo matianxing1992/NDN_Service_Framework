@@ -92,74 +92,6 @@ struct ProviderArtifactCleanupGuard
   std::function<void()> release() noexcept { return std::move(callback); }
 };
 
-struct ProviderArtifactDirectoryRegistry;
-
-struct ProviderArtifactDirectoryOwner
-{
-  std::shared_ptr<ProviderArtifactDirectoryRegistry> registry;
-  std::string key;
-  std::filesystem::path directory;
-
-  ~ProviderArtifactDirectoryOwner() noexcept;
-};
-
-struct ProviderArtifactDirectoryRegistry
-{
-  std::mutex mutex;
-  std::map<std::string, std::weak_ptr<ProviderArtifactDirectoryOwner>> owners;
-};
-
-std::shared_ptr<ProviderArtifactDirectoryRegistry>
-providerArtifactDirectoryRegistry()
-{
-  static const auto registry = std::make_shared<ProviderArtifactDirectoryRegistry>();
-  return registry;
-}
-
-ProviderArtifactDirectoryOwner::~ProviderArtifactDirectoryOwner() noexcept
-{
-  std::lock_guard<std::mutex> lock(registry->mutex);
-  const auto found = registry->owners.find(key);
-  const auto current = found == registry->owners.end()
-    ? std::shared_ptr<ProviderArtifactDirectoryOwner>{} : found->second.lock();
-  if (current && current.get() != this)
-    return;
-  try {
-    std::error_code cleanupError;
-    withNativeArtifactDirectoryFinalization(directory.string(), [&] {
-      std::filesystem::remove_all(directory, cleanupError);
-    });
-    if (cleanupError)
-      reportArtifactCleanupFailure("provider-directory");
-  }
-  catch (...) {
-    reportArtifactCleanupFailure("provider-directory-exception");
-  }
-  if (found != registry->owners.end())
-    registry->owners.erase(found);
-}
-
-std::shared_ptr<ProviderArtifactDirectoryOwner>
-retainProviderArtifactDirectory(const std::filesystem::path& directory)
-{
-  const auto normalized = std::filesystem::absolute(directory).lexically_normal();
-  const auto key = normalized.string();
-  const auto registry = providerArtifactDirectoryRegistry();
-  std::lock_guard<std::mutex> lock(registry->mutex);
-  if (const auto found = registry->owners.find(key);
-      found != registry->owners.end()) {
-    if (auto existing = found->second.lock())
-      return existing;
-    registry->owners.erase(found);
-  }
-  auto owner = std::make_shared<ProviderArtifactDirectoryOwner>();
-  owner->registry = registry;
-  owner->key = key;
-  owner->directory = normalized;
-  registry->owners.emplace(key, owner);
-  return owner;
-}
-
 std::filesystem::path
 requireProviderArtifactPathUnderCacheRoot(const std::filesystem::path& cacheDir,
                                           const std::filesystem::path& artifact)
@@ -1806,15 +1738,27 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
           const auto sourceIdentity = providerCanonicalSourceIdentity(ctx, projection);
           const auto key = providerArtifactKey(
             projection, providerIdentity, sourceIdentity.first, sourceIdentity.second);
+          const auto diskCacheHit = std::make_shared<std::atomic<bool>>(false);
           auto lease = artifactCache->acquireWithRunner(
             key, projection, control,
-            [&ctx, projection, options, metrics, protectedRuntime] (
+            [&ctx, projection, options, metrics, protectedRuntime, diskCacheHit,
+             sourceIdentity] (
                 const NativeRequestControl& jobControl) mutable {
               options.shouldCancel = jobControl.cancelled;
               options.assemblyTimeoutMs = static_cast<std::uint64_t>(std::max<std::int64_t>(
                 1, std::chrono::duration_cast<Milliseconds>(
                   jobControl.deadline - std::chrono::steady_clock::now()).count()));
-              auto built = prepareNativeCanonicalOnnxRole(ctx, projection, options);
+              NativeModelRunnerSpec built;
+              if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
+                    projection, options, sourceIdentity.first, sourceIdentity.second)) {
+                built = *cached;
+                diskCacheHit->store(true, std::memory_order_relaxed);
+              }
+              else {
+                built = prepareNativeCanonicalOnnxRole(ctx, projection, options);
+                metrics->sourceFetches.fetch_add(1, std::memory_order_relaxed);
+                metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
+              }
               ProviderArtifactCleanupGuard cleanupGuard;
               if (protectedRuntime) {
                 auto directoryOwner = built.lifetime;
@@ -1828,8 +1772,6 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 const auto ciphertextPath = requireProviderArtifactPathUnderCacheRoot(
                   options.cacheDir, path->second);
               }
-              metrics->sourceFetches.fetch_add(1, std::memory_order_relaxed);
-              metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
               auto artifact = std::make_shared<PreparedProviderArtifact>();
               artifact->encryptedObjectName = protectedRuntime
                 ? "local-protected-assembled-ciphertext"
@@ -1866,15 +1808,13 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 artifact->ciphertextBytes = ciphertextBytes;
               }
               else {
-                // Plaintext assembled artifacts are owned by this cache entry
-                // too.  Tie the directory lifetime to eviction/invalidation
-                // so the cache budget cannot drop while a full model.onnx
-                // remains resident on disk without an owner.
+                // Plaintext assembled artifacts live in the system-wide,
+                // content-addressed cache.  Keep the entry after this
+                // Provider exits so a later run can verify and reopen it;
+                // the current Selection/grant remains the authorization gate.
                 const auto modelPath = requireProviderArtifactPathUnderCacheRoot(
                   options.cacheDir, built.path);
-                const auto directory = modelPath.parent_path();
-                auto owner = retainProviderArtifactDirectory(directory);
-                cleanupGuard.callback = [owner = std::move(owner)] { (void)owner; };
+                cleanupGuard.callback = [] {};
                 artifact->ciphertextBytes = std::filesystem::file_size(modelPath);
               }
               auto runner = std::make_shared<const NativeModelRunnerSpec>(std::move(built));
@@ -1936,7 +1876,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             if (!std::filesystem::is_regular_file(cachedModelPath))
               throw std::runtime_error("DI_PROVIDER_ARTIFACT_MATERIALIZATION_MISSING");
           }
-          if (lease.cacheHit())
+          if (lease.cacheHit() || diskCacheHit->load(std::memory_order_relaxed))
             metrics->templateHits.fetch_add(1, std::memory_order_relaxed);
           spec.lifetime = std::make_shared<ProviderArtifactLease>(std::move(lease));
         }

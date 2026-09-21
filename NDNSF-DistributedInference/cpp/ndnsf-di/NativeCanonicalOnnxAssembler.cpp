@@ -250,6 +250,39 @@ readFile(const std::filesystem::path& path, std::uint64_t maxBytes)
   return bytes;
 }
 
+std::string
+sha256File(const std::filesystem::path& path, std::uint64_t maxBytes)
+{
+  std::error_code error;
+  const auto size = std::filesystem::file_size(path, error);
+  if (error || size == 0 || size > maxBytes)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_FILE_INVALID");
+  std::ifstream input(path, std::ios::binary);
+  if (!input.good())
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_FILE_UNREADABLE");
+  ndn::util::Sha256 digest;
+  std::array<std::uint8_t, 1U << 20> buffer{};
+  std::uint64_t total = 0;
+  while (input) {
+    input.read(reinterpret_cast<char*>(buffer.data()),
+               static_cast<std::streamsize>(buffer.size()));
+    const auto count = static_cast<std::size_t>(input.gcount());
+    if (count == 0)
+      break;
+    if (total > maxBytes - count)
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_FILE_TOO_LARGE");
+    digest.update(ndn::span<const std::uint8_t>(buffer.data(), count));
+    total += count;
+  }
+  if (!input.eof() || total != size)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_FILE_UNREADABLE");
+  auto hex = digest.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return "sha256:" + hex;
+}
+
 void
 writeFileAtomic(const std::filesystem::path& path,
                 const std::vector<std::uint8_t>& bytes)
@@ -406,6 +439,172 @@ withNativeArtifactDirectoryFinalization(const std::string& directory,
 {
   std::lock_guard<std::mutex> lock(nativeAssemblyFinalizationMutex);
   action();
+}
+
+std::optional<NativeModelRunnerSpec>
+tryLoadNativeCanonicalOnnxRoleFromCache(
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const std::string& canonicalSourceName,
+  const std::string& canonicalSourceDigest)
+{
+  if (projection.assembly.protectionEpoch != "plaintext-v1" ||
+      options.cacheDir.empty() || options.providerIdentity.empty())
+    return std::nullopt;
+  requireActiveAssembly(options, projection.deadlineMs);
+
+  const auto cacheRoot = std::filesystem::path(options.cacheDir);
+  const auto roleRoot = cacheRoot / "assembled" / safeRole(
+    projection.assembly.selectedRole);
+  std::error_code error;
+  if (!std::filesystem::is_directory(roleRoot, error) || error)
+    return std::nullopt;
+  const auto discardCorruptEntry = [&] (const std::filesystem::path& directory) {
+    std::error_code cleanupError;
+    withNativeArtifactDirectoryFinalization(directory.string(), [&] {
+      std::filesystem::remove_all(directory, cleanupError);
+    });
+  };
+
+  const auto matches = [&] (const boost::property_tree::ptree& manifest) {
+    const auto stringMatches = [&] (const char* name, const std::string& value) {
+      return !value.empty() && manifest.get<std::string>(name, "") == value;
+    };
+    const auto& role = projection.assembly;
+    if (manifest.get<std::string>("schema", "") != "ndnsf-di-assembled-onnx-v1" ||
+        !stringMatches("signer", options.providerIdentity) ||
+        !stringMatches("modelManifestDigest", role.modelManifestDigest) ||
+        !stringMatches("artifactProfileDigest", role.artifactProfileDigest) ||
+        !stringMatches("graphDigest", role.graphDigest) ||
+        !stringMatches("role", role.selectedRole) ||
+        !stringMatches("recipeDigest", role.recipeDigest) ||
+        !stringMatches("artifactDigest", role.artifactDigest) ||
+        !stringMatches("canonicalInitializerDigest", role.canonicalInitializerDigest) ||
+        !stringMatches("adapterDescriptorDigest", role.adapterDescriptorDigest) ||
+        !stringMatches("assemblerDescriptorDigest", role.assemblerDescriptorDigest) ||
+        !stringMatches("backendAbi", role.backendAbi) ||
+        !stringMatches("precision", role.precision) ||
+        !stringMatches("quantization", role.quantization) ||
+        !stringMatches("layout", role.layout) ||
+        !stringMatches("padding", role.padding) ||
+        manifest.get<std::string>("roleKind", "") != role.roleKind ||
+        manifest.get<std::uint64_t>("rank", std::numeric_limits<std::uint64_t>::max()) != role.rank ||
+        manifest.get<std::uint64_t>("layerBegin", std::numeric_limits<std::uint64_t>::max()) != role.layerBegin ||
+        manifest.get<std::uint64_t>("layerEnd", std::numeric_limits<std::uint64_t>::max()) != role.layerEnd ||
+        manifest.get<std::uint64_t>("nodeCount", std::numeric_limits<std::uint64_t>::max()) != role.nodeIndices.size())
+      return false;
+    if (!projection.plan.modelName.empty() &&
+        !stringMatches("modelName", projection.plan.modelName))
+      return false;
+    if (!canonicalSourceName.empty() &&
+        !stringMatches("canonicalSourceDataName", canonicalSourceName))
+      return false;
+    return canonicalSourceDigest.empty() ||
+      stringMatches("canonicalSourceDigest", canonicalSourceDigest);
+  };
+
+  for (std::filesystem::directory_iterator it(roleRoot, error), end;
+       !error && it != end; it.increment(error)) {
+    const auto directory = it->path();
+    std::error_code directoryError;
+    if (!it->is_directory(directoryError) || directoryError)
+      continue;
+    const auto digestName = directory.filename().string();
+    if (digestName.size() != 64 ||
+        !std::all_of(digestName.begin(), digestName.end(), [] (const char ch) {
+          return std::isxdigit(static_cast<unsigned char>(ch)) != 0;
+        }))
+      continue;
+    try {
+      const auto manifestPath = directory / "manifest.json";
+      const auto modelPath = directory / "model.onnx";
+      const auto signaturePath = directory / "manifest.signature";
+      if (!std::filesystem::is_regular_file(manifestPath) ||
+          !std::filesystem::is_regular_file(modelPath) ||
+          !std::filesystem::is_regular_file(signaturePath))
+        continue;
+      requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, modelPath);
+      const auto expectedDigest = "sha256:" + digestName;
+      try {
+        if (sha256File(modelPath, projection.assembly.maxAssembledBytes) != expectedDigest) {
+          // A content-addressed directory with a different model digest is a
+          // stale or interrupted entry. Remove only this exact entry so the
+          // authenticated cold path can recreate it instead of surfacing a
+          // cache-conflict error.
+          discardCorruptEntry(directory);
+          continue;
+        }
+      }
+      catch (const std::exception&) {
+        discardCorruptEntry(directory);
+        continue;
+      }
+      const auto manifestBytes = readFile(manifestPath, MaxAssemblyMetadataBytes);
+      std::istringstream input(std::string(manifestBytes.begin(), manifestBytes.end()));
+      boost::property_tree::ptree manifest;
+      boost::property_tree::read_json(input, manifest);
+      if (!matches(manifest))
+        continue;
+      const auto assembledDigest = manifest.get<std::string>("assembledModelDigest", "");
+      if (assembledDigest != expectedDigest || assembledDigest.size() != 71)
+        continue;
+      const auto signatureBytes = readFile(signaturePath, MaxAssemblyMetadataBytes);
+      if (signatureBytes.empty() ||
+          expectedDigest != assembledDigest)
+        continue;
+      requireActiveAssembly(options, projection.deadlineMs);
+
+      NativeModelRunnerSpec spec;
+      spec.role = projection.assembly.selectedRole;
+      spec.kind = "onnx";
+      spec.backend = projection.assembly.backend;
+      spec.path = modelPath.string();
+      spec.metadata = {
+        {"artifactDigest", projection.assembly.artifactDigest},
+        {"fragmentDigest", projection.assembly.artifactDigest},
+        {"recipeDigest", projection.assembly.recipeDigest},
+        {"modelManifestDigest", projection.assembly.modelManifestDigest},
+        {"artifactProfileDigest", projection.assembly.artifactProfileDigest},
+        {"graphDigest", projection.assembly.graphDigest},
+        {"canonicalInitializerDigest", projection.assembly.canonicalInitializerDigest},
+        {"adapterDescriptorDigest", projection.assembly.adapterDescriptorDigest},
+        {"assemblerDescriptorDigest", projection.assembly.assemblerDescriptorDigest},
+        {"backendAbi", projection.assembly.backendAbi},
+        {"precision", projection.assembly.precision},
+        {"quantization", projection.assembly.quantization},
+        {"layout", projection.assembly.layout},
+        {"padding", projection.assembly.padding},
+        {"maxSourceBytes", std::to_string(projection.assembly.maxSourceBytes)},
+        {"maxAssembledBytes", std::to_string(projection.assembly.maxAssembledBytes)},
+        {"maxNodes", std::to_string(projection.assembly.maxNodes)},
+        {"assembledModelDigest", assembledDigest},
+        {"assemblyManifestDigest", sha256Hex(manifestBytes)},
+        {"assemblySignature", std::string(signatureBytes.begin(), signatureBytes.end())},
+        {"assembledFrom", "canonical-root-post-selection-cache"},
+      };
+      if (projection.generationContract.enabled) {
+        const auto& generation = projection.generationContract;
+        if (!generation.stateSuccessorMap.empty())
+          spec.metadata["stateSuccessorMap"] = generation.stateSuccessorMap;
+        if (!generation.positionInputPolicy.empty())
+          spec.metadata["positionInputPolicy"] = generation.positionInputPolicy;
+        if (!generation.attentionMaskInputName.empty())
+          spec.metadata["attentionMaskInputName"] = generation.attentionMaskInputName;
+        if (!generation.positionIdsInputName.empty())
+          spec.metadata["positionIdsInputName"] = generation.positionIdsInputName;
+        if (!generation.cachePositionInputName.empty())
+          spec.metadata["cachePositionInputName"] = generation.cachePositionInputName;
+      }
+      if (options.reportProgress)
+        options.reportProgress("CACHE_HIT", 0.90);
+      return spec;
+    }
+    catch (const std::exception&) {
+      // Cache is an optimization, not an authority. Ignore stale or partial
+      // entries and let the authenticated cold path decide.
+    }
+  }
+  return std::nullopt;
 }
 
 namespace {
@@ -1193,6 +1392,12 @@ prepareNativeCanonicalOnnxRole(
              << ",\"graphDigest\":" << jsonEscape(projection.assembly.graphDigest)
              << ",\"role\":" << jsonEscape(projection.assembly.selectedRole)
              << ",\"roleKind\":" << jsonEscape(projection.assembly.roleKind)
+             << ",\"artifactDigest\":"
+             << jsonEscape(projection.assembly.artifactDigest)
+             << ",\"canonicalSourceDataName\":" << jsonEscape(sourceName)
+             << ",\"canonicalSourceDigest\":" << jsonEscape(sourceDigest)
+             << ",\"canonicalInitializerDigest\":"
+             << jsonEscape(projection.assembly.canonicalInitializerDigest)
              << ",\"rank\":" << projection.assembly.rank
              << ",\"layerBegin\":" << projection.assembly.layerBegin
              << ",\"layerEnd\":" << projection.assembly.layerEnd

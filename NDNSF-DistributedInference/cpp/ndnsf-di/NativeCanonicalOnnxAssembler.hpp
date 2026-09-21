@@ -82,6 +82,19 @@ void
 withNativeArtifactDirectoryFinalization(const std::string& directory,
                                         const std::function<void()>& action);
 
+/**
+ * Reopen a finalized plaintext assembled artifact from the stable cache root.
+ * The caller must already have an authenticated post-Selection projection.
+ * Missing, stale, or corrupt entries return nullopt and leave the normal
+ * fetch/assembly path available. Protected artifacts remain request scoped.
+ */
+std::optional<NativeModelRunnerSpec>
+tryLoadNativeCanonicalOnnxRoleFromCache(
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const std::string& canonicalSourceName = {},
+  const std::string& canonicalSourceDigest = {});
+
 NativeModelRunnerSpec
 prepareNativeCanonicalOnnxRole(
   const NativeCanonicalOnnxFetchers& fetchers,
