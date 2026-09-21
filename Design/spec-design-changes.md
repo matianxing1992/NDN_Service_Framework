@@ -627,3 +627,14 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 - 源码范围 / 文档提交定位：`NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.{hpp,cpp}`、`Provider.cpp`、`examples/DI_NativeProviderExecutable.cpp`、`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`、`tests/integration-tests/di-prepared-provider.t.cpp`、`di-prepared-process.t.cpp`；对应 Spec189 plan/tasks/placement contract。
 - 验证命令、结果与持久证据：`./waf build --targets=spec185-provider-assembly -j4` `rc=0`；`NDNSF_SPEC182_BIN_DIR=build-spec189-oracle build-spec189-oracle/spec185-provider-assembly --run_test='Spec185ProviderAssembly/Spec188ProviderReferenceAssembly/ProductionAssemblerCache*' --log_level=test_suite` 两 case `rc=0`；首次未设置 worker 环境的 invocation boundary 见 [cache selector evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-cache-selector-worker-path-20260920.md)。
 - 状态 / 剩余验收 / 下一步：`PARTIAL`；先核对安装候选并以稳定 root 运行一次 warm/cold 对照，确认 Provider 记录 cache hit 且不出现重复 material fetch/assembly，再继续真实 MiniNDN full-path gate。
+
+### D-189-STREAM：Selection 后才启动 streamed event prefetch
+
+- 日期 / Spec / 任务与契约 ID：2026-09-20；[Spec189](../specs/189-qwen-two-provider-minindn/spec.md)；T006/T007；`Q189-WIRE`、`Q189-ASSEMBLY`。
+- 模块 / 当前与目标章节：Core `ServiceUser::initializeStreamConsumer` 与 Selection publication；Spec189 request-chain stream boundary。
+- 原设计 / 新设计 / 修改原因：原实现创建 streamed event consumer 后立即调用 `prefetchWindow()`，在 Provider 尚未收到 authenticated Selection 时就发出 exact event Interests，可能把正常的 admission wait 误判为 `stream event gap exceeded retry budget`。当前由调用方在 Selection 成功上线路径后再启动 ordinary/collaboration consumer；已有 binding 的 targeted request 在初始化返回后立即启动，保持其既有 Selection 顺序。
+- 当前已实现部分 / 目标未实现部分：三条 Core Selection 路径已加入 Selection-gated prefetch，targeted/normal/collaboration focused selectors 和既有 native flow selector 通过；新的 Qwen r152 已越过 ACK/grant verification，但仍未观察到 Selection，故完整 Qwen handoff、cache hit、execute、terminal 和 repeat 仍未实现。
+- 兼容性、迁移或撤回影响：不改变 Selection/ACK wire、授权、KV 或 ONNX contract；失败时仍保留 bounded stream retry/cancellation 语义。回退仅恢复 consumer 初始化时机，不影响稳定 cache 的 digest/authorization gate。
+- 源码范围 / 文档提交定位：`ndn-service-framework/ServiceUser.cpp`；验证记录与当前失败边界见 [r152 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r152-qwen-selection-boundary-20260920.md)。
+- 验证命令、结果与持久证据：`./waf --out=build-spec189-oracle build --targets=integration-tests -j4` `rc=0`；`Spec175InvocationStream/NormalServiceOnlyRequestPublishesOrderedEventsAndOneResult`、`Spec175InvocationStream/TargetedStreamBootstrapsAndUsesOneSelection`、`Spec170NdnsfDiCoreFlow/ProductionNativeHandlersRunStreamedD2bRequestToFinalResponse`、`Spec170NdnsfDiCoreFlow/PreconfiguredEnvironmentRunsFourProviderRoleSplitCollaboration` 均 `PASS`。真实 Qwen r152 仍为 `PARTIAL`，未宣称资格 PASS。
+- 状态 / 剩余验收 / 下一步：`PARTIAL`；先定位 Selection publication/consumer 的实际 wire boundary，再运行 stable-root warm/cold 对照和完整 two-provider handoff。

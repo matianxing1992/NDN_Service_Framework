@@ -914,6 +914,20 @@ def main(argv=None, *, _supervised=False) -> int:
                      if args.oracle_binary is not None
                      else (build / "examples/spec189-two-provider-oracle").resolve())
     receipt = build / "spec180-native-build.json"
+    # Verify the complete runtime identity before copying the canonical graph
+    # or external initializer into the run directory.  The same checks are
+    # repeated immediately before child launch below as a TOCTOU fence, but a
+    # failed preflight must not first create a model-sized transient copy.
+    require_file_digest(receipt, args.build_receipt_sha256, "BUILD_RECEIPT")
+    for path, expected, label in (
+        (args.controller_binary, args.controller_binary_sha256, "CONTROLLER_BINARY"),
+        (authority_binary, args.authority_binary_sha256, "AUTHORITY_BINARY"),
+        (requester_binary, args.requester_binary_sha256, "REQUESTER_BINARY"),
+        (provider_binary, args.provider_binary_sha256, "PROVIDER_BINARY"),
+        (assembly_worker_binary, args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
+        (oracle_binary, args.oracle_binary_sha256, "SPEC189_ORACLE_BINARY"),
+    ):
+        require_file_digest(path, expected, label)
     if args.build_receipt_sha256:
         require_file_digest(receipt, args.build_receipt_sha256, "BUILD_RECEIPT")
     for path, expected, label in (
