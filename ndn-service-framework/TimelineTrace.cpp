@@ -55,6 +55,17 @@ timelineTraceSampleAllows(const ndn::Name& requestId)
     return (hash % sampleRate) == 0;
 }
 
+std::string
+timelineField(TimelineFields fields, const char* name, std::string fallback)
+{
+    for (const auto& field : fields) {
+        if (field.first == name && !field.second.empty()) {
+            return field.second;
+        }
+    }
+    return fallback;
+}
+
 uint64_t
 wallMicroseconds()
 {
@@ -71,10 +82,55 @@ timelineSteadyMicroseconds()
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+void
+logPhaseTiming(const std::string& role,
+               const std::string& phase,
+               const ndn::Name& requestId,
+               TimelineFields fields)
+{
+    if (requestId.empty() || phase.empty()) return;
+    if (!envFlagEnabled("NDNSF_PHASE_TIMING")) return;
+    const auto attempt = timelineField(
+        fields, "attempt", timelineField(fields, "attemptEpoch", "request"));
+    const auto canonicalAttempt = attempt.empty() || attempt == "0" ?
+        std::string("request") : attempt;
+    std::ostringstream os;
+    os << "NDNSF_PHASE_TIMING"
+       << " component=" << role
+       << " executionRole=" << timelineField(fields, "executionRole", role)
+       << " phase=" << phase
+       << " steady_us=" << timelineSteadyMicroseconds()
+       << " timestamp_us=" << wallMicroseconds()
+       << " requestId=" << requestId.toUri()
+       << " attempt=" << canonicalAttempt
+       << " providerBootId=" << timelineField(fields, "providerBootId", "none")
+       << " sessionId=" << timelineField(fields, "sessionId", "none")
+       << " conversationId=" << timelineField(fields, "conversationId", "none")
+       << " inferenceEpoch=" << timelineField(fields, "inferenceEpoch", "none")
+       << " contextEpoch=" << timelineField(fields, "contextEpoch", "none");
+    for (const auto& field : fields) {
+        if (field.first.empty() || field.first == "role" ||
+            field.first == "executionRole" || field.first == "attempt" ||
+            field.first == "attemptEpoch" || field.first == "providerBootId" ||
+            field.first == "sessionId" || field.first == "conversationId" ||
+            field.first == "inferenceEpoch" || field.first == "contextEpoch" ||
+            field.second.find_first_of("\r\n \t") != std::string::npos)
+            continue;
+        os << " " << field.first << "=" << field.second;
+    }
+    NDN_LOG_WARN(os.str());
+}
+
 bool
 timelineTraceEnvEnabled()
 {
     return envFlagEnabled("NDNSF_TIMELINE_TRACE");
+}
+
+bool
+phaseTimingEnvEnabled()
+{
+    return envFlagEnabled("NDNSF_PHASE_TIMING");
 }
 
 bool
@@ -95,6 +151,14 @@ logTimelineTrace(const std::string& role,
                  const ndn::Name& requestId,
                  TimelineFields fields)
 {
+    const auto emitPhase = [&] {
+        const char* phase = nullptr;
+        if (event == "request_created") phase = "submit";
+        else if (event == "request_publish_done") phase = "requestPublished";
+        else if (event == "first_ack_observed") phase = "ackReceived";
+        if (phase != nullptr) logPhaseTiming(role, phase, requestId, fields);
+    };
+    emitPhase();
     if (!timelineTraceEnvEnabled()) {
         return;
     }

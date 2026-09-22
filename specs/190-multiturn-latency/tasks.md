@@ -1,21 +1,22 @@
 # Tasks: Multi-turn Token Generation Latency
 
-**Status**: PLANNED
+**Status**: PARTIAL
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [design contract](contracts/design.md)
 
 ## Current Checkpoint
 
-2026-09-22 03:00 -05:00：按用户要求改为严格串行闭环，任务重排且重新编号；全部产品任务仍未完成。
+2026-09-22 04:33 -05:00：严格串行完成 T001；T002 及后续任务仍未启动。
 旧→新：T001–T005不变；旧T008→T006、旧T009→T007、旧T010→T008、旧T011→T009、旧T006→T010、旧T007→T011。
 Batch ID/evidence路径保持原身份，历史提交/审计不改写；下表与正文使用新任务ID。
-本轮仅计划/skill修订，无产品修改或实验。下一步只有T001，不能跳过或并行推进后项。
-实际文档/工作流检查和独立复审见[audit](audit.md)的Strict Serial Revision；不作为产品完成证据。
+T001 的实现、C++ focused regression、compile-link 和只读静态复核已闭合；证据见
+[b190-01](evidence/b190-01.md)。本项不包含 MiniNDN/Qwen 两节点实验或性能验收。
+下一步只有 T002，不能跳过或并行推进后项。
 
 ## Execution Progress
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| [T001 Phase timing](#t001-phase-timing) | NOT_STARTED | — | research已有历史分段，新增C++指标/回归未实现 | 2026-09-22 03:00 -05:00 |
+| [T001 Phase timing](#t001-phase-timing) | DONE | — | [b190-01](evidence/b190-01.md)；216/216 compile-link，`Spec190Timing` C++ regression 3/3，静态复核 PASS；MiniNDN/Qwen/performance unobserved | 2026-09-22 04:33 -05:00 |
 | [T002 ACK window](#t002-ack-window) | NOT_STARTED | T001 | 1000ms目标，原生认证/截止回归待做 | 2026-09-22 03:00 -05:00 |
 | [T003 Live turns](#t003-live-turns) | NOT_STARTED | T002 | 同handle/实时事件待实现 | 2026-09-22 03:00 -05:00 |
 | [T004 Finalize and drain](#t004-finalize-and-drain) | NOT_STARTED | T003 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 03:00 -05:00 |
@@ -41,7 +42,7 @@ Native assertion/fixture/oracle均C++；Python仅启动和配置；共享业务�
 
 ### T001 Phase Timing
 
-- [ ] T001 Deliver correlated phase timing in `NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp`, `ndn-service-framework/ServiceUser.cpp`, and `tests/unit-tests/spec190-timing.t.cpp`.
+- [x] T001 Deliver correlated phase timing in `NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp`, `ndn-service-framework/ServiceUser.cpp`, and `tests/unit-tests/spec190-timing.t.cpp`.
 
 **Outcome / owner**：Core/DI/CLI各自产生阶段事件，可以区分网络、认证、规划、模型计算、交付及终态等待。
 **Read**：research.md、CD-01、现有RuntimeTiming、NativeInferenceClient::beginCoreRequest/commitConversationTurn、r260 raw。
