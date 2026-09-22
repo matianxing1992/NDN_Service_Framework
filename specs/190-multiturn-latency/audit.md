@@ -2,8 +2,31 @@
 
 ## Verdict
 
-PASS — 限定文档规划范围：结构检查、独立只读复审及所提问题修订完成。
-不是全Spec READY_FOR_IMPLEMENTATION；T004仍先诊断FINALIZE首边界。产品实现/行为/性能NOT_RUN。
+PASS — 限定本次文档规划：新增Repo/传输/prepare复用范围完成主审、结构检查及Kant独立复审修正。
+结构PASS：17 FR、9 SC、5 stories、11 tasks、0产品勾选、17/17 FR追踪。
+不是全Spec READY_FOR_IMPLEMENTATION；T004先诊断FINALIZE首边界，T011先冻结CD-09安全接口。
+产品实现/行为/性能NOT_RUN。以下原7任务审查保留为历史，不代表扩展范围已获独立PASS。
+
+## Scope Revision
+
+相对checkpoint `930f69e9`增加CD-06–09/T008–T011：实际stage tensor预算与分层缓存计数，
+固定每node Repo owner和重启恢复，prepare前lookup免重复拆层/导出/打包/STORE，当前授权下合法复用。
+已修正旧版“Repo全部不在范围”、7任务追踪和仅STORE去重的歧义。
+源码核对表见research；已有file backend/manifest-first基础不等于真实protected重启复用。
+CodeGraph有待索引文件，结论以直接源码核对为准。校验读盘不等于网络payload，layer hit不等于resident hit。
+五lane按plan B190-08–11；static主审完成，compile-link/runtime-test NOT_RUN，
+unobserved为实际prepare跳过量、wire预算、重启后合法密文服务及磁盘稳定性。
+
+### Revision Review Trace
+
+review profile沿用下述路径/摘要。两reviewer首次遇model capacity，保留状态后重试；不视为产品失败。
+Kant针对冻结快照发现T010只恢复publication receipt不足以恢复PreparedModel；已补ModelPreparationCache前置分支、
+PreparedMetadataV1、reference-only catalog/adapter恢复、当前Runtime owner重建及真实冷正/热零计数，局部复审PASS。
+v1 `.codex-tmp/spec190-reuse-review/doc-snapshot.tgz` SHA256 `a9bdad06aa9eabdbddcf13a6042281e34889c202f24b38c5535011bfb3372bb9`；
+修正后v2 `.codex-tmp/spec190-reuse-review/doc-snapshot-v2.tgz` SHA256 `44c276bc9d29f9c2449a2b94edf0ab3efff9b9bc64e54b73fe1b3dded9fdbd09`。
+结构检查PASS，Spec Kit入口同步11/11，diff whitespace检查PASS；未执行产品构建或实验。
+Laplace完成冻结快照的传输/缓存范围复审，无新增控制性发现；T010最后增量由Kant复审，不冒称两人均独立重验。
+Closure: CLOSED_FOR_VALIDATION（规划交付），T004/T011前置门保留，所有产品任务仍未完成。
 
 ## Scope and Source
 

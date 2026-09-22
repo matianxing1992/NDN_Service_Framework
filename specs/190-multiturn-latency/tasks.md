@@ -5,10 +5,13 @@
 
 ## Current Checkpoint
 
-2026-09-22 02:27 -05:00：已建立r260耗时与源码分析、需求、设计及7个行为任务，完成结构检查与两次独立只读审计修订；
-ACK60秒已确认，FINALIZE约30秒有源码对应但丢失/拒绝原因待T004定位。
-本轮只创建计划，不实施、不编译、不启动新模型。文档规划审计PASS见[audit.md](audit.md)，全部产品任务保持NOT_STARTED。
-下一步T001建立准确分段基线，再T002验证1000ms ACK；不继续Spec189 r261独立实现。
+2026-09-22 02:43 -05:00：按用户追加需求纳入stage传输、固定per-node Repo、重启查询复用与受保护材料缓存；
+保留T001–T007，新增T008–T011，收敛/最终实验依赖已扩展。新契约见[material-reuse](contracts/material-reuse.md)。
+本轮仅修订文档，无代码/构建/实验/数据清理。T011安全接口设计门仍BLOCK生产编码，不能称仅改目录即可复用旧密文；
+其余任务未开始，所有产品checkbox未勾选。新增审计结果见[audit.md](audit.md)。
+本轮补充确认：`user.prepare(model)`完整命中跳过实际材料生成；ModelPreparationCache前置lookup、持久元数据恢复与
+冷正/热零C++计数门已补齐，Kant局部复审PASS。结构17 FR/9 SC/11 tasks、Spec Kit sync11/11通过；产品NOT_RUN。
+下一步T001→T002，T009固定Repo owner可独立推进；最终验收须同时包含真实Repo与hot网络预算，不用旧诊断旁路替代。
 
 ## Execution Progress
 
@@ -19,8 +22,12 @@ ACK60秒已确认，FINALIZE约30秒有源码对应但丢失/拒绝原因待T004
 | [T003 Live turns](#t003-live-turns) | NOT_STARTED | T001 | 同handle/实时事件待实现 | 2026-09-22 02:16 -05:00 |
 | [T004 Finalize and drain](#t004-finalize-and-drain) | NOT_STARTED | T001,T003 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 02:16 -05:00 |
 | [T005 Resident session](#t005-resident-session) | NOT_STARTED | T001 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 02:16 -05:00 |
-| [T006 Convergence and candidate](#t006-convergence-and-candidate) | NOT_STARTED | T002,T003,T004,T005 | C++oracle、preflight mutation、收敛门待做 | 2026-09-22 02:16 -05:00 |
-| [T007 Matched experiment](#t007-matched-experiment) | NOT_STARTED | T006 | 三组配对和全部SC待验收 | 2026-09-22 02:16 -05:00 |
+| [T006 Convergence and candidate](#t006-convergence-and-candidate) | NOT_STARTED | T002,T003,T004,T005,T008,T009,T010,T011 | 新增真实Repo/重启/字节预算oracle与preflight；门未执行 | 2026-09-22 02:43 -05:00 |
+| [T007 Matched experiment](#t007-matched-experiment) | NOT_STARTED | T006 | 三组warm配对、cold/三次restart/缺层及SC-001–009待验收 | 2026-09-22 02:43 -05:00 |
+| [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T001 | actual bundle/wire字节与多发修复待做 | 2026-09-22 02:43 -05:00 |
+| [T009 Persistent Repo owner](#t009-persistent-repo-owner) | NOT_STARTED | — | 固定根、单owner、恢复/cleanup隔离待做 | 2026-09-22 02:43 -05:00 |
+| [T010 Query and reuse](#t010-query-and-reuse) | NOT_STARTED | T009 | 接既有manifest-first/root-last，免重复STORE待做 | 2026-09-22 02:43 -05:00 |
+| [T011 Protected material reuse](#t011-protected-material-reuse) | BLOCKED | T005,T009,T010; CD-09 | 先冻结crypto-owner恢复/key-reference/retention接口，禁止直接移除protected miss门 | 2026-09-22 02:43 -05:00 |
 
 ## Shared Execution Contract
 
@@ -135,15 +142,17 @@ fresh evidence与真实ORT调用→Provider host/库默认接线→显式disable
 - [ ] T006 Deliver a closed candidate and native latency oracle in `examples/Spec189TwoProviderOracle.cpp`, `examples/wscript`, `Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`, and `specs/190-multiturn-latency/evidence/b190-06.md`.
 
 **Outcome / owner**：生产入口与设计一致，oracle辨别真流式/真session复用/正确KV；错误候选不得启动。
-**Read**：所有CD/FR/SC及T001–005证据；当前安装工具和launcher preflight；原Spec189协议oracle。
+**Read**：所有CD/FR/SC及T001–005、T008–011证据；当前安装工具和launcher preflight；原Spec189协议oracle。
 **Write scope**：复用oracle规则的Spec190薄入口（新文件时登记实际路径）、Waf、C++oracle反例fixture、
 必要preflight mutation tests、active文档/API对应变化；不新建泛化平台或容器pipeline。
-**Design binding**：CD-05；新target有definition/link/install映射；签名/API/双PDF仅同步本Spec已实现变化。
+**Design binding**：CD-05–09；新target有definition/link/install映射；签名/API/双PDF仅同步本Spec已实现变化。
 **Steps**：先写假profile/假cachehit/假token/错attempt/缺KV/缺终态反例→接入共享C++oracle→
 冻结源/运行/输入/配置身份→错hash/错config/缺依赖零启动检查→只读CodeGraph+源审查完整五lane→修正→重审。
 **Acceptance**：原生focused selectors与适用spec189回归、动态owner门、安装身份通过；语义/安全/owner/证据缺口为零；
 记录PASS只指design-code convergence与preflight，不是性能PASS。有未解决控制性缺口则BLOCK T007。
-**Exit**：一个不可变candidate READY_FOR_EXPERIMENT；所有partial依赖明确，不能跳过T004或T005。Batch B190-06。
+还要验证Repo固定根不在任何cleanup目标内、单writer配置、现存数据不能当错误候选的可删除staging；
+新增C++oracle必须检查真实Repo提交/查询/读取、restart、payload delta及实际wire，拒绝compatibility假通过。
+**Exit**：一个不可变candidate READY_FOR_EXPERIMENT；所有partial依赖明确，不能跳过T004/T005/T008–T011。Batch B190-06。
 
 ### T007 Matched Experiment
 
@@ -154,13 +163,92 @@ fresh evidence与真实ORT调用→Provider host/库默认接线→显式disable
 **Write scope**：新run roots与本批evidence/tasks；不得运行中修源码、换安装库或改候选。
 **Steps**：验证系统安装闭包→先一组匹配smoke，失败停止并保留首边界→通过后至少3组配对，
 控制组/处理组交替→用C++oracle逐轮检查token/事件/KV/load/FINALIZE→统计全部时延和资源→清理本次临时进程。
-**Acceptance**：SC-001–006、T004≤2秒正常finalize门；失败不丢样本；若累积真实请求观察不足60秒，
+**Acceptance**：SC-001–009、T004≤2秒正常finalize门；失败不丢样本；若累积真实请求观察不足60秒，
 追加相同样本，不延长单轮sleep；记录每轮首token、decode、checkpoint、terminal/退出及总时长，解释13秒残差归属。
 **Exit**：仅满足全部目标才标Spec190性能PASS；否则PARTIAL，定位并回到所属任务；不因此关闭Spec189 full Repo资格。Batch B190-07。
 
+新增Repo-enabled验收按CD-06–09：同固定根首次cold提交、至少三次Repo/Provider进程重启、合法warm查询命中、
+一次选中材料缺失的真实fetch；control/treatment均相同warm状态。磁盘目录/manifest/digest、STORE计数、
+material payload/wire与session load独立核对；不能仅靠旧cache-compatible oracle通过。
+
+## Phase 6: User Story 4
+
+### T008 Stage Transfer
+
+- [ ] T008 [US4] Bound stage data transfer in `NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp`, `NdnsfCollaborationDependencyIo.cpp`, and `tests/unit-tests/spec190-stage-transfer.t.cpp`.
+
+**Outcome / owner**：按真实tensor/encoded/wire预算发送当前stage所需数据，不多发KV/权重/完整logits，热材料零网络有实测依据。
+**Read**：CD-06、outputForEdge/withoutProviderLocalState、lastLogits/makeTokenFeedback、dependency publish/prefetch、T001事件。
+**Write scope**：上述DI路径、NativeEpochCoordinator.cpp、RuntimeTiming、必要Core分段/wire观察点、test/Waf；
+额外mask/position删除必须同时改sealed边契约和接收重建，不能仅改发送端。
+**Design binding**：CD-06；保留业务签名，统一identity计数，counter累计与delta明确；Design status: proposed。
+**Steps**：扩展既有Provider-local KV C++fixture捕获实际bundle→构造prompt/delta/decode/finalize动态输入→
+独立解码/计算shape字节→接入生产wire/retry/本地copy分层指标→仅修有反例证明的多发/复制→冻结复审/回归。
+**Acceptance**：`StageTransferBudget`注入额外KV、weights、full logits、重复bundle、缺失position/lineage和乱序必须检出；
+实际tensor集合及数值与sealedcontract一致，允许合法metadata/重传但单独计；cumulative snapshot不能重复累计。
+layer/assembled/resident三个状态分列；热材料零payload与缺对象精确补取由T011/T007真实路径证明。
+**Exit**：C++预算/正确性反例闭合，未采集字段标unknown；不靠降低logging或断言network=0常量通过。B190-08。
+
+## Phase 7: User Story 5
+
+### T009 Persistent Repo Owner
+
+- [ ] T009 [US5] Reopen a fixed per-node Repo safely in `NDNSF-DistributedRepo/src/backends/FilesystemRepoStoreBackend.cpp`, `NDNSF-DistributedRepo/src/RepoNode.cpp`, and `tests/unit-tests/spec190-repo-restart.t.cpp`.
+
+**Outcome / owner**：固定node根跨run/进程重启，单writer恢复可读committed数据；run cleanup不删除共享payload。
+**Read**：CD-07、BackendOwnershipLease、recoverOrphans、RepoNode::registerServices、launcher prepare_fixed_workspace/cleanup_encrypted_repository。
+**Write scope**：上述后端/Node仅补已发现缺口；C++ requester/Provider注入单owner与固定配置；launcher只配置根/启动，
+禁止在Python补恢复/commit逻辑；native test及tests/wscript，现有安装target `ndnsf-distributed-repo`。
+**Design binding**：CD-07；复用现有constructor/范围接口，node/deployment/root/owner稳定，boot/catalog状态新建。
+**Steps**：先真实后端跨owner/进程close-reopen C++fixture→验证已有恢复/锁能力→接per-node固定根并排除reset/cleanup→
+测试crash/半提交/双writer/损坏/满额和目录逃逸→复审后只编受影响Repo/调用者。
+**Acceptance**：`RepoRestart`至少3次新PID复用同根，payload hash/count/bytes不变；所有committed对象可查读，
+半提交不成为hit，第二writer BUSY，不夺锁；有效read期间不删对象；普通失败清理只清owned staging；
+启动不将整权重库加载入内存，测试小ONNX/文件与子进程均RAII收尾。
+**Exit**：原生存储/owner证明闭合，网络Repo服务及真实模型重启交T007。B190-09，asan+文件故障注入。
+
+### T010 Query and Reuse
+
+**Prepare-level requirement**：production `user.prepare(model)`在拆层/导出/打包前查Repo；完整命中直接复用已校验prepared receipt。
+C++ fixture记录split/export/package/STORE计数：第二次调用及新进程重启后均为0，返回材料/IO契约与冷准备等价；
+变化内容/配置必须miss，部分缺失仅重建缺失依赖闭包。hash/必要inspection与授权成本单列，不能先完整准备再只去重STORE。
+
+- [ ] T010 [US5] Reuse verified committed publications before STORE in `NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp`, `NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.cpp`, and `tests/unit-tests/spec190-repo-lookup-reuse.t.cpp`.
+
+**Outcome / owner**：User prepare查询完整publication identity，命中直接引用，避免重复ingest/分层/存储及大型vector物化。
+**Read**：CD-08；RepoSourceProvider::load/publish和已有Spec189RepoPublication回归；Runtime.hpp两个Repository port、RepoClient::requestManifest。
+**Write scope**：既有adapter及Runtime.hpp/.cpp新增lookupPrepared可选port、NativeCanonicalArtifactPublisher必要接线、
+ModelPreparationCache.cpp/.hpp前置lookup与恢复、PreparedModelPackage.hpp版本化元数据接线、NativeRequestCatalog factory引用恢复、
+examples/DI_NativeRequester.cpp、C++fixture/Waf；不复制另一个Repo publisher。
+恢复schema/校验/当前adapter与runtimeBinding owner按CD-08；真实冷生成计数为正、热生成计数为零，轻量wrapper重建另计。
+**Design binding**：CD-08；稳定完整identity替代仅sourceDigest根；旧port默认nullopt兼容，不改原请求授权/Selection。
+**Steps**：已有首写/复用回归扩到真正close-reopen→完整identity/key冲突反例→小manifest先查的native快路径→
+miss才bounded publish/root-last，命中保留rollbackOwned=false→复审/构建/定向测试。
+**Acceptance**：`RepoLookupReuse`第二run STORE/新payload/materialization计数0；请求元数据/本地hash读另计；
+同source不同initializer/profile/layer不可错误命中；缺子对象只补缺失；unauthorized/conflict/unavailable不当miss盲写；
+lookup/publish竞争、取消不删他人已提交对象，误清理旧run材料反例必须失败。
+**Exit**：native canonical复用通过，不据此声明protected密文/网络serving复用已实现。B190-10，asan+事务故障矩阵。
+
+### T011 Protected Material Reuse
+
+- [ ] T011 [US5] Preserve current authorization during durable material reuse in `NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp`, `ndn-service-framework/ServiceUser.cpp`, `NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp`, and `tests/unit-tests/spec190-protected-material-reuse.t.cpp`.
+
+**Outcome / owner**：真实Repo路径新run新grant合法复用既有材料/组装产物；不靠临时目录保留或compatibility bypass骗过验收。
+**Read**：CD-09；Core publishEncryptedLargeData/EncryptedLargeDataRangeStore，Source析构清理、当前grant/host plaintext lease、assembler protected-miss门。
+**Write scope**：上述Core/Repo/DI owner及必要hpp、NativeProtectedProvider/runner factory接线、test/Waf；不重做加密算法。
+**Design binding**：CD-09，当前BLOCK生产编码；先在契约冻结durable key-reference/serving恢复、新grant绑定及retention公共签名、
+owner/错误/取消/失效流程，标明与原request-scoped API兼容；独立只读审查后才解除该gate。
+**Steps**：复用现有crypto-owner而非在Repo藏key→完整加密identity/receipt与恢复事务→显式durable与transient清理分离→
+当前Selection后校验材料/assembled命中→缺层走原保护fetch→旧grant/key/boot等C++反例→冻结组合审查/回归。
+**Acceptance**：`ProtectedMaterialReuse`旧/错grant、失效key、错AAD/ciphertext、非法保留policy仍拒绝；
+合法restart后真实Repo lookup/read/serving可用，相同protected identity大payload不重复STORE；
+材料/assembled热命中零material网络payload，缺一对象只取该role必要范围；保留原副本安全与迟到清理边界。
+Provider新boot必须新session，旧KV receipt不能命中；不能把T005明文diagnostic通过计为本任务通过。
+**Exit**：新安全契约和生产回归均完成，真实Qwen证明交T007；接口未闭合保持BLOCK，不删除原安全门。B190-11。
+
 ## Dependencies and Strategy
 
-`T001 → {T002, T003, T005}; T003 → T004; {T002,T004,T005} → T006 → T007`。
-没有按文件拆分测试/实现/证据任务；7个任务各有独立行为或真实验收出口。
+`T001 → {T002,T003,T005,T008}; T003 → T004; T009 → T010; {T005,T009,T010,CD-09 gate} → T011; {T002,T004,T005,T008,T009,T010,T011} → T006 → T007`。
+保留旧ID避免断追踪；T008–T011在最终收敛前执行。11个任务各有独立行为、生命周期/安全或真实验收出口，未拆行政任务。
 MVP：T001/T002先消除已知60秒等待；接着T003/T004保证真实交互与及时收尾；T005再减少加载开销。
-新spec规划完成不勾选任何产品任务。无外部approval依赖；T004先诊断再补设计是技术前置，不要求用户代替定位。
+新spec规划完成不勾选任何产品任务。T004首边界与T011安全接口是明确技术前置，执行者先核实/补齐设计，不让用户代替诊断。

@@ -86,5 +86,33 @@ T001/T007记录日志字节和读取成本，只有实测在关键路径才在�
 ## Scope Audit Decisions
 
 保留已有效的 Spec189 r260 request-local runner reuse、r259 affinity 和 KV校验，不重做。
-不把 GPU、Repo full-path、SIF、泛化自适应 scheduler、聊天 UI 混入性能计划。
+不把GPU、通用Repo重构、SIF、泛化自适应scheduler、聊天UI混入性能计划。
+用户后续明确要求的固定Repo存储/重启查询复用与stage网络预算已纳入下节，不沿用原先排除所有Repo工作的范围。
 核心性能任务自带安全、负例、C++ oracle、文档义务，不按“写测试/实现/审查/记报告”机械拆任务。
+
+## Revision: Stage Network and Persistent Repo
+
+2026-09-22追加源码核查，尚无新实验。CodeGraph索引有待同步项，最终事实核对当前磁盘源，不从旧索引推断完成。
+
+| Current fact | Evidence / implication |
+| --- | --- |
+| 层获取容器不等于持久layer cache | NativeCanonicalOnnxAssembler的fetchedBundles只做本次组装内去重 |
+| protected普通路径拒绝assembled cache | tryLoadNativeCanonicalOnnxRoleFromCache对非plaintext且非compatibility返回miss；必须T011安全接线，不能删除检查冒充提速 |
+| 跨stage本应过滤KV | ProviderRoleWorker::outputForEdge/withoutProviderLocalState；显式state边拒绝；需要真实bundle/wire反例确认 |
+| 尾部本地采样 | NativeEpochCoordinator::lastLogits/makeTokenFeedback；不应把完整logits传回上游，但本地物化/copy可能昂贵 |
+| r260未测完整wire字节 | 每侧3次CACHE_HIT，没有MATERIAL_FETCH也没有DEPENDENCY_OBJECT计数，不能据缺日志量化0网络 |
+| 文件Repo已有恢复和锁 | FilesystemRepoStoreBackend构造恢复、digest payload/原子manifest；BackendOwnershipLease用flock；不必新造数据库 |
+| User已有source查询复用 | RepoSourceProvider::load/publish已有manifest-first/root-last/rollbackOwned=false；requester主要接sourceOwner，compatibility接另一publisher，非远端持久发布闭合 |
+| 稳定source根不够 | launcher resolve_model_source_repository已跨run按digest；固定workspace仍会清repo子目录，新的durable根必须排除cleanup |
+| 密文生命周期是独立缺口 | RepoEncryptedLargeDataStore::Source析构removeIfCurrent，commitFile同名拒绝；Core名含request/version；保留文件不恢复key/receipt/serving |
+
+r260 plan声明hidden_states/attention_mask/position_ids，但不是逐V3 wire的测量。
+Tensor纯字节按实际shape/dtype求和，prefill/delta/decode/finalize分开；metadata、加密、分段、Interest、
+重传另外统计。NativeRuntimeMetrics的activationOutputBytes可能包括CPU本地KV，不能当网络量；
+controlBytes可能与输入统计重叠，cumulative snapshot不能逐token累加。具体验证契约见CD-06。
+
+复用实现优先级：现有文件后端与RepoSourceProvider接线/测试→固定per-node owner与目录→
+完整publication identity查询免重复STORE→有安全设计门的protected发布/缓存复用。
+同source但不同profile/initializer/layers目前可能根名冲突；不能以has()替代完整身份验证。
+已有原生`Spec189RepoPublication/PreparePublicationCommitsAndReusesCanonicalReceipt`可扩展，
+不能把其局部通过改称跨进程restart或新授权hot路径通过。

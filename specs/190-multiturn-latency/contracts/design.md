@@ -1,6 +1,7 @@
 # Design Binding and Validation Contract
 
 **Status**: proposed；以下新增签名/selector 尚未实现。G1–G6、C1–C3、D1–D4、B1–B3、M1–M3适用。
+新增stage传输与per-node Repo复用由[CD-06–09](material-reuse.md)控制；T011完成前protected缓存限制仍保留。
 路径缩写 `DI/` 指 `NDNSF-DistributedInference/cpp/ndnsf-di/`；`ORT/` 指 `NDNSF-DistributedInference/cpp/adapters/onnx/`。
 
 ## CD-01 Timing and ACK Window
@@ -78,7 +79,8 @@ completion通知后无活跃业务待办时立即唤醒drain。
 close之后acquire报明确closed错误，不能偷偷退回新建session绕过关闭；drain超时返回false，不能报告全释放。
 **Identity**：遵守[data model](../data-model.md)，只允许可信preparation验证出的digest和contract；缺字段fail-safe miss，
 相同path但内容改变不能命中。assembler已有稳定assembled digest须复用，不每轮复制模型。
-protected临时明文backing/CUDA先bypass并记录原因；不得让cache强持有上次grant/context。
+T005的protected临时明文backing/CUDA先bypass并记录原因；T011单独闭合真实protected复用，
+未通过不得宣称Repo热缓存路径PASS。不得让cache强持有上次grant/context。
 **Owner flow**：NativeProviderHandler当前授权/Selection/spec校验→factory→cache acquire→fresh wrapper→
 每epoch真实run；请求结束释放wrapper lease，KV按原store保留；host退出stop admission→worker drain→cache close/drain。
 host `examples/DI_NativeProviderExecutable.cpp` 显式注入并收束；库 `DI/Provider.cpp` 采用同一owner契约，
@@ -107,6 +109,8 @@ closed后acquire拒绝、drain超时和最终成功均验证，保留原无cache
 
 三组配对：相同候选支持control（ACK60000、原单轮进程、resident disabled）与treatment
 （ACK1000、同handle、resident enabled）；轮次token/采样/模型/拓扑/资源一致，交替顺序，固定输入。
+新增Repo-enabled的对照与处理必须使用相同合法warm材料状态，不能与旧cache-compatible数据混比；
+冷入库/三次重启/缺层场景另外按CD-06–09执行，不为每run复制一个大Repo目录。
 报告每组结果、首轮cold与后轮warm，不能从3样本承诺全球p95。必要时一次消融只改ACK以确认主要因果。
 TTFT从request提交到首token交付；decode间隔分离first token/prefill；总耗时从第一次提交到最后checkpoint，
 启动/最终退出另表，所有失败计入成功率。后轮parent/role/provider/boot/epoch必须与有效KV receipt匹配。

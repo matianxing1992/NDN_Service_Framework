@@ -9,14 +9,17 @@
 
 唯一目标：降低 `MiniNDN + Qwen3-0.6B + two Providers + native NDNSF-DI`
 多轮对话从提交到首 token、后续 token 和下一轮可开始的等待，保持正确输出和 KV 复用。
-以 Spec189 r260 的缓存兼容执行为性能基线；不把该范围升级为完整 Repo 获取资格。
+保留 Spec189 r260 的缓存兼容执行作历史基线；新增真实Repo持久化/重启复用与网络预算验收，
+分别报告两个范围，不能把旧诊断结果升级为新Repo路径的资格。
 本次交付是计划和审计，不是产品实现。Spec189 的未完成资格不自动关闭。
 
 纳入：ACK 窗口与软件排队、实时 token 消费、同一原生 Conversation 连续请求、
-轮次终态/退出等待、短期 CPU 模型 session 驻留及其必要的证据/资源边界。
-排除：Repo 重构、加密协议重做、GPU/CUDA 新能力、跨机 KV 搬运、SIF/Tiger、量化、
+轮次终态/退出等待、短期 CPU 模型 session 驻留、Provider间传输预算、
+每节点固定Repo持久目录、重启恢复和查询命中免重复存储，以及这些优化必需的授权/证据/资源边界。
+排除：通用Repo架构重构、加密算法重做、GPU/CUDA 新能力、跨机 KV 搬运、SIF/Tiger、量化、
 更换模型、通用调度重写、聊天 UI、无限性能调参和恢复 Spec189 全部遗留任务。
 不新增自适应 ACK 窗口或提前关闭策略：先用已有固定窗口机制完成最小改进。
+2026-09-22追加需求：Repo固定存储与真实命中复用属于本Spec核心优化，不再将所有Repo工作排除。
 
 ## User Scenarios & Testing
 
@@ -51,6 +54,31 @@
 2. **Given** 模型变化、过期、显式驱逐或关闭，**Then** 不再新租用旧项，活跃使用结束后释放；不得造成悬空 backing 或无界保留。
 3. **Given** cache hit，**Then** 实际调用 ORT，不能复用旧输出或把旧 profile 标成当前请求。
 
+### User Story 4 - Minimal Stage Data Transfer (Priority: P1)
+
+同一模型的热路径应主要交换当前stage边界激活、token反馈和必要控制，
+不能因实现重复发送整模型、全历史KV、完整logits或重复材料而拖慢生成。
+**Why this priority**: 多stage端到端时延包含序列化、加密、分段、网络及复制；现有日志不能证明这些成本很小。
+**Independent Test**: C++捕获真实production dependency发布/接收对象，按实际tensor shape/dtype推导预算并核对wire/重传计数。
+**Acceptance Scenarios**:
+
+1. **Given** 当前授权/Selection有效且所分配材料缓存完整，**When** 进入推理，**Then** 模型材料网络payload为零，仅必要摘要/授权/控制交换，真实activation仍传输。
+2. **Given** 首次prefill、续轮delta、decode和finalize，**Then** 分别核对动态张量字节，不能假设所有阶段固定小包。
+3. **Given** 一层缺失或损坏，**Then** 只获取所选role实际缺少的对象/范围并验证，不回退为无界整模型复制；无法安全恢复时明确失败。
+
+### User Story 5 - Persistent Per-node Repo Reuse (Priority: P1)
+
+首次保存后，各节点Repo使用同一固定目录；实验和Repo进程重启后恢复已提交数据，
+User先查并校验完整身份，命中直接引用，只有缺失才写入，避免每run新增一份大文件。
+**Why this priority**: 仅磁盘目录存在或当前source-cache命中，不证明真实Repo发布/网络owner可重启复用。
+**Independent Test**: 真正关闭并重建C++Repo owner/进程，查询/读取同一对象；第二次STORE/payload写入为零，
+随后通过真实Repo材料路径完成两Provider推理，而不是共享路径旁路。
+**Acceptance Scenarios**:
+
+1. **Given** 相同部署/节点/模型身份，**When** runId和PID变化并重启，**Then** canonical路径及已提交payload不变，catalog/服务恢复可用。
+2. **Given** 摘要/模型契约冲突、半提交、错误key epoch或旧权限，**Then** 不把has()当命中；保留有效对象，拒绝或精确补齐缺失，重新授权。
+3. **Given** 正常退出、失败清理或并发run，**Then** 不删除持久committed对象，不争抢同一后端writer；临时staging仍受预算并回收。
+
 ## Acceptance Evidence Contract
 
 所有 `spec190-latency-tests` 及其 selector 均为 **planned**，由 tasks.md 指定任务在 Waf 注册；不是已有测试。
@@ -61,6 +89,8 @@
 | US2 / FR-004–006 | Conversation::request, EventReader, Runtime::close/drain | 实时事件、同 handle 续轮、及时终态 | spec190-latency-tests / LiveTurns, TerminalDrain | 缺 receipt、busy、事件乱序、失败退出 | DI+Core / B190-03,04 |
 | US3 / FR-007–009 | NativeProviderHandler → RegistryNativeModelRunnerFactory → ORT | load count、租约释放、新请求证据 | spec190-latency-tests / ResidentSession | 错身份/失效授权/驱逐/关闭/加载失败 | DI / B190-05 |
 | all / FR-010–012 | installed requester/providers + maintained MiniNDN launcher | 正确 token、耗时和资源结果 | installed C++ oracle + named native regressions | 假 hit、错候选、失败不能剔除 | B190-06,07 |
+| US4 / FR-013–014 | ProviderRoleWorker → NdnsfCollaborationDependencyIo → Core | 动态payload/wire预算与hot material zero | spec190-latency-tests / StageTransferBudget | KV/weights泄入、重复发送、缺层、重传 | DI/Core / B190-08,11 |
+| US5 / FR-015–017 | RepoCore/FilesystemRepoStoreBackend/RepoSourceProvider → Runtime prepare | restart查询复用、无重复STORE、固定目录 | spec190-latency-tests / RepoRestart, RepoLookupReuse, ProtectedMaterialReuse | 半提交/冲突/owner锁/key失效/cleanup | Repo+DI+Core / B190-09,10,11 |
 
 ### Edge Cases
 
@@ -84,6 +114,11 @@ profiling 已结束、模型外部权重仍有 owner、RSS 未立即下降但对
 - **FR-010**: Matched Validation — MUST 固定模型/token 输入/采样/拓扑/资源/日志级别，保留对照和全部失败；正确输出、KV、cleanup 与性能同时通过才可宣称改进。
 - **FR-011**: Native Acceptance — MUST 由生产 C++ target、C++ fixture/assertion/oracle 证明行为；先实现与静态审查、再定向测试、收敛审计后运行 MiniNDN。
 - **FR-012**: Immutable Scope — MUST 绑定源码含未跟踪文件、安装产物/依赖、harness、配置、模型及 oracle 身份；复用并补足既有 preflight，拒绝候选时零启动副作用，历史 raw 不覆盖。
+- **FR-013**: Stage Byte Budget — MUST 按实际边/epoch/prefill-delta-decode-finalize分类记录tensor、encoded payload、ciphertext/NDN wire、Interest/重传/控制及本地copy成本；缺观测不能填零，累计snapshot不可逐epoch重复相加。
+- **FR-014**: Cache-aware Material Transfer — MUST 区分layer、assembled、resident与KV命中；当前授权完整命中时不再传模型材料或跨stage KV/权重/完整logits，缺失只补必要对象；disk hit不等于免ORT load，restart不等于KV恢复。
+- **FR-015**: Stable Repo Storage — MUST 每deployment/node使用固定独占Repo根，不含runId/PID/时间戳；复用现有文件后端，重启恢复已提交manifest/payload，run cleanup不得重置或删除该根。
+- **FR-016**: Verified Lookup Before Preparation — MUST `user.prepare(model)`先查询完整publication身份和提交状态，校验后复用prepared receipt/reference；完整命中跳过重复拆层、ONNX导出、打包、STORE/ingest及大payload复制。必要身份/hash/IO/当前授权校验保留并独立计时；部分缺失只修复缺失材料，miss有界分段提交、root-last、并发幂等、失败只撤销本次owned写入。
+- **FR-017**: Authorized Durable Reuse — MUST 将内容身份/持久存储与当前grant/locator/boot分开；Repo不拥有解密密钥。密文只在真实加密身份和key-reference仍有效时复用，重启恢复合法serving owner；旧授权不得复活，真实Repo路径不能用cache-compatibility绕过。
 
 ### Key Entities
 
@@ -99,10 +134,14 @@ TurnTiming、AckWindowPolicy、LoadedSessionIdentity、SessionLease、LoadEviden
 - **SC-004**: Reuse and Correctness — 同 handle 三轮 EOS/EOT/预算正确；固定 r260 样本维持 10/11/11 token（含 EOS），两侧后续 KV 命中；resident enabled 时每 Provider 相同角色合计一次 load，禁用对照三次。
 - **SC-005**: Bounded Resources — TTL/驱逐/shutdown C++ 析构计数与 lease 归零，实验无遗留进程或新增整模型副本；健康轮durable checkpoint commit→Provider TERMINAL≤2秒，失联补偿预算不缩短；报告 RSS/可用内存/swap，高水位不可由仅清空 map 证明下降。
 - **SC-006**: Reproducible Improvement — 至少三组配对实验，报告每组成功/失败及所有样本，至少60秒累计真实请求观察；不通过 sleep 凑时间。主decode指标为requester相邻生成token接收时间差，排除首token、EOS/EOT及checkpoint-finalize；先每轮求中位、再按相同轮号跨配对组比较，处理组不得劣于对照10%以上。ORT Run时间另列，不与接收间隔混比；小样本p95仅描述，不作总体保证。
+- **SC-007**: Verified Transfer Economy — 完整且合法的layer/assembled热命中模型材料网络payload=0；dependency实际tensor集合与预算一致，无KV/权重/完整logits跨stage传输；wire/metadata/retry单列不要求为零。只缺一对象时，成功恢复不得读取不相关role材料。
+- **SC-008**: Restart Reuse — 同模型至少3次run/Repo重启后，各节点固定根不变，committed payload数量/总字节不增长，重复STORE=0；合法密文复用与canonical复用分别计数。损坏/半提交/失效key/并发writer负例拒绝，不覆盖好对象。
+- **SC-009**: Honest Warm-path Readiness — 按[缓存状态矩阵](contracts/material-reuse.md#cache-state-matrix)证明：layer-hit无需网络取材但可组装/load；assembled-hit无需取材/重组装但需load；resident-hit无需取材/重组装/load。各阶段时长与可用内存/磁盘增量报告，不承诺重启后无需加载。
 
 ## Assumptions
 
 1 秒是本 workload 的目标窗口，不是“全球任何网络 RTT 必定小于200ms”的保证。
 ACK 涉及路由、进程队列、密钥/签名验证，不只往返网络传播。预热/授权 readiness 在开始请求前单列，不能挪动请求内工作美化计时。
-初版 resident 范围限实际 CPU、现有不可变明文 assembled cache；加密临时 backing 或 CUDA 不满足复用前提时走原路径并记录 bypass，不扩展新能力。
-`Spec189 = correctness/full-path obligations`；`Spec190 = matched multi-turn latency`。两者资格和原始证据分别保留。
+T005先实现CPU明文immutable缓存兼容路径；T011负责让真实受保护材料路径安全复用，不能将原先强制miss检查直接删除。
+CUDA不扩展。进程重启保留磁盘材料不保留ORT session或旧boot的KV有效性。
+`Spec189 = original correctness/full-path obligations`；`Spec190 = latency + scoped real-Repo reuse`。两者资格和原始证据分别保留。
