@@ -5,7 +5,7 @@
 
 ## Current Checkpoint
 
-2026-09-22 08:15 -05:00：严格串行完成 T001、T002；T003 实现与静态 gate 已完成，NAC-ABE fixture 首边界已修复并通过两项 C++ focused selector。run-04 在约 12.43 分钟后由资源守卫以 `RESOURCE_BOUNDARY:ownedSwap` 停止；T003 内完成原生内存 Changed gate 后，run-05 已让两个 Provider 到达 `RUNNER_READY` 且未触发资源门，但 Provider-1 在下一次 exact dependency fetch 前因 stale `NDNSF_DATA_V1` group no-progress 状态失败。两次 cleanup 均为 PASS，三轮终端闭环尚未完成。随后新增的 group-progress C++ Changed gate、Spec190 `201/201` compile-link、standalone C++ 回归和串行文档 gate 均通过；第一次 run-06 因历史父目录 root-owned 停止，目录修复后的第二次 run-06 又在 MiniNDN root preflight 因未使用 `sudo -E` 停止；run-07 已通过 ACK/Selection、Provider-0 `RUNNER_READY` 和 Provider-1 首次 dependency fetch，但双 cold assembly 又触发 `RESOURCE_BOUNDARY:MemAvailable`，失败边界已持久化。T003 保持 PARTIAL；未启动 T004 或任何后续任务。
+2026-09-22：严格串行完成 T001、T002；T003 实现与静态 gate 已完成，NAC-ABE fixture 首边界已修复并通过两项 C++ focused selector。run-04 在约 12.43 分钟后由资源守卫以 `RESOURCE_BOUNDARY:ownedSwap` 停止；run-05 已让两个 Provider 到达 `RUNNER_READY` 且未触发资源门，但 Provider-1 在下一次 exact dependency fetch 前因 stale `NDNSF_DATA_V1` group no-progress 状态失败；run-07 又在 Provider-1 并发 cold assembly 时触发 `RESOURCE_BOUNDARY:MemAvailable`。新增的跨 Provider cold-assembly `flock` gate 已完成静态复核、production worker rebuild、fork-based C++ selector 1 次加 3 次重复通过，以及 Spec182 activation 9/9；run-11 已跨过资源门并让 Provider-0 到达 `RUNNER_READY`，但 Provider-1 的首个 producer-readiness wait 在返回 manifest 后仍被错误计入 no-progress，约 365 秒后失败。新增 readiness baseline gate 已通过 CodeGraph review、受影响 DI library compile-link、独立 C++ target 和 readiness/idle-gap/in-operation selectors，readiness selector 再重复 3 次通过；广泛 `unit-tests` 仍停在既有 Spec182 fixture 编译边界。run-08～run-10、run-12、run-13、run-17 均为已保留的 launcher/preflight 边界；run-12 为手工 requester digest 不匹配，run-13 为错误 tokenizer 路径，run-17 为 tokenizer directory 摘要，均未进入 MiniNDN/Repo/Provider。run-14 已通过 preflight、ACK/Selection 并跨过 readiness 边界，但由 host guard 以 `RESOURCE_BOUNDARY:ownedSwap` 停止，峰值 `303861760 > 268435456`，cleanup=PASS，仍未得到 terminal/三轮闭环。materialized-role 复用分支的 compile-link、focused selector 一次加三次重复和 CodeGraph 复核均已通过；run-15 的 manifest 解析边界已登记。run-16、run-18 和 run-19 均通过正确 manifest、ACK/Selection，Provider-0 到达 `RUNNER_READY`，Provider-1 完成 materialization 并进入 assembly worker，随后由 host guard 以 `RESOURCE_BOUNDARY:MemAvailable` 停止，cleanup=PASS，仍未得到 terminal/三轮闭环。run-18 后新增的 canonical initializer pre-worker release Changed gate 已完成 compile-link、focused selector 一次加三次重复和静态复核；run-19 证明该释放仍不足以覆盖 Provider-0 resident runner 与 Provider-1 ORT worker validation 的重叠峰值（最小 `availableBytes=1374429184`，最大 `ownedSwapBytes=174768128`）。随后 worker-session-options Changed gate 已完成 `di-native-assembly-worker`/DI library compile-link、materialized selector 一次加三次重复、CodeGraph 复核及 Spec182 worker protocol 30/30；run-20 已让两个 Provider 均到达 `RUNNER_READY`，但 host guard 仍以 `RESOURCE_BOUNDARY:MemAvailable` 停止（最小 `availableBytes=1362620416`，最大 owned swap 为 `94552064`），cleanup=PASS，仍未得到 terminal/三轮闭环；同时暴露 launcher 每 0.2 秒整读多 MB Provider 日志的诊断开销。下一步只能在 T003 内限制该诊断读取并降低真实 worker 峰值后重新执行 immutable run；当前未启动 T004 或任何后续任务。
 旧→新：T001–T005不变；旧T008→T006、旧T009→T007、旧T010→T008、旧T011→T009、旧T006→T010、旧T007→T011。
 Batch ID/evidence路径保持原身份，历史提交/审计不改写；下表与正文使用新任务ID。
 T001、T002 的实现、C++ focused regression、compile-link 和只读静态复核已分别闭合；证据见
@@ -20,13 +20,30 @@ fixture 首边界已通过“prepare 前 binding + C++ pump”修复，`Prepared
 `docs/failure-log.md`。下一步只能在 T003 内用真实 Changed gate 覆盖该资源边界、静态复审后重跑；
 不能将 T003 计为 DONE，也不能跳过或并行推进后项。
 
+补充：bounded Provider-log tail 与 post-`RUNNER_READY` NFD large-data purge gate 的最终
+Python 定向回归为 88/88；其中已修复本轮 offset 后冲突 request identity 未立即 fail-closed
+以及两个测试夹具断言问题。该 gate 只证明 launcher 控制逻辑，不能替代真实两节点终态；T003
+仍为 PARTIAL。run-21 在 installed requester CLI/ABI contract 边界停止，已登记 raw evidence；
+已只安装匹配 build artifact 的 requester 与 DI shared library，并完成 hash/help/symbol/ldd
+预检；下一步使用新的 immutable run 验证真实链路。
+run-22 已观察到三轮 requester 与 Provider execution/terminal，但 launcher barrier 因旧轮次
+误判冲突且 READY tail scan 漏掉 purge 时机而失败；T003 仍为 PARTIAL，下一步只修复这两个
+当前 gate 边界，禁止进入 T004。修复后的 barrier/current-identity filter 与 incremental READY
+scan 已通过 88/88 Python gate；run-23 已完成真实三轮、purge、terminal 和 negative-parent，
+但 C++ oracle 因 round-zero 日志丢失 cache-mode preamble 而失败；下一步只修复该 evidence
+边界并运行新的 immutable run，仍禁止进入 T004。
+run-24 已重复完成三轮、purge、terminal 和 negative-parent，但多轮 C++ oracle 要求每个
+`requester-N.log` 都包含 run-scoped preamble；T003 仍 PARTIAL，下一步只修复 per-turn evidence
+视图并运行 run-25。
+round-zero preamble 保留修复及 split regression 已通过，相关 Python gate 为 89/89；immutable run-25 已完成三轮 requester、Provider execution/terminal、negative-parent 和 post-`RUNNER_READY` purge；C++ oracle 为 `CACHE_DIAGNOSTIC_PASS`，supervisor cleanup 为 PASS。该轮显式记录 `fullPathQualification=NOT_RUN`，且尚未执行 C++ 父进程/pipe 实时读取门；T003 仍为 PARTIAL，不解锁 T004。
+
 ## Execution Progress
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [T001 Phase timing](#t001-phase-timing) | DONE | — | [b190-01](evidence/b190-01.md)；216/216 compile-link，`Spec190Timing` C++ regression 3/3，静态复核 PASS；MiniNDN/Qwen/performance unobserved | 2026-09-22 04:33 -05:00 |
 | [T002 ACK window](#t002-ack-window) | DONE | T001 | [b190-02](evidence/b190-02.md)；Qwen 1000ms profile、非法值校验、C++ compile-link、Python 8/8、`Spec190AckWindow` 3/3、静态复核 PASS；真实两节点/Trust Schema签名验收未运行 | 2026-09-22 05:10 -05:00 |
-| [T003 Live turns](#t003-live-turns) | PARTIAL | T002 | [b190-03](evidence/b190-03.md)；实现/静态/full target compile-link PASS；group-progress focused selectors PASS；run-04 触发 ownedSwap，run-05 越过资源门但触发 stale group no-progress，run-07 在 ACK/Selection、Provider-0 RUNNER_READY 和 Provider-1 首次 fetch 后触发 MemAvailable 资源门；三轮 Qwen、terminal、负例和完整 cleanup 验收未闭合 | 2026-09-22 08:15 -05:00 |
+| [T003 Live turns](#t003-live-turns) | PARTIAL | T002 | [b190-03](evidence/b190-03.md)；实现/静态/受影响目标 compile-link PASS；focused C++ gates、Spec182 activation 9/9、worker protocol 30/30 已通过；run-04/07/14/16/18/19/20 的资源边界、run-05/11 的 group progress 边界、run-12/13/15/17 的 launcher 预检边界、run-21/22/23/24 的安装/barrier/oracle evidence 边界均已保留；run-25 完成三轮 requester、Provider execution/terminal、negative-parent、purge 和 C++ `CACHE_DIAGNOSTIC_PASS`，但 `fullPathQualification=NOT_RUN`，C++ 父进程/pipe 实时门仍未观测 | 2026-09-22 |
 | [T004 Finalize and drain](#t004-finalize-and-drain) | NOT_STARTED | T003 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 03:00 -05:00 |
 | [T005 Resident session](#t005-resident-session) | NOT_STARTED | T004 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 03:00 -05:00 |
 | [T006 Stage transfer](#t006-stage-transfer) | NOT_STARTED | T005 | actual bundle/wire字节与多发修复待做 | 2026-09-22 03:00 -05:00 |
