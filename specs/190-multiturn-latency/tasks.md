@@ -35,7 +35,7 @@ scan 已通过 88/88 Python gate；run-23 已完成真实三轮、purge、termin
 run-24 已重复完成三轮、purge、terminal 和 negative-parent，但多轮 C++ oracle 要求每个
 `requester-N.log` 都包含 run-scoped preamble；T003 仍 PARTIAL，下一步只修复 per-turn evidence
 视图并运行 run-25。
-round-zero preamble 保留修复及 split regression 已通过，相关 Python gate 为 89/89；immutable run-25 已完成三轮 requester、Provider execution/terminal、negative-parent 和 post-`RUNNER_READY` purge；C++ oracle 为 `CACHE_DIAGNOSTIC_PASS`，supervisor cleanup 为 PASS。该轮显式记录 `fullPathQualification=NOT_RUN`，且尚未执行 C++ 父进程/pipe 实时读取门；T003 仍为 PARTIAL，不解锁 T004。新增 run-26 在 MiniNDN 启动前发现固定 model-source cache payload 的 `0600` owner write bit，`MODEL_CANONICAL_SOURCE_NOT_IMMUTABLE` fail-closed；无协议结果，已保留 raw evidence，下一步只修复该 cache immutability 边界并以新 run 重试。
+round-zero preamble 保留修复及 split regression 已通过，相关 Python gate 为 89/89；immutable run-25 已完成三轮 requester、Provider execution/terminal、negative-parent 和 post-`RUNNER_READY` purge；C++ oracle 为 `CACHE_DIAGNOSTIC_PASS`，supervisor cleanup 为 PASS。该轮显式记录 `fullPathQualification=NOT_RUN`，且尚未执行 C++ 父进程/pipe 实时读取门；T003 仍为 PARTIAL，不解锁 T004。新增 run-26 在 MiniNDN 启动前发现固定 model-source cache payload 的 `0600` owner write bit，`MODEL_CANONICAL_SOURCE_NOT_IMMUTABLE` fail-closed；无协议结果，已保留 raw evidence。run-27 修复权限后真实 requester 三轮和 live markers 均出现，但未筛选的 Boost.Test driver 还执行 15 个无关 Spec185 测试并整体失败；T003 仍 PARTIAL，下一步只验证限定 Spec190 selector 的新 run。
 
 ## Execution Progress
 

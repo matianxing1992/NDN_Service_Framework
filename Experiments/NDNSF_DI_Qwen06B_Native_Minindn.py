@@ -15,7 +15,9 @@ streaming, and conversation checkpoints stay in the C++ executables.
 from __future__ import annotations
 
 import argparse
+import atexit
 import errno
+import fcntl
 import hashlib
 import json
 import math
@@ -27,7 +29,6 @@ import sqlite3
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -66,6 +67,8 @@ LARGE_DATA_DEFAULT_IMS_LIMIT = 50000
 LARGE_DATA_IMS_MARGIN_SEGMENTS = 8192
 LARGE_DATA_IMS_MAX_LIMIT = 1000000
 LARGE_MODEL_THRESHOLD_BYTES = 256 * 1024 * 1024
+ENCRYPTED_REPOSITORY_LEASE = ".ndnsf-di-encrypted-repo-lease.json"
+ENCRYPTED_REPOSITORY_STALE_AFTER_S = 10 * 60
 # MiniNDN-only bounded Content Store capacity.  The real Qwen Repo/fetch path
 # must not replicate multi-GiB canonical objects in every forwarder; eviction
 # remains allowed because the authenticated Repo is the source of truth.
@@ -77,6 +80,63 @@ MAX_STARTUP_TIMEOUT_S = 600.0
 MAX_ROUTING_WAIT_S = 120.0
 MAX_QWEN_ROUNDS = 8
 MAX_STAGE_COUNT = 32
+# Spec190 narrows only this Qwen multi-turn profile.  Core and other
+# profiles retain their existing defaults; the value is passed explicitly in
+# the generated native requester contract.
+DEFAULT_QWEN_ACK_TIMEOUT_MS = 1000
+# A normal operator run uses one bounded disposable workspace.  Durable
+# Spec189 evidence must pass --run-root explicitly; that path is never swept
+# by this launcher.  The model-source/assembled cache remains outside this
+# workspace and is intentionally reusable across runs.
+FIXED_WORK_ROOT = Path("/var/tmp/ndnsf-di-spec189")
+FIXED_NDNSF_DIRNAME = "ndnsf"
+FIXED_REPO_DIRNAME = "repo"
+FIXED_WORKSPACE_LOCK = ".active.lock"
+
+
+def prepare_fixed_workspace(work_root: Path) -> tuple[Path, Path, object]:
+    """Lock and reset only the fixed disposable MiniNDN workspace.
+
+    The returned file handle holds an advisory lock for the complete outer
+    supervisor lifetime.  Refuse a concurrent run before removing anything.
+    Only the named ``ndnsf`` and ``repo`` directories are disposable; the
+    cache root and explicitly supplied evidence roots are not in scope.
+    """
+    work_root = work_root.expanduser().resolve()
+    work_root.mkdir(parents=True, exist_ok=True)
+    work_root.chmod(0o700)
+    lock_path = work_root / FIXED_WORKSPACE_LOCK
+    lock = lock_path.open("a+")
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError) as exc:
+        lock.close()
+        raise RuntimeError(f"FIXED_WORKSPACE_BUSY:{work_root}") from exc
+
+    try:
+        disposable = []
+        for name in (FIXED_NDNSF_DIRNAME, FIXED_REPO_DIRNAME):
+            path = work_root / name
+            if path.is_symlink() or (path.exists() and not path.is_dir()):
+                raise RuntimeError(f"FIXED_WORKSPACE_ENTRY_INVALID:{path}")
+            if path.exists():
+                shutil.rmtree(path)
+            path.mkdir(mode=0o700)
+            disposable.append(path)
+        return disposable[0], disposable[1], lock
+    except Exception:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+        raise
+
+
+def release_fixed_workspace(lock: object | None) -> None:
+    if lock is None:
+        return
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock.close()
 
 
 def digest_bytes(value: bytes) -> str:
@@ -86,6 +146,74 @@ def digest_bytes(value: bytes) -> str:
 def provider_cache_namespace(provider: str) -> str:
     """Return a stable, filesystem-safe namespace for one Provider identity."""
     return "provider-" + hashlib.sha256(provider.encode("utf-8")).hexdigest()
+
+
+def model_source_cache_identity(model_name: str, model_manifest_digest: str,
+                                source_digest: str, graph_digest: str,
+                                initializer_digest: str | None,
+                                node_mapping_digest: str,
+                                tokenizer_digest: str) -> dict:
+    """Build the immutable identity for the cross-run canonical source Repo."""
+    return {
+        "schema": "ndnsf-di-model-source-cache-v1",
+        "modelName": model_name,
+        "modelManifestDigest": model_manifest_digest,
+        "sourceDigest": source_digest,
+        "graphDigest": graph_digest,
+        "initializerDigest": initializer_digest or "",
+        "nodeMappingDigest": node_mapping_digest,
+        "tokenizerDigest": tokenizer_digest,
+    }
+
+
+def resolve_model_source_repository(cache_root: Path, identity: dict) -> tuple[Path, str]:
+    """Return one system-wide, digest-namespaced canonical source Repo.
+
+    The Repo store is content addressed, so completed source/initializer
+    objects can be reused by later runs.  Keep the identity beside the store
+    and reject a namespace that was ever associated with another candidate;
+    no run-scoped model-sized copy is created here.
+    """
+    cache_root = cache_root.expanduser().resolve()
+    cache_namespace = digest_bytes(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    repository = cache_root / "model-source" / cache_namespace[len("sha256:"):]
+    repository.mkdir(parents=True, exist_ok=True)
+    repository.chmod(0o700)
+    marker = repository / "cache-identity.json"
+    encoded = json.dumps(identity, indent=2, sort_keys=True) + "\n"
+    if marker.exists():
+        try:
+            current = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("MODEL_SOURCE_CACHE_IDENTITY_UNREADABLE") from exc
+        if current != identity:
+            raise RuntimeError("MODEL_SOURCE_CACHE_IDENTITY_MISMATCH")
+    else:
+        partial = marker.with_name(marker.name + ".partial")
+        partial.write_text(encoded, encoding="utf-8")
+        partial.chmod(0o600)
+        os.replace(partial, marker)
+        marker.chmod(0o600)
+    return repository, cache_namespace
+
+
+def validate_model_source_repository(repository: Path, objects: list[tuple[str, int]]) -> bool:
+    """Validate completed content-addressed source objects without loading them."""
+    if not repository.is_dir():
+        return False
+    for expected_digest, expected_size in objects:
+        if not expected_digest.startswith("sha256:"):
+            raise RuntimeError("MODEL_SOURCE_CACHE_DIGEST_INVALID")
+        hex_digest = expected_digest[len("sha256:"):]
+        payload = repository / "payloads" / "sha256" / hex_digest[:2] / hex_digest
+        if not payload.is_file():
+            return False
+        if payload.stat().st_size != expected_size:
+            raise RuntimeError("MODEL_SOURCE_CACHE_SIZE_MISMATCH")
+        if digest_file(payload) != expected_digest:
+            raise RuntimeError("MODEL_SOURCE_CACHE_DIGEST_MISMATCH")
+    return True
 
 
 def digest_file(path: Path) -> str:
@@ -116,6 +244,37 @@ def preparation_cache_budget(max_source_bytes: int,
             PREPARATION_CACHE_SCRATCH_BYTES)
 
 
+def assembled_model_budget(stages: list[dict], source_bytes: int = 0,
+                           initializer_bytes: int = 0) -> int:
+    """Return the native-contract-aware per-role assembly ceiling.
+
+    Native canonical preparation first retains the complete material set, then
+    role assembly may hold selected payloads, the initializer copy, and two
+    protobuf/model serialization buffers at once.  Four times the largest
+    digest-verified stage is a conservative bound for that selected-role
+    working set; the complete source+initializer footprint covers preparation
+    manifest generation.  This avoids charging the complete initializer four
+    times to every role while still satisfying both native phases.
+    """
+    if not stages:
+        raise ValueError("at least one stage is required for an assembly budget")
+    if (not isinstance(source_bytes, int) or isinstance(source_bytes, bool) or
+            source_bytes < 0 or not isinstance(initializer_bytes, int) or
+            isinstance(initializer_bytes, bool) or initializer_bytes < 0):
+        raise ValueError("source and initializer byte sizes must be non-negative integers")
+    sizes = []
+    for stage in stages:
+        size = stage.get("bytes")
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            raise ValueError("stage byte sizes must be positive integers")
+        sizes.append(size)
+    largest_stage = max(sizes)
+    selected_role_working_set = 4 * largest_stage
+    complete_material_set = source_bytes + initializer_bytes
+    return (max(selected_role_working_set, complete_material_set) +
+            LOCAL_ASSEMBLY_DISK_MARGIN_BYTES)
+
+
 def large_data_ims_limit(source_bytes: int, initializer_bytes: int) -> int:
     """Reserve enough bounded IMS entries for this run's canonical objects.
 
@@ -140,9 +299,10 @@ def large_data_ims_limit(source_bytes: int, initializer_bytes: int) -> int:
 
 
 def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
-                         rounds: int = 2, stage_count: int = 3,
+                         rounds: int = 3, stage_count: int = 3,
                          startup_timeout_s: float = 60.0,
-                         routing_wait_s: float = 8.0) -> dict[str, int]:
+                         routing_wait_s: float = 8.0,
+                         ack_timeout_ms: int = DEFAULT_QWEN_ACK_TIMEOUT_MS) -> dict[str, int]:
     """Scale preparation/request deadlines only for genuinely large objects.
 
     The old 30-second bootstrap is suitable for small fixtures but expires
@@ -154,6 +314,8 @@ def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
             rounds > MAX_QWEN_ROUNDS or stage_count < 1 or
             stage_count > MAX_STAGE_COUNT):
         raise ValueError("Qwen runtime budget inputs are outside supported bounds")
+    if ack_timeout_ms <= 0:
+        raise ValueError("Qwen ACK window must be positive and smaller than the request deadline")
     if (not math.isfinite(startup_timeout_s) or not math.isfinite(routing_wait_s) or
             startup_timeout_s < 0 or routing_wait_s < 0 or
             startup_timeout_s > MAX_STARTUP_TIMEOUT_S or
@@ -162,28 +324,29 @@ def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
             "Qwen startup budgets must be finite and within the supported bounds")
     total = source_bytes + initializer_bytes
     if total >= LARGE_MODEL_THRESHOLD_BYTES:
-        bootstrap_ms, timeout_ms, ack_timeout_ms, no_progress_ms, policy_ms = (
-            600000, 900000, 60000, 180000, 60000)
+        bootstrap_ms, timeout_ms, no_progress_ms, policy_ms = (
+            600000, 900000, 180000, 60000)
         base_service_ms = 1200000
     else:
-        bootstrap_ms, timeout_ms, ack_timeout_ms, no_progress_ms, policy_ms = (
-            60000, 180000, 30000, 30000, 5000)
+        bootstrap_ms, timeout_ms, no_progress_ms, policy_ms = (
+            60000, 180000, 30000, 5000)
         base_service_ms = 300000
+    if ack_timeout_ms >= timeout_ms:
+        raise ValueError("Qwen ACK window must be positive and smaller than the request deadline")
     # The turn deadline is written before MiniNDN startup. It must cover the
     # worst-case startup markers, one preparation window, every configured
     # request round, and a bounded commit/cleanup margin. Provider and
     # Authority lifetimes use the same envelope so they cannot exit midway
     # through a later conversation round.
-    # Each fresh requester performs one synchronous Runtime.open/freeze phase
-    # and one User.prepare phase before submitting its request. Both phases
-    # are bounded by the same large-model bootstrap budget in the native
-    # preparation path, so account for both instead of killing a valid run at
-    # the first phase boundary.
-    per_round_bootstrap_ms = 2 * bootstrap_ms
-    process_timeout_s = (per_round_bootstrap_ms + timeout_ms + 120000 + 999) // 1000
+    # The requester is one process now: pay the synchronous Runtime.open/freeze
+    # and User.prepare cost once, then reserve one request deadline per turn.
+    # Do not retain the old per-process timeout, which could kill a valid later
+    # turn even though the overall lifecycle budget already covers all turns.
+    preparation_bootstrap_ms = 2 * bootstrap_ms
+    process_timeout_s = (preparation_bootstrap_ms + rounds * timeout_ms + 120000 + 999) // 1000
     startup_ms = int((routing_wait_s + startup_timeout_s * (2 + stage_count)) * 1000) + 999
-    per_round_ms = per_round_bootstrap_ms + timeout_ms
-    lifecycle_ms = startup_ms + rounds * per_round_ms + 120000
+    per_round_ms = timeout_ms
+    lifecycle_ms = startup_ms + preparation_bootstrap_ms + rounds * per_round_ms + 120000
     service_ms = max(base_service_ms, lifecycle_ms)
     # Keep the provider's complete post-Selection assembly budget explicit.
     # It is independently wired from the dependency/readiness/control budgets,
@@ -351,13 +514,82 @@ def resolve_encrypted_repository_path(run_root: Path, requested: Path | None) ->
         pass
     else:
         raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_MUST_BE_OUTSIDE_RUN_ROOT")
+    lease = path.parent / (path.name + ENCRYPTED_REPOSITORY_LEASE)
     if path.exists():
-        if not path.is_dir() or any(path.iterdir()):
+        if not path.is_dir():
             raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_NOT_EMPTY")
+        if any(path.iterdir()):
+            try:
+                metadata = json.loads(lease.read_text(encoding="utf-8"))
+                owner_pid = int(metadata["pid"])
+                owner_root = Path(metadata["runRoot"]).resolve()
+                lease_age = time.time() - lease.stat().st_mtime
+                try:
+                    os.kill(owner_pid, 0)
+                    owner_live = True
+                except OSError as error:
+                    owner_live = error.errno == errno.EPERM
+                if (metadata.get("schema") != "ndnsf-di-encrypted-repo-lease-v1" or
+                        owner_root != run_root.resolve() or owner_live or
+                        lease_age < ENCRYPTED_REPOSITORY_STALE_AFTER_S):
+                    raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_BUSY")
+                cleanup_encrypted_repository(path, run_root, require_lease=True)
+            except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                raise RuntimeError("ENCRYPTED_REPOSITORY_PATH_NOT_EMPTY")
+        elif lease.exists():
+            lease.unlink()
     else:
         path.mkdir(parents=True, exist_ok=False)
     path.chmod(0o700)
+    if requested is not None:
+        lease.write_text(json.dumps({
+            "schema": "ndnsf-di-encrypted-repo-lease-v1",
+            "pid": os.getpid(),
+            "runRoot": str(run_root.resolve()),
+        }, sort_keys=True) + "\n", encoding="utf-8")
+        lease.chmod(0o600)
     return path
+
+
+def cleanup_encrypted_repository(path: Path, run_root: Path,
+                                 require_lease: bool = False) -> bool:
+    """Remove only this run's encrypted Repo payloads, preserving evidence.
+
+    ``run_root`` itself is never removed.  An external directory is eligible
+    only when its sibling lease belongs to this run; this prevents a failed
+    launcher from cleaning another run's ciphertext or the system-wide source
+    cache.  The operation is idempotent so an atexit callback and ``finally``
+    can safely cover the same failure.
+    """
+    path = path.expanduser().resolve()
+    run_root = run_root.expanduser().resolve()
+    default = (run_root / "requester/encrypted-repo").resolve()
+    if path == default:
+        eligible = True
+    else:
+        lease = path.parent / (path.name + ENCRYPTED_REPOSITORY_LEASE)
+        try:
+            metadata = json.loads(lease.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        eligible = (metadata.get("schema") == "ndnsf-di-encrypted-repo-lease-v1" and
+                    Path(metadata.get("runRoot", "")).resolve() == run_root and
+                    int(metadata.get("pid", -1)) == os.getpid())
+        if require_lease and not eligible:
+            return False
+    if not eligible or not path.is_dir():
+        return False
+    removed = False
+    for child in list(path.iterdir()):
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink(missing_ok=True)
+        removed = True
+    if path != default:
+        path.rmdir()
+        lease.unlink(missing_ok=True)
+    return removed or not path.exists()
 
 
 def require_file_digest(path: Path, expected_digest: str | None, label: str) -> str:
@@ -381,16 +613,13 @@ def canonical_source_graph_digest(path: Path) -> str:
     calculation in the maintained ONNX identity helper also avoids silently
     reusing the planner digest for a different identity domain.
     """
-    package_root = ROOT / "NDNSF-DistributedInference"
-    if str(package_root) not in sys.path:
-        sys.path.insert(0, str(package_root))
     try:
         from ndnsf_distributed_inference.adapters.onnx.graph import (  # type: ignore
             canonical_onnx_identity,
         )
     except ImportError as exc:
         raise RuntimeError(
-            "Qwen canonical source identity requires the maintained ONNX oracle"
+            "Qwen canonical source identity requires the installed NDNSF ONNX adapter"
         ) from exc
     return canonical_onnx_identity(path).graph_digest
 
@@ -646,9 +875,9 @@ def env_for(home: Path, node: str) -> dict[str, str]:
            "NDN_CLIENT_TPM": "tpm-file:" + str(home / "tpm"),
            "NDN_CLIENT_TRANSPORT": f"unix:///run/nfd/{node}.sock",
            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
-    diagnostic_log = os.environ.get("NDNSF_NDN_LOG", "")
-    if diagnostic_log:
-        env["NDN_LOG"] = diagnostic_log
+    # Required RuntimeEvidence stage/terminal records use WARN. Without a
+    # default, the failure monitor cannot see native request failures.
+    env["NDN_LOG"] = os.environ.get("NDNSF_NDN_LOG") or "*=WARN"
     stream_diagnostic = os.environ.get("NDNSF_STREAM_GRANT_DIAGNOSTIC", "")
     if stream_diagnostic:
         env["NDNSF_STREAM_GRANT_DIAGNOSTIC"] = stream_diagnostic
@@ -717,6 +946,160 @@ def wait_for_marker(process, log: Path, markers: tuple[str, ...], timeout: float
     raise RuntimeError(f"timeout waiting for {markers}: {log}")
 
 
+def _read_log_tail(log: Path, max_bytes: int = 256 * 1024) -> str:
+    """Read only the bounded tail needed for a terminal marker scan."""
+    if not log.exists():
+        return ""
+    with log.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(max(0, size - max_bytes), os.SEEK_SET)
+        return stream.read(max_bytes).decode(errors="replace")
+
+
+def provider_terminal_failure(provider_logs: list[Path]) -> str | None:
+    """Return the first request-time Provider failure observed in a log."""
+    markers = (
+        "NDNSF_DI_PROVIDER_STAGE stage=TERMINAL status=failed",
+        "NDNSF_DI_NATIVE_FAILURE ",
+    )
+    for log in provider_logs:
+        if not log.exists():
+            continue
+        text = _read_log_tail(log)
+        for line in reversed(text.splitlines()):
+            if any(marker in line for marker in markers):
+                return f"{log}: {line.strip()}"
+    return None
+
+
+def provider_runners_ready(provider_logs: list[Path], scan_state: dict | None = None) -> bool:
+    """Return true after incrementally observing every selected Provider's runner marker."""
+    marker = b"NDNSF_DI_PROVIDER_STAGE stage=RUNNER_READY status=observed"
+    state = scan_state if scan_state is not None else {}
+    for log in provider_logs:
+        entry = state.setdefault(log, {"offset": 0, "pending": b"", "ready": False})
+        if entry["ready"]:
+            continue
+        if not log.exists():
+            return False
+        with log.open("rb") as stream:
+            stat = os.fstat(stream.fileno())
+            if stat.st_size < entry["offset"]:
+                entry.update(offset=0, pending=b"")
+            stream.seek(entry["offset"])
+            raw = stream.read()
+        data = entry["pending"] + raw
+        entry["offset"] += len(raw)
+        if marker in data:
+            entry["ready"] = True
+        else:
+            entry["pending"] = data[-(len(marker) - 1):]
+    return bool(provider_logs) and all(state.get(log, {}).get("ready", False)
+                                       for log in provider_logs)
+
+
+def purge_minindn_large_data_cache(nodes, run_root: Path) -> None:
+    """Evict model/preparation Data from MiniNDN CS after runner activation.
+
+    The authenticated Repo remains the source of truth.  This only removes
+    transient forwarder copies after every selected Provider has reached
+    ``RUNNER_READY``; execution data and certificates use different prefixes.
+    Keeping the large-data fetch window bounded avoids retaining one model
+    working set in every NFD while the requester begins its first turn.
+    """
+    prefixes = (MODEL_URI, USER + "/NDNSF/LARGE-DATA")
+    records = []
+    for node in nodes:
+        for prefix in prefixes:
+            command = (
+                "timeout --signal=TERM 15s nfdc cs erase "
+                f"{shlex.quote(prefix)} >/dev/null 2>&1; rc=$?; "
+                "printf 'NDNSF_CS_ERASE_RC=%s\\n' \"$rc\""
+            )
+            output = node.cmd(command)
+            marker = "NDNSF_CS_ERASE_RC="
+            values = [line.rsplit("=", 1)[-1].strip()
+                      for line in output.splitlines() if marker in line]
+            if values != ["0"]:
+                raise RuntimeError(
+                    f"MiniNDN NFD CS purge failed on {node.name} for {prefix}: {output!r}")
+            records.append({"node": node.name, "prefix": prefix, "returncode": 0})
+    (run_root / "ndn-cache-purge.json").write_text(
+        json.dumps({"schema": "ndnsf-minindn-large-data-cache-purge-v1",
+                    "trigger": "all-providers-runner-ready",
+                    "records": records}, indent=2, sort_keys=True) + "\n")
+    print("NDNSF_MININDN_LARGE_DATA_CACHE_PURGED " +
+          json.dumps({"nodes": len(nodes), "prefixes": list(prefixes)}, sort_keys=True),
+          flush=True)
+
+
+def wait_for_native_round(process, request_log: Path,
+                          provider_logs: list[Path], timeout: float,
+                          on_all_providers_ready=None) -> str:
+    """Wait for a request while aborting promptly after Provider failure.
+
+    A requester can remain alive while the selected Provider has already
+    emitted a terminal failure. Polling only ``wait()`` would retain every
+    MiniNDN process until the large-model timeout and delay finally cleanup.
+    """
+    deadline = time.monotonic() + timeout
+    runners_ready_handled = False
+    runner_scan_state = {}
+    while time.monotonic() < deadline:
+        # A success marker precedes process exit. Reap before accepting the
+        # round, and read the log after poll so an exited process's final
+        # flushed markers cannot be missed by an earlier read.
+        returncode = process.poll()
+        text = request_log.read_text(errors="replace") if request_log.exists() else ""
+        failure = provider_terminal_failure(provider_logs)
+        if failure:
+            raise RuntimeError(
+                f"native request aborted after Provider terminal failure: {failure}")
+        if (not runners_ready_handled and on_all_providers_ready is not None and
+                provider_runners_ready(provider_logs, runner_scan_state)):
+            on_all_providers_ready()
+            runners_ready_handled = True
+        if returncode is not None:
+            return text
+        time.sleep(0.2)
+    raise RuntimeError(f"timeout waiting for native request: {request_log}")
+
+
+def split_native_turn_logs(text: str, rounds: int) -> list[str]:
+    """Split one native requester log into immutable per-turn oracle views."""
+    lines = text.splitlines(keepends=True)
+    starts = []
+    for index, line in enumerate(lines):
+        marker = "NATIVE_CONVERSATION_TURN_START index="
+        if marker not in line:
+            continue
+        prefix, value = line.split(marker, 1)
+        try:
+            turn = int(value.split()[0])
+        except (ValueError, IndexError) as exc:
+            raise RuntimeError("native requester turn-start marker is malformed") from exc
+        if prefix or turn != len(starts):
+            raise RuntimeError("native requester turn-start markers are not ordered")
+        starts.append(index)
+    if len(starts) != rounds:
+        raise RuntimeError("native requester turn count does not match configuration")
+    preamble = "".join(lines[:starts[0]])
+    result = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
+        chunk = "".join(lines[start:end])
+        # The C++ oracle opens each per-turn file as an independent view. Keep
+        # run-scoped declarations (for example cache mode) in every view, not
+        # only in the physical first log.
+        chunk = preamble + chunk
+        if chunk.count("NATIVE_CONVERSATION_TURN_COMPLETE") != 1 or \
+                chunk.count("NATIVE_REQUEST_SUCCEEDED") != 1:
+            raise RuntimeError("native requester turn is missing one terminal success")
+        result.append(chunk)
+    return result
+
+
 def validate_native_output(path: Path) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -730,6 +1113,200 @@ def validate_native_output(path: Path) -> dict:
     if any(not isinstance(item, int) for item in token_ids):
         raise RuntimeError(f"native output token IDs are not integers: {path}")
     return {"tokenCount": len(token_ids), "tokenIds": token_ids}
+
+
+def run_cpp_oracle(binary: Path, run_root: Path, cache_compatibility: bool,
+                   timeout: float, require_multi_token: bool = False, rounds: int = 1) -> dict:
+    """Keep the explicit cache diagnostic distinct from full-path evidence."""
+    arguments = [str(binary)]
+    if cache_compatibility:
+        arguments.append("--cache-compatibility")
+    if require_multi_token:
+        arguments.append("--require-multi-token")
+    if rounds != 1:
+        arguments.extend(["--rounds", str(rounds)])
+    arguments.extend(["--run-root", str(run_root)])
+    marker = ("SPEC189_CPP_CACHE_DIAGNOSTIC_PASS" if cache_compatibility
+              else "SPEC189_CPP_ORACLE_PASS")
+    log = run_root / "spec189-cpp-oracle.log"
+    with log.open("w") as handle:
+        result = subprocess.run(arguments, cwd=str(ROOT), stdout=handle,
+                                stderr=subprocess.STDOUT, text=True,
+                                timeout=timeout, check=False)
+    output = log.read_text(errors="replace")
+    if (result.returncode != 0 or
+            not any(line.startswith(marker + " ") for line in output.splitlines())):
+        raise RuntimeError(f"SPEC189_CPP_ORACLE_FAIL rc={result.returncode}: {log}")
+    return {"binary": str(binary), "log": str(log), "returncode": result.returncode,
+            "scope": "cache-compatible-execution" if cache_compatibility else "full-path",
+            "status": "CACHE_DIAGNOSTIC_PASS" if cache_compatibility else "PASS"}
+
+
+def continuation_config(first_config: dict, round_index: int, delta_ids: list[int]) -> dict:
+    """Wire each requester to its immediate parent; native code owns validation."""
+    if not 1 <= round_index < MAX_QWEN_ROUNDS:
+        raise ValueError("continuation round must be between 1 and 7")
+    cfg = json.loads(json.dumps(first_config))
+    cfg["request"]["options_file"] = f"options-{round_index}.json"
+    parent = ("conversation-state.json" if round_index == 1
+              else f"conversation-state-{round_index - 1}.json")
+    cfg["conversation"]["turn"] = {
+        "mode": "APPEND_DELTA", "generation_id": f"{round_index:032x}",
+        "parent_state_file": parent, "delta_token_ids": list(delta_ids)}
+    cfg["conversation"]["checkpoint_output_file"] = f"conversation-state-{round_index}.json"
+    return cfg
+
+
+def continuation_options(first_options: dict, round_index: int) -> dict:
+    """Preserve the model-specific KV and position contract across turns."""
+    if not 1 <= round_index < MAX_QWEN_ROUNDS:
+        raise ValueError("continuation round must be between 1 and 7")
+    options = json.loads(json.dumps(first_options))
+    options["generationId"] = f"{round_index:032x}"
+    options["sampling"]["seed"] = 18406 + round_index
+    return options
+
+
+def snapshot_provider_logs(provider_logs: list[Path]) -> dict:
+    """Freeze the byte boundary before launching a round; never reuse old lines."""
+    result = {}
+    for path in provider_logs:
+        with path.open("rb") as stream:
+            stat = os.fstat(stream.fileno())
+            partial = False
+            if stat.st_size:
+                stream.seek(stat.st_size - 1)
+                partial = stream.read(1) != b"\n"
+            result[path] = (stat.st_dev, stat.st_ino, stat.st_size, partial)
+    return result
+
+
+def _round_fields(line: str, marker: str) -> dict | None:
+    prefix, found, payload = line.partition(marker + " ")
+    if not found:
+        if marker in line.split():
+            raise RuntimeError("Provider barrier malformed marker line")
+        return None
+    if marker in prefix or marker in payload:
+        raise RuntimeError("Provider barrier conflicting marker line")
+    fields = {}
+    for token in payload.split():
+        key, equal, value = token.partition("=")
+        if equal:
+            if key in fields:
+                raise RuntimeError("Provider barrier malformed/conflicting fields")
+            fields[key] = value
+    return fields
+
+
+def wait_for_provider_round_barrier(request_text: str, provider_offsets: dict,
+                                    placement: dict, tail_role: str,
+                                    deadline: float) -> dict:
+    """Observe finalization only; stopped is NOT a behavior/qualification PASS.
+
+    placement maps each log to its expected (provider, role). The caller owns
+    requester exit/checkpoint validation and the unchanged C++ oracle.
+    """
+    if (set(provider_offsets) != set(placement) or not placement or
+            len({pair[1] for pair in placement.values()}) != len(placement) or
+            sum(pair[1] == tail_role for pair in placement.values()) != 1):
+        raise RuntimeError("Provider barrier invalid placement")
+    success, committed = [], []
+    for line in request_text.splitlines(keepends=True):
+        if not line.endswith("\n"):
+            continue
+        for marker, records in (("NATIVE_REQUEST_SUCCEEDED", success),
+                                ("NDNSF_DI_NATIVE_SELECTION_COMMITTED", committed)):
+            fields = _round_fields(line, marker)
+            if fields is not None:
+                records.append(fields)
+    if len(success) != 1 or len(committed) != 1:
+        raise RuntimeError("Provider barrier missing/conflicting requester identity")
+    selected = committed[0]
+    identity = {key: selected.get(key, "")
+                for key in ("requestId", "planDigest", "attemptEpoch")}
+    if (not all(identity.values()) or not identity["attemptEpoch"].isdigit() or
+            int(identity["attemptEpoch"]) <= 0 or
+            success[0].get("request") != identity["requestId"] or
+            success[0].get("plan") != identity["planDigest"]):
+        raise RuntimeError("Provider barrier requester/Selection identity mismatch")
+    while True:
+        logs = {}
+        for path, (device, inode, offset, partial) in provider_offsets.items():
+            with path.open("rb") as stream:
+                stat = os.fstat(stream.fileno())
+                if (stat.st_dev, stat.st_ino) != (device, inode) or stat.st_size < offset:
+                    raise RuntimeError("Provider barrier log replaced/truncated")
+                stream.seek(offset)
+                raw = stream.read()
+            if partial:
+                raw = raw.partition(b"\n")[2]
+            logs[path] = raw[:raw.rfind(b"\n") + 1].decode("utf-8", errors="strict").splitlines()
+        # Scan every Provider before accepting any completion; failures win.
+        for lines in logs.values():
+            for line in lines:
+                if ("NDNSF_DI_NATIVE_FAILURE " in line or
+                        ("NDNSF_DI_PROVIDER_STAGE " in line and
+                         "status=failed" in line.split())):
+                    raise RuntimeError("Provider barrier terminal failure: " + line)
+        observations = {}
+        for path, lines in logs.items():
+            provider, role = placement[path]
+            accepted = False
+            completed = None
+            terminal = False
+            mismatched_identity = False
+            for line in lines:
+                selection = _round_fields(line, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED")
+                stage = _round_fields(line, "NDNSF_DI_PROVIDER_STAGE")
+                fields = selection if selection is not None else stage
+                if fields is None:
+                    continue  # Generic execution-completed markers are insufficient.
+                # The byte offset excludes completed earlier turns.  Any
+                # identity-bearing line appended after that boundary belongs
+                # to this barrier and must fail closed if it names another
+                # request; silently treating it as an old turn can hide a
+                # cross-turn completion.
+                if fields.get("requestId") and fields.get("requestId") != identity["requestId"]:
+                    mismatched_identity = True
+                    continue
+                # Intermediate stages (notably feedback DEPENDENCY_FETCH) may
+                # legitimately omit a plan digest. Their semantics belong to
+                # the native oracle; failures were already checked globally.
+                if selection is None and fields.get("stage") not in ("EXECUTION_COMPLETED", "TERMINAL"):
+                    continue
+                if (any(fields.get(key) != value for key, value in identity.items()) or
+                        not fields.get("provider") or not fields.get("role") or
+                        fields.get("provider") != provider or fields.get("role") != role):
+                    raise RuntimeError("Provider barrier conflicting Provider identity: " + line)
+                if selection is not None:
+                    if accepted:
+                        raise RuntimeError("Provider barrier duplicate Selection")
+                    accepted = True
+                    continue
+                if not accepted:
+                    raise RuntimeError("Provider barrier completion before Selection")
+                status = fields.get("status")
+                if fields["stage"] == "EXECUTION_COMPLETED":
+                    if completed is not None or status not in ("observed", "stopped"):
+                        raise RuntimeError("Provider barrier conflicting completion")
+                    if role == tail_role and status != "observed":
+                        raise RuntimeError("Provider barrier tail stopped")
+                    completed = status
+                else:
+                    if role != tail_role or completed != "observed" or terminal or status != "observed":
+                        raise RuntimeError("Provider barrier conflicting/out-of-order terminal")
+                    terminal = True
+            if mismatched_identity and not accepted:
+                raise RuntimeError("Provider barrier conflicting Provider identity")
+            if completed is not None and (role != tail_role or terminal):
+                observations[role] = {"provider": provider, "completionStatus": completed,
+                                      "terminalObserved": terminal}
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Provider barrier timeout waiting for Provider round finalization")
+        if len(observations) == len(placement):
+            return {"observation": "finalization-only", **identity, "roles": observations}
+        time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
 
 
 def main(argv=None, *, _supervised=False) -> int:
@@ -756,7 +1333,8 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--topology", type=Path, default=ROOT / "Experiments/Topology/AI_Lab.conf")
     parser.add_argument("--topology-sha256", default=None)
     parser.add_argument("--tokenizer-sha256", default=None)
-    parser.add_argument("--stage-nodes", default="ucla,arizona,wustl")
+    parser.add_argument("--stage-nodes", default="ucla,arizona",
+                        help="execution nodes in stage order; defaults to the two-provider Qwen profile")
     parser.add_argument("--controller-node", default="memphis")
     parser.add_argument("--user-node", default="neu")
     parser.add_argument("--build", type=Path, default=ROOT / "build-spec184-b5-candidate-r4")
@@ -767,26 +1345,40 @@ def main(argv=None, *, _supervised=False) -> int:
                         help="installed NativeArtifactAuthority executable")
     parser.add_argument("--requester-binary", type=Path, default=None,
                         help="installed NativeRequester executable")
+    parser.add_argument("--requester-driver-binary", type=Path, default=None,
+                        help="optional C++ parent/pipe driver that launches the real requester")
     parser.add_argument("--provider-binary", type=Path, default=None,
                         help="installed native Provider executable")
     parser.add_argument("--assembly-worker-binary", type=Path, default=None,
                         help="installed native ONNX assembly worker executable")
     parser.add_argument("--authority-binary-sha256", default=None)
     parser.add_argument("--requester-binary-sha256", default=None)
+    parser.add_argument("--requester-driver-binary-sha256", default=None)
     parser.add_argument("--provider-binary-sha256", default=None)
     parser.add_argument("--assembly-worker-binary-sha256", default=None)
     parser.add_argument("--oracle-binary", type=Path, default=None,
                         help="Spec189 C++ full-path oracle executable")
     parser.add_argument("--oracle-binary-sha256", default=None)
+    parser.add_argument(
+        "--fixed-work-root", type=Path, default=FIXED_WORK_ROOT,
+        help="disposable fixed workspace; explicit --run-root remains durable evidence")
     parser.add_argument("--run-root", type=Path, default=None)
     parser.add_argument(
         "--artifact-cache-root", type=Path,
         default=Path("/var/tmp/ndnsf-di-native-artifacts"),
         help="stable host cache root; provider subdirectories are derived from the provider identity")
+    parser.add_argument(
+        "--cache-compatibility-mode", action="store_true",
+        help="diagnostic mode: after authenticated Selection, Providers read the verified system-wide source cache and skip Repo material fetch")
     parser.add_argument("--encrypted-repository-path", type=Path, default=None,
                         help="optional empty run-scoped ciphertext Repo directory on a separate filesystem")
-    parser.add_argument("--rounds", type=int, default=2)
+    parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--ack-timeout-ms", type=int,
+                        default=DEFAULT_QWEN_ACK_TIMEOUT_MS,
+                        help="Qwen ACK collection window; default is the Spec190 1000ms profile")
     parser.add_argument("--max-new-tokens", type=int, default=2)
+    parser.add_argument("--require-multi-token", action="store_true",
+                        help="require native multi-token output ending at EOS or the token budget")
     parser.add_argument("--input-token-ids", default="")
     parser.add_argument("--delta-token-ids", default="0")
     parser.add_argument("--negative-parent", action="store_true")
@@ -821,13 +1413,22 @@ def main(argv=None, *, _supervised=False) -> int:
         USER = APP_ROOT + "/user"
     limits = validate_limits(json.loads(args.resource_limits_json))
     if not _supervised:
-        run_root = (args.run_root.expanduser().resolve() if args.run_root else
-                    Path(tempfile.mkdtemp(prefix="ndnsf-qwen06b-minindn-", dir="/tmp")))
-        run_root.mkdir(parents=True, exist_ok=True)
-        run_root.chmod(0o700)
+        workspace_lock = None
+        if args.run_root is None:
+            run_root, fixed_repo_root, workspace_lock = prepare_fixed_workspace(
+                args.fixed_work_root)
+        else:
+            run_root = args.run_root.expanduser().resolve()
+            fixed_repo_root = None
+            run_root.mkdir(parents=True, exist_ok=True)
+            run_root.chmod(0o700)
         worker_args = list(sys.argv[1:] if argv is None else argv)
         if args.run_root is None:
             worker_args.extend(["--run-root", str(run_root)])
+            if (not args.cache_compatibility_mode and
+                    args.encrypted_repository_path is None):
+                worker_args.extend(["--encrypted-repository-path",
+                                    str(fixed_repo_root / "encrypted-repo")])
         # Internal worker entry has no public bypass switch. The outer process
         # owns resource admission before model hashing/materialization begins.
         worker = [sys.executable, "-c",
@@ -836,30 +1437,35 @@ def main(argv=None, *, _supervised=False) -> int:
                   "raise SystemExit(scope['main'](_supervised=True))",
                   str(Path(__file__).resolve()), *worker_args]
         try:
-            receipt_fd = os.open(run_root / "supervisor.json",
-                                 os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            print("NATIVE_HOST_GUARD_STOP " + json.dumps({
-                "boundary": "EVIDENCE_CONFLICT", "cleanup": "NOT_STARTED",
-                "returncode": None, "remainingProcesses": []}, sort_keys=True))
-            return 1
-        with os.fdopen(receipt_fd, "w", encoding="utf-8") as receipt:
-            result = run_guarded(worker, cwd=ROOT, stdout=None,
-                                 sample_path=run_root / "resource-samples.jsonl", limits=limits)
-            json.dump(result, receipt, sort_keys=True, indent=2)
-            receipt.write("\n")
-        if result["boundary"] or result["cleanup"] != "PASS":
-            print("NATIVE_HOST_GUARD_STOP " + json.dumps(result, sort_keys=True))
-            return 1
-        return result["returncode"] if result["returncode"] is not None else 1
+            try:
+                receipt_fd = os.open(run_root / "supervisor.json",
+                                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                print("NATIVE_HOST_GUARD_STOP " + json.dumps({
+                    "boundary": "EVIDENCE_CONFLICT", "cleanup": "NOT_STARTED",
+                    "returncode": None, "remainingProcesses": []}, sort_keys=True))
+                return 1
+            with os.fdopen(receipt_fd, "w", encoding="utf-8") as receipt:
+                result = run_guarded(worker, cwd=ROOT, stdout=None,
+                                     sample_path=run_root / "resource-samples.jsonl", limits=limits)
+                json.dump(result, receipt, sort_keys=True, indent=2)
+                receipt.write("\n")
+            if result["boundary"] or result["cleanup"] != "PASS":
+                print("NATIVE_HOST_GUARD_STOP " + json.dumps(result, sort_keys=True))
+                return 1
+            return result["returncode"] if result["returncode"] is not None else 1
+        finally:
+            release_fixed_workspace(workspace_lock)
     if os.geteuid() != 0:
         raise SystemExit("MININDN_REQUIRES_ROOT: run this script with sudo -E")
     if args.rounds < 1 or args.rounds > 8:
         raise SystemExit("--rounds must be between 1 and 8")
     if args.negative_parent and args.rounds < 2:
         raise SystemExit("--negative-parent requires --rounds >= 2")
-    if args.max_new_tokens < 1 or args.max_new_tokens > 64:
-        raise SystemExit("--max-new-tokens must be between 1 and 64")
+    if args.max_new_tokens < 1 or args.max_new_tokens > 1024:
+        raise SystemExit("--max-new-tokens must be between 1 and 1024")
+    if args.require_multi_token and args.max_new_tokens < 2:
+        raise SystemExit("--require-multi-token requires at least two output tokens")
     stage_manifest_path = args.stage_manifest.expanduser().resolve()
     require_file_digest(stage_manifest_path, args.stage_manifest_sha256, "MODEL_STAGE_MANIFEST")
     model_manifest, stages = load_stage_manifest(stage_manifest_path, args.stage_root)
@@ -904,6 +1510,8 @@ def main(argv=None, *, _supervised=False) -> int:
     requester_binary = (args.requester_binary.expanduser().resolve()
                         if args.requester_binary is not None
                         else (build / "examples/DI_NativeRequester").resolve())
+    requester_driver_binary = (args.requester_driver_binary.expanduser().resolve()
+                               if args.requester_driver_binary is not None else None)
     provider_binary = (args.provider_binary.expanduser().resolve()
                        if args.provider_binary is not None
                        else (build / "examples/di-native-provider").resolve())
@@ -919,25 +1527,22 @@ def main(argv=None, *, _supervised=False) -> int:
     # repeated immediately before child launch below as a TOCTOU fence, but a
     # failed preflight must not first create a model-sized transient copy.
     require_file_digest(receipt, args.build_receipt_sha256, "BUILD_RECEIPT")
-    for path, expected, label in (
+    binary_checks = [
         (args.controller_binary, args.controller_binary_sha256, "CONTROLLER_BINARY"),
         (authority_binary, args.authority_binary_sha256, "AUTHORITY_BINARY"),
         (requester_binary, args.requester_binary_sha256, "REQUESTER_BINARY"),
         (provider_binary, args.provider_binary_sha256, "PROVIDER_BINARY"),
         (assembly_worker_binary, args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
         (oracle_binary, args.oracle_binary_sha256, "SPEC189_ORACLE_BINARY"),
-    ):
+    ]
+    if requester_driver_binary is not None:
+        binary_checks.append((requester_driver_binary, args.requester_driver_binary_sha256,
+                              "REQUESTER_DRIVER_BINARY"))
+    for path, expected, label in binary_checks:
         require_file_digest(path, expected, label)
     if args.build_receipt_sha256:
         require_file_digest(receipt, args.build_receipt_sha256, "BUILD_RECEIPT")
-    for path, expected, label in (
-        (args.controller_binary, args.controller_binary_sha256, "CONTROLLER_BINARY"),
-        (authority_binary, args.authority_binary_sha256, "AUTHORITY_BINARY"),
-        (requester_binary, args.requester_binary_sha256, "REQUESTER_BINARY"),
-        (provider_binary, args.provider_binary_sha256, "PROVIDER_BINARY"),
-        (assembly_worker_binary, args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
-        (oracle_binary, args.oracle_binary_sha256, "SPEC189_ORACLE_BINARY"),
-    ):
+    for path, expected, label in binary_checks:
         require_file_digest(path, expected, label)
     revision = str(model_manifest.get("modelRevision", ""))
     model_name = args.model_name or str(model_manifest.get("model", ""))
@@ -1023,10 +1628,9 @@ def main(argv=None, *, _supervised=False) -> int:
         if canonical_initializer_input.stat().st_size == 0:
             raise SystemExit("MODEL_CANONICAL_INITIALIZER_SIZE_INVALID")
     if args.run_root is None:
-        run_root = Path(tempfile.mkdtemp(prefix="ndnsf-qwen06b-minindn-", dir="/tmp"))
-    else:
-        run_root = args.run_root.expanduser().resolve()
-        run_root.mkdir(parents=True, exist_ok=True)
+        raise SystemExit("RUN_ROOT_REQUIRED_INTERNAL")
+    run_root = args.run_root.expanduser().resolve()
+    run_root.mkdir(parents=True, exist_ok=True)
     run_root.chmod(0o700)
     artifact_cache_root = args.artifact_cache_root.expanduser().resolve()
     if artifact_cache_root == run_root or run_root in artifact_cache_root.parents:
@@ -1063,6 +1667,26 @@ def main(argv=None, *, _supervised=False) -> int:
     # this copied source object, so compute it only after the initializer has
     # been materialized in the same requester directory.
     canonical_source_digest = canonical_source_graph_digest(source_path)
+    source_cache_identity = model_source_cache_identity(
+        model_name, manifest_digest,
+        source_digest, canonical_source_digest, initializer_digest,
+        mapping_digest, tokenizer_digest)
+    model_source_repository, source_cache_namespace = resolve_model_source_repository(
+        artifact_cache_root, source_cache_identity)
+    source_cache_objects = [(source_digest, source_path.stat().st_size)]
+    if initializer_digest:
+        source_cache_objects.append(
+            (initializer_digest, initializer_path.stat().st_size))
+    source_cache_hit = validate_model_source_repository(
+        model_source_repository, source_cache_objects)
+    if args.cache_compatibility_mode and not source_cache_hit:
+        raise SystemExit("MODEL_SOURCE_CACHE_REQUIRED_FOR_COMPATIBILITY_MODE")
+    print("MODEL_SOURCE_CACHE " + json.dumps({
+        "namespace": source_cache_namespace,
+        "path": str(model_source_repository),
+        "hashesVerified": source_cache_hit,
+        "objects": len(source_cache_objects),
+    }, sort_keys=True), flush=True)
     stage_plan, service_manifest = stage_plan_and_manifest(
         run_root, model_manifest, stages, args.max_new_tokens, tokenizer_digest)
     provider_names = [f"{APP_ROOT}/provider-{index}" for index in range(len(stages))]
@@ -1077,28 +1701,30 @@ def main(argv=None, *, _supervised=False) -> int:
         canonical_initializer_input.stat().st_size
         if canonical_initializer_input is not None else 0,
     ) + 64 * 1024 * 1024
-    # NativeCanonicalOnnxRecipeAssembler bounds the initializer materialization
-    # peak as retained selected material + the raw initializer + two final-model
-    # upper bounds.  Use source/initializer sizes as conservative upper bounds
-    # for those terms; the old final-model-only value rejected the real Qwen
-    # candidate after all selected material had already been authenticated.
-    source_bytes_for_budget = canonical_source_input.stat().st_size
-    initializer_bytes_for_budget = (canonical_initializer_input.stat().st_size
-                                    if canonical_initializer_input is not None else 0)
-    max_assembled_bytes = (3 * source_bytes_for_budget +
-                           4 * initializer_bytes_for_budget +
-                           64 * 1024 * 1024)
-    max_prepared_bytes = preparation_cache_budget(
-        max_source_bytes, max_assembled_bytes)
     canonical_source_bytes = canonical_source_input.stat().st_size
     canonical_initializer_bytes = (canonical_initializer_input.stat().st_size
                                    if canonical_initializer_input is not None else 0)
+    # This is a per-role output ceiling.  Do not charge the complete external
+    # initializer to every Provider's assembled layer: that inflated the
+    # preparation reservation to 9 GiB for the 0.6B candidate and encouraged
+    # the host to swap.  The canonical source/initializer remain separately
+    # bounded by max_source_bytes.
+    max_assembled_bytes = assembled_model_budget(
+        stages, canonical_source_input.stat().st_size, canonical_initializer_bytes)
+    max_prepared_bytes = preparation_cache_budget(
+        max_source_bytes, max_assembled_bytes)
     large_data_ims = large_data_ims_limit(
         canonical_source_bytes, canonical_initializer_bytes)
     runtime_budgets = qwen_runtime_budgets(
         canonical_source_bytes, canonical_initializer_bytes,
         rounds=args.rounds, stage_count=len(stages),
-        startup_timeout_s=args.startup_timeout_s, routing_wait_s=args.routing_wait_s)
+        startup_timeout_s=args.startup_timeout_s, routing_wait_s=args.routing_wait_s,
+        ack_timeout_ms=args.ack_timeout_ms)
+    print("SPEC190_ACK_WINDOW " + json.dumps({
+        "ackTimeoutMs": runtime_budgets["ack_timeout_ms"],
+        "requestTimeoutMs": runtime_budgets["timeout_ms"],
+        "profile": "qwen-multiturn",
+    }, sort_keys=True), flush=True)
     state_inputs = {
         stage["role"]: {name: [name] for name in stage.get("cacheInputs", [])}
         for stage in stages
@@ -1323,8 +1949,14 @@ def main(argv=None, *, _supervised=False) -> int:
         (directory / "offer-private.pem").write_bytes(provider_keys[index][2].read_bytes())
         (directory / "recipient-private.pem").write_bytes(provider_keys[index][0].read_bytes())
         (directory / "recipient-key-map.json").write_text(json.dumps({provider: str(directory / "recipient-private.pem")}))
-    encrypted_repository_path = resolve_encrypted_repository_path(
-        run_root, args.encrypted_repository_path)
+    encrypted_repository_path = None
+    encrypted_repository_cleanup = None
+    if not args.cache_compatibility_mode:
+        encrypted_repository_path = resolve_encrypted_repository_path(
+            run_root, args.encrypted_repository_path)
+        encrypted_repository_cleanup = lambda: cleanup_encrypted_repository(
+            encrypted_repository_path, run_root)
+        atexit.register(encrypted_repository_cleanup)
     requester_cfg = {
         "schema": "ndnsf-di-native-requester-v1",
         "catalog": {**catalog, "source": {**catalog["source"], "file": source_path.name,
@@ -1344,10 +1976,18 @@ def main(argv=None, *, _supervised=False) -> int:
         # remote Providers can fetch the returned references.  Keep ciphertext
         # large data in its separate Repo below so the two ownership contracts
         # do not share cache accounting or cleanup.
-        "repository": {"path": str(run_root / "requester/canonical-repo"),
-                        "max_bytes": 4 << 30},
-        "encrypted_repository": {"path": str(encrypted_repository_path),
-                                 "max_bytes": 4 << 30},
+        "repository": {"path": str(model_source_repository),
+                        "max_bytes": 4 << 30,
+                        "cache_namespace": source_cache_namespace,
+                        "cache_identity": source_cache_identity,
+                        "cache_hit": source_cache_hit},
+        **({"cache_compatibility": {
+                "enabled": True,
+                "source_namespace": source_cache_namespace,
+            }} if args.cache_compatibility_mode else {
+                "encrypted_repository": {"path": str(encrypted_repository_path),
+                                         "max_bytes": 4 << 30},
+            }),
         "limits": {"bootstrap_ms": runtime_budgets["bootstrap_ms"],
                     "large_data_ims_limit": large_data_ims,
                     "max_source_bytes": max_source_bytes,
@@ -1406,7 +2046,29 @@ def main(argv=None, *, _supervised=False) -> int:
         "attentionMaskInputName": "attention_mask",
         "positionIdsInputName": "position_ids",
     }, indent=2, sort_keys=True) + "\n")
+    # One native requester owns the complete conversation.  Each entry names
+    # only its input/options/output files; Conversation owns the authenticated
+    # checkpoint and KV lineage between entries.
+    turns = [{"input_file": "input.bin", "options_file": "options.json",
+              "output_file": "output-0.bin",
+              "checkpoint_output_file": "conversation-state.json"}]
+    for round_index in range(1, args.rounds):
+        options = continuation_options(
+            json.loads((requester_dir / "options.json").read_text()), round_index)
+        (requester_dir / f"options-{round_index}.json").write_text(
+            json.dumps(options, indent=2, sort_keys=True) + "\n")
+        turns.append({"input_file": "delta.bin",
+                      "options_file": f"options-{round_index}.json",
+                      "output_file": f"output-{round_index}.bin",
+                      "checkpoint_output_file": f"conversation-state-{round_index}.json"})
+    requester_cfg["turns"] = turns
     (requester_dir / "config.json").write_text(json.dumps(requester_cfg, indent=2, sort_keys=True) + "\n")
+    # Preserve the established C++ oracle's per-round config view while the
+    # production requester itself is launched exactly once.
+    for round_index in range(1, args.rounds):
+        compatibility = continuation_config(requester_cfg, round_index, delta_ids)
+        (requester_dir / f"config-{round_index}.json").write_text(
+            json.dumps(compatibility, indent=2, sort_keys=True) + "\n")
     # Re-check every identity immediately before creating MiniNDN processes.
     # The earlier preflight protects preparation; this final fence prevents a
     # replacement between preflight/materialization and the actual requester,
@@ -1416,14 +2078,7 @@ def main(argv=None, *, _supervised=False) -> int:
     require_file_digest(args.topology, args.topology_sha256, "TOPOLOGY")
     require_file_digest(tokenizer, args.tokenizer_sha256, "MODEL_TOKENIZER")
     require_file_digest(receipt, args.build_receipt_sha256, "BUILD_RECEIPT")
-    for path, expected, label in (
-        (args.controller_binary, args.controller_binary_sha256, "CONTROLLER_BINARY"),
-        (authority_binary, args.authority_binary_sha256, "AUTHORITY_BINARY"),
-        (requester_binary, args.requester_binary_sha256, "REQUESTER_BINARY"),
-        (provider_binary, args.provider_binary_sha256, "PROVIDER_BINARY"),
-        (assembly_worker_binary, args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
-        (oracle_binary, args.oracle_binary_sha256, "SPEC189_ORACLE_BINARY"),
-    ):
+    for path, expected, label in binary_checks:
         require_file_digest(path, expected, label)
     require_file_digest(source_path, args.canonical_source_sha256, "MODEL_CANONICAL_SOURCE")
     require_file_digest(mapping_path, args.node_mapping_sha256, "MODEL_NODE_MAPPING")
@@ -1448,6 +2103,7 @@ def main(argv=None, *, _supervised=False) -> int:
     (run_root / "minindn-node-app-plan.json").write_text(
         json.dumps(node_app_plan, indent=2, sort_keys=True) + "\n")
     processes = []
+    provider_logs = []
     try:
         ndn.start()
         AppManager(ndn, ndn.net.hosts, Nfd, csSize=MININDN_NFD_CS_SIZE,
@@ -1515,9 +2171,13 @@ def main(argv=None, *, _supervised=False) -> int:
                        f"{shlex.quote(str(artifact_cache_root / provider_cache_namespace(provider)))} "
                        f"--repo-fetch-timeout-ms {runtime_budgets['timeout_ms']} "
                        f"--assembly-timeout-ms {runtime_budgets['assembly_timeout_ms']} "
+                       f"--conversation-retention-ms {min(3600000, runtime_budgets['retention_ms'])} "
                        f"--tokenizer-json {shlex.quote(str(tokenizer))} --selection-offer-key-file {shlex.quote(str(directory / 'offer-private.pem'))} "
-                       "--offer-backend onnxruntime-cpu --offer-can-provision --offer-has-model")
+                       "--offer-backend onnxruntime-cpu --offer-can-provision --offer-has-model" +
+                       (f" --cache-compatibility-source-dir {shlex.quote(str(model_source_repository))}"
+                        if args.cache_compatibility_mode else ""))
             proc, log = start(node, f"provider-{index}", command, env)
+            provider_logs.append(log)
             wait_for_marker(proc, log, ("NDNSF_DI_NATIVE_PROVIDER_READY", "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"), args.startup_timeout_s)
         requester_env = env_for(homes[args.user_node], args.user_node)
         # Large canonical objects require an explicit, finite requester-side
@@ -1525,62 +2185,77 @@ def main(argv=None, *, _supervised=False) -> int:
         # retain the historical default, so this opt-in cannot enlarge every
         # process in a deployment.
         requester_env["NDNSF_REQUEST_LARGE_IMS_LIMIT"] = str(large_data_ims)
-        requester_cmd = (f"{shlex.quote(str(requester_binary))} --config {shlex.quote(str(requester_dir / 'config.json'))} "
-                         f"--input {shlex.quote(str(requester_dir / 'input.bin'))} --output {shlex.quote(str(requester_dir / 'output-0.bin'))}")
-        first_proc, first_log = start(args.user_node, "requester-0", requester_cmd, requester_env)
-        first_proc.wait(timeout=runtime_budgets["process_timeout_s"])
-        first_text = first_log.read_text(errors="replace")
-        if first_proc.returncode != 0 or "NATIVE_REQUEST_SUCCEEDED" not in first_text or "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN" not in first_text:
-            raise RuntimeError(f"first native Qwen round failed: {first_log}")
-        first_output = validate_native_output(requester_dir / "output-0.bin")
-        round_records = [{"round": 0, "returncode": first_proc.returncode,
-                          "log": str(first_log), "output": str(requester_dir / "output-0.bin"),
-                          **first_output}]
-        for round_index in range(1, args.rounds):
-            cfg = json.loads((requester_dir / "config.json").read_text())
-            generation_id = f"{round_index:032x}"
-            cfg["request"]["options_file"] = f"options-{round_index}.json"
-            cfg["conversation"]["turn"] = {"mode": "APPEND_DELTA", "generation_id": generation_id,
-                "parent_state_file": "conversation-state.json", "delta_token_ids": delta_ids}
-            cfg["conversation"].pop("checkpoint_output_file", None)
-            (requester_dir / f"options-{round_index}.json").write_text(json.dumps({
-                "useCache": True, "outputMode": "TOKEN_STREAMING", "generationId": generation_id,
-                "maxNewTokens": args.max_new_tokens, "tokenizerDigest": tokenizer_digest,
-                "eosTokenIds": eos_token_ids, "sampling": {"mode": "Greedy", "temperature": 0.0,
-                "topK": 1, "topP": 1.0, "repetitionPenalty": 1.0, "seed": 18406 + round_index},
-                "tokenInputName": "input_ids"}, indent=2, sort_keys=True))
-            cfg_path = requester_dir / f"config-{round_index}.json"; cfg_path.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
-            proc, log = start(args.user_node, f"requester-{round_index}",
-                              requester_cmd.replace("config.json", cfg_path.name).replace("input.bin", "delta.bin").replace("output-0.bin", f"output-{round_index}.bin"), requester_env)
-            proc.wait(timeout=runtime_budgets["process_timeout_s"])
-            text = log.read_text(errors="replace")
-            if proc.returncode != 0 or "NATIVE_REQUEST_SUCCEEDED" not in text:
-                raise RuntimeError(f"native Qwen round {round_index} failed: {log}")
-            output_summary = validate_native_output(requester_dir / f"output-{round_index}.bin")
-            round_records.append({"round": round_index, "returncode": proc.returncode,
-                                  "log": str(log), "output": str(requester_dir / f"output-{round_index}.bin"),
+        def requester_launch(config_path: Path):
+            launch_env = dict(requester_env)
+            if requester_driver_binary is not None:
+                # The driver is a C++ parent/pipe oracle.  It launches the
+                # verified requester itself after observing a live event;
+                # keeping the two identities separate prevents a test driver
+                # from replacing the production requester preflight.
+                launch_env["SPEC190_NATIVE_REQUESTER_BINARY"] = str(requester_binary)
+                launch_env["SPEC190_NATIVE_TURNS_CONFIG"] = str(config_path)
+                # The Waf unit-test executable contains the repository's
+                # other integration suites as well.  Select only the named
+                # parent/pipe case so unrelated fixture requirements cannot
+                # turn a live MiniNDN run into an aggregate-test result.
+                driver_cmd = (
+                    f"{shlex.quote(str(requester_driver_binary))} "
+                    "--run_test=Spec190LiveTurns/ParentPipeReadsLiveEventsBeforeTerminal")
+                return driver_cmd, launch_env
+            return (f"{shlex.quote(str(requester_binary))} --config "
+                    f"{shlex.quote(str(config_path))}"), launch_env
+
+        requester_cmd, requester_launch_env = requester_launch(requester_dir / "config.json")
+        placement = {log: (provider_names[index], stages[index]["role"])
+                     for index, log in enumerate(provider_logs)}
+        tail_role = stages[-1]["role"]
+        round_deadline = time.monotonic() + runtime_budgets["process_timeout_s"]
+        provider_offsets = snapshot_provider_logs(provider_logs)
+        first_proc, first_log = start(args.user_node, "requester", requester_cmd, requester_launch_env)
+        first_text = wait_for_native_round(
+            first_proc, first_log, provider_logs,
+            max(0.0, round_deadline - time.monotonic()),
+            on_all_providers_ready=lambda: purge_minindn_large_data_cache(
+                ndn.net.hosts, run_root))
+        if (first_proc.returncode != 0 or
+                first_text.count("NATIVE_REQUEST_SUCCEEDED") != args.rounds or
+                (args.rounds > 1 and
+                 "NATIVE_CONVERSATION_TURNS_SUCCEEDED" not in first_text) or
+                first_text.count("NATIVE_CONVERSATION_TURN_COMPLETE") != args.rounds or
+                "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN" not in first_text):
+            raise RuntimeError(f"native Qwen turns failed: {first_log}")
+        turn_texts = split_native_turn_logs(first_text, args.rounds)
+        for round_index, turn_text in enumerate(turn_texts):
+            (run_root / f"requester-{round_index}.log").write_text(turn_text)
+        process_barrier = wait_for_provider_round_barrier(
+            turn_texts[-1], provider_offsets, placement, tail_role, round_deadline)
+        round_records = []
+        for round_index in range(args.rounds):
+            output_path = requester_dir / f"output-{round_index}.bin"
+            output_summary = validate_native_output(output_path)
+            round_records.append({"round": round_index, "returncode": first_proc.returncode,
+                                  "log": str(run_root / f"requester-{round_index}.log"),
+                                  "output": str(output_path),
+                                  "providerFinalization": process_barrier if round_index == args.rounds - 1 else {
+                                      "observation": "covered-by-final-process-barrier"},
                                   **output_summary})
         if args.negative_parent:
-            cfg = json.loads((requester_dir / "config-1.json").read_text() if args.rounds > 1 else (requester_dir / "config.json").read_text())
+            cfg = json.loads((requester_dir / "config.json").read_text())
             cfg["conversation"]["turn"]["parent_checkpoint_digest"] = "sha256:" + "0" * 64
             bad = requester_dir / "config-negative.json"; bad.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
+            negative_cmd, negative_env = requester_launch(bad)
             proc, log = start(args.user_node, "requester-negative",
-                              requester_cmd.replace("config.json", bad.name).replace("input.bin", "delta.bin").replace("output-0.bin", "output-negative.bin"), requester_env)
+                              negative_cmd, negative_env)
             proc.wait(timeout=120); text = log.read_text(errors="replace")
             if proc.returncode == 0 or "DI_NATIVE_CONVERSATION_PARENT_MISMATCH" not in text:
                 raise RuntimeError(f"negative parent case did not fail closed: {log}")
             round_records.append({"round": "negative-parent", "returncode": proc.returncode, "log": str(log)})
-        oracle_log = run_root / "spec189-cpp-oracle.log"
-        with oracle_log.open("w") as oracle_handle:
-            oracle_result = subprocess.run(
-                [str(oracle_binary), "--run-root", str(run_root)],
-                cwd=str(ROOT), stdout=oracle_handle, stderr=subprocess.STDOUT,
-                text=True, timeout=max(30.0, args.startup_timeout_s), check=False)
-        oracle_output = oracle_log.read_text(errors="replace")
-        if (oracle_result.returncode != 0 or
-                "SPEC189_CPP_ORACLE_PASS" not in oracle_output):
-            raise RuntimeError(
-                f"SPEC189_CPP_ORACLE_FAIL rc={oracle_result.returncode}: {oracle_log}")
+        # Every round crosses the observation barrier; the C++ oracle checks
+        # each request identity, generation result, and chained KV checkpoint.
+        oracle_record = run_cpp_oracle(oracle_binary, run_root,
+                                      args.cache_compatibility_mode,
+                                      max(30.0, args.startup_timeout_s), args.require_multi_token,
+                                      args.rounds)
         record = {"schema": f"ndnsf-di-{MODEL_FAMILY}-native-minindn-run-v1", "model": model_name,
                   "revision": revision, "stageManifest": str(stage_manifest_path),
                   "stageManifestDigest": manifest_digest, "tokenizerDigest": tokenizer_digest,
@@ -1588,13 +2263,12 @@ def main(argv=None, *, _supervised=False) -> int:
                   "largeDataImsLimit": large_data_ims,
                   "runtimeBudgets": runtime_budgets,
                   "rounds": round_records,
-                  "cppOracle": {"binary": str(oracle_binary),
-                                "log": str(oracle_log),
-                                "returncode": oracle_result.returncode,
-                                "status": "PASS"},
-                  "status": "PASS"}
+                  "cppOracle": oracle_record,
+                  "status": oracle_record["status"]}
+        if args.cache_compatibility_mode:
+            record["fullPathQualification"] = "NOT_RUN"
         (run_root / "run-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-        print(f"NDNSF_DI_{MODEL_FAMILY.upper()}_NATIVE_MININDN_PASS " + json.dumps(record, sort_keys=True))
+        print(f"NDNSF_DI_{MODEL_FAMILY.upper()}_NATIVE_MININDN_{record['status']} " + json.dumps(record, sort_keys=True))
         return 0
     finally:
         for proc, handle, _ in reversed(processes):
@@ -1607,6 +2281,11 @@ def main(argv=None, *, _supervised=False) -> int:
                 proc.kill(); proc.wait(timeout=2)
             handle.close()
         ndn.stop()
+        if encrypted_repository_cleanup is not None:
+            try:
+                encrypted_repository_cleanup()
+            finally:
+                atexit.unregister(encrypted_repository_cleanup)
 
 
 if __name__ == "__main__":

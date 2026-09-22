@@ -11336,3 +11336,14 @@ Provider or oracle execution occurred. Supervisor evidence is `boundary=null`, `
 `.codex-tmp/spec190-t003-real-20260922-rerun/run-26/`. The next Changed gate is read-only repair
 of the exact verified cache payloads followed by a fresh immutable run; run-26 is not a protocol
 result.
+
+2026-09-22 Spec190 T003 run-27 driver boundary: after the read-only cache repair, the real
+MiniNDN requester completed all three turns and emitted the expected live-pending, first-event,
+terminal, Provider execution/terminal and purge markers. The C++ driver process nevertheless
+returned 1 because the Waf executable also ran 15 unrelated Spec185 integration tests whose
+YOLO/Qwen fixtures were absent; the driver invocation had not selected the named Spec190 test.
+No run-record was written. Supervisor evidence is `boundary=null`, `cleanup=PASS`,
+`returncode=1`; raw evidence is preserved in
+`.codex-tmp/spec190-t003-real-20260922-rerun/run-27/`. The next Changed gate adds the exact
+Boost.Test `Spec190LiveTurns/ParentPipeReadsLiveEventsBeforeTerminal` selector; this run is not
+a parent/pipe PASS or T003 closure.
