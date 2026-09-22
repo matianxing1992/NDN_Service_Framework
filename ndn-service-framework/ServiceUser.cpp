@@ -869,9 +869,35 @@ namespace ndn_service_framework
                 std::chrono::system_clock::now().time_since_epoch()).count();
         }
 
+#if defined(HAVE_TESTS)
+        struct UnitTestClock
+        {
+            std::mutex mutex;
+            std::function<uint64_t()> callback;
+        };
+
+        UnitTestClock&
+        unitTestClock()
+        {
+            static UnitTestClock clock;
+            return clock;
+        }
+#endif
+
         uint64_t
         nowMicroseconds()
         {
+#if defined(HAVE_TESTS)
+            auto& clock = unitTestClock();
+            std::function<uint64_t()> callback;
+            {
+                std::lock_guard<std::mutex> lock(clock.mutex);
+                callback = clock.callback;
+            }
+            if (callback) {
+                return callback();
+            }
+#endif
             return std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
         }
@@ -3009,6 +3035,15 @@ namespace ndn_service_framework
     {
         return m_useTokens;
     }
+
+#if defined(HAVE_TESTS)
+    void ServiceUser::setTestClockForUnitTests(std::function<uint64_t()> clock)
+    {
+        auto& holder = unitTestClock();
+        std::lock_guard<std::mutex> lock(holder.mutex);
+        holder.callback = std::move(clock);
+    }
+#endif
 
     void ServiceUser::setTimelineTrace(bool enabled)
     {
@@ -9553,7 +9588,7 @@ namespace ndn_service_framework
                         // Deferred callers must receive the immutable
                         // ACK_CLOSED snapshot before DI can inspect the
                         // graph, split the model, and commit the plan.
-                        handleAckCollectionTimeout(parsedV2->requestId);
+                        handleAckCollectionTimeout(parsedV2->requestId, false);
                     }
                     else {
                         evaluateAckSelection(parsedV2->requestId);
@@ -10323,13 +10358,37 @@ namespace ndn_service_framework
         return true;
     }
 
-    bool ServiceUser::handleAckCollectionTimeout(const ndn::Name& requestId)
+    bool ServiceUser::handleAckCollectionTimeout(const ndn::Name& requestId,
+                                                bool timerFired)
     {
         auto pendingCall = m_pendingCalls.find(requestId);
         if (pendingCall == m_pendingCalls.end()) {
             NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_SKIPPED_NO_PENDING timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri());
+            return false;
+        }
+
+        // A scheduler callback can be observed slightly before its nominal
+        // deadline under load. Keep the ACK window open until the Core-owned
+        // deadline is reached; the test-only clock uses this same guard for
+        // deterministic 999/1000/1001ms boundary checks.
+        const auto nowUs = nowMicroseconds();
+        if (timerFired && pendingCall->second.ackWindowDeadlineUs != 0 &&
+            nowUs < pendingCall->second.ackWindowDeadlineUs) {
+            const auto remainingUs = pendingCall->second.ackWindowDeadlineUs - nowUs;
+            const auto remainingMs = std::max<uint64_t>(
+                1, (remainingUs + 999) / 1000);
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_TIMER_IGNORED"
+                      << " timestamp_us=" << nowUs
+                      << " requestId=" << requestId.toUri()
+                      << " deadlineUs=" << pendingCall->second.ackWindowDeadlineUs);
+            m_scheduler.schedule(ndn::time::milliseconds(
+                static_cast<int64_t>(std::min<uint64_t>(
+                    remainingMs, static_cast<uint64_t>(std::numeric_limits<int64_t>::max())))),
+              [this, requestId] {
+                handleAckCollectionTimeout(requestId);
+              });
             return false;
         }
 
@@ -10352,8 +10411,9 @@ namespace ndn_service_framework
                       << " requestId=" << requestId.toUri()
                       << " inFlight=" << pendingCall->second.ackDecryptsInFlight
                       << " deferrals=" << pendingCall->second.ackSelectionDeferrals);
-            m_scheduler.schedule(ndn::time::milliseconds(20), [this, requestId]() {
-                handleAckCollectionTimeout(requestId);
+            m_scheduler.schedule(ndn::time::milliseconds(20),
+              [this, requestId, timerFired]() {
+                handleAckCollectionTimeout(requestId, timerFired);
             });
             return false;
         }
@@ -11951,8 +12011,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                       << requestID.toUri() << " with error: " << error);
         auto pendingCall = m_pendingCalls.find(requestID);
         if (pendingCall != m_pendingCalls.end() &&
-            (pendingCall->second.acksHandler ||
-             pendingCall->second.ackCandidatesHandler) &&
+            shouldTrackAckDecrypt(pendingCall->second) &&
             pendingCall->second.ackDecryptsInFlight > 0) {
             --pendingCall->second.ackDecryptsInFlight;
         }

@@ -413,6 +413,15 @@ run(int argc, char** argv)
     request.get<std::uint64_t>("ack_timeout_ms", options.ackTimeout.count()));
   options.applicationRequestId = request.get<std::string>("application_request_id", {});
   options.providerNames = providerNames(request);
+  if (options.timeout.count() <= 0 || options.ackTimeout.count() <= 0 ||
+      options.ackTimeout >= options.timeout) {
+    throw std::invalid_argument(
+      "request ACK window must be positive and smaller than the request deadline");
+  }
+  std::cout << "SPEC190_ACK_WINDOW_NATIVE {\"ackTimeoutMs\":"
+            << options.ackTimeout.count()
+            << ",\"requestTimeoutMs\":" << options.timeout.count()
+            << "}" << std::endl;
 
   const auto generationMode = request.get<std::string>("generation_mode", "TOKEN_DIAGNOSTIC");
   const bool streaming = generationMode == "TOKEN_STREAMING" ||

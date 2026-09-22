@@ -5,19 +5,20 @@
 
 ## Current Checkpoint
 
-2026-09-22 04:33 -05:00：严格串行完成 T001；T002 及后续任务仍未启动。
+2026-09-22 05:10 -05:00：严格串行完成 T001、T002；当前只允许启动 T003，未提前处理后续任务。
 旧→新：T001–T005不变；旧T008→T006、旧T009→T007、旧T010→T008、旧T011→T009、旧T006→T010、旧T007→T011。
 Batch ID/evidence路径保持原身份，历史提交/审计不改写；下表与正文使用新任务ID。
-T001 的实现、C++ focused regression、compile-link 和只读静态复核已闭合；证据见
-[b190-01](evidence/b190-01.md)。本项不包含 MiniNDN/Qwen 两节点实验或性能验收。
-下一步只有 T002，不能跳过或并行推进后项。
+T001、T002 的实现、C++ focused regression、compile-link 和只读静态复核已分别闭合；证据见
+[b190-01](evidence/b190-01.md) 和 [b190-02](evidence/b190-02.md)。T002 的 Python 边界测试
+为 8/8，C++ `Spec190AckWindow` 为 3/3；没有运行 MiniNDN/Qwen 两节点实验或性能验收。
+下一步只有 T003，不能跳过或并行推进后项。
 
 ## Execution Progress
 
 | Unit / Details | Status | Depends | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | [T001 Phase timing](#t001-phase-timing) | DONE | — | [b190-01](evidence/b190-01.md)；216/216 compile-link，`Spec190Timing` C++ regression 3/3，静态复核 PASS；MiniNDN/Qwen/performance unobserved | 2026-09-22 04:33 -05:00 |
-| [T002 ACK window](#t002-ack-window) | NOT_STARTED | T001 | 1000ms目标，原生认证/截止回归待做 | 2026-09-22 03:00 -05:00 |
+| [T002 ACK window](#t002-ack-window) | DONE | T001 | [b190-02](evidence/b190-02.md)；Qwen 1000ms profile、非法值校验、C++ compile-link、Python 8/8、`Spec190AckWindow` 3/3、静态复核 PASS；真实两节点/Trust Schema签名验收未运行 | 2026-09-22 05:10 -05:00 |
 | [T003 Live turns](#t003-live-turns) | NOT_STARTED | T002 | 同handle/实时事件待实现 | 2026-09-22 03:00 -05:00 |
 | [T004 Finalize and drain](#t004-finalize-and-drain) | NOT_STARTED | T003 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 03:00 -05:00 |
 | [T005 Resident session](#t005-resident-session) | NOT_STARTED | T004 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 03:00 -05:00 |
@@ -59,7 +60,7 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 
 ### T002 ACK Window
 
-- [ ] T002 [US1] Enforce the one-second Qwen ACK profile with verified closure regressions in `Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`, `examples/DI_NativeRequester.cpp`, and `tests/unit-tests/spec190-ack-window.t.cpp`.
+- [x] T002 [US1] Enforce the one-second Qwen ACK profile with verified closure regressions in `Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`, `examples/DI_NativeRequester.cpp`, and `tests/unit-tests/spec190-ack-window.t.cpp`.
 
 **Outcome / owner**：DI profile实际采用1000ms，Core维持原认证、截止与候选快照契约。
 **Read**：CD-01；ServiceUser::handleAckCollectionTimeout、BeginCollaborationWithProviders、NativeOfferAdmission；T001事件。

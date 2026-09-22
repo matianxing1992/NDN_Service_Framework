@@ -594,6 +594,12 @@ namespace ndn_service_framework{
             size_t getAckProcessingQueueDepth() const;
             void setUseTokens(bool enabled);
             bool getUseTokens() const;
+#if defined(HAVE_TESTS)
+            // Test-only clock seam for deterministic deadline assertions. It
+            // is not present in production builds and does not alter the
+            // public runtime contract.
+            static void setTestClockForUnitTests(std::function<uint64_t()> clock);
+#endif
             HybridCryptoCounters& getHybridCryptoCounters();
             void setTimelineTrace(bool enabled);
             struct RuntimeDiagnostics
@@ -1617,7 +1623,8 @@ namespace ndn_service_framework{
 
             bool evaluateAckSelection(const ndn::Name& requestId);
 
-            bool handleAckCollectionTimeout(const ndn::Name& requestId);
+            bool handleAckCollectionTimeout(const ndn::Name& requestId,
+                                             bool timerFired = true);
 
             bool closeDeferredCollaborationAcks(const ndn::Name& requestId,
                                                 PendingCall& pendingCall);
