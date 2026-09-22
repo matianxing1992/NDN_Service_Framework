@@ -11368,3 +11368,15 @@ terminal was produced. Raw evidence is preserved in
 second-assembly working-set overlap, not a Repo identity or readiness failure. Do not raise the
 resource limit; the next Changed gate must reduce the native cold-session peak and rerun the
 affected compile/static/runtime checks.
+
+2026-09-22 Spec190 T003 run-31 normal Repo resource boundary: the new bounded ORT-session
+candidate passed immutable model-source cache verification, ACK/Selection, and Provider-0
+material fetch/assembly through `RUNNER_READY`. Provider-1 remained in placement-bound material
+fetch/assembly when the host guard stopped the run at `RESOURCE_BOUNDARY:ownedSwap` with
+`maxOwnedSwapBytes=326877184 > 268435456`; `minAvailableBytes=1654267904`, so the first reported
+boundary was not `MemAvailable`, and maximum process RSS total was `7692361728`. The supervisor
+recorded `cleanup=PASS`, `returncode=-2`, and no remaining processes. No requester terminal,
+negative-parent result, C++ oracle result, or run-record exists; `requester.log` remained empty.
+Raw evidence is preserved in `.codex-tmp/spec190-t003-real-20260922-rerun/run-31/` and
+`.codex-tmp/spec190-t003-real-20260922-rerun-run-31.log`. This repeats the native resident-runner
+plus second-assembly overlap boundary; do not raise the resource limit or advance to T004.
