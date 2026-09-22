@@ -11326,3 +11326,13 @@ process, so its live-event pause/read boundary remains unobserved. Raw evidence 
 `.codex-tmp/spec190-t003-real-20260922-rerun-run-25.log`; the next T003-only step is that selector
 with `SPEC190_NATIVE_REQUESTER_BINARY` and `SPEC190_NATIVE_TURNS_CONFIG` set during a live run,
 followed by normal Repo/full-path validation only after the selector passes.
+
+2026-09-22 Spec190 T003 run-26 preflight boundary: the new requester-driver invocation stopped
+before MiniNDN startup with `MODEL_CANONICAL_SOURCE_NOT_IMMUTABLE`. The fixed model-source cache
+graph and initializer objects were root-owned `0600`; their digests were known, but the owner
+write bit violated the launcher's immutable hard-link contract. No parent/pipe selector, Repo,
+Provider or oracle execution occurred. Supervisor evidence is `boundary=null`, `cleanup=PASS`,
+`returncode=1`; raw evidence is preserved in
+`.codex-tmp/spec190-t003-real-20260922-rerun/run-26/`. The next Changed gate is read-only repair
+of the exact verified cache payloads followed by a fresh immutable run; run-26 is not a protocol
+result.
