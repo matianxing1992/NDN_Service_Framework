@@ -11357,3 +11357,14 @@ cleanup passed and no run-record, three-turn terminal, or parent/pipe result was
 evidence is preserved in `.codex-tmp/spec190-t003-real-20260922-rerun/run-29/`. The first
 boundary is resource overlap, not Repo digest or protocol rejection; assembled artifacts were
 retained in the fixed Provider cache for a new warm-cache run. Do not relax the resource limit.
+
+2026-09-22 Spec190 T003 run-30 normal Repo resource boundary: both Providers completed real
+material fetch/assembly and emitted `RUNNER_READY`, but before the requester live round the host
+guard stopped at `RESOURCE_BOUNDARY:ownedSwap` with `maxOwnedSwapBytes=285323264` and
+`minAvailableBytes=2034692096`. The launcher was interrupted in the post-readiness NFD purge
+callback; supervisor cleanup passed, no processes remained, and no requester/run-record/oracle
+terminal was produced. Raw evidence is preserved in
+`.codex-tmp/spec190-t003-real-20260922-rerun/run-30/`. This is the same resident-runner plus
+second-assembly working-set overlap, not a Repo identity or readiness failure. Do not raise the
+resource limit; the next Changed gate must reduce the native cold-session peak and rerun the
+affected compile/static/runtime checks.
