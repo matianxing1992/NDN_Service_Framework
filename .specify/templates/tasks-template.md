@@ -14,6 +14,12 @@ description: "Task list template for feature implementation"
 
 **Input**: Design documents from `/specs/[###-feature-name]/`
 
+**Execution mode**: [batch default / STRICT_SERIAL when explicitly requested]
+For STRICT_SERIAL apply `skills/speckit-code-design/references/task-progress.md#strict-serial-completion-mode`:
+dependency-ordered details and progress rows; next task requires previous DONE, not static-only PASS;
+each task includes its complete scoped validation. Merge inseparable batch members into internal
+steps; omit parallel examples. Story grouping must not introduce forward acceptance dependencies.
+
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
 **Tests**: The examples below include test-first work inside behavioral tasks.
