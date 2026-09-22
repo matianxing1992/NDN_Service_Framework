@@ -11347,3 +11347,13 @@ No run-record was written. Supervisor evidence is `boundary=null`, `cleanup=PASS
 `.codex-tmp/spec190-t003-real-20260922-rerun/run-27/`. The next Changed gate adds the exact
 Boost.Test `Spec190LiveTurns/ParentPipeReadsLiveEventsBeforeTerminal` selector; this run is not
 a parent/pipe PASS or T003 closure.
+
+2026-09-22 Spec190 T003 run-29 normal Repo resource boundary: the run disabled
+`cache-compatibility-mode` and crossed ACK/Selection plus real Repo material fetch. Provider-0
+completed assembly-worker validation, cache finalization and `RUNNER_READY`; Provider-1 was still
+assembling when the host guard stopped the run at `RESOURCE_BOUNDARY:ownedSwap` with
+`maxOwnedSwapBytes=306475008 > 268435456` and `minAvailableBytes=2542047232`. Supervisor
+cleanup passed and no run-record, three-turn terminal, or parent/pipe result was produced. Raw
+evidence is preserved in `.codex-tmp/spec190-t003-real-20260922-rerun/run-29/`. The first
+boundary is resource overlap, not Repo digest or protocol rejection; assembled artifacts were
+retained in the fixed Provider cache for a new warm-cache run. Do not relax the resource limit.
