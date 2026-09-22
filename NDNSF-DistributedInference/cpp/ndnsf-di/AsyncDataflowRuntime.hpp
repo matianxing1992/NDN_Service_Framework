@@ -68,6 +68,9 @@ struct DependencyEdge
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::vector<std::string> tensors;
+  // Concrete names selected from one logical transport bundle.  Empty keeps
+  // the legacy one-name selection contract.
+  std::vector<std::string> bundleTensorNames;
   std::string requestId;
   std::uint64_t attemptEpoch = 0;
   // Cross-Provider edges opt into the authenticated NDNSF_DATA_V1 profile.
@@ -177,6 +180,10 @@ struct RoleExecutionContext
   std::string sessionId;
   std::string role;
   std::string requestId;
+  // Stable Provider boot identity propagated from the selected decode-state
+  // binding into adapter-owned phase records.  It is metadata only; no model
+  // or state bytes cross this boundary.
+  std::string providerBootId;
   std::uint64_t attemptEpoch = 0;
   std::uint64_t inferenceEpoch = 0;
   // Set only while a stateful adapter owns an entire streamed decode loop.

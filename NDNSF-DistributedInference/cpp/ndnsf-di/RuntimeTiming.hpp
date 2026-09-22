@@ -1,7 +1,12 @@
 #pragma once
 
 #include <mutex>
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace ndnsf::di {
 
@@ -37,5 +42,49 @@ logRuntimeWarn(const std::string& record);
 
 void
 logRuntimeError(const std::string& record);
+
+/** One immutable phase observation parsed from an NDNSF_PHASE_TIMING line. */
+struct RuntimePhaseObservation
+{
+  // `role` is the emitting component (user, di-provider, or di-cli).  The
+  // execution role is kept separately so a provider's stage role cannot
+  // overwrite the component identity.
+  std::string role;
+  std::string executionRole;
+  std::string phase;
+  std::string scope;
+  std::string requestId;
+  std::string attempt;
+  std::string providerBootId;
+  std::string providerName;
+  std::string sessionId;
+  std::string conversationId;
+  std::string inferenceEpoch;
+  std::string contextEpoch;
+  std::uint64_t tokenIndex = 0;
+  std::uint64_t steadyUs = 0;
+  std::uint64_t wallUs = 0;
+};
+
+/**
+ * Parse the canonical phase record emitted by the native timing path.
+ * Missing or malformed fields return nullopt; a missing field is never
+ * represented as a zero timestamp.
+ */
+std::optional<RuntimePhaseObservation>
+parseRuntimePhaseObservation(std::string_view record);
+
+/** Validate one request/attempt sequence without merging retry identities. */
+bool
+validateRuntimePhaseSequence(const std::vector<RuntimePhaseObservation>& observations,
+                             std::string* error = nullptr);
+
+/** Emit one structured phase record when NDNSF_PHASE_TIMING is enabled. */
+void
+logRuntimePhase(const std::string& role,
+                const std::string& phase,
+                const std::string& requestId,
+                const std::string& attempt = {},
+                const std::vector<std::pair<std::string, std::string>>& fields = {});
 
 } // namespace ndnsf::di

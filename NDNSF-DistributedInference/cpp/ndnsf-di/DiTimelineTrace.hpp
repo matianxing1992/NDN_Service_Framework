@@ -73,6 +73,38 @@ logDiTimelineTrace(const std::string& role,
                    const std::string& requestId,
                    DiTimelineFields fields = {})
 {
+  const auto emitPhase = [&] {
+    const char* phase = nullptr;
+    // These events surround the named production boundaries.  Validation is
+    // not session construction, and role_compute includes dependency/state
+    // handling around the runner; the adapter emits the narrower ORT Run
+    // boundary separately.
+    if (event == "role_validation_start") phase = "roleValidationBegin";
+    else if (event == "role_validation_done") phase = "roleValidationEnd";
+    else if (event == "role_preparation_start") phase = "runnerPreparationBegin";
+    else if (event == "role_preparation_done") phase = "runnerPreparationEnd";
+    else if (event == "role_compute_start") phase = "roleExecutionBegin";
+    else if (event == "role_compute_done") phase = "roleExecutionEnd";
+    else if (event == "dependency_fetch_start") phase = "stageInputFetchBegin";
+    else if (event == "dependency_fetch_done" ||
+             event == "dependency_fetch_pre_satisfied") phase = "stageInputFetchEnd";
+    else if (event == "dependency_publish_start") phase = "stageOutputPublishBegin";
+    else if (event == "dependency_publish_done") phase = "stageOutputPublishEnd";
+    if (phase == nullptr) return;
+    std::string attempt;
+    std::vector<std::pair<std::string, std::string>> phaseFields;
+    for (const auto& field : fields) {
+      if (field.first == "role") {
+        phaseFields.emplace_back("executionRole", field.second);
+      }
+      else {
+        phaseFields.push_back(field);
+      }
+      if (field.first == "attemptEpoch" || field.first == "attempt") attempt = field.second;
+    }
+    logRuntimePhase(role, phase, requestId, attempt, phaseFields);
+  };
+  emitPhase();
   if (!diTimelineEnvEnabled() || !diTimelineSampleAllows(requestId)) return;
   std::ostringstream record;
   record << "NDNSF_TIMELINE"

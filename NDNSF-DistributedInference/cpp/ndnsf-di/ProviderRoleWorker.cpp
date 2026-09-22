@@ -84,6 +84,45 @@ withoutProviderLocalState(const TensorBundle& bundle,
   return makeEncodedTensorBundle(bundle.name, std::move(tensors));
 }
 
+TensorBundle
+providerDecodeStateFromOutputs(
+  const std::map<std::string, TensorBundle>& outputs,
+  const RoleSpec& role)
+{
+  if (role.stateInputNames.size() != role.stateOutputNames.size() ||
+      role.stateInputNames.empty()) {
+    throw std::invalid_argument(
+      "Provider decode-state input/output metadata length mismatch");
+  }
+  std::vector<NamedTensor> nextState;
+  nextState.reserve(role.stateInputNames.size());
+  for (std::size_t index = 0; index < role.stateOutputNames.size(); ++index) {
+    bool found = false;
+    for (const auto& output : outputs) {
+      if (!isEncodedTensorBundle(output.second.payload)) {
+        continue;
+      }
+      try {
+        auto tensor = findTensor(
+          decodeTensorBundle(output.second.payload), role.stateOutputNames[index]);
+        tensor.name = role.stateInputNames[index];
+        nextState.push_back(std::move(tensor));
+        found = true;
+        break;
+      }
+      catch (const std::out_of_range&) {
+      }
+    }
+    if (!found) {
+      throw std::runtime_error(
+        "Provider role is missing decode-state output: " +
+        role.stateOutputNames[index]);
+    }
+  }
+  return makeEncodedTensorBundle("__ndnsf_provider_decode_state",
+                                 std::move(nextState));
+}
+
 } // namespace
 
 ProviderRoleWorker::ProviderRoleWorker(std::size_t workerCount,
@@ -302,6 +341,9 @@ ProviderRoleWorker::executeAsyncImpl(
         {{"sessionId", item.sessionId},
          {"role", item.role.role},
          {"scope", edge.scope},
+         {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+         {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                              item.role.candidateDecodeStateIdentity->providerBootId : "none"},
          {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
       // A request-scoped epoch coordinator may have fetched and validated an
       // exact dependency before submitting this role.  Do not express a
@@ -320,6 +362,9 @@ ProviderRoleWorker::executeAsyncImpl(
           {{"sessionId", item.sessionId},
            {"role", item.role.role},
            {"scope", edge.scope},
+           {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+           {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                                item.role.candidateDecodeStateIdentity->providerBootId : "none"},
            {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
         continue;
       }
@@ -361,6 +406,9 @@ ProviderRoleWorker::executeAsyncImpl(
           {{"sessionId", item.sessionId},
            {"role", item.role.role},
            {"scope", pending.edge.scope},
+           {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+           {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                                item.role.candidateDecodeStateIdentity->providerBootId : "none"},
            {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
       }
       enqueueReady(std::move(item));
@@ -423,6 +471,9 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
             {{"sessionId", state->item.sessionId},
              {"role", state->item.role.role},
              {"scope", pending.edge.scope},
+             {"inferenceEpoch", std::to_string(state->item.role.inferenceEpoch)},
+             {"providerBootId", state->item.role.candidateDecodeStateIdentity ?
+                                  state->item.role.candidateDecodeStateIdentity->providerBootId : "none"},
              {"attemptEpoch", std::to_string(
                 state->item.role.attemptEpoch)}});
         }
@@ -645,6 +696,10 @@ ProviderRoleWorker::exactForwardCacheKeyFor(
     for (const auto& tensor : edge.tensors) {
       appendString(os, tensor);
     }
+    appendUint64(os, static_cast<std::uint64_t>(edge.bundleTensorNames.size()));
+    for (const auto& tensor : edge.bundleTensorNames) {
+      appendString(os, tensor);
+    }
   }
   appendUint64(os, static_cast<std::uint64_t>(item.role.outputs.size()));
   for (const auto& edge : item.role.outputs) {
@@ -653,6 +708,10 @@ ProviderRoleWorker::exactForwardCacheKeyFor(
     appendString(os, edge.consumerRole);
     appendUint64(os, static_cast<std::uint64_t>(edge.tensors.size()));
     for (const auto& tensor : edge.tensors) {
+      appendString(os, tensor);
+    }
+    appendUint64(os, static_cast<std::uint64_t>(edge.bundleTensorNames.size()));
+    for (const auto& tensor : edge.bundleTensorNames) {
       appendString(os, tensor);
     }
   }
@@ -797,6 +856,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       "di-provider", "role_preparation_start", requestId,
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
+       {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+       {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                            item.role.candidateDecodeStateIdentity->providerBootId : "none"},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     runner = item.prepareRunner();
     if (!runner) {
@@ -807,6 +869,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       "di-provider", "role_preparation_done", requestId,
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
+       {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+       {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                            item.role.candidateDecodeStateIdentity->providerBootId : "none"},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
   }
 
@@ -823,6 +888,8 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   ctx.sessionId = item.sessionId;
   ctx.role = item.role.role;
   ctx.requestId = item.role.requestId;
+  ctx.providerBootId = item.role.candidateDecodeStateIdentity ?
+    item.role.candidateDecodeStateIdentity->providerBootId : "none";
   ctx.attemptEpoch = item.role.attemptEpoch;
   ctx.inferenceEpoch = item.role.inferenceEpoch;
   ctx.streamingStateExecution = item.role.streamingStateExecution;
@@ -877,7 +944,12 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   // limited to pure dependency-producing executions.
   if (item.executionGuard) item.executionGuard();
   const bool hasStreamSideEffect = static_cast<bool>(item.eventSink);
-  if (!hasStreamSideEffect) {
+  // A generation epoch may update adapter-owned KV or depend on lineage not
+  // represented in the pure-output cache key, even with equal tensor bytes.
+  // Reusing a loaded runner must not suppress that state transition.
+  const bool canReuseOutputs = !hasStreamSideEffect &&
+    !item.role.streamingStateExecution && !item.role.generationLineage;
+  if (canReuseOutputs) {
     result.outputsByScope = getCachedOutputs(result.exactForwardCacheKey);
   }
   result.exactForwardCacheHit = !result.outputsByScope.empty();
@@ -890,6 +962,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       "di-provider", "role_compute_start", requestId,
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
+       {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+       {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                            item.role.candidateDecodeStateIdentity->providerBootId : "none"},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     // The epoch coordinator owns the authenticated generation loop.  Its
     // lineage-bearing work items represent exactly one epoch, so invoking a
@@ -921,9 +996,12 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       "di-provider", "role_compute_done", requestId,
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
+       {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+       {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                            item.role.candidateDecodeStateIdentity->providerBootId : "none"},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     if (item.executionGuard) item.executionGuard();
-    if (!hasStreamSideEffect) {
+    if (canReuseOutputs) {
       putCachedOutputs(result.exactForwardCacheKey, result.outputsByScope);
     }
   }
@@ -935,6 +1013,16 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
                              result.exactForwardCacheHit);
   }
   result.runtimeMetrics = runner->runtimeMetricsSnapshot();
+  if (item.role.streamingStateExecution &&
+      !result.runnerSupportsOpaqueStateHandles) {
+    // Capture the state successor before the dependency publication loop
+    // removes Provider-local tensors from a bundle.  Qwen's assembled output
+    // scope is intentionally the same as its pipeline edge scope, so keeping
+    // only outputsByScope would overwrite the state-bearing bundle before the
+    // outer NativeProviderRuntime can stage its decode-state transaction.
+    result.providerDecodeState = providerDecodeStateFromOutputs(
+      result.outputsByScope, item.role);
+  }
   if (item.role.streamingStateExecution &&
       runner->supportsOpaqueStateHandles()) {
     if (const auto handle = runner->stateHandleSnapshot(item.sessionId)) {
@@ -959,6 +1047,14 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
           "planned dependency explicitly names Provider-local decode state");
       }
     }
+    for (const auto& tensor : edge.bundleTensorNames) {
+      if (std::find(item.role.stateOutputNames.begin(),
+                    item.role.stateOutputNames.end(), tensor) !=
+          item.role.stateOutputNames.end()) {
+        throw std::logic_error(
+          "planned dependency bundle explicitly names Provider-local decode state");
+      }
+    }
     auto bundle = withoutProviderLocalState(
       outputForEdge(result.outputsByScope, edge),
       item.role.stateOutputNames);
@@ -969,6 +1065,13 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
           lineage.inferenceEpoch != item.role.inferenceEpoch) {
         throw std::logic_error(
           "role generation lineage does not match the execution epoch");
+      }
+      if (edge.producerRole.empty() || edge.producerRole != item.role.role) {
+        throw std::logic_error(
+          "generation lineage output edge producer role is not the executing role: " +
+          item.role.role + " operation=" + edge.operationKind +
+          " scope=" + edge.scope + " producer=" + edge.producerRole +
+          " consumer=" + edge.consumerRole);
       }
       lineage.producerRole = edge.producerRole;
       lineage.consumerRole = edge.consumerRole;
@@ -987,11 +1090,22 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
 #endif
     auto& bundle = staged.second;
     result.outputsByScope[edge.scope] = bundle;
+    // A final-token state-only pass must carry the real activation to the
+    // next role, but only after the coordinator commits this role's state.
+    // The already validated, lineage-bound bundle is returned for that step.
+    if (item.role.generationLineage &&
+        item.role.generationLineage->transitionKind ==
+          GenerationEpochLineageV1::CHECKPOINT_FINALIZE) {
+      continue;
+    }
     logDiTimelineTrace(
       "di-provider", "dependency_publish_start", requestId,
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
        {"scope", edge.scope},
+       {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+       {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                            item.role.candidateDecodeStateIdentity->providerBootId : "none"},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
     if (item.executionGuard) item.executionGuard();
     item.io->publishOutput(item.sessionId, edge, bundle);
@@ -1000,6 +1114,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       {{"sessionId", item.sessionId},
        {"role", item.role.role},
        {"scope", edge.scope},
+       {"inferenceEpoch", std::to_string(item.role.inferenceEpoch)},
+       {"providerBootId", item.role.candidateDecodeStateIdentity ?
+                            item.role.candidateDecodeStateIdentity->providerBootId : "none"},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
 
     OutputPublishTiming timing;
@@ -1044,32 +1161,34 @@ ProviderRoleWorker::outputForEdge(const std::map<std::string, TensorBundle>& out
                                   const DependencyEdge& edge)
 {
   const auto found = outputsByScope.find(edge.scope);
+  const auto& bundleNames = edge.bundleTensorNames.empty()
+    ? edge.tensors : edge.bundleTensorNames;
   if (found != outputsByScope.end()) {
-    if (!edge.tensors.empty() && isEncodedTensorBundle(found->second.payload)) {
-      return selectTensorBundle(edge.scope, found->second, edge.tensors);
+    if (!bundleNames.empty() && isEncodedTensorBundle(found->second.payload)) {
+      return selectTensorBundle(edge.scope, found->second, bundleNames);
     }
     TensorBundle bundle = found->second;
     bundle.name = edge.scope;
     return bundle;
   }
 
-  if (edge.tensors.empty() && outputsByScope.size() == 1) {
-    return selectTensorBundle(edge.scope, outputsByScope.begin()->second, edge.tensors);
+  if (bundleNames.empty() && outputsByScope.size() == 1) {
+    return selectTensorBundle(edge.scope, outputsByScope.begin()->second, bundleNames);
   }
 
-  if (!edge.tensors.empty()) {
-    if (edge.tensors.size() == 1) {
-      const auto tensorOutput = outputsByScope.find(edge.tensors.front());
+  if (!bundleNames.empty()) {
+    if (bundleNames.size() == 1) {
+      const auto tensorOutput = outputsByScope.find(bundleNames.front());
       if (tensorOutput != outputsByScope.end()) {
         TensorBundle bundle = tensorOutput->second;
-        bundle.name = edge.tensors.front();
+        bundle.name = bundleNames.front();
         return bundle;
       }
     }
     for (const auto& item : outputsByScope) {
       if (isEncodedTensorBundle(item.second.payload)) {
         try {
-          return selectTensorBundle(edge.scope, item.second, edge.tensors);
+          return selectTensorBundle(edge.scope, item.second, bundleNames);
         }
         catch (const std::out_of_range&) {
         }

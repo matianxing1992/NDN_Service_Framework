@@ -1,4 +1,6 @@
 #include "ndnsf-di/api.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
@@ -7,6 +9,7 @@
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 
+#include <algorithm>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -76,6 +79,87 @@ readOptions(const ptree& request, const std::filesystem::path& base)
   return path ? readBytes(relativeTo(base, *path), 4 * 1024 * 1024)
               : std::vector<std::uint8_t>{};
 }
+
+class CacheCompatibilityArtifactPublisher final : public RepositoryArtifactPublisher
+{
+public:
+  explicit CacheCompatibilityArtifactPublisher(std::string sourceNamespace)
+    : m_sourceNamespace(std::move(sourceNamespace))
+  {
+    if (m_sourceNamespace.rfind("sha256:", 0) != 0 || m_sourceNamespace.size() != 71 ||
+        !std::all_of(m_sourceNamespace.begin() + 7, m_sourceNamespace.end(), [] (char value) {
+          return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
+        }))
+      throw std::invalid_argument("cache compatibility source namespace is invalid");
+  }
+
+  NativePreparedCanonicalPublication publish(
+    const std::string& modelKey, const std::string& serviceName,
+    const NativeInspectedModel& model, const NativeCanonicalSource& source,
+    const NativeCanonicalPublicationOptions& options,
+    const NativeRequestControl& control) const override
+  {
+    control.requireActive();
+    model.validate();
+    const bool hasPostSelectionMaterial = source.materializedRole ||
+      !source.materialPayloads.empty() || !source.layerPayloads.empty();
+    if (modelKey.empty() || serviceName.empty() || hasPostSelectionMaterial ||
+        source.modelBytes.size() != model.canonicalSourceBytes ||
+        nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) !=
+          model.canonicalSourceDigest ||
+        source.initializerBytes.has_value() != (model.canonicalInitializerBytes != 0) ||
+        (source.initializerBytes &&
+         (source.initializerBytes->size() != model.canonicalInitializerBytes ||
+          nativePlanningDigest(source.initializerBytes->data(), source.initializerBytes->size()) !=
+            model.canonicalInitializerObjectDigest)))
+      throw std::runtime_error("DI_CACHE_COMPATIBILITY_SOURCE_NOT_PLAIN_CANONICAL");
+
+    const auto prefix = std::string("/cache-compatible/") + m_sourceNamespace.substr(7);
+    NativePreparedCanonicalPublication result;
+    result.sourceDataName = prefix + "/source";
+    result.rootDataName = prefix + "/root";
+    result.artifactPrefetchRequired = false;
+    if (model.canonicalInitializerBytes != 0)
+      result.initializerDataName = prefix + "/initializer";
+    result.artifactProfileDigest = options.artifactProfileDigest;
+    result.layerManifestDigests = options.layerManifestDigests;
+    for (const auto& digest : options.layerManifestDigests)
+      result.layerDataNames.push_back(prefix + "/layer/" + digest.substr(7));
+
+    NativeJson metadata{{"canonicalSourceBytes", model.canonicalSourceBytes},
+      {"canonicalSourceDataName", result.sourceDataName},
+      {"canonicalSourceDigest", model.canonicalSourceDigest},
+      {"cacheCompatibilityNamespace", m_sourceNamespace}};
+    if (model.canonicalInitializerBytes != 0) {
+      metadata["canonicalInitializerBytes"] = model.canonicalInitializerBytes;
+      metadata["canonicalInitializerDataName"] = result.initializerDataName;
+      metadata["canonicalInitializerObjectDigest"] = model.canonicalInitializerObjectDigest;
+    }
+    if (!options.packageManifestDigest.empty())
+      metadata["packageManifestDigest"] = options.packageManifestDigest;
+    NativeJson root{{"schema", "ndnsf-di-canonical-model-manifest-v1"},
+      {"state", "ACTIVE"}, {"artifactProfileDigest", options.artifactProfileDigest},
+      {"modelIdentityDigest", model.descriptor.contentDigest},
+      {"modelName", model.descriptor.modelName}, {"metadata", std::move(metadata)}};
+    if (!options.layerManifestDigests.empty())
+      root["layerManifestDigests"] = options.layerManifestDigests;
+    result.canonicalManifestJson = nativeCanonicalJson(root);
+    result.manifestDigest = nativePlanningDigest(result.canonicalManifestJson);
+    result.publishedBytes = 0;
+    result.rollbackOwned = false;
+    result.validate();
+    control.requireActive();
+    return result;
+  }
+
+  void rollback(const NativePreparedCanonicalPublication&) const noexcept override
+  {
+    // The compatibility receipt owns no Core publication or serving lease.
+  }
+
+private:
+  std::string m_sourceNamespace;
+};
 
 std::vector<std::string>
 providerNames(const ptree& request)
@@ -206,6 +290,17 @@ validateStreamEvent(const std::vector<std::int64_t>& expected,
   }
 }
 
+std::string
+streamEventText(const Event& event)
+{
+  std::stringstream stream(std::string(event.payload.begin(), event.payload.end()));
+  ptree value;
+  boost::property_tree::read_json(stream, value);
+  if (value.get<std::string>("schema", {}) != "GenerationTokenEventV1")
+    throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: malformed event schema");
+  return value.get<std::string>("textDelta", {});
+}
+
 void
 writeCheckpoint(const Conversation& conversation, const std::filesystem::path& path)
 {
@@ -258,6 +353,18 @@ run(int argc, char** argv)
     auto sourceOwner = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
       std::move(repo));
     runtimeConfig.repositorySourceProvider = sourceOwner;
+  }
+  if (const auto compatibility = config.get_child_optional("cache_compatibility")) {
+    if (compatibility->get<bool>("enabled", false)) {
+      if (config.get_child_optional("encrypted_repository"))
+        throw std::invalid_argument(
+          "cache compatibility must not configure an encrypted repository");
+      const auto sourceNamespace = compatibility->get<std::string>("source_namespace", {});
+      runtimeConfig.repositoryArtifactPublisher =
+        std::make_shared<CacheCompatibilityArtifactPublisher>(sourceNamespace);
+      std::cout << "NDNSF_DI_CACHE_COMPATIBILITY_REQUESTER enabled=true "
+                   "protectedPublication=skipped" << std::endl;
+    }
   }
   if (const auto repository = config.get_child_optional("encrypted_repository")) {
     auto path = std::filesystem::path(repository->get<std::string>("path"));
@@ -420,7 +527,17 @@ run(int argc, char** argv)
           throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: too many events");
         validateStreamEvent(streamExpected, *event, observedEvents);
       }
+      std::cout << streamEventText(*event);
       ++observedEvents;
+      // NativeInferenceClient records API queue delivery separately.  This
+      // marker follows actual text output from the requester executable and
+      // its flush boundary, with a distinct execution role.
+      std::cout.flush();
+      logRuntimePhase(
+        "di-cli", "tokenEmitted", handle.id(), "request",
+        {{"executionRole", "cli-output"},
+         {"conversationId", "none"},
+         {"tokenIndex", std::to_string(observedEvents)}});
     }
     std::cout << "NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
   }

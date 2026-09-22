@@ -311,6 +311,9 @@ private:
                                      std::function<void()>)> m_schedule;
   mutable std::mutex m_mutex;
   std::vector<std::weak_ptr<NativeInferenceHandle::Operation>> m_operations;
+  // Keep closed operations alive until the explicit drain boundary can emit
+  // one terminal lifecycle observation for each request.
+  std::vector<std::shared_ptr<NativeInferenceHandle::Operation>> m_closedOperations;
   bool m_closed = false;
 };
 

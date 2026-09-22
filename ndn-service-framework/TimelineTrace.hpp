@@ -15,10 +15,19 @@ uint64_t timelineSteadyMicroseconds();
 
 bool timelineTraceEnvEnabled();
 
+bool phaseTimingEnvEnabled();
+
 void logTimelineTrace(const std::string& role,
                       const std::string& event,
                       const ndn::Name& requestId,
                       TimelineFields fields = {});
+
+// Normalized Spec190 phase evidence. This is an observation channel only;
+// lifecycle state remains owned by ServiceUser and the DI runtime.
+void logPhaseTiming(const std::string& role,
+                    const std::string& phase,
+                    const ndn::Name& requestId,
+                    TimelineFields fields = {});
 
 void logStreamTimelineTrace(const std::string& role,
                             const std::string& event,
