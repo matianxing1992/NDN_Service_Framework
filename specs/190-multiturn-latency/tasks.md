@@ -5,13 +5,20 @@
 
 ## Current Checkpoint
 
-2026-09-22 05:10 -05:00：严格串行完成 T001、T002；当前只允许启动 T003，未提前处理后续任务。
+2026-09-22 08:15 -05:00：严格串行完成 T001、T002；T003 实现与静态 gate 已完成，NAC-ABE fixture 首边界已修复并通过两项 C++ focused selector。run-04 在约 12.43 分钟后由资源守卫以 `RESOURCE_BOUNDARY:ownedSwap` 停止；T003 内完成原生内存 Changed gate 后，run-05 已让两个 Provider 到达 `RUNNER_READY` 且未触发资源门，但 Provider-1 在下一次 exact dependency fetch 前因 stale `NDNSF_DATA_V1` group no-progress 状态失败。两次 cleanup 均为 PASS，三轮终端闭环尚未完成。随后新增的 group-progress C++ Changed gate、Spec190 `201/201` compile-link、standalone C++ 回归和串行文档 gate 均通过；第一次 run-06 因历史父目录 root-owned 停止，目录修复后的第二次 run-06 又在 MiniNDN root preflight 因未使用 `sudo -E` 停止；run-07 已通过 ACK/Selection、Provider-0 `RUNNER_READY` 和 Provider-1 首次 dependency fetch，但双 cold assembly 又触发 `RESOURCE_BOUNDARY:MemAvailable`，失败边界已持久化。T003 保持 PARTIAL；未启动 T004 或任何后续任务。
 旧→新：T001–T005不变；旧T008→T006、旧T009→T007、旧T010→T008、旧T011→T009、旧T006→T010、旧T007→T011。
 Batch ID/evidence路径保持原身份，历史提交/审计不改写；下表与正文使用新任务ID。
 T001、T002 的实现、C++ focused regression、compile-link 和只读静态复核已分别闭合；证据见
 [b190-01](evidence/b190-01.md) 和 [b190-02](evidence/b190-02.md)。T002 的 Python 边界测试
 为 8/8，C++ `Spec190AckWindow` 为 3/3；没有运行 MiniNDN/Qwen 两节点实验或性能验收。
-下一步只有 T003，不能跳过或并行推进后项。
+T003 的 requester/launcher 实现、full target compile-link 与只读静态复核通过；NAC-ABE
+fixture 首边界已通过“prepare 前 binding + C++ pump”修复，`PreparedRequestCompletesThroughServedProvider`
+与 `PreparedConversationCommitsTwoNativeTurns` 均退出 0。真实 Qwen run-04 已进入两 Provider
+生产路径，Provider-0 到达 `RUNNER_READY`，Provider-1 仍在 material bundle assembly；资源守卫随后
+观察到 `ownedSwapBytes=348352512 > 268435456` 并停止运行，未观察到三轮 terminal、第二轮失败/取消
+负例或真实 cleanup 后的完整验收。详见 [b190-03](evidence/b190-03.md) 和
+`docs/failure-log.md`。下一步只能在 T003 内用真实 Changed gate 覆盖该资源边界、静态复审后重跑；
+不能将 T003 计为 DONE，也不能跳过或并行推进后项。
 
 ## Execution Progress
 
@@ -19,13 +26,13 @@ T001、T002 的实现、C++ focused regression、compile-link 和只读静态复
 | --- | --- | --- | --- | --- |
 | [T001 Phase timing](#t001-phase-timing) | DONE | — | [b190-01](evidence/b190-01.md)；216/216 compile-link，`Spec190Timing` C++ regression 3/3，静态复核 PASS；MiniNDN/Qwen/performance unobserved | 2026-09-22 04:33 -05:00 |
 | [T002 ACK window](#t002-ack-window) | DONE | T001 | [b190-02](evidence/b190-02.md)；Qwen 1000ms profile、非法值校验、C++ compile-link、Python 8/8、`Spec190AckWindow` 3/3、静态复核 PASS；真实两节点/Trust Schema签名验收未运行 | 2026-09-22 05:10 -05:00 |
-| [T003 Live turns](#t003-live-turns) | NOT_STARTED | T002 | 同handle/实时事件待实现 | 2026-09-22 03:00 -05:00 |
+| [T003 Live turns](#t003-live-turns) | PARTIAL | T002 | [b190-03](evidence/b190-03.md)；实现/静态/full target compile-link PASS；group-progress focused selectors PASS；run-04 触发 ownedSwap，run-05 越过资源门但触发 stale group no-progress，run-07 在 ACK/Selection、Provider-0 RUNNER_READY 和 Provider-1 首次 fetch 后触发 MemAvailable 资源门；三轮 Qwen、terminal、负例和完整 cleanup 验收未闭合 | 2026-09-22 08:15 -05:00 |
 | [T004 Finalize and drain](#t004-finalize-and-drain) | NOT_STARTED | T003 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 03:00 -05:00 |
 | [T005 Resident session](#t005-resident-session) | NOT_STARTED | T004 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 03:00 -05:00 |
 | [T006 Stage transfer](#t006-stage-transfer) | NOT_STARTED | T005 | actual bundle/wire字节与多发修复待做 | 2026-09-22 03:00 -05:00 |
 | [T007 Persistent Repo owner](#t007-persistent-repo-owner) | NOT_STARTED | T006 | 固定根、单owner、恢复/cleanup隔离待做 | 2026-09-22 03:00 -05:00 |
 | [T008 Query and reuse](#t008-query-and-reuse) | NOT_STARTED | T007 | 接既有manifest-first/root-last，免重复STORE待做 | 2026-09-22 03:00 -05:00 |
-| [T009 Protected material reuse](#t009-protected-material-reuse) | BLOCKED | T008 | 先冻结crypto-owner恢复/key-reference/retention接口，禁止直接移除protected miss门 | 2026-09-22 03:00 -05:00 |
+| [T009 Protected material reuse](#t009-protected-material-reuse) | NOT_STARTED | T008 | 轮到 T009 后先冻结 crypto-owner 恢复/key-reference/retention 接口；当前不得提前评估或编码，禁止直接移除 protected miss 门 | 2026-09-22 07:26 -05:00 |
 | [T010 Convergence and candidate](#t010-convergence-and-candidate) | NOT_STARTED | T009 | 新增真实Repo/重启/字节预算oracle与preflight；门未执行 | 2026-09-22 03:00 -05:00 |
 | [T011 Matched experiment](#t011-matched-experiment) | NOT_STARTED | T010 | 三组warm配对、cold/三次restart/缺层及SC-001–009待验收 | 2026-09-22 03:00 -05:00 |
 
@@ -37,6 +44,23 @@ T001、T002 的实现、C++ focused regression、compile-link 和只读静态复
 Native assertion/fixture/oracle均C++；Python仅启动和配置；共享业务生产路径，不写fake ACK或fake runner当模型证明。
 每批记录一个 `evidence/b190-0N.md`，包含Review trace、Coverage matrix、Closure decision、
 四类miss、build计时和实际结果；没有实测不勾选。失败保留raw并更新docs/failure-log.md。
+
+## Strict Serial Dispatch Gate
+
+`ACTIVE_TASK_ID` 只能是当前进度表中第一个不是 `DONE` 的任务；本 checkpoint 的
+`ACTIVE_TASK_ID=T003`。后续任务即使设计上已知存在风险或未来可能 `BLOCKED`，在其紧邻
+前项 `DONE` 前都必须保持 `NOT_STARTED`，不得提前派发、预实现、预验收或把结果回填到前项。
+
+每个任务只有在以下条件全部满足后才可将状态改为 `DONE` 并解锁下一行：本任务的实现、
+接口/设计核对、只读静态复审、受影响构建、具名 C++ 回归/动态验证、负例与生命周期清理、
+五 lane evidence、四类 miss retrospective 和 closure decision 均有持久证据；硬验收不能写
+`UNOBSERVED`、`NOT_RUN` 或 `PARTIAL`。`STATIC_PASS`、单项 focused PASS、构建成功或
+cleanup PASS 都不能解锁下一任务。
+
+当前任务失败时只在当前任务内登记稳定的 recovery/Changed gate，保留原始 run 和首边界，
+先静态复审再重建/重跑；失败、`PARTIAL` 或 `BLOCKED` 均停止调度。只有当前任务重新满足
+完整 exit 才能继续下一个任务；若后项发现前项缺陷，重开最早受影响任务并暂停后项，不能
+通过来回跳转或把欠账转交 T010/T011。严格串行模式不使用 `[P]` 或并行执行示例。
 
 
 ## Phase 1: T001

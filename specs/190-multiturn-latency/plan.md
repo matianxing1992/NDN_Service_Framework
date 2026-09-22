@@ -42,10 +42,10 @@ G1–G6、C1–C3、D1–D4、R1–R6、B1–B3、M1–M3映射[design contract]
 | MiniNDN launcher | 拓扑、配置、启动/停止、资源采集 | C++业务oracle和轮次状态机 |
 
 关键签名/字段/失败流程以 [CD-01–05](contracts/design.md)及[CD-06–09](contracts/material-reuse.md)为单一设计源。
-T004首个FINALIZE失败点尚未完全归因；先执行其只读/仪器诊断子步骤，确认生产修复点并修订CD-03，
-再编码该修复。不得将未知触发条件改写成“已经定位stop睡眠”。其余批次不被该诊断阻塞。
-T009的durable key-reference/新grant绑定/serving恢复和protected缓存retention接口尚未冻结，
-只可先做其明确的源码核查/设计闭合；该生产编码与真实protected warm资格BLOCK，不能凭文档结构通过释放。
+T004首个FINALIZE失败点尚未完全归因；轮到 T004 后先执行其只读/仪器诊断子步骤，确认生产修复点并修订CD-03，
+再编码该修复。不得将未知触发条件改写成“已经定位stop睡眠”。在 T003 完整 DONE 前，T004 及所有后续批次均不派发。
+T009的durable key-reference/新grant绑定/serving恢复和protected缓存retention接口尚未冻结；轮到 T009 后才可做其
+源码核查/设计闭合，该生产编码与真实protected warm资格不能凭文档结构通过释放；在此之前保持 NOT_STARTED。
 
 ## Logical Batch Quality Plan
 
@@ -65,9 +65,15 @@ T009的durable key-reference/新grant绑定/serving恢复和protected缓存reten
 
 Batch growth decision：每行不同独立行为出口，不为少编译合并为一大批；达到出口立即限定验证。
 每task写测试与实现→只读冻结审查；批末组合审查→受影响增量编译/测试。实测前T010 convergence。
-T002与T003/T005可在T001通过后分派不同文件；共享NativeInferenceClient/Provider接线修改串行合并复审。
+STRICT_SERIAL下任何后项都必须等待紧邻前项DONE；T002/T003/T005不可提前分派或只做静态通过后暂缓测试。
+调度器每次只允许一个 ACTIVE_TASK_ID，必须等当前行的完整 implementation→review→build→native
+test/dynamic validation→evidence closure 全部完成后才切换到下一行。`PARTIAL`、`BLOCKED`、
+`STATIC_PASS`、`TESTS_DEFERRED`、单项 selector PASS 或 cleanup PASS 都不是解锁状态；后续行
+在未轮到前保持 `NOT_STARTED`，不使用并行任务或并行示例。失败只生成当前任务内的 recovery/Changed
+gate，保留原始证据并停在当前行；不得把前项欠账转交 T010/T011。
 任务已按依赖重新编号，正文/表格均T001至T011；仅B190批次和历史证据ID保留，映射见tasks checkpoint。
-T007存储生命周期、T008 prepare命中、T009安全边界有不同caller/独立出口，因而分批，不按写文件或写测试拆分。
+T007存储生命周期、T008 prepare命中、T009安全边界有不同caller/独立出口，因而分批，不按写文件或写测试拆分；
+它们仍严格等待前项 DONE，不因不同 caller 而提前执行。
 
 ## Coverage Matrix
 

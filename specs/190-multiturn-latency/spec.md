@@ -21,6 +21,20 @@
 不新增自适应 ACK 窗口或提前关闭策略：先用已有固定窗口机制完成最小改进。
 2026-09-22追加需求：Repo固定存储与真实命中复用属于本Spec核心优化，不再将所有Repo工作排除。
 
+## Execution Order and Completion Gate
+
+本Spec采用 `STRICT_SERIAL` 执行模式。任务必须按 `T001 → T002 → T003 → T004 →
+T005 → T006 → T007 → T008 → T009 → T010 → T011` 的顺序执行；任一时刻只有一个
+`ACTIVE_TASK_ID`，它必须是任务表中第一个尚未 `DONE` 的任务。下一项开始前，上一项必须
+完成实现与接线、接口/设计核对、只读静态复审、受影响构建、具名 C++ 回归或动态验证、
+负例与生命周期清理、五 lane evidence、miss retrospective 和 closure decision。
+
+`PARTIAL`、`BLOCKED`、`STATIC_PASS`、单项 focused test PASS、构建成功或 cleanup PASS
+均不能解锁下一项。当前项失败时，只在当前项内保留首个失败边界并建立 recovery/Changed
+gate；不得提前实现、预验收或静态准备后续项，也不得把当前项欠账转交 `T010` 或 `T011`。
+若后续复核发现前项缺陷，必须暂停后续项并重开最早受影响项。只有所有任务完成后，才能
+进入最终候选收敛和真实两节点性能验收；本执行顺序本身不等于产品或性能 PASS。
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Bounded Request Admission (Priority: P1)
