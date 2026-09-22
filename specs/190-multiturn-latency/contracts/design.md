@@ -1,7 +1,7 @@
 # Design Binding and Validation Contract
 
 **Status**: proposed；以下新增签名/selector 尚未实现。G1–G6、C1–C3、D1–D4、B1–B3、M1–M3适用。
-新增stage传输与per-node Repo复用由[CD-06–09](material-reuse.md)控制；T011完成前protected缓存限制仍保留。
+新增stage传输与per-node Repo复用由[CD-06–09](material-reuse.md)控制；T009完成前protected缓存限制仍保留。
 路径缩写 `DI/` 指 `NDNSF-DistributedInference/cpp/ndnsf-di/`；`ORT/` 指 `NDNSF-DistributedInference/cpp/adapters/onnx/`。
 
 ## CD-01 Timing and ACK Window
@@ -79,7 +79,7 @@ completion通知后无活跃业务待办时立即唤醒drain。
 close之后acquire报明确closed错误，不能偷偷退回新建session绕过关闭；drain超时返回false，不能报告全释放。
 **Identity**：遵守[data model](../data-model.md)，只允许可信preparation验证出的digest和contract；缺字段fail-safe miss，
 相同path但内容改变不能命中。assembler已有稳定assembled digest须复用，不每轮复制模型。
-T005的protected临时明文backing/CUDA先bypass并记录原因；T011单独闭合真实protected复用，
+T005的protected临时明文backing/CUDA先bypass并记录原因；T009单独闭合真实protected复用，
 未通过不得宣称Repo热缓存路径PASS。不得让cache强持有上次grant/context。
 **Owner flow**：NativeProviderHandler当前授权/Selection/spec校验→factory→cache acquire→fresh wrapper→
 每epoch真实run；请求结束释放wrapper lease，KV按原store保留；host退出stop admission→worker drain→cache close/drain。

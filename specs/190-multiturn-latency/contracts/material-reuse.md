@@ -93,7 +93,7 @@ adapter ID/version、manifest、capabilities、graph/IO/layer及initializer引�
 篡改/无权限为错误，不静默当hit。manifest与capabilities不得仅相信未验证旧JSON。
 由当前native catalog factory从已校验graph/IO引用重建catalog及preparation/splitter adapter，复用已有注册表；
 轻量重建FrozenPreparationRegistration、默认placement和当前runtimeBinding，绝不恢复旧指针、grant或cached plan。
-不支持reference-only恢复的adapter保持明确MISS并不得计为Qwen热路径通过；T010必须补齐Qwen native factory恢复支持。
+不支持reference-only恢复的adapter保持明确MISS并不得计为Qwen热路径通过；T008必须补齐Qwen native factory恢复支持。
 新建PreparedModelPackage/wrapper及当前serving lease是必要轻量重绑定，不计为重复材料打包。
 所有计数绑定实际production材料生成/序列化/提交调用点；冷路径必须展示对应非零计数，
 不存在split/export独立调用时记录真实等价生成入口，禁止对从未调用的占位counter断言0制造PASS。
@@ -121,9 +121,9 @@ Provider缓存只持有按policy可保留的材料及可验证身份；不永久
 **Persistence ownership**：request-scoped transient仍沿用当前析构清理；新增durable material显式owner/retention，
 退出仅释放活跃lease，GC仅在明确失效且无活跃read时执行。key-reference恢复失败不能将有ciphertext文件称为可用Repo hit。
 稳定producer身份/证书或合法信任迁移、locator/路由恢复均要真实验证；Provider boot变更使旧KV失效。
-**Design gate**：T011先冻结Core crypto-owner提供的durable key-reference/serving恢复接口、
+**Design gate**：T009先冻结Core crypto-owner提供的durable key-reference/serving恢复接口、
 加密identity与新grant重绑定、缓存retention policy及错误/取消契约，然后才改公共API或默认protected路径。
-当前仅有目标边界，不能写成此项生产编码READY；无明确安全接口时T011 BLOCK，T001/T002/T008/T009不受阻。
+当前仅有目标边界，不能写成此项生产编码READY；到T009时先闭合安全设计门，未闭合则停在T009，不能开始T010/T011。
 不用存储整份旧request/grant/会话key JSON来凑重启复用，不换明文传输绕开问题。
 **Proof**：真实protected冷发布→新run同identity查询hit→Repo重启恢复服务→当前新grant命中本地层/assembled；
 旧/错grant、失效key、篡改ciphertext、错AAD、错boot/KV、取消与活跃lease等反例仍拒绝；

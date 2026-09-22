@@ -2,13 +2,14 @@
 
 ## Current State
 
-仅计划；不得照抄planned selector当作已存在的可执行命令。按依赖完成T001–T006及T008–T011，再执行T007。
+仅计划；不得照抄planned selector当作已存在的可执行命令。严格逐项完成T001至T011；上一项DONE前不开始下一项。
 基线：[research](research.md)。固定Qwen3-0.6B、两Provider、r260三轮输入/采样、1024 token预算。
 
 ## Document Checks
 
 ```bash
 python3 .agents/skills/speckit-audit/scripts/audit_speckit_structure.py specs/190-multiturn-latency --strict
+python3 skills/speckit-code-design/scripts/verify-serial-tasks.py specs/190-multiturn-latency/tasks.md --self-test
 .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
 python3 skills/speckit-code-design/scripts/verify-spec-kit-sync.py --require-entrypoints
 ```
@@ -19,7 +20,7 @@ T001注册后使用planned `spec190-latency-tests` 的PhaseTiming/AckWindow/Live
 Waf受影响增量构建，系统编译器与已安装依赖，默认-j4；Core/API变化重编真实消费者。
 T003–005生命周期selector repeated+asan-ubsan；三组正常/边界/失败用例按plan参数矩阵，不全树重构。
 安装使用`scripts/install-global-target.sh`，核对实际库/binary路径hash及`ldd`，不能MiniNDN加载build树。
-T006注册并安装 `spec190-multiturn-oracle` 后再运行；`--help`不算行为通过。
+T010注册并安装 `spec190-multiturn-oracle` 后再运行；`--help`不算行为通过。
 
 ## Matched Runs
 
@@ -39,7 +40,7 @@ receipt和材料闭包与冷准备一致。另做缺失层真实fetch及错误�
 性能control/treatment均相同Repo warm状态；冷启动与重启恢复单列，不混入纯ACK收益。
 分别报告layer、assembled、resident命中；layer hit不能当作免assembly/ORT load。
 按stage tensor实际shape/dtype计算预算，分别记录payload/wire/重传/控制字节；KV和无关层不得跨stage搬运。
-T011先闭合CD-09安全接口再编码；原生安全反例未通过，不用明文兼容缓存替代真实Repo验收。
+T009先闭合CD-09安全接口再编码；原生安全反例未通过，不用明文兼容缓存替代真实Repo验收。
 
 ## Metrics
 

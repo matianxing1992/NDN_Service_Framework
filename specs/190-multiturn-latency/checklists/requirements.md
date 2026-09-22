@@ -13,11 +13,14 @@
 
 ## Requirements and Tasks
 
+- [x] STRICT_SERIAL：正文与进度表顺序一致，每项仅依赖前项，上一项全部验收DONE才推进。
+- [x] 未执行任务旧→新ID显式映射，历史B190/evidence不改写；没有把前项欠测转交最终实验。
+
 - [x] FR/SC双向映射任务，C++生产入口、负例、owner、文件及planned selectors可追踪。
 - [x] 11项按行为出口组织，测试/实现/证据不机械拆分。
 - [x] 认证、KV、FINALIZE补偿、缓存identity/lease/退出与旧profile污染均覆盖。
 - [x] 匹配对照、失败样本、时间口径、资源及候选不可变门明确。
-- [x] 本轮严格结构检查与Kant独立复审修正完成；仅规划PASS，T004/T011前置门保留。
+- [x] 本轮严格结构检查与Kant独立复审修正完成；仅规划PASS，T004/T009前置门保留。
 - [x] prepare免重复准备、stage字节预算、固定根重启、当前授权和冷热对照均有原生验收。
 
 ## Limits

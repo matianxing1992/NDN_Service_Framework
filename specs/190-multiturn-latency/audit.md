@@ -1,5 +1,33 @@
 # Spec190 Audit
 
+## Strict Serial Revision — 2026-09-22 03:05 -05:00
+
+用户要求：清单即执行顺序，上一项全部本项验收完成才进入下一项，不允许前向依赖或批内欠测推进。
+以`832cc8b7`为基线重排未执行任务，映射见tasks checkpoint；旧B190/证据身份保留。
+当前ID：T006传输、T007固定Repo、T008 prepare复用、T009保护材料、T010收敛、T011系统实验。
+下文旧版审计中的T ID均为历史编号，不作为当前调度依据。
+
+**Findings / repair**：修正原收敛/实验排在追加前置之前；正文/registry/plan统一单链DONE依赖。
+Kant指出T010 Read包含后项、plan仍可并行及T004/T006本项/系统验收混淆，均修正并局部复审PASS。
+T004本项原生控制/生命周期完整验收，T006本项真实序列化/计数校准完整验收；
+真实MiniNDN≤2秒及保护材料热路径完整归对应T009/T011，原SC不减少、不把欠测改名为完成。
+共享skill增加按用户显式要求启用的STRICT_SERIAL，默认模式不变；本机tasks入口和版本化模板引用同一规则，个人共享副本同步。
+Laplace检查器审查发现子ID截断与模式声明宽松，改完整ID解析/显式声明并加反例；单层检查器明确拒绝可执行子ID。
+Laplace对该增量复审PASS；main实际运行正常链+10反例PASS，不以代理未运行的静态意见代替测试结果。
+
+**Coverage matrix**：production entry为本机speckit-tasks入口及版本化模板；implementation为task-progress严格模式与顺序检查器；
+test为正常链和10个非法结构fixture及真实tasks解析；build/source closure为Python工作流工具、native N/A；
+migration/evidence为旧→新映射、保留历史证据及局部DONE/系统PASS边界。无产品源码/API变化。
+**Validation**：strict结构17 FR/9 SC/11 tasks/0完成；顺序检查及自测、skill格式、sync11/11+personal、diff检查。
+**Review trace**：profile沿用下述review-agent路径/SHA；Kant审Spec顺序/验收，Laplace审skill/检查器，均只读。
+初次冻结`.codex-tmp/spec190-serial-review/review-v1.tgz` SHA256 `7b78a2b7d124039dd3c0cb89a29454f795411e79f66e53d305989f685f78269b`；
+后续只对上述已定位问题修复并复审。Batch growth decision：仅顺序/验收归属/skill门修订，不扩产品任务。
+**Retrospective**：static发现/修复如上；compile-link N/A；workflow-runtime为检查器自测，native-runtime NOT_RUN；
+unobserved为全部产品任务与真实性能。Closure decision: CLOSED_FOR_VALIDATION（文档/工作流），不表示产品完成。
+**Checkpoint boundary**：仅Spec190与干净的任务模板/进度契约/新检查器；既有21个暂存文件不混提。
+本机`.agents/skills/speckit-tasks/SKILL.md`受忽略，已更新但不强制入Git；个人共享副本仅本机同步。
+Design变更索引仍含既有混合修改，保留未提交。下一步仅T001；T009生产编码仍有安全设计门。
+
 ## Verdict
 
 PASS — 限定本次文档规划：新增Repo/传输/prepare复用范围完成主审、结构检查及Kant独立复审修正。

@@ -62,7 +62,7 @@ launcher先等requester exit和Provider barrier，再启动下轮，没有逐轮
 
 真实requester逐token TTFT/间隔、ACK认证/排队、Selection前2.93秒、轮间13秒仍须统一关联采集。
 两侧Provider日志约46.62/46.13MB，failure polling有重读全文行为；未量出其时间占比。
-T001/T007记录日志字节和读取成本，只有实测在关键路径才在原harness局部改为offset读取，
+T001/T011记录日志字节和读取成本，只有实测在关键路径才在原harness局部改为offset读取，
 不单开日志平台/日志优化任务，也不先改日志级别使对照失真。
 
 ## Decisions
@@ -97,7 +97,7 @@ T001/T007记录日志字节和读取成本，只有实测在关键路径才在�
 | Current fact | Evidence / implication |
 | --- | --- |
 | 层获取容器不等于持久layer cache | NativeCanonicalOnnxAssembler的fetchedBundles只做本次组装内去重 |
-| protected普通路径拒绝assembled cache | tryLoadNativeCanonicalOnnxRoleFromCache对非plaintext且非compatibility返回miss；必须T011安全接线，不能删除检查冒充提速 |
+| protected普通路径拒绝assembled cache | tryLoadNativeCanonicalOnnxRoleFromCache对非plaintext且非compatibility返回miss；必须T009安全接线，不能删除检查冒充提速 |
 | 跨stage本应过滤KV | ProviderRoleWorker::outputForEdge/withoutProviderLocalState；显式state边拒绝；需要真实bundle/wire反例确认 |
 | 尾部本地采样 | NativeEpochCoordinator::lastLogits/makeTokenFeedback；不应把完整logits传回上游，但本地物化/copy可能昂贵 |
 | r260未测完整wire字节 | 每侧3次CACHE_HIT，没有MATERIAL_FETCH也没有DEPENDENCY_OBJECT计数，不能据缺日志量化0网络 |

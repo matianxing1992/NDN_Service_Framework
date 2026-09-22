@@ -142,6 +142,6 @@ TurnTiming、AckWindowPolicy、LoadedSessionIdentity、SessionLease、LoadEviden
 
 1 秒是本 workload 的目标窗口，不是“全球任何网络 RTT 必定小于200ms”的保证。
 ACK 涉及路由、进程队列、密钥/签名验证，不只往返网络传播。预热/授权 readiness 在开始请求前单列，不能挪动请求内工作美化计时。
-T005先实现CPU明文immutable缓存兼容路径；T011负责让真实受保护材料路径安全复用，不能将原先强制miss检查直接删除。
+T005先实现CPU明文immutable缓存兼容路径；T009负责让真实受保护材料路径安全复用，不能将原先强制miss检查直接删除。
 CUDA不扩展。进程重启保留磁盘材料不保留ORT session或旧boot的KV有效性。
 `Spec189 = original correctness/full-path obligations`；`Spec190 = latency + scoped real-Repo reuse`。两者资格和原始证据分别保留。

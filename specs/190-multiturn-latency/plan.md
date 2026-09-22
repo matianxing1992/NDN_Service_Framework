@@ -25,7 +25,7 @@ Spec189待做的跨请求驻留转入本Spec T005，旧Spec资格不关闭。
 
 I/D1：原生Conversation/既有协议权威；II/G3：授权/验证/Selection不变；III：CodeGraph后核对源；
 IV/VI：每task一个行为出口，测试/实现/证据不拆行政任务；V：匹配真实MiniNDN，至少60秒累计真实请求观察；
-VII：候选冻结及拒绝零启动；VIII：T006收敛PASS后才运行T007。G4/D3是驻留及drain硬约束。
+VII：候选冻结及拒绝零启动；VIII：T010收敛PASS后才运行T011。G4/D3是驻留及drain硬约束。
 G1–G6、C1–C3、D1–D4、R1–R6、B1–B3、M1–M3映射[design contract](contracts/design.md)与[material contract](contracts/material-reuse.md)。
 无原则豁免，当前/目标PDF不因本计划自动刷新为实现事实。
 
@@ -44,7 +44,7 @@ G1–G6、C1–C3、D1–D4、R1–R6、B1–B3、M1–M3映射[design contract]
 关键签名/字段/失败流程以 [CD-01–05](contracts/design.md)及[CD-06–09](contracts/material-reuse.md)为单一设计源。
 T004首个FINALIZE失败点尚未完全归因；先执行其只读/仪器诊断子步骤，确认生产修复点并修订CD-03，
 再编码该修复。不得将未知触发条件改写成“已经定位stop睡眠”。其余批次不被该诊断阻塞。
-T011的durable key-reference/新grant绑定/serving恢复和protected缓存retention接口尚未冻结，
+T009的durable key-reference/新grant绑定/serving恢复和protected缓存retention接口尚未冻结，
 只可先做其明确的源码核查/设计闭合；该生产编码与真实protected warm资格BLOCK，不能凭文档结构通过释放。
 
 ## Logical Batch Quality Plan
@@ -52,22 +52,22 @@ T011的durable key-reference/新grant绑定/serving恢复和protected缓存reten
 | Batch / Members | Stable exit | Implementation / acceptance dependencies | Caller + contract + selector + source closure | Owner / result |
 | --- | --- | --- | --- | --- |
 | B190-01 / T001 | 每阶段可按request/attempt关联，不伪造缺失指标 | none / C++ PhaseTiming | Core/DI/CLI timing；CD-01；spec190-latency-tests；DI/Core库+requester | DI/Core / evidence/b190-01.md planned |
-| B190-02 / T002 | Qwen profile实际1000ms、原认证和冻结行为不变 | T001 / AckWindow+原Core回归 | launcher→requester→Core；CD-01；同测试target；Core仅实际修改时构建 | DI admission / evidence/b190-02.md planned |
-| B190-03 / T003 | token终态前输出、同Conversation三轮无需逐轮进程退出 | T001 / LiveTurns | requester→Conversation→EventReader；CD-02；DI/requester | DI API / evidence/b190-03.md planned |
-| B190-04 / T004 | 正常FINALIZE及时处理，无30秒补偿满窗；异常补偿不丢 | T001,T003 / TerminalDrain | NativeInferenceClient↔ProviderHandler；CD-03；DI/provider/requester，必要Core | DI lifecycle / evidence/b190-04.md planned |
-| B190-05 / T005 | 两请求一次ORT load，身份/证据/lease与退出正确 | T001 / ResidentSession，接入T003在T007验收 | Provider factory→ORT；CD-04；DI/provider+真实ORT fixture | DI adapter / evidence/b190-05.md planned |
-| B190-06 / T006 | 全真实路径收敛PASS，候选错误在启动前拒绝 | T001–T005,T008–T011 / all focused selectors | Waf注册/安装、C++oracle、launcher preflight；CD-05–09 | validation / evidence/b190-06.md planned |
-| B190-07 / T007 | 三组配对同handle实测正确、提速、资源收束 | T006 PASS / all SC | 已安装MiniNDN+oracle；CD-05；不修改candidate | experiment / evidence/b190-07.md planned |
-| B190-08 / T008 | 按实际tensor/wire预算传输，无模型/KV/logits额外跨stage | T001 / StageTransferBudget | worker→dependencyIo；CD-06；DI/Core观察+原生fixture | DI dataflow / evidence/b190-08.md planned |
-| B190-09 / T009 | 节点固定根重开可读，cleanup不删committed对象 | none / RepoRestart | RepoNode/Core/file backend+launcher；CD-07；Repo/原生fixture | Repo lifecycle / evidence/b190-09.md planned |
-| B190-10 / T010 | User查询完整匹配后不再STORE，缺失才精确补齐 | T009 / RepoLookupReuse | Runtime→RepoSourceProvider/RepoClient；CD-08；DI+Repo | DI prepare / evidence/b190-10.md planned |
-| B190-11 / T011 | 新授权下protected持久/本地缓存合法复用，无旁路 | T005,T009,T010 + CD-09设计门 / ProtectedMaterialReuse | crypto owner→Repo backing/assembler；CD-09；Core+DI+Repo | protected material / evidence/b190-11.md planned |
+| B190-02 / T002 | Qwen profile实际1000ms、原认证和冻结行为不变 | T001 DONE / AckWindow+原Core回归 | launcher→requester→Core；CD-01；同测试target；Core仅实际修改时构建 | DI admission / evidence/b190-02.md planned |
+| B190-03 / T003 | token终态前输出、同Conversation三轮无需逐轮进程退出 | T002 DONE / LiveTurns | requester→Conversation→EventReader；CD-02；DI/requester | DI API / evidence/b190-03.md planned |
+| B190-04 / T004 | 正常FINALIZE及时处理，无30秒补偿满窗；异常补偿不丢 | T003 DONE / TerminalDrain | NativeInferenceClient↔ProviderHandler；CD-03；DI/provider/requester，必要Core | DI lifecycle / evidence/b190-04.md planned |
+| B190-05 / T005 | 两请求一次ORT load，身份/证据/lease与退出正确 | T004 DONE / ResidentSession，接入T003在T011验收 | Provider factory→ORT；CD-04；DI/provider+真实ORT fixture | DI adapter / evidence/b190-05.md planned |
+| B190-08 / T006 | 按实际tensor/wire预算传输，无模型/KV/logits额外跨stage | T005 DONE / StageTransferBudget | worker→dependencyIo；CD-06；DI/Core观察+原生fixture | DI dataflow / evidence/b190-08.md planned |
+| B190-09 / T007 | 节点固定根重开可读，cleanup不删committed对象 | T006 DONE / RepoRestart | RepoNode/Core/file backend+launcher；CD-07；Repo/原生fixture | Repo lifecycle / evidence/b190-09.md planned |
+| B190-10 / T008 | User查询完整匹配后不再STORE，缺失才精确补齐 | T007 DONE / RepoLookupReuse | Runtime→RepoSourceProvider/RepoClient；CD-08；DI+Repo | DI prepare / evidence/b190-10.md planned |
+| B190-11 / T009 | 新授权下protected持久/本地缓存合法复用，无旁路 | T008 DONE / ProtectedMaterialReuse | crypto owner→Repo backing/assembler；CD-09；Core+DI+Repo | protected material / evidence/b190-11.md planned |
+| B190-06 / T010 | 全真实路径收敛PASS，候选错误在启动前拒绝 | T009 DONE / all focused selectors | Waf注册/安装、C++oracle、launcher preflight；CD-05–09 | validation / evidence/b190-06.md planned |
+| B190-07 / T011 | 三组配对同handle实测正确、提速、资源收束 | T010 DONE / all SC | 已安装MiniNDN+oracle；CD-05；不修改candidate | experiment / evidence/b190-07.md planned |
 
 Batch growth decision：每行不同独立行为出口，不为少编译合并为一大批；达到出口立即限定验证。
-每task写测试与实现→只读冻结审查；批末组合审查→受影响增量编译/测试。实测前T006 convergence。
+每task写测试与实现→只读冻结审查；批末组合审查→受影响增量编译/测试。实测前T010 convergence。
 T002与T003/T005可在T001通过后分派不同文件；共享NativeInferenceClient/Provider接线修改串行合并复审。
-追加T008–T011保留旧ID，执行顺序按依赖，不按数字大小；T006/T007仍最后。
-T009存储生命周期、T010prepare命中、T011安全边界有不同caller/独立出口，因而分批，不按写文件或写测试拆分。
+任务已按依赖重新编号，正文/表格均T001至T011；仅B190批次和历史证据ID保留，映射见tasks checkpoint。
+T007存储生命周期、T008 prepare命中、T009安全边界有不同caller/独立出口，因而分批，不按写文件或写测试拆分。
 
 ## Coverage Matrix
 
@@ -85,7 +85,7 @@ T009存储生命周期、T010prepare命中、T011安全边界有不同caller/独
 implementation为文件backend/受保护range-store与CD-06–09，tests为planned RepoRestart/RepoLookupReuse/
 ProtectedMaterialReuse/StageTransferBudget，build为Repo/DI/Core真实target+tests/wscript安装接线，
 migration为固定root排除cleanup、原transient清理不变、旧key/grant禁止复用、Repo-enabled与诊断分开。
-CodeGraph定位后核对实际源码，T011实现接线仍为gap，不以已有helper声明全路径支持。
+CodeGraph定位后核对实际源码，T009实现接线仍为gap，不以已有helper声明全路径支持。
 
 ## Dynamic Validation
 
@@ -100,13 +100,13 @@ acquire/release/evict/close/single-flight竞争做至少20次、总预算120秒�
 每native selector至少3次；异步生命周期定向case至少20次，预算每case90秒（正常不应睡满）。
 Freeze→Sample→Run→Classify；Face/io/scheduler owner晚于worker销毁，或显式join/drain证明安全。
 不能降低生产close契约迁就fixture，sanitizer未跑就保留该验收缺口。
-T008：计数/序列化C++反例+适用asan；T009/T010：真实文件backend恢复、双进程flock、部分提交/断电边界
-故障注入及asan；T011复用现有C++授权/crypto负例，新增重启/lease动态门。不能用目录存在、Python配置
+T006：计数/序列化C++反例+适用asan；T007/T008：真实文件backend恢复、双进程flock、部分提交/断电边界
+故障注入及asan；T009复用现有C++授权/crypto负例，新增重启/lease动态门。不能用目录存在、Python配置
 检查、缓存标志或r260未采集的零日志行来证明material bytes=0。
 
 ## Pre-Qualification Design-Code Convergence
 
-T006核对spec/contract→生产默认接线→CPP fixture/oracle→安装闭包；未解决语义、安全、owner、
+T010核对spec/contract→生产默认接线→CPP fixture/oracle→安装闭包；未解决语义、安全、owner、
 wire或证据缺口BLOCK。记录static、compile-link、runtime-test、unobserved四类首边界，
 Build measurement记录targets/-j/toolchain/elapsed/exit；无运行填NOT_RUN，不补造PASS。
 审查记录包括review-agent profile路径/SHA、固定候选摘要、完整diff范围及五lane；结论仅适用该候选。
@@ -115,7 +115,7 @@ Build measurement记录targets/-j/toolchain/elapsed/exit；无运行填NOT_RUN�
 ## Immutable Candidate and Invalidation
 
 候选元组：含新增未跟踪文件的源码快照、系统库/二进制与依赖hash、launcher/oracle/fixtures、
-有效配置、输入/模型/权重digest、验收契约。复用现有安装校验和preflight，在T006补必要mutation。
+有效配置、输入/模型/权重digest、验收契约。复用现有安装校验和preflight，在T010补必要mutation。
 源码/ABI改变→静态+受影响构建+安装+preflight+实测；harness/oracle/配置/输入改变→受影响静态+
 preflight+实测；单纯描述更新→文档审计，不自动重跑模型。每candidate/gate一个active subject。
 不复用旧run id，不覆盖r260；公共不可变缓存可重用，临时小ONNX fixture退出自动删除。
@@ -125,3 +125,10 @@ preflight+实测；单纯描述更新→文档审计，不自动重跑模型。�
 本目录：spec、research、plan、data-model、contracts/design、tasks、quickstart、traceability、audit/checklist。
 生产修改限CD-01–09明确路径。维护Design/spec-design-changes.md，实施API变化随对应task同步中文契约和双PDF。
 Git使用Experimental显式路径checkpoint，不push；混合既有源码/暂存区不得打包进本Spec文档提交。
+
+## Strict Serial Execution
+
+用户要求严格串行：T001–T011按数字顺序逐项完成，上项全部本项验收DONE后才开始下项。
+以tasks.md的单链完成依赖为准；本表技术依赖是额外前置，不允许独立派发/静态后延期测试。
+任务与独立验收批次一一对应，B190历史ID保留；T010候选收敛、T011真实系统验收置末。
+T004未知首边界和T009安全设计门在本任务先闭合；被阻塞时不得跳项。局部回归不能转交末项补欠账。
