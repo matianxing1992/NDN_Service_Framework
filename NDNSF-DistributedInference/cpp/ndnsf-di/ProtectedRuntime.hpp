@@ -42,6 +42,20 @@ struct NativeProtectedGrantConfig
   std::function<bool()> shouldCancel;
 };
 
+/** Non-secret, stable identity of the protected key used for one artifact. */
+struct NativeProtectedKeyReferenceV1
+{
+  std::string authorityIdentity;
+  std::string providerIdentity;
+  std::string modelManifestDigest;
+  std::string protectionEpoch;
+  std::string keyId;
+
+  void validate() const;
+  std::string canonical() const;
+  std::string digest() const;
+};
+
 /** Exact, non-secret authorization binding for one protected execution role. */
 struct ProtectedRuntimeBindingV1
 {
@@ -119,6 +133,7 @@ public:
   ProtectedRuntimeState state() const noexcept;
   const std::string& terminalReason() const noexcept;
   const ProtectedRuntimeBindingV1& binding() const noexcept;
+  std::optional<NativeProtectedKeyReferenceV1> keyReference() const;
 
 private:
   struct Lease
@@ -137,6 +152,7 @@ private:
 private:
   ProtectedRuntimeBindingV1 m_binding;
   std::optional<NativeProtectedGrantConfig> m_grantConfig;
+  std::optional<NativeProtectedKeyReferenceV1> m_keyReference;
   std::vector<std::uint8_t> m_contentKey;
   std::uint64_t m_grantExpiresAtMs = 0;
   mutable std::mutex m_mutex;

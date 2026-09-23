@@ -62,8 +62,18 @@ std::string contextBytes(const NativeAssembledEntryContext& value)
   if (value.entryKind != "MODEL_PROTO" && value.entryKind != "EXTERNAL_DATA") {
     throw rejected("assembled entry kind is invalid");
   }
+  if (!value.keyReferenceDigest.empty() &&
+      (value.keyReferenceDigest.size() != 71 ||
+       value.keyReferenceDigest.substr(0, 7) != "sha256:" ||
+       !std::all_of(value.keyReferenceDigest.begin() + 7,
+                    value.keyReferenceDigest.end(), [] (unsigned char c) {
+                      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                    }))) {
+    throw rejected("assembled key reference digest is invalid");
+  }
   return "NDNSF-DI/assembled/v1" + value.modelManifestDigest +
-         value.roleAssemblySpecDigest + value.storageProfileDigest;
+         value.roleAssemblySpecDigest + value.storageProfileDigest +
+         value.keyReferenceDigest;
 }
 
 Bytes hkdf(const Bytes& key, const std::string& info)
@@ -124,6 +134,7 @@ std::string manifest(const NativeAssembledEntryContext& value,
   return "{\"aead\":\"AES-256-GCM\",\"ciphertextDigest\":\"" +
     cipherDigest + "\",\"ciphertextLength\":" +
     std::to_string(cipherLength) + ",\"entryKind\":\"" + value.entryKind +
+    "\",\"keyReferenceDigest\":\"" + value.keyReferenceDigest +
     "\",\"kdf\":\"HKDF-SHA256\",\"kdfContextDigest\":\"" +
     digest(reinterpret_cast<const unsigned char*>(aad.data()), aad.size()) +
     "\",\"modelManifestDigest\":\"" + value.modelManifestDigest +

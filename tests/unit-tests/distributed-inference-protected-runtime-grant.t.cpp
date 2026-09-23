@@ -30,6 +30,7 @@ struct BoundGrantFixture
   NativeProtectedGrantConfig config;
   std::string wire;
   std::string expectedKey;
+  std::string expectedKeyId;
   std::uint64_t now = 0;
   int fetchCount = 0;
 
@@ -43,6 +44,7 @@ struct BoundGrantFixture
     std::istringstream input(wire);
     boost::property_tree::read_json(input, grant);
     expectedKey = unhex(positive.get<std::string>("expected.contentKey"));
+    expectedKeyId = grant.get<std::string>("keyId");
     now = vectors.get<std::uint64_t>("nowMs");
     binding.provider = vectors.get<std::string>("providerIdentity");
     binding.role = "stage0";
@@ -483,9 +485,17 @@ BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreSealsAndAuthenticatesAllEntryKinds, 
 {
   ProtectedRuntime runtime(binding, config);
   runtime.verifyGrant(binding, now);
+  const auto keyReference = runtime.keyReference();
+  BOOST_REQUIRE(keyReference);
+  BOOST_CHECK_EQUAL(keyReference->authorityIdentity, config.authorityIdentity);
+  BOOST_CHECK_EQUAL(keyReference->providerIdentity, binding.provider);
+  BOOST_CHECK_EQUAL(keyReference->modelManifestDigest, config.modelManifestDigest);
+  BOOST_CHECK_EQUAL(keyReference->protectionEpoch, binding.protectionEpoch);
+  BOOST_CHECK_EQUAL(keyReference->keyId, expectedKeyId);
   for (const auto& kind : {"MODEL_PROTO", "EXTERNAL_DATA"}) {
     const NativeAssembledEntryContext context{
-      config.modelManifestDigest, binding.planDigest, binding.securityPolicySnapshotDigest, kind};
+      config.modelManifestDigest, binding.planDigest, binding.securityPolicySnapshotDigest,
+      kind, keyReference->digest()};
     const std::vector<std::uint8_t> plain{'m', 'o', 'd', 'e', 'l'};
     runtime.withContentKey(now, [&] (const auto& key) {
       auto wire = sealNativeAssembledEntry(key, plain, context);
@@ -500,6 +510,24 @@ BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreSealsAndAuthenticatesAllEntryKinds, 
   }
 }
 
+BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreRejectsWrongKeyReferenceContext, BoundGrantFixture)
+{
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  const auto keyReference = runtime.keyReference();
+  BOOST_REQUIRE(keyReference);
+  const NativeAssembledEntryContext context{
+    config.modelManifestDigest, binding.planDigest, binding.securityPolicySnapshotDigest,
+    "MODEL_PROTO", keyReference->digest()};
+  const std::vector<std::uint8_t> plain{'p', 'r', 'o', 't', 'e', 'c', 't', 'e', 'd'};
+  runtime.withContentKey(now, [&] (const auto& key) {
+    const auto wire = sealNativeAssembledEntry(key, plain, context);
+    auto wrong = context;
+    wrong.keyReferenceDigest = "sha256:" + std::string(64, 'c');
+    BOOST_CHECK_THROW(openNativeAssembledEntry(key, wire, wrong, plain.size()), std::runtime_error);
+  });
+}
+
 BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreStreamsFileBackedSealAndOpen, BoundGrantFixture)
 {
   char pattern[] = "/tmp/spec181-native-stream-XXXXXX";
@@ -512,11 +540,13 @@ BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreStreamsFileBackedSealAndOpen, BoundG
   std::generate(plain.begin(), plain.end(), [value = std::uint8_t{0}] () mutable {
     return value++;
   });
-  const NativeAssembledEntryContext context{
-    config.modelManifestDigest, binding.planDigest, binding.securityPolicySnapshotDigest,
-    "MODEL_PROTO"};
   ProtectedRuntime runtime(binding, config);
   runtime.verifyGrant(binding, now);
+  const auto keyReference = runtime.keyReference();
+  BOOST_REQUIRE(keyReference);
+  const NativeAssembledEntryContext context{
+    config.modelManifestDigest, binding.planDigest, binding.securityPolicySnapshotDigest,
+    "MODEL_PROTO", keyReference->digest()};
   runtime.withContentKey(now, [&] (const auto& key) {
     const auto wireDigest = sealNativeAssembledEntryToFile(
       key, plain, wirePath, context);

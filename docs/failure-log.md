@@ -1,5 +1,23 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-14 protected key-reference propagation gate
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`.
+- **Boundary:** the B190-13 static audit found that grant `keyId` was discarded
+  after content-key unwrap, so a protected assembled ciphertext had no stable,
+  non-secret key identity in its authenticated context. That boundary is now
+  closed in the in-process path: verifier → `ProtectedRuntime` reference →
+  assembled AAD/manifest → Provider open. Missing or mismatched references fail
+  closed before plaintext exposure.
+- **Validation:** ordinary root `build/` compile/link of
+  `spec181-protected-runtime-closure` with `-j2` passed in `8m31.186s`; the
+  selector ran `32` C++ cases with no errors. `git diff --check` passed.
+- **Evidence:** [B190-14](../specs/190-multiturn-latency/evidence/b190-14.md).
+- **Still open:** stable protected cache identity/path, ciphertext-only durable
+  Repo recovery across process restart, new-grant/Selection rebinding, and
+  real Qwen/MiniNDN qualification. The protected assembler miss remains in
+  force. ASan/UBSan is explicitly deferred and no sanitizer result is claimed.
+
 ## Spec190 T006 — protected key-reference identity boundary (2026-09-23)
 
 静态复查确认 protected durable reuse 的下一个首边界在 grant verification 到磁盘密文

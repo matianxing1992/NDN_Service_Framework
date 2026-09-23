@@ -44,6 +44,14 @@ miss，不改稳定目录、不运行真实 Qwen。下一 gate 只实现 referen
 fail-closed C++ selector，证据见 [B190-13](evidence/b190-13.md)；T006 仍 `PARTIAL`，T007
 继续锁定。
 
+2026-09-23 16:51 -05:00：B190-14 reference propagation atomic gate 已通过。普通根
+`build/` 的 `spec181-protected-runtime-closure` 完成 compile/link，selector 运行 `32` 个 C++
+case 无错误；已验证 grant `keyId` → runtime opaque reference → assembled AAD/manifest 的
+正向链路，以及错误 reference 的 fail-closed 拒绝。ASan/UBSan 按用户决定 deferred，未与普通
+`build/` 混用。稳定 protected cache 路径、ciphertext-only Repo 跨进程恢复、new-grant/Selection
+重绑定和真实 Qwen 仍未验证；T006 继续 `PARTIAL`，下一 gate 仍是 durable protected lookup/
+recovery，不能跳到 T007。详见 [B190-14](evidence/b190-14.md)。
+
 2026-09-23 16:02 -05:00：用户明确取消 ASan/UBSan 资格方向，fresh sanitizer `-j2` 从 `1/120`
 推进到 `8/120` 后受控停止；可用内存约 5.4 GiB，最近 `vmstat` 没有持续 `si/so`，但没有产生
 sanitizer 结果。根 `build/` 仅约 80 KiB 配置、没有可复用对象；后续普通 Waf 构建固定使用根
@@ -852,7 +860,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
 | [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
-| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)：retention/source-lifetime atomic gate compile-link + C++ 5-case×3 PASS；key-reference/recovery/assembled hit 未完成，禁止解除 protected miss 门 | 2026-09-23 16:31 -05:00 |
+| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-14](evidence/b190-14.md)：key-reference propagation/AAD wrong-reference atomic gate compile-link + C++ 32-case PASS；durable recovery/assembled hit 未完成，禁止解除 protected miss 门 | 2026-09-23 16:51 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
 | [T009 Finalize and drain](#t009-finalize-and-drain) | NOT_STARTED | T008 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 15:08 -05:00 |
