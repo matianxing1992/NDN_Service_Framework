@@ -1,5 +1,22 @@
 # Spec 设计变更记录
 
+## Spec190 Core-owned protected reference recovery — 2026-09-23
+
+- **Status**: `PARTIAL`；B190-18 只推进 T006 的 Core durable reference recovery，不解除
+  protected assembler miss，也不解锁 T007。
+- **Delta**: `ServiceUser` 为稳定 publication identity 持久化非秘密 reference metadata，
+  在 Repo durable lookup 后校验内容摘要、大小、policy/protection epoch、opaque key-reference、
+  manifest、locator、owner 和首段可读性；命中后直接恢复已有 range serving，不重新加密或
+  `commitFile`。reference 只有在 Repo commit/read-back、local owner registration 和 expiry
+  registration 成功后才写入；缺失或损坏 reference fail-closed。
+- **Boundary**: 该记录不持有 private key、plaintext、旧 grant、完整 request 或 session KV，
+  也不改变 Repo 的 ciphertext-only owner。当前实现尚未证明真实 OS process restart、wrapped-key
+  decrypt serving、grant/Selection/placement rebinding、revoke invalidation、Provider/assembled
+  hit 或 Qwen/MiniNDN qualification；因此不把结构化 reference recovery 写成完整 protected
+  reuse。
+- **Evidence**: [B190-18](../specs/190-multiturn-latency/evidence/b190-18.md)；affected C++
+  target build、8-case suite 和 restart/missing-reference selector 3 次通过。
+
 ## Spec190 single-supervisor MiniNDN startup and swap diagnostics — 2026-09-23
 
 - **Status**: `PARTIAL`；真实 r16 仍在资源边界停止，不能视为 T003 或两 Provider 验收通过。

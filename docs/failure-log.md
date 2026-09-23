@@ -1,5 +1,27 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-18 Core-owned durable reference recovery gate
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
+- **Boundary:** B190-17 could re-register a durable Repo source only while the
+  process-local Hybrid crypto/reference state was available. B190-18 adds a
+  Core-owned non-secret reference store and validates it before treating a Repo
+  ciphertext as a protected lookup hit. Missing or malformed reference now
+  fails closed as `DURABLE_LOOKUP_METADATA_MISMATCH`.
+- **Ordering:** the reference is persisted only after Repo commit/read-back,
+  local serving-owner registration and expiry scheduling. A failed persistence
+  leaves an unreferenced durable object rather than a false hit.
+- **Validation:** ordinary root `build/` target compile/link passed; the full
+  `spec189-encrypted-repo` suite passed 8/8; the restart/missing-reference
+  selector passed three consecutive times.
+- **Review boundary:** independent static review confirmed this atomic ordering
+  but remains `BLOCK` for complete T006: real OS restart/decrypt serving,
+  current grant/Selection/placement rebinding, revoke invalidation,
+  Provider/assembled hit, precise missing-object fetch and Qwen/MiniNDN remain
+  unobserved. The reference is structurally validated but not yet independently
+  authenticated/owner-bound. ASan/UBSan remains deferred.
+- **Evidence:** [B190-18](../specs/190-multiturn-latency/evidence/b190-18.md).
+
 ## 2026-09-23 — Spec190 B190-17 durable lookup-to-serving gate
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`.

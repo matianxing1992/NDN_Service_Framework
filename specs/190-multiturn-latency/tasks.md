@@ -5,6 +5,17 @@
 
 ## Current Checkpoint
 
+2026-09-23 18:10 -05:00：B190-18 Core-owned durable reference recovery gate 已完成。`ServiceUser`
+在 Repo durable lookup 命中前恢复并严格校验非秘密 reference；有效命中直接重注册已有
+range source，不重新生成 key、加密或 `commitFile`；reference 缺失/损坏返回
+`DURABLE_LOOKUP_METADATA_MISMATCH`，不把仍存在的 ciphertext 当作 protected hit。reference
+仅在 Repo commit/read-back、local serving owner 和 expiry registration 全部成功后落盘。
+普通根 `build/` 的 `spec189-encrypted-repo` 目标重编译链接通过，完整 8 cases 通过，
+`DurablePublicationReusesAfterServiceUserRestart` 连续 3 次通过。独立只读复核确认本原子顺序，
+但仍 BLOCK T006 完整闭合：真实 OS 进程重启/解密 serving、当前 grant/Selection/placement
+绑定、revoke invalidation、Provider/assembled hit、缺对象精确 fetch 和 Qwen/MiniNDN 未验证。
+详见 [B190-18](evidence/b190-18.md)。
+
 2026-09-23 17:33 -05:00：B190-17 durable lookup-to-serving atomic gate 已完成。Core
 在 Durable publish 前按稳定 `publicationIdentity` 查询 Repo，校验当前明文摘要/大小、当前
 key epoch/reference、稳定 encrypted name、完整非秘密 metadata 和首段可读性；命中后直接注册 durable range source
@@ -892,7 +903,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
 | [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
-| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)、[B190-17](evidence/b190-17.md)：retention、key-reference/AAD、Repo durable identity metadata/restart read、Core durable lookup-to-serving gate 已分别通过；跨进程 key/reference recovery、new-grant/Selection rebinding、Provider/assembled hit 和真实 protected restart 未完成，禁止解除 protected miss 门 | 2026-09-23 17:33 -05:00 |
+| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)、[B190-17](evidence/b190-17.md)、[B190-18](evidence/b190-18.md)：retention、key-reference/AAD、Repo durable identity metadata/restart read、Core durable lookup-to-serving 和 Core-owned reference recovery gate 已分别通过；真实 OS restart/decrypt serving、new-grant/Selection/placement rebinding、revoke invalidation、Provider/assembled hit、精确 missing-object fetch 和真实 protected restart 未完成，禁止解除 protected miss 门 | 2026-09-23 18:10 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
 | [T009 Finalize and drain](#t009-finalize-and-drain) | NOT_STARTED | T008 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 15:08 -05:00 |
