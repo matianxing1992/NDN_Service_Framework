@@ -19,6 +19,16 @@ enum class EncryptedLargeDataRetention
 struct EncryptedLargeDataCommitOptions
 {
   EncryptedLargeDataRetention retention = EncryptedLargeDataRetention::Transient;
+
+  // Non-secret identity supplied by the Core/crypto owner. The Repo stores
+  // these values as opaque manifest metadata; it never unwraps or creates a
+  // key from them.
+  std::string publicationIdentity;
+  std::string protectionEpoch;
+  std::string keyReferenceId;
+  std::string keyReferenceVersion;
+  std::string ciphertextManifestDigest;
+  std::string servingLocator;
 };
 
 /** Immutable encrypted envelope. The last owner releases its storage lease.
@@ -60,7 +70,7 @@ public:
     const std::function<void()>& requireActive = {})
   {
     if (options.retention != EncryptedLargeDataRetention::Transient)
-      throw std::runtime_error("durable encrypted range commit unsupported");
+      throw std::runtime_error("DURABLE_RETENTION_UNSUPPORTED");
     return commitFile(encryptedName, file, size, requireActive);
   }
 };

@@ -942,6 +942,13 @@ RepoObjectManifest::toJson() const
   os << "\"operationId\":" << jsonQuote(operationId) << ",";
   os << "\"lifecycleState\":" << jsonQuote(lifecycleState) << ",";
   os << "\"policyEpoch\":" << jsonQuote(policyEpoch) << ",";
+  os << "\"publicationIdentity\":" << jsonQuote(publicationIdentity) << ",";
+  os << "\"protectionEpoch\":" << jsonQuote(protectionEpoch) << ",";
+  os << "\"keyReferenceId\":" << jsonQuote(keyReferenceId) << ",";
+  os << "\"keyReferenceVersion\":" << jsonQuote(keyReferenceVersion) << ",";
+  os << "\"ciphertextManifestDigest\":"
+     << jsonQuote(ciphertextManifestDigest) << ",";
+  os << "\"servingLocator\":" << jsonQuote(servingLocator) << ",";
   os << "\"replicaNodes\":[";
   for (size_t i = 0; i < replicaNodes.size(); ++i) {
     if (i != 0) {

@@ -130,7 +130,11 @@ Provider缓存只持有按policy可保留的材料及可验证身份；不永久
 当前仅有目标边界，不能写成此项生产编码READY；到T006时先闭合安全设计门，未闭合则停在T006，不能开始T007。
 不用存储整份旧request/grant/会话key JSON来凑重启复用，不换明文传输绕开问题。
 
-### T006 Target interface freeze (not current behavior)
+### T006 Target interface and current implementation boundary
+
+The following remains the target contract for complete protected reuse. B190-16
+implements only the durable identity metadata transport and Repo restart-read
+subset; it does not make the protected lookup path a hit.
 
 以下是实现前冻结的最小公共契约；它描述目标接口，不表示当前源码已经提供这些能力：
 
@@ -139,18 +143,25 @@ Provider缓存只持有按policy可保留的材料及可验证身份；不永久
   `Durable` 但没有持久 owner 时必须返回明确的 `DURABLE_RETENTION_UNSUPPORTED`，不能静默降级。
 - 新的 `EncryptedLargeDataCommitOptions` 只携带已由 Core 校验的 publication identity、
   `protectionEpoch`、opaque `keyReferenceId`/version、ciphertext/encryption-manifest digest
-  和 serving locator。它不携带 plaintext、private key、旧 grant、完整 request 或会话 KV。
+  和 serving locator。当前源码已实现这些非秘密字段在 Durable commit → Repo manifest →
+  close/reopen read 路径中的传递；它不携带 plaintext、private key、旧 grant、完整 request
+  或会话 KV。
 - `EncryptedLargeDataRangeStore::commitFile(..., options, requireActive)` 的 owner 只提交并
   校验 ciphertext bytes；`EncryptedLargeDataRangeSource` 的 durable lease 析构只释放读取
   lease，不删除 committed object。删除只能由 Core 的显式 invalidation/GC 操作执行，并且
   必须检查 identity、无 active read 和当前失效状态。
 - `ServiceUser` 是 key-reference owner：冷发布时创建或恢复 opaque reference；重启后先校验
   identity、key version、policy epoch 和 reference digest，再重新注册合法 serving；随后每个新
-  request 仍必须独立完成 grant verification、Selection 和 placement 检查。Repo 不生成、不解包、
-  不接受 grant，也不决定授权。
+  request 仍必须独立完成 grant verification、Selection 和 placement 检查。该恢复/serving
+  接线尚未实现；Repo 不生成、不解包、不接受 grant，也不决定授权。
 - `LargeDataPublishResult`/prepared receipt 必须同时记录 ciphertext manifest 与 key-reference
   identity，且 rollback 只撤销本次 owned staging。新请求的 `requestId`、`attempt`、Provider
   `bootId` 和旧 grant 不能成为 durable identity，也不能被恢复为旧 session/KV。
+
+当前 B190-16 已将上述 identity 字段加入 `RepoObjectManifest` 的 JSON 持久化与兼容解析，
+并在 Durable metadata 不完整时于提交前拒绝；`LargeDataPublishResult`、ServiceUser
+key-reference recovery、serving re-registration、稳定 protected assembled lookup 和
+Provider hit 仍是后续 T006 gate。
 
 只要其中任一 owner、reference、serving 或新 grant 绑定失败，结果就是 typed miss/rejection，
 而不是把“Repo 里还有文件”报告成 protected hit。实现必须先以 C++ 反例验证这组不变量，之后才可

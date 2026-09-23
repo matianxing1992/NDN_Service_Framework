@@ -1060,3 +1060,13 @@ finalization仍归原生C++。新增精确恢复观测区别于模型cache hit�
 - 兼容性、迁移或撤回影响：只影响 protected assembled-entry identity；plaintext/compatibility cache、transient Repo API 和 B190-12 durable Source gate 不变。reference 不包含 content key、private key、grant wire、request/KV 或 provider boot/fencing；撤回必须同步移除 production field、AAD/manifest serialization、Assembler/Provider checks 与 B190-14 selector。
 - 源码与证据：`NativeGrantVerifier.*`、`ProtectedRuntime.*`、`NativeProtectedArtifactStore.*`、`NativeCanonicalOnnxAssembler.cpp`、`Provider.cpp`；[B190-14](../specs/190-multiturn-latency/evidence/b190-14.md)。
 - 验证与状态：普通根 `build/` `spec181-protected-runtime-closure` compile/link PASS（`-j2`，8m31.186s）；selector `32` C++ cases PASS；`git diff --check` PASS。ASan/UBSan 按用户范围 deferred；T006 仍 `PARTIAL`，T007 继续锁定。
+
+### D-190-PROTECTED-DURABLE-METADATA：Core-owned protected identity in Repo manifest — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T006/B190-16；`CD-09`、`FR-017`、`SC-007`。
+- 模块 / 当前与目标章节：`EncryptedLargeDataCommitOptions`、`RepoObjectManifest`、`RepoEncryptedLargeDataStore` 的 ciphertext-only durable publication metadata；[CD-09](../specs/190-multiturn-latency/contracts/material-reuse.md#cd-09-protected-material-reuse-boundary)。
+- 原设计 / 新设计 / 修改原因：B190-15 确认稳定 protected path 不能先于 Core key-reference/serving owner。现在 Durable commit options 携带由 Core/crypto owner 提供的 publication identity、protection epoch、opaque key-reference id/version、ciphertext/encryption-manifest digest 和 serving locator；Repo 将这些非秘密字段写入可重启读取的 manifest，不生成、不解包密钥，也不把它们当授权结果。
+- 当前已实现部分 / 目标未实现部分：Repo manifest 序列化/解析、Durable 缺字段 fail-closed、close/reopen metadata/read C++ regression 已实现；ServiceUser 的真实 key-reference recovery/serving re-registration、新 grant/Selection 绑定、稳定 protected assembled lookup、Provider hit 和真实 Qwen restart 仍未实现，protected miss 不变。
+- 兼容性、迁移或撤回影响：无选项 legacy `commitFile` 继续是 Transient；不完整 Durable metadata 返回 `DURABLE_METADATA_INVALID`，不产生对象；旧 manifest 缺字段按空值读取并不伪装成 protected hit。撤回需同步移除 options/manifest 字段、JSON 兼容解析和 B190-16 selector，不能仅删除文档。
+- 源码与证据：`ndn-service-framework/EncryptedLargeDataRangeStore.hpp`、`NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp`、`RepoTypes.cpp`、`RepoProtocol.cpp`、`RepoEncryptedLargeDataStore.hpp`、`tests/unit-tests/spec190-protected-material-reuse.t.cpp`；[B190-16](../specs/190-multiturn-latency/evidence/b190-16.md)。
+- 验证与状态：普通根 `build/` 的 `spec190-protected-material-reuse` `43/43` compile-link，7 C++ cases 首轮通过并连续 3 次通过；公共头变更后的 `spec189-encrypted-repo` `120/120` compile-link，6 cases PASS；API reference 增量刷新成功，`git diff --check` PASS。ASan/UBSan deferred；此单元为 `ADVANCE/PARTIAL`，T006 与 protected miss gate 仍未闭合。

@@ -49,6 +49,20 @@ struct Fixture
   }
 };
 
+EncryptedLargeDataCommitOptions
+durableOptions()
+{
+  EncryptedLargeDataCommitOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "/protected/publication/qwen/v1";
+  options.protectionEpoch = "grant-epoch-7";
+  options.keyReferenceId = "key-reference-digest-7";
+  options.keyReferenceVersion = "v1";
+  options.ciphertextManifestDigest = "sha256:ciphertext-manifest-7";
+  options.servingLocator = "/protected/durable";
+  return options;
+}
+
 class LegacyTransientOnlyStore final : public EncryptedLargeDataRangeStore
 {
 public:
@@ -83,8 +97,7 @@ BOOST_AUTO_TEST_CASE(DurableSourceSurvivesRequestLeaseDestruction)
   Fixture fixture;
   RepoEncryptedLargeDataStore store(fixture.repo);
   const auto path = fixture.input("durable.bin");
-  EncryptedLargeDataCommitOptions options;
-  options.retention = EncryptedLargeDataRetention::Durable;
+  const auto options = durableOptions();
   auto source = store.commitFile("/protected/durable", path, 10, options);
   BOOST_REQUIRE(source);
   BOOST_CHECK(source->isDurable());
@@ -103,8 +116,7 @@ BOOST_AUTO_TEST_CASE(ExplicitReleaseIsIdempotentAndGenerationFenced)
   Fixture fixture;
   RepoEncryptedLargeDataStore store(fixture.repo);
   const auto path = fixture.input("replace.bin");
-  EncryptedLargeDataCommitOptions options;
-  options.retention = EncryptedLargeDataRetention::Durable;
+  const auto options = durableOptions();
   auto old = store.commitFile("/protected/replace", path, 10, options);
   const auto oldManifest = fixture.repo->getManifest("/protected/replace");
   BOOST_REQUIRE(fixture.repo->removeIfCurrent(oldManifest));
@@ -125,8 +137,7 @@ BOOST_AUTO_TEST_CASE(DurableCancellationLeavesNoCommittedObject)
   Fixture fixture;
   RepoEncryptedLargeDataStore store(fixture.repo);
   const auto path = fixture.input("cancel.bin", std::string(2U << 20, 'c'));
-  EncryptedLargeDataCommitOptions options;
-  options.retention = EncryptedLargeDataRetention::Durable;
+  const auto options = durableOptions();
   unsigned checks = 0;
   BOOST_CHECK_THROW(store.commitFile("/protected/cancel", path, 2U << 20, options, [&] {
     if (++checks == 5)
@@ -143,6 +154,58 @@ BOOST_AUTO_TEST_CASE(UnsupportedDurableAdapterFailsClosed)
   options.retention = EncryptedLargeDataRetention::Durable;
   BOOST_CHECK_THROW(store.commitFile("/protected/unsupported", {}, 1, options),
                     std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(DurableIdentityMetadataSurvivesRepoOwnerRestart)
+{
+  Fixture fixture;
+  const auto path = fixture.input("restart.bin");
+  const auto options = durableOptions();
+  RepoObjectManifest committed;
+  {
+    RepoEncryptedLargeDataStore store(fixture.repo);
+    auto source = store.commitFile("/protected/restart", path, 10, options);
+    BOOST_REQUIRE(source);
+    committed = fixture.repo->getManifest("/protected/restart");
+    BOOST_CHECK_EQUAL(committed.publicationIdentity, options.publicationIdentity);
+    BOOST_CHECK_EQUAL(committed.protectionEpoch, options.protectionEpoch);
+    BOOST_CHECK_EQUAL(committed.keyReferenceId, options.keyReferenceId);
+    BOOST_CHECK_EQUAL(committed.keyReferenceVersion, options.keyReferenceVersion);
+    BOOST_CHECK_EQUAL(committed.ciphertextManifestDigest,
+                      options.ciphertextManifestDigest);
+    BOOST_CHECK_EQUAL(committed.servingLocator, options.servingLocator);
+    source.reset();
+  }
+
+  fixture.repo.reset();
+  StorageCapability capability;
+  capability.repoNode = "/spec190/protected-material";
+  capability.freeBytes = 16U << 20;
+  fixture.repo = std::make_shared<RepoCore>(capability,
+    makeFilesystemRepoStore((fixture.root / "objects").string(), 1U << 20, 1U << 20));
+
+  BOOST_CHECK(fixture.repo->has("/protected/restart"));
+  const auto restored = fixture.repo->getManifest("/protected/restart");
+  BOOST_CHECK_EQUAL(restored.publicationIdentity, committed.publicationIdentity);
+  BOOST_CHECK_EQUAL(restored.protectionEpoch, committed.protectionEpoch);
+  BOOST_CHECK_EQUAL(restored.keyReferenceId, committed.keyReferenceId);
+  BOOST_CHECK_EQUAL(restored.keyReferenceVersion, committed.keyReferenceVersion);
+  BOOST_CHECK_EQUAL(restored.ciphertextManifestDigest,
+                    committed.ciphertextManifestDigest);
+  BOOST_CHECK_EQUAL(restored.servingLocator, committed.servingLocator);
+  BOOST_CHECK_EQUAL(fixture.repo->getRangeIfCurrent(restored, {0, 10}).size(), 10U);
+}
+
+BOOST_AUTO_TEST_CASE(DurableIdentityMetadataIsRequired)
+{
+  Fixture fixture;
+  RepoEncryptedLargeDataStore store(fixture.repo);
+  const auto path = fixture.input("invalid-metadata.bin");
+  EncryptedLargeDataCommitOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  BOOST_CHECK_THROW(store.commitFile("/protected/invalid-metadata", path, 10, options),
+                    std::invalid_argument);
+  BOOST_CHECK(!fixture.repo->has("/protected/invalid-metadata"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

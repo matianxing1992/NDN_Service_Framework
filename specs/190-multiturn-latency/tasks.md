@@ -5,6 +5,18 @@
 
 ## Current Checkpoint
 
+2026-09-23 17:09 -05:00：B190-16 durable metadata atomic gate 已完成。`EncryptedLargeDataCommitOptions`
+现在携带 Core-owned、非秘密的 publication identity、protection epoch、opaque key-reference
+id/version、ciphertext manifest digest 和 serving locator；`RepoObjectManifest` 原样序列化并在
+Repo owner close/reopen 后恢复。Durable 缺少任一字段在提交前以 `DURABLE_METADATA_INVALID`
+拒绝，legacy transient overload 与 cleanup 语义保持不变。普通根 `build/` 的
+`spec190-protected-material-reuse` 为 43/43 compile-link，7 个 C++ case 首轮通过并连续
+3 次通过；公共头变更后的 `spec189-encrypted-repo` 为 120/120 compile-link、6 cases PASS。
+API reference 增量刷新并通过 `git diff --check`。该 gate 只证明 Repo metadata persistence/read，
+尚未证明 ServiceUser key-reference recovery、serving re-registration、新 grant/Selection
+绑定、stable protected assembled hit 或真实 Qwen restart；protected miss 保持，T006 仍
+`PARTIAL`，T007 继续锁定。详见 [B190-16](evidence/b190-16.md)。
+
 2026-09-23 16:08 -05:00：用户明确将本 Spec190 执行中的 ASan/UBSan 构建门 deferred；已同步
 `plan.md` 的 Dynamic Validation 和各任务 Exit，不再把未执行 sanitizer 结果伪称 PASS。按最新
 durable evidence，T003 的 r34 真实三轮链路已补齐任务表状态为 DONE，T005 的普通根 `build/`
@@ -868,7 +880,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
 | [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
-| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-14](evidence/b190-14.md)：key-reference propagation/AAD wrong-reference atomic gate compile-link + C++ 32-case PASS；durable recovery/assembled hit 未完成，禁止解除 protected miss 门 | 2026-09-23 16:51 -05:00 |
+| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)：retention、key-reference/AAD、Repo durable identity metadata/restart read gates 已分别通过；ServiceUser recovery、new-grant/Selection rebinding、Provider/assembled hit 和真实 protected restart 未完成，禁止解除 protected miss 门 | 2026-09-23 17:09 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
 | [T009 Finalize and drain](#t009-finalize-and-drain) | NOT_STARTED | T008 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 15:08 -05:00 |
@@ -1011,7 +1023,7 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 **Design binding**：CD-09，当前BLOCK生产编码；先在契约冻结durable key-reference/serving恢复、新grant绑定及retention公共签名、owner/错误/取消/失效流程，标明与原request-scoped API兼容；独立只读审查后才解除该gate。
 **Steps**：复用现有crypto-owner而非在Repo藏key→完整加密identity/receipt与恢复事务→显式durable与transient清理分离→当前Selection后校验材料/assembled命中→缺层走原保护fetch→旧grant/key/boot等C++反例→冻结组合审查/回归。
 **Acceptance**：`ProtectedMaterialReuse`旧/错grant、失效key、错AAD/ciphertext、非法保留policy仍拒绝；合法restart后真实Repo lookup/read/serving可用，相同protected identity大payload不重复STORE；材料/assembled热命中零material网络payload，缺一对象只取该role必要范围；保留原副本安全与迟到清理边界。Provider新boot必须新session，旧KV receipt不能命中；不能把T007明文diagnostic通过计为本任务通过。
-**Exit**：retention/source-lifetime atomic gate 已完成；新安全契约、Core key-reference/recovery、
+**Exit**：retention/source-lifetime、authenticated key-reference 和 Repo durable identity metadata/restart-read atomic gates 已完成；新安全契约的 Core key-reference/serving recovery、
 Provider serving/assembled hit 和生产回归仍未完成，真实Qwen证明交T011；接口未闭合保持
 `PARTIAL`，不删除原安全门。B190-12。
 

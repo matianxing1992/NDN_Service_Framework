@@ -1,5 +1,27 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-16 durable protected identity metadata gate
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`.
+- **Boundary:** the Core/Repo durable publication contract previously had no
+  recoverable non-secret identity for a protected ciphertext. Stable path or
+  cache-hit changes would therefore have created a false hit. The new Durable
+  options carry publication identity, protection epoch, opaque key-reference
+  id/version, ciphertext manifest digest and serving locator; Repo persists and
+  returns them without owning keys.
+- **Validation:** ordinary root `build/` `spec190-protected-material-reuse`
+  completed `43/43`; its 7 C++ cases passed once and then 3 repeated runs
+  passed. The changed public headers also rebuilt `spec189-encrypted-repo`
+  `120/120`, whose 6 integration cases passed. Repo owner close/reopen metadata
+  and range-read recovery passed; incomplete Durable metadata rejected before
+  commit. API reference refresh and `git diff --check` passed.
+- **Decision:** this closes only Repo metadata persistence/read. ServiceUser
+  key-reference recovery, serving re-registration, new grant/Selection
+  rebinding, stable protected assembled lookup, Provider hit and real Qwen
+  restart remain unobserved. The protected assembler miss stays mandatory;
+  T006 remains `PARTIAL` and T007 remains locked. ASan/UBSan is deferred.
+- **Evidence:** [B190-16](../specs/190-multiturn-latency/evidence/b190-16.md).
+
 ## 2026-09-23 — Spec190 B190-15 stable protected identity / Repo recovery static audit
 
 - **Status:** `ROOT_CAUSE` / T006 remains `PARTIAL`.

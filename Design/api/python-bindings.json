@@ -5505,8 +5505,8 @@
   {
     "file": "pythonWrapper/src/ndnsf/di_bindings.cpp",
     "baseline_commit": "3c7c11c75d151ac87577e7a2ea2f863bfe551061",
-    "matches_commit": true,
-    "sha256": "e214e8e6773a97bb3499b4f806a5132483bff268102e4fd725aa7ab344ae19da",
+    "matches_commit": false,
+    "sha256": "57ff4d082c742a9559033a5e7cb680422c56422011e72d0733bb4902f072b002",
     "entries": [
       {
         "owner": "CachePolicy",
@@ -7703,15 +7703,36 @@
         "owner": "User",
         "name": "\"prepare_async\"",
         "operation": "def",
-        "line": 1167,
+        "line": 1186,
         "signature": "def(\"prepare_async\",\n[] (const di::User& user, const std::string& modelKey,\n                                const di::PrepareOptions& options,\n                                const py::object& timeout) { implementation omitted },\npy::arg(\"model_key\") = \"default\",\npy::kw_only(),\npy::arg(\"options\") = di::PrepareOptions{},\npy::arg(\"timeout_s\") = py::none())"
       },
       {
         "owner": "User",
         "name": "\"start_prepare\"",
         "operation": "def",
-        "line": 1159,
+        "line": 1178,
         "signature": "def(\"start_prepare\",\n[] (const di::User& user, const std::string& modelKey,\n                                di::PrepareOptions options, const py::object& timeout) { implementation omitted },\npy::arg(\"model_key\") = \"default\",\npy::kw_only(),\npy::arg(\"options\") = di::PrepareOptions{},\npy::arg(\"timeout_s\") = py::none())"
+      },
+      {
+        "owner": "User",
+        "name": "\"open_conversation\"",
+        "operation": "def",
+        "line": 1171,
+        "signature": "def(\"open_conversation\",\n[] (const di::User& user,\n                                    const di::PreparedModel& model,\n                                    const di::ConversationOptions& options) { implementation omitted },\npy::arg(\"model\"),\npy::kw_only(),\npy::arg(\"options\") = di::ConversationOptions{})"
+      },
+      {
+        "owner": "User",
+        "name": "\"run\"",
+        "operation": "def",
+        "line": 1165,
+        "signature": "def(\"run\",\n[] (const di::User& user, const di::PreparedModel& model,\n                     const di::Input& input, const di::RequestOptions& options) { implementation omitted },\npy::arg(\"model\"),\npy::arg(\"input\"),\npy::kw_only(),\npy::arg(\"options\") = di::RequestOptions{})"
+      },
+      {
+        "owner": "User",
+        "name": "\"request\"",
+        "operation": "def",
+        "line": 1159,
+        "signature": "def(\"request\",\n[] (const di::User& user, const di::PreparedModel& model,\n                          const di::Input& input, const di::RequestOptions& options) { implementation omitted },\npy::arg(\"model\"),\npy::arg(\"input\"),\npy::kw_only(),\npy::arg(\"options\") = di::RequestOptions{})"
       },
       {
         "owner": "User",
@@ -7724,91 +7745,91 @@
         "owner": "Runtime",
         "name": "\"__aexit__\"",
         "operation": "def",
-        "line": 1249,
+        "line": 1268,
         "signature": "def(\"__aexit__\",\n[] (std::shared_ptr<di::Runtime> runtime,\n                            py::object excType, py::object exc, py::object traceback) { implementation omitted })"
       },
       {
         "owner": "Runtime",
         "name": "\"__aenter__\"",
         "operation": "def",
-        "line": 1245,
+        "line": 1264,
         "signature": "def(\"__aenter__\",\n[] (std::shared_ptr<di::Runtime> runtime) { implementation omitted })"
       },
       {
         "owner": "Runtime",
         "name": "\"__exit__\"",
         "operation": "def",
-        "line": 1227,
+        "line": 1246,
         "signature": "def(\"__exit__\",\n[] (di::Runtime& runtime, py::object excType,\n                           py::object, py::object) { implementation omitted })"
       },
       {
         "owner": "Runtime",
         "name": "\"__enter__\"",
         "operation": "def",
-        "line": 1224,
+        "line": 1243,
         "signature": "def(\"__enter__\",\n[] (di::Runtime& runtime) -> di::Runtime& { implementation omitted },\npy::return_value_policy::reference_internal)"
       },
       {
         "owner": "Runtime",
         "name": "\"drain_async\"",
         "operation": "def",
-        "line": 1204,
+        "line": 1223,
         "signature": "def(\"drain_async\",\n[] (std::shared_ptr<di::Runtime> runtime,\n                             const py::object& timeout,\n                             const py::object& callback) -> py::object { implementation omitted },\npy::kw_only(),\npy::arg(\"timeout_s\") = py::none(),\npy::arg(\"callback\") = py::none())"
       },
       {
         "owner": "Runtime",
         "name": "\"drain\"",
         "operation": "def",
-        "line": 1199,
+        "line": 1218,
         "signature": "def(\"drain\",\n[] (const di::Runtime& runtime, const py::object& timeout) { implementation omitted },\npy::kw_only(),\npy::arg(\"timeout_s\") = py::none())"
       },
       {
         "owner": "Runtime",
         "name": "\"close\"",
         "operation": "def",
-        "line": 1198,
+        "line": 1217,
         "signature": "def(\"close\",\n&di::Runtime::close)"
       },
       {
         "owner": "Runtime",
         "name": "\"provider\"",
         "operation": "def",
-        "line": 1195,
+        "line": 1214,
         "signature": "def(\"provider\",\n[] (di::Runtime& runtime) { implementation omitted })"
       },
       {
         "owner": "Runtime",
         "name": "\"provider\"",
         "operation": "def",
-        "line": 1192,
+        "line": 1211,
         "signature": "def(\"provider\",\n[] (di::Runtime& runtime, const di::ProviderConfig& config) { implementation omitted },\npy::arg(\"config\"))"
       },
       {
         "owner": "Runtime",
         "name": "\"placement_strategy\"",
         "operation": "def",
-        "line": 1187,
+        "line": 1206,
         "signature": "def(\"placement_strategy\",\n[] (const di::Runtime& runtime, const std::string& id) { implementation omitted },\npy::arg(\"id\"))"
       },
       {
         "owner": "Runtime",
         "name": "\"user\"",
         "operation": "def",
-        "line": 1186,
+        "line": 1205,
         "signature": "def(\"user\",\n&di::Runtime::user,\npy::arg(\"config\") = di::UserConfig{})"
       },
       {
         "owner": "Runtime",
         "name": "\"open\"",
         "operation": "def_static",
-        "line": 1182,
+        "line": 1201,
         "signature": "def_static(\"open\",\n[] (di::ProviderConfig config) { implementation omitted },\npy::arg(\"provider_config\"))"
       },
       {
         "owner": "Runtime",
         "name": "\"open\"",
         "operation": "def_static",
-        "line": 1178,
+        "line": 1197,
         "signature": "def_static(\"open\",\n[] (di::RuntimeConfig config) { implementation omitted },\npy::arg(\"config\"))"
       }
     ]

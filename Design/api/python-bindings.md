@@ -7609,7 +7609,7 @@ py::keep_alive<0, 1>())
 
 ## pythonWrapper/src/ndnsf/di_bindings.cpp
 
-SHA-256：`e214e8e6773a97bb3499b4f806a5132483bff268102e4fd725aa7ab344ae19da`。
+SHA-256：`57ff4d082c742a9559033a5e7cb680422c56422011e72d0733bb4902f072b002`。
 
 ### CachePolicy · "REFRESH"
 
@@ -10526,7 +10526,7 @@ py::arg("definition"))
 
 ### User · "prepare_async"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1167)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1186)
 
 ```cpp
 def("prepare_async",
@@ -10541,7 +10541,7 @@ py::arg("timeout_s") = py::none())
 
 ### User · "start_prepare"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1159)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1178)
 
 ```cpp
 def("start_prepare",
@@ -10551,6 +10551,48 @@ py::arg("model_key") = "default",
 py::kw_only(),
 py::arg("options") = di::PrepareOptions{},
 py::arg("timeout_s") = py::none())
+```
+
+### User · "open_conversation"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1171)
+
+```cpp
+def("open_conversation",
+[] (const di::User& user,
+                                    const di::PreparedModel& model,
+                                    const di::ConversationOptions& options) { implementation omitted },
+py::arg("model"),
+py::kw_only(),
+py::arg("options") = di::ConversationOptions{})
+```
+
+### User · "run"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1165)
+
+```cpp
+def("run",
+[] (const di::User& user, const di::PreparedModel& model,
+                     const di::Input& input, const di::RequestOptions& options) { implementation omitted },
+py::arg("model"),
+py::arg("input"),
+py::kw_only(),
+py::arg("options") = di::RequestOptions{})
+```
+
+### User · "request"
+
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1159)
+
+```cpp
+def("request",
+[] (const di::User& user, const di::PreparedModel& model,
+                          const di::Input& input, const di::RequestOptions& options) { implementation omitted },
+py::arg("model"),
+py::arg("input"),
+py::kw_only(),
+py::arg("options") = di::RequestOptions{})
 ```
 
 ### User · "prepare"
@@ -10569,7 +10611,7 @@ py::arg("timeout_s") = py::none())
 
 ### Runtime · "__aexit__"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1249)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1268)
 
 ```cpp
 def("__aexit__",
@@ -10579,7 +10621,7 @@ def("__aexit__",
 
 ### Runtime · "__aenter__"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1245)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1264)
 
 ```cpp
 def("__aenter__",
@@ -10588,7 +10630,7 @@ def("__aenter__",
 
 ### Runtime · "__exit__"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1227)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1246)
 
 ```cpp
 def("__exit__",
@@ -10598,7 +10640,7 @@ def("__exit__",
 
 ### Runtime · "__enter__"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1224)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1243)
 
 ```cpp
 def("__enter__",
@@ -10608,7 +10650,7 @@ py::return_value_policy::reference_internal)
 
 ### Runtime · "drain_async"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1204)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1223)
 
 ```cpp
 def("drain_async",
@@ -10622,7 +10664,7 @@ py::arg("callback") = py::none())
 
 ### Runtime · "drain"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1199)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1218)
 
 ```cpp
 def("drain",
@@ -10633,7 +10675,7 @@ py::arg("timeout_s") = py::none())
 
 ### Runtime · "close"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1198)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1217)
 
 ```cpp
 def("close",
@@ -10642,7 +10684,7 @@ def("close",
 
 ### Runtime · "provider"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1195)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1214)
 
 ```cpp
 def("provider",
@@ -10651,7 +10693,7 @@ def("provider",
 
 ### Runtime · "provider"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1192)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1211)
 
 ```cpp
 def("provider",
@@ -10661,7 +10703,7 @@ py::arg("config"))
 
 ### Runtime · "placement_strategy"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1187)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1206)
 
 ```cpp
 def("placement_strategy",
@@ -10671,7 +10713,7 @@ py::arg("id"))
 
 ### Runtime · "user"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1186)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1205)
 
 ```cpp
 def("user",
@@ -10681,7 +10723,7 @@ py::arg("config") = di::UserConfig{})
 
 ### Runtime · "open"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1182)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1201)
 
 ```cpp
 def_static("open",
@@ -10691,7 +10733,7 @@ py::arg("provider_config"))
 
 ### Runtime · "open"
 
-[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1178)
+[源码](../../pythonWrapper/src/ndnsf/di_bindings.cpp#L1197)
 
 ```cpp
 def_static("open",

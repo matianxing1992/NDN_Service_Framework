@@ -425,7 +425,7 @@ Provider 的在途状态 & 清理匹配服务的 pending 请求、token、stream
 \toprule
 数据对象 & 关键身份与含义 \\
 \midrule
-RepoObjectManifest & objectName、objectType、SHA-256、size、segmentCount、replicationFactor、replicaNodes、policyEpoch 及生命周期 metadata。\\
+RepoObjectManifest & objectName、objectType、SHA-256、size、segmentCount、replicationFactor、replicaNodes、policyEpoch、以及由 Core 持有的 protected durable publication identity（publication、protection epoch、opaque key-reference、ciphertext manifest digest、serving locator）和生命周期 metadata；Repo 只保存并返回这些非秘密字段。\\
 已签名 Data packet & 按原始 NDN 名称与 wire bytes 保存；保持发布者身份，不能因进入 Repo 就改成 Repo 内容签名。\\
 ArtifactReference & 不可变制品身份：逻辑名、内容摘要、大小、root manifest 名称、发布者与策略 epoch；不是只有路径。\\
 目录条目 & 逻辑对象、manifest 摘要、来源 Repo、状态、目录版本及副本位置；不等于全部段字节。\\
