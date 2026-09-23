@@ -1,5 +1,22 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-15 stable protected identity / Repo recovery static audit
+
+- **Status:** `ROOT_CAUSE` / T006 remains `PARTIAL`.
+- **Boundary:** the protected assembled directory is staging-derived and owned
+  by request/cache cleanup; normal protected lookup is an intentional miss;
+  Provider cache identity still contains the grant instance; Core durable
+  encrypted publication still lacks recoverable key-reference/manifest owner
+  metadata and uses request/version naming. A stable path change alone would
+  create false protected hits.
+- **Decision:** the next atomic gate is Core/Repo durable identity metadata and
+  restart serving recovery. Only after that gate can the assembler use a stable
+  protected path and the Provider replace grant-instance cache identity.
+- **Evidence:** [B190-15](../specs/190-multiturn-latency/evidence/b190-15.md).
+- **Validation boundary:** this is a static audit only; no code, cache miss gate,
+  or Qwen/MiniNDN run changed. B190-14 remains the latest compile/link/runtime
+  result. ASan/UBSan is deferred.
+
 ## 2026-09-23 — Spec190 B190-14 protected key-reference propagation gate
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`.

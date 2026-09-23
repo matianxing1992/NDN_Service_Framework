@@ -52,6 +52,14 @@ case 无错误；已验证 grant `keyId` → runtime opaque reference → assemb
 重绑定和真实 Qwen 仍未验证；T006 继续 `PARTIAL`，下一 gate 仍是 durable protected lookup/
 recovery，不能跳到 T007。详见 [B190-14](evidence/b190-14.md)。
 
+2026-09-23：B190-15 完成下一边界的全局静态审查。确认 protected 目录仍使用随机 staging
+目录、cache eviction 会删除其 owner、`tryLoad` 对 normal protected 仍强制 miss、Provider
+cache key 仍绑定 grant 实例；同时 Core durable publication 仍使用 request/version 名，receipt
+没有可恢复 key-reference/manifest，wrapped key 仍是进程态。不能直接改稳定路径或替换
+`grantName|grantDigest`，否则会把无 owner recovery 的 ciphertext 当作 hit。下一 atomic gate
+改为 Core/Repo durable identity metadata 与 restart serving recovery；证据见
+[B190-15](evidence/b190-15.md)。T006 仍 `PARTIAL`，T007 继续锁定。
+
 2026-09-23 16:02 -05:00：用户明确取消 ASan/UBSan 资格方向，fresh sanitizer `-j2` 从 `1/120`
 推进到 `8/120` 后受控停止；可用内存约 5.4 GiB，最近 `vmstat` 没有持续 `si/so`，但没有产生
 sanitizer 结果。根 `build/` 仅约 80 KiB 配置、没有可复用对象；后续普通 Waf 构建固定使用根
