@@ -64,6 +64,6 @@
 - Add counters only to startup logs: rejected because MiniNDN clients cannot verify behavior.
 - Add all counters to capability ACKs: rejected because frequent counter changes would bloat normal selection metadata.
 
-## DeepSeek Second-Pass Review
+## Design Review Findings
 
-The advisory review identified stale read-through races, cache admission failure after a successful commit, partial segmented-write concerns, zero-budget behavior, and status consistency. The design adopts serialized operation ordering, treats cache admission as optional acceleration after durability, and tests zero/oversized/failure cases. Existing multi-record segmented insertion atomicity remains outside this cache feature; individual committed records remain authoritative and the parent manifest is published only after completion.
+The design review identified stale read-through races, cache admission failure after a successful commit, partial segmented-write concerns, zero-budget behavior, and status consistency. The design adopts serialized operation ordering, treats cache admission as optional acceleration after durability, and tests zero/oversized/failure cases. Existing multi-record segmented insertion atomicity remains outside this cache feature; individual committed records remain authoritative and the parent manifest is published only after completion.

@@ -51,9 +51,9 @@ Python字段统一snake_case；不可变原生view返回只读值或副本，不
 | A19 | `const ModelManifest& PreparedModel::manifest() const noexcept` | `model.manifest` | Python只读快照；T003 |
 | A20 | `const PreparationReceipt& PreparedModel::receipt() const noexcept` | `model.receipt` | 每次prepare独立receipt；T004 |
 | A21 | `ModelCapabilities PreparedModel::capabilities() const` | `model.capabilities` | 只读能力/schema副本；T003 |
-| A22 | `RequestHandle PreparedModel::request(Input, const RequestOptions&={}) const` | `model.request(input, *, options=None) -> RequestHandle` | native非阻塞提交，owner保存输入；T005 |
-| A23 | `Result PreparedModel::run(Input, const RequestOptions&={}) const` | `model.run(input, *, options=None) -> Result` | request.result便利组合；T005 |
-| A24 | `Conversation PreparedModel::openConversation(const ConversationOptions&={}) const` | `model.open_conversation(options=None)` | 同模型native coordinator；T007 |
+| A22 | `RequestHandle User::request(const PreparedModel&, Input, const RequestOptions&={}) const` | `user.request(model, input, *, options=None) -> RequestHandle` | User先校验model属于同一Runtime，再由native owner非阻塞提交；PreparedModel旧入口仅兼容；T005 |
+| A23 | `Result User::run(const PreparedModel&, Input, const RequestOptions&={}) const` | `user.run(model, input, *, options=None) -> Result` | request.result便利组合；PreparedModel旧入口仅兼容；T005 |
+| A24 | `Conversation User::openConversation(const PreparedModel&, const ConversationOptions&={}) const` | `user.open_conversation(model, options=None)` | User先校验model属于同一Runtime，再取得同一native coordinator；PreparedModel旧入口仅兼容；T007 |
 
 ## Request, Stream and Subscription APIs
 
@@ -153,7 +153,7 @@ Python prepare/start_prepare上的timeout_s覆盖options中的timeout_s；None�
 | --- | --- | --- | --- |
 | Runtime | C++对象不可复制，通过shared_ptr共享；子handle持State，不强持Runtime外壳 | 最后Runtime外壳析构触发close；State仍负责安全取消/join | 新prepare/request/serve报RUNTIME_CLOSED；已有终态可读，drain可重试；close线程安全 |
 | User | 可复制，引用同principal/State | 释放本引用，无独立close | Runtime关闭后不能prepare |
-| PreparedModel | 可复制，immutable Package lease+State | 最后副本释放lease，不主动撤销已提交请求 | Runtime关闭后manifest/receipt/capabilities可读；request/openConversation拒绝 |
+| PreparedModel | 可复制，immutable Package lease+State | 最后副本释放lease，不主动撤销已提交请求 | Runtime关闭后manifest/receipt/capabilities可读；User request/run/openConversation拒绝，旧直接入口仅兼容 |
 | PreparationHandle | 可复制，同一waiter；不同prepare调用各自waiter | 最后用户handle释放时取消仍Pending的该waiter；订阅不能无限保活已放弃的waiter | result/cancel/status可并发；终态不可逆；READY结果可重复读取 |
 | RequestHandle | 可复制，同operation+Package lease | 析构不cancel；operation保留到终态/cleanup | result/状态可重复读；等待超时不改状态，失败不复用ID自动重试 |
 | Conversation | move-only，同coordinator会话引用 | 析构close，取消未提交turn | close后request拒绝；已有checkpoint/export允许，未提交首轮报CHECKPOINT_NOT_READY；同会话只允许一turn |

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <openssl/evp.h>
 #include <algorithm>
@@ -7,7 +8,9 @@
 
 namespace ndnsf::di {
 namespace {
-constexpr std::size_t MAX_WIRE = 4 * 1024 * 1024;
+// YOLO [1,3,640,640] float32 input is 4,915,200 bytes before the envelope;
+// keep the native inline request bound large enough for that production path.
+constexpr std::size_t MAX_WIRE = 16 * 1024 * 1024;
 bool digest(const std::string& s)
 {
   return s.size() == 71 && s.compare(0, 7, "sha256:") == 0 &&
@@ -100,7 +103,17 @@ NativeGenerationExecutionContractV1 nativeGenerationFromOptions(
   result.tokenInputName = values.value("tokenInputName", std::string("input_ids"));
   result.stateInputNames = values.value("stateInputNames", std::vector<std::string>{"attention_kv_in", "recurrent_state_in", "convolution_state_in"});
   result.stateOutputNames = values.value("stateOutputNames", std::vector<std::string>{"attention_kv_out", "recurrent_state_out", "convolution_state_out"});
-  if (!result.maxGeneratedTokens || result.maxGeneratedTokens > 64 || !digest(result.tokenizerDigest) ||
+  result.stateSuccessorMap = values.value("stateSuccessorMap",
+    values.value("state_successor_map", values.value("kvTensorMap", std::string{})));
+  result.positionInputPolicy = values.value("positionInputPolicy",
+    values.value("position_input_policy", std::string{}));
+  result.attentionMaskInputName = values.value("attentionMaskInputName",
+    values.value("attention_mask_input_name", std::string{}));
+  result.positionIdsInputName = values.value("positionIdsInputName",
+    values.value("position_ids_input_name", std::string{}));
+  result.cachePositionInputName = values.value("cachePositionInputName",
+    values.value("cache_position_input_name", std::string{}));
+  if (!result.maxGeneratedTokens || result.maxGeneratedTokens > MAX_NATIVE_GENERATED_TOKENS || !digest(result.tokenizerDigest) ||
       result.eosTokenIds.empty() || result.samplingMode.empty() || !result.samplingTopK ||
       result.samplingTopP <= 0 || result.samplingTopP > 1 ||
       result.samplingRepetitionPenalty < .1 || result.samplingRepetitionPenalty > 2 ||
@@ -122,6 +135,13 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
   const std::optional<NativeGenerationRecovery>& recovery)
 {
   model.validate();
+  if (model.artifactReference) {
+    // The descriptor graphDigest is the adapter/planning graph identity.  A
+    // model reference carries the canonical source graph identity, which is
+    // verified during preparation against the inspected source.  They are
+    // intentionally distinct identities and must not be compared here.
+    model.artifactReference->validate();
+  }
   if (contract.serviceName.empty() || contract.serviceName.front() != '/' ||
       contract.taskName.empty() || contract.taskName != input.taskName || requestId.empty() ||
       !attempt || !deadlineMs ||
@@ -191,6 +211,8 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
       {"adapter_composition_digest", contract.adapterCompositionDigest},
       {"task_descriptor_digest", contract.taskDescriptorDigest},
       {"generation_mode", contract.generationMode}, {"placement_profile", "DI_PLACEMENT_V3"}}}};
+  if (model.artifactReference)
+    envelope["model_reference"] = nativeParseJson(model.artifactReference->canonicalJson());
   if (recovery) {
     const auto& value = *recovery;
     if (attempt != 2 || value.generationId.size() != 32 ||

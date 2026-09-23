@@ -1,4 +1,4 @@
-% Shared four-slide body; included by UPDATES.tex.
+% Shared five-slide body; included by UPDATES.tex.
 \begin{frame}{What Is Near This Map Pin? Combine Partial Views}
 \small Request: inspect this approximate region. The target's identity is unknown.
 \vspace{.2em}
@@ -64,7 +64,7 @@
 \small\renewcommand{\arraystretch}{1.5}
 \begin{tabular}{>{\RaggedRight\arraybackslash}p{.20\textwidth}>{\RaggedRight\arraybackslash}p{.28\textwidth}>{\RaggedRight\arraybackslash}p{.42\textwidth}}
 \textbf{Gap}&\textbf{Simplified example}&\textbf{Real deployment needs}\\\hline
-Position / pointing & Known coordinates; assigned views & GPS + IMU, camera/gimbal calibration, coordinate frames, synchronized pose and exposure\\
+Position / pointing & Known coordinates; assigned views & GPS + IMU, camera-to-body calibration, coordinate frames, synchronized pose and exposure\\
 Useful views & Target assumed visible & Region search, camera control, visibility checks and complementary viewpoints\\
 Joint judgment & Views assumed to match & Same-object association, time alignment, multi-view inference and uncertainty checks\\
 \end{tabular}
@@ -72,7 +72,7 @@ Joint judgment & Views assumed to match & Same-object association, time alignmen
 \evidence{Candidate tools: \href{https://mavsdk.mavlink.io/main/en/cpp/index.html}{MAVSDK control/telemetry}; \href{https://docs.opencv.org/4.13.0/d9/d0c/group__calib3d.html}{OpenCV calibration/geometry}. Hardware support and integration remain to be verified.}
 \end{frame}
 
-\begin{frame}{Candidate Hardware for the First Camera Bench Test}
+\begin{frame}{Optional Gimbal Upgrade: Not the Current Setup}
 \fontsize{9}{10.5}\selectfont
 \begin{columns}[T,onlytextwidth]
 \column{.48\textwidth}
@@ -93,6 +93,22 @@ Joint judgment & Views assumed to match & Same-object association, time alignmen
 \end{itemize}
 \end{columns}
 \vspace{.6em}
-\textbf{First bench test:} aim at a region $\rightarrow$ capture distinct views $\rightarrow$ verify pose and timing.
+\textbf{Current choice:} fixed camera. Gimbal hardware is a possible later upgrade.
 \evidence{Product images: \href{https://shop.siyi.biz/products/siyi-a8-mini-gimbal-camera}{SIYI official store} and \href{https://gremsy.com/products/pixy-u}{Gremsy official site}. Images not to scale. Candidate hardware; verify power, payload and mounting before selection.}
+\end{frame}
+
+\begin{frame}{Current Solution: Fixed Camera}
+\begin{block}{Why start here?}
+Simpler hardware; constant camera-to-body geometry.
+\end{block}
+\begin{itemize}
+\item \textbf{Calibrate:} camera intrinsics and the fixed camera-to-body transform.
+\item \textbf{Capture:} reposition the UAV; prefer low-motion intervals and short exposures when feasible.
+\item \textbf{Record:} pair each image with capture-time position, attitude and timestamp.
+\item \textbf{Analyze:} estimate viewing direction from attitude and calibration; verify same-object matches before combining views.
+\end{itemize}
+\begin{alertblock}{Limitation}
+Attitude estimates do not prevent blur or jitter. Reject poor frames.
+\end{alertblock}
+\evidence{Implementation plan; calibration and timing require validation. Metadata reference: \href{https://mavlink.io/en/messages/common.html\#CAMERA_IMAGE_CAPTURED}{MAVLink capture metadata}.}
 \end{frame}

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
@@ -328,6 +329,14 @@ struct NativeInferenceHandle::Operation
     acceptedTokenIds.swap(tokens);
     acceptedText.swap(text);
     acceptedTerminalHint.swap(terminalHint);
+    logRuntimePhase(
+      "di-cli", "tokenReceived", requestId, std::to_string(attempt),
+      {{"executionRole", "requester"},
+       {"conversationId", conversationTurn ? conversationTurn->parent.conversationId : "none"},
+       {"contextEpoch", conversationTurn ?
+          std::to_string(conversationTurn->parent.parentContextEpoch) : "none"},
+       {"inferenceEpoch", std::to_string(attempt)},
+       {"tokenIndex", std::to_string(acceptedTokenIds.size())}});
     return true;
   }
 
@@ -372,6 +381,30 @@ struct NativeInferenceHandle::Operation
     return true;
   }
 };
+
+void
+logClientLifecyclePhase(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+                        const char* phase)
+{
+  if (!operation || !phase || operation->requestId.empty()) return;
+  std::string conversationId = "none";
+  std::string contextEpoch = "none";
+  std::uint64_t attempt = 1;
+  {
+    std::lock_guard<std::mutex> lock(operation->mutex);
+    attempt = operation->attempt;
+    if (operation->conversationTurn) {
+      conversationId = operation->conversationTurn->parent.conversationId;
+      contextEpoch = std::to_string(operation->conversationTurn->successorContextEpoch);
+    }
+  }
+  logRuntimePhase(
+    "di-cli", phase, operation->requestId, std::to_string(attempt),
+    {{"executionRole", "requester"},
+     {"conversationId", conversationId},
+     {"contextEpoch", contextEpoch},
+     {"inferenceEpoch", std::to_string(attempt)}});
+}
 
 // The client must retain every pending operation until it reaches a terminal
 // state, even when the caller drops its public handle.  A weak-only client
@@ -515,6 +548,15 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   if (conversationTerminal) {
     try { conversationTerminal(); }
     catch (...) {}
+    if (terminal == NativeRequestStatus::Succeeded && conversationTurn) {
+      logRuntimePhase(
+        "di-cli", "turnReady", operation->requestId,
+        std::to_string(conversationTurn->attempt),
+        {{"executionRole", "requester"},
+         {"conversationId", conversationTurn->parent.conversationId},
+         {"inferenceEpoch", std::to_string(conversationTurn->attempt)},
+         {"contextEpoch", std::to_string(conversationTurn->successorContextEpoch)}});
+    }
   }
   // Publish the terminal frame before completing the Core state. Core wakes a
   // pending reader during complete/fail; publishing first prevents an EOF
@@ -1009,13 +1051,22 @@ void commitConversationTurn(
     }
     catch (...) {}
   };
-  completed.durableCommitGate = [operation](const std::function<void()>& publish) {
-    std::lock_guard<std::mutex> lock(operation->mutex);
-    if (operation->cancelled->load() ||
-        std::chrono::steady_clock::now() >= operation->deadline)
-      throw std::runtime_error("conversation durable commit fenced by terminal request");
-    publish();
-    operation->conversationCommitted = true;
+  completed.durableCommitGate = [operation, turn](const std::function<void()>& publish) {
+    {
+      std::lock_guard<std::mutex> lock(operation->mutex);
+      if (operation->cancelled->load() ||
+          std::chrono::steady_clock::now() >= operation->deadline)
+        throw std::runtime_error("conversation durable commit fenced by terminal request");
+      publish();
+      operation->conversationCommitted = true;
+    }
+    logRuntimePhase(
+      "di-cli", "checkpointCommitted", operation->requestId,
+      std::to_string(turn.attempt),
+      {{"executionRole", "requester"},
+       {"conversationId", turn.parent.conversationId},
+       {"inferenceEpoch", std::to_string(turn.attempt)},
+       {"contextEpoch", std::to_string(turn.successorContextEpoch)}});
   };
   completed.finalizeProviderState = [operation, turn, receipts, committedCheckpointDigest] {
     try {
@@ -1249,6 +1300,17 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             throw NativeDiError("NATIVE_REQUEST_PLANNING_INPUT_MISSING", "planning", "ACK_CLOSED",
               "native planning inputs were not published before ACK closure", operation->requestId,
               sourceAttempt);
+          const auto phaseConversationId = conversationTurn ?
+            conversationTurn->parent.conversationId : std::string("none");
+          const auto phaseContextEpoch = conversationTurn ?
+            std::to_string(conversationTurn->parent.parentContextEpoch) : std::string("none");
+          const std::vector<std::pair<std::string, std::string>> planPhaseFields = {
+            {"executionRole", "requester"},
+            {"conversationId", phaseConversationId},
+            {"contextEpoch", phaseContextEpoch},
+            {"inferenceEpoch", std::to_string(sourceAttempt)}};
+          logRuntimePhase("di-cli", "planBegin", operation->requestId,
+                          std::to_string(sourceAttempt), planPhaseFields);
           const auto encoded = [&] {
             std::lock_guard<std::mutex> lock(operation->mutex);
             if (operation->cancelled->load() || operation->attempt != sourceAttempt ||
@@ -1267,6 +1329,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                 *legacySplitter, *legacyPlacement, *preparation, *admission,
                 closure, control, operation->wireDeadlineMs, operation->cancelled,
                 conversationTurn ? &*conversationTurn : nullptr);
+          logRuntimePhase("di-cli", "planEnd", operation->requestId,
+                          std::to_string(sourceAttempt), planPhaseFields);
           std::optional<NativeConversationTurn> plannedConversationTurn = conversationTurn;
           if (plannedConversationTurn && conversations) {
             if (plannedConversationTurn->attempt == 2) {
@@ -1334,6 +1398,17 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                 operation->phase = DiRequestPhase::Committed;
             }
             catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
+            catch (const std::exception& error) {
+              // Keep the first Core boundary visible instead of replacing
+              // all validation/publication errors with one opaque message.
+              auto detail = std::string(error.what()).substr(0, 1024);
+              std::replace(detail.begin(), detail.end(), '\n', ' ');
+              std::replace(detail.begin(), detail.end(), '\r', ' ');
+              failOperation(operation, NativeDiError(
+                "NATIVE_REQUEST_COMMIT_FAILED", "runtime", "commit",
+                "Core plan commit failed: " + detail,
+                operation->requestId, sourceAttempt), sourceAttempt);
+            }
             catch (...) { failOperation(operation, NativeDiError(
               "NATIVE_REQUEST_COMMIT_FAILED", "runtime", "commit", "Core plan commit failed",
               operation->requestId, sourceAttempt), sourceAttempt); }
@@ -1411,6 +1486,26 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           observed.payload = payload;
           observed.terminal = false;
           publishEvent(operation, std::move(observed), true);
+          std::string conversationId = "none";
+          std::string contextEpoch = "none";
+          std::size_t tokenIndex = 0;
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->conversationTurn) {
+              conversationId = operation->conversationTurn->parent.conversationId;
+              contextEpoch = std::to_string(
+                operation->conversationTurn->parent.parentContextEpoch);
+            }
+            tokenIndex = operation->acceptedTokenIds.size();
+          }
+          logRuntimePhase(
+            "di-cli", "tokenDelivered", operation->requestId,
+            std::to_string(sourceAttempt),
+            {{"executionRole", "requester"},
+             {"conversationId", conversationId},
+             {"contextEpoch", contextEpoch},
+             {"inferenceEpoch", std::to_string(sourceAttempt)},
+             {"tokenIndex", std::to_string(tokenIndex)}});
           try {
             if (operation->options.onGenerationEvent) operation->options.onGenerationEvent(payload);
           }
@@ -1570,10 +1665,13 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
         *operation->requestContract, operation->coreRequestId, operation->attempt,
         operation->wireDeadlineMs, operation->recovery);
     }
-    catch (const std::exception&) {
+    catch (const std::exception& error) {
+      std::string detail = "native request contract encoding failed";
+      if (error.what() != nullptr && *error.what() != '\0')
+        detail += ": " + std::string(error.what());
       failOperation(operation, NativeDiError(
         "NATIVE_REQUEST_CONTRACT_INVALID", "planning", "requestWire",
-        "native request contract encoding failed", operation->requestId, operation->attempt));
+        detail, operation->requestId, operation->attempt));
       return;
     }
     {
@@ -2189,6 +2287,20 @@ NativeInferenceHandle NativeInferenceClient::requestImpl(
         generation.generationId = operation->generationId;
         operation->samplingDigest = generation.samplingDigest;
         operation->maxGenerationTokens = generation.maxGeneratedTokens;
+        const auto requiredStreamEvents = nativeStreamEventBudgetForGeneration(
+          generation.maxGeneratedTokens);
+        // StreamRequestOptions::maxEvents includes the terminal event and is
+        // independently bounded by the Core stream protocol. Derive the
+        // minimum from the authenticated generation contract so a caller
+        // cannot request 1025 tokens with the generic 512-event default.
+        if (requiredStreamEvents > 4096) {
+          throw NativeDiError(
+            "INVALID_GENERATION_OPTIONS", "local", "request",
+            "generation budget exceeds the native stream event bound");
+        }
+        operation->options.stream->maxEvents = std::max<std::uint32_t>(
+          operation->options.stream->maxEvents,
+          static_cast<std::uint32_t>(requiredStreamEvents));
       }
     }
     // Keep a weak diagnostic index for the existing tests and a separate
@@ -2340,8 +2452,20 @@ void NativeInferenceClient::close() noexcept
         operations.push_back(std::move(entry.second));
       m_operationRegistry->pending.clear();
     }
+    for (const auto& weak : m_operations) {
+      if (const auto operation = weak.lock(); operation &&
+          std::none_of(operations.begin(), operations.end(),
+                       [&operation](const auto& existing) {
+                         return existing.get() == operation.get();
+                       })) {
+        operations.push_back(operation);
+      }
+    }
+    m_closedOperations = operations;
     m_operations.clear();
   }
+  for (const auto& operation : operations)
+    logClientLifecyclePhase(operation, "closeBegin");
   for (const auto& operation : operations) {
     cancelOperation(operation);
   }
@@ -2365,8 +2489,20 @@ void NativeInferenceClient::failIo(const std::string& reason) noexcept
         operations.push_back(std::move(entry.second));
       m_operationRegistry->pending.clear();
     }
+    for (const auto& weak : m_operations) {
+      if (const auto operation = weak.lock(); operation &&
+          std::none_of(operations.begin(), operations.end(),
+                       [&operation](const auto& existing) {
+                         return existing.get() == operation.get();
+                       })) {
+        operations.push_back(operation);
+      }
+    }
+    m_closedOperations = operations;
     m_operations.clear();
   }
+  for (const auto& operation : operations)
+    logClientLifecyclePhase(operation, "closeBegin");
   for (const auto& operation : operations) {
     try {
       auto error = std::make_shared<NativeDiError>(
@@ -2395,13 +2531,23 @@ bool NativeInferenceClient::drain(std::chrono::milliseconds timeout)
       std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
     if (!m_operationRuntime || !m_operationRuntime->drain(remaining))
       return false;
-    if (!m_ioCleanupState)
-      return true;
-    std::unique_lock<std::mutex> lock(m_ioCleanupState->mutex);
-    return m_ioCleanupState->condition.wait_until(lock, deadline, [this] {
-      return !m_ioCleanupState ||
-             m_ioCleanupState->pending.load(std::memory_order_acquire) == 0;
-    });
+    if (m_ioCleanupState) {
+      std::unique_lock<std::mutex> lock(m_ioCleanupState->mutex);
+      if (!m_ioCleanupState->condition.wait_until(lock, deadline, [this] {
+        return !m_ioCleanupState ||
+               m_ioCleanupState->pending.load(std::memory_order_acquire) == 0;
+      })) {
+        return false;
+      }
+    }
+    std::vector<std::shared_ptr<NativeInferenceHandle::Operation>> drained;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      drained.swap(m_closedOperations);
+    }
+    for (const auto& operation : drained)
+      logClientLifecyclePhase(operation, "drainEnd");
+    return true;
   }
   catch (const ndn_service_framework::OperationError& error) {
     if (error.code() == ndn_service_framework::OperationErrorCode::WouldDeadlock)

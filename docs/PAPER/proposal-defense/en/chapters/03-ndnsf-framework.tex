@@ -234,6 +234,12 @@ authorization namespaces. ABE-protected challenges, validated signatures, and
 invocation-state checks jointly enforce service-level authorization and reject
 replayed or mismatched Request/ACK/Selection/Response messages.
 
+The submitted prototype uses the implementation names
+\texttt{UserToken} and \texttt{ProviderToken} for these one-time fields. The
+revised protocol description uses \texttt{RequestNonce} and
+\texttt{ProviderChallenge} to name their request- and selection-binding roles;
+neither is the NDN Interest Nonce or a generic bearer credential.
+
 NAC-ABE enforcement is tied to the invocation tokens rather than to a separate
 permission list carried in every service message. A Request message includes a
 fresh \texttt{UserToken} encrypted under the service attribute, so only an

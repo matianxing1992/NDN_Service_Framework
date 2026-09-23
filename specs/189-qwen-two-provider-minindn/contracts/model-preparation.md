@@ -1,9 +1,10 @@
 # Contract: Reusable Qwen Preparation
 
-**Status**: TARGET / T003 pending. 当前已有 protected publication 与 material-only
-consumer 的局部 C++ 实现和 selector；真实 requester→Core→Provider ingress、
-峰值预算与完整资格仍未闭合。旧审计中“consumer 尚未接入、必然 fallback”是历史快照
-事实，不能覆盖当前源码，也不能被局部 selector 反向升级为全链 PASS。
+**Status**: TARGET / T003 pending. 当前已有 protected publication、material-only
+consumer 和 system-wide canonical source-cache 的局部 C++/launcher 实现与 selector；
+真实 requester→Core→Provider ingress、峰值预算与完整资格仍未闭合。旧审计中
+“consumer 尚未接入、必然 fallback”是历史快照事实，不能覆盖当前源码，也不能被局部
+selector 反向升级为全链 PASS。
 以下是对现有公开入口的目标要求，不是当前行为声明。
 
 ## Required behavior
@@ -23,6 +24,25 @@ stageIndex=0/1 不能作为永久材料身份。读取单元有界，不能以�
 实际 requester 持有/连接 Repo service/source owner；测试 adapter 不代表实际接线。
 临时源 owner 可释放；handle 保留引用/lease。重复 prepare 命中完整 immutable identity，
 同 handle 后续 request publication 增量为零。使用文件后端及预算内 cache。
+
+canonical graph/initializer source 可按 candidate-derived immutable identity 进入
+system-wide content-addressed cache；命中必须重新核对 size/hash，不能按路径或文件名
+信任。该 cache 只避免每个 run 重复复制同一 plain source，不代替 prepare/manifest
+commit，也不跨请求复用 protected grant-bound encrypted Repo/ciphertext。run-scoped
+encrypted repository 和 active lease 仍由本次请求拥有。
+
+当前为 Qwen3-0.6B 内存诊断保留一个显式、默认关闭的
+temporary cache-compatibility mode。requester 仍必须完成 authenticated prepare、manifest、
+ACK、Selection、grant 和 placement，但以绑定 system-wide plain source-cache namespace
+的 metadata-only receipt 代替 run-scoped encrypted Repo，因此不会在该模式复制大 payload。
+它只能在本次 authenticated Selection/grant/placement 验证完成后，从该 source cache 读取
+graph/initializer，且必须核对 identity schema、model/manifest digest、大小和逐文件
+SHA-256；缺失或不匹配即 fail closed。它跳过的是 Selection 之后的 Repo material fetch，
+不是 prepare、manifest、ACK、Selection 或授权；material-backed source 不支持。若
+authenticated Selection 已建立 `ProtectedRuntime`，protected role 可在该显式诊断模式
+下继续使用 verified local source，并按 `assembled/<role>/<sha256>/model.onnx` 的实际
+SHA-256 复用已组装模型；普通 protected Repo/ciphertext qualification 仍须走原路径，
+且该模式不满足正式 Repo 或 two-provider qualification。
 
 ## Audit follow-up ownership
 
@@ -78,8 +98,10 @@ tensors 沿同一路径发布。前者可关闭子批但 T003 仍 PARTIAL；sour
 成功 receipt 的 publisher cache 不能永久强持 serving lease；由既有 preparation
 cache 的预算/淘汰决定空闲保留，活动 package/request 保住读取能力。最后 handle
 释放不一定立即删除预算内缓存，但 eviction/close 后必须可回收；增加真实 publisher
-参与的 C++ 反例，不只检查手动 token reset。持久提交保证本次存活 owner 下可读，
-不承诺进程重启后恢复密钥/serving；跨重启恢复不属于本 Spec，不能为此增建服务。
+参与的 C++ 反例，不只检查手动 token reset。持久提交保证本次存活 owner 下可读；
+system-wide plain source cache 只在 identity 校验通过时跨 run 复用，不承诺进程重启
+后恢复密钥/serving。encrypted Repo、wrapped key 和 protected serving 的跨重启恢复
+不属于本 Spec，不能为此增建服务。
 
 ### Bounded commit and identity ownership
 

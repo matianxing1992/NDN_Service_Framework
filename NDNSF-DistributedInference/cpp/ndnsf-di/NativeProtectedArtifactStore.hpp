@@ -28,6 +28,23 @@ std::vector<std::uint8_t> openNativeAssembledEntry(
   const NativeAssembledEntryContext& expected,
   std::uint64_t maxPlaintextBytes);
 
+// File-backed variants for production protected assembly.  They preserve the
+// canonical wire format while bounding encryption/decryption buffers instead
+// of materializing a second full model-sized vector.
+std::string sealNativeAssembledEntryToFile(
+  const std::vector<std::uint8_t>& contentKey,
+  const std::vector<std::uint8_t>& plaintext,
+  const std::filesystem::path& wirePath,
+  const NativeAssembledEntryContext& context);
+
+std::string openNativeAssembledEntryToFile(
+  const std::vector<std::uint8_t>& contentKey,
+  const std::filesystem::path& wirePath,
+  const std::filesystem::path& plaintextPath,
+  const NativeAssembledEntryContext& expected,
+  std::uint64_t maxPlaintextBytes,
+  const std::string& expectedWireDigest = {});
+
 // Own an existing private staging directory before any plaintext is written.
 // Cleanup walks the pinned directory fd, never following symlinks.
 using NativePlaintextFileEraser =

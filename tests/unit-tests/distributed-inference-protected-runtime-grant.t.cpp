@@ -5,7 +5,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
+#include <algorithm>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <thread>
 #include <chrono>
@@ -114,6 +117,12 @@ void checkWorkerFence(BoundGrantFixture& fixture, bool duringRun, bool cancelReq
   BOOST_CHECK_EQUAL(executions, duringRun ? 1 : 0);
   BOOST_CHECK(cleared);
   BOOST_CHECK(runtime.state() == ProtectedRuntimeState::Zeroized);
+}
+
+std::vector<std::uint8_t> readBinaryFile(const std::filesystem::path& path)
+{
+  std::ifstream input(path, std::ios::binary);
+  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input), {});
 }
 }
 
@@ -489,6 +498,48 @@ BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreSealsAndAuthenticatesAllEntryKinds, 
       BOOST_CHECK_THROW(openNativeAssembledEntry(key, wire, context, plain.size()), std::runtime_error);
     });
   }
+}
+
+BOOST_FIXTURE_TEST_CASE(NativeProtectedStoreStreamsFileBackedSealAndOpen, BoundGrantFixture)
+{
+  char pattern[] = "/tmp/spec181-native-stream-XXXXXX";
+  const auto root = std::filesystem::path(::mkdtemp(pattern));
+  const auto wirePath = root / "model.onnx.cipher";
+  const auto plaintextPath = root / "staging" / "model.onnx";
+  const auto rejectedWirePath = root / "rejected.onnx.cipher";
+  const auto rejectedPlaintextPath = root / "rejected" / "model.onnx";
+  std::vector<std::uint8_t> plain(3 * 1024 * 1024 + 17);
+  std::generate(plain.begin(), plain.end(), [value = std::uint8_t{0}] () mutable {
+    return value++;
+  });
+  const NativeAssembledEntryContext context{
+    config.modelManifestDigest, binding.planDigest, binding.securityPolicySnapshotDigest,
+    "MODEL_PROTO"};
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  runtime.withContentKey(now, [&] (const auto& key) {
+    const auto wireDigest = sealNativeAssembledEntryToFile(
+      key, plain, wirePath, context);
+    BOOST_CHECK(!wireDigest.empty());
+    BOOST_CHECK_EQUAL(openNativeAssembledEntryToFile(
+      key, wirePath, plaintextPath, context, plain.size(), wireDigest), wireDigest);
+    BOOST_CHECK(readBinaryFile(plaintextPath) == plain);
+
+    std::filesystem::copy_file(wirePath, rejectedWirePath);
+    std::fstream tampered(rejectedWirePath, std::ios::in | std::ios::out | std::ios::binary);
+    tampered.seekg(-1, std::ios::end);
+    char byte = 0;
+    tampered.read(&byte, 1);
+    tampered.seekp(-1, std::ios::end);
+    byte ^= 1;
+    tampered.write(&byte, 1);
+    tampered.close();
+    BOOST_CHECK_THROW(openNativeAssembledEntryToFile(
+      key, rejectedWirePath, rejectedPlaintextPath, context, plain.size(), wireDigest),
+      std::runtime_error);
+    BOOST_CHECK(!std::filesystem::exists(rejectedPlaintextPath));
+  });
+  std::filesystem::remove_all(root);
 }
 
 BOOST_FIXTURE_TEST_CASE(NativeProtectedDirectoryCleansOriginalAndPreservesReplacement, BoundGrantFixture)

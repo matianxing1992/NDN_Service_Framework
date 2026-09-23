@@ -50,6 +50,22 @@ Proposal／slides 批注修订完成：英文50页、中文38页、slides49页�
 
 ## Current Checkpoint
 
+2026-09-22 19:45 -05:00：补齐 Python thin binding 的 owner 边界。`User` 现在实际
+导出 `request(model, input, options)`、`run(model, input, options)` 和
+`open_conversation(model, options)`；旧 `PreparedModel` binding 仍保留兼容入口。
+当前扩展以系统依赖闭包重建 `RC=0`，候选 DI 库优先加载时
+`tests/python/test_spec185_prepared_model.py` 为 `10 passed`。C++ focused selector
+仍是此前 `RC=124`，没有把 Python binding 通过误计为 native runtime PASS；详见
+[API owner correction evidence](evidence/api-owner-correction-20260922.md)。
+
+2026-09-22 19:28 -05:00 API ownership correction：将普通请求入口明确收归
+`User::request/run/openConversation(model, ...)`，通过现有 `runtimeBinding`
+拒绝跨 Runtime 的 PreparedModel；旧 `PreparedModel` 入口保留为 compiler-deprecated
+兼容层。C++ DI library 与 `spec189-prepared-request` target 均 compile-link PASS，
+但新增 API selector 在既有 preparation/fixture 边界 30 秒未产生终态，`RC=124`，
+不计运行 PASS；原始日志见[API owner correction evidence](evidence/api-owner-correction-20260922.md)。
+T005/T006/T013 的历史 PASS 不因本轮未完成运行复核而重写；当前 API PDF 刷新仍待 Design 管理 checkpoint。
+
 2026-09-15 14:23 -05:00 Tiger layered APP runner：沿用既有
 `Experiments/TigerCluster` SIF/APP 脚本，修正 identity 目录复制与 `tpmInfo` locator
 同步、NFD socket 专用目录和 device/inode 复核、`cleanenv`/`containall`、FD pin 及

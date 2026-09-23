@@ -4,7 +4,9 @@
 The candidate SIF is the output of the container-native build.  Extraction is
 performed through Apptainer so a host-built shared object or Python extension
 cannot silently enter the APP directory.  The resulting directory and JSON
-record are the portable half of the ``base SIF + APP`` pair.
+record are the portable half of the historical ``base SIF + APP`` pair.
+Current installed-v1 complete runtimes are self-contained and do not use this
+legacy export step.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ EXPECTED_BINARIES = (
     "di-native-fault-provider",
     "App_ServiceController",
     "DI_NativeArtifactAuthority",
+    "spec187-yolo-minindn",
 )
 APP_NATIVE_LIBRARIES = (
     "libndn-service-framework.so.0.1.0",
@@ -155,6 +158,9 @@ def load_build_record(path: Path, candidate: Path, expected: str) -> dict[str, A
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         fail("APP_BUILD_RECORD_INVALID", error)
+    if record.get("containerNativeBuild", {}).get("runtimeLayout") == "installed-v1":
+        fail("APP_EXPORT_NOT_REQUIRED_FOR_INSTALLED_RUNTIME",
+             "Use the complete runtime.sif directly; this exporter is legacy-only")
     base = record.get("buildInput", {}).get("baseSif")
     if not isinstance(base, dict) or not DIGEST.fullmatch(str(base.get("sha256", ""))):
         fail("APP_BUILD_RECORD_BASE_MISSING")
@@ -349,7 +355,7 @@ for directory, subdirectories, filenames in os.walk(root, onerror=onerror,
             raise SystemExit("APP_MATERIALIZED_ELF_DEPENDENCY_FAILED:" + path)
         verify_elf_resolution(path, result.stdout)
 PY
-for name in di-native-provider di-native-fault-provider App_ServiceController DI_NativeArtifactAuthority; do
+for name in di-native-provider di-native-fault-provider App_ServiceController DI_NativeArtifactAuthority spec187-yolo-minindn; do
     test -x "$app/bin/$name"
 done
 for name in libndn-service-framework.so.0.1.0 libndnsf-distributed-inference.so \
@@ -1223,7 +1229,7 @@ for directory, subdirectories, filenames in os.walk(root, onerror=onerror, follo
         if not valid:
             raise SystemExit("APP_CANDIDATE_SPECIAL_FILE:" + path)
 PY
-for name in di-native-provider di-native-fault-provider App_ServiceController DI_NativeArtifactAuthority; do
+for name in di-native-provider di-native-fault-provider App_ServiceController DI_NativeArtifactAuthority spec187-yolo-minindn; do
     test -x "$app/bin/$name"
 done
 for name in libndn-service-framework.so.0.1.0 libndnsf-distributed-inference.so \

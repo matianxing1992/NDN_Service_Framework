@@ -10,6 +10,7 @@ initial producer-readiness repair. No raw run directory was overwritten.
 
 - run root: `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r142/`
 - external Repo: `.codex-tmp/spec189-qwen-two-provider-20260918/external-r142/encrypted-repo/`
+  （该空 staging 已在 2026-09-21 cleanup 中删除；durable evidence 保留）
 - launch output: `.codex-tmp/spec189-r142-launch.log`
 - supervisor: `runs/two-provider-global-r142/supervisor.json`
 - resource trace: `runs/two-provider-global-r142/resource-samples.jsonl`

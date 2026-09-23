@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include <algorithm>
 #include <condition_variable>
@@ -28,9 +29,11 @@ std::runtime_error cacheError(const char* code, const std::string& message)
 void
 reportArtifactCleanupFailure(const char* phase) noexcept
 {
-  std::fprintf(stderr,
-               "NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED phase=%s\n",
-               phase == nullptr ? "unknown" : phase);
+  try {
+    logRuntimeEvidence(std::string("NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED phase=") +
+                       (phase == nullptr ? "unknown" : phase));
+  }
+  catch (...) { /* Cleanup must remain noexcept, including logging failures. */ }
 }
 
 void requireControlActive(const NativeRequestControl& control)

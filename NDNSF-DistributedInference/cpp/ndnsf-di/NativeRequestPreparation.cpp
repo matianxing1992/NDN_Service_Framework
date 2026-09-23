@@ -66,7 +66,11 @@ bool sameModel(const NativeModelDescriptor& a, const NativeModelDescriptor& b)
 NativeJson publicationRoot(const NativeArtifactBinding& artifacts)
 {
   const auto& wire = artifacts.canonicalManifestJson;
-  if (wire.empty() || wire.size() > 1024 * 1024 || nativePlanningDigest(wire) != artifacts.manifestDigest)
+  // The material object index is carried by the separately fetched receipt;
+  // this business root must remain small enough for authority RequestMessage
+  // transport and therefore shares the 4 KiB inline grant limit.
+  if (wire.empty() || wire.size() > 4 * 1024 ||
+      nativePlanningDigest(wire) != artifacts.manifestDigest)
     throw std::invalid_argument("native publication business root bytes differ from the manifest digest");
   auto root = nativeParseJson(wire);
   if (!root.is_object() || root.value("schema", NativeJson{}) != "ndnsf-di-canonical-model-manifest-v1" ||

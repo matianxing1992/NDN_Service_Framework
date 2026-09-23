@@ -1,13 +1,14 @@
 # C-05 API Surface, Usability and Extension Contracts
 
-**Status**: PLANNED / 2026-09-12 revision。此契约把全API审查结论纳入185；C-01/C-03同步修订，
-新接口尚未实现，不允许直接把所有Native头改名或删除旧Python包。
+**Status**: PLANNED / 2026-09-12 revision。此契约把全API审查结论纳入185；C-01/C-03同步修订。
+当前实现已提供 `User`-owned request surface；旧入口仍按兼容契约保留，不允许直接删除
+旧Python包或把设计契约误写成另一套native实现。
 
 ## Surface Levels and Export Policy
 
 | Level | Target entry | Allowed responsibility | Compatibility |
 | --- | --- | --- | --- |
-| application | C++ `ndnsf-di/api.hpp`；Python `ndnsf_distributed_inference.api` | Runtime/User/PreparedModel/Input/RequestHandle/Result/Conversation/Errors及有限值类型 | Python现有api旧名字保留显式deprecated aliases；新例子只用canonical入口 |
+| application | C++ `ndnsf-di/api.hpp`；Python `ndnsf_distributed_inference.api` | Runtime/User/PreparedModel/Input/RequestHandle/Result/Conversation/Errors及有限值类型 | `User` owns request initiation；旧 `PreparedModel` entry 保留兼容；新例子只用canonical入口 |
 | provider | C++ `ndnsf-di/provider.hpp`；Python `ndnsf_distributed_inference.provider_api` | Provider配置、serve、registration、stop/drain | 原NativeInferenceProvider与PythonInferenceProvider保留迁移映射 |
 | extension | C++ `ndnsf-di/extensions.hpp`；Python原sdk明确支持清单 | 只读model/candidate/offer view、proposal、adapter/runner工厂和注册 | sealer/worker/key/commit不是插件自由操作；不再用star exports声称全稳定 |
 | authority/admin | 独立operator头/模块与可执行程序 | 独立签名策略、发行、部署管理 | 不进入application/provider umbrella，不为清理API删除已有authority功能 |
@@ -122,12 +123,14 @@ import不连接网络、启动业务线程或加载模型；核心对象直接�
 
 ```python
 with Runtime.open(config) as runtime:
-    model = runtime.user().prepare("default")
-    result = model.request(Input.inline_bytes(payload)).result(timeout_s=30)
+    user = runtime.user()
+    model = user.prepare("default")
+    result = user.run(model, Input.inline_bytes(payload))
 
 async with Runtime.open(config) as runtime:
-    model = await runtime.user().prepare_async("default", timeout_s=300)
-    handle = model.request(Input.inline_bytes(payload), options=options)
+    user = runtime.user()
+    model = await user.prepare_async("default", timeout_s=300)
+    handle = user.request(model, Input.inline_bytes(payload), options=options)
     async for event in handle.events_async():
         consume(event.payload)
     result = await handle.result_async(timeout_s=30)

@@ -307,6 +307,8 @@ Raw launcher output is `.codex-tmp/spec189-r126-launch.log`; raw run root is
 `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r126/`;
 the ext4 ciphertext directory is
 `.codex-tmp/spec189-qwen-two-provider-20260918/external-r126/encrypted-repo/`.
+该次运行结束后该空 staging 已在 2026-09-21 cleanup 中删除；本证据正文和 raw
+日志仍保留，删除不改变该次 focused check 的结论。
 The next bounded change is MiniNDN-only NFD CS sizing; guard limits, native
 ownership, and production Repo/DI contracts remain unchanged.
 

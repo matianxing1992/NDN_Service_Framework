@@ -459,13 +459,18 @@ BOOST_AUTO_TEST_CASE(NativeNegativeCacheDeadlineRevokeAndCleanupMatrix)
     "RuntimeDrainAsyncTracksMultiplePreparedClients",
     "RuntimeDrainAsyncWakesAfterLastClientTimerRetires",
     "RuntimeDrainAsyncIncludesNativeClientWork"});
-  runNativeCasesTwice("spec185-provider-assembly", "Spec185ProviderAssembly", {
+  runNativeCasesTwice("spec185-provider-assembly", "Spec185ProviderAssembly/Spec188ProviderReferenceAssembly", {
     "AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse",
     "ProductionAssemblerFetchesCanonicalSourceAfterSelection",
     "ProviderArtifactCachePinsEvictsAndSeparatesIdentity",
     "ProtectedArtifactCacheColdHitBindsGrantAndRetainsCiphertext",
     "ProductionAssemblerCacheColdHitUsesExactArtifact",
+    "ProductionAssemblerCacheScansStableRootAndVerifiesFileDigest",
     "ProtectedSelectionBindingRejectsProviderEpochAndGrantSubstitution",
+    "ProviderArtifactCacheStopCancelsInFlightBuild",
+    "ProviderArtifactCacheStopPreservesActiveLeaseUntilRelease",
+    "MemoryLifecycleAlternatesModelsAndReclaimsEvictedArtifacts"});
+  runNativeCasesTwice("spec185-provider-assembly", "Spec185ProviderAssembly", {
     "ProviderOnlyRuntimeServesAndDrainsNativeRegistration"});
   // Controller revocation and deadline/cleanup cases are already registered
   // in the complete C++ integration target; run their named cases through a

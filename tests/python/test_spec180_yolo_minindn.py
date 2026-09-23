@@ -4,6 +4,7 @@ import json
 
 import importlib.util
 from pathlib import Path
+import sqlite3
 import sys
 from types import SimpleNamespace
 
@@ -23,6 +24,45 @@ def load_runner():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_minindn_environment_compat_preserves_equals_in_both_entrypoints():
+    module = load_runner()
+
+    class Completed:
+        def communicate(self):
+            return (b"A=one=two\nB=plain\nNO_EQUALS\n", b"")
+
+    class Node:
+        params = {"params": {"homeDir": "/tmp/fake-minindn-node"}}
+
+        def __init__(self):
+            self.calls = []
+
+        def popen(self, argv, cwd=None, **kwargs):
+            self.calls.append((argv, cwd, kwargs))
+            if argv != ["printenv"]:
+                return SimpleNamespace()
+            assert cwd == self.params["params"]["homeDir"]
+            return Completed()
+
+    module._install_minindn_environment_compat()
+    import minindn.apps.application as application
+    import minindn.util as util
+
+    expected = {
+        "A": "one=two",
+        "B": "plain",
+        "HOME": "/tmp/fake-minindn-node",
+        "C": "value=with=equals",
+    }
+    assert util.popenGetEnv(Node(), {"C": "value=with=equals"}) == expected
+    application_node = Node()
+    application.getPopen(application_node, "echo command",
+                          envDict={"C": "value=with=equals"}, shell=True)
+    assert application_node.calls[-1][0] == "echo command"
+    assert application_node.calls[-1][1] == "/tmp/fake-minindn-node"
+    assert application_node.calls[-1][2]["env"] == expected
 
 
 def _negative_children(module, tmp_path, *, case="Y-N-P", marker_request="/request",
@@ -160,6 +200,38 @@ def test_native_library_closure_rejects_split_ndn_cxx(monkeypatch):
     with pytest.raises(module.RunnerError,
                        match="NATIVE_LIBRARY_CLOSURE_MISMATCH"):
         module._validate_native_library_closure()
+
+
+def test_native_library_closure_rejects_historical_local_prefix(monkeypatch):
+    module = load_runner()
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/local/bin/nfd")
+    extension = next((module.ROOT / "pythonWrapper/ndnsf").glob("_ndnsf*.so"))
+    legacy = (module.ROOT / ".local-boost171/lib/libndn-cxx.so.0.9.0").resolve()
+    monkeypatch.setattr(module, "_ldd_library_map", lambda path: {
+        "libndn-cxx.so.0.9.0": legacy,
+    })
+    monkeypatch.setattr(module, "digest_file", lambda path: str(path))
+    with pytest.raises(module.RunnerError,
+                       match="NATIVE_LIBRARY_CLOSURE_LEGACY_LOCAL_PREFIX"):
+        module._validate_native_library_closure()
+
+
+@pytest.mark.parametrize("output, error", [
+    ("libmissing.so => not found\n", "NATIVE_LIBRARY_CLOSURE_UNRESOLVED"),
+    ("libbroken.so ??? /tmp/broken (0x1234)\n",
+     "NATIVE_LIBRARY_CLOSURE_UNRECOGNIZED"),
+])
+def test_native_library_closure_ldd_parser_is_fail_closed(monkeypatch, tmp_path,
+                                                            output, error):
+    module = load_runner()
+
+    class Result:
+        returncode = 0
+        stdout = output
+
+    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: Result())
+    with pytest.raises(module.RunnerError, match=error):
+        module._ldd_library_map(tmp_path / "fixture.so")
 
 
 def test_host_build_guard_rejects_missing_receipt(tmp_path):
@@ -1163,6 +1235,7 @@ def test_control_start_waits_for_controller_before_repository(tmp_path: Path):
     class Node:
         def __init__(self, name):
             self.name = name
+            self.params = {"params": {"homeDir": str(tmp_path / name)}}
 
     class Net:
         def __getitem__(self, name):
@@ -1181,6 +1254,7 @@ def test_control_start_waits_for_controller_before_repository(tmp_path: Path):
 
         def __init__(self):
             self.started = []
+            self.envs = {}
 
         def start(self, node, name, command, env, procs, **kwargs):
             path = output / (name + ".log")
@@ -1189,6 +1263,7 @@ def test_control_start_waits_for_controller_before_repository(tmp_path: Path):
                 if name == "controller" else "")
             proc = Proc()
             self.started.append(name)
+            self.envs[name] = dict(env)
             handle = path.open("ab")
             procs.append((proc, handle, path))
             return proc, path
@@ -1203,6 +1278,26 @@ def test_control_start_waits_for_controller_before_repository(tmp_path: Path):
     started = runtime.start_processes(Ndn(), {}, [], phase="control")
     assert legacy.started == ["controller", "repo"]
     assert [item[0].name for item in started] == ["controller", "repo"]
+    assert legacy.envs["controller"]["NDN_CLIENT_PIB"].endswith(
+        "/memphis/.ndn")
+    assert legacy.envs["controller"]["NDN_CLIENT_TPM"].endswith(
+        "/memphis/.ndn")
+
+
+def test_initialize_keychains_rewrites_node_tpm_locator(tmp_path: Path):
+    module = load_runner()
+    node_home = tmp_path / "memphis"
+    (node_home / ".ndn").mkdir(parents=True)
+    pib_path = node_home / ".ndn" / "pib.db"
+    with sqlite3.connect(pib_path) as connection:
+        connection.execute("CREATE TABLE tpmInfo(tpm_locator BLOB)")
+        connection.execute("INSERT INTO tpmInfo VALUES (?)", ("tpm-file:",))
+
+    module._rewrite_node_tpm_locator(node_home, "memphis")
+
+    with sqlite3.connect(pib_path) as connection:
+        assert connection.execute("SELECT tpm_locator FROM tpmInfo").fetchone()[0] == (
+            "tpm-file:" + str(node_home / ".ndn"))
 
 
 def test_start_processes_rejects_invalid_phase_before_side_effects(tmp_path: Path):
@@ -1269,7 +1364,10 @@ def test_start_processes_rolls_back_partial_phase_launch(tmp_path: Path):
 
     class Net:
         def __getitem__(self, name):
-            return type("Node", (), {"name": name})()
+            return type("Node", (), {
+                "name": name,
+                "params": {"params": {"homeDir": str(tmp_path / name)}},
+            })()
 
     class Ndn:
         net = Net()
@@ -1640,7 +1738,8 @@ def test_runtime_stop_uses_legacy_process_handles_after_start(tmp_path: Path):
             return None
 
     class Node:
-        pass
+        def __init__(self):
+            self.params = {"params": {"homeDir": str(tmp_path / "memphis")}}
 
     class Net:
         def __getitem__(self, _name):
@@ -1752,7 +1851,10 @@ def test_initialize_keychains_uses_case_identity_parent(tmp_path: Path):
             calls.append((args, kwargs))
 
     runtime._legacy = Legacy()
-    runtime.initialize_keychains(object())
+    # The production method also rewrites node-scoped TPM locators.  Supply
+    # the smallest network-shaped stub so this unit stays focused on the
+    # legacy keychain argument contract without triggering real filesystem IO.
+    runtime.initialize_keychains(SimpleNamespace(net=SimpleNamespace(hosts=[])))
     assert len(calls) == 1
     _args, kwargs = calls[0]
     assert kwargs["app_root"] == "/example"
@@ -1859,3 +1961,19 @@ def test_exact_sif_prefix_binds_per_node_home_and_sealed_pwd(
     assert "--env NDNSF_DI_STATE_ROOT=/tmp/state" in module.sif_exec_prefix(
         {"NDNSF_DI_STATE_ROOT": "/tmp/state",
          "SPEC180_RUNTIME_SIF": "/opt/sifs/spec180.sif"})
+
+
+def test_exact_sif_prefix_preserves_node_keychain_locators(
+        tmp_path: Path, monkeypatch):
+    """SIF cleanenv must retain the node PIB/TPM pair used by Runtime::open."""
+    monkeypatch.setenv("SPEC180_RUNTIME_SIF", "/opt/sifs/spec180.sif")
+    monkeypatch.setenv("SPEC180_RUNTIME_APPTAINER",
+                       "/opt/apptainer/1.5.3/bin/apptainer")
+    module = load_runner()
+    node_home = tmp_path / "node-home"
+    prefix = module.sif_exec_prefix(
+        {"NDN_CLIENT_PIB": f"pib-sqlite3:{node_home}/.ndn",
+         "NDN_CLIENT_TPM": f"tpm-file:{node_home}/.ndn"},
+        home_dir=str(node_home))
+    assert f"--env NDN_CLIENT_PIB=pib-sqlite3:{node_home}/.ndn" in prefix
+    assert f"--env NDN_CLIENT_TPM=tpm-file:{node_home}/.ndn" in prefix

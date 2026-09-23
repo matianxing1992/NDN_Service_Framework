@@ -15,12 +15,38 @@
 
 2026-09-15 用户将当前方向简化为 **base SIF + NDNSF**；全部外部依赖与 SDK 归 base，本仓库模块统一归 NDNSF。优先在已有 base 上补齐依赖。详见 [two-layer delivery](two-layer-delivery.md) 与 [base completion](base-sif-build.md)。以下旧 APP 名称保留兼容和历史说明，不额外划出应用构建层；当前迁移未验收部分保持 PARTIAL。
 
-2026-09-08 已接受后续使用**稳定基础 SIF + 外置版本化 DI/UAV 应用包**。
+### Current installed-v1 layout
+
+当前 `development-runtime.def.in` 使用 dependency-only base，并在容器中执行根 Waf
+的 `install --destdir`。原生文件清单、头文件和 SONAME 链由 Waf 决定；模板只传递
+完整安装树。外部库从 `/opt/ndn-base` 消费，不再复制进 NDNSF 的库目录，也不再
+用 SVS checkout/build 覆盖已安装的头文件与库。Python 原生绑定仍用该容器的
+Python 和 staged NDNSF 库构建；DI 的历史纯 Python compatibility tree 仍随当前
+development profile 安装到镜像 site-packages，不宣称已完成 Python owner-wheel 迁移。
+
+该模板是 **DI development profile**，不是所有四模块程序的自动全集：包含显式选择的
+生产程序、assembly worker 和两个已有实验附件。附件使用 Waf 的
+`--install-experiment-fixtures` opt-in 安装，不再手工复制 build 目录。此选项默认关闭，
+必须与 `--with-examples --with-tests` 一起使用；没有扩大为编译所有测试。
+
+最终 SIF 直接运行，不需要再生成 `/opt/ndnsf-app` 或调用 `build-sif-app.py`。
+旧 APP exporter 会明确拒绝 `installed-v1`，避免误走“先构建完整镜像再拆包”的旧链路。
+检测到 base 含旧 NDNSF 时先修复并重新封存 base；应用层不卸载或改写 base 的外部依赖。
+历史 base 的 NDN-CXX 外部库别名可保留，验证使用其规范化后的 base 路径。
+
+“与本机一致”指同一源码、Waf 目标和安装规则，并非复制本机二进制，也不代表 Python、
+glibc、CUDA/驱动或 ELF 字节相同。目前仍是干净的容器内 NDNSF 构建；没有新增跨镜像
+编译对象缓存，不能承诺与本机增量 `waf` 一样快。静态检查结果见
+[second audit](waf-install-static-review-20260922.md#second-audit--installed-v1)；尚未构建验证。
+
+### Historical external APP layout
+
+2026-09-08 曾采用**稳定基础 SIF + 外置版本化 DI/UAV 应用包**。
 详细归属、builder ABI、只读挂载、组合身份与验收见
 [Layered Runtime Delivery](../../../specs/182-native-di-python-bindings/contracts/layered-runtime-delivery.md)。
 应用更新可复用未变基础 SIF，但须在对应 builder 内构建并验证新组合。
 pair 入口见 [SIF + APP delivery](sif-app-delivery.md)。应用候选必须采用
-`/opt/ndnsf-app` 分层布局。当前 `development-runtime.def.in` 在同一
+`/opt/ndnsf-app` 分层布局。历史 `development-runtime.def.in` 在同一
 container-native builder 中保留旧 `/opt/ndnsf-di/current` 兼容检查树，同时发布
 无 symlink 的 `/opt/ndnsf-app` 候选树（包含 DI 应用程序及其 Core、SVS、NDNSD、NAC-ABE、
 OpenABE、Relic 和 DI 原生库闭包，稳定 NDN-CXX/NFD/ONNX Runtime/Python 由 base 提供）；旧
@@ -47,12 +73,14 @@ bash Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-local-sif.s
   --sif /absolute/path/to/Experiments/TigerCluster/images/<candidate>/runtime.sif \
   --record /absolute/path/to/Experiments/TigerCluster/images/<candidate>/build-record.json \
   --source-seal /absolute/path/to/source-seal.json \
-  --host-gate-manifest /absolute/path/to/qualified-host-gate.json \
+  --build-only \
   --apptainer /absolute/path/to/qualified/apptainer \
   --expected-apptainer 1.5.3
 ```
 
 这是需替换占位值的路径示例，本轮未构建；原脚本的`--help`打印用法并返回2，沿用既有行为。
+普通构建先用 `--build-only` 得到 `BUILT_UNQUALIFIED` 候选，不需要先做模型实验；
+只有正式 release 才换用 `--host-gate-manifest` 并完成其独立资格要求。
 SIF、缓存、私有身份、模型和大日志不入Git。镜像在容器builder内编译原生组件；宿主驱动构建，不提供宿主.so或venv作为运行依赖。
 
 ## Existing Images
@@ -108,6 +136,12 @@ python3 Experiments/TigerCluster/adapters/slurm-apptainer/scripts/run-di-unit-sm
 `/opt/ndnsf-stage/lib`。外部依赖由 pkg-config 和各自的 prefix 提供；
 `/opt/ndn-base/lib` 保留在依赖搜索路径和运行时 RPATH 中，不能作为 Repo
 binding 的显式 Core 库目录。模板和构建门禁共同检查这一约定。
+
+宿主本地构建与 SIF 的依赖边界不同：宿主使用系统 Boost 1.71 和统一的
+`/usr/local/lib/libndn-cxx.so.0.9.0`，`.local-boost171/lib` 仅是历史 staging，
+不得放入 host `LD_LIBRARY_PATH`。SIF 内不引用宿主 `/usr/local/lib`；稳定
+NDN-CXX/NFD、SVS/NAC-ABE/NDNSD 等外部运行库由 base 提供，Core/DI 使用
+`/opt/ndnsf-di/current/lib`。每次候选都要用 `ldd`、真实路径和 SHA-256 检查完整闭包。
 
 ### Historical Directory Migration Scope
 

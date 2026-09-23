@@ -31,7 +31,7 @@ def invoke_provider(tmp_path, backend, execution_provider="cpu"):
             "metadata": {"executionProvider": execution_provider}}]}]}))
     home = tmp_path / "home"
     home.mkdir()
-    env = dict(os.environ, HOME=str(home),
+    env = dict(os.environ, HOME=str(home), NDN_LOG="*=WARN",
                NDN_CLIENT_PIB="pib-sqlite3:" + str(tmp_path / "pib"),
                NDN_CLIENT_TPM="tpm-file:" + str(tmp_path / "tpm"),
                NDN_CLIENT_TRANSPORT="unix://" + str(tmp_path / "unused.sock"))
@@ -48,11 +48,12 @@ def invoke_provider(tmp_path, backend, execution_provider="cpu"):
 @pytest.mark.parametrize("backend", ["onnxruntime", "onnxruntime-cpu"])
 def test_public_cpu_backend_loads_and_warms_real_model(tmp_path, backend):
     result = invoke_provider(tmp_path, backend)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" in result.stdout
+    combined_log = result.stdout + "\n" + result.stderr
+    assert result.returncode == 0, combined_log
+    assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" in combined_log
     prefix = "NDNSF_DI_EXECUTION_EVIDENCE "
-    records = [json.loads(line[len(prefix):]) for line in result.stdout.splitlines()
-               if line.startswith(prefix)]
+    records = [json.loads(line.partition(prefix)[2])
+               for line in combined_log.splitlines() if prefix in line]
     assert len(records) == 1
     assert records[0]["loadCompleted"] == "true"
     assert records[0]["warmupCompleted"] == "true"
@@ -63,14 +64,16 @@ def test_public_cpu_backend_loads_and_warms_real_model(tmp_path, backend):
 
 def test_unknown_backend_still_rejects(tmp_path):
     result = invoke_provider(tmp_path, "unknown-backend")
+    combined_log = result.stdout + "\n" + result.stderr
     assert result.returncode != 0
-    assert "no NativeModelRunner backend registered: unknown-backend" in result.stderr
-    assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" not in result.stdout
+    assert "no NativeModelRunner backend registered: unknown-backend" in combined_log
+    assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" not in combined_log
 
 
 @pytest.mark.parametrize("backend", ["onnxruntime-cpu", "onnxruntime-cuda"])
 def test_public_backend_preserves_execution_provider_validation(tmp_path, backend):
     result = invoke_provider(tmp_path, backend, "invalid-provider")
+    combined_log = result.stdout + "\n" + result.stderr
     assert result.returncode != 0
-    assert "unsupported ONNX Runtime execution provider: invalid-provider" in result.stderr
-    assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" not in result.stdout
+    assert "unsupported ONNX Runtime execution provider: invalid-provider" in combined_log
+    assert "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK" not in combined_log

@@ -242,6 +242,12 @@ public:
                 const NdnsfDataV1Segment& segment,
                 const std::string& expectedDataName = {});
 
+  /**
+   * Start a new transport operation without extending the group hard
+   * deadline.  The no-progress clock is scoped to the operation; runner
+   * preparation and idle time between operations must not terminate it.
+   */
+  bool beginOperation(std::uint64_t nowMs);
   bool recordProgress(std::uint64_t nowMs);
   bool deadlineExpired(std::uint64_t nowMs) const;
   void cancel(std::string reason);

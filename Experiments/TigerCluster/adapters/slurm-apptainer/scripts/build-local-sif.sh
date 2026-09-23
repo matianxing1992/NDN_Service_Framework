@@ -18,8 +18,8 @@ usage: build-local-sif.sh \
 
 The definition is executed by the local host's Apptainer.  It may bootstrap
 from a sealed localimage, but must produce the complete application SIF.
-The expected version must come from a bounded Slurm compute-node probe, not
-from the Tiger login node.
+The required build version is Apptainer 1.5.3. The Tiger login-node version
+does not override this policy; runtime compatibility is checked separately.
 --build-only creates a BUILT_UNQUALIFIED candidate for local tests. It cannot
 produce a release PASS record or be used by the APP release packager.
 EOF
@@ -65,6 +65,7 @@ else
 fi
 [ -f "$definition" ] || { echo LOCAL_SIF_DEFINITION_MISSING >&2; exit 4; }
 [ -f "$source_seal" ] || { echo LOCAL_SIF_SOURCE_SEAL_MISSING >&2; exit 4; }
+[ "$expected_version" = 1.5.3 ] || { echo LOCAL_SIF_APPTAINER_POLICY_REQUIRES_1_5_3 >&2; exit 4; }
 [ ! -e "$sif" ] || { echo LOCAL_SIF_OUTPUT_EXISTS >&2; exit 4; }
 [ ! -e "$record" ] || { echo LOCAL_SIF_RECORD_EXISTS >&2; exit 4; }
 [ -x "$apptainer_bin" ] || { echo LOCAL_SIF_APPTAINER_NOT_EXECUTABLE >&2; exit 4; }

@@ -20,7 +20,6 @@ Treat every path present before Phase 1 as user-owned/pre-existing:
   `pythonWrapper/ndnsf/{__init__,service}.py`, `_ndnsf.cpp`, and
   `generic-dynamic-api-targeted.t.cpp`;
 - pre-existing untracked Repo experiments/tests/docs and Specs 071-083;
-- deleted `tools/ai/deepseek_delegate.py`.
 
 Phase 1 owns only:
 

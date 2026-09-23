@@ -128,5 +128,5 @@ canonical file reads. Spec Kit requirements checklist is 25/25; implementation
 and code-aware audit rules keep T014 blocked. GSD installation health passed,
 but its phase-36/Spec170 checkpoint is stale for this request, so no unrelated
 phase was resumed. ARS is not applicable to implementation-only work. No
-DeepSeek configuration, credentials, unrelated worktree edits or git history
-were changed.
+Unrelated configuration, credentials, worktree edits or git history were
+changed.

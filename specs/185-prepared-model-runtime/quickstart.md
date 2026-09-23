@@ -13,10 +13,10 @@ auto runtime = di::Runtime::open(config);
 auto user = runtime->user();
 auto model = user.prepare("default");
 auto capabilities = model.capabilities();
-auto result = model.run(di::Input::inlineBytes(encodedInput));
+auto result = user.run(model, di::Input::inlineBytes(encodedInput));
 auto preparing = user.prepareAsync("default");
 auto sameModel = preparing.result(std::chrono::seconds(10));
-auto request = sameModel.request(di::Input::inlineBytes(nextEncodedInput));
+auto request = user.request(sameModel, di::Input::inlineBytes(nextEncodedInput));
 auto completion = request.onCompletion([](std::exception_ptr error, std::optional<di::Result> value) {
   // Consume the native completion; do not block the IO owner.
 });
@@ -50,8 +50,9 @@ from ndnsf_distributed_inference.api import Runtime, RuntimeConfig, Input
 
 config = RuntimeConfig(native_config_path="/operator/native-requester.json")
 with Runtime.open(config) as runtime:
-    model = runtime.user().prepare()
-    result = model.run(Input.inline_bytes(encoded_input))
+    user = runtime.user()
+    model = user.prepare()
+    result = user.run(model, Input.inline_bytes(encoded_input))
 ```
 
 encoded_input由应用按该模型schema提供。Provider使用provider_api中的ProviderConfig/ServiceDefinition；Runtime仍用同一C++绑定。

@@ -4,7 +4,7 @@
 
 - [x] T001 Audit C++/Python Repo storage, protocol, client, CLI, test, and MiniNDN paths with CodeGraph and record findings in `specs/073-repo-tiered-hot-cache/plan.md`
 - [x] T002 Define authority, cache, compatibility, and acceptance requirements in `specs/073-repo-tiered-hot-cache/spec.md`
-- [x] T003 [P] Record storage decisions and DeepSeek second-pass findings in `specs/073-repo-tiered-hot-cache/research.md`
+- [x] T003 [P] Record storage decisions and second-pass findings in `specs/073-repo-tiered-hot-cache/research.md`
 - [x] T004 [P] Define cache status and entry models in `specs/073-repo-tiered-hot-cache/data-model.md`
 - [x] T005 [P] Define the `CACHE_STATUS` wire contract in `specs/073-repo-tiered-hot-cache/contracts/cache-status.md`
 - [x] T006 [P] Define deterministic MiniNDN variables and acceptance evidence in `specs/073-repo-tiered-hot-cache/experiment-plan.md`

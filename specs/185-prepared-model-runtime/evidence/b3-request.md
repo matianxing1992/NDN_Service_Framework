@@ -49,7 +49,7 @@ diff、周边 caller、fixture、`tests/wscript` 和五 lane；最终受影响�
 
 | Lane | 实际范围与判定 |
 | --- | --- |
-| production entry/callers | `User::prepare` -> `PreparedModel::requestInternal` -> `NativeInferenceClient::requestCooperative` -> Core operation；`Runtime::close/drain/drainAsync` 与多 client fixture。covered。 |
+| production entry/callers | `User::prepare` -> `User::request(PreparedModel)` -> `PreparedModel::requestInternal` -> `NativeInferenceClient::requestCooperative` -> Core operation；`Runtime::close/drain/drainAsync` 与多 client fixture。covered。 |
 | implementation and wire | package projection、input/placement mapping、request ID/lease、deadline/cancel/terminal gate、event reader、Core ticket/drain、immutable snapshot/notifier、NAC-DKEY cleanup；无新增 wire schema，wire N/A 由 diff 证实。covered。 |
 | test/harness/oracle | C++ `Spec185PreparedRequest` 12 cases、`Spec185ExtensionRegistry` 10 cases；独立 ONNX planning/semantic fixture、wrong digest/role、provider ACK/selection、cancel/deadline/slow-consumer/drain cases；`tests/wscript` 完整注册。covered。 |
 | build/source closure | `NDNSF-DistributedInference` DI closure、Core `OperationRuntime`/`ServiceUser` consumers、`tests/wscript`；normal 与独立 ASan/UBSan target 均从对应 Waf tree 链接。covered。 |

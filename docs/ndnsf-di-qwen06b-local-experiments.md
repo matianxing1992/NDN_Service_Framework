@@ -17,15 +17,18 @@ python3 Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py check \
   --stage-manifest .codex-tmp/spec184-qwen06b-native-20260912/qwen-onnx-service-manifest.json \
   --stage-root .codex-tmp/spec184-qwen06b-native-20260912/qwen-onnx-stage-artifacts \
   --canonical-source <canonical-source.onnx> \
+  --node-mapping <node-mapping.json> \
   [--canonical-initializer <canonical-initializer.bin>]
 
 python3 Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py prepare \
   --profile <profile.json> --stage-manifest <manifest.json> --stage-root <stage-root> \
-  --canonical-source <canonical-source.onnx> --run-id qwen06b-local-r01
+  --canonical-source <canonical-source.onnx> --node-mapping <node-mapping.json> \
+  --run-id qwen06b-local-r01
 
 sudo -E python3 Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py run \
   --profile <profile.json> --stage-manifest <manifest.json> --stage-root <stage-root> \
-  --canonical-source <canonical-source.onnx> --run-id qwen06b-local-r01
+  --canonical-source <canonical-source.onnx> --node-mapping <node-mapping.json> \
+  --run-id qwen06b-local-r01
 ```
 
 `local` 可组合 `prepare` 和 `run`，适合一次性开发 smoke；需要复现实验或排查
@@ -40,7 +43,7 @@ sudo -E python3 Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py run \
 | --- | --- | --- |
 | `machine` | topology 节点、C++ binary 存在性、`readelf` RUNPATH、`ldd -r` closure | `candidate/model/bundle/minindn/workload` 为 `NOT_EVALUATED` |
 | `candidate` | profile、runner、build receipt、native binary 和 topology hash | 不允许继续准备 |
-| `model` | stage role 顺序、stage hash、tokenizer hash、canonical source ONNX 解析/hash、字节数 | source 缺失、超限或非 ONNX 时停止 |
+| `model` | stage role 顺序、stage hash、tokenizer hash、canonical source ONNX 解析/hash、initializer 字节数、node mapping 覆盖/hash | source、initializer 或 mapping 缺失、超限、非 ONNX 或覆盖不完整时停止 |
 | `bundle` | app manifest、canonical source identity 和精确 child command；candidate digest 绑定所有输入 | 修改输入后必须重新 prepare |
 | `minindn` | 真实 NFD/NLSR、Controller、Authority、Provider 启动和清理 | 启动失败不计为模型或协议结果 |
 | `workload` | C++ requester 的 ACK/Selection/Response、多轮会话和输出校验 | 只有 child run-record 为 PASS 才能 PASS |
@@ -54,3 +57,14 @@ source 时，`check` 会在 `model` 层返回 `WAITING_EXTERNAL_INPUT`，不会�
 
 该流程的 native 行为仍由 C++ requester/provider/authority 和 ONNX Runtime 负责；
 Python 只负责 profile、文件身份、拓扑生命周期和子进程编排。
+
+## 2026-09-16 real-model replay
+
+本机 real Qwen3-0.6B 候选已通过 `check` 和 `prepare`，并以只读 hard-link 方式复用
+1.5 GiB external initializer。修正 C++ 对齐的 Int64 `input_ids` tensor bundle 后，
+`qwen06b-local-real-r5` 中 Controller、Authority 和三个 Provider 均 ready，Provider
+发出 `DI_PLACEMENT_V3_OFFER`；Requester 在 `ACK_CLOSED` 后以
+`DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED` 结束，180 秒 deadline 内没有 Selection、
+Provider execution 或结果。因此该 run 是 `minindn=PASS`、`workload=FAIL`，仍为
+`UNQUALIFIED`，不能作为 Qwen3.6-27B 或 Tiger 资格。原始目录和逐次失败边界见
+[real replay evidence](../specs/184-native-di-closure/evidence/qwen06b-local-real-replay-20260916.md)。

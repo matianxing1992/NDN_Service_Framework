@@ -3,11 +3,18 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp"
 #include <openssl/ossl_typ.h>
+#include <cstddef>
 #include <map>
 #include <set>
 #include <vector>
 
 namespace ndnsf::di {
+
+// Grant authority requests are carried in one ordinary NDN RequestMessage.
+// Keep the optional inline manifest well below the packet-size boundary; a
+// larger canonical root must be pre-authorized by its digest (or use a future
+// bounded reference transport), never be put into this wire field.
+inline constexpr std::size_t NativeGrantInlineManifestMaxBytes = 4U * 1024U;
 
 /** GrantRequestV1 wire value. Private keys never enter this value. */
 struct NativeSignedGrantRequest

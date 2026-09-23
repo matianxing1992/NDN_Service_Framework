@@ -1,5 +1,64 @@
 # UAV Simulation-to-Field Revision
 
+## Fixed Camera Baseline — 2026-09-16
+
+按用户和导师反馈进行小幅修订：P3 使用 camera-to-body calibration；P4 明确云台是
+后续可选升级、并非当前配置；新增 P5 说明固定相机的标定、低运动时段采集、图像与
+拍摄时位姿/时间对应，以及同一目标匹配。固定相机是当前选择，具体集成步骤仍为计划。
+姿态估计用于估计视线，不声称消除模糊/抖动，也不声称姿态本身足以确定目标位置。
+新增 [MAVLink capture metadata](https://mavlink.io/en/messages/common.html#CAMERA_IMAGE_CAPTURED)
+引用只支持元数据表示；硬件标定精度和时间同步仍需验证。
+
+同步 `inspection-illustrated.tex`、两份内容相同的 PDF、可编辑 PPTX 和导出 wrapper。
+两遍 pdfLaTeX 成功，最终日志无排版/字体警告。PDF/PPTX 文字预检均为 5 页且无 findings。
+117/117 PDF spans 恰好分配一次，78 个非空原生文本框、11 个原生项目符号、
+4 个独立图像区域、5 个恢复链接；对象均未超出画布，FILTERTEXT 背景无可提取文字。
+LibreOffice 6.4.7.2 / Poppler 全 5 页人工核对通过，新增页与源 PDF 核对无明显重叠或裁切。
+未在 Microsoft PowerPoint / Google Slides 客户端实测。图形线条仍为图片，文字可编辑。
+
+PDF SHA-256: `3b282cd51f69b021d818e50d12a2b3e70a1027fb8a8842e5dc2a2d36e4d5c080`.
+PPTX SHA-256: `20dd8c45922e87ad832dd110190b028ba6587d0c6e36b3c842f24ab9c1d831da`.
+可重建渲染和验证清单位于 `docs/PAPER/proposal-defense/slides/build/uav-fixed-20260916-r1/`；
+编译日志和修改前备份位于 `/tmp/ndnsf-uav-fixed-20260916-r1/`，这些临时产物不入 Git。
+没有产品/API、实验结果或 Spec 功能验收变化。既有 pre-commit 阻塞保持未绕过，文件待提交。
+下一步在实际演示客户端确认字体和排版；以下四页导出记录为历史版本。
+
+## Editable PowerPoint Export — 2026-09-16
+
+本轮只转换用户指定的四页 `UPDATES_UAV.pdf`，未改 PDF、TeX、研究结论或产品状态。
+复用 proposal `generate_hybrid_editable_pptx.py`，新增本目录 wrapper，按
+NDN Slides Review 检查文字可编辑性、断词、图文分离和全页渲染。
+
+| Page | Editable content | Figure handling / review |
+| --- | --- | --- |
+| 1 | 16 textboxes：标题、请求、全部示意图标签、证据与页脚 | 场景为独立图片，标签为原生文本；示意线索边界不变 |
+| 2 | 20 textboxes，3 native bullets | 流程图底图独立，文字与正文可编辑；保留 proposed/uncertainty |
+| 3 | 18 textboxes，包括表格全部文字 | 修复 assigned/calibration/alignment/uncertainty 的 PDF 断词；单元格以文本框而非 native table 表示 |
+| 4 | 12 textboxes，4 native bullets | 两张照片独立；不把候选硬件写为已验证设备 |
+
+Validation：99/99 PDF text spans 恰好分配一次；FILTERTEXT 背景无可提取文字；
+最终 66 个非空文本框、7 个原生项目符号、4 个独立图像区域、4 个恢复的链接。
+修正后逐文本组与源 PDF 的转换清单对照一致，所有对象边界位于画布内。
+LibreOffice 6.4.7.2 导出、Poppler 1400px 全四页人工检查通过；最终 r3
+渲染逐页与已人工检查的 r2 PNG SHA-256 一致，无明显裁切/重叠。
+未在 Microsoft PowerPoint 或 Google Slides 客户端实测。
+
+文字预检没有超过 100 words 的页面；唯一 minor 提示为末页的 “First”，
+这里指第一次台架测试，不是首创声明，故保留。几何图形仍为图片，不声称全部
+线条/节点可单独编辑；产品图片内原有商标保留为图片内容。
+
+Source PDF SHA-256: `f41a92ecaef557067ce96941e949da4d00cd12c16fd29ba0338d911c33ef6f27`.
+PPTX SHA-256: `8785e0f4417ee6c8d5dfc5485acae20e2008fde091b9a1009d300a2c15304131`.
+可重建的原始清单、验证 JSON、LibreOffice PDF 与渲染图位于
+`docs/PAPER/proposal-defense/slides/build/uav-editable-20260916-r3/`，不入 Git。
+下一步在实际演示用 PowerPoint/Google Slides 中确认字体替换；无实验重跑或 API 变化。
+
+Checkpoint：导出与验证完成，但普通 `git commit` 被现有 `.git/hooks/pre-commit`
+拒绝（exit 1）：`Commit blocked: development-assistant files or references remain
+in the Git index.` 该钩子默认通过 `git grep --cached` 扫描整个 index，既有
+`.specify/memory/constitution.md:16` 等文件引用触发拒绝，不是 PPTX 检查失败。
+本轮未禁用钩子、未更改其环境开关、未删除既有资料；文件保留待提交。
+
 ## Current Revision: Joint Identification of an Unknown Target — 2026-09-11
 
 用户指出更合适的任务是“只知道大概位置，不知道目标是什么，综合多个视角共同判断”。本轮采用

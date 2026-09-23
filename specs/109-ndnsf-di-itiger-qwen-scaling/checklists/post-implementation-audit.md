@@ -115,10 +115,6 @@ relabelled.
 | GSD | Installation/help and health validated; resumable state is healthy. |
 | ARS experiment workflow | Used for controlled baseline/candidate separation, confound control, sample thresholds, confidence intervals, failure retention, and authority grading. |
 
-The optional DeepSeek delegate was not used for authoritative review because
-the repository helper referenced by the local skill is absent; local code,
-CodeGraph, tests, and preserved evidence remain the audit sources.
-
 ## Readiness scorecard
 
 | Dimension | Ready? | Notes |

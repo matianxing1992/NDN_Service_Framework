@@ -56,6 +56,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 namespace ndnsf::di {
 namespace {
@@ -770,6 +771,22 @@ BOOST_AUTO_TEST_CASE(RequestFrameDecoderLifecycle)
   BOOST_CHECK(trickle.model() == model);
 }
 
+BOOST_AUTO_TEST_CASE(FileBackedRequestDeclaresLengthWithoutBufferingModel)
+{
+  const auto header = craftRequestHeader(2, 4096, 0, 2, true);
+  std::vector<std::uint8_t> frame = header;
+  frame.push_back('{');
+  frame.push_back('}');
+
+  NativeOnnxRequestDecoder decoder;
+  BOOST_CHECK(decoder.feed(frame.data(), frame.size()) ==
+              NativeOnnxRequestDecoder::Result::Complete);
+  BOOST_CHECK(decoder.header().hasModelFile);
+  BOOST_CHECK_EQUAL(decoder.header().modelLength, 4096U);
+  BOOST_CHECK(decoder.model().empty());
+  BOOST_CHECK(decoder.metadata() == std::vector<std::uint8_t>({'{', '}'}));
+}
+
 BOOST_AUTO_TEST_CASE(RequestFrameTruncationNeedsMoreAtEveryPrefix)
 {
   const std::vector<std::uint8_t> model(64, 0xAB);
@@ -785,8 +802,9 @@ BOOST_AUTO_TEST_CASE(RequestFrameTruncationNeedsMoreAtEveryPrefix)
 
 BOOST_AUTO_TEST_CASE(RequestFrameRejectsIncoherentHeaders)
 {
-  // Wrong magic, reserved flag value, and flag-0-with-initializer are all
-  // protocol errors the moment the 33-byte header completes.
+  // Wrong magic, a file-backed flag with zero model length, and
+  // flag-0-with-initializer are all protocol errors the moment the 33-byte
+  // header completes.
   std::vector<std::uint8_t> bad = craftRequestHeader(0, 0, 0, 0, false);
   NativeOnnxRequestDecoder badMagic;
   BOOST_CHECK(badMagic.feed(bad.data(), bad.size()) ==
@@ -811,6 +829,41 @@ BOOST_AUTO_TEST_CASE(RequestFrameRejectsIncoherentHeaders)
               NativeOnnxRequestDecoder::Result::Complete);
   BOOST_CHECK(emptyInitializer.header().hasInitializer);
   BOOST_CHECK(emptyInitializer.initializer().empty());
+}
+
+BOOST_AUTO_TEST_CASE(RequestFrameRejectsUntrustedOversizedLengths)
+{
+  // Lengths are decoded from an untrusted child-process pipe.  These headers
+  // must fail before model/initializer storage reserves a caller-declared
+  // multi-gigabyte amount; no payload bytes are supplied by this test.
+  const auto tooMuchMetadata = craftRequestHeader(
+    kNativeOnnxWorkerMaxMetadataBytes + 1, 0, 0, 0, true);
+  NativeOnnxRequestDecoder metadataDecoder;
+  BOOST_CHECK(metadataDecoder.feed(tooMuchMetadata.data(),
+                                   tooMuchMetadata.size()) ==
+              NativeOnnxRequestDecoder::Result::ProtocolError);
+
+  const auto tooMuchModel = craftRequestHeader(
+    0, 3ULL * 1024 * 1024 * 1024, 0, 0, true);
+  NativeOnnxRequestDecoder modelDecoder;
+  BOOST_CHECK(modelDecoder.feed(tooMuchModel.data(), tooMuchModel.size()) ==
+              NativeOnnxRequestDecoder::Result::ProtocolError);
+
+  const auto tooMuchInitializer = craftRequestHeader(
+    0, 0, 3ULL * 1024 * 1024 * 1024, 1, true);
+  NativeOnnxRequestDecoder initializerDecoder;
+  BOOST_CHECK(initializerDecoder.feed(tooMuchInitializer.data(),
+                                      tooMuchInitializer.size()) ==
+              NativeOnnxRequestDecoder::Result::ProtocolError);
+
+  // The individual lengths are each within the fixed bound, but their sum
+  // exceeds it.  The short-circuit check must reject without unsigned
+  // subtraction wrapping.
+  const auto overTotal = craftRequestHeader(
+    0, 2ULL * 1024 * 1024 * 1024, 1, 1, true);
+  NativeOnnxRequestDecoder totalDecoder;
+  BOOST_CHECK(totalDecoder.feed(overTotal.data(), overTotal.size()) ==
+              NativeOnnxRequestDecoder::Result::ProtocolError);
 }
 
 BOOST_AUTO_TEST_CASE(ResponseFrameDecoderLifecycle)
@@ -842,6 +895,15 @@ BOOST_AUTO_TEST_CASE(ResponseFrameDecoderLifecycle)
               NativeOnnxResponseDecoder::Result::Complete);
   BOOST_CHECK_EQUAL(errorDecoder.header().status, 2);
   BOOST_CHECK(errorDecoder.model().empty());
+
+  const std::vector<std::uint8_t> digestOnlyFrame =
+    composeNativeOnnxWorkerResponse(kNativeOnnxWorkerDigestOnlyStatus, "{}", {});
+  NativeOnnxResponseDecoder digestOnlyDecoder;
+  BOOST_CHECK(digestOnlyDecoder.feed(digestOnlyFrame.data(), digestOnlyFrame.size()) ==
+              NativeOnnxResponseDecoder::Result::Complete);
+  BOOST_CHECK_EQUAL(digestOnlyDecoder.header().status,
+                    kNativeOnnxWorkerDigestOnlyStatus);
+  BOOST_CHECK(digestOnlyDecoder.model().empty());
 
   // One-byte trickles (cross-call header accumulation).
   NativeOnnxResponseDecoder trickle;
@@ -883,7 +945,7 @@ BOOST_AUTO_TEST_CASE(ResponseFrameRejectsOversizeAndIncoherentHeaders)
   BOOST_CHECK(badMagic.feed(bad.data(), bad.size()) ==
               NativeOnnxResponseDecoder::Result::ProtocolError);
 
-  bad = craftResponseHeader(0, 0, 3, true);  // reserved status
+  bad = craftResponseHeader(0, 0, 4, true);  // reserved status
   NativeOnnxResponseDecoder reservedStatus;
   BOOST_CHECK(reservedStatus.feed(bad.data(), bad.size()) ==
               NativeOnnxResponseDecoder::Result::ProtocolError);
@@ -891,6 +953,11 @@ BOOST_AUTO_TEST_CASE(ResponseFrameRejectsOversizeAndIncoherentHeaders)
   bad = craftResponseHeader(0, 0, 0, true);  // status 0 must carry a model
   NativeOnnxResponseDecoder emptyOk;
   BOOST_CHECK(emptyOk.feed(bad.data(), bad.size()) ==
+              NativeOnnxResponseDecoder::Result::ProtocolError);
+
+  bad = craftResponseHeader(0, 1, kNativeOnnxWorkerDigestOnlyStatus, true);
+  NativeOnnxResponseDecoder digestOnlyWithModel;
+  BOOST_CHECK(digestOnlyWithModel.feed(bad.data(), bad.size()) ==
               NativeOnnxResponseDecoder::Result::ProtocolError);
 
   bad = craftResponseHeader(0, 5, 1, true);  // error status with a model
@@ -929,6 +996,8 @@ BOOST_AUTO_TEST_CASE(ComposeEnforcesFrameCoherence)
                     std::runtime_error);  // flag 1 without bytes
   BOOST_CHECK_THROW(composeNativeOnnxWorkerResponse(1, "{}", {1}),
                     std::runtime_error);  // error status with a model
+  BOOST_CHECK_NO_THROW(composeNativeOnnxWorkerResponse(
+                         kNativeOnnxWorkerDigestOnlyStatus, "{}", {}));
   BOOST_CHECK_THROW(composeNativeOnnxWorkerResponse(0, "{}", {}),
                     std::runtime_error);  // ok without model bytes
   BOOST_CHECK_THROW(composeNativeOnnxWorkerResponse(
@@ -1268,6 +1337,21 @@ BOOST_AUTO_TEST_CASE(MetadataRejectsDigestFormatAndPayloadMismatch)
   BOOST_CHECK_EQUAL(check.failureCode, "DI_NATIVE_ONNX_RECIPE");
 }
 
+BOOST_AUTO_TEST_CASE(MetadataCarriesOptionalFileSourceIdentity)
+{
+  const auto recipe = recipeFromVector(workerAcceptRow());
+  const std::string sourceDigest =
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const std::string envelope = buildNativeOnnxWorkerRequestMetadata(
+    recipe, 4096, sourceDigest);
+  const NativeOnnxMetadataCheck check =
+    validateNativeOnnxWorkerMetadata(envelope);
+  BOOST_REQUIRE(check.ok);
+  BOOST_REQUIRE(check.value.sourceBytes.has_value());
+  BOOST_CHECK_EQUAL(*check.value.sourceBytes, 4096U);
+  BOOST_CHECK_EQUAL(check.value.sourceDigest, sourceDigest);
+}
+
 // ---------------------------------------------------------------------------
 // Real-subprocess transport (OA02) against the built worker and the
 // deliberately-misbehaving test tools.
@@ -1303,6 +1387,42 @@ BOOST_AUTO_TEST_CASE(SubprocessUnregisteredThenRegisteredMatchesInProcess)
   BOOST_CHECK_EQUAL(viaWorker.nodeCount, inProcess.nodeCount);
   BOOST_CHECK(viaWorker.inputNames == inProcess.inputNames);
   BOOST_CHECK(viaWorker.outputNames == inProcess.outputNames);
+}
+
+BOOST_AUTO_TEST_CASE(SubprocessFileBackedMaterializedRoleMatchesInProcess)
+{
+  const std::string worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
+  const auto row = workerAcceptRow();
+  const auto sourceBytes = fromHex(row.get<std::string>("modelHex"));
+  const auto source = sourceFromRow(row);
+  auto recipe = recipeFromVector(row);
+  recipe.materializedRole = true;
+  const auto path = std::filesystem::temp_directory_path() /
+    ("ndnsf-di-worker-file-" + std::to_string(::getpid()) + ".onnx");
+  struct TempFileCleanup {
+    std::filesystem::path path;
+    ~TempFileCleanup()
+    {
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+    }
+  } cleanup{path};
+  {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    BOOST_REQUIRE(output.good());
+    output.write(reinterpret_cast<const char*>(sourceBytes.data()),
+                 static_cast<std::streamsize>(sourceBytes.size()));
+    BOOST_REQUIRE(output.good());
+  }
+  NativeCanonicalSource emptySource;
+  registerNativeOnnxWorkerLocation({worker, ""});
+  const auto inProcess = assembleInProcess(source, recipe);
+  const auto viaWorker = runNativeOnnxAssemblyWorkerAt(
+    {worker, ""}, emptySource, recipe, extractionControl(), nullptr, path);
+  BOOST_CHECK_EQUAL(viaWorker.modelDigest, inProcess.modelDigest);
+  BOOST_CHECK(viaWorker.modelBytes == inProcess.modelBytes);
+  BOOST_CHECK_EQUAL(viaWorker.modelDigest, sha256HexOf(viaWorker.modelBytes));
+  BOOST_CHECK_EQUAL(viaWorker.nodeCount, recipe.nodeIndices.size());
 }
 
 BOOST_AUTO_TEST_CASE(SubprocessChainRejectionPropagatesItsOwnCode)

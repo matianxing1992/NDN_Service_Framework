@@ -1,4 +1,5 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 
 #include <set>
 #include <future>
@@ -756,6 +757,61 @@ BOOST_AUTO_TEST_CASE(SelectionSnapshotRejectsStaleMemberAndKeepsLatest)
   BOOST_REQUIRE(snapshot);
   BOOST_REQUIRE_EQUAL(snapshot->memberStatuses.size(), 1);
   BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().sequence, 2);
+}
+
+BOOST_AUTO_TEST_CASE(SelectionAssemblyAdmissionContinuesIntoRootProgress)
+{
+  ndn::security::KeyChain keyChain("pib-memory:collab-status-admission",
+                                   "tpm-memory:collab-status-admission");
+  ndn::DummyClientFace face(keyChain);
+  auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/admission"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-admission"));
+  LocalServiceProvider provider(face, ndn::Name("/test/group"),
+                                providerCert, aaCert,
+                                "examples/trust-any.conf");
+  const std::string selectionDigest = "sha256:selection-admission";
+  provider.seedSelectionStatusForTest(selectionDigest,
+                                      ndn::Name("/LLM/Qwen"),
+                                      ndn::Name("/request/admission"));
+
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "terminal";
+  assignment.service = ndn::Name("/LLM/Qwen");
+  assignment.selectionDigest = selectionDigest;
+  RequestMessage request;
+  ServiceProvider::CollaborationContext context(
+    provider, ndn::Name("/user/admission"), ndn::Name("/request/admission"),
+    request, assignment);
+  ndnsf::di::NativeSelectionProjectionV3 projection;
+  projection.requestId = "/request/admission";
+  projection.attempt = 1;
+  projection.planDigest = "sha256:plan-admission";
+  projection.assembly.selectedRole = "terminal";
+  projection.assembly.backend = "onnxruntime-cpu";
+  auto sequence = std::make_shared<std::atomic<std::uint64_t>>(0);
+  auto reportAdmission = ndnsf::di::makeNativeAssemblyProgressReporter(
+    context, projection, projection.assembly.backend, 1, 0, sequence);
+  auto reportRoot = ndnsf::di::makeNativeAssemblyProgressReporter(
+    context, projection, projection.assembly.backend, 1, 0, sequence);
+  reportAdmission("ASSEMBLY_ADMISSION", 0.0);
+  BOOST_CHECK_NO_THROW(reportRoot("ROOT_VERIFIED", 0.25));
+
+  const auto snapshot = provider.getSelectionExecutionStatus(selectionDigest);
+  BOOST_REQUIRE(snapshot);
+  BOOST_REQUIRE_EQUAL(snapshot->memberStatuses.size(), 1);
+  BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().operationId,
+                    selectionDigest + ":terminal:assembly-progress");
+  BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().operation,
+                    "ensure-deployment");
+  BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().state, "RUNNING");
+  BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().detailsSchema,
+                    "ndnsf-di-preparation-progress-v1");
+  BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().sequence, 2);
+  const auto& details = snapshot->memberStatuses.front().detailsPayload;
+  const std::string detailsText(reinterpret_cast<const char*>(details.data()),
+                                details.size());
+  BOOST_CHECK(detailsText.find("\"phase\":\"ROOT_VERIFIED\"") !=
+              std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(SelectionSnapshotConcurrentMembersRemainOwned)

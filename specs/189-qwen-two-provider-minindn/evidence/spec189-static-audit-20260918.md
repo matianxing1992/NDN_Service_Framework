@@ -1,5 +1,24 @@
 # Spec189 Static Audit and Progress Reclassification
 
+## Follow-up convergence audit — 2026-09-18 19:16 -0500
+
+这次修订针对执行结构，不改变已记录的历史结论：
+
+* T008 的 host guard/lifecycle safety 不是独立产品能力，已并入 T009 的最终
+  resource gate；T003/T006 交付实际 native owner counters，T009 负责完整模型
+  采样、分类停止和 post-drain。活动任务由 7 项减为 6 项，结构检查重新通过。
+* 同 handle 两请求的零 publication 不再在 T003 的小 selector 中重复模拟，T003
+  只关闭 immutable prepare/Repo reference；最终 reuse 由 T009 的真实 MiniNDN
+  运行证明。
+* Qwen layer map、candidate profile、resource thresholds、MiniNDN topology 和
+  `spec189-two-provider-oracle` 明确为本地候选契约；它们不能借 Spec189 进入
+  Core/Repo 全局默认值或公共 API。Python ONNX helper 只做预检，native C++
+  identity/prepare 仍是权威实现。
+
+结构检查：`audit_speckit_structure.py --strict` PASS（6 tasks / 1 DONE / 26 FR /
+6 SC；ID 不连续仅表示保留合并历史）；Spec Kit 同步 `11/11 PASS`；`git diff --check`
+PASS。产品状态仍 `IN_PROGRESS`，没有新的 native 或 MiniNDN PASS。
+
 ## B189-1a follow-up — 2026-09-18 15:42 -0500
 
 官方只读 `review-agent` 对 B189-1a 冻结的十个文件完成复审，返回

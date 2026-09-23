@@ -517,17 +517,12 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   silentOptions.maxEventRetries = 1;
   size_t silentErrors = 0;
   std::vector<ndn::Name> silentRetries;
-  StreamedInvocationErrorCode silentErrorCode =
-    StreamedInvocationErrorCode::InvalidOptions;
   StreamEventConsumer silentConsumer(
     binding, silentOptions, eventKey, silentLifecycle,
     [] (const ndn::Data&) { return true; },
     [] (const InvocationEventMessage&) {},
     [] (const ResponseMessage&) {},
-    [&] (const StreamedInvocationError& error) {
-      ++silentErrors;
-      silentErrorCode = error.code;
-    },
+    [&] (const StreamedInvocationError&) { ++silentErrors; },
     [&] (const ndn::Name& name) { silentRetries.push_back(name); });
   silentConsumer.start();
   const auto silentTimeout = std::chrono::steady_clock::now();
@@ -540,14 +535,24 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   silentConsumer.onRetryTimeout(
     makeInvocationEventName(binding, 1),
     silentTimeout + std::chrono::milliseconds(1));
-  BOOST_CHECK_EQUAL(silentErrors, 1);
-  BOOST_CHECK(silentErrorCode == StreamedInvocationErrorCode::EventTimeout);
-  BOOST_CHECK(silentLifecycle->user().state() ==
+  BOOST_CHECK_EQUAL(silentErrors, 0);
+  BOOST_CHECK(silentLifecycle->user().state() !=
               StreamUserLifecycleState::Failed);
+  BOOST_REQUIRE_EQUAL(silentRetries.size(), 2);
+  // Before the first application event, a large-model assembly window may
+  // outlive one bounded retry batch. The consumer keeps polling; the request
+  // deadline remains the enclosing timeout authority.
+  silentConsumer.onRetryTimeout(
+    makeInvocationEventName(binding, 1),
+    silentTimeout + std::chrono::milliseconds(2));
+  BOOST_CHECK_EQUAL(silentErrors, 0);
+  BOOST_CHECK_EQUAL(silentRetries.size(), 3);
 
-  // Authenticated post-Selection assembly progress re-arms only the bounded
-  // retry budget for the same Provider operation. A mismatched request,
-  // another Provider, or a stale sequence cannot keep a stream alive.
+  // An authenticated post-Selection RUNNING status re-arms the bounded retry
+  // budget for the same Provider operation, including a repeated status while
+  // a long assembly worker is busy. A mismatched request or another Provider
+  // cannot keep a stream alive; the enclosing request deadline remains the
+  // final bound.
   auto progressLifecycle = std::make_shared<StreamInvocationLifecycle>();
   auto progressOptions = silentOptions;
   progressOptions.maxEventRetries = 1;
@@ -589,9 +594,13 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   progressStatus.memberStatuses.push_back(progressMember);
   BOOST_CHECK(progressConsumer.observeAuthenticatedProgress(progressStatus));
 
+  progressConsumer.onRetryTimeout(
+    makeInvocationEventName(binding, 1),
+    progressNow + std::chrono::milliseconds(1));
+  BOOST_CHECK_EQUAL(progressErrors, 0U);
+
   // Assembly proper continues the same authenticated progress epoch after
-  // input/queue admission work.  Its next sequence must extend the operation
-  // rather than being rejected as a duplicate.
+  // input/queue admission work. Its next sequence extends the operation.
   progressStatus.memberStatuses.front().sequence = 2;
   progressStatus.memberStatuses.front().progress = 0.5;
   BOOST_CHECK(progressConsumer.observeAuthenticatedProgress(progressStatus));
@@ -612,6 +621,68 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   wrongRole.memberStatuses.front().sequence = 2;
   BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(wrongRole));
 
+  // A collaboration terminal consumer accepts the same Selection-scoped
+  // progress operation from each selected Provider.  The Provider and member
+  // identities must still agree, and the operation must be one of the exact
+  // role bindings supplied by the committed Selection.
+  auto collaborationProgressLifecycle =
+    std::make_shared<StreamInvocationLifecycle>();
+  std::vector<ndn::Name> collaborationProgressRetries;
+  const ndn::Name workerProvider("/test/provider/stream-worker");
+  const std::string workerSelectionDigest = "selection-digest-worker";
+  StreamEventConsumer collaborationProgressConsumer(
+    binding, progressOptions, eventKey, collaborationProgressLifecycle,
+    [] (const ndn::Data&) { return true; },
+    [] (const InvocationEventMessage&) {},
+    [] (const ResponseMessage&) {},
+    [] (const StreamedInvocationError&) {},
+    [&] (const ndn::Name& name) { collaborationProgressRetries.push_back(name); },
+    {},
+    progressSelectionDigest + ":terminal:assembly-progress",
+    {{provider.toUri(), progressSelectionDigest,
+      progressSelectionDigest + ":terminal:assembly-progress"},
+     {provider.toUri(), progressSelectionDigest,
+      progressSelectionDigest + ":worker:assembly-progress"},
+     {workerProvider.toUri(), workerSelectionDigest,
+      workerSelectionDigest + ":worker:assembly-progress"}});
+  collaborationProgressConsumer.start();
+  collaborationProgressConsumer.onInactivityTimeout(progressNow);
+  BOOST_REQUIRE_EQUAL(collaborationProgressRetries.size(), 1);
+  auto sameProviderWorkerStatus = progressStatus;
+  sameProviderWorkerStatus.memberStatuses.front().role = "worker";
+  sameProviderWorkerStatus.memberStatuses.front().operationId =
+    progressSelectionDigest + ":worker:assembly-progress";
+  BOOST_CHECK(collaborationProgressConsumer.observeAuthenticatedProgress(
+    sameProviderWorkerStatus));
+  auto workerProgressStatus = progressStatus;
+  workerProgressStatus.providerName = workerProvider;
+  workerProgressStatus.selectionDigest = workerSelectionDigest;
+  workerProgressStatus.memberStatuses.front().providerName = workerProvider;
+  workerProgressStatus.memberStatuses.front().selectionDigest = workerSelectionDigest;
+  workerProgressStatus.memberStatuses.front().role = "worker";
+  workerProgressStatus.memberStatuses.front().operationId =
+    workerSelectionDigest + ":worker:assembly-progress";
+  BOOST_CHECK(collaborationProgressConsumer.observeAuthenticatedProgress(
+    workerProgressStatus));
+  // Progress may move from the worker to the terminal Provider. Each exact
+  // provider/selection/operation tuple has its own freshness state, while a
+  // repeated valid status remains a liveness signal.
+  BOOST_CHECK(collaborationProgressConsumer.observeAuthenticatedProgress(
+    progressStatus));
+  auto mixedProgressStatus = progressStatus;
+  mixedProgressStatus.memberStatuses.front().sequence = 4;
+  auto staleWorkerMember = sameProviderWorkerStatus.memberStatuses.front();
+  staleWorkerMember.sequence = 1;
+  mixedProgressStatus.memberStatuses.push_back(staleWorkerMember);
+  BOOST_CHECK(collaborationProgressConsumer.observeAuthenticatedProgress(
+    mixedProgressStatus));
+  BOOST_CHECK(collaborationProgressConsumer.observeAuthenticatedProgress(
+    workerProgressStatus));
+  auto mismatchedWorkerMember = workerProgressStatus;
+  mismatchedWorkerMember.memberStatuses.front().providerName = provider;
+  BOOST_CHECK(!collaborationProgressConsumer.observeAuthenticatedProgress(
+    mismatchedWorkerMember));
+
   auto wrongRequest = progressStatus;
   wrongRequest.requestId = ndn::Name("/other-request");
   BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(wrongRequest));
@@ -623,16 +694,21 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   oldSelection.memberStatuses.front().selectionDigest = oldSelection.selectionDigest;
   BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(oldSelection));
 
-  // The first timeout is the in-flight retry whose budget was refreshed by
-  // the authenticated milestone; a stale duplicate does not refresh again.
+  // A repeated authenticated RUNNING status remains a valid liveness signal
+  // while the worker is busy and refreshes the bounded retry budget.
   progressConsumer.onRetryTimeout(
     makeInvocationEventName(binding, 1),
     progressNow + std::chrono::milliseconds(1));
-  BOOST_REQUIRE_EQUAL(progressRetries.size(), 2);
-  BOOST_CHECK(!progressConsumer.observeAuthenticatedProgress(progressStatus));
+  BOOST_REQUIRE_EQUAL(progressRetries.size(), 3);
+  BOOST_CHECK(progressConsumer.observeAuthenticatedProgress(progressStatus));
   progressConsumer.onRetryTimeout(
     makeInvocationEventName(binding, 1),
     progressNow + std::chrono::milliseconds(2));
+  BOOST_CHECK_EQUAL(progressErrors, 0U);
+  BOOST_CHECK(progressLifecycle->user().state() != StreamUserLifecycleState::Failed);
+  progressConsumer.onRetryTimeout(
+    makeInvocationEventName(binding, 1),
+    progressNow + std::chrono::milliseconds(3));
   BOOST_CHECK_EQUAL(progressErrors, 1U);
   BOOST_CHECK(progressLifecycle->user().state() == StreamUserLifecycleState::Failed);
 

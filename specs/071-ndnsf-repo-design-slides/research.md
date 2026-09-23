@@ -39,7 +39,3 @@
 **Rationale**: The generic MiniNDN regression covers catalog gossip, policy, tombstones, queries, UAV data products, repair, and auto-repair, but it is not a production-scale benchmark.
 
 **Alternatives considered**: Rerunning the full regression is unnecessary for a documentation-only change; quoting unmeasured performance would be misleading.
-
-## DeepSeek Advisory Review
-
-DeepSeek suggested a 19-slide outline. The useful ordering advice was retained. Claims that Repo verifies publisher signatures during storage, that In-App mode necessarily means memory-only storage, that tombstones have an implemented linger-period guarantee, and that validation covers a fixed ten-node scale were rejected because current source and regression documentation do not support them.

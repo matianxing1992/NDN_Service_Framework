@@ -2,6 +2,7 @@
 
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
+#include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
 #include <mutex>
@@ -202,7 +203,8 @@ std::vector<std::vector<std::uint8_t>> NativeConversationJournal::authentication
 
 void NativeConversationJournal::appendConversation(
   const std::string& checkpointWire, const NativeJson& transcript, std::uint64_t nowMs,
-  std::optional<std::size_t> nativeInitialPromptTokenCount)
+  std::optional<std::size_t> nativeInitialPromptTokenCount,
+  const std::map<std::string, std::string>& providersByRole)
 {
   auto& state = *m_impl;
   std::lock_guard<std::mutex> guard(state.mutex);
@@ -223,8 +225,12 @@ void NativeConversationJournal::appendConversation(
   require(checkpoint.at("parentContextEpoch") == durableParent && epoch > durableParent &&
           epoch - durableParent == 1, "conversation durable parent changed");
   const auto envelopeId = "conversation-" + sha(conversationId) + "-" + std::to_string(epoch);
-  const auto plaintext = nativeConversationCanonicalJson({{"checkpoint", nativeConversationBase64Encode(checkpointWire)},
-                                              {"transcript", transcript}});
+  NativeJson body{{"checkpoint", nativeConversationBase64Encode(checkpointWire)},
+                  {"transcript", transcript}};
+  // Keep placement inside the authenticated encrypted envelope. Legacy
+  // records omit this optional local metadata and remain readable.
+  if (!providersByRole.empty()) body["providersByRole"] = providersByRole;
+  const auto plaintext = nativeConversationCanonicalJson(body);
   const auto expiry = checkpoint.at("expiresAtMs").get<std::uint64_t>();
   const auto encoded = nativeSealConversationEnvelope(plaintext, envelopeId, expiry, state.config.keys.front());
   const auto wireDigest = "sha256:" + sha(encoded);
@@ -286,7 +292,9 @@ std::vector<NativeJson> NativeConversationJournal::readConversations(std::uint64
       if (payload.contains("payloadDigest"))
         require(payload.at("payloadDigest") == "sha256:" + sha(plaintext), "conversation payload digest mismatch");
       auto body = nativeParseJson(plaintext);
-      require(body.is_object() && body.size() == 2 && body.contains("checkpoint") && body.contains("transcript"),
+      require(body.is_object() && body.contains("checkpoint") && body.contains("transcript") &&
+              (body.size() == 2 || (body.size() == 3 && body.contains("providersByRole") &&
+                                    body.at("providersByRole").is_object())),
               "conversation journal body malformed");
       const auto checkpointWire = nativeConversationBase64Decode(body.at("checkpoint").get<std::string>());
       const auto checkpoint = nativeParseJson(checkpointWire);
@@ -304,7 +312,14 @@ std::vector<NativeJson> NativeConversationJournal::readConversations(std::uint64
         body["nativeInitialPromptTokenCount"] = *nativeInitialPromptTokenCount;
       }
       nativeValidateConversationTranscript(body.at("transcript"), checkpoint, nativeInitialPromptTokenCount);
-      if (checkpoint.at("expiresAtMs").get<std::uint64_t>() <= nowMs) continue;
+      if (checkpoint.at("expiresAtMs").get<std::uint64_t>() <= nowMs) {
+        // An expired successor is still the durable head. Do not resurrect an
+        // older epoch whose receipt happened to promise a longer lifetime.
+        result.erase(std::remove_if(result.begin(), result.end(), [&](const auto& previous) {
+          return previous.at("transcript").at("conversationId") == checkpoint.at("conversationId");
+        }), result.end());
+        continue;
+      }
       body["checkpointWire"] = checkpointWire;
       result.push_back(std::move(body));
     }

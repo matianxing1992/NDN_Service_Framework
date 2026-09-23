@@ -2,7 +2,8 @@
 
 ## Request Projection
 
-PreparedModel::request 复制 owning Input/options，校验 Runtime、模型/任务/schema、时间和 capability，
+User::request(model, ...) 先校验 PreparedModel 与 User 属于同一 Runtime，再由 PreparedModel 内部复制
+owning Input/options，校验模型/任务/schema、时间和 capability，
 从 Package 取 NativeModelRef、splitter、默认 placement、catalog.makePreparation；
 绑定一个与该用户/包关联的 NativeInferenceClient。复用该 client 的 operation/notification owner，
 不逐请求创建一套线程池。Input repository保留现有LargeDataReference的完整canonical metadata，

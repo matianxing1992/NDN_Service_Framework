@@ -307,6 +307,11 @@ def _preload_qwen_stage_models(
             "metadata": dict(artifact.metadata or {}),
         }))
     for role, path, item in entries:
+        materialization = (item.get("metadata") or {}).get("materialization")
+        if materialization in {"exporter-contract-only", "operator-local-unverified"}:
+            raise RuntimeError(
+                "QWEN_ONNX_EXPORTER_ARTIFACT_NOT_RUNTIME_INPUT: "
+                f"role={role}; use post-Selection Repo materialization")
         if not path:
             continue
         cache[path] = qwen_transformer_model_from_stage_package(
@@ -709,6 +714,11 @@ def _preload_qwen_onnx_sessions(provider: APPProvider, roles: set[str], *,
     if profile_root:
         Path(profile_root).mkdir(parents=True, exist_ok=True)
     for role, path, item in entries:
+        materialization = (item.get("metadata") or {}).get("materialization")
+        if materialization in {"exporter-contract-only", "operator-local-unverified"}:
+            raise RuntimeError(
+                "QWEN_ONNX_EXPORTER_ARTIFACT_NOT_RUNTIME_INPUT: "
+                f"role={role}; use post-Selection Repo materialization")
         if not path:
             continue
         profile_prefix = None
@@ -767,8 +777,23 @@ def _qwen_onnx_can_prepare(
     *,
     runtime_cache: Mapping[str, object],
     local_artifacts: Mapping[str, Mapping[str, object]] | None,
+    runtime_metadata: Mapping[str, Mapping[str, object]] | None = None,
 ) -> bool:
     """Return whether Selection can truthfully prepare an ONNX role."""
+    if any((item.get("metadata") or {}).get("materialization") ==
+           "exporter-contract-only"
+           for item in (local_artifacts or {}).values()) or any(
+               item.get("materialization") == "exporter-contract-only"
+               for item in (runtime_metadata or {}).values()):
+        raise RuntimeError(
+            "QWEN_ONNX_EXPORTER_ARTIFACT_NOT_RUNTIME_INPUT: "
+            "exporter stages cannot satisfy post-Selection preparation")
+    if (any((item.get("metadata") or {}).get("materialization") ==
+            "operator-local-unverified"
+            for item in (local_artifacts or {}).values()) and
+            not str(getattr(args, "selection_repo_registration", "") or "")):
+        raise RuntimeError(
+            "QWEN_ONNX_LOCAL_ARTIFACT_REQUIRES_REPO_REGISTRATION")
     if runtime_cache:
         return True
     if any(str(item.get("path", ""))
@@ -863,6 +888,8 @@ def _qwen_onnx_metadata_from_stage_manifest(
         metadata.setdefault("stageIndex", index)
         metadata.setdefault("stageCount", len(stages))
         metadata.setdefault("layerRange", dict(stage.get("layerRange") or {}))
+        if "materialization" in stage:
+            metadata.setdefault("materialization", stage["materialization"])
         for key in common_keys:
             if key in document and key not in metadata:
                 metadata[key] = document[key]
@@ -880,11 +907,16 @@ def _qwen_onnx_metadata_from_stage_manifest(
 
 
 def _artifact_path_by_role(provider: APPProvider) -> dict[str, str]:
-    return {
-        artifact.role: artifact.path
-        for artifact in provider.deployment.service_policy(SERVICE).artifacts
-        if artifact.path
-    }
+    paths: dict[str, str] = {}
+    for artifact in provider.deployment.service_policy(SERVICE).artifacts:
+        metadata = dict(artifact.metadata or {})
+        if metadata.get("materialization") == "exporter-contract-only":
+            raise RuntimeError(
+                "QWEN_ONNX_EXPORTER_ARTIFACT_NOT_RUNTIME_INPUT: "
+                f"role={artifact.role}; use the native post-Selection canonical assembler")
+        if artifact.path:
+            paths[artifact.role] = artifact.path
+    return paths
 
 
 def _parse_selection_local_artifacts(
@@ -916,7 +948,10 @@ def _parse_selection_local_artifacts(
                 "onnx-model" if runtime == QWEN_ONNX_RUNTIME
                 else "llm-stage-weights"
             ),
-            "metadata": {"runtime": runtime},
+            "metadata": {
+                "runtime": runtime,
+                "materialization": "operator-local-unverified",
+            },
             "filename": path.name,
         }
     return result
@@ -1107,10 +1142,16 @@ def _selection_v2_for_qwen(
         flush=True,
     )
     artifact_paths = _artifact_path_by_role(provider)
+    artifact_materialization: dict[str, str] = {
+        artifact.role: str((artifact.metadata or {}).get("materialization", ""))
+        for artifact in provider.deployment.service_policy(SERVICE).artifacts
+    }
     for role, item in dict(local_artifacts or {}).items():
         path = str(item.get("path", ""))
         if path:
             artifact_paths[str(role)] = path
+        artifact_materialization[str(role)] = str(
+            (item.get("metadata") or {}).get("materialization", ""))
     repo_registration_path = str(
         getattr(args, "selection_repo_registration", "") or "")
     # Registration is deliberately late-bound.  ACK/offer publication must
@@ -1482,6 +1523,10 @@ def _selection_v2_for_qwen(
                 raise RuntimeError(
                     f"selected Qwen role has no resolved artifact: {role}")
             if registration_item is None:
+                if artifact_materialization.get(role) in {
+                        "exporter-contract-only", "operator-local-unverified"}:
+                    raise RuntimeError(
+                        "QWEN_ONNX_LOCAL_ARTIFACT_REQUIRES_REPO_REGISTRATION")
                 source_path = Path(model_path)
                 if not source_path.is_file():
                     raise RuntimeError(
@@ -4744,10 +4789,11 @@ def main() -> int:
              or (args.runtime == TINY_ONNX_RUNTIME
                  and bool(sessions))
              or (args.runtime == QWEN_ONNX_RUNTIME
-                 and _qwen_onnx_can_prepare(
-                     args,
-                     runtime_cache=qwen_runtime_cache,
-                     local_artifacts=selection_local_artifacts))
+                and _qwen_onnx_can_prepare(
+                    args,
+                    runtime_cache=qwen_runtime_cache,
+                    local_artifacts=selection_local_artifacts,
+                    runtime_metadata=qwen_metadata))
              or (args.runtime != QWEN_ONNX_RUNTIME
                  and bool(qwen_models))))
     provider.serve_service(

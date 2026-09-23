@@ -26,7 +26,9 @@ void certifyEndpoint(NativeTensorEndpointV3& endpoint)
     endpoint.manifestDigest = hash(NativeJson{{"requestId", endpoint.requestId}, {"attempt", endpoint.attempt},
       {"planDigest", endpoint.planDigest}, {"group", endpoint.groupId}, {"epoch", endpoint.groupEpoch},
       {"operation", endpoint.operation}, {"round", endpoint.round}, {"producer", endpoint.producerRole},
-      {"consumers", endpoint.consumerRoles}, {"tensor", endpoint.tensorId}, {"tensorDigest", endpoint.tensorDigest}});
+      {"consumers", endpoint.consumerRoles}, {"tensor", endpoint.tensorId},
+      {"bundleTensorNames", endpoint.bundleTensorNames},
+      {"tensorDigest", endpoint.tensorDigest}});
   auto value = nativeEndpointJson(endpoint);
   value.erase("endpoint_digest"); value.erase("consumer_role");
   endpoint.endpointDigest = hash(value);
@@ -179,6 +181,46 @@ std::map<std::string, NativeRoleProjectionInputs> NativePlanProjectionBuilder::b
         e.operation = transfer.operation; e.sourceKind = "ROLE"; e.producerRole = producer;
         e.producerRank = core.assemblyByRole.at(producer).rank; e.consumerRoles = std::move(consumers);
         e.tensorId = transfer.tensor; e.tensorDigest = transfer.integrityDigest;
+        // The planner's tensor ID is a logical/authenticated transport
+        // identity.  A real sliced ONNX role can expose several concrete
+        // values at one cut (Qwen's residual/attention boundary is four).
+        // Bind those members from the prepared producer/consumer contracts;
+        // never rename them to the logical ID.
+        const auto& producerAssembly = core.assemblyByRole.at(producer);
+        const auto isGenerationState = [&core] (const std::string& name) {
+          return std::find(core.generationContract.stateInputNames.begin(),
+                           core.generationContract.stateInputNames.end(), name) !=
+                   core.generationContract.stateInputNames.end() ||
+            std::find(core.generationContract.stateOutputNames.begin(),
+                      core.generationContract.stateOutputNames.end(), name) !=
+                   core.generationContract.stateOutputNames.end();
+        };
+        const auto appendIfShared = [&] (const auto& candidate) {
+          if (isGenerationState(candidate.name))
+            return;
+          const bool sharedByEveryConsumer = std::all_of(
+            e.consumerRoles.begin(), e.consumerRoles.end(),
+            [&core, &candidate] (const auto& consumer) {
+              const auto& consumerAssembly = core.assemblyByRole.at(consumer);
+              return std::any_of(
+                consumerAssembly.expectedInputs.begin(),
+                consumerAssembly.expectedInputs.end(),
+                [&candidate] (const auto& input) {
+                  return candidate.name == input.name &&
+                    candidate.dtype == input.dtype && candidate.shape == input.shape;
+                });
+            });
+          if (sharedByEveryConsumer)
+            e.bundleTensorNames.push_back(candidate.name);
+        };
+        for (const auto& output : producerAssembly.expectedOutputs)
+          appendIfShared(output);
+        for (const auto& input : producerAssembly.expectedInputs)
+          appendIfShared(input);
+        std::sort(e.bundleTensorNames.begin(), e.bundleTensorNames.end());
+        e.bundleTensorNames.erase(std::unique(e.bundleTensorNames.begin(),
+                                              e.bundleTensorNames.end()),
+                                  e.bundleTensorNames.end());
         e.layoutDigest = transfer.sourceLayoutDigest; e.targetLayoutDigest = transfer.targetLayoutDigest;
         e.segmentCount = context.maxSegments;
         e.consumerRole = e.consumerRoles.front(); certifyEndpoint(e);
@@ -213,8 +255,13 @@ void NativePlanProjectionBuilder::certify(std::map<std::string, NativeRoleProjec
     dataflow.waitFor.clear();
     if (!dataflow.mustFetch.empty()) {
       NativeReadinessPredicateV3 wait; wait.mode = "ALL";
-      for (const auto& e : dataflow.mustFetch) wait.endpointDigests.push_back(e.endpointDigest);
-      dataflow.waitFor.push_back(std::move(wait));
+      for (const auto& e : dataflow.mustFetch) {
+        // Readiness is for prefill, not future decode/finalization objects.
+        if (!core.generationContract.enabled || e.sourceKind != "ROLE" ||
+            e.round < core.generationContract.streamingOperationStride)
+          wait.endpointDigests.push_back(e.endpointDigest);
+      }
+      if (!wait.endpointDigests.empty()) dataflow.waitFor.push_back(std::move(wait));
     }
     auto json = nativeDataflowJson(dataflow); json.erase("dataflow_digest"); dataflow.dataflowDigest = hash(json);
     NativeSelectionProjectionV3 value;

@@ -215,6 +215,11 @@ BOOST_AUTO_TEST_CASE(RepoSourceMissReusesValidatedInitializer)
   BOOST_REQUIRE(first.initializerBytes.has_value());
   BOOST_CHECK_EQUAL_COLLECTIONS(first.initializerBytes->begin(), first.initializerBytes->end(),
                                initializerBytes.begin(), initializerBytes.end());
+  BOOST_REQUIRE(first.initializerRangeSource);
+  BOOST_CHECK_EQUAL(first.initializerRangeSource->size(), initializerBytes.size());
+  const auto firstRange = first.initializerRangeSource->read(0, initializerBytes.size());
+  BOOST_CHECK_EQUAL_COLLECTIONS(firstRange.begin(), firstRange.end(),
+                                initializerBytes.begin(), initializerBytes.end());
   BOOST_REQUIRE(fixture.repo->has(sourceName));
   BOOST_REQUIRE(fixture.repo->has(initializerName));
 
@@ -227,6 +232,8 @@ BOOST_AUTO_TEST_CASE(RepoSourceMissReusesValidatedInitializer)
   BOOST_REQUIRE(second.initializerBytes.has_value());
   BOOST_CHECK_EQUAL_COLLECTIONS(second.initializerBytes->begin(), second.initializerBytes->end(),
                                initializerBytes.begin(), initializerBytes.end());
+  BOOST_REQUIRE(second.initializerRangeSource);
+  BOOST_CHECK_EQUAL(second.initializerRangeSource->size(), initializerBytes.size());
 }
 
 BOOST_AUTO_TEST_CASE(LegacyCanonicalReceiptWithoutLayersStillReuses)

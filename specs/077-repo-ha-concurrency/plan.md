@@ -37,7 +37,6 @@ Evolve NDNSF-REPO from a functional replicated research prototype into a measure
 - **Verify With The Right Scope**: Focused tests precede MiniNDN failure and 60-second performance campaigns.
 - **GSD**: Phase 9 tracks this multi-stage implementation and acceptance state.
 - **ARS**: The experiment-agent workflow defines variables, controls, warmup, duration, metrics, repetitions, and failure injection.
-- **DeepSeek**: Skipped because the user explicitly removed the DeepSeek workflow and helper from this repository.
 
 ## Architecture
 

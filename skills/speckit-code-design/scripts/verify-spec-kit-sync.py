@@ -41,6 +41,7 @@ SHARED_FILES = (
     "references/batch-quality-gates.md",
     "references/bounded-executor.md",
     "references/design-template.md",
+    "references/experiment-static-review-loop.md",
     "references/pre-test-static-review.md",
     "references/review-agent.md",
     "references/review-gate.md",

@@ -69,13 +69,13 @@
 \hypersetup{pageanchor=true}
 
 \begin{abstract}
-请求者可能知道所需服务，却不知道哪些获准 Provider 当前可用且愿意执行。初版 NDNSF 在命名数据网络（NDN）上发现候选，并为一次调用选定一个 Provider，但不提供多角色协作。本研究计划评估这一基础，并研究面向相互依赖服务角色的扩展。
+网络应用需要服务发现、调用授权和应用数据交换机制。服务可用性、资源或连通性的变化会增加这些任务的难度。命名数据网络（NDN）提供按名称检索数据和以数据为中心的安全机制，但应用仍需要完成这些任务的服务级机制。本研究考察命名数据网络服务框架（NDNSF）如何提供这些机制，并将其扩展到多 Provider 协作。
 
-被评估设计采用属性基加密（ABE）保护发现描述，无需逐一列出 Provider 身份。服务授权由基于 ABE 的 challenge 核验、信任规则下的签名验证及请求状态检查共同实施，服务权限与身份签名凭证分离管理；运行时授予和撤销需要验证权限更新，撤销还需要换钥。获准但未选中的候选仍可读取发现描述；选定后的输入与结果交换采用请求级密钥保护。
+NDNSF 提供可复用的服务接口，以 Request、应答（ACK）、Selection 和 Response Data 表达调用交互。初版原型为一次调用选定一个 Provider：在选定之前，Request 携带的发现描述只有获准提供所请求服务的 Provider 可以读取；选定之后，请求级密钥只向被选中的 Provider 交付应用输入。NDNSF 使用属性基加密（ABE），保护发现描述不被缺少所需解密能力的参与者读取。User 不必逐一列出 Provider 身份，但获准候选即使最终未被选中，仍可读取发现描述。服务授权结合信任规则下的签名验证和当前服务权限检查。受保护的 RequestNonce 与 ProviderChallenge 成功匹配，表明双方分别恢复了本次交换所需的受保护值；请求状态检查则拒绝重放或过期调用。服务权限与身份签名凭证分离管理，运行时授予和撤销通过经过验证的状态更新及相应密钥更新生效。选定 Provider 后，请求级密钥保护预定参与者之间的应用输入与结果。
 
-拟议协作扩展使用合格的肯定应答（positive ACK）Data 分配角色并导出本地依赖检查，旨在使 Provider 仅接受指定前驱沿声明依赖边提供的中间 Data，无论其来自生产者还是缓存。无人机与分布式推理应用为调用、数据交付、运行时授权及协作提供验证场景。
+拟议协作扩展将角色分配给 positive ACK 已通过验证和资格检查的 Provider。每个 Provider 根据签名计划生成本地输入验证规则。计划明确指定 Provider、服务角色与声明的依赖边之间的关系，检查则约束哪些中间 Data 可以推进执行，无论其来自生产者还是缓存。研究还覆盖已知 Provider 调用、可信本地组合、流式传输，以及按名称检索大对象。
 
-已有评估支持有限配置下的调用和执行效率结论，不证明拟议协作机制的有效性。计划中的评价将比较完整授权替代方案，检验执行与恢复中的角色和依赖约束，并测量通信、处理和管理成本。本研究旨在明确调用设计及其协作扩展何时有用，以及何时成本超过收益。
+两套应用提供验证场景：无人机（UAV）应用覆盖控制、遥测、视频及多视角感知与分析；分布式推理应用覆盖模型检索、单 Provider 推理和模型分片的协作执行。初步实验报告各配置下的调用时延和观察到的执行次数；这些实验尚未验证协作扩展。计划中的评价将比较完整授权替代方案，检验依赖约束与恢复，并测量完成情况、时延、通信、计算和凭证管理成本。预期贡献是经过评价的框架设计，以及说明其机制何时有益于动态网络应用、何时受开销限制的证据。
 \begin{keywords}
 Named Data Networking, service authorization, provider discovery, collaboration, distributed inference
 \end{keywords}
@@ -84,6 +84,8 @@ Named Data Networking, service authorization, provider discovery, collaboration,
 \mainmatter
 \newcommand{\proposalroot}{.}
 \input{\proposalroot/ch/chapters/research-revision}
+\appendix
+\input{\proposalroot/ch/chapters/historical-observations}
 \bibliographystyle{bibstyle}
 \bibliography{ref,research-references}
 \end{document}

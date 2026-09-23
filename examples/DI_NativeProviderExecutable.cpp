@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
@@ -15,6 +16,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
@@ -60,6 +62,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <cstdio>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -71,6 +74,50 @@ namespace {
 using namespace ndnsf::di;
 
 volatile std::sig_atomic_t g_shutdownRequested = 0;
+
+void
+logProviderPreparationProgress(const NativeSelectionProjectionV3& projection,
+                               const char* phase,
+                               const char* detail = nullptr) noexcept
+{
+  try {
+    std::ostringstream record;
+    record << "NDNSF_DI_PROVIDER_PREPARATION phase="
+           << (phase == nullptr ? "unknown" : phase)
+           << " requestId=" << projection.requestId
+           << " provider=" << projection.provider
+           << " role=" << projection.assembly.selectedRole
+           << " detail=" << (detail == nullptr ? "" : detail);
+    logRuntimeEvidence(record.str());
+  }
+  catch (...) {
+    // Progress reporting must not fail preparation or bypass the shared sink.
+  }
+}
+
+void
+logExecutionEvidenceUpdateSummary(const ExecutionEvidence& evidence)
+{
+  std::ostringstream record;
+  record << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE"
+         << " provider=" << evidence.providerName
+         << " evidenceEpoch=" << evidence.evidenceEpoch
+         << " runnerKind=" << toString(evidence.runnerKind)
+         << " realCompute=" << (evidence.realCompute ? "true" : "false")
+         << " loadCompleted=" << (evidence.loadCompleted ? "true" : "false")
+         << " warmupCompleted=" << (evidence.warmupCompleted ? "true" : "false")
+         << " executionCompleted=" << (evidence.executionCompleted ? "true" : "false")
+         << " exactForwardCacheHit=" << (evidence.exactForwardCacheHit ? "true" : "false")
+         << " roles=" << evidence.roles.size()
+         << " artifacts=" << evidence.artifactDigests.size()
+         << " nodeProviderAssignments=" << evidence.nodeProviderAssignments.size()
+         << " requestId=" << evidence.requestId
+         << " attemptEpoch=" << evidence.attemptEpoch
+         << " profileCaptured=" << (!evidence.providerProfilePath.empty() ? "true" : "false")
+         << " profileRequestId=" << evidence.profileRequestId
+         << " profileAttemptEpoch=" << evidence.profileAttemptEpoch;
+  logRuntimeEvidence(record.str());
+}
 
 void
 requestShutdown(int)
@@ -108,12 +155,17 @@ struct Options
   std::string roles = "all";
   std::string artifactReferencesPath;
   std::string artifactCacheDir = "/tmp/ndnsf-di-native-artifacts";
+  std::string cacheCompatibilitySourceDir;
   // Deployment-local standalone tokenizer.  It is deliberately configured
   // outside the Selection wire contract and bound to the authenticated
   // tokenizer digest only after Selection.
   std::string tokenizerJson;
   std::string repoServiceName = "/NDNSF/DistributedRepo";
   int repoFetchTimeoutMs = 30000;
+  // This is the complete post-Selection material-fetch plus native-worker
+  // budget.  Keep it separate from dependency/readiness/control budgets.
+  int assemblyTimeoutMs = 300000;
+  int conversationRetentionMs = 300000;
   int repoAckTimeoutMs = 500;
   int repoPermissionWaitMs = 3000;
   int permissionWaitMs = 30000;
@@ -231,9 +283,9 @@ resolveWorkerLocation()
       }
     }
   }
-  std::cerr << "DI_NativeProviderExecutable: no DI_NativeOnnxAssemblyWorker "
-               "found; onnx post-Selection requests will fail with "
-               "DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING\n";
+  logRuntimeWarn("DI_NativeProviderExecutable: no DI_NativeOnnxAssemblyWorker "
+                 "found; onnx post-Selection requests will fail with "
+                 "DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING");
   return {};
 }
 
@@ -770,6 +822,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--artifact-cache-dir") {
       options.artifactCacheDir = readValue();
     }
+    else if (arg == "--cache-compatibility-source-dir") {
+      options.cacheCompatibilitySourceDir = readValue();
+    }
     else if (arg == "--tokenizer-json") {
       options.tokenizerJson = readValue();
     }
@@ -778,6 +833,17 @@ parseArgs(int argc, char** argv)
     }
     else if (arg == "--repo-fetch-timeout-ms") {
       options.repoFetchTimeoutMs = parsePositiveInt(readValue(), "--repo-fetch-timeout-ms");
+    }
+    else if (arg == "--assembly-timeout-ms") {
+      options.assemblyTimeoutMs = parsePositiveInt(readValue(), "--assembly-timeout-ms");
+    }
+    else if (arg == "--conversation-retention-ms") {
+      const auto value = readValue();
+      if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+        throw std::invalid_argument("--conversation-retention-ms must be an integer in [1,3600000]");
+      options.conversationRetentionMs = parsePositiveInt(value, "--conversation-retention-ms");
+      if (options.conversationRetentionMs > 3600000)
+        throw std::invalid_argument("--conversation-retention-ms must be in [1,3600000]");
     }
     else if (arg == "--repo-ack-timeout-ms") {
       options.repoAckTimeoutMs = parsePositiveInt(readValue(), "--repo-ack-timeout-ms");
@@ -871,6 +937,14 @@ parseArgs(int argc, char** argv)
   if (options.allowPreassembledDiagnostic && !options.checkOnly) {
     throw std::invalid_argument(
       "--allow-preassembled-diagnostic is restricted to --check-only");
+  }
+  if (!options.cacheCompatibilitySourceDir.empty()) {
+    if (!options.serve)
+      throw std::invalid_argument(
+        "--cache-compatibility-source-dir requires --serve");
+    if (!std::filesystem::path(options.cacheCompatibilitySourceDir).is_absolute())
+      throw std::invalid_argument(
+        "--cache-compatibility-source-dir must be absolute");
   }
   if (!options.executionPolicy.empty() &&
       options.executionPolicy != "DATA_DRIVEN_V2" &&
@@ -1051,12 +1125,15 @@ materializeManifestSpecs(const Options& options,
     specs,
     input,
     materializerOptions);
-  std::cout << "NDNSF_DI_NATIVE_PROVIDER_ARTIFACTS_MATERIALIZED"
-            << " references=" << options.artifactReferencesPath
-            << " cacheDir=" << options.artifactCacheDir
-            << " repoFetchFromManifest=" << (materializerOptions.repoFetchFromManifest ? 1 : 0)
-            << " repoFetch=" << (materializerOptions.repoFetch ? 1 : 0)
-            << std::endl;
+  {
+    std::ostringstream record;
+    record << "NDNSF_DI_NATIVE_PROVIDER_ARTIFACTS_MATERIALIZED"
+             << " references=" << options.artifactReferencesPath
+             << " cacheDir=" << options.artifactCacheDir
+             << " repoFetchFromManifest=" << (materializerOptions.repoFetchFromManifest ? 1 : 0)
+             << " repoFetch=" << (materializerOptions.repoFetch ? 1 : 0);
+    logRuntimeEvidence(record.str());
+  }
   return materialized;
 }
 
@@ -1209,8 +1286,11 @@ printUsage(const char* program)
     << "[--trust-schema <path>] [--bootstrap-token <token>] "
     << "[--artifact-references <json>] "
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
+    << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
-    << "[--repo-fetch-timeout-ms <ms>] [--repo-ack-timeout-ms <ms>] "
+    << "[--repo-fetch-timeout-ms <ms>] [--assembly-timeout-ms <ms>] "
+    << "[--conversation-retention-ms <1..3600000>] "
+    << "[--repo-ack-timeout-ms <ms>] "
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--permission-wait-ms <ms>] "
     << "[--tracer-deterministic-runner] [--enable-admission-lease] "
@@ -1232,12 +1312,35 @@ main(int argc, char** argv)
     std::signal(SIGINT, requestShutdown);
     std::signal(SIGTERM, requestShutdown);
     auto options = parseArgs(argc, argv);
-    std::cout << "NDNSF_DI_NATIVE_PROVIDER_START mode="
-              << (options.serve ? "serve" : "check")
-              << " service=" << options.serviceName
-              << " identity=" << options.providerName
-              << " roles=" << options.roles
-              << std::endl;
+    const auto staleAfter = std::chrono::milliseconds(std::max<std::int64_t>(
+      10 * 60 * 1000,
+      static_cast<std::int64_t>(options.assemblyTimeoutMs) + 60 * 1000));
+    const auto removedStaging = cleanupNativeArtifactStaging(
+      options.artifactCacheDir, staleAfter);
+    {
+      std::ostringstream record;
+      record << "NDNSF_DI_PROVIDER_STAGING_GC removed=" << removedStaging
+               << " cacheDir=" << options.artifactCacheDir;
+      logRuntimeEvidence(record.str());
+    }
+    {
+      std::ostringstream record;
+      record << "NDNSF_DI_NATIVE_PROVIDER_START mode="
+               << (options.serve ? "serve" : "check")
+               << " service=" << options.serviceName
+               << " identity=" << options.providerName
+               << " roles=" << options.roles;
+      logRuntimeEvidence(record.str());
+    }
+    if (!options.cacheCompatibilitySourceDir.empty()) {
+      {
+        std::ostringstream record;
+        record << "NDNSF_DI_CACHE_COMPATIBILITY_CONFIG sourceDir="
+                 << options.cacheCompatibilitySourceDir
+                 << " repoFetch=skipped-after-selection";
+        logRuntimeEvidence(record.str());
+      }
+    }
     if (options.checkOnly == options.serve) {
       throw std::invalid_argument(
         "exactly one of --check-only or --serve is required");
@@ -1296,12 +1399,15 @@ main(int argc, char** argv)
       config.hasModel = options.offerHasModel;
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_V3_OFFER_SIGNER_READY"
-                << " provider=" << options.providerName
-                << " keyId=" << nativeOfferConfig->signerKeyId
-                << " backend=" << options.offerBackend
-                << " devices=" << joinRoles(options.offerDevices)
-                << std::endl;
+      {
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_PROVIDER_V3_OFFER_SIGNER_READY"
+                 << " provider=" << options.providerName
+                 << " keyId=" << nativeOfferConfig->signerKeyId
+                 << " backend=" << options.offerBackend
+                 << " devices=" << joinRoles(options.offerDevices);
+        logRuntimeEvidence(record.str());
+      }
     }
     if (options.serve) {
       if (plan.executionPolicy != "DATA_DRIVEN_V2") {
@@ -1349,17 +1455,20 @@ main(int argc, char** argv)
             }, std::move(evidence));
         });
     }
-    std::cout << "NDNSF_DI_NATIVE_PROVIDER_BACKENDS_READY onnxruntime=1"
-              << " wiringCheckOnly=" << (options.wiringCheckOnly ? 1 : 0)
-              << " tracerDeterministicRunner="
-              << (options.tracerDeterministicRunner ? 1 : 0)
-              << std::endl;
+    {
+      std::ostringstream record;
+      record << "NDNSF_DI_NATIVE_PROVIDER_BACKENDS_READY onnxruntime=1"
+               << " wiringCheckOnly=" << (options.wiringCheckOnly ? 1 : 0)
+               << " tracerDeterministicRunner="
+               << (options.tracerDeterministicRunner ? 1 : 0);
+      logRuntimeEvidence(record.str());
+    }
 
     if (options.serve) {
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_FACE_CREATING" << std::endl;
+      logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_FACE_CREATING");
       ndn::Face face;
       ndn::KeyChain keyChain;
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_FACE_READY" << std::endl;
+      logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_FACE_READY");
 
       const ndn::Name providerIdentity(options.providerName);
       const ndn::Name controllerIdentity(options.controllerName);
@@ -1369,32 +1478,39 @@ main(int argc, char** argv)
         providerCert = ndn_service_framework::ensureControllerSignedCertificate(
           face, keyChain, controllerIdentity, providerIdentity,
           providerIdentity, options.bootstrapToken);
-        std::cout << "NDNSF_DI_NATIVE_PROVIDER_BOOTSTRAP_CERT_READY"
-                  << " provider=" << options.providerName
-                  << " certificate=" << providerCert.getName()
-                  << std::endl;
+        {
+          std::ostringstream record;
+          record << "NDNSF_DI_NATIVE_PROVIDER_BOOTSTRAP_CERT_READY"
+                   << " provider=" << options.providerName
+                   << " certificate=" << providerCert.getName();
+          logRuntimeEvidence(record.str());
+        }
       }
       keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(providerIdentity));
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_KEYCHAIN_READY providerCert="
-                << providerCert.getName()
-                << " controllerCert=" << controllerCert.getName()
-                << std::endl;
+      {
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_PROVIDER_KEYCHAIN_READY providerCert="
+                 << providerCert.getName()
+                 << " controllerCert=" << controllerCert.getName();
+        logRuntimeEvidence(record.str());
+      }
 
       std::unique_ptr<ndn_service_framework::CertificatePublisher> certPublisher;
       if (!options.noServeCertificates) {
-        std::cout << "NDNSF_DI_NATIVE_PROVIDER_CERT_PUBLISHER_CREATING"
-                  << std::endl;
+        logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_CERT_PUBLISHER_CREATING");
         certPublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
           face,
           keyChain,
           providerCert.getName());
-        std::cout << "NDNSF_DI_NATIVE_PROVIDER_CERT_PUBLISHER_READY prefix="
-                  << certPublisher->getRegisteredPrefix()
-                  << std::endl;
+        {
+          std::ostringstream record;
+          record << "NDNSF_DI_NATIVE_PROVIDER_CERT_PUBLISHER_READY prefix="
+                   << certPublisher->getRegisteredPrefix();
+          logRuntimeEvidence(record.str());
+        }
       }
 
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_CREATING"
-                << std::endl;
+      logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_CREATING");
       auto provider = std::make_shared<ndn_service_framework::ServiceProvider>(
         face,
         ndn::Name(options.groupName),
@@ -1411,15 +1527,17 @@ main(int argc, char** argv)
       if (nativeOfferConfig) {
         nativeOfferConfig->bootEpoch = providerBootId;
       }
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_READY"
-                << std::endl;
+      logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_READY");
       provider->setUseTokens(!options.disableTokens);
       provider->setHandlerThreads(options.handlerThreads);
       provider->setAckThreads(options.ackThreads);
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_THREADS_READY handlerThreads="
-                << options.handlerThreads
-                << " ackThreads=" << options.ackThreads
-                << std::endl;
+      {
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_PROVIDER_THREADS_READY handlerThreads="
+                 << options.handlerThreads
+                 << " ackThreads=" << options.ackThreads;
+        logRuntimeEvidence(record.str());
+      }
 
       auto provisioningState = std::make_shared<NativeProviderReadinessState>();
       auto capacitySnapshot = std::make_shared<
@@ -1444,10 +1562,13 @@ main(int argc, char** argv)
         [telemetryCollector] { return telemetryCollector->snapshot(); });
       if (options.enableAdmissionLease) {
         provider->setGenericAdmissionLeaseRequired(ndn::Name(options.serviceName), true);
-        std::cout << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_REQUIRED"
-                  << " service=" << options.serviceName
-                  << " ttlMs=" << options.admissionLeaseTtlMs
-                  << std::endl;
+        {
+          std::ostringstream record;
+          record << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_REQUIRED"
+                   << " service=" << options.serviceName
+                   << " ttlMs=" << options.admissionLeaseTtlMs;
+          logRuntimeEvidence(record.str());
+        }
       }
 
       // spec182 CD-014: the shared NativeInferenceProvider host owns the
@@ -1536,20 +1657,26 @@ main(int argc, char** argv)
               payload += "resourceBindingProof=" + proof + ";";
             }
             decision.payload = textBuffer(payload);
-            std::cout << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_GRANTED"
-                      << " provider=" << providerName
-                      << " service=" << serviceName
-                      << " leaseId=" << lease.leaseId
-                      << " proof=" << (proof.empty() ? "-" : proof)
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_GRANTED"
+                       << " provider=" << providerName
+                       << " service=" << serviceName
+                       << " leaseId=" << lease.leaseId
+                       << " proof=" << (proof.empty() ? "-" : proof);
+              logRuntimeEvidence(record.str());
+            }
           }
-          std::cout << "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION"
-                    << " provider=" << providerName
-                    << " roles=" << rolesText
-                    << " status=" << (decision.status ? 1 : 0)
-                    << " message=\"" << decision.message << "\""
-                    << " payload=\"" << bufferText(decision.payload) << "\""
-                    << std::endl;
+          {
+            std::ostringstream record;
+            record << "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION"
+                     << " provider=" << providerName
+                     << " roles=" << rolesText
+                     << " status=" << (decision.status ? 1 : 0)
+                     << " message=\"" << decision.message << "\""
+                     << " payload=\"" << bufferText(decision.payload) << "\"";
+            logRuntimeEvidence(record.str());
+          }
           return decision;
         };
       // Observation seam invoked by host->serve once the native runtime is
@@ -1585,23 +1712,35 @@ main(int argc, char** argv)
             auto executionEvidence = aggregateExecutionEvidence(
               runtime.executionEvidence);
             provisioningState->setExecutionEvidence(executionEvidence);
-            std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
-                      << executionEvidenceToJson(executionEvidence)
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_EXECUTION_EVIDENCE "
+                       << executionEvidenceToJson(executionEvidence);
+              logRuntimeEvidence(record.str());
+            }
           }
           else {
             // Canonical role assembly is deliberately deferred until an
             // authenticated Selection.  Readiness is capability-only here;
             // per-role execution evidence is published after ORT loads.
-            std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_DEFERRED"
-                      << " reason=post-selection-assembly"
-                      << " roles=" << allowedRoles.size()
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_EXECUTION_EVIDENCE_DEFERRED"
+                       << " reason=post-selection-assembly"
+                       << " roles=" << allowedRoles.size();
+              logRuntimeEvidence(record.str());
+            }
           }
           provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
           auto executionEvidenceMutex = std::make_shared<std::mutex>();
+          auto fullObservationLogged = std::make_shared<bool>(false);
+          auto lastObservedProfilePath = std::make_shared<std::string>();
+          auto lastObservedProfileRequestId = std::make_shared<std::string>();
+          auto lastObservedExecutionCompleted = std::make_shared<bool>(false);
           *executionEvidenceObserver =
-            [executionEvidenceByRole, executionEvidenceMutex, provisioningState]
+            [executionEvidenceByRole, executionEvidenceMutex, provisioningState,
+             fullObservationLogged, lastObservedProfilePath,
+             lastObservedProfileRequestId, lastObservedExecutionCompleted]
             (const ExecutionEvidence& observed) {
               std::lock_guard<std::mutex> lock(*executionEvidenceMutex);
               for (const auto& role : observed.roles) {
@@ -1615,12 +1754,22 @@ main(int argc, char** argv)
               const auto aggregate = aggregateExecutionEvidence(current);
               provisioningState->setExecutionEvidence(aggregate);
               provisioningState->setExecutionEvidenceByRole(*executionEvidenceByRole);
-              std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE "
-                        << executionEvidenceToJson(aggregate)
-                        << std::endl;
-              std::cout << "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED "
-                        << executionEvidenceToJson(observed)
-                        << std::endl;
+              logExecutionEvidenceUpdateSummary(aggregate);
+              const bool fullObservationChanged =
+                !*fullObservationLogged ||
+                observed.providerProfilePath != *lastObservedProfilePath ||
+                observed.profileRequestId != *lastObservedProfileRequestId ||
+                observed.executionCompleted != *lastObservedExecutionCompleted;
+              if (fullObservationChanged) {
+                std::ostringstream record;
+                record << "NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED "
+                         << executionEvidenceToJson(observed);
+                logRuntimeEvidence(record.str());
+                *fullObservationLogged = true;
+                *lastObservedProfilePath = observed.providerProfilePath;
+                *lastObservedProfileRequestId = observed.profileRequestId;
+                *lastObservedExecutionCompleted = observed.executionCompleted;
+              }
             };
         };
 
@@ -1684,10 +1833,13 @@ main(int argc, char** argv)
               options.providerName,      // deploymentId placeholder
               joinRoles(allowedRoles),   // which roles
               30000);                    // estimated 30s to ready
-            std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_INSTALLING"
-                      << " artifactReferences=" << options.artifactReferencesPath
-                      << " cacheDir=" << options.artifactCacheDir
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_INSTALLING"
+                       << " artifactReferences=" << options.artifactReferencesPath
+                       << " cacheDir=" << options.artifactCacheDir;
+              logRuntimeEvidence(record.str());
+            }
 
             // Formal serving never reads a ready-made role file at startup.
             // The metadata-only specs are used only for the ordered role set;
@@ -1696,12 +1848,15 @@ main(int argc, char** argv)
               specs, options, providerBootId, providerStartedAtMs);
             auto materializedSpecs = metadataSpecs;
             auto runners = orderedSpecs(plan, materializedSpecs, allowedRoles);
-            std::cout << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
-                      << plan.roles.size()
-                      << " artifacts=" << materializedSpecs.size()
-                      << " activeRoles=" << allowedRoles.size()
-                      << " runners=" << runners.size()
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
+                       << plan.roles.size()
+                       << " artifacts=" << materializedSpecs.size()
+                       << " activeRoles=" << allowedRoles.size()
+                       << " runners=" << runners.size();
+              logRuntimeEvidence(record.str());
+            }
 
             NativeProviderHandlerConfig config;
             config.plan = plan;
@@ -1720,8 +1875,18 @@ main(int argc, char** argv)
             // authenticated inter-Provider dependency reads. It must not
             // extend the independent readiness/control deadlines.
             config.dependencyFetchTimeoutMs = options.repoFetchTimeoutMs;
-            std::cout << "NDNSF_DI_DEPENDENCY_FETCH_TIMEOUT_MS "
-                      << config.dependencyFetchTimeoutMs << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_DEPENDENCY_FETCH_TIMEOUT_MS "
+                       << config.dependencyFetchTimeoutMs;
+              logRuntimeEvidence(record.str());
+            }
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_ASSEMBLY_TIMEOUT_MS "
+                       << options.assemblyTimeoutMs;
+              logRuntimeEvidence(record.str());
+            }
             // Serving prepares a runner only after authenticated Selection.
             // Model adapters supply a spec; observations are bound once below.
             config.allowPreassembledV3Compatibility = false;
@@ -1743,7 +1908,9 @@ main(int argc, char** argv)
             const auto assemblyWorkerLocation = resolveWorkerLocation();
             config.runnerPreparationFactory =
               [assemblyCacheDir,
+               cacheCompatibilitySourceDir = options.cacheCompatibilitySourceDir,
                assemblyProviderIdentity,
+               assemblyTimeoutMs = options.assemblyTimeoutMs,
                assemblyWorkerLocation,
                providerCert,
                providerBootId,
@@ -1759,32 +1926,49 @@ main(int argc, char** argv)
                 else {
                   NativeCanonicalOnnxAssemblerOptions assemblyOptions;
                   assemblyOptions.cacheDir = assemblyCacheDir;
+                  assemblyOptions.cacheCompatibilitySourceDir = cacheCompatibilitySourceDir;
                   assemblyOptions.providerIdentity = assemblyProviderIdentity;
+                  assemblyOptions.assemblyTimeoutMs = static_cast<std::uint64_t>(
+                    assemblyTimeoutMs);
                   assemblyOptions.protectedRuntime = protectedRuntime;
                   assemblyOptions.workerLocation = assemblyWorkerLocation;
                   assemblyOptions.reportProgress = makeNativeAssemblyProgressReporter(
                     ctx, projection, projection.assembly.backend.empty()
-                      ? std::string("native") : projection.assembly.backend);
+                      ? std::string("native") : projection.assembly.backend,
+                    1, 0, projection.assemblyProgressSequence);
                   if (protectedRuntime) {
                     const auto& payload = ctx.assignment().assignmentPayload;
                     assemblyOptions.roleAssemblySpecDigest = nativeAssemblyDigestFromCanonicalProjection(
                       std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
                   }
                   assemblyOptions.signManifest =
-                    [&keyChain, providerCert](const std::string& manifestBytes) {
+              [&keyChain, providerCert](const std::string& manifestBytes) {
                       return signNativeAssemblyManifest(
                         keyChain, providerCert, manifestBytes);
                     };
+                  logProviderPreparationProgress(projection, "CACHE_LOOKUP_BEGIN",
+                                                 "recipe-addressed");
                   if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
                         projection, assemblyOptions)) {
                     spec = *cached;
+                    logProviderPreparationProgress(projection, "CACHE_LOOKUP_HIT",
+                                                   "recipe-addressed");
                   }
                   else {
+                    logProviderPreparationProgress(projection, "CACHE_LOOKUP_MISS",
+                                                   "cold-assembly");
+                    logProviderPreparationProgress(projection, "ASSEMBLY_CALL_BEGIN",
+                                                   "canonical-onnx");
                     spec = prepareNativeCanonicalOnnxRole(ctx, projection, assemblyOptions);
+                    logProviderPreparationProgress(projection, "ASSEMBLY_CALL_DONE",
+                                                   "canonical-onnx");
                   }
                 }
+                logProviderPreparationProgress(projection, "FACTORY_BIND_BEGIN",
+                                               "runner-context");
                 bindNativeRunnerPreparationContext(spec, projection,
                   {assemblyProviderIdentity, providerBootId, providerStartedAtMs, assemblyCacheDir});
+                logProviderPreparationProgress(projection, "FACTORY_DONE", "runner-spec");
                 return spec;
               };
             config.requireExecutionAttemptBinding = options.requireExecutionLease;
@@ -1796,6 +1980,7 @@ main(int argc, char** argv)
             config.allowLegacyPeerReadinessBarrier =
               plan.executionPolicy == "LEGACY_READY_SET_V1";
             config.workerCount = options.workers;
+            config.conversationRetentionMs = static_cast<std::uint64_t>(options.conversationRetentionMs);
             config.kvStateStore = std::make_shared<KvStateStore>(
               64ULL * 1024ULL * 1024ULL, 128);
             config.kvStateStore->setProviderBootId(providerBootId);
@@ -1885,18 +2070,25 @@ main(int argc, char** argv)
             // constraint holds and the main thread owns the registration.
             *registrationOut = providerHost->serve(nativeService, config);
             signalServeCompleted();
-            std::cout << "NDNSF_DI_EXECUTION_LEASE_SERVICE_READY"
-                      << " provider=" << options.providerName
-                      << " service=" << options.serviceName
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_EXECUTION_LEASE_SERVICE_READY"
+                       << " provider=" << options.providerName
+                       << " service=" << options.serviceName;
+              logRuntimeEvidence(record.str());
+            }
             const auto permissionDeadline =
               std::chrono::steady_clock::now() +
               std::chrono::milliseconds(options.permissionWaitMs);
             while (!provider->hasProviderPermissionForService(
                      ndn::Name(options.serviceName))) {
               if (runLimitReached->load(std::memory_order_acquire)) {
-                std::cout << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_WAIT_CANCELLED"
-                          << " reason=run-limit" << std::endl;
+                {
+                  std::ostringstream record;
+                  record << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_WAIT_CANCELLED"
+                           << " reason=run-limit";
+                  logRuntimeEvidence(record.str());
+                }
                 signalProvisioningDone();
                 return;
               }
@@ -1906,37 +2098,52 @@ main(int argc, char** argv)
               }
               std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            std::cout << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_READY"
-                      << " provider=" << options.providerName
-                      << " service=" << options.serviceName
-                      << " policyEpoch=" << provider->getCurrentPolicyEpoch()
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_READY"
+                       << " provider=" << options.providerName
+                       << " service=" << options.serviceName
+                       << " policyEpoch=" << provider->getCurrentPolicyEpoch();
+              logRuntimeEvidence(record.str());
+            }
             provider->updateNdnsdMeta("providerBootId", providerBootId);
-            std::cout << "NDNSF_DI_PROVIDER_BOOT_READY"
-                      << " provider=" << options.providerName
-                      << " providerBootId=" << providerBootId
-                      << " attemptAuthority=fresh"
-                      << " kvState=fresh"
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_PROVIDER_BOOT_READY"
+                       << " provider=" << options.providerName
+                       << " providerBootId=" << providerBootId
+                       << " attemptAuthority=fresh"
+                       << " kvState=fresh";
+              logRuntimeEvidence(record.str());
+            }
             provisioningState->markReady(
               "native runtime ready; role assembly deferred until Selection");
             provider->updateNdnsdMeta("runtimeStatus", "ready");
-            std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"
-                      << " activeRoles=" << allowedRoles.size()
-                      << " workers=" << options.workers
-                      << std::endl;
-            std::cout << "NDNSF_DI_NATIVE_PROVIDER_READY"
-                      << " provider=" << options.providerName
-                      << " activeRoles=" << allowedRoles.size()
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"
+                       << " activeRoles=" << allowedRoles.size()
+                       << " workers=" << options.workers;
+              logRuntimeEvidence(record.str());
+            }
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_NATIVE_PROVIDER_READY"
+                       << " provider=" << options.providerName
+                       << " activeRoles=" << allowedRoles.size();
+              logRuntimeEvidence(record.str());
+            }
             signalProvisioningDone();
           }
           catch (const std::exception& exc) {
             provisioningState->markFailed(exc.what());
             provisionFailed->store(true, std::memory_order_release);
-            std::cerr << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_FAILED"
-                      << " error=\"" << exc.what() << "\""
-                      << std::endl;
+            {
+              std::ostringstream record;
+              record << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_FAILED"
+                       << " error=\"" << exc.what() << "\"";
+              logRuntimeError(record.str());
+            }
             // A producer Face may keep its io_context alive indefinitely. Stop
             // it directly so processEvents() returns even when another
             // ServiceProvider scheduler has outstanding retry work. The main
@@ -1951,11 +2158,14 @@ main(int argc, char** argv)
         };
 
       provider->fetchPermissionsFromController(controllerIdentity);
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_FETCH_ISSUED controller="
-                << controllerIdentity
-                << std::endl;
+      {
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_FETCH_ISSUED controller="
+                 << controllerIdentity;
+        logRuntimeEvidence(record.str());
+      }
       provider->init();
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_INIT_DONE" << std::endl;
+      logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_INIT_DONE");
       provider->setNdnsdMeta({{"runtimeStatus", "installing"}});
       provider->startNdnsdPeriodicPublish(10);
       // Keep the installation task joinable.  It captures the Face and
@@ -1984,23 +2194,30 @@ main(int argc, char** argv)
                                   });
         return 2;
       }
-      std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY service="
-                << options.serviceName
-                << " identity=" << options.providerName
-                << " roles=" << joinRoles(allowedRoles)
-                << " workers=" << options.workers
-                << " handlerThreads=" << options.handlerThreads
-                << " ackThreads=" << options.ackThreads
-                << " runtimeStatus=installing"
-                << std::endl;
+      {
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY service="
+                 << options.serviceName
+                 << " identity=" << options.providerName
+                 << " roles=" << joinRoles(allowedRoles)
+                 << " workers=" << options.workers
+                 << " handlerThreads=" << options.handlerThreads
+                 << " ackThreads=" << options.ackThreads
+                 << " runtimeStatus=installing";
+        logRuntimeEvidence(record.str());
+      }
       const auto serveStartedAt = std::chrono::steady_clock::now();
       while (!provisionFailed->load(std::memory_order_acquire) &&
              g_shutdownRequested == 0) {
         if (options.runForMs &&
             std::chrono::steady_clock::now() >=
               serveStartedAt + std::chrono::milliseconds(*options.runForMs)) {
-          std::cout << "NDNSF_DI_NATIVE_PROVIDER_RUN_LIMIT_REACHED"
-                    << " runForMs=" << *options.runForMs << std::endl;
+          {
+            std::ostringstream record;
+            record << "NDNSF_DI_NATIVE_PROVIDER_RUN_LIMIT_REACHED"
+                     << " runForMs=" << *options.runForMs;
+            logRuntimeEvidence(record.str());
+          }
           runLimitReached->store(true, std::memory_order_release);
           break;
         }
@@ -2011,15 +2228,18 @@ main(int argc, char** argv)
           face.processEvents(ndn::time::milliseconds(100));
         }
         catch (const std::exception& exc) {
-          std::cerr << "NDNSF_DI_NATIVE_PROVIDER_EVENT_LOOP_EXCEPTION"
-                    << " provider=" << options.providerName
-                    << " service=" << options.serviceName
-                    << " error=\"" << exc.what() << "\""
-                    << std::endl;
+          {
+            std::ostringstream record;
+            record << "NDNSF_DI_NATIVE_PROVIDER_EVENT_LOOP_EXCEPTION"
+                     << " provider=" << options.providerName
+                     << " service=" << options.serviceName
+                     << " error=\"" << exc.what() << "\"";
+            logRuntimeError(record.str());
+          }
         }
       }
       if (g_shutdownRequested != 0) {
-        std::cout << "NDNSF_DI_NATIVE_PROVIDER_SHUTDOWN_REQUESTED" << std::endl;
+        logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_SHUTDOWN_REQUESTED");
       }
       provider->stopNdnsdPeriodicPublish();
       face.shutdown();
@@ -2039,12 +2259,15 @@ main(int argc, char** argv)
     specs = withExecutionEvidenceContext(
       materializeManifestSpecs(options, specs), options, providerBootId, providerStartedAtMs);
     auto runners = orderedSpecs(plan, specs, allowedRoles);
-    std::cout << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
-              << plan.roles.size()
-              << " artifacts=" << specs.size()
-              << " activeRoles=" << allowedRoles.size()
-              << " runners=" << runners.size()
-              << std::endl;
+    {
+      std::ostringstream record;
+      record << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
+               << plan.roles.size()
+               << " artifacts=" << specs.size()
+               << " activeRoles=" << allowedRoles.size()
+               << " runners=" << runners.size();
+      logRuntimeEvidence(record.str());
+    }
     auto io = std::make_shared<PlaceholderDependencyIo>();
     NativeProviderSession session(plan,
                                   defaultAssignment(plan, options.providerName, allowedRoles),
@@ -2064,17 +2287,23 @@ main(int argc, char** argv)
       ++registered;
     }
     const auto aggregateEvidence = aggregateExecutionEvidence(checkEvidence);
-    std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
-              << executionEvidenceToJson(aggregateEvidence)
-              << std::endl;
+    {
+      std::ostringstream record;
+      record << "NDNSF_DI_EXECUTION_EVIDENCE "
+               << executionEvidenceToJson(aggregateEvidence);
+      logRuntimeEvidence(record.str());
+    }
 
-    std::cout << "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK service="
-              << options.serviceName
-              << " roles=" << plan.roles.size()
-              << " artifacts=" << specs.size()
-              << " registered=" << registered
-              << " workers=" << options.workers
-              << std::endl;
+    {
+      std::ostringstream record;
+      record << "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK service="
+               << options.serviceName
+               << " roles=" << plan.roles.size()
+               << " artifacts=" << specs.size()
+               << " registered=" << registered
+               << " workers=" << options.workers;
+      logRuntimeEvidence(record.str());
+    }
     return 0;
   }
   catch (const std::exception& exc) {

@@ -1,5 +1,82 @@
 # Research-first Proposal Revision and Evidence Audit
 
+## 2026-09-17 Full-text Clarity Revision
+
+[全文语言记录](clarity-review-20260917.md)：通读39个活动 TeX 文件，18个有措辞修改。
+英文75页、中文56页；结构、引用、公式、图、代码及原数字保留，镜像及构建检查 PASS。
+slides 与实验不变；这不是重新认证全部科学结论。以下为先前各轮记录。
+
+## 2026-09-17 RQ1 Concise Revision
+
+[精简记录](cost-model-audit-20260917.md#latest-concise-revision)：新增正文约由1021词
+减为570词，保留模型、三组配置与必要边界。英文73页、中文56页、slides/PPTX53页；
+修改页及镜像检查通过，历史实验数字不变。以下为先前各轮记录。
+
+## 2026-09-17 RQ1 Cost-model Re-audit
+
+最新 [re-audit](cost-model-audit-20260917.md) 修正凭证计数、固定 k 的线性增长、
+维护成本、授权有效期与撤销配对条件。英文74页、中文57页、slides/PPTX53页；
+仅修订三份正文／slides源文件，abstract与历史结果页不变。未运行产品实验。
+下文页数为各轮历史记录。
+
+## 2026-09-17 RQ1 Cost Model
+
+模型与三组计划配置见[cost-model review](cost-model-review-20260917.md)，
+正式稿英文73页、中文56页，slides/PPTX53页（45页主线）。按相同权限与保护要求，
+区分每服务角色、共享组合角色及更新压力，给出分摊成本式和条件化复杂度。
+未运行新产品实验，未预设ABE更优。下文保留前轮页数及历史记录。
+
+## 2026-09-17 Three Contribution Revisions
+
+用户指定的三项修订及证据边界见[contribution revision](contribution-revision-20260917.md)。
+当前英文72页、中文55页、slides52页（44页主线），PPTX、notes和对照稿同步。
+RQ1研究条件化取舍；RQ2补CFN机制对照及原对象复用／旧执行隔离；第4章研究共用
+契约与应用验证边界，保留全部原应用类别。没有新产品实验或性能结果。
+核验见[validation](contribution-validation-20260917.json)；下文页数均为历史记录。
+
+## 2026-09-17 Proposal Criteria and Necessity Review
+
+本轮[逐项必要性复审](proposal-criteria-review-20260917.md)按官方 proposal 标准，
+补强 RQ 关系、最近工作比较、同等发现加密的授权对照、反例与最低研究范围。
+论文双语、slides、可编辑 PPTX 和讲稿同步；42 页主线，50 页总数。
+保留所有既有实验数字；没有新增产品或 TigerCluster 测试。
+核验见[artifact validation](proposal-criteria-validation-20260917.json)。
+后续文献差异证明和匹配实验仍未完成，不能将文档审查视作研究验收。
+
+## 2026-09-16 TigerCluster Evaluation Preparation
+
+新增进度及评价范围见[TigerCluster plan](tiger-evaluation-plan-20260916.md)。
+双语DI正文和slides第35页增加正在准备的多节点GPU实验；评价正确性、延迟、
+Provider间传输及GPU峰值内存，不替代UAV无线/移动场景。Spec187 T004仍未启动，
+本项是计划说明，不是TigerCluster性能结果。
+
+## 2026-09-16 Skill-guided Proposal Review
+
+局部研究论证审查见[proposal skill review](proposal-skill-review-20260916.md)。
+使用现有学术论证及NDN slides审查技能；仅补强双语证据层次、预定比较标准与
+第36、40页的评价对应关系。其余研究结构和实验数据保持不变，未新增产品实验。
+以下记录保留各轮原有范围和时间边界。
+
+## 2026-09-16 Proposal Language Review
+
+当前语言修订见[language review](language-review-20260916.md)及
+[validation](language-validation-20260916.json)。逐句核对主叙事和50页slides，
+将编辑／验收式表述融入研究方法，保留必要限制；同步中文、讲稿、可编辑PPTX及对照。
+英文65页、中文51页、slides50页；研究结构、RQ、实验数字和时间安排保持不变。
+以下旧记录按对应checkpoint解释。
+
+## 2026-09-16 Proposal Register Review
+
+当前proposal研究口径及章节／slide处置见[proposal register review](proposal-register-review-20260916.md)。
+强调待回答问题、已有实现基础、跨应用复用检验和结果解释，不重排章节或改动历史实验。
+
+## 2026-09-16 Latest-design Synchronization
+
+当前Core、DI和UAV设计口径的局部同步见[design sync](design-sync-20260916.md)。
+记录原生PreparedModel入口、ACK关闭后的规划顺序、已有提交检查与剩余验证、
+以及UAV服务授权／操作员权限／车辆安全的边界。本文以下记录保留原checkpoint含义。
+
+
 ## 2026-09-14 Dissertation Proposal Positioning
 
 最新结构与口径审查见[proposal review](proposal-structure-review-20260914.md)，当前产物检查见[validation](proposal-structure-validation-20260914.json)。保留逐句与导师批注修订内容，进一步区分已有基础、拟议方法、初步证据和预期成果；以下检查记录按其原checkpoint解释。

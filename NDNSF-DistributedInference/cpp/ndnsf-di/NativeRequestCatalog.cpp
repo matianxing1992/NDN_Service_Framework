@@ -48,6 +48,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     recipe.at("backend_abi"), recipe.at("precision"), recipe.at("quantization"), recipe.at("layout"),
     recipe.at("padding"), recipe.at("protection_epoch"), recipe.at("max_source_bytes"),
     recipe.at("max_assembled_bytes"), recipe.at("max_nodes")};
+  if (entry.recipe.quantization != model.descriptor.quantizationSubtype)
+    throw std::invalid_argument("request recipe quantization differs from model identity");
   const auto& publication = root.at("publication");
   entry.publication.artifactRoot = publication.at("artifact_root").get<std::string>();
   entry.publication.packageManifestDigest = publication.value("package_manifest_digest", model.modelManifestDigest);
@@ -56,6 +58,10 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   entry.publication.layerManifestDigests = publication.value("layer_manifest_digests", std::vector<std::string>{});
   entry.publication.maxPublicationBytes = publication.value(
     "max_publication_bytes", std::uint64_t{0});
+  // The complete operator-pinned catalog is available before source loading.
+  // Use it as the durable publication identity so initializer/profile/split
+  // changes cannot collide under a source-only Repo path.
+  entry.publication.publicationIdentityDigest = nativePlanningDigest(nativeCanonicalJson(root));
   entry.nodes = root.value("node_mapping", NativeCanonicalRolePreparer::NodeMap{});
   entry.maxPayloadBytes = root.at("max_payload_bytes").get<std::size_t>();
   const auto format = root.at("input_format").get<std::string>();
@@ -109,13 +115,16 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   }
   NativeRequestCatalog result;
   const auto& split = root.at("splitter");
-  if (split.at("kind") == "QWEN") {
+  const auto splitterKind = split.at("kind").get<std::string>();
+  if (splitterKind == "QWEN" || splitterKind == "LLAMA") {
+    const auto modelFamily = splitterKind == "LLAMA" ? "llama" : "qwen";
     auto strategy = std::make_shared<qwen::NativeQwenLayerSplit>(
       split.at("layer_ranges").get<std::vector<qwen::NativeQwenLayerSplit::LayerRange>>(),
       split.at("artifact_digests_by_role").get<std::map<std::string, std::string>>(),
       split.at("weight_bytes_by_role").get<std::map<std::string, std::uint64_t>>(),
       split.at("roles").get<std::vector<std::string>>(), split.at("tensor_degrees").get<std::vector<std::uint64_t>>(),
-      split.value("input_ingress_role", std::string{}), split.value("result_egress_role", std::string{}));
+      split.value("input_ingress_role", std::string{}), split.value("result_egress_role", std::string{}),
+      modelFamily);
     model.graph = strategy->inspectGraph(model.descriptor, model.descriptor.sourceRevision, entry.recipe.maxNodes);
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);

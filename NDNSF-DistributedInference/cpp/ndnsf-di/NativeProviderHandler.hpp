@@ -109,7 +109,10 @@ struct NativeProviderHandlerConfig
   // independent from fetchTimeoutMs, which bounds readiness and control ACKs.
   int dependencyFetchTimeoutMs = 30000;
   int fetchTimeoutMs = 30000;
-  std::size_t maxSegmentSize = 7600;
+  // Match the maintained Python provider path. Exact V3 Data names carry
+  // request/plan/role/tensor bindings, so the signed wire packet needs room
+  // beyond the plaintext segment payload.
+  std::size_t maxSegmentSize = 7000;
   int freshnessMs = 60000;
   // Optional request-scoped cross-Provider data-plane coordinator.  When
   // absent, dependencies retain the ordinary COLLAB-LARGE path.
@@ -125,6 +128,9 @@ struct NativeProviderHandlerConfig
   ProtectedRuntimeFactory protectedRuntimeFactory;
   std::size_t workerCount = 1;
   std::size_t workerQueueCapacity = 1024;
+  // Finite per-host KV retention policy; authenticated turn deadlines may
+  // shorten it. Valid range: 1..3600000 ms. No per-turn sliding extension.
+  std::uint64_t conversationRetentionMs = 300'000;
   ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;
   uint64_t executionLeaseCleanupIntervalMs = 1000;
   std::string executionLeaseTargetService;

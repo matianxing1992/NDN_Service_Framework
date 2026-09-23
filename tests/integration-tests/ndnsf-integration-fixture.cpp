@@ -93,6 +93,45 @@ pumpFaces(ndn::DummyClientFace& userFace,
   }
 }
 
+class ProducerSubscriptionGuard
+{
+public:
+  ProducerSubscriptionGuard(ndn::svs::SVSPubSub& pubsub, uint32_t handle)
+    : m_pubsub(pubsub)
+    , m_handle(handle)
+  {
+  }
+
+  ProducerSubscriptionGuard(const ProducerSubscriptionGuard&) = delete;
+  ProducerSubscriptionGuard& operator=(const ProducerSubscriptionGuard&) = delete;
+
+  ~ProducerSubscriptionGuard() noexcept
+  {
+    reset();
+  }
+
+  void reset() noexcept
+  {
+    if (!m_active)
+      return;
+    try {
+      m_pubsub.unsubscribe(m_handle);
+    }
+    catch (...) {
+      // Leaving a callback that captures bootstrap-local state alive would
+      // be a use-after-scope. Terminate instead of allowing that unsafe
+      // state to escape a noexcept cleanup boundary.
+      std::terminate();
+    }
+    m_active = false;
+  }
+
+private:
+  ndn::svs::SVSPubSub& m_pubsub;
+  uint32_t m_handle;
+  bool m_active = true;
+};
+
 ndn::Name
 indexedName(const ndn::Name& base, size_t index)
 {
@@ -357,6 +396,30 @@ NdnsfIntegrationEnvironment::enableProductionIngressForTest()
   m_user->attachLocalMockPubSubForTest(std::move(userPubSub));
   m_user->init();
   enableProviderProductionIngressForTest();
+  m_user->refreshNacProducerForTest();
+  for (size_t index = 0; index < providerCount(); ++index) {
+    provider(index).refreshNacProducerForTest();
+  }
+
+  // init() installs the production ingress registrations and can expose a
+  // controller-status revalidation that re-arms NAC-ABE caches after the
+  // initial bootstrap gate.  Re-establish the same explicit producer and
+  // consumer readiness boundary before a request is allowed to publish an
+  // encrypted large object; otherwise the first request can observe an empty
+  // producer public-parameter cache even though bootstrap() was READY.
+  pumpUntilWithAttributeAuthority([&] {
+    if (!m_user->isNacConsumerReadyForTest() ||
+        !m_user->isNacProducerReadyForTest()) {
+      return false;
+    }
+    for (size_t index = 0; index < providerCount(); ++index) {
+      if (!provider(index).isNacConsumerReadyForTest() ||
+          !provider(index).isNacProducerReadyForTest()) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 void
@@ -448,16 +511,22 @@ NdnsfIntegrationEnvironment::bootstrap()
   m_status = EnvironmentStatus::Bootstrapping;
   try {
     installPermissions();
+    m_user->refreshNacProducerForTest();
+    for (size_t index = 0; index < providerCount(); ++index) {
+      provider(index).refreshNacProducerForTest();
+    }
 
     ndn::Name publicationName(m_profile.groupPrefix);
     publicationName.append("bootstrap").append("1");
     bool delivered = false;
-    m_providerPubSub->subscribeToProducer(
+    const auto bootstrapSubscription = m_providerPubSub->subscribeToProducer(
         m_profile.userNode,
         [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
           delivered = publication.name == publicationName;
         },
         false);
+    ProducerSubscriptionGuard bootstrapSubscriptionGuard(
+      *m_providerPubSub, bootstrapSubscription);
     const std::string payload = "spec170-bootstrap";
     m_userPubSub->publish(
         publicationName,
@@ -471,16 +540,21 @@ NdnsfIntegrationEnvironment::bootstrap()
     pumpFaces(*m_userFace, providerFaces, *m_attributeAuthorityFace, true,
               true, [&] {
       if (!delivered || m_attributeAuthorityPublicParameterData == 0 ||
-          !m_user->isNacConsumerReadyForTest()) {
+          !m_user->isNacConsumerReadyForTest() ||
+          !m_user->isNacProducerReadyForTest()) {
         return false;
       }
       for (size_t index = 0; index < providerCount(); ++index) {
-        if (!provider(index).isNacConsumerReadyForTest()) {
+        if (!provider(index).isNacConsumerReadyForTest() ||
+            !provider(index).isNacProducerReadyForTest()) {
           return false;
         }
       }
       return true;
     });
+    // The callback captures bootstrap-local state; release it before any
+    // later validation can throw while the locals are still in scope.
+    bootstrapSubscriptionGuard.reset();
     if (!delivered) {
       throw std::runtime_error("SVS bootstrap publication was not delivered");
     }
@@ -492,10 +566,18 @@ NdnsfIntegrationEnvironment::bootstrap()
     if (!m_user->isNacConsumerReadyForTest()) {
       throw std::runtime_error("User NAC-ABE DKEY bootstrap was not completed");
     }
+    if (!m_user->isNacProducerReadyForTest()) {
+      throw std::runtime_error(
+          "User NAC-ABE producer public-parameter bootstrap was not completed");
+    }
     for (size_t index = 0; index < providerCount(); ++index) {
       if (!provider(index).isNacConsumerReadyForTest()) {
         throw std::runtime_error(
             "Provider NAC-ABE DKEY bootstrap was not completed");
+      }
+      if (!provider(index).isNacProducerReadyForTest()) {
+        throw std::runtime_error(
+            "Provider NAC-ABE producer public-parameter bootstrap was not completed");
       }
     }
     if (m_user->getAllowedServices().empty() ||

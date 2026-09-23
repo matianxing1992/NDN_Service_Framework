@@ -12,7 +12,7 @@ C++库独立提供Runtime配置解析、模型注册/准备、输入schema处理
 | Capability | C++ owner / public entry | Python allowed mapping |
 | --- | --- | --- |
 | 配置/模型注册 | Runtime::open, User::prepare/prepareAsync | 参数与路径转换，调用同一native loader |
-| 请求/结果 | PreparedModel::request/run, RequestHandle::result/onCompletion | snake_case、Future/asyncio Future适配 |
+| 请求/结果 | User::request/run(model, ...), RequestHandle::result/onCompletion | snake_case、Future/asyncio Future适配；PreparedModel直接请求仅兼容 |
 | 可靠流 | native EventReader::next/nextAsync/close | iterator/async iterator协议外壳，不缓存第二份权威序列 |
 | 输入/生成 | Input工厂、native adapter encode、task capabilities | bytes/str转换；不执行Python模型规划或tokenizer |
 | 会话 | Conversation/NativeConversationCoordinator/journal | opaque checkpoint与异常映射 |

@@ -25,6 +25,9 @@ struct NativeCanonicalPublicationOptions
   // topology-independent material set can be larger than any one role.
   // Zero lets the catalog derive a bounded default.
   std::uint64_t maxPublicationBytes = 0;
+  // Stable prepare identity supplied by the operator-pinned catalog. Empty
+  // preserves the legacy source-digest root for old direct publisher users.
+  std::string publicationIdentityDigest;
 };
 
 struct NativePublicationKeyReference
@@ -63,10 +66,17 @@ struct NativePreparedCanonicalPublication
   std::vector<NativePublicationKeyReference> rollbackKeyReferences;
   std::string rollbackKeyId;
   std::string rollbackServiceName;
+  // Compatibility receipts are metadata-only: the authenticated assignment
+  // still carries rootDataName as its artifact identity, but Core must not
+  // prefetch that name because the Provider validates the shared local cache.
+  bool artifactPrefetchRequired = true;
   // Durable repository receipts are reusable by later preparations.  They do
   // not grant the failing caller ownership to remove already-committed
   // objects; transient Core publications keep the default true value.
   bool rollbackOwned = true;
+  // Optional reference-only material index restored by a Repo lookup. Selected
+  // payloads are fetched after ACK/Selection, not during prepare lookup.
+  std::shared_ptr<const NativeCanonicalSource::MaterialManifest> materialManifest;
   // Package/request copies retain Core's serving pins after prepare returns.
   std::vector<std::shared_ptr<void>> servingLeases;
 

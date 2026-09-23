@@ -113,6 +113,7 @@ NativeJson jsonValue(const NativeTensorEndpointV3& value)
   result["consumer_role"] = value.consumerRole;
   result["consumer_roles"] = value.consumerRoles;
   result["tensor_id"] = value.tensorId;
+  result["bundle_tensor_names"] = value.bundleTensorNames;
   result["tensor_digest"] = value.tensorDigest;
   result["layout_digest"] = value.layoutDigest;
   result["target_layout_digest"] = value.targetLayoutDigest;
@@ -173,6 +174,16 @@ NativeJson jsonValue(const NativeGenerationExecutionContractV1& value)
   result["token_input_name"] = value.tokenInputName;
   result["state_input_names"] = value.stateInputNames;
   result["state_output_names"] = value.stateOutputNames;
+  if (!value.stateSuccessorMap.empty())
+    result["state_successor_map"] = value.stateSuccessorMap;
+  if (!value.positionInputPolicy.empty())
+    result["position_input_policy"] = value.positionInputPolicy;
+  if (!value.attentionMaskInputName.empty())
+    result["attention_mask_input_name"] = value.attentionMaskInputName;
+  if (!value.positionIdsInputName.empty())
+    result["position_ids_input_name"] = value.positionIdsInputName;
+  if (!value.cachePositionInputName.empty())
+    result["cache_position_input_name"] = value.cachePositionInputName;
   result["eos_token_ids"] = value.eosTokenIds;
   result["sampling_digest"] = value.samplingDigest;
   result["tokenizer_digest"] = value.tokenizerDigest;

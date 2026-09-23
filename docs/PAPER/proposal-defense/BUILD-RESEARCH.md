@@ -1,5 +1,11 @@
 # Research-first Proposal Sources
 
+Latest scope checkpoint (2026-09-17): see `minimal-revision-checklist-20260917.md`.
+The seven-chapter structure keeps UAV and DI separate and consolidates evaluation
+and the timeline in Chapter 6. `validate_minimal_revision.py --run <before-and-build-directory>`
+checks this round against its archived pre-edit sources; durable results are in
+`minimal-revision-validation-20260917.json`. Earlier validation records are historical.
+
 The September 2026 revision uses shared narrative sources:
 
 - `main.tex` and `en/main.tex` load `en/chapters/research-revision.tex`.
@@ -8,6 +14,27 @@ The September 2026 revision uses shared narrative sources:
 - `protocol-overview.tex` is the common vector figure.
 - `slides/main.tex` loads `slides/research-slides.tex`; `main_35min.tex` is a compatibility entry to the same consolidated talk, not a separately maintained argument.
 - Earlier numbered chapter fragments are retained historical material and are not loaded by these entries.
+
+## File layout and entry-point policy
+
+The repository intentionally keeps two entry points for each language so that
+the root-level deliverables used in review and the language-specific build
+directories can be checked independently. They are not four independent
+proposal versions:
+
+| Path | Role | Editing rule |
+|---|---|---|
+| `main.tex`, `main_ch.tex` | Root English/Chinese compatibility entries and shareable-document entry points | Keep synchronized with `en/main.tex` and `ch/main.tex`; do not treat them as separate manuscripts |
+| `en/chapters/`, `ch/chapters/` | Canonical English/Chinese chapter sources | Edit the language chapter here |
+| `en/main.tex`, `ch/main.tex` | Language-specific mirror build entries | Keep the entry metadata and abstract synchronized with the root entries |
+| `main.pdf`, `main_ch.pdf` | Root-level shareable English/Chinese PDFs | Current deliverables referenced by review documents |
+| `en/main.pdf`, `ch/main.pdf` | Language-directory mirror PDFs | Validation mirrors; not additional revisions |
+| `build/`, `en/build/`, `ch/build/` | LaTeX auxiliary files and isolated build logs | Do not use as shareable manuscript versions |
+
+The root and language-directory PDFs must be rebuilt together after source
+changes. A stale mirror is an error, even when the page count appears to
+match. Comparison PDFs and files under `revision-comparison/` are historical
+review artifacts and are not current proposal sources.
 
 Build English with `latexmk -norc -pdf -bibtex -interaction=nonstopmode -halt-on-error main.tex` from the appropriate directory. Build Chinese with `-xelatex` instead of `-pdf`. Build slides from `slides/` with `latexmk -norc -pdf -interaction=nonstopmode -halt-on-error main.tex`. Isolated output directories are recommended. Keep bibliography basenames unqualified; the alternate entry directories link to the shared additional bibliography.
 

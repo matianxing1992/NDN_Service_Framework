@@ -82,6 +82,19 @@ class Spec185PreparedModelWrapperTests(unittest.TestCase):
         self.assertIn("PyImport_AddModule", source)
         self.assertNotIn("g_diErrorType", source)
 
+    def test_binding_exposes_user_owned_request_surface(self):
+        source = BINDINGS.read_text(encoding="utf-8")
+        self.assertIn(
+            '.def("request", [] (const di::User& user, const di::PreparedModel& model,',
+            source)
+        self.assertIn(
+            '.def("run", [] (const di::User& user, const di::PreparedModel& model,',
+            source)
+        self.assertIn(
+            '.def("open_conversation", [] (const di::User& user,',
+            source)
+        self.assertIn('py::arg("model")', source)
+
     def test_api_exports_direct_native_views_without_python_planner_fallback(self):
         api = API.read_text(encoding="utf-8")
         async_api = ASYNC.read_text(encoding="utf-8")
@@ -192,9 +205,12 @@ class Spec185PreparedModelWrapperTests(unittest.TestCase):
             self.skipTest(f"native extension unavailable: {exc}")
         if not hasattr(_ndnsf, "Runtime"):
             self.skipTest("current extension predates Spec185 direct bindings")
-        for name in ("Runtime", "PreparedModel", "PreparationHandle", "RequestHandle",
+        for name in ("Runtime", "User", "PreparedModel", "PreparationHandle", "RequestHandle",
                      "Conversation", "EventReader", "Subscription"):
             self.assertTrue(hasattr(_ndnsf, name), name)
+        self.assertTrue(hasattr(_ndnsf.User, "request"))
+        self.assertTrue(hasattr(_ndnsf.User, "run"))
+        self.assertTrue(hasattr(_ndnsf.User, "open_conversation"))
 
     def test_native_error_translator_survives_module_teardown(self):
         try:

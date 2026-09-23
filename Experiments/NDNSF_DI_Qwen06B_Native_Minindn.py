@@ -22,6 +22,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import signal
 import shutil
@@ -67,6 +68,7 @@ LARGE_DATA_DEFAULT_IMS_LIMIT = 50000
 LARGE_DATA_IMS_MARGIN_SEGMENTS = 8192
 LARGE_DATA_IMS_MAX_LIMIT = 1000000
 LARGE_MODEL_THRESHOLD_BYTES = 256 * 1024 * 1024
+MAX_NEW_TOKENS = 1025
 ENCRYPTED_REPOSITORY_LEASE = ".ndnsf-di-encrypted-repo-lease.json"
 ENCRYPTED_REPOSITORY_STALE_AFTER_S = 10 * 60
 # MiniNDN-only bounded Content Store capacity.  The real Qwen Repo/fetch path
@@ -80,6 +82,13 @@ MAX_STARTUP_TIMEOUT_S = 600.0
 MAX_ROUTING_WAIT_S = 120.0
 MAX_QWEN_ROUNDS = 8
 MAX_STAGE_COUNT = 32
+
+
+def _raise_keyboard_interrupt(signum, _frame) -> None:
+    """Route TERM through main's finally block so transient staging is cleaned."""
+    raise KeyboardInterrupt(f"received signal {signum}")
+
+
 # Spec190 narrows only this Qwen multi-turn profile.  Core and other
 # profiles retain their existing defaults; the value is passed explicitly in
 # the generated native requester contract.
@@ -427,6 +436,39 @@ def qwen_state_successor_pairs(stages: list[dict]) -> list[tuple[str, str]]:
     return state_successor_pairs(stages, "qwen")
 
 
+def canonical_qwen_state_name(name: str) -> str:
+    """Map the profile's semantic KV name to the exported ONNX tensor name.
+
+    The semantic names are stable across the conversation/catalog contract;
+    they are not necessarily the names used by one ONNX exporter.  The
+    Qwen3 export used by Spec190 names inputs ``past_key_values.N.key`` and
+    outputs ``present.N.key`` (and their value counterparts).  Keep this
+    conversion in one place so metadata, catalog bindings, and generation
+    options cannot drift independently.
+    """
+    if (re.fullmatch(r"past_key_values\.\d+\.(key|value)", name) or
+            re.fullmatch(r"present\.\d+\.(key|value)", name)):
+        return name
+    match = re.fullmatch(r"past_(key|value)\.(\d+)", name)
+    if match:
+        return f"past_key_values.{match.group(2)}.{match.group(1)}"
+    match = re.fullmatch(r"present_(key|value)\.(\d+)", name)
+    if match:
+        return f"present.{match.group(2)}.{match.group(1)}"
+    raise ValueError(f"QWEN_CANONICAL_STATE_NAME_INVALID:{name}")
+
+
+def canonical_qwen_state_successor_pairs(
+    stages: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    """Return source-bound Qwen KV successor pairs in semantic order."""
+    return [
+        (canonical_qwen_state_name(input_name),
+         canonical_qwen_state_name(output_name))
+        for input_name, output_name in qwen_state_successor_pairs(stages)
+    ]
+
+
 def materialize_input(source: Path, destination: Path, expected_digest: str | None,
                       label: str, free_margin: int = LOCAL_ASSEMBLY_DISK_MARGIN_BYTES) -> dict:
     """Create a run-local immutable view without duplicating large artifacts.
@@ -761,8 +803,10 @@ def manifest_eos_token_ids(model_manifest: dict) -> list[int]:
 
 def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dict],
                             max_tokens: int, tokenizer_digest: str):
+    raw_quantization = str(model_manifest.get("quantization", "none")).lower()
+    quantization = "weight_only_int8" if raw_quantization == "int8" else raw_quantization
     eos_token_ids = manifest_eos_token_ids(model_manifest)
-    state_pairs = state_successor_pairs(stages, STATE_PREFIX)
+    state_pairs = canonical_qwen_state_successor_pairs(stages)
     roles = [str(stage["role"]) for stage in stages]
     dependencies = []
     for index in range(len(roles) - 1):
@@ -780,10 +824,16 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
         })
     artifacts = []
     for index, stage in enumerate(stages):
-        cache_inputs = list(stage.get("cacheInputs", []))
-        cache_outputs = list(stage.get("cacheOutputs", []))
-        input_names = list(stage["inputNames"])
-        output_names = list(stage["outputNames"])
+        cache_inputs = [canonical_qwen_state_name(name)
+                        for name in stage.get("cacheInputs", [])]
+        cache_outputs = [canonical_qwen_state_name(name)
+                         for name in stage.get("cacheOutputs", [])]
+        input_names = [canonical_qwen_state_name(name)
+                       if name.startswith(("past_", "present_")) else name
+                       for name in stage["inputNames"]]
+        output_names = [canonical_qwen_state_name(name)
+                        if name.startswith(("past_", "present_")) else name
+                        for name in stage["outputNames"]]
         if index > 0 and "hidden_states" in input_names:
             input_names[input_names.index("hidden_states")] = (
                 f"{STATE_PREFIX}_s{index - 1}_hidden_states_out")
@@ -798,6 +848,7 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
             "allowCpuFallback": "false",
             "deviceId": "cpu0",
             "dtype": str(model_manifest.get("dtype", "float32")),
+            "quantization": quantization,
             "passthroughTensors": "attention_mask,position_ids",
             "kvTensorMap": ",".join(
                 f"{a}={b}" for a, b in state_pairs
@@ -841,6 +892,7 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
         "dtype": model_manifest.get("dtype", "float32"), "modelFamily": MODEL_FAMILY,
         "modelFormat": "onnx", "plannerKind": f"native-{MODEL_FAMILY}-layer",
         "runtimeBackend": "onnxruntime", "executionPolicy": "DATA_DRIVEN_V2",
+        "quantization": quantization,
         "roles": roles, "dependencies": dependencies,
     }]}
     service_manifest = {"services": [{
@@ -849,6 +901,7 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
         "roles": roles, "dependencies": dependencies, "artifacts": artifacts,
         "modelFamily": MODEL_FAMILY, "modelFormat": "onnx",
         "plannerKind": f"native-{MODEL_FAMILY}-layer", "runtimeBackend": "onnxruntime",
+        "quantization": quantization,
     }]}
     plan_path = output / f"native-{MODEL_FAMILY}-execution-plan.json"
     manifest_path = output / f"native-{MODEL_FAMILY}-service-manifest.json"
@@ -973,40 +1026,14 @@ def provider_terminal_failure(provider_logs: list[Path]) -> str | None:
     return None
 
 
-def provider_runners_ready(provider_logs: list[Path], scan_state: dict | None = None) -> bool:
-    """Return true after incrementally observing every selected Provider's runner marker."""
-    marker = b"NDNSF_DI_PROVIDER_STAGE stage=RUNNER_READY status=observed"
-    state = scan_state if scan_state is not None else {}
-    for log in provider_logs:
-        entry = state.setdefault(log, {"offset": 0, "pending": b"", "ready": False})
-        if entry["ready"]:
-            continue
-        if not log.exists():
-            return False
-        with log.open("rb") as stream:
-            stat = os.fstat(stream.fileno())
-            if stat.st_size < entry["offset"]:
-                entry.update(offset=0, pending=b"")
-            stream.seek(entry["offset"])
-            raw = stream.read()
-        data = entry["pending"] + raw
-        entry["offset"] += len(raw)
-        if marker in data:
-            entry["ready"] = True
-        else:
-            entry["pending"] = data[-(len(marker) - 1):]
-    return bool(provider_logs) and all(state.get(log, {}).get("ready", False)
-                                       for log in provider_logs)
-
-
 def purge_minindn_large_data_cache(nodes, run_root: Path) -> None:
-    """Evict model/preparation Data from MiniNDN CS after runner activation.
+    """Evict model/preparation data only after the complete request chain.
 
     The authenticated Repo remains the source of truth.  This only removes
-    transient forwarder copies after every selected Provider has reached
-    ``RUNNER_READY``; execution data and certificates use different prefixes.
-    Keeping the large-data fetch window bounded avoids retaining one model
-    working set in every NFD while the requester begins its first turn.
+    transient forwarder copies after all conversation turns and their Provider
+    finalization have completed; execution data and certificates use different
+    prefixes.  Purging at ``RUNNER_READY`` would erase material still needed
+    by a later turn before the durable protected-cache task is complete.
     """
     prefixes = (MODEL_URI, USER + "/NDNSF/LARGE-DATA")
     records = []
@@ -1027,7 +1054,7 @@ def purge_minindn_large_data_cache(nodes, run_root: Path) -> None:
             records.append({"node": node.name, "prefix": prefix, "returncode": 0})
     (run_root / "ndn-cache-purge.json").write_text(
         json.dumps({"schema": "ndnsf-minindn-large-data-cache-purge-v1",
-                    "trigger": "all-providers-runner-ready",
+                    "trigger": "all-conversation-turns-complete",
                     "records": records}, indent=2, sort_keys=True) + "\n")
     print("NDNSF_MININDN_LARGE_DATA_CACHE_PURGED " +
           json.dumps({"nodes": len(nodes), "prefixes": list(prefixes)}, sort_keys=True),
@@ -1035,8 +1062,7 @@ def purge_minindn_large_data_cache(nodes, run_root: Path) -> None:
 
 
 def wait_for_native_round(process, request_log: Path,
-                          provider_logs: list[Path], timeout: float,
-                          on_all_providers_ready=None) -> str:
+                          provider_logs: list[Path], timeout: float) -> str:
     """Wait for a request while aborting promptly after Provider failure.
 
     A requester can remain alive while the selected Provider has already
@@ -1044,8 +1070,6 @@ def wait_for_native_round(process, request_log: Path,
     MiniNDN process until the large-model timeout and delay finally cleanup.
     """
     deadline = time.monotonic() + timeout
-    runners_ready_handled = False
-    runner_scan_state = {}
     while time.monotonic() < deadline:
         # A success marker precedes process exit. Reap before accepting the
         # round, and read the log after poll so an exited process's final
@@ -1056,10 +1080,6 @@ def wait_for_native_round(process, request_log: Path,
         if failure:
             raise RuntimeError(
                 f"native request aborted after Provider terminal failure: {failure}")
-        if (not runners_ready_handled and on_all_providers_ready is not None and
-                provider_runners_ready(provider_logs, runner_scan_state)):
-            on_all_providers_ready()
-            runners_ready_handled = True
         if returncode is not None:
             return text
         time.sleep(0.2)
@@ -1388,7 +1408,14 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--startup-timeout-s", type=float, default=60.0)
     parser.add_argument("--resource-limits-json", default="{}",
                         help="host resource limits as a JSON object; defaults match LocalExperiment")
+    parser.add_argument(
+        "--direct-start", action="store_true",
+        help="start MiniNDN in this process; the caller owns host resource supervision")
     args = parser.parse_args(argv)
+    # The launcher owns transient Repo staging and MiniNDN processes.  SIGTERM
+    # must follow the same cleanup path as Ctrl-C; the default Python action
+    # would exit before the finally block removes only this run's staging.
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     global SERVICE, GROUP, APP_ROOT, CONTROLLER, AUTHORITY, USER
     global MODEL_FAMILY, MODEL_URI, STATE_PREFIX, TOPIC_PREFIX, ARTIFACT_ROOT
     if args.model_family == "llama":
@@ -1412,6 +1439,11 @@ def main(argv=None, *, _supervised=False) -> int:
         AUTHORITY = APP_ROOT + "/authority"
         USER = APP_ROOT + "/user"
     limits = validate_limits(json.loads(args.resource_limits_json))
+    if not _supervised and args.direct_start:
+        # LocalExperiment already owns the single host resource supervisor.
+        # Enter the MiniNDN path in this process; do not recursively parse the
+        # full launcher command or create another worker/supervisor boundary.
+        _supervised = True
     if not _supervised:
         workspace_lock = None
         if args.run_root is None:
@@ -1462,8 +1494,9 @@ def main(argv=None, *, _supervised=False) -> int:
         raise SystemExit("--rounds must be between 1 and 8")
     if args.negative_parent and args.rounds < 2:
         raise SystemExit("--negative-parent requires --rounds >= 2")
-    if args.max_new_tokens < 1 or args.max_new_tokens > 1024:
-        raise SystemExit("--max-new-tokens must be between 1 and 1024")
+    if args.max_new_tokens < 1 or args.max_new_tokens > MAX_NEW_TOKENS:
+        raise SystemExit(
+            f"--max-new-tokens must be between 1 and {MAX_NEW_TOKENS}")
     if args.require_multi_token and args.max_new_tokens < 2:
         raise SystemExit("--require-multi-token requires at least two output tokens")
     stage_manifest_path = args.stage_manifest.expanduser().resolve()
@@ -1540,10 +1573,6 @@ def main(argv=None, *, _supervised=False) -> int:
                               "REQUESTER_DRIVER_BINARY"))
     for path, expected, label in binary_checks:
         require_file_digest(path, expected, label)
-    if args.build_receipt_sha256:
-        require_file_digest(receipt, args.build_receipt_sha256, "BUILD_RECEIPT")
-    for path, expected, label in binary_checks:
-        require_file_digest(path, expected, label)
     revision = str(model_manifest.get("modelRevision", ""))
     model_name = args.model_name or str(model_manifest.get("model", ""))
     if not model_name:
@@ -1562,6 +1591,14 @@ def main(argv=None, *, _supervised=False) -> int:
     precision = str(model_manifest.get("dtype", "float32")).lower()
     if precision not in {"float16", "float32"}:
         raise SystemExit(f"unsupported {MODEL_FAMILY} precision: {precision}")
+    if MODEL_FAMILY == "llama" and precision != "float32":
+        raise SystemExit("SMOLLM2_CPU_FLOAT32_REQUIRED")
+    quantization = str(model_manifest.get("quantization", "none")).lower()
+    if quantization not in {"none", "int8"}:
+        raise SystemExit(f"unsupported {MODEL_FAMILY} quantization: {quantization}")
+    if quantization == "int8" and precision != "float32":
+        raise SystemExit("INT8_PUBLIC_CONTRACT_MUST_BE_FLOAT32")
+    quantization_subtype = "weight_only_int8" if quantization == "int8" else "none"
     graph_digest = qwen_graph_digest(model_name, revision, precision, ranges)
     adapter = {
         "name": MODEL_FAMILY, "version": "1", "state_digest": digest_text(f"{MODEL_FAMILY}-native-state"),
@@ -1576,10 +1613,13 @@ def main(argv=None, *, _supervised=False) -> int:
         "graph_inspectable": True, "splittable": True, "deterministic_analysis": True,
     }
     model_descriptor = {
-        "model_name": model_name, "content_digest": digest_text(f"{model_name}:{revision}:weights"),
-        "semantics_digest": digest_text(f"{model_name}:{revision}:semantics"),
+        "model_name": model_name,
+        "content_digest": digest_text(f"{model_name}:{revision}:weights:{quantization}"),
+        "semantics_digest": digest_text(f"{model_name}:{revision}:semantics:{quantization}"),
         "graph_digest": graph_digest, "model_format": "onnx", "precision": precision,
         "adapter": adapter, "source_revision": revision,
+        **({"quantization_subtype": quantization_subtype}
+           if quantization_subtype != "none" else {}),
     }
     adapter_digest = digest_bytes(canonical_bytes(adapter))
     manifest_digest = digest_bytes(stage_manifest_path.read_bytes())
@@ -1725,16 +1765,28 @@ def main(argv=None, *, _supervised=False) -> int:
         "requestTimeoutMs": runtime_budgets["timeout_ms"],
         "profile": "qwen-multiturn",
     }, sort_keys=True), flush=True)
+    # Keep semantic names as the mapping keys consumed by the native planner,
+    # but bind each value and generation option to the actual Qwen ONNX name.
     state_inputs = {
-        stage["role"]: {name: [name] for name in stage.get("cacheInputs", [])}
+        stage["role"]: {
+            name: [canonical_qwen_state_name(name)]
+            for name in stage.get("cacheInputs", [])
+        }
         for stage in stages
     }
     state_outputs = {
-        stage["role"]: {name: [name] for name in stage.get("cacheOutputs", [])}
+        stage["role"]: {
+            name: [canonical_qwen_state_name(name)]
+            for name in stage.get("cacheOutputs", [])
+        }
         for stage in stages
     }
-    all_state_inputs = [name for stage in stages for name in stage.get("cacheInputs", [])]
-    all_state_outputs = [name for stage in stages for name in stage.get("cacheOutputs", [])]
+    all_state_inputs = [canonical_qwen_state_name(name)
+                        for stage in stages
+                        for name in stage.get("cacheInputs", [])]
+    all_state_outputs = [canonical_qwen_state_name(name)
+                         for stage in stages
+                         for name in stage.get("cacheOutputs", [])]
     catalog = {
         "schema": "ndnsf-di-native-request-catalog-v1", "model": model_descriptor,
         "source": {"data_name": f"/catalog/{MODEL_FAMILY}/source", "digest": source_digest,
@@ -1742,10 +1794,12 @@ def main(argv=None, *, _supervised=False) -> int:
                     "canonical_graph_digest": canonical_source_digest,
                     **({"initializer_digest": initializer_digest}
                        if initializer_digest else {})},
-        "recipe": {"artifact_profile_digest": digest_text(f"{MODEL_FAMILY}-profile"),
-                   "assembler_descriptor_digest": digest_text(f"{MODEL_FAMILY}-assembler"),
+        "recipe": {"artifact_profile_digest": digest_text(
+                       f"{MODEL_FAMILY}-profile:{quantization_subtype}"),
+                   "assembler_descriptor_digest": digest_text(
+                       f"{MODEL_FAMILY}-assembler:{quantization_subtype}"),
                    "backend_abi": "onnxruntime-cpu-v1", "precision": precision,
-                   "quantization": "none", "layout": "native", "padding": "none",
+                   "quantization": quantization_subtype, "layout": "native", "padding": "none",
                    "protection_epoch": "epoch-1", "max_source_bytes": max_source_bytes,
                    "max_assembled_bytes": max_assembled_bytes, "max_nodes": 10000},
         "publication": {"artifact_root": MODEL_URI + "/artifacts",
@@ -2041,7 +2095,7 @@ def main(argv=None, *, _supervised=False) -> int:
         "stateOutputNames": all_state_outputs,
         "stateSuccessorMap": ",".join(
             f"{input_name}={output_name}"
-            for input_name, output_name in state_successor_pairs(stages, STATE_PREFIX)),
+            for input_name, output_name in canonical_qwen_state_successor_pairs(stages)),
         "positionInputPolicy": f"{MODEL_FAMILY}-causal-position-v1",
         "attentionMaskInputName": "attention_mask",
         "positionIdsInputName": "position_ids",
@@ -2214,9 +2268,7 @@ def main(argv=None, *, _supervised=False) -> int:
         first_proc, first_log = start(args.user_node, "requester", requester_cmd, requester_launch_env)
         first_text = wait_for_native_round(
             first_proc, first_log, provider_logs,
-            max(0.0, round_deadline - time.monotonic()),
-            on_all_providers_ready=lambda: purge_minindn_large_data_cache(
-                ndn.net.hosts, run_root))
+            max(0.0, round_deadline - time.monotonic()))
         if (first_proc.returncode != 0 or
                 first_text.count("NATIVE_REQUEST_SUCCEEDED") != args.rounds or
                 (args.rounds > 1 and
@@ -2256,6 +2308,10 @@ def main(argv=None, *, _supervised=False) -> int:
                                       args.cache_compatibility_mode,
                                       max(30.0, args.startup_timeout_s), args.require_multi_token,
                                       args.rounds)
+        # Keep authenticated material available for every continuation turn.
+        # The large-data CS is purged only after the final Provider barrier and
+        # the native oracle, never when the first runner becomes ready.
+        purge_minindn_large_data_cache(ndn.net.hosts, run_root)
         record = {"schema": f"ndnsf-di-{MODEL_FAMILY}-native-minindn-run-v1", "model": model_name,
                   "revision": revision, "stageManifest": str(stage_manifest_path),
                   "stageManifestDigest": manifest_digest, "tokenizerDigest": tokenizer_digest,

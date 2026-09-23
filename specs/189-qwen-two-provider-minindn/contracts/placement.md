@@ -18,7 +18,12 @@ Selection 验证前可读 summary，不能重型 fetch/创建 runner。
 - prepare/Repo commit/READY 先于 request；ACK 先于规划与 Selection。
 - Selection/grant 验证先于本请求重型 fetch/runner 使用。
 - model material fetch/verify 先于 runner ready；cache hit 可替代重新构造，
-  不能跳过本次授权和内容验证。
+  不能跳过本次授权和内容验证。Plaintext immutable assembled entries may be
+  retained under one stable system cache root rather than a run directory; a hit
+  requires the current role/model/recipe/backend identity and a streaming digest
+  check of the actual file. Canonical graph/initializer source reuse uses a separate
+  candidate-derived source-cache identity and the same hash/size fail-closed rule.
+  Protected grant-bound ciphertext remains request scoped.
 - upstream tensor fetch 与 model assembly 可交错。首段使用请求输入，没有 upstream；
   后段执行必须等真实 NDN input 验证完成。
 - authorization/runner/input 均 ready 才 execute；前段输出先于后段消费；

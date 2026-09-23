@@ -24810,6 +24810,13 @@ ndn::Name BeginCollaborationWithProviders(
 
 ### API-3ab0d3d87607 · ndn_service_framework::ServiceUser::CommitCollaborationPlan
 
+r257当前行为（C++定向回归和缓存兼容MiniNDN已验证，非完整Repo资格）：在Face I/O线程对完整选中集合先检查Selection
+权限和opaque assignment非空/4MiB上限；超过4096 bytes的原始payload在首次1MiB有界
+envelope编码之前复用加密Data外置。已有reference不重复发布。准备失败回收新staging；
+进入Selection发送后保留bounded serving生命周期。提交副作用阶段异常取消该invocation，
+同request不可重提；这不证明远端已经停止。公开签名不变。详见
+[r257](../../specs/189-qwen-two-provider-minindn/evidence/b189-r257-core-assignment-externalization.md)。
+
 public / declared-interface；[源码](../../ndn-service-framework/ServiceUser.hpp#L941)
 
 ```cpp

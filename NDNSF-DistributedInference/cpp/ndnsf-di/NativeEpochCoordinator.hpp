@@ -64,9 +64,14 @@ struct NativeEpochCoordinatorConfig
   std::string role;
   std::map<std::string, TensorBundle> initialInputs;
   // DATA_DRIVEN_V2 prepares the runner only after authenticated Selection.
-  // Carry that callback through each epoch instead of looking for a
-  // metadata-only startup runner in NativeProviderRuntime.
+  // Prepare lazily on the first worker execution, then retain that runner
+  // for this invocation's sequential token/finalize epochs. A new invocation
+  // prepares independently; no metadata-only startup runner is substituted.
   ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
+  // V3 Selection supplies exact endpoint-authorized role edges. Generation
+  // epochs must reuse those edges instead of reconstructing legacy edges from
+  // the plan, while retaining the plan-owned TOKEN_FEEDBACK control edge.
+  std::function<RoleSpec(std::size_t)> roleSpecFactory;
   std::string finalResponseScope = "final-response";
   std::size_t maxEpochs = 0;
   std::string tokenInputName = "input_ids";

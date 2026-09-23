@@ -3,7 +3,7 @@
 - [x] T001 Load project context, active UAV specs, and constitution.
 - [x] T002 Use CodeGraph to trace roles, services, control, mission, stream,
   FEC, repo, and GUI/headless paths.
-- [x] T003 Use ARS presentation structure guidance and DeepSeek as an advisory
+- [x] T003 Use ARS presentation structure guidance and perform an adversarial
   completeness review.
 - [x] T004 Create the standalone Beamer theme and footer.
 - [x] T005 Add motivation, boundary, roles, containers, service catalog, and

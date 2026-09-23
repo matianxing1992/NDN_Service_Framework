@@ -37,6 +37,8 @@ RUN_SCHEMA = "ndnsf-di-qwen06b-local-run-v2"
 # The real Qwen3-0.6B canonical external initializer is about 1.5 GiB.  Keep
 # a finite admission bound while allowing that artifact through the wrapper.
 MODEL_SOURCE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+MAX_NEW_TOKENS = 1025
+DEFAULT_ARTIFACT_CACHE_ROOT = Path("/var/tmp/ndnsf-di-native-artifacts")
 RUN_ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,47}$")
 NODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PHASES = ("machine", "candidate", "model", "bundle", "minindn", "workload", "cleanup")
@@ -60,6 +62,20 @@ def canonical_digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def normalized_model_identity(manifest: dict[str, Any]) -> dict[str, str]:
+    """Return the model fields that control native compatibility and caching."""
+    quantization = str(manifest.get("quantization", "none")).lower()
+    return {
+        "family": str(manifest.get("modelFamily", "qwen")),
+        "name": str(manifest.get("model", "")),
+        "dtype": str(manifest.get("dtype", "")),
+        "modelFormat": str(manifest.get("modelFormat", "onnx")),
+        "quantization": quantization,
+        "quantizationSubtype": (
+            "weight_only_int8" if quantization == "int8" else quantization),
+    }
+
+
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2,
@@ -71,6 +87,17 @@ def resolve_path(value: str, field: str) -> Path:
         raise ValueError(f"{field} must be a non-empty path")
     path = Path(value).expanduser()
     return path.resolve() if path.is_absolute() else (ROOT / path).resolve()
+
+
+def resolve_artifact_cache_root(value: Path, run_root: Path) -> Path:
+    """Resolve a persistent cache root and keep it outside one run's evidence."""
+    cache_root = value.expanduser().resolve()
+    resolved_run_root = run_root.expanduser().resolve()
+    if cache_root == resolved_run_root or resolved_run_root in cache_root.parents:
+        raise ValueError("CACHE_ROOT_MUST_BE_OUTSIDE_RUN_ROOT")
+    if cache_root.exists() and not cache_root.is_dir():
+        raise ValueError("CACHE_ROOT_NOT_DIRECTORY")
+    return cache_root
 
 
 def load_profile(path: Path) -> tuple[dict[str, Any], str]:
@@ -88,7 +115,7 @@ def load_profile(path: Path) -> tuple[dict[str, Any], str]:
     unknown = sorted(set(payload) - {
         "schema", "profileId", "topologyFile", "stageNodes", "controllerNode",
         "userNode", "buildDir", "controllerBinary", "authorityBinary",
-        "requesterBinary", "providerBinary", "assemblyWorkerBinary", "outputRoot", "resourceLimits",
+        "requesterBinary", "providerBinary", "assemblyWorkerBinary", "oracleBinary", "outputRoot", "resourceLimits",
     })
     if unknown:
         raise ValueError("PROFILE_UNKNOWN_FIELDS:" + ",".join(unknown))
@@ -106,7 +133,7 @@ def load_profile(path: Path) -> tuple[dict[str, Any], str]:
     profile = dict(payload)
     profile["resourceLimits"] = validate_limits(payload.get("resourceLimits"))
     for field in ("topologyFile", "buildDir", "controllerBinary", "authorityBinary",
-                  "requesterBinary", "providerBinary", "assemblyWorkerBinary", "outputRoot"):
+                  "requesterBinary", "providerBinary", "assemblyWorkerBinary", "oracleBinary", "outputRoot"):
         if field in profile:
             profile[field] = str(resolve_path(profile[field], field))
     if "controllerBinary" not in profile:
@@ -119,6 +146,8 @@ def load_profile(path: Path) -> tuple[dict[str, Any], str]:
         profile["providerBinary"] = str(Path(profile["buildDir"]) / "examples/di-native-provider")
     if "assemblyWorkerBinary" not in profile:
         profile["assemblyWorkerBinary"] = str(Path(profile["buildDir"]) / "DI_NativeOnnxAssemblyWorker")
+    if "oracleBinary" not in profile:
+        profile["oracleBinary"] = str(Path(profile["buildDir"]) / "examples/spec189-two-provider-oracle")
     if "outputRoot" not in profile:
         profile["outputRoot"] = str(ROOT / "results/spec184-qwen06b-local")
     return profile, sha256_file(path)
@@ -249,7 +278,8 @@ def first_failure_marker(log_root: Path) -> str | None:
 
 
 def canonical_source_info(source_path: Path | None,
-                          initializer_path: Path | None) -> dict[str, Any]:
+                          initializer_path: Path | None,
+                          cache_root: Path | None = None) -> dict[str, Any]:
     """Validate the canonical model objects before any MiniNDN process starts.
 
     The staged ONNX files are role artifacts.  They are not the canonical source
@@ -271,19 +301,51 @@ def canonical_source_info(source_path: Path | None,
         result.update(status="FAIL", reason="MODEL_CANONICAL_SOURCE_SIZE_INVALID",
                       maxBytes=MODEL_SOURCE_MAX_BYTES)
         return result
-    try:
-        import onnx
-        model = onnx.load(str(source_path), load_external_data=False)
-    except ImportError:
-        result.update(status="FAIL", reason="MODEL_ONNX_VALIDATOR_UNAVAILABLE")
-        return result
-    except Exception as exc:
-        result.update(status="FAIL", reason="MODEL_CANONICAL_SOURCE_NOT_ONNX",
-                      error=type(exc).__name__)
-        return result
-    result.update(status="PASS", graphName=str(model.graph.name),
-                  nodeCount=len(model.graph.node), inputCount=len(model.graph.input),
-                  outputCount=len(model.graph.output))
+    summary_path = None
+    if cache_root is not None:
+        cache_root = cache_root.expanduser().resolve()
+        summary_path = (cache_root / "compatibility" / "canonical-source" /
+                        result["sha256"][7:] / "summary.json")
+        try:
+            cached = json.loads(summary_path.read_text(encoding="utf-8"))
+            if (isinstance(cached, dict) and
+                    cached.get("schema") == "ndnsf-di-canonical-source-summary-v1" and
+                    cached.get("sourceSha256") == result["sha256"] and
+                    cached.get("status") == "PASS"):
+                result.update({key: cached[key] for key in
+                               ("status", "graphName", "nodeCount", "inputCount",
+                                "outputCount")})
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError):
+            pass
+    if result.get("status") != "PASS":
+        try:
+            import onnx
+            model = onnx.load(str(source_path), load_external_data=False)
+        except ImportError:
+            result.update(status="FAIL", reason="MODEL_ONNX_VALIDATOR_UNAVAILABLE")
+            return result
+        except Exception as exc:
+            result.update(status="FAIL", reason="MODEL_CANONICAL_SOURCE_NOT_ONNX",
+                          error=type(exc).__name__)
+            return result
+        result.update(status="PASS", graphName=str(model.graph.name),
+                      nodeCount=len(model.graph.node), inputCount=len(model.graph.input),
+                      outputCount=len(model.graph.output))
+        if summary_path is not None:
+            try:
+                write_json(summary_path, {
+                    "schema": "ndnsf-di-canonical-source-summary-v1",
+                    "sourceSha256": result["sha256"],
+                    "status": result["status"],
+                    "graphName": result["graphName"],
+                    "nodeCount": result["nodeCount"],
+                    "inputCount": result["inputCount"],
+                    "outputCount": result["outputCount"],
+                })
+            except OSError:
+                # The compatibility cache is an optimization.  A cache write
+                # failure must not turn a valid candidate into a false reject.
+                pass
     if initializer_path is not None:
         initializer_path = initializer_path.expanduser().resolve()
         if not initializer_path.is_file():
@@ -303,7 +365,8 @@ def canonical_source_info(source_path: Path | None,
 
 def load_model_inputs(stage_manifest: Path, stage_root: Path | None,
                       canonical_source: Path | None = None,
-                      canonical_initializer: Path | None = None) -> dict[str, Any]:
+                      canonical_initializer: Path | None = None,
+                      cache_root: Path | None = None) -> dict[str, Any]:
     spec = importlib.util.spec_from_file_location("qwen_runner", RUNNER)
     if spec is None or spec.loader is None:
         raise ValueError("RUNNER_IMPORT_FAILED")
@@ -330,7 +393,8 @@ def load_model_inputs(stage_manifest: Path, stage_root: Path | None,
             "manifestSha256": sha256_file(stage_manifest),
             "tokenizerSha256": sha256_file(tokenizer),
             "canonicalSource": canonical_source_info(canonical_source,
-                                                       canonical_initializer)}
+                                                       canonical_initializer,
+                                                       cache_root)}
 
 
 def node_mapping_info(path: Path | None,
@@ -407,8 +471,7 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
                     ("requester", profile["requesterBinary"]),
                     ("provider", profile["providerBinary"]),
                     ("assemblyWorker", profile["assemblyWorkerBinary"]),
-                    ("oracle", str(Path(profile["buildDir"]) /
-                                   "examples/spec189-two-provider-oracle")))
+                    ("oracle", profile["oracleBinary"]))
     for name, raw in binary_specs:
         machine["binaries"][name] = binary_check(Path(raw))
     if any(item["status"] != "PASS" for item in machine["binaries"].values()):
@@ -430,7 +493,8 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
                              if canonical_initializer_arg else None)
     model = load_model_inputs(args.stage_manifest.resolve(),
                               args.stage_root.resolve() if args.stage_root else None,
-                              canonical_source, canonical_initializer)
+                              canonical_source, canonical_initializer,
+                              args.cache_dir)
     node_mapping = node_mapping_info(
         node_mapping_arg.resolve() if node_mapping_arg else None,
         model["stages"],
@@ -438,6 +502,7 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
     candidate_payload = {
         "schema": "ndnsf-di-qwen06b-app-manifest-v1",
         "application": "Qwen3-0.6B-native-MiniNDN",
+        "modelIdentity": normalized_model_identity(model["manifest"]),
         "runner": {"path": str(RUNNER), "sha256": sha256_file(RUNNER)},
         "resourceGuard": {"sha256": sha256_file(ROOT / "Experiments/native_resource_guard.py"),
                           "limits": validate_limits(profile.get("resourceLimits"))},
@@ -476,16 +541,36 @@ def preflight(args: argparse.Namespace, profile: dict[str, Any], profile_sha: st
 
 def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path,
                 candidate: dict[str, Any] | None = None) -> list[str]:
+    model_identity = (candidate or {}).get("modelIdentity", {})
+    model_family = str(model_identity.get("family", "qwen"))
+    model_name = str(model_identity.get("name", ""))
     command = [sys.executable, str(RUNNER),
                "--stage-manifest", str(args.stage_manifest.resolve()),
                "--stage-root", str(args.stage_root.resolve()),
+               "--model-family", model_family,
+               "--model-name", model_name,
                "--topology", profile["topologyFile"], "--stage-nodes", ",".join(profile["stageNodes"]),
                "--controller-node", profile["controllerNode"], "--user-node", profile["userNode"],
                "--build", profile["buildDir"], "--controller-binary", profile["controllerBinary"],
                "--rounds", str(args.rounds), "--max-new-tokens", str(args.max_new_tokens),
                "--run-root", str(run_dir / "workload"), "--nlsr-wait-s", str(args.nlsr_wait_s),
                "--startup-timeout-s", str(args.startup_timeout_s),
-               "--resource-limits-json", json.dumps(profile["resourceLimits"], sort_keys=True)]
+               "--resource-limits-json", json.dumps(profile["resourceLimits"], sort_keys=True),
+               "--direct-start"]
+    if getattr(args, "require_multi_token", False):
+        command.append("--require-multi-token")
+    cache_dir = getattr(args, "cache_dir", None)
+    if cache_dir is not None:
+        command.extend(["--artifact-cache-root", str(
+            resolve_artifact_cache_root(cache_dir, run_dir / "workload"))])
+    for field, option in (
+        ("authorityBinary", "--authority-binary"),
+        ("requesterBinary", "--requester-binary"),
+        ("providerBinary", "--provider-binary"),
+        ("assemblyWorkerBinary", "--assembly-worker-binary"),
+        ("oracleBinary", "--oracle-binary"),
+    ):
+        command.extend([option, profile[field]])
     if candidate:
         command.extend(["--stage-manifest-sha256", candidate["modelManifest"]["sha256"],
                         "--tokenizer-sha256", candidate["tokenizer"]["sha256"],
@@ -502,9 +587,6 @@ def command_for(args: argparse.Namespace, profile: dict[str, Any], run_dir: Path
             digest = candidate.get("binaries", {}).get(name, {}).get("sha256")
             if digest:
                 command.extend([option, digest])
-        oracle_path = candidate.get("binaries", {}).get("oracle", {}).get("path")
-        if oracle_path:
-            command.extend(["--oracle-binary", oracle_path])
     if getattr(args, "canonical_source", None):
         command.extend(["--canonical-source", str(args.canonical_source.resolve())])
         if candidate and candidate.get("canonicalSource", {}).get("sha256"):
@@ -572,9 +654,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--node-mapping", type=Path, required=True,
                         help="authenticated semantic-to-canonical ONNX node mapping JSON")
     parser.add_argument("--output-root", type=Path, default=None)
+    parser.add_argument("--cache-dir", "--artifact-cache-root", dest="cache_dir",
+                        type=Path, default=DEFAULT_ARTIFACT_CACHE_ROOT,
+                        help="persistent cross-run model/provider cache root; outside each run")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--max-new-tokens", type=int, default=1)
+    parser.add_argument("--require-multi-token", action="store_true",
+                        help="require each native round to produce multiple tokens or EOS")
     parser.add_argument("--input-token-ids", default="")
     parser.add_argument("--delta-token-ids", default="0")
     parser.add_argument("--negative-parent", action="store_true")
@@ -594,7 +681,8 @@ def main() -> int:
         args.run_id = datetime.now(timezone.utc).strftime("run-%Y%m%d-%H%M%S")
     if not RUN_ID_RE.fullmatch(args.run_id):
         raise SystemExit("RUN_ID_INVALID")
-    if args.rounds < 1 or args.rounds > 8 or args.max_new_tokens < 1 or args.max_new_tokens > 64:
+    if (args.rounds < 1 or args.rounds > 8 or args.max_new_tokens < 1
+            or args.max_new_tokens > MAX_NEW_TOKENS):
         raise SystemExit("WORKLOAD_LIMIT_INVALID")
     try:
         check = preflight(args, profile, profile_sha)
@@ -609,6 +697,7 @@ def main() -> int:
         return 1
     run_dir = args.output_root / args.run_id
     if args.action in ("prepare", "local"):
+        args.cache_dir = resolve_artifact_cache_root(args.cache_dir, run_dir / "workload")
         run_dir.mkdir(parents=True, exist_ok=False)
         run_dir.chmod(0o700)
         write_json(run_dir / "preflight.json", check)
@@ -617,6 +706,7 @@ def main() -> int:
                   "candidateId": check["candidate"]["candidateId"],
                   "candidateDigest": check["candidate"]["candidateDigest"],
                   "profileId": profile["profileId"], "profileSha256": profile_sha,
+                  "cacheRoot": str(args.cache_dir),
                   "command": command_for(args, profile, run_dir, check["candidate"]),
                   "status": "NOT_EVALUATED"}
         bundle = {"schema": "ndnsf-di-qwen06b-bundle-v1", "runId": args.run_id,

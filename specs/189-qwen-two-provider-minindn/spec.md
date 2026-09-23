@@ -10,6 +10,19 @@
 
 ## Purpose and scope
 
+**Resident runner decision — 2026-09-22**: 已加载ONNX session应由Provider以有界
+内存缓存短期保留，允许后续匹配请求复用，不因一次request结束立即销毁。闲置超时、
+容量/替换需求或显式eviction可释放无活跃lease的session；关闭Provider先停止准入、
+drain/cancel，再释放内存owner。磁盘模型缓存与会话KV独立管理，缓存不替代本次
+授权、Selection和兼容性校验。当前为接受的目标，跨request驻留尚未实现；
+[r260](evidence/b189-r260-runner-reuse.md)先修逐token重载，再验证跨request生命周期。
+
+**Conversation locality decision — 2026-09-22**: 多轮对话通过已有placement策略子类
+优先沿用上一轮合法角色—Provider分配，避免不必要的KV迁移；本轮授权、ACK、资源
+与精确KV恢复校验不省略。模型缓存命中不能代替KV有效性。显式保留期限须贯通
+配置、Provider实际store和receipt，续轮不能复活过期状态。当前实现/验证进度见
+[r259](evidence/b189-r259-affinity-retention.md)，不得将计划写为多轮验收PASS。
+
 Spec189 只处理一个可判定目标：在当前 6-core/12-GB 主机上，使用真实 Qwen3-0.6B 和两个 native CPU Provider，完成可重复的完整成功请求。失败时在第一个明确边界停止并保留证据，但失败分类不满足完成条件。它不重做 Spec188 已验证的 bounded prepare/request/YOLO 工作，也不自动构建 SIF、上传 TigerCluster 或运行 QWEN 集群资格。
 
 目标调用链固定为：
@@ -28,6 +41,87 @@ Qwen snapshot
 ```
 
 Stage export is preparation input only. A generated ONNX file, an ORT session, a preloaded provider runner, a static selector, or a synthetic ACK/Selection is never a product PASS.
+
+## Explicit acceptance target
+
+连续生成要求（r256）：下一次两节点诊断使用 `maxNewTokens=1024` 和有效聊天输入，
+生成至配置的 EOS/EOT 或 token 预算耗尽，不设置字符上限。必须核对多token输出、
+终止原因、最后token的KV finalization及checkpoint；单token成功不替代该要求。
+缓存诊断仍不等于以下完整Repo资格。
+
+本 Spec 的唯一主线固定为：**MiniNDN + Qwen/Qwen3-0.6B + 2 个执行节点 + NDNSF-DI
+原生 C++ 推理**。这里的“2 个节点”专指两个实际执行模型分片的 native CPU
+Provider（当前 profile 为 `ucla` 和 `arizona`）；`memphis`、`neu` 以及 Repo/Core
+属于支撑该请求的基础设施角色，不计入两个执行节点。
+
+只有同一个新鲜 candidate 在 MiniNDN 中走完真实
+`prepare → Repo → ACK → Selection → placement-bound fetch → Provider-0/Provider-1
+assembly/execute → hidden-state handoff → terminal output → drain/cleanup`，并由
+C++ oracle 验证输出、两 Provider 的选中材料和资源/清理结果，才可写入
+`QWEN_TWO_PROVIDER_PASS`。stage export、单 Provider ORT、Python-only runner、缓存
+命中、静态 selector、伪 ACK/Selection 或局部事件均不是该目标的完成替代物。
+
+## Current planning checkpoint — 2026-09-21
+
+本轮已将旧 Qwen stage exporter 的边界语义移入 Provider 侧原生 materializer：已认证
+的 role input/output contract 现在用于重建内部 handoff（例如
+`hidden_states_out`）的 ONNX graph boundary，selected node/dependency 仍保持有界。
+新增 stage-boundary C++ selector 与既有 15-case canonical publisher regression 均通过，
+受影响 native target 已安装并核对 `/usr/local` 身份。安装日志同时记录了
+`py_repoclient` host-binding 环境缺口；这不改变 native install 结果，但在 runtime
+preflight 前必须显式处理或确认其不属于 launcher 的加载闭包。
+
+该 checkpoint 只关闭 stage materialization 的 focused compile/test/install 单元；尚未
+重跑新的 MiniNDN 请求，仍没有 terminal output、独立 oracle、两次 repeat 或
+`QWEN_TWO_PROVIDER_PASS`。下一门是安装闭包与实际加载路径的静态确认，然后以新 raw
+run ID 运行一次完整两 Provider Qwen candidate。
+
+## Current qualification boundary — 2026-09-20
+
+Spec188 的 YOLO 通过结果只证明其已关闭的轻量本地路径；它不能替代本 Spec 的
+Qwen 两 Provider 资格。两者共享 prepare、Repo、request、ACK、Selection、授权和
+Provider 接线，但 Qwen 还会触发分阶段材料读取、Provider-0 到 Provider-1 的
+hidden-state handoff、ORT runner 建立和较长的 assembly 等待窗口。
+
+当前真实 Qwen 证据已越过共同入口和资源边界：r155 首次证明 system-wide
+content-addressed source cache 写入并命中准备路径；r156 通过释放 source protobuf
+越过先前的 `MemAvailable` assembly 边界，进入 Provider-0 `RUNNER_READY`。r159–r161
+继续在真实 MiniNDN 观察到两个 Provider 的执行入口、Provider-0 assembly/runner 和
+Provider-1 dependency fetch，但 Provider-0 在 generation lineage 首个使用点失败，
+Requester 随后返回 `NATIVE_STREAM_FAILED`。这些运行没有 terminal response、模型输出、
+oracle、repeat 或资格 PASS。
+
+r161 的源码边界已经确认：初始 lineage 含有合法的 authenticated core generation
+state，但在本地 ONNX causal-position materialization 时尚未绑定 edge-local
+`producerRole`/`consumerRole`；此前误用了要求完整 edge routing 的 `validate()`。当前
+已加入 `validateCore()`，并完成受影响 DI closure 的编译与全局安装；wire
+encode/decode、edge publication 仍保持 full `validate()`。这不是 Qwen ONNX
+input/KV/output contract mismatch，因此不新增 adapter。
+
+随后 r162 使用该已安装修正进入真实 MiniNDN，并在两个 Provider 已完成授权入口后
+按计划受控停止，避免继续执行普通 Repo material fetch/assembly；这不是新的协议失败。
+当前已实现一个显式、默认关闭的 temporary cache-compatibility mode：它只在已认证
+Selection/grant/placement 通过后，从已校验的 system-wide plain source cache 读取
+graph/initializer，跳过该阶段的 Repo material fetch；它不绕过 prepare、manifest、
+ACK、Selection、授权或 placement。material-backed source 仍不支持；若 Selection 已
+建立既有 `ProtectedRuntime`，protected role 可在该显式诊断模式下使用 verified local
+source，并按 `assembled/<role>/<sha256>/model.onnx` 的实际 SHA-256 复用已组装模型，
+但普通 protected Repo qualification 仍必须走加密 Repo/ciphertext 路径。旧的 Provider-only
+r163 版本已通过 source-cache identity/hash 校验，但在 ACK/Selection 之前仍由 host
+guard 的 `RESOURCE_BOUNDARY:diskFree` 停止，因为 requester prepare 仍产生约 1.4 GiB
+的 protected Repo payload。现在 requester-side metadata-only publication seam 已实现，
+并已通过静态门、受影响 C++ 编译和全局安装；它在兼容模式下不创建 run-scoped encrypted
+Repo，只交付经过 source-cache namespace 绑定的 metadata receipt，普通 authenticated
+prepare/manifest/ACK/Selection/授权/placement 仍保留。r164 已用全新 run ID 尝试验证
+materialization，但在 requester/Provider 启动前被 host guard 的
+`RESOURCE_BOUNDARY:diskFree` 停止：`diskFreeBytes=4232839168` 低于 4 GiB 门限；
+没有创建新的 run-scoped encrypted Repo，也没有进入 ACK、Selection、assembly、NDN
+handoff、terminal output、drain、warm cache 或 repeat。获得足够磁盘空间后才可用新的
+run ID 继续。T003/T005/T006/T007/T009 继续保持 `PARTIAL`；不得用 source-cache hit、
+cache-compatibility diagnostic、focused selector、YOLO 结果或单次局部事件把它提升为
+`QWEN_TWO_PROVIDER_PASS`。
+本次边界与 closure 记录见 [boundary revision evidence](evidence/b189-spec-revision-20260920.md)
+及 [r161 evidence](evidence/b189-r161-lineage-validation-diagnostic-20260920.md)。
 
 ## User Scenarios & Testing
 
@@ -145,6 +239,8 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 - **FR-027**: Native preparation MUST account for every model-sized representation it creates or retains, including source, initializer, material payloads, encryption buffers and ORT preparation buffers. The C++ evidence MUST expose the owner and peak contribution of each category; post-publication source release does not prove that the preparation peak is within the resource envelope.
 - **FR-028**: Every Repo publication path used by this candidate MUST apply one logical quota over committed bytes, staging bytes and outstanding range reservations. Replacement, cancellation and failed retries MUST release only the reservation/object identity owned by that operation; a successful disk-space check alone is insufficient.
 - **FR-029**: Conversation/PreparedModel handle installation and exceptional cleanup MUST be generation-guarded. A completed older turn MUST NOT overwrite or close a newer active turn, and the C++ regression MUST control the terminal/next-turn interleaving.
+- **FR-030**: A streamed two-provider request MUST accept only fresh authenticated progress from every committed selected Provider/role, bound by `{providerName, providerSelectionDigest, operationId}` and monotonic `(epoch, sequence)`; terminal-Provider-only progress MUST NOT qualify the request while another selected Provider is assembling or publishing an upstream tensor.
+- **FR-031**: The temporary cache-compatibility diagnostic mode MUST be explicit and default-off; after authenticated Selection/grant/placement it MAY read only a verified system-wide plain source cache and a hash-verified content-addressed assembled model cache, MUST fail closed on identity/hash/size mismatch or missing `ProtectedRuntime` for a protected role, MUST NOT be used for normal protected Repo qualification, and MUST NOT satisfy the normal Repo or two-provider qualification requirements.
 
 ## Success Criteria
 
@@ -154,6 +250,7 @@ Stage export is preparation input only. A generated ONNX file, an ORT session, a
 - **SC-004**: Successful completion leaves no active runner, lease, callback or temporary layer window beyond the declared baseline.
 - **SC-005**: Resource evidence includes at least 1-second samples around prepare, ACK, Selection, provider fetch, execution, terminal and drain; a safety stop is deterministic.
 - **SC-006**: Two independent runs of the same immutable candidate, each with prepare-once/two-request reuse in one live requester, MUST both pass output, resource and cleanup checks. Failed repeats remain incomplete.
+- **SC-007**: During a streamed two-provider request, authenticated progress from each committed selected Provider/role MUST keep the bounded stream window alive; a terminal-only progress path is an execution-liveness failure and cannot satisfy SC-003.
 
 ## Non-goals and assumptions
 
@@ -174,6 +271,12 @@ digests. The production review must also compare authenticated V3 dependency
 endpoint digests with the edges consumed by the generation coordinator.
 
 Provider events MUST satisfy the [causal contract](contracts/placement.md), not a total log-line order. Model assembly and upstream tensor fetch can interleave; the first stage has no upstream fetch. Execution requires verified authorization, runner and input; the terminal role returns the final result and all participants drain. A requester stream gap is a symptom, not a root-cause classification. Missing markers remain UNOBSERVED. ACK/Selection/grant verification alone never proves execution.
+
+Generation lineage has two validation scopes: `validateCore()` is permitted only
+inside the local adapter path before edge-local producer/consumer binding, while
+full `validate()` remains mandatory for encoded/decoded and published dependency
+edges. This split does not alter the wire schema or permit an edge with missing
+routing identity to be published.
 
 ## Audit reconciliation — 2026-09-19
 
@@ -207,6 +310,18 @@ qualification result. The rebuilt C++ selectors pass locally; one fresh real can
 run must observe the marker before any additional component work is admitted. See
 [admission/r58 evidence](evidence/b189-admission-sequence-r58-20260919.md).
 
+For a streamed collaboration, the terminal user-side consumer may wait while a
+nonterminal Provider fetches selected material or publishes an upstream tensor.
+Its authenticated progress allowlist therefore binds each committed participant
+as an exact tuple `{providerName, providerSelectionDigest, operationId}`. The
+selection digest is Provider-specific because the Selection key envelope is
+recipient-bound; a status must match both the outer Provider/digest and its
+member Provider/operation identity. Freshness `(epoch, sequence)` is tracked per
+tuple, so worker progress followed by terminal progress can each re-arm the
+bounded stream gap. The legacy single-Provider path retains its one exact
+operation binding. This contract is still subject to the rebuilt C++ selector and
+fresh host-native candidate run; it does not advance qualification by itself.
+
 Every bounded retry follows the shared
 [experiment static re-review loop](../../skills/speckit-code-design/references/experiment-static-review-loop.md):
 freeze the candidate and raw attempt, classify the first missing production
@@ -226,3 +341,7 @@ gate.
 - 2026-09-18 19:16 -0500: Spec189 收敛审计将资源 guard 从独立 T008 改为跨批次门，T008/T010 合并到 T009；同 handle 重用只在最终真实运行收口；Qwen profile/material/oracle 明确为候选局部契约，避免临时实验设计替代全局 API。当前仍无 `QWEN_TWO_PROVIDER_PASS`。
 - 2026-09-19: DI/Repo design audit reconciliation retained the historical F01–F09 findings, marked the later material-only consumer as a local repair rather than qualification, and added explicit preparation-peak, quota-accounting and generation-guard requirements. F03/F04/F06/F07 remain conditional or legacy follow-up items and are not silently treated as fixed.
 - 2026-09-19: r56 reached ACK/Selection/grant verification but failed the post-grant stream-liveness boundary before assembly. The design now freezes B189-3 at the authenticated pre-root `ASSEMBLY_STARTED` gate; no blind timeout increase or further component expansion precedes one rebuilt-candidate retry.
+- 2026-09-19: r70 crossed authenticated assembly admission and selected-material fetch, then exposed that a terminal stream consumer could not use progress from a nonterminal Provider. The repair contract now requires Provider-specific Selection digests and per-provider/operation freshness; r70 remains `PARTIAL` until static review, C++ validation and a new candidate run complete.
+- 2026-09-20 04:34 -0500: 对 r47/r70 与 Spec188 YOLO 结果重新分层：共同 ACK/Selection 链已在 Qwen 运行中观察到，宿主机 `swapIo` 是独立资源门，当前主要生产阻断是跨 Provider progress 聚合。新增 FR-030/SC-007，明确 YOLO 或 terminal-only progress 不能替代两 Provider LLM 资格；progress 修复尚待新安装候选真实重跑。
+- 2026-09-20: r155 建立并验证 system-wide canonical source cache；r156 的 source protobuf release 使真实运行越过 assembly memory boundary。r159-r161 将失败边界收敛到 local ONNX causal-position materialization 对 edge-less initial lineage 误用 full validation；新增 `validateCore()` 设计与实现，保持 wire/edge full validation，affected DI closure 已编译并安装，r162 runtime 仍待验证。
+- 2026-09-21: 按最新计划将唯一验收目标明确为 `MiniNDN + Qwen/Qwen3-0.6B + 2 execution Provider nodes + NDNSF-DI native C++ inference`；旧 stage exporter 的显式 role boundary 语义已由 C++ materializer 重建，focused selector、15-case publisher regression 和 native install 通过。`py_repoclient` host-binding 缺口与完整 MiniNDN runtime 仍未关闭，产品状态保持 `IN_PROGRESS`。

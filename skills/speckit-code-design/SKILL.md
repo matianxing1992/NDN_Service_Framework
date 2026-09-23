@@ -85,7 +85,9 @@ tasks.md 顶部必须用逐执行单元的 `Execution Progress` 表完整登记�
 设计者冻结决策，按行为提供定向阅读/精确写入范围/检查命令，执行者一次完成一张就绪卡。
 已有上层任务与正式验收保持；执行卡不自动表示设计已就绪。
 
-唯一执行规则见 [pre-test-static-review.md](references/pre-test-static-review.md)。
+唯一执行规则见 [pre-test-static-review.md](references/pre-test-static-review.md)；真实运行、
+MiniNDN、模型和资格实验的反复重试还必须遵循
+[experiment-static-review-loop.md](references/experiment-static-review-loop.md)。
 每个小任务编码后应用只读 review-agent profile 静态门。按该参考的 Dependency-Scoped Dispatch：依赖该任务的工作等待通过；无依赖、文件边界清晰且自身前置已满足的任务可在异步审查期间继续。单主会话使用编码主代理和只读审查子代理，审查固定快照；整批成员静态通过及组合审查通过后统一构建和相关测试。批次测试未完成保持 PARTIAL；集成与真实实验沿用最终验证阶段。
 Static review PASS != Behavior PASS。
 
@@ -166,7 +168,9 @@ CLI `--help`、usage/schema rejection、target/link smoke 或 harness 启动只�
 不能写成 native request/result 或 qualification PASS；没有真实生产请求与独立结果时保持
 对应 production/qualification lane 的 `PARTIAL` 或 `gap`。
 
-需求成形（`speckit-specify`、`speckit-clarify`、`speckit-checklist`）、计划与任务生成
+真实实验失败后，先按 [experiment-static-review-loop.md](references/experiment-static-review-loop.md)
+冻结原始结果、分类首个边界、登记 Changed gate 并完成受影响范围复审；只改 run id、超时、
+日志级别或重复运行不能关闭漏检。需求成形（`speckit-specify`、`speckit-clarify`、`speckit-checklist`）、计划与任务生成
 （`speckit-plan`、`speckit-tasks`）、代码现实分析（`speckit-analyze`、`speckit-audit`、
 `speckit-converge`）以及执行（`speckit-implement`）都必须使用这份 reference。
 `speckit-constitution` 修改治理规则时要同步模板和依赖 skill；`speckit-taskstoissues`

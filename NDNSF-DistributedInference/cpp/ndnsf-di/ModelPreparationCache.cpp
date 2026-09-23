@@ -423,7 +423,15 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   const auto runtime = nativeParseJson(spec.configurationJson);
   const auto& request = runtime.at("request");
 
+  std::optional<NativePreparedCanonicalPublication> preparedPublication;
+  if (spec.lookupPrepared) {
+    preparedPublication = spec.lookupPrepared(spec, deadline);
+    if (preparedPublication)
+      preparedPublication->validate();
+  }
   NativeCanonicalSource source = spec.loadSource(spec, deadline);
+  if (preparedPublication && preparedPublication->materialManifest)
+    source.materialManifest = preparedPublication->materialManifest;
   requireActive(deadline, spec.cancelled);
   if (source.modelBytes.empty() || source.modelBytes.size() > spec.maxSourceBytes)
     throw std::invalid_argument("canonical model source is empty or exceeds its bound");
@@ -449,23 +457,28 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
       !digest(catalog.model.canonicalGraphDigest))
     throw std::invalid_argument("prepared model source identity is incomplete");
 
-  const auto& preparedSource = catalog.preparation->sourceRefFor(descriptor);
-  if (preparedSource.materialManifest) {
-    for (const auto& payload : preparedSource.materialManifest->payloads)
-      addSize(memory.materialBytes, payload.bytes.size());
-  }
-  updatePeak();
+  // Keep the owning source view only for the pre-publication identity check.
+  // Its scope must end before preparePublication() so the old full source is
+  // not kept alive by a local shared_ptr while material bundles are published.
+  {
+    const auto preparedSource = catalog.preparation->sourceRefFor(descriptor);
+    if (preparedSource->materialManifest) {
+      for (const auto& payload : preparedSource->materialManifest->payloads)
+        addSize(memory.materialBytes, payload.byteSize());
+    }
+    updatePeak();
 
-  // Validate the canonical ONNX graph separately from the adapter's planning
-  // graph.  This catches a semantic graph accidentally being used as source
-  // identity and also validates any pinned initializer object.
-  const auto sourceIdentity = inspectNativeOnnxSourceGraph(
-    catalog.preparation->sourceRefFor(descriptor), descriptor, control);
-  if (sourceIdentity.canonicalIdentity.graphDigest != catalog.model.canonicalGraphDigest)
-    throw std::invalid_argument("prepared model canonical graph identity differs");
-  if (catalog.model.canonicalInitializerBytes != 0 &&
-      sourceIdentity.canonicalIdentity.initializerDigest != catalog.model.canonicalInitializerDigest)
-    throw std::invalid_argument("prepared model initializer identity differs");
+    // Validate the canonical ONNX graph separately from the adapter's planning
+    // graph.  This catches a semantic graph accidentally being used as source
+    // identity and also validates any pinned initializer object.
+    const auto sourceIdentity = inspectNativeOnnxSourceGraph(
+      *preparedSource, descriptor, control);
+    if (sourceIdentity.canonicalIdentity.graphDigest != catalog.model.canonicalGraphDigest)
+      throw std::invalid_argument("prepared model canonical graph identity differs");
+    if (catalog.model.canonicalInitializerBytes != 0 &&
+        sourceIdentity.canonicalIdentity.initializerDigest != catalog.model.canonicalInitializerDigest)
+      throw std::invalid_argument("prepared model initializer identity differs");
+  }
   const auto adapter = catalog.preparation->adapters()->find(descriptor.adapterId);
   if (!adapter || adapter->adapterVersion() != descriptor.adapterVersion)
     throw std::runtime_error("DI_NATIVE_PREPARATION_ADAPTER_UNAVAILABLE");
@@ -571,7 +584,6 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     throw std::runtime_error("DI_NATIVE_PREPARATION_CACHE_BUDGET_EXCEEDED");
   if (spec.cancelled && spec.cancelled())
     throw std::runtime_error("DI_NATIVE_PREPARATION_CANCELLED");
-  std::optional<NativePreparedCanonicalPublication> preparedPublication;
   const auto rollbackPublication = [&] {
     if (preparedPublication && spec.rollbackPublication) {
       try { spec.rollbackPublication(*preparedPublication); }
@@ -584,7 +596,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     bool committed = false;
     ~PublicationRollbackGuard() { if (!committed && rollback) rollback(); }
   } publicationGuard{rollbackPublication};
-  if (spec.preparePublication) {
+  if (!preparedPublication && spec.preparePublication) {
     NativeRequestControl publicationControl{
       "prepare/" + spec.key, 1, deadline, spec.cancelled};
     preparedPublication = spec.preparePublication(*catalog.preparation,

@@ -44,6 +44,13 @@ removeDatabase(const std::filesystem::path& path)
   std::filesystem::remove(path.string() + "-shm");
 }
 
+std::filesystem::path
+variantDatabase(const std::filesystem::path& base, const std::string& suffix)
+{
+  return base.parent_path() /
+    (base.stem().string() + "-" + suffix + base.extension().string());
+}
+
 void
 require(bool condition, const std::string& message)
 {
@@ -207,7 +214,9 @@ main()
     const auto manifestC = makeManifest("/repo/tiered/lru/C", lruPayload);
     const auto twoEntryBudget = logicalCharge(manifestA, lruPayload) +
                                 logicalCharge(manifestB, lruPayload);
-    auto lruStore = makeTieredRepoStore(makeSqliteRepoStore(sqlitePath.string()),
+    const auto lruSqlitePath = variantDatabase(sqlitePath, "lru");
+    removeDatabase(lruSqlitePath);
+    auto lruStore = makeTieredRepoStore(makeSqliteRepoStore(lruSqlitePath.string()),
                                         twoEntryBudget,
                                         "sqlite");
     lruStore->put(manifestA, lruPayload);
@@ -230,8 +239,10 @@ main()
             "evicted object did not follow backing read-through");
 
     const std::vector<uint8_t> oversizedPayload(512, 0x44);
+    const auto oversizedSqlitePath = variantDatabase(sqlitePath, "oversized");
+    removeDatabase(oversizedSqlitePath);
     auto oversizedStore = makeTieredRepoStore(
-      makeSqliteRepoStore(sqlitePath.string()), 128, "sqlite");
+      makeSqliteRepoStore(oversizedSqlitePath.string()), 128, "sqlite");
     const auto oversizedManifest = makeManifest("/repo/tiered/oversized",
                                                 oversizedPayload);
     oversizedStore->put(oversizedManifest, oversizedPayload);
@@ -247,8 +258,10 @@ main()
             oversizedStatus.oversizedBypasses == 2,
             "oversized read-through was admitted");
 
+    const auto disabledSqlitePath = variantDatabase(sqlitePath, "disabled");
+    removeDatabase(disabledSqlitePath);
     auto disabledStore = makeTieredRepoStore(
-      makeSqliteRepoStore(sqlitePath.string()), 0, "sqlite");
+      makeSqliteRepoStore(disabledSqlitePath.string()), 0, "sqlite");
     disabledStore->put(manifestA, lruPayload);
     require(disabledStore->get(manifestA.objectName).payload == lruPayload,
             "zero-budget store lost authoritative object");
@@ -259,15 +272,19 @@ main()
             disabledStatus.usedBytes == 0,
             "zero-budget cache was not disabled");
 
-    auto disabledSqliteStore = makeTieredRepoStore(sqlitePath.string(), 0);
+    const auto disabledFactoryPath = variantDatabase(sqlitePath, "disabled-factory");
+    removeDatabase(disabledFactoryPath);
+    auto disabledSqliteStore = makeTieredRepoStore(disabledFactoryPath.string(), 0);
     const auto disabledSqliteStatus = disabledSqliteStore->cacheStatus();
     require(disabledSqliteStatus.storageBackend == "sqlite" &&
             disabledSqliteStatus.authoritativeBackend == "sqlite" &&
             disabledSqliteStatus.cachePolicy == "disabled",
             "zero-budget SQLite status contract mismatch");
 
+    const auto deleteSqlitePath = variantDatabase(sqlitePath, "delete");
+    removeDatabase(deleteSqlitePath);
     auto deleteStore = makeTieredRepoStore(
-      makeSqliteRepoStore(sqlitePath.string()), 4096, "sqlite");
+      makeSqliteRepoStore(deleteSqlitePath.string()), 4096, "sqlite");
     deleteStore->put(manifestA, lruPayload);
     require(deleteStore->erase(manifestA.objectName), "delete did not reach authority");
     const auto deleteStatus = deleteStore->cacheStatus();
@@ -282,8 +299,10 @@ main()
     }
     require(missingAfterDelete, "deleted object remained readable");
 
+    const auto concurrentSqlitePath = variantDatabase(sqlitePath, "concurrent");
+    removeDatabase(concurrentSqlitePath);
     auto concurrentStore = makeTieredRepoStore(
-      makeSqliteRepoStore(sqlitePath.string()), 4096, "sqlite");
+      makeSqliteRepoStore(concurrentSqlitePath.string()), 4096, "sqlite");
     concurrentStore->put(manifestA, lruPayload);
     std::atomic<bool> concurrentOk{true};
     std::vector<std::thread> threads;
@@ -311,6 +330,12 @@ main()
 
     removeDatabase(sqlitePath);
     removeDatabase(failureSqlitePath);
+    removeDatabase(lruSqlitePath);
+    removeDatabase(oversizedSqlitePath);
+    removeDatabase(disabledSqlitePath);
+    removeDatabase(disabledFactoryPath);
+    removeDatabase(deleteSqlitePath);
+    removeDatabase(concurrentSqlitePath);
     std::cout << "DISTRIBUTED_REPO_TIERED_CACHE_TEST_OK "
               << concurrentStatus.toJson() << std::endl;
     return 0;

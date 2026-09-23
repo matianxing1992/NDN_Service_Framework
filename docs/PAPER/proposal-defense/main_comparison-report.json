@@ -1,1704 +1,3549 @@
 {
-  "status": "DOCUMENT_PASS",
-  "method": "Topic-grouped full-page side-by-side; no difference overlays",
-  "comparison_pages": 79,
-  "source_pages": [
-    59,
-    50
+  "format": "inline_old_text_gold_brackets",
+  "source_sha256": [
+    "3e1bd2e9ae323ad919917d64c0d6a003646ddc27e7a4ca137c7e9618c9bc6277",
+    "240c39a2628cc7dfa7494845ad732123bbb6e1eb9be0b0092b2b6ddff2d41a13"
   ],
-  "source_sha256": {
-    "docs/PAPER/reference-pdfs/Tianxing_Dissertation_Proposal_Origin.pdf": "3e1bd2e9ae323ad919917d64c0d6a003646ddc27e7a4ca137c7e9618c9bc6277",
-    "docs/PAPER/proposal-defense/main.pdf": "f3b6d952ed723fa0b81b6b0600434f0c37d5230a92b2b5c60a13c6f3ca90fcae"
-  },
-  "output_sha256": "9c0884b78936c5a022c7ae399999289acfe8e23214d6e66fad25c2250e0cc7cb",
-  "page_size_points": [
-    1272,
-    880
+  "alignment_sha256": "7b756674eaafbd839949a8c83d71d26e924f2afd866e2efd0e1988854322a971",
+  "old_gold_rgb": "9C7300",
+  "current_units": [
+    "N0001",
+    "N0002",
+    "N0003",
+    "N0004",
+    "N0005",
+    "N0006",
+    "N0007",
+    "N0008",
+    "N0009",
+    "N0010",
+    "N0011",
+    "N0012",
+    "N0013",
+    "N0014",
+    "N0015",
+    "N0016",
+    "N0017",
+    "N0018",
+    "N0019",
+    "N0020",
+    "N0021",
+    "N0022",
+    "N0023",
+    "N0024",
+    "N0025",
+    "N0026",
+    "N0027",
+    "N0028",
+    "N0029",
+    "N0030",
+    "N0031",
+    "N0032",
+    "N0033",
+    "N0034",
+    "N0035",
+    "N0036",
+    "N0037",
+    "N0038",
+    "N0039",
+    "N0040",
+    "N0041",
+    "N0042",
+    "N0043",
+    "N0044",
+    "N0045",
+    "N0046",
+    "N0047",
+    "N0048",
+    "N0049",
+    "N0050",
+    "N0051",
+    "N0052",
+    "N0053",
+    "N0054",
+    "N0055",
+    "N0056",
+    "N0057",
+    "N0058",
+    "N0059",
+    "N0060",
+    "N0061",
+    "N0062",
+    "N0063",
+    "N0064",
+    "N0065",
+    "N0066",
+    "N0067",
+    "N0068",
+    "N0069",
+    "N0070",
+    "N0071",
+    "N0072",
+    "N0073",
+    "N0074",
+    "N0075",
+    "N0076",
+    "N0077",
+    "N0078",
+    "N0079",
+    "N0080",
+    "N0081",
+    "N0082",
+    "N0083",
+    "N0084",
+    "N0085",
+    "N0086",
+    "N0087",
+    "N0088",
+    "N0089",
+    "N0090",
+    "N0091",
+    "N0092",
+    "N0093",
+    "N0094",
+    "N0095",
+    "N0096",
+    "N0097",
+    "N0098",
+    "N0099",
+    "N0100",
+    "N0101",
+    "N0102",
+    "N0103",
+    "N0104",
+    "N0105",
+    "N0106",
+    "N0107",
+    "N0108",
+    "N0109",
+    "N0110",
+    "N0111",
+    "N0112",
+    "N0113",
+    "N0114",
+    "N0115",
+    "N0116",
+    "N0117",
+    "N0118",
+    "N0119",
+    "N0120",
+    "N0121",
+    "N0122",
+    "N0123",
+    "N0124",
+    "N0125",
+    "N0126",
+    "N0127",
+    "N0128",
+    "N0129",
+    "N0130",
+    "N0131",
+    "N0132",
+    "N0133",
+    "N0134",
+    "N0135",
+    "N0136",
+    "N0137",
+    "N0138",
+    "N0139",
+    "N0140",
+    "N0141",
+    "N0142",
+    "N0143",
+    "N0144",
+    "N0145",
+    "N0146",
+    "N0147",
+    "N0148",
+    "N0149",
+    "N0150",
+    "N0151",
+    "N0152",
+    "N0153",
+    "N0154",
+    "N0155",
+    "N0156",
+    "N0157",
+    "N0158",
+    "N0159",
+    "N0160",
+    "N0161",
+    "N0162",
+    "N0163",
+    "N0164",
+    "N0165",
+    "N0166",
+    "N0167",
+    "N0168",
+    "N0169",
+    "N0170",
+    "N0171",
+    "N0172",
+    "N0173",
+    "N0174",
+    "N0175",
+    "N0176",
+    "N0177",
+    "N0178",
+    "N0179",
+    "N0180",
+    "N0181",
+    "N0182",
+    "N0183",
+    "N0184",
+    "N0185",
+    "N0186",
+    "N0187",
+    "N0188",
+    "N0189",
+    "N0190",
+    "N0191",
+    "N0192",
+    "N0193",
+    "N0194",
+    "N0195",
+    "N0196",
+    "N0197",
+    "N0198",
+    "N0199",
+    "N0200",
+    "N0201",
+    "N0202",
+    "N0203",
+    "N0204",
+    "N0205",
+    "N0206",
+    "N0207",
+    "N0208",
+    "N0209",
+    "N0210",
+    "N0211",
+    "N0212",
+    "N0213",
+    "N0214",
+    "N0215",
+    "N0216",
+    "N0217",
+    "N0218",
+    "N0219",
+    "N0220",
+    "N0221",
+    "N0222",
+    "N0223",
+    "N0224",
+    "N0225",
+    "N0226",
+    "N0227",
+    "N0228",
+    "N0229",
+    "N0230",
+    "N0231",
+    "N0232",
+    "N0233",
+    "N0234",
+    "N0235",
+    "N0236",
+    "N0237",
+    "N0238",
+    "N0239",
+    "N0240",
+    "N0241",
+    "N0242",
+    "N0243",
+    "N0244",
+    "N0245",
+    "N0246",
+    "N0247",
+    "N0248",
+    "N0249",
+    "N0250",
+    "N0251",
+    "N0252",
+    "N0253",
+    "N0254",
+    "N0255",
+    "N0256",
+    "N0257",
+    "N0258",
+    "N0259",
+    "N0260",
+    "N0261",
+    "N0262",
+    "N0263",
+    "N0264",
+    "N0265",
+    "N0266",
+    "N0267",
+    "N0268",
+    "N0269",
+    "N0270",
+    "N0271",
+    "N0272",
+    "N0273",
+    "N0274",
+    "N0275",
+    "N0276",
+    "N0277",
+    "N0278",
+    "N0279",
+    "N0280",
+    "N0281",
+    "N0282",
+    "N0283",
+    "N0284",
+    "N0285",
+    "N0286",
+    "N0287",
+    "N0288",
+    "N0289",
+    "N0290",
+    "N0291",
+    "N0292",
+    "N0293",
+    "N0294",
+    "N0295",
+    "N0296",
+    "N0297",
+    "N0298",
+    "N0299",
+    "N0300",
+    "N0301",
+    "N0302",
+    "N0303",
+    "N0304",
+    "N0305",
+    "N0306",
+    "N0307",
+    "N0308",
+    "N0309",
+    "N0310",
+    "N0311",
+    "N0312",
+    "N0313",
+    "N0314",
+    "N0315",
+    "N0316",
+    "N0317",
+    "N0318",
+    "N0319",
+    "N0320",
+    "N0321",
+    "N0322",
+    "N0323",
+    "N0324",
+    "N0325",
+    "N0326",
+    "N0327",
+    "N0328",
+    "N0329",
+    "N0330",
+    "N0331",
+    "N0332",
+    "N0333",
+    "N0334",
+    "N0335",
+    "N0336",
+    "N0337",
+    "N0338",
+    "N0339",
+    "N0340",
+    "N0341",
+    "N0342",
+    "N0343",
+    "N0344",
+    "N0345",
+    "N0346",
+    "N0347",
+    "N0348",
+    "N0349",
+    "N0350"
   ],
-  "source_scale": 1,
-  "all_source_pages_covered": true,
-  "text_identical_and_raster_checked_panels": 130,
-  "raster_tolerance": {
-    "channel_fraction_with_error_over_8_max": 0.001,
-    "mean_channel_error_max": 1
-  },
-  "raster_deltas": [
+  "old_accounting": [
     {
-      "comparison_page": 14,
-      "side": 1,
-      "source_page": 11,
-      "changed_channel_fraction": 3.91991813560441e-05,
-      "channel_fraction_with_error_over_8": 3.507295173961841e-05,
-      "mean_absolute_channel_error": 0.0016752492242688322,
-      "bbox": [
-        465,
-        288,
-        470,
-        296
-      ]
+      "old_ids": [
+        "O0001"
+      ],
+      "new_ids": [
+        "N0001"
+      ],
+      "mode": "unchanged"
     },
     {
-      "comparison_page": 15,
-      "side": 1,
-      "source_page": 12,
-      "changed_channel_fraction": 6.808278867102397e-05,
-      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
-      "mean_absolute_channel_error": 0.002568577936224995,
-      "bbox": [
-        445,
-        317,
-        452,
-        323
-      ]
+      "old_ids": [
+        "O0002",
+        "O0003"
+      ],
+      "new_ids": [
+        "N0002"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 19,
-      "side": 1,
-      "source_page": 12,
-      "changed_channel_fraction": 6.808278867102397e-05,
-      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
-      "mean_absolute_channel_error": 0.002568577936224995,
-      "bbox": [
-        445,
-        317,
-        452,
-        323
-      ]
+      "old_ids": [
+        "O0004"
+      ],
+      "new_ids": [
+        "N0003"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 22,
-      "side": 1,
-      "source_page": 15,
-      "changed_channel_fraction": 4.3325410972469796e-05,
-      "channel_fraction_with_error_over_8": 2.8883607314979865e-05,
-      "mean_absolute_channel_error": 0.0015452729913514227,
-      "bbox": [
-        445,
-        149,
-        450,
-        157
-      ]
+      "old_ids": [
+        "O0005"
+      ],
+      "new_ids": [
+        "N0004"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 30,
-      "side": 1,
-      "source_page": 19,
-      "changed_channel_fraction": 0.07168086089654717,
-      "channel_fraction_with_error_over_8": 0.0,
-      "mean_absolute_channel_error": 0.07268972403776325,
-      "bbox": [
-        72,
-        75,
-        540,
-        754
-      ]
+      "old_ids": [
+        "O0007",
+        "O0008"
+      ],
+      "new_ids": [
+        "N0005"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 33,
-      "side": 1,
-      "source_page": 20,
-      "changed_channel_fraction": 0.00013410246253383508,
-      "channel_fraction_with_error_over_8": 0.00011347131445170662,
-      "mean_absolute_channel_error": 0.0027790156466627053,
-      "bbox": [
-        172,
-        205,
-        437,
-        680
-      ]
+      "old_ids": [
+        "O0009"
+      ],
+      "new_ids": [
+        "N0006"
+      ],
+      "mode": "unchanged"
     },
     {
-      "comparison_page": 37,
-      "side": 1,
-      "source_page": 21,
-      "changed_channel_fraction": 0.06703885257806827,
-      "channel_fraction_with_error_over_8": 0.0,
-      "mean_absolute_channel_error": 0.06784553046807949,
-      "bbox": [
-        72,
-        75,
-        534,
-        754
-      ]
+      "old_ids": [
+        "O0010"
+      ],
+      "new_ids": [
+        "N0007"
+      ],
+      "mode": "unchanged"
     },
     {
-      "comparison_page": 39,
-      "side": 1,
-      "source_page": 23,
-      "changed_channel_fraction": 6.808278867102397e-05,
-      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
-      "mean_absolute_channel_error": 0.002568577936224995,
-      "bbox": [
-        445,
-        526,
-        452,
-        532
-      ]
+      "old_ids": [
+        "O0012"
+      ],
+      "new_ids": [
+        "N0009"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 40,
-      "side": 1,
-      "source_page": 24,
-      "changed_channel_fraction": 6.808278867102397e-05,
-      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
-      "mean_absolute_channel_error": 0.002568577936224995,
-      "bbox": [
-        366,
-        78,
-        373,
-        84
-      ]
+      "old_ids": [
+        "O0013"
+      ],
+      "new_ids": [
+        "N0025"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 41,
-      "side": 1,
-      "source_page": 25,
-      "changed_channel_fraction": 0.00012378688849277084,
-      "channel_fraction_with_error_over_8": 0.00010109262560242952,
-      "mean_absolute_channel_error": 0.004388245197068727,
-      "bbox": [
-        327,
-        526,
-        334,
-        604
-      ]
+      "old_ids": [
+        "O0014"
+      ],
+      "new_ids": [
+        "N0011"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 46,
-      "side": 1,
-      "source_page": 29,
-      "changed_channel_fraction": 0.00011347131445170662,
-      "channel_fraction_with_error_over_8": 0.00010109262560242952,
-      "mean_absolute_channel_error": 0.004448075526506899,
-      "bbox": [
-        426,
-        414,
-        447,
-        493
-      ]
+      "old_ids": [
+        "O0015"
+      ],
+      "new_ids": [
+        "N0028"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 47,
-      "side": 1,
-      "source_page": 29,
-      "changed_channel_fraction": 0.00011347131445170662,
-      "channel_fraction_with_error_over_8": 0.00010109262560242952,
-      "mean_absolute_channel_error": 0.004448075526506899,
-      "bbox": [
-        426,
-        414,
-        447,
-        493
-      ]
+      "old_ids": [
+        "O0026"
+      ],
+      "new_ids": [
+        "N0023"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 48,
-      "side": 1,
-      "source_page": 30,
-      "changed_channel_fraction": 0.00013822869215026078,
-      "channel_fraction_with_error_over_8": 0.00011759754406813231,
-      "mean_absolute_channel_error": 0.004875140291806959,
-      "bbox": [
-        121,
-        229,
-        373,
-        682
-      ]
+      "old_ids": [
+        "O0027"
+      ],
+      "new_ids": [
+        "N0024"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 50,
-      "side": 1,
-      "source_page": 32,
-      "changed_channel_fraction": 8.665082194493959e-05,
-      "channel_fraction_with_error_over_8": 7.633524790387536e-05,
-      "mean_absolute_channel_error": 0.0032040172971545522,
-      "bbox": [
-        465,
-        265,
-        472,
-        274
-      ]
+      "old_ids": [
+        "O0028"
+      ],
+      "new_ids": [
+        "N0021"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 52,
-      "side": 1,
-      "source_page": 34,
-      "changed_channel_fraction": 7.633524790387536e-05,
-      "channel_fraction_with_error_over_8": 7.014590347923682e-05,
-      "mean_absolute_channel_error": 0.002830593516868027,
-      "bbox": [
-        406,
-        476,
-        413,
-        485
-      ]
+      "old_ids": [
+        "O0047"
+      ],
+      "new_ids": [
+        "N0041"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 58,
-      "side": 1,
-      "source_page": 36,
-      "changed_channel_fraction": 9.902951079421667e-05,
-      "channel_fraction_with_error_over_8": 7.220901828744967e-05,
-      "mean_absolute_channel_error": 0.0032267115600448934,
-      "bbox": [
-        426,
-        317,
-        448,
-        683
-      ]
+      "old_ids": [
+        "O0051"
+      ],
+      "new_ids": [
+        "N0020"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 60,
-      "side": 1,
-      "source_page": 38,
-      "changed_channel_fraction": 8.046147752030105e-05,
-      "channel_fraction_with_error_over_8": 6.189344424638542e-05,
-      "mean_absolute_channel_error": 0.0031049877863603354,
-      "bbox": [
-        386,
-        315,
-        393,
-        324
-      ]
+      "old_ids": [
+        "O0031",
+        "O0036"
+      ],
+      "new_ids": [
+        "N0039",
+        "N0040"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 72,
-      "side": 1,
-      "source_page": 46,
-      "changed_channel_fraction": 3.91991813560441e-05,
-      "channel_fraction_with_error_over_8": 3.507295173961841e-05,
-      "mean_absolute_channel_error": 0.0015081369248035915,
-      "bbox": [
-        366,
-        639,
-        371,
-        645
-      ]
+      "old_ids": [
+        "O0035"
+      ],
+      "new_ids": [
+        "N0038"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 76,
-      "side": 1,
-      "source_page": 48,
-      "changed_channel_fraction": 0.00011347131445170662,
-      "channel_fraction_with_error_over_8": 9.696639598600383e-05,
-      "mean_absolute_channel_error": 0.003924044365220836,
-      "bbox": [
-        406,
-        161,
-        430,
-        383
-      ]
+      "old_ids": [
+        "O0039"
+      ],
+      "new_ids": [
+        "N0044"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 77,
-      "side": 1,
-      "source_page": 48,
-      "changed_channel_fraction": 0.00011347131445170662,
-      "channel_fraction_with_error_over_8": 9.696639598600383e-05,
-      "mean_absolute_channel_error": 0.003924044365220836,
-      "bbox": [
-        406,
-        161,
-        430,
-        383
-      ]
+      "old_ids": [
+        "O0040",
+        "O0041",
+        "O0042",
+        "O0043",
+        "O0044",
+        "O0045",
+        "O0046"
+      ],
+      "new_ids": [
+        "N0045"
+      ],
+      "mode": "paired_old_passage"
     },
     {
-      "comparison_page": 79,
-      "side": 1,
-      "source_page": 50,
-      "changed_channel_fraction": 4.126229616425695e-05,
-      "channel_fraction_with_error_over_8": 2.8883607314979865e-05,
-      "mean_absolute_channel_error": 0.0012770680662837525,
-      "bbox": [
-        431,
-        628,
-        437,
-        637
-      ]
+      "old_ids": [
+        "O0016"
+      ],
+      "new_ids": [
+        "N0050"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0017"
+      ],
+      "new_ids": [
+        "N0052"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0018"
+      ],
+      "new_ids": [
+        "N0053"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0019"
+      ],
+      "new_ids": [
+        "N0059"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0023"
+      ],
+      "new_ids": [
+        "N0061"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0025"
+      ],
+      "new_ids": [
+        "N0060"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0052"
+      ],
+      "new_ids": [
+        "N0048"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0056"
+      ],
+      "new_ids": [
+        "N0063"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0058",
+        "O0063"
+      ],
+      "new_ids": [
+        "N0066"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0065",
+        "O0068"
+      ],
+      "new_ids": [
+        "N0069"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0083"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0110"
+      ],
+      "new_ids": [
+        "N0093"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0111"
+      ],
+      "new_ids": [
+        "N0094"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0135"
+      ],
+      "new_ids": [
+        "N0097"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0136"
+      ],
+      "new_ids": [
+        "N0098"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0141"
+      ],
+      "new_ids": [
+        "N0101"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0142"
+      ],
+      "new_ids": [
+        "N0102"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0147"
+      ],
+      "new_ids": [
+        "N0114"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0158"
+      ],
+      "new_ids": [
+        "N0112"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0160"
+      ],
+      "new_ids": [
+        "N0135"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0088"
+      ],
+      "new_ids": [
+        "N0109"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0089"
+      ],
+      "new_ids": [
+        "N0084"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0162"
+      ],
+      "new_ids": [
+        "N0106"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0163"
+      ],
+      "new_ids": [
+        "N0127"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0167"
+      ],
+      "new_ids": [
+        "N0119"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0188"
+      ],
+      "new_ids": [
+        "N0145"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0190"
+      ],
+      "new_ids": [
+        "N0146"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0192",
+        "O0193"
+      ],
+      "new_ids": [
+        "N0151",
+        "N0152"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0194"
+      ],
+      "new_ids": [
+        "N0154"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0138"
+      ],
+      "new_ids": [
+        "N0158",
+        "N0159"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0197"
+      ],
+      "new_ids": [
+        "N0173"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0198"
+      ],
+      "new_ids": [
+        "N0174"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0209"
+      ],
+      "new_ids": [
+        "N0179"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0211",
+        "O0214",
+        "O0215",
+        "O0216",
+        "O0217"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0218"
+      ],
+      "new_ids": [
+        "N0180"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0219"
+      ],
+      "new_ids": [
+        "N0181",
+        "N0183"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0221"
+      ],
+      "new_ids": [
+        "N0184"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0222",
+        "O0223"
+      ],
+      "new_ids": [
+        "N0185"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0224"
+      ],
+      "new_ids": [
+        "N0190"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0225",
+        "O0226",
+        "O0227",
+        "O0228"
+      ],
+      "new_ids": [
+        "N0193",
+        "N0194"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0229",
+        "O0230",
+        "O0231"
+      ],
+      "new_ids": [
+        "N0195"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0233"
+      ],
+      "new_ids": [
+        "N0198"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0234"
+      ],
+      "new_ids": [
+        "N0199"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0243"
+      ],
+      "new_ids": [
+        "N0204"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0244"
+      ],
+      "new_ids": [
+        "N0205"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0246",
+        "O0247"
+      ],
+      "new_ids": [
+        "N0208",
+        "N0211"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0270",
+        "O0271",
+        "O0272",
+        "O0273",
+        "O0274",
+        "O0275"
+      ],
+      "new_ids": [
+        "N0225"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0276"
+      ],
+      "new_ids": [
+        "N0226"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0278"
+      ],
+      "new_ids": [
+        "N0230"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0173"
+      ],
+      "new_ids": [
+        "N0247",
+        "N0248"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0174"
+      ],
+      "new_ids": [
+        "N0253"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0241"
+      ],
+      "new_ids": [
+        "N0281"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0283"
+      ],
+      "new_ids": [
+        "N0236"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0295"
+      ],
+      "new_ids": [
+        "N0282"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0308"
+      ],
+      "new_ids": [
+        "N0285"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0316"
+      ],
+      "new_ids": [
+        "N0256"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0300"
+      ],
+      "new_ids": [
+        "N0293"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0302",
+        "O0303",
+        "O0304",
+        "O0305",
+        "O0306"
+      ],
+      "new_ids": [
+        "N0294"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0310"
+      ],
+      "new_ids": [
+        "N0298"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0311",
+        "O0312",
+        "O0313",
+        "O0314"
+      ],
+      "new_ids": [
+        "N0300"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0317"
+      ],
+      "new_ids": [
+        "N0296"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0318"
+      ],
+      "new_ids": [
+        "N0301"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0319"
+      ],
+      "new_ids": [
+        "N0302"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0320",
+        "O0321"
+      ],
+      "new_ids": [
+        "N0303"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0322"
+      ],
+      "new_ids": [
+        "N0312"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0323"
+      ],
+      "new_ids": [
+        "N0313"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0324"
+      ],
+      "new_ids": [
+        "N0323"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0325"
+      ],
+      "new_ids": [
+        "N0316"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0326"
+      ],
+      "new_ids": [
+        "N0317"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0327"
+      ],
+      "new_ids": [
+        "N0325"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0328"
+      ],
+      "new_ids": [
+        "N0324"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0330"
+      ],
+      "new_ids": [
+        "N0326"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0332"
+      ],
+      "new_ids": [
+        "N0327"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0333"
+      ],
+      "new_ids": [
+        "N0328"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0334"
+      ],
+      "new_ids": [
+        "N0329"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0335"
+      ],
+      "new_ids": [
+        "N0318"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0336"
+      ],
+      "new_ids": [
+        "N0319"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0337"
+      ],
+      "new_ids": [
+        "N0330"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0338"
+      ],
+      "new_ids": [
+        "N0320"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0340"
+      ],
+      "new_ids": [
+        "N0322"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0341"
+      ],
+      "new_ids": [
+        "N0331"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0342"
+      ],
+      "new_ids": [
+        "N0332"
+      ],
+      "mode": "unchanged"
+    },
+    {
+      "old_ids": [
+        "O0343"
+      ],
+      "new_ids": [
+        "N0336"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0344"
+      ],
+      "new_ids": [
+        "N0337"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0345"
+      ],
+      "new_ids": [
+        "N0338"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0346"
+      ],
+      "new_ids": [
+        "N0342"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0347"
+      ],
+      "new_ids": [
+        "N0343"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0348"
+      ],
+      "new_ids": [
+        "N0344"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0349"
+      ],
+      "new_ids": [
+        "N0341"
+      ],
+      "mode": "paired_old_passage"
+    },
+    {
+      "old_ids": [
+        "O0006"
+      ],
+      "new_ids": [
+        "N0002"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0011"
+      ],
+      "new_ids": [
+        "N0009"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0020"
+      ],
+      "new_ids": [
+        "N0052"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0021"
+      ],
+      "new_ids": [
+        "N0060"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0022"
+      ],
+      "new_ids": [
+        "N0061"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0024"
+      ],
+      "new_ids": [
+        "N0054"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0029"
+      ],
+      "new_ids": [
+        "N0027"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0030"
+      ],
+      "new_ids": [
+        "N0040"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0032"
+      ],
+      "new_ids": [
+        "N0047"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0033"
+      ],
+      "new_ids": [
+        "N0039"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0034"
+      ],
+      "new_ids": [
+        "N0039"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0037"
+      ],
+      "new_ids": [
+        "N0014"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0038"
+      ],
+      "new_ids": [
+        "N0040"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0048"
+      ],
+      "new_ids": [
+        "N0042"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0049"
+      ],
+      "new_ids": [
+        "N0032"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0050"
+      ],
+      "new_ids": [
+        "N0042"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0053"
+      ],
+      "new_ids": [
+        "N0048"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0054"
+      ],
+      "new_ids": [
+        "N0064"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0055"
+      ],
+      "new_ids": [
+        "N0065"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0057"
+      ],
+      "new_ids": [
+        "N0072"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0059"
+      ],
+      "new_ids": [
+        "N0064"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0060"
+      ],
+      "new_ids": [
+        "N0070"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0061"
+      ],
+      "new_ids": [
+        "N0073"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0062"
+      ],
+      "new_ids": [
+        "N0066"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0064"
+      ],
+      "new_ids": [
+        "N0069"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0066"
+      ],
+      "new_ids": [
+        "N0066"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0067"
+      ],
+      "new_ids": [
+        "N0069"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0069"
+      ],
+      "new_ids": [
+        "N0064"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0070"
+      ],
+      "new_ids": [
+        "N0064"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0071"
+      ],
+      "new_ids": [
+        "N0070"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0072"
+      ],
+      "new_ids": [
+        "N0064"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0073"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0074"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0075"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0076"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0077"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0078"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0079"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0080"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0081"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0082"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0084"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0085"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0086"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0087"
+      ],
+      "new_ids": [
+        "N0109"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0090"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0091"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0092"
+      ],
+      "new_ids": [
+        "N0077"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0093"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0094"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0095"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0096"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0097"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0098"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0099"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0100"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0101"
+      ],
+      "new_ids": [
+        "N0077"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0102"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0103"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0104"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0105"
+      ],
+      "new_ids": [
+        "N0075"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0106"
+      ],
+      "new_ids": [
+        "N0077"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0107"
+      ],
+      "new_ids": [
+        "N0079"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0108"
+      ],
+      "new_ids": [
+        "N0078"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0109"
+      ],
+      "new_ids": [
+        "N0076"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0112"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0113"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0114"
+      ],
+      "new_ids": [
+        "N0100"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0115"
+      ],
+      "new_ids": [
+        "N0097"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0116"
+      ],
+      "new_ids": [
+        "N0099"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0117"
+      ],
+      "new_ids": [
+        "N0097"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0118"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0119"
+      ],
+      "new_ids": [
+        "N0097"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0120"
+      ],
+      "new_ids": [
+        "N0104"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0121"
+      ],
+      "new_ids": [
+        "N0104"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0122"
+      ],
+      "new_ids": [
+        "N0097"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0123"
+      ],
+      "new_ids": [
+        "N0097"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0124"
+      ],
+      "new_ids": [
+        "N0099"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0125"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0126"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0127"
+      ],
+      "new_ids": [
+        "N0099"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0128"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0129"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0130"
+      ],
+      "new_ids": [
+        "N0104"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0131"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0132"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0133"
+      ],
+      "new_ids": [
+        "N0099"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0134"
+      ],
+      "new_ids": [
+        "N0095"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0137"
+      ],
+      "new_ids": [
+        "N0159"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0139"
+      ],
+      "new_ids": [
+        "N0158"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0140"
+      ],
+      "new_ids": [
+        "N0101"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0143"
+      ],
+      "new_ids": [
+        "N0102"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0144"
+      ],
+      "new_ids": [
+        "N0097"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0145"
+      ],
+      "new_ids": [
+        "N0114"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0146"
+      ],
+      "new_ids": [
+        "N0139"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0148"
+      ],
+      "new_ids": [
+        "N0114"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0149"
+      ],
+      "new_ids": [
+        "N0115"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0150"
+      ],
+      "new_ids": [
+        "N0112"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0151"
+      ],
+      "new_ids": [
+        "N0115"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0152"
+      ],
+      "new_ids": [
+        "N0113"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0153"
+      ],
+      "new_ids": [
+        "N0115"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0154"
+      ],
+      "new_ids": [
+        "N0116"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0155"
+      ],
+      "new_ids": [
+        "N0136"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0156"
+      ],
+      "new_ids": [
+        "N0135"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0157"
+      ],
+      "new_ids": [
+        "N0115"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0159"
+      ],
+      "new_ids": [
+        "N0115"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0161"
+      ],
+      "new_ids": [
+        "N0106"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0164"
+      ],
+      "new_ids": [
+        "N0106"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0165"
+      ],
+      "new_ids": [
+        "N0085"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0166"
+      ],
+      "new_ids": [
+        "N0133"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0168"
+      ],
+      "new_ids": [
+        "N0119"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0169"
+      ],
+      "new_ids": [
+        "N0106"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0170"
+      ],
+      "new_ids": [
+        "N0120"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0171"
+      ],
+      "new_ids": [
+        "N0084"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0172"
+      ],
+      "new_ids": [
+        "N0248"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0175"
+      ],
+      "new_ids": [
+        "N0250"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0176"
+      ],
+      "new_ids": [
+        "N0309"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0177"
+      ],
+      "new_ids": [
+        "N0142"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0178"
+      ],
+      "new_ids": [
+        "N0154"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0179"
+      ],
+      "new_ids": [
+        "N0145"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0180"
+      ],
+      "new_ids": [
+        "N0144"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0181"
+      ],
+      "new_ids": [
+        "N0146"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0182"
+      ],
+      "new_ids": [
+        "N0151"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0183"
+      ],
+      "new_ids": [
+        "N0142"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0184"
+      ],
+      "new_ids": [
+        "N0154"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0185"
+      ],
+      "new_ids": [
+        "N0142"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0186"
+      ],
+      "new_ids": [
+        "N0142"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0187"
+      ],
+      "new_ids": [
+        "N0145"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0189"
+      ],
+      "new_ids": [
+        "N0146"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0191"
+      ],
+      "new_ids": [
+        "N0152"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0195"
+      ],
+      "new_ids": [
+        "N0151"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0196"
+      ],
+      "new_ids": [
+        "N0151"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0199"
+      ],
+      "new_ids": [
+        "N0179"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0200"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0201"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0202"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0203"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0204"
+      ],
+      "new_ids": [
+        "N0179"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0205"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0206"
+      ],
+      "new_ids": [
+        "N0175"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0207"
+      ],
+      "new_ids": [
+        "N0175"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0208"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0210"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0212"
+      ],
+      "new_ids": [
+        "N0175"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0213"
+      ],
+      "new_ids": [
+        "N0177"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0220"
+      ],
+      "new_ids": [
+        "N0181"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0232"
+      ],
+      "new_ids": [
+        "N0198"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0235"
+      ],
+      "new_ids": [
+        "N0203"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0236"
+      ],
+      "new_ids": [
+        "N0281"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0237"
+      ],
+      "new_ids": [
+        "N0244"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0238"
+      ],
+      "new_ids": [
+        "N0263"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0239"
+      ],
+      "new_ids": [
+        "N0244"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0240"
+      ],
+      "new_ids": [
+        "N0263"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0242"
+      ],
+      "new_ids": [
+        "N0285"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0245"
+      ],
+      "new_ids": [
+        "N0211"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0248"
+      ],
+      "new_ids": [
+        "N0208"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0249"
+      ],
+      "new_ids": [
+        "N0206"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0250"
+      ],
+      "new_ids": [
+        "N0212"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0251"
+      ],
+      "new_ids": [
+        "N0208"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0252"
+      ],
+      "new_ids": [
+        "N0211"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0253"
+      ],
+      "new_ids": [
+        "N0214"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0254"
+      ],
+      "new_ids": [
+        "N0215"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0255"
+      ],
+      "new_ids": [
+        "N0214"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0256"
+      ],
+      "new_ids": [
+        "N0212"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0257"
+      ],
+      "new_ids": [
+        "N0212"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0258"
+      ],
+      "new_ids": [
+        "N0206"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0259"
+      ],
+      "new_ids": [
+        "N0208"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0260"
+      ],
+      "new_ids": [
+        "N0209"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0261"
+      ],
+      "new_ids": [
+        "N0211"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0262"
+      ],
+      "new_ids": [
+        "N0214"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0263"
+      ],
+      "new_ids": [
+        "N0206"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0264"
+      ],
+      "new_ids": [
+        "N0212"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0265"
+      ],
+      "new_ids": [
+        "N0214"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0266"
+      ],
+      "new_ids": [
+        "N0212"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0267"
+      ],
+      "new_ids": [
+        "N0206"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0268"
+      ],
+      "new_ids": [
+        "N0212"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0269"
+      ],
+      "new_ids": [
+        "N0225"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0277"
+      ],
+      "new_ids": [
+        "N0230"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0279"
+      ],
+      "new_ids": [
+        "N0247"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0280"
+      ],
+      "new_ids": [
+        "N0249"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0281"
+      ],
+      "new_ids": [
+        "N0249"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0282"
+      ],
+      "new_ids": [
+        "N0252"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0284"
+      ],
+      "new_ids": [
+        "N0245"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0285"
+      ],
+      "new_ids": [
+        "N0272"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0286"
+      ],
+      "new_ids": [
+        "N0266"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0287"
+      ],
+      "new_ids": [
+        "N0238"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0288"
+      ],
+      "new_ids": [
+        "N0244"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0289"
+      ],
+      "new_ids": [
+        "N0262"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0290"
+      ],
+      "new_ids": [
+        "N0279"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0291"
+      ],
+      "new_ids": [
+        "N0264"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0292"
+      ],
+      "new_ids": [
+        "N0264"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0293"
+      ],
+      "new_ids": [
+        "N0282"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0294"
+      ],
+      "new_ids": [
+        "N0280"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0296"
+      ],
+      "new_ids": [
+        "N0285"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0297"
+      ],
+      "new_ids": [
+        "N0289"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0298"
+      ],
+      "new_ids": [
+        "N0289"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0299"
+      ],
+      "new_ids": [
+        "N0293"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0301"
+      ],
+      "new_ids": [
+        "N0294"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0307"
+      ],
+      "new_ids": [
+        "N0285"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0309"
+      ],
+      "new_ids": [
+        "N0296"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0315"
+      ],
+      "new_ids": [
+        "N0297"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0329"
+      ],
+      "new_ids": [
+        "N0325"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0331"
+      ],
+      "new_ids": [
+        "N0350"
+      ],
+      "mode": "related_unpaired"
+    },
+    {
+      "old_ids": [
+        "O0339"
+      ],
+      "new_ids": [
+        "N0321"
+      ],
+      "mode": "related_unpaired"
     }
   ],
-  "groups": [
-    {
-      "topic": "Title",
-      "original": [
-        1
-      ],
-      "current": [
-        1
-      ],
-      "starts_at": 2
-    },
-    {
-      "topic": "Abstract",
-      "original": [
-        2,
-        3
-      ],
-      "current": [
-        2
-      ],
-      "starts_at": 3
-    },
-    {
-      "topic": "Contents",
-      "original": [
-        4,
-        5
-      ],
-      "current": [
-        3,
-        4
-      ],
-      "starts_at": 5
-    },
-    {
-      "topic": "Motivation, research gap and scope",
-      "original": [
-        6,
-        11,
-        12,
-        15,
-        16
-      ],
-      "current": [
-        5,
-        6,
-        7,
-        8
-      ],
-      "starts_at": 7
-    },
-    {
-      "topic": "Research questions and expected contributions",
-      "original": [
-        13,
-        14
-      ],
-      "current": [
-        9,
-        10
-      ],
-      "starts_at": 12
-    },
-    {
-      "topic": "NDN background and naming",
-      "original": [
-        7,
-        8,
-        9,
-        10,
-        11
-      ],
-      "current": [
-        11,
-        12
-      ],
-      "starts_at": 14
-    },
-    {
-      "topic": "Related work and design alternatives",
-      "original": [
-        17,
-        18,
-        19,
-        20,
-        21,
-        22,
-        23,
-        24,
-        25
-      ],
-      "current": [
-        12,
-        13,
-        14,
-        15,
-        16
-      ],
-      "starts_at": 19
-    },
-    {
-      "topic": "Architecture, responsibilities and API",
-      "original": [
-        26,
-        27,
-        28,
-        29,
-        30
-      ],
-      "current": [
-        17,
-        18,
-        19
-      ],
-      "starts_at": 28
-    },
-    {
-      "topic": "Named messages and invocation workflow",
-      "original": [
-        30,
-        31,
-        32
-      ],
-      "current": [
-        20,
-        21
-      ],
-      "starts_at": 33
-    },
-    {
-      "topic": "Authorization, confidentiality and trust",
-      "original": [
-        32,
-        33,
-        34
-      ],
-      "current": [
-        19,
-        21,
-        22,
-        23,
-        24,
-        25,
-        26
-      ],
-      "starts_at": 36
-    },
-    {
-      "topic": "Invocation modes, streams and large objects",
-      "original": [
-        37,
-        38,
-        39
-      ],
-      "current": [
-        26,
-        27,
-        28,
-        29
-      ],
-      "starts_at": 43
-    },
-    {
-      "topic": "Collaboration plan, dependencies and execution state",
-      "original": [
-        29,
-        36,
-        37
-      ],
-      "current": [
-        29,
-        30,
-        31
-      ],
-      "starts_at": 47
-    },
-    {
-      "topic": "UAV application and validation",
-      "original": [
-        40,
-        41,
-        42,
-        43,
-        44,
-        45,
-        46
-      ],
-      "current": [
-        32,
-        33,
-        34,
-        35
-      ],
-      "starts_at": 50
-    },
-    {
-      "topic": "Distributed inference application and validation",
-      "original": [
-        47,
-        48,
-        49,
-        50,
-        51,
-        52
-      ],
-      "current": [
-        35,
-        36,
-        37,
-        38,
-        39,
-        40
-      ],
-      "starts_at": 57
-    },
-    {
-      "topic": "Existing evidence and its interpretation",
-      "original": [
-        34,
-        35,
-        36
-      ],
-      "current": [
-        41,
-        42
-      ],
-      "starts_at": 63
-    },
-    {
-      "topic": "Proposed evaluation and metrics",
-      "original": [
-        45,
-        46,
-        51,
-        52,
-        54,
-        55
-      ],
-      "current": [
-        43,
-        44,
-        45
-      ],
-      "starts_at": 66
-    },
-    {
-      "topic": "Research plan, timeline and risks",
-      "original": [
-        53,
-        54,
-        55,
-        56
-      ],
-      "current": [
-        46,
-        47
-      ],
-      "starts_at": 72
-    },
-    {
-      "topic": "Conclusion and expected outcomes",
-      "original": [
-        57
-      ],
-      "current": [
-        48
-      ],
-      "starts_at": 76
-    },
-    {
-      "topic": "References",
-      "original": [
-        57,
-        58,
-        59
-      ],
-      "current": [
-        48,
-        49,
-        50
-      ],
-      "starts_at": 77
-    }
-  ],
-  "pages": [
-    {
-      "comparison_page": 2,
-      "topic": "Title",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 1
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 1
-        }
-      ]
-    },
-    {
-      "comparison_page": 3,
-      "topic": "Abstract",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 2
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 2
-        }
-      ]
-    },
-    {
-      "comparison_page": 4,
-      "topic": "Abstract",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 3
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 5,
-      "topic": "Contents",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 4
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 3
-        }
-      ]
-    },
-    {
-      "comparison_page": 6,
-      "topic": "Contents",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 5
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 4
-        }
-      ]
-    },
-    {
-      "comparison_page": 7,
-      "topic": "Motivation, research gap and scope",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 6
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 5
-        }
-      ]
-    },
-    {
-      "comparison_page": 8,
-      "topic": "Motivation, research gap and scope",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 11
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 6
-        }
-      ]
-    },
-    {
-      "comparison_page": 9,
-      "topic": "Motivation, research gap and scope",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 12
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 7
-        }
-      ]
-    },
-    {
-      "comparison_page": 10,
-      "topic": "Motivation, research gap and scope",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 15
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 8
-        }
-      ]
-    },
-    {
-      "comparison_page": 11,
-      "topic": "Motivation, research gap and scope",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 16
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 12,
-      "topic": "Research questions and expected contributions",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 13
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 9
-        }
-      ]
-    },
-    {
-      "comparison_page": 13,
-      "topic": "Research questions and expected contributions",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 14
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 10
-        }
-      ]
-    },
-    {
-      "comparison_page": 14,
-      "topic": "NDN background and naming",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 7
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 11
-        }
-      ]
-    },
-    {
-      "comparison_page": 15,
-      "topic": "NDN background and naming",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 8
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 12
-        }
-      ]
-    },
-    {
-      "comparison_page": 16,
-      "topic": "NDN background and naming",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 9
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 17,
-      "topic": "NDN background and naming",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 10
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 18,
-      "topic": "NDN background and naming",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 11
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 19,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 17
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 12
-        }
-      ]
-    },
-    {
-      "comparison_page": 20,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 18
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 13
-        }
-      ]
-    },
-    {
-      "comparison_page": 21,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 19
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 14
-        }
-      ]
-    },
-    {
-      "comparison_page": 22,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 20
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 15
-        }
-      ]
-    },
-    {
-      "comparison_page": 23,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 21
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 16
-        }
-      ]
-    },
-    {
-      "comparison_page": 24,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 22
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 25,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 23
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 26,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 24
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 27,
-      "topic": "Related work and design alternatives",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 25
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 28,
-      "topic": "Architecture, responsibilities and API",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 26
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 17
-        }
-      ]
-    },
-    {
-      "comparison_page": 29,
-      "topic": "Architecture, responsibilities and API",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 27
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 18
-        }
-      ]
-    },
-    {
-      "comparison_page": 30,
-      "topic": "Architecture, responsibilities and API",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 28
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 19
-        }
-      ]
-    },
-    {
-      "comparison_page": 31,
-      "topic": "Architecture, responsibilities and API",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 29
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 32,
-      "topic": "Architecture, responsibilities and API",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 30
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 33,
-      "topic": "Named messages and invocation workflow",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 30
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 20
-        }
-      ]
-    },
-    {
-      "comparison_page": 34,
-      "topic": "Named messages and invocation workflow",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 31
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 21
-        }
-      ]
-    },
-    {
-      "comparison_page": 35,
-      "topic": "Named messages and invocation workflow",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 32
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 36,
-      "topic": "Authorization, confidentiality and trust",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 32
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 19
-        }
-      ]
-    },
-    {
-      "comparison_page": 37,
-      "topic": "Authorization, confidentiality and trust",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 33
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 21
-        }
-      ]
-    },
-    {
-      "comparison_page": 38,
-      "topic": "Authorization, confidentiality and trust",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 34
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 22
-        }
-      ]
-    },
-    {
-      "comparison_page": 39,
-      "topic": "Authorization, confidentiality and trust",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": null
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 23
-        }
-      ]
-    },
-    {
-      "comparison_page": 40,
-      "topic": "Authorization, confidentiality and trust",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": null
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 24
-        }
-      ]
-    },
-    {
-      "comparison_page": 41,
-      "topic": "Authorization, confidentiality and trust",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": null
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 25
-        }
-      ]
-    },
-    {
-      "comparison_page": 42,
-      "topic": "Authorization, confidentiality and trust",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": null
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 26
-        }
-      ]
-    },
-    {
-      "comparison_page": 43,
-      "topic": "Invocation modes, streams and large objects",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 37
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 26
-        }
-      ]
-    },
-    {
-      "comparison_page": 44,
-      "topic": "Invocation modes, streams and large objects",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 38
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 27
-        }
-      ]
-    },
-    {
-      "comparison_page": 45,
-      "topic": "Invocation modes, streams and large objects",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 39
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 28
-        }
-      ]
-    },
-    {
-      "comparison_page": 46,
-      "topic": "Invocation modes, streams and large objects",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": null
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 29
-        }
-      ]
-    },
-    {
-      "comparison_page": 47,
-      "topic": "Collaboration plan, dependencies and execution state",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 29
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 29
-        }
-      ]
-    },
-    {
-      "comparison_page": 48,
-      "topic": "Collaboration plan, dependencies and execution state",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 36
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 30
-        }
-      ]
-    },
-    {
-      "comparison_page": 49,
-      "topic": "Collaboration plan, dependencies and execution state",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 37
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 31
-        }
-      ]
-    },
-    {
-      "comparison_page": 50,
-      "topic": "UAV application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 40
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 32
-        }
-      ]
-    },
-    {
-      "comparison_page": 51,
-      "topic": "UAV application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 41
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 33
-        }
-      ]
-    },
-    {
-      "comparison_page": 52,
-      "topic": "UAV application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 42
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 34
-        }
-      ]
-    },
-    {
-      "comparison_page": 53,
-      "topic": "UAV application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 43
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 35
-        }
-      ]
-    },
-    {
-      "comparison_page": 54,
-      "topic": "UAV application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 44
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 55,
-      "topic": "UAV application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 45
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 56,
-      "topic": "UAV application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 46
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 57,
-      "topic": "Distributed inference application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 47
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 35
-        }
-      ]
-    },
-    {
-      "comparison_page": 58,
-      "topic": "Distributed inference application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 48
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 36
-        }
-      ]
-    },
-    {
-      "comparison_page": 59,
-      "topic": "Distributed inference application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 49
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 37
-        }
-      ]
-    },
-    {
-      "comparison_page": 60,
-      "topic": "Distributed inference application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 50
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 38
-        }
-      ]
-    },
-    {
-      "comparison_page": 61,
-      "topic": "Distributed inference application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 51
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 39
-        }
-      ]
-    },
-    {
-      "comparison_page": 62,
-      "topic": "Distributed inference application and validation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 52
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 40
-        }
-      ]
-    },
-    {
-      "comparison_page": 63,
-      "topic": "Existing evidence and its interpretation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 34
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 41
-        }
-      ]
-    },
-    {
-      "comparison_page": 64,
-      "topic": "Existing evidence and its interpretation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 35
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 42
-        }
-      ]
-    },
-    {
-      "comparison_page": 65,
-      "topic": "Existing evidence and its interpretation",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 36
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 66,
-      "topic": "Proposed evaluation and metrics",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 45
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 43
-        }
-      ]
-    },
-    {
-      "comparison_page": 67,
-      "topic": "Proposed evaluation and metrics",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 46
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 44
-        }
-      ]
-    },
-    {
-      "comparison_page": 68,
-      "topic": "Proposed evaluation and metrics",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 51
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 45
-        }
-      ]
-    },
-    {
-      "comparison_page": 69,
-      "topic": "Proposed evaluation and metrics",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 52
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 70,
-      "topic": "Proposed evaluation and metrics",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 54
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 71,
-      "topic": "Proposed evaluation and metrics",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 55
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 72,
-      "topic": "Research plan, timeline and risks",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 53
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 46
-        }
-      ]
-    },
-    {
-      "comparison_page": 73,
-      "topic": "Research plan, timeline and risks",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 54
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 47
-        }
-      ]
-    },
-    {
-      "comparison_page": 74,
-      "topic": "Research plan, timeline and risks",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 55
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 75,
-      "topic": "Research plan, timeline and risks",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 56
-        },
-        {
-          "version": "CURRENT",
-          "source_page": null
-        }
-      ]
-    },
-    {
-      "comparison_page": 76,
-      "topic": "Conclusion and expected outcomes",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 57
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 48
-        }
-      ]
-    },
-    {
-      "comparison_page": 77,
-      "topic": "References",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 57
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 48
-        }
-      ]
-    },
-    {
-      "comparison_page": 78,
-      "topic": "References",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 58
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 49
-        }
-      ]
-    },
-    {
-      "comparison_page": 79,
-      "topic": "References",
-      "panels": [
-        {
-          "version": "ORIGINAL",
-          "source_page": 59
-        },
-        {
-          "version": "CURRENT",
-          "source_page": 50
-        }
-      ]
+  "graphics": [
+    {
+      "unit": "N0030",
+      "asset": "N0030-0.pdf",
+      "source": {
+        "page": 10,
+        "rect": [
+          66,
+          239.74000549316406,
+          546,
+          562.0419921875
+        ]
+      }
+    },
+    {
+      "unit": "N0060",
+      "asset": "N0060-0.pdf",
+      "source": {
+        "page": 17,
+        "rect": [
+          66,
+          97.01099395751953,
+          546,
+          338.0169982910156
+        ]
+      }
+    },
+    {
+      "unit": "N0079",
+      "asset": "N0079-0.pdf",
+      "source": {
+        "page": 21,
+        "rect": [
+          66,
+          69.40399932861328,
+          546,
+          271.33197021484375
+        ]
+      }
+    },
+    {
+      "unit": "N0085",
+      "asset": "N0085-0.pdf",
+      "source": {
+        "page": 22,
+        "rect": [
+          66,
+          169.6190948486328,
+          546,
+          392.6549987792969
+        ]
+      }
+    },
+    {
+      "unit": "N0098",
+      "asset": "N0098-0.pdf",
+      "source": {
+        "page": 24,
+        "rect": [
+          66,
+          462.7915344238281,
+          546,
+          680.4594116210938
+        ]
+      }
+    },
+    {
+      "unit": "N0102",
+      "asset": "N0102-0.pdf",
+      "source": {
+        "page": 25,
+        "rect": [
+          66,
+          464.3670654296875,
+          546,
+          709.0579833984375
+        ]
+      }
+    },
+    {
+      "unit": "N0103",
+      "asset": "N0103-0.pdf",
+      "source": {
+        "page": 26,
+        "rect": [
+          66,
+          70.00001525878906,
+          546,
+          99.81097412109375
+        ]
+      }
+    },
+    {
+      "unit": "N0111",
+      "asset": "N0111-0.pdf",
+      "source": {
+        "page": 27,
+        "rect": [
+          66,
+          332.1880798339844,
+          546,
+          408.9801330566406
+        ]
+      }
+    },
+    {
+      "unit": "N0114",
+      "asset": "N0114-0.pdf",
+      "source": {
+        "page": 28,
+        "rect": [
+          66,
+          83.84998321533203,
+          546,
+          373.06298828125
+        ]
+      }
+    },
+    {
+      "unit": "N0137",
+      "asset": "N0137-0.pdf",
+      "source": {
+        "page": 35,
+        "rect": [
+          66,
+          69.40399932861328,
+          546,
+          323.9599914550781
+        ]
+      }
+    },
+    {
+      "unit": "N0163",
+      "asset": "N0163-0.pdf",
+      "source": {
+        "page": 40,
+        "rect": [
+          66,
+          121.80304718017578,
+          546,
+          389.9079895019531
+        ]
+      }
+    },
+    {
+      "unit": "N0186",
+      "asset": "N0186-0.pdf",
+      "source": {
+        "page": 44,
+        "rect": [
+          66,
+          69.40399932861328,
+          546,
+          283.31201171875
+        ]
+      }
+    },
+    {
+      "unit": "N0220",
+      "asset": "N0220-0.pdf",
+      "source": {
+        "page": 50,
+        "rect": [
+          66,
+          356.85479736328125,
+          546,
+          612.8384399414062
+        ]
+      }
+    },
+    {
+      "unit": "N0227",
+      "asset": "N0227-0.pdf",
+      "source": {
+        "page": 52,
+        "rect": [
+          66,
+          69.40399932861328,
+          546,
+          337.5090026855469
+        ]
+      }
+    },
+    {
+      "unit": "N0240",
+      "asset": "N0240-0.pdf",
+      "source": {
+        "page": 54,
+        "rect": [
+          66,
+          402.3230285644531,
+          546,
+          637.3399658203125
+        ]
+      }
+    },
+    {
+      "unit": "N0243",
+      "asset": "N0243-0.pdf",
+      "source": {
+        "page": 55,
+        "rect": [
+          66,
+          214.9840850830078,
+          546,
+          529.7260131835938
+        ]
+      }
+    },
+    {
+      "unit": "N0250",
+      "asset": "N0250-0.pdf",
+      "source": {
+        "page": 57,
+        "rect": [
+          66,
+          69.40399932861328,
+          546,
+          311.9800109863281
+        ]
+      }
+    },
+    {
+      "unit": "N0256",
+      "asset": "N0256-0.pdf",
+      "source": {
+        "page": 58,
+        "rect": [
+          66,
+          120.94702911376953,
+          546,
+          404.1700134277344
+        ]
+      }
+    },
+    {
+      "unit": "N0268",
+      "asset": "N0268-0.pdf",
+      "source": {
+        "page": 60,
+        "rect": [
+          66,
+          242.2006378173828,
+          546,
+          297.784423828125
+        ]
+      }
+    },
+    {
+      "unit": "N0275",
+      "asset": "N0275-0.pdf",
+      "source": {
+        "page": 61,
+        "rect": [
+          66,
+          97.89502716064453,
+          546,
+          340.47100830078125
+        ]
+      }
+    },
+    {
+      "unit": "N0296",
+      "asset": "N0296-0.pdf",
+      "source": {
+        "page": 65,
+        "rect": [
+          66,
+          195.09303283691406,
+          546,
+          608.2979736328125
+        ]
+      }
+    },
+    {
+      "unit": "N0300",
+      "asset": "N0300-0.pdf",
+      "source": {
+        "page": 66,
+        "rect": [
+          66,
+          316.05706787109375,
+          546,
+          657.8980102539062
+        ]
+      }
+    },
+    {
+      "unit": "N0309",
+      "asset": "N0309-0.pdf",
+      "source": {
+        "page": 68,
+        "rect": [
+          66,
+          227.9650421142578,
+          546,
+          615.1099853515625
+        ]
+      }
     }
   ],
   "limits": [
-    "Topic grouping is not sentence alignment.",
-    "Boundary pages deliberately repeat.",
-    "Embedded pages are unchanged; internal source-PDF links are not copied."
-  ]
+    "PDF-derived paragraph boundaries; source wording retained, pagination changes.",
+    "Topic-related notes are not claims of exact replacement or deletion.",
+    "Old graphics are represented by extracted text and Origin page locators; revised graphics remain vector excerpts.",
+    "No claim or experiment changes; this is not scientific validation."
+  ],
+  "output_sha256": "70bdbc2e191fdfcc4d46f0d20db9b81bcb7af88f8a8b21c762af621131906347",
+  "pages": 102,
+  "status": "TEXT_AND_LAYOUT_PASS; visual review recorded separately",
+  "validation": {
+    "missing_current_text": [],
+    "current_order_errors": [],
+    "missing_old_gold_text": [],
+    "outside_page_spans": [],
+    "latex_errors": [],
+    "current_units": 350,
+    "old_units": 349,
+    "pages": 102,
+    "annotation_modes": {
+      "unchanged": 13,
+      "paired_old_passage": 96,
+      "related_unpaired": 204
+    },
+    "status": "TEXT_AND_LAYOUT_PASS"
+  }
 }

@@ -15,9 +15,11 @@ qualification. T013 remains the C++ process qualification authority.
 
 The inherited Spec182 binding suite was updated where its requester assertion
 still required the retired hand-built `nativeRequestRuntimeFromJson` executable
-path. The current requester uses the prepared native owner route
-`Runtime::open -> User::prepare -> PreparedModel::request`; this compatibility
-change does not weaken the native runtime parser binding or catalog validation.
+path. The canonical requester route is now
+`Runtime::open -> User::prepare -> User::request(PreparedModel)`; the older
+`PreparedModel::request` spelling remains a deprecated compatibility wrapper.
+This ownership correction does not weaken the native runtime parser binding or
+catalog validation.
 
 ## Static review
 

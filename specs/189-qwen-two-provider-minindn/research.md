@@ -15,7 +15,16 @@ canonical assembler 整 initializer 读取必须改为消费同一 Repo 选定�
 ## Decision: reuse component evidence
 
 保留全局 dependency closure 和已有 C++ checks。
-T002/T004 合并 T003、T010 合并 T009，T008 安全门前移。
+T002/T004 合并 T003、T008/T010 合并 T009；资源门保留为每次 full-model run
+的跨批次前置条件和最终 drain 判据，不再作为独立能力任务。
+
+## Local-detail boundary
+
+Qwen layer map、material manifest 的候选字段、profile 阈值、MiniNDN topology
+和 Spec189 oracle 只服务本地候选。它们不能反向修改 NDNSF Core/Repo 的全局
+默认值或公共 API；只有真实跨模块契约变化才进入 Design/MANAGEMENT.md 规定的
+独立设计变更。native C++ 是 source identity 和 prepare 的权威实现，Python
+helper 只做预检和编排。
 组件与两 Provider 正式资格分开，避免字段级任务/重复编译 executable。
 
 ## Known boundary

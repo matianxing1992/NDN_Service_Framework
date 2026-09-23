@@ -100,7 +100,7 @@ Spec184 T007/T008、Qwen3.6-27B 外部资格和旧路径 retirement 未完成项
 | FR-013 / US1,US2 | C-09 | T017,T018 | Core OperationRuntime/State and NativeInferenceClient; Spec185CoreOperation / Spec185DiCoreOperation | evidence/b0c-core-operation.md |
 | FR-001 / US1 | C-01 | T001,T002 | Runtime::open/close/drain; Spec185Runtime ownership counters | evidence/b1-runtime.md |
 | FR-002,FR-003 / US1 | C-02 | T003,T004 | User::prepare; Spec185Preparation source/parser counters and byte oracle | evidence/b2-preparation.md |
-| FR-004,FR-005 / US2 | C-01,C-03 | T005,T006 | PreparedModel::request; Spec185PreparedRequest signed native trace and independent result | evidence/b3-request.md |
+| FR-004,FR-005 / US2 | C-01,C-03 | T005,T006 | User::request(PreparedModel); Spec185PreparedRequest signed native trace and independent result | evidence/b3-request.md |
 | FR-006 / US2 | C-03 | T007,T008 | Conversation::request/exportCheckpoint; Spec185Conversation journal/handle equality | evidence/b4-conversation.md |
 | FR-007 / US3 | C-03 | T009,T010 | Provider::serve; Spec185ProviderAssembly fetch counter and state isolation | evidence/b5-provider.md |
 | FR-008 / US4 | C-01,C-04 | T011,T012 | DI_NativeRequester; Spec185Compatibility and wrapper-only checks | evidence/b6-migration.md |

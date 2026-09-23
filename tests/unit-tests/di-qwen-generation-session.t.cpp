@@ -130,6 +130,20 @@ BOOST_AUTO_TEST_CASE(SpecCodecRoundTripPreservesIdentityBindings)
   BOOST_CHECK_EQUAL(decoded.roles[2].providerBootId, "boot-2");
 }
 
+BOOST_AUTO_TEST_CASE(SpecAcceptsNativeGenerationBudget1024)
+{
+  for (const auto budget : {64U, 1024U}) {
+    auto spec = validSpec();
+    spec.maxGeneratedTokens = budget;
+    spec.tokenEpoch = budget - 1;
+    BOOST_CHECK_NO_THROW(spec.validate());
+    const auto decoded = qwenGenerationSessionSpecFromJson(
+      qwenGenerationSessionSpecToJson(spec));
+    BOOST_CHECK_EQUAL(decoded.maxGeneratedTokens, budget);
+    BOOST_CHECK_EQUAL(decoded.tokenEpoch, budget - 1);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(SpecAllowsThreeStagesToShareAProvider)
 {
   auto spec = validSpec();
@@ -164,7 +178,7 @@ BOOST_AUTO_TEST_CASE(SpecValidationRejectsUnboundOrUnboundedValues)
   spec.maxGeneratedTokens = 0;
   checkInvalid(spec);
   spec = validSpec();
-  spec.maxGeneratedTokens = 65;
+  spec.maxGeneratedTokens = 1025;
   checkInvalid(spec);
   spec = validSpec();
   spec.attemptEpoch = 3;

@@ -11,11 +11,16 @@
 // and Lifetime): one local request frame and one response frame over
 // anonymous pipes; stdout carries protocol bytes only; stderr is bounded.
 //   request : 8B "NDI182A1" | u64le metadataLength | u64le modelLength
-//             | u64le initializerLength | u8 hasInitializer | metadata
+//             | u64le initializerLength | u8 flags | metadata
 //             | model bytes | initializer bytes
+//             flags bit 0 is hasInitializer; bit 1 is hasModelFile.  A file
+//             request declares modelLength but carries no model bytes: the
+//             parent passes the already-staged read-only model as fd 3.
 //   response: 8B "NDI182R1" | u32le metadataLength | u64le modelLength
-//             | u8 status (0 ok / 1 algorithm reject / 2 input error)
-//             | metadata | model bytes (status 0 only)
+//             | u8 status (0 ok / 1 algorithm reject / 2 input error /
+//             | 3 file-backed digest-only success)
+//             | metadata | model bytes (status 0 only; status 3 reuses the
+//             | already-staged file after the child exits)
 // The parent closes its write end after one frame; the child drains the
 // remaining input to EOF and rejects any trailing/second-frame byte.  The
 // worker is not a network service and never receives credentials.
@@ -27,7 +32,10 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndnsf::di {
@@ -45,6 +53,7 @@ inline constexpr const char* kNativeOnnxAssemblyErrorSchema =
   "ndnsf-di-native-assembly-error-v1";
 inline constexpr const char* kNativeOnnxAssemblyRequestSchema =
   "ndnsf-di-native-assembly-request-v1";
+inline constexpr std::uint8_t kNativeOnnxWorkerDigestOnlyStatus = 3;
 
 // Certified assembly recipe JSON schema (CertifiedOnnxAssemblyRecipe.to_dict,
 // camelCase keys; canonical digest definition in the S1 contract).
@@ -58,6 +67,7 @@ struct NativeOnnxRequestHeader
   std::uint64_t modelLength = 0;
   std::uint64_t initializerLength = 0;
   bool hasInitializer = false;
+  bool hasModelFile = false;
 };
 
 /** Parsed response frame header. */
@@ -65,7 +75,8 @@ struct NativeOnnxResponseHeader
 {
   std::uint32_t metadataLength = 0;
   std::uint64_t modelLength = 0;
-  std::uint8_t status = 0;  // 0 ok / 1 algorithm reject / 2 input error
+  std::uint8_t status = 0;  // 0 ok / 1 algorithm reject / 2 input error /
+                            // 3 file-backed digest-only success
 };
 
 /**
@@ -136,6 +147,7 @@ public:
   const NativeOnnxResponseHeader& header() const { return m_header; }
   const std::vector<std::uint8_t>& metadata() const { return m_metadata; }
   const std::vector<std::uint8_t>& model() const { return m_model; }
+  std::vector<std::uint8_t> takeModel() { return std::move(m_model); }
 
 private:
   Result m_result = Result::NeedMore;
@@ -165,6 +177,8 @@ struct NativeOnnxWorkerMetadata
   NativeCertifiedRecipe recipe;  // certified slice incl. adapter/backend identity
   std::string recipeDigest;      // certified digest over the canonical recipe JSON
   std::string schema;            // kNativeOnnxAssemblyRequestSchema
+  std::optional<std::uint64_t> sourceBytes;
+  std::string sourceDigest;
 };
 
 /** Outcome of child-side S1 metadata validation. */
@@ -195,7 +209,10 @@ validateNativeOnnxWorkerMetadata(const std::string& json);
  * canonical payload are one certificate).
  */
 std::string
-buildNativeOnnxWorkerRequestMetadata(const NativeCertifiedRecipe& recipe);
+buildNativeOnnxWorkerRequestMetadata(
+  const NativeCertifiedRecipe& recipe,
+  std::optional<std::uint64_t> sourceBytes = std::nullopt,
+  const std::string& sourceDigest = {});
 
 /**
  * Compose one request frame (magic, little-endian lengths, hasInitializer
@@ -239,7 +256,7 @@ NativeOnnxWorkerOutcome
 finalizeNativeOnnxWorkerResponse(bool childExitZero,
                                  std::uint8_t status,
                                  const std::string& metadataJson,
-                                 const std::vector<std::uint8_t>& modelBytes,
+                                 std::vector<std::uint8_t> modelBytes,
                                  const NativeCertifiedRecipe& recipe,
                                  std::uint64_t maxAssembledBytes,
                                  bool activeAfterResponse);
@@ -249,10 +266,15 @@ finalizeNativeOnnxWorkerResponse(bool childExitZero,
  * S1-S7 certified chain in-process with the certified recipe budget and no
  * cancellation callback.  The bounded worker child calls this; it starts no
  * second worker, touches no Core/Repo state, and writes no cache or manifest.
+ * When sourceToReleaseAfterParse is non-null, OA04 scrubs and releases the
+ * supplied child-owned request source after parsing/inlining completes; the
+ * default remains non-destructive for focused in-process callers.
  */
 NativeCertifiedAssembly
 assembleInProcess(const NativeCanonicalSource& source,
-                  const NativeCertifiedRecipe& recipe);
+                  const NativeCertifiedRecipe& recipe,
+                  NativeCanonicalSource* sourceToReleaseAfterParse = nullptr,
+                  const NativeOnnxModelFileInput* modelFile = nullptr);
 
 /** Fixed location of the installed native worker binary. */
 struct NativeOnnxWorkerLocation
@@ -289,7 +311,9 @@ NativeCertifiedAssembly
 runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
                               const NativeCanonicalSource& source,
                               const NativeCertifiedRecipe& recipe,
-                              const NativeAssemblyControl& control);
+                              const NativeAssemblyControl& control,
+                              NativeCanonicalSource* sourceToReleaseAfterWrite = nullptr,
+                              const std::filesystem::path& modelFile = {});
 
 /**
  * OA03 worker child entry: accepts only the fixed "--stdio-v1

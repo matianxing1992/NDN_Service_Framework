@@ -22,6 +22,7 @@
 #include <future>
 #include <filesystem>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -523,6 +524,21 @@ logProviderStageMarker(const char* stage,
   logRuntimeEvidence(record.str());
 }
 
+void
+logProviderBoundaryStdout(const char* stage,
+                          const std::string& requestId,
+                          const std::string& provider,
+                          const std::string& role)
+{
+  std::ostringstream record;
+  record << "NDNSF_DI_PROVIDER_BOUNDARY"
+            << " stage=" << stage
+            << " requestId=" << requestId
+            << " provider=" << provider
+            << " role=" << role;
+  logRuntimeEvidence(record.str());
+}
+
 std::string
 metadataValue(const NativeModelRunnerSpec& spec,
               std::initializer_list<const char*> names)
@@ -641,7 +657,13 @@ public:
     , runnerSpecs(config.runnerSpecs)
     , runnerFactory(config.runnerFactory)
     , localProviderName(config.localProviderName)
-    , runtime(config.workerCount, config.workerQueueCapacity)
+    // Preserve the runtime's existing byte/entry capacities; only the explicit
+    // per-host conversation TTL differs from its default construction.
+    , runtime(config.workerCount, config.workerQueueCapacity,
+              512ULL * 1024ULL * 1024ULL, 128,
+              512ULL * 1024ULL * 1024ULL, 128,
+              512ULL * 1024ULL * 1024ULL, 128,
+              config.conversationRetentionMs)
     , executionLeaseTable(config.executionLeaseTable)
     , executionLeaseCleanupIntervalMs(config.executionLeaseCleanupIntervalMs)
   {
@@ -2034,8 +2056,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.fail("DI_PROTECTED_RUNTIME_FACTORY_MISSING");
           return;
         }
+        logProviderBoundaryStdout("PROTECTED_RUNTIME_FACTORY_BEGIN", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         protectedRuntime = config.protectedRuntimeFactory(
           ctx, *selectionProjection, groupCoordinator);
+        logProviderBoundaryStdout("PROTECTED_RUNTIME_FACTORY_DONE", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         if (!protectedRuntime ||
             protectedRuntime->state() != ProtectedRuntimeState::GrantVerified) {
           // Preparation requires a newly verified grant, not a drained runtime
@@ -2045,6 +2071,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         const auto fencingToken = nativeProtectedFencingToken(
           *selectionProjection, config.providerBootId, assignmentFields);
+        logProviderBoundaryStdout("PROTECTED_BINDING_VALIDATE_BEGIN", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         if (const auto error = validateProtectedRuntimeBinding(
               *selectionProjection, *protectedRuntime, groupCoordinator,
               config.providerBootId, fencingToken)) {
@@ -2056,19 +2084,74 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.fail(*error);
           return;
         }
+        logProviderBoundaryStdout("PROTECTED_BINDING_VALIDATE_DONE", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         logProviderStageMarker("GRANT_VERIFIED", stageRequestId,
                                ctx.localProvider().toUri(), role,
                                requestPlanDigest, "observed", {},
                                stageAttemptEpoch);
+        logProviderBoundaryStdout("GRANT_STAGE_MARKER_DONE", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
+        logProviderStageMarker("POST_GRANT_CONTINUING", stageRequestId,
+                               ctx.localProvider().toUri(), role,
+                               requestPlanDigest, "observed", {},
+                               stageAttemptEpoch);
+        logProviderBoundaryStdout("POST_GRANT_CONTINUING", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         if (selectionProjection && config.runnerPreparationFactory) {
           const auto adapterIdentity = selectionProjection->assembly.backend.empty()
             ? std::string("native") : selectionProjection->assembly.backend;
           auto reportAdmission = makeNativeAssemblyProgressReporter(
             ctx, *selectionProjection, adapterIdentity, 1, 0,
             selectionProjection->assemblyProgressSequence);
-          reportAdmission("ASSEMBLY_ADMISSION", 0.0);
+          const auto& boundRole = selectionProjection->assembly.selectedRole;
+          const auto operationId = ctx.assignment().selectionDigest + ":" +
+            boundRole + ":assembly-progress";
+          try {
+            logRuntimeEvidence(
+              std::string("NDNSF_DI_ASSEMBLY_ADMISSION_BEGIN provider=") +
+              ctx.localProvider().toUri() + " requestId=" +
+              selectionProjection->requestId + " role=" + boundRole +
+              " selectionDigest=" + ctx.assignment().selectionDigest +
+              " operationId=" + operationId);
+            logProviderBoundaryStdout("ASSEMBLY_ADMISSION_BEGIN", stageRequestId,
+                                      ctx.localProvider().toUri(), role);
+            reportAdmission("ASSEMBLY_ADMISSION", 0.0);
+            logProviderBoundaryStdout("ASSEMBLY_ADMISSION_DONE", stageRequestId,
+                                      ctx.localProvider().toUri(), role);
+            std::ostringstream record;
+            record << "NDNSF_DI_ASSEMBLY_ADMISSION_REPORTED"
+                   << " provider=" << ctx.localProvider().toUri()
+                   << " requestId=" << selectionProjection->requestId
+                   << " role=" << boundRole
+                   << " selectionDigest=" << ctx.assignment().selectionDigest
+                   << " operationId=" << operationId;
+            logRuntimeEvidence(record.str());
+          }
+          catch (const std::exception& error) {
+            auto errorText = std::string(error.what());
+            if (errorText.size() > 512) {
+              errorText.resize(512);
+            }
+            std::replace_if(errorText.begin(), errorText.end(),
+                            [] (unsigned char value) {
+                              return value < 0x20 || value == 0x7f;
+                            }, ' ');
+            std::ostringstream record;
+            record << "NDNSF_DI_ASSEMBLY_ADMISSION_FAILED"
+                   << " provider=" << ctx.localProvider().toUri()
+                   << " requestId=" << selectionProjection->requestId
+                   << " role=" << boundRole
+                   << " selectionDigest=" << ctx.assignment().selectionDigest
+                   << " operationId=" << operationId
+                   << " error=\"" << errorText << "\"";
+            logRuntimeError(record.str());
+            throw;
+          }
         }
       }
+      logProviderBoundaryStdout("POST_PROTECTED_ADMISSION_DONE", stageRequestId,
+                                ctx.localProvider().toUri(), role);
       std::shared_ptr<DependencyIo> io =
         std::make_shared<NdnsfCollaborationDependencyIo>(
         ctx,
@@ -2089,6 +2172,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
       std::optional<ExecutionAttemptKey> executionAttempt;
       if (config.requireExecutionAttemptBinding) {
+        logProviderBoundaryStdout("EXECUTION_BINDING_BEGIN", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         auto binding = validateNativeProviderExecutionBinding(
           assignmentFields,
           config.providerBootId,
@@ -2105,6 +2190,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           return;
         }
         executionAttempt = std::move(binding.attempt);
+        logProviderBoundaryStdout("EXECUTION_BINDING_DONE", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
       }
       if (config.executionLeaseTable != nullptr) {
         const auto& fields = assignmentFields;
@@ -2149,6 +2236,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             return;
           }
         }
+        logProviderBoundaryStdout("LEASE_ACTIVATION_BEGIN", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         const auto activated = config.executionLeaseTable->validateAndActivate(
           leaseId,
           providerEpoch,
@@ -2160,6 +2249,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx.fail(activated.reasonCode);
           return;
         }
+        logProviderBoundaryStdout("LEASE_ACTIVATION_DONE", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         activatedLeaseId = leaseId;
         activatedProviderEpoch = providerEpoch;
         activatedRequester = binding.requesterName;
@@ -2225,6 +2316,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                           executionSessionId,
                               assignment,
                               ctx.localProvider().toUri()));
+      logProviderBoundaryStdout("ROLE_SPEC_READY", stageRequestId,
+                                ctx.localProvider().toUri(), role);
       if (selectionProjection && selectionProjection->conversationTurnBinding &&
           selectionProjection->conversationTurnBinding->serviceName !=
             ctx.assignment().service.toUri()) {
@@ -2325,6 +2418,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                      std::uint64_t sequence,
                                      double progress,
                                      const std::string& phase) {
+        if (selectionProjection) {
+          logProviderBoundaryStdout("STATUS_REPORT_BEGIN", stageRequestId,
+                                    ctx.localProvider().toUri(), role);
+          logRuntimeEvidence(
+            std::string("NDNSF_DI_STATUS_REPORT_BEGIN provider=") +
+            ctx.localProvider().toUri() + " requestId=" + stageRequestId +
+            " role=" + role + " operationId=" + operationId +
+            " state=" + stateName + " phase=" + phase);
+        }
         ndn_service_framework::ServiceProvider::ServiceOperationStatus status;
         status.operationId = operationId;
         status.operation = operation;
@@ -2347,6 +2449,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         status.detailsPayload = ndn::Buffer(
           reinterpret_cast<const std::uint8_t*>(details.data()), details.size());
         ctx.reportOperationStatus(std::move(status));
+        if (selectionProjection) {
+          logProviderBoundaryStdout("STATUS_REPORT_DONE", stageRequestId,
+                                    ctx.localProvider().toUri(), role);
+          logRuntimeEvidence(
+            std::string("NDNSF_DI_STATUS_REPORT_DONE provider=") +
+            ctx.localProvider().toUri() + " requestId=" + stageRequestId +
+            " role=" + role + " operationId=" + operationId +
+            " state=" + stateName + " phase=" + phase);
+        }
       };
       const auto readinessOperationId =
         ctx.assignment().selectionDigest + ":" + role + ":readiness";
@@ -2383,18 +2494,30 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                            stageAttemptEpoch] {
             const auto preparationId = std::to_string(
               runnerPreparationSequence->fetch_add(1, std::memory_order_relaxed) + 1);
+            logProviderBoundaryStdout("RUNNER_PREPARATION_BEGIN", projection.requestId,
+                                      ctx.localProvider().toUri(), role);
             logProviderStageMarker("ASSEMBLY_STARTED", projection.requestId,
                                    ctx.localProvider().toUri(), role,
                                    projection.planDigest, "observed", {},
                                    stageAttemptEpoch, preparationId);
             if (executionGuard) executionGuard();
+            logProviderBoundaryStdout("RUNNER_PREPARATION_FACTORY_BEGIN",
+                                      projection.requestId,
+                                      ctx.localProvider().toUri(), role);
             auto spec = preparationFactory(ctx, projection, protectedRuntime);
+            logProviderBoundaryStdout("RUNNER_PREPARATION_FACTORY_DONE",
+                                      projection.requestId,
+                                      ctx.localProvider().toUri(), role);
             if (const auto error = validateNativePreparedRunnerSpec(
                   projection, spec)) {
               throw std::runtime_error(*error);
             }
             if (executionGuard) executionGuard();
+            logProviderBoundaryStdout("RUNNER_CREATE_BEGIN", projection.requestId,
+                                      ctx.localProvider().toUri(), role);
             auto runner = runnerFactory->create(spec);
+            logProviderBoundaryStdout("RUNNER_CREATE_DONE", projection.requestId,
+                                      ctx.localProvider().toUri(), role);
             if (executionGuard) executionGuard();
             const auto evidence = runner->executionEvidenceSnapshot();
             if (!evidence) {
@@ -2451,7 +2574,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       // Collaboration channel and validates exact selection/revision/plan
       // membership.  This is a DI payload above NDNSF Core, not a new base
       // protocol message.
+      logProviderBoundaryStdout("READINESS_BARRIER_CHECK", stageRequestId,
+                                ctx.localProvider().toUri(), role);
       if (config.allowLegacyPeerReadinessBarrier) {
+        logProviderBoundaryStdout("READINESS_BARRIER_BEGIN", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         constexpr const char* readinessScope = "ndnsf-di-readiness-v1";
         const ndn::Name readinessTopic("/ndnsf-di/readiness");
         auto expected = ctx.assignment().roleProviders;
@@ -2643,9 +2770,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                << " revision=" << effectiveRevision
                << " binding_digest=" << readinessBindingDigest;
         logRuntimeInfo(record.str());
+        logProviderBoundaryStdout("READINESS_BARRIER_DONE", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
       }
+      logProviderBoundaryStdout("EXECUTION_STATUS_BEGIN", stageRequestId,
+                                ctx.localProvider().toUri(), role);
       reportStatus(executionOperationId, "distributed-inference", "RUNNING", 1,
                    0.0, "EXECUTING");
+      logProviderBoundaryStdout("EXECUTION_STATUS_DONE", stageRequestId,
+                                ctx.localProvider().toUri(), role);
       if (const auto* spec = runnerSpecForRole(state->runnerSpecs, role)) {
         logFragmentInventoryEvent("EXECUTION_OBSERVED",
                                   *spec,
@@ -2918,14 +3051,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           coordinatorConfig.roleSpecFactory =
             [projection, assignmentForCoordinator, providerName] (std::size_t sequence) {
               auto projected = roleSpecFromSelectionProjectionV3(
-                projection, providerName);
+                projection, providerName, sequence);
               // Generation control edges are added by the requester planner
               // after the cross-Provider V3 projection is sealed. Preserve
               // those exact TOKEN_FEEDBACK edges, but never reintroduce the
               // legacy reconstruction of protected pipeline edges.
+              // V3 assignments may contain only the local role. Missing
+              // remote mappings must stay empty so dependency IO resolves
+              // the producer through the sealed capability rank, not self.
               const auto control = roleSpecFor(
                 projection.plan, projection.executionRole.roleId,
-                projection.requestId, assignmentForCoordinator, providerName,
+                projection.requestId, assignmentForCoordinator, "",
                 sequence);
               for (const auto& edge : control.inputs) {
                 if (edge.operationKind == "TOKEN_FEEDBACK")
@@ -3008,8 +3144,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               (*config.stageServiceTimeObserver)(elapsed);
             }
           };
+        logProviderBoundaryStdout("EPOCH_COORDINATOR_BEGIN", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         const auto coordinated = runNativeEpochCoordinator(
           std::move(coordinatorConfig));
+        logProviderBoundaryStdout("EPOCH_COORDINATOR_DONE", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
         if (config.epochCoordinatorCompletionObserver &&
             *config.epochCoordinatorCompletionObserver) {
           try {
@@ -3061,7 +3201,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           receipt.positionDigest = identity.positionDigest;
           receipt.stateSchemaDigest = identity.stateSchemaDigest;
           receipt.stateComponentDigests = identity.stateComponentDigests;
-          receipt.expiresAtMs = turn.retentionDeadlineMs;
+          // Use one time sample for the advertised receipt, binding and
+          // actual store admission, so advertised retention cannot outlive KV.
+          const auto promotionNowMs = static_cast<std::uint64_t>(
+            std::max<long long>(0, epochMs()));
+          const auto maximumDeadline = std::numeric_limits<std::uint64_t>::max();
+          const auto localDeadline = promotionNowMs > maximumDeadline - config.conversationRetentionMs
+            ? maximumDeadline : promotionNowMs + config.conversationRetentionMs;
+          receipt.expiresAtMs = std::min(turn.retentionDeadlineMs, localDeadline);
           receipt.validate();
 
           ConversationStateBinding conversationBinding;
@@ -3070,11 +3217,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           conversationBinding.serviceName = turn.serviceName;
           conversationBinding.planRoleMapDigest = turn.planRoleMapDigest;
           conversationBinding.receiptDigest = receipt.computedDigest();
-          conversationBinding.expiresAtMs = turn.retentionDeadlineMs;
+          conversationBinding.expiresAtMs = receipt.expiresAtMs;
           conversationBinding.identity = identity;
           if (!state->runtime.stageDecodeStatePromotion(
                 executionSessionId, finalized, conversationBinding,
-                static_cast<std::uint64_t>(std::max<long long>(0, epochMs())))) {
+                promotionNowMs)) {
             // The conversation-enabled coordinator retained the final
             // request-local decode state for this handoff.  A failed stage
             // must release that state before surfacing the boundary error.
@@ -3136,7 +3283,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             const auto waitBudget = static_cast<std::uint64_t>(
               std::max(1, timeoutBudget.conversationControlMs));
             const auto controlDeadline = std::min(
-              turn.retentionDeadlineMs, nowForControl + waitBudget);
+              receipt.expiresAtMs, nowForControl + waitBudget);
             const auto publishAck = [&](bool committed, const std::string& checkpointDigest) {
               NativeJson ack{{"schema", committed ? "ndnsf-di-provider-conversation-commit-ack-v1" :
                                                      "ndnsf-di-provider-conversation-rollback-ack-v1"},
@@ -3191,7 +3338,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                     control.planRoleMapDigest != turn.planRoleMapDigest ||
                     control.roleName != finalized.role ||
                     control.receiptDigest != receipt.computedDigest() ||
-                    control.expiresAtMs > turn.retentionDeadlineMs ||
+                    control.expiresAtMs > receipt.expiresAtMs ||
                     control.expiresAtMs <= now) {
                   continue;
                 }

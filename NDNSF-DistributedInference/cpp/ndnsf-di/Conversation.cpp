@@ -83,6 +83,23 @@ std::string requestString(const PreparedModelPackage& package, const char* field
   }
 }
 
+std::uint64_t configuredRetentionDeadlineFromPackage(const PreparedModelPackage& package)
+{
+  const auto root = nativeParseJson(package.registration->configurationJson);
+  const auto conversation = root.find("conversation");
+  if (conversation == root.end() || !conversation->is_object())
+    return 0;
+  const auto turn = conversation->find("turn");
+  if (turn == conversation->end() || !turn->is_object())
+    return 0;
+  if (!turn->contains("retention_deadline_ms"))
+    return 0;
+  const auto deadline = turn->at("retention_deadline_ms").get<std::uint64_t>();
+  if (deadline == 0)
+    throw std::invalid_argument("conversation retention_deadline_ms must be positive");
+  return deadline;
+}
+
 } // namespace
 
 ConversationCheckpoint ConversationCheckpoint::fromBytes(
@@ -104,11 +121,13 @@ struct Conversation::State
                  std::shared_ptr<NativeInferenceClient> nativeClient,
                  std::shared_ptr<NativeConversationCoordinator> owner,
                  std::string id,
+                 std::uint64_t configuredRetentionDeadline,
                  std::string service,
                  std::string security,
                  std::string tokenizer)
     : model(std::move(preparedModel)), client(std::move(nativeClient)), coordinator(std::move(owner)),
-      conversationId(std::move(id)), serviceName(std::move(service)),
+      conversationId(std::move(id)), configuredRetentionDeadlineMs(configuredRetentionDeadline),
+      serviceName(std::move(service)),
       securityDomainDigest(std::move(security)), tokenizerDigest(std::move(tokenizer))
   {
   }
@@ -118,6 +137,7 @@ struct Conversation::State
   std::shared_ptr<NativeInferenceClient> client;
   std::shared_ptr<NativeConversationCoordinator> coordinator;
   std::string conversationId;
+  std::uint64_t configuredRetentionDeadlineMs = 0;
   std::string serviceName;
   std::string securityDomainDigest;
   std::string tokenizerDigest;
@@ -171,7 +191,12 @@ NativeConversationContinuation Conversation::makeContinuation(const Input& input
     continuation.mode = "FULL_CONTEXT";
     continuation.parentContextEpoch = 0;
     continuation.canonicalTokenIds = inputTokens;
-    continuation.retentionDeadlineMs = nowMs() + 300'000;
+    const auto now = nowMs();
+    continuation.retentionDeadlineMs = m_state->configuredRetentionDeadlineMs != 0
+      ? m_state->configuredRetentionDeadlineMs : now + 300'000;
+    if (continuation.retentionDeadlineMs <= now)
+      throw DiError("CONVERSATION_RETENTION_EXPIRED", "conversation", "request",
+                    "configured conversation retention deadline has expired");
     return continuation;
   }
 
@@ -326,6 +351,11 @@ void Conversation::close() noexcept
 
 Conversation PreparedModel::openConversation(const ConversationOptions& options) const
 {
+  return openConversationInternal(options);
+}
+
+Conversation PreparedModel::openConversationInternal(const ConversationOptions& options) const
+{
   if (!m_package || !m_clientFactory)
     throw DiError("RUNTIME_CLOSED", "local", "conversation",
                   "prepared model is not bound to a native Runtime client");
@@ -358,6 +388,18 @@ Conversation PreparedModel::openConversation(const ConversationOptions& options)
     throw DiError("UNSUPPORTED_CAPABILITY", "local", "conversation",
                   "conversation requires a pinned tokenizer digest");
 
+  std::uint64_t configuredRetentionDeadline = 0;
+  try {
+    configuredRetentionDeadline = configuredRetentionDeadlineFromPackage(*m_package);
+  }
+  catch (const std::exception& error) {
+    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "conversation",
+                  std::string("verified conversation retention is invalid: ") + error.what());
+  }
+  if (configuredRetentionDeadline != 0 && configuredRetentionDeadline <= nowMs())
+    throw DiError("CONVERSATION_RETENTION_EXPIRED", "conversation", "open",
+                  "configured conversation retention deadline has expired");
+
   std::string id = options.conversationId;
   if (options.checkpoint) {
     const auto header = parseCheckpointWire(options.checkpoint->m_wire);
@@ -386,7 +428,7 @@ Conversation PreparedModel::openConversation(const ConversationOptions& options)
 
   return Conversation(std::make_shared<Conversation::State>(
     PreparedModel(m_package, m_receipt, m_lease, m_clientFactory), client, coordinator,
-    std::move(id), service, security, tokenizer));
+    std::move(id), configuredRetentionDeadline, service, security, tokenizer));
 }
 
 } // namespace ndnsf::di

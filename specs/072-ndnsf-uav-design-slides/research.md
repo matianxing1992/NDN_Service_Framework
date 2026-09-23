@@ -21,20 +21,3 @@
 - `Experiments/NDNSF_UAV_GUI_Minindn.py` provides headless and GUI smoke paths
   for control, telemetry, mission, video, recording, parameters, preflight,
   authority, and operator-dashboard behavior.
-
-## DeepSeek Second-Pass Review
-
-DeepSeek was used only as an adversarial completeness checklist. The following
-suggestions were rejected because they do not match current code:
-
-- placing MAVLink abstractions or XOR FEC inside NDNSF Core;
-- modeling telemetry as a stream subscription;
-- claiming one consumer per stream session;
-- describing mission compensation as in-flight route merging;
-- claiming automatic producer feedback on every adaptive decision;
-- inventing ServiceRouter, OperatorConsole, AutopilotManager, or XorFecEncoder
-  classes that do not exist.
-
-Useful retained checks were: state boundaries must be explicit, one-loss XOR
-limits must be stated, exact-name recording retrieval must be distinct from
-live streaming, and the final slide must identify production gaps.

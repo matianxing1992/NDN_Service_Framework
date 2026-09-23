@@ -1,7 +1,88 @@
 # B189-0/B189-5 Convergence Evidence
 
 **Status**: IN_PROGRESS / BLOCKED_FOR_NATIVE_EXECUTION
-**Updated**: 2026-09-18 02:22 -0500
+**Updated**: 2026-09-18 19:16 -0500
+
+## Convergence audit correction — 2026-09-18 19:16 -0500
+
+本轮只修正执行结构，不把文档修订写成功能结果。T008 已从活动能力任务中撤下，
+并入 T009 的 full-model resource gate；T003/T006 仍负责各自 native owner/
+materialization counters，T009 负责两次真实运行的采样和 drain。T002/T004 仍归
+T003，T010 仍归 T009。活动任务从七项变为六项，批次顺序为
+`B189-0 → B189-1 → B189-2 → B189-3 → B189-5`。
+
+审计同时明确局部边界：Qwen layer map、候选 profile、资源阈值、MiniNDN topology
+和 `spec189-two-provider-oracle` 只属于本候选；不会因为本 Spec 顺手扩展全局
+NDNSF API、Repo 默认值或缓存架构。Python ONNX helper 只做预检/编排，native C++
+仍是 source identity 和 prepare 的权威实现。已有 r13/r27 证据不变，当前仍无
+`QWEN_TWO_PROVIDER_PASS`；下一触发是修复后的受控 r28 runtime，而不是再建行政
+任务或先做全局重构。
+
+## Changed assembly gate — r13, 2026-09-18
+
+The file-backed ONNX assembly repair passed the final read-only static gate in
+immutable snapshot `.codex-tmp/spec189-canonical-identity-review-r13/`.
+`diff.patch` SHA-256 is
+`2a310f6a916a11d393ca6e611312c3ceeac5aaba8a3a25cb4623ce92bde77d18`; all 9
+frozen file hashes match `files.sha256`. The gate covers explicit authenticated
+initializer-path wiring, inline/external branching, stable-FD sidecar staging,
+sequential canonical identity, and selected tensor materialization.
+
+Focused validation passed:
+
+* `22 passed, 1 skipped` from the native assembly, Spec180 Provider role, and
+  APP facade tests; Python syntax compilation also passed.
+* A real Qwen graph plus its 1,503,264,768-byte initializer was scanned through
+  `canonical_onnx_identity` using an immutable candidate view. It emitted
+  `SPEC189_CANONICAL_IDENTITY_PASS`, graph digest
+  `sha256:0f3f6982c069b16d3bb1166f8d2ea6648c89419496869d01e9c1f81020ae0ca2`,
+  normalized initializer digest
+  `sha256:617db90e3f0cbc21fab2fac12855c626e459aef0bab1ce3002deaeab74c91756`,
+  and 311 tensors. `/usr/bin/time -v` recorded 3,689,700 kB peak RSS,
+  7.37 seconds elapsed, and `Swaps: 0`; raw output is under
+  `.codex-tmp/spec189-qwen-two-provider-20260918/identity-r1/`.
+
+This is a focused Python/ONNX resource and assembly result. It does not prove
+native Repo publication, ACK/Selection, provider execution, hidden-state
+handoff, cleanup, or MiniNDN qualification. The changed gate is closed for
+this batch; a fresh bounded r28 candidate is the next runtime trigger.
+
+## Global candidate preflight — r26/r27, 2026-09-18
+
+The candidate was rebuilt/installed with the global host closure and the
+Python binding was rebuilt against `/usr/local/lib` after r26 exposed a stale
+same-SONAME extension. The repaired binding imported successfully, but that
+does not establish a protocol result.
+
+| Attempt | First boundary | Classification | Evidence |
+| --- | --- | --- | --- |
+| `two-provider-global-r26` | stale `_ndnsf` extension undefined current Core symbol, before MiniNDN | `PREFLIGHT_BOUNDARY` | `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r26/` |
+| `two-provider-global-r27` | canonical ONNX identity materialization drove swap-I/O over 256 MiB; guard cleanup passed before requester launch | `RESOURCE_BOUNDARY:swapIo` | `.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r27/` |
+
+r27 is the first attempt in this sequence that started the real MiniNDN
+authority/controller/provider processes with the repaired global binding. The
+requester log is empty, so no ACK, Selection, provider fetch, assembly,
+handoff, terminal output or cleanup counters were observed. The old r25 log
+is not reused. The changed gate for the next attempt is the maintained
+`canonical_onnx_identity` implementation, reviewed in immutable snapshot
+`.codex-tmp/spec189-canonical-identity-review-r13/`; it now loads external
+initializers one at a time and clears their bytes after hashing.
+
+Current candidate binary identities used by r27: build receipt
+`sha256:e03b2604fba42d6ea32d979822a7f1ca894c1b6aaa35d2ce052c944d857d6248`,
+controller `sha256:e968e534bf7db213160dd9fb6fb29b115dfc3fae085da003986eaf6f872f1eb4`,
+requester `sha256:8422a72d22344ca4f8f5f66896546864e93771bc68e82d190c88146bd43a7a19`,
+provider `sha256:e4b66bd0cf0d97f30b3d065e5e2fc0caf12ec16b013f733bc2fa67fd0d620f1c`,
+assembly worker `sha256:b002ffdf75c5d17fb09e482aefdabeac341db0e5397fc9e2ed177aaaeac106a0`,
+oracle `sha256:1ace7e8ad884f5d7bda93726ac3d0e2d7d775642dcff23778d23fb81ba7c5fcb`.
+No `QWEN_TWO_PROVIDER_PASS` is claimed.
+
+**Four miss classes for the r27 gate**: static=`PASS` after r13 review;
+compile/link=not rerun because the repaired batch is Python-only; runtime/test=
+focused helper and real identity checks pass, while r27 stopped at host
+resource admission before the requester; unobserved=all protocol and full
+cleanup markers. **Closure decision**: `CLOSED_FOR_VALIDATION` for the
+assembly/resource subunit; next trigger is a fresh bounded r28 preflight.
 
 ## T001 integration boundary — 2026-09-18 13:29 -0500
 

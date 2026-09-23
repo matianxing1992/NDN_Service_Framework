@@ -162,6 +162,8 @@ def test_provider_assembles_certified_role_from_canonical_root(tmp_path):
         local_artifacts={
             "BackboneNeck": {
                 "path": str(package / "canonical" / "yolo26n.onnx"),
+                "canonical_initializer_path": str(
+                    package / "canonical" / "yolo26n.weights"),
                 "filename": "yolo26n.onnx",
                 "kind": "onnx-model",
                 "backend": "onnxruntime-cpu",
@@ -171,6 +173,8 @@ def test_provider_assembles_certified_role_from_canonical_root(tmp_path):
         ctx, execution, backbone,
         {"BackboneNeck": {
             "path": str(package / "canonical" / "yolo26n.onnx"),
+            "canonical_initializer_path": str(
+                package / "canonical" / "yolo26n.weights"),
             "filename": "yolo26n.onnx",
             "kind": "onnx-model",
             "backend": "onnxruntime-cpu",

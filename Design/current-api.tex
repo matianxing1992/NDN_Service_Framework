@@ -134,7 +134,7 @@ ndn::Name RequestService(const ndn::Name& serviceName,
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 758 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 824 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-1009e77682c2}\quad public\par
@@ -147,7 +147,7 @@ ndn::Name RequestServiceTargeted(const ndn::Name& provider,
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 751 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 817 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-efa9e29aae17}\quad public\par
@@ -161,7 +161,7 @@ ndn::Name RequestServiceTargeted(const ndn::Name& provider,
                                            std::function<void()> onTimeout,
                                            int timeoutMs)
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 1038 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 1104 行。\par
 
 完整声明查询：\path{api/core-reference.md}。
 
@@ -278,7 +278,7 @@ ndn::Name BeginCollaboration(const ServiceName& service,
                                          TimeoutHandler onTimeout,
                                          const RequestId& requestId = RequestId());
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 891 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 957 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-3ab0d3d87607}\quad public\par
@@ -288,7 +288,7 @@ bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
                                          CollaborationPlan plan);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 941 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 1007 行。\par
 
 完整声明查询：\path{api/core-reference.md}。
 
@@ -340,7 +340,7 @@ std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
                 std::function<void(const StreamedInvocationError&)> onError,
                 size_t strategy = ndn_service_framework::tlv::FirstResponding)
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 812 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 878 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-2eecc93af394}\quad public\par
@@ -348,7 +348,7 @@ std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 bool publish(const EventT& event)
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/InvocationStream.hpp}，第 348 行。\par
+\textbf{源码：}\path{ndn-service-framework/InvocationStream.hpp}，第 349 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-2bdd4eb83edb}\quad public\par
@@ -356,7 +356,7 @@ bool publish(const EventT& event)
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 void finish(const ResponseT& response, StreamFinishReason reason)
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/InvocationStream.hpp}，第 359 行。\par
+\textbf{源码：}\path{ndn-service-framework/InvocationStream.hpp}，第 360 行。\par
 
 完整声明查询：\path{api/core-reference.md}。
 
@@ -400,7 +400,7 @@ ndn::Name publishSignedAppData(
                 const ndn::Buffer& payload,
                 ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 670 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 736 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-ef2281d2fe2d}\quad public\par
@@ -413,7 +413,7 @@ void fetchSignedAppData(
                 SignedAppDataHandler onData,
                 SignedAppDataFailureHandler onFailure);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 693 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 759 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-68706878d1a8}\quad public\par
@@ -586,7 +586,7 @@ static std::vector<std::vector<uint8_t>> getDataPackets(
     const RepoNode& node,
     const RepoObjectManifest& manifest);
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp}，第 62 行。\par
+\textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp}，第 76 行。\par
 
 完整声明查询：\path{api/repo-reference.md}。
 
@@ -775,7 +775,7 @@ RepoCore 先在目录锁外调用 store->get(objectName)，再锁住目录状态
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 RepoCatalogDelta catalogSnapshot() const;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 60 行。\par
+\textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 91 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-e296daab62b3}\quad public\par
@@ -783,7 +783,7 @@ RepoCatalogDelta catalogSnapshot() const;
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 RepoCatalogDelta catalogDelta(uint64_t sinceEpoch) const;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 62 行。\par
+\textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 93 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-2c18852cdee0}\quad public\par
@@ -791,7 +791,7 @@ RepoCatalogDelta catalogDelta(uint64_t sinceEpoch) const;
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 RepoCatalogEntry catalogLookup(const std::string& objectName) const;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 64 行。\par
+\textbf{源码：}\path{NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp}，第 95 行。\par
 
 完整声明查询：\path{api/repo-reference.md}。
 
@@ -891,7 +891,7 @@ V3 proposal & proposeRoles 以绑定上下文、ackClosedDigest、角色、合�
 \code{NativeModelSplitStrategy} 实现 identity 和 enumerate；NativePlacementStrategy 实现 identity 和 proposeRoles。adapter 拥有模型检查、输入编码、结果解码，由 registry 登记并在使用前固定。策略返回值不能给自己签发 grant。新增策略应以固定图、报价、时钟测试确定性和拒绝分支，再让实际 requester 选择它；仅创建子类不会改变默认路径。
 
 \subsection{当前源码的描述符与候选增补}
-当前工作树 NativeModelDescriptor 包含 NativeAdapterDescriptor 和 sourceRevision；adapter 描述符绑定 \code{name/version/stateDigest/abi}、格式/任务/backend/precision 能力及输入/options/result schema 摘要，\code{canonicalJson/modelDigest} 提供规范身份。\code{NativeRequestPreparation} 的 sameModel 按模型 canonicalJson 比较。当前 NativeSplitCandidate 还包含 fragmentsByRole、artifactsByRole、requirementsByRole、crossPartitionTensors、tensorDegreesByRole、\code{rankArtifactDigestsByRole}、输入/结果角色、mergeKind、postprocessingJson、estimatedCosts、可选 hybridPlan 与 candidateDigest；computedDigest 用于完整候选身份，不能只哈希部分角色名。这些是并行实现中的源码事实，完整语义、独立 oracle 与接线验收仍以 Spec182 为准；目标冻结声明不自动复制这些新增字段。
+当前工作树 NativeModelDescriptor 包含 NativeAdapterDescriptor、sourceRevision 和默认值为 \code{none} 的 quantizationSubtype；非默认 \code{weight\_only\_int8} subtype 进入 \code{canonicalJson/modelDigest}，legacy \code{none} 保持旧 canonical JSON 兼容。adapter 描述符绑定 \code{name/version/stateDigest/abi}、格式/任务/backend/precision 能力及输入/options/result schema 摘要，\code{canonicalJson/modelDigest} 提供规范身份。\code{NativeRequestPreparation} 的 sameModel 按模型 canonicalJson 比较。当前 NativeSplitCandidate 还包含 fragmentsByRole、artifactsByRole、requirementsByRole、crossPartitionTensors、tensorDegreesByRole、\code{rankArtifactDigestsByRole}、输入/结果角色、mergeKind、postprocessingJson、estimatedCosts、可选 hybridPlan 与 candidateDigest；computedDigest 用于完整候选身份，不能只哈希部分角色名。这些是并行实现中的源码事实，完整语义、独立 oracle 与接线验收仍以 Spec182 为准；目标冻结声明不自动复制这些新增字段。
 
 \subsection{完整签名与源码定位}
 
@@ -904,7 +904,7 @@ virtual std::vector<NativeSplitCandidate> enumerate(
     const NativeGraphSnapshot& graph,
     const NativeCandidateBudget& budget) const = 0;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 279 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 301 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-0f4ac0e590fd}\quad public\par
@@ -915,7 +915,7 @@ virtual NativeRolePlacementProposalV3 proposeRoles(
     const std::vector<NativeSelectionRoleV3>& roles,
     const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const = 0;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 290 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp}，第 312 行。\par
 
 完整声明查询：\path{api/di-reference.md}。
 
@@ -958,7 +958,7 @@ NativePreparedInput prepareInput(const NativeModelDescriptor& model,
                                    std::string repositoryReference,
                                    std::chrono::steady_clock::time_point deadline) const;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 105 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 108 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-dcca376d355a}\quad public\par
@@ -966,7 +966,7 @@ NativePreparedInput prepareInput(const NativeModelDescriptor& model,
 \begin{Verbatim}[fontsize=\footnotesize,breaklines,breakanywhere]
 NativeInspectedModel inspectModel(const NativePreparedInput& input) const;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 113 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 116 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-2d8e39c7fc67}\quad public\par
@@ -977,7 +977,7 @@ NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
                                         const NativeRolePlacementProposalV3& proposal,
                                         const NativeRequestControl& control) const;
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 121 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 124 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-d192a8a670da}\quad public\par
@@ -987,7 +987,7 @@ static std::vector<NativeSelectionRoleV3> bindPublishedRoles(
     const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
     const std::vector<NativeSelectionRoleV3>& roles, const NativeArtifactBinding& artifacts);
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 128 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp}，第 131 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-1df2153e06a6}\quad public\par
@@ -1212,7 +1212,7 @@ prepareCheckpoint 拒绝 aborted、request/attempt 不同、未完成、空 toke
 NativeEpochCoordinatorResult
 runNativeEpochCoordinator(NativeEpochCoordinatorConfig config);
 \end{Verbatim}
-\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp}，第 163 行。\par
+\textbf{源码：}\path{NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp}，第 167 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-493dc84e5029}\quad public\par

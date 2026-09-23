@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace ndn_service_framework {
 
@@ -421,6 +422,18 @@ struct StreamRequestOptions
   ndn::Block wireEncode() const;
   bool wireDecode(const ndn::Block& wire);
   bool operator==(const StreamRequestOptions& other) const;
+};
+
+/**
+ * Exact authenticated progress identity accepted by a streamed
+ * collaboration consumer.  The selection digest is Provider-specific because
+ * each Selection envelope contains a recipient-bound key offer.
+ */
+struct StreamProgressBinding
+{
+  std::string providerName;
+  std::string selectionDigest;
+  std::string operationId;
 };
 
 /** Public options are intentionally the same bounded wire contract. The
@@ -939,7 +952,9 @@ public:
                       ErrorCallback onError,
                       RetryCallback onRetry,
                       RetryAccountingCallback onRetryAccounting = {},
-                      std::string expectedProgressOperationId = {});
+                      std::string expectedProgressOperationId = {},
+                      std::vector<StreamProgressBinding>
+                        expectedProgressBindings = {});
 
   ~StreamEventConsumer();
 
@@ -951,6 +966,9 @@ public:
    * cannot be lost before the first inactivity timer fires.
    */
   void prefetchWindow();
+  /** Add one exact Provider/Selection/operation tuple to a collaboration
+   * consumer while the remaining Provider Selections are being published. */
+  void addExpectedProgressBinding(StreamProgressBinding binding);
   void setAuthorizationCallback(AuthorizationCallback callback);
   bool accept(const ndn::Data& data);
   bool acceptResponse(const ResponseMessage& response);
@@ -958,8 +976,9 @@ public:
    * Admit one Provider-signed, selection-bound assembly milestone.  The
    * member operation identity and (epoch, sequence) are the freshness fence;
    * wall-clock timestamps are intentionally not used because Providers may
-   * have independent clocks.  A fresh milestone re-arms the bounded gap
-   * budget without clearing an Interest that is already in flight.
+   * have independent clocks.  A valid authenticated RUNNING status re-arms
+   * the bounded gap budget without clearing an Interest that is already in
+   * flight; the request deadline remains the hard upper bound.
    */
   bool observeAuthenticatedProgress(const SelectionExecutionStatus& status);
   void onInactivityTimeout(std::chrono::steady_clock::time_point now);
@@ -1003,10 +1022,15 @@ private:
   ErrorCallback onError_;
   RetryCallback onRetry_;
   RetryAccountingCallback onRetryAccounting_;
-  // A Provider can host several roles.  Bind progress to the exact terminal
-  // operation selected for this stream instead of accepting any role's
-  // signed ensure-deployment status.
+  // Legacy single-provider callers bind progress to one exact operation.
   std::string expectedProgressOperationId_;
+  // A streamed collaboration may wait for a nonterminal Provider to assemble
+  // and publish an upstream tensor before the terminal Provider can emit the
+  // first user-facing event.  Bind each accepted progress record to both its
+  // authenticated Provider and exact Selection-scoped operation ID so any
+  // selected role can re-arm the bounded stream gap without admitting an
+  // unrelated status record.
+  std::vector<StreamProgressBinding> expectedProgressBindings_;
   AuthorizationCallback authorization_;
   BoundedStreamQueue<CallbackTask> callbackQueue_;
   std::thread callbackThread_;
@@ -1027,9 +1051,16 @@ private:
   uint64_t expectedCursor_ = 1;
   uint8_t retryCount_ = 0;
   std::chrono::steady_clock::time_point nextRetryAt_{};
-  std::string progressOperationId_;
-  uint64_t progressEpoch_ = 0;
-  uint64_t progressSequence_ = 0;
+  // A streamed Provider may spend the post-Selection request budget assembling
+  // a runner before it can publish the first application event.  Do not treat
+  // that initial silence as a transport gap; a positive authenticated
+  // assembly milestone may arm bounded gap retry once the Provider has
+  // actually progressed.
+  bool retryBudgetArmed_ = false;
+  // Freshness is tracked independently for each exact Provider/Selection/
+  // operation tuple.  A worker Provider may progress before the terminal role;
+  // one global cursor would reject that legitimate handoff.
+  std::map<std::string, std::pair<uint64_t, uint64_t>> progressStates_;
   bool started_ = false;
   bool prefetchStarted_ = false;
   bool failed_ = false;

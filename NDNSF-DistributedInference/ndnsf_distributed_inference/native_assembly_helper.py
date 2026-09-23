@@ -141,7 +141,7 @@ def _run(request_path: Path, output_dir: Path) -> dict:
         raise ValueError("canonical ONNX source is not a regular file")
     source_path = source_candidate.resolve()
     source = source_path.read_bytes()
-    initializer_source = None
+    initializer_source_path = None
     initializer_path_value = request.get("canonical_initializer_path", "")
     if initializer_path_value:
         initializer_candidate = Path(str(initializer_path_value))
@@ -154,7 +154,7 @@ def _run(request_path: Path, output_dir: Path) -> dict:
                 or initializer_path.parent != source_path.parent):
             raise ValueError(
                 "canonical ONNX initializer must be a sibling model.onnx.data file")
-        initializer_source = initializer_path.read_bytes()
+        initializer_source_path = initializer_path
     role_payload = request.get("role_spec")
     recipe_payload = request.get("recipe")
     if not isinstance(role_payload, dict) or not isinstance(recipe_payload, dict):
@@ -168,7 +168,7 @@ def _run(request_path: Path, output_dir: Path) -> dict:
     role = RoleAssemblySpec(**role_payload)
     recipe = CertifiedOnnxAssemblyRecipe(**recipe_payload)
     assembled = assemble_certified_onnx_model(
-        source, canonical_initializer=initializer_source,
+        source, canonical_initializer_path=initializer_source_path,
         role_spec=role, recipe=recipe)
 
     output_dir = output_dir.resolve()

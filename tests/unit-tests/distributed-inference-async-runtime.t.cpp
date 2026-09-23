@@ -4779,9 +4779,13 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
       nextState.payload = rawTensorPayload<std::int64_t>(
         {static_cast<std::int64_t>(call + 1)});
       return std::map<std::string, TensorBundle>{
-        {"onnx-output-bundle",
+        // Deliberately collide with the dependency scope.  Qwen's native
+        // runner uses the same outputBundleScope as its pipeline edge; the
+        // worker must preserve the local state successor before replacing
+        // this scope with the state-stripped handoff bundle.
+        {"activation",
          makeEncodedTensorBundle(
-           "onnx-output-bundle", {std::move(logits), std::move(nextState)})},
+           "activation", {std::move(logits), std::move(nextState)})},
       };
     });
   runtime.registerRunner(runnerSpec, runner);
@@ -4820,7 +4824,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
   config.localProvider = "/provider/A";
   config.role = runnerSpec.role;
   config.initialInputs = {
-    {"input_ids",
+    {"application-input",
      makeEncodedTensorBundle(
        "prompt",
        {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
@@ -4836,6 +4840,19 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
   config.samplingDigest = "sha256:sampling";
   config.prepareRunner = [runner] { return runner; };
   config.eventSink = [] (const std::vector<std::uint8_t>&) { return true; };
+  config.roleSpecFactory = [plan, assignment] (std::size_t sequence) {
+    auto projected = roleSpecFor(
+      plan, "/Stage/0", "session-a", assignment, "/provider/A", sequence);
+    DependencyEdge applicationInput;
+    applicationInput.scope = "application-input";
+    applicationInput.producerRole = "";
+    applicationInput.consumerRole = "/Stage/0";
+    applicationInput.plannedDataName = "/request/application-input";
+    applicationInput.tensors = {"input_ids"};
+    applicationInput.operationKind = "APPLICATION_INPUT";
+    projected.inputs.insert(projected.inputs.begin(), std::move(applicationInput));
+    return projected;
+  };
   config.resultObserver = [&observedIdentities] (
     const RoleSpec& role, const ProviderRoleResult&) {
       BOOST_REQUIRE(role.candidateDecodeStateIdentity.has_value());

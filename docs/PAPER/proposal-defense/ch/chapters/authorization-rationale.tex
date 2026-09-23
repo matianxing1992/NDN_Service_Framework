@@ -23,7 +23,7 @@ Provider 身份。这里的保密对象是缺少相应解密能力的外部
 名称或流量模式。在请求级机密性路径中，应用输入使用请求级密钥加密，Selection
 将该密钥保护给选中的 Provider，请求方 User 仍保留访问能力。Trust Schema
 本身不加密内容；角色授权方案也可以配合 ABE 或
-服务组加密来实现发现阶段的保密性。
+服务组加密（使用共享组密钥加密）来实现发现阶段的保密性。
 
 节点可以获取或缓存加密的 Request Data，而不获得解密权限。
 交付与披露的分离也适用于其他内容加密方案，并非 ABE 独有。
@@ -45,14 +45,14 @@ ABE 保护发现描述，就需要同时管理解密权限和基于角色的调�
 两类服务级检查中复用属性授权机构，无需仅为表示服务成员资格而增加角色签名
 凭证；验证 Data 签名所需的信任规则仍须保留。
 
-这是复用管理机制的理由，并非已证明的成本优势。Provider 与 User 权限仍然
-不同；发现加密并不已经提供 User 权限解密密钥或 challenge 处理。若策略
+评价将测量共用管理基础设施的成本与收益。Provider 与 User 权限仍然
+不同；User 权限解密密钥及 challenge 处理会增加描述加密以外的成本。若策略
 需要限制命令参数，DNMP 的 Schema 检查可能比 NDNSF 的服务级检查更合适。评价应
 在相同策略粒度下比较凭证更新和调用开销。
 
 \paragraph{理由三：权限聚合作为额外的管理便利。}
 KP-ABE 将属性关联到密文，将访问策略编码到解密密钥（DKEY）
-中~\cite{dulal2023nacabe}。NDNSF 使用 \texttt{/SERVICE/<service>} 表示
+中~\cite{goyal2006abe,dulal2023nacabe}。NDNSF 使用 \texttt{/SERVICE/<service>} 表示
 Provider 访问权限，使用 \texttt{/PERMISSION/<service>} 表示 User 访问权限。
 在同一授权机构和参数代际内，一个实体的多项服务权限可以合并到为其单独签发
 的 DKEY 中。例如，一个 User 的策略允许检测 OR 地图服务，另一个仅允许检测
@@ -61,10 +61,9 @@ Provider 访问权限，使用 \texttt{/PERMISSION/<service>} 表示 User 访问
 
 相比 DNMP 基于角色密钥的授权~\cite{dnmp}，NDNSF 在 DKEY 中表示服务权限，
 而非增加角色专用签名凭证。如果等价权限需要多个不同角色凭证，这避免了签发和
-维护这些额外签名凭证。但不能据此断言 DNMP 每项服务都需要一份凭证：一个角色
-可以允许多种命令。Trust Schema 也可以表达其他凭证安排，因此这不是普遍优势。
-一份 DKEY 不代表固定大小或更新成本；策略复杂度、分发和换钥仍需考虑。
-这里比较的是需独立管理的凭证，而不是已证明总密钥字节数或运行成本更低。
+维护这些额外签名凭证。比较取决于角色粒度：一个 DNMP 角色可以允许多种命令，
+Trust Schema 也可以支持其他凭证安排。因此，评价将同时测量需独立管理的凭证数、
+DKEY 大小、策略复杂度、分发、换钥及运行成本。
 
 \subsection{授权机制、生命周期与成本}
 \label{sec:authorization-withdrawal-ch}
@@ -76,7 +75,7 @@ User 和 Provider 按适用的信任规则验证 Data 签名与证书链。这�
 \paragraph{服务权限验证。}
 在 ABE-backed 调用路径中，User 为请求生成新的随机值 \emph{RequestNonce}，
 并将其放入 ABE 保护的 Request 内容。这是 NDNSF 应用层的值，
-不是 NDN Interest 的 Nonce。Provider 恢复该值后在 ACK Data 中返回，
+不是用于转发重复／环路处理的 NDN Interest Nonce。Provider 恢复该值后在 ACK Data 中返回，
 User 将返回值与活动请求中保存的值比较。因此，RequestNonce 既用于请求绑定，
 也用于检查对方能否获取该服务保护的值。Provider 生成 \emph{ProviderChallenge}，
 并将其放入 ABE 保护的 ACK 内容。User 使用恢复出的 ProviderChallenge 构造
@@ -100,12 +99,17 @@ challenge 值本身都不能防止重放。这些准入检查也不保证跨崩�
 
 \paragraph{运行时授予与撤销权限。}
 
+\texttt{PolicyStatusData} 指 Controller 签名的命名 Data 状态载荷，本身不是
+授予权限的操作。它标识服务、当前 ControllerVersion、有效期、策略摘要、可选的
+ABE 公共参数名称／摘要、Controller 证书和撤销目标。参与者先验证外层 Data 签名及
+状态内容，再更新本地权限或 DKEY；它用于传播和认证策略状态，不单独授予权限。
+
 Controller 为两种操作更新权限状态。普通授予更新目标实体的完整权限策略，
 该实体获取替换 DKEY，ABE 公共参数保持不变。撤销还会轮换 Controller 的
 ABE 主密钥与公共参数；仍有权限的实体获取编码其剩余权限的替换 DKEY。
 主密钥保留在 Controller，轮换范围是整个 Controller，而非仅被撤销的服务。
 
-在修订后的传播设计中，Controller 将更新后的公共参数发布为签名的 Named Data，
+在拟议的更新发现路径中（目前尚未完成端到端验证），Controller 将更新后的公共参数发布为签名的 Named Data，
 并通过 Sync 宣告其可获取。参与者获取并验证公共参数与 Controller 签名的
 \texttt{PolicyStatusData}，按需刷新 DKEY。普通授予虽不更换公共参数，仍要求
 参与者发现并获取更新后的权限状态。Sync 用于发现更新，不是授予权限的依据。

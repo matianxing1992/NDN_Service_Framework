@@ -42,6 +42,22 @@ bool containsName(const std::vector<std::string>& names, const std::string& valu
   return std::find(names.begin(), names.end(), value) != names.end();
 }
 
+std::vector<std::string>
+splitMetadataNames(const std::string& encoded)
+{
+  std::vector<std::string> result;
+  std::size_t start = 0;
+  while (start < encoded.size()) {
+    const auto end = encoded.find(',', start);
+    const auto value = encoded.substr(
+      start, end == std::string::npos ? std::string::npos : end - start);
+    if (!value.empty())
+      result.push_back(value);
+    start = end == std::string::npos ? encoded.size() : end + 1;
+  }
+  return result;
+}
+
 } // namespace
 
 void
@@ -149,8 +165,22 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
     const auto& position = projection.generationContract;
     if (!position.positionInputPolicy.empty()) {
       if (position.attentionMaskInputName.empty() ||
-          position.positionIdsInputName.empty() ||
-          !containsName(inputNames, position.attentionMaskInputName) ||
+          position.positionIdsInputName.empty()) {
+        throw std::invalid_argument(
+          "generation position input policy has missing input names");
+      }
+      // The authenticated contract is global; downstream subgraphs may
+      // consume derived position tensors instead of the original inputs.
+      // A partially present local position interface is still invalid.
+      const bool hasLocalPositionInput =
+        containsName(inputNames, position.attentionMaskInputName) ||
+        containsName(inputNames, position.positionIdsInputName) ||
+        (!position.cachePositionInputName.empty() &&
+         containsName(inputNames, position.cachePositionInputName));
+      if (!hasLocalPositionInput) {
+        return;
+      }
+      if (!containsName(inputNames, position.attentionMaskInputName) ||
           !containsName(inputNames, position.positionIdsInputName) ||
           (!position.cachePositionInputName.empty() &&
            !containsName(inputNames, position.cachePositionInputName))) {
@@ -165,6 +195,7 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
       }
     }
   }
+
 }
 
 } // namespace ndnsf::di

@@ -32,7 +32,7 @@ recordGrantVerification(const ProtectedRuntimeBindingV1& binding,
   std::ostringstream record;
   record << "NDNSF_DI_GRANT_VERIFICATION ";
   boost::property_tree::write_json(record, fields, false);
-  std::cout << record.str() << std::flush;
+  logRuntimeEvidence(record.str());
 }
 
 bool
@@ -328,7 +328,7 @@ ProtectedRuntime::authorizeDataflow(ProtectedDataflowDirection direction,
              << " owns_role=" << (ownsRole ? 1 : 0)
              << " peer_matches=" << (peerMatches ? 1 : 0)
              << " peer_present=" << (peer != peers.end() ? 1 : 0);
-      std::cerr << record.str() << std::endl;
+      logRuntimeEvidence(record.str());
     }
     m_terminalReason = "protected dataflow is not authorized for this role/endpoint";
     try { drainLocked(); } catch (...) {}

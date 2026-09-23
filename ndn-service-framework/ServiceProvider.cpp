@@ -1756,12 +1756,27 @@ namespace ndn_service_framework
         m_testNacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
             m_face, keyChain, nac_validator, identityCert,
             attrAuthorityCertificate);
+        m_testNacProducer->refreshPublicParameters();
     }
 
     bool
     ServiceProvider::isNacConsumerReadyForTest()
     {
         return activeNacConsumer().readyForDecryption();
+    }
+
+    bool
+    ServiceProvider::isNacProducerReadyForTest()
+    {
+        const auto& producer = activeNacProducer();
+        return !producer.getPublicParamsDataName().empty() &&
+               !producer.getPublicParamsDigest().empty();
+    }
+
+    void
+    ServiceProvider::refreshNacProducerForTest()
+    {
+        activeNacProducer().refreshPublicParameters();
     }
 
     void
@@ -3432,7 +3447,7 @@ namespace ndn_service_framework
                           << dataName.toUri() << ": " << result.errorMessage);
             return std::nullopt;
         }
-        return ndn::Buffer(result.plaintext.begin(), result.plaintext.end());
+        return std::optional<ndn::Buffer>(std::move(result.plaintext));
     }
 
     void ServiceProvider::CollaborationContext::fail(const std::string& reason)
@@ -4195,21 +4210,48 @@ namespace ndn_service_framework
 
     bool ServiceProvider::replySelectionExecutionStatus(const ndn::Interest& interest)
     {
+        const bool traceStatus = std::getenv("NDNSF_SELECTION_STATUS_TRACE") != nullptr;
         const auto parsed = parseSelectionStatusQueryName(interest.getName());
         if (!parsed || !parsed->providerName.equals(identity)) {
+            if (traceStatus) {
+                NDN_LOG_WARN("NDNSF_SELECTION_STATUS_REPLY event=ignored"
+                             << " reason=name-mismatch"
+                             << " name=" << interest.getName().toUri()
+                             << " provider=" << identity.toUri());
+            }
             return false;
         }
         auto service = m_services.find(parsed->serviceName);
         if (service == m_services.end() ||
             !service->second.selectionStatusQueryable) {
+            if (traceStatus) {
+                NDN_LOG_WARN("NDNSF_SELECTION_STATUS_REPLY event=ignored"
+                             << " reason=service-not-queryable"
+                             << " provider=" << identity.toUri()
+                             << " service=" << parsed->serviceName.toUri()
+                             << " selectionDigest=" << parsed->selectionDigest);
+            }
             return false;
         }
 
         auto status = getSelectionExecutionStatus(parsed->selectionDigest);
-        const SelectionExecutionStatus reply =
-            status ? *status :
-                     makeUnknownSelectionExecutionStatus(identity,
-                                                         parsed->selectionDigest);
+        if (!status) {
+            // Do not publish an unbound negative snapshot.  The generic
+            // unknown value has no service/request binding and a cached Data
+            // response would be rejected by ServiceUser for this exact
+            // Selection, while also hiding a status entry that is registered
+            // immediately after Selection admission.  Let the bounded
+            // requester query timeout and retry after the Provider has
+            // created the authenticated status record.
+            if (traceStatus) {
+                NDN_LOG_INFO("NDNSF_SELECTION_STATUS_REPLY event=not-found"
+                             << " provider=" << identity.toUri()
+                             << " service=" << parsed->serviceName.toUri()
+                             << " selectionDigest=" << parsed->selectionDigest);
+            }
+            return false;
+        }
+        const SelectionExecutionStatus reply = *status;
         const auto payload = encodeSelectionExecutionStatus(reply);
         auto data = std::make_shared<ndn::Data>(interest.getName());
         data->setFreshnessPeriod(ndn::time::milliseconds(1000));
@@ -4223,6 +4265,14 @@ namespace ndn_service_framework
                 .sign(*data, m_signingInfo);
         }
         m_face.put(*data);
+        if (traceStatus) {
+            NDN_LOG_INFO("NDNSF_SELECTION_STATUS_REPLY event=sent"
+                         << " provider=" << identity.toUri()
+                         << " service=" << parsed->serviceName.toUri()
+                         << " selectionDigest=" << parsed->selectionDigest
+                         << " state=" << selectionExecutionStateToString(reply.state)
+                         << " members=" << reply.memberStatuses.size());
+        }
         return true;
     }
 
@@ -4478,6 +4528,14 @@ namespace ndn_service_framework
         // unwrap; production providers continue to use their private chain.
         auto& activeKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
         const auto& options = requestMessage.getStreamRequestOptions();
+        const bool directDiagnostic = std::getenv("NDNSF_STREAM_GRANT_DIAGNOSTIC") != nullptr;
+        const auto reportReject = [&](const std::string& reason) {
+            if (directDiagnostic) {
+                std::cerr << "NDNSF_STREAM_GRANT_REJECT reason=" << reason
+                          << " requestId=" << requestId.toUri()
+                          << " provider=" << providerName.toUri() << std::endl;
+            }
+        };
         if (options.controllerVersion && requestMessage.hasControllerVersion() &&
             *options.controllerVersion != requestMessage.getControllerVersion()) {
             NDN_LOG_WARN("Reject streamed request with mismatched ControllerVersion requestId="
@@ -4503,12 +4561,17 @@ namespace ndn_service_framework
         else {
             NDN_LOG_WARN("Reject streamed selection without Provider-specific key grant requestId="
                          << requestId.toUri());
+            reportReject("missing-grant");
             return false;
         }
         HybridMessageEnvelope grant;
         if (!grant.WireDecode(grantBlock) || grant.getMessageType() != "STREAM-GRANT" ||
             grant.getAlgorithm() != "RSA-OAEP" || !grant.hasWrappedMessageKey() ||
             grant.getEpochId() != std::to_string(options.streamEpoch)) {
+            NDN_LOG_ERROR("NDNSF_STREAM_GRANT_REJECT reason=malformed-or-epoch-mismatch"
+                          << " requestId=" << requestId.toUri()
+                          << " provider=" << providerName.toUri());
+            reportReject("malformed-or-epoch-mismatch");
             return false;
         }
         ndn::Buffer eventKey;
@@ -4516,12 +4579,22 @@ namespace ndn_service_framework
             eventKey = unwrapSelectionGatedInputKey(
                 grant.getWrappedMessageKey(), identityCert.getName(), activeKeyChain);
         }
-        catch (const std::exception&) {
+        catch (const std::exception& error) {
+            NDN_LOG_ERROR("NDNSF_STREAM_GRANT_REJECT reason=unwrap-failed"
+                          << " requestId=" << requestId.toUri()
+                          << " provider=" << providerName.toUri()
+                          << " detail=" << error.what());
+            reportReject("unwrap-failed");
             return false;
         }
         if (eventKey.size() != 32 ||
             computeStreamSha256(ndn::span<const uint8_t>(eventKey.data(), eventKey.size())) !=
                 options.eventKeyCommitment) {
+            NDN_LOG_ERROR("NDNSF_STREAM_GRANT_REJECT reason=event-key-commitment-mismatch"
+                          << " requestId=" << requestId.toUri()
+                          << " provider=" << providerName.toUri()
+                          << " eventKeyBytes=" << eventKey.size());
+            reportReject("event-key-commitment-mismatch");
             return false;
         }
         StreamBinding binding;
@@ -4547,14 +4620,26 @@ namespace ndn_service_framework
             options.controllerVersion;
         binding.deadlineEpochMs = options.deadlineEpochMs;
         try { binding.validate(); }
-        catch (const std::exception&) {
+        catch (const std::exception& error) {
+            NDN_LOG_ERROR("NDNSF_STREAM_GRANT_REJECT reason=binding-invalid"
+                          << " requestId=" << requestId.toUri()
+                          << " provider=" << providerName.toUri()
+                          << " detail=" << error.what());
+            reportReject("binding-invalid");
             return false;
         }
         const auto expectedGrantBinding = computeStreamGrantBindingDigest(binding);
         if (grant.getKeyId() != selectionGatedHex(ndn::span<const uint8_t>(
                 expectedGrantBinding.data(), expectedGrantBinding.size()))) {
-            NDN_LOG_WARN("Reject streamed grant with mismatched Provider binding requestId="
-                         << requestId.toUri());
+            NDN_LOG_ERROR("NDNSF_STREAM_GRANT_REJECT reason=binding-digest-mismatch"
+                          << " requestId=" << requestId.toUri()
+                          << " provider=" << providerName.toUri()
+                          << " grantKeyId=" << grant.getKeyId()
+                          << " expectedKeyId="
+                          << selectionGatedHex(ndn::span<const uint8_t>(
+                              expectedGrantBinding.data(), expectedGrantBinding.size()))
+                          << " producerBootId=" << binding.producerBootId);
+            reportReject("binding-digest-mismatch");
             return false;
         }
 
@@ -6099,17 +6184,48 @@ namespace ndn_service_framework
                                     return;
                                 }
                                 if (readyRequest.hasStreamRequestOptions()) {
-                                    // The request-scoped input has now been
-                                    // authenticated.  Initialize the normal
-                                    // stream publisher from the already
-                                    // authenticated Selection grant before
-                                    // entering the worker handler; this keeps
-                                    // event-key delivery bound to the same
-                                    // request/selection as the encrypted input.
-                                    if (!initializeStreamPublisher(
+                                    // A streamed collaboration gives the event
+                                    // key only to its terminal role.  A
+                                    // nonterminal role still carries a
+                                    // structured CollaborationAssignmentEnvelope
+                                    // and must execute its stage without a
+                                    // user-facing event publisher.  Ordinary
+                                    // streamed requests and unstructured
+                                    // assignments remain fail-closed when the
+                                    // Selection grant is absent.
+                                    const auto hasStructuredAssignment =
+                                        [](const ndn::Buffer& payload) {
+                                            std::vector<ndn::Buffer> items;
+                                            try {
+                                                items = decodeOpaqueAssignmentSet(payload);
+                                            }
+                                            catch (const std::exception&) {
+                                                return false;
+                                            }
+                                            if (items.empty()) return false;
+                                            for (const auto& item : items) {
+                                                CollaborationAssignmentEnvelope envelope;
+                                                try {
+                                                    if (!decodeCollaborationAssignmentEnvelope(
+                                                            item, envelope)) {
+                                                        return false;
+                                                    }
+                                                }
+                                                catch (const std::exception&) {
+                                                    return false;
+                                                }
+                                            }
+                                            return true;
+                                        };
+                                    const bool hasGrant =
+                                        selectionMessage.hasStreamEventKeyGrant();
+                                    const bool canRunWithoutGrant =
+                                        hasStructuredAssignment(assignmentPayloadCopy);
+                                    if ((!hasGrant && !canRunWithoutGrant) ||
+                                        (hasGrant && !initializeStreamPublisher(
                                             requesterName, providerName, serviceName,
                                             requestId, readyRequest, selectionMessage,
-                                            selectionDigest)) {
+                                            selectionDigest))) {
                                         publishExecutionFailureOnEventLoop(
                                             requesterName, providerName, serviceName,
                                             requestId, readyRequest,
@@ -7411,8 +7527,7 @@ namespace ndn_service_framework
                                   << " error=" << result.errorMessage);
                     return std::nullopt;
                 }
-                return std::optional<ndn::Buffer>(
-                    ndn::Buffer(result.plaintext.begin(), result.plaintext.end()));
+                return std::optional<ndn::Buffer>(std::move(result.plaintext));
             }
         }
         ndn::Buffer scopeKey;
@@ -8632,7 +8747,7 @@ namespace ndn_service_framework
 
         auto startFetch = [this, state, finishIfReady](
                               const ndn::Name& dataName,
-                              std::function<void(const ndn::Buffer&)> onPlaintext) mutable {
+                              std::function<void(ndn::Buffer)> onPlaintext) mutable {
             const auto serviceName = state->assignment.service.toUri();
             const bool traceAssignmentFetch =
                 isTruthyEnv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE");
@@ -8685,17 +8800,15 @@ namespace ndn_service_framework
                                 result.errorMessage = "collaboration completion authority or deadline expired";
                             }
                             if (result.success) {
-                                ndn::Buffer buffer(result.plaintext.begin(),
-                                                   result.plaintext.end());
                                 if (traceAssignmentFetch) {
                                     NDN_LOG_WARN("NDNSF_COLLAB_ASSIGNMENT_FETCH"
                                                  << " event=done"
                                                  << " requestId=" << state->requestId.toUri()
                                                  << " role=" << state->assignment.role
                                                  << " dataName=" << dataName.toUri()
-                                                 << " bytes=" << buffer.size());
+                                                 << " bytes=" << result.plaintext.size());
                                 }
-                                onPlaintext(buffer);
+                                onPlaintext(std::move(result.plaintext));
                                 if (state->pending > 0) {
                                     --state->pending;
                                 }
@@ -8732,7 +8845,7 @@ namespace ndn_service_framework
 
         for (const auto& entry : keysToFetch) {
             startFetch(entry.second,
-                       [state, keyScope = entry.first](const ndn::Buffer& buffer) {
+                       [state, keyScope = entry.first](ndn::Buffer buffer) {
                            if (buffer.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
                                state->failed = true;
                                if (!state->error.empty()) {
@@ -8742,21 +8855,21 @@ namespace ndn_service_framework
                                                keyScope;
                                return;
                            }
-                           state->fetchedKeys[keyScope] = buffer;
+                           state->fetchedKeys[keyScope] = std::move(buffer);
                        });
         }
 
         if (needsArtifactFetch) {
             startFetch(state->assignment.artifactDataName,
-                       [state](const ndn::Buffer& buffer) {
-                           state->fetchedArtifact = buffer;
+                       [state](ndn::Buffer buffer) {
+                           state->fetchedArtifact = std::move(buffer);
                        });
         }
 
         if (state->assignmentReference) {
             const auto reference = *state->assignmentReference;
             startFetch(reference.dataName,
-                       [state, reference](const ndn::Buffer& buffer) {
+                       [state, reference](ndn::Buffer buffer) {
                            if (buffer.size() != reference.plaintextSize ||
                                sha256DigestString(buffer) != reference.digest) {
                                state->failed = true;
@@ -8768,7 +8881,7 @@ namespace ndn_service_framework
                                    "digest mismatch";
                                return;
                            }
-                           state->assignment.assignmentPayload = buffer;
+                           state->assignment.assignmentPayload = std::move(buffer);
                        });
         }
 
@@ -8964,10 +9077,8 @@ namespace ndn_service_framework
                                           << " scope=" << keyScope);
                             return;
                         }
-                        ndn::Buffer buffer(result.plaintext.begin(),
-                                           result.plaintext.end());
                         m_collaborationScopeKeysByRequest[requestId][keyScope] =
-                            std::move(buffer);
+                            std::move(result.plaintext);
                         auto pendingIt =
                             m_pendingEncryptedCollaborationData.find(requestId);
                         if (pendingIt != m_pendingEncryptedCollaborationData.end()) {
@@ -11970,7 +12081,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 return legacyResult;
             }
 
-            legacyResult.plaintext.assign(plaintext->begin(), plaintext->end());
+            legacyResult.plaintext = std::move(*plaintext);
             legacyResult.success = true;
             return legacyResult;
         };
@@ -11979,7 +12090,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto mutex = std::make_shared<std::mutex>();
         auto cv = std::make_shared<std::condition_variable>();
         auto error = std::make_shared<std::string>();
-        auto encodedEnvelope = std::make_shared<ndn::Buffer>();
+        // SegmentFetcher already owns the assembled wire through a shared
+        // immutable buffer.  Keep that ownership instead of copying the
+        // complete envelope into a second Buffer before decoding it.
+        auto encodedEnvelope = std::make_shared<ndn::ConstBufferPtr>();
 
         boost::asio::post(m_face.getIoContext(), [this, stopping, current, overallDeadline, dataValidator, encryptedDataName,
                                                   completed, mutex, cv, error, encodedEnvelope,
@@ -12012,7 +12126,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     [completed, mutex, cv, encodedEnvelope, transportValidator](ndn::ConstBufferPtr buffer) {
                         {
                             std::lock_guard<std::mutex> lock(*mutex);
-                            encodedEnvelope->assign(buffer->begin(), buffer->end());
+                            *encodedEnvelope = std::move(buffer);
                             completed->store(true);
                         }
                         cv->notify_one();
@@ -12057,18 +12171,28 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return fetchLegacyNacAbe();
         }
 
-        HybridMessageEnvelope envelope;
+        auto envelope = std::make_shared<HybridMessageEnvelope>();
         try {
+            if (!*encodedEnvelope) {
+                return fetchLegacyNacAbe();
+            }
+            // The ConstBufferPtr overload keeps the SegmentFetcher buffer
+            // alive without copying its bytes.  WireDecode performs the one
+            // required authenticated ciphertext copy into the envelope.
             ndn::Block block(*encodedEnvelope);
-            if (!envelope.WireDecode(block)) {
+            if (!envelope->WireDecode(block)) {
                 return fetchLegacyNacAbe();
             }
         }
         catch (const std::exception&) {
             return fetchLegacyNacAbe();
         }
+        // The Block is out of scope, so release the assembled transport wire
+        // before decrypting the envelope.  The envelope now owns only the
+        // fields needed for authentication/decryption.
+        *encodedEnvelope = nullptr;
 
-        const auto messageType = envelope.getMessageType();
+        const auto messageType = envelope->getMessageType();
         if (messageType != "REQUEST-LARGE") {
             result.errorMessage = "large-data hybrid envelope has unexpected message type " +
                                   messageType;
@@ -12090,19 +12214,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                               decryptCv,
                               decryptError](const ndn::Buffer& key) mutable {
             const std::string adText = encryptedDataName.toUri() + "|" +
-                                       envelope.getMessageType() + "|" + serviceName;
+                                       envelope->getMessageType() + "|" + serviceName;
             const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()),
                                  adText.size());
             ndn::Buffer decrypted;
             const bool ok = hybridAesGcmDecrypt(
-                key, envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), decrypted);
+                key, *envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), decrypted);
             {
                 std::lock_guard<std::mutex> lock(*decryptMutex);
                 if (!ok) {
                     *decryptError = "hybrid AES-GCM authentication failed";
                 }
                 else {
-                    *plaintext = decrypted;
+                    *plaintext = std::move(decrypted);
                 }
                 decryptCompleted->store(true);
             }
@@ -12110,12 +12234,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         };
 
         ndn::Buffer key;
-        if (m_hybridMessageCrypto.findReceiveKey(envelope.getKeyId(),
+        if (m_hybridMessageCrypto.findReceiveKey(envelope->getKeyId(),
                                                  key,
                                                  m_hybridCryptoCounters)) {
             finishDecrypt(key);
         }
-        else if (envelope.hasWrappedMessageKey()) {
+        else if (envelope->hasWrappedMessageKey()) {
             boost::asio::post(m_face.getIoContext(),
                 [this, stopping, current, overallDeadline, envelope, serviceName, encryptedDataName, finishDecrypt, decryptCompleted,
                  decryptMutex, decryptCv, decryptError]() mutable {
@@ -12124,16 +12248,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     const auto keyDataName = makeHybridMessageKeyDataName(
                         ndn::Name(serviceName), extractLargeDataProducerPrefix(encryptedDataName),
                         std::string("/SERVICE") + serviceName,
-                        envelope.getEpochId());
+                        envelope->getEpochId());
                     activeNacConsumer().consume(
                         keyDataName,
-                        makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
+                        makeNacInlineContentBlock(envelope->getWrappedMessageKey()),
                         [this, stopping, current, overallDeadline, serviceName, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                                 (current && !current())) return;
                             m_hybridMessageCrypto.cacheReceiveKey(serviceName,
-                                                                  envelope.getKeyId(),
-                                                                  envelope.getEpochId(),
+                                                                  envelope->getKeyId(),
+                                                                  envelope->getEpochId(),
                                                                   unwrappedKey);
                             finishDecrypt(unwrappedKey);
                         },
@@ -12157,15 +12281,15 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     const auto keyDataName = makeHybridMessageKeyDataName(
                         ndn::Name(serviceName), extractLargeDataProducerPrefix(encryptedDataName),
                         std::string("/SERVICE") + serviceName,
-                        envelope.getEpochId());
+                        envelope->getEpochId());
                     activeNacConsumer().consume(
                         keyDataName,
                         [this, stopping, current, overallDeadline, serviceName, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                                 (current && !current())) return;
                             m_hybridMessageCrypto.cacheReceiveKey(serviceName,
-                                                                  envelope.getKeyId(),
-                                                                  envelope.getEpochId(),
+                                                                  envelope->getKeyId(),
+                                                                  envelope->getEpochId(),
                                                                   unwrappedKey);
                             finishDecrypt(unwrappedKey);
                         },
@@ -12200,19 +12324,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return result;
         }
 
-        result.plaintext.assign(plaintext->begin(), plaintext->end());
+        result.plaintext = std::move(*plaintext);
         result.success = true;
         return result;
     }
 
     LargeDataFetchResult ServiceProvider::resolveLargeDataReferencePayload(
-        const ndn::Buffer& payload,
+        ndn::Buffer payload,
         const std::string& serviceName)
     {
         LargeDataFetchResult result;
         const auto reference = parseLargeDataReferencePayload(payload);
         if (!reference) {
-            result.plaintext.assign(payload.begin(), payload.end());
+            result.plaintext = std::move(payload);
             result.success = true;
             return result;
         }

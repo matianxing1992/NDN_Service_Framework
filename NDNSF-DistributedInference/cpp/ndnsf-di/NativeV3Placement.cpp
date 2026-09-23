@@ -164,8 +164,11 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRolesImpl(
   std::map<std::pair<std::string, std::string>, std::uint64_t> reservedMemory;
   for (auto role : ordered) {
     if (control) control->requireActive();
+    const auto key = ranks.at(role.role).size() == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
+    const auto preferred = context.preferredProvidersByRole.find(key);
     std::vector<Cost> choices;
     std::vector<Cost> distinctChoices;
+    std::vector<Cost> preferredChoices;
     const auto fitsReservation = [&](const Cost& choice) {
       const auto& provider = std::get<8>(choice);
     const auto& device = std::get<9>(choice);
@@ -200,17 +203,21 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRolesImpl(
         const auto device = std::get<9>(choice);
         if (device != "cpu" && usedDevices.count(std::make_pair(offer.provider, device))) continue;
         choices.push_back(choice);
+        if (preferred != context.preferredProvidersByRole.end() && offer.provider == preferred->second)
+          preferredChoices.push_back(choice);
         if (!used.count(offer.provider)) distinctChoices.push_back(choice);
       }
     }
     // Prefer spreading roles across Providers when the topology permits it,
     // but allow a smaller deployment to co-locate roles on one admitted
     // Provider.  The per-role device/resource contract remains authoritative.
-    if (!distinctChoices.empty()) choices.swap(distinctChoices);
+    // Conversation locality outranks spreading and immutable-model residency,
+    // but only after current admission and device/resource feasibility checks.
+    if (!preferredChoices.empty()) choices.swap(preferredChoices);
+    else if (!distinctChoices.empty()) choices.swap(distinctChoices);
     if (choices.empty()) throw NativeNoFeasiblePlacement("no feasible Provider for V3 role " + role.role);
     const auto choice = *std::min_element(choices.begin(), choices.end());
     const auto provider = std::get<8>(choice), device = std::get<9>(choice);
-    const auto key = ranks.at(role.role).size() == 1 ? role.role : role.role + "#" + std::to_string(role.rank);
     if (!result.providerByRole.emplace(key, provider).second)
       throw std::invalid_argument("ambiguous V3 role assignment key");
     used.insert(provider);

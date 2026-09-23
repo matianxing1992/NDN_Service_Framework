@@ -7,7 +7,7 @@ def build(bld):
                 includes=['..'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+                install_path='${BINDIR}')
 
     bld.program(name='App_Provider',
                 target='App_Provider',
@@ -239,6 +239,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
@@ -253,8 +254,8 @@ def build(bld):
     bld.program(name='DI_NativeRequester',
                 target='DI_NativeRequester',
                 source=['DI_NativeRequester.cpp'],
-                includes=['..'],
-                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                includes=['..', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 
@@ -386,6 +387,7 @@ def build(bld):
     # generated protobuf closure so its install/link boundary is reproducible.
     di_native_onnx_assembly_sources = bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.cpp',
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
         # prepareNativeCanonicalOnnxRole activates through the OA02 worker
         # subprocess transport, which lives in this TU.
@@ -594,7 +596,7 @@ def build(bld):
                 # dependency; this flag alone does not make host-bound
                 # NAC-ABE/SVS/NDNSD paths relocatable.
                 linkflags=['-pthread', '-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+                install_path='${BINDIR}')
 
     bld.program(name='di-native-fault-provider',
                 target='di-native-fault-provider',
@@ -638,7 +640,7 @@ def build(bld):
                 use='BOOST ONNXRUNTIME ONNX NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL DL TOKENIZER_BRIDGE',
                 cxxflags=['-fPIC', '-pthread', '-DNDNSF_DI_EXPERIMENT_FAULTS=1'],
                 linkflags=['-pthread'],
-                install_path=None)
+                install_path='${BINDIR}' if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
 
     bld.program(name='di-native-onnxruntime-smoke',
                 target='di-native-onnxruntime-smoke',

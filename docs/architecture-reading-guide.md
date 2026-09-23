@@ -6,6 +6,11 @@ implementation or expensive validation begins.
 
 ## Reading order
 
+0. Read [`Design/highlevel-design.md`](../Design/highlevel-design.md) first. Map
+   the proposed change to its shared and module principles, preserve the stated
+   ownership boundaries, and record evidence for compliance. Existing gaps are
+   repair work, not permission to weaken a principle; changes to principles
+   require explicit user acceptance.
 1. Read [`architecture.md`](architecture.md) for the framework/application
    ownership map and the accepted runtime direction.
 2. Read [`ndnsf-core-app-boundary.md`](ndnsf-core-app-boundary.md) when a change

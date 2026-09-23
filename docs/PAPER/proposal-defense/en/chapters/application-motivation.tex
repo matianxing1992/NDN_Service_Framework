@@ -7,18 +7,38 @@ The discovery descriptor contains the information needed for a participation dec
 
 NDNSF-UAV and NDNSF-DI expose complementary demands. The former combines device-specific operations, changing observations, live data, and physical actions. The latter combines compute selection, model preparation, large artifacts, intermediate tensors, and incremental outputs. Both require authorization and bounded request lifetimes. Their differences test whether a common invocation and named-object interface remains useful beyond one workload. Reusability is an engineering objective to be evaluated through shared mechanisms and application-specific code, rather than assumed from implementing two demonstrations.
 
-The scope is organized around an invocation's lifecycle: deciding who may participate, deciding which work may start, and obtaining an interpretable outcome before the operation closes. These questions connect the application cases to prior invocation mechanisms~\cite{rice,nsc} and command authorization~\cite{dnmp}. Table~\ref{tab:framework-needs} groups the resulting requirements. It is a bounded scope for the workflows studied here, not an exhaustive inventory of every possible service framework. For example, billing and hard real-time flight control require additional application mechanisms. RQ1 examines participation and permission decisions, RQ2 examines dependencies when work spans Providers, and RQ3 examines observed outcomes and costs.
+We derive the scope by following a request from candidate discovery to execution and closure. At each stage, we identify the relationship the application needs and the failure that follows if it is not enforced.
 
-\begin{table}[htbp]\centering\small
-\caption{Framework requirements and their relationship to the research questions.}
+Authorization, confidentiality, and timeliness apply across stages. Permission changes can affect an invocation throughout its lifetime and are listed separately as a cross-cutting concern.
+
+\subsection{Research Gap and Design Focus}
+NDN provides named Data retrieval and signature validation, but a Data name and a valid signature do not by themselves record or validate the service decision governing an invocation. The gap examined here is how a runtime service decision is carried into the admission and use of named Data.
+
+Candidate discovery lets Providers report eligibility and willingness, but it does not commit an executor. A Provider's permission to offer a service authorizes that capability; it does not assign the Provider to a particular invocation or workflow role. Selection is the binding step: the initial prototype commits one Provider per invocation, while the collaboration extension commits Provider-to-role assignments and dependency edges.
+
+For a dependent task, signature verification authenticates the producer but does not establish that the object was produced by the assigned predecessor for the active invocation or satisfies the declared dependency. The consumer must therefore check the producer, exact object name, dependency edge, and execution context.
+
+Prior invocation and command-authorization systems address parts of this problem. NDNSF investigates a reusable protocol connecting these decisions, with authorization spanning invocation and data retrieval.
+
+To make this gap operational, Table~\ref{tab:framework-needs} maps each invocation stage to the relationship the framework must preserve, the failure caused by its absence, and the validation planned in Chapter~\ref{chap:evaluation}.
+
+\begin{table}[htbp]\singlespacing\centering\small
+\caption{From invocation requirements to failure cases and proposed validation.}
 \label{tab:framework-needs}
-\begin{tabularx}{\textwidth}{p{.23\textwidth}X p{.16\textwidth}}
-\toprule Requirement category & Required behavior & Research link\\\midrule
-Discovery and invocation & Find willing candidates, select an executor, correlate completion or timeout & RQ1, RQ3\\\midrule
-Authorization and confidentiality & Check both service permissions, restrict Content access, apply permission changes & RQ1, RQ3\\\midrule
-Execution and collaboration & Associate work with active requests; enforce assigned roles and dependencies in the extension & RQ2, RQ3\\\midrule
-Named-object delivery & Distinguish control messages, ongoing streams, and complete artifacts; validate retrieved Data & RQ2, RQ3\\\bottomrule
+\begin{tabularx}{\textwidth}{p{.16\textwidth}XXp{.23\textwidth}}
+\toprule Stage or concern & Required relationship & Failure if missing & Proposed checks\\\midrule
+Candidate discovery & Eligible candidates report willingness and feasibility; descriptor access is restricted & Ineligible candidate selected or descriptor disclosed to unauthorized readers & ACK eligibility and descriptor access\\\midrule
+Selection and start & The intended Provider starts only a permitted, active invocation & Wrong device, unauthorized work, or repeated start & Permission, Selection, and replay checks\\\midrule
+Input and intermediate Data & Correct producer, object or stream, and permitted dependency & Wrong, stale, or incomplete input advances execution & Object/stream validation; role, edge, and cache tests\\\midrule
+Closure or replacement & Results match the active operation; closed work cannot advance its replacement & Late results revive closed work or complete the wrong operation & Deadline, cancellation, and replacement tests\\\midrule
+Permission changes & Permission updates take effect after status validation and required key updates & A grant is unusable or withdrawn permission remains accepted & Grant/withdrawal propagation and rejection delay\\\bottomrule
 \end{tabularx}
 \end{table}
 
-These are related requirements, not four strictly separated protocol layers. Authorization affects every remote operation, and execution state determines whether an otherwise valid object may be used. The following chapters explain the NDN foundation, the framework mechanisms, and their application-level validation. The research questions retain a narrower evidential purpose: determine which choices are justified, which additional guarantees the collaboration extension provides, and what their costs are.
+This table is a requirements-to-evidence map; it does not claim that all proposed collaboration checks have already been implemented or validated.
+
+The evaluation asks whether its checks enforce the intended relationships and whether the resulting cost is justified for the studied workloads.
+
+For each workflow in Chapters~\ref{chap:uav} and~\ref{chap:di}, validation will identify the applicable rows, test their failure cases through the corresponding framework paths, and record the outcomes. Single-Provider workflows do not require collaboration-role checks.
+
+Chapter~\ref{chap:evaluation} specifies the proposed tests. Coverage is limited to the declared workflows; the exclusions below define the remaining scope boundaries.

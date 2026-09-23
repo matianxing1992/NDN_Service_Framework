@@ -16,7 +16,7 @@ Application code defines the meaning of a service and supplies its feasibility a
 
 The ServiceContainer supports composition of runtime roles and local services within a process. Its local registry gives trusted components a way to invoke registered application functionality without turning every internal call into a network exchange. The application must keep the runtime and callback dependencies alive until active operations are closed. Local composition is useful for shared camera or inference facilities, but remote callers cannot select it as an alternative authorization path.
 
-The current typed C++ interface illustrates this separation. The following shortened example uses application-defined, serializable status messages; identity provisioning, event-loop setup, and error handling are omitted. It illustrates API use rather than a standalone executable.
+The current typed C++ interface illustrates this separation. The following shortened example uses application-defined, serializable status messages; identity provisioning, event-loop setup, and error handling are omitted. It illustrates application programming interface (API) use rather than a standalone executable.
 \begin{lstlisting}[language=C++,caption={Typed registration and invocation of a compact status service.}]
 provider.addHandler<StatusQuery, StatusReply>(
   ndn::Name("/status"),

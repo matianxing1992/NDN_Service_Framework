@@ -1,6 +1,8 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -337,6 +339,43 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionBindsStreamedGenerationContract)
   BOOST_CHECK_THROW(parseProjection(missing), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(NativeGenerationBudgetAccepts1025AndRetainsWireBounds)
+{
+  NativeJson options{{"useCache", true}, {"outputMode", "TOKEN_STREAMING"},
+    {"maxNewTokens", 64}, {"tokenizerDigest", digest('8')},
+    {"eosTokenIds", NativeJson::array({2})}};
+  const auto decodeOptions = [](const NativeJson& value) {
+    const auto wire = value.dump();
+    return nativeGenerationFromOptions({wire.begin(), wire.end()}, std::string(32, 'a'));
+  };
+  const auto samplingDigest = decodeOptions(options).samplingDigest;
+  for (const auto budget : {1, 64, 1024, 1025}) {
+    BOOST_TEST_CONTEXT("generation budget=" << budget) {
+      options["maxNewTokens"] = budget;
+      const auto generation = decodeOptions(options);
+      BOOST_CHECK_EQUAL(generation.maxGeneratedTokens, budget);
+      BOOST_CHECK_EQUAL(generation.samplingDigest, samplingDigest);
+      auto wire = nativeParseJson(streamingProjectionJson());
+      wire["generation_contract"]["max_generated_tokens"] = budget;
+      const auto projection = parseProjection(wire.dump());
+      BOOST_CHECK_EQUAL(projection.generationContract.maxGeneratedTokens, budget);
+      BOOST_CHECK_EQUAL(parseProjection(nativeSelectionProjectionV3ToJson(projection))
+                          .generationContract.maxGeneratedTokens, budget);
+    }
+  }
+  for (const auto budget : {0, 1026}) {
+    options["maxNewTokens"] = budget;
+    BOOST_CHECK_THROW(decodeOptions(options), std::invalid_argument);
+    auto wire = nativeParseJson(streamingProjectionJson());
+    wire["generation_contract"]["max_generated_tokens"] = budget;
+    BOOST_CHECK_THROW(parseProjection(wire.dump()), std::invalid_argument);
+    auto projection = parseProjection(streamingProjectionJson());
+    projection.generationContract.maxGeneratedTokens = budget;
+    BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(projection, projection.provider, 0),
+                      std::invalid_argument);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(NativeV3ProjectionBindsRoleLocalConversationReference)
 {
   const auto value = parseProjection(conversationProjectionJson());
@@ -637,6 +676,51 @@ BOOST_AUTO_TEST_CASE(NativeV3RuntimeEdgesComeOnlyFromSealedRoleDataflow)
   BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(
                       values[1], "/provider/wrong"),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeV3GenerationSelectsOnlySealedEpochEndpoints)
+{
+  auto values = validProjectionSet();
+  for (auto& value : values) {
+    value.generationContract.enabled = true;
+    value.generationContract.maxGeneratedTokens = 1;
+    value.generationContract.streamingOperationStride = 4;
+  }
+  values[0].dataflow.mayPublish.front().round = 1;
+  values[1].dataflow.mustFetch.front().round = 1;
+  auto finalEndpoint = values[0].dataflow.mayPublish.front();
+  finalEndpoint.round = 5;
+  // Explicit sealed fixture identities: this case tests selection, not the
+  // trusted builder's canonical digest calculation.
+  finalEndpoint.endpointDigest = digest('1');
+  finalEndpoint.manifestDigest = digest('2');
+  values[0].dataflow.mayPublish.push_back(finalEndpoint);
+  values[1].dataflow.mustFetch.push_back(finalEndpoint);
+  for (std::uint64_t epoch = 0; epoch != 2; ++epoch) {
+    const auto source = roleSpecFromSelectionProjectionV3(values[0], values[0].provider, epoch);
+    const auto sink = roleSpecFromSelectionProjectionV3(values[1], values[1].provider, epoch);
+    BOOST_REQUIRE_EQUAL(source.outputs.size(), 1);
+    BOOST_REQUIRE_EQUAL(sink.inputs.size(), 1);
+    BOOST_CHECK_EQUAL(source.outputs[0].collectiveOperationIndex, 1 + 4 * epoch);
+    BOOST_CHECK_EQUAL(source.outputs[0].plannedDataName, sink.inputs[0].plannedDataName);
+    BOOST_CHECK_EQUAL(source.outputs[0].endpointDigest, sink.inputs[0].endpointDigest);
+    BOOST_CHECK_EQUAL(source.outputs[0].manifestContractDigest, sink.inputs[0].manifestContractDigest);
+  }
+  const auto prefill = roleSpecFromSelectionProjectionV3(values[0], values[0].provider);
+  const auto finalize = roleSpecFromSelectionProjectionV3(values[0], values[0].provider, 1);
+  BOOST_CHECK_NE(prefill.outputs[0].plannedDataName, finalize.outputs[0].plannedDataName);
+  BOOST_CHECK_NE(prefill.outputs[0].endpointDigest, finalize.outputs[0].endpointDigest);
+  auto incomplete = values[0];
+  incomplete.dataflow.mayPublish.pop_back();
+  BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(incomplete, incomplete.provider, 0), std::invalid_argument);
+  auto repeated = values[0];
+  repeated.dataflow.mayPublish.push_back(finalEndpoint);
+  BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(repeated, repeated.provider, 1), std::invalid_argument);
+  BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(values[0], values[0].provider, 2), std::invalid_argument);
+  values[0].generationContract.streamingOperationStride = 0;
+  BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(values[0], values[0].provider, 0), std::invalid_argument);
+  values[0].generationContract.enabled = false;
+  BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(values[0], values[0].provider, 1), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(NativeV3ProjectionSeparatesMultiplePipelineTensors)

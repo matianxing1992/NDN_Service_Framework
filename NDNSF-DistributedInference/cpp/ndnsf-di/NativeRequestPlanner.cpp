@@ -26,6 +26,40 @@ bool sameStrategyIdentity(const NativeStrategyIdentity& left,
     left.deterministic == right.deterministic;
 }
 
+void expandStateContractsFromCatalog(NativeSplitCandidate& candidate,
+                                     const NativeStateTensorMapping& mapping,
+                                     const NativeModelDescriptor& model)
+{
+  const auto expand = [&model] (const NativeStateTensorMapping::Roles& mapped,
+                                auto& declared) {
+    if (mapped.empty()) return;
+    for (const auto& item : mapped) {
+      const auto found = declared.find(item.first);
+      if (found == declared.end() || item.second.size() == found->second.size()) {
+        continue;
+      }
+      std::vector<NativeTensorContract> replacement;
+      for (const auto& semantic : item.second) {
+        for (const auto& name : semantic.second) {
+          replacement.push_back({name, model.precision,
+                                 {"batch", "heads", "sequence", "head-dimension"},
+                                 std::nullopt});
+        }
+      }
+      if (!replacement.empty()) {
+        found->second = std::move(replacement);
+      }
+    }
+  };
+  expand(mapping.inputs, candidate.roleStateInputsByRole);
+  expand(mapping.outputs, candidate.roleStateOutputsByRole);
+  // The mapped tensor names are part of SplitCandidate's authenticated
+  // identity. Recompute the digest before the catalog binder validates the
+  // candidate; otherwise a legitimate dynamic-past mapping is rejected as a
+  // foreign candidate after this local expansion.
+  candidate.candidateDigest = candidate.computedDigest();
+}
+
 void requireObject(const NativeJson& value, const char* field)
 {
   if (!value.is_object())
@@ -333,6 +367,9 @@ NativePlannedRequest planNativeRequestImpl(
     throw std::invalid_argument("native request runtime/ACK binding is incomplete");
   NativeOfferBindingContext context{control.requestId, control.attempt, runtime.contract.serviceName,
     encoded.modelIntentDigest, model.graph.graphDigest, wireDeadlineMs};
+  if (conversationTurn && conversationTurn->attempt == 1 &&
+      conversationTurn->parent.parentContextEpoch > 0)
+    context.preferredProvidersByRole = conversationTurn->providersByRole;
   std::vector<NativeAdmittedOfferV3> offers;
   for (const auto& ack : closure.candidates) {
     if (encoded.recovery && ack.providerName.toUri() == encoded.recovery->failedProvider) continue;
@@ -362,6 +399,7 @@ NativePlannedRequest planNativeRequestImpl(
     control.requireActive();
     if (!sameStrategyIdentity(candidate.splitter, ports.splitterIdentity))
       throw std::invalid_argument("native splitter returned a foreign strategy identity");
+    expandStateContractsFromCatalog(candidate, runtime.stateMapping, model.descriptor);
     if (runtime.catalog)
       candidate = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
     auto roles = preparation.prepareRoles(model, candidate, control);
@@ -424,18 +462,32 @@ NativePlannedRequest planNativeRequestImpl(
           std::set<std::string>(generation.stateInputNames.begin(), generation.stateInputNames.end()).size() != generation.stateInputNames.size() ||
           std::set<std::string>(generation.stateOutputNames.begin(), generation.stateOutputNames.end()).size() != generation.stateOutputNames.size())
         throw std::invalid_argument("generation state input/output contract is incomplete");
+      std::set<std::string> observedStateInputs;
+      std::set<std::string> observedStateOutputs;
       for (const auto& role : proposal.roles) {
         const auto includes = [](const auto& tensors, const std::string& name) {
           return std::any_of(tensors.begin(), tensors.end(), [&](const auto& tensor) { return tensor.name == name; });
         };
         if (role.selectedRole == *sources.begin() && !includes(role.expectedInputs, generation.tokenInputName))
           throw std::invalid_argument("generation source omits the token input");
-        for (const auto& name : generation.stateInputNames)
-          if (name.empty() || !includes(role.expectedInputs, name))
-            throw std::invalid_argument("generation role omits a sealed state input");
-        for (const auto& name : generation.stateOutputNames)
-          if (name.empty() || !includes(role.expectedOutputs, name))
-            throw std::invalid_argument("generation role omits a sealed state output");
+        std::size_t localStateCount = 0;
+        for (std::size_t index = 0; index < generation.stateInputNames.size(); ++index) {
+          const auto hasInput = includes(role.expectedInputs, generation.stateInputNames[index]);
+          const auto hasOutput = includes(role.expectedOutputs, generation.stateOutputNames[index]);
+          if (hasInput != hasOutput)
+            throw std::invalid_argument("generation role has an incomplete state pair");
+          if (hasInput) {
+            ++localStateCount;
+            observedStateInputs.insert(generation.stateInputNames[index]);
+            observedStateOutputs.insert(generation.stateOutputNames[index]);
+          }
+        }
+        if (localStateCount == 0)
+          throw std::invalid_argument("generation role omits all sealed state pairs");
+      }
+      if (observedStateInputs.size() != generation.stateInputNames.size() ||
+          observedStateOutputs.size() != generation.stateOutputNames.size()) {
+        throw std::invalid_argument("generation state contract has an unbound role state");
       }
       const auto hash = [](const NativeJson& value) {
         return nativePlanningDigest(nativeCanonicalJson(value));
@@ -548,7 +600,9 @@ NativePlannedRequest planNativeRequestImpl(
       ndn_service_framework::SelectedParticipant participant;
       participant.role = role; participant.service = spec.service; participant.provider = ndn::Name(provider);
       participant.assignedArtifact = spec.requiredArtifact; participant.assignmentPayload = spec.assignmentPayload;
-      participant.ack = *ack; participant.artifactDataName = ndn::Name(core.artifacts.sourceByRole.at(role));
+      participant.ack = *ack;
+      participant.artifactDataName = core.artifacts.artifactPrefetchRequired
+        ? ndn::Name(core.artifacts.sourceByRole.at(role)) : ndn::Name();
       selected.push_back(std::move(participant));
     }
     std::map<std::string, std::set<std::string>> scopes;

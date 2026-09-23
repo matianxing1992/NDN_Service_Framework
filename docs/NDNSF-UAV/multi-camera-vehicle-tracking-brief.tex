@@ -1,0 +1,185 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[margin=22mm]{geometry}
+\usepackage{fontspec}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{microtype}
+
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\hypersetup{colorlinks=true,urlcolor=blue,linkcolor=black}
+\setlist{nosep,leftmargin=1.5em}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+\setlength{\emergencystretch}{3em}
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+\title{\textbf{Multi-Camera Multi-Vehicle Tracking Dataset and Algorithm Brief}\\
+\large NDNSF-UAV integration note}
+\author{NDNSF-UAV project}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\textbf{Purpose.} This note describes the public ``Multi-Camera Multi-Vehicle
+Tracking System (UAV Dataset)'' and its reference tracking pipeline, and maps
+them to a bounded NDNSF-UAV experiment. The dataset is useful for a small,
+reproducible multi-provider prototype; it is not by itself a complete
+multi-UAV scientific benchmark for recognition or geolocation.
+
+\section{Dataset overview and provenance}
+
+The dataset is distributed with the project
+\href{https://huggingface.co/datasets/jye9/Multi-Camera-Multi-Vehicle-Tracking-System}{Hugging Face dataset card}.
+The accompanying implementation is available at
+\href{https://github.com/JYe9/multi-camera-multi-vehicle-tracking-system}{the project repository}.
+The repository describes three synchronized one-minute UAV clips:
+\code{uav1\_1min.mp4}, \code{uav2\_1min.mp4}, and \code{uav3\_1min.mp4}.
+The views observe overlapping urban regions and are intended to maintain a
+consistent identity for the same vehicle across cameras. The CSV output uses
+frame-level fields such as bounding box, confidence, local tracker ID,
+\code{global\_id}, \code{camera\_id}, speed, and status.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Property & Dataset-level interpretation \\
+\midrule
+Views & Three UAV video streams with synchronized frame indices \\
+Target & Vehicles in urban scenes; the example highlights a red vehicle with a persistent global ID \\
+Labels & Per-frame boxes and tracking metadata; local and cross-camera IDs are both represented \\
+Output & Annotated MP4 files and per-camera CSV files \\
+Algorithm context & Ultralytics YOLO detection, Supervision/ByteTrack local tracking, and overlap-region cross-camera matching \\
+Scale & Small pilot resource: three one-minute videos rather than a large, diverse flight campaign \\
+License boundary & Check the dataset card and project license before redistribution; keep raw videos outside Git \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The data should therefore be called a \emph{synchronized multi-camera UAV
+tracking pilot}. It should not be described as a broad recognition benchmark:
+the release does not provide the target-class diversity, calibrated camera
+geometry, or flight metadata needed for a general claim about 3-D localization
+or improved recognition accuracy. It is also different from ordinary UAV MOT:
+multi-object tracking within one video does not establish identity association
+across independent views.
+
+\clearpage
+\section{Reference algorithm}
+
+The reference code is an engineering baseline rather than a new tracking
+algorithm. Its processing chain is:
+
+\begin{enumerate}
+  \item Load one YOLO detector and initialize one local tracker per UAV stream.
+  \item Process corresponding frame indices in parallel. Each stream performs
+        confidence filtering, non-maximum suppression, and local ByteTrack
+        association.
+  \item Convert local detections into anchor points and estimate speed and
+        direction using camera-specific pixel-to-meter scale factors.
+  \item Use configured field-of-view and overlap regions to match compatible
+        local tracks across cameras and assign a persistent \code{global\_id}.
+  \item Append detection and association records to CSV and render boxes,
+        labels, traces, regions, counters, and time codes to annotated video.
+\end{enumerate}
+
+The important distinction is between three identities: the detector's object
+candidate, a camera-local \code{tracker\_id}, and the cross-camera
+\code{global\_id}. A global ID is an application-level association result; it
+is not automatically an NDN producer identity and it is not a cryptographic
+proof that two objects are physically the same vehicle. The matching logic is
+based on overlap regions and configured spatial/appearance cues, so its speed
+and direction estimates require scene-specific calibration.
+
+For an NDNSF experiment, each camera stream should be treated as a separate
+logical Provider. The application should publish a bounded frame or temporal
+chunk as Named Data, while the tracking service consumes references to those
+objects. The full video should not be placed in a Request or Selection
+message.
+
+\clearpage
+\section{NDNSF-UAV integration and evaluation}
+
+\subsection*{3.1 Data-plane mapping}
+
+The three streams can be mapped to a minimal collaboration plan:
+
+\begin{verbatim}
+/uav/A  -> ViewData-A  --+
+/uav/B  -> ViewData-B  ---+--> TrackingProvider -> User
+/uav/C  -> ViewData-C  --+
+\end{verbatim}
+
+The protected discovery descriptor may contain the target region, deadline,
+minimum number of views, required vehicle-tracking capability, and resource
+constraints. After ACK collection and Selection, the plan assigns capture
+roles to the selected UAV Providers and a tracking role to the analysis
+Provider. Each View Data object should carry at least:
+
+\begin{itemize}
+  \item a request/mission session and attempt identifier;
+  \item producer identity, camera/UAV identity, sequence and frame index;
+  \item capture timestamp, target or track identifier, and media type;
+  \item exact Data name, content digest, bounding-box metadata, and optional
+        pose/GPS information.
+\end{itemize}
+
+The tracker must accept a View Data object only when its producer, name, digest,
+capture window, and dependency edge agree with the selected plan. Directly
+retrieved and cached objects must pass the same checks. A missing Provider,
+wrong producer, undeclared dependency, duplicate object, or stale attempt is a
+protocol rejection—not a computer-vision false negative.
+
+\subsection*{3.2 Recommended experiment stages}
+
+\begin{enumerate}
+  \item \textbf{Pipeline smoke test.} Use the three released videos to exercise
+        three ACKs, three selected capture roles, Named Data publication, and
+        one tracking Provider. Verify direct retrieval, cache retrieval, and
+        result publication.
+  \item \textbf{Failure and admission tests.} Remove one stream, delay one
+        stream, substitute a wrong producer, replay an old frame, or submit an
+        undeclared dependency. Record the first rejection stage and the final
+        request outcome.
+  \item \textbf{Paired tracking comparison.} Compare one stream against two
+        and three streams over the same time windows. Keep detector weights,
+        thresholds, frame sampling, and preprocessing fixed.
+  \item \textbf{Extended application study.} Only after obtaining more scenes
+        and target identities should the project report general multi-view
+        tracking or recognition improvements. The current three one-minute
+        release is a pilot, not sufficient evidence for such a claim.
+\end{enumerate}
+
+\subsection*{3.3 Metrics and limitations}
+
+Application metrics should include IDF1, HOTA or MOTA, identity switches,
+cross-view association accuracy, track continuity, and recovery after
+occlusion. NDNSF metrics should include positive ACK count, selected Provider
+count, accepted-view count, completion within deadline, end-to-end latency,
+message/byte overhead, cache-hit latency, and rejection counts for wrong
+producer, wrong dependency, and stale attempt.
+
+The dataset is especially useful for validating the \emph{data-plane contract}
+of NDNSF-UAV: selected Providers publish named objects and the analysis role
+advances only on authorized, correctly correlated objects. It does not by
+itself validate UAV flight control, GPS localization accuracy, cryptographic
+authorization strength, or that adding views always improves recognition.
+Those claims require calibrated metadata, more independent scenes, target-level
+splits, and a separately controlled application study.
+
+\section*{Sources}
+
+\begin{itemize}
+  \item Dataset card: \href{https://huggingface.co/datasets/jye9/Multi-Camera-Multi-Vehicle-Tracking-System/blob/main/README.md}{Hugging Face README}
+  \item Algorithm repository: \url{https://github.com/JYe9/multi-camera-multi-vehicle-tracking-system}
+  \item Project paper record: \url{https://arxiv.org/abs/2605.15779}
+\end{itemize}
+
+\end{document}

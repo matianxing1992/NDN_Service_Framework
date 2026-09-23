@@ -20,6 +20,1120 @@
 
 ## Current Checkpoint
 
+**Spec190 handoff — PLANNED**（2026-09-22 02:20 -05:00）：用户将后续工作调整为多轮token生成延迟分析与独立Spec规划。
+跨request驻留T009-R261及ACK/实时交付/同handle/FINALIZE性能工作由
+[Spec190 tasks](../190-multiturn-latency/tasks.md)承接；当前Spec189保持PARTIAL，不重写r260历史结果，
+不关闭完整Repo、ABI或其他资格缺口。本轮仅规划，无新产品实现/模型运行。
+
+**r260 Request-scoped runner reuse — CACHE_DIAGNOSTIC_PASS / Spec PARTIAL**（2026-09-22 01:55 -05:00）：
+r259每个Provider每轮11/12/12次准备已定位并修复；受控C++ RED复现、静态复审、
+增量构建与45 cases/1042 assertions三次GREEN通过。全局安装后真实三轮10/11/11
+tokenIds与r259相同，均EOS，后两轮KV恢复，各Provider每轮只准备一次（合计70→6）。
+Selection→checkpoint合计241.309→63.011秒，监控总区间599.588→426.593秒；
+C++ oracle PASS、cleanup PASS、无残留。未改ACK/收尾预算，单次观察非稳定性能保证。
+下一步T009-R261实现已接受的短期跨request驻留与shutdown释放；当前尚未实现。
+见[r260设计与性能基线](evidence/b189-r260-runner-reuse.md)。
+
+**r259 Conversation affinity and retention — CACHE_DIAGNOSTIC_PASS / Spec PARTIAL**（2026-09-22 01:22 -05:00）：
+已实现既有placement子类偏好、本地journal映射认证、Provider有界retention与receipt
+一致性。链接fixture边界修正并复审后构建成功；C++43 cases/882 assertions及placement
+六case/147 assertions各三次通过。真实两节点三轮10/11/11token均EOS，后两轮两侧
+恢复父KV，prefix23→51→79；安装版C++ oracle PASS，cleanup PASS且无残留。
+binding ABI重建、双PDF及完整Repo/同handle验收仍开放，不把Python辅助检查当原生
+功能证明。未混合提交或push；下一产品验证为常驻C++ Conversation同handle多轮。
+见[r259](evidence/b189-r259-affinity-retention.md)。
+
+**r258 Chained multi-turn KV — PARTIAL**（2026-09-22）：限定五目标构建通过，
+C++24 cases/638 assertions三次、CLI89例、Python71项通过；真实首轮10token/EOS，
+第二轮两Provider复用KV后11token/EOS。第三轮仍选原节点，但父checkpoint已过期，
+在restore前失败；cleanup PASS且无残留。下一步修正保留期限契约并实现策略层原
+placement优先；当前只有选后映射一致性校验，不能称已实现优先选择或三轮PASS。
+见 [r258](evidence/b189-r258-multiturn-kv.md)。保持完整Repo资格、同handle和独立repeat开放。
+
+**r257 Core assignment repair — CACHE_DIAGNOSTIC_PASS / Spec PARTIAL**（2026-09-21 23:59 -05:00）：
+Core外置顺序/授权/失败取消修复后，8场景163 assertions三次通过；真实两节点Qwen
+1024预算运行生成10token并EOS结束，输出`Hello! How can I assist you today?`，
+两Provider完成、checkpoint prefix23、C++缓存诊断与cleanup均PASS，无残留。
+完整Repo资格与sanitizer仍未完成，未混合提交或追加实验。见
+[r257](evidence/b189-r257-core-assignment-externalization.md)。
+
+**r255/r256 scope checkpoint — PARTIAL**：缓存诊断独立verdict已实现；C++ CLI24例、
+Python93项通过，旧r254 raw以新oracle只读重判为CACHE_DIAGNOSTIC_PASS，完整Repo
+资格仍NOT_RUN，原始失败记录未覆盖。见 [r255](evidence/b189-r255-cache-diagnostic.md)。
+用户追加连续多token生成并更正为EOS/EOT或token上限，不需字符上限；字符草稿已
+撤回，未为字符草稿构建/运行。1024预算贯通已完成静态复审、C++602 assertions三次、
+预算18及builder177 assertions、CLI41 cases、Python94项通过；新1024实验在两ACK后
+Core plan commit失败，未进入组装/生成，cleanup PASS无残留，保持PARTIAL；见
+[r256](evidence/b189-r256-multitoken-stop.md)。
+
+**r254 finalize/feedback — PARTIAL**（2026-09-21 22:40 -05:00）：按用户限定只修
+正常 finalize 被标 STOP、反馈边缺 accepted planDigest 两项。生产补丁已写，
+冻结复审、26.255s定向构建通过；C++4/4、345 assertions三次通过，安装一致。
+随后唯一两节点运行返回token14582/Question、checkpoint；两Provider完成均observed，
+反馈摘要正确、尾terminal齐备。oracle新首边界MATERIAL_FETCH/incomplete-material-sequence，
+cleanup PASS、无残留；未追加修复或重跑。完整资格仍未通过。
+见 [r254](evidence/b189-r254-finalize-feedback.md)，不新增无关重构或关闭验收任务。
+
+**r253 finalization observation — PARTIAL**：已实现每轮日志偏移/共享截止时间及
+Provider 真实收尾观测屏障；不提前终态、不替代原生 oracle。v2 静态复审通过，
+85项编排测试通过（0.65s）；见 [r253](evidence/b189-r253-provider-finalization.md)。
+
+**r252 evidence lines — PARTIAL**：已统一主要 Provider 机器日志 sink，增加真实
+C++ 并发大记录/换行测试及 worker 链接闭包；首轮静态复审发现旧 stdout-only
+observer 与异步缺 worker 提示遗漏，已修复，v2 五 lane STATIC_PASS；定向增量
+构建成功3m2.476s；C++ 2/2、228 assertions 连续三次通过，CLI observer5/5通过。
+另确认 requester exit 不保证 Provider terminal 已可见，需独立收尾屏障。
+见 [r252](evidence/b189-r252-evidence-lines.md)，不改变产品任务验收状态。
+
+**r251 wrapper exit — PARTIAL**：r250 两 Provider 已 execution completed，requester
+返回 token14582（Question）、1 stream event 和 conversation checkpoint；launcher
+因成功 marker 先于 poll 导致 returncode=None 被误判失败。cleanup PASS、无残留。
+已补 poll/reap→读log 顺序和 wrapper 正反例，静态复审及33项测试通过；
+相同 native identity 的 r251 再次原生成功，但 C++ oracle 拒绝交错拼接的 grant 日志；
+cleanup PASS、无残留。下一步修日志原子性并核对 checkpoint 完成观测；
+见 [r251](evidence/b189-r251-requester-exit.md)。未计完整资格验收。
+
+**r250 epoch dataflow — PARTIAL**：已补逐轮精确 endpoint 枚举/选择、epoch0
+readiness、最终 activation 在状态 commit 后传播，并修上游成功返回前的 KV retain。
+冻结静态复审与限定构建通过；finalization 4/4、182 assertions 连续三次通过，含
+四失败分支与两端 promotion/readback；epoch projection 23/23、128 assertions 通过。
+builder roundtrip 首次因旧 fixture 缺必填字段失败，修测试副本并独立复审/增量构建后
+1/1、163 assertions 通过。安装核对及实际原生请求成功，wrapper 收尾误判见上；
+见 [r250](evidence/b189-r250-epoch-dataflow.md)。
+
+**r249 half logits**：原生 lastLogits 已加入 FLOAT16 数值转换，保留 FP32 和 wire；
+新增真实 coordinator C++ fixture、typed logits 正反例及独立 target。
+五条 coverage lane 静态复审通过，限定增量编译通过（32.896s）；新增 C++ selector
+3/3、125 assertions 通过；见 [half logits](evidence/b189-r249-half-logits.md)。
+安装哈希一致；两节点诊断退出 1，Provider-1 报 GENERATION_EPOCH_LINEAGE_MISMATCH，
+cleanup PASS、无残留；下一步静态核对 lineage 字段，任务保持 PARTIAL。
+事后静态复审已确认 PIPELINE finalization 过滤遗漏、marker 不携带下游计算数据，
+以及 V3 pipeline projection 未使用 epoch 参数；下一批统一修正对象身份与最终状态
+推进并增加双角色 C++ 回归。未放宽校验、未再次运行；具体 mismatch 字段尚未取证。
+
+**r248 evidence wiring — 2026-09-21 21:26 -05:00**：r247 因缺少必要 terminal
+日志保留现场后有序停止（session 46086，退出 254），不是新业务成功或超限。
+已补 launcher 默认 WARN 和配置/失败早停测试，静态复审待返回；
+详见 [terminal evidence](evidence/b189-r248-terminal-evidence.md)。
+下一步有界诊断获取真实首个失败原因，产品任务保持 PARTIAL。
+后续实际结果：27 项 launcher 测试通过；r248 自动捕获 Stage/1
+`native epoch coordinator logits are invalid` 后退出 1，cleanup PASS。
+确认模型 logits 为 FLOAT16，而 C++ sampler 只接受 Float32；下一步兼容
+采样数值转换并补 C++ 正反例。当前没有活跃 MiniNDN run，不关闭产品任务。
+
+**r246 feedback checkpoint**：两个 Provider 缓存命中并完成 runner 创建，
+position policy 修复在真实调用中生效；仍未返回 token。
+线程栈捕获下游 TOKEN_FEEDBACK 被作为本机 producer 等待；已保留现场并
+有序停止 run worker，session 53292 退出 254，不是资源超限。
+下一步最小修复 control-edge 的缺映射 fallback 并做 C++ 回归；
+详见 [r246 feedback evidence](evidence/b189-r246-feedback-route.md)，产品任务 PARTIAL。
+后续 r247：最小 caller 修复及 partial/complete assignment C++ 用例已写入，
+不可变快照只读单元/组合复审通过；affected build 通过（1m39.402s），
+C++ 6/6 cases、74/74 assertions 通过。DI/provider 已定向安装且摘要一致；
+实际跨节点反馈复验待启动，不能记为反馈链路 PASS。
+复跑门通过后已启动 `two-provider-feedback-route-r247`，exec session `46086`，
+日志 `.codex-tmp/spec189-r247-feedback-route/launch.log`；source cache 校验通过，
+模型返回尚未确认。后续轮询同一 session，不重复启动。
+最近观察：两个 runner 创建完成，无 token；provider-1 栈未见活动执行，
+且 launcher 默认未配置 NDN_LOG，必须的 stage/terminal 日志缺失。
+下一步核实请求终态与日志配置，不能沿用 r246 的 self-wait 结论。
+
+**r245 terminal checkpoint**：exec `7992` 退出 1，`RESOURCE_BOUNDARY:ownedSwap`，
+cleanup PASS。provider-0 缓存命中并完成 runner 创建；provider-1 冷组装完成，
+最后边界 FACTORY_BIND_BEGIN，尚无 token。下文 running 描述为此前观察，
+以 [terminal evidence](evidence/b189-r245-resource-boundary.md) 为准。
+下一步定位绑定校验/异常传播及资源峰值；不放宽门限，不关闭任务。
+静态对照已确认 position policy 没有按角色实际输入投影：合法 stage-1
+没有 mask/position 输入，但 C++ binding 强制要求；历史 Python 按本地输入
+决定是否启用。2026-09-21 21:04 -05:00：C++ role-local 修复与正反例已编写，
+独立只读单元/组合复审通过；affected DI 库与 `spec189-preparation-alias`
+构建通过，C++ 5/5 cases、61/61 assertions 通过。Provider 独立编译闭包补审后
+也已定向构建/安装，产物与 installed 摘要一致。真实模型复验待运行；
+swap 和失败传播仍开放，详见上述 terminal evidence。
+同一 reviewer 完成 rerun gate 后已启动 `two-provider-position-policy-r246`
+（exec session `53292`，日志 `.codex-tmp/spec189-r246-position-policy/launch.log`），
+保持原门限与缓存校验；运行结论待观察，任务保持 PARTIAL。
+
+**Installed Python closure repair**：已删除 launcher 对 DI checkout 的主动路径注入，
+通过原有 wheel 入口安装 root 所需 DI/NDN/MiniNDN 模块。只读静态审查通过；
+root imports、native wrapper 安装和 loader 全局闭包已核对。
+详见 [installed closure](evidence/b189-installed-python-closure.md)。下一步观察
+已固定两节点参数的新 raw run，产品任务保持 PARTIAL。
+
+本轮 launcher/cache tests 30/30 PASS，root 模块来源核验已留档。
+后续更新：native wheel 构建、安装与 loader 核验已通过；诊断 run
+`two-provider-installed-python-r245` 正在 exec session `7992` 执行，结果待观察。
+已观察两个 Provider 的真实 placement ACK；两段均到达 `ASSEMBLY_CALL_DONE`，
+provider-1 最后观察边界为 `FACTORY_BIND_BEGIN`，尚无 token 返回结论。
+
+**Review workflow cleanup**：本轮扫描仓库 Markdown/RST/TeX 及 active Spec、
+`.specify` 文档配置，未发现 DeepSeek 复核或 delegate 流程残留；不使用该流程。
+保留模型兼容性说明和独立 Claude 后端配置，不改动会话数据。
+该检查不构成模型验收，也不关闭产品任务。
+
+**B189 r244 v5 caller preflight**：两段 manifest 被手工启动命令传成三个节点，
+退出 1、cleanup PASS、无 MiniNDN 执行。已确认下一调用须使用 `ucla,arizona`。
+host guard 定向测试 22/22 通过；worker 定向安装成功。
+此前关于 tokenizer 缺失与 worker 未安装的诊断不成立，详见
+[v5 evidence](evidence/b189-r244-v5-launch-preflight.md)。
+产品任务仍为 PARTIAL；下一步固化可复用调用并核对安装闭包后重试。
+
+v5 后续静态修复：默认/示例改为两执行节点；LocalExperiment 补齐六个程序路径
+传递及 oracleBinary 的安装路径配置，解除“只传摘要却使用构建树默认程序”的
+caller 错误。只读复审通过，配置/缓存/host guard 52 项通过，日志见同一
+[v5 evidence](evidence/b189-r244-v5-launch-preflight.md)。Python checkout 导入与
+root 缺 ndn 的安装闭包仍开放，未重跑模型，任务 checkbox 不变。
+
+**B189 r244 cross-process cold-assembly gate — 2026-09-21**:
+为两个 Provider 的 model-sized cold assembly 增加共享 advisory `flock` admission
+gate。cache hit 不等待；cache miss 在 `prepareNativeCanonicalOnnxRole` 入口取得
+共享锁，等待期间检查取消、request deadline 和 assembly timeout，并记录
+`COLD_ASSEMBLY_WAIT`/`COLD_ASSEMBLY_ENTERED`；RAII 覆盖异常和 cleanup。直接 assembler
+调用的默认锁路径从 cache root 父目录派生，修复普通用户访问历史 root-owned
+`/var/tmp` 路径的权限边界；生产 Provider 仍按固定 artifact-cache root 共享一把锁。
+affected build/install 通过，preparation `4/4`、canonical publisher `16/16`、
+provider assembly `20/20` 通过，注册双 Provider assembly selector 至少观察到
+`COLD_ASSEMBLY_GATE state=ENTERED`。真实 MiniNDN 新 run 只到两 Provider `PROVIDER_READY`，
+外层会话随后以 `137` 结束且无 guard/assembly 终点；没有把它记为 runtime PASS。
+证据见 [r244 cold-assembly gate evidence](evidence/b189-r244-cold-assembly-gate-20260921.md)。
+T003、T005、T006、T007、T009 仍保持 `PARTIAL`，下一步先修复/诊断 launcher
+session `137` 边界，再重跑真实两 Provider 链路；不改变当前内存门限。
+
+**B189 r242 Python/C++ model-path parity repair — 2026-09-21**:
+完成旧 Python Qwen 成功路径与当前 C++ production path 的静态逐阶段对照。
+已确认 `input_ids` request tensor bundle、C++ 生成的 `attention_mask`/
+`position_ids`、stage concrete boundary/passthrough、`past/present` KV、命名
+`logits` 输出和 7000-byte publication contract 对齐；recipe-addressed assembled
+cache 保留。唯一确认的运行时不一致是 decode epoch 重取首轮
+`APPLICATION_INPUT`，现已修复为 epoch 0 仅消费 ingress、epoch > 0 仅消费
+`TOKEN_FEEDBACK` 并使用 Provider-local KV。affected C++ build/install 通过；
+preparation 4/4、canonical publisher 16/16、provider assembly 20/20 通过。
+证据见 [r242 parity evidence](evidence/b189-r242-python-cpp-static-parity-20260921.md)。
+新增 coordinator regression 尚未由 aggregate `unit-tests` 编译，因无关的旧
+`di-native-planning.t.cpp` 聚合赋值错误阻塞；没有修改该 stale test。T003、T005、
+T006、T007、T009 仍为 `PARTIAL`，下一步用新 raw run 验证真实两 Provider handoff
+和 terminal。
+
+**B189 r232 preparation observability and alias-contract boundary — 2026-09-21**:
+Provider executable 已补充 `CACHE_LOOKUP`、`ASSEMBLY_CALL`、factory bind 进度，
+assembler 已补充 source/initializer/worker/cache-finalization 进度及异常首行。新的
+installed-candidate raw run 进入真实 MiniNDN；Provider-0 完成 worker assembly 和
+`model.onnx` 写入，但在 `bindNativeRunnerOutputScopes` 因
+`native runner activation output alias contract is ambiguous` 失败。没有
+`RUNNER_SPEC_READY`、`RUNNER_READY`、ORT、terminal 或 two-provider qualification
+证据，operator 停止后 cleanup 无残余进程，保持 `RUNTIME_UNQUALIFIED`，不推进任务
+checkbox。详细边界见 [r232 evidence](evidence/b189-r232-preparation-alias-contract-20260921.md)。
+下一步只核对并修复 authenticated generation state contract 从 Core sealing 到
+Selection projection/Provider assembler 的传递，保留 alias 校验，再做 affected
+C++ build、selector 和新的 raw run。
+
+r233 首次启动另有一个 launcher preflight-only 失败：手工传入 binary digest 时遗漏
+`sha256:` 前缀，返回 `CONTROLLER_BINARY_DIGEST_MISMATCH`；未启动 MiniNDN、Core、
+Provider 或模型路径，不能计入 runtime 结果。实际 Controller hash 与候选一致，命令
+格式已修正；产品任务仍不推进。
+
+r233 retry 已通过 digest preflight 并进入 MiniNDN；诊断确认 generation contract
+完整到达 Provider，但 alias 两侧计数为 `activationOutputs=4`、`semanticOutputs=1`，
+原因是 activation 侧未排除 3 个 passthrough/local-input tensor。运行资源正常、guard
+未触发；operator 停止后没有 runner/ORT/terminal 证据，仍保持
+`RUNTIME_UNQUALIFIED`。下一步修正 assembler 与 cache/rebind preparation 的共同
+local-input 过滤规则，补回归 case 后再 build、selector、raw run。
+
+r234 修复的第一次 affected build 在 `NativeRunnerPreparation.cpp` 因 rebind 函数
+缺少本地 `localInputNames` 集合而失败；未安装、未运行 selector 或 MiniNDN，任务仍
+未完成。失败边界已记录，下一步仅补齐局部集合并重编。
+
+r234 第二次 affected build/install 通过；新增 `spec189-preparation-alias` 为 `4/4`
+（44 assertions），`Spec185ProviderAssembly` 为 `20/20`（192 assertions），
+`spec189-canonical-publisher` 为 `16/16`（397 assertions）。这是 focused/native
+selector PASS，不推进 Qwen two-provider checkbox；下一步运行新的 installed raw
+candidate 验证 `RUNNER_READY`、ORT、terminal 和 cleanup。
+
+r235 使用该 installed candidate 的新 raw run 仍在 Provider-0 alias contract 边界停止：
+`generationEnabled=true generationStateOutputs=56 expectedOutputs=32 localInputs=31
+roleOutputs=1 activationOutputs=4 semanticOutputs=1`。因此实际多出的 3 个 concrete
+output 名称不等于当前 projection 的 local-input 名称，r234 过滤修复尚未解除生产
+边界；资源 guard 未触发，未取得 runner/ORT/terminal 证据。下一步增加名称级诊断，
+核对 authenticated semantic edge 到 ONNX concrete name 的映射后再做最小 C++ 修复。
+
+**B189 recipe-addressed assembled-cache checkpoint — 2026-09-21**:
+静态对照确认 Python launcher 负责 canonical source/initializer、node mapping、
+layer/state contract 和 Provider command；C++ `NativeCanonicalRolePreparer` 与
+`NativeCanonicalOnnxAssembler` 负责 Selection 后的真实 role assembly、pinned
+worker 和 ORT runner。assembled cache 已修正为组装前可知的
+`recipeDigest` 目录键：`assembled/<safe-role>/<recipeDigest>/model.onnx`；
+完成后的 model SHA 只通过 `manifest.json` 和文件 SHA-256 做命中校验，不再扫描
+同 role 下未知 SHA 目录。backend/ABI 等仍保留在 recipe，因为当前缓存交付的是
+可运行 contract；普通 protected Repo 仍是 grant-bound encrypted path。受影响
+build `BUILD_RC=0`，`Spec185ProviderAssembly` `20/20 PASS`，Python launcher/cache
+定向测试 `29 passed`，`git diff --check=PASS`。这只是 `FOCUSED_BEHAVIOR_PASS`，
+不推进任何 product checkbox；r229 之后仍为 `RUNTIME_UNQUALIFIED`。证据见
+[recipe-key cache checkpoint](evidence/b189-cache-recipe-key-20260921.md)。下一步
+只运行新的 installed-candidate MiniNDN raw run，验证真实 cache hit、runner、ORT、
+terminal 和 cleanup 边界。
+
+同一 checkpoint 已补上模型准备的单元/selector 证据：固定种子生成并重新读取
+小型 4-node fully-connected ONNX，生产 `NativeCanonicalRolePreparer` 将其分为
+3+1 两个 role，并由 native assembly 链分别完成 full checker、shape inference、
+CPU ORT session load；测试结束后 `/tmp/spec189-generated-multilayer-fc` 不存在。
+`spec189-canonical-publisher` 全部 `16/16`、`397 assertions` 通过，模型准备
+定向 case `1/1` 通过。该证据只证明准备/拆分/组装模块边界，不推进真实 Qwen
+two-provider product checkbox；本轮显式路径 checkpoint 尝试仍被仓库 hook 以
+`development-assistant files or references remain in the Git index` 拒绝，未绕过、未
+push；下一步仍只运行新的 installed-candidate MiniNDN raw run。
+
+**B189 r229 cache-compatibility assembled-cache eligibility boundary — 2026-09-21**:
+r229 使用修正后的 Qwen manifest 和 `hashesVerified=true` 的 system-wide
+model-source cache，在显式 cache-compatibility mode 下进入真实 MiniNDN。两 Provider
+完成 signed placement ACK 和 grant verification；Provider-0 到达
+`PROTECTED_RUNTIME_FACTORY_DONE`、`ROLE_SPEC_READY`、`EPOCH_COORDINATOR_BEGIN`、
+`RUNNER_PREPARATION_BEGIN`、`RUNNER_PREPARATION_FACTORY_BEGIN`，Provider-1 到达
+`EPOCH_COORDINATOR_BEGIN`。运行在首个稳定边界后由 operator 以 `143` 停止；这不是协议
+结果。389 个 resource samples 中 `ownedSwapBytes` 最大 `40439808`、最低可用内存
+`3570765824` bytes、最低 free disk `37422333952` bytes、最大 supervised RSS
+`5490577408` bytes，host guard 未触发且 cleanup 后无残留进程。没有 assembly worker、
+`RUNNER_READY`、ORT、terminal 或 two-provider qualification 证据，保持
+`RUNTIME_UNQUALIFIED`，不推进 checkbox。证据见
+[r229 runtime evidence](evidence/b189-r229-cache-compatibility-factory-diagnostic-20260921.md)。
+
+静态检查发现原 hash-only assembled lookup 只接受 `plaintext-v1`，因此本次仍带
+authenticated protected epoch 的 cache-compatibility run 没有命中已组装模型，退回了
+大模型 cold assembly。修复现已限制为：显式 cache-compatibility mode 下，Selection/grant
+通过后仅按 `assembled/<safe-role>/<sha256>/model.onnx` 的实际 SHA-256 命中；protected
+cold assembly 只在该诊断模式写入可复用明文，命中时跳过第二份 protected staging；普通
+protected Repo 仍保持 grant-bound encrypted 语义。受影响 Waf build 与
+`Spec185ProviderAssembly` 19/19 通过。下一步先冻结新的 post-repair static snapshot，
+再用新的 raw run 验证 cache hit；正式 Qwen two-provider qualification 仍需原始
+protected Repo 链路，不能由诊断模式计为完成。
+
+**B189 r228 in-place shape and streamed-response Core timeout — 2026-09-21**:
+r228 使用修正后的 maintained Qwen stage manifest，通过 hash-only model-source
+cache 校验并进入真实 MiniNDN。两 Provider 都完成 grant verification 并到达
+`EPOCH_COORDINATOR_BEGIN`；Provider-0 继续到
+`RUNNER_PREPARATION_BEGIN` 和 `RUNNER_PREPARATION_FACTORY_BEGIN`。随后 requester
+在 Core 边界报告 `NATIVE_REQUEST_TIMEOUT`，Core request deadline expired；host
+resource guard 未触发，`ownedSwapBytes=124108800`、最低可用内存为
+`4033961984` bytes，最大采样进程 RSS 为 `2728910848` bytes。没有 assembly
+worker、`RUNNER_READY`、ORT、terminal 或 two-provider qualification 证据，cleanup
+完成且无残留进程，保持 `RUNTIME_UNQUALIFIED`，不推进 checkbox。in-place shape
+inference 与 streamed worker response 的 native build 通过，`Spec185ProviderAssembly`
+19/19；hash-only cache 规则不变。证据见
+[r228 runtime evidence](evidence/b189-r228-inplace-shape-core-timeout-boundary-20260921.md)。
+下一步只检查 Core/provider preparation wait 及 deadline/lease progression，不改变
+cache 语义、不把 timeout 计为模型推理结果。
+
+**B189 r227 stage-manifest preflight boundary — 2026-09-21**:
+r227 在 MiniNDN 启动前因输入 manifest 缺少显式 `modelFamily` 失败，报告
+`ValueError: stage manifest requires an explicit modelFamily`；没有 Provider、Repo、
+ACK、Selection、assembly、ORT 或资源结果。r228 已使用包含
+`"modelFamily": "qwen"` 的 maintained manifest 修正该输入边界，产品任务仍保持
+`RUNTIME_UNQUALIFIED`，不推进 checkbox。证据见
+[r227 preflight evidence](evidence/b189-r227-manifest-preflight-boundary-20260921.md)。
+
+**B189 r226 finalization-scope repair and worker-memory boundary — 2026-09-21**:
+r226 通过完整 preflight 和 hash-only model-source cache 校验；两 Provider 产生 signed
+placement ACK。finalization mutex 修复解除 r225 自死锁，Provider-0 进入
+material-backed role preparation 并生成 `752094842` bytes 的 staged
+`canonical.onnx`；Provider-0 到达 `RUNNER_PREPARATION_FACTORY_BEGIN`，Provider-1
+到达 `EPOCH_COORDINATOR_BEGIN`。随后 host guard 因
+`ownedSwap=482988032` 超过 `268435456` 停止，最低可用内存为
+`2230837248` bytes，最大 supervised child RSS 为 `3621294080` bytes，cleanup=PASS
+且无残留进程。没有 completed assembly worker、`RUNNER_READY`、ORT、terminal 或
+two-provider qualification 证据，保持 `RUNTIME_UNQUALIFIED`，不推进 checkbox。证据见
+[r226 runtime evidence](evidence/b189-r226-finalization-scope-worker-memory-boundary-20260921.md)。
+下一步只降低 native assembly-worker/ORT 首次工作集，并保持 authenticated fetch、C++
+production worker、resource guard 和 hash-only cache 规则不变。
+
+**B189 r225 material-payload release and finalization deadlock — 2026-09-21**:
+r225 通过完整 preflight，复用并校验同一 hash-only model-source cache；两 Provider
+产生 signed placement ACK，Provider-0 到达 `RUNNER_PREPARATION_FACTORY_BEGIN`，
+Provider-1 到达 `EPOCH_COORDINATOR_BEGIN`。按 authenticated material reference
+最后一次消费释放 payload backing 后，resource samples 的
+`ownedSwap` 峰值为 `88768512`，最低可用内存为 `3450798080` bytes，未触发
+resource boundary。只读 gdb 随后确认 Provider-0 在
+`NativeAssemblyArtifactDirectoryOwner` 析构中重新获取仍由 preparation path 持有的
+`nativeAssemblyFinalizationMutex`，形成自死锁；运行由 operator 有界停止，cleanup
+完成且无残留进程。没有 `RUNNER_READY`、ORT、terminal 或 two-provider qualification
+证据，保持 `RUNTIME_UNQUALIFIED`，不推进 checkbox。证据见
+[r225 runtime evidence](evidence/b189-r225-material-payload-release-finalization-deadlock-20260921.md)。
+下一步仅将 finalization mutex 缩到 immutable directory file-finalization 区间，再用
+新的 raw run 验证；hash-only cache 规则不变。
+
+**B189 r224 serialization-memory repair boundary — 2026-09-21**: r224 通过完整
+launcher preflight，`MODEL_SOURCE_CACHE` 报告 `hashesVerified=true`，并进入真实
+MiniNDN；两 Provider 都产生 signed placement ACK 和
+`GRANT_VERIFICATION status=VERIFIED boundary=BEFORE_ASSEMBLY`。Provider-0 到达
+`RUNNER_PREPARATION_FACTORY_BEGIN`，Provider-1 到达 `EPOCH_COORDINATOR_BEGIN`，但
+没有 `RUNNER_READY`、ORT、terminal 或 two-provider qualification 证据。新增的直接
+protobuf vector serialization 已完成受影响 native build、安装身份核对和
+`Spec185ProviderAssembly` 19/19 focused 测试；运行时仍由 host guard 因
+`ownedSwap=303005696` 超过 `268435456` 上限停止。最低可用内存为
+`2243293184` bytes，cleanup=PASS 且无残留进程，因此这是 swap working-set 边界，
+不是 available-memory floor。保持 `RUNTIME_UNQUALIFIED`，不推进 checkbox。证据见
+[r224 runtime evidence](evidence/b189-r224-serialization-memory-repair-boundary-20260921.md)。
+下一步只处理首次 protected material 装配的 working-set/lifecycle，并保留完整
+authenticated publication/fetch、assembly、runner 和 terminal 路径；hash-only cache
+不能作为 protected epoch 的 qualification 替代。
+
+**B189 r223 epoch/material fetch boundary — 2026-09-21**: r223 通过完整
+launcher preflight 并进入真实 MiniNDN；hash-only model-source cache 校验成功。两
+Provider 都到达 `EPOCH_COORDINATOR_BEGIN`，Provider-0 继续到
+`RUNNER_PREPARATION_FACTORY_BEGIN`。只读 gdb 栈确认当前生产等待位于
+`ServiceProvider::fetchAndDecryptLargeDataUntil` →
+`CollaborationContext::fetchEncryptedLargeData`，由 native canonical assembler
+请求 `material-bundle`。host guard 随后因 `ownedSwap=384675840` 超过
+`268435456` 上限早停；cleanup=PASS、无残留进程。Provider-0 staging 中的
+`canonical.onnx` 仅是失败现场证据，不是 cache hit、runner、ORT、terminal 或
+two-provider PASS。保持 `RUNTIME_UNQUALIFIED`，不推进 checkbox。证据见
+[r223 runtime evidence](evidence/b189-r223-epoch-material-fetch-boundary-20260921.md)。
+下一步只修正 authenticated material publication/fetch 与首次装配的内存/cache
+生命周期；qualification 不得改走 cache-compatibility mode。
+
+**B189 r221 status/epoch boundary — 2026-09-21**: r221 通过 preflight、model-source cache
+校验并进入真实 MiniNDN；两 Provider 都完成 grant/binding、`ASSEMBLY_ADMISSION_DONE`、
+`ROLE_SPEC_READY` 和首个 `STATUS_REPORT_DONE`，但没有第二个状态、`EXECUTION_ENTERED`、
+`ASSEMBLY_STARTED`、`RUNNER_READY`、ORT、execution 或 terminal 证据，也没有启动 assembly
+worker。操作员有界停止后 supervisor 为 `cleanup=PASS` 且无残留进程。该取消不是协议结果，
+保持 `RUNTIME_UNQUALIFIED`。证据见 [r221 runtime evidence](evidence/b189-r221-status-boundary-20260921.md)。
+下一步只在 authenticated epoch coordinator 入口和 `runnerPreparationFactory` 调用前后加入
+直接边界探针，再用新的 raw run 定位首个未观测区间。
+
+**B189 r219 post-grant boundary — 2026-09-21**: r219 通过完整 launcher preflight 并进入真实
+MiniNDN；hash-only model-source cache 报告 `hashesVerified=true`，两 Provider 都打印了
+protected-runtime factory、grant verification、binding validation、`GRANT_STAGE_MARKER_DONE`
+和 `POST_GRANT_CONTINUING`。之后没有 assembly admission completion、`ASSEMBLY_STARTED`、
+`RUNNER_READY`、ORT、execution 或 terminal 证据，也没有启动 assembly worker；有界停止后
+supervisor 为 `cleanup=PASS` 且无残留进程。该取消是诊断停止，不是协议结果，保持
+`RUNTIME_UNQUALIFIED`。证据见 [r219 runtime evidence](evidence/b189-r219-post-grant-boundary-20260921.md)。
+下一步只在 assembly admission reporting、lease activation 与首个 readiness/execution status
+调用前后增加直接边界探针，再用新 raw run 定位首个未观测区间。
+
+**B189 r217 post-grant probe runtime stop — 2026-09-21**: r217 通过完整 preflight 并
+进入真实 MiniNDN；两 Provider 都有 signed ACK 和
+`NDNSF_DI_GRANT_VERIFICATION status=VERIFIED boundary=BEFORE_ASSEMBLY`，但没有
+assembly worker、`ASSEMBLY_STARTED`、`RUNNER_READY`、ORT、execution 或 terminal 证据。
+为避免重复等待未改变的长 Core deadline，诊断运行约五分钟后停止；supervisor
+`cleanup=PASS` 且无残留进程。该取消是操作员诊断停止，不是协议结果，保持
+`RUNTIME_UNQUALIFIED`。证据见 [r217 runtime evidence](evidence/b189-r217-post-grant-probe-runtime-stop-20260921.md)。
+下一步在 protected-runtime factory 返回、binding validation 和 post-grant marker
+前后加入直接 flush 的 Provider stdout 探针，再用新的 raw run ID 定位首个边界。
+
+**B189 r216 stage-manifest stop-contract preflight boundary — 2026-09-21**: r216 通过了
+摘要和 `modelFamily` 检查，但 `candidate/stage-manifest-qwen-r99.json` 缺少 launcher
+要求的显式 `eosTokenIds`，首先报告 `ValueError: MODEL_EOS_TOKEN_IDS_REQUIRED` 并在
+MiniNDN 启动前停止。无 Controller、Provider、ACK、Selection、Repo、assembly、ORT、
+terminal 或模型证据；这是 `PREFLIGHT_UNQUALIFIED`，不推进 checkbox。证据见 [r216
+preflight evidence](evidence/b189-r216-stage-manifest-stop-contract-preflight-boundary-20260921.md)，
+下一次使用已核对同时包含 `modelFamily` 与 `eosTokenIds` 的
+`candidate/stage-manifest-qwen-v2.json` 和新的 raw run ID 继续。
+
+**B189 r215 stage-manifest schema preflight boundary — 2026-09-21**: r215 通过了
+带 `sha256:<hex>` 的文件摘要检查，但选择的 `candidate/stage-manifest.json` 缺少
+launcher 要求的显式 `modelFamily`，在加载 manifest 时首先报告
+`ValueError: stage manifest requires an explicit modelFamily`。无 MiniNDN、Controller、
+Provider、ACK、Selection、Repo、assembly、ORT、terminal 或模型证据；这是
+`PREFLIGHT_UNQUALIFIED`，不推进 checkbox。证据见 [r215 preflight evidence](evidence/b189-r215-stage-manifest-schema-preflight-boundary-20260921.md)，
+下一次使用已核对的 Qwen manifest `candidate/stage-manifest-qwen-r99.json` 和新的 raw
+run ID 继续。
+
+**B189 r214 stage-manifest digest preflight boundary — 2026-09-21**: r214 在
+MiniNDN 启动前因命令把 `sha256sum` 的裸十六进制摘要传给要求
+`sha256:<hex>` 的 launcher，首先报告 `MODEL_STAGE_MANIFEST_DIGEST_MISMATCH`。
+无 Controller、Provider、ACK、Selection、Repo、assembly、ORT、terminal 或模型证据；
+这是 `PREFLIGHT_UNQUALIFIED`，不推进任何 checkbox。新的 post-grant C++ 探针已在此
+之前安装，focused `Spec185ProviderAssembly` 为 19/19；该结果不能改变 r211 的
+`RUNTIME_UNQUALIFIED`。证据见 [r214 preflight evidence](evidence/b189-r214-stage-manifest-preflight-boundary-20260921.md)，
+下一次使用新的 raw run ID 和带 `sha256:` 前缀的完整摘要继续同一链路。
+
+**B189 hash-only cache static recheck — 2026-09-21 11:31 -05:00**: 重新核对
+`NativeCanonicalOnnxAssembler`、`Provider` 调用方、C++ fixture 和 build closure。
+当前 plaintext cache 只在 authenticated Selection/grant 后按
+`assembled/<role>/<sha256>/model.onnx` 的目录名与实际文件 SHA-256 命中；不再读取
+`manifest.json`/`manifest.signature`。确认 `artifactDigest` 不是 assembled 文件摘要，
+因此没有把它错误用作缓存键；同时修复 `sha256File` 在小上限/并发文件增长边界上的
+无符号下溢检查。r213 又覆盖了通用 `readFile()` 的同类边界；该单元现在是
+`FOCUSED_BEHAVIOR_PASS` 的 cache 复核，仍未推进
+任何 Spec189 qualification checkbox。验证与限制见 [assembled-model cache evidence]
+(evidence/b189-assembled-model-cache-20260921.md)；下一步继续定位 r211 的
+`ACK/grant → Selection/assembly/runner → Core timeout` 首个生产边界。
+
+本轮本地 checkpoint commit 被仓库 hook 拒绝，原因是当前 index 中仍有
+development-assistant 文件/引用；未绕过 hook，现有显式暂存保持不变。该提交门禁
+不改变本单元的 focused validation 结果，也不推进任何 qualification checkbox。
+
+**B189 r211 BASIC assembly-worker Core timeout boundary — 2026-09-21**: 新 closure
+运行 r211 通过 model-source hash cache，两个 Provider 完成 signed ACK 和
+`GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`；BASIC worker 修复使
+`ownedSwapBytes` 峰值保持在 `212910080`，未重现 r209 的资源早停。但 Requester
+随后报告 `NATIVE_REQUEST_TIMEOUT boundary=Core`，没有 `RUNNER_READY`、ORT、terminal
+或 two-provider PASS，supervisor cleanup PASS。证据见 [r211 evidence](evidence/b189-r211-basic-worker-core-timeout-boundary-20260921.md)。
+保持 `RUNTIME_UNQUALIFIED`；下一步只追查 post-grant 到 Selection/assembly/runner/
+response 的 Core 推进缺口，不调整资源阈值、不把 timeout 重跑计为完成。
+
+**B189 assembly-worker peak-memory repair — 2026-09-21**: 针对 r209 的
+`RESOURCE_BOUNDARY:ownedSwap`，assembly worker 保留 full ONNX checker 和真实 CPU
+ORT session load，但把 ORT graph optimization 从 `ORT_ENABLE_ALL` 对齐为正式
+`OnnxRuntimeModelRunner` 已使用的 `ORT_ENABLE_BASIC`，以去除验证阶段不必要的
+transient graph/weight peak。受影响 DI native targets build 通过，
+`Spec185ProviderAssembly` 19/19 通过；新 closure 已安装到 `/usr/local`，receipt
+`SPEC180_NATIVE_IDENTITY_OK`、Python imports、RUNPATH/`ldd` closure 通过。该修复尚未
+经过新的 MiniNDN runtime run，故仍不推进产品 checkbox；下一步使用新的 raw run ID
+验证资源峰值及完整链路。
+
+**B189 r209 owned-swap assembly boundary — 2026-09-21**: r209 通过
+`MODEL_SOURCE_CACHE hashesVerified=true`，两个真实 Provider 完成 signed ACK 和
+`GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`；随后 native assembly worker 出现
+约 4.12 GiB RSS，launcher 首次超过 `maxOwnedSwapBytes=256 MiB`，报告
+`RESOURCE_BOUNDARY:ownedSwap` 并完成 cleanup。未产生 `RUNNER_READY`、ORT、terminal
+或 two-provider PASS；Requester 的 `CANCELLED` 是资源门禁后的结果。raw 资源样本、
+Provider/Requester 日志和边界分析见 [r209 evidence](evidence/b189-r209-owned-swap-assembly-boundary-20260921.md)。
+保持 `RUNTIME_UNQUALIFIED`；下一步只修正 assembly worker 峰值内存并做定向 C++
+验证，然后使用新的 raw run ID 重跑。
+
+**B189 r208 launcher variable-order preflight boundary — 2026-09-21**: r208 在
+`MODEL_SOURCE_CACHE hashesVerified=true` 后、MiniNDN 启动前因新预算代码使用尚未赋值的
+`canonical_initializer_bytes` 抛出 `UnboundLocalError`，返回 `RC=1`。没有 Controller、
+Requester、Provider、ACK、Selection 或模型证据；raw launch log 与 run root 已保留在
+[r208 evidence](evidence/b189-r208-budget-variable-preflight-boundary-20260921.md)。
+这是 launcher preflight bug，不推进任何 checkbox；修复变量赋值顺序后必须重新跑定向
+Python 检查并使用新的 raw run ID。
+
+**B189 hash-only cache admission repair — 2026-09-21**: 本地 plaintext assembled-model
+cache 现在只在当前 authenticated Selection/grant 已通过后，按
+`assembled/<role>/<sha256>/model.onnx` 的目录摘要与文件实际 SHA-256 判定命中；不再读取
+或依赖 `manifest.json`、`manifest.signature`。当前请求的 runner/KV/lease 仍独立，protected
+role 仍不进入 plaintext cache。受影响 native closure 已重建，`Spec185ProviderAssembly`
+19/19 通过；fixture 明确覆盖“无 manifest 仍命中”和“篡改后删除精确 entry”。这只是
+focused cache evidence，不推进 T003/T005/T006/T007/T009。
+
+**B189 r207 preparation material-budget boundary — 2026-09-21**: r207 完成 root、安装
+oracle 摘要、model-source hash cache 与两 Provider 启动；但在 ACK/Selection 前，Requester
+于 preparation 首先失败：`SOURCE_IDENTITY_MISMATCH boundary=preparation`，底层
+`DI_NATIVE_ONNX_MATERIAL_LIMIT`。本轮生成的 `max_assembled_bytes=1020532942` 仅覆盖
+最大 stage 加余量，却低于 native canonical material bundle/manifest/receipt 共享的
+`projection.assembly.maxAssembledBytes` 契约；因此不能把该值直接当作每个 stage 的最终
+文件上限。supervisor cleanup PASS，Provider 只到 READY，未产生 ACK、Selection、assembly、
+runner、ORT 或 terminal evidence。raw run 与证据见
+[r207 preparation boundary](evidence/b189-r207-preparation-material-budget-boundary-20260921.md)。
+保持 `RUNTIME_UNQUALIFIED`，下一步先修正并定向验证 native material budget，再生成新 raw run；
+不得把 r207 计为模型或协议完成。
+
+**B189 native-contract-aware budget repair — 2026-09-21**: launcher 现按
+`max(4 * largest_verified_stage, canonical_source + canonical_initializer) + 256 MiB`
+生成 `max_assembled_bytes`。其中前项覆盖 native role materialization 的 selected payload、
+initializer copy 和双序列化 buffer，后项覆盖 preparation 阶段完整 material set；不是把
+initializer 四次重复计入每个 Provider。当前 Qwen candidate 计算值为 `3276825400` bytes，
+相应 `max_prepared_bytes` 约 5.98 GiB。`py_compile` 与 29 项 Python 定向测试通过；
+尚未安装该新 launcher/native receipt，也未重跑 MiniNDN，因此不推进任何 checkbox。下一步
+安装并核对新 native closure，再以新 raw run 验证真实链路。
+
+**B189 r206 digest preflight boundary — 2026-09-21**: r206 在 MiniNDN 启动前因
+手工转录的 `--oracle-binary-sha256` 错误而停止，报告
+`SPEC189_ORACLE_BINARY_DIGEST_MISMATCH`；没有 Controller、ACK、Selection、Provider
+或模型结果。raw root 已保留，实际已安装 oracle 摘要已重新读取并写入
+[r206 evidence](evidence/b189-r206-budgeted-launch-preflight-boundary-20260921.md)。
+这是 `PREFLIGHT_UNQUALIFIED`，不推进任何 checkbox；下一次使用新 r207 raw run 和
+正确摘要验证刚修正的 per-role assembly budget。
+
+**B189 per-role assembly budget correction — 2026-09-21**: 静态审查确认 launcher
+曾按 `3*source + 4*initializer` 生成 `max_assembled_bytes`，把完整 external
+initializer 错误计入每个 Provider 的单层输出上限和 preparation-cache reservation。
+第一次修复改为“最大 stage + 256 MiB”，但 r207 证明该值又低于 native material
+bundle/manifest/receipt 的共享 assembly budget，故该修复保持为失败尝试，不视为完成。
+旧的 `max_source_bytes` 独立限制 canonical graph/initializer 的设计保留；当前待修正的是
+`max_assembled_bytes` 的 native-contract-aware 上界。本轮不推进 T003/T005/T006/T007/T009。
+
+**B189 r205 production-Repo/Core timeout boundary — 2026-09-21**: r205 使用已安装
+的 hash-only cache closure、run-root 外的真实 Repo staging 和新的 raw run，完成
+model-source cache 哈希校验并进入 MiniNDN。两个 execution Provider 都完成 ACK 和
+`GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`；Provider-0 观察到约 752 MB 的
+assembly staging 文件，但双方都没有 `ASSEMBLY_STARTED`、`RUNNER_READY`、ORT 或
+terminal marker。Requester 首先报告 `NATIVE_REQUEST_TIMEOUT boundary=Core`，launcher
+返回 `RC=1`；Repo staging 已清理，supervisor `cleanup=PASS`。证据见
+[r205 boundary](evidence/b189-r205-hash-only-production-repo-boundary-20260921.md)。
+保持 `RUNTIME_UNQUALIFIED`，不推进任何 checkbox；r207 的 budget boundary 已另行记录，
+下一步使用 native-contract-aware budget 和新 raw run 重试。
+
+**B189 local assembled-model cache simplified to hash-only admission — 2026-09-21**:
+按用户要求，plaintext assembled cache hit 不再要求 `manifest.signature` 或
+`manifest.json`；仍必须在当前 authenticated Selection/grant 路径内，校验
+`assembled/<role>/<sha256>/model.onnx` 的实际 SHA-256。protected role 继续不进入该
+plaintext reuse path。当前 affected native closure build 通过；`Spec185ProviderAssembly`
+19-case C++ suite 在 `NDNSF_SPEC182_BIN_DIR=$PWD/build-spec189-oracle` 下通过，包含无
+signature fixture 命中及篡改 model 后精确 entry 删除。只读复审无 P0/P1；本机 cache
+不承担恶意本地进程防护，standalone provider 的 source tuple 与 hash/open TOCTOU
+仍是已记录的 P2 边界。此 focused result 不推进 T003/T005/T006/T007/T009，也不改变
+r203 `RUNTIME_UNQUALIFIED`；下一步继续核对当前 installed source closure，再重跑新的
+MiniNDN production Repo 链路。
+
+**B189 current installed-runtime receipt — 2026-09-21**: hash-only cache closure 已
+安装到 `/usr/local`，Python bindings 使用安装库 digest 重装。新的
+`.codex-tmp/spec189-current-native-build-20260921.json` 由仓库
+`spec180_native_build.py build` 生成，并以相同 system-first PATH 通过
+`spec180_native_build.py verify`、Python imports、Provider RUNPATH/`ldd` closure
+检查。中间一次 `rg` PATH 错误和一次 `WAF_TOOL_CHANGED` 环境漂移已登记在
+`docs/failure-log.md`，最终 verify 为 PASS。下一步才允许用该 receipt 启动新的
+MiniNDN raw run；若首个生产边界失败，先保存 evidence 再重试。
+
+**B189 r204 launcher path boundary — 2026-09-21**: r204 在模型 source cache 校验后、
+MiniNDN 启动前停止，因为显式 `--encrypted-repository-path` 错误地位于 raw
+`--run-root` 内，launcher 返回 `ENCRYPTED_REPOSITORY_PATH_MUST_BE_OUTSIDE_RUN_ROOT`。
+无协议/模型结果，raw run 保留并已写入 failure log；下一次使用新 r205 raw run 及
+run-root 外的 Repo staging，继续同一 production Repo 链路。
+
+**B189 assembled-model cache verification — 2026-09-21**: 当前 Provider 已具备
+system-wide content-addressed assembled-model reuse：在本次 authenticated
+Selection/grant 后扫描 `assembled/<role>/<assembledModelDigest>/model.onnx`，重新
+校验 manifest/role/graph/recipe/backend/range/source digest 和实际文件 SHA-256，命中后
+仅复用 immutable model path；runner、KV、lease 与当前请求保持独立，protected grant
+材料不进入 plaintext reuse。当前 closure 的 `spec185-provider-assembly` 重建通过；
+5 个缓存/身份/保护域 C++ selectors 通过，包含篡改后删除精确 entry 和 independent
+grant 隔离。首次 cold-hit selector 仅因未设置 `NDNSF_SPEC182_BIN_DIR` 找不到当前
+assembly worker，修正环境变量后通过；该失败已记入 failure-log。证据见
+[assembled-model cache verification](evidence/b189-assembled-model-cache-20260921.md)。
+这只是 focused cache/static/build evidence，不推进 T003/T005/T006/T007/T009 或
+最终 `QWEN_TWO_PROVIDER_PASS`；r203 的 Core timeout/runtime-unqualified 边界保持不变。
+下一步是安装并核对当前 source closure 的 system binaries，再以新的 raw run ID 重跑
+完整 MiniNDN production Repo 链路。
+
+**B189 current-closure rebuild target-name preflight — 2026-09-21**: r203 后的 affected
+native closure 构建命令在 Waf target 解析阶段失败，原因是把 executable 名称
+`DI_NativeOnnxAssemblyWorker` 当作 target；没有编译、安装或运行变化。原始输出见
+`.codex-tmp/spec189-current-closure-rebuild-20260921.log`；`./waf list` 已确认真实
+target 为 `di-native-assembly-worker`。这是命令边界，不推进任何 checkbox；下一步使用
+真实 target 重建当前 source closure，并核对 candidate receipt/source hash。
+
+**B189 r203 model-materialization/Core-timeout boundary — 2026-09-21**: root MiniNDN
+实际启动并完成两 Provider 的 ACK 前置路径。model-source cache hash 校验通过；cache 中
+存在约 752 MB assembled stage-0 model，但 r203 Provider-0 日志没有
+`NATIVE_SELECTION_ACCEPTED`、`ASSEMBLY_ADMISSION_REPORTED` 或 `stage=ASSEMBLY_STARTED`，
+manifest 也没有本次 requestId，不能把文件无条件归因于 r203 的 post-Selection assembly，
+更不证明 ORT runner load。Provider-1
+没有对应 stage-1 assembled 文件；两 Provider 都只记录到
+`GRANT_VERIFICATION boundary=BEFORE_ASSEMBLY`，没有 `EXECUTION_ENTERED`、
+`ASSEMBLY_STARTED`、`RUNNER_READY`、ORT 或 terminal marker。Requester 首先报告
+`NATIVE_REQUEST_TIMEOUT boundary=Core`，supervisor 为 `boundary=null`、`cleanup=PASS`、
+无残留进程，资源门未停止。证据见 [r203 model materialization/Core timeout](evidence/b189-r203-model-materialization-core-timeout-20260921.md)。
+保持 `RUNTIME_UNQUALIFIED`，不推进任何 checkbox；下一步先做 assembly/runner provenance
+与 Core timeout 等待边界的静态审查，再以新 raw run 验证。
+
+**B189 r202 root preflight boundary — 2026-09-21**: 首次尝试没有进入 MiniNDN；launcher
+在 root preflight 停止并报告 `MININDN_REQUIRES_ROOT: run this script with sudo -E`。
+supervisor cleanup 为 PASS，但没有 Controller/Requester/Provider 协议 marker，因此
+不计作模型或协议结果。raw run 与首个边界见 [r202 root preflight](evidence/b189-r202-root-preflight-boundary-20260921.md)。
+下一步使用相同 candidate、`sudo -n -E` 和新 raw run ID 重试；不推进任何 checkbox。
+
+**B189 cleanup checkpoint — 2026-09-21**: 已在无活动 MiniNDN/Provider 进程的前提下
+清理未被 durable evidence 引用的旧 run roots、失效 `external-*`/`encrypted-repo`
+staging 和旧 SmolLM135M 大模型候选；保留当前 Qwen `identity-r1/canonical/stages/
+candidate`、已引用 raw runs、历史 SmolLM runs/logs 及系统 model cache。根分区可用
+空间约从 14 GiB 增至 40 GiB；证据见 [artifact cleanup](evidence/b189-artifact-cleanup-20260921.md)。
+本 checkpoint 只维护实验工作区，不推进任何产品验收 checkbox。
+
+**Explicit target refinement — 2026-09-21**: 本 Spec 的唯一验收目标已固定为
+`MiniNDN + Qwen/Qwen3-0.6B + 2 execution Provider nodes (ucla, arizona) +
+NDNSF-DI native C++ inference`。Controller/User/Repo 只计作支撑角色；stage export、
+单 Provider、缓存命中、静态 selector 和 Python-only runner 不计目标完成。
+
+**B189-4 native stage-materialization boundary checkpoint**: 2026-09-21 —
+旧 Qwen stage 导出结果确认每个 stage 必须显式重建 graph input/output；当前
+canonical template 的内部 handoff（例如 `hidden_states_out`）不在原始
+canonical graph boundary 中。C++ `materializeNativeCanonicalModel` 已接收已认证
+role contracts，按契约重建 stage I/O；新增
+`MaterializedRoleRebuildsInternalStageBoundary` C++ selector 通过。受影响
+native closure 和 `spec189-canonical-publisher` 编译通过；cold checker 的 external
+initializer 问题随后已修复，同一 `Spec182CanonicalPublisher` 15-case regression
+与 focused selector 均通过。受影响 native targets 已安装到 `/usr/local`，并核对了
+hash、RUNPATH 与直接依赖；Waf 的 `py_repoclient` editable 安装仍因缺少
+`NDNSF_GLOBAL_NATIVE_DIGESTS` 而失败，保留为安装/preflight gap。证据见
+[stage materialization unit boundary](evidence/b189-stage-materialization-unit-20260921.md)。
+本单元不推进任何产品验收 checkbox；下一步是确认 launcher 的 Python/native 加载闭包，
+再以新 raw run ID 重跑完整 MiniNDN 两 Provider Qwen 链路。
+
+**B189-4 fixed workspace and provider staging GC checkpoint**: 2026-09-21 —
+默认 MiniNDN launcher 现在使用固定 `/var/tmp/ndnsf-di-spec189/ndnsf` 和
+`repo` scratch；每次默认运行在 supervisor admission 后先清空并重建这两个目录，
+保留 digest-namespaced `model-source/assembled` cache。显式 `--run-root` 仍完全
+保留，作为 r189–r195 raw evidence 目录；固定 workspace 用 advisory lock 拒绝
+并发清理。实际 standalone `di-native-provider` 在 plan load 前接入 staging GC，
+只清理无 live lease 的过期 assembly/protected staging。6 项 Python 测试、Python
+语法检查、C++ staging selector、受影响 Waf build 和 native install 通过；隔离
+启动实测输出 `NDNSF_DI_PROVIDER_STAGING_GC removed=1`，并保留 `assembled/` 与
+`model-source/`；launcher 预置旧 scratch 后以无效 manifest 失败时，旧 `ndnsf/`
+和 `repo/` 被清理而 cache 保留。证据见 [fixed workspace/provider GC checkpoint](evidence/b189-fixed-workspace-provider-gc-20260921.md)。
+这只是 cleanup/static/build focused boundary，不改变 r195 的
+`NATIVE_STREAM_FAILED / stream event gap exceeded retry budget`，不关闭任何产品
+验收 checkbox。安装仍有既有 `NDNSF_GLOBAL_NATIVE_DIGESTS` host binding 限制；下一步
+在本次 static review 后，以新的显式 raw run root 重跑完整 MiniNDN 链路。
+
+**B189-4 r195 stream-gap cache runtime boundary**: 2026-09-21 — r195 used the
+installed candidate after the previous object cleanup. It reached both Provider
+`GRANT_VERIFIED`/`EXECUTION_ENTERED`, Provider 0 `ASSEMBLY_STARTED`, and
+Provider 1 `DEPENDENCY_FETCH`, then failed with
+`NATIVE_STREAM_FAILED / stream event gap exceeded retry budget`. Cache-compatible
+source and initializer references were returned and hash-verified with
+`rootFetch=skipped` and `repoFetch=skipped`. No Provider reached `RUNNER_READY`,
+ORT, terminal, or oracle. The supervisor reported `boundary=null`, cleanup
+`PASS`, return code 1, and the resource sampler remained above its gates
+(minimum free disk 4338700288 bytes). Evidence is in [r195 stream-gap cache
+runtime boundary](evidence/b189-r195-stream-gap-cache-runtime-boundary-20260921.md).
+This is `RUNTIME_UNQUALIFIED`; no checkbox advances. The next unit is the
+reference-checked external/provider staging cleanup policy and focused failure
+cleanup tests; it does not claim to resolve the r195 stream gap.
+
+**B189-4 r194 status-query observation and host disk boundary**: 2026-09-21
+— r194 ran the unchanged installed candidate with INFO logging only. The
+requester recorded 150 `expressed`/`data-received`/`accepted` status queries;
+both Providers contributed 75 accepted responses with the correct service,
+digest, `state=Running`, and `members=2`. The run reached ACK/Selection,
+Provider grant/execution, P0 `ASSEMBLY_STARTED`, and P1 dependency-fetch begin,
+then the supervisor stopped it at `RESOURCE_BOUNDARY:diskFree` (minimum
+4200099840 bytes against the 4294967296-byte gate). Cleanup passed, no process
+remained, and memory/swap gates did not trigger. No Provider reached
+`RUNNER_READY`, ORT, terminal, or oracle. Evidence is in [r194 status-query
+observation and disk boundary](evidence/b189-r194-status-query-observe-disk-boundary-20260921.md).
+This is `RUNTIME_UNQUALIFIED`; no checkbox advances. Release disk only through
+an explicit, reference-checked cleanup, then rerun the same candidate and keep
+the static review/build/runtime gate sequence intact.
+
+**B189-4 r193 delayed status-query runtime boundary**: 2026-09-21 — r193
+passed ACK/Selection, both Provider grant/execution entries, P0
+`ASSEMBLY_STARTED`, and P1 `DEPENDENCY_FETCH` begin, then failed with
+`NATIVE_STREAM_FAILED / stream event gap exceeded retry budget`. The supervisor
+reported `boundary=null`, cleanup `PASS`, no remaining processes, and no
+resource stop; no Provider reached `RUNNER_READY`, ORT, terminal, or oracle.
+The cache-compatible source and initializer were returned and hash-verified
+with `rootFetch=skipped` and `repoFetch=skipped`. No status-query marker was
+visible under the run's WARN log filter, so the delayed-query change is not
+runtime-proven. Evidence is in [r193 status-query delay boundary](evidence/b189-r193-status-query-delay-runtime-boundary-20260921.md).
+This is `RUNTIME_UNQUALIFIED`; no checkbox advances. Before another run,
+perform the required immutable post-failure static review and prove the
+initial-query scheduling boundary with a focused assertion or runtime marker.
+
+**B189-4 r192 status-query race runtime boundary**: 2026-09-21 — r192
+passed ACK/Selection, both Provider grant/execution entries, P0
+`ASSEMBLY_STARTED`, and P1 `DEPENDENCY_FETCH` begin. The supervisor remained
+clear (`boundary=null`, cleanup `PASS`); minimum disk, memory, and swap stayed
+above the gates. The requester still failed with
+`NATIVE_STREAM_FAILED / stream event gap exceeded retry budget`, with no
+`RUNNER_READY`, ORT, terminal, or oracle result. Both initial Selection-status
+queries timed out. Static review identified the immediate-query race: the
+Provider status record is created while processing Selection, after the User
+publishes Selection and starts the first query. The next changed gate defers
+that first query by the configured status interval, then preserves bounded
+polling. Evidence is in [r192 status-query race boundary](evidence/b189-r192-status-query-race-runtime-boundary-20260921.md).
+This is `RUNTIME_UNQUALIFIED`; no checkbox advances. Take the required
+post-failure immutable static snapshot before the next build or MiniNDN run.
+
+**B189-4 r191 host resource boundary**: 2026-09-21 — after the Core
+status-cache repair was installed, r191 reached requester Selection commit,
+both Provider grant/execution entries, and P0 `ASSEMBLY_STARTED`. The host
+supervisor then stopped the run at `RESOURCE_BOUNDARY:diskFree`: minimum free
+disk was 3659636736 bytes against the 4294967296-byte gate. Cleanup passed,
+memory/swap gates did not trigger, and no stream, native failure, ORT, or
+terminal result is inferred. Evidence is in
+[r191 host disk boundary](evidence/b189-r191-host-disk-boundary-20260921.md).
+Old unreferenced `external-r127`, `external-r129`, and `external-r131`
+staging directories were removed after reference checks; current
+canonical/stage/identity material, referenced staging, and r189–r191 raw runs
+are retained. Free disk is now about 7.7 GiB, above the 4 GiB gate. This is
+`UNQUALIFIED`; no checkbox advances. Rerun the same MiniNDN candidate and then
+perform the required post-run static review.
+
+**B189-4 r190 stream-gap/status-cache runtime boundary and next static gate**:
+2026-09-21 — r190 passed ACK/Selection, assignment selection, both Provider
+grant/execution entries, P0 `ASSEMBLY_STARTED`, and P1 dependency-fetch begin,
+but the requester exhausted the stream event-gap retry budget while P0 was
+still assembling. No native failure or output-contract marker was observed;
+cleanup passed and all resource guards remained clear. The run also showed
+unbound Selection-status replies with `payloadService=/`, so the existing
+authenticated assembly heartbeat could not reset the stream cursor. The
+changed Core path now suppresses unregistered negative status Data rather than
+caching an invalid binding; focused C++ build/test passed. Evidence is in
+[r190 stream-gap/status-cache boundary](evidence/b189-r190-stream-gap-status-cache-boundary-20260921.md).
+This is `RUNTIME_UNQUALIFIED`; no checkbox advances. Before r191, perform a
+fresh immutable static review of this changed Core path, rebuild/install the
+affected framework and DI targets, then rerun the same Qwen flow.
+
+**B189-4 r190 passthrough-aware output-alias static gate**: 2026-09-21 —
+static review confirmed that Qwen's `attention_mask` and `position_ids` are
+authenticated role outputs carried as local ONNX passthrough inputs, not
+additional activation outputs. Cold assembly and final preparation now filter
+those names from the alias candidate set, require a single semantic activation
+edge with a single concrete non-KV output, and fail closed on ambiguity. The
+immutable snapshot `.codex-tmp/spec189-r190-passthrough-alias-review-v1/`
+passed diff, filter-source, cardinality, both-call-site, and no-detach checks.
+The focused C++ target built and all four preparation-context tests passed;
+aggregate `unit-tests` remains blocked by unrelated old aggregate-assignment
+errors in `di-native-planning.t.cpp`. Evidence is in
+[r190 passthrough-alias static review](evidence/b189-r190-passthrough-alias-static-review-20260921.md).
+This `STATIC_PASS` releases the affected install and one MiniNDN runtime; no
+checkbox advances.
+
+**B189-4 r189 preparation-alias runtime boundary**: 2026-09-21 — the
+installed preparation-alias candidate completed cache-compatible source
+verification, ACK/Selection, both Provider grant/execution boundaries, and
+Provider-0 `RUNNER_READY` plus ONNX execution. It failed at the unchanged
+first production boundary while selecting the inter-Provider tensor:
+`tensor bundle has no tensor: hidden-layer-13-to-14`. Provider-1 reached
+dependency-fetch begin; cleanup passed, the resource guard did not stop the
+run, and no terminal/oracle result exists. The failure is caused by treating
+the Qwen passthrough outputs `attention_mask` and `position_ids` as additional
+activation outputs, so the 1:1 alias helper silently returns. Evidence is in
+[r189 preparation-alias runtime boundary](evidence/b189-r189-preparation-alias-runtime-boundary-20260921.md).
+No checkbox advances. The next gate is the focused C++ passthrough-aware alias
+repair, followed by regression assertion, static review, affected build, and
+the same MiniNDN run.
+
+**B189-4 r189 preparation-alias static gate**: 2026-09-21 — after r188's
+post-`RUNNER_READY` output-edge failure, the final
+`bindNativeRunnerPreparationContext` path now reprojects authenticated local
+role outputs and binds concrete ONNX activation outputs to semantic edge IDs
+after local KV names are known. The immutable snapshot
+`.codex-tmp/spec189-r189-preparation-alias-review-v1/` passed diff, source,
+state-exclusion, cardinality, no-model-family-gate, and no-lifecycle-change
+checks. Evidence is in
+[r189 preparation-alias static review](evidence/b189-r189-preparation-alias-static-review-20260921.md).
+This `STATIC_PASS` releases the affected build/install and one runtime attempt;
+no checkbox advances.
+
+**B189-4 r189 affected native build/install**: 2026-09-21 — the focused
+`ndnsf-distributed-inference`, `di-native-provider`, and `DI_NativeRequester`
+build passed with `-j4`, and the affected native system install returned `0`.
+The staged `py_repoclient` editable install retained the existing
+`NDNSF_GLOBAL_NATIVE_DIGESTS` limitation, while the native binaries required
+by MiniNDN were installed. Evidence is in
+[r189 preparation-alias build](evidence/b189-r189-preparation-alias-build-20260921.md).
+This is `COMPILE_LINK_PASS` for the affected native boundary only; no checkbox
+advances.
+
+**B189-4 r188 output-alias preparation boundary**: 2026-09-21 — the
+cache-compatible Qwen 0.6B two-Provider run passed source-cache verification
+(`rootFetch=skipped`, `repoFetch=skipped`), Selection, both grant-verification
+boundaries, and Provider-0 `ASSEMBLY_STARTED` → `RUNNER_READY`; Provider-1
+reached dependency-fetch begin. Provider-0 then failed while publishing the
+authenticated inter-Provider edge with `tensor bundle has no tensor:
+hidden-layer-13-to-14`. This is after runner construction, so r186's assembler
+alias repair is insufficient as the final preparation-context closure. The
+run retained `supervisor cleanup=PASS`, no remaining processes, and 252 resource
+samples above the stop gates. Evidence is in
+[r188 output-alias preparation boundary](evidence/b189-r188-output-alias-preparation-boundary-20260921.md).
+The next changed gate is a focused C++ preparation-context repair, then static
+review, affected build/install, and a new MiniNDN run; no checkbox advances.
+
+**B189-4 r186 output-alias repair static gate**: 2026-09-21 — the repair no
+longer gates concrete-output-to-semantic-edge alias binding on the
+assembly-time `projection.plan.modelFamily`; authenticated role outputs and
+concrete expected outputs remain the source of truth. Terminal override, KV
+state exclusion, one-to-one cardinality, cold/cache call sites, diagnostic
+gate, and no-detach checks all passed on immutable snapshot
+`.codex-tmp/spec189-r186-output-alias-review-v1/`. Evidence is in
+[r186 output-alias static review](evidence/b189-r186-output-alias-static-review-20260921.md).
+This `STATIC_PASS` releases the affected build and one runtime attempt; the
+runtime result must be followed by another static review. No checkbox advances.
+
+**B189-4 r185 concrete output alias remained unbound**: 2026-09-21 — the
+valid-log cache-compatible run passed source-cache skip, Selection, both
+Provider grant/execution boundaries, and Provider-0 `RUNNER_READY`; Provider-1
+reached dependency-fetch begin. The P0 manifest still published concrete
+`qwen_s0_hidden_states_out` without `outputAlias.*`, then failed before ORT
+`Run` with missing semantic tensor `hidden-layer-13-to-14`, so the output
+contract diagnostic marker was not reached. Cleanup PASS and resource gates
+were preserved. Evidence is in
+[r185 output-alias runtime boundary](evidence/b189-r185-output-alias-runtime-boundary-20260921.md).
+The next changed gate removes the assembly-time `modelFamily` dependency from
+alias binding, followed by static review, build, and runtime; no checkbox
+advances.
+
+**B189-4 r184 selection-status gap before ORT**: 2026-09-21 — the Qwen
+cache-compatible run reached both Provider ACK and grant-verification
+boundaries, with `repoFetch=skipped-after-selection` on both providers, but
+the requester never recorded Selection commit or assignment selection and
+ended with `NATIVE_STREAM_FAILED` after a stream event gap. No dependency
+fetch, assembly, runner, or ORT output-contract evidence exists. Cleanup was
+PASS with no remaining processes; 234 resource samples stayed above the
+available-memory and disk gates. Evidence is in
+[r184 selection-status gap boundary](evidence/b189-r184-selection-status-gap-boundary-20260921.md).
+The next run only restores the known-valid `NDNSF_NDN_LOG='*=WARN'` diagnostic
+configuration; no task checkbox advances.
+
+**B189-4 r183 invalid NDN logging configuration boundary**: 2026-09-21 — the
+manifest preflight passed, then bootstrap `ndnsec key-gen` aborted because the
+launch command set `NDNSF_NDN_LOG=info`, which became invalid `NDN_LOG=info`
+(`malformed logging config: '=' is missing`). A same-environment minimal
+reproduction succeeded after removing that variable. No ACK, Selection,
+Provider, or ORT evidence exists; the raw run root and launch log are retained.
+Evidence is in
+[r183 NDN log preflight boundary](evidence/b189-r183-ndn-log-preflight-boundary-20260921.md).
+The next retry only removes this logging variable; no task checkbox advances.
+
+**B189-4 r182 EOS manifest preflight boundary**: 2026-09-21 — the corrected
+manifest passed the explicit `modelFamily` check, then startup stopped because
+`stage-manifest-qwen-r99.json` lacks `eosTokenIds` and raised
+`MODEL_EOS_TOKEN_IDS_REQUIRED`. No MiniNDN, ACK, Selection, Provider, or ORT
+evidence exists; the raw run root and launch log are retained. The sibling
+`stage-manifest-qwen-v2.json` has the same Qwen revision and layer ranges plus
+`eosTokenIds: [151645]`. Evidence is in
+[r182 EOS preflight boundary](evidence/b189-r182-eos-preflight-boundary-20260921.md).
+The next retry only switches to that manifest and recomputes its hash; no task
+checkbox advances.
+
+**B189-4 r181 stage-manifest preflight boundary**: 2026-09-21 — the first
+r181 launch stopped before MiniNDN because the selected legacy
+`candidate/stage-manifest.json` lacks explicit `modelFamily`. The raw run root
+and launch log are retained; no ACK, Selection, Provider, or ORT evidence was
+created. The sibling `stage-manifest-qwen-r99.json` and
+`stage-manifest-qwen-v2.json` both declare `modelFamily: qwen` with layer ranges
+`[0,14)` and `[14,28)`. Evidence is in
+[r181 stage-manifest preflight boundary](evidence/b189-r181-stage-manifest-preflight-boundary-20260921.md).
+The next retry only corrects the manifest input and recomputes its hash; no
+task checkbox advances.
+
+**B189-4 r180 output-contract diagnostic static gate**: 2026-09-21 — the
+trace-gated C++ diagnostic records the actual ORT output names and the existing
+alias lookup result without recording tensor payload, KV state, or input. The
+immutable snapshot `.codex-tmp/spec189-r180-output-contract-diagnostic-review-v1/`
+passed the read-only review, `git diff --check`, trace-gate, actual-output-name,
+alias-lookup, no-payload, and no-lifecycle-change checks. Evidence is in
+[r180 output-contract diagnostic static review](evidence/b189-r180-output-contract-diagnostic-static-review-20260921.md).
+This releases one diagnostic build and run only; no task checkbox advances.
+
+**B189-4 r180 output-alias repair reached the same concrete boundary**:
+2026-09-21 — the installed alias candidate passed cache-compatible preflight
+with `rootFetch=skipped repoFetch=skipped`, authenticated ACK/Selection, both
+Provider grant/execution-entered boundaries, and Provider-0 `RUNNER_READY`.
+It then failed at the unchanged first production boundary
+`tensor bundle has no tensor: hidden-layer-13-to-14`; Provider-1 reached
+dependency-fetch begin and cleanup passed. Resource limits were unchanged
+(minimum available `3455885312`, minimum disk `5393469440`, maximum sampled
+aggregate RSS `6242652160`, maximum owned swap `5087232`). The canonical graph
+inspection binds the concrete layer-13→14 tensor to `/Add_4_output_0`; the
+next repair must correct assembled ONNX I/O construction rather than repeat
+metadata-only aliasing. Evidence is in
+[r180 output-alias boundary](evidence/b189-r180-output-alias-repair-boundary-20260921.md).
+T003-R4 remains `RUNTIME_OUTPUT_ALIAS_BOUNDARY`; T003/T005/T006/T007/T009
+remain `PARTIAL`; no checkbox is advanced.
+
+**B189-4 r179 output-alias repair static pass**: 2026-09-21 — the Qwen-only
+non-terminal activation repair maps concrete prepared ONNX output names to the
+authenticated semantic edge tensor IDs, excludes KV state outputs, requires
+one-to-one cardinality, and retains the terminal `final-response` path. The
+immutable snapshot `.codex-tmp/spec189-r179-output-alias-review-v1/` passed
+read-only review, `git diff --check`, Qwen/terminal ordering, KV exclusion,
+alias cardinality/source, both cold/cache call-site, and no-detach checks.
+Evidence is in
+[r179 output-alias static review](evidence/b189-r179-output-alias-static-review-20260921.md).
+The affected native build and r180 runtime are released; no task checkbox is
+advanced.
+
+**B189-4 r179 output-scope repair reached RUNNER_READY, then output-alias boundary**: 2026-09-21 — the installed candidate passed cache-compatible
+preflight with `rootFetch=skipped repoFetch=skipped`, authenticated
+ACK/Selection, both Provider grant/execution-entered boundaries, and
+Provider-0 `RUNNER_READY`; the r178 missing-scope error did not recur. The
+next first boundary was the missing semantic tensor
+`hidden-layer-13-to-14` because the assembled ONNX output is named
+`qwen_s0_hidden_states_out`. Provider-1 reached dependency-fetch begin;
+cleanup passed and no terminal/oracle result exists. Evidence is in
+[r179 output-alias boundary](evidence/b189-r179-output-alias-boundary-20260921.md).
+T003-R4 is `RUNTIME_OUTPUT_ALIAS_BOUNDARY`; T003/T005/T006/T007/T009 remain
+`PARTIAL`. The next gate is authenticated Qwen output-alias binding, then a
+fresh static review before r180.
+
+**B189-4 r178 output-scope repair static pass**: 2026-09-21 — the repair
+reuses the production role selector's exact runtime scope in both cold and
+assembled-cache runner specs, while retaining the terminal `final-response`
+override. The immutable snapshot
+`.codex-tmp/spec189-r178-output-scope-review-v1/` passed the read-only review,
+`git diff --check`, selector/call-site invariants, cache/cold coverage, and
+no-detach checks. Evidence is in
+[r178 output-scope static review](evidence/b189-r178-output-scope-static-review-20260921.md).
+The affected native build and r179 runtime are released; no task checkbox is
+advanced.
+
+**B189-4 r178 cache-memory repair reached RUNNER_READY, then output-scope boundary**: 2026-09-21 — the installed cache-compatible candidate passed
+source-cache preflight with `rootFetch=skipped repoFetch=skipped`, authenticated
+ACK/Selection, both Provider grant/execution-entered boundaries, and the
+memory repair reduced OA02 worker RSS to about 2.7 GiB. Provider-0 reached
+`RUNNER_READY` but failed before terminal publication because its runner spec
+did not publish the authenticated dataflow scope. Provider-1 reached only
+`DEPENDENCY_FETCH status=begin`; cleanup passed and no execution, terminal, or
+oracle result exists. Evidence is in
+[r178 output-scope boundary](evidence/b189-r178-cache-memory-repair-output-scope-boundary-20260921.md).
+T003-R4 is `RUNTIME_OUTPUT_SCOPE_BOUNDARY`; T003/T005/T006/T007/T009 remain
+`PARTIAL`. The next gate is a focused output-scope repair in both cold and
+assembled-cache runner specs, followed by a fresh static review before build
+and r179 runtime.
+
+**B189-4 r177 memory repair post-compile-fix static pass**: 2026-09-21 — the
+one-argument compile repair was re-reviewed on immutable snapshot
+`.codex-tmp/spec189-r177-memory-review-v3/`; no P0-P3 issue was found. The
+signature check, source-lifetime/materialization invariants, worker reap
+invariant, and `git diff --check` passed. Evidence is in
+[r177 memory static review v3](evidence/b189-r177-memory-static-review-v3-20260921.md).
+The affected build retry is released; no runtime status changed.
+
+**B189-4 r177 memory repair compile boundary**: 2026-09-21 — the first
+affected-target build stopped before linking because the new
+`materializeShapeInferenceInitializers` call omitted its declared
+`materializedBudget` argument. No runtime was started and no task is complete.
+The failure is preserved in [failure-log](../../docs/failure-log.md); the
+minimal call-site repair must pass a fresh static check before the build retry.
+
+**B189-4 r177 cache-worker memory repair: static pass**: 2026-09-21 — the
+repair keeps the authenticated source graph external, hashes its verified cache
+bytes directly, materializes only bounded shape inputs and selected-role
+initializers, and transfers selected TensorProto ownership with `Swap()` before
+scrubbing the worker source. The read-only snapshot review found no P0-P3
+issue; `git diff --check` and focused source-lifetime/materialization
+invariants passed. Cache identity, Selection, protected-runtime, resource
+limits, and worker join/cancel behavior remain unchanged. Evidence is in
+[r177 memory static review](evidence/b189-r177-memory-static-review-20260921.md).
+An incremental native build and fresh runtime are now the only released gates;
+r177 remains `UNQUALIFIED / RESOURCE_BOUNDARY`.
+
+**B189-4 r177 heartbeat runtime reached worker, then memory boundary**:
+2026-09-21 — the installed heartbeat candidate passed cache preflight,
+authenticated ACK/Selection, both Provider grant/execution-entered
+boundaries, and Provider-0 verified the cached source and initializer while
+logging `rootFetch=skipped repoFetch=skipped`. No stream gap recurred. The
+unchanged host guard then stopped the run at
+`RESOURCE_BOUNDARY:MemAvailable` (`1545871360` below the
+`1610612736` floor); the OA02 assembly worker peaked at about 5.7 GiB RSS.
+No runner, terminal response, or oracle result exists; cleanup passed. The
+run is preserved in
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r177-assembly-heartbeat/`
+and detailed in
+[b189-r177 evidence](evidence/b189-r177-cache-bypass-memory-boundary-20260921.md).
+T003-R4 remains `RUNTIME_RESOURCE_BOUNDARY`; the next gate is a focused
+native worker/cache memory-ownership repair followed by static review.
+
+**B189-4 r176 stream-liveness heartbeat repair: static pass**: 2026-09-21 —
+the changed gate adds a join-scoped authenticated assembly-progress heartbeat
+around the synchronous OA02 worker, preserving the worker's first exception
+and all existing cache, protected-runtime, Selection, and resource gates. The
+read-only review found no P0-P3 issue; evidence is preserved in
+[heartbeat static review](evidence/b189-r176-heartbeat-static-review-20260921.md).
+`git diff --check`, Python compilation, and the focused heartbeat invariant
+check passed. Native rebuild and the fresh trace-enabled runtime remain
+pending; r176 itself remains `UNQUALIFIED / RUNTIME_STREAM_GAP`.
+
+**B189-4 r176 cache bypass reached verified material, then stream gap**:
+2026-09-21 — the latest installed candidate passed source-cache preflight,
+authenticated ACK/Selection, both Provider grant/execution-entered boundaries,
+and Provider-0 explicitly logged `rootFetch=skipped repoFetch=skipped`. The
+cache-backed source and 1.5 GiB initializer both returned and passed digest
+verification. No runner, terminal response, or oracle result followed;
+requester Core failed with `stream event gap exceeded retry budget` before
+runner activation. Evidence is preserved in
+[b189-r176 evidence](evidence/b189-r176-cache-bypass-stream-gap-boundary-20260921.md).
+The guard did not stop the run: 156 samples recorded minimum disk free
+`7267594240`, minimum available memory `3762192384`, and maximum owned swap
+`74481664`; cleanup passed. T003-R4 is now
+`RUNTIME_STREAM_GAP / STATIC_PENDING_DIAGNOSIS`; T003/T005/T006/T007/T009
+remain `PARTIAL`. The next changed gate is trace-only observation of signed
+Selection-status/progress delivery during assembly, followed by a fresh static
+review before any code repair.
+
+**B189-4 r175 disk guard after model-name repair**: 2026-09-21 — the repaired
+and installed candidate passed source-cache preflight, but MiniNDN startup was
+stopped by `RESOURCE_BOUNDARY:diskFree` before ACK/Selection. Evidence is
+preserved in `evidence/b189-r175-disk-guard-after-model-name-repair-20260921.md`;
+74 samples recorded minimum disk free `4234629120`, below the maintained 4 GiB
+floor, while minimum available memory was `6448869376` and maximum owned swap
+was `5468160`. Cleanup passed with no remaining process. T003-R4 remains
+`RUNTIME_PENDING_RESOURCE` after the code repair; T003/T005/T006/T007/T009
+remain `PARTIAL`.
+
+**B189-4 r174 cache model-name domain boundary**: 2026-09-21 — the latest
+cache-compatible run passed source-cache preflight, authenticated ACK/Selection,
+both Provider grants, and both `EXECUTION_ENTERED` boundaries. Provider-0 then
+failed at `ASSEMBLY_STARTED` with
+`DI_CACHE_COMPATIBILITY_IDENTITY_MISMATCH`: the cache stores external model
+name `Qwen/Qwen3-0.6B`, while the sealed plan uses control-plane URI
+`/Model/Qwen3/0.6B`. Evidence is preserved in
+`evidence/b189-r174-cache-model-name-domain-boundary-20260921.md`. The
+minimal repair removes only this cross-domain string comparison, keeps graph,
+source/initializer digest and object verification, and passed `git diff --check`,
+Python compilation, the cache invariant check, and CodeGraph inspection;
+affected build and runtime retry remain pending. T003-R4 is
+`IMPLEMENTED / STATIC_PASS / BUILD_PENDING`; T003/T005/T006/T007/T009 remain
+`PARTIAL`.
+
+**B189-4 r173 disk guard boundary**: 2026-09-21 — the cache-compatible
+candidate passed source-cache preflight, but MiniNDN startup was stopped by
+`RESOURCE_BOUNDARY:diskFree`; minimum free disk was `4219887616`, below the
+4 GiB guard. Evidence is preserved in
+`evidence/b189-r173-disk-guard-boundary-20260921.md`. No protocol or model
+result is claimed; T003-R4 remains `RUNTIME_PENDING_RESOURCE`; T003/T005/T006/T007/T009 remain `PARTIAL`.
+
+**B189-4 r172 cache identity contract boundary**: 2026-09-21 — after the
+protected-role repair, r172 reached verified cache, authenticated ACK/Selection,
+both Provider grants, and Provider-0 `ASSEMBLY_STARTED`; it then stopped at
+`DI_CACHE_COMPATIBILITY_IDENTITY_MISMATCH`. The cache preparation-stage
+manifest digest was incorrectly compared with the selected publication-root
+receipt digest. Evidence is preserved in
+`evidence/b189-r172-cache-identity-contract-boundary-20260921.md`. The next
+repair separates these digest domains; T003-R4 is `RUNTIME_BUG / STATIC_PENDING`;
+T003/T005/T006/T007/T009 remain `PARTIAL`.
+
+**B189-4 r171 protected-role compatibility boundary**: 2026-09-20 — the
+verified cache and authenticated ACK/Selection reached both Provider grant
+checks and Provider-0 `ASSEMBLY_STARTED`; the assembler then rejected the
+protected role with `DI_CACHE_COMPATIBILITY_PROTECTED_UNSUPPORTED`. The
+failure is recorded in
+`evidence/b189-r171-cache-protected-role-boundary-20260920.md`. The repair
+removes only that over-broad rejection; protected runtime/content-key and
+secure-erase checks remain. T003-R4 is `IMPLEMENTED / STATIC_PENDING` until
+the repair review and affected rebuild pass; T003/T005/T006/T007/T009 remain
+`PARTIAL`.
+
+**B189-4 r170 bootstrap logging boundary**: 2026-09-20 — the Qwen v2
+manifest and verified source cache passed preflight, then bootstrap stopped at
+`ndnsec key-gen` because the invocation used invalid `NDNSF_NDN_LOG=0`.
+Evidence is preserved in
+`evidence/b189-r170-bootstrap-logging-boundary-20260920.md`; the next retry
+uses `NDNSF_NDN_LOG='*=WARN'`. T003-R4 remains
+`STATIC_PASS / BUILD_PASS / RUNTIME_PENDING`; T003/T005/T006/T007/T009 remain
+`PARTIAL`.
+
+**B189-4 r169 manifest contract boundary**: 2026-09-20 — the corrected
+invocation passed argument parsing and `modelFamily=qwen`, but the selected
+`stage-manifest-qwen-r99.json` lacked Qwen `eosTokenIds`, so preflight stopped
+with `MODEL_EOS_TOKEN_IDS_REQUIRED`. Evidence is preserved in
+`evidence/b189-r169-stage-manifest-contract-boundary-20260920.md`; the next
+retry uses `stage-manifest-qwen-v2.json`. T003-R4 remains
+`STATIC_PASS / BUILD_PASS / RUNTIME_PENDING`; T003/T005/T006/T007/T009 remain
+`PARTIAL`.
+
+**B189-4 r168 launcher argument boundary**: 2026-09-20 — the valid Qwen
+manifest reached the launcher, but the retry stopped at argument parsing because
+the wrapper used `--assembly-worker-sha256` rather than the maintained
+`--assembly-worker-binary-sha256`. This is an invocation-only failure; raw
+evidence is preserved in
+`evidence/b189-r168-launch-argument-boundary-20260920.md`. T003-R4 remains
+`STATIC_PASS / BUILD_PASS / RUNTIME_PENDING`; T003/T005/T006/T007/T009 remain
+`PARTIAL`.
+
+**B189-4 r167 manifest preflight boundary**: 2026-09-20 — the first r167
+cache-compatible retry stopped before MiniNDN/NFD because the selected
+`candidate/stage-manifest.json` lacked the required explicit `modelFamily`.
+This is a run-input failure, not a protocol or resource result; the raw
+launcher output is preserved in
+`evidence/b189-r167-stage-manifest-preflight-boundary-20260920.md` and the
+next retry uses the existing `stage-manifest-qwen-r99.json`. T003-R4 remains
+`STATIC_PASS / BUILD_PASS / RUNTIME_PENDING`; T003/T005/T006/T007/T009 remain
+`PARTIAL`.
+
+**B189-4 T003-R4 cache-compatible root prefetch bypass**: 2026-09-20 23:39 -0500 —
+r166 crossed authenticated ACK/Selection but Core still prefetched the metadata-only
+compatibility root and failed with `Nack Error` before Provider assembly. The repair
+adds an explicit `artifactPrefetchRequired` binding: ordinary publications retain
+the default prefetch, while the authenticated compatibility receipt keeps
+`assignedArtifact` and omits `artifactDataName`; Provider-side cache identity and
+assembly remain the next boundary. Static review and affected build are pending;
+T003/T005/T006/T007/T009 remain `PARTIAL`. Raw r166 is preserved at
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r166-cache-compatibility-requester/`.
+
 **B189-3 r139 authenticated-Selection disk-free boundary**: 2026-09-20 — r139
 used a fresh run/external root, the repaired launcher, the exact installed
 candidate, unchanged resource/stream limits, and `NDNSF_NDN_LOG='*=TRACE'`.
@@ -926,12 +2040,6 @@ The diagnostic-only launcher adjustment passed Python syntax and diff checks:
 processes. It does not change retry budgets or acceptance semantics; r102 is
 the first runtime using this observation control.
 
-The requested read-only DeepSeek review fallback was attempted but the
-maintained `tools/ai/deepseek_delegate.py` entrypoint is absent in this
-checkout. Primary-agent CodeGraph/source review is the fallback; no delegate
-opinion is treated as evidence and no source change is justified by that
-failed tool invocation.
-
 **B189-3 r101 install invocation boundary**: 2026-09-20 — the first
 candidate-install invocation passed the shell script to Python and stopped with
 `SyntaxError` before build/install or MiniNDN. The raw output is
@@ -1443,14 +2551,25 @@ T001 映射已关闭；host direct/launcher guard 已复审，39 host checks 通
 
 ## Execution Progress
 
+| Unit / Details | Status | Depends | Evidence / Remaining | Updated |
+| --- | --- | --- | --- | --- |
+| [T009-R258 Chained multi-turn KV](evidence/b189-r258-multiturn-kv.md) | PARTIAL | r257 cache diagnostic | 定向构建/回归通过；真实第二轮KV复用成功，第三轮父状态过期，非Provider切换；cleanup PASS；保留期限与placement优先待修，不替代完整Repo和同handle验收 | 2026-09-22 |
+| [T009-R260 Request-scoped runner reuse](evidence/b189-r260-runner-reuse.md) | PARTIAL | r259 performance baseline | C++45/1042三次GREEN；三轮32token相同、KV恢复、准备70→6、C++缓存诊断/清理PASS；跨request/完整资格/文档动态门仍开放 | 2026-09-22 01:55 -05:00 |
+| [T009-R261 Resident ONNX sessions](../190-multiturn-latency/tasks.md#t005-resident-session) | PLANNED | r260; loaded/request evidence separation | 转Spec190 T005承接；尚未实现，不再维护第二套驻留实施任务；本Spec资格不关闭 | 2026-09-22 02:20 -05:00 |
+| [T009-R259 Conversation affinity and retention](evidence/b189-r259-affinity-retention.md) | PARTIAL | r258 first boundary | C++43/882与6/147各三次通过；真实三轮10/11/11 EOS、后两轮KV恢复、C++ CACHE_DIAGNOSTIC_PASS、cleanup PASS；binding/文档/完整Repo/同handle资格未关闭 | 2026-09-22 01:22 -05:00 |
+| [T005-R257 Core assignment order](evidence/b189-r257-core-assignment-externalization.md) | PARTIAL | T005 / r256 first boundary | Core八场景163 assertions三次PASS；全局安装核验与真实两Provider10token/EOS缓存诊断PASS；完整Repo、sanitizer、文档交付待完成 | 2026-09-21 23:59 -05:00 |
+
 6 项是能力任务，不按数量计算产品百分比。T003 三个独立执行出口见
 [bounded execution units](batch-execution.md#bounded-execution-units)，B189-1a 已关闭，
 当前下一步为 B189-1b。
-本轮下一步仍为 T006-R2：先完成 r98 `ownedSwap` 资源边界的单变量诊断，核对
-requester/Provider 的进程级工作集与宿主 swap 基线；在保持完整身份契约和维护资源门的
-前提下，用全新安装候选运行真实 MiniNDN 请求。只有越过资源门并观察到 ACK/Selection
-后，才继续处理材料、runner、handoff 或 terminal 边界。T006-R1 的 admission→ROOT
-单调序列已是 focused C++ 出口，不再重复领取。
+本轮下一步是 T006/T007 的 r162 真实重跑：r155 已证明 system-wide source cache
+identity/hash/size reuse，r156 已通过 source protobuf release 越过先前 assembly
+memory boundary，r161 已定位并修正 local ONNX adapter 的 core lineage validation
+边界。affected DI closure 已完成编译和全局安装；r162 必须先观察是否越过 local
+materialization，再继续 Provider-1 assembly、handoff、terminal、output、drain 和
+warm/repeat。资源门仍保持原阈值，不能用 cache hit 或 focused selector 代替资格。
+T006-R1 的 admission→ROOT 单调序列与 T006-R2 的 progress allowlist 已是 focused
+C++ 出口，不再重复领取。
 每个出口验证后立即记录，不等整项 T003 写完才第一次构建。
 本轮新增 memory-lifecycle audit 已关闭两个局部 working-set 出口：prepare 的完整
 source/initializer 在 material manifest 固定后可释放，Provider role model 物化后可
@@ -1470,11 +2589,11 @@ adapter producer/consumer 和 Runtime protected publication 的本地出口已�
 | Unit / Details | Status | Depends | Remaining exit / Evidence |
 | --- | --- | --- | --- |
 | [T001 Freeze integration boundary](#t001) | DONE | — | 2026-09-18 13:29 -0500：真实接线/候选/后继缺口及五 lane 映射已只读审查；仅关闭实施边界。[convergence](evidence/b189-convergence.md) |
-| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | material-backed publication budget/receipt path and focused C++ selector now pass; protected range-store/material-only consumer remain local boundaries. F02 actual ORT/RSS, F05 replacement/rollback beyond focused selector, F09 complete publication boundary, real Qwen source release and protected ingress remain open. [material publication](evidence/b189-material-publication-20260919.md); [prepare](evidence/b189-prepare.md); [protected range-store](evidence/b189-protected-range-store-20260919.md) |
+| [T003 Prepare and reuse Repo materials](#t003) | PARTIAL | T001 | material-backed publication budget/receipt path, focused C++ selectors and system-wide canonical source-cache hash/size reuse pass locally; r155 observed source-cache write/hit in the real chain. Protected range-store/material-only consumer ingress, full F02 ORT/RSS attribution, F05 replacement/rollback, F09 complete publication boundary and final two-request reuse remain open. [material publication](evidence/b189-material-publication-20260919.md); [prepare](evidence/b189-prepare.md); [r155 source cache](evidence/b189-r155-source-cache-memory-boundary-20260920.md) |
 | [T005 Authenticate placement](#t005) | PARTIAL | T003 | ACK 后规划、signed Selection、生产 ingress handler/no-fetch 计数。[placement](evidence/b189-placement.md); [production ingress](evidence/b189-placement-production-20260919.md) |
-| [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer、aggregate budget、Selection-scoped admission sequence 与 assembly suite 已通过；r70 已进入 Provider 真实材料读取，但 stream consumer 仍未跨 selected Provider progress 续命，生产 assembly、owner/cancel counters 仍待完成。[material consumer](evidence/b189-material-consumer-20260919.md); [admission/r58 boundary](evidence/b189-admission-sequence-r58-20260919.md); [r70 boundary](evidence/b189-native-r70-progressed-stream-boundary-20260919.md) |
-| [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | 阶段/材料/CLI 门和持久 admission sequence 已验；r70 尚无 runner、NDN endpoint 因果、hidden-state handoff、独立输出与真实多 token 仍待验。[causal oracle](evidence/b189-causal-oracle-20260919.md); [r70 boundary](evidence/b189-native-r70-progressed-stream-boundary-20260919.md) |
-| [T009 Qualify reuse and repeat](#t009) | PARTIAL | T003 + T005 + T006 + T007 | r70 resource guard/cleanup passed but stopped during post-Selection assembly; same-handle two requests, independent repeat, F08 generation-guard, native counters, terminal output and qualification remain open。[convergence](evidence/b189-convergence.md); [r70 boundary](evidence/b189-native-r70-progressed-stream-boundary-20260919.md) |
+| [T006 Materialize selected ranges](#t006) | PARTIAL | T005 | material-only C++ consumer、aggregate budget、Selection-scoped admission/progress selectors、source release、role-boundary rebuild 和 ONNX assembly worker 已通过局部验证；native install 已更新，但下一次 MiniNDN 仍需验证 Provider-0/Provider-1 runner、handoff、terminal、owner/cancel counters 和 full warm path。[material consumer](evidence/b189-material-consumer-20260919.md); [stage boundary](evidence/b189-stage-materialization-unit-20260921.md); [r156 boundary](evidence/b189-r156-worker-release-lineage-boundary-20260920.md) |
+| [T007 Validate handoff and output](#t007) | PARTIAL | T006 static gate | lineage core/edge validation 修正已编译并安装；r162 尚未验证 NDN endpoint 因果、hidden-state handoff、独立输出与 terminal response。[causal oracle](evidence/b189-causal-oracle-20260919.md); [r161 boundary](evidence/b189-r161-lineage-validation-diagnostic-20260920.md) |
+| [T009 Qualify reuse and repeat](#t009) | PARTIAL | T003 + T005 + T006 + T007 | r161 resource guard/cleanup passed but stopped at local lineage validation; same-handle two requests, independent repeat, F08 generation-guard, native counters, terminal output and qualification remain open。[convergence](evidence/b189-convergence.md); [r161 boundary](evidence/b189-r161-lineage-validation-diagnostic-20260920.md) |
 
 ## Task checklist
 
@@ -1496,8 +2615,9 @@ adapter producer/consumer 和 Runtime protected publication 的本地出口已�
 | T003-R1 | F02 preparation peak | Runtime/ONNX preparation owner; before T009 full model | FOCUSED_CXX_PASS / QUALIFICATION_OPEN | C++ selector records source/material/encryption/ORT budget categories and post-publication cancel/retry cleanup; actual ORT allocator/RSS and real Qwen remain open; [F02 evidence](evidence/b189-f02-memory-20260919.md) |
 | T003-R2 | F05 mixed quota reservation | RepoCore range/vector/Data packet admission; before protected candidate | FOCUSED_CXX_PASS | C++ mixed range/vector/Data selector passed; replacement/failure rollback and protected candidate remain open; [F05 evidence](evidence/b189-f05-quota-20260919.md) |
 | T003-R3 | F09 fd error ownership | FilesystemRepoStoreBackend error path; before protected candidate | FOCUSED_CXX_PASS | injected fsync/close failure, one-owner/no-duplicate-close and preserved manifest boundary; [F09 evidence](evidence/b189-f09-fd-owner-20260919.md) |
+| T003-R4 | cache-compatible metadata-only receipt must suppress Core root prefetch while retaining authenticated assignment identity | `NativeCanonicalArtifactPublisher` → `NativeRequestPlanner` → Core assignment preparation → Provider assembler; before next cache-compatible MiniNDN retry | IN_PROGRESS / STATIC_PENDING | r166 first boundary is preserved in [r166 evidence](evidence/b189-r166-cache-root-identity-boundary-20260920.md); implementation is in the working tree, pending static review, affected build/install, and fresh guarded runtime |
 | T006-R1 | executable assembly progress sequence | NativeProvider executable runner factory; before the next real Qwen retry | FOCUSED_CXX_PASS / QUALIFICATION_OPEN | executable uses the Selection-scoped sequence shared with admission, and a C++ reporter-contract regression uses two independent reporters with admission sequence 1 followed by ROOT sequence 2; no real MiniNDN credit until the fresh run crosses the boundary; [T006-R1 evidence](evidence/b189-t006-r1-progress-sequence-20260919.md) |
-| T006-R2 | cross-provider stream progress binding | Core `ServiceUser`/`InvocationStream` collaboration consumer; before the next real Qwen retry | FOCUSED_CXX_PASS / QUALIFICATION_OPEN | consumer allowlists exact `{provider, providerSelectionDigest, role operationId}` tuples and monotonic freshness; local lifecycle/status selectors pass, but r70 remains the old-candidate boundary and a fresh installed-candidate run is required; [progress heartbeat evidence](evidence/b189-r4-progress-heartbeat-20260919.md); [r70 boundary](evidence/b189-native-r70-progressed-stream-boundary-20260919.md) |
+| T006-R2 | cross-provider stream progress binding | Core `ServiceUser`/`InvocationStream` collaboration consumer; before the next real Qwen retry | FOCUSED_CXX_PASS / QUALIFICATION_OPEN | consumer allowlists exact `{provider, providerSelectionDigest, role operationId}` tuples and monotonic freshness; local lifecycle/status selectors pass, while r161 remains the latest installed-candidate lineage boundary and r162 must verify the post-fix stream path; [progress heartbeat evidence](evidence/b189-r4-progress-heartbeat-20260919.md); [r161 boundary](evidence/b189-r161-lineage-validation-diagnostic-20260920.md) |
 | T009-R1 | F08 turn owner race | Conversation/PreparedModel handle installation; after T007 and before same-handle PASS | PLANNED | C++ barrier interleaving where older terminal/exception cannot overwrite or close newer turn |
 | F03/F04 follow-up | catalog snapshot/history gap | Only if catalog snapshot/delta becomes a candidate caller | DEFERRED | snapshot-required + incarnation/oldest-sequence C++/Python sync evidence |
 | F06/F07 follow-up | compatibility replacement/durability | Legacy helper/backend maintenance, not current native protected path | DEFERRED | separate compatibility task and failure model; no Spec189 PASS credit |
@@ -1799,3 +2919,443 @@ new run ID and a host state that stays below the unchanged resource limits.
 保留历史 ID 稳定链接；序号不再代表时间。
 成员、五 lane、动态检查、唯一结果记录见 [batch-execution.md](batch-execution.md)。
 达到批次出口即验证，不为了少编译加入新职责。
+
+### Current Checkpoint — r147 SmolLM2-135M external-data staging-name boundary
+
+r147 使用 external-data canonical source 后仍在 MiniNDN 前的 identity 预检
+停止：ONNX 内部 external location 为
+`canonical-smollm135m-external-initializer.bin`，而 launcher 的固定 staging
+文件名是 `requester/canonical-initializer.bin`，因此未能打开 initializer。
+external graph 的 ONNX checker/ORT 已通过；没有进程、ACK、Selection、Provider
+执行、资源或资格结果。该边界是候选 staging-name mismatch，不是 ONNX
+输入/KV/输出契约缺陷，不新增 adapter。详见
+[r147 evidence](evidence/b189-r147-smollm135m-external-name-boundary-20260920.md)。
+下一次只统一 external location 与 launcher staging 名称，并使用新 run ID。
+
+### Current Checkpoint — r146 SmolLM2-135M inline-material publication boundary
+
+r145 的 tokenizer digest 格式修正后，r146 已通过候选预检并真正启动
+MiniNDN；Requester 在本地 `prepare` 失败于
+`DI_NATIVE_PUBLICATION_MATERIAL_PAYLOAD_TOO_LARGE`。supervisor 未触发资源门，
+cleanup 为 `PASS` 且无残留进程；尚未出现 ACK、Selection、Provider assembly/
+execute、terminal 或 oracle。原因是当前 539,094,828-byte inline canonical
+ONNX 的 initializer material payload 超过现有 1 MiB bounded publication
+limit，不是 ONNX 输入/KV/输出契约不匹配，因此不新增 adapter。详见
+[r146 evidence](evidence/b189-r146-smollm135m-inline-material-boundary-20260920.md)。
+T003、T005、T006、T007、T009 继续保持 `PARTIAL`；下一次仅切换为 external-data
+canonical source、绑定 initializer digest，并使用新的 run ID。
+
+### Current Checkpoint — r145 SmolLM2-135M tokenizer preflight boundary
+
+首次以现有 `llama` profile 准备 `HuggingFaceTB/SmolLM2-135M`：完整
+canonical ONNX 为 30 层/8081 nodes，输入、30 层动态 KV、`float32 logits`
+输出均通过 ONNX checker、ORT session 和直接执行；两阶段 profile manifest、
+EOS `[0]`、15/15 layer split 及 8081-node 精确 mapping 也已生成。完整
+MiniNDN 尚未启动。r145 在 launcher 预检因 tokenizer digest 缺少 `sha256:`
+前缀停止，未观察到 NFD、ACK、Selection、Provider assembly/execute、terminal
+或资源结果；详见 [r145 evidence](evidence/b189-r145-smollm135m-tokenizer-preflight-20260920.md)。
+该边界不是 ONNX 输入/KV/输出契约不匹配，不新增 adapter。T003、T005、T006、
+T007、T009 继续保持 `PARTIAL`；修正格式后必须用新 run ID 重试。
+
+### Current Checkpoint — r148 SmolLM2-135M Core stream-gap boundary
+
+r148 使用与 launcher staging 名称一致的 external-data canonical graph，沿用
+现有 `llama` profile；候选 ONNX 输入、动态 KV、logits 契约没有新增 adapter
+需求。真实 MiniNDN 已到达两 Provider `READY`、签名 ACK 和
+`GRANT_VERIFICATION BEFORE_ASSEMBLY`，随后 Requester 因
+`NATIVE_STREAM_FAILED: stream event gap exceeded retry budget` 停止。没有
+Selection、assembly、execution、runner、terminal、oracle、repeat 或资格结果。
+supervisor cleanup 为 `PASS`，owned-swap 未触发。详见
+[r148 evidence](evidence/b189-r148-smollm135m-stream-gap-20260920.md)。
+
+当前工作单元转向 Selection 后的 immutable compatible cache：必须保持授权和
+Selection 为前置门，命中后才可跳过 layer fetch/copy/assembly，并用精确 digest
+和 role/model identity 校验 cache。T003、T005、T006、T007、T009 继续保持
+`PARTIAL`；cache 命中测试通过也不等于 Spec189 multi-provider qualification
+完成。
+
+### Current Checkpoint — stable cache focused selector
+
+新增的 `ProductionAssemblerCacheScansStableRootAndVerifiesFileDigest` 已通过：
+它从非 run-scoped stable root 读取已有 manifest/model，流式校验模型 digest，
+命中后返回现有路径；篡改模型后返回 miss。组合 selector 中旧的
+`ProductionAssemblerCacheColdHitUsesExactArtifact` 因未设置
+`NDNSF_SPEC182_BIN_DIR=build-spec189-oracle`，在 worker fixture 发现前停止；
+worker 实体存在，详见 [selector evidence](evidence/b189-cache-selector-worker-path-20260920.md)。
+这不是 cache 实现失败。下一步以显式 worker 环境重跑旧 assembler cache case，
+再验证 Provider 生产 wiring；T003、T005、T006、T007、T009 仍为 `PARTIAL`。
+
+### Current Checkpoint — r149 stable-root production wiring boundary
+
+r149 使用重建并安装到系统的 standalone `di-native-provider`、worker、
+requester 和 authority；Provider cache root 为固定的
+`/var/tmp/ndnsf-di-native-artifacts/`，Provider 子目录由 identity SHA-256
+派生。两 Provider 都到达 `READY`、签名 ACK 和
+`GRANT_VERIFICATION BEFORE_ASSEMBLY`，但约三分钟没有 Selection 完成、
+`CACHE_HIT`、`ASSEMBLY_STARTED`、execution、terminal 或 oracle 事件，遂按
+精确 PID 受控停止。该 catalog 使用 `protection_epoch=epoch-1`，因此新的
+plaintext stable-cache loader 正确不复用 protected grant-bound ciphertext；
+stable root 没有 assembled model。详见
+[r149 evidence](evidence/b189-r149-smollm135m-stable-cache-boundary-20260920.md)。
+这不是 cache、资源或 ONNX 契约失败；T003、T005、T006、T007、T009 继续保持
+`PARTIAL`，下一步仍需先解除 Selection 前 stream/admission boundary，再做
+真正 warm-hit 对照。
+
+### Current Checkpoint — r150 Qwen3-0.6B EOS preflight boundary
+
+r150 在 MiniNDN 启动前停止于 `MODEL_EOS_TOKEN_IDS_REQUIRED`。使用的
+`stage-manifest-qwen-r99.json` 缺少显式 `eosTokenIds`，而 pinned Qwen3-0.6B
+snapshot 的 `config.json` 给出 `eos_token_id=151645`、`<|im_end|>`；现有
+`stage-manifest-qwen-v2.json` 已包含该 stop contract。没有 ACK、Selection、
+Provider assembly/execute、cache、资源、模型输出或资格结果，supervisor
+cleanup 为 `PASS`。详见
+[r150 EOS preflight evidence](evidence/b189-r150-qwen-eos-preflight-20260920.md)。
+这不是 ONNX input/KV/output 契约不匹配，不新增 adapter；下一次使用新 run ID
+和 `stage-manifest-qwen-v2.json` 重试。T003、T005、T006、T007、T009 继续
+保持 `PARTIAL`。
+
+### Current Checkpoint — r151 Qwen3-0.6B build identity preflight boundary
+
+r151 仍未进入 MiniNDN：使用已安装 `/usr/local` binaries 时把 `/usr/local`
+误作为 build identity root，后置复核失败于
+`BUILD_RECEIPT_MISSING:/usr/local/spec180-native-build.json`。该复核发生在
+1,503,264,768-byte canonical initializer 已复制到 run directory 之后；没有
+ACK、Selection、Provider assembly/execute、cache、资源、模型输出或资格结果，
+supervisor cleanup 为 `PASS`。详见
+[r151 build receipt evidence](evidence/b189-r151-qwen-build-receipt-preflight-20260920.md)。
+下一次保留 `build-spec189-oracle` 作为 build identity root，显式提供
+`spec180-native-build.json` digest，同时继续使用 `/usr/local` installed
+binaries；并将 identity 复核前移到大文件 materialization 之前。T003、T005、
+T006、T007、T009 继续保持 `PARTIAL`。
+
+### Current Checkpoint — r152 Qwen3-0.6B Selection boundary
+
+r152 使用 `stage-manifest-qwen-v2.json` 和正确的 `build-spec189-oracle`
+receipt identity，预检通过后进入真实 wired MiniNDN。两个 Provider 均到达
+`READY`、签名 `ACK_DECISION status=1` 和 `GRANT_VERIFICATION
+BEFORE_ASSEMBLY`；没有 Selection、`CACHE_HIT`、assembly、execution、terminal
+或模型输出，Requester 在约三分钟观察窗口后受控取消。227 个 resource samples
+中最低可用内存约 4.70 GiB，`ownedSwapBytes` 峰值约 5 MiB，supervisor cleanup
+为 `PASS`；stable root 只有 active assembly metadata，没有 assembled model。
+详见 [r152 Selection evidence](evidence/b189-r152-qwen-selection-boundary-20260920.md)。
+该边界属于 `ACK/grant verification → Selection` admission/stream liveness，
+不是内存、磁盘、ownedSwap、cache 或 Qwen ONNX 契约失败。T003、T005、T006、T007、
+T009 继续保持 `PARTIAL`；下一步先取得 Selection wire/consumer 证据，再做 stable
+root cold/warm cache 对照。
+
+### Current Checkpoint — r155 Qwen3-0.6B source-cache / assembly memory boundary
+
+r155 验证了新的系统唯一 source cache：preflight 为该模型 identity 创建
+`/var/tmp/ndnsf-di-native-artifacts/model-source/<identity-hash>/`，并在本轮完成
+content-addressed graph 与 1,503,264,768-byte initializer 的 Repo 写入；run-local
+initializer 与输入保持同 inode hardlink，没有再创建第二份物理 canonical source Repo。
+真实链路随后到达 `ACK_CLOSED`、`SELECTION_COMMITTED`、两 Provider 的 authenticated
+Selection、`GRANT_VERIFIED`，Provider-0 到达 `ASSEMBLY_STARTED`，Provider-1 到达
+`DEPENDENCY_FETCH`。host guard 在首次 material fetch/assembly 峰值停止于
+`RESOURCE_BOUNDARY:MemAvailable`：最低 available 为 `1370591232` bytes，低于
+`1610612736` 门限；`ownedSwapBytes` 峰值 `157200384`，仍低于
+`268435456` 门限，cleanup 为 `PASS`。因此 source cache 实现与定向测试通过，但
+Provider assembled cache 尚未完成，不能声称 warm hit 或完整推理；没有
+`RUNNER_READY`、terminal、模型输出或资格 PASS。详见
+[r155 source-cache evidence](evidence/b189-r155-source-cache-memory-boundary-20260920.md)。
+T003、T005、T006、T007、T009 继续保持 `PARTIAL`；下一步先针对 assembly 内存峰值
+和 cache 可复用边界做静态/定向诊断，不重复运行同一必然触发的冷 assembly 路径。
+
+### Current Checkpoint — r156 worker-release / GenerationEpochLineage boundary
+
+r156 命中 system-wide source cache，且使用释放完整 source protobuf 后重新构建、安装的
+native DI closure。真实链路已到达 `ACK_CLOSED`、`SELECTION_COMMITTED`、两 Provider
+authenticated Selection、`GRANT_VERIFIED`、Provider-0 `ASSEMBLY_STARTED` 和
+`RUNNER_READY`；Provider-1 进入 `DEPENDENCY_FETCH status=begin`。本轮没有触发 host
+resource boundary：最低 `MemAvailable=2326757376`，最高
+`ownedSwapBytes=205512704`，supervisor cleanup 为 `PASS`。
+
+Provider-0 随后在 generation lineage 输出边界失败于
+`GenerationEpochLineageV1 invalid producerRole`，Requester 最终报告
+`NATIVE_STREAM_FAILED`。没有 terminal response、model output、oracle、repeat 或
+qualification PASS；详见 [r156 evidence](evidence/b189-r156-worker-release-lineage-boundary-20260920.md)。
+因此 memory working-set 修复只记为 focused/production-boundary progress，T003、T005、
+T006、T007、T009 继续保持 `PARTIAL`。下一步仅检查 V3 projected activation edge 与
+planner-owned `TOKEN_FEEDBACK` edge 的 sealed producer/consumer binding，修复后使用新
+run ID 重跑；不把 provider-1 的后续停止误判为独立根因。
+
+### Current Checkpoint — r157 diagnostic launcher preflight boundary
+
+r157 原计划验证 Provider worker 的 fail-closed producer-role 诊断，但启动命令漏传
+tokenizer digest 的 `sha256:` prefix，在 MiniNDN/NFD 启动前停止于
+`MODEL_TOKENIZER_DIGEST_MISMATCH`。没有 process、ACK、Selection、assembly、lineage、
+execution、terminal、resource 或 model-output 结果；raw run 已保留，详见
+[r157 evidence](evidence/b189-r157-tokenizer-preflight-boundary-20260920.md)。这次失败
+不是代码或 ONNX contract 结果；修正参数格式后使用新的 run ID 重试，T003、T005、T006、
+T007、T009 继续保持 `PARTIAL`。
+
+### Current Checkpoint — r158 bootstrap key-generation boundary
+
+r158 已正确命中 source cache，但在 MiniNDN/NFD 启动前创建第一个 bootstrap
+identity 时停止。诊断命令设置了非法的 `NDNSF_NDN_LOG=info`；launcher 原样传为
+`NDN_LOG=info`，ndn-cxx parser 报 `malformed logging config: '=' is missing`，
+`ndnsec key-gen` 以 `134`（`SIGABRT`）退出。隔离的 root key-gen 复现了该行为，
+移除非法日志值后成功；因此本轮没有 process、ACK、Selection、assembly、lineage、
+execution、terminal、resource、model-output 或 qualification 结果，不能用于判断
+lineage 修复。监督器 cleanup 为 `PASS`，raw run 已保留，详见
+[r158 evidence](evidence/b189-r158-bootstrap-keygen-boundary-20260920.md)。
+下一步只修正运行参数为合法的 `NDNSF_NDN_LOG='*=TRACE'`，使用新的 run ID
+继续验证已安装的 fail-closed producer-role diagnostic；T003、T005、T006、T007、
+T009 继续保持 `PARTIAL`。
+
+### Current Checkpoint — r159 coordinator lineage boundary
+
+r159 使用合法的 `NDNSF_NDN_LOG='*=TRACE'`，成功越过 r158 bootstrap key-gen，命中
+verified source cache，并进入真实 MiniNDN。两个 Provider 都到达
+`EXECUTION_ENTERED`；Provider-0 到达 `ASSEMBLY_STARTED`、`RUNNER_READY`，并记录
+ONNX warmup `session_cache=hit`；Provider-1 进入 `DEPENDENCY_FETCH`。Provider-0
+随后仍在 `GenerationEpochLineageV1 invalid producerRole` 处 terminal failure，
+Requester 报 `NATIVE_STREAM_FAILED`。新加的 `ProviderRoleWorker` fail-closed 检查
+没有触发，故首个失败位于其后的 `NativeEpochCoordinator::lineageForEdge` 路径；
+尚未知道具体 projected `TOKEN_FEEDBACK` edge 字段，不能填默认 role。supervisor
+记录 `boundary=null`、`cleanup=PASS`、无残留进程；514 个样本最低
+`MemAvailable=1848680448`，最高 `ownedSwapBytes=59289600`，最低磁盘剩余
+`9280036864`。没有 terminal、输出、oracle、repeat 或 qualification PASS，详见
+[r159 evidence](evidence/b189-r159-lineage-coordinator-boundary-20260920.md)。
+下一步只在 `lineageForEdge` 增加 edge-describing fail-closed 诊断，重建/安装受影响
+DI target 后用新 run ID 继续；T003、T005、T006、T007、T009 继续保持 `PARTIAL`。
+
+### Current Checkpoint — r160 lineage validation boundary
+
+r160 使用合法的 `NDNSF_NDN_LOG='*=WARN'`，source cache 命中，真实 MiniNDN 到达
+两个 Provider `EXECUTION_ENTERED`、Provider-0 `ASSEMBLY_STARTED`/`RUNNER_READY` 和
+Provider-1 `DEPENDENCY_FETCH`。Provider-0 仍返回裸的
+`GenerationEpochLineageV1 invalid producerRole`，Requester 随后返回
+`NATIVE_STREAM_FAILED`。ProviderRoleWorker 与 `NativeEpochCoordinator::lineageForEdge`
+两个新增 edge 检查都没有改变错误，故还需覆盖 `extractGenerationEpochLineage()`
+内部的 `GenerationEpochLineageV1::validate()`；本轮不填默认 producer role。
+supervisor 为 `boundary=null`、`cleanup=PASS`、无残留进程；385 个样本最低
+`MemAvailable=2569969664`，最高 `ownedSwapBytes=31666176`，最低磁盘剩余
+`7732269056`。没有 terminal、输出、oracle、repeat 或 qualification PASS，详见
+[r160 evidence](evidence/b189-r160-lineage-validation-boundary-20260920.md)。
+下一步只在最终 lineage validate 边界增加 request/epoch/consumer/index 诊断，重建/安装
+DI target 后用新 run ID 继续；T003、T005、T006、T007、T009 继续保持 `PARTIAL`。
+
+### Current Checkpoint — r161 local ONNX lineage validation boundary
+
+r161 使用合法的 `NDNSF_NDN_LOG='*=WARN'`、已安装的受影响 DI closure 和 verified
+system-wide source cache，真实 MiniNDN 已到达两个 Provider 的
+`EXECUTION_ENTERED`，Provider-0 的 `ASSEMBLY_STARTED`/`RUNNER_READY`，以及
+Provider-1 的 `DEPENDENCY_FETCH`。Provider-0 随后返回带 request/epoch/consumer/index
+诊断的 `GenerationEpochLineageV1 invalid producerRole`，Requester 返回
+`NATIVE_STREAM_FAILED`。源码核对确认首个失败边界是
+`OnnxRuntimeModelRunner::materializeCausalPositionInputsV1()` 对尚未绑定 edge-local
+role 的初始 core lineage 调用了 full `validate()`；这不是 ONNX contract、cache 或
+resource failure。已保留 r161 raw run，详见
+[r161 evidence](evidence/b189-r161-lineage-validation-diagnostic-20260920.md)。
+已实现 `validateCore()` 并只让本地 ONNX position materialization 使用它，wire
+encode/decode 和 edge publication 继续使用 full `validate()`；受影响 DI targets
+已重建并安装，详见下一条 build/install checkpoint。T003、T005、T006、T007、T009
+继续保持 `PARTIAL`。
+
+### Current Checkpoint — r161 core-lineage fix build/install
+
+已将 `GenerationEpochLineageV1::validateCore()` 接入 local ONNX causal-position
+materialization；`encodeGenerationEpochLineage()`、decode 和 edge publication 仍调用
+full `validate()`。affected closure 使用 system compiler/binutils 和 `-j4` 完成
+`ndnsf-distributed-inference,di-native-provider` 构建，Waf 报 `build finished
+successfully (7m56.905s)`；随后 `scripts/install-global-target.sh` 分别成功安装两个
+target，且没有重建 Core/Repo/UAV。该共享头变更使 DI installable closure 的 196 个
+Waf tasks 重新编译，属于受影响闭包而非全仓库重编。尚无 r162 runtime 结果，T003、
+T005、T006、T007、T009 继续保持 `PARTIAL`；下一步用新 run ID 验证 local
+materialization 后的 Provider-1 assembly、handoff 和 terminal 边界。
+
+### Current Checkpoint — r162 controlled cancellation before cache-compatible mode
+
+r162 命中 verified system-wide source cache，并在真实 MiniNDN 中到达
+`ACK_CLOSED`、`SELECTION_COMMITTED`、两 Provider 的 `GRANT_VERIFIED`/
+`EXECUTION_ENTERED`、Provider-0 `ASSEMBLY_STARTED` 和 Provider-1
+`DEPENDENCY_FETCH status=begin`。为避免继续运行普通 Repo material fetch/assembly
+造成无必要的工作集增长，本轮被有意中断；supervisor `cleanup=PASS`、无残留进程，且
+host resource guard 未触发（minimum `MemAvailable=7148163072`、maximum
+`ownedSwapBytes=118554624`）。没有 `RUNNER_READY`、terminal、model output、oracle、
+repeat 或 qualification PASS，详见
+[r162 cache-compatibility stop evidence](evidence/b189-r162-cache-compatibility-stop-20260920.md)。
+
+因此这不是新的协议失败根因，也不能计为完整链路进展。下一工作单元只实现显式、默认关闭、
+hash/size 校验、缺缓存即 fail-closed 的 temporary cache-compatibility mode；它只替代
+Selection 之后的 Repo material fetch，不绕过 ACK、Selection、grant 或 placement 校验。
+实现后必须先完成静态审查，再编译/安装并使用新 run ID 验证；T003、T005、T006、T007、T009
+继续保持 `PARTIAL`。
+
+### Current Checkpoint — cache-compatibility implementation static gate
+
+已完成 temporary cache-compatibility mode 的最小实现：`di-native-provider` 只在显式
+`--cache-compatibility-source-dir` 下启用；launcher 只在显式
+`--cache-compatibility-mode` 且 system-wide source cache 命中时传入该参数。requester
+在同一显式模式下使用 metadata-only authenticated publication receipt，不创建或配置
+run-scoped encrypted Repo；source owner 仍独立校验 plain graph/initializer。Provider
+仍先完成 authenticated Selection/grant/placement，随后由 assembler 校验 cache identity
+schema、model/manifest digest、文件大小和 SHA-256；普通 Repo fetcher 在该模式不调用，
+缺失、不匹配、material-backed source 和 protected role 均 fail closed。默认路径和正式
+Repo contract 未改变。
+
+实现后的静态门已通过：Python `py_compile`、受影响五个实现文件的 `git diff --check`、
+参数传播/normal-versus-compatibility 分支审查均 `PASS`。随后只重建受影响 DI closure：
+`./waf build --targets=ndnsf-distributed-inference,DI_NativeRequester,di-native-provider -j4` 报
+`build finished successfully`（210 tasks，`rc=0`）；`ndnsf-distributed-inference` 和
+`DI_NativeRequester` 的 global install 均 `rc=0`；未重建 Core/Repo/UAV。安装态
+`DI_NativeRequester --help`、`ldd` closure 和 Provider flag 检查也通过。持久记录见
+[cache-compatibility static evidence](evidence/b189-r163-cache-compatibility-static-20260920.md)。
+这不是 runtime 或 qualification PASS；下一步必须使用新 r164 run ID 运行，再按
+`implement → static check → runtime → bug fix → static check` 继续。
+
+### Current Checkpoint — r163 cache-compatibility disk boundary
+
+r163 使用显式 `--cache-compatibility-mode`、已安装 affected DI closure 和 verified
+system-wide source cache 启动两个 Provider；两方均记录
+`repoFetch=skipped-after-selection`，但在 ACK/Selection 之前由 host guard 停止于
+`RESOURCE_BOUNDARY:diskFree`。监督器 `cleanup=PASS`、无残留进程；约 1.4 GiB 已写入
+run-scoped encrypted Repo，`MemAvailable` 和 `ownedSwapBytes` 未触发门限。该证据说明
+当前实现只跳过 Provider post-Selection Repo fetch，不能避免 requester prepare 阶段的
+`NativeCanonicalArtifactPublisher` 大体积 protected publication；不是 ONNX/KV/output
+契约结果，也不是 cache identity 失败。详见
+[r163 disk boundary](evidence/b189-r163-disk-boundary-20260920.md)。
+
+因此不重复运行同一命令。下一工作单元若要继续，必须先做 requester-side 最小诊断接缝
+设计/实现，使 authenticated prepare/manifest/ACK/Selection 身份仍可验证而不发布大体积
+protected payload；实现后重新静态审查，再用新的 run ID 运行。若不改变该边界，则需要
+另行授权清理足够的失败运行大文件或提供有足够空闲空间的文件系统。T003、T005、T006、
+T007、T009 继续保持 `PARTIAL`。
+
+### Current Checkpoint — r164 requester cache-compatibility disk boundary
+
+r164 已使用 requester metadata-only publication path、显式
+`--cache-compatibility-mode`、verified system-wide source cache，并且未传入
+`--encrypted-repository-path`。host guard 在 admission、requester/Provider 启动之前停止：
+`diskFreeBytes=4232839168 < minDiskFreeBytes=4294967296`，`availableBytes=9151160320`、
+`ownedSwapBytes=0`；cleanup=PASS、无残留进程，且没有创建新的 run-scoped encrypted Repo。
+因此本次没有 ACK、Selection、grant、placement、assembly、materialization、terminal、
+output、oracle、repeat 或 qualification 结果。这是宿主机磁盘安全门，不是 requester
+receipt、协议或 ONNX contract 失败。详见
+[r164 disk-boundary evidence](evidence/b189-r164-requester-cache-disk-boundary-20260920.md)。
+在获得足够磁盘空间或完成明确授权的失败运行大文件清理前，不得重复同一命令；T003、T005、
+T006、T007、T009 继续保持 `PARTIAL`。
+
+### Current Checkpoint — r236 concrete-boundary alias diagnostic
+
+r236 的名称级 raw run 已确认 Provider-0 不是停在模型准备黑箱：它完成了
+`WORKER_DONE` 和 `CACHE_FINALIZATION_DONE`，随后在旧的 activation-output alias
+校验处失败。当前 Qwen 冷组装边界实际产生四个 concrete activation names，而
+planner 的 `hidden-layer-13-to-14` 只是 logical authenticated edge；旧代码把两者
+错误地当成同一 tensor contract。对比旧 Python wrapper 示例后，已将修复方向收敛为
+logical edge + authenticated concrete `bundleTensorNames`，并把共享 control inputs
+作为 bundle passthrough；不再进行多对一 alias。r236 raw/evidence 见
+[r236 concrete-boundary evidence](evidence/b189-r232-preparation-alias-contract-20260921.md)。
+
+当前仍没有 `RUNNER_SPEC_READY`、`RUNNER_READY`、ORT、terminal 或 qualification
+PASS，T003、T005、T006、T007、T009 继续保持 `PARTIAL`。下一步是 affected C++
+build/install、projection/assembly/Provider selectors 及安装态 hash 核对；通过后
+使用新 run ID 验证两 Provider handoff 和 terminal，失败则先更新本 checkpoint。
+
+普通 Waf install 的第一次尝试在覆盖 `/usr/local/lib/libndnsf-distributed-inference.so`
+时因 shell 权限失败，未形成可运行 installed candidate；失败边界已登记在
+[bundle-contract evidence](evidence/b189-r232-preparation-alias-contract-20260921.md)。
+这不是实现或 runtime 失败，下一步只重试仓库已有的 global-target 安装入口，随后
+运行 selectors。
+
+selector 的第一次调用误用了 `build-spec189-oracle/tests/` 路径并返回 shell `127`，
+没有测试进程启动；Waf 产物实际在 `build-spec189-oracle/spec189-preparation-alias`。
+该 invocation 边界已记录，下一步使用实际路径执行 focused selectors。
+
+正确路径下 preparation selector 已通过 `4` cases；Provider selector 的 3 个
+assembly integration cases 因测试默认路径未包含 `build-spec189-oracle` 而返回
+`201`，candidate worker 已确认存在。该环境定位问题不计为源码失败；下一步只设置
+`NDNSF_SPEC182_BIN_DIR=build-spec189-oracle` 重跑 Provider selector。
+
+修正环境变量后 `spec185-provider-assembly` 已通过 `20/20`；同时
+`spec189-preparation-alias` `4/4`、`spec189-canonical-publisher` `16/16` 通过。
+这只是 focused selector PASS，未推进任何完整链路 checkbox；下一步核对 installed
+candidate hash，再使用新 run ID 验证 `RUNNER_READY`、ORT、跨 Provider handoff、
+terminal 和 cleanup。
+
+### Current Checkpoint — r237 initial dynamic KV shape boundary
+
+r237 使用新的 raw run
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r237-bundle-member-contract`
+进入真实 MiniNDN，并确认 bundle-member contract 已越过旧 alias 边界：Provider-0
+完成 `RUNNER_SPEC_READY` 和 `RUNNER_READY`，Provider-1 完成
+`DEPENDENCY_FETCH status=begin`。首个生产失败发生在 Provider-0 首次 ORT execute 的
+`/Add_2`：`Attempting to broadcast an axis by a dimension other than 1. 3 by 4`。
+profile 显示首轮 KV 为 `[1,8,1,128]`，与旧 Python 示例中
+`_qwen_initial_state()` 对 `past/cache/sequence` 维生成 `0` 的契约不一致；这不是
+model preparation、cache、内存或 handoff 失败。supervisor cleanup 为 `PASS`、无残留进程、
+resource guard 未触发。持久证据见
+[r237 initial KV shape evidence](evidence/b189-r237-initial-kv-shape-boundary-20260921.md)。
+
+已在 C++ runner 中修复：仅对 epoch-0 缺省 state 保留 dynamic zero，普通输入、显式
+shape metadata 和 warmup 不改变；streamed initial state 同步使用该规则。当前仍无
+terminal success、model output、oracle、repeat 或 qualification PASS，T003、T005、
+T006、T007、T009 保持 `PARTIAL`。下一步按
+`implement → static check → runtime → bug fix → static check` 完成受影响 DI build、
+focused regression，再使用新的 raw run 验证真实 Qwen two-provider 链路。
+
+### Current Checkpoint — r238 exact Data wire-size boundary
+
+r238 已越过 r237 的首轮 KV shape 失败：Provider-0 到达 `RUNNER_READY` 并完成
+实际首轮 ORT execute，Provider-1 到达 `DEPENDENCY_FETCH status=begin`。新的首个
+失败是 Stage0→Stage1 exact `NDNSF_DATA_V1` 发布：底层记录
+`contentBytes=7784 wireBytes=8999 limit=8800`。原因是当前 C++ 默认
+`maxSegmentSize=7600` 没有为长 V3 Data name 和签名预留足够 wire 空间；旧 Python
+provider 使用 `max_segment_size=7000`。这不是 model output、KV、cache 或内存失败，
+cleanup 为 `PASS`、无残留进程。持久证据见
+[r238 exact Data wire evidence](evidence/b189-r238-exact-data-wire-boundary-20260921.md)。
+
+已将 C++ Provider handler/dependency IO 默认统一为 `7000`，并保留 exact publisher
+最终 wire-size fail-closed 检查。当前没有 Provider-1 execute、terminal、oracle、
+repeat 或 qualification PASS，T003、T005、T006、T007、T009 保持 `PARTIAL`。下一步
+按 `implement → static check → runtime → bug fix → static check` 完成受影响 build、
+focused regression，再用新的 raw run 验证 exact publication、跨 Provider fetch、
+terminal 和 cleanup。
+
+### Current Checkpoint — r239 historical Python/C++ state-and-lineage boundary
+
+r239 在 r237/r238 修复后完成 Provider-0 `RUNNER_READY`，Provider-1 完成
+`DEPENDENCY_FETCH(begin, complete)`，但 Provider-0 在 decode-state commit 前报
+`Provider role is missing decode-state output: present_key.0`，Provider-1 报
+`native epoch coordinator is missing its canonical token input`。对照旧 Python
+Qwen 实现及 Git 历史（`96c26cab`, `78f27d64`, `51d928f2`, `f7f8fc89`, `5264ebc4`,
+`76e8556d`）确认：worker 必须在发布 state-stripped handoff 前保留本地 state，且
+`PIPELINE` handoff 必须承载并校验 generation lineage。r239 raw/evidence 见
+[r239 Python/C++ contract evidence](evidence/b189-r239-python-cpp-contract-boundary-20260921.md)。
+
+当前没有 terminal、oracle、repeat 或 qualification PASS；T003、T005、T006、T007、
+T009 继续保持 `PARTIAL`。下一步仅实现上述两个受影响 C++ contract 修复，先完成
+static review、affected build 和 focused regression，再用新的 raw run 重试真实
+MiniNDN 链路；失败后先更新本 checkpoint，不得重复 r239。
+
+### Current Checkpoint — r240 protected dataflow authorization boundary
+
+r240 使用新的构建和新的 raw run 验证了 r239 的两个 C++ 修复：source-cache 校验、
+authenticated Selection、两端 `GRANT_VERIFIED`、Provider-0 cache hit、
+`RUNNER_READY` 以及 Provider-1 `DEPENDENCY_FETCH(begin, complete)` 均已通过。
+Provider-0 随后在第一次依赖读取的 `ProtectedRuntime::authorizeDataflow(Fetch)`
+失败，terminal reason 为 `protected dataflow is not authorized for this role/endpoint`。
+cleanup=PASS、无残留进程，但没有 terminal success、oracle、repeat 或 qualification
+PASS；T003、T005、T006、T007、T009 继续保持 `PARTIAL`。证据见
+[r240 protected dataflow evidence](evidence/b189-r240-protected-dataflow-boundary-20260921.md)。
+
+这次失败尚未足以判断是 endpoint digest、provider/role peer map、或请求输入边界的
+构造错误；下一步只在新的 raw run 打开 `NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC=1`
+和 runtime timing，记录 `allowed/owns_role/peer_matches` 的首个拒绝字段，随后按
+`implement → static check → runtime → bug fix → static check` 修复并重新验证。
+
+### Current Checkpoint — r241 application-input decode boundary
+
+r241 的诊断确认 Provider-0 在 epoch 0 使用 request-backed `APPLICATION_INPUT`
+后，decode epoch 仍尝试 fetch 同一 edge；诊断为 `producer=`、`peer_present=0`、
+`allowed=0`、`owns_role=1`。这解释了 r240 的授权失败：ProtectedRuntime 的
+inter-Provider binding 没有错误地收录该 ingress edge，错误在 epoch role 构造。
+证据见 [r241 application-input evidence](evidence/b189-r241-application-input-decode-boundary-20260921.md)。
+
+已实现 epoch>0 移除 `APPLICATION_INPUT`、保留 `TOKEN_FEEDBACK`，并把该场景加入
+C++ coordinator regression；`git diff --check` 通过。但包含旧
+`NativeArtifactBinding` 聚合赋值的其他 unit test 使 `unit-tests,integration-tests`
+构建在无关文件处失败，新增 regression 尚未编译/运行。T003、T005、T006、T007、
+T009 继续保持 `PARTIAL`；下一步不修改无关 stale test，只完成可用 affected build、
+regression verification，再用新的 raw run 重跑真实链路。

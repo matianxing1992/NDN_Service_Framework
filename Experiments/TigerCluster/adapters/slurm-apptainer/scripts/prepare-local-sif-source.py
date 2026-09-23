@@ -67,6 +67,11 @@ FILES = (
     "scripts/run_spec180_case.py",
     "scripts/validate_spec180_results.py",
     "tests/fixtures/spec180/yolo26n/fixed-fixture.ppm",
+    "tests/main.cpp",
+    "tests/boost-test.hpp",
+    "tests/integration-tests/di-prepared-request.t.cpp",
+    "tests/integration-tests/ndnsf-integration-fixture.cpp",
+    "tests/fixtures/spec182/native-model-fixture.hpp",
 )
 NDN_SVS_FILES = (
     "waf",

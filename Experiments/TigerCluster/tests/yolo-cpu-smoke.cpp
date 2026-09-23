@@ -1,5 +1,10 @@
 // Standalone base/ORT acceptance; this does not exercise the NDNSF protocol.
 #include <onnxruntime_cxx_api.h>
+#ifdef NDNSF_NATIVE_RUNNER
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include <cstring>
+#endif
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -78,6 +83,23 @@ try {
   require(argc == 4, "usage: yolo-cpu-smoke MODEL FIXTURE ORACLE");
   const auto reference = oracle(argv[3]);
   auto pixels = input(argv[2]);
+#ifdef NDNSF_NATIVE_RUNNER
+  using namespace ndnsf::di;
+  const auto start = std::chrono::steady_clock::now();
+  NativeModelRunnerSpec spec{"YOLO", "onnx", "onnxruntime", argv[1],
+                             {{"output_tensor", "predictions"}}};
+  OnnxRuntimeModelRunner session(spec);
+  NamedTensor tensor;
+  tensor.name = "images";
+  tensor.shape = {1, 3, 640, 640};
+  tensor.payload.resize(pixels.size() * sizeof(float));
+  std::memcpy(tensor.payload.data(), pixels.data(), tensor.payload.size());
+  RoleExecutionContext context;
+  context.role = "YOLO";
+  context.sessionId = "candidate-yolo-cpu";
+  context.requestId = "candidate-yolo-cpu";
+  context.inputsByScope["images"] = TensorBundle{"images", encodeTensorBundle({tensor})};
+#else
   Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "yolo-cpu-smoke");
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(4);
@@ -91,9 +113,24 @@ try {
   auto tensor = Ort::Value::CreateTensor<float>(memory, pixels.data(), pixels.size(), shape.data(), shape.size());
   const char* inputs[] = {"images"};
   const char* outputs[] = {"predictions"};
+#endif
   std::cout << "session_ms=" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() << '\n';
   for (int run = 0; run < 3; ++run) {
     const auto begin = std::chrono::steady_clock::now();
+#ifdef NDNSF_NATIVE_RUNNER
+    auto result = session.run(context);
+    require(result.size() == 1, "MODEL_OUTPUT_COUNT");
+    const auto tensors = decodeTensorBundle(result.begin()->second.payload);
+    const auto& output = findTensor(tensors, "predictions");
+    const auto dims = output.shape;
+    require(output.elementType == TensorElementType::Float32 && dims.size() == 3 &&
+            dims[0] == 1 && dims[1] > 0 && dims[1] <= 300 && dims[2] == 6, "OUTPUT_SHAPE");
+    require(output.payload.size() == std::size_t(dims[1] * 6) * sizeof(float), "OUTPUT_BYTES");
+    std::vector<float> values(output.payload.size() / sizeof(float));
+    std::memcpy(values.data(), output.payload.data(), output.payload.size());
+    const auto* data = values.data();
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+#else
     auto result = session.Run(Ort::RunOptions{nullptr}, inputs, &tensor, 1, outputs, 1);
     const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
     auto info = result.at(0).GetTensorTypeAndShapeInfo();
@@ -101,6 +138,7 @@ try {
     require(info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT && dims.size() == 3 &&
             dims[0] == 1 && dims[1] > 0 && dims[1] <= 300 && dims[2] == 6, "OUTPUT_SHAPE");
     const auto* data = result[0].GetTensorData<float>();
+#endif
     std::vector<Row> rows;
     for (int64_t i = 0; i < dims[1]; ++i) {
       Row row{};
@@ -123,7 +161,11 @@ try {
     std::cout << "run=" << run << " inference_ms=" << elapsed << " rows=" << rows.size()
               << " max_abs_error=" << error << '\n';
   }
+#ifdef NDNSF_NATIVE_RUNNER
+  std::cout << "YOLO_CPU_NATIVE_RUNNER_PASS ort=" << OrtGetApiBase()->GetVersionString() << '\n';
+#else
   std::cout << "YOLO_CPU_MODEL_SMOKE_PASS ort=" << OrtGetApiBase()->GetVersionString() << '\n';
+#endif
   return 0;
 }
 catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

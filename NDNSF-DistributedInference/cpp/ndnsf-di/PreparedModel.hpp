@@ -23,6 +23,7 @@ using Subscription = ndn_service_framework::OperationSubscription;
 struct PreparedModelPackage;
 class NativeInferenceClient;
 class CooperativePlacementStrategy;
+class User;
 struct NativeApplicationInput;
 struct NativeRequestOptions;
 class DiError;
@@ -238,13 +239,22 @@ public:
   const PreparationReceipt& receipt() const noexcept;
   ModelCapabilities capabilities() const;
 
-  /** Submit a non-blocking request through the package's native client. */
+  /**
+   * Compatibility entry point. Prefer User::request(model, input, options),
+   * which keeps request initiation owned by the User façade.
+   */
+  [[deprecated("use User::request(model, input, options)")]]
   RequestHandle request(const Input& input, const RequestOptions& options = {}) const;
 
-  /** Submit and wait using the request's configured deadline. */
+  /** Compatibility entry point; prefer User::run(model, input, options). */
+  [[deprecated("use User::run(model, input, options)")]]
   Result run(const Input& input, const RequestOptions& options = {}) const;
 
-  /** Open one model-bound native conversation using the Runtime coordinator. */
+  /**
+   * Compatibility entry point. Prefer User::openConversation(model, options),
+   * which validates the model/User Runtime binding at the owner boundary.
+   */
+  [[deprecated("use User::openConversation(model, options)")]]
   Conversation openConversation(const ConversationOptions& options = {}) const;
 
 private:
@@ -270,6 +280,7 @@ private:
   RequestHandle requestInternal(Input input, const RequestOptions& options) const;
   RequestHandle requestInternal(Input input, const RequestOptions& options,
                                 std::optional<NativeConversationContinuation> continuation) const;
+  Conversation openConversationInternal(const ConversationOptions& options) const;
 
   std::shared_ptr<const PreparedModelPackage> m_package;
   PreparationReceipt m_receipt;
@@ -278,6 +289,7 @@ private:
   std::shared_ptr<ClientState> m_clientState;
   friend class ModelPreparationCache;
   friend class Conversation;
+  friend class User;
   friend struct Spec185PreparedModelTestAccess;
 };
 

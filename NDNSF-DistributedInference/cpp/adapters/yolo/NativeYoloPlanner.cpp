@@ -249,7 +249,8 @@ NativeYoloComponentSplit::enumerateImpl(const NativeModelDescriptor& model,
   graph.validate(model);
   if (model.adapterId.find("yolo") == std::string::npos &&
       model.modelName.find("YOLO") == std::string::npos &&
-      model.modelName.find("Yolo") == std::string::npos) {
+      model.modelName.find("Yolo") == std::string::npos &&
+      model.modelName.find("yolo") == std::string::npos) {
     throw std::invalid_argument("YOLO native splitter received another adapter");
   }
   std::vector<const NativeYoloComponentSpec*> ordered;

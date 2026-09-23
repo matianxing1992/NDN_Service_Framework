@@ -67,7 +67,7 @@ namespace ndn_service_framework{
     struct LargeDataFetchResult
     {
         bool success = false;
-        std::vector<uint8_t> plaintext;
+        ndn::Buffer plaintext;
         std::string errorMessage;
     };
 
@@ -706,6 +706,14 @@ namespace ndn_service_framework{
              * obtained its DKEY. */
             bool isNacConsumerReadyForTest();
 
+            /** Return whether the active LocalMock NAC-ABE Producer has
+             * obtained public parameters. */
+            bool isNacProducerReadyForTest();
+
+            /** Re-issue the LocalMock NAC-ABE Producer public-parameter
+             * fetch after fixture transport wiring is complete. */
+            void refreshNacProducerForTest();
+
             /** Install or clear the LocalMock streamed-event publication hook. */
             void setStreamPublicationInterceptorForTest(
                 StreamPublicationInterceptorForTest interceptor);
@@ -1059,7 +1067,7 @@ namespace ndn_service_framework{
                 const std::string& serviceName);
 
             LargeDataFetchResult resolveLargeDataReferencePayload(
-                const ndn::Buffer& payload,
+                ndn::Buffer payload,
                 const std::string& serviceName);
 
             // Request-scoped large responses cannot use the legacy

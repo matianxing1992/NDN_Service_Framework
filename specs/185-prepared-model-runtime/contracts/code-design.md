@@ -196,7 +196,7 @@ void Conversation::requireIdle() const;
 // REUSE existing nativeConversationCoordinatorFromConfig(string,path,string)
 ```
 
-openConversation验证模型能力/tokenizer/security及checkpoint后取得State同一个coordinator；checkpoint无身份认证不得直接写journal。
+User::openConversation(model)先校验PreparedModel与User属于同一Runtime，再验证模型能力/tokenizer/security及checkpoint并取得同一个coordinator；checkpoint无身份认证不得直接写journal。
 request锁内requireIdle/closed检查并保留active ticket→从verified parent/transcript和 adapter 的
 `conversationInputTokens(Input)` 构造 continuation→走FN03同requestImpl；requestId/attempt在native
 分配后才进入beginTurn，包装不能提前假造。APPEND_DELTA 只接收 native adapter 生成的当前输入
@@ -328,9 +328,9 @@ PO10：T011每C-07行有外部consumer/对应领域oracle；T013完整C++流程�
 | --- | --- | --- | --- |
 | FLOW01 | CLI/app→Runtime.open→bootstrap.loadModelRegistration→State发布 | 初始化全部成功才发布；bootstrap逆序释放 | PO01 |
 | FLOW02 | User.prepareAsync→cache.prepare→buildPackage→NativeRequestCatalog.load→publish→waiter通知 | generation+waiter终态锁内提交；job失败无READY、旧refresh保留 | PO02 |
-| FLOW03 | model.request→encode/project→clientFor→requestCooperative→requestImpl→ACK_CLOSED→planNativeRequestImpl→validator→原publication/seal→Selection | 原operation二次deadline/cancel fence；无策略失败Selection | PO03,PO08 |
+| FLOW03 | user.request(model)→Runtime binding check→encode/project→clientFor→requestCooperative→requestImpl→ACK_CLOSED→planNativeRequestImpl→validator→原publication/seal→Selection | User只接受同一Runtime的PreparedModel；原operation二次deadline/cancel fence；无策略失败Selection | PO03,PO08 |
 | FLOW04 | 已验证native stream ingress→可靠buffer→read dispatch；native terminal→completion slots | cursor/dispatch同锁；失败不EOF；slot callback锁外 | PO04 |
-| FLOW05 | model.openConversation→同coordinator→conversation.request→FLOW03→receipt/COMMIT ACK/durable gate→checkpoint | journal唯一成功事实；失败原rollback，不创建第二终态 | PO05 |
+| FLOW05 | user.openConversation(model)→Runtime binding check→同coordinator→conversation.request→FLOW03→receipt/COMMIT ACK/durable gate→checkpoint | journal唯一成功事实；失败原rollback，不创建第二终态；Conversation只负责后续turn | PO05 |
 | FLOW06 | Provider.serve→Face native host→authenticated Selection→guards→cache.acquire→factory→run/Response | 每request权限/lease独立；失败job和mutable context清理 | PO06,PO07 |
 | FLOW07 | close/stop→fence→cancel/close native owners→tickets/callback退出→drain→join | 不等待自身通知；晚订阅拒绝，已drained快路径 | PO01,PO04,PO06 |
 

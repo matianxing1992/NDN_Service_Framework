@@ -30,11 +30,12 @@ std::string NativeSignedGrantRequest::signingBytes() const
       std::any_of(allowedResidencyTiers.begin(), allowedResidencyTiers.end(),
                   [](const auto& tier) { return tier.empty(); }))
     throw reject("signed request is incomplete");
-  const auto bytes = NativeJson{{"providerIdentity", providerIdentity}, {"requestId", requestId},
+  auto value = NativeJson{{"providerIdentity", providerIdentity}, {"requestId", requestId},
     {"attempt", attempt}, {"planCoreDigest", planCoreDigest}, {"grantViewDigest", grantViewDigest},
     {"modelManifestDigest", modelManifestDigest}, {"protectionEpoch", protectionEpoch},
     {"requesterIdentity", requesterIdentity}, {"issuedAtMs", issuedAtMs},
-    {"allowedResidencyTiers", allowedResidencyTiers}, {"purpose", purpose}}.dump();
+    {"allowedResidencyTiers", allowedResidencyTiers}, {"purpose", purpose}};
+  const auto bytes = value.dump();
   if (bytes.size() > 65536) throw reject("signed request exceeds wire limit");
   return bytes;
 }
@@ -96,7 +97,8 @@ NativeKeyGrant NativeArtifactGrantIssuer::issue(const NativeSignedGrantRequest& 
     throw reject("request signature or operator policy rejected");
   std::string keyManifest = request.modelManifestDigest;
   if (!m_config.allowedModelManifests.count(keyManifest)) {
-    if (publishedManifestJson.empty() || publishedManifestJson.size() > 1024 * 1024 ||
+    if (publishedManifestJson.empty() ||
+        publishedManifestJson.size() > NativeGrantInlineManifestMaxBytes ||
         nativePlanningDigest(publishedManifestJson) != request.modelManifestDigest)
       throw reject("published manifest is not bound to the signed request");
     const auto root = nativeParseJson(publishedManifestJson);

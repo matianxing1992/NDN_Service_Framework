@@ -9,8 +9,6 @@
 - Spec 084 structural audit: PASS, 23 FR, 11 SC, six user stories, 69 tasks,
   100% requirement and task traceability.
 - Occam audit unit tests: 3 passed.
-- DeepSeek: unavailable and intentionally not used; the delegate script is a
-  pre-existing deletion, and this phase contains architecture/security authority.
 - Agent context: refreshed from Spec 084 plan.
 
 GSD Phase 16 was updated from the stale T001-T128 sequence to the 69-task

@@ -612,8 +612,130 @@ T005/T006 的子组在所属矩阵维护，不继续在 tasks.md 堆积上百个
 任务状态不能由 migration record、文档结构 PASS、CLI smoke 或 Python wrapper 结果提升；
 T007 也不能替代 T001–T006 的定向 C++ 出口。
 
+2026-09-16 **T007-QWEN06B-REAL-MININDN / PARTIAL**：使用真实 Qwen3-0.6B FP16
+三阶段 manifest、1,298,490-byte canonical ONNX graph、1,503,264,768-byte external
+initializer、完整 node mapping 和当前五个 native binary，先后完成 r1–r4 的输入/CLI
+边界修复。r5 中 Controller、Authority 和三个 Provider 均 ready，Provider 发出
+`DI_PLACEMENT_V3_OFFER`；Requester 随后在 `ACK_CLOSED` 以
+`DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED` 结束（180 s deadline），未观察到
+Selection、Provider execution、terminal response 或数值 oracle。Python wrapper 定向检查
+为 `20 passed`；独立 C++ YOLO selector 保持既有 PASS，但真实 Qwen 仍 `UNQUALIFIED`，不能提升 T007 或替代
+Qwen3.6-27B qualification。详见 [Qwen3-0.6B real replay](evidence/qwen06b-local-real-replay-20260916.md)。
+
+2026-09-16 **T007-QWEN06B-NATIVE-REBUILD / PARTIAL**：为验证当前 requester/Conversation
+修订而复用 `build-spec187-local-nac-r1` 并以 `/usr/bin/g++ -B/usr/bin -j4` 选择
+`DI_NativeRequester`，构建在 `NativeOnnxRecipeAssembler.cpp` 首个缺失
+`onnx/checker.h` 处退出（`rc=1`）。Waf 仍指向不存在的
+`.codex-tmp/spec182-t001-dependencies/onnx-install` full-protobuf 前缀；本机只有
+Python wheel 头文件，没有可证明的 `libonnx.a`/`libonnx_proto.a` C++ 闭包。原始日志
+`.codex-tmp/spec187-qwen-budget-build-r1-20260916.log`，详细边界见 [Qwen real replay](evidence/qwen06b-local-real-replay-20260916.md)。
+未下载依赖、未复制大模型、未启动 Qwen；T007 仍为 `PARTIAL`。
+
+2026-09-16 **T007-QWEN06B-NATIVE-REBUILD / PASS_FOR_BUILD**：从封存 base SIF 恢复
+`/opt/onnx` C++ 前缀，并用封存 Rust 1.90 offline vendor 重建 tokenizer bridge；随后
+复用 `build-spec187-local-nac-r1` 以 `/usr/bin/g++ -B/usr/bin -j4` 成功构建
+`DI_NativeRequester`（Waf `106/106`）和当前源码 `integration-tests`（`127/127`，约
+2 分 55 秒）。`readelf -d`/`ldd -r` 通过，当前 requester、DI library、ONNX 静态库和
+tokenizer bridge 的 SHA-256、原始日志及磁盘边界见 [Qwen real replay](evidence/qwen06b-local-real-replay-20260916.md)。
+使用正确 NAC-ABE 前缀运行 `Spec182GrantClientFlow/*`（4/4、34 assertions）及
+`Spec170NdnsfDiCoreFlow/Spec184DurableOutcome`（1/1、10 assertions）均 `rc=0`。
+这只关闭本机 C++ 构建/selector 行；没有启动真实 Qwen 请求或产生数值 oracle，T007 继续
+`PARTIAL`。
+
+同一当前源码 `integration-tests` 下，`RequestScopedSelection/*` 4/4（6,570 assertions）
+通过；`NativeYoloMergeDecodesAndOrdersDependencyTensors` 21/21 与
+`NativeProviderIssuesCanonicalPreparationOfferV3` 10/10 通过。`Spec175NativeAssembly/*`
+另外 5 项因本轮未构建 `DI_NativeOnnxAssemblyWorker` 在 fixture 前置检查处返回
+`DI_NativeOnnxAssemblyWorker binary not found`，保持 `UNOBSERVED`，不计入 T007 PASS。
+
+补设 `NDNSF_SPEC182_BIN_DIR=build-spec187-local-nac-r1` 后，当前源码
+`Spec175NativeAssembly/*` 7/7（141 assertions）通过；assembly worker 的 ORT 加载、
+1/2/4-provider fixture、YOLO merge 和 V3 offer 均有 C++ 结果。该结果关闭了“worker
+候选目录未提供”的测试接线边界，但没有运行真实 Qwen initializer，T007 仍为 `PARTIAL`。
+
+2026-09-16 **T007-QWEN06B-REAL-MININDN / RESOURCE_BOUNDARY**：r10 真实 Qwen3-0.6B
+MiniNDN run 的 Controller/Authority/three Providers 均 ready 并发出 V3 offers；随后
+requester RSS 约 9.1 GiB、swap 接近 8 GiB，在主机剩余约 17 GiB 磁盘和约 0.5 GiB 可用内存
+时为保护系统停止。run record 的 `minindn=PASS` 只表示启动，`workload=FAIL`，没有
+Selection、Provider execution、terminal response 或 numerical oracle；T007 仍为
+`PARTIAL`。记录：
+[qwen06b-local-real-replay-20260916](evidence/qwen06b-local-real-replay-20260916.md#2026-09-16--real-qwen-r10-resource-boundary)。
+下一批先收紧 canonical source/initializer、加密大对象和 assembly worker 的整对象所有权，
+再用小对象 C++ 回归验证，资源未满足前不重启真实 0.6B。
+
+2026-09-17 **T007-QWEN06B-MEMORY-OWNERSHIP / STATIC_PASS + FOCUSED_PASS**：修正
+`sourceFor()` 的整对象复制、SegmentFetcher buffer 的多余复制，以及 move 后 canonical
+source/initializer 的成功/异常明文擦除；官方 review-agent 对 setup、worker、cancel 和
+后续异常路径返回 `STATIC_PASS`。`DI_NativeRequester` 受影响增量构建以 `-j4`
+`106/106` 成功；`RequestScopedSelection/SelectedProviderReceivesSegmentedEncryptedInput`
+`1/1`（6,570 assertions）和 `Spec175NativeAssembly/*` `7/7`（141 assertions）通过。
+日志与哈希见 [Qwen replay evidence](evidence/qwen06b-local-real-replay-20260916.md#2026-09-17--bounded-ownership-repair-and-focused-regression)。
+该出口只证明小对象 C++ 回归和 ownership 修正，r10 的真实 Qwen 资源边界仍开放，T007
+继续 `PARTIAL`；未再次启动真实模型。
+
+2026-09-17 **T007-QWEN06B-LARGE-FETCH-OWNERSHIP / STATIC_PASS + FOCUSED_PASS**：
+`ServiceProvider::fetchAndDecryptLargeDataUntil` 改为共享 SegmentFetcher 的
+`ConstBufferPtr` 和只读 `HybridMessageEnvelope`，避免完整 transport envelope 及
+异步 lambda 的重复 ciphertext 复制。官方 review-agent 对冻结快照返回
+`STATIC_PASS`，无 P0/P1/P2。受影响目标以系统优先工具链、`-j4` 完成
+`233/233`（1m54.92s，峰值 RSS 2,868,132 KB，无 swap）；设置当前 worker 目录和
+匹配 NAC-ABE 后，`Spec175NativeAssembly/*` `7/7` 与
+`RequestScopedSelection/SelectedProviderReceivesSegmentedEncryptedInput` `1/1`
+通过。首次未设置 worker 目录的 fixture preflight `rc=201` 已单独记录，未计入产品
+失败。真实 Qwen r10 尚未重跑，T007 仍为 `PARTIAL`/`UNQUALIFIED`；证据见
+[large-fetch ownership regression](evidence/qwen06b-local-real-replay-20260916.md#2026-09-17--large-fetch-ownership-repair)。
+
+2026-09-17 **T007-QWEN06B-SEGMENTED-WORKER-REGRESSION / FOCUSED_PASS**：修复
+`unit-tests` 源闭合漏列 `OperationRuntime.cpp` 后，增量 unit build `203/203` 成功；
+补建 `DI_NativeOnnxAssemblyWorker` 与五个 worker fixture 后，C++
+`Spec182OnnxWorkerProtocol/*` `30/30`、
+`GenericDynamicApi/PreparedAndMessages/LargeDataPublicationEmitsBoundedFinalizedSegments`
+`1/1`、`Spec175NativeAssembly/*` `7/7`，以及
+`RequestScopedSelection/SelectedProviderReceivesSegmentedEncryptedInput` `1/1` 均通过。
+这些结果覆盖 bounded worker frame、恶意长度拒绝、子进程故障、FinalBlock 分段、
+SegmentFetcher 重组和 assembly 接线；没有运行 1.5 GiB Qwen initializer。证据见
+[Qwen replay evidence](evidence/qwen06b-local-real-replay-20260916.md#2026-09-17--segmented-worker-and-large-data-regression-closure)。
+两次 selector 目标/依赖路径错误均保留为 setup boundary；真实 r10 内存
+`RESOURCE_BOUNDARY` 未改变，T007 继续 `PARTIAL`。
+
 ## Validation
 
 每个任务的 C++ test/negative oracle 见 spec Acceptance Evidence Contract 和注册表；批次组合
 审查通过后统一运行相关验证。T007 是最终 qualification，不替代前置批次定向 test，且必须
 服从 [promotion candidate](contracts/promotion-candidate.md) 的失效矩阵。
+
+2026-09-17 **T007-QWEN06B-R11-PREFLIGHT / NOT_EVALUATED**：root 启动首次遗漏维护的
+`PYTHONPATH`，本地 validator 在 MiniNDN 启动前返回 `MODEL_ONNX_VALIDATOR_UNAVAILABLE`。
+修正环境后 user/root 均可导入同一 ONNX wheel；该边界不计为模型或协议结果。r10
+`RESOURCE_BOUNDARY` 仍是最新真实 workload，T007 继续 `PARTIAL`。
+
+2026-09-17 **T007-QWEN06B-R12/R13-REAL-MININDN / RESOURCE_BOUNDARY**：r12 因 root
+`LD_PRELOAD` 使 `ldd -r` 递归而在 MiniNDN 前停止；r13 去掉 preload 后完成
+Controller/Authority/Provider/requester 启动，但 requester 进程树在约 119 秒使
+`MemAvailable` 降至 2 GiB 安全线以下。受控停止前未观察 Selection、Provider execution、
+terminal response 或 numerical oracle；r13 run 保留为 `RUNNING`（外部停止早于 wrapper
+cleanup），不得计作 PASS。磁盘约 43 GiB 可用，模型和原始日志均保留；T007 继续
+`PARTIAL`/`UNQUALIFIED`。证据见 [Qwen replay evidence](evidence/qwen06b-local-real-replay-20260916.md#2026-09-17--r12r13-launch-and-resource-boundaries)。
+
+2026-09-17 **T007-QWEN06B-LARGE-FETCH-WIRE-BLOCK / STATIC_PASS + FOCUSED_PASS**：
+`publishEncryptedLargeData` 改为保留 `WireEncode()` 返回的共享 `ndn::Block`，直接从其
+底层 buffer 分段，去除第二个完整 envelope vector。官方 review-agent 复审为
+`STATIC_PASS`；修复 stale `encoded.size()` 后，受影响构建 `233/233`、`-j4`、
+`1m26.86s`、峰值 RSS `2,767,444 KB`、无 swap。分段 selector `1/1`（峰值 RSS
+`177,696 KB`）和 `Spec175NativeAssembly/*` `7/7`（峰值 RSS `67,024 KB`）通过。
+该批没有重跑真实 Qwen；r13 `RESOURCE_BOUNDARY` 仍是最新 workload，T007 继续
+`PARTIAL`/`UNQUALIFIED`。证据见 [shared WireEncode buffer repair](evidence/qwen06b-local-real-replay-20260916.md#2026-09-17--shared-wireencode-buffer-repair)。
+
+2026-09-17 **T007-QWEN06B-R14-REAL-MININDN / RESOURCE_BOUNDARY**：使用共享
+`WireEncode` buffer 修复后的新 run ID `qwen06b-local-real-r14-wire-block`，正确
+环境下 Controller、Authority、三个 Provider 和 requester 均启动；Provider 均发出
+签名 V3 offer。约 `117.0 s` 时资源监控记录进程树 RSS `6,737,232 KB`、
+`MemAvailable=1,651,808 KB`、swap `3,966,452 KB`，触发 2 GiB 安全线并以
+`rc=137` 停止。未观察 Selection、Provider execution、terminal response 或 numerical
+oracle；wrapper cleanup 未完成，run record 保留 `RUNNING`，分类为
+`RESOURCE_BOUNDARY` 而不是 PASS。随后已清理并核验所有 r14 子进程退出；磁盘约 43 GiB
+可用，模型、当前构建和 1.5 GiB 运行目录保留。T007 继续 `PARTIAL`/`UNQUALIFIED`，
+证据见 [r14 monitored replay](evidence/qwen06b-local-real-replay-20260916.md#2026-09-17--r14-monitored-replay-after-shared-wireencode-repair)。
+该结果要求下一批改变发布存储边界（有界或 file-backed segment serving）并先补 C++
+资源探针；不能只提高监控阈值或重复同一 in-memory publisher，也不能删除模型、当前
+构建或原始证据来制造资源 PASS。

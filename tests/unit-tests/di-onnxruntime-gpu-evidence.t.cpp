@@ -226,6 +226,13 @@ BOOST_AUTO_TEST_CASE(CausalPositionInputsComeOnlyFromAuthenticatedLineage)
   BOOST_CHECK_THROW(
     materializeCausalPositionInputsV1(missingPolicy, io, lineage, 2),
     std::invalid_argument);
+
+  auto llamaPolicy = contract;
+  llamaPolicy.policy = "llama-causal-position-v1";
+  const auto llamaValues = materializeCausalPositionInputsV1(
+    llamaPolicy, io, lineage, 2);
+  BOOST_CHECK(llamaValues.count("attention_mask") == 1);
+  BOOST_CHECK(llamaValues.count("position_ids") == 1);
 }
 
 BOOST_AUTO_TEST_CASE(OrtProfileRecordsEveryModelNodeProviderAndGpuUuid)

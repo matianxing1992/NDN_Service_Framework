@@ -1,7 +1,7 @@
 # Design Binding and Validation Contract
 
 **Status**: proposed；以下新增签名/selector 尚未实现。G1–G6、C1–C3、D1–D4、B1–B3、M1–M3适用。
-新增stage传输与per-node Repo复用由[CD-06–09](material-reuse.md)控制；T009完成前protected缓存限制仍保留。
+新增stage传输与per-node Repo复用由[CD-06–09](material-reuse.md)控制；T006完成前protected缓存限制仍保留。
 路径缩写 `DI/` 指 `NDNSF-DistributedInference/cpp/ndnsf-di/`；`ORT/` 指 `NDNSF-DistributedInference/cpp/adapters/onnx/`。
 
 ## CD-01 Timing and ACK Window
@@ -55,6 +55,35 @@ completion通知后无活跃业务待办时立即唤醒drain。
 旧版本/丢失处理与owner，再修对应task，不能由编码者即兴扩展Core wire。
 **PO**：TerminalDrain：完成、缺receipt、延迟callback、cancel/close竞态、正常/超时drain及外部Face先后析构。
 
+## CD-INT8 Model-source compatibility (T003 precondition)
+
+This is a bounded compatibility contract for the current candidate, not a generic quantization
+contract and not current product completion. The accepted source shape is `ONNX` with a
+versioned `weight_only_int8` subtype. Public control inputs remain `INT64`; activation,
+hidden-state handoff, KV, present and logits remain `FLOAT32`; the actual operator set,
+initializer dtypes, dynamic shapes and past-KV names are part of the candidate identity.
+`precision=float32` therefore describes the public runtime tensor contract, while the subtype
+describes the stored/operator weight representation; it must not be interpreted as all-INT8.
+
+The immutable identity tuple is:
+`model_root + source_revision + model_format + quantization_subtype + graph_digest + initializer_digest +
+role/layer_set + complete_io_kv_position_contract + backend_abi + device + security_domain`.
+The tuple is used by Python inspection, the C++ catalog, material publication, assembled cache and
+resident runner. Any field mismatch is a safe miss. A cache hit still requires current grant,
+ACK, Selection and placement validation.
+
+Canonical material publication MUST represent large inline and external initializers with the same
+ordered chunk digest/reassembly rules. Each payload remains below
+`NativeCanonicalMaterialBundleMaxBytes`; the implementation must not raise that bound or copy the
+complete inline model into a second unbounded staging buffer. Chunk order, byte length, source
+initializer identity and the reassembled digest are verified before role assembly. Failure before
+publication has no Repo/Provider side effect.
+
+The C++ gate is complete only when the real assembler and ORT CPU runner prove the candidate's
+selected role material, one-token execution and one continuation using the declared FP32/INT64
+contract. A new adapter is allowed only if that gate observes a real input/KV/output contract
+mismatch and the adapter has an independent identity, negative tests and C++ production evidence.
+
 ## CD-04 Resident CPU Session
 
 **Class delta**：在 `ORT/OnnxRuntimeModelRunner.cpp` 将 `Impl` 的加载对象分离；新建
@@ -79,7 +108,7 @@ completion通知后无活跃业务待办时立即唤醒drain。
 close之后acquire报明确closed错误，不能偷偷退回新建session绕过关闭；drain超时返回false，不能报告全释放。
 **Identity**：遵守[data model](../data-model.md)，只允许可信preparation验证出的digest和contract；缺字段fail-safe miss，
 相同path但内容改变不能命中。assembler已有稳定assembled digest须复用，不每轮复制模型。
-T005的protected临时明文backing/CUDA先bypass并记录原因；T009单独闭合真实protected复用，
+T005的protected临时明文backing/CUDA先bypass并记录原因；T006单独闭合真实protected复用，
 未通过不得宣称Repo热缓存路径PASS。不得让cache强持有上次grant/context。
 **Owner flow**：NativeProviderHandler当前授权/Selection/spec校验→factory→cache acquire→fresh wrapper→
 每epoch真实run；请求结束释放wrapper lease，KV按原store保留；host退出stop admission→worker drain→cache close/drain。
@@ -114,7 +143,7 @@ closed后acquire拒绝、drain超时和最终成功均验证，保留原无cache
 报告每组结果、首轮cold与后轮warm，不能从3样本承诺全球p95。必要时一次消融只改ACK以确认主要因果。
 TTFT从request提交到首token交付；decode间隔分离first token/prefill；总耗时从第一次提交到最后checkpoint，
 启动/最终退出另表，所有失败计入成功率。后轮parent/role/provider/boot/epoch必须与有效KV receipt匹配。
-不更改EOS/1024 token预算来制造吞吐差异；初版只是固定短对话延迟验收，不宣称长序列吞吐结论。
+不更改EOS/1025 token预算来制造吞吐差异；初版只是固定短对话延迟验收，不宣称长序列吞吐结论。
 
 源/库/harness/配置/model/oracle变更分别使受影响静态门、构建、安装、preflight和实验失效；
 只改说明文档不重跑模型。完整候选元组冻结，单candidate/gate仅一个active subject。

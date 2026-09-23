@@ -30,10 +30,12 @@ public:
   NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
     const NativeAssemblyControl& control);
   std::shared_ptr<const NativeAdapterRegistry> adapters() const;
-  /** Borrow the verified source for in-place identity checks without copying
-   * multi-gigabyte canonical initializer buffers. The catalog must outlive
-   * the returned reference. */
-  const NativeCanonicalSource& sourceRefFor(const NativeModelDescriptor& model) const;
+  /** Return an owning view of the verified source without copying its
+   * multi-gigabyte canonical buffers.  The view keeps the immutable source
+   * alive while a publisher or identity check is using it, even if the
+   * catalog releases its transient owner concurrently. */
+  std::shared_ptr<const NativeCanonicalSource> sourceRefFor(
+    const NativeModelDescriptor& model) const;
   /** Return a copy of the verified owned source for preparation identity checks. */
   NativeCanonicalSource sourceFor(const NativeModelDescriptor& model) const;
   /** Return the immutable publication profile frozen with the model entry. */
@@ -67,6 +69,9 @@ private:
     const NativeModelDescriptor& model) const;
   /** Drop the transient preparation source after publication/package creation. */
   void releaseTransientSource() const noexcept;
+  /** Drop full source/initializer buffers while retaining the authenticated
+   * material manifest for a material-backed publication. */
+  void releaseTransientSourceBytes() const;
   std::shared_ptr<const State> m_state;
 };
 

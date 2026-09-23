@@ -329,6 +329,8 @@ def options(opt):
                       help='Build examples')
     optgrp.add_option('--with-tests', action='store_true', default=False,
                       help='Build unit tests')
+    optgrp.add_option('--install-experiment-fixtures', action='store_true', default=False,
+                      help='Install explicitly selected native experiment fixtures')
     optgrp.add_option('--toolchain-root', default='/usr/bin',
                       help='Required compiler/binutils root (default: /usr/bin)')
     optgrp.add_option('--ndn-svs-source-tree', default='',
@@ -351,6 +353,21 @@ def options(opt):
 
 
 def configure(conf):
+    # Report missing SDKs together before receipt/ABI validation stops at the
+    # first error. This is read-only; dependencies own their installation.
+    import runpy
+    inventory = runpy.run_path(os.path.join(conf.path.abspath(), 'scripts',
+                                           'configure_dependencies.py'))
+    missing, optional = inventory['check_dependencies'](
+        nac_prefix=conf.options.nac_abe_prefix,
+        onnx_prefix=conf.options.onnx_prefix)
+    for warning in optional:
+        Logs.warn(warning)
+    if missing:
+        conf.fatal('Missing configure dependencies:\n  - ' +
+                   '\n  - '.join(missing) +
+                   '\nUse ./configure.sh for OS packages; install NDN libraries '
+                   'with their own projects. See docs/configure-dependencies.md.')
     _validate_global_dependency_identity(conf)
     conf.start_msg('Building static library')
     if conf.options.enable_static:
@@ -397,6 +414,10 @@ def configure(conf):
 
     conf.env.WITH_EXAMPLES = conf.options.with_examples
     conf.env.WITH_TESTS = conf.options.with_tests
+    conf.env.INSTALL_EXPERIMENT_FIXTURES = conf.options.install_experiment_fixtures
+    if conf.env.INSTALL_EXPERIMENT_FIXTURES and not (
+            conf.env.WITH_TESTS and conf.env.WITH_EXAMPLES):
+        conf.fatal('--install-experiment-fixtures requires --with-tests and --with-examples')
 
     conf.find_program('dot', mandatory=False)
 
@@ -828,6 +849,17 @@ int main() {
 
     _ensure_tokenizer_bridge(conf)
 
+    # Metadata and file presence do not establish header/library compatibility.
+    for label, use, fragment in [
+        ('SQLite', 'sqlite3', '#include <sqlite3.h>\nint main(){sqlite3* db=nullptr; int r=sqlite3_open(":memory:",&db); sqlite3_close(db); return r;}'),
+        ('OpenSSL', 'OPENSSL', '#include <openssl/evp.h>\nint main(){auto* c=EVP_MD_CTX_new(); EVP_MD_CTX_free(c);}'),
+        ('Protobuf', 'PROTOBUF', '#include <google/protobuf/stubs/common.h>\nint main(){GOOGLE_PROTOBUF_VERIFY_VERSION; google::protobuf::ShutdownProtobufLibrary();}'),
+        ('ONNX full protobuf', 'ONNX PROTOBUF', '#include <onnx/onnx_pb.h>\nint main(){onnx::ModelProto m; return m.ByteSizeLong() != 0;}'),
+        ('ONNX Runtime', 'ONNXRUNTIME', '#include <onnxruntime_c_api.h>\nint main(){return OrtGetApiBase()->GetApi(ORT_API_VERSION) == nullptr;}'),
+    ]:
+        conf.check(features='cxx cxxprogram', fragment=fragment, use=use,
+                   mandatory=True, msg='Checking ' + label + ' compile/link closure')
+
     conf.define_cond('HAVE_TESTS', conf.env.WITH_TESTS)
     conf.define_cond('HAVE_ONNXRUNTIME_CPP', conf.env.HAVE_ONNXRUNTIME_CPP)
     conf.define_cond('HAVE_GSTREAMER', conf.env.HAVE_GSTREAMER)
@@ -1027,3 +1059,13 @@ def build(bld):
         target='libndn-service-framework.pc',
         install_path='${LIBDIR}/pkgconfig',
         VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes)
+
+    # A selected-target install still needs the public header installation
+    # tasks. Waf otherwise posts only the explicitly named native targets and
+    # silently omits these anonymous install_files generators. Do not change
+    # the target filter for compilation (especially the native test suites).
+    if bld.cmd == 'install':
+        for group in bld.groups:
+            for task_generator in list(group):
+                if 'install_task' in getattr(task_generator, 'features', []):
+                    task_generator.post()

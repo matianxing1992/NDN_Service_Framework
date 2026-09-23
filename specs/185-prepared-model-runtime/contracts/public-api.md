@@ -122,6 +122,9 @@ class User {
 public:
   PreparedModel prepare(const std::string& modelKey = "default", const PrepareOptions& = {}) const;
   PreparationHandle prepareAsync(const std::string& modelKey = "default", const PrepareOptions& = {}) const;
+  RequestHandle request(const PreparedModel&, Input, const RequestOptions& = {}) const;
+  Result run(const PreparedModel&, Input, const RequestOptions& = {}) const;
+  Conversation openConversation(const PreparedModel&, const ConversationOptions& = {}) const;
   // Advanced/operator overload; ordinary apps use the registered model key.
   PreparedModel prepare(const PrepareRequest&, const PrepareOptions& = {}) const;
 };
@@ -130,6 +133,7 @@ public:
   const ModelManifest& manifest() const noexcept;
   const PreparationReceipt& receipt() const noexcept;
   ModelCapabilities capabilities() const;
+  // Deprecated compatibility wrappers; User owns request initiation.
   RequestHandle request(Input, const RequestOptions& = {}) const;
   Result run(Input, const RequestOptions& = {}) const;
   Conversation openConversation(const ConversationOptions& = {}) const;

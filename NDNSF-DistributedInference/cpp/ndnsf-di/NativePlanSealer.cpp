@@ -393,6 +393,10 @@ std::vector<std::uint8_t> NativePlanSealer::encode(
   const NativeSelectionProjectionV3& projection)
 {
   const auto wire = nativeSelectionProjectionV3ToJson(projection);
+  // Core's external assignment boundary is 4 MiB. Check the actual complete
+  // serialization before publication, not an endpoint-count estimate.
+  if (wire.size() > (4U << 20))
+    throw std::invalid_argument("V3 Selection exceeds external assignment wire limit");
   return {wire.begin(), wire.end()};
 }
 

@@ -1,5 +1,89 @@
 # Spec190 Audit
 
+## Protected Reuse Ordering Repair — 2026-09-22
+
+**Finding**：当前严格串行计划将 T006 `ProtectedMaterialReuse` 放在 T007
+`ResidentSession` 之前，且 `plan.md`/`tasks.md` 已要求 T006 在本任务内冻结
+durable key-reference、serving recovery、new-grant binding 和 retention policy；但
+`contracts/design.md` 与 `contracts/material-reuse.md` 曾把同一设计门写成 T009，且
+`traceability.md` 仍保留旧任务编号。这使 T006 无法闭合，也使 T007 无法按依赖合法开始。
+
+**Repair**：将设计冻结责任统一归 T006；T006 未闭合前继续保留 normal protected
+Repo 的 assembled-cache miss 门，不能以 cache-compatible 路径替代。T007 只在 T006
+`DONE` 后进入；T009 仍只负责 FINALIZE/drain，不再承担 protected material 设计门。
+本次只修订 active contract/traceability/audit 文档，没有修改生产代码、缓存策略、授权
+语义、任务状态或运行证据。
+
+**Coverage matrix**：
+
+| Lane | Result | Scope and check |
+| --- | --- | --- |
+| production entry/callers | `covered` | 以当前 `Provider.cpp`/`ProviderArtifactCache.cpp`/`NativeCanonicalOnnxAssembler.cpp` 静态结果核对 T006/T007 owner；无源码修改。 |
+| implementation and wire | `covered` | `contracts/design.md` CD-04、`contracts/material-reuse.md` CD-09、`plan.md`、`tasks.md`、`traceability.md` 的任务顺序和安全门一致性。 |
+| test/harness/oracle | `covered` | T006 `ProtectedMaterialReuse` 与 T007 `ResidentSession` 的 planned C++ selectors 仍按严格依赖，未冒称通过。 |
+| build/source closure | `N/A` | 纯文档修订，无新增符号、target、安装或源码闭包。 |
+| migration/evidence | `covered` | T003 保持 `PARTIAL`，T004–T011 保持 `NOT_STARTED`；当前 protected miss 与 run-58 raw evidence 不变。 |
+
+**Validation**：修订后运行 Spec Kit sync、strict structure、serial task order 和
+`git diff --check`；产品 compile/link/runtime/dynamic 均 `NOT_RUN`。Closure decision：
+`CLOSED_FOR_VALIDATION`（仅本次顺序修复），下一稳定出口仍为 T003 完整闭合后启动 T004。
+
+## Per-Change Static Review Gate Revision — 2026-09-22 14:04 -0500
+
+**User intent**：将“每次修改完成后先做主动只读静态审查，再构建/测试/实验”写入
+Spec190及其执行文档，避免在未复审的工作树上反复试错；不改变T003首个资源边界、任务顺序或
+T004启动条件。
+
+**Scope**：仅审查并修改 `spec.md`、`plan.md`、`tasks.md` 和
+`checklists/requirements.md` 中的治理条款；没有生产源码、测试、launcher、配置、模型或证据
+raw 被修改。当前工作树含其他既有未提交改动，本次范围按上述四个路径精确隔离。
+
+**Static findings**：none。新增门明确规定固定baseline、完整diff、真实入口/caller、owner、
+测试/oracle、Waf/安装/符号闭包、五lane coverage、四类 miss、首个失败边界、review trace 和
+closure decision；同时明确 `STATIC_PASS` 不等于行为、性能或资格PASS，后续修改使受影响复审失效。
+Spec、plan、tasks、checklist 对该门的术语和当前T003/T004状态一致。
+
+**Coverage matrix**：
+
+| Lane | Result | Scope and check |
+| --- | --- | --- |
+| production entry/callers | `N/A` for product change | 本次无生产代码变化；既有T003入口/边界由 `tasks.md` 与 `evidence/b190-03.md` 保持引用，未将文档审查冒充代码审查。 |
+| implementation and wire | `covered` for document contract | `spec.md`、`plan.md`、`tasks.md` 的统一静态门文本及 `STATIC_PASS` 边界交叉核对；无wire/API变化。 |
+| test/harness/oracle | `N/A` for product change | 未修改fixture、selector、oracle或Waf注册；结构与任务前置检查覆盖文档可执行性。 |
+| build/source closure | `N/A` for product change | 未新增入口或符号；未触发C++构建，避免将文档检查写成compile/link证据。 |
+| migration/evidence | `covered` | 保留run-34 raw边界、T003=`PARTIAL`、T004–T011=`NOT_STARTED`；仅新增本审查记录和当前checkpoint。 |
+
+**Validation**：`verify-spec-kit-sync.py --require-entrypoints` PASS（11/11，personal shared skill
+present）；`audit_speckit_structure.py specs/190-multiturn-latency --strict` PASS（17 FR、9 SC、
+5 stories、11 tasks、17/17 traced requirements、2 tasks complete）；repository prerequisites
+PASS；`git diff --check` PASS；ID交叉检查保持T001–T011、FR-001–FR-017、SC-001–SC-009和B190-01–11。
+
+**Compile/build misses**：N/A（纯文档治理修改，未运行产品构建）。
+
+**Runtime/test misses**：N/A（纯文档治理修改，未运行产品测试；T003既有normal Repo资源边界仍未关闭）。
+
+**Dynamic validation**：`N/A`，无运行时状态变化；不产生`DYNAMIC_PASS`。
+
+**Build measurement**：N/A；没有新增C++ target、source closure或安装产物。
+
+**Behavior result**：文档范围 `STATIC_PASS`；产品范围保持T003 `PARTIAL`，不解锁T004。
+
+**Review trace**：baseline `63ac255684c880ded77ebfd9761b0f5c49ff7b7a`；完整diff范围为上述四个文件；执行
+`verify-spec-kit-sync.py`、`audit_speckit_structure.py --strict`、repository prerequisites、
+`git diff --check`及ID交叉检查。使用的skill/reference SHA：
+`.agents/skills/speckit-specify/SKILL.md`=`aa3a6fa946bd181300aa638a830f9e43153fb72cbe9c93168dc9a54d230d94f1`，
+`.agents/skills/speckit-audit/SKILL.md`=`adcecbdad090b8000b686d11a1873b823ae43cdc7bf811b2f8d813fbfd3bc46a`，
+`pre-test-static-review.md`=`2ac9b07aa65a6a8e88f2a37a146439b193401241431d756a087e679955d3e95c`，
+`batch-quality-gates.md`=`08bb7431984cba703bb7a7f96c4024d09681529db4e48cdce548d440f5667159c`。
+本次不调用review-agent进行产品代码审查，因为没有生产代码差异；文档审查采用上述官方skill、
+结构检查和交叉检查，未把缺少agent调用写成产品静态PASS。
+
+**Batch growth decision**：不扩批；仅把已有执行规则提升为单一Spec190治理门。
+
+**Closure decision**：`CLOSED_FOR_VALIDATION`（仅本次文档治理修改）；下一稳定出口仍是T003内
+针对run-34 `MODEL_MATERIALIZED/WORKER_START`资源边界的静态审查与最小Changed gate。T004–T011
+继续保持`NOT_STARTED`。
+
 ## Strict Serial Revision — 2026-09-22 03:05 -05:00
 
 用户要求：清单即执行顺序，上一项全部本项验收完成才进入下一项，不允许前向依赖或批内欠测推进。
@@ -107,3 +191,168 @@ Checkpoint scope：仅新Spec190十份文档和`.specify/feature.json`；旧Spec
 static：如上术语、范围和FINALIZE归因已修；compile-link：NOT_RUN；runtime-test：NOT_RUN；
 unobserved：1秒真实成功率、真实TTFT/吞吐、FINALIZE首个缺失点、CPU驻留节省量及退出资源。
 本轮不补造构建耗时，不用任务数量作性能证据。
+
+## 2026-09-23 Direct INT8 source-compatibility audit
+
+### Audit boundary and verdict
+
+本轮针对“只替换原始模型文件，FP16→预构建 INT8 后为何连续出现多处错误”做跨层只读审查。
+审查范围为 Python candidate inspection/cache、C++ model descriptor/catalog、canonical graph and
+initializer identity、Repo/material publication、selection-bound assembly、ORT runner 的
+input/KV/output contract、cache key、T003 evidence 与 failure index。CodeGraph 已同步，当前
+source reality 以 Experimental 工作树和 r6 raw evidence 为准。
+
+结论：当前缺口不是一个 adapter 缺失，而是 source-format compatibility 没有作为一条完整
+生产契约实现。INT8 候选的公开 IO/KV 已与当前 ORT smoke 对齐，但在进入 ACK 之前，inline
+initializer 被 publisher 当作单个 oversized payload，首个真实边界是
+`DI_NATIVE_PUBLICATION_MATERIAL_PAYLOAD_TOO_LARGE`。因此尚不能宣称 assembly、runner、两节点
+协议或多轮 KV 兼容，也不能把错误归因于“INT8 本身不被 ORT 支持”。
+
+### Findings
+
+| ID | Severity | Finding | Consequence |
+| --- | --- | --- | --- |
+| F190-INT8-01 | HIGH | `quantization` 已进入 Python recipe/profile，但 `NativeModelDescriptor` 的 canonical JSON/identity 没有独立的 quantization subtype；C++ preparer 只要求非空字符串。 | FP32 public contract 与 weight-only INT8 representation 容易被混写；跨量化 cache/recipe 复用无法由统一 descriptor 完整拒绝。 |
+| F190-INT8-02 | BLOCKING | publisher 仍把 inline initializer 序列化成一个 material payload，并保留 1 MiB 上限；已有 chunk/reassembly 只覆盖 external initializer。 | r6 在本地 preparation 停止，未进入 ACK/Selection；提高上限会破坏内存/出版预算，不是修复。 |
+| F190-INT8-03 | HIGH | Python ONNX identity 近期修正为 wire-level `TensorProto.dims`，但尚未完成干净 C++ build 和 direct-candidate dual-oracle regression。 | 量化 scale/zero-point scalar shape 的 Python/C++ 漂移可能在后续 publication/role binding 重新出现。 |
+| F190-INT8-04 | HIGH | current candidate 的 `precision=float32` 只表达公开 activation/KV/output contract，语义尚未在 C++/文档中版本化为 weight-only INT8。 | “全 INT8”与“INT8 weight + FP32 activation”会产生错误 cache identity、错误 adapter 方向和错误验收结论。 |
+| F190-INT8-05 | HIGH | inline chunking 的 backing/ownership、ModelPreparationCache retention、assembled material 和 provider fetch 的峰值尚未用内存账本闭合。 | 修复分块后仍可能重复保留约 754 MB source/initializer/material；不能仅以单 payload 通过证明内存问题解决。 |
+| F190-INT8-06 | MEDIUM | 现有 Spec190 把“量化”整体写在排除项，tasks/evidence 还保留“下载未完成”的旧 checkpoint。 | 任务范围、当前事实和后续 gate 不一致，容易再次跳过静态审查直接运行。 |
+
+### Ordered repair plan
+
+修复只在 T003 内按以下顺序执行；任何一步失败都停在该步，不启动 T004，也不把 focused
+PASS 写成产品完成：
+
+1. `B190-03A-1 Contract`: 固化 `ONNX + weight_only_int8`、FP32 public activation/KV/output、
+   INT64 control、full IO/KV/position/operator contract；将 subtype 纳入 C++ model identity、
+   recipe/cache key 和负例矩阵。全图 INT8、signed INT8 wire、量化导出不纳入本次修复。
+2. `B190-03A-2 Identity`: 对固定 8372-node candidate 做 Python↔C++ graph/initializer/shape
+   双向 oracle，特别覆盖 198 个 scalar scale/zero-point initializer；完成 clean affected build
+   后才允许继续。
+3. `B190-03A-3 Material`: 将 inline raw initializer 接入现有 bounded chunk representation，
+   复用 external chunk 的顺序、digest、range、reassembly 和 selected-layer filtering；补充
+   oversized-inline、chunk tamper、order/length/digest mismatch、inline/external parity 的 C++ tests。
+4. `B190-03A-4 Ownership`: 记录 source protobuf、initializer backing、material payload、
+   assembled role model、ORT session、KV 的 owner/bytes/lifetime；证明 chunking 不产生第二份
+   完整模型，失败和取消均释放本次 owned material，stable cache 不被 cleanup 删除。
+5. `B190-03A-5 Native gate`: 真实 C++ canonical publisher/assembler/provider runner/ORT CPU
+   target 验证 selected role、one-token、continuation 和 output/KV contract；仅在此处观察到
+   真实契约不匹配时，才新增 adapter，并单独增加 adapter identity/negative regression。
+6. `B190-03A-6 Chain gate`: static review → affected compile/link → installed binary/source
+   closure → candidate preflight → 一次 fresh normal Repo。证据必须出现 prepare、publication、
+   ACK、Selection、placement fetch、assembly、execute、terminal 或首个失败边界；不复用旧 run。
+7. `B190-03A-7 Live turns`: 只有 B190-03A closure 后才回到 T003 原有 Conversation/live-token
+   三轮测试；再按严格顺序考虑 T004。
+
+### Coverage and closure
+
+| Lane | Current result | Required closure |
+| --- | --- | --- |
+| production entry/callers | `PASS` for static route mapping: Python prepare → C++ catalog/publisher → Repo → provider assembler/runner | clean source/CodeGraph recheck after each production edit |
+| implementation/wire | `BLOCKED` at inline publication payload bound | bounded inline chunk contract and ownership proof |
+| test/harness/oracle | partial: ORT CPU one-token smoke and prior cold-assembly gate; no direct full candidate C++ chain | named C++ identity/material/runner selectors |
+| build/source closure | stale after draft inline regression; interrupted build has no result | clean affected Waf build/install plus hash/nm/readelf closure |
+| migration/evidence | `PARTIAL`; r6 raw retained, task checkpoint corrected by this audit | new immutable run, failure index, no overwrite/qualification inflation |
+
+四类 miss：`static=BLOCKED`（inline representation and descriptor contract are incomplete）；
+`compile-link=NOT_RUN`（draft regression build was intentionally stopped）；
+`runtime-test=PARTIAL`（ORT smoke only, production chain stopped at preparation）；
+`unobserved=ACK/Selection/assembly/terminal/multiturn KV/cleanup under direct INT8`。
+Closure decision：`OPEN_FOR_NEXT_BATCH`。T003 remains `PARTIAL`; T004–T011 remain `NOT_STARTED`。
+本审计完成的是全局定位和顺序计划，不是产品验收。
+
+### B190-03A native candidate gate closure update (2026-09-23)
+
+在不改动 production lineage 校验的前提下，完成了 direct candidate 的真实 C++ native
+gate。既有测试夹具首次运行在 `OnnxRuntimeModelRunner::run` 因缺失
+`GenerationEpochLineageV1` 停止；静态复核确认 stateful causal-position contract 要求
+authenticated prefill/decode lineage，随后仅在 fixture 中补齐该契约及
+`generationInputTokenCount`。受影响目标 `integration-tests` 重新构建 `128/128`，固定
+754 MB Qwen INT8 candidate 的 selector 通过 `1/1`（约 89.5 秒），实际覆盖 canonical
+assembler、OA02 worker、C++ ORT CPU session/warmup、prefill、FP32 logits 和使用前次
+present KV 的 continuation。
+
+这只闭合 B190-03A-5 的 direct native one-token/continuation contract；不等于 T003 完成。
+正常 Repo 链仍必须在 root-owned context 中 fresh 执行，并出现 prepare/publication、ACK、
+Selection、placement-bound fetch、Provider assembly/execute、terminal 或首个失败边界。
+
+| Lane | Current result | Remaining gate |
+| --- | --- | --- |
+| production callers | `PASS` for static assembler → worker → runner route | root-owned normal Repo lifecycle |
+| implementation/wire | `PASS` for INT8 weight identity, bounded material, FP32 public IO/KV, and lineage-bound continuation | Repo publication/selection/fetch evidence |
+| test/harness/oracle | `PASS` for named C++ direct candidate selector `1/1` | ACK/Selection/two-provider/terminal oracle |
+| build/source closure | `PASS` for affected `integration-tests` `128/128` | installed closure and root-owned candidate run |
+| migration/evidence | `PARTIAL`; all first boundaries and fixed-candidate hash retained | fresh normal Repo raw evidence and cleanup |
+
+Miss classes are now `static=PASS`, `compile-link=PASS`, `runtime-test=PASS` for this focused
+native gate, and `unobserved=Repo/ACK/Selection/placement/two-provider/terminal/EOS/three-turn`.
+Closure decision is `OPEN_FOR_NEXT_BATCH` for the remaining T003 normal-Repo chain; T003 remains
+`PARTIAL`, T004–T011 remain `NOT_STARTED`.
+
+### B190-03A normal-run wrapper audit update (2026-09-23)
+
+对 normal-run prepare command 做静态闭环检查时发现一个真实编排缺口：原
+`LocalExperiment.command_for()` 没有把 `--require-multi-token` 传递给已经支持该门的
+`NDNSF_DI_Qwen06B_Native_Minindn.py`。这会使“3 轮、2 token 上限”在命令层仍可能退化为每轮
+单 token，无法证明 EOS/预算语义。修复只增加 wrapper 参数和条件转发，并加入 Python 回归；
+32 项回归与两个脚本 `py_compile` 通过，r9 prepare manifest 显示目标参数确实存在。
+
+该修复关闭了 T003 的编排/准备缺口，但没有改变 root owner 前置条件，也没有产生 protocol
+结果。r9 的 candidate/profile/binary/build/model/topology hash 已冻结，状态仍是
+`NOT_EVALUATED`；下一步仍只能在 root-owned context 中执行一次 fresh normal Repo。
+
+| Lane | Current result | Remaining gate |
+| --- | --- | --- |
+| production callers | `PASS` for LocalExperiment → native launcher option forwarding | root-owned process launch |
+| implementation/wire | `PASS` for explicit multi-token requirement in recorded command | live EOS/token/terminal evidence |
+| test/harness/oracle | `PASS` for 32 wrapper regressions and r9 prepare manifest | normal Repo/Provider/three-turn oracle |
+| build/source closure | `PASS` for Python syntax; native candidate gate remains PASS | root-owned installed run |
+| migration/evidence | `PARTIAL`; r8 was not executed and r9 is retained | fresh run evidence and cleanup |
+
+Closure decision remains `BLOCKED_ON_OWNER_CONTEXT`; T003 `PARTIAL`, T004–T011 `NOT_STARTED`.
+
+### B190-03A status update after identity/material gates (2026-09-23)
+
+本次按既定 owner 顺序完成了两个最小修复：`NativeModelDescriptor` 将非默认
+`weight_only_int8` 纳入 canonical identity，并保持 legacy `none` 的旧 JSON 字节兼容；
+inline `raw_data` 改用 shared backing 和 bounded chunk view，复用 external initializer
+的 digest、range、顺序和 reassembly 校验。对应 C++ identity/material selectors 分别为
+`6/6`、`25/25`、`26/26`，受影响 targets compile-link PASS，Python launcher syntax PASS。
+
+这只关闭了 source identity/material representation gate，不关闭 direct candidate native
+gate。既有 native fixture 在 `NativeExecutionPlanJson.cpp:1413` 因 selection dataflow
+缺少匹配 execution-role/request/attempt/plan digest 停止，未进入 assembler/ORT；不得为此
+引入无关 fixture 重构。新的 direct r7 在 launcher root-owner preflight 以
+`MININDN_REQUIRES_ROOT` 停止，当前会话没有 root/sudo，未启动 MiniNDN、Repo、Provider、
+ACK/Selection、assembly、ORT 或 terminal。两项边界均已写入 [b190-03](evidence/b190-03.md)
+和 `docs/failure-log.md`，并保留原始 run 目录。
+
+| Lane | Current result | Remaining gate |
+| --- | --- | --- |
+| production callers | `PASS` for static source→catalog→publisher→assembler route | root-owned direct candidate run and production lifecycle evidence |
+| implementation/wire | `PASS` for identity subtype and bounded inline material focused contract | native candidate assembler/runner/continuation contract |
+| test/harness/oracle | `PASS` for named identity/material C++ selectors; fixture is `FAIL_FIXTURE_DATAFLOW` | named production C++ runner oracle on the candidate |
+| build/source closure | affected Waf targets and Python syntax `PASS` | installed/source closure and root-owned normal Repo run |
+| migration/evidence | `PARTIAL`; r6/r7 and fixture raw boundaries retained | ACK/Selection/placement/terminal/cleanup evidence |
+
+Miss classes remain `static=PASS` for the repaired gate,
+`compile-link=PASS`, `runtime-test=PARTIAL` (focused gates only; direct production path
+unobserved), and `unobserved=direct-candidate assembler/ORT continuation, Repo, ACK/Selection,
+terminal, and full multi-turn KV reuse`。Changed gate closure decision is
+`BLOCKED_ON_OWNER_CONTEXT`; T003 remains `PARTIAL`, T004–T011 remain `NOT_STARTED`。
+The next allowed action is one root-owned fresh normal Repo run with the same candidate/source
+hashes, after candidate preflight and the existing static/source closure are rechecked；no
+further speculative production edits are authorized by this update。
+
+### B190-03A selected-layer scope audit (2026-09-23)
+
+补充核对 production role-preparer 和 assembler 后确认：semantic node mapping、每 role 的
+`nodeIndices`、layer range 以及 selected-node cover 校验均存在并已由 source review 覆盖；但
+当前真实 Qwen C++ selector 的 projection 是完整 8372-node 单 role。它不能证明该 candidate
+的 `0..14` / `14..28` 两 stage 被分别抽取、stage activation 被传递，或两个 Provider 都
+执行过一次。该缺口只能由 r9 root-owned normal Repo 关闭，不能再靠 tiny fixture 或完整图
+selector 代替。
+
+因此当前 closure 保持 `BLOCKED_ON_OWNER_CONTEXT`：T003 `PARTIAL`，T004–T011
+`NOT_STARTED`；不新增 adapter，不继续做与该 gate 无关的重构。

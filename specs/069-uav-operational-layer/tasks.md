@@ -10,7 +10,7 @@ state contracts.
 - [x] T001 Create Spec069 artifacts in `specs/069-uav-operational-layer/`.
 - [x] T002 Review current UAV state models and core/app boundary in
   `NDNSF-UAV-APP/shared/UavProtocol.*` and `docs/ndnsf-core-app-boundary.md`.
-- [x] T003 Use CodeGraph and DeepSeek second-pass planning before edits.
+- [x] T003 Use CodeGraph and second-pass planning before edits.
 
 ## Phase 2: Foundational
 

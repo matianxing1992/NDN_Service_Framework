@@ -1,5 +1,7 @@
-\subsection{Operator Workflow and State Interpretation}
+\section{Operator Workflow and State Interpretation}
 A typical session starts with an operator discovering sensing services and choosing a vehicle. Subsequent camera or mission operations retain that vehicle identity unless the operator or a stated mission policy authorizes replacement. The interface associates status with the vehicle and operation that produced it. A delayed observation must not be presented as evidence that a newly issued command succeeded. Observation time, operation identity, and the application's stale-data threshold are therefore part of the validation contract.
+
+The current UAV experiment assumes a camera fixed to the vehicle body. This is an experimental configuration that simplifies geometric calibration; it is not a requirement imposed by NDNSF. Vehicle-attitude disturbance and camera-to-body calibration therefore remain application-level validation concerns.
 
 The proposed evaluation follows a complete session rather than testing isolated buttons: obtain status, start a camera stream, inspect incremental frames, stop the stream, find a recording, and retrieve the selected recorded object. Camera control uses service invocation; frame delivery and recording retrieval use their respective data paths. An implementation may record while no live viewer is attached, so recording availability should not be inferred from stream subscription. The test records whether the configured application supports that mode and whether recording references identify the correct producer and version.
 
@@ -15,7 +17,27 @@ Mission operation & Issue bounded work and follow progress & Admission, progress
 \end{tabularx}
 \end{table}
 
+\section{Live Video, Recording, and Perception Services}
+Live viewing and recorded retrieval have different objectives. The live path prioritizes recent usable frames within a latency budget; delayed frames may no longer be useful to the operator. A recording path instead needs a defined retention interval and identifiable segments for later retrieval. Stream/session identity, producer identity, and frame or segment sequence must prevent a late frame from an earlier session from appearing in the current one. These are application validation requirements, not claims that every delivery policy is implemented.
+
+The test should vary frame size, production rate, available bandwidth, and receiver buffering independently. Reducing resolution or dropping obsolete frames may reduce viewing delay but also reduce visual information; it is not an unconditional networking improvement. Report delivered frame rate, age of displayed frames, gaps, and recording completeness alongside service-call latency. Authorization to start recording, access a stream, and read a retained object must be checked at the corresponding operation or object boundary.
+
+Perception adds computation to acquisition: a sensing service supplies a named image, an analysis service obtains the permitted image and runs a fixed detector, and the requester retrieves annotations referring to that image. Telemetry, camera control, recording, flight commands, and analysis therefore exercise different framework paths. Multi-view collaboration combines those paths rather than replacing the rest of the UAV application.
+
+\section{Flight Commands and Local Safety}
+
+Three responsibilities must remain distinct: the NDNSF runtime checks service authorization and request state; the UAV application manages operator authority and mission state; the vehicle and its safety logic determine whether an operation is safe.
+
+The evaluation will examine where vehicle-specific operator authority is checked, in addition to service-invocation permission. The current ground station checks operator leases; the drone-side execution handler does not independently repeat that check. End-to-end tests will assess whether expired or unauthorized operator commands are rejected along the command path.
+
 Flight-related services connect the application to the vehicle's flight-control interface, such as MAVLink and PX4~\cite{mavlink-survey,px4}. Authorization to submit a command is separate from its operational safety. Geofencing, vehicle readiness, collision avoidance, and local failsafe behavior belong to the vehicle/application safety design. The networking study should use bounded supervisory commands and an explicit loss-of-contact policy, rather than assume that a service invocation is suitable for every low-level flight-control loop.
+
+For a bounded navigation or camera-pointing operation, validation should record vehicle readiness, command acceptance, observed progress, and the final application outcome separately. Readiness checks include a current autopilot heartbeat, a suitable position estimate, battery condition, and the permitted flight mode. The flight controller's command acknowledgment and observed vehicle state must be distinguished from NDNSF ACK Data. A positive NDNSF ACK cannot establish that the vehicle reached a waypoint. Late status from an old command must not complete a newer one.
+
+Timeout and reconnection tests must verify a locally configured hold, return, or landing policy appropriate to the vehicle and operating conditions. Continuous manual control requires a separate control-rate and stale-command safety assessment; it is not assumed safe merely because supervisory calls work. In the fixed-camera configuration, interpreting a view also requires time-aligned vehicle attitude and camera-to-body calibration. Service-message delivery alone does not establish flight safety or geometric accuracy.
+
+\section{Mission Assignment and Partial Failure}
+Mission progress, reassignment policy, and compensation remain application responsibilities. The NDNSF runtime carries the associated service exchanges; it does not interpret a vehicle's mission outcome or provide atomic rollback of physical actions.
 
 Multi-vehicle patrol provides a secondary workload: an application divides a region into tasks, tracks their completion, and decides whether unfinished tasks can be reassigned. Its relevance is the association of task state and returned observations with the active assignment. This is broader than multi-view analysis, but it should not become an additional unbounded algorithm-development requirement. The primary collaboration experiment below fixes its task and analysis method so that network and protocol effects can be isolated.
 

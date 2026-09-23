@@ -4,7 +4,7 @@ workflow:
   name: "Full SDD Cycle"
   version: "1.0.0"
   author: "GitHub"
-  description: "Runs specify → plan → tasks → implement with review gates"
+  description: "Runs specify → plan → tasks → full active-Spec implementation with review gates"
 
 requires:
   # 0.8.5 is the first release with engine-side resolution of the
@@ -73,4 +73,8 @@ steps:
     command: speckit.implement
     integration: "{{ inputs.integration }}"
     input:
-      args: "{{ inputs.spec }}"
+      # The feature description belongs to specify/plan/tasks.  The final
+      # command must invoke the implement skill's one-line full-execution
+      # mode so it resolves the active Spec and processes tasks.md until all
+      # tasks are DONE or a real blocker is persisted.
+      args: "完成当前 active Spec 的所有任务。"

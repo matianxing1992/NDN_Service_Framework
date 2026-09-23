@@ -353,11 +353,16 @@ def test_spec180_v3_offer_issuer_disables_simple_service_mirror():
     app.serve_service(
         service="/AI/YOLO/YOLO26n", roles=["FullModel"], handler=lambda ctx: None,
         backends=["onnxruntime-cpu"], has_model=True, can_provision=False,
-        local_artifacts={"FullModel": {"path": "/candidate/model.onnx"}},
+        local_artifacts={"FullModel": {
+            "path": "/candidate/model.onnx",
+            "canonical_initializer_path": "/candidate/model.weights",
+        }},
         selection_offer_issuer_v3=object(),
     )
     assert captured["service"] == "/AI/YOLO/YOLO26n"
     assert captured["roles"] == ["FullModel"]
+    assert captured["local_artifacts"]["FullModel"][
+        "canonical_initializer_path"] == "/candidate/model.weights"
     assert captured["register_simple_service"] is False
 
 

@@ -4,6 +4,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
@@ -37,12 +38,45 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 using namespace ndnsf::di;
 using namespace ndn_service_framework;
 
 namespace {
+
+class ScopedEnvironmentVariable
+{
+public:
+  ScopedEnvironmentVariable(const char* name, const char* value)
+    : m_name(name)
+  {
+    if (const char* previous = std::getenv(name); previous != nullptr) {
+      m_previous = previous;
+      m_hadPrevious = true;
+    }
+    if (::setenv(m_name.c_str(), value, 1) != 0)
+      throw std::runtime_error("cannot set provider test environment variable");
+  }
+
+  ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+  ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) = delete;
+
+  ~ScopedEnvironmentVariable() noexcept
+  {
+    if (m_hadPrevious)
+      (void)::setenv(m_name.c_str(), m_previous.c_str(), 1);
+    else
+      (void)::unsetenv(m_name.c_str());
+  }
+
+private:
+  std::string m_name;
+  std::string m_previous;
+  bool m_hadPrevious = false;
+};
 
 std::filesystem::path
 trustSchema()
@@ -475,13 +509,39 @@ BOOST_AUTO_TEST_CASE(ProviderConfigUsesOneValidatedCppGrammar)
 
 BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
 {
-  // Explicitly opt this in-process C++ fixture into the local controller
-  // identity fallback; production Provider startup requires an external
-  // controller certificate or --controller-cert.
-  ::setenv("NDNSF_SPEC185_ALLOW_LOCAL_CONTROLLER", "1", 1);
+  // Runtime::open(ProviderConfig) still validates the production launch
+  // grammar, but the unopened Provider owner is replaced before serve() with
+  // the same borrowed-face fixture used by the authenticated assembly tests.
+  // This keeps the public Provider-only Runtime path under test without
+  // making the selector depend on an external NFD daemon.
+  ScopedEnvironmentVariable allowLocalController(
+    "NDNSF_SPEC185_ALLOW_LOCAL_CONTROLLER", "1");
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.groupPrefix = ndn::Name("/spec185/group");
+  profile.syncPrefix = ndn::Name("/spec185/provider-only/sync");
+  profile.userNode = ndn::Name("/spec185/provider-only/user");
+  profile.providerNode = ndn::Name("/spec185/provider-only/provider");
+  profile.userIdentity = ndn::Name("/spec185/user");
+  profile.providerIdentity = ndn::Name("/spec185/provider");
+  profile.attributeAuthority = ndn::Name("/spec185/aa");
+  profile.serviceName = ndn::Name("/Inference/Spec185Provider");
+  profile.providerRoles = {"/Backbone"};
+  profile.providerFacesHaveDedicatedIoWorkers = true;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  environment.enableProviderProductionIngressForTest();
   const auto config = makeConfig();
   auto runtime = Runtime::open(config);
   BOOST_REQUIRE(runtime);
+  const auto providerIdentity = environment.keyChain().getPib().getIdentity(
+    environment.provider().getName());
+  const auto providerCertificate = providerIdentity.getDefaultKey().getDefaultCertificate();
+  auto inProcessProvider = Provider::fromServiceProviderForTest(
+    environment.providerFace(), environment.provider(), environment.keyChain(),
+    providerCertificate, providerCertificate, config,
+    std::make_shared<RegistryNativeModelRunnerFactory>(), {}, {});
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderOnlyFixture(
+    runtime, std::move(inProcessProvider));
 
   BOOST_CHECK_EXCEPTION(runtime->user(), DiError,
                         [](const DiError& error) {
@@ -547,9 +607,17 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
   BOOST_CHECK_EQUAL(afterDrain.assemblies, 0U);
   BOOST_CHECK_EQUAL(afterDrain.runnersCreated, 0U);
   BOOST_CHECK(registration.closed());
-  runtime->close();
-  ::unsetenv("NDNSF_SPEC185_ALLOW_LOCAL_CONTROLLER");
+  // Provider-only close() is an admission fence; drain() is the bounded
+  // lifecycle fence that joins the owned Face worker before the selector
+  // exits.  The process qualification runs this fixture under LeakSanitizer.
+  BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
 }
+
+// Keep the real Provider::serve -> authenticated Selection -> runner path in
+// the Spec188 selector as well as the older Spec185 regression suite.  The
+// body remains shared so this task cannot accidentally replace the production
+// ingress with a direct assembler-only fixture.
+BOOST_AUTO_TEST_SUITE(Spec188ProviderReferenceAssembly)
 
 BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse)
 {
@@ -1395,39 +1463,31 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
   const std::vector<std::uint8_t> modelBytes{'c', 'a', 'c', 'h', 'e', 'd'};
   const auto modelDigest = providerAssemblyDigest(modelBytes);
   const auto roleDirectory = root / "assembled" / "_LLM_Pipeline_Stage_0" /
-                             modelDigest.substr(7);
+                             projection.assembly.recipeDigest.substr(7);
   std::filesystem::create_directories(roleDirectory);
   std::ofstream(roleDirectory / "model.onnx", std::ios::binary)
     .write(reinterpret_cast<const char*>(modelBytes.data()),
            static_cast<std::streamsize>(modelBytes.size()));
-  const auto manifest = std::string(
-    "{\"schema\":\"ndnsf-di-assembled-onnx-v1\","
-    "\"modelName\":\"spec189-cache-fixture\","
-    "\"modelDigest\":\"" + zeroDigest('f') + "\","
-    "\"assembledModelDigest\":\"" + modelDigest + "\","
-    "\"modelManifestDigest\":\"" + projection.assembly.modelManifestDigest + "\","
-    "\"artifactProfileDigest\":\"" + projection.assembly.artifactProfileDigest + "\","
-    "\"graphDigest\":\"" + projection.assembly.graphDigest + "\","
-    "\"role\":\"" + projection.assembly.selectedRole + "\","
-    "\"roleKind\":\"" + projection.assembly.roleKind + "\","
-    "\"artifactDigest\":\"" + projection.assembly.artifactDigest + "\","
-    "\"canonicalInitializerDigest\":\"" +
-      projection.assembly.canonicalInitializerDigest + "\","
-    "\"rank\":0,\"layerBegin\":0,\"layerEnd\":2,"
-    "\"recipeDigest\":\"" + projection.assembly.recipeDigest + "\","
-    "\"adapterDescriptorDigest\":\"" +
-      projection.assembly.adapterDescriptorDigest + "\","
-    "\"assemblerDescriptorDigest\":\"" +
-      projection.assembly.assemblerDescriptorDigest + "\","
-    "\"backendAbi\":\"" + projection.assembly.backendAbi + "\","
-    "\"precision\":\"" + projection.assembly.precision + "\","
-    "\"quantization\":\"" + projection.assembly.quantization + "\","
-    "\"layout\":\"" + projection.assembly.layout + "\","
-    "\"padding\":\"" + projection.assembly.padding + "\","
-    "\"nodeCount\":21,\"signer\":\"" + projection.provider + "\"}");
-  std::ofstream(roleDirectory / "manifest.json") << manifest;
-  std::ofstream(roleDirectory / "manifest.signature") << "fixture-signature";
-
+  std::ofstream(roleDirectory / "manifest.json")
+    << "{\"assembledModelDigest\":\"" << modelDigest
+    << "\",\"recipeDigest\":\"" << projection.assembly.recipeDigest
+    << "\",\"modelManifestDigest\":\"" << projection.assembly.modelManifestDigest
+    << "\",\"graphDigest\":\"" << projection.assembly.graphDigest
+    << "\",\"canonicalInitializerDigest\":\""
+    << projection.assembly.canonicalInitializerDigest
+    << "\",\"artifactProfileDigest\":\""
+    << projection.assembly.artifactProfileDigest
+    << "\",\"role\":\"" << projection.assembly.selectedRole
+    << "\",\"roleKind\":\"" << projection.assembly.roleKind
+    << "\",\"adapterDescriptorDigest\":\""
+    << projection.assembly.adapterDescriptorDigest
+    << "\",\"assemblerDescriptorDigest\":\""
+    << projection.assembly.assemblerDescriptorDigest
+    << "\",\"backendAbi\":\"" << projection.assembly.backendAbi
+    << "\",\"precision\":\"" << projection.assembly.precision
+    << "\",\"quantization\":\"" << projection.assembly.quantization
+    << "\",\"layout\":\"" << projection.assembly.layout
+    << "\",\"padding\":\"" << projection.assembly.padding << "\"}";
   NativeCanonicalOnnxAssemblerOptions options;
   options.cacheDir = root.string();
   options.providerIdentity = projection.provider;
@@ -1448,6 +1508,23 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
   BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(projection, options));
   BOOST_CHECK(!std::filesystem::exists(roleDirectory));
   std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheRequiresAuthorizedRuntime)
+{
+  auto projection = makeProviderAssemblyProjection(
+    zeroDigest('a'), zeroDigest('b'), zeroDigest('c'), zeroDigest('d'));
+  projection.assembly.protectionEpoch = "spec189-protected-v1";
+
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = (std::filesystem::temp_directory_path() /
+                      "spec189-protected-cache-runtime-guard").string();
+  options.cacheCompatibilitySourceDir = options.cacheDir;
+  options.providerIdentity = projection.provider;
+
+  BOOST_CHECK_THROW(
+    tryLoadNativeCanonicalOnnxRoleFromCache(projection, options),
+    std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubstitution)
@@ -1908,5 +1985,624 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheSeparatesIndependentGrants)
   facade.stop();
   BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
 }
+
+BOOST_AUTO_TEST_CASE(NoAuthenticatedSelectionDoesNotFetchOrAssemble)
+{
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{
+    1024 * 1024, 2, std::chrono::milliseconds(2000)});
+  NativeSelectionProjectionV3 projection;
+  NativeRequestControl control;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  std::atomic<unsigned> fetches{0};
+  std::atomic<unsigned> assemblies{0};
+  ProviderArtifactKey key;
+  const auto builder = [&] (const NativeRequestControl&) {
+    fetches.fetch_add(1, std::memory_order_relaxed);
+    assemblies.fetch_add(1, std::memory_order_relaxed);
+    auto artifact = std::make_shared<PreparedProviderArtifact>();
+    artifact->encryptedObjectName = "must-not-be-built";
+    artifact->ciphertextDigest = zeroDigest('a');
+    artifact->formatVersion = "spec188-test-v1";
+    artifact->canonicalMetadataJson = "{}";
+    artifact->ciphertextBytes = 1;
+    return ProviderArtifactCache::BuildResult{std::move(artifact), {}};
+  };
+
+  // ProviderArtifactCache rejects an unbound request before invoking the
+  // fetch/assembly builder.  This is the native no-Selection gate; a caller
+  // cannot turn a missing authenticated projection into a source fetch.
+  BOOST_CHECK_EXCEPTION(
+    cache.acquireWithRunner(key, projection, control, builder),
+    std::invalid_argument,
+    [] (const std::invalid_argument& error) {
+      return std::string(error.what()).find("authenticated projection") !=
+             std::string::npos;
+    });
+  BOOST_CHECK_EQUAL(fetches.load(std::memory_order_relaxed), 0U);
+  BOOST_CHECK_EQUAL(assemblies.load(std::memory_order_relaxed), 0U);
+  cache.stop();
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedSelectionFetchesAndVerifiesBeforeAssembly)
+{
+  const auto fixture = providerAssemblyFixture();
+  BOOST_REQUIRE(!fixture.empty());
+  const auto source = providerAssemblyRead(fixture);
+  BOOST_REQUIRE(!source.empty());
+  const auto sourceDigest = providerAssemblyDigest(source);
+  const auto profileDigest = std::string("sha256:") + std::string(64, 'b');
+  const auto sourceIdentity = providerAssemblySourceIdentity(source);
+  const auto sourceName = ndn::Name("/spec188/provider/source");
+  const auto rootName = ndn::Name("/spec188/provider/root");
+  const auto rootText = std::string(
+    "{\"artifactProfileDigest\":\"") + profileDigest +
+    "\",\"metadata\":{\"canonicalSourceBytes\":" +
+    std::to_string(source.size()) +
+    ",\"canonicalSourceDataName\":\"" + sourceName.toUri() +
+    "\",\"canonicalSourceDigest\":\"" + sourceDigest +
+    "\"},\"modelIdentityDigest\":\"" + zeroDigest('a') +
+    "\",\"modelName\":\"spec175-tiny-causal-lm-v1\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
+    "\"state\":\"ACTIVE\"}";
+  const std::vector<std::uint8_t> rootPayload(rootText.begin(), rootText.end());
+  auto projection = makeProviderAssemblyProjection(
+    providerAssemblyDigest(rootPayload), profileDigest,
+    sourceIdentity.graphDigest, sourceIdentity.initializerDigest);
+  projection.canonicalArtifactName = rootName.toUri();
+
+  std::atomic<unsigned> rootFetches{0};
+  std::atomic<unsigned> sourceFetches{0};
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [&] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != rootName)
+      return std::nullopt;
+    rootFetches.fetch_add(1, std::memory_order_relaxed);
+    return ndn::Buffer(rootPayload.data(), rootPayload.size());
+  };
+  fetchers.fetchEncryptedLargeData = [&] (
+      const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name != sourceName || service != ndn::Name("/LLM/Qwen"))
+      return std::nullopt;
+    sourceFetches.fetch_add(1, std::memory_order_relaxed);
+    return ndn::Buffer(source.data(), source.size());
+  };
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = (std::filesystem::temp_directory_path() /
+                      "spec188-provider-reference-assembly").string();
+  options.providerIdentity = projection.provider;
+  options.workerLocation = providerAssemblyWorker();
+  options.signManifest = [] (const std::string& manifest) {
+    return std::string("spec188-provider-signature-") +
+      providerAssemblyDigest(std::vector<std::uint8_t>(manifest.begin(), manifest.end()));
+  };
+  std::error_code cleanupError;
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+
+  const auto prepared = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_REQUIRE(std::filesystem::is_regular_file(prepared.path));
+  BOOST_CHECK_EQUAL(rootFetches.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(prepared.metadata.at("modelManifestDigest"),
+                   projection.assembly.modelManifestDigest);
+  BOOST_CHECK_EQUAL(prepared.metadata.at("assembledFrom"),
+                    "canonical-root-post-selection");
+
+  auto tampered = fetchers;
+  tampered.fetchEncryptedLargeData = [source, sourceName] (
+      const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name != sourceName || service != ndn::Name("/LLM/Qwen"))
+      return std::nullopt;
+    auto mutated = source;
+    mutated.front() ^= 0x01;
+    return ndn::Buffer(mutated.data(), mutated.size());
+  };
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(tampered, projection, options),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("SOURCE_DIGEST_MISMATCH") !=
+             std::string::npos;
+    });
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(SelectionIdentityChangesRejectProviderArtifactReuse)
+{
+  auto projection = makeProviderAssemblyProjection(
+    zeroDigest('a'), zeroDigest('b'), zeroDigest('c'), zeroDigest('d'));
+  projection.canonicalArtifactName = "/spec188/provider/root";
+  projection.assembly.selectedRole = "/Backbone";
+  projection.assembly.role = "/Backbone";
+  projection.assembly.recipeDigest = zeroDigest('e');
+  projection.assembly.backendAbi = "onnxruntime-cpu-v1";
+  projection.assembly.precision = "float32";
+  projection.assembly.quantization = "none";
+  projection.assembly.protectionEpoch = "epoch-1";
+  projection.assembly.maxSourceBytes = 8;
+  projection.assembly.maxAssembledBytes = 8;
+  projection.requestId = "/spec188/provider/request";
+  NativeRequestControl control;
+  control.requestId = projection.requestId;
+  control.attempt = 1;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+
+  ProviderArtifactKey key;
+  key.canonicalRootName = projection.canonicalArtifactName;
+  key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+  key.role = projection.assembly.selectedRole;
+  key.recipeDigest = projection.assembly.recipeDigest;
+  key.backendAbi = projection.assembly.backendAbi;
+  key.precision = projection.assembly.precision;
+  key.quantization = projection.assembly.quantization;
+  key.protectionEpoch = projection.assembly.protectionEpoch;
+  key.protectionIdentity = projection.provider;
+  key.sourceDigest = zeroDigest('f');
+
+  const auto builder = [] (const NativeRequestControl&) {
+    auto artifact = std::make_shared<PreparedProviderArtifact>();
+    artifact->encryptedObjectName = "spec188-artifact";
+    artifact->ciphertextDigest = zeroDigest('1');
+    artifact->formatVersion = "spec188-test-v1";
+    artifact->canonicalMetadataJson = "{}";
+    artifact->ciphertextBytes = 1;
+    return ProviderArtifactCache::BuildResult{std::move(artifact), {}};
+  };
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{
+    1024 * 1024, 2, std::chrono::milliseconds(2000)});
+  auto lease = cache.acquireWithRunner(key, projection, control, builder);
+  BOOST_REQUIRE(lease);
+
+  auto changed = projection;
+  changed.assembly.recipeDigest = zeroDigest('6');
+  BOOST_CHECK_EXCEPTION(
+    cache.acquireWithRunner(key, changed, control, builder),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("KEY_MISMATCH") != std::string::npos;
+    });
+  changed = projection;
+  changed.assembly.protectionEpoch = "epoch-2";
+  BOOST_CHECK_EXCEPTION(
+    cache.acquireWithRunner(key, changed, control, builder),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("KEY_MISMATCH") != std::string::npos;
+    });
+  lease = {};
+  cache.stop();
+}
+
+BOOST_AUTO_TEST_CASE(ProviderArtifactCacheStopCancelsInFlightBuild)
+{
+  auto projection = makeProviderAssemblyProjection(
+    zeroDigest('a'), zeroDigest('b'), zeroDigest('c'), zeroDigest('d'));
+  projection.canonicalArtifactName = "/spec188/provider/lifecycle/root";
+  projection.requestId = "/spec188/provider/lifecycle/request";
+  NativeRequestControl control;
+  control.requestId = projection.requestId;
+  control.attempt = 1;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+
+  ProviderArtifactKey key;
+  key.sourceDigest = zeroDigest('e');
+  key.canonicalSourceName = "/spec188/provider/lifecycle/source";
+  key.canonicalRootName = projection.canonicalArtifactName;
+  key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+  key.canonicalGraphDigest = projection.assembly.graphDigest;
+  key.role = projection.assembly.selectedRole;
+  key.recipeDigest = projection.assembly.recipeDigest;
+  key.backendAbi = projection.assembly.backendAbi;
+  key.device = "cpu";
+  key.precision = projection.assembly.precision;
+  key.quantization = projection.assembly.quantization;
+  key.protectionEpoch = projection.assembly.protectionEpoch;
+  key.protectionIdentity = projection.provider;
+
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{
+    4 * 1024 * 1024, 2, std::chrono::milliseconds(5000)});
+  std::mutex gateMutex;
+  std::condition_variable gateCondition;
+  bool builderStarted = false;
+  std::string failure;
+  std::thread creator([&] {
+    try {
+      (void)cache.acquireWithRunner(
+        key, projection, control,
+        [&] (const NativeRequestControl& request) {
+          {
+            std::lock_guard<std::mutex> lock(gateMutex);
+            builderStarted = true;
+          }
+          gateCondition.notify_all();
+          std::unique_lock<std::mutex> lock(gateMutex);
+          gateCondition.wait(lock, [&] {
+            return request.cancelled && request.cancelled();
+          });
+          throw std::runtime_error("DI_PROVIDER_ARTIFACT_CANCELLED: stop fence");
+          return ProviderArtifactCache::BuildResult{};
+        });
+    }
+    catch (const std::exception& error) {
+      std::lock_guard<std::mutex> lock(gateMutex);
+      failure = error.what();
+    }
+  });
+  bool started = false;
+  {
+    std::unique_lock<std::mutex> lock(gateMutex);
+    started = gateCondition.wait_for(
+      lock, std::chrono::seconds(2), [&] { return builderStarted; });
+  }
+
+  // stop() is the shared cancellation fence.  Wake the fixture only after
+  // the cache has published its stopped state; the creator must then leave
+  // without publishing an entry or retaining a lease.
+  cache.stop();
+  gateCondition.notify_all();
+  creator.join();
+  BOOST_REQUIRE(started);
+  BOOST_CHECK_MESSAGE(
+    failure.find("DI_PROVIDER_ARTIFACT_CANCELLED") != std::string::npos ||
+      failure.find("RUNTIME_CLOSED") != std::string::npos,
+    failure);
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
+  BOOST_CHECK_EXCEPTION(
+    cache.acquireWithRunner(key, projection, control,
+      [] (const NativeRequestControl&) {
+        return ProviderArtifactCache::BuildResult{};
+      }),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("RUNTIME_CLOSED") !=
+             std::string::npos;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(ProviderArtifactCacheStopPreservesActiveLeaseUntilRelease)
+{
+  auto projection = makeProviderAssemblyProjection(
+    zeroDigest('a'), zeroDigest('b'), zeroDigest('c'), zeroDigest('d'));
+  projection.canonicalArtifactName = "/spec188/provider/lifecycle/lease-root";
+  projection.requestId = "/spec188/provider/lifecycle/lease-request";
+  NativeRequestControl control;
+  control.requestId = projection.requestId;
+  control.attempt = 1;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+
+  ProviderArtifactKey key;
+  key.sourceDigest = zeroDigest('e');
+  key.canonicalSourceName = "/spec188/provider/lifecycle/lease-source";
+  key.canonicalRootName = projection.canonicalArtifactName;
+  key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+  key.canonicalGraphDigest = projection.assembly.graphDigest;
+  key.role = projection.assembly.selectedRole;
+  key.recipeDigest = projection.assembly.recipeDigest;
+  key.backendAbi = projection.assembly.backendAbi;
+  key.device = "cpu";
+  key.precision = projection.assembly.precision;
+  key.quantization = projection.assembly.quantization;
+  key.protectionEpoch = projection.assembly.protectionEpoch;
+  key.protectionIdentity = projection.provider;
+
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{
+    4 * 1024 * 1024, 2, std::chrono::milliseconds(2000)});
+  auto lease = cache.acquireWithRunner(
+    key, projection, control,
+    [] (const NativeRequestControl&) {
+      auto artifact = std::make_shared<PreparedProviderArtifact>();
+      artifact->encryptedObjectName = "spec188-lifecycle-artifact";
+      artifact->ciphertextDigest = zeroDigest('f');
+      artifact->formatVersion = "spec188-test-v1";
+      artifact->canonicalMetadataJson = "{}";
+      artifact->ciphertextBytes = 1;
+      return ProviderArtifactCache::BuildResult{std::move(artifact), {}};
+    });
+  BOOST_REQUIRE(lease);
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 1U);
+
+  // A stop fence may evict idle entries, but an active request lease keeps its
+  // immutable artifact alive until the request releases it.
+  cache.stop();
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 1U);
+  BOOST_CHECK(lease);
+  lease = {};
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(MemoryLifecycleAlternatesModelsAndReclaimsEvictedArtifacts)
+{
+  // This is a native owner probe: every artifact carries a custom deleter so
+  // the assertion observes actual immutable source destruction instead of
+  // inferring cleanup from cache counters alone.
+  std::atomic<unsigned> destroyed{0};
+  std::atomic<unsigned> builds{0};
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{
+    4 * 1024 * 1024, 1, std::chrono::milliseconds(2000)});
+
+  auto makeIdentity = [] (char tag) {
+    auto projection = makeProviderAssemblyProjection(
+      zeroDigest(tag), zeroDigest('b'), zeroDigest('c'), zeroDigest('d'));
+    projection.canonicalArtifactName =
+      "/spec188/provider/memory/root-" + std::string(1, tag);
+    projection.requestId =
+      "/spec188/provider/memory/request-" + std::string(1, tag);
+    ProviderArtifactKey key;
+    key.sourceDigest = zeroDigest('e');
+    key.canonicalSourceName =
+      "/spec188/provider/memory/source-" + std::string(1, tag);
+    key.canonicalRootName = projection.canonicalArtifactName;
+    key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+    key.canonicalGraphDigest = projection.assembly.graphDigest;
+    key.role = projection.assembly.selectedRole;
+    key.recipeDigest = projection.assembly.recipeDigest;
+    key.backendAbi = projection.assembly.backendAbi;
+    key.device = "cpu";
+    key.precision = projection.assembly.precision;
+    key.quantization = projection.assembly.quantization;
+    key.protectionEpoch = projection.assembly.protectionEpoch;
+    key.protectionIdentity = projection.provider;
+    return std::make_pair(std::move(projection), std::move(key));
+  };
+
+  auto acquire = [&] (char tag) {
+    auto identity = makeIdentity(tag);
+    NativeRequestControl control;
+    control.requestId = identity.first.requestId;
+    control.attempt = 1;
+    control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    return cache.acquireWithRunner(
+      identity.second, identity.first, control,
+      [&destroyed, &builds, tag] (const NativeRequestControl&) {
+        builds.fetch_add(1, std::memory_order_relaxed);
+        auto bytes = std::shared_ptr<const std::vector<std::uint8_t>>(
+          new std::vector<std::uint8_t>(64 * 1024, static_cast<std::uint8_t>(tag)),
+          [&destroyed] (const std::vector<std::uint8_t>* value) {
+            destroyed.fetch_add(1, std::memory_order_relaxed);
+            delete value;
+          });
+        auto artifact = std::make_shared<PreparedProviderArtifact>();
+        artifact->encryptedObjectName = "spec188-memory-artifact-" + std::string(1, tag);
+        artifact->ciphertextDigest = zeroDigest(tag);
+        artifact->formatVersion = "spec188-memory-v1";
+        artifact->canonicalMetadataJson = "{}";
+        artifact->ciphertextBytes = bytes->size();
+        artifact->ciphertext = std::move(bytes);
+        return ProviderArtifactCache::BuildResult{std::move(artifact), {}};
+      });
+  };
+
+  auto first = acquire('a');
+  BOOST_REQUIRE(first);
+  first = {};
+  auto second = acquire('b');
+  BOOST_REQUIRE(second);
+  BOOST_CHECK_EQUAL(destroyed.load(std::memory_order_relaxed), 1U);
+  second = {};
+  auto third = acquire('c');
+  BOOST_REQUIRE(third);
+  BOOST_CHECK_EQUAL(destroyed.load(std::memory_order_relaxed), 2U);
+  BOOST_CHECK_EQUAL(builds.load(std::memory_order_relaxed), 3U);
+  third = {};
+  cache.stop();
+  BOOST_CHECK_EQUAL(destroyed.load(std::memory_order_relaxed), 3U);
+  BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderArtifactCacheEvictsDiskBackedProtectedDescriptor)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+                    "spec189-disk-backed-provider-cache";
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+
+  auto makeIdentity = [] (char tag) {
+    auto projection = makeProviderAssemblyProjection(
+      zeroDigest(tag), zeroDigest('b'), zeroDigest('c'), zeroDigest('d'));
+    projection.canonicalArtifactName =
+      "/spec189/provider/disk/root-" + std::string(1, tag);
+    projection.requestId =
+      "/spec189/provider/disk/request-" + std::string(1, tag);
+    ProviderArtifactKey key;
+    key.sourceDigest = zeroDigest('e');
+    key.canonicalSourceName =
+      "/spec189/provider/disk/source-" + std::string(1, tag);
+    key.canonicalRootName = projection.canonicalArtifactName;
+    key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+    key.canonicalGraphDigest = projection.assembly.graphDigest;
+    key.role = projection.assembly.selectedRole;
+    key.recipeDigest = projection.assembly.recipeDigest;
+    key.backendAbi = projection.assembly.backendAbi;
+    key.device = "cpu";
+    key.precision = projection.assembly.precision;
+    key.quantization = projection.assembly.quantization;
+    key.protectionEpoch = projection.assembly.protectionEpoch;
+    key.protectionIdentity = projection.provider;
+    return std::make_pair(std::move(projection), std::move(key));
+  };
+
+  ProviderArtifactCache cache(ProviderArtifactCacheConfig{
+    4 * 1024 * 1024, 1, std::chrono::milliseconds(2000)});
+  auto first = makeIdentity('a');
+  NativeRequestControl firstControl;
+  firstControl.requestId = first.first.requestId;
+  firstControl.attempt = 1;
+  firstControl.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  const auto firstPath = root / "a" / "model.onnx.cipher";
+  std::filesystem::create_directories(firstPath.parent_path());
+  std::ofstream(firstPath, std::ios::binary) << "cipher-a";
+  std::atomic<unsigned> cleanups{0};
+  auto build = [&] (const std::filesystem::path& path, char tag) {
+    auto artifact = std::make_shared<PreparedProviderArtifact>();
+    artifact->encryptedObjectName = "disk-backed";
+    artifact->ciphertextDigest = zeroDigest(tag);
+    artifact->formatVersion = "spec189-disk-backed-v1";
+    artifact->canonicalMetadataJson = "{}";
+    artifact->ciphertextBytes = std::filesystem::file_size(path);
+    auto runner = std::make_shared<NativeModelRunnerSpec>();
+    runner->role = "/LLM/Pipeline/Stage/0";
+    runner->kind = "protected-template";
+    runner->backend = "onnxruntime";
+    runner->metadata["encryptedArtifactPath"] = path.string();
+    return ProviderArtifactCache::BuildResult{
+      std::move(artifact), std::move(runner), [&cleanups, path] {
+        ++cleanups;
+        std::error_code ignored;
+        std::filesystem::remove_all(path.parent_path(), ignored);
+      }};
+  };
+  auto lease = cache.acquireWithRunner(
+    first.second, first.first, firstControl,
+    [&] (const NativeRequestControl&) { return build(firstPath, 'a'); });
+  BOOST_REQUIRE(lease);
+  lease = {};
+
+  auto second = makeIdentity('b');
+  NativeRequestControl secondControl = firstControl;
+  secondControl.requestId = second.first.requestId;
+  const auto secondPath = root / "b" / "model.onnx.cipher";
+  std::filesystem::create_directories(secondPath.parent_path());
+  std::ofstream(secondPath, std::ios::binary) << "cipher-b";
+  auto secondLease = cache.acquireWithRunner(
+    second.second, second.first, secondControl,
+    [&] (const NativeRequestControl&) { return build(secondPath, 'b'); });
+  BOOST_REQUIRE(secondLease);
+  BOOST_CHECK_EQUAL(cleanups.load(), 1U);
+  BOOST_CHECK(!std::filesystem::exists(firstPath));
+  secondLease = {};
+  cache.stop();
+  BOOST_CHECK_EQUAL(cleanups.load(), 2U);
+  BOOST_CHECK(!std::filesystem::exists(secondPath));
+}
+
+BOOST_AUTO_TEST_CASE(ProviderArtifactCacheDefersCleanupForStoppedActiveLease)
+{
+  auto projection = makeProviderAssemblyProjection(
+    zeroDigest('a'), zeroDigest('b'), zeroDigest('c'), zeroDigest('d'));
+  projection.canonicalArtifactName = "/spec189/provider/deferred/root";
+  projection.requestId = "/spec189/provider/deferred/request";
+  ProviderArtifactKey key;
+  key.sourceDigest = zeroDigest('e');
+  key.canonicalSourceName = "/spec189/provider/deferred/source";
+  key.canonicalRootName = projection.canonicalArtifactName;
+  key.canonicalRootDigest = projection.assembly.modelManifestDigest;
+  key.canonicalGraphDigest = projection.assembly.graphDigest;
+  key.role = projection.assembly.selectedRole;
+  key.recipeDigest = projection.assembly.recipeDigest;
+  key.backendAbi = projection.assembly.backendAbi;
+  key.device = "cpu";
+  key.precision = projection.assembly.precision;
+  key.quantization = projection.assembly.quantization;
+  key.protectionEpoch = projection.assembly.protectionEpoch;
+  key.protectionIdentity = projection.provider;
+  NativeRequestControl control;
+  control.requestId = projection.requestId;
+  control.attempt = 1;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+
+  const auto path = std::filesystem::temp_directory_path() /
+                    "spec189-deferred-cleanup" / "model.onnx.cipher";
+  std::error_code ignored;
+  std::filesystem::remove_all(path.parent_path(), ignored);
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream(path, std::ios::binary) << "ciphertext";
+  unsigned cleanups = 0;
+  ProviderArtifactCache cache;
+  auto lease = cache.acquireWithRunner(
+    key, projection, control,
+    [&] (const NativeRequestControl&) {
+      auto artifact = std::make_shared<PreparedProviderArtifact>();
+      artifact->encryptedObjectName = "deferred";
+      artifact->ciphertextDigest = zeroDigest('f');
+      artifact->formatVersion = "spec189-deferred-v1";
+      artifact->canonicalMetadataJson = "{}";
+      artifact->ciphertextBytes = std::filesystem::file_size(path);
+      auto runner = std::make_shared<NativeModelRunnerSpec>();
+      runner->metadata["encryptedArtifactPath"] = path.string();
+      return ProviderArtifactCache::BuildResult{
+        std::move(artifact), std::move(runner), [&] {
+          ++cleanups;
+          std::error_code error;
+          std::filesystem::remove_all(path.parent_path(), error);
+        }};
+    });
+  BOOST_REQUIRE(lease);
+  cache.stop();
+  BOOST_CHECK(std::filesystem::exists(path));
+  lease = {};
+  BOOST_CHECK_EQUAL(cleanups, 1U);
+  BOOST_CHECK(!std::filesystem::exists(path));
+
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream(path, std::ios::binary) << "ciphertext-again";
+  ProviderArtifactCache cache2;
+  auto lease2 = cache2.acquireWithRunner(
+    key, projection, control,
+    [&] (const NativeRequestControl&) {
+      auto artifact = std::make_shared<PreparedProviderArtifact>();
+      artifact->encryptedObjectName = "invalidated";
+      artifact->ciphertextDigest = zeroDigest('f');
+      artifact->formatVersion = "spec189-deferred-v1";
+      artifact->canonicalMetadataJson = "{}";
+      artifact->ciphertextBytes = std::filesystem::file_size(path);
+      auto runner = std::make_shared<NativeModelRunnerSpec>();
+      runner->metadata["encryptedArtifactPath"] = path.string();
+      return ProviderArtifactCache::BuildResult{
+        std::move(artifact), std::move(runner), [&] {
+          ++cleanups;
+          std::error_code error;
+          std::filesystem::remove_all(path.parent_path(), error);
+        }};
+    });
+  cache2.invalidate(key);
+  BOOST_CHECK(std::filesystem::exists(path));
+
+  // An invalidated generation must not be returned to a new request while
+  // its old lease is still active.  The replacement build gets a distinct
+  // immutable path; the old path remains pinned until lease2 is released.
+  const auto replacementPath = std::filesystem::temp_directory_path() /
+                               "spec189-deferred-cleanup-replacement" /
+                               "model.onnx.cipher";
+  std::filesystem::remove_all(replacementPath.parent_path(), ignored);
+  std::filesystem::create_directories(replacementPath.parent_path());
+  std::ofstream(replacementPath, std::ios::binary) << "replacement";
+  NativeRequestControl replacementControl = control;
+  replacementControl.requestId = projection.requestId + "/replacement";
+  unsigned replacementBuilds = 0;
+  auto replacementLease = cache2.acquireWithRunner(
+    key, projection, replacementControl,
+    [&] (const NativeRequestControl&) {
+      ++replacementBuilds;
+      auto artifact = std::make_shared<PreparedProviderArtifact>();
+      artifact->encryptedObjectName = "replacement";
+      artifact->ciphertextDigest = zeroDigest('f');
+      artifact->formatVersion = "spec189-deferred-v1";
+      artifact->canonicalMetadataJson = "{}";
+      artifact->ciphertextBytes = std::filesystem::file_size(replacementPath);
+      auto runner = std::make_shared<NativeModelRunnerSpec>();
+      runner->metadata["encryptedArtifactPath"] = replacementPath.string();
+      return ProviderArtifactCache::BuildResult{
+        std::move(artifact), std::move(runner), [&] {
+          ++cleanups;
+          std::error_code error;
+          std::filesystem::remove_all(replacementPath.parent_path(), error);
+        }};
+    });
+  BOOST_REQUIRE(replacementLease);
+  BOOST_CHECK_EQUAL(replacementBuilds, 1U);
+  BOOST_CHECK(std::filesystem::exists(path));
+  BOOST_CHECK(std::filesystem::exists(replacementPath));
+  replacementLease = {};
+  lease2 = {};
+  cache2.stop();
+  BOOST_CHECK_EQUAL(cleanups, 3U);
+  BOOST_CHECK(!std::filesystem::exists(path));
+  BOOST_CHECK(!std::filesystem::exists(replacementPath));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -9,6 +9,8 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <atomic>
+#include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -29,6 +31,13 @@ namespace ndnsf::di {
 struct NativeCanonicalOnnxAssemblerOptions
 {
   std::string cacheDir = "/tmp/ndnsf-di-native-artifacts";
+  // Cross-process admission lock for the model-sized cold assembly working
+  // set. Empty derives a lock beside the cache root; Provider supplies the
+  // shared production path explicitly. Cache hits never acquire this lock.
+  std::filesystem::path coldAssemblyLockPath;
+  // Explicit diagnostic mode for a verified, system-wide plaintext source
+  // cache.  Empty means the normal Repo-backed path.
+  std::filesystem::path cacheCompatibilitySourceDir;
   std::string providerIdentity;
   std::uint64_t assemblyTimeoutMs = 30000;
   std::function<bool()> shouldCancel;
@@ -85,8 +94,12 @@ withNativeArtifactDirectoryFinalization(const std::string& directory,
 /**
  * Reopen a finalized plaintext assembled artifact from the stable cache root.
  * The caller must already have an authenticated post-Selection projection.
- * Missing, stale, or corrupt entries return nullopt and leave the normal
- * fetch/assembly path available. Protected artifacts remain request scoped.
+ * Admission is recipe-addressed: the directory name is the pre-assembly
+ * recipeDigest (the authenticated model/layer/node/backend contract), while
+ * manifest.json records the post-assembly model SHA-256. Both identities are
+ * checked before a hit is returned. Missing, stale, or corrupt entries return
+ * nullopt and leave the normal fetch/assembly path available. Protected
+ * artifacts remain request scoped.
  */
 std::optional<NativeModelRunnerSpec>
 tryLoadNativeCanonicalOnnxRoleFromCache(

@@ -34,7 +34,7 @@ or traffic patterns. In the request-scoped confidentiality path, the full
 application input is encrypted with a request-scoped key; Selection protects
 that key for the selected Provider. The requesting User retains access. A Trust Schema alone does
 not encrypt content; a role-authorized design can also use ABE or service-group
-encryption to provide discovery confidentiality.
+encryption (encryption under a shared group key) to provide discovery confidentiality.
 
 Encrypted Request Data can be retrieved or cached without granting decryption
 access. This separation of delivery from disclosure also holds for other
@@ -62,16 +62,16 @@ NDNSF uses the attribute-authority infrastructure for both service-level checks,
 without adding role signing credentials solely to represent service membership.
 Trust rules for validating Data signatures remain necessary.
 
-This is a management-reuse rationale, not a demonstrated cost advantage.
-Provider and User permissions remain distinct; discovery encryption does not
-already supply User permission decryption keys or challenge processing.
+The evaluation will measure the costs and benefits of this shared management
+infrastructure. Provider and User permissions remain distinct; User permission
+decryption keys and challenge processing add costs beyond descriptor encryption.
 For policies requiring command-argument restrictions, DNMP's schema-based checks may be a better fit than
 NDNSF's service-level checks. The evaluation must compare both designs at the
 same policy granularity, including credential updates and invocation overhead.
 
 \paragraph{Reason 3: service-permission aggregation as an additional management benefit.}
 KP-ABE associates attributes with ciphertext and an access policy with each
-decryption key (DKEY)~\cite{dulal2023nacabe}. NDNSF uses
+decryption key (DKEY)~\cite{goyal2006abe,dulal2023nacabe}. NDNSF uses
 \texttt{/SERVICE/<service>} for Provider access and
 \texttt{/PERMISSION/<service>} for User access. Within one authority and parameter
 generation, an entity's service permissions can be combined in one individually
@@ -84,12 +84,11 @@ Compared with DNMP's role-key-based authorization~\cite{dnmp}, NDNSF represents
 service entitlements in the DKEY rather than in additional role-specific signing
 credentials. Where equivalent entitlements require several distinct role
 credentials, this avoids issuing and maintaining those additional signing
-credentials. It does not imply one credential per DNMP service: one role can
-permit several commands. Nor does it establish a universal advantage over
-Trust Schemas, which can express other credential arrangements. A single DKEY
-does not have fixed size or update cost; policy complexity, distribution, and
-rekeying still matter. The benefit concerns independently managed credentials,
-not a demonstrated reduction in total key bytes or runtime cost.
+credentials. The comparison depends on role granularity: one DNMP role can
+permit several commands, and Trust Schemas can support other credential
+arrangements. The evaluation will therefore measure independently managed
+credentials alongside DKEY size, policy complexity, distribution, rekeying,
+and runtime costs.
 
 \subsection{Authorization Mechanisms, Lifecycle, and Costs}
 \label{sec:authorization-withdrawal}
@@ -102,7 +101,8 @@ alone establish that signer's permission to offer or invoke the requested servic
 \paragraph{Service-permission verification.}
 In the ABE-backed invocation path, the User generates a fresh random value,
 \emph{RequestNonce}, and includes it in ABE-protected Request content.
-This is an NDNSF application-level value, not the NDN Interest Nonce.
+This is an NDNSF application-level value, not the NDN Interest Nonce used for
+forwarding duplicate and loop handling.
 A Provider that recovers it returns it in ACK Data; the User compares the
 returned value with the one stored for the active request. Thus RequestNonce
 supports both request binding and a check of access to the service-protected value.
@@ -133,6 +133,14 @@ exactly-once application side effects across crashes.
 
 \paragraph{Runtime permission grants and withdrawals.}
 
+\texttt{PolicyStatusData} denotes a Controller-signed named Data payload,
+not a grant by itself. It identifies the service and current ControllerVersion,
+validity interval, policy digest, optional ABE public-parameter name and digest,
+the Controller certificate, and revocation targets. Participants validate the
+enclosing Data signature and this status before updating local permission or
+DKEY state; the status distributes and authenticates policy state but does not
+independently grant permission.
+
 The Controller updates permission status for both operations. An ordinary grant
 updates the target entity's complete permission policy; that entity retrieves
 a replacement DKEY without changing the ABE public parameters. Withdrawal
@@ -141,8 +149,9 @@ Entities retaining permissions obtain replacement DKEYs encoding their remaining
 permissions. The master key stays with the Controller. Rotation is Controller-wide,
 not confined to the withdrawn service.
 
-In the revised dissemination design, the Controller publishes updated public
-parameters as signed named Data and uses Sync to announce their availability.
+In the proposed update-discovery path, which is not yet fully verified end to end,
+the Controller publishes updated public parameters as signed named Data and uses
+Sync to announce their availability.
 Participants retrieve and validate the parameters and Controller-signed
 \texttt{PolicyStatusData}, then refresh their DKEYs as required. Ordinary grants
 also require participants to discover and retrieve updated permission status,
@@ -162,8 +171,8 @@ DNMP specifies validity bounds and replay-state handling~\cite{dnmp}; these
 do not by themselves provide immediate withdrawal of an unexpired role key.
 For the comparison, a DNMP-inspired design can revoke
 the relevant credential and require execution nodes to check signed revocation
-status or reject expired certificates. This invalidates authority at the
-validator; it does not physically retrieve distributed certificates.
+status or reject expired certificates. The execution node then rejects the
+revoked or expired credential; distributed certificate copies need not be retrieved.
 Both approaches require update propagation, and neither retracts previously
 disclosed keys or plaintext.
 

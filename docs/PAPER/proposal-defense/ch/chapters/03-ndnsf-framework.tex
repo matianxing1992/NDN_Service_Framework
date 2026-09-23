@@ -195,6 +195,11 @@ policy，向目标 identity 生成加密的 PermissionResponse。服务消息根
 级授权 namespace 映射到 NAC-ABE attribute。一次性 user/provider token 将
 调用流程绑定到特定 request，防止 replay。
 
+提交的原型将这些一次性字段实现为 \texttt{UserToken} 和
+\texttt{ProviderToken}；修订后的协议描述使用 \texttt{RequestNonce} 和
+\texttt{ProviderChallenge} 表达其请求绑定和选择绑定作用。二者都不是
+NDN Interest Nonce，也不是通用的持有者凭证。
+
 图~\ref{fig:ndnsf-policy-example-ch} 展示了 NDNSF 中 provider policy 和
 user policy 的关系：provider permission 决定一个实体可以提供哪些命名服
 务，user permission 决定一个实体可以访问哪些命名服务。本文后续 UAV 和

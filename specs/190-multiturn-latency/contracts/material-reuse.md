@@ -48,6 +48,10 @@ sealed edge contract/发送和接收双方同时改动且负例通过时才删�
 `<repo_persistent_root>/<deployment_id>/<node_id>/`；内部canonical/material/ciphertext子区固定，
 对象digest可分层，不能含runId/PID/时间戳，也不能把所有节点指向同一后端writer。
 根必须在launcher reset/cleanup范围之外；默认不迁移/删除历史目录，仅新profile映射使用已核对固定根。
+LocalExperiment 的 `prepare --cache-dir` 只指定该稳定缓存根的宿主路径，并通过 launch record
+传给 native runner；它不是每个run的Repo根，也不能落在run evidence/workload目录内。source
+Repo和Provider assembled cache仍按完整identity/recipe digest分区，不能因目录相同而把请求态、授权态、
+加密Repo、日志或旧KV写入共享缓存；默认的普通protected路径仍必须走当前请求的授权和Selection。
 **Ownership**：每节点一个C++Repo owner，多个本地caller共享owner，远程通过已安装RepoNode/Core服务；
 不得每个requester各自打开同一root。并发第二owner明确BUSY，不夺锁/清空目录。
 可在所属C++应用内持有Repo，不强制引入新daemon；跨进程共享时接入现有服务入口。
@@ -121,9 +125,9 @@ Provider缓存只持有按policy可保留的材料及可验证身份；不永久
 **Persistence ownership**：request-scoped transient仍沿用当前析构清理；新增durable material显式owner/retention，
 退出仅释放活跃lease，GC仅在明确失效且无活跃read时执行。key-reference恢复失败不能将有ciphertext文件称为可用Repo hit。
 稳定producer身份/证书或合法信任迁移、locator/路由恢复均要真实验证；Provider boot变更使旧KV失效。
-**Design gate**：T009先冻结Core crypto-owner提供的durable key-reference/serving恢复接口、
+**Design gate**：T006先冻结Core crypto-owner提供的durable key-reference/serving恢复接口、
 加密identity与新grant重绑定、缓存retention policy及错误/取消契约，然后才改公共API或默认protected路径。
-当前仅有目标边界，不能写成此项生产编码READY；到T009时先闭合安全设计门，未闭合则停在T009，不能开始T010/T011。
+当前仅有目标边界，不能写成此项生产编码READY；到T006时先闭合安全设计门，未闭合则停在T006，不能开始T007。
 不用存储整份旧request/grant/会话key JSON来凑重启复用，不换明文传输绕开问题。
 **Proof**：真实protected冷发布→新run同identity查询hit→Repo重启恢复服务→当前新grant命中本地层/assembled；
 旧/错grant、失效key、篡改ciphertext、错AAD、错boot/KV、取消与活跃lease等反例仍拒绝；

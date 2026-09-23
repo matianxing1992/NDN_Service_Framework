@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml  # type: ignore
 
 from llm_pipeline_lib import (
+    MODEL_NAME,
     QWEN_ONNX_RUNTIME,
     QWEN_TRANSFORMERS_RUNTIME,
     SERVICE,
@@ -24,8 +25,8 @@ def main() -> int:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--policy", default="/tmp/ndnsf-di-llm-pipeline-policy.yaml")
-    parser.add_argument("--service", default=SERVICE)
-    parser.add_argument("--model", default="/Model/LLM/Pipeline/Fake")
+    parser.add_argument("--service", default=None)
+    parser.add_argument("--model", default=None)
     parser.add_argument("--stages", type=int, default=3)
     parser.add_argument("--layers", type=int, default=24)
     parser.add_argument("--controller", default="/NDNSF-DistributeInference/example/controller")
@@ -39,7 +40,12 @@ def main() -> int:
         default="fake",
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
-    parser.add_argument("--qwen-model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    # The family selects the default checkpoint.  Keeping a Qwen default here
+    # while requesting the Llama/SmolLM2 family creates a policy identity that
+    # names SmolLM2 but exports Qwen weights, which the native catalog must
+    # reject rather than silently bind to the wrong model.
+    parser.add_argument("--qwen-model", default=None)
+    parser.add_argument("--qwen-model-family", choices=("qwen", "llama"), default="qwen")
     parser.add_argument("--qwen-revision", default="main")
     parser.add_argument("--qwen-prompt", default="")
     parser.add_argument("--qwen-allow-download", action="store_true")
@@ -59,10 +65,38 @@ def main() -> int:
     parser.add_argument("--trust-app-root", action="append", default=[])
     args = parser.parse_args()
 
+    service = args.service or (
+        "/AI/LLM/Pipeline/SmolLM2Native"
+        if args.qwen_model_family == "llama" else SERVICE)
+    smollm_models = {
+        "HuggingFaceTB/SmolLM2-135M": "/Model/SmolLM2/135M",
+        "HuggingFaceTB/SmolLM2-360M": "/Model/SmolLM2/360M",
+    }
+    qwen_model = args.qwen_model or (
+        "HuggingFaceTB/SmolLM2-135M"
+        if args.qwen_model_family == "llama" else "Qwen/Qwen2.5-0.5B-Instruct")
+    if args.qwen_model_family == "llama":
+        if qwen_model not in smollm_models:
+            raise ValueError(
+                "llama model family supports only the maintained SmolLM2 checkpoints: "
+                f"{sorted(smollm_models)}")
+        derived_model = smollm_models[qwen_model]
+        if args.model and args.model != derived_model:
+            raise ValueError(
+                "SmolLM2 policy model does not match the selected checkpoint: "
+                f"model={args.model} checkpoint={qwen_model}")
+        model = derived_model
+    else:
+        if "smollm" in qwen_model.lower():
+            raise ValueError(
+                "qwen model family cannot load a SmolLM2 checkpoint: "
+                f"{qwen_model}")
+        model = args.model or MODEL_NAME
+
     policy = write_policy(
         args.policy,
-        service=args.service,
-        model=args.model,
+        service=service,
+        model=model,
         stages=args.stages,
         layers=args.layers,
         controller=args.controller,
@@ -71,7 +105,8 @@ def main() -> int:
         provider_prefix=args.provider_prefix,
         runtime=args.runtime,
         transformer_layers=args.transformer_layers,
-        qwen_model=args.qwen_model,
+        qwen_model=qwen_model,
+        qwen_model_family=args.qwen_model_family,
         qwen_revision=args.qwen_revision,
         qwen_prompt=args.qwen_prompt,
         qwen_allow_download=args.qwen_allow_download,
@@ -88,19 +123,22 @@ def main() -> int:
         config.setdefault("trust", {})["app_roots"] = list(args.trust_app_root)
         policy.write_text(
             yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    manifest_path = Path(args.policy).parent / "qwen-onnx-service-manifest.json"
+    manifest_path = Path(args.policy).parent / (
+        f"{args.qwen_model_family}-onnx-service-manifest.json")
     if args.runtime == QWEN_ONNX_RUNTIME:
         if not manifest_path.exists():
             raise RuntimeError(f"Qwen ONNX service manifest was not generated: {manifest_path}")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if int(manifest.get("stageCount", 0)) != 3 or len(manifest.get("stages", [])) != 3:
-            raise RuntimeError("Qwen pilot requires exactly three exported ONNX stages")
+        if (int(manifest.get("stageCount", 0)) != args.stages or
+                len(manifest.get("stages", [])) != args.stages):
+            raise RuntimeError(
+                f"{args.qwen_model_family} ONNX manifest stage count does not match --stages")
         manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     else:
         manifest_digest = ""
     print(
         "LLM_PIPELINE_POLICY_OK",
-        f"service={args.service}",
+        f"service={service}",
         f"stages={args.stages}",
         f"layers={args.layers}",
         f"policy={policy}",

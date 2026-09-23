@@ -229,7 +229,14 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
   return std::async(std::launch::async, [this, sessionId, edge] {
     logDependencyStageMarker("begin", sessionId, edge,
                              m_ctx.localProvider().toUri());
-    if (m_protectedRuntime) {
+    // TOKEN_FEEDBACK is not a V3 tensor endpoint.  The request-scoped
+    // ProviderGroupCoordinator capability seals its NDNSF_DATA_V1 operation
+    // (including producer/consumer ranks, epoch and operation index), while
+    // NativeGroupProjectionBuilder deliberately keeps it out of the
+    // mustFetch/mayPublish endpoint projection to avoid a readiness cycle.
+    // Requiring a ProtectedRuntime endpoint here would therefore authorize an
+    // empty digest and reject the otherwise authenticated feedback edge.
+    if (m_protectedRuntime && edge.operationKind != "TOKEN_FEEDBACK") {
       m_protectedRuntime->authorizeDataflow(
         ProtectedDataflowDirection::Fetch, edge.endpointDigest,
         edge.producerRole, edge.consumerRole, nowEpochMs());
@@ -242,6 +249,10 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
       const auto& capability = m_groupCoordinator->capability();
       const auto& operation = operationForEdge(
         capability, edge.collectiveOperationIndex);
+      if (!m_groupCoordinator->beginOperation(nowEpochMs())) {
+        throw std::runtime_error(
+          "NDNSF_DATA_V1 group cannot begin dependency operation");
+      }
       const auto producerRank = producerRankForEdge(capability, edge);
       const auto producerPrefix = providerPrefixForRank(
         capability, producerRank);
@@ -305,7 +316,17 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
             throw std::runtime_error(
               "failed to fetch signed exact Data: " + name.toUri());
           }
-          if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
+          if (initialProducerReadiness) {
+            // The first manifest fetch is a producer-readiness wait.  It is
+            // explicitly allowed to outlive noProgressMs while the producer
+            // prepares its runner; only once the manifest is available does
+            // the operation's transport no-progress window begin.
+            if (!m_groupCoordinator->beginOperation(nowEpochMs())) {
+              throw std::runtime_error(
+                "NDNSF_DATA_V1 readiness ended after group deadline or cancellation");
+            }
+          }
+          else if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
             throw std::runtime_error(
               "NDNSF_DATA_V1 no-progress/hard deadline or cancellation");
           }
@@ -737,7 +758,10 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
                                               const DependencyEdge& edge,
                                               const TensorBundle& bundle)
 {
-  if (m_protectedRuntime) {
+  // See prefetchInput: TOKEN_FEEDBACK is authorized by the sealed group
+  // operation below, not by a V3 endpoint digest that does not exist for this
+  // internal generation-control edge.
+  if (m_protectedRuntime && edge.operationKind != "TOKEN_FEEDBACK") {
     m_protectedRuntime->authorizeDataflow(
       ProtectedDataflowDirection::Publish, edge.endpointDigest,
       edge.producerRole, edge.consumerRole, nowEpochMs());
@@ -750,6 +774,10 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
     const auto& capability = m_groupCoordinator->capability();
     const auto& operation = operationForEdge(
       capability, edge.collectiveOperationIndex);
+    if (!m_groupCoordinator->beginOperation(nowEpochMs())) {
+      throw std::runtime_error(
+        "NDNSF_DATA_V1 group cannot begin publication operation");
+    }
     const auto producerRank = producerRankForEdge(capability, edge);
     const auto chunkSize = std::max<std::size_t>(1, m_maxSegmentSize);
     std::vector<std::vector<std::uint8_t>> chunks;

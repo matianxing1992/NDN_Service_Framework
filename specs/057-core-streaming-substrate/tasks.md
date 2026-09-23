@@ -9,7 +9,7 @@
 ## Phase 1: Setup
 
 - [x] T001 Create `specs/057-core-streaming-substrate/` with spec, plan, and tasks.
-- [x] T002 Confirm CodeGraph, GSD, Spec Kit, and DeepSeek decision gates.
+- [x] T002 Confirm CodeGraph, GSD, and Spec Kit decision gates.
 
 ## Phase 2: Foundational Core API
 
@@ -46,7 +46,7 @@
 
 - [x] T019 Run C++ core streaming tests.
 - [x] T020 Run Python streaming and existing core coordination tests.
-- [x] T021 Review DeepSeek checklist against final implementation and record accepted/rejected suggestions.
+- [x] T021 Review the implementation checklist against final implementation and record accepted/rejected suggestions.
 
 ## Phase 8: UAV Compatibility Mapping
 

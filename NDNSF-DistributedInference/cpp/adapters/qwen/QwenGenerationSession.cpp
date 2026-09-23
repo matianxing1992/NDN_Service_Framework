@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -215,7 +216,7 @@ QwenGenerationSessionSpec::validate() const
           "qwen generation attempt bound exceeded");
   require(inputTokenCount >= 1 && inputTokenCount <= 512,
           "qwen generation input token bound exceeded");
-  require(maxGeneratedTokens >= 1 && maxGeneratedTokens <= 64,
+  require(maxGeneratedTokens >= 1 && maxGeneratedTokens <= MAX_NATIVE_GENERATED_TOKENS,
           "qwen generation output token bound exceeded");
   require(tokenEpoch < maxGeneratedTokens, "qwen generation token epoch out of range");
   require(deadlineEpochMs > 0, "qwen generation deadline missing");

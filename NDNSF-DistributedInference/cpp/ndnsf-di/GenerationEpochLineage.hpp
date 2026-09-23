@@ -34,6 +34,11 @@ struct GenerationEpochLineageV1
   std::string consumerRole;
   std::uint64_t operationIndex = 0;
 
+  /** Validate authenticated request/generation state before edge-local routing
+   *  fields are bound by the executing Provider. */
+  void validateCore() const;
+
+  /** Validate the complete wire/publication form, including edge routing. */
   void validate() const;
 
   /** Compare the shared generation state while ignoring edge-local routing. */

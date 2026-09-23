@@ -128,6 +128,16 @@ struct RepositorySourceRequest
   std::chrono::steady_clock::time_point deadline{};
 };
 
+/** Small prepare-before-STORE lookup for an immutable Repo publication. */
+struct RepositoryPreparedLookupRequest
+{
+  std::string modelKey;
+  std::string serviceName;
+  std::string catalogConfigurationJson;
+  std::uint64_t maxPublicationBytes = 0;
+  std::chrono::steady_clock::time_point deadline{};
+};
+
 /** Production source-owner boundary for Runtime preparation. */
 class RepositorySourceProvider
 {
@@ -137,6 +147,12 @@ public:
   virtual ~RepositorySourceProvider() = default;
   virtual NativeCanonicalSource load(const RepositorySourceRequest& request,
                                      const Fallback& fallback) const = 0;
+
+  /** A null result is a normal miss; an existing but corrupt receipt is an
+   * error and must not be converted into a new publication. */
+  virtual std::optional<NativePreparedCanonicalPublication> lookupPrepared(
+    const RepositoryPreparedLookupRequest&) const
+  { return std::nullopt; }
 };
 
 /** Durable publication owner for Runtime::prepare. Loading verified source
@@ -234,6 +250,18 @@ public:
   PreparedModel prepare(const std::string& modelKey = "default",
                         const PrepareOptions& options = {}) const;
 
+  /** Submit one request on behalf of this User using a prepared model. */
+  RequestHandle request(const PreparedModel& model, const Input& input,
+                        const RequestOptions& options = {}) const;
+
+  /** Submit one request and wait on behalf of this User. */
+  Result run(const PreparedModel& model, const Input& input,
+             const RequestOptions& options = {}) const;
+
+  /** Open a conversation on behalf of this User using a prepared model. */
+  Conversation openConversation(const PreparedModel& model,
+                                const ConversationOptions& options = {}) const;
+
   /** Start native preparation; each handle is an independently cancellable waiter. */
   PreparationHandle prepareAsync(const std::string& modelKey = "default",
                                   const PrepareOptions& options = {}) const;
@@ -241,6 +269,8 @@ public:
 private:
   explicit User(std::shared_ptr<detail::RuntimeState> state,
                 std::string profileName);
+
+  void requirePreparedModel(const PreparedModel& model, const char* boundary) const;
 
   std::shared_ptr<detail::RuntimeState> m_state;
   std::string m_profileName;

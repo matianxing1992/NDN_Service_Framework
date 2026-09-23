@@ -8,7 +8,7 @@
 
 - [x] T001 Create `docs/NDNSF-REPO/slides/` and Spec Kit feature structure.
 - [x] T002 Verify CodeGraph index and collect current Repo implementation evidence.
-- [x] T003 Run a scoped DeepSeek outline review and record accepted/rejected advice in `specs/071-ndnsf-repo-design-slides/research.md`.
+- [x] T003 Record accepted/rejected outline decisions in `specs/071-ndnsf-repo-design-slides/research.md`.
 
 ## Phase 2: Foundational Content
 

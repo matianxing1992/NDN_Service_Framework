@@ -218,7 +218,9 @@ T003 继续真实 protected producer/consumer 接线，不把本次 PASS 当 T00
 
 原生 install 成功（8.929s），但 Waf 附带 Python editable hook 因未传
 `NDNSF_GLOBAL_NATIVE_DIGESTS` 被既有门禁拒绝；未授予 binding PASS，未更改门禁。
-原始安装输出 `.codex-tmp/spec189-t003-source-borrow-r3/install.log`，旧 DI 备份同目录。
+原始安装输出 `.codex-tmp/spec189-t003-source-borrow-r3/install.log`，旧 DI 备份同目录；
+该备份后来以 `prior-installed-di.so.zst` 保留，解压后的 SHA-256 仍为
+`76f3752328e00568c8bb582936c2502d8975d95300154f192352c02de0016ae1`。
 本修复保持 API/ABI/既有 source 生命周期契约，无新增设计接口或当前/目标 PDF 语义变更。
 
 r1 historical validation: STATIC_PASS (source-borrow patch SHA-256

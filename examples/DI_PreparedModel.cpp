@@ -77,7 +77,7 @@ main(int argc, char** argv)
     auto user = runtime->user();
     auto preparation = user.prepareAsync();
     const auto model = preparation.result();
-    std::cout << "PREPARED_MODEL_ROUTE=Runtime.open->User.prepareAsync->PreparedModel\n";
+    std::cout << "PREPARED_MODEL_ROUTE=Runtime.open->User.prepareAsync->User.request\n";
 
     RequestOptions options;
     if (streaming) {
@@ -89,12 +89,12 @@ main(int argc, char** argv)
       ConversationOptions conversationOptions;
       if (!checkpointIn.empty())
         conversationOptions.checkpoint = ConversationCheckpoint::fromBytes(readBytes(checkpointIn));
-      conversation.emplace(model.openConversation(conversationOptions));
+      conversation.emplace(user.openConversation(model, conversationOptions));
     }
     const auto input = Input::inlineBytes(readBytes(argv[4]));
     RequestHandle request = conversation
       ? conversation->request(input, options)
-      : model.request(input, options);
+      : user.request(model, input, options);
     const auto result = request.result(options.timeout);
     if (streaming) {
       auto reader = request.events();

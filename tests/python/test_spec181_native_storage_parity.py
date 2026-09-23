@@ -24,15 +24,18 @@ def native_driver(tmp_path_factory):
         "NDNSF-DistributedInference/cpp/ndnsf-di/" + name + ".cpp"
         for name in ("NativeProtectedArtifactStore", "ProtectedRuntime", "NativeGrantVerifier")]
     subprocess.run(["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-I.", *sources,
-                    "-lcrypto", "-pthread", "-o", str(target)], cwd=ROOT,
+                    "-lcrypto", "-lndn-cxx", "-pthread", "-o", str(target)], cwd=ROOT,
                    check=True, capture_output=True, text=True, timeout=120)
     return target
 
 
-def invoke(driver, mode, kind, source, target, limit, **changes):
+def invoke(driver, mode, kind, source, target, limit, expected_digest="", **changes):
     context = dict(CONTEXT, **changes)
-    return subprocess.run([str(driver), mode, kind, *context.values(),
-                           str(source), str(target), str(limit)],
+    command = [str(driver), mode, kind, *context.values(),
+               str(source), str(target), str(limit)]
+    if expected_digest:
+        command.append(expected_digest)
+    return subprocess.run(command,
                           capture_output=True, text=True, timeout=10)
 
 
@@ -59,6 +62,27 @@ def test_python_and_native_disk_ciphertext_interoperate(native_driver, tmp_path,
         assert result.returncode == 1
         assert "DI_PROTECTED_GRANT_REJECTED" in result.stderr
         assert not loaded.exists()
+
+
+@pytest.mark.parametrize("kind", ["MODEL_PROTO", "EXTERNAL_DATA"])
+def test_native_file_backed_seal_open_and_reject_cleanup(native_driver, tmp_path, kind):
+    plain = bytes(range(256)) * 4097 + b"\x00streamed\xff"
+    source, encrypted, loaded = [tmp_path / name for name in ("input", "cipher", "output")]
+    rejected, rejected_output = tmp_path / "rejected-cipher", tmp_path / "rejected-output"
+    source.write_bytes(plain)
+    result = invoke(native_driver, "seal-file", kind, source, encrypted, len(plain))
+    assert result.returncode == 0, result.stderr
+    digest = result.stdout
+    result = invoke(native_driver, "open-file", kind, encrypted, loaded, len(plain), digest)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == digest
+    assert loaded.read_bytes() == plain
+    rejected.write_bytes(encrypted.read_bytes()[:-1] + bytes([encrypted.read_bytes()[-1] ^ 1]))
+    result = invoke(native_driver, "open-file", kind, rejected, rejected_output,
+                    len(plain), digest)
+    assert result.returncode == 1
+    assert "DI_PROTECTED_GRANT_REJECTED" in result.stderr
+    assert not rejected_output.exists()
 
 
 @pytest.mark.parametrize("assembly", [

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
@@ -691,7 +692,7 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
   }
   if (options.generation) {
     if (!native.stream || options.generation->maxNewTokens == 0 ||
-        options.generation->maxNewTokens > 64)
+        options.generation->maxNewTokens > MAX_NATIVE_GENERATED_TOKENS)
       throw DiError("INVALID_GENERATION_OPTIONS", "local", "request",
                     "generation requires an enabled stream and a bounded token count");
     // A public generation request is meaningful only when the verified

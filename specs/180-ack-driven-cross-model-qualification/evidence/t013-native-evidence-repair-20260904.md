@@ -153,7 +153,7 @@ paths and exact snippets supported claims. Spec Kit implementation/audit and
 GSD progress/health were used. GSD's healthy store reports phase36 in STATE but
 an older phase05 verification route in its progress projection; neither changes
 the explicitly active Spec180 pointer. This report/tasks.md hold the continuation.
-ARS and DeepSeek were not used for this implementation-only repair.
+ARS was not used for this implementation-only repair.
 
 ## Selected source SHA-256 (not complete source/runtime binding)
 

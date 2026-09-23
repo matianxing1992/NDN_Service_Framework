@@ -17,7 +17,8 @@ spec.loader.exec_module(guard)
 
 
 def limits(**updates):
-    return {"minAvailableBytes": 1, "minDiskFreeBytes": 1,
+    return {"minAvailableBytes": 1, "minSwapFreeBytes": 1,
+            "minDiskFreeBytes": 1, "maxOwnedSwapBytes": 2**60,
             "maxSwapIoBytes": 2**60, "timeoutSeconds": 3,
             "stopGraceSeconds": 0.1, **updates}
 
@@ -53,7 +54,53 @@ def test_normal_child_and_actual_host_samples(tmp_path):
     assert records[0]["phase"] == "admission"
     assert records[-1]["phase"] == "drained"
     assert all(row["availableBytes"] > 0 and row["diskFreeBytes"] > 0 for row in records)
+    assert all("swapIoDeltaBytes" in row and "ownedSwapDeltaBytes" in row and
+               "swapFreeBytes" in row for row in records)
     assert all(row["nativeCounters"] is None for row in records)
+
+
+def test_unowned_global_swap_activity_does_not_stop_workload(tmp_path, monkeypatch):
+    original = guard.host_sample
+
+    def noisy_host(path):
+        sample = original(path)
+        sample["swapIoBytes"] += 16 * 1024 * 1024
+        return sample
+
+    monkeypatch.setattr(guard, "host_sample", noisy_host)
+    monkeypatch.setattr(guard, "owned_swap_bytes", lambda rows: 0)
+    result = run(tmp_path, "print('ok')", maxOwnedSwapBytes=1)
+    assert result["boundary"] is None
+    assert result["returncode"] == 0
+
+
+def test_owned_swap_growth_is_diagnostic_only(tmp_path, monkeypatch):
+    calls = 0
+
+    def owned_swap(rows):
+        nonlocal calls
+        calls += 1
+        return 0 if calls < 3 else 2
+
+    monkeypatch.setattr(guard, "owned_swap_bytes", owned_swap)
+    result = run(tmp_path, "import time; time.sleep(60)",
+                 maxOwnedSwapBytes=1, timeoutSeconds=0.3)
+    assert result["boundary"] == "DEADLINE_BOUNDARY"
+    assert result["cleanup"] == "PASS"
+
+
+def test_swap_free_floor_stops_workload(tmp_path, monkeypatch):
+    original = guard.host_sample
+
+    def depleted_swap(path):
+        sample = original(path)
+        sample["swapFreeBytes"] = 0
+        return sample
+
+    monkeypatch.setattr(guard, "host_sample", depleted_swap)
+    result = run(tmp_path, "open('started', 'w').close()", minSwapFreeBytes=1)
+    assert result["boundary"] == "RESOURCE_BOUNDARY:SwapFree"
+    assert not (tmp_path / "started").exists()
 
 
 def test_runtime_resource_stop_reaps_real_child(tmp_path, monkeypatch):

@@ -1,6 +1,50 @@
-# B189-4 Resource and Drain Evidence
+# B189-4 Historical Resource and Drain Evidence (cross-cutting gate)
 
-**Status**: IN_PROGRESS / T008
+**Status**: IN_PROGRESS / cross-cutting gate owned by T003/T006/T009
+
+T008 的历史文件名和证据链接保留，以免破坏旧记录；它不再是活动能力任务。新的
+native counters 随实际 owner 交付，完整模型采样和 drain 只在 T009 的真实运行中
+收口。已有 host guard/lifecycle/identity 结果仍只证明其各自边界，不能单独产生
+`QWEN_TWO_PROVIDER_PASS`。
+
+## Canonical identity bounded regression — r13, 2026-09-18
+
+The repaired identity path was run against the real Qwen graph and its
+1,503,264,768-byte external initializer through an immutable hardlink view
+(the sidecar was not duplicated). It emitted
+`SPEC189_CANONICAL_IDENTITY_PASS` for 311 tensors. `/usr/bin/time -v` recorded
+3,689,700 kB peak RSS, 7.37 seconds elapsed, and `Swaps: 0`; the graph digest
+was `sha256:0f3f6982c069b16d3bb1166f8d2ea6648c89419496869d01e9c1f81020ae0ca2`
+and the normalized initializer digest was
+`sha256:617db90e3f0cbc21fab2fac12855c626e459aef0bab1ce3002deaeab74c91756`.
+Raw output is under
+`.codex-tmp/spec189-qwen-two-provider-20260918/identity-r1/`.
+This closes the focused identity/resource subunit; it does not qualify the
+full MiniNDN request or prove the complete native cleanup path.
+
+## Full-candidate preflight — r27, 2026-09-18
+
+The global candidate entered the real MiniNDN launcher, but the host guard
+stopped it during canonical source identity calculation before the requester
+process was launched. The canonical graph protobuf is small; its external
+initializer is 1,503,264,768 bytes. The old eager ONNX load reached about
+4,234 MiB RSS and crossed the configured 256 MiB swap-I/O delta limit.
+
+| Metric | Observed | Gate |
+| --- | ---: | --- |
+| `MemAvailable` at stop | about 3.65 GiB | minimum 1.5 GiB (not the first crossed limit) |
+| process RSS peak | about 4.2 GiB | sampled by host guard |
+| swap-I/O delta | 281,194,496 bytes | maximum 268,435,456 bytes |
+| disk free | about 31.9 GiB | minimum 4 GiB |
+| child cleanup | no remaining processes | `PASS` |
+
+Supervisor result is `RESOURCE_BOUNDARY:swapIo`, return code `-15`, with raw
+samples and receipt in
+`.codex-tmp/spec189-qwen-two-provider-20260918/runs/two-provider-global-r27/workload/`.
+This is a valid safety-stop diagnostic, not a protocol failure or qualification
+result. The repair gate is the maintained ONNX identity helper: it must avoid
+whole-model external-data materialization while preserving the canonical
+digest, then pass a focused regression before another full candidate attempt.
 
 ## Direct entry and native lifecycle — 2026-09-18 14:11 -0500
 

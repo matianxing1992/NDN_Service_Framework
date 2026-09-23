@@ -1,26 +1,46 @@
-\subsection{从模型图到运行时分配}
-模型准备和 Provider 分配发生在不同时刻。准备阶段识别支持的模型、张量接口及候选切分，并可在具体调用之前生成描述分片和依赖的可复用模板。运行时规划再根据请求和收集的 positive ACK 将角色绑定到实际 Provider。手工模板符合这种设计；检验协议并不要求自动搜索切分。Controller 的授权职责也不使它成为模型切分器。
+\section{从模型图到运行时分配}
+本地准备验证可复用模型包、源身份及支持的接口。本章中，\texttt{PreparedModel} 表示这一经过本地验证的可复用模型包及会话状态；它不等于 Provider 分配、资源预留或远端 runner 就绪。
+
+ACK 收集关闭后，原生规划器验证报价、枚举支持的切分并验证放置。可复用或手工模板可以限制搜索范围，但不预先选定本次 Provider。
+
+规划器取得制品引用并封装执行计划，再通过 NDNSF 运行时提交。选定 Provider 认证 Selection 后，才获取、组装或复用获准资源并执行。
 
 \begin{figure}[htbp]\singlespacing\centering
 \begin{tikzpicture}[every node/.style={draw,align=center,font=\small,text width=9.6cm,inner sep=6pt}]
-\node (model) at (0,0) {模型图及支持的张量接口};
-\node (template) at (0,-1.25) {准备好的分片及依赖模板};
-\node (assign) at (0,-2.85) {请求要求 + 通过验证的 positive ACK\newline 运行时 Provider 分配};
-\node (plan) at (0,-4.55) {已提交角色及命名依赖\newline Provider 本地输入检查};
-\node (execute) at (0,-6.25) {准备被分配分片、交换获准张量\newline 执行并发布结果};
+\node (model) at (0,0) {本地验证的模型包\newline 源身份及支持的接口};
+\node (template) at (0,-1.6) {请求及已关闭的 ACK 集合\newline 通过验证的 Provider 报价};
+\node (assign) at (0,-3.2) {枚举切分并验证放置\newline 获取制品引用并封装计划};
+\node (plan) at (0,-4.8) {通过 NDNSF 运行时提交计划\newline 选定 Provider 认证 Selection};
+\node (execute) at (0,-6.4) {准备或复用获准资源\newline 验证依赖、执行并发布结果};
 \draw[->] (model)--(template);\draw[->] (template)--(assign);
 \draw[->] (assign)--(plan);\draw[->] (plan)--(execute);
 \end{tikzpicture}
-\caption{模型准备与请求专属协作的拟议分工。箭头表示处理顺序，并不声称所有模型图和分配策略都已实现。}
+\caption{原生路径中的模型准备与请求专属规划。箭头表示处理顺序；模型、设备及恢复覆盖仍需分别验证。}
 \end{figure}
 
 各分片契约需要定义输入输出张量名称、形状或支持的动态形状约束、元素类型、序列化及模型版本兼容性。跨越跳跃连接或分支图的切分可能同时需要多个输出，而非单个向量。接收分片必须得到全部必要输入才能执行。一个有效反例是提交签名正确、但形状或模型身份错误的张量：协议来源有效不意味着应用契约成立。
 
-Pipeline partitioning 分配连续计算阶段并传递边界张量。Tensor parallelism 将操作分配给多个参与者，并增加 reduction、gather 等交换。模型复制则由完整副本承担独立工作。这些是不同执行策略，不是把模型放到多台设备的同义词。Early exit 改变计算量，也应与放置分别评价。ONNX 导出提供图表示~\cite{onnx}，可用切分及 collective 仍取决于 runtime 和模型算子的支持。
+Pipeline partitioning 分配连续计算阶段并传递边界张量。Tensor parallelism 将操作分配给多个参与者，并增加 reduction、gather 等交换。模型复制由完整副本承担独立工作。这些是不同执行策略。Early exit 改变计算量~\cite{branchynet}，多个模型预测融合改变分析方法，两者须与放置效应分开。Edge--cloud 描述设备放置，不是独立切分算子。ONNX 导出提供图表示~\cite{onnx}，可用切分及 collective 仍取决于 runtime 和模型算子的支持。
 
 当 Provider 缺少所需对象或兼容的已加载会话时，准备代价尤为重要。评价应区分对象传输、会话创建、加速器内存分配和执行。复用驻留权重的 warm run 不能在不披露差异时与 cold baseline 比较。放置策略可以偏好已持有兼容状态的 Provider，但必须遵守请求授权，不能假定缓存状态可以用于任意新请求。
 
-\subsection{张量交换与自回归状态}
+\section{规划输入、可行性与策略比较}
+规划研究考虑有界的受支持候选切分集合，区分可行性约束与优化偏好：不支持算子、张量契约不兼容或内存不足排除分配；预计执行或传输时间对其余可行分配排序。估计值需要明确来源和测量时间。Provider 的 positive ACK 是意愿报告，不是独立验证的硬件基准。
+
+\begin{table}[htbp]\centering\small
+\caption{拟议 DI 规划对照的输入。这些是评价维度，不代表已完成通用优化器。}
+\begin{tabularx}{\textwidth}{p{.25\textwidth}XX}
+\toprule 规划输入 & 可行性／成本问题 & 实验控制\\\midrule
+模型与切分契约 & 算子、精度、张量接口及对象兼容性 & 冻结模型／导出身份与支持的切分\\\midrule
+设备资源 & 权重、激活、workspace 及 key/value（K/V）状态能否容纳 & 测量峰值内存，不仅计算权重大小\\\midrule
+计算与通信 & 容量或执行时间收益能否抵偿传输成本 & 同负载测量边界字节和各阶段耗时\\\midrule
+准备与驻留 & 对象、会话和兼容状态是否已有 & 区分冷准备与热执行\\\midrule
+权限与可用性 & 各角色能否在截止时间前获取必要对象 & 排序前先实施授权与截止时间约束\\\bottomrule
+\end{tabularx}\end{table}
+
+在相同 Provider 候选集合及受支持切分上，比较固定有效映射、简单资源感知映射以及已实现的自适应策略，同时记录规划耗时、各 Provider 利用率及端到端成本。策略预测完成时间时，比较预测与实测值；仅使用可行性规则的策略不必声称具有耗时预测能力。若无完整可行分配，应报告该结果，而非静默省略依赖。初始问题是运行时信息能否在明确条件下改进分配；模型切分、Provider 选择和依赖约束保持可分别验证。
+
+\section{张量交换与自回归状态}
 在流水线中，上游分片生成激活张量，使其作为受保护命名 Data 可被获取，并通过声明依赖提供引用。下游取得和验证对象、检查张量契约，再执行本分片。Fan-out 向多个获准消费者复用上游输出；fan-in 等待计算所需输入集合。协作协议判断哪些生产者和依赖边获准，DI 判断数值和布局是否适合模型。
 
 自回归推理增加了解码步骤之间的依赖。启用 K/V caching 时，prefill 后的计算使用前一 token 与保留的 K/V 状态，避免重新计算整个前缀。按层切分时，各 runtime 可以保留本分片层的 K/V 张量。生成的 token 或选择它所需的信息返回驱动下一解码步骤的组件。因此，一次前向计算可以沿有向无环图流动，而完整生成过程会随时间反复执行该图。
@@ -28,3 +48,5 @@ Pipeline partitioning 分配连续计算阶段并传递边界张量。Tensor par
 权重驻留加速器并不消除逻辑上的 K/V 输入。Runtime 可以复用设备缓冲区并直接绑定，避免每步序列化和传输整个缓存~\cite{ortkvcache}。重新分配或会话继续需要明确的兼容性及状态转移策略；以无关 K/V 状态启动替换者不是有效恢复。评价应区分本地 K/V 复用收益、远程转移成本和框架编排开销。
 
 初始数值验证应将支持的切分执行与相同模型、精度、输入和解码策略下的未切分执行比较，并在测量前规定张量容差或确定性输出判据。小型合成模型能够验证张量路径，但不能证明大型预训练模型的内存可行性、吞吐量或恢复。这些控制区分通信路径可用与分布式推理正确且有价值。
+
+我们正在准备在 TigerCluster（本研究使用的外部多 GPU 集群）上开展 NDNSF-DI 多节点 GPU 实验。Providers 将部署在不同 GPU 节点上，以检验推理正确性，并测量端到端延迟、Provider 间数据传输开销及 GPU 峰值内存使用。集群实验将补充而非替代 UAV 无线连接和移动场景测试。

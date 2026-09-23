@@ -3,7 +3,7 @@
 ## Current State
 
 仅计划；不得照抄planned selector当作已存在的可执行命令。严格逐项完成T001至T011；上一项DONE前不开始下一项。
-基线：[research](research.md)。固定Qwen3-0.6B、两Provider、r260三轮输入/采样、1024 token预算。
+基线：[research](research.md)。固定Qwen3-0.6B、两Provider、r260三轮输入/采样、1025 token预算。
 
 ## Document Checks
 

@@ -1,9 +1,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -11,6 +13,13 @@
 namespace ndnsf::di {
 
 namespace {
+
+std::uint64_t
+conversationRetentionDeadline(std::uint64_t nowMs, std::uint64_t retentionMs)
+{
+  const auto maximum = std::numeric_limits<std::uint64_t>::max();
+  return nowMs > maximum - retentionMs ? maximum : nowMs + retentionMs;
+}
 
 /**
  * Erase Provider-owned state bytes before releasing the container holding
@@ -462,7 +471,7 @@ ConversationStateStore::ConversationStateStore(
   , m_hostMaxEntries(hostMaxEntries)
   , m_retentionMs(retentionMs)
 {
-  if (retentionMs == 0 || retentionMs > 300'000) {
+  if (retentionMs == 0 || retentionMs > 3'600'000) {
     throw std::invalid_argument("conversation state retention is out of range");
   }
 }
@@ -671,7 +680,8 @@ ConversationStateStore::stagePromotion(std::string originRequestId,
   entry.pinCount = 1;
   entry.lastAccess = ++m_accessSequence;
   entry.lastUsedAtMs = nowMs;
-  entry.expiresAtMs = std::min(entry.binding.expiresAtMs, nowMs + m_retentionMs);
+  entry.expiresAtMs = std::min(entry.binding.expiresAtMs,
+                             conversationRetentionDeadline(nowMs, m_retentionMs));
   m_gpuBytes += bytes;
   m_entries.emplace(key, std::move(entry));
   ++m_stagedPromotions;
@@ -718,7 +728,8 @@ ConversationStateStore::stageAdapterPromotion(
   entry.pinCount = 1;
   entry.lastAccess = ++m_accessSequence;
   entry.lastUsedAtMs = nowMs;
-  entry.expiresAtMs = std::min(entry.binding.expiresAtMs, nowMs + m_retentionMs);
+  entry.expiresAtMs = std::min(entry.binding.expiresAtMs,
+                             conversationRetentionDeadline(nowMs, m_retentionMs));
   m_gpuBytes += entry.allocatedBytes;
   m_entries.emplace(key, std::move(entry));
   ++m_stagedPromotions;
@@ -1346,6 +1357,9 @@ NativeProviderRuntime::executeRoleAsyncImpl(
     "di-provider", "role_validation_start", timelineRequestId,
     {{"sessionId", sessionId},
      {"role", role.role},
+     {"inferenceEpoch", std::to_string(role.inferenceEpoch)},
+     {"providerBootId", role.candidateDecodeStateIdentity ?
+                          role.candidateDecodeStateIdentity->providerBootId : "none"},
      {"attemptEpoch", std::to_string(role.attemptEpoch)}});
   auto runner = std::move(preparedRunner);
   if (!runner && !prepareRunner) {
@@ -1425,6 +1439,15 @@ NativeProviderRuntime::executeRoleAsyncImpl(
         initialInputsByScope["__ndnsf_provider_decode_state"] =
           std::move(*restored);
       }
+      // Emit only after the exact retained parent was pinned and restored.
+      // This is distinct from an assembled-model/runner cache hit.
+      std::ostringstream record;
+      record << "NDNSF_DI_CONVERSATION_KV_RESTORED"
+             << " requestId=" << role.candidateDecodeStateIdentity->requestId
+             << " role=" << role.role
+             << " parentContextEpoch=" << conversationBinding->contextEpoch
+             << " prefixTokenCount=" << conversationBinding->identity.prefixTokenCount;
+      logRuntimeEvidence(record.str());
     }
     if (role.inferenceEpoch > 0) {
       if (role.predecessorDecodeStateIdentity.has_value() !=
@@ -1454,6 +1477,9 @@ NativeProviderRuntime::executeRoleAsyncImpl(
     "di-provider", "role_validation_done", timelineRequestId,
     {{"sessionId", sessionId},
      {"role", role.role},
+     {"inferenceEpoch", std::to_string(role.inferenceEpoch)},
+     {"providerBootId", role.candidateDecodeStateIdentity ?
+                          role.candidateDecodeStateIdentity->providerBootId : "none"},
      {"attemptEpoch", std::to_string(role.attemptEpoch)}});
   std::future<ProviderRoleResult> workerFuture;
   try {
@@ -1520,6 +1546,9 @@ NativeProviderRuntime::executeRoleAsyncImpl(
           }
           state = opaqueStateBundleFromHandle(*result.stateHandle, role,
                                               stateSessionId);
+        }
+        else if (result.providerDecodeState) {
+          state = *result.providerDecodeState;
         }
         else {
           state = stateBundleFromResult(result, role);

@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
@@ -1322,6 +1323,45 @@ User::User(std::shared_ptr<detail::RuntimeState> state, std::string profileName)
 {
 }
 
+void User::requirePreparedModel(const PreparedModel& model, const char* boundary) const
+{
+  if (!m_state)
+    throw DiError("RUNTIME_CLOSED", "local", boundary,
+                  "User has no Runtime state");
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (m_state->phase != detail::RuntimeState::Phase::Open)
+      throw DiError("RUNTIME_CLOSED", "local", boundary,
+                    "Runtime is closed");
+  }
+  if (!model.m_package || !model.m_package->runtimeBinding ||
+      model.m_package->runtimeBinding != m_state->runtimeBinding)
+    throw DiError("MODEL_RUNTIME_MISMATCH", "local", boundary,
+                  "prepared model belongs to a different Runtime");
+}
+
+RequestHandle User::request(const PreparedModel& model, const Input& input,
+                            const RequestOptions& options) const
+{
+  requirePreparedModel(model, "request");
+  return model.requestInternal(input, options);
+}
+
+Result User::run(const PreparedModel& model, const Input& input,
+                 const RequestOptions& options) const
+{
+  requirePreparedModel(model, "request");
+  auto handle = model.requestInternal(input, options);
+  return handle.result();
+}
+
+Conversation User::openConversation(const PreparedModel& model,
+                                   const ConversationOptions& options) const
+{
+  requirePreparedModel(model, "conversation");
+  return model.openConversationInternal(options);
+}
+
 PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& options) const
 {
   if (!m_state)
@@ -1354,14 +1394,23 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
                               m_state->config.repositorySourceProvider,
                               m_state->config.repositoryArtifactPublisher);
   spec.runtimeBinding = m_state->runtimeBinding;
+  if (m_state->config.repositorySourceProvider) {
+    const auto provider = m_state->config.repositorySourceProvider;
+    spec.lookupPrepared = [provider](const PreparationSpec& current,
+                                      std::chrono::steady_clock::time_point deadline) {
+      return provider->lookupPrepared(RepositoryPreparedLookupRequest{
+        current.key, current.publicationServiceName, current.catalogConfigurationJson,
+        current.maxAssembledBytes, deadline});
+    };
+  }
   const auto publicationServiceName = spec.publicationServiceName;
   spec.preparePublication = [state = m_state, modelKey, publicationServiceName](
     const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
     const NativeRequestControl& control) {
     if (state->config.repositoryArtifactPublisher) {
-      const auto& source = catalog.sourceRefFor(model.descriptor);
+      const auto source = catalog.sourceRefFor(model.descriptor);
       return state->config.repositoryArtifactPublisher->publish(
-        modelKey, publicationServiceName, model, source,
+        modelKey, publicationServiceName, model, *source,
         catalog.publicationFor(model.descriptor), control);
     }
     ensureRuntimeCoreTransport(state);
@@ -1491,9 +1540,9 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
     const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
     const NativeRequestControl& control) {
     if (state->config.repositoryArtifactPublisher) {
-      const auto& source = catalog.sourceRefFor(model.descriptor);
+      const auto source = catalog.sourceRefFor(model.descriptor);
       return state->config.repositoryArtifactPublisher->publish(
-        modelKey, publicationServiceName, model, source,
+        modelKey, publicationServiceName, model, *source,
         catalog.publicationFor(model.descriptor), control);
     }
     ensureRuntimeCoreTransport(state);

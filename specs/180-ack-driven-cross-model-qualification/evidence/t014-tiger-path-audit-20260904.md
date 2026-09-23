@@ -92,7 +92,7 @@ authoritative. CodeGraph was used first; archived duplicate symbols required
 exact canonical-path verification. Spec Kit implementation/audit gates were
 used. GSD progress was inspected, but its historical Spec170 resume state was
 not allowed to override active Spec180 tasks. ARS is not applicable to this
-implementation-only repair. No DeepSeek provider/configuration was enabled.
+implementation-only repair. No unrelated provider/configuration was enabled.
 
 Next implementation checkpoint: close T013's real supervision/result chain
 (TP-01/02/03), then T011's real Y-N negatives (TP-04), complete candidate-plane

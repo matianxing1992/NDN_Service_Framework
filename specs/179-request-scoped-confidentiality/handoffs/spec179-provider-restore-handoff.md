@@ -1,4 +1,4 @@
-# Spec179 Handoff — DeepSeek → Codex/OpenAI provider restore
+# Spec179 Handoff — Codex/OpenAI provider restore
 
 **Date**: 2026-09-04 (CDT)
 
@@ -76,8 +76,7 @@ epoch revocation). Goal is active; do not create a new goal.
 
 Use the five-tool gate (Context Mode → CodeGraph → Spec Kit → GSD → ARS). In
 this session Context Mode guard reported `Codex configuration is missing:
-hooks=true` because DeepSeek required `[features] hooks=false`; after this
-restore it should pass again. CodeGraph index is up to date.
+hooks=true`; after this restore it should pass again. CodeGraph index is up to date.
 
 Suggested skills: `speckit-implement`, `speckit-audit`,
 `codegraph-first`, `gsd-resume-work`.

@@ -1,5 +1,340 @@
 # Failure Log and Evidence Index
 
+## Spec190 T005 — ASan/UBSan serial build interrupted before result (2026-09-23)
+
+2026-09-23：沿用 `build-spec190-t005-asan`，以 `-j1` 从已完成对象继续构建
+`spec190-repo-lookup-reuse`。单个 sanitizer translation unit 完成后推进到约 `19/120`
+并进入下一个 Core translation unit；期间可用内存约 3.8–6.0 GiB，没有新的持续 swap
+边界或编译错误。用户随后主动中断本轮工作，进程已收尾，未产生 ASan 编译完成或运行结果。
+该边界不计 PASS/FAIL；T005 保持 `PARTIAL`，后续若需要 sanitizer 资格应重新配置/构建。
+
+## Spec190 T005 — ASan/UBSan parallel build resource boundary (2026-09-23)
+
+2026-09-23：在独立的 `build-spec190-t005-asan` 中以系统 `/usr/bin/g++`、
+`--with-tests --with-sanitizer=address,undefined` 和 `-j2` 构建
+`spec190-repo-lookup-reuse`。完整受影响闭包推进到约 `15/120` 个任务时，两个大型
+`cc1plus` 进程使本机可用内存降至约 `243 MiB`，`vmstat` 出现持续 swap-in。为保护
+12 GB 主机，受控中断 Waf，返回 `rc=68`；没有产生 ASan 编译完成或运行结果。这是资源
+边界，不是代码 PASS/FAIL，也不是 MiniNDN 启动失败。保留该 build 目录及已完成对象；下一次
+只在同一目录以 `-j1` 继续，T005 仍为 `PARTIAL`。
+
+## Spec190 T005 — direct fork process-restart selector deadlocked (test boundary)
+
+2026-09-23：OS 新进程复用选择器第一次实现直接从已创建过多线程运行时的测试进程
+`fork()`。父进程阻塞在结果 pipe read，子进程停在继承的运行时 futex；`ps` 确认父/子
+分别处于 `pipe_read`/`futex_wait_queue_me`，没有进入 child 的 Repo prepare 统计发送，约
+60 秒后受控终止。该边界是测试夹具违反 fork-after-threads 生命周期约束，不是 Repo lookup
+miss 或生产进程失败；原始临时根 `/tmp/spec185-prepared-request-3466373-1/` 保留。
+下一次只改为 `fork()+exec()` 启动同一测试二进制的 child selector，避免继承锁和线程状态，
+不修改生产缓存/Repo 逻辑。
+
+## Spec190 T005 — exec process restart and stale cleanup focused PASS
+
+2026-09-23：将上述 selector 改为 `fork()+exec()` 后，真实新进程 child 通过固定 Repo root
+执行 `User::prepare()`，计数为 `lookups=1`、`missIngests=0`、`publicationCalls=0`；父进程
+随后重新打开同一 root 并确认 source object 仍存在。同一批次的 Runtime close/reopen 和
+protected Repo selector 也重新构建并通过。`spec190-repo-lookup-reuse` 增加 recovered receipt
+的 stale cleanup no-op 断言，4 cases 连续 3 次通过；本结果仍是 T005 focused evidence，
+不宣称完整 T005，剩余 identity 维度和 sanitizer 证据继续保留。
+
+## Spec190 T005 — Runtime restart lookup reuse PASS (focused)
+
+2026-09-23：保留首次 material receipt 缺字段失败；第一次修复重跑又发现 lookup 将缺省
+`publication.package_manifest_digest` 与空字符串比较，而生产 `NativeRequestCatalog`
+使用 `source.model_manifest_digest` 作为默认值。保留这两个首边界后，完成两处最小修复并重建
+`spec189-prepared-request`。`Spec190PrepareReusesCommittedReceiptAcrossRuntimeRestart` 通过：
+固定 Repo 在第一次 `User::prepare()` 记录 `lookups=1, missIngests=1, publicationCalls=1`，
+释放并重建 Repo/Provider 后第二次记录 `lookups=1, missIngests=0, publicationCalls=0`。
+该结果只证明同一测试进程内 Runtime/Repo owner close/reopen 的 prepare-before-STORE reuse，
+不计为 OS 新进程资格或 T005 完整 PASS。完整记录见
+[`b190-10.md`](../specs/190-multiturn-latency/evidence/b190-10.md#runtime-restart-reuse-resolved-2026-09-23)。
+
+同一批次随后新增缺失 source 子对象和取消 publish 反例：root 保留、缺失对象由 root-last
+路径恢复，取消在副作用前停止且旧 receipt 仍可 lookup；filesystem fsync fault injection
+下失败的新 publication 也不删除旧 receipt。`spec190-repo-lookup-reuse` 4 cases 连续 3 次
+通过。旧清理隔离和 OS 新进程边界仍未闭合。
+
+## Spec190 T005 — Runtime restart lookup identity conflict
+
+2026-09-23：新增 C++ production selector
+`Spec190PrepareReusesCommittedReceiptAcrossRuntimeRestart` 首次重开 Runtime 后，第二次
+`User::prepare()` 在 `lookupPrepared` 停止，边界为
+`repository prepared receipt is corrupt or conflicts with the requested catalog`。第一次
+publication identity 与 root 保存的 digest 已核对一致；字段级对照确认 lookup 漏恢复
+`materialReceiptDataName/Digest/Bytes`，使 `NativePreparedCanonicalPublication::validate()`
+拒绝不完整 receipt。该结果不计为跨进程复用 PASS；测试输出和失败边界保留在
+[`b190-10.md`](../specs/190-multiturn-latency/evidence/b190-10.md#runtime-restart-regression-boundary-2026-09-23)。
+下一步重建受影响 C++ target 后重跑该 selector。
+
+## Spec190 T005 — lookup/publish publication-boundary regression PASS
+
+2026-09-23：静态审查发现 `publish()` 已持有 Repo publication lock，而新增的
+`lookupPrepared()` 未持有同一把锁；并发读取可能在 root 已出现、依赖对象尚未提交时把合法
+receipt 判为损坏。仅补 lookup 侧共享锁，并新增 C++ `ConcurrentLookupAndPublishObserveOneCommitBoundary`
+回归。`spec190-repo-lookup-reuse` 2 cases 连续 3 次通过；受影响的
+`Spec189RuntimeUsesProtectedEncryptedRepoPublication` 重新构建后通过。该项只证明提交边界
+不可被并发 lookup 撕裂，不等同于 T005 完整验收；Runtime restart、缺失子对象修复、取消/事务
+故障矩阵和 ASan 仍未闭合。完整记录见
+[`b190-10.md`](../specs/190-multiturn-latency/evidence/b190-10.md)。
+
+## Spec190 T004 — fixed Repo owner/restart proof PASS
+
+2026-09-23：T004 使用固定 node root 和稳定 owner identity 完成原生 C++ storage proof。
+新 `spec190-repo-restart` selector 通过 4/4，并连续重复 3 次；3 个新 PID 依次关闭/重开
+同一 root，committed graph/layer/later payload 的 manifest、hash、bytes 可读且不变，半提交
+range 不可见。第二 owner 首边界为预期的 `repo-persistence-owned`，损坏 sidecar 触发保守
+恢复，symlink root 和逻辑满额边界均 fail-closed。既有 `spec189-repo-fd-owner` 文件故障
+selector 3/3，独立 ASan Waf selector 4/4 且无 ASan/leak 报告。该项只新增 C++证明和 Waf
+target，没有修改 Repo 生产实现，也没有增加 Python recovery/commit；网络 Repo 服务及真实
+Qwen 重启仍留给 T011。完整记录见
+[`b190-09.md`](../specs/190-multiturn-latency/evidence/b190-09.md#t004-fixed-per-node-repo-ownerrestart-proof--2026-09-23)。
+
+## Spec190 T004 — first selector fixture boundaries
+
+2026-09-23：首次运行新 selector 在子进程中因测试参数把 96-byte vector 送入 64-byte
+`maxRangeBytes` 而停止；同一运行的 corrupt-catalog 夹具又把 staging 文件写到错误的
+`root/staging` 而非生产使用的 `root/payloads/staging`。没有生产 Repo、实验或持久数据失败；
+修正夹具参数和路径后重新构建并通过。该尝试不计入 T004 runtime-test，但原始首边界保留。
+
+## Spec190 T003 — r34 integrated three-turn PASS
+
+2026-09-23：r34 使用修复后的 C++ material-event oracle 和“最终轮次后才 purge”策略完成
+真实两 Provider 三轮 MiniNDN 链路。launcher 返回 `NDNSF_DI_QWEN_NATIVE_MININDN_PASS`，
+三轮均产生 live first event、terminal、checkpoint 和 success，最终
+`NATIVE_CONVERSATION_TURNS_SUCCEEDED count=3`；C++ oracle 为 `SPEC189_CPP_ORACLE_PASS`。
+`run-record.json` 为 `PASS`，`ndn-cache-purge.json` 记录 10 个 CS erase，encrypted Repo
+和运行进程无残留。三轮 token IDs 为 `[9,353]`、`[353,353]`、`[353,353]`，后续轮次有
+KV restore。完整证据见 [`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r34-integrated-three-turn-pass-2026-09-23)。
+
+该结果闭合 T003，不代表 T004–T011 或 Spec190 最终 latency/cache qualification 完成。
+
+## Spec190 T003 — r33 command-line preflight typo
+
+2026-09-23：r33 命令在 Python argparse 阶段因 `--requester-driver-binary-sha256` 和
+`--assembly-worker-binary-sha256` 参数复制错误返回 `rc=2`。没有启动 MiniNDN、Provider、
+Repo 或 requester，也没有产生模型/协议证据；该边界不计入 T003 runtime-test。下一次
+使用新 r34 run root 和已核对的修复 oracle hash。
+
+## Spec190 T003 — r32 production turns passed; post-run oracle contract was stale
+
+2026-09-23：r32 使用 r31 的延后 CS purge 修复完成真实三轮 production requester 链路。每轮
+都有 live first event、terminal、checkpoint 和 `NATIVE_REQUEST_SUCCEEDED`，最终为
+`NATIVE_CONVERSATION_TURNS_SUCCEEDED count=3`；Provider 两端后续轮次观察到 KV restore，
+第三轮未再出现 `material-bundle_UNAVAILABLE`。launcher 在三轮完成后运行旧
+`spec189-two-provider-oracle` 时停止，首边界为 `MATERIAL_FETCH reason=unknown-kind`：
+当前生产日志包含 `material-receipt`、`material-bundle`，并按 payload digest 直接记录
+verified chunks，而旧 parser 只接受旧三种 kind。详见
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r32-three-turn-production-chain-passed-stale-c-oracle-rejected-current-material-events-2026-09-23)。
+
+该失败发生在 launcher 最终 purge 和 `run-record.json` 写入之前，不是请求链失败；r32 原始
+目录保留。已扩展 C++ oracle 的新旧材料序列校验，`spec189-material-oracle-tests` 通过
+15 cases，修复后对同一 r32 raw run 得到 `SPEC189_CPP_ORACLE_PASS`，三轮 token/epoch/prefix
+分别为 `2/1/3`、`2/2/6`、`2/3/9`。尚未将该后置复核等同于 launcher 集成 PASS；下一步用
+修复后的 oracle、新 run root 重跑并确认最终 purge、run record 和 cleanup。
+
+## Spec190 T003 — r31 continuation material purged before later turns
+
+2026-09-23：r31 使用正确 immutable Qwen INT8 source、单一 direct-start MiniNDN 路径和
+真实 C++ parent/pipe driver，完成启动、ACK、Selection、placement-bound fetch、两端首次
+assembly/`RUNNER_READY`、真实 ORT execution 以及前两轮 output/checkpoint；第二轮两端均
+观察到 `CONVERSATION_KV_RESTORED`。第三轮首次失败边界为 Provider-1 的
+`NDNSF_DI_PROVIDER_STAGE stage=TERMINAL status=failed`，原因
+`DI_CANONICAL_material-bundle_UNAVAILABLE`。原始证据保留在
+`.codex-tmp/spec190-qwen-int8-direct-prepared/direct-int8-live-r31/`，详见
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r31-direct-c-live-turn-run-continuation-material-was-purged-too-early-2026-09-23)。
+
+静态对照确认 launcher 在第一轮所有 Provider `RUNNER_READY` 后立即 purge
+MiniNDN LargeData CS，但 requester 尚未完成后续 conversation turns；这使后续 turn 的
+material 重新 fetch，并在第三轮暴露 unavailable。该结果不是 startup 或 protocol PASS。
+唯一 Changed gate 是移除 runner-ready purge callback，将 CS purge 推迟到最终 Provider
+barrier 和 native C++ oracle 完成之后；失败路径仍由 MiniNDN/process cleanup 收尾。修复
+完成定向测试前不得重跑；T003 保持 `PARTIAL`。
+
+## Spec190 T003 — r30 canonical source path preflight
+
+2026-09-23：真实 C++ `spec190-live-turns` parent/pipe driver 的第一次启动在 MiniNDN 前
+停止，命令将 canonical source 写成 cache root 下不存在的 `blobs/<digest>`，而固定候选实际
+位于 HuggingFace `models--liodon-ai--Qwen3-0.6B-ONNX/blobs/<digest>`。没有启动 MiniNDN、
+Provider、requester、Repo 或协议链，且没有残留进程。`spec190-live-turns` 本身已完成
+201/201 compile-link；该结果分类为 `FAIL_PRECHECK`，不计入 T003 runtime-test。详见
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r30-direct-live-turn-launch-path-boundary-2026-09-23)。
+下一次使用新的 run root 和同一 immutable candidate 的正确 source path。
+
+## Spec190 T003 — r29 current-candidate cache miss during focused probe
+
+2026-09-23：r29 将请求预算降到 `max-new-tokens=2`，用于隔离 cache、terminal 和 cleanup，
+沿单一 direct-start 进入 MiniNDN、Provider execution 和 native cache lookup。Provider-0
+首先记录 `CACHE_LOOKUP_MISS` 并进入 `COLD_ASSEMBLY_GATE`，随后为避免再次启动尚未解释的长
+冷组装而中断；因此没有 terminal/EOS 或协议 PASS。只读源码审查确认 cache 按 Selection 后的
+`recipeDigest` 查找，并再次校验 graph、initializer、role、backend ABI、precision、
+quantization、layout、padding 和 assembled digest。现有 cache manifest 属于旧的
+`float16/quantization=none` candidate，当前 r29 是 `weight_only_int8` 且 source/graph identity
+不同，故 miss 是 fail-closed 的正确行为，不应放宽校验。精确 r29 Repo/staging 已在确认无残留
+进程后清理；详见 [`b190-10.md`](../specs/190-multiturn-latency/evidence/b190-10.md)。分类为
+`UNQUALIFIED` cache-reuse boundary；T003 保持 `PARTIAL`，下一步先完成 current recipe/cache
+identity 对照，再决定是否需要最小代码变更。
+
+## Spec190 T003 — r28 requester terminal timeout after native execution
+
+2026-09-23：r28 完成 MiniNDN、normal Repo、ACK、Selection、placement fetch、双 Provider
+assembly/`RUNNER_READY` 和真实 ONNX CPU execution；两 Provider 分别达到 529/528 execution
+updates，越过原 512 event 上限且没有 admission rejection。首个失败边界是
+`requestTimeoutMs=900000` 后的 `NATIVE_STREAM_ORACLE_FAILED: terminal event timeout`。
+未观察到 EOS、terminal、checkpoint、KV reuse 或后续轮次。详见
+[`b190-09.md`](../specs/190-multiturn-latency/evidence/b190-09.md)。分类为
+`UNQUALIFIED` performance/terminal boundary；不得用增加 timeout 伪造完成。下一步只做一次
+只读 C++/ORT execution throughput 与 terminal-timeout 静态审查，再决定最小 Changed gate。
+
+## Spec190 T003 — r27 direct-start preflight boundaries
+
+2026-09-23：第一次 direct-start invocation 因摘要参数缺少 `sha256:` 前缀停止于
+`MODEL_STAGE_MANIFEST_DIGEST_MISMATCH`；修正后通过模型、拓扑、node mapping、二进制和
+build receipt 预检，但停止于 `ENCRYPTED_REPOSITORY_PATH_MUST_BE_OUTSIDE_RUN_ROOT`。
+两次均未启动 MiniNDN 或 Provider，分类为 `UNQUALIFIED` startup attempts，不计入 T003。
+原始目录和下一步的固定 `/var/tmp` Repo staging 记录见
+[`b190-08.md`](../specs/190-multiturn-latency/evidence/b190-08.md)。
+
+## Spec190 T003 — r26 stream event budget boundary
+
+2026-09-23：r26 采用单一 `--direct-start` 和当前 immutable Qwen INT8 candidate，真实链路
+完成 MiniNDN/NFD、normal Repo publication、ACK、Selection、placement-bound fetch、两端
+assembly、`RUNNER_READY` 和 C++ execution；compact Provider 日志约 7 MB/端，未复现 r24
+日志膨胀。约 512 个 token event 后 Provider-1 首先报告
+`native epoch token event admission was rejected`，Requester 无 terminal/EOS、checkpoint、
+KV reuse 或三轮结果。静态审查确认 native `StreamRequestOptions::maxEvents` 默认 512，
+而 `maxNewTokens=1025` 只投影到 generation contract，未同步 stream event budget；失败
+owner 是 Provider `eventSink` → `CollaborationContext::publishStreamEvent` 的 bounded
+publisher admission，不是 launcher、ORT、内存或重复事件。r26 原始目录保留；T003 仍
+`PARTIAL`，T004–T011 仍 `NOT_STARTED`。下一步仅实现 `maxEvents >= maxNewTokens + 1`
+的原生投影 gate，完成 C++ compile/link、回归和安装闭合后 fresh normal Repo。详见
+[`b190-07.md`](../specs/190-multiturn-latency/evidence/b190-07.md)。
+
+## Spec190 T003 — r18 Provider-0 ORT Gather shape boundary
+
+Fresh r18 used the direct-start path after the installed ONNX adapter was repaired. The outer
+resource guard did not stop the run (`155` samples; minimum `MemAvailable=3745480704`, maximum
+root RSS `5133791232`, maximum owned swap `166862848`), no nested supervisor file was created, and
+no residual MiniNDN/Provider process remained. The requester crossed `ACK_CLOSED` and
+`NATIVE_SELECTION_COMMITTED`; Provider-0 reached `MODEL_MATERIALIZED`, `WORKER_START`,
+`RUNNER_SPEC_READY` and `RUNNER_CREATE_BEGIN`, while Provider-1 entered `DEPENDENCY_FETCH`.
+
+Provider-0 then failed in the real C++ ONNX Runtime execution path at `/model/Gather_5`:
+`indices element out of data bounds, idx=1 must be within the inclusive range [-1,0]`.
+There was no `RUNNER_READY`, terminal success, EOS, KV reuse or three-turn result. This is the
+first failure below launcher/resource supervision and is currently classified as a Qwen Stage-0
+prefill input-shape/position contract boundary; confirm the exact input tensor with a focused C++
+shape trace before changing production code. Raw evidence remains in
+`.codex-tmp/spec190-qwen-int8-direct-prepared/direct-int8-prep-r18/`; T003 stays `PARTIAL`.
+
+## Spec190 T003 — r16 outer owned-swap boundary and nested-supervisor cleanup
+
+Fresh r16 crossed `ACK_CLOSED` and `NATIVE_SELECTION_COMMITTED`; Provider-0 reached
+`MODEL_MATERIALIZED/WORKER_START`, and Provider-1 entered `DEPENDENCY_FETCH`. It stopped before
+`RUNNER_READY`, terminal, EOS or three-turn KV at the LocalExperiment outer guard's
+`RESOURCE_BOUNDARY:ownedSwap`. Root samples recorded peak RSS `5071327232` bytes, minimum
+`MemAvailable=3289763840`, peak owned swap `291000320`, minimum `SwapFree=1562202112`, and no
+remaining processes after outer cleanup. The inner Native MiniNDN runner had a second supervisor;
+the outer SIGTERM therefore produced `SUPERVISOR_ERROR:KeyboardInterrupt` and
+`cleanup=UNOBSERVED` in `workload/supervisor.json`, although its emergency cleanup left no PIDs.
+
+Static C++ review confirmed the file-backed assembly worker does not create an ORT session;
+`assembleInProcess(..., loadRuntimeSession=false)` validates the file-backed certificate and the
+Provider parent creates the authoritative session after worker completion. The first repair is
+therefore launcher/resource policy, not another model adapter: LocalExperiment now passes
+`--direct-start` so it is the sole host supervisor, and owned swap is diagnostic rather than a
+standalone stop condition. `py_compile`, `git diff --check`, and focused Python regression passed
+`61/61`; no post-repair real run has been started. Raw evidence remains in
+`.codex-tmp/spec190-qwen-int8-direct-prepared/direct-int8-prep-r16/`.
+
+## Spec190 T003 — r17 installed ONNX adapter source-identity mismatch
+
+r17 used the repaired direct-start path; the outer resource guard had `boundary=null`,
+`cleanup=PASS`, and no residual processes. Preparation stopped first at
+`SOURCE_IDENTITY_MISMATCH`: the catalog's Python-derived canonical graph digest was
+`sha256:849af2...`, while the native/source-bound digest was `sha256:fbcde7...`. The model bytes
+and manifest were unchanged. Root had loaded a stale installed ONNX adapter whose canonical
+identity still used NumPy-inferred shape instead of wire-level `TensorProto.dims` for scalar
+initializers. This is a Python installation closure failure, not a Qwen/ORT/resource/protocol
+result. The existing adapter package was reinstalled with `--no-deps`; root module hash now equals
+the repository source and the digest is `sha256:fbcde7...`. The focused Python suite passed `61/61`;
+no post-install real run has been started. Raw evidence remains in
+`.codex-tmp/spec190-qwen-int8-direct-prepared/direct-int8-prep-r17/`.
+
+## Spec190 T003 — r15 post-Selection stale Provider contract boundary
+
+2026-09-23 的 fresh r15 在 Qwen canonical state-name mapping gate 通过后越过
+`ACK_CLOSED`，Requester 记录 `NATIVE_SELECTION_COMMITTED`；两个 Provider 随后均停止于
+`V3 Selection generation contract is incomplete`。没有进入 Repo fetch、assembly、runner、
+terminal 或 EOS。显式中断后 `cleanup=PASS`、`remainingProcesses=[]`，但 Provider 报错后仍
+因长 `--run-for-ms` 保持 RUNNING，暴露失败早停边界。静态审查发现当前
+`NativeGenerationLimits.hpp` 已为 `1025`，而安装的 `di-native-provider` 二进制构建时间
+早于该头文件修复，仍是 stale Provider consumer；因此下一步不是修改模型或放宽 contract，
+而是重建/安装受影响 C++ production targets，运行既有 1025 selector，再做一次 fresh run。
+原始目录：`.codex-tmp/spec190-qwen-int8-direct-prepared/direct-int8-prep-r15/`。
+随后仅重建并安装受影响的四个 C++ production targets，并运行既有
+`NativeGenerationBudgetAccepts1025AndRetainsWireBounds`，结果为 `1 test / 22 assertions`；
+源码与安装头文件 hash 一致。Waf 的无关 Python wrapper staged install 因缺少
+`NDNSF_GLOBAL_NATIVE_DIGESTS` 被跳过，不改变该 C++ gate。r15 仍未产生 Repo/assembly/terminal
+结果，T003 保持 `PARTIAL`，下一步是一次 fresh normal r16。
+
+## Spec190 T003 — r14 post-ACK Qwen state-name boundary
+
+2026-09-23 的 fresh r14 在 shared C++ `1025` token-limit 修复安装后通过 launcher preflight，
+MiniNDN、Controller、Authority、两个 Provider 均 READY，并进入 `Runtime.open -> User.prepare
+-> User.request`。ACK 已关闭后，native planning 以
+`NATIVE_REQUEST_STAGE_FAILED boundary=ACK_CLOSED message=native state mapping differs from the
+source boundary` 停止；`ACK_CLOSED` 是该异步 callback 的 owner boundary，不是 ACK collection
+timeout。保留原始目录 `.codex-tmp/spec190-qwen-int8-direct-prepared/direct-int8-prep-r14/`；
+cleanup PASS、无残留，未进入 Selection、Repo fetch、assembly、terminal 或 EOS。
+
+静态对照 preserved catalog/options、Qwen ONNX source strings 和
+`NativeCanonicalRolePreparer::bindStateContracts` 后确认首因：catalog/options 把 semantic
+`past_key.N`/`past_value.N`/`present_key.N`/`present_value.N` 直接当作 source tensor name，
+而 source 实际使用 `past_key_values.N.key/value` 与 `present.N.key/value`。C++ fail-closed
+校验行为正确，Qwen manifest/catalog owner 缺少 canonical state-name mapping。该失败不是
+内存、ORT、量化算子或网络传输结果。随后只修复该 mapping，并完成 `py_compile PASS`、
+Python 定向回归 `39 passed`、已安装 C++ source-bound selector `1 test / 29 assertions`，
+以及真实 stage-plan metadata canonical-name 检查；没有改 C++ 源码，因此不需要新的 C++
+重建。该 Changed gate 已通过，但新的 normal Repo/Selection/assembly/terminal/EOS 结果
+尚未产生；T003 保持 `PARTIAL`，下一步是一次 fresh r15。
+
+该 Changed gate 的首次 Python 定向回归在 C++ build 前停止：新增 helper 缺少 `re` import，
+并以过宽前缀判断接受了不完整 canonical name；既有 35 项通过，新增正/反例暴露该测试边界。
+没有启动新的 MiniNDN，也没有改变 r14 生产结论；随后已补齐 import 和精确 regex，重跑同一
+Python gate 已通过。该初始 gate 失败作为过程证据保留，不计为生产失败。
+
+## 2026-09-22 — SIF Waf-install static fixture boundary
+
+纯脚本检查（无构建）新增 payload 负例遇到宿主 Python 3.8 的
+`Path.is_relative_to` 不可用；同组旧 Spec170 fixture 另有 3 个已有 marker 缺失失败。
+首个边界、Changed gate 与后续结果记录于
+[Waf-install static review](../Experiments/TigerCluster/docs/waf-install-static-review-20260922.md)。
+不计为 SIF、原生代码或协议失败，也不改变 Spec190 推理验收状态。
+第二轮曾有一个 transfer mutation 误改清理行的 fixture 失败，已改为完整 section 定位。
+当前离线检查为 61 passed / 1 skipped / 5 deselected，详见同一记录的 Second audit。
+
+## Spec185 API owner correction — stale Python extension before rebuild
+
+2026-09-22 对新增 Python binding surface 的首轮定向测试加载了
+`/usr/local/lib/python3.8/dist-packages/ndnsf/_ndnsf*.so` 旧扩展；源码已有
+`User` binding，但旧二进制没有 `User.request/run/open_conversation`，因此测试为
+`9 passed, 1 failed`，失败边界是 stale artifact，不是 native request 行为。按当前
+host binding 构建契约从 `pythonWrapper/setup.py` 强制重建后，候选 DI 库优先加载的
+真实扩展导出检查与定向套件均通过（`10 passed`）；该失败保留作为重建前置错误，
+不能被解读为 API runtime 失败。详情见
+[API owner correction evidence](../specs/185-prepared-model-runtime/evidence/api-owner-correction-20260922.md)。
+
+## Spec185 API owner correction — focused selector stopped before runtime result
+
+2026-09-22 对新增 `User::request(model, ...)` 入口运行
+`Spec185PreparedRequest/PreparedRequestsSharePackageButAllocateIndependentIds`，
+target 已成功链接，但 selector 在进入测试用例后 30 秒仍未产生下一条边界，
+以 `RC=124` 停止。原始输出保留于
+`.codex-tmp/spec185-api-owner-correction-20260922/selector.log`；目前不能区分
+既有 `Runtime::prepare()`/fixture 等待还是本次测试新增的后续边界，故不计同
+Runtime 成功、跨 Runtime 拒绝或任何模型/协议 PASS。下一步先用更细粒度的
+fixture 边界定位，再重跑同一 selector；代码 compile-link 结果与本失败独立记录。
+
 ## Spec190 T003 — Qwen single-preparation reproduces empty NAC-ABE wrapper
 
 2026-09-22 对 `Spec185PreparedRequest/PreparedRequestCompletesThroughServedProvider`
@@ -11380,3 +11715,663 @@ negative-parent result, C++ oracle result, or run-record exists; `requester.log`
 Raw evidence is preserved in `.codex-tmp/spec190-t003-real-20260922-rerun/run-31/` and
 `.codex-tmp/spec190-t003-real-20260922-rerun-run-31.log`. This repeats the native resident-runner
 plus second-assembly overlap boundary; do not raise the resource limit or advance to T004.
+
+2026-09-22 Spec190 T003 run-32 normal Repo resource boundary: the worker used `ORT_DISABLE_ALL`
+with the same bounded thread/prepacking settings. Model-source cache verification, ACK/Selection,
+Provider-0 material fetch/assembly/cache finalization/`RUNNER_READY`, and Provider-1 placement-bound
+`DEPENDENCY_FETCH=complete` were observed; Provider-1 then entered `ASSEMBLY_STARTED`. The host
+guard stopped first at `RESOURCE_BOUNDARY:MemAvailable` with
+`minAvailableBytes=1605091328 < 1610612736`, while `maxOwnedSwapBytes=92225536` remained below
+the owned-swap limit. The maximum RSS sample total was `7507595264`; the Provider-1 assembly
+worker reached `3040763904` bytes while the resident Provider-0 runner was `2047303680` bytes.
+Supervisor cleanup passed, returncode was `-2`, and no processes remained. The launcher was
+interrupted before requester terminal, negative-parent, run-record, or complete C++ oracle evidence;
+`requester.log` had no three-turn result. Raw evidence is preserved in
+`.codex-tmp/spec190-t003-real-20260922-rerun/run-32/` and
+`.codex-tmp/spec190-t003-real-20260922-rerun-run-32.log`. This is still the resident-runner plus
+second-assembly working-set overlap boundary; do not raise resource limits or advance to T004.
+
+2026-09-22 Spec190 T003 run-33 launcher preflight boundary: the new normal-Repo invocation did
+not enter MiniNDN because the frozen `PROVIDER_BINARY` digest was accidentally set to the DI
+shared-library digest rather than the installed `di-native-provider` executable digest. The
+launcher failed closed with `PROVIDER_BINARY_DIGEST_MISMATCH`; supervisor cleanup passed and the
+raw run is preserved in `.codex-tmp/spec190-t003-real-20260922-rerun/run-33/` with launcher log
+`.codex-tmp/spec190-t003-real-20260922-rerun-run-33.log`. This is an invocation-parameter error,
+not a Repo, Provider, ORT or resource result. The corrected provider executable digest is
+`sha256:980cd710f270cc58fb0012536f669985a8ffdb29bba6ee414badf78ad0e4474c`; retry uses a fresh
+run root and the same unchanged normal-Repo candidate.
+
+2026-09-22 Spec190 T003 run-34 normal Repo resource boundary: after the corrected preflight, the
+unchanged encrypted-Repo candidate crossed model-source cache verification, ACK/Selection and
+real placement-bound material fetch. Provider-0 completed `WORKER_DONE`, cache finalization,
+`RUNNER_CREATE_DONE` and `RUNNER_READY`; Provider-1 then completed `DEPENDENCY_FETCH` and entered
+`ASSEMBLY_STARTED`, later reaching `MODEL_MATERIALIZED` and `WORKER_START`. The host guard stopped
+first at `RESOURCE_BOUNDARY:MemAvailable` with `minAvailableBytes=1336852480 < 1610612736`;
+`maxOwnedSwapBytes=5410816` stayed below the owned-swap limit, while `maxTotalRssBytes=7660179456`
+and the Provider-1 assembly worker reached `2896437248` bytes. Supervisor cleanup passed,
+`returncode=-2`, and no processes remained. Provider-1 did not reach `WORKER_DONE`/`RUNNER_READY`;
+requester.log was empty, with no three-turn terminal, run-record, negative-parent or complete
+C++ oracle result. Raw evidence is preserved in `.codex-tmp/spec190-t003-real-20260922-rerun/run-34/`
+and `.codex-tmp/spec190-t003-real-20260922-rerun-run-34.log`. This shows that removing the
+duplicate worker ORT session is insufficient: the remaining cold peak is in model materialization/
+structural assembly beside the resident runner. Do not raise resource limits or advance to T004.
+
+2026-09-22 Spec190 T003 file-backed worker Changed gate and run-35/38 boundaries: the worker now
+accepts a read-only fd-backed canonical source, validates its declared length/source identity, and
+parses without receiving the model bytes through the parent pipe. The affected DI/worker targets
+compiled and installed; exact C++ selectors passed, but the old full materialized-role suite was
+not completed because an existing oversize negative case drove RSS to about 7.5 GiB. This is a
+focused gate result, not a full-suite PASS. run-35 failed before MiniNDN at
+`MODEL_STAGE_MANIFEST_DIGEST_MISMATCH`; run-36 failed before MiniNDN at
+`REQUESTER_BINARY_DIGEST_MISMATCH`; run-37 failed before MiniNDN at
+`ENCRYPTED_REPOSITORY_PATH_MUST_BE_OUTSIDE_RUN_ROOT`. These are preserved launcher/preflight
+boundaries with supervisor cleanup PASS and no protocol result.
+
+2026-09-22 Spec190 T003 run-38 normal Repo resource boundary: with corrected executable/model
+digests and an external encrypted Repo, the run crossed ACK/Selection and real placement-bound
+material fetch. Provider-0 completed `WORKER_DONE`, `CACHE_FINALIZATION_DONE` and `RUNNER_READY`;
+Provider-1 reached `MODEL_MATERIALIZED` and `WORKER_START` with about 752100006 bytes of worker
+input. The host guard stopped first at `RESOURCE_BOUNDARY:MemAvailable`, with sampled minimum
+`availableBytes=1172180992 < 1610612736`, `maxOwnedSwapBytes=148004864` below the owned-swap
+limit, and sampled process RSS total about `7841587200` bytes. Supervisor recorded cleanup PASS,
+returncode -2 and no remaining processes; requester terminal, run-record, negative-parent and
+complete C++ oracle evidence were not produced. Raw evidence is preserved in
+`.codex-tmp/spec190-t003-file-backed-20260922/run-38/` and its launch log. Source audit also
+confirmed that the normal protected Repo path explicitly bypasses persisted assembled-cache lookup
+unless cache-compatibility is enabled, while ProviderArtifactCache itself is process-local; this
+explains the observed material fetch and remains an open protected durable-cache requirement, not
+a reason to relax the resource guard. Spec190 T003 remains PARTIAL and T004 remains NOT_STARTED.
+
+2026-09-22 Spec190 T003 run-43 normal Repo after the digest-only file-backed worker response
+Changed gate: the run passed launcher preflight, ACK/Selection, placement-bound material fetch,
+and a complete first native turn. Both Providers reached `RUNNER_READY` and
+`EXECUTION_COMPLETED`; Provider-1 reached `TERMINAL`, and the requester emitted
+`NATIVE_REQUEST_SUCCEEDED` plus its conversation checkpoint. The second turn did not reuse a
+persistent assembled runner: Provider-0 fetched/materialized/assembled again, while Provider-1
+reached `MODEL_MATERIALIZED`/`WORKER_START`. The host guard first stopped at
+`RESOURCE_BOUNDARY:ownedSwap` with `maxOwnedSwapBytes=379510784 > 268435456`,
+`minAvailableBytes=1816113152`, `maxSwapIoBytes=634507788288`, and sampled peak
+`rssBytes=7121756160`; supervisor `cleanup=PASS`, `returncode=-2`, and no remaining processes.
+There is no three-turn terminal, complete C++ oracle, negative-parent, or qualification result.
+Raw evidence is preserved in `.codex-tmp/spec190-t003-file-backed-20260922/run-43/` and
+`run-43-launch.log`. The first production boundary is resident-runner plus second-turn
+materialization/assembly working-set overlap; the cache miss is a separate unimplemented
+cross-request durable-cache requirement. T003 remains `PARTIAL`; T004 remains `NOT_STARTED`.
+
+2026-09-22 Spec190 T003 focused C++ selector environment boundary: the first invocation of the
+`spec185-provider-assembly` selector batch omitted `NDNSF_SPEC182_BIN_DIR`, so three assembler
+cases failed closed with `DI_NativeOnnxAssemblyWorker binary not found`; the pure cache cases in
+the same batch passed. This was a test setup failure, not a Provider/Repo/cache assertion. The
+selector was rerun with `NDNSF_SPEC182_BIN_DIR=build-spec189-oracle`; the cache identity, protected
+grant hit, and recipe-addressed assembler hit cases each passed `1/1`. No production code or
+resource gate was changed by this retry.
+
+2026-09-22 Spec190 T003 cache/runner diagnosis: CodeGraph/source review and run-43 logs confirm
+`ProviderArtifactCache` is process-local and supports exact-key runner/template hits, while normal
+protected Repo explicitly returns miss when `cacheCompatibilitySourceDir` is empty. The two run-43
+turns also had different `selectionDigest` values; the current logs do not expose canonical cache
+keys, so they do not prove an exact-key hit was available. The first production boundary remains
+Provider-1 cold materialization/
+assembly overlapping the resident Provider-0 runner; this is not evidence to remove the protected
+cache gate or raise the resource limit. T003 remains `PARTIAL`; T004 remains `NOT_STARTED`.
+
+2026-09-22 Spec190 T003 file-backed S7 digest-reuse Changed gate: static review found that the
+materialized role file is already a deterministic, digest-certified ONNX wire, while the worker was
+allocating another full serialized buffer only to recompute the same digest. The minimal repair
+reuses that file digest only for `modelFile` worker requests; inline/parity serialization remains
+unchanged. DI/worker compile-link and focused C++ selectors passed, including integration `128/128`,
+materialized/cold/readiness `1/1`, `1/1`, `15/15`, and the correctly configured Spec185 cache selector
+`11/11`. The broad `unit-tests` target remains at the pre-existing `NativeArtifactBinding`
+aggregate-assignment compile boundary in `di-native-planning.t.cpp`; no runtime assertion ran there.
+Waf install first hit `/usr/local` permission, then matching build outputs were explicitly installed;
+installed hashes and worker `ldd` closure were verified. No normal Repo rerun has occurred after this
+gate, so it produces no qualification result and does not unlock T004.
+
+2026-09-22 Spec190 T003 run-44/run-45 launcher preflight boundaries: two manually assembled
+normal-Repo invocations supplied an invalid canonical initializer digest and stopped before model
+copy, MiniNDN, Repo, ACK, or Provider execution with `MODEL_CANONICAL_INITIALIZER_DIGEST_MISMATCH`.
+Both raw run directories are retained under `.codex-tmp/spec190-t003-file-backed-20260922/`; their
+supervisors report `cleanup=PASS` and no remaining processes. These are operator parameter-boundary
+failures, not product/runtime results.
+
+2026-09-22 Spec190 T003 run-46 normal Repo after file-backed S7 digest-reuse: corrected source-file
+digest preflight passed; the run crossed ACK/Selection and placement-bound material fetch, Provider-0
+reached `RUNNER_READY`, and Provider-1 reached `ASSEMBLY_HEARTBEAT progress=0.550`. The first
+production resource boundary was the existing overlap of Provider-0 resident runner and Provider-1
+cold assembly: `ownedSwapBytes=341704704 > 268435456`, `rssBytes=7010164736`,
+`availableBytes=1658068992`, with the first over-limit sample showing assembly worker RSS
+`3225214976` and Provider-0 RSS `1604648960`. Supervisor cleanup was PASS, returncode -2, with no
+remaining processes. There was no terminal, three-round completion, complete C++ oracle,
+negative-parent, or qualification result. Raw evidence is retained in
+`.codex-tmp/spec190-t003-file-backed-20260922/run-46/`; T003 remains `PARTIAL` and T004 remains
+`NOT_STARTED`. This does not justify raising the resource limit or removing the protected cache gate.
+
+2026-09-22 Spec190 T003 run-50 launcher preflight boundary: the retry command supplied the
+stage-manifest digest without its required `sha256:` prefix and was rejected with
+`MODEL_STAGE_MANIFEST_DIGEST_MISMATCH` before MiniNDN, Repo, ACK, Selection, model transfer, or
+Provider execution. The raw run directory is retained under
+`.codex-tmp/spec190-t003-file-backed-20260922/run-50/`; this is an operator parameter failure,
+not a product/runtime result. The next attempt uses a new run root and the verified prefixed
+digest; T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-22 Spec190 T003 run-51 launcher preflight boundary: after correcting the manifest
+prefix, the command still carried a manually mistyped topology digest and stopped with
+`TOPOLOGY_DIGEST_MISMATCH` before MiniNDN, Repo, ACK, Selection, model transfer, or Provider
+execution. The actual digest was recomputed from `Experiments/Topology/AI_Lab.conf`; the raw run
+is retained under `.codex-tmp/spec190-t003-file-backed-20260922/run-51/`. This is another
+operator parameter failure, not a product/runtime result. The next attempt uses a new run root
+and the digest computed from the file; T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-22 Spec190 T003 run-52 launcher preflight boundary: the attempt moved digest calculation
+to the shell, but the canonical source and initializer from the preserved run-49 evidence are
+root-owned and unreadable to the non-root shell. Empty computed values caused
+`MODEL_CANONICAL_DIGEST_MISMATCH`; the launcher stopped before MiniNDN, Repo, ACK, Selection,
+model transfer, or Provider execution. The raw run is retained under
+`.codex-tmp/spec190-t003-file-backed-20260922/run-52/`. The next attempt performs digest
+calculation under the same root boundary as the launcher; T003 remains `PARTIAL` and T004 remains
+`NOT_STARTED`.
+
+2026-09-22 Spec190 T003 run-53 MiniNDN startup boundary: all file digests passed after running
+the launcher and digest computation under a root shell, but the multiline `sudo bash -c` command
+exported a newline-containing `SUDO_COMMAND`. Mini-NDN's installed `popenGetEnv` parser split
+that inherited value into a line without `=`, causing `IndexError` while starting NFD. The run
+entered MiniNDN setup but not NFD/Repo/ACK/Selection/Provider execution; supervisor cleanup was
+`PASS`, return code `1`, and no remaining processes. Raw evidence is retained under
+`.codex-tmp/spec190-t003-file-backed-20260922/run-53/`. This is an invocation/environment
+boundary, not a model or resource result; the next run computes root-readable hashes separately
+and invokes the launcher without a multiline sudo shell.
+
+2026-09-22 Spec190 T003 run-54 normal Repo resource boundary: the root-readable digest and
+single-line sudo invocation passed launcher and MiniNDN/NFD startup, and the real chain crossed
+ACK/Selection, Provider-0 `WORKER_DONE → RUNNER_READY`, and Provider-1
+`MODEL_MATERIALIZED → WORKER_DONE → RUNNER_READY`. Before the first requester terminal, the host
+guard stopped at `RESOURCE_BOUNDARY:MemAvailable`; the first failing sample had
+`availableBytes=1407516672 < 1610612736`, `rssBytes=7752343552`, and `ownedSwapBytes=301068288`
+(also over its 268435456 limit). The largest processes were approximately 3.80 GiB and 1.98 GiB,
+corresponding to the two resident Provider runtime groups after cold assembly. Supervisor cleanup
+was `PASS`, return code `1`, with no remaining processes. No terminal, three-round output, C++
+oracle, negative-parent, or qualification PASS was produced. Raw evidence is retained under
+`.codex-tmp/spec190-t003-file-backed-20260922/run-54/`; T003 remains `PARTIAL` and T004 remains
+`NOT_STARTED`. This confirms the move/file-backed changes do not remove the resident two-runner
+overlap; it does not justify raising the resource limit or bypassing the protected cache gate.
+
+2026-09-22 Spec190 T003 run-55 normal Repo resource boundary after a single ORT arena probe:
+`DisableCpuMemArena()` was added to the resident session options as the only Changed gate after
+static review. The run passed launcher, MiniNDN/NFD, ACK/Selection, placement-bound fetch, and both
+Provider `CACHE_LOOKUP_MISS -> MODEL_MATERIALIZED -> WORKER_DONE -> RUNNER_READY` stages, but before
+requester terminal the host guard stopped at `RESOURCE_BOUNDARY:MemAvailable`. The first failing
+sample had `availableBytes=1143881728 < 1610612736`, peak RSS `8372178944`, and
+`ownedSwapBytes=422146048 > 268435456`; supervisor cleanup was `PASS`, return code `1`, and no
+remaining processes. Compared with run-54 (`availableBytes=1407516672`, RSS `7752343552`, owned
+swap `301068288`), this probe did not improve the overlap and was reverted. No terminal, three-round
+requester state, C++ oracle, negative-parent, or qualification PASS was produced. Raw evidence is
+retained under `.codex-tmp/spec190-t003-file-backed-20260922/run-55/`; T003 remains `PARTIAL` and
+T004 remains `NOT_STARTED`.
+
+2026-09-22 Spec190 T003 native install substep boundary: the matching DI shared library was
+installed and its hash/ldd closure was verified, but Waf's subsequent editable `py_repoclient`
+substep stopped because `NDNSF_GLOBAL_NATIVE_DIGESTS` was not set. This is an install-side Python
+binding boundary, not a C++ compile/link or focused runtime assertion; it is recorded separately
+from the run-55 product boundary and does not count as complete install PASS.
+
+2026-09-22 Spec190 T003 run-56 launcher preflight boundary: the normal-Repo retry passed no
+product stage because `native-qwen-service-manifest.json` (a service manifest whose top level is
+`services`) was supplied as `--stage-manifest`. `load_stage_manifest()` stopped with
+`stage manifest requires an explicit modelFamily`; MiniNDN/NFD, Repo, ACK, Selection, model
+transfer, and Provider execution did not start. Raw evidence is retained under
+`.codex-tmp/spec190-t003-file-backed-20260922/run-56/`; this is an invocation parameter boundary,
+not a `DisableMemPattern()` runtime result. T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-22 Spec190 T003 run-57 normal Repo resource boundary with ORT memory-pattern disabled:
+the corrected Qwen v2 stage manifest passed launcher, MiniNDN/NFD, ACK/Selection, placement-bound
+fetch, and both Provider `CACHE_LOOKUP_MISS -> MODEL_MATERIALIZED -> WORKER_DONE -> RUNNER_READY`
+stages. The host guard then stopped before requester terminal at
+`RESOURCE_BOUNDARY:MemAvailable`; the first failing sample and run maxima were
+`availableBytes=1429606400 < 1610612736`, `rssBytes=8234680320`, and
+`ownedSwapBytes=183209984`. Supervisor cleanup was `PASS`, return code `1`, and no remaining
+processes. This reduced cold-assembly/swap pressure compared with run-54/55 but did not close the
+resident two-runner working-set boundary. No terminal, three-round requester state, C++ oracle,
+negative-parent, or qualification PASS was produced. Raw evidence is retained under
+`.codex-tmp/spec190-t003-file-backed-20260922/run-57/`; T003 remains `PARTIAL` and T004 remains
+`NOT_STARTED`.
+
+2026-09-22 Spec190 T003 run-58 normal Repo resource boundary with ORT graph optimization
+disabled: after focused C++ selectors passed, runner `ORT_ENABLE_BASIC` was changed to
+`ORT_DISABLE_ALL` while retaining `DisableMemPattern()`. The run passed launcher, MiniNDN/NFD,
+ACK/Selection, placement-bound fetch, Provider-0 `MODEL_MATERIALIZED -> WORKER_DONE ->
+RUNNER_READY`, and Provider-1 `MODEL_MATERIALIZED -> WORKER_DONE`; before Provider-1
+`RUNNER_READY`, the host guard stopped at `RESOURCE_BOUNDARY:MemAvailable`. The first failing
+sample had `availableBytes=1547898880 < 1610612736`, RSS `7395811328`, and owned swap
+`14311424`; supervisor cleanup was `PASS`, return code `-2`, with no remaining processes. This
+reduced the peak versus run-57 but did not close the resource boundary. Raw Provider phase
+evidence shows Provider-1 reached `MODEL_MATERIALIZED -> WORKER_DONE ->
+CACHE_FINALIZATION_BEGIN`, then stopped before `CACHE_FINALIZATION_DONE`,
+`RUNNER_CREATE_BEGIN`, or `RUNNER_READY`; therefore two resident ORT sessions are not proven by
+run-58. The two largest raw process groups were about 3.19 GiB and 1.98 GiB RSS, but the sample
+does not identify their component ownership. The supported next hypothesis is overlap between the
+Provider-0 resident runner and model-sized temporary buffers in Provider-1 protected cache
+finalization. No terminal, three-round requester state, C++ oracle, negative-parent, or qualification
+PASS was produced. Raw evidence is retained under `.codex-tmp/spec190-t003-file-backed-20260922/run-58/`;
+T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-22 Spec190 T003 cache/lease/resident-runner static review: after run-58, the production
+cache and cleanup paths were reviewed without a source change or another runtime retry. The
+artifact key excludes request/attempt and mutable runner state, but intentionally includes the
+authenticated Selection `offerDigest` and protected grant/provider identity. More importantly,
+`tryLoadNativeCanonicalOnnxRoleFromCache()` fail-closes to a miss for normal protected Repo when
+`cacheCompatibilitySourceDir` is empty; this preserves grant-bound encrypted semantics and is the
+current T006 protected-material boundary, not an unlocated cache-key defect. Published cache entries
+clear runner `path`/`lifetime` and retain metadata/ciphertext descriptors only; move-only lease release
+and the parent/worker plaintext guards cover the active pin and staging cleanup. Static review found
+no evidence that an idle cache retains a second model-sized resident buffer or that a failure path
+leaks it. A raw-phase correction after this review shows that run-58 did not prove two resident ORT
+sessions: Provider-1 stopped in protected cache finalization before runner creation. The remaining
+T003 boundary is therefore classified as a candidate overlap between the Provider-0 resident runner
+and Provider-1 protected finalization buffers; it is not closed by another cache-key tweak. T003
+remains `PARTIAL`, T004 remains `NOT_STARTED`, and no resource threshold is raised or protected
+cache gate removed.
+
+2026-09-22 Spec190 T003 run-58 memory decomposition: a read-only aggregation of 437 resource
+samples found no `nativeCounters`, so the retained evidence can separate process RSS, owned swap,
+and system `MemAvailable`, but not ORT arena versus anonymous heap versus mmap/file-backed pages.
+At the first boundary the largest group (`PID/group=2900289`) had about 2.97 GiB RSS and had
+grown from about 1.57 GiB in the preceding samples; the Provider-0 process (`PID=2900263`, mapped
+by its native execution evidence) had about 1.84 GiB. The other large groups were approximately
+0.40–0.44 GiB each, with one group that had earlier reached about 1.53 GiB. Source review shows
+the protected finalization path retains model-sized vectors across `modelBytes -> cipher -> wire`
+while sealing and `wire -> cipher -> plaintext` while opening. This supports a transient
+model-buffer overlap hypothesis at `CACHE_FINALIZATION_BEGIN`, but exact PID/component and
+seal/open sub-phase remain `UNOBSERVED`. No source change, threshold increase, or retry was made;
+T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-23 Spec190 T003 materialized-payload release Changed gate and run-67 normal Repo:
+the native assembler now releases materialized layer payload/index containers immediately after
+`materializeNativeCanonicalModel()` returns, before role identity and worker preparation. Focused
+C++ selectors passed (`1/1`, `1/1`, `15/15`) and the materialized-role selector passed three
+times; the selected native build completed `226/226`, with installed hashes and worker `ldd`
+verified. Launcher-only boundaries in run-59 through run-66 were preserved separately: root,
+evidence-directory, digest-format, build-receipt, binary-digest, and stale-requester-binary
+invocation errors; none entered the product runtime. The corrected run-67 passed launcher,
+MiniNDN/NFD, ACK/Selection, placement-bound fetch, and both Provider
+`WORKER_DONE -> CACHE_FINALIZATION_DONE -> RUNNER_READY` stages. Host guard then stopped before
+requester terminal at `RESOURCE_BOUNDARY:MemAvailable`: over 616 running samples,
+`maxRss=6884945920`, `minAvailable=1327259648 < 1610612736`, and
+`maxOwnedSwap=326225920 > 268435456`; cleanup was `PASS`, return code `1`, and no processes
+remained. Peak RSS was about 487 MiB below run-58, but owned swap crossed its gate, so this is
+not a memory or multi-turn qualification PASS. Raw evidence is retained under
+`.codex-tmp/spec190-t003-file-backed-20260922/run-67/`; T003 remains `PARTIAL` and T004 remains
+`NOT_STARTED`. The next action is static resident-runner/ORT/initializer/KV lifetime review;
+do not raise resource thresholds or bypass protected cache.
+
+2026-09-23 Spec190 T003 run-67 native-profile refinement: the preserved ORT profiles map PID
+`2968462` to Provider-0 and `2968488` to Provider-1. At the resource boundary their RSS was
+`1572311040` and `3286151168` bytes respectively. Provider-1 executed the large
+`InsertedPrecisionFreeCast_onnx::MatMul_9461_kernel_time` twice (warmup and first real run),
+with `float16[1024,151936]`, `parameter_size=311164928`, and `output_size=622329856`; the
+largest corresponding Provider-0 cast output was `12582912` bytes. This narrows the next
+Changed gate to the CPU EP/ONNX dtype-conversion contract. It does not yet prove allocator
+ownership or make T003 a PASS; do not remove the readiness warmup or raise resource limits.
+
+The same static review confirms that an in-place CPU `float32` rewrite of the Qwen initializer
+is not a valid untracked fix: the native recipe and role preparer bind the original
+`graphDigest`/`canonicalInitializerDigest` even though the recipe also carries backend/profile
+identity. Such a rewrite would require a signed derived-artifact identity and cache key before
+it can be considered as a Changed gate.
+
+2026-09-23 Spec190 T003 CPU FP16-kernel diagnosis: the requested direct replacement of
+the Provider-1 `float32` `MatMul` path with FP16 was not implementable on the current
+host. AMD Ryzen 7 3700X exposes `F16C` conversion but not `AVX512_FP16` arithmetic;
+the selected ORT library is 1.26.0. A minimal FP16 `MatMul` CPU-EP probe completed but
+its optimized graph contained `InsertedPrecisionFreeCast_W/X/Y`, confirming that ORT
+uses conversion around the unsupported FP16 `MatMul` rather than a selectable native
+FP16 `MatMul`. Existing C++ focused selectors remained green (`1/1`, `1/1`, `15/15`),
+and no production code was changed. This is a backend-capability boundary, not a
+justification to alter the canonical initializer or remove readiness warmup. T003
+remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-23 Spec190 T003 prepacking gate run-68 launcher boundary: the fresh run was
+stopped before MiniNDN/NFD, Repo, ACK, or Provider startup because the reused immutable
+stage manifest did not contain an explicit `modelFamily`. The current launcher requires
+the caller to supply `--model-family qwen`; this was an invocation-contract failure, not
+a model/ORT/resource result. The raw run-68 directory is retained and the corrected
+retry must use run-69. T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-23 Spec190 T003 prepacking gate run-69 repeated the same launcher boundary:
+`--model-family qwen` is consumed after `load_stage_manifest()`, so it cannot repair
+the missing manifest field. No product runtime was entered. A maintained manifest with
+explicit `modelFamily=qwen` and matching stage/canonical/node-mapping digests was found;
+the next retry uses run-70. T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-23 Spec190 T003 prepacking gate run-70 runtime boundary: the corrected
+manifest entered the real chain and both Providers reached `RUNNER_READY`, but the host
+guard stopped at `RESOURCE_BOUNDARY:SwapFree`; cleanup was `PASS`, return code `1`, and
+no processes remained. Across 546 samples: `maxRss=6806839296`,
+`minAvailable=2661167104`, `maxOwnedSwap=75616256`, and
+`minSwapFree=533250048 < 536870912`. RSS and owned swap were below run-67, but the
+initial global SwapFree levels differed, so the gate is not a controlled PASS and no
+terminal response was produced. The prepacking setting additionally retained/reused ORT's
+FP32 prepacked representation and did not remove the `float16 -> float32` conversion, so it
+does not satisfy the user's no-FP32-conversion requirement. The setting was explicitly
+reverted to `session.disable_prepacking=1`; T003 remains `PARTIAL` and T004 remains
+`NOT_STARTED`.
+
+2026-09-23 Spec190 T003 prepacking diagnostic closure: the run-70 experiment was rejected
+and reverted after static/runtime review. Enabling ORT prepacking changes weight retention,
+but does not provide a native FP16 CPU `MatMul`; the optimized path still uses the existing
+FP16-to-FP32 conversion. The current host/CPU EP therefore cannot meet the no-FP32-conversion
+requirement through a session option. No production acceptance claim is made; T003 remains
+`PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-23 Spec190 T003 warmup-state retention audit: the CPU Qwen path writes
+`deviceStateBySession` only when `statefulIo` is present and the selected provider is
+CUDA. The CPU constructor warmup returns local outputs that are immediately discarded;
+there is no warmup KV leak to fix with `releaseSessionState`. The remaining resident
+memory is held by the ORT session/arena, converted or prepacked weights, and the
+request-scoped runner lifetime. No readiness-warmup removal or fake cleanup change was
+made; the prepacking gate is closed as rejected because it does not satisfy the
+no-FP32-conversion requirement. T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-23 Spec190 CPU-safe smaller-model candidate preparation: the Qwen3-0.6B FP16
+CPU path was not changed. The maintained `llama` profile generated a separate
+`HuggingFaceTB/SmolLM2-135M` candidate with explicit `float32` ONNX artifacts under
+`.codex-tmp/spec190-smollm135m-20260923-retry2/`. Both stages loaded in CPU EP; all
+initializers were ONNX `FLOAT`, no `InsertedPrecisionFreeCast` nodes were present, and
+KV/logits contracts were `tensor(float)`. This is only a candidate contract result;
+the full protected two-Provider chain has not run, so no Spec189/190 qualification or
+Qwen target completion is claimed. T003 remains `PARTIAL` and T004 remains `NOT_STARTED`.
+
+2026-09-23 Spec190 all-FP32 candidate `f32-smollm135m-r1` first production boundary:
+the normal Repo chain reached Provider-0 assembly worker completion and cache finalization,
+then `CausalPositionInputContractV1::validate()` rejected the authenticated
+`llama-causal-position-v1` manifest policy because the native validator accepted only
+`qwen-causal-position-v1`. A bounded C++ fix accepted both explicit policies while retaining
+input-name and graph-signature checks. The affected production targets built/installed and
+the standalone C++ regression passed `1/1` with `8/8` assertions; the full unit-test target
+remained blocked by pre-existing `NativeArtifactBinding` aggregate assignments in
+`di-native-planning.t.cpp`. Raw r1 evidence is retained under
+`.codex-tmp/spec190-smollm135m-20260923-runs/f32-smollm135m-r1/`.
+
+2026-09-23 Spec190 all-FP32 candidate `f32-smollm135m-r2` resource boundary: the fresh
+normal Repo run passed check/prepare, ACK/Selection, placement-bound fetch and Provider-0
+assembly through `MODEL_MATERIALIZED → WORKER_DONE → CACHE_FINALIZATION_DONE → RUNNER_READY`.
+The host guard then stopped at `RESOURCE_BOUNDARY:SwapFree`; supervisor cleanup was `PASS`,
+no processes remained, and Provider-1 was still in `DEPENDENCY_FETCH`. Across 148 samples,
+`minAvailableBytes=4791259136`, `maxOwnedSwapBytes=0`, `maxRssBytes=2794491904`, but
+`minSwapFreeBytes=536846336 < 536870912`; this is a global host swap-free gate, not an
+owned-swap/OOM result. The run has no terminal response and is not a Spec189/190 or Qwen
+qualification PASS. Raw evidence is retained under
+`.codex-tmp/spec190-smollm135m-20260923-runs/f32-smollm135m-r2/`; T003 remains `PARTIAL`
+and T004 remains `NOT_STARTED`.
+
+2026-09-22 22:03 -05:00 Spec190 T003 recovery host precondition: before starting another
+normal Repo attempt, read-only host inspection found `/swapfile-codex` about 6 GiB total and
+almost fully used, with `SwapFree` about 548 KiB and `MemAvailable` about 7.8 GiB. The largest
+swap users were VS Code renderer/tooling and desktop processes; no MiniNDN/Provider/Requester/
+Controller/assembly-worker process remained. This is a host resource precondition that can
+re-trigger the global `RESOURCE_BOUNDARY:SwapFree` without proving a new model defect. No
+`swapoff/swapon`, process termination, threshold change, or new experiment was performed.
+T003 remains `PARTIAL`; T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#host-swap-precondition-discovered-during-t003-recovery).
+
+2026-09-22 23:34 -05:00 Spec190 all-INT8 feasibility boundary: ORT CPU supports quantized
+operators, but the current Qwen FP16 graph cannot be made all-INT8 by changing manifest
+metadata or backend text. Direct dynamic quantization of the FP16 stage failed at ORT load
+because `DynamicQuantizeLinear` received `tensor(float16)`. The existing C++ tensor bundle
+enum and ONNX type mapping have no signed `Int8`; Qwen control inputs remain `INT64`, while
+KV/hidden/output contracts remain floating-point. No production INT8 change was retained and
+no two-node experiment was started. The required next boundary is an independently exported/
+calibrated all-INT8 graph plus signed-INT8 scale-aware C++ contracts and focused regression;
+T003 remains `PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#all-int8-feasibility-boundary).
+
+2026-09-23 Spec190 minimal INT8 route strategy boundary: a local ORT dynamic per-channel
+MatMul quantization attempt ran for `29:09.81` and was stopped with exit `130` while processing
+the large graph; it left only partial `stage-0` output under
+`.codex-tmp/spec190-qwen-int8-candidate-r4/` and no candidate manifest or canonical initializer.
+This is an intentionally preserved aborted attempt, not an ORT runtime or protocol result.
+Remote metadata was then checked for a prebuilt alternative. `liodon-ai/Qwen3-0.6B-ONNX`
+advertises a `753999618`-byte dynamic INT8 weight-only single graph with past-KV inputs, while
+the official `Qwen/Qwen3-0.6B-GPTQ-Int8` is a GPTQ/Safetensors route. Neither has been proven to
+match Spec189's two-stage placement and native production contract. A fixed-cache download was
+stopped at `157343725` bytes and left as `.incomplete`; no ORT or two-node test was run. T003
+remains `PARTIAL` and T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#prebuilt-int8-onnx-route).
+
+2026-09-23 Spec190 direct INT8 candidate preparation boundary: the earlier 157343725-byte
+`.incomplete` download state was later superseded by a complete fixed-cache candidate. Read-only
+candidate inspection and an ORT CPU one-token smoke passed: `753999618` bytes, 8372 nodes,
+197 `MatMulInteger`, INT64 control inputs and FLOAT past/present/logits. The first fresh production
+run `direct-int8-prep-r6` reached both Provider READY but the Requester stopped before ACK at
+`PREPARATION_FAILED / DI_NATIVE_PUBLICATION_MATERIAL_PAYLOAD_TOO_LARGE`. The inline initializer
+material exceeded the maintained 1 MiB bundle bound because the existing bounded chunk branch only
+handles external initializers. No Selection, assembly, ORT production execution, terminal, or
+qualification result exists; cleanup passed and no processes remain. This is a native material
+representation boundary, not proof of an ONNX IO/KV mismatch. Preserve r6 and implement the ordered
+B190-03A compatibility/material gate before retrying; T003 remains `PARTIAL`, T004 remains
+`NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#direct-int8-candidate-downloaded-and-r6-preparation-boundary-2026-09-23).
+
+2026-09-23 Spec190 B190-03A compile boundary: the first affected build of the bounded inline
+initializer repair stopped in `NativeOnnxRecipeAssembler.cpp` because the implementation called
+`mutable_graph()` on a `const onnx::ModelProto`. The new path must move inline `raw_data` into
+shared backing, so this is a local const-correctness error. No link, selector, ORT, Repo, MiniNDN,
+or protocol execution ran. The host showed swap-in, so the retry remains bounded at `-j2`; repair
+only this compile boundary before repeating the same affected target. T003 remains `PARTIAL` and
+T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#b190-03a-inline-material-compile-boundary-20260923).
+
+2026-09-23 Spec190 B190-03A compile boundary resolved: after changing only the local
+`ModelProto` ownership required by the inline `raw_data` move, the same system-first `-j2`
+target completed 121/121 and linked `spec189-canonical-publisher`. Native C++ selectors for
+large inline and existing external initializer bounded chunk/reassembly passed 25/25 and
+26/26 assertions. This resolves only the material representation compile/test boundary;
+source quantization identity, native runner, Repo, ACK/Selection, assembly, terminal and
+multi-turn evidence remain unobserved. T003 remains `PARTIAL`, T004 remains `NOT_STARTED`.
+Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#b190-03a-inline-material-bounded-chunk-regression-20260923).
+
+2026-09-23 Spec190 B190-03A identity compile boundary: the affected production translation units
+compiled, but the new C++ identity negative test stopped the target because it called a nonexistent
+`digest()` helper instead of the maintained `nativePlanningDigest()` helper. No link, selector, ORT,
+Repo, MiniNDN, or protocol result was produced. T003 remains `PARTIAL` and T004 remains
+`NOT_STARTED`; durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#b190-03a-identity-compile-boundary-20260923).
+
+2026-09-23 Spec190 B190-03A identity/material boundary resolved: after the test-only helper repair,
+the same target linked 121/121. The C++ identity selector passed 6/6 assertions and the inline
+and external bounded-chunk selectors passed 25/25 and 26/26; the maintained launcher passed
+Python syntax compilation. This closes only the descriptor/material focused gate. Native assembler
+and ORT continuation, Repo, ACK/Selection, Provider assembly, terminal and multi-turn evidence
+remain unobserved. T003 remains `PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#b190-03a-identity-and-bounded-material-regression-20260923).
+
+2026-09-23 Spec190 native runner selector preflight boundary: the existing C++
+`RegisteredOneProviderAssemblyLoadsOrt` selector could not locate
+`DI_NativeOnnxAssemblyWorker` because the current affected build root is
+`build-spec189-oracle/`, not one of the fixture's default candidates. No assembler, worker,
+ORT, Repo or protocol result was produced. Preserve this as `FAIL_PRECHECK`; retry only with
+`NDNSF_SPEC182_BIN_DIR=build-spec189-oracle`. T003 remains `PARTIAL`, T004 remains
+`NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#native-runner-selector-path-boundary-2026-09-23).
+
+2026-09-23 Spec190 native runner fixture boundary after path repair: with
+`NDNSF_SPEC182_BIN_DIR=build-spec189-oracle`, the existing registered assembly selector passed
+worker discovery but stopped at `NativeExecutionPlanJson.cpp:1413` with
+`V3 Selection dataflow cannot be projected for this Provider`. The fixture lacks the matching
+execution-role/request/attempt/plan digest dataflow, so no assembler or ORT result was produced.
+This is retained as `FAIL_FIXTURE_DATAFLOW`; no unrelated fixture change is authorized. T003
+remains `PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#native-runner-selector-path-boundary-2026-09-23).
+
+2026-09-23 Spec190 direct candidate r7 owner preflight boundary: the fresh command reached no
+MiniNDN or business process and exited immediately with `MININDN_REQUIRES_ROOT: run this script
+with sudo -E`. The current session is uid 1000 and non-interactive sudo is unavailable; only
+run-scoped supervisor/resource samples exist under `direct-int8-prep-r7`. This is an experiment
+owner-context block, not an INT8, ORT, Repo, or protocol result. Preserve r7 and resume only in a
+root-owned context. T003 remains `PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#direct-candidate-r7-root-owner-preflight-boundary-20260923).
+
+2026-09-23 Spec190 supporting native gates while r7 is owner-blocked: the rebuilt
+`spec190-cold-assembly-gate` selector passed 40/40 assertions and
+`spec190-materialized-role` passed 7/7 assertions. These are bounded C++ admission/materialization
+checks only; they do not prove direct candidate ORT continuation, Repo, ACK/Selection, assembly,
+terminal or two-node qualification. The direct r7 root-owner block remains unchanged.
+
+2026-09-23 Spec190 native fixture dataflow boundary resolved: the existing
+`RegisteredOneProviderAssemblyLoadsOrt` selector had stopped at
+`NativeExecutionPlanJson.cpp:1413` because its fixture projection omitted the required V3
+`executionRole.roleId`, `requestId`, `attempt`, and `planDigest` bindings. The production check
+was correct; only the fixture was repaired. The affected `integration-tests` target rebuilt
+`128/128`, and the selector passed `1/1` with the explicit
+`NDNSF_SPEC182_BIN_DIR=build-spec189-oracle` worker path. This closes the fixture/precondition
+boundary and proves tiny-fixture native assembler/worker/ORT warmup only. It does not prove the
+direct INT8 candidate, continuation/KV, Repo, ACK/Selection, two-provider chain, terminal, or
+qualification. T003 remains `PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#native-fixture-dataflow-repair-and-ort-selector-2026-09-23).
+
+2026-09-23 Spec190 direct INT8 C++ gate first stopped at the runner's authenticated lineage
+boundary: `stateful ONNX execution is missing authenticated generation lineage`. Static source
+review confirmed this is a required production contract for stateful causal-position inputs,
+not a model-load or ORT construction failure. The test fixture was repaired with valid
+prefill/decode `GenerationEpochLineageV1` values and `generationInputTokenCount`; production
+validation was unchanged. The affected `integration-tests` target rebuilt `128/128`, and the
+same selector then passed `1/1` in about 89.5 seconds, exercising the real assembler, OA02 worker,
+ORT CPU runner, FP32 logits, and predecessor-KV continuation on the fixed 754 MB candidate.
+This resolves the focused native candidate gate only. Repo publication/query, ACK/Selection,
+placement fetch, two-provider execution, terminal, EOS and three-turn evidence remain unobserved;
+T003 remains `PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md).
+
+2026-09-23 Spec190 normal-run static boundary: `LocalExperiment.py` accepted the normal
+three-round/token-budget parameters but omitted `--require-multi-token` when constructing the
+native launcher command. This could have produced a single-token round and invalidated the
+EOS/token-budget acceptance boundary even if MiniNDN started. The minimal wrapper repair and
+32 Python regressions plus launcher syntax compilation passed; no MiniNDN or Repo process ran
+from the defective r8 bundle. Corrected r9 preparation is `NOT_EVALUATED` and records the
+candidate/profile/binary/model hashes plus `--rounds 3 --max-new-tokens 2 --require-multi-token`.
+T003 remains `PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md).
+
+2026-09-23 Spec190 normal-run outer launcher boundary: the first PTY-enabled invocation used
+`PATH=/usr/bin:/bin:/usr/sbin:/sbin` and stopped before MiniNDN business startup because the
+installed `/usr/local/bin/nfd-stop` was not visible to `Minindn.cleanUp()`. This is an
+invocation PATH failure, not a model/Repo/protocol result. A new r10 invocation with the
+complete PATH reached MiniNDN, but it used the invalid short `--max-new-tokens 2` budget and
+ended with `native Qwen turns failed: .../requester.log`; it is not qualification evidence.
+
+2026-09-23 Spec190 token-budget contract boundary: the required `--max-new-tokens 1025` was
+rejected before preparation because `LocalExperiment.py` allowed only `1..64`; the native
+runner independently allowed only `1..1024`. The minimal two-layer validation repair raised
+both ceilings to `1025`, with the existing command regression updated to assert the exact
+value. `33` focused Python tests, both launcher `py_compile`, and `git diff --check` passed.
+No corrected r11 MiniNDN/Repo/protocol result exists yet; T003 remains `PARTIAL` and T004
+remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#normal-launcher-pty-path-and-token-budget-correction-2026-09-23).
+
+2026-09-23 Spec190 r11 preparation boundary: with the corrected `1025` token contract and
+complete PTY/PATH, MiniNDN plus Controller, Authority and both Providers reached `READY`, then
+the requester stopped at `PREPARATION_FAILED` with `model descriptor contains unknown or lossy
+fields`. No ACK, Selection, Repo fetch, assembly, terminal or token result exists. Static source
+comparison found current `NativePlanning.cpp` supports `quantization_subtype=weight_only_int8`,
+but installed `DI_NativeRequester` was stale. The affected native targets rebuilt `119/119`
+and installed successfully; the identity selector passed `1/1` with `6/6 assertions`, and
+installed/build requester hashes now match. The Waf install's separate editable Python binding
+phase reported its pre-existing `NDNSF_GLOBAL_NATIVE_DIGESTS` requirement; it is not native
+runtime evidence. r11 raw evidence is preserved; a fresh r12 run is required. T003 remains
+`PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r11-preparation-boundary-and-installed-requester-closure-repair-2026-09-23).
+
+2026-09-23 Spec190 r13 request boundary: after installing the serialized-material repair, the
+fresh candidate passed outer preflight and reached Controller/Authority/two-Provider READY plus
+`Runtime.open -> User.prepare -> User.request`, then failed before ACK with
+`generation options violate the execution contract`. No Repo, Selection, assembly, terminal or
+token result exists; resource guard and cleanup passed with no residue. Static source comparison
+found Python/native launcher limits at `1025` but shared C++ `NativeGenerationLimits.hpp` still at
+`1024`, so `NativeRequestEnvelope` rejected the requested 1025 options. This is a shared token-limit
+configuration mismatch, not a model/ORT/resource result. r13 is preserved and the Changed gate is
+`1025` accepted by envelope/projection/role contract while `1026` remains rejected. T003 remains
+`PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r13-request-contract-boundary-and-shared-token-limit-changed-gate-2026-09-23).
+
+2026-09-23 Spec190 r12 preparation boundary: after correcting the requester installation
+closure, `1025` token forwarding and PTY/PATH, MiniNDN plus Controller, Authority and both
+Providers reached `READY`, then requester preparation failed with `native canonical material
+payload is invalid`. No Repo/ACK/Selection/assembly/terminal/token result exists. Static model
+inspection found 56 Qwen INT8 initializers whose raw field is exactly `1 MiB` while serialized
+TensorProto is `1,048,617` bytes. The producer and validator both used raw size only, so the
+single-payload branch produced a payload above the 1 MiB cap and the validator rejected it. Both
+checks were changed to include serialized TensorProto size; the focused C++ boundary and prior
+large-inline tests pass `2/2`, `31/31 assertions`. The fixed library is not yet installed and
+no retry is started until the startup/configuration simplification is reviewed. T003 remains
+`PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r12-preparation-boundary-and-serialized-size-boundary-repair-2026-09-23).
+
+2026-09-23 Spec190 r18-r21 C++ runner warmup boundary: the direct-start normal candidate
+passed the resource/cleanup path and reached `RUNNER_CREATE_BEGIN`, but the Provider failed
+inside the constructor's real ORT warmup at `/model/Gather_5` because the causal graph was
+probed with an all-zero `attention_mask`. r21 preserved the raw run and a temporary input trace
+confirmed the boundary before any user request lineage; no Repo/terminal/EOS result exists.
+The minimal C++ Changed gate now uses a valid one-token warmup (`attention_mask=1`,
+`position_ids/cache_position=0`) while leaving authenticated request materialization unchanged.
+The affected native build/install and `DirectInt8CandidateAssemblyRunsOrtAndContinuation`
+selector passed; the unrelated editable Python install still reports the pre-existing
+`NDNSF_GLOBAL_NATIVE_DIGESTS` requirement. T003 remains `PARTIAL`, T004 remains `NOT_STARTED`.
+Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r18-r21-runner-warmup-boundary-and-minimal-cpp-changed-gate-2026-09-23).
+
+2026-09-23 Spec190 r22 command preflight boundary: the post-gate normal Repo invocation
+stopped before MiniNDN business startup because the root command-local PATH omitted
+`/usr/local/bin`; `Minindn.cleanUp()` could not resolve `nfd-stop`. No daemon, Provider,
+Requester, Repo, ORT, or protocol result exists. Preserve r22 and retry once with the same
+candidate/configuration, a new run root, and `/usr/local/bin:/usr/local/sbin` restored in PATH.
+T003 remains `PARTIAL`, T004 remains `NOT_STARTED`. Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r22-command-path-preflight-boundary-2026-09-23).
+
+2026-09-23 Spec190 r23 normal Repo warmup boundary: complete PATH restored real Repo
+publication, ACK close, Selection, Provider-0 assembly and `RUNNER_SPEC_READY`; Provider-0
+then failed at constructor warmup `/model/Gather_5`. Static comparison found the normal
+manifest has no `inputShape.*` override, while the prior direct C++ selector explicitly forced
+initial `past_key_values.*` dimension 2 to zero. The constructor warmup therefore used a
+nonzero initial KV shape with a one-token mask. The minimal C++ repair reuses the existing
+epoch-0 symbolic state-shape rule, and the direct selector was tightened to remove that
+explicit override; build/install and the selector passed. r23 remains non-qualification evidence
+with no terminal/EOS/three-turn result. T003 remains `PARTIAL`, T004 remains `NOT_STARTED`.
+Durable detail is in
+[`b190-03.md`](../specs/190-multiturn-latency/evidence/b190-03.md#r23-normal-repo-warmup-boundary-and-dynamic-kv-changed-gate-2026-09-23).
+
+2026-09-23 Spec190 r24 runtime log-volume boundary: the fresh normal Repo run passed
+command preflight, MiniNDN/NFD startup, ACK/Selection, placement-bound fetch, both
+assembly workers, `RUNNER_READY`, and entered real C++ execution. It was deliberately
+stopped after the two Provider logs reached about `0.93 GB` with only `2.6 GB` free on
+the root filesystem. The first 512 dependency-fetch events per Provider were present;
+no ORT/model/protocol error was observed before the stop, but no terminal/EOS/KV result
+exists. The first owner is the Provider executable's evidence observer, which repeatedly
+serializes the complete ONNX node-provider assignment list for every token. r24 is not
+qualification evidence; raw logs and cleanup are preserved. The next Changed gate is a
+compact per-epoch evidence summary plus full records only on meaningful profile/completion
+transitions, followed by C++ compile-link, focused regression, and one fresh normal Repo.
+See [`b190-06.md`](../specs/190-multiturn-latency/evidence/b190-06.md).
+
+2026-09-23 Spec190 r25 resource/cleanup boundary: after the compact Provider evidence
+change, both Providers entered real C++ execution and emitted over 200 compact updates each
+with logs around `6.6 MB`, so the r24 log-volume problem did not recur. The run-scoped
+encrypted Repo nevertheless reached about `734 MB`; with the preserved r24 evidence and
+other staging, host free space fell below the configured `4 GB` guard. The run was stopped
+before terminal/EOS/KV qualification. `canonical-source.onnx` was verified as a read-only
+hardlink to the immutable source inode, not a second physical model copy. Operator cleanup
+removed only r24/r25 transient encrypted staging and kept logs/config/raw evidence. The
+launcher had not converted SIGTERM into its existing `finally`, leaving children/staging
+until explicit cleanup; the minimal signal bridge is now implemented and covered by a
+focused regression. See [`b190-06.md`](../specs/190-multiturn-latency/evidence/b190-06.md).
+# 2026-09-23 — Spec190 T005 ASan resource stop and lookup fixture boundary
+
+- Scope: `spec190-repo-lookup-reuse` prepare-before-STORE receipt lookup gate.
+- First fixture boundary: the new test root did not set owner-only permissions; production
+  `FilesystemRepoStoreBackend` correctly rejected it as `repo-file-root-not-private`. After adding
+  the same owner-only setup used by the existing Repo fixtures, the selector passed.
+- ASan boundary: the independent full affected closure reached 14/120 compile tasks, then sustained
+  swap on the 12GB host (`vmstat` showed about 0.5 GiB available and swap-in activity). The build was
+  interrupted to protect the host; no ASan result is claimed.
+- Durable evidence: [B190-10](../specs/190-multiturn-latency/evidence/b190-10.md).
+- Next action: run the C++ Runtime second-prepare/new-process and lookup/publish transaction matrix
+  under bounded resource conditions; keep T005 `PARTIAL` until those gates pass.

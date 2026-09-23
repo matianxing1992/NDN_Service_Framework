@@ -10,10 +10,14 @@
 
 For the native local gate, also provide absolute, candidate-bound paths through
 `SPEC187_NATIVE_MODE=1`, `SPEC187_NATIVE_SELECTOR`,
-`SPEC187_NATIVE_REQUEST_CONFIG`, `SPEC187_NATIVE_REQUEST_INPUT` and
-`SPEC187_NATIVE_REQUEST_OUTPUT`. The selector is launched as the MiniNDN User
-process and inherits its node transport; a missing input or an existing output
-is rejected before MiniNDN starts.
+`SPEC187_NATIVE_AUTHORITY_CONFIG`, `SPEC187_NATIVE_GRANT_AUTHORITY_PUBLIC_KEY`,
+`SPEC187_NATIVE_PROVIDER_RECIPIENT_KEY_MAP`, `SPEC187_NATIVE_REQUEST_CONFIG`,
+`SPEC187_NATIVE_REQUEST_INPUT` and `SPEC187_NATIVE_REQUEST_OUTPUT`. The
+authority, request configuration and request input/output must be under the
+bound `results` tree; the selector is the sealed
+`/opt/ndnsf-di/current/bin/spec187-yolo-minindn`. The runner starts the native
+authority and waits for `NATIVE_GRANT_AUTHORITY_READY` before Providers, and a
+missing input or an existing output is rejected before MiniNDN starts.
 
 ## Local sequence
 
