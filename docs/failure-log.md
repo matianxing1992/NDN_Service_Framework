@@ -1,5 +1,29 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-19 protected-reuse global static audit
+
+- **Status:** `ROOT_CAUSE` / T006 remains `PARTIAL`; T007 remains locked.
+- **First boundary:** Controller status transition and durable protected serving
+  invalidation. B190-18 persisted a non-secret reference, but the current
+  status path can invalidate too early or too late, active `m_largeDataFiles`
+  serving is not retired, and a late publication can race the policy epoch.
+  No new production retry was run.
+- **Findings:** P1 first-install/version-advance confusion; P1 missing
+  publication/reference epoch fence; P1 reference-only invalidation leaves
+  active serving; P1 reference I/O error has no fail-closed status contract.
+  P2 service-filtered multi-record rewrite and Face-callback blocking remain
+  design constraints.
+- **Audit scope:** CodeGraph and current source mapped
+  `prepare → Core/Repo publication → ACK/Selection/placement → Provider
+  assembly/runner → terminal/cleanup`; architecture ownership and active
+  Spec190 contracts were read. `PreparedServiceRequest` currently contains no
+  grant/Selection/placement binding.
+- **Changed gate:** B190-20 must prove service-scoped policy-transition fence,
+  old-interest serving retirement, Repo ciphertext preservation, unaffected
+  service reuse, same-version status restore reuse, and a paused-publication
+  race negative in a C++ oracle.
+- **Evidence:** [B190-19](../specs/190-multiturn-latency/evidence/b190-19.md).
+
 ## 2026-09-23 — Spec190 B190-18 Core-owned durable reference recovery gate
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.

@@ -5,6 +5,16 @@
 
 ## Current Checkpoint
 
+2026-09-23 18:45 -05:00：B190-19 完成 T006 全局静态审查。独立复核发现不能直接把
+“删除 `.dkr` reference”当作撤销修复：必须先区分首次 status restore 与真正版本推进，
+为 durable publish/reference 加 service-scoped policy epoch fence，撤销当前
+`m_largeDataFiles` serving owner，并为 reference I/O 建立 fail-closed typed result；否则
+旧 ciphertext 仍可能继续 serving，或并发旧发布被标成新 epoch。审查覆盖
+`source → prepare → Repo → ACK/Selection → placement → assembly/runner → terminal/cleanup`
+链路，明确当前 `PreparedServiceRequest` 不携带 grant/Selection/placement。未改生产代码、
+未启动新实验；T006 继续 `PARTIAL`，T007 继续锁定。下一 gate 固定为 B190-20
+`policy-transition protected-serving fence`，详见 [B190-19](evidence/b190-19.md)。
+
 2026-09-23 18:10 -05:00：B190-18 Core-owned durable reference recovery gate 已完成。`ServiceUser`
 在 Repo durable lookup 命中前恢复并严格校验非秘密 reference；有效命中直接重注册已有
 range source，不重新生成 key、加密或 `commitFile`；reference 缺失/损坏返回
@@ -903,7 +913,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
 | [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
-| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)、[B190-17](evidence/b190-17.md)、[B190-18](evidence/b190-18.md)：retention、key-reference/AAD、Repo durable identity metadata/restart read、Core durable lookup-to-serving 和 Core-owned reference recovery gate 已分别通过；真实 OS restart/decrypt serving、new-grant/Selection/placement rebinding、revoke invalidation、Provider/assembled hit、精确 missing-object fetch 和真实 protected restart 未完成，禁止解除 protected miss 门 | 2026-09-23 18:10 -05:00 |
+| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)、[B190-17](evidence/b190-17.md)、[B190-18](evidence/b190-18.md)、[B190-19](evidence/b190-19.md)：retention、key-reference/AAD、Repo durable identity metadata/restart read、Core durable lookup-to-serving 和 Core-owned reference recovery gate 已分别通过；policy-transition serving fence、真实 OS restart/decrypt serving、new-grant/Selection/placement rebinding、revoke invalidation、Provider/assembled hit、精确 missing-object fetch 和真实 protected restart 未完成，禁止解除 protected miss 门 | 2026-09-23 18:45 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
 | [T009 Finalize and drain](#t009-finalize-and-drain) | NOT_STARTED | T008 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 15:08 -05:00 |
