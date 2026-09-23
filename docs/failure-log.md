@@ -1,5 +1,16 @@
 # Failure Log and Evidence Index
 
+## Spec190 T006 — protected key-reference identity boundary (2026-09-23)
+
+静态复查确认 protected durable reuse 的下一个首边界在 grant verification 到磁盘密文
+身份的 owner 交接：`NativeGrantVerifier` 解析出的 `keyId` 当前被丢弃，`ProtectedRuntime`
+只保留 secret content key，`NativeAssembledEntryContext` 也没有 opaque key-reference 字段。
+因此不能仅把 protected 目录改成稳定路径或删除 assembler miss；那会把“仍存在的文件”误报为
+当前 grant 可用的 protected hit。B190-13 冻结了最小 C++ gate：由 authority/provider/
+model/epoch/keyId 派生非秘密 `sha256:` reference，绑定 protected ciphertext 的 AAD/manifest，
+并拒绝缺失或错误 reference。当前没有代码、compile/link 或 runtime 结果；T006 保持
+`PARTIAL`，T007 不解锁。
+
 ## Spec190 T006 — retention boundary Changed gate opened (2026-09-23)
 
 CD-09 target contract and the scoped C++ re-review identified the first owner-correct

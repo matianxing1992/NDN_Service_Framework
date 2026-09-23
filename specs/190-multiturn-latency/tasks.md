@@ -37,6 +37,13 @@ Core key-reference owner。
 新 grant 绑定、Provider serving/assembled protected hit 和真实重启均未验证；下一 gate 是
 Core crypto-owner 的 scoped static re-review，不能跳到 T007。
 
+2026-09-23：B190-13 完成 Core key-reference identity static re-review。首边界为 grant
+`keyId` 在 `NativeGrantVerificationResult` 丢失、`ProtectedRuntime` 没有非秘密 opaque
+reference、protected entry AAD/manifest 未绑定该 reference；因此继续保留 assembler protected
+miss，不改稳定目录、不运行真实 Qwen。下一 gate 只实现 reference propagation 与 wrong-reference
+fail-closed C++ selector，证据见 [B190-13](evidence/b190-13.md)；T006 仍 `PARTIAL`，T007
+继续锁定。
+
 2026-09-23 16:02 -05:00：用户明确取消 ASan/UBSan 资格方向，fresh sanitizer `-j2` 从 `1/120`
 推进到 `8/120` 后受控停止；可用内存约 5.4 GiB，最近 `vmstat` 没有持续 `si/so`，但没有产生
 sanitizer 结果。根 `build/` 仅约 80 KiB 配置、没有可复用对象；后续普通 Waf 构建固定使用根

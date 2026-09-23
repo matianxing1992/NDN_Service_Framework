@@ -1040,3 +1040,13 @@ finalization仍归原生C++。新增精确恢复观测区别于模型cache hit�
 - 兼容性、迁移或撤回影响：legacy transient callers 与 Spec189 cleanup 保持兼容；不存储 plaintext/private key/grant/KV，不改变 assembler protected miss。撤回需同步移除 overload、Repo retention branch、selector 与 B190-12，不得只删测试。
 - 源码与证据：`ndn-service-framework/EncryptedLargeDataRangeStore.hpp`、`NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp`、`tests/unit-tests/spec190-protected-material-reuse.t.cpp`、`tests/wscript`；[B190-12](../specs/190-multiturn-latency/evidence/b190-12.md)。
 - 验证与状态：root `build/` configure PASS；new target `43/43` compile-link，selector `5 cases × 3` PASS；existing `spec189-encrypted-repo` `120/120` compile-link，6 cases PASS；`git diff --check` PASS。状态 `PARTIAL/OPEN_FOR_NEXT_BATCH`，key-reference/restart/real Qwen remains unobserved，T007 `NOT_STARTED`。
+
+### D-190-PROTECTED-KEY-REFERENCE：authenticated protected key-reference identity gate — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T006/B190-13；`CD-09`、`FR-017`、`SC-007`、`SC-008`。
+- 模块 / 当前与目标章节：`NativeGrantVerifier`、`ProtectedRuntime`、`NativeProtectedArtifactStore`、`NativeCanonicalOnnxAssembler` protected material identity。
+- 原设计 / 新设计 / 修改原因：grant wire 已包含 `keyId`，但当前 verifier result 丢弃它，runtime 只持有 secret content key，assembled ciphertext context 不包含可重启复用的 key-reference。冻结由 authority/provider/model/epoch/keyId 派生的非秘密 `sha256:` reference，并将其纳入 protected ciphertext AAD/manifest；request、attempt、grant digest、provider boot、fencing 和 KV 仍为运行时绑定，不能进入 durable identity。
+- 当前已实现部分 / 目标未实现部分：本条只记录静态审查和最小实现门；reference propagation、AAD/manifest binding、wrong-reference selector、稳定 protected cache lookup、当前新 grant 绑定和真实重启仍未完成。Assembler protected miss 不变。
+- 兼容性、迁移或撤回影响：只扩展 protected assembled-entry identity；现有 plaintext/compatibility cache、transient Repo API 和 B190-12 durable source gate 不改变。缺失/错误 reference 必须 fail-closed，不得把旧 ciphertext 当命中。
+- 源码与证据：`NativeGrantVerifier.*`、`ProtectedRuntime.*`、`NativeProtectedArtifactStore.*`、`NativeCanonicalOnnxAssembler.cpp`；[B190-13](../specs/190-multiturn-latency/evidence/b190-13.md)；[CD-09](../specs/190-multiturn-latency/contracts/material-reuse.md#cd-09-protected-material-reuse-boundary)。
+- 验证与状态：本轮 static review 已完成；compile-link/runtime-test 尚未执行，ASan/UBSan 按用户范围 deferred。状态 `PARTIAL/OPEN_FOR_NEXT_BATCH`，T006 未完成，T007 继续锁定。
