@@ -5,6 +5,25 @@
 
 ## Current Checkpoint
 
+2026-09-23 16:02 -05:00：用户明确取消 ASan/UBSan 资格方向，fresh sanitizer `-j2` 从 `1/120`
+推进到 `8/120` 后受控停止；可用内存约 5.4 GiB，最近 `vmstat` 没有持续 `si/so`，但没有产生
+sanitizer 结果。根 `build/` 仅约 80 KiB 配置、没有可复用对象；后续普通 Waf 构建固定使用根
+`build/`，不与独立 sanitizer 配置混用。T005 的现有 focused/transaction 证据保持有效，完整
+sanitizer 门不再作为本轮工作目标，不因此把 T005 标记为完整验收。
+
+2026-09-23 16:03 -05:00：普通根 `build/` 重新配置后以 `-j3` 完成 `120/120`，同一
+`spec190-repo-lookup-reuse` 二进制连续 3 次通过 4/4 C++ 用例；SHA-256 为
+`cc2f471eb3d8d13a99e8c7cfee56779e99bf956fe80986136da527f9e424b89f`。普通构建及 focused
+runtime gate 已闭合；ASan/UBSan 按用户范围明确 deferred，不能据此把 T005 的原始 sanitizer
+exit 词条计为 PASS。
+
+2026-09-23 15:48 -05:00：T005 进入 `IN_PROGRESS`，本轮只处理尚未闭合的 ASan/UBSan
+全闭包证据。已完成当前生产调用链、Repo publication lock、fixture/oracle、Waf target 与
+安装边界的只读复审；上一轮 `-j2` 在约 15/120 因 12GB 主机资源边界停止，旧构建目录已不在
+工作树，因此本轮登记新的 Changed gate：fresh `--with-tests --with-sanitizer=address,undefined`
+配置，在同一受影响 `spec190-repo-lookup-reuse` target 上先以 `-j2` 观察真实峰值和 swap。
+若 `-j2` 稳定完成，再单独评估 `-j3`；任一资源边界只记为未闭合，不改变生产结论。
+
 2026-09-23：T005 已完成 native static/compile/runtime gate 的主要边界，但尚未闭合完整验收。
 静态审查确认原路径在 `load` 和完整 source inspection 后才进入 `publish`，因此跨进程
 Repo 命中仍会触发 publication 入口。已在 `RepositorySourceProvider` 增加可选
@@ -793,7 +812,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T002 ACK window](#t002-ack-window) | DONE | T001 | [b190-02](evidence/b190-02.md)；Qwen 1000ms profile、非法值校验、C++ compile-link、Python 8/8、`Spec190AckWindow` 3/3、静态复核 PASS；真实两节点/Trust Schema签名验收未运行 | 2026-09-22 05:10 -05:00 |
 | [T003 Live turns](#t003-live-turns) | PARTIAL | T002 | [b190-03](evidence/b190-03.md)、[b190-06](evidence/b190-06.md)；实现/静态/受影响目标 compile-link PASS；source identity subtype C++ gate 6/6、inline bounded-chunk C++ 回归 25/25、既有 external bounded-chunk 回归 26/26；focused C++ gates、Spec182 activation 9/9、worker protocol 30/30 已通过；本轮 `worker-child-skip-ort-session`、`worker-file-backed-response` 与 file-backed S7 digest-reuse gate 的静态/compile-link/focused C++ 验证通过；完整 `unit-tests` 仍受既有 `di-native-planning.t.cpp` 编译边界影响；direct INT8 candidate 已完成固定缓存下载和 ORT one-token smoke，但 fresh r6 在 preparation 首边界触发 `DI_NATIVE_PUBLICATION_MATERIAL_PAYLOAD_TOO_LARGE`，未进入 ACK/Selection/assembly；B190-03A native assembler/ORT one-token+continuation gate 尚未完成；run-04/07/14/16/18/19/20/29/30/31/32/34/43/46 的资源边界、run-05/11 的 group progress 边界、run-12/13/15/17/33/44/45/50 的 launcher 预检边界、run-21/22/23/24 的安装/barrier/oracle evidence 边界、r24 的日志磁盘边界均已保留；不得解锁 T004 | 2026-09-23 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
-| [T005 Query and reuse](#t005-query-and-reuse) | PARTIAL | T004 | prepare-before-STORE lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup 和 initializer/layer identity focused PASS；sanitizer 未闭合 | 2026-09-23 |
+| [T005 Query and reuse](#t005-query-and-reuse) | PARTIAL | T004 | prepare-before-STORE lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup 和 initializer/layer identity focused PASS；普通根 `build/` `-j3` 与 C++ 4-case ×3 PASS；ASan/UBSan deferred by user | 2026-09-23 16:03 -05:00 |
 | [T006 Protected material reuse](#t006-protected-material-reuse) | NOT_STARTED | T005 | 轮到 T006 后先冻结 crypto-owner 恢复/key-reference/retention 接口；当前不得提前评估或编码，禁止直接移除 protected miss 门 | 2026-09-22 15:08 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |

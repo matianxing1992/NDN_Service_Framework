@@ -1,5 +1,30 @@
 # Failure Log and Evidence Index
 
+## Spec190 T005 — ordinary root `build/` `-j3` compile and focused regression PASS (2026-09-23)
+
+2026-09-23：按用户要求放弃 sanitizer 构建，重新配置仓库根 `build/` 的普通 `--with-tests`
+身份，以 `-j3` 构建 `spec190-repo-lookup-reuse`；`120/120` 成功，耗时约 `9m23.675s`。
+峰值压力时可用内存约 `2.8 GiB`，出现少量 swap-out 但没有 OOM 或持续 swap-in。相同二进制
+连续运行 3 次，4/4 focused cases 每次通过；binary SHA-256 为
+`cc2f471eb3d8d13a99e8c7cfee56779e99bf956fe80986136da527f9e424b89f`。该结果证明普通根
+`build/` 的 compile/link/runtime gate；不把未执行的 ASan/UBSan 结果补写为 PASS。
+
+## Spec190 T005 — fresh ASan/UBSan `-j2` stopped by user scope change (2026-09-23)
+
+2026-09-23：fresh system-first ASan/UBSan configure 后，`spec190-repo-lookup-reuse` 以 `-j2`
+从 `1/120` 推进到 `8/120`。期间可用内存约 `5.4 GiB`，最近 `vmstat` 样本没有持续
+swap-in/out，未复现上一轮的 `243 MiB` 资源边界。用户随后明确取消 sanitizer 方向并要求普通
+Waf 使用仓库根 `build/`，因此受控停止，返回 `rc=120`；没有 sanitizer compile/link/runtime
+结果。该记录不计 PASS/FAIL，T005 仍 `PARTIAL`，后续只按普通 build 范围推进。
+
+## Spec190 T005 — fresh ASan/UBSan `-j2` Changed gate started (2026-09-23)
+
+本轮在当前生产调用链、测试 oracle、Waf target 和安装边界完成只读复审后，登记 fresh
+`--with-tests --with-sanitizer=address,undefined` 配置及 `spec190-repo-lookup-reuse`
+目标的 `-j2` 资源观测。上一轮 ASan 构建目录已不存在，因此不复用旧对象；本条记录在构建
+启动前建立，当前尚无 compile/link 或 runtime-test 结论。若 `-j2` 稳定完成，再单独评估
+`-j3`；资源停止仍保持 T005 `PARTIAL`，不计 sanitizer PASS。
+
 ## Spec190 T005 — ASan/UBSan serial build interrupted before result (2026-09-23)
 
 2026-09-23：沿用 `build-spec190-t005-asan`，以 `-j1` 从已完成对象继续构建
