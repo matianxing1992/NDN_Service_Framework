@@ -797,6 +797,7 @@ verifyAndUnwrapNativeGrant(const std::string& wireJson,
       reinterpret_cast<const std::uint8_t*>(plaintext.data()) +
         plaintext.size());
     result.verified = true;
+    result.keyId = grant.keyId;
     result.expiresAtMs = grant.expiresAtMs;
     result.allowedResidencyTiers = grant.allowedResidencyTiers;
     OPENSSL_cleanse(plaintext.data(), plaintext.size());

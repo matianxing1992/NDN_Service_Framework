@@ -1853,11 +1853,14 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 *protectedRuntime, staging,
                 "provider-artifact-" + std::to_string(::getpid()));
               const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
+              const auto keyReference = protectedRuntime->keyReference();
+              if (!keyReference)
+                throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
               const NativeAssembledEntryContext context{
                 projection.assembly.modelManifestDigest,
                 options.roleAssemblySpecDigest,
                 sha256TensorBytes(std::vector<std::uint8_t>(profile.begin(), profile.end())),
-                "MODEL_PROTO"};
+                "MODEL_PROTO", keyReference->digest()};
               protectedRuntime->withContentKey(providerNowMs(), [&] (const auto& key) {
                 const auto actualDigest = openNativeAssembledEntryToFile(
                   key, ciphertextPath, staging / "model.onnx", context,

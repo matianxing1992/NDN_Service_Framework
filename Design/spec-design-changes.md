@@ -1050,3 +1050,13 @@ finalization仍归原生C++。新增精确恢复观测区别于模型cache hit�
 - 兼容性、迁移或撤回影响：只扩展 protected assembled-entry identity；现有 plaintext/compatibility cache、transient Repo API 和 B190-12 durable source gate 不改变。缺失/错误 reference 必须 fail-closed，不得把旧 ciphertext 当命中。
 - 源码与证据：`NativeGrantVerifier.*`、`ProtectedRuntime.*`、`NativeProtectedArtifactStore.*`、`NativeCanonicalOnnxAssembler.cpp`；[B190-13](../specs/190-multiturn-latency/evidence/b190-13.md)；[CD-09](../specs/190-multiturn-latency/contracts/material-reuse.md#cd-09-protected-material-reuse-boundary)。
 - 验证与状态：本轮 static review 已完成；compile-link/runtime-test 尚未执行，ASan/UBSan 按用户范围 deferred。状态 `PARTIAL/OPEN_FOR_NEXT_BATCH`，T006 未完成，T007 继续锁定。
+
+### D-190-PROTECTED-KEY-REFERENCE-IMPLEMENTED：key-reference propagation and authenticated artifact context — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T006/B190-14；`CD-09`、`FR-017`、`SC-007`、`SC-008`。
+- 模块 / 当前与目标章节：`NativeGrantVerifier`、`ProtectedRuntime`、`NativeProtectedArtifactStore`、`NativeCanonicalOnnxAssembler`、Provider protected serving。
+- 原设计 / 新设计 / 修改原因：原实现验证 grant 后丢弃 `keyId`，protected assembled context 只能绑定模型/recipe/storage，无法证明 ciphertext 属于当前授权 key identity。现在保存并校验由 authority/provider/model/epoch/keyId 派生的非秘密 `sha256:` reference，并将其加入 protected AAD/manifest；Assembler 和 Provider 缺少 reference 时 fail-closed。
+- 当前已实现部分 / 目标未实现部分：B190-14 的 reference propagation、authorized accessor、AAD/manifest binding、wrong-reference C++ regression 已实现并通过；stable protected cache path、ciphertext-only durable Repo recovery、new-grant/Selection rebinding、跨进程 restart 和真实 Qwen 仍未实现或观测，protected miss 不变。
+- 兼容性、迁移或撤回影响：只影响 protected assembled-entry identity；plaintext/compatibility cache、transient Repo API 和 B190-12 durable Source gate 不变。reference 不包含 content key、private key、grant wire、request/KV 或 provider boot/fencing；撤回必须同步移除 production field、AAD/manifest serialization、Assembler/Provider checks 与 B190-14 selector。
+- 源码与证据：`NativeGrantVerifier.*`、`ProtectedRuntime.*`、`NativeProtectedArtifactStore.*`、`NativeCanonicalOnnxAssembler.cpp`、`Provider.cpp`；[B190-14](../specs/190-multiturn-latency/evidence/b190-14.md)。
+- 验证与状态：普通根 `build/` `spec181-protected-runtime-closure` compile/link PASS（`-j2`，8m31.186s）；selector `32` C++ cases PASS；`git diff --check` PASS。ASan/UBSan 按用户范围 deferred；T006 仍 `PARTIAL`，T007 继续锁定。

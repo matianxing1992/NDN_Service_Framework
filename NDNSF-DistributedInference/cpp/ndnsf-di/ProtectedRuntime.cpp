@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
+#include <ndn-cxx/util/sha256.hpp>
 #include <algorithm>
 #include <cstdlib>
 #include <exception>
@@ -65,6 +66,43 @@ requireText(const std::string& value, const char* field)
 }
 
 } // namespace
+
+void
+NativeProtectedKeyReferenceV1::validate() const
+{
+  requireText(authorityIdentity, "protected.keyReference.authorityIdentity");
+  requireText(providerIdentity, "protected.keyReference.providerIdentity");
+  requireText(protectionEpoch, "protected.keyReference.protectionEpoch");
+  requireText(keyId, "protected.keyReference.keyId");
+  if (!isDigest(modelManifestDigest)) {
+    throw std::invalid_argument("protected.keyReference.modelManifestDigest is invalid");
+  }
+}
+
+std::string
+NativeProtectedKeyReferenceV1::canonical() const
+{
+  validate();
+  const auto frame = [] (const std::string& value) {
+    return std::to_string(value.size()) + ":" + value;
+  };
+  return "NDNSF-DI/protected-key-reference/v1" + frame(authorityIdentity) +
+         frame(providerIdentity) + frame(modelManifestDigest) +
+         frame(protectionEpoch) + frame(keyId);
+}
+
+std::string
+NativeProtectedKeyReferenceV1::digest() const
+{
+  ndn::util::Sha256 hash;
+  const auto value = canonical();
+  hash << value;
+  auto hex = hash.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return "sha256:" + hex;
+}
 
 void
 ProtectedRuntimeBindingV1::validate() const
@@ -202,6 +240,14 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
       throw std::runtime_error(result.reason.empty()
         ? "DI_PROTECTED_GRANT_REJECTED: invalid content key" : result.reason);
     }
+    if (result.keyId.empty()) {
+      throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: verified grant key identity is missing");
+    }
+    NativeProtectedKeyReferenceV1 keyReference{
+      config.authorityIdentity, m_binding.provider,
+      config.modelManifestDigest, m_binding.protectionEpoch, result.keyId};
+    keyReference.validate();
+    m_keyReference = std::move(keyReference);
     if (std::find(result.allowedResidencyTiers.begin(), result.allowedResidencyTiers.end(),
                   "DISK_CIPHERTEXT_ASSEMBLED") == result.allowedResidencyTiers.end()) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: assembled residency is forbidden");
@@ -381,6 +427,7 @@ ProtectedRuntime::drainLocked()
   bool failed = false;
   OPENSSL_cleanse(m_contentKey.data(), m_contentKey.size());
   m_contentKey.clear();
+  m_keyReference.reset();
   const auto drain = [&failed] (auto& leases) {
     for (auto it = leases.rbegin(); it != leases.rend(); ++it) {
       try {
@@ -439,6 +486,16 @@ const ProtectedRuntimeBindingV1&
 ProtectedRuntime::binding() const noexcept
 {
   return m_binding;
+}
+
+std::optional<NativeProtectedKeyReferenceV1>
+ProtectedRuntime::keyReference() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!authorizedStateLocked() || !m_keyReference) {
+    return std::nullopt;
+  }
+  return m_keyReference;
 }
 
 } // namespace ndnsf::di

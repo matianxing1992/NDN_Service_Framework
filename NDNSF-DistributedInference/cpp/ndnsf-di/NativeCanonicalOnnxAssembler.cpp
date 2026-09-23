@@ -1989,9 +1989,14 @@ prepareNativeCanonicalOnnxRole(
       // Ciphertext alone is retained in the final cache; the authenticated
       // plaintext handoff is streamed into the private staging directory.
       const std::string profile = "\"ndnsf-di-provider-workdir-scratch-v1\"";
+      const auto keyReference = options.protectedRuntime->keyReference();
+      if (!keyReference) {
+        throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
+      }
       const NativeAssembledEntryContext context{
         projection.assembly.modelManifestDigest, options.roleAssemblySpecDigest,
-        sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())), "MODEL_PROTO"};
+        sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())),
+        "MODEL_PROTO", keyReference->digest()};
       const auto cipherPath = finalDir / "model.onnx.cipher";
       options.protectedRuntime->withContentKey(nowMs(), [&] (const auto& key) {
         encryptedArtifactDigest = sealNativeAssembledEntryToFile(

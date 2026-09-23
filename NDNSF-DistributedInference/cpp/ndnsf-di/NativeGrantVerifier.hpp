@@ -33,6 +33,8 @@ struct NativeGrantVerificationResult
   bool verified = false;
   /** Empty on success; otherwise the registered rejection reason. */
   std::string reason;
+  /** Non-secret authority key identity carried by the verified grant. */
+  std::string keyId;
   std::vector<std::uint8_t> contentKey;
   std::uint64_t expiresAtMs = 0;
   std::vector<std::string> allowedResidencyTiers;

@@ -12,6 +12,7 @@ struct NativeAssembledEntryContext
   std::string roleAssemblySpecDigest;
   std::string storageProfileDigest;
   std::string entryKind = "MODEL_PROTO";
+  std::string keyReferenceDigest;
 };
 
 // Hash the exact assembly object in the canonical, authenticated Selection wire.
