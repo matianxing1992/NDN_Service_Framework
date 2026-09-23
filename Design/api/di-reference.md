@@ -25,11 +25,11 @@ inline std::string queryCudaDeviceUuid(int runtimeOrdinal)
 
 ## NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp
 
-源码 SHA-256：`dd538c23e034046142ab9c1f0cf2fd1e4e9acabfa2e843212bc415fe85f0c096`。
+源码 SHA-256：`a8f51dff92a75a5be5044e699a977defddb5e47c89066e523c6c1ad45ccbc6e3`。
 
 ### API-9209edc737ff · ndnsf::di::kNdnSf182RequestMagic[8] = {'N', 'D', 'I', '1', '8', '2', 'A', '1'}
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L43)
 
 ```cpp
 inline constexpr char kNdnSf182RequestMagic[8] = {'N', 'D', 'I', '1', '8', '2', 'A', '1'};
@@ -37,7 +37,7 @@ inline constexpr char kNdnSf182RequestMagic[8] = {'N', 'D', 'I', '1', '8', '2', 
 
 ### API-e0b6bc83629d · ndnsf::di::kNdnSf182ResponseMagic[8] = {'N', 'D', 'I', '1', '8', '2', 'R', '1'}
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L44)
 
 ```cpp
 inline constexpr char kNdnSf182ResponseMagic[8] = {'N', 'D', 'I', '1', '8', '2', 'R', '1'};
@@ -45,7 +45,7 @@ inline constexpr char kNdnSf182ResponseMagic[8] = {'N', 'D', 'I', '1', '8', '2',
 
 ### API-8d94801e5960 · ndnsf::di::kNativeOnnxWorkerMaxMetadataBytes = 65536
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L47)
 
 ```cpp
 inline constexpr std::size_t kNativeOnnxWorkerMaxMetadataBytes = 65536;
@@ -59,7 +59,7 @@ inline constexpr std::size_t kNativeOnnxWorkerMaxMetadataBytes = 65536;
 
 ### API-1b9633b08b10 · ndnsf::di::* kNativeOnnxAssemblyResultSchema =   "ndnsf-di-native-assembly-result-v1"
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L42)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L50)
 
 ```cpp
 inline constexpr const char* kNativeOnnxAssemblyResultSchema =
@@ -74,7 +74,7 @@ inline constexpr const char* kNativeOnnxAssemblyResultSchema =
 
 ### API-1ba1652233d1 · ndnsf::di::* kNativeOnnxAssemblyErrorSchema =   "ndnsf-di-native-assembly-error-v1"
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L52)
 
 ```cpp
 inline constexpr const char* kNativeOnnxAssemblyErrorSchema =
@@ -83,16 +83,24 @@ inline constexpr const char* kNativeOnnxAssemblyErrorSchema =
 
 ### API-3494c9ca2e9f · ndnsf::di::* kNativeOnnxAssemblyRequestSchema =   "ndnsf-di-native-assembly-request-v1"
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L46)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L54)
 
 ```cpp
 inline constexpr const char* kNativeOnnxAssemblyRequestSchema =
   "ndnsf-di-native-assembly-request-v1";
 ```
 
+### API-7f41a3262c6f · ndnsf::di::kNativeOnnxWorkerDigestOnlyStatus = 3
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L56)
+
+```cpp
+inline constexpr std::uint8_t kNativeOnnxWorkerDigestOnlyStatus = 3;
+```
+
 ### API-169d06e75b7d · ndnsf::di::* kNativeOnnxCertifiedRecipeSchema =   "ndnsf-di-certified-onnx-assembly-v1"
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L51)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L60)
 
 ```cpp
 inline constexpr const char* kNativeOnnxCertifiedRecipeSchema =
@@ -108,7 +116,7 @@ inline constexpr const char* kNativeOnnxCertifiedRecipeSchema =
 
 ### API-ee5aaa6f5a47 · ndnsf::di::NativeOnnxRequestHeader
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L64)
 
 ```cpp
 struct NativeOnnxRequestHeader
@@ -116,7 +124,7 @@ struct NativeOnnxRequestHeader
 
 ### API-f3d2c75cb088 · ndnsf::di::NativeOnnxRequestHeader::metadataLength
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L66)
 
 ```cpp
 std::uint64_t metadataLength = 0;
@@ -124,7 +132,7 @@ std::uint64_t metadataLength = 0;
 
 ### API-ecc66adf599f · ndnsf::di::NativeOnnxRequestHeader::modelLength
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L67)
 
 ```cpp
 std::uint64_t modelLength = 0;
@@ -132,7 +140,7 @@ std::uint64_t modelLength = 0;
 
 ### API-cf7112b5cacf · ndnsf::di::NativeOnnxRequestHeader::initializerLength
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L68)
 
 ```cpp
 std::uint64_t initializerLength = 0;
@@ -140,15 +148,23 @@ std::uint64_t initializerLength = 0;
 
 ### API-523bd6064743 · ndnsf::di::NativeOnnxRequestHeader::hasInitializer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L69)
 
 ```cpp
 bool hasInitializer = false;
 ```
 
+### API-f7a003f1ccc4 · ndnsf::di::NativeOnnxRequestHeader::hasModelFile
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L70)
+
+```cpp
+bool hasModelFile = false;
+```
+
 ### API-8cc4be528142 · ndnsf::di::NativeOnnxResponseHeader
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L64)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L74)
 
 ```cpp
 struct NativeOnnxResponseHeader
@@ -156,7 +172,7 @@ struct NativeOnnxResponseHeader
 
 ### API-602c4e8a195e · ndnsf::di::NativeOnnxResponseHeader::metadataLength
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L76)
 
 ```cpp
 std::uint32_t metadataLength = 0;
@@ -164,7 +180,7 @@ std::uint32_t metadataLength = 0;
 
 ### API-2f6af31975f5 · ndnsf::di::NativeOnnxResponseHeader::modelLength
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L67)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L77)
 
 ```cpp
 std::uint64_t modelLength = 0;
@@ -172,7 +188,7 @@ std::uint64_t modelLength = 0;
 
 ### API-0d2ada6ba6a4 · ndnsf::di::NativeOnnxResponseHeader::status
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L78)
 
 ```cpp
 std::uint8_t status = 0;
@@ -180,7 +196,7 @@ std::uint8_t status = 0;
 
 ### API-b87152028e0f · ndnsf::di::NativeOnnxRequestDecoder
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L87)
 
 ```cpp
 class NativeOnnxRequestDecoder
@@ -188,7 +204,7 @@ class NativeOnnxRequestDecoder
 
 ### API-0849bea3a03c · ndnsf::di::NativeOnnxRequestDecoder::Result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L90)
 
 ```cpp
 enum class Result
@@ -196,7 +212,7 @@ enum class Result
 
 ### API-e735d9d2a7f3 · ndnsf::di::NativeOnnxRequestDecoder::Result::NeedMore
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L90)
 
 ```cpp
 NeedMore
@@ -204,7 +220,7 @@ NeedMore
 
 ### API-917c4ea2927d · ndnsf::di::NativeOnnxRequestDecoder::Result::Complete
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L90)
 
 ```cpp
 Complete
@@ -212,7 +228,7 @@ Complete
 
 ### API-db542d77c3f1 · ndnsf::di::NativeOnnxRequestDecoder::Result::ProtocolError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L90)
 
 ```cpp
 ProtocolError
@@ -220,7 +236,7 @@ ProtocolError
 
 ### API-1bab99a91888 · ndnsf::di::NativeOnnxRequestDecoder::Phase
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L91)
 
 ```cpp
 enum class Phase
@@ -228,7 +244,7 @@ enum class Phase
 
 ### API-644707f98c63 · ndnsf::di::NativeOnnxRequestDecoder::Phase::Header
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L93)
 
 ```cpp
 Header
@@ -236,7 +252,7 @@ Header
 
 ### API-7db174318a3e · ndnsf::di::NativeOnnxRequestDecoder::Phase::Payload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L94)
 
 ```cpp
 Payload
@@ -250,7 +266,7 @@ Payload
 
 ### API-9fbdf23a70fd · ndnsf::di::NativeOnnxRequestDecoder::Phase::Trailing
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L95)
 
 ```cpp
 Trailing
@@ -264,7 +280,7 @@ Trailing
 
 ### API-d1ca4da0afb0 · ndnsf::di::NativeOnnxRequestDecoder::Phase::Done
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L96)
 
 ```cpp
 Done
@@ -272,7 +288,7 @@ Done
 
 ### API-e667523aa28d · ndnsf::di::NativeOnnxRequestDecoder::feed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L101)
 
 ```cpp
 Result feed(const std::uint8_t* data, std::size_t size);
@@ -287,7 +303,7 @@ Result feed(const std::uint8_t* data, std::size_t size);
 
 ### API-632731c796e7 · ndnsf::di::NativeOnnxRequestDecoder::result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L103)
 
 ```cpp
 Result result() const
@@ -295,7 +311,7 @@ Result result() const
 
 ### API-679258df6ac5 · ndnsf::di::NativeOnnxRequestDecoder::complete
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L104)
 
 ```cpp
 bool complete() const
@@ -303,7 +319,7 @@ bool complete() const
 
 ### API-6ab13fba1be2 · ndnsf::di::NativeOnnxRequestDecoder::header
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L105)
 
 ```cpp
 const NativeOnnxRequestHeader& header() const
@@ -311,7 +327,7 @@ const NativeOnnxRequestHeader& header() const
 
 ### API-1451d71db9b1 · ndnsf::di::NativeOnnxRequestDecoder::metadata
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L106)
 
 ```cpp
 const std::vector<std::uint8_t>& metadata() const
@@ -319,7 +335,7 @@ const std::vector<std::uint8_t>& metadata() const
 
 ### API-3a511ba1002c · ndnsf::di::NativeOnnxRequestDecoder::model
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L107)
 
 ```cpp
 const std::vector<std::uint8_t>& model() const
@@ -327,7 +343,7 @@ const std::vector<std::uint8_t>& model() const
 
 ### API-d5ec2cdf48db · ndnsf::di::NativeOnnxRequestDecoder::initializer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L108)
 
 ```cpp
 const std::vector<std::uint8_t>& initializer() const
@@ -335,7 +351,7 @@ const std::vector<std::uint8_t>& initializer() const
 
 ### API-dad7ec5fcf0b · ndnsf::di::NativeOnnxResponseDecoder
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L120)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L131)
 
 ```cpp
 class NativeOnnxResponseDecoder
@@ -343,7 +359,7 @@ class NativeOnnxResponseDecoder
 
 ### API-64d20d74d258 · ndnsf::di::NativeOnnxResponseDecoder::Result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L134)
 
 ```cpp
 enum class Result
@@ -351,7 +367,7 @@ enum class Result
 
 ### API-2bdd1c26b698 · ndnsf::di::NativeOnnxResponseDecoder::Result::NeedMore
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L134)
 
 ```cpp
 NeedMore
@@ -359,7 +375,7 @@ NeedMore
 
 ### API-c3ab4032be5a · ndnsf::di::NativeOnnxResponseDecoder::Result::Complete
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L134)
 
 ```cpp
 Complete
@@ -367,7 +383,7 @@ Complete
 
 ### API-1a43c6472a04 · ndnsf::di::NativeOnnxResponseDecoder::Result::ProtocolError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L134)
 
 ```cpp
 ProtocolError
@@ -375,7 +391,7 @@ ProtocolError
 
 ### API-778ee31cce5e · ndnsf::di::NativeOnnxResponseDecoder::Phase
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L124)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L135)
 
 ```cpp
 enum class Phase
@@ -383,7 +399,7 @@ enum class Phase
 
 ### API-bf6c0c450cf7 · ndnsf::di::NativeOnnxResponseDecoder::Phase::Header
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L126)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L137)
 
 ```cpp
 Header
@@ -391,7 +407,7 @@ Header
 
 ### API-08b1f5d27df4 · ndnsf::di::NativeOnnxResponseDecoder::Phase::Payload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L127)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L138)
 
 ```cpp
 Payload
@@ -405,7 +421,7 @@ Payload
 
 ### API-6d7d850d2bdc · ndnsf::di::NativeOnnxResponseDecoder::Phase::Trailing
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L128)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L139)
 
 ```cpp
 Trailing
@@ -413,7 +429,7 @@ Trailing
 
 ### API-d5db35bdead4 · ndnsf::di::NativeOnnxResponseDecoder::Phase::Done
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L129)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L140)
 
 ```cpp
 Done
@@ -421,7 +437,7 @@ Done
 
 ### API-97f74b130259 · ndnsf::di::NativeOnnxResponseDecoder::feed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L143)
 
 ```cpp
 Result feed(const std::uint8_t* data, std::size_t size);
@@ -429,7 +445,7 @@ Result feed(const std::uint8_t* data, std::size_t size);
 
 ### API-424fdc79a311 · ndnsf::di::NativeOnnxResponseDecoder::result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L134)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L145)
 
 ```cpp
 Result result() const
@@ -437,7 +453,7 @@ Result result() const
 
 ### API-a3cfdf934ba8 · ndnsf::di::NativeOnnxResponseDecoder::complete
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L135)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L146)
 
 ```cpp
 bool complete() const
@@ -445,7 +461,7 @@ bool complete() const
 
 ### API-b3183948b2a5 · ndnsf::di::NativeOnnxResponseDecoder::header
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L147)
 
 ```cpp
 const NativeOnnxResponseHeader& header() const
@@ -453,7 +469,7 @@ const NativeOnnxResponseHeader& header() const
 
 ### API-f578e51146c2 · ndnsf::di::NativeOnnxResponseDecoder::metadata
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L137)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L148)
 
 ```cpp
 const std::vector<std::uint8_t>& metadata() const
@@ -461,15 +477,23 @@ const std::vector<std::uint8_t>& metadata() const
 
 ### API-59577abd60af · ndnsf::di::NativeOnnxResponseDecoder::model
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L138)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L149)
 
 ```cpp
 const std::vector<std::uint8_t>& model() const
 ```
 
+### API-df7718752c6c · ndnsf::di::NativeOnnxResponseDecoder::takeModel
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L150)
+
+```cpp
+std::vector<std::uint8_t> takeModel()
+```
+
 ### API-c7e6ca94e17a · ndnsf::di::canonicalNativeOnnxRecipeJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L159)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L171)
 
 ```cpp
 std::string
@@ -488,7 +512,7 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe);
 
 ### API-8f9eba44e5d2 · ndnsf::di::NativeOnnxWorkerMetadata
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L175)
 
 ```cpp
 struct NativeOnnxWorkerMetadata
@@ -496,7 +520,7 @@ struct NativeOnnxWorkerMetadata
 
 ### API-2dfa9d6cb543 · ndnsf::di::NativeOnnxWorkerMetadata::recipe
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L165)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L177)
 
 ```cpp
 NativeCertifiedRecipe recipe;
@@ -504,7 +528,7 @@ NativeCertifiedRecipe recipe;
 
 ### API-9bb37106ed4c · ndnsf::di::NativeOnnxWorkerMetadata::recipeDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L166)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L178)
 
 ```cpp
 std::string recipeDigest;
@@ -518,7 +542,7 @@ std::string recipeDigest;
 
 ### API-f4683c7065d8 · ndnsf::di::NativeOnnxWorkerMetadata::schema
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L167)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L179)
 
 ```cpp
 std::string schema;
@@ -530,9 +554,31 @@ std::string schema;
 // certified digest over the canonical recipe JSON
 ```
 
+### API-24d20fdaa23e · ndnsf::di::NativeOnnxWorkerMetadata::sourceBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L180)
+
+```cpp
+std::optional<std::uint64_t> sourceBytes;
+```
+
+原始接口说明：
+
+```text
+// kNativeOnnxAssemblyRequestSchema
+```
+
+### API-78b63ca7257c · ndnsf::di::NativeOnnxWorkerMetadata::sourceDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L181)
+
+```cpp
+std::string sourceDigest;
+```
+
 ### API-5a2f969013c5 · ndnsf::di::NativeOnnxMetadataCheck
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L171)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L185)
 
 ```cpp
 struct NativeOnnxMetadataCheck
@@ -540,7 +586,7 @@ struct NativeOnnxMetadataCheck
 
 ### API-1384609346e3 · ndnsf::di::NativeOnnxMetadataCheck::ok
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L173)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L187)
 
 ```cpp
 bool ok = false;
@@ -548,7 +594,7 @@ bool ok = false;
 
 ### API-e3fe06b9eb35 · ndnsf::di::NativeOnnxMetadataCheck::failureCode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L174)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L188)
 
 ```cpp
 std::string failureCode;
@@ -556,7 +602,7 @@ std::string failureCode;
 
 ### API-33a7e16cb643 · ndnsf::di::NativeOnnxMetadataCheck::failureMessage
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L175)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L189)
 
 ```cpp
 std::string failureMessage;
@@ -570,7 +616,7 @@ std::string failureMessage;
 
 ### API-0cc912252fc3 · ndnsf::di::NativeOnnxMetadataCheck::value
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L176)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L190)
 
 ```cpp
 NativeOnnxWorkerMetadata value;
@@ -578,7 +624,7 @@ NativeOnnxWorkerMetadata value;
 
 ### API-ec425aba2870 · ndnsf::di::validateNativeOnnxWorkerMetadata
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L186)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L200)
 
 ```cpp
 NativeOnnxMetadataCheck
@@ -597,13 +643,16 @@ validateNativeOnnxWorkerMetadata(const std::string& json);
  */
 ```
 
-### API-25b2d57819c7 · ndnsf::di::buildNativeOnnxWorkerRequestMetadata
+### API-715004b04b40 · ndnsf::di::buildNativeOnnxWorkerRequestMetadata
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L197)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L211)
 
 ```cpp
 std::string
-buildNativeOnnxWorkerRequestMetadata(const NativeCertifiedRecipe& recipe);
+buildNativeOnnxWorkerRequestMetadata(
+  const NativeCertifiedRecipe& recipe,
+  std::optional<std::uint64_t> sourceBytes = std::nullopt,
+  const std::string& sourceDigest = {});
 ```
 
 原始接口说明：
@@ -621,7 +670,7 @@ buildNativeOnnxWorkerRequestMetadata(const NativeCertifiedRecipe& recipe);
 
 ### API-5fbdaf2efa3d · ndnsf::di::composeNativeOnnxWorkerRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L205)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L222)
 
 ```cpp
 std::vector<std::uint8_t>
@@ -643,7 +692,7 @@ composeNativeOnnxWorkerRequest(const std::string& metadata,
 
 ### API-f5d73ea0f878 · ndnsf::di::composeNativeOnnxWorkerResponse
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L215)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L232)
 
 ```cpp
 std::vector<std::uint8_t>
@@ -663,7 +712,7 @@ composeNativeOnnxWorkerResponse(std::uint8_t status,
 
 ### API-ebceb1586316 · ndnsf::di::NativeOnnxWorkerOutcome
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L230)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L247)
 
 ```cpp
 struct NativeOnnxWorkerOutcome
@@ -671,7 +720,7 @@ struct NativeOnnxWorkerOutcome
 
 ### API-c010a11ce659 · ndnsf::di::NativeOnnxWorkerOutcome::ok
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L232)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L249)
 
 ```cpp
 bool ok = false;
@@ -679,7 +728,7 @@ bool ok = false;
 
 ### API-adcce32d9f60 · ndnsf::di::NativeOnnxWorkerOutcome::failureCode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L233)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L250)
 
 ```cpp
 std::string failureCode;
@@ -687,7 +736,7 @@ std::string failureCode;
 
 ### API-c88e4efde711 · ndnsf::di::NativeOnnxWorkerOutcome::failureMessage
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L234)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L251)
 
 ```cpp
 std::string failureMessage;
@@ -701,35 +750,37 @@ std::string failureMessage;
 
 ### API-4cb61361c574 · ndnsf::di::NativeOnnxWorkerOutcome::value
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L235)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L252)
 
 ```cpp
 NativeCertifiedAssembly value;
 ```
 
-### API-dc7d92f6120d · ndnsf::di::finalizeNativeOnnxWorkerResponse
+### API-5d449c1a83f0 · ndnsf::di::finalizeNativeOnnxWorkerResponse
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L238)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L255)
 
 ```cpp
 NativeOnnxWorkerOutcome
 finalizeNativeOnnxWorkerResponse(bool childExitZero,
                                  std::uint8_t status,
                                  const std::string& metadataJson,
-                                 const std::vector<std::uint8_t>& modelBytes,
+                                 std::vector<std::uint8_t> modelBytes,
                                  const NativeCertifiedRecipe& recipe,
                                  std::uint64_t maxAssembledBytes,
                                  bool activeAfterResponse);
 ```
 
-### API-d559df056429 · ndnsf::di::assembleInProcess
+### API-df98f47014a9 · ndnsf::di::assembleInProcess
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L253)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L273)
 
 ```cpp
 NativeCertifiedAssembly
 assembleInProcess(const NativeCanonicalSource& source,
-                  const NativeCertifiedRecipe& recipe);
+                  const NativeCertifiedRecipe& recipe,
+                  NativeCanonicalSource* sourceToReleaseAfterParse = nullptr,
+                  const NativeOnnxModelFileInput* modelFile = nullptr);
 ```
 
 原始接口说明：
@@ -740,12 +791,15 @@ assembleInProcess(const NativeCanonicalSource& source,
  * S1-S7 certified chain in-process with the certified recipe budget and no
  * cancellation callback.  The bounded worker child calls this; it starts no
  * second worker, touches no Core/Repo state, and writes no cache or manifest.
+ * When sourceToReleaseAfterParse is non-null, OA04 scrubs and releases the
+ * supplied child-owned request source after parsing/inlining completes; the
+ * default remains non-destructive for focused in-process callers.
  */
 ```
 
 ### API-2168f2748496 · ndnsf::di::NativeOnnxWorkerLocation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L258)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L280)
 
 ```cpp
 struct NativeOnnxWorkerLocation
@@ -753,7 +807,7 @@ struct NativeOnnxWorkerLocation
 
 ### API-f70211ee5402 · ndnsf::di::NativeOnnxWorkerLocation::path
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L260)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L282)
 
 ```cpp
 std::string path;
@@ -761,7 +815,7 @@ std::string path;
 
 ### API-c48a18895e3d · ndnsf::di::NativeOnnxWorkerLocation::sha256
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L261)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L283)
 
 ```cpp
 std::string sha256;
@@ -775,7 +829,7 @@ std::string sha256;
 
 ### API-d4d87f2a9203 · ndnsf::di::registerNativeOnnxWorkerLocation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L270)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L292)
 
 ```cpp
 void
@@ -795,7 +849,7 @@ registerNativeOnnxWorkerLocation(const NativeOnnxWorkerLocation& location);
 
 ### API-543edfc94a1b · ndnsf::di::runNativeOnnxAssemblyWorker
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L282)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L304)
 
 ```cpp
 NativeCertifiedAssembly
@@ -818,16 +872,18 @@ runNativeOnnxAssemblyWorker(const NativeCanonicalSource& source,
  */
 ```
 
-### API-0d040a0d9ff3 · ndnsf::di::runNativeOnnxAssemblyWorkerAt
+### API-b4bb7d4363ba · ndnsf::di::runNativeOnnxAssemblyWorkerAt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L288)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L310)
 
 ```cpp
 NativeCertifiedAssembly
 runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
                               const NativeCanonicalSource& source,
                               const NativeCertifiedRecipe& recipe,
-                              const NativeAssemblyControl& control);
+                              const NativeAssemblyControl& control,
+                              NativeCanonicalSource* sourceToReleaseAfterWrite = nullptr,
+                              const std::filesystem::path& modelFile = {});
 ```
 
 原始接口说明：
@@ -838,7 +894,7 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
 
 ### API-44fbc100cfba · ndnsf::di::runNativeOnnxAssemblyWorkerMain
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L303)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp#L327)
 
 ```cpp
 int
@@ -861,35 +917,906 @@ runNativeOnnxAssemblyWorkerMain(int argc, char** argv);
 
 ## NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp
 
-源码 SHA-256：`d7a30d51979dce301697d0848995715a276c79711fa23f0369bb60e51d063cda`。
+源码 SHA-256：`007ed53674c25bc0dca6fab9b2318d3eb2c0f27b622bf4e9846b8034d18dd07c`。
+
+### API-ecb217030a2d · ndnsf::di::NativeCanonicalByteBuffer
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L27)
+
+```cpp
+class NativeCanonicalByteBuffer
+```
+
+### API-7f55f6f84903 · ndnsf::di::NativeCanonicalByteBuffer::value_type
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L30)
+
+```cpp
+using value_type = std::uint8_t;
+```
+
+### API-55d344210d62 · ndnsf::di::NativeCanonicalByteBuffer::vector_type
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L31)
+
+```cpp
+using vector_type = std::vector<value_type>;
+```
+
+### API-1cfe117f49e1 · ndnsf::di::NativeCanonicalByteBuffer::iterator
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L32)
+
+```cpp
+using iterator = vector_type::iterator;
+```
+
+### API-41bae9cba0b2 · ndnsf::di::NativeCanonicalByteBuffer::const_iterator
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L33)
+
+```cpp
+using const_iterator = vector_type::const_iterator;
+```
+
+### API-2ae20818f467 · ndnsf::di::NativeCanonicalByteBuffer::NativeCanonicalByteBuffer
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L35)
+
+```cpp
+NativeCanonicalByteBuffer() = default;
+```
+
+### API-ce30930438eb · ndnsf::di::NativeCanonicalByteBuffer::NativeCanonicalByteBuffer
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L36)
+
+```cpp
+explicit NativeCanonicalByteBuffer(std::size_t size)
+```
+
+### API-04832fdc34d7 · ndnsf::di::NativeCanonicalByteBuffer::NativeCanonicalByteBuffer
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L39)
+
+```cpp
+NativeCanonicalByteBuffer(vector_type bytes)
+```
+
+### API-831a175a7b68 · ndnsf::di::NativeCanonicalByteBuffer::operator=
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L43)
+
+```cpp
+NativeCanonicalByteBuffer& operator=(vector_type bytes)
+```
+
+### API-e1595db44c60 · ndnsf::di::NativeCanonicalByteBuffer::empty
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L49)
+
+```cpp
+bool empty() const noexcept
+```
+
+### API-264ba96c512b · ndnsf::di::NativeCanonicalByteBuffer::size
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L50)
+
+```cpp
+std::size_t size() const noexcept
+```
+
+### API-9139c6baa80b · ndnsf::di::NativeCanonicalByteBuffer::data
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L51)
+
+```cpp
+const value_type* data() const noexcept
+```
+
+### API-de8bcff7eb3c · ndnsf::di::NativeCanonicalByteBuffer::data
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L52)
+
+```cpp
+value_type* data() noexcept
+```
+
+### API-657cea734131 · ndnsf::di::NativeCanonicalByteBuffer::begin
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L53)
+
+```cpp
+const_iterator begin() const noexcept
+```
+
+### API-d74e45d98ee4 · ndnsf::di::NativeCanonicalByteBuffer::end
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L54)
+
+```cpp
+const_iterator end() const noexcept
+```
+
+### API-f3a02e046d16 · ndnsf::di::NativeCanonicalByteBuffer::begin
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L55)
+
+```cpp
+iterator begin() noexcept
+```
+
+### API-92f3f754c252 · ndnsf::di::NativeCanonicalByteBuffer::end
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L56)
+
+```cpp
+iterator end() noexcept
+```
+
+### API-0e3efbba78d2 · ndnsf::di::NativeCanonicalByteBuffer::operator[]
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L57)
+
+```cpp
+const value_type& operator[](std::size_t index) const
+```
+
+### API-5cc8442f5d35 · ndnsf::di::NativeCanonicalByteBuffer::operator[]
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L58)
+
+```cpp
+value_type& operator[](std::size_t index)
+```
+
+### API-332d4f8cf62a · ndnsf::di::NativeCanonicalByteBuffer::operator const vector_type&() const
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L61)
+
+```cpp
+operator const vector_type&() const
+```
+
+原始接口说明：
+
+```text
+/** Preserve legacy call sites that consume a const std::vector reference. */
+```
+
+### API-d9e3e8195492 · ndnsf::di::NativeCanonicalByteBuffer::asVector
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L67)
+
+```cpp
+const vector_type& asVector() const noexcept
+```
+
+### API-b3d580c43fce · ndnsf::di::NativeCanonicalByteBuffer::asVector
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L68)
+
+```cpp
+vector_type& asVector() noexcept
+```
+
+### API-703b2b0afba9 · ndnsf::di::NativeCanonicalByteBuffer::operator vector_type&()
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L74)
+
+```cpp
+operator vector_type&()
+```
+
+### API-98617a1fba12 · ndnsf::di::NativeCanonicalByteBuffer::copy
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L75)
+
+```cpp
+vector_type copy() const
+```
+
+### API-7c833a5d0209 · ndnsf::di::NativeCanonicalByteBuffer::shared
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L78)
+
+```cpp
+std::shared_ptr<const vector_type> shared() const noexcept
+```
+
+原始接口说明：
+
+```text
+/** Return the shared allocation for zero-copy producer-side range views. */
+```
+
+### API-4abcda871d89 · ndnsf::di::NativeCanonicalByteRangeSource
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L91)
+
+```cpp
+class NativeCanonicalByteRangeSource
+```
+
+### API-35fb18931e06 · ndnsf::di::NativeCanonicalByteRangeSource::~NativeCanonicalByteRangeSource
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L94)
+
+```cpp
+virtual ~NativeCanonicalByteRangeSource() = default;
+```
+
+### API-40837fa9d5fd · ndnsf::di::NativeCanonicalByteRangeSource::size
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L95)
+
+```cpp
+virtual std::uint64_t size() const noexcept = 0;
+```
+
+### API-31adf80c9ce7 · ndnsf::di::NativeCanonicalByteRangeSource::read
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L96)
+
+```cpp
+virtual std::vector<std::uint8_t> read(std::uint64_t offset,
+                                         std::uint64_t length) const = 0;
+```
+
+### API-85e676ff738b · ndnsf::di::NativeCanonicalMaterialBundleMaxBytes = 1U << 20
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L104)
+
+```cpp
+inline constexpr std::uint64_t NativeCanonicalMaterialBundleMaxBytes = 1U << 20;
+```
+
+原始接口说明：
+
+```text
+// Protected material bundles are deliberately bounded so a post-Selection
+// consumer can reserve the complete fetched object before touching the Repo.
+// A payload larger than this limit is rejected by the publisher rather than
+// silently creating an unbounded bundle.
+```
+
+### API-15bdf3c0d890 · ndnsf::di::NativeCanonicalMaterialReceiptEnvelopeMaxBytes = 4U << 10
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L112)
+
+```cpp
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptEnvelopeMaxBytes = 4U << 10;
+```
+
+原始接口说明：
+
+```text
+// The material-object index is carried by an authenticated receipt rather
+// than the inline authority root.  Prepare reserves this conservative bound
+// before publishing any object; the generated receipt must fit it as well.
+// Payload IDs and protected data names are producer-controlled strings, so a
+// fixed per-record allowance is preferable to discovering an overrun after a
+// publication prefix has become visible.
+```
+
+### API-489da3bb7508 · ndnsf::di::NativeCanonicalMaterialReceiptRecordMaxBytes = 4U << 10
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L113)
+
+```cpp
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptRecordMaxBytes = 4U << 10;
+```
+
+### API-a920fdbf2c02 · ndnsf::di::NativeCanonicalMaterialReceiptPayloadIdMaxBytes = 512
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L114)
+
+```cpp
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptPayloadIdMaxBytes = 512;
+```
+
+### API-3db082ab2fa1 · ndnsf::di::NativeCanonicalMaterialReceiptDataNameMaxBytes = 1024
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L115)
+
+```cpp
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptDataNameMaxBytes = 1024;
+```
+
+### API-9ee673f72914 · ndnsf::di::NativeCanonicalMaterialReceiptFixedRecordOverheadMaxBytes = 512
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L120)
+
+```cpp
+inline constexpr std::uint64_t NativeCanonicalMaterialReceiptFixedRecordOverheadMaxBytes = 512;
+```
+
+原始接口说明：
+
+```text
+// Receipt payload IDs and NDN URI names are restricted to printable
+// non-escaping tokens before serialization.  With two 71-byte digests, three
+// uint64 fields (20 decimal digits each), and this fixed key/punctuation
+// allowance, the per-record bound is proven below rather than guessed.
+```
 
 ### API-4219858b0fb4 · ndnsf::di::NativeCanonicalSource
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L17)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L128)
 
 ```cpp
 struct NativeCanonicalSource
 ```
 
+### API-ac97a63d5144 · ndnsf::di::NativeCanonicalSource::MaterialReference
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L130)
+
+```cpp
+struct MaterialReference
+```
+
+### API-86d06493cfe6 · ndnsf::di::NativeCanonicalSource::MaterialReference::payloadId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L132)
+
+```cpp
+std::string payloadId;
+```
+
+### API-26b127057f9a · ndnsf::di::NativeCanonicalSource::MaterialReference::chunkPayloadIds
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L136)
+
+```cpp
+std::vector<std::string> chunkPayloadIds;
+```
+
+原始接口说明：
+
+```text
+// External initializers and large inline raw initializers use one small
+// TensorProto header plus ordered raw byte chunks. The legacy single-payload
+// form remains valid for small inline initializers and existing manifests.
+```
+
+### API-cf0c77f0b086 · ndnsf::di::NativeCanonicalSource::MaterialReference::kind
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L137)
+
+```cpp
+std::string kind;
+```
+
+### API-23db9fa58adc · ndnsf::di::NativeCanonicalSource::MaterialReference::logicalName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L138)
+
+```cpp
+std::string logicalName;
+```
+
+### API-36cd7ac3f30b · ndnsf::di::NativeCanonicalSource::MaterialReference::nodeIndex
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L139)
+
+```cpp
+std::uint64_t nodeIndex = 0;
+```
+
+### API-4d85c8c87f7d · ndnsf::di::NativeCanonicalSource::MaterialReference::digest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L140)
+
+```cpp
+std::string digest;
+```
+
+### API-13d6f81b1456 · ndnsf::di::NativeCanonicalSource::MaterialReference::bytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L141)
+
+```cpp
+std::uint64_t bytes = 0;
+```
+
+### API-7c1f2e258927 · ndnsf::di::NativeCanonicalSource::MaterialReference::dependencies
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L142)
+
+```cpp
+std::vector<std::string> dependencies;
+```
+
+### API-b8daccf851d2 · ndnsf::di::NativeCanonicalSource::MaterialReference::sharedDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L143)
+
+```cpp
+std::string sharedDigest;
+```
+
+### API-b38d36392538 · ndnsf::di::NativeCanonicalSource::MaterialPayload
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L146)
+
+```cpp
+struct MaterialPayload
+```
+
+### API-44690596b3eb · ndnsf::di::NativeCanonicalSource::MaterialPayload::payloadId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L148)
+
+```cpp
+std::string payloadId;
+```
+
+### API-78e31d8eadfb · ndnsf::di::NativeCanonicalSource::MaterialPayload::digest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L149)
+
+```cpp
+std::string digest;
+```
+
+### API-ac127792663a · ndnsf::di::NativeCanonicalSource::MaterialPayload::bytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L150)
+
+```cpp
+std::vector<std::uint8_t> bytes;
+```
+
+### API-7b7ab0a6cf67 · ndnsf::di::NativeCanonicalSource::MaterialPayload::backing
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L155)
+
+```cpp
+std::shared_ptr<const std::vector<std::uint8_t>> backing;
+```
+
+原始接口说明：
+
+```text
+// A producer may authenticate and publish a bounded view of an immutable
+// source object instead of copying the range into bytes.  Consumer-fetched
+// payloads continue to use bytes, so this is wire/internal compatible.
+```
+
+### API-9fa145aea778 · ndnsf::di::NativeCanonicalSource::MaterialPayload::backingOffset
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L156)
+
+```cpp
+std::size_t backingOffset = 0;
+```
+
+### API-a5c15381cc17 · ndnsf::di::NativeCanonicalSource::MaterialPayload::backingSize
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L157)
+
+```cpp
+std::size_t backingSize = 0;
+```
+
+### API-0754ab445cf0 · ndnsf::di::NativeCanonicalSource::MaterialPayload::stringBacking
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L162)
+
+```cpp
+std::shared_ptr<const std::string> stringBacking;
+```
+
+原始接口说明：
+
+```text
+// Inline TensorProto raw_data is owned by a string in protobuf. Move that
+// allocation into shared backing before creating chunk views so manifest
+// derivation does not allocate a second full initializer-sized vector.
+```
+
+### API-2e2516f4c9a9 · ndnsf::di::NativeCanonicalSource::MaterialPayload::stringOffset
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L163)
+
+```cpp
+std::size_t stringOffset = 0;
+```
+
+### API-fdb6396fef0b · ndnsf::di::NativeCanonicalSource::MaterialPayload::stringSize
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L164)
+
+```cpp
+std::size_t stringSize = 0;
+```
+
+### API-434fd35af31e · ndnsf::di::NativeCanonicalSource::MaterialPayload::rangeSource
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L168)
+
+```cpp
+std::shared_ptr<const NativeCanonicalByteRangeSource> rangeSource;
+```
+
+原始接口说明：
+
+```text
+// A producer may retain only an authenticated bounded range reader after
+// source inspection.  Consumer-fetched payloads remain byte-owned.
+```
+
+### API-b9bbc9a3884b · ndnsf::di::NativeCanonicalSource::MaterialPayload::rangeOffset
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L169)
+
+```cpp
+std::uint64_t rangeOffset = 0;
+```
+
+### API-985addc46ffe · ndnsf::di::NativeCanonicalSource::MaterialPayload::rangeSize
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L170)
+
+```cpp
+std::uint64_t rangeSize = 0;
+```
+
+### API-27386c42b859 · ndnsf::di::NativeCanonicalSource::MaterialPayload::empty
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L172)
+
+```cpp
+bool empty() const noexcept
+```
+
+### API-a3724d93da94 · ndnsf::di::NativeCanonicalSource::MaterialPayload::byteSize
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L173)
+
+```cpp
+std::size_t byteSize() const noexcept
+```
+
+### API-4c1c79c68961 · ndnsf::di::NativeCanonicalSource::MaterialPayload::data
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L178)
+
+```cpp
+const std::uint8_t* data() const noexcept
+```
+
+### API-a7ed15423737 · ndnsf::di::NativeCanonicalSource::MaterialPayload::copyBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L188)
+
+```cpp
+std::vector<std::uint8_t> copyBytes() const
+```
+
+### API-1215b3137b16 · ndnsf::di::NativeCanonicalSource::MaterialPayload::scrub
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L206)
+
+```cpp
+void scrub() noexcept
+```
+
+原始接口说明：
+
+```text
+/** Scrub only payload-owned plaintext; source owners retain shared views. */
+```
+
+### API-83be80ebad85 · ndnsf::di::NativeCanonicalSource::MaterialPayload::release
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L214)
+
+```cpp
+void release() noexcept
+```
+
+原始接口说明：
+
+```text
+/** Release this payload after its final authenticated consumer. */
+```
+
+### API-64665a91f576 · ndnsf::di::NativeCanonicalSource::MaterialManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L234)
+
+```cpp
+struct MaterialManifest
+```
+
+### API-64daf90fd673 · ndnsf::di::NativeCanonicalSource::MaterialManifest::schema
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L236)
+
+```cpp
+std::string schema = "ndnsf-di-canonical-material-manifest-v1";
+```
+
+### API-fc3575ae623d · ndnsf::di::NativeCanonicalSource::MaterialManifest::sourceDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L237)
+
+```cpp
+std::string sourceDigest;
+```
+
+### API-667f121f226c · ndnsf::di::NativeCanonicalSource::MaterialManifest::graphDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L238)
+
+```cpp
+std::string graphDigest;
+```
+
+### API-72b997a7884c · ndnsf::di::NativeCanonicalSource::MaterialManifest::initializerDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L239)
+
+```cpp
+std::string initializerDigest;
+```
+
+### API-e81f94422d77 · ndnsf::di::NativeCanonicalSource::MaterialManifest::manifestDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L240)
+
+```cpp
+std::string manifestDigest;
+```
+
+### API-fdf066ac3470 · ndnsf::di::NativeCanonicalSource::MaterialManifest::templatePayloadId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L241)
+
+```cpp
+std::string templatePayloadId;
+```
+
+### API-acbab300cb0a · ndnsf::di::NativeCanonicalSource::MaterialManifest::references
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L242)
+
+```cpp
+std::vector<MaterialReference> references;
+```
+
+### API-fda7a0401d76 · ndnsf::di::NativeCanonicalSource::MaterialManifest::payloads
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L243)
+
+```cpp
+std::vector<MaterialPayload> payloads;
+```
+
+### API-819c4ea0d54c · ndnsf::di::NativeCanonicalSource::MaterialManifest::payloadsComplete
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L247)
+
+```cpp
+bool payloadsComplete = true;
+```
+
+原始接口说明：
+
+```text
+// Producers set this true.  A post-Selection consumer carries the
+// authenticated reference index with only the selected payload bytes;
+// the canonical JSON/digest remains the producer's full index.
+```
+
+### API-44b22986342c · ndnsf::di::NativeCanonicalSource::MaterialManifest::canonicalJson
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L249)
+
+```cpp
+std::string canonicalJson() const;
+```
+
+### API-ef3593637289 · ndnsf::di::NativeCanonicalSource::MaterialManifest::validate
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L250)
+
+```cpp
+void validate() const;
+```
+
 ### API-ac283804c76b · ndnsf::di::NativeCanonicalSource::modelBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L253)
 
 ```cpp
 std::vector<std::uint8_t> modelBytes;
 ```
 
-### API-de2906a39733 · ndnsf::di::NativeCanonicalSource::initializerBytes
+### API-6340258a24b1 · ndnsf::di::NativeCanonicalSource::initializerBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L20)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L254)
 
 ```cpp
-std::optional<std::vector<std::uint8_t>> initializerBytes;
+std::optional<NativeCanonicalByteBuffer> initializerBytes;
+```
+
+### API-2a2e50c5adb6 · ndnsf::di::NativeCanonicalSource::initializerRangeSource
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L255)
+
+```cpp
+std::shared_ptr<const NativeCanonicalByteRangeSource> initializerRangeSource;
+```
+
+### API-87d8f0689d27 · ndnsf::di::NativeCanonicalSource::materialManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L256)
+
+```cpp
+std::shared_ptr<const MaterialManifest> materialManifest;
+```
+
+### API-d56ea8c4f6f1 · ndnsf::di::NativeCanonicalSource::materialPayloads
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L260)
+
+```cpp
+std::vector<MaterialPayload> materialPayloads;
+```
+
+原始接口说明：
+
+```text
+// Bytes fetched after Selection.  They are deliberately separate from the
+// producer-owned manifest payload list so a Provider cannot imply that the
+// complete model was downloaded.
+```
+
+### API-0c09186666a6 · ndnsf::di::NativeCanonicalSource::materializedRole
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L267)
+
+```cpp
+bool materializedRole = false;
+```
+
+原始接口说明：
+
+```text
+// A post-Selection consumer may carry a role model rebuilt from the
+// authenticated material index.  The indices remain the canonical source
+// indices; the serialized model contains only the selected nodes.  These
+// fields are internal assembly provenance and are never accepted from an
+// application-facing request.
+```
+
+### API-5421f8b24960 · ndnsf::di::NativeCanonicalSource::materializedNodeIndices
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L268)
+
+```cpp
+std::vector<std::uint64_t> materializedNodeIndices;
+```
+
+### API-fa88e628b525 · ndnsf::di::NativeCanonicalSource::materializedSourceDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L269)
+
+```cpp
+std::string materializedSourceDigest;
+```
+
+### API-9c09522db9b7 · ndnsf::di::NativeCanonicalSource::materializedGraphDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L270)
+
+```cpp
+std::string materializedGraphDigest;
+```
+
+### API-e9a0d871bd63 · ndnsf::di::NativeCanonicalSource::materializedInitializerDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L271)
+
+```cpp
+std::string materializedInitializerDigest;
+```
+
+### API-84566d4a77a7 · ndnsf::di::NativeCanonicalSource::LayerPayload
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L278)
+
+```cpp
+struct LayerPayload
+```
+
+### API-83ce06e40c33 · ndnsf::di::NativeCanonicalSource::LayerPayload::stageIndex
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L280)
+
+```cpp
+std::uint64_t stageIndex = 0;
+```
+
+### API-b759d7eaf9d1 · ndnsf::di::NativeCanonicalSource::LayerPayload::layerBegin
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L281)
+
+```cpp
+std::uint64_t layerBegin = 0;
+```
+
+### API-81aae8be024b · ndnsf::di::NativeCanonicalSource::LayerPayload::layerEnd
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L282)
+
+```cpp
+std::uint64_t layerEnd = 0;
+```
+
+### API-447c9016734a · ndnsf::di::NativeCanonicalSource::LayerPayload::digest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L283)
+
+```cpp
+std::string digest;
+```
+
+### API-f8cf99ac3c1a · ndnsf::di::NativeCanonicalSource::LayerPayload::bytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L284)
+
+```cpp
+std::vector<std::uint8_t> bytes;
+```
+
+### API-01536abdbe06 · ndnsf::di::NativeCanonicalSource::layerPayloads
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L286)
+
+```cpp
+std::vector<LayerPayload> layerPayloads;
+```
+
+### API-0310e8178743 · ndnsf::di::NativeOnnxModelFileInput
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L294)
+
+```cpp
+struct NativeOnnxModelFileInput
+```
+
+### API-74263f10f3c7 · ndnsf::di::NativeOnnxModelFileInput::fd
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L296)
+
+```cpp
+int fd = -1;
+```
+
+### API-0d8fc9556b17 · ndnsf::di::NativeOnnxModelFileInput::bytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L297)
+
+```cpp
+std::uint64_t bytes = 0;
+```
+
+### API-a78893c585a8 · ndnsf::di::NativeOnnxModelFileInput::digest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L298)
+
+```cpp
+std::string digest;
 ```
 
 ### API-c04767696800 · ndnsf::di::NativeCertifiedRecipe
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L23)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L301)
 
 ```cpp
 using NativeCertifiedRecipe = NativeSelectionRoleV3;
@@ -897,7 +1824,7 @@ using NativeCertifiedRecipe = NativeSelectionRoleV3;
 
 ### API-acbae30571e3 · ndnsf::di::NativeAssemblyControl
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L304)
 
 ```cpp
 struct NativeAssemblyControl
@@ -905,7 +1832,7 @@ struct NativeAssemblyControl
 
 ### API-3f856d4608e7 · ndnsf::di::NativeAssemblyControl::deadline
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L306)
 
 ```cpp
 std::chrono::steady_clock::time_point deadline;
@@ -913,7 +1840,7 @@ std::chrono::steady_clock::time_point deadline;
 
 ### API-ab89b254150e · ndnsf::di::NativeAssemblyControl::requireActive
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L308)
 
 ```cpp
 std::function<void()> requireActive;
@@ -927,7 +1854,7 @@ std::function<void()> requireActive;
 
 ### API-bb765c119277 · ndnsf::di::NativeAssemblyControl::maxSourceBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L309)
 
 ```cpp
 std::uint64_t maxSourceBytes = 0;
@@ -935,7 +1862,7 @@ std::uint64_t maxSourceBytes = 0;
 
 ### API-209dfa288677 · ndnsf::di::NativeAssemblyControl::maxAssembledBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L310)
 
 ```cpp
 std::uint64_t maxAssembledBytes = 0;
@@ -943,7 +1870,7 @@ std::uint64_t maxAssembledBytes = 0;
 
 ### API-fae9834a670b · ndnsf::di::NativeCertifiedAssembly
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L313)
 
 ```cpp
 struct NativeCertifiedAssembly
@@ -951,7 +1878,7 @@ struct NativeCertifiedAssembly
 
 ### API-8de1ae360d62 · ndnsf::di::NativeCertifiedAssembly::modelBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L315)
 
 ```cpp
 std::vector<std::uint8_t> modelBytes;
@@ -959,7 +1886,7 @@ std::vector<std::uint8_t> modelBytes;
 
 ### API-8e1a69245f7e · ndnsf::di::NativeCertifiedAssembly::inputNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L316)
 
 ```cpp
 std::vector<std::string> inputNames;
@@ -967,7 +1894,7 @@ std::vector<std::string> inputNames;
 
 ### API-8e775159eb3c · ndnsf::di::NativeCertifiedAssembly::outputNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L317)
 
 ```cpp
 std::vector<std::string> outputNames;
@@ -975,7 +1902,7 @@ std::vector<std::string> outputNames;
 
 ### API-6bff7dc1740f · ndnsf::di::NativeCertifiedAssembly::nodeCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L318)
 
 ```cpp
 std::uint64_t nodeCount = 0;
@@ -983,7 +1910,7 @@ std::uint64_t nodeCount = 0;
 
 ### API-09ede607de7f · ndnsf::di::NativeCertifiedAssembly::modelDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L319)
 
 ```cpp
 std::string modelDigest;
@@ -991,7 +1918,7 @@ std::string modelDigest;
 
 ### API-7f06e6898711 · ndnsf::di::assembleNativeCertifiedOnnxModel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L51)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L329)
 
 ```cpp
 NativeCertifiedAssembly
@@ -1014,7 +1941,7 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
 
 ### API-5d80e0810f4d · ndnsf::di::NormalizedInitializerPayload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L335)
 
 ```cpp
 struct NormalizedInitializerPayload
@@ -1022,7 +1949,7 @@ struct NormalizedInitializerPayload
 
 ### API-d2335dbe2efc · ndnsf::di::NormalizedInitializerPayload::dtype
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L337)
 
 ```cpp
 std::string dtype;
@@ -1030,7 +1957,7 @@ std::string dtype;
 
 ### API-af6833cce0cc · ndnsf::di::NormalizedInitializerPayload::shape
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L61)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L339)
 
 ```cpp
 std::vector<std::int64_t> shape;
@@ -1045,7 +1972,7 @@ std::vector<std::int64_t> shape;
 
 ### API-2a027bb35808 · ndnsf::di::NormalizedInitializerPayload::byteOrder
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L340)
 
 ```cpp
 std::string byteOrder;
@@ -1059,7 +1986,7 @@ std::string byteOrder;
 
 ### API-9a53e1380f80 · ndnsf::di::NormalizedInitializerPayload::content
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L341)
 
 ```cpp
 std::vector<std::uint8_t> content;
@@ -1073,7 +2000,7 @@ std::vector<std::uint8_t> content;
 
 ### API-841bd88738d1 · ndnsf::di::NativeOnnxIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L67)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L345)
 
 ```cpp
 struct NativeOnnxIdentity
@@ -1081,7 +2008,7 @@ struct NativeOnnxIdentity
 
 ### API-9a9c6156793a · ndnsf::di::NativeOnnxIdentity::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L69)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L347)
 
 ```cpp
 std::string graphDigest;
@@ -1089,7 +2016,7 @@ std::string graphDigest;
 
 ### API-a3f61c574d42 · ndnsf::di::NativeOnnxIdentity::initializerDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L348)
 
 ```cpp
 std::string initializerDigest;
@@ -1097,7 +2024,7 @@ std::string initializerDigest;
 
 ### API-d80100de9117 · ndnsf::di::NativeOnnxGraphInspection
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L352)
 
 ```cpp
 struct NativeOnnxGraphInspection
@@ -1105,7 +2032,7 @@ struct NativeOnnxGraphInspection
 
 ### API-c77a5f1eea16 · ndnsf::di::NativeOnnxGraphInspection::graph
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L354)
 
 ```cpp
 NativeGraphSnapshot graph;
@@ -1113,7 +2040,7 @@ NativeGraphSnapshot graph;
 
 ### API-0c14a25cd43c · ndnsf::di::NativeOnnxGraphInspection::nodeNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L355)
 
 ```cpp
 std::vector<std::string> nodeNames;
@@ -1121,7 +2048,7 @@ std::vector<std::string> nodeNames;
 
 ### API-a7a5ede5a21a · ndnsf::di::NativeOnnxGraphInspection::canonicalNodeIndices
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L358)
 
 ```cpp
 std::map<std::string, std::uint64_t> canonicalNodeIndices;
@@ -1136,7 +2063,7 @@ std::map<std::string, std::uint64_t> canonicalNodeIndices;
 
 ### API-b04c08a88add · ndnsf::di::NativeOnnxGraphInspection::graphMetadataJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L81)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L359)
 
 ```cpp
 std::string graphMetadataJson;
@@ -1144,7 +2071,7 @@ std::string graphMetadataJson;
 
 ### API-6233ba7c438d · ndnsf::di::NativeOnnxGraphInspection::canonicalIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L360)
 
 ```cpp
 NativeOnnxIdentity canonicalIdentity;
@@ -1152,7 +2079,7 @@ NativeOnnxIdentity canonicalIdentity;
 
 ### API-6b35326ad52b · ndnsf::di::inspectNativeOnnxPlanningGraph
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L89)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L370)
 
 ```cpp
 NativeOnnxGraphInspection
@@ -1164,14 +2091,17 @@ inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
 
 ```text
 /** Inspect owned ONNX bytes using official shape inference and the maintained
- * adapter-bound planning schema. Reject a different expected graph identity;
- * source fetching/authentication belongs to the caller's native catalog owner.
+ * adapter-bound planning schema. Deep attribute tensors are materialized into
+ * the graph copy; large top-level external initializers remain range-bound and
+ * only shape-value inputs needed by inference are materialized under the
+ * assembly budget. Reject a different expected graph identity; source
+ * fetching/authentication belongs to the caller's native catalog owner.
  */
 ```
 
 ### API-02b4b5e9ffa8 · ndnsf::di::inspectNativeOnnxSourceGraph
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L377)
 
 ```cpp
 NativeOnnxGraphInspection
@@ -1189,7 +2119,7 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
 
 ### API-bae23a9a5484 · ndnsf::di::normalizedOnnxInitializerPayload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L388)
 
 ```cpp
 NormalizedInitializerPayload
@@ -1210,7 +2140,7 @@ normalizedOnnxInitializerPayload(const std::vector<std::uint8_t>& serializedTens
 
 ### API-4ddd3f1d104e · ndnsf::di::canonicalOnnxSourceIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L400)
 
 ```cpp
 NativeOnnxIdentity
@@ -1223,17 +2153,132 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
 ```text
 /**
  * Owned-source canonical identity of one source model (OA05 + OA06 seam):
- * parse the given bytes, validate and inline external tensors strictly from
- * the passed memory (never from paths declared in the model), then compute
- * the graph digest and the ordered normalized-initializer digest on the
- * original, not shape-inferred, graph.  The model is not full-checked here;
+ * parse the given bytes, validate external metadata strictly from the passed
+ * memory (never from paths declared in the model), materialize deep attribute
+ * tensors and hash top-level ranges one at a time, then compute the graph
+ * digest and ordered normalized-initializer digest on the original, not
+ * shape-inferred, graph.  The model is not full-checked here;
  * checker and extractor runs arrive with the certified-extraction cards.
  */
 ```
 
+### API-dbdc0cc1cca6 · ndnsf::di::deriveNativeCanonicalMaterialManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L410)
+
+```cpp
+std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
+deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
+                                      const NativeAssemblyControl& control);
+```
+
+原始接口说明：
+
+```text
+/**
+ * Derive the prepare-time material manifest from the authenticated canonical
+ * ONNX source.  This is a producer operation: it does not choose Provider
+ * ranges and it emits no final partition model.  The caller owns the returned
+ * bytes until the protected publisher commits every referenced object.
+ */
+```
+
+### API-f2fb43c98336 · ndnsf::di::parseNativeCanonicalMaterialManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L415)
+
+```cpp
+std::shared_ptr<NativeCanonicalSource::MaterialManifest>
+parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes);
+```
+
+原始接口说明：
+
+```text
+/** Parse an authenticated producer manifest without materializing payloads. */
+```
+
+### API-d530f75465f1 · ndnsf::di::materializeNativeCanonicalModel
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L425)
+
+```cpp
+std::vector<std::uint8_t>
+materializeNativeCanonicalModel(NativeCanonicalSource& source,
+                                const std::vector<std::uint64_t>& nodeIndices,
+                                const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
+                                const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
+                                const NativeAssemblyControl& control);
+```
+
+原始接口说明：
+
+```text
+/** Rebuild one selected role model from the template, selected nodes and
+ * explicit shared initializer payloads.  No complete source/initializer is
+ * required by this operation.  When boundary contracts are supplied, the
+ * materialized graph input/output declarations are rebuilt in that exact
+ * order.  This is the native equivalent of the old stage exporter: an
+ * internal handoff tensor such as `hidden_states_out` is a stage output even
+ * though it is not a canonical source graph output. */
+```
+
+### API-eb3cfc899198 · ndnsf::di::materializeNativeCanonicalModel
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L435)
+
+```cpp
+std::vector<std::uint8_t>
+materializeNativeCanonicalModel(NativeCanonicalSource& source,
+                                const std::vector<std::uint64_t>& nodeIndices,
+                                const NativeAssemblyControl& control);
+```
+
+原始接口说明：
+
+```text
+/** Compatibility entry for producer/fixture callers that retain the source
+ * graph boundary.  Provider post-Selection assembly must use the overload
+ * above with the authenticated role contracts. */
+```
+
+### API-34de275dfc1c · ndnsf::di::validateNativeCanonicalMaterialManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L441)
+
+```cpp
+void validateNativeCanonicalMaterialManifest(
+  const NativeCanonicalSource& source,
+  const NativeCanonicalSource::MaterialManifest& manifest,
+  const NativeAssemblyControl& control);
+```
+
+原始接口说明：
+
+```text
+/** Validate a prepared material manifest against the authenticated ONNX source. */
+```
+
+### API-4347e8a2ca93 · ndnsf::di::validateNativeCanonicalMaterialReferenceIndex
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L447)
+
+```cpp
+void validateNativeCanonicalMaterialReferenceIndex(
+  const NativeCanonicalSource& source,
+  const NativeCanonicalSource::MaterialManifest& manifest,
+  const NativeAssemblyControl& control);
+```
+
+原始接口说明：
+
+```text
+/** Validate only a durable reference index restored before payload fetch. */
+```
+
 ### API-8d548f603eb2 · ndnsf::di::onnxInitializerNormalizationRevision
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L128)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L458)
 
 ```cpp
 std::uint32_t
@@ -1254,7 +2299,7 @@ onnxInitializerNormalizationRevision(const NativeCanonicalSource& source,
 
 ### API-c70b0903a9c9 · ndnsf::di::checkOnnxAssemblerDescriptorBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp#L469)
 
 ```cpp
 void
@@ -1277,7 +2322,7 @@ checkOnnxAssemblerDescriptorBinding(const std::string& assemblerDescriptorDigest
 
 ## NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp
 
-源码 SHA-256：`cd2703fb2088458fd8a1e5ddbe0fdee882b52ebfd4ccb6e6ec3af024e28a46eb`。
+源码 SHA-256：`86401b3e528992946887e5a5dcc1caec3d29e5ccc3758c2542917d5d369663eb`。
 
 ### API-10f829b848d7 · ndnsf::di::OnnxRuntimeProviderSelection
 
@@ -1368,9 +2413,25 @@ std::vector<std::string> stateFamilies{
     "attention_kv", "recurrent_state", "convolution_state"};
 ```
 
+### API-a028af873a4c · ndnsf::di::StatefulOnnxIoContractV1::successorInputByOutput
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L38)
+
+```cpp
+std::map<std::string, std::string> successorInputByOutput;
+```
+
+原始接口说明：
+
+```text
+// Dynamic-past models may use names that do not follow the legacy *_in /
+// *_out convention.  The adapter supplies an explicit output-to-input map
+// for those contracts; an empty map retains the legacy family rules.
+```
+
 ### API-c8e0cca20883 · ndnsf::di::StatefulOnnxIoContractV1::stateInputForOutput
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L40)
 
 ```cpp
 std::string stateInputForOutput(const std::string& outputName) const
@@ -1378,7 +2439,7 @@ std::string stateInputForOutput(const std::string& outputName) const
 
 ### API-9293ad8caf6a · ndnsf::di::StatefulOnnxIoContractV1::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L62)
 
 ```cpp
 void validate() const
@@ -1386,7 +2447,7 @@ void validate() const
 
 ### API-614d6364f0f7 · ndnsf::di::CausalPositionInputContractV1
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L114)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L137)
 
 ```cpp
 struct CausalPositionInputContractV1
@@ -1394,7 +2455,7 @@ struct CausalPositionInputContractV1
 
 ### API-c648bfe8cfa2 · ndnsf::di::CausalPositionInputContractV1::policy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L116)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L139)
 
 ```cpp
 std::string policy;
@@ -1402,7 +2463,7 @@ std::string policy;
 
 ### API-da92b8ac5786 · ndnsf::di::CausalPositionInputContractV1::attentionMaskInputName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L117)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L140)
 
 ```cpp
 std::string attentionMaskInputName;
@@ -1410,7 +2471,7 @@ std::string attentionMaskInputName;
 
 ### API-d0f6cb560b07 · ndnsf::di::CausalPositionInputContractV1::positionIdsInputName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L141)
 
 ```cpp
 std::string positionIdsInputName;
@@ -1418,7 +2479,7 @@ std::string positionIdsInputName;
 
 ### API-06826f58c542 · ndnsf::di::CausalPositionInputContractV1::cachePositionInputName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L142)
 
 ```cpp
 std::string cachePositionInputName;
@@ -1426,7 +2487,7 @@ std::string cachePositionInputName;
 
 ### API-bf6193abe193 · ndnsf::di::CausalPositionInputContractV1::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L144)
 
 ```cpp
 void
@@ -1435,7 +2496,7 @@ void
 
 ### API-f76ce195458b · ndnsf::di::materializeCausalPositionInputsV1
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L125)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L148)
 
 ```cpp
 std::map<std::string, TensorBundle>
@@ -1448,7 +2509,7 @@ materializeCausalPositionInputsV1(
 
 ### API-15bf23c9b3b8 · ndnsf::di::resolveOnnxRuntimeProviderSelection
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L155)
 
 ```cpp
 OnnxRuntimeProviderSelection
@@ -1458,7 +2519,7 @@ resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
 
 ### API-fdb2f40af298 · ndnsf::di::OnnxRuntimeModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L159)
 
 ```cpp
 class OnnxRuntimeModelRunner final : public NativeModelRunner
@@ -1466,7 +2527,7 @@ class OnnxRuntimeModelRunner final : public NativeModelRunner
 
 ### API-5b28a30aa5cd · ndnsf::di::OnnxRuntimeModelRunner::OnnxRuntimeModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L162)
 
 ```cpp
 explicit OnnxRuntimeModelRunner(NativeModelRunnerSpec spec);
@@ -1474,7 +2535,7 @@ explicit OnnxRuntimeModelRunner(NativeModelRunnerSpec spec);
 
 ### API-e2dd090c7bf4 · ndnsf::di::OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L140)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L163)
 
 ```cpp
 ~OnnxRuntimeModelRunner() final;
@@ -1482,7 +2543,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adap
 
 ### API-d6ce4c127333 · ndnsf::di::OnnxRuntimeModelRunner::run
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L165)
 
 ```cpp
 std::map<std::string, TensorBundle>
@@ -1491,7 +2552,7 @@ std::map<std::string, TensorBundle>
 
 ### API-f9ba7fbbf18a · ndnsf::di::OnnxRuntimeModelRunner::releaseSessionState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L145)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L168)
 
 ```cpp
 void
@@ -1500,7 +2561,7 @@ void
 
 ### API-c62ecd68f5e2 · ndnsf::di::OnnxRuntimeModelRunner::runStreamed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L148)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L171)
 
 ```cpp
 std::optional<std::map<std::string, TensorBundle>>
@@ -1509,7 +2570,7 @@ std::optional<std::map<std::string, TensorBundle>>
 
 ### API-14aacbaf04b2 · ndnsf::di::OnnxRuntimeModelRunner::executionEvidence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L151)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L174)
 
 ```cpp
 const std::optional<ExecutionEvidence>&
@@ -1518,7 +2579,7 @@ const std::optional<ExecutionEvidence>&
 
 ### API-9af87cfad4da · ndnsf::di::OnnxRuntimeModelRunner::executionEvidenceSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L154)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L177)
 
 ```cpp
 std::optional<ExecutionEvidence>
@@ -1527,7 +2588,7 @@ std::optional<ExecutionEvidence>
 
 ### API-9b7d3e7306ab · ndnsf::di::OnnxRuntimeModelRunner::runtimeMetricsSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L157)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L180)
 
 ```cpp
 std::optional<NativeRuntimeMetrics>
@@ -1536,7 +2597,7 @@ std::optional<NativeRuntimeMetrics>
 
 ### API-39a424ab3e72 · ndnsf::di::OnnxRuntimeModelRunner::supportsOpaqueStateHandles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L160)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L183)
 
 ```cpp
 bool
@@ -1545,7 +2606,7 @@ bool
 
 ### API-649bf37df0b5 · ndnsf::di::OnnxRuntimeModelRunner::stateHandleSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L186)
 
 ```cpp
 std::optional<NativeOpaqueStateHandleV1>
@@ -1554,7 +2615,7 @@ std::optional<NativeOpaqueStateHandleV1>
 
 ### API-615cf8394f21 · ndnsf::di::OnnxRuntimeModelRunner::supportsConversationStateTransfer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L166)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L189)
 
 ```cpp
 bool
@@ -1563,7 +2624,7 @@ bool
 
 ### API-608af2414c72 · ndnsf::di::OnnxRuntimeModelRunner::promoteSessionStateToConversation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L169)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L192)
 
 ```cpp
 std::optional<NativeConversationStateHandleV1>
@@ -1573,7 +2634,7 @@ std::optional<NativeConversationStateHandleV1>
 
 ### API-65f082645a9c · ndnsf::di::OnnxRuntimeModelRunner::restoreConversationState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L173)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L196)
 
 ```cpp
 bool
@@ -1583,7 +2644,7 @@ bool
 
 ### API-7bd756c99a57 · ndnsf::di::OnnxRuntimeModelRunner::pauseConversationStateToHost
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L177)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L200)
 
 ```cpp
 bool
@@ -1592,7 +2653,7 @@ bool
 
 ### API-6af7ccc7f0ce · ndnsf::di::OnnxRuntimeModelRunner::prefetchConversationStateToGpu
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L180)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L203)
 
 ```cpp
 std::future<bool>
@@ -1601,7 +2662,7 @@ std::future<bool>
 
 ### API-28e1e7965be5 · ndnsf::di::OnnxRuntimeModelRunner::cancelConversationStatePrefetch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L183)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L206)
 
 ```cpp
 bool
@@ -1610,7 +2671,7 @@ bool
 
 ### API-d55c76ece5c1 · ndnsf::di::OnnxRuntimeModelRunner::releaseConversationState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L186)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L209)
 
 ```cpp
 bool
@@ -1619,7 +2680,7 @@ bool
 
 ### API-79462df3eb4d · ndnsf::di::registerOnnxRuntimeBackend
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L198)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp#L221)
 
 ```cpp
 void
@@ -1628,7 +2689,7 @@ registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory);
 
 ## NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp
 
-源码 SHA-256：`d0d74aa21cc8f77bdbba7581e6619c1a00e5cf49d778ff46bd6ffb9e2ffd56e4`。
+源码 SHA-256：`e6c94c444dbdf43248f4a100c0ba04e2bc4d5dfb756db526d92fe4c2f7e38331`。
 
 ### API-42bdd9c8d737 · ndnsf::di::qwen::NativeQwenLayerSplit
 
@@ -1647,7 +2708,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adap
 using LayerRange = std::pair<std::uint64_t, std::uint64_t>;
 ```
 
-### API-4ebc2adeb849 · ndnsf::di::qwen::NativeQwenLayerSplit::NativeQwenLayerSplit
+### API-0f4814e99a1f · ndnsf::di::qwen::NativeQwenLayerSplit::NativeQwenLayerSplit
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L25)
 
@@ -1661,12 +2722,13 @@ NativeQwenLayerSplit(
       "/LLM/Pipeline/Stage/2"},
     std::vector<std::uint64_t> tensorDegrees = {1, 1, 1},
     std::string inputIngressRole = {},
-    std::string resultEgressRole = {});
+    std::string resultEgressRole = {},
+    std::string modelFamily = "qwen");
 ```
 
 ### API-65d16d78b80b · ndnsf::di::qwen::NativeQwenLayerSplit::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L37)
 
 ```cpp
 NativeStrategyIdentity identity() const override;
@@ -1674,7 +2736,7 @@ NativeStrategyIdentity identity() const override;
 
 ### API-80771b0510b2 · ndnsf::di::qwen::NativeQwenLayerSplit::inspectGraph
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L40)
 
 ```cpp
 NativeGraphSnapshot inspectGraph(const NativeModelDescriptor& model,
@@ -1690,7 +2752,7 @@ NativeGraphSnapshot inspectGraph(const NativeModelDescriptor& model,
 
 ### API-4e1e8ac4cf33 · ndnsf::di::qwen::NativeQwenLayerSplit::enumerateFromMetadata
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L42)
 
 ```cpp
 std::vector<NativeSplitCandidate> enumerateFromMetadata(const NativeModelDescriptor& model,
@@ -1699,7 +2761,7 @@ std::vector<NativeSplitCandidate> enumerateFromMetadata(const NativeModelDescrip
 
 ### API-e4ac032fe39f · ndnsf::di::qwen::NativeQwenLayerSplit::enumerate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L43)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L44)
 
 ```cpp
 std::vector<NativeSplitCandidate> enumerate(
@@ -1710,7 +2772,7 @@ std::vector<NativeSplitCandidate> enumerate(
 
 ### API-94572256562f · ndnsf::di::qwen::NativeQwenLayerSplit::enumerate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L48)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp#L49)
 
 ```cpp
 std::vector<NativeSplitCandidate> enumerate(
@@ -3181,7 +4243,7 @@ std::vector<NativeSplitCandidate> enumerate(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp
 
-源码 SHA-256：`5519d1555b604a0c1f9c69f44d4aed98f76843ab3d1c48feaae1baaf9fde3ef3`。
+源码 SHA-256：`fe08c86606071212a38d36021e075e128dcdee24e2fe8302ff0b54d8996d5077`。
 
 ### API-fc626aa767fb · ndnsf::di::TensorBundle
 
@@ -3413,9 +4475,24 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::vector<std::string> tensors;
 ```
 
+### API-f31a081a7168 · ndnsf::di::DependencyEdge::bundleTensorNames
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L73)
+
+```cpp
+std::vector<std::string> bundleTensorNames;
+```
+
+原始接口说明：
+
+```text
+// Concrete names selected from one logical transport bundle.  Empty keeps
+// the legacy one-name selection contract.
+```
+
 ### API-f922d1fccf34 · ndnsf::di::DependencyEdge::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L71)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L74)
 
 ```cpp
 std::string requestId;
@@ -3423,7 +4500,7 @@ std::string requestId;
 
 ### API-17b6cb138f8f · ndnsf::di::DependencyEdge::attemptEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L75)
 
 ```cpp
 std::uint64_t attemptEpoch = 0;
@@ -3431,7 +4508,7 @@ std::uint64_t attemptEpoch = 0;
 
 ### API-7d5533c4c2fd · ndnsf::di::DependencyEdge::useNdnsfDataV1
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L78)
 
 ```cpp
 bool useNdnsfDataV1 = false;
@@ -3446,7 +4523,7 @@ bool useNdnsfDataV1 = false;
 
 ### API-f27aee7e9a6d · ndnsf::di::DependencyEdge::collectiveOperationIndex
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L79)
 
 ```cpp
 std::uint64_t collectiveOperationIndex = 0;
@@ -3454,7 +4531,7 @@ std::uint64_t collectiveOperationIndex = 0;
 
 ### API-a3ab67cc9c03 · ndnsf::di::DependencyEdge::collectiveProducerRank
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L80)
 
 ```cpp
 std::string collectiveProducerRank;
@@ -3462,7 +4539,7 @@ std::string collectiveProducerRank;
 
 ### API-e4cb87da8b45 · ndnsf::di::DependencyEdge::collectiveSourceLayoutDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L81)
 
 ```cpp
 std::string collectiveSourceLayoutDigest;
@@ -3470,7 +4547,7 @@ std::string collectiveSourceLayoutDigest;
 
 ### API-85f7cd711b39 · ndnsf::di::DependencyEdge::collectiveTargetLayoutDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L82)
 
 ```cpp
 std::string collectiveTargetLayoutDigest;
@@ -3478,7 +4555,7 @@ std::string collectiveTargetLayoutDigest;
 
 ### API-21721d6c8e42 · ndnsf::di::DependencyEdge::collectiveTensorDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L83)
 
 ```cpp
 std::string collectiveTensorDigest;
@@ -3486,7 +4563,7 @@ std::string collectiveTensorDigest;
 
 ### API-528fd22d079b · ndnsf::di::DependencyEdge::redistributions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L81)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L84)
 
 ```cpp
 std::vector<RedistributionSpec> redistributions;
@@ -3494,7 +4571,7 @@ std::vector<RedistributionSpec> redistributions;
 
 ### API-c81f13cfb4c8 · ndnsf::di::DependencyEdge::redistributionProducerRank
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L87)
 
 ```cpp
 std::optional<std::uint64_t> redistributionProducerRank;
@@ -3509,7 +4586,7 @@ std::optional<std::uint64_t> redistributionProducerRank;
 
 ### API-d0dfb3b13c6a · ndnsf::di::DependencyEdge::redistributionConsumerRank
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L88)
 
 ```cpp
 std::optional<std::uint64_t> redistributionConsumerRank;
@@ -3517,7 +4594,7 @@ std::optional<std::uint64_t> redistributionConsumerRank;
 
 ### API-4631e65b4f2e · ndnsf::di::DependencyEdge::transportScope
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L91)
 
 ```cpp
 std::string transportScope;
@@ -3532,7 +4609,7 @@ std::string transportScope;
 
 ### API-882f0dcf5442 · ndnsf::di::DependencyEdge::producerProvider
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L89)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L92)
 
 ```cpp
 std::string producerProvider;
@@ -3540,7 +4617,7 @@ std::string producerProvider;
 
 ### API-3b93f14928bb · ndnsf::di::DependencyEdge::topicPrefix
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L93)
 
 ```cpp
 std::string topicPrefix;
@@ -3548,7 +4625,7 @@ std::string topicPrefix;
 
 ### API-8d1a60f729cc · ndnsf::di::DependencyEdge::declaredByV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L97)
 
 ```cpp
 bool declaredByV3 = false;
@@ -3564,7 +4641,7 @@ bool declaredByV3 = false;
 
 ### API-3e6a3ec5589d · ndnsf::di::DependencyEdge::manifestDataName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L98)
 
 ```cpp
 std::string manifestDataName;
@@ -3572,7 +4649,7 @@ std::string manifestDataName;
 
 ### API-b6813f10fc28 · ndnsf::di::DependencyEdge::maxSegments
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L99)
 
 ```cpp
 std::size_t maxSegments = 0;
@@ -3580,7 +4657,7 @@ std::size_t maxSegments = 0;
 
 ### API-ab03f811f77b · ndnsf::di::DependencyEdge::endpointDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L100)
 
 ```cpp
 std::string endpointDigest;
@@ -3588,7 +4665,7 @@ std::string endpointDigest;
 
 ### API-4f54ee5050bf · ndnsf::di::DependencyEdge::planDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L98)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L101)
 
 ```cpp
 std::string planDigest;
@@ -3596,7 +4673,7 @@ std::string planDigest;
 
 ### API-1ace35dd46b7 · ndnsf::di::DependencyEdge::manifestContractDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L99)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L102)
 
 ```cpp
 std::string manifestContractDigest;
@@ -3604,7 +4681,7 @@ std::string manifestContractDigest;
 
 ### API-075a3ff11ad8 · ndnsf::di::DependencyEdge::tensorDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L100)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L103)
 
 ```cpp
 std::string tensorDigest;
@@ -3612,7 +4689,7 @@ std::string tensorDigest;
 
 ### API-a0b147fd0055 · ndnsf::di::DependencyEdge::layoutDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L101)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L104)
 
 ```cpp
 std::string layoutDigest;
@@ -3620,7 +4697,7 @@ std::string layoutDigest;
 
 ### API-055b77283931 · ndnsf::di::DependencyEdge::securityProfile
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L102)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L105)
 
 ```cpp
 std::string securityProfile;
@@ -3628,7 +4705,7 @@ std::string securityProfile;
 
 ### API-01af5d216e29 · ndnsf::di::DependencyEdge::operationKind
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L103)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L106)
 
 ```cpp
 std::string operationKind;
@@ -3636,7 +4713,7 @@ std::string operationKind;
 
 ### API-f662565a984a · ndnsf::di::DependencyEdge::round
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L104)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L107)
 
 ```cpp
 std::uint64_t round = 0;
@@ -3644,7 +4721,7 @@ std::uint64_t round = 0;
 
 ### API-64fcb70936d6 · ndnsf::di::DependencyEdge::microbatch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L108)
 
 ```cpp
 std::uint64_t microbatch = 0;
@@ -3652,7 +4729,7 @@ std::uint64_t microbatch = 0;
 
 ### API-60a5b47dfb2e · ndnsf::di::DependencyEdge::noProgressDeadlineMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L106)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L109)
 
 ```cpp
 std::uint64_t noProgressDeadlineMs = 0;
@@ -3660,7 +4737,7 @@ std::uint64_t noProgressDeadlineMs = 0;
 
 ### API-447252c940b3 · ndnsf::di::DependencyEdge::hardDeadlineMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L110)
 
 ```cpp
 std::uint64_t hardDeadlineMs = 0;
@@ -3668,7 +4745,7 @@ std::uint64_t hardDeadlineMs = 0;
 
 ### API-ea342ca675da · ndnsf::di::validateTensorBundleForEdge
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L113)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L116)
 
 ```cpp
 void
@@ -3687,7 +4764,7 @@ validateTensorBundleForEdge(const DependencyEdge& edge,
 
 ### API-ad10c8b567f1 · ndnsf::di::RoleSpec
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L121)
 
 ```cpp
 struct RoleSpec
@@ -3695,7 +4772,7 @@ struct RoleSpec
 
 ### API-d5bb17697ac7 · ndnsf::di::RoleSpec::RoleSpec
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L120)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L123)
 
 ```cpp
 RoleSpec() = default;
@@ -3703,7 +4780,7 @@ RoleSpec() = default;
 
 ### API-e62597db7e2a · ndnsf::di::RoleSpec::RoleSpec
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L122)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L125)
 
 ```cpp
 RoleSpec(std::string role,
@@ -3715,7 +4792,7 @@ RoleSpec(std::string role,
 
 ### API-a3cb593cc40b · ndnsf::di::RoleSpec::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L135)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L138)
 
 ```cpp
 std::string role;
@@ -3723,7 +4800,7 @@ std::string role;
 
 ### API-8c9a1363955a · ndnsf::di::RoleSpec::inputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L139)
 
 ```cpp
 std::vector<DependencyEdge> inputs;
@@ -3731,7 +4808,7 @@ std::vector<DependencyEdge> inputs;
 
 ### API-3c769498fac4 · ndnsf::di::RoleSpec::outputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L137)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L140)
 
 ```cpp
 std::vector<DependencyEdge> outputs;
@@ -3739,7 +4816,7 @@ std::vector<DependencyEdge> outputs;
 
 ### API-55ef17f869a2 · ndnsf::di::RoleSpec::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L138)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L141)
 
 ```cpp
 std::string requestId;
@@ -3747,7 +4824,7 @@ std::string requestId;
 
 ### API-b6f464bd5cea · ndnsf::di::RoleSpec::attemptEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L142)
 
 ```cpp
 std::uint64_t attemptEpoch = 0;
@@ -3755,7 +4832,7 @@ std::uint64_t attemptEpoch = 0;
 
 ### API-8acbcb0a94aa · ndnsf::di::RoleSpec::inferenceEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L145)
 
 ```cpp
 std::uint64_t inferenceEpoch = 0;
@@ -3770,7 +4847,7 @@ std::uint64_t inferenceEpoch = 0;
 
 ### API-d3e5da8e4688 · ndnsf::di::RoleSpec::generationLineage
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L146)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L149)
 
 ```cpp
 std::optional<GenerationEpochLineageV1> generationLineage;
@@ -3786,7 +4863,7 @@ std::optional<GenerationEpochLineageV1> generationLineage;
 
 ### API-9a75ed8cdf76 · ndnsf::di::RoleSpec::stateInputNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L147)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L150)
 
 ```cpp
 std::vector<std::string> stateInputNames;
@@ -3794,7 +4871,7 @@ std::vector<std::string> stateInputNames;
 
 ### API-df89a4ef405b · ndnsf::di::RoleSpec::stateOutputNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L148)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L151)
 
 ```cpp
 std::vector<std::string> stateOutputNames;
@@ -3802,7 +4879,7 @@ std::vector<std::string> stateOutputNames;
 
 ### API-9c4b0c97d2ff · ndnsf::di::RoleSpec::predecessorDecodeStateIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L153)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L156)
 
 ```cpp
 std::optional<DecodeStateIdentityV1> predecessorDecodeStateIdentity;
@@ -3819,7 +4896,7 @@ std::optional<DecodeStateIdentityV1> predecessorDecodeStateIdentity;
 
 ### API-482a7369ed4f · ndnsf::di::RoleSpec::candidateDecodeStateIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L154)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L157)
 
 ```cpp
 std::optional<DecodeStateIdentityV1> candidateDecodeStateIdentity;
@@ -3827,7 +4904,7 @@ std::optional<DecodeStateIdentityV1> candidateDecodeStateIdentity;
 
 ### API-6379be5ee8c2 · ndnsf::di::RoleSpec::conversationStateBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L161)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L164)
 
 ```cpp
 std::optional<ConversationStateBinding> conversationStateBinding;
@@ -3846,7 +4923,7 @@ std::optional<ConversationStateBinding> conversationStateBinding;
 
 ### API-87ca9c66341a · ndnsf::di::RoleSpec::conversationStateLookupNowMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L162)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L165)
 
 ```cpp
 std::uint64_t conversationStateLookupNowMs = 0;
@@ -3854,7 +4931,7 @@ std::uint64_t conversationStateLookupNowMs = 0;
 
 ### API-9d9b95dd30a0 · ndnsf::di::RoleSpec::deferStateCommit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L166)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L169)
 
 ```cpp
 bool deferStateCommit = false;
@@ -3870,7 +4947,7 @@ bool deferStateCommit = false;
 
 ### API-70f4b23b61d4 · ndnsf::di::RoleSpec::streamingStateExecution
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L170)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L173)
 
 ```cpp
 bool streamingStateExecution = false;
@@ -3886,7 +4963,7 @@ bool streamingStateExecution = false;
 
 ### API-b27db17f191c · ndnsf::di::RoleExecutionContext
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L173)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L176)
 
 ```cpp
 struct RoleExecutionContext
@@ -3894,7 +4971,7 @@ struct RoleExecutionContext
 
 ### API-10111795f332 · ndnsf::di::RoleExecutionContext::StreamEventSink
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L175)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L178)
 
 ```cpp
 using StreamEventSink = std::function<bool(const std::vector<std::uint8_t>&)>;
@@ -3902,7 +4979,7 @@ using StreamEventSink = std::function<bool(const std::vector<std::uint8_t>&)>;
 
 ### API-d2e6b47e2cbe · ndnsf::di::RoleExecutionContext::sessionId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L177)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L180)
 
 ```cpp
 std::string sessionId;
@@ -3910,7 +4987,7 @@ std::string sessionId;
 
 ### API-4e151fc3fafa · ndnsf::di::RoleExecutionContext::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L178)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L181)
 
 ```cpp
 std::string role;
@@ -3918,15 +4995,31 @@ std::string role;
 
 ### API-3b57d0cbe9eb · ndnsf::di::RoleExecutionContext::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L179)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L182)
 
 ```cpp
 std::string requestId;
 ```
 
+### API-e9045b431cef · ndnsf::di::RoleExecutionContext::providerBootId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L186)
+
+```cpp
+std::string providerBootId;
+```
+
+原始接口说明：
+
+```text
+// Stable Provider boot identity propagated from the selected decode-state
+// binding into adapter-owned phase records.  It is metadata only; no model
+// or state bytes cross this boundary.
+```
+
 ### API-c31aabed35af · ndnsf::di::RoleExecutionContext::attemptEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L180)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L187)
 
 ```cpp
 std::uint64_t attemptEpoch = 0;
@@ -3934,7 +5027,7 @@ std::uint64_t attemptEpoch = 0;
 
 ### API-9586bcfe033e · ndnsf::di::RoleExecutionContext::inferenceEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L181)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L188)
 
 ```cpp
 std::uint64_t inferenceEpoch = 0;
@@ -3942,7 +5035,7 @@ std::uint64_t inferenceEpoch = 0;
 
 ### API-f48f3541bf6d · ndnsf::di::RoleExecutionContext::streamingStateExecution
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L187)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L194)
 
 ```cpp
 bool streamingStateExecution = false;
@@ -3960,7 +5053,7 @@ bool streamingStateExecution = false;
 
 ### API-0a06d3ea409b · ndnsf::di::RoleExecutionContext::generationLineage
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L192)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L199)
 
 ```cpp
 std::optional<GenerationEpochLineageV1> generationLineage;
@@ -3977,7 +5070,7 @@ std::optional<GenerationEpochLineageV1> generationLineage;
 
 ### API-d85680788f43 · ndnsf::di::RoleExecutionContext::generationInputTokenCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L197)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L204)
 
 ```cpp
 std::uint32_t generationInputTokenCount = 0;
@@ -3994,7 +5087,7 @@ std::uint32_t generationInputTokenCount = 0;
 
 ### API-0ac69172d2c8 · ndnsf::di::RoleExecutionContext::inputsByScope
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L198)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L205)
 
 ```cpp
 std::map<std::string, TensorBundle> inputsByScope;
@@ -4002,7 +5095,7 @@ std::map<std::string, TensorBundle> inputsByScope;
 
 ### API-8703eb0ea03b · ndnsf::di::RoleExecutionContext::inputEdgesByScope
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L202)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L209)
 
 ```cpp
 std::map<std::string, DependencyEdge> inputEdgesByScope;
@@ -4018,7 +5111,7 @@ std::map<std::string, DependencyEdge> inputEdgesByScope;
 
 ### API-b7afc4cd770f · ndnsf::di::RoleExecutionContext::streamEventSink
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L207)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L214)
 
 ```cpp
 StreamEventSink streamEventSink;
@@ -4035,7 +5128,7 @@ StreamEventSink streamEventSink;
 
 ### API-9bd2ec76b7b4 · ndnsf::di::RoleRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L210)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L217)
 
 ```cpp
 using RoleRunner = std::function<std::map<std::string, TensorBundle>(
@@ -4044,7 +5137,7 @@ using RoleRunner = std::function<std::map<std::string, TensorBundle>(
 
 ### API-a37505258bd7 · ndnsf::di::RoleTiming
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L213)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L220)
 
 ```cpp
 struct RoleTiming
@@ -4052,7 +5145,7 @@ struct RoleTiming
 
 ### API-4a75841ed9dc · ndnsf::di::RoleTiming::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L215)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L222)
 
 ```cpp
 std::string role;
@@ -4060,7 +5153,7 @@ std::string role;
 
 ### API-dad93ed42a88 · ndnsf::di::RoleTiming::queuedAt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L216)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L223)
 
 ```cpp
 std::chrono::steady_clock::time_point queuedAt;
@@ -4068,7 +5161,7 @@ std::chrono::steady_clock::time_point queuedAt;
 
 ### API-47fe7460a741 · ndnsf::di::RoleTiming::workerStartedAt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L217)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L224)
 
 ```cpp
 std::chrono::steady_clock::time_point workerStartedAt;
@@ -4076,7 +5169,7 @@ std::chrono::steady_clock::time_point workerStartedAt;
 
 ### API-482b91b34577 · ndnsf::di::RoleTiming::startedAt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L218)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L225)
 
 ```cpp
 std::chrono::steady_clock::time_point startedAt;
@@ -4084,7 +5177,7 @@ std::chrono::steady_clock::time_point startedAt;
 
 ### API-58f643c1c374 · ndnsf::di::RoleTiming::finishedAt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L219)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L226)
 
 ```cpp
 std::chrono::steady_clock::time_point finishedAt;
@@ -4092,7 +5185,7 @@ std::chrono::steady_clock::time_point finishedAt;
 
 ### API-01ea1cda9c01 · ndnsf::di::DataflowResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L222)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L229)
 
 ```cpp
 struct DataflowResult
@@ -4100,7 +5193,7 @@ struct DataflowResult
 
 ### API-9f34656fe612 · ndnsf::di::DataflowResult::outputsByScope
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L224)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L231)
 
 ```cpp
 std::map<std::string, TensorBundle> outputsByScope;
@@ -4108,7 +5201,7 @@ std::map<std::string, TensorBundle> outputsByScope;
 
 ### API-e9cd7289ccaf · ndnsf::di::DataflowResult::roleTimings
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L225)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L232)
 
 ```cpp
 std::vector<RoleTiming> roleTimings;
@@ -4116,7 +5209,7 @@ std::vector<RoleTiming> roleTimings;
 
 ### API-19a4db183517 · ndnsf::di::AsyncDataflowRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L228)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L235)
 
 ```cpp
 class AsyncDataflowRuntime
@@ -4124,7 +5217,7 @@ class AsyncDataflowRuntime
 
 ### API-2ecb837889ca · ndnsf::di::AsyncDataflowRuntime::AsyncDataflowRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L231)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L238)
 
 ```cpp
 explicit AsyncDataflowRuntime(std::size_t workerCount = std::thread::hardware_concurrency());
@@ -4132,7 +5225,7 @@ explicit AsyncDataflowRuntime(std::size_t workerCount = std::thread::hardware_co
 
 ### API-7725b289de8d · ndnsf::di::AsyncDataflowRuntime::~AsyncDataflowRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L233)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L240)
 
 ```cpp
 ~AsyncDataflowRuntime();
@@ -4140,7 +5233,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-018d9673570f · ndnsf::di::AsyncDataflowRuntime::run
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L235)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L242)
 
 ```cpp
 DataflowResult
@@ -4152,7 +5245,7 @@ DataflowResult
 
 ### API-19f9fc135ef8 · ndnsf::di::durationMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L295)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp#L302)
 
 ```cpp
 double
@@ -6052,7 +7145,7 @@ DependencyWaitSchedulerSnapshot snapshot() const;
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp
 
-源码 SHA-256：`9c7ff205e528b09805764a128f0215d359d3499593ede7603f16df79e529a578`。
+源码 SHA-256：`502ba4e56209ae297ebb47d99639866a5f1b020ebfe67bd3e96c0bc4ac33a06f`。
 
 ### API-b09ef99d8b90 · ndnsf::di::DiTimelineFields
 
@@ -7352,7 +8445,7 @@ ndn_service_framework::ProviderExecutionLeaseTable&
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp
 
-源码 SHA-256：`1ab8f1c41430812d9ca864d4b33b6cae052ae96ab85c8e092a983a22df976d87`。
+源码 SHA-256：`503471d250690f8955b4cb03bd313df1a453d3828cbc79a044ed2b5327fa8775`。
 
 ### API-0cf1f0202ffa · ndnsf::di::GenerationEpochLineageV1
 
@@ -7498,17 +8591,38 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::uint64_t operationIndex = 0;
 ```
 
+### API-913a577bc061 · ndnsf::di::GenerationEpochLineageV1::validateCore
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp#L39)
+
+```cpp
+void validateCore() const;
+```
+
+原始接口说明：
+
+```text
+/** Validate authenticated request/generation state before edge-local routing
+   *  fields are bound by the executing Provider. */
+```
+
 ### API-14b236e3fa26 · ndnsf::di::GenerationEpochLineageV1::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp#L42)
 
 ```cpp
 void validate() const;
 ```
 
+原始接口说明：
+
+```text
+/** Validate the complete wire/publication form, including edge routing. */
+```
+
 ### API-8f67650fb8be · ndnsf::di::GenerationEpochLineageV1::sameGenerationState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp#L45)
 
 ```cpp
 bool sameGenerationState(const GenerationEpochLineageV1& other) const noexcept;
@@ -7522,7 +8636,7 @@ bool sameGenerationState(const GenerationEpochLineageV1& other) const noexcept;
 
 ### API-638fc3ef4a6b · ndnsf::di::GenerationEpochLineageV1::operator==
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp#L42)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp#L47)
 
 ```cpp
 bool operator==(const GenerationEpochLineageV1& other) const noexcept;
@@ -7530,7 +8644,7 @@ bool operator==(const GenerationEpochLineageV1& other) const noexcept;
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp
 
-源码 SHA-256：`ad4c0d6fadafed3bdd737c020bba131d8c176d385614c4c4e6f4fdad698bd9c4`。
+源码 SHA-256：`405ccbdb18053eb9b21e19c1a650ce8d1df8e33c282f9c79476f4fe763850967`。
 
 ### API-339793d93331 · ndnsf::di::PreparationSpec
 
@@ -7540,9 +8654,104 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 struct PreparationSpec
 ```
 
+### API-1fe95131e37c · ndnsf::di::PreparationSpec::MemorySnapshot
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L28)
+
+```cpp
+struct MemorySnapshot
+```
+
+### API-ccc2504271a6 · ndnsf::di::PreparationSpec::MemorySnapshot::sourceBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L30)
+
+```cpp
+std::size_t sourceBytes = 0;
+```
+
+### API-12cfdfb84fed · ndnsf::di::PreparationSpec::MemorySnapshot::initializerBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L31)
+
+```cpp
+std::size_t initializerBytes = 0;
+```
+
+### API-a86b0d2a3be7 · ndnsf::di::PreparationSpec::MemorySnapshot::materialBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L32)
+
+```cpp
+std::size_t materialBytes = 0;
+```
+
+### API-c5d5f047780f · ndnsf::di::PreparationSpec::MemorySnapshot::encryptedPublicationBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L33)
+
+```cpp
+std::size_t encryptedPublicationBytes = 0;
+```
+
+### API-7de0382f2fcc · ndnsf::di::PreparationSpec::MemorySnapshot::ortPreparationBudgetBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L34)
+
+```cpp
+std::size_t ortPreparationBudgetBytes = 0;
+```
+
+### API-709b21c84952 · ndnsf::di::PreparationSpec::MemorySnapshot::peakBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L35)
+
+```cpp
+std::size_t peakBytes = 0;
+```
+
+### API-8da51cf78657 · ndnsf::di::PreparationSpec::MemorySnapshot::sourceOwnerReleased
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L36)
+
+```cpp
+bool sourceOwnerReleased = false;
+```
+
+### API-79da2eb361cb · ndnsf::di::PreparationSpec::MemorySnapshot::cacheEntryCommitted
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L37)
+
+```cpp
+bool cacheEntryCommitted = false;
+```
+
+### API-754e11872155 · ndnsf::di::PreparationSpec::MemorySnapshot::publicationRollbackAttempted
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L40)
+
+```cpp
+bool publicationRollbackAttempted = false;
+```
+
+原始接口说明：
+
+```text
+/** True when rollback was invoked; the callback's remote deletion result
+     * is intentionally outside this diagnostic snapshot. */
+```
+
+### API-08c3642178b8 · ndnsf::di::PreparationSpec::MemorySnapshot::terminalCleanup
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L41)
+
+```cpp
+bool terminalCleanup = false;
+```
+
 ### API-efac62abe9af · ndnsf::di::PreparationSpec::key
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L44)
 
 ```cpp
 std::string key;
@@ -7550,7 +8759,7 @@ std::string key;
 
 ### API-530e6c6a5e0c · ndnsf::di::PreparationSpec::baseDirectory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L27)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L45)
 
 ```cpp
 std::filesystem::path baseDirectory;
@@ -7558,7 +8767,7 @@ std::filesystem::path baseDirectory;
 
 ### API-ee0129349b17 · ndnsf::di::PreparationSpec::configurationJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L46)
 
 ```cpp
 std::string configurationJson;
@@ -7566,7 +8775,7 @@ std::string configurationJson;
 
 ### API-bdc601fc6767 · ndnsf::di::PreparationSpec::catalogConfigurationJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L47)
 
 ```cpp
 std::string catalogConfigurationJson;
@@ -7574,7 +8783,7 @@ std::string catalogConfigurationJson;
 
 ### API-3f241b41ae4f · ndnsf::di::PreparationSpec::taskName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L48)
 
 ```cpp
 std::string taskName;
@@ -7582,7 +8791,7 @@ std::string taskName;
 
 ### API-2e4ee6728499 · ndnsf::di::PreparationSpec::taskContractDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L49)
 
 ```cpp
 std::string taskContractDigest;
@@ -7590,7 +8799,7 @@ std::string taskContractDigest;
 
 ### API-533e149dde37 · ndnsf::di::PreparationSpec::inputLayoutDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L50)
 
 ```cpp
 std::string inputLayoutDigest;
@@ -7598,15 +8807,23 @@ std::string inputLayoutDigest;
 
 ### API-3cd152822aa8 · ndnsf::di::PreparationSpec::configurationDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L51)
 
 ```cpp
 std::string configurationDigest;
 ```
 
+### API-b9953f9d7494 · ndnsf::di::PreparationSpec::publicationServiceName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L52)
+
+```cpp
+std::string publicationServiceName;
+```
+
 ### API-32fa01af9ba6 · ndnsf::di::PreparationSpec::maxSourceBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L34)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L53)
 
 ```cpp
 std::uint64_t maxSourceBytes = 0;
@@ -7614,7 +8831,7 @@ std::uint64_t maxSourceBytes = 0;
 
 ### API-d101d2abda6c · ndnsf::di::PreparationSpec::maxAssembledBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L54)
 
 ```cpp
 std::uint64_t maxAssembledBytes = 0;
@@ -7622,7 +8839,7 @@ std::uint64_t maxAssembledBytes = 0;
 
 ### API-b64034b96e44 · ndnsf::di::PreparationSpec::ClientFactory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L58)
 
 ```cpp
 using ClientFactory = std::function<std::shared_ptr<NativeInferenceClient>(
@@ -7638,7 +8855,7 @@ using ClientFactory = std::function<std::shared_ptr<NativeInferenceClient>(
 
 ### API-f37a338dc054 · ndnsf::di::PreparationSpec::clientFactory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L60)
 
 ```cpp
 ClientFactory clientFactory;
@@ -7646,7 +8863,7 @@ ClientFactory clientFactory;
 
 ### API-c3d4858a23a5 · ndnsf::di::PreparationSpec::runtimeBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L63)
 
 ```cpp
 std::shared_ptr<void> runtimeBinding;
@@ -7660,7 +8877,7 @@ std::shared_ptr<void> runtimeBinding;
 
 ### API-312725831310 · ndnsf::di::PreparationSpec::SourceLoader
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L47)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L66)
 
 ```cpp
 using SourceLoader = std::function<NativeCanonicalSource(
@@ -7675,15 +8892,95 @@ using SourceLoader = std::function<NativeCanonicalSource(
 
 ### API-56abdc2e2a65 · ndnsf::di::PreparationSpec::loadSource
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L68)
 
 ```cpp
 SourceLoader loadSource;
 ```
 
+### API-098039aea93f · ndnsf::di::PreparationSpec::PreparedLookup
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L71)
+
+```cpp
+using PreparedLookup = std::function<std::optional<NativePreparedCanonicalPublication>(
+    const PreparationSpec&, std::chrono::steady_clock::time_point)>;
+```
+
+原始接口说明：
+
+```text
+/** Optional committed-publication lookup performed before source parsing and
+   * STORE. A hit carries only immutable receipt/reference metadata. */
+```
+
+### API-9be45e78edea · ndnsf::di::PreparationSpec::lookupPrepared
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L73)
+
+```cpp
+PreparedLookup lookupPrepared;
+```
+
+### API-e2c035b901b1 · ndnsf::di::PreparationSpec::PublicationPreparer
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L76)
+
+```cpp
+using PublicationPreparer = std::function<NativePreparedCanonicalPublication(
+    const NativeCanonicalPreparationCatalog&, const NativeInspectedModel&,
+    const NativeRequestControl&)>;
+```
+
+原始接口说明：
+
+```text
+/** Runtime-owned prepare-time publication port. It returns names/digests,
+   * never source bytes, and is optional for offline cache-only fixtures. */
+```
+
+### API-e48ce8d357b1 · ndnsf::di::PreparationSpec::PublicationRollback
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L79)
+
+```cpp
+using PublicationRollback = std::function<void(
+    const NativePreparedCanonicalPublication&)>;
+```
+
+### API-25735405d566 · ndnsf::di::PreparationSpec::preparePublication
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L81)
+
+```cpp
+PublicationPreparer preparePublication;
+```
+
+### API-58a151890f9f · ndnsf::di::PreparationSpec::rollbackPublication
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L82)
+
+```cpp
+PublicationRollback rollbackPublication;
+```
+
+### API-4390d6000db4 · ndnsf::di::PreparationSpec::repositoryArtifactPublisher
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L84)
+
+```cpp
+std::shared_ptr<const RepositoryArtifactPublisher> repositoryArtifactPublisher;
+```
+
+原始接口说明：
+
+```text
+/** Optional durable Repo publication owner selected by Runtime. */
+```
+
 ### API-060213b5f4af · ndnsf::di::PreparationSpec::cancelled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L51)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L86)
 
 ```cpp
 std::function<bool()> cancelled;
@@ -7697,7 +8994,7 @@ std::function<bool()> cancelled;
 
 ### API-d21bcebb8366 · ndnsf::di::PreparationSpec::acquireCommit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L88)
 
 ```cpp
 std::function<std::shared_ptr<void>(std::chrono::steady_clock::time_point)> acquireCommit;
@@ -7711,7 +9008,7 @@ std::function<std::shared_ptr<void>(std::chrono::steady_clock::time_point)> acqu
 
 ### API-36c9a7ccd1d8 · ndnsf::di::PreparationSpec::dispatch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L90)
 
 ```cpp
 std::function<void(std::function<void()>)> dispatch;
@@ -7725,7 +9022,7 @@ std::function<void(std::function<void()>)> dispatch;
 
 ### API-cea94f0af47a · ndnsf::di::PreparationSpec::schedule
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L92)
 
 ```cpp
 std::function<std::function<void()>(std::chrono::steady_clock::time_point,
@@ -7740,7 +9037,7 @@ std::function<std::function<void()>(std::chrono::steady_clock::time_point,
 
 ### API-f552011ba6a2 · ndnsf::di::PreparationSpec::jobGeneration
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L95)
 
 ```cpp
 std::uint64_t jobGeneration = 0;
@@ -7754,7 +9051,7 @@ std::uint64_t jobGeneration = 0;
 
 ### API-36988f4ea509 · ndnsf::di::PreparationSpec::onTerminal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L97)
 
 ```cpp
 std::function<void()> onTerminal;
@@ -7766,9 +9063,23 @@ std::function<void()> onTerminal;
 /** Release the Runtime-owned preparation ticket at job terminal state. */
 ```
 
+### API-553a1fa7b2d5 · ndnsf::di::PreparationSpec::memoryObserver
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L99)
+
+```cpp
+std::function<void(const MemorySnapshot&)> memoryObserver;
+```
+
+原始接口说明：
+
+```text
+/** Optional C++ evidence hook; exceptions are swallowed by the owner. */
+```
+
 ### API-7e186d381d26 · ndnsf::di::ModelPreparationCache
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L107)
 
 ```cpp
 class ModelPreparationCache
@@ -7776,7 +9087,7 @@ class ModelPreparationCache
 
 ### API-f2df458d8c2e · ndnsf::di::ModelPreparationCache::ModelPreparationCache
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L110)
 
 ```cpp
 ModelPreparationCache(std::size_t maxBytes, std::size_t maxEntries,
@@ -7785,7 +9096,7 @@ ModelPreparationCache(std::size_t maxBytes, std::size_t maxEntries,
 
 ### API-623c2b4f3f63 · ndnsf::di::ModelPreparationCache::~ModelPreparationCache
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L112)
 
 ```cpp
 ~ModelPreparationCache() noexcept;
@@ -7793,7 +9104,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-18346500ce96 · ndnsf::di::ModelPreparationCache::prepare
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L114)
 
 ```cpp
 PreparedModel prepare(const PreparationSpec& spec,
@@ -7803,7 +9114,7 @@ PreparedModel prepare(const PreparationSpec& spec,
 
 ### API-39666624f9b9 · ndnsf::di::ModelPreparationCache::parseCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L81)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L118)
 
 ```cpp
 std::size_t parseCount() const noexcept;
@@ -7811,7 +9122,7 @@ std::size_t parseCount() const noexcept;
 
 ### API-773b06854efe · ndnsf::di::ModelPreparationCache::entryCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L119)
 
 ```cpp
 std::size_t entryCount() const noexcept;
@@ -7819,7 +9130,7 @@ std::size_t entryCount() const noexcept;
 
 ### API-5104d232991c · ndnsf::di::ModelPreparationCache::chargedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp#L120)
 
 ```cpp
 std::size_t chargedBytes() const noexcept;
@@ -7876,11 +9187,28 @@ materializeNativeModelArtifactsFromReferencesJson(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp
 
-源码 SHA-256：`4e7e2b67fb564fdea8faf00fc0b070a4d9d48759ac430925b46865d9fd83fc2e`。
+源码 SHA-256：`0fcf61e6cc63516e31048e27eb81ee951a5f15047cd05120c07721cedcd92fe0`。
+
+### API-0b9ac812a228 · ndnsf::di::NativeGrantInlineManifestMaxBytes = 4U * 1024U
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L17)
+
+```cpp
+inline constexpr std::size_t NativeGrantInlineManifestMaxBytes = 4U * 1024U;
+```
+
+原始接口说明：
+
+```text
+// Grant authority requests are carried in one ordinary NDN RequestMessage.
+// Keep the optional inline manifest well below the packet-size boundary; a
+// larger canonical root must be pre-authorized by its digest (or use a future
+// bounded reference transport), never be put into this wire field.
+```
 
 ### API-665fb8848f37 · ndnsf::di::NativeSignedGrantRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L13)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L20)
 
 ```cpp
 struct NativeSignedGrantRequest
@@ -7888,7 +9216,7 @@ struct NativeSignedGrantRequest
 
 ### API-2cdc9009500e · ndnsf::di::NativeSignedGrantRequest::providerIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L15)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L22)
 
 ```cpp
 std::string providerIdentity, requestId, planCoreDigest, grantViewDigest;
@@ -7896,7 +9224,7 @@ std::string providerIdentity, requestId, planCoreDigest, grantViewDigest;
 
 ### API-06f2ba8bf60a · ndnsf::di::NativeSignedGrantRequest::modelManifestDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L16)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L23)
 
 ```cpp
 std::string modelManifestDigest, protectionEpoch, requesterIdentity;
@@ -7904,7 +9232,7 @@ std::string modelManifestDigest, protectionEpoch, requesterIdentity;
 
 ### API-87923632fd46 · ndnsf::di::NativeSignedGrantRequest::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L17)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L24)
 
 ```cpp
 std::uint64_t attempt = 0, issuedAtMs = 0;
@@ -7912,7 +9240,7 @@ std::uint64_t attempt = 0, issuedAtMs = 0;
 
 ### API-c0d654b78d7d · ndnsf::di::NativeSignedGrantRequest::allowedResidencyTiers
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L18)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L25)
 
 ```cpp
 std::vector<std::string> allowedResidencyTiers{"DISK_CIPHERTEXT_ASSEMBLED"};
@@ -7920,7 +9248,7 @@ std::vector<std::string> allowedResidencyTiers{"DISK_CIPHERTEXT_ASSEMBLED"};
 
 ### API-e6bddcd831c7 · ndnsf::di::NativeSignedGrantRequest::purpose
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L26)
 
 ```cpp
 std::string purpose = "DISK_CIPHERTEXT_ASSEMBLED";
@@ -7928,7 +9256,7 @@ std::string purpose = "DISK_CIPHERTEXT_ASSEMBLED";
 
 ### API-caea6133bc36 · ndnsf::di::NativeSignedGrantRequest::requesterSignature
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L20)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L27)
 
 ```cpp
 std::string requesterSignature;
@@ -7936,7 +9264,7 @@ std::string requesterSignature;
 
 ### API-d517a5a5677f · ndnsf::di::NativeSignedGrantRequest::signingBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L22)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L29)
 
 ```cpp
 std::string signingBytes() const;
@@ -7944,7 +9272,7 @@ std::string signingBytes() const;
 
 ### API-04f7087c3995 · ndnsf::di::NativeSignedGrantRequest::sign
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L23)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L30)
 
 ```cpp
 NativeSignedGrantRequest sign(EVP_PKEY& requesterPrivateKey) const;
@@ -7952,7 +9280,7 @@ NativeSignedGrantRequest sign(EVP_PKEY& requesterPrivateKey) const;
 
 ### API-828462e625b8 · ndnsf::di::NativeGrantPublicationSource
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L33)
 
 ```cpp
 struct NativeGrantPublicationSource
@@ -7960,7 +9288,7 @@ struct NativeGrantPublicationSource
 
 ### API-21721aae92fe · ndnsf::di::NativeGrantPublicationSource::modelName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L35)
 
 ```cpp
 std::string modelName, modelContentDigest, canonicalSourceDigest;
@@ -7968,7 +9296,7 @@ std::string modelName, modelContentDigest, canonicalSourceDigest;
 
 ### API-efa3efe2ca67 · ndnsf::di::NativeGrantPublicationSource::initializerObjectDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L36)
 
 ```cpp
 std::string initializerObjectDigest, artifactProfileDigest;
@@ -7976,7 +9304,7 @@ std::string initializerObjectDigest, artifactProfileDigest;
 
 ### API-ce728ba899c9 · ndnsf::di::NativeGrantIssuerConfig
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L39)
 
 ```cpp
 struct NativeGrantIssuerConfig
@@ -7984,7 +9312,7 @@ struct NativeGrantIssuerConfig
 
 ### API-7b7aaedc21e1 · ndnsf::di::NativeGrantIssuerConfig::authorityIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L34)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L41)
 
 ```cpp
 std::string authorityIdentity, requesterIdentity, protectionEpoch, keyId;
@@ -7992,7 +9320,7 @@ std::string authorityIdentity, requesterIdentity, protectionEpoch, keyId;
 
 ### API-dbbd24daec09 · ndnsf::di::NativeGrantIssuerConfig::authorityPrivateKey
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L42)
 
 ```cpp
 std::shared_ptr<EVP_PKEY> authorityPrivateKey, requesterPublicKey;
@@ -8000,7 +9328,7 @@ std::shared_ptr<EVP_PKEY> authorityPrivateKey, requesterPublicKey;
 
 ### API-91b010b58ee3 · ndnsf::di::NativeGrantIssuerConfig::allowedModelManifests
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L43)
 
 ```cpp
 std::set<std::string> allowedModelManifests;
@@ -8008,7 +9336,7 @@ std::set<std::string> allowedModelManifests;
 
 ### API-0d0979645e6f · ndnsf::di::NativeGrantIssuerConfig::publicationSources
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L46)
 
 ```cpp
 std::map<std::string, NativeGrantPublicationSource> publicationSources;
@@ -8023,7 +9351,7 @@ std::map<std::string, NativeGrantPublicationSource> publicationSources;
 
 ### API-71e2489640d3 · ndnsf::di::NativeGrantIssuerConfig::allowedResidencyTiers
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L47)
 
 ```cpp
 std::set<std::string> allowedResidencyTiers{"DISK_CIPHERTEXT_ASSEMBLED"};
@@ -8031,7 +9359,7 @@ std::set<std::string> allowedResidencyTiers{"DISK_CIPHERTEXT_ASSEMBLED"};
 
 ### API-43b4b348fbff · ndnsf::di::NativeGrantIssuerConfig::recipientPublicKeys
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L48)
 
 ```cpp
 std::map<std::string, std::shared_ptr<EVP_PKEY>> recipientPublicKeys;
@@ -8039,7 +9367,7 @@ std::map<std::string, std::shared_ptr<EVP_PKEY>> recipientPublicKeys;
 
 ### API-a1ecfb96b4fc · ndnsf::di::NativeGrantIssuerConfig::contentKey
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L43)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L50)
 
 ```cpp
 std::function<std::vector<std::uint8_t>(const std::string&, const std::string&)> contentKey;
@@ -8053,7 +9381,7 @@ std::function<std::vector<std::uint8_t>(const std::string&, const std::string&)>
 
 ### API-b3e99a611b72 · ndnsf::di::NativeGrantAuthorityRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L50)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L57)
 
 ```cpp
 struct NativeGrantAuthorityRequest
@@ -8061,7 +9389,7 @@ struct NativeGrantAuthorityRequest
 
 ### API-d11ab1a7a86a · ndnsf::di::NativeGrantAuthorityRequest::request
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L59)
 
 ```cpp
 NativeSignedGrantRequest request;
@@ -8069,7 +9397,7 @@ NativeSignedGrantRequest request;
 
 ### API-5593246bb9d2 · ndnsf::di::NativeGrantAuthorityRequest::expiresAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L60)
 
 ```cpp
 std::uint64_t expiresAtMs = 0;
@@ -8077,7 +9405,7 @@ std::uint64_t expiresAtMs = 0;
 
 ### API-49ed6cb87993 · ndnsf::di::NativeGrantAuthorityRequest::publishedManifestJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L54)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L61)
 
 ```cpp
 std::string publishedManifestJson;
@@ -8085,7 +9413,7 @@ std::string publishedManifestJson;
 
 ### API-6c79accad35b · ndnsf::di::nativeGrantAuthorityRequestJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L64)
 
 ```cpp
 std::string nativeGrantAuthorityRequestJson(const NativeGrantAuthorityRequest& request);
@@ -8093,7 +9421,7 @@ std::string nativeGrantAuthorityRequestJson(const NativeGrantAuthorityRequest& r
 
 ### API-d19e66821d7d · ndnsf::di::nativeGrantAuthorityRequestFromJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L65)
 
 ```cpp
 NativeGrantAuthorityRequest nativeGrantAuthorityRequestFromJson(const std::string& wire);
@@ -8101,7 +9429,7 @@ NativeGrantAuthorityRequest nativeGrantAuthorityRequestFromJson(const std::strin
 
 ### API-6087445f6dae · ndnsf::di::nativeKeyGrantJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L66)
 
 ```cpp
 std::string nativeKeyGrantJson(const NativeKeyGrant& grant);
@@ -8109,7 +9437,7 @@ std::string nativeKeyGrantJson(const NativeKeyGrant& grant);
 
 ### API-e1e08f682c1a · ndnsf::di::nativeKeyGrantFromJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L67)
 
 ```cpp
 NativeKeyGrant nativeKeyGrantFromJson(const std::string& wire);
@@ -8117,7 +9445,7 @@ NativeKeyGrant nativeKeyGrantFromJson(const std::string& wire);
 
 ### API-3cea916f456d · ndnsf::di::NativeArtifactGrantIssuer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L67)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L74)
 
 ```cpp
 class NativeArtifactGrantIssuer
@@ -8125,7 +9453,7 @@ class NativeArtifactGrantIssuer
 
 ### API-72b03877b0c9 · ndnsf::di::NativeArtifactGrantIssuer::NativeArtifactGrantIssuer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L77)
 
 ```cpp
 explicit NativeArtifactGrantIssuer(NativeGrantIssuerConfig config);
@@ -8133,7 +9461,7 @@ explicit NativeArtifactGrantIssuer(NativeGrantIssuerConfig config);
 
 ### API-df13c0e19cae · ndnsf::di::NativeArtifactGrantIssuer::issue
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L71)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L78)
 
 ```cpp
 NativeKeyGrant issue(const NativeSignedGrantRequest& request,
@@ -8142,7 +9470,7 @@ NativeKeyGrant issue(const NativeSignedGrantRequest& request,
 
 ### API-6c2ff19d93cc · ndnsf::di::NativeArtifactGrantIssuer::issue
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L80)
 
 ```cpp
 NativeKeyGrant issue(const NativeSignedGrantRequest& request,
@@ -8152,7 +9480,7 @@ NativeKeyGrant issue(const NativeSignedGrantRequest& request,
 
 ### API-749a3b3474ba · ndnsf::di::NativeArtifactGrantIssuer::requesterIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L84)
 
 ```cpp
 const std::string& requesterIdentity() const noexcept
@@ -8160,7 +9488,7 @@ const std::string& requesterIdentity() const noexcept
 
 ### API-bea4387925fe · ndnsf::di::NativeArtifactGrantIssuer::protectionEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L85)
 
 ```cpp
 const std::string& protectionEpoch() const noexcept
@@ -8168,7 +9496,7 @@ const std::string& protectionEpoch() const noexcept
 
 ### API-61dd63f0654b · ndnsf::di::detail::verifyNativeIssuedGrant
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L92)
 
 ```cpp
 void verifyNativeIssuedGrant(const NativeKeyGrant& grant, const NativeSignedGrantRequest& request,
@@ -8178,7 +9506,7 @@ void verifyNativeIssuedGrant(const NativeKeyGrant& grant, const NativeSignedGran
 
 ### API-9536d5a529dd · ndnsf::di::detail::signNativeGrantBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L89)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L96)
 
 ```cpp
 std::string signNativeGrantBytes(EVP_PKEY& key, const std::string& bytes);
@@ -8192,7 +9520,7 @@ std::string signNativeGrantBytes(EVP_PKEY& key, const std::string& bytes);
 
 ### API-3a57ad4a54e1 · ndnsf::di::detail::verifyNativeGrantBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L97)
 
 ```cpp
 bool verifyNativeGrantBytes(EVP_PKEY& key, const std::string& bytes,
@@ -8201,13 +9529,52 @@ bool verifyNativeGrantBytes(EVP_PKEY& key, const std::string& bytes,
 
 ### API-d2ee451a103e · ndnsf::di::detail::issueNativeGrantWire
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp#L99)
 
 ```cpp
 NativeKeyGrant issueNativeGrantWire(const NativeSignedGrantRequest& request,
   const std::string& authority, const std::string& keyId, EVP_PKEY& authorityKey,
   EVP_PKEY& recipientKey, const std::vector<std::uint8_t>& contentKey,
   std::uint64_t nowMs, std::uint64_t expiresAtMs);
+```
+
+## NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp
+
+源码 SHA-256：`c86c0a8203ff02c59bef01d8bfc009f3f012f71b41a77303fc6f8bb4fe401cd5`。
+
+### API-baa419d24d58 · ndnsf::di::markNativeArtifactStagingLease
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp#L11)
+
+```cpp
+void markNativeArtifactStagingLease(const std::filesystem::path& directory) noexcept;
+```
+
+原始接口说明：
+
+```text
+/** Create a best-effort PID lease beside a provider artifact staging tree. */
+```
+
+### API-c7c43f5734aa · ndnsf::di::cleanupNativeArtifactStaging
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp#L19)
+
+```cpp
+std::size_t cleanupNativeArtifactStaging(
+  const std::filesystem::path& cacheDir,
+  std::chrono::milliseconds staleAfter) noexcept;
+```
+
+原始接口说明：
+
+```text
+/** Remove only orphaned provider staging/protected assembly directories.
+ *
+ * Content-addressed source and assembled caches are deliberately outside this
+ * sweep.  A live PID lease always wins over age; legacy trees without a lease
+ * need to be older than staleAfter before they are eligible.
+ */
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp
@@ -8399,35 +9766,11 @@ const std::string& protectionEpoch() const noexcept
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp
 
-源码 SHA-256：`af841bfd888c7ed5da8706e77b9b9199a44ede407b8f3209b69dd9919815bb4b`。
-
-### API-e4ff463eb749 · ndn_service_framework::ServiceUser
-
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L7)
-
-```cpp
-class ServiceUser
-```
-
-### API-441ede8e1c36 · ndn_service_framework::PreparedServiceRequest
-
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L8)
-
-```cpp
-struct PreparedServiceRequest
-```
-
-### API-38d6b545d57f · ndn_service_framework::LargeDataPublishResult
-
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L9)
-
-```cpp
-struct LargeDataPublishResult
-```
+源码 SHA-256：`ed69dc50efad0a09ed0e02ab8fd5ce61d5263ba9ea740b14aa09ff638b4bb183`。
 
 ### API-3593192c813c · ndnsf::di::NativeCanonicalPublicationOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L14)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L15)
 
 ```cpp
 struct NativeCanonicalPublicationOptions
@@ -8435,7 +9778,7 @@ struct NativeCanonicalPublicationOptions
 
 ### API-0c707b802085 · ndnsf::di::NativeCanonicalPublicationOptions::artifactRoot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L16)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L17)
 
 ```cpp
 std::string artifactRoot;
@@ -8443,7 +9786,7 @@ std::string artifactRoot;
 
 ### API-db3c1f988ff7 · ndnsf::di::NativeCanonicalPublicationOptions::packageManifestDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L18)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L19)
 
 ```cpp
 std::string packageManifestDigest;
@@ -8457,15 +9800,377 @@ std::string packageManifestDigest;
 
 ### API-15fb3fb60730 · ndnsf::di::NativeCanonicalPublicationOptions::layerManifestDigests
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L20)
 
 ```cpp
 std::vector<std::string> layerManifestDigests;
 ```
 
-### API-ac21bf084517 · ndnsf::di::NativeCanonicalArtifactPublisher
+### API-adf2f6455483 · ndnsf::di::NativeCanonicalPublicationOptions::artifactProfileDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L22)
+
+```cpp
+std::string artifactProfileDigest;
+```
+
+原始接口说明：
+
+```text
+// All roles produced from one catalog share this immutable profile identity.
+```
+
+### API-eede14364e69 · ndnsf::di::NativeCanonicalPublicationOptions::maxPublicationBytes
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L27)
+
+```cpp
+std::uint64_t maxPublicationBytes = 0;
+```
+
+原始接口说明：
+
+```text
+// Bounded serialized publication budget for the complete prepare receipt.
+// This is independent of a selected role's maxAssembledBytes: a
+// topology-independent material set can be larger than any one role.
+// Zero lets the catalog derive a bounded default.
+```
+
+### API-cedd8dbcccd8 · ndnsf::di::NativeCanonicalPublicationOptions::publicationIdentityDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L30)
+
+```cpp
+std::string publicationIdentityDigest;
+```
+
+原始接口说明：
+
+```text
+// Stable prepare identity supplied by the operator-pinned catalog. Empty
+// preserves the legacy source-digest root for old direct publisher users.
+```
+
+### API-5ce2d0d2f17c · ndnsf::di::NativePublicationKeyReference
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L33)
+
+```cpp
+struct NativePublicationKeyReference
+```
+
+### API-ae4ea73bb0a6 · ndnsf::di::NativePublicationKeyReference::keyId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L35)
+
+```cpp
+std::string keyId;
+```
+
+### API-146b14f479be · ndnsf::di::NativePublicationKeyReference::serviceName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L36)
+
+```cpp
+std::string serviceName;
+```
+
+### API-c8a2961bba23 · ndnsf::di::NativePreparedCanonicalPublication
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L40)
+
+```cpp
+struct NativePreparedCanonicalPublication
+```
+
+### API-7d1119105db0 · ndnsf::di::NativePreparedCanonicalPublication::sourceDataName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L42)
+
+```cpp
+std::string sourceDataName;
+```
+
+### API-c23dfd9560de · ndnsf::di::NativePreparedCanonicalPublication::initializerDataName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L43)
+
+```cpp
+std::string initializerDataName;
+```
+
+### API-82cb1ab9be47 · ndnsf::di::NativePreparedCanonicalPublication::rootDataName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L44)
+
+```cpp
+std::string rootDataName;
+```
+
+### API-f5519a9f13e3 · ndnsf::di::NativePreparedCanonicalPublication::materialManifestDataName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L45)
+
+```cpp
+std::string materialManifestDataName;
+```
+
+### API-cc8f4bc625c2 · ndnsf::di::NativePreparedCanonicalPublication::materialManifestDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L46)
+
+```cpp
+std::string materialManifestDigest;
+```
+
+### API-01fee590906e · ndnsf::di::NativePreparedCanonicalPublication::materialManifestBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L47)
+
+```cpp
+std::uint64_t materialManifestBytes = 0;
+```
+
+### API-e31663d8bd03 · ndnsf::di::NativePreparedCanonicalPublication::materialReceiptDataName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L48)
+
+```cpp
+std::string materialReceiptDataName;
+```
+
+### API-6ba862da9b9a · ndnsf::di::NativePreparedCanonicalPublication::materialReceiptDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L49)
+
+```cpp
+std::string materialReceiptDigest;
+```
+
+### API-dc02293b66a3 · ndnsf::di::NativePreparedCanonicalPublication::materialReceiptBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L50)
+
+```cpp
+std::uint64_t materialReceiptBytes = 0;
+```
+
+### API-b5bbc3141de3 · ndnsf::di::NativePreparedCanonicalPublication::publishedBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L52)
+
+```cpp
+std::uint64_t publishedBytes = 0;
+```
+
+原始接口说明：
+
+```text
+/** Sum of plaintext bytes handed to the protected publication transport. */
+```
+
+### API-b732123126b0 · ndnsf::di::NativePreparedCanonicalPublication::canonicalManifestJson
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L53)
+
+```cpp
+std::string canonicalManifestJson;
+```
+
+### API-47613640d539 · ndnsf::di::NativePreparedCanonicalPublication::manifestDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L54)
+
+```cpp
+std::string manifestDigest;
+```
+
+### API-0140c16fbf0f · ndnsf::di::NativePreparedCanonicalPublication::artifactProfileDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L55)
+
+```cpp
+std::string artifactProfileDigest;
+```
+
+### API-41f88dfb2578 · ndnsf::di::NativePreparedCanonicalPublication::layerDataNames
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L56)
+
+```cpp
+std::vector<std::string> layerDataNames;
+```
+
+### API-82e5a56c041d · ndnsf::di::NativePreparedCanonicalPublication::layerManifestDigests
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L57)
+
+```cpp
+std::vector<std::string> layerManifestDigests;
+```
+
+### API-cd5c5b9187c5 · ndnsf::di::NativePreparedCanonicalPublication::materialPayloadIds
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L62)
+
+```cpp
+std::vector<std::string> materialPayloadIds;
+```
+
+原始接口说明：
+
+```text
+// Protected, topology-independent graph/node/tensor objects committed by
+// B189-1b.  Names and digests are kept separate from legacy layer fields so
+// old v1 receipts remain readable while new consumers require the material
+// manifest before fetching any role bytes.
+```
+
+### API-5681476408de · ndnsf::di::NativePreparedCanonicalPublication::materialDataNames
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L63)
+
+```cpp
+std::vector<std::string> materialDataNames;
+```
+
+### API-e5f2073be90b · ndnsf::di::NativePreparedCanonicalPublication::materialDigests
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L64)
+
+```cpp
+std::vector<std::string> materialDigests;
+```
+
+### API-d6673b3df7ad · ndnsf::di::NativePreparedCanonicalPublication::rollbackDataNames
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L65)
+
+```cpp
+std::vector<std::string> rollbackDataNames;
+```
+
+### API-d77eb2932996 · ndnsf::di::NativePreparedCanonicalPublication::rollbackKeyReferences
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L66)
+
+```cpp
+std::vector<NativePublicationKeyReference> rollbackKeyReferences;
+```
+
+### API-5a47e6870315 · ndnsf::di::NativePreparedCanonicalPublication::rollbackKeyId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L67)
+
+```cpp
+std::string rollbackKeyId;
+```
+
+### API-5354f9700d24 · ndnsf::di::NativePreparedCanonicalPublication::rollbackServiceName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L68)
+
+```cpp
+std::string rollbackServiceName;
+```
+
+### API-2f4856df51e4 · ndnsf::di::NativePreparedCanonicalPublication::artifactPrefetchRequired
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L72)
+
+```cpp
+bool artifactPrefetchRequired = true;
+```
+
+原始接口说明：
+
+```text
+// Compatibility receipts are metadata-only: the authenticated assignment
+// still carries rootDataName as its artifact identity, but Core must not
+// prefetch that name because the Provider validates the shared local cache.
+```
+
+### API-871b7b3d9d52 · ndnsf::di::NativePreparedCanonicalPublication::rollbackOwned
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L76)
+
+```cpp
+bool rollbackOwned = true;
+```
+
+原始接口说明：
+
+```text
+// Durable repository receipts are reusable by later preparations.  They do
+// not grant the failing caller ownership to remove already-committed
+// objects; transient Core publications keep the default true value.
+```
+
+### API-a6fe42eb2277 · ndnsf::di::NativePreparedCanonicalPublication::materialManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L79)
+
+```cpp
+std::shared_ptr<const NativeCanonicalSource::MaterialManifest> materialManifest;
+```
+
+原始接口说明：
+
+```text
+// Optional reference-only material index restored by a Repo lookup. Selected
+// payloads are fetched after ACK/Selection, not during prepare lookup.
+```
+
+### API-cdcb23c0b74b · ndnsf::di::NativePreparedCanonicalPublication::servingLeases
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L81)
+
+```cpp
+std::vector<std::shared_ptr<void>> servingLeases;
+```
+
+原始接口说明：
+
+```text
+// Package/request copies retain Core's serving pins after prepare returns.
+```
+
+### API-cecc277fa3d1 · ndnsf::di::NativePreparedCanonicalPublication::validate
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L83)
+
+```cpp
+void validate() const;
+```
+
+### API-9248559f9187 · ndnsf::di::NativeUncachedPublication
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L88)
+
+```cpp
+struct NativeUncachedPublication
+```
+
+### API-34b1176992ed · ndnsf::di::NativeUncachedPublication::binding
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L90)
+
+```cpp
+NativeArtifactBinding binding;
+```
+
+### API-94107dbdcaba · ndnsf::di::NativeUncachedPublication::publications
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L91)
+
+```cpp
+std::vector<ndn_service_framework::LargeDataPublishResult> publications;
+```
+
+### API-ac21bf084517 · ndnsf::di::NativeCanonicalArtifactPublisher
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L99)
 
 ```cpp
 class NativeCanonicalArtifactPublisher
@@ -8473,7 +10178,7 @@ class NativeCanonicalArtifactPublisher
 
 ### API-7f987199da34 · ndnsf::di::NativeCanonicalArtifactPublisher::SourcePort
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L102)
 
 ```cpp
 using SourcePort = std::function<std::shared_ptr<const NativeCanonicalSource>(
@@ -8482,7 +10187,7 @@ using SourcePort = std::function<std::shared_ptr<const NativeCanonicalSource>(
 
 ### API-c455eead986e · ndnsf::di::NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L105)
 
 ```cpp
 NativeCanonicalArtifactPublisher(std::shared_ptr<ndn_service_framework::ServiceUser> user,
@@ -8491,7 +10196,7 @@ NativeCanonicalArtifactPublisher(std::shared_ptr<ndn_service_framework::ServiceU
 
 ### API-22040668a6a3 · ndnsf::di::NativeCanonicalArtifactPublisher::operator()
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L108)
 
 ```cpp
 NativeArtifactBinding operator()(const NativeInspectedModel& model,
@@ -8499,12 +10204,93 @@ NativeArtifactBinding operator()(const NativeInspectedModel& model,
     const NativeRequestControl& control) const;
 ```
 
+### API-55190304bc29 · ndnsf::di::NativeCanonicalArtifactPublisher::prepare
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L113)
+
+```cpp
+NativePreparedCanonicalPublication prepare(const NativeInspectedModel& model,
+                                             const NativeRequestControl& control) const;
+```
+
+原始接口说明：
+
+```text
+/** Publish canonical source/initializer/root once during Runtime::prepare. */
+```
+
+### API-e783fc927903 · ndnsf::di::NativeCanonicalArtifactPublisher::bindPrepared
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L117)
+
+```cpp
+NativeArtifactBinding bindPrepared(const NativeInspectedModel& model,
+    const NativeSplitCandidate& candidate,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const NativePreparedCanonicalPublication& publication,
+    const NativeRequestControl& control) const;
+```
+
+原始接口说明：
+
+```text
+/** Bind a selected request to a prepare-time receipt without Core I/O. */
+```
+
 ### API-6058eb1cc72a · ndnsf::di::NativeCanonicalArtifactPublisher::artifactPort
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L123)
 
 ```cpp
 NativeRequestPreparation::ArtifactPort artifactPort() const;
+```
+
+### API-7f6fd536d7f7 · ndnsf::di::NativeCanonicalArtifactPublisher::Stats
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L128)
+
+```cpp
+struct Stats
+```
+
+### API-978c76944dd2 · ndnsf::di::NativeCanonicalArtifactPublisher::Stats::sourceVerifications
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L130)
+
+```cpp
+std::size_t sourceVerifications = 0;
+```
+
+### API-7ae52652cd40 · ndnsf::di::NativeCanonicalArtifactPublisher::Stats::publicationCalls
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L131)
+
+```cpp
+std::size_t publicationCalls = 0;
+```
+
+### API-8f840f4bd1c3 · ndnsf::di::NativeCanonicalArtifactPublisher::Stats::cacheHits
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L132)
+
+```cpp
+std::size_t cacheHits = 0;
+```
+
+### API-ae46e3ecfebb · ndnsf::di::NativeCanonicalArtifactPublisher::Stats::sharedWaiters
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L133)
+
+```cpp
+std::size_t sharedWaiters = 0;
+```
+
+### API-591575231682 · ndnsf::di::NativeCanonicalArtifactPublisher::stats
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp#L136)
+
+```cpp
+Stats stats() const noexcept;
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp
@@ -8566,11 +10352,11 @@ inline std::string nativeCanonicalJson(const NativeJson& value)
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp
 
-源码 SHA-256：`b304f46bfb2cc0eeebd8de0cf7c0795ef2f34c881dae45c9dd4e278af4e9825f`。
+源码 SHA-256：`6885c12366a154ed39284e359694ff629e224ee58728eedc423ecb86a0c93dee`。
 
 ### API-5427cedd1868 · ndnsf::di::NativeCanonicalOnnxAssemblerOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L27)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L31)
 
 ```cpp
 struct NativeCanonicalOnnxAssemblerOptions
@@ -8578,15 +10364,46 @@ struct NativeCanonicalOnnxAssemblerOptions
 
 ### API-b402c8c6273f · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::cacheDir
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L33)
 
 ```cpp
 std::string cacheDir = "/tmp/ndnsf-di-native-artifacts";
 ```
 
+### API-5d040d7e8fee · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::coldAssemblyLockPath
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L37)
+
+```cpp
+std::filesystem::path coldAssemblyLockPath;
+```
+
+原始接口说明：
+
+```text
+// Cross-process admission lock for the model-sized cold assembly working
+// set. Empty derives a lock beside the cache root; Provider supplies the
+// shared production path explicitly. Cache hits never acquire this lock.
+```
+
+### API-6d8ab0c5e06d · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::cacheCompatibilitySourceDir
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L40)
+
+```cpp
+std::filesystem::path cacheCompatibilitySourceDir;
+```
+
+原始接口说明：
+
+```text
+// Explicit diagnostic mode for a verified, system-wide plaintext source
+// cache.  Empty means the normal Repo-backed path.
+```
+
 ### API-2646026120c8 · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::providerIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L41)
 
 ```cpp
 std::string providerIdentity;
@@ -8594,7 +10411,7 @@ std::string providerIdentity;
 
 ### API-4433271f9773 · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::assemblyTimeoutMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L42)
 
 ```cpp
 std::uint64_t assemblyTimeoutMs = 30000;
@@ -8602,15 +10419,31 @@ std::uint64_t assemblyTimeoutMs = 30000;
 
 ### API-7b78e4b382f4 · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::shouldCancel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L43)
 
 ```cpp
 std::function<bool()> shouldCancel;
 ```
 
+### API-581383abf048 · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::reportProgress
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L47)
+
+```cpp
+std::function<void(const std::string& phase, double progress)> reportProgress;
+```
+
+原始接口说明：
+
+```text
+// Called only after an authenticated assembly milestone has completed.  The
+// callback is request-owned; it must not outlive the synchronous assembly
+// call and must preserve the Provider operation sequence it reports.
+```
+
 ### API-14b23be23cbb · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::signManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L48)
 
 ```cpp
 std::function<std::string(const std::string& manifestBytes)> signManifest;
@@ -8618,7 +10451,7 @@ std::function<std::string(const std::string& manifestBytes)> signManifest;
 
 ### API-ac1658eff28c · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::protectedRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L34)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L49)
 
 ```cpp
 std::shared_ptr<ProtectedRuntime> protectedRuntime;
@@ -8626,7 +10459,7 @@ std::shared_ptr<ProtectedRuntime> protectedRuntime;
 
 ### API-45f837ddd8b7 · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::roleAssemblySpecDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L50)
 
 ```cpp
 std::string roleAssemblySpecDigest;
@@ -8634,7 +10467,7 @@ std::string roleAssemblySpecDigest;
 
 ### API-0672ccbfe5a9 · ndnsf::di::NativeCanonicalOnnxAssemblerOptions::workerLocation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L54)
 
 ```cpp
 NativeOnnxWorkerLocation workerLocation;
@@ -8648,9 +10481,34 @@ NativeOnnxWorkerLocation workerLocation;
 // a non-empty sha256 is re-probed against the pinned binary on every spawn.
 ```
 
+### API-153c58609104 · ndnsf::di::makeNativeAssemblyProgressReporter
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L62)
+
+```cpp
+std::function<void(const std::string& phase, double progress)>
+makeNativeAssemblyProgressReporter(
+  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+  const NativeSelectionProjectionV3& projection,
+  const std::string& adapterIdentity = "native",
+  std::uint64_t epoch = 1,
+  std::uint64_t initialSequence = 0,
+  std::shared_ptr<std::atomic<std::uint64_t>> sequenceState = {});
+```
+
+原始接口说明：
+
+```text
+/**
+ * Build the Provider-signed progress reporter used by production assembly
+ * callers.  The reporter uses the existing per-operation epoch/sequence
+ * fields in SelectionExecutionStatus; it is not a wall-clock heartbeat.
+ */
+```
+
 ### API-17caf9fee06a · ndnsf::di::NativeCanonicalOnnxFetchers
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L78)
 
 ```cpp
 struct NativeCanonicalOnnxFetchers
@@ -8658,7 +10516,7 @@ struct NativeCanonicalOnnxFetchers
 
 ### API-61937d74099d · ndnsf::di::NativeCanonicalOnnxFetchers::getArtifact
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L51)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L80)
 
 ```cpp
 std::function<std::optional<ndn::Buffer>(const ndn::Name&)> getArtifact;
@@ -8666,16 +10524,64 @@ std::function<std::optional<ndn::Buffer>(const ndn::Name&)> getArtifact;
 
 ### API-00331d6e0801 · ndnsf::di::NativeCanonicalOnnxFetchers::fetchEncryptedLargeData
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L81)
 
 ```cpp
 std::function<std::optional<ndn::Buffer>(const ndn::Name&, const ndn::Name&)>
     fetchEncryptedLargeData;
 ```
 
+### API-f0e8eeb359bd · ndnsf::di::withNativeArtifactDirectoryFinalization
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L90)
+
+```cpp
+void
+withNativeArtifactDirectoryFinalization(const std::string& directory,
+                                        const std::function<void()>& action);
+```
+
+原始接口说明：
+
+```text
+/**
+ * Serialize final artifact-directory cleanup with assembler finalization.
+ * The guard is process-local and covers content-addressed directories shared
+ * by multiple Provider cache keys.
+ */
+```
+
+### API-967b53bf5aae · ndnsf::di::tryLoadNativeCanonicalOnnxRoleFromCache
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L104)
+
+```cpp
+std::optional<NativeModelRunnerSpec>
+tryLoadNativeCanonicalOnnxRoleFromCache(
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const std::string& canonicalSourceName = {},
+  const std::string& canonicalSourceDigest = {});
+```
+
+原始接口说明：
+
+```text
+/**
+ * Reopen a finalized plaintext assembled artifact from the stable cache root.
+ * The caller must already have an authenticated post-Selection projection.
+ * Admission is recipe-addressed: the directory name is the pre-assembly
+ * recipeDigest (the authenticated model/layer/node/backend contract), while
+ * manifest.json records the post-assembly model SHA-256. Both identities are
+ * checked before a hit is returned. Missing, stale, or corrupt entries return
+ * nullopt and leave the normal fetch/assembly path available. Protected
+ * artifacts remain request scoped.
+ */
+```
+
 ### API-dc6af690bb9b · ndnsf::di::prepareNativeCanonicalOnnxRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L56)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L111)
 
 ```cpp
 NativeModelRunnerSpec
@@ -8687,7 +10593,7 @@ prepareNativeCanonicalOnnxRole(
 
 ### API-ca45b7d2f27b · ndnsf::di::prepareNativeCanonicalOnnxRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp#L125)
 
 ```cpp
 NativeModelRunnerSpec
@@ -8712,11 +10618,11 @@ prepareNativeCanonicalOnnxRole(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp
 
-源码 SHA-256：`89dec2d204f938faa2f82691e1d4817cc2daf63d4f75df718634a78de2d23c9b`。
+源码 SHA-256：`0e1fe4bd958386cc13909c4faa185a2ef0960ebb084dd5778673b4346bfab8a7`。
 
 ### API-0697d76fdf2a · ndnsf::di::Spec185PreparedModelTestAccess
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L8)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L10)
 
 ```cpp
 struct Spec185PreparedModelTestAccess
@@ -8724,7 +10630,7 @@ struct Spec185PreparedModelTestAccess
 
 ### API-58b82f9e9366 · ndnsf::di::NativeCanonicalCatalogEntry
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L13)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L15)
 
 ```cpp
 struct NativeCanonicalCatalogEntry
@@ -8732,7 +10638,7 @@ struct NativeCanonicalCatalogEntry
 
 ### API-d1f67ac49b50 · ndnsf::di::NativeCanonicalCatalogEntry::model
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L15)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L17)
 
 ```cpp
 NativeInspectedModel model;
@@ -8740,7 +10646,7 @@ NativeInspectedModel model;
 
 ### API-27ef61760c3e · ndnsf::di::NativeCanonicalCatalogEntry::source
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L16)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L18)
 
 ```cpp
 NativeCanonicalSource source;
@@ -8748,7 +10654,7 @@ NativeCanonicalSource source;
 
 ### API-f04e31a6e2f4 · ndnsf::di::NativeCanonicalCatalogEntry::recipe
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L17)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L19)
 
 ```cpp
 NativeRoleRecipeProfile recipe;
@@ -8756,7 +10662,7 @@ NativeRoleRecipeProfile recipe;
 
 ### API-de0aca67f6aa · ndnsf::di::NativeCanonicalCatalogEntry::nodes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L18)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L20)
 
 ```cpp
 NativeCanonicalRolePreparer::NodeMap nodes;
@@ -8764,7 +10670,7 @@ NativeCanonicalRolePreparer::NodeMap nodes;
 
 ### API-d3cd4eab13c2 · ndnsf::di::NativeCanonicalCatalogEntry::publication
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L21)
 
 ```cpp
 NativeCanonicalPublicationOptions publication;
@@ -8772,7 +10678,7 @@ NativeCanonicalPublicationOptions publication;
 
 ### API-dd57ec5b5ede · ndnsf::di::NativeCanonicalCatalogEntry::format
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L20)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L22)
 
 ```cpp
 NativeCatalogModelAdapter::Format format = NativeCatalogModelAdapter::Format::OpaqueBytes;
@@ -8780,7 +10686,7 @@ NativeCatalogModelAdapter::Format format = NativeCatalogModelAdapter::Format::Op
 
 ### API-fa8b87c8790b · ndnsf::di::NativeCanonicalCatalogEntry::maxPayloadBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L21)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L23)
 
 ```cpp
 std::size_t maxPayloadBytes = 0;
@@ -8788,7 +10694,7 @@ std::size_t maxPayloadBytes = 0;
 
 ### API-907d43ab778c · ndnsf::di::NativeCanonicalCatalogEntry::conversationTokenEncoder
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L22)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L24)
 
 ```cpp
 NativeCatalogModelAdapter::ConversationTokenEncoder conversationTokenEncoder;
@@ -8796,7 +10702,7 @@ NativeCatalogModelAdapter::ConversationTokenEncoder conversationTokenEncoder;
 
 ### API-2e0bd125ae39 · ndnsf::di::NativeCanonicalPreparationCatalog
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L25)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L27)
 
 ```cpp
 class NativeCanonicalPreparationCatalog
@@ -8804,7 +10710,7 @@ class NativeCanonicalPreparationCatalog
 
 ### API-b5178f98e5db · ndnsf::di::NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L30)
 
 ```cpp
 NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
@@ -8813,15 +10719,33 @@ NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entri
 
 ### API-d639bb94aee0 · ndnsf::di::NativeCanonicalPreparationCatalog::adapters
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L32)
 
 ```cpp
 std::shared_ptr<const NativeAdapterRegistry> adapters() const;
 ```
 
+### API-c2c7143aa987 · ndnsf::di::NativeCanonicalPreparationCatalog::sourceRefFor
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L37)
+
+```cpp
+std::shared_ptr<const NativeCanonicalSource> sourceRefFor(
+    const NativeModelDescriptor& model) const;
+```
+
+原始接口说明：
+
+```text
+/** Return an owning view of the verified source without copying its
+   * multi-gigabyte canonical buffers.  The view keeps the immutable source
+   * alive while a publisher or identity check is using it, even if the
+   * catalog releases its transient owner concurrently. */
+```
+
 ### API-320b5e4c6a82 · ndnsf::di::NativeCanonicalPreparationCatalog::sourceFor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L40)
 
 ```cpp
 NativeCanonicalSource sourceFor(const NativeModelDescriptor& model) const;
@@ -8833,9 +10757,23 @@ NativeCanonicalSource sourceFor(const NativeModelDescriptor& model) const;
 /** Return a copy of the verified owned source for preparation identity checks. */
 ```
 
+### API-6d6dfef16e69 · ndnsf::di::NativeCanonicalPreparationCatalog::publicationFor
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L42)
+
+```cpp
+NativeCanonicalPublicationOptions publicationFor(const NativeModelDescriptor& model) const;
+```
+
+原始接口说明：
+
+```text
+/** Return the immutable publication profile frozen with the model entry. */
+```
+
 ### API-5198401c2e78 · ndnsf::di::NativeCanonicalPreparationCatalog::bindStateContracts
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L43)
 
 ```cpp
 NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
@@ -8845,11 +10783,31 @@ NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
 
 ### API-d0a82b8a375e · ndnsf::di::NativeCanonicalPreparationCatalog::makePreparation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L46)
 
 ```cpp
 std::shared_ptr<NativeRequestPreparation> makePreparation(
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName) const;
+```
+
+### API-36ee99b8a8ec · ndnsf::di::NativeCanonicalPreparationCatalog::makePreparation
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L48)
+
+```cpp
+std::shared_ptr<NativeRequestPreparation> makePreparation(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
+    std::optional<NativePreparedCanonicalPublication> preparedPublication) const;
+```
+
+### API-520fbdabb36b · ndnsf::di::NativeCanonicalPreparationCatalog::preparePublication
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp#L52)
+
+```cpp
+NativePreparedCanonicalPublication preparePublication(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName,
+    const NativeModelDescriptor& model, const NativeRequestControl& control) const;
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp
@@ -9328,7 +11286,7 @@ std::function<void()> onTerminal;
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp
 
-源码 SHA-256：`ef4d60c63ceed05702da97952a040e7a8a5641f3ad69db1fd0fc981da885537a`。
+源码 SHA-256：`c788c0a37aa02f29f18befc5517e2cafbafad7358f18e590d8846d235d92fdee`。
 
 ### API-bab1efb9f458 · ndnsf::di::NativeDiError
 
@@ -9497,9 +11455,23 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::string executionRequestId;
 ```
 
+### API-6661ac960f7c · ndnsf::di::NativeConversationTurn::providersByRole
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L47)
+
+```cpp
+std::map<std::string, std::string> providersByRole;
+```
+
+原始接口说明：
+
+```text
+// Owner-restored placement; not accepted from an external continuation hint.
+```
+
 ### API-fd80148a928c · ndnsf::di::NativeCompletedAttempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L48)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L50)
 
 ```cpp
 struct NativeCompletedAttempt
@@ -9507,7 +11479,7 @@ struct NativeCompletedAttempt
 
 ### API-febe95821b4c · ndnsf::di::NativeCompletedAttempt::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L50)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L52)
 
 ```cpp
 std::string requestId;
@@ -9515,7 +11487,7 @@ std::string requestId;
 
 ### API-9541faa4b5c5 · ndnsf::di::NativeCompletedAttempt::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L51)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L53)
 
 ```cpp
 std::uint64_t attempt = 0;
@@ -9523,7 +11495,7 @@ std::uint64_t attempt = 0;
 
 ### API-3c4bee03ae81 · ndnsf::di::NativeCompletedAttempt::tokenIds
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L54)
 
 ```cpp
 std::vector<std::int64_t> tokenIds;
@@ -9531,7 +11503,7 @@ std::vector<std::int64_t> tokenIds;
 
 ### API-41ba86b2686f · ndnsf::di::NativeCompletedAttempt::providerStateDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L55)
 
 ```cpp
 std::string providerStateDigest;
@@ -9539,7 +11511,7 @@ std::string providerStateDigest;
 
 ### API-ead6ca33908f · ndnsf::di::NativeCompletedAttempt::complete
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L54)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L56)
 
 ```cpp
 bool complete = false;
@@ -9547,7 +11519,7 @@ bool complete = false;
 
 ### API-bda53e13cb49 · ndnsf::di::NativeCompletedAttempt::generationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L57)
 
 ```cpp
 std::string generationId;
@@ -9555,7 +11527,7 @@ std::string generationId;
 
 ### API-3eb366256914 · ndnsf::di::NativeCompletedAttempt::modelContractDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L56)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L58)
 
 ```cpp
 std::string modelContractDigest;
@@ -9563,7 +11535,7 @@ std::string modelContractDigest;
 
 ### API-b7428308d2ea · ndnsf::di::NativeCompletedAttempt::tokenizerDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L59)
 
 ```cpp
 std::string tokenizerDigest;
@@ -9571,7 +11543,7 @@ std::string tokenizerDigest;
 
 ### API-c1765ddd3d5e · ndnsf::di::NativeCompletedAttempt::chatTemplateDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L60)
 
 ```cpp
 std::string chatTemplateDigest;
@@ -9579,7 +11551,7 @@ std::string chatTemplateDigest;
 
 ### API-0db7336afb39 · ndnsf::di::NativeCompletedAttempt::applicationMessages
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L61)
 
 ```cpp
 std::string applicationMessages;
@@ -9587,7 +11559,7 @@ std::string applicationMessages;
 
 ### API-6298df4599e8 · ndnsf::di::NativeCompletedAttempt::authenticatedReceipts
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L62)
 
 ```cpp
 std::vector<NativeJson> authenticatedReceipts;
@@ -9595,7 +11567,7 @@ std::vector<NativeJson> authenticatedReceipts;
 
 ### API-ba469d0c2211 · ndnsf::di::NativeCompletedAttempt::commitProviderState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L61)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L63)
 
 ```cpp
 std::function<void(const std::string&)> commitProviderState;
@@ -9603,7 +11575,7 @@ std::function<void(const std::string&)> commitProviderState;
 
 ### API-534c0198c469 · ndnsf::di::NativeCompletedAttempt::rollbackProviderState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L64)
 
 ```cpp
 std::function<void()> rollbackProviderState;
@@ -9611,7 +11583,7 @@ std::function<void()> rollbackProviderState;
 
 ### API-8f6d7ee6e1f8 · ndnsf::di::NativeCompletedAttempt::durableCommitGate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L65)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L67)
 
 ```cpp
 std::function<void(const std::function<void()>& publish)> durableCommitGate;
@@ -9626,7 +11598,7 @@ std::function<void(const std::function<void()>& publish)> durableCommitGate;
 
 ### API-b219349aa462 · ndnsf::di::NativeCompletedAttempt::finalizeProviderState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L67)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L69)
 
 ```cpp
 std::function<void()> finalizeProviderState;
@@ -9640,7 +11612,7 @@ std::function<void()> finalizeProviderState;
 
 ### API-4d6745e8dc82 · ndnsf::di::NativeConversationCheckpoint
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L72)
 
 ```cpp
 struct NativeConversationCheckpoint
@@ -9648,7 +11620,7 @@ struct NativeConversationCheckpoint
 
 ### API-2d097c816130 · ndnsf::di::NativeConversationCheckpoint::conversationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L74)
 
 ```cpp
 std::string conversationId;
@@ -9656,7 +11628,7 @@ std::string conversationId;
 
 ### API-1db2c7d75db5 · ndnsf::di::NativeConversationCheckpoint::parentContextEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L75)
 
 ```cpp
 std::uint64_t parentContextEpoch = 0;
@@ -9664,7 +11636,7 @@ std::uint64_t parentContextEpoch = 0;
 
 ### API-f4b02c2f15ef · ndnsf::di::NativeConversationCheckpoint::successorContextEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L76)
 
 ```cpp
 std::uint64_t successorContextEpoch = 0;
@@ -9672,7 +11644,7 @@ std::uint64_t successorContextEpoch = 0;
 
 ### API-a073fea8f0cd · ndnsf::di::NativeConversationCheckpoint::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L77)
 
 ```cpp
 std::string requestId;
@@ -9680,7 +11652,7 @@ std::string requestId;
 
 ### API-484af3531ebd · ndnsf::di::NativeConversationCheckpoint::parentCheckpointDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L78)
 
 ```cpp
 std::string parentCheckpointDigest;
@@ -9688,7 +11660,7 @@ std::string parentCheckpointDigest;
 
 ### API-2ab0de64e44e · ndnsf::di::NativeConversationCheckpoint::prefixDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L79)
 
 ```cpp
 std::string prefixDigest;
@@ -9696,7 +11668,7 @@ std::string prefixDigest;
 
 ### API-4a91554e58b5 · ndnsf::di::NativeConversationCheckpoint::modelContractDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L80)
 
 ```cpp
 std::string modelContractDigest;
@@ -9704,7 +11676,7 @@ std::string modelContractDigest;
 
 ### API-13fecc947a9e · ndnsf::di::NativeConversationCheckpoint::providerStateDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L81)
 
 ```cpp
 std::string providerStateDigest;
@@ -9712,7 +11684,7 @@ std::string providerStateDigest;
 
 ### API-d0e1e70e8b4b · ndnsf::di::NativeConversationCheckpoint::checkpointDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L82)
 
 ```cpp
 std::string checkpointDigest;
@@ -9720,7 +11692,7 @@ std::string checkpointDigest;
 
 ### API-98d0d711bf05 · ndnsf::di::NativeConversationCheckpoint::wire
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L81)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L83)
 
 ```cpp
 std::string wire;
@@ -9728,7 +11700,7 @@ std::string wire;
 
 ### API-c3c0546697d9 · ndnsf::di::NativeConversationCheckpoint::transcript
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L84)
 
 ```cpp
 NativeJson transcript;
@@ -9736,7 +11708,7 @@ NativeJson transcript;
 
 ### API-486c6ca5266e · ndnsf::di::NativeConversationCheckpoint::expectedRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L85)
 
 ```cpp
 std::vector<std::string> expectedRoles;
@@ -9744,7 +11716,7 @@ std::vector<std::string> expectedRoles;
 
 ### API-10b8b608582a · ndnsf::di::NativeConversationCheckpoint::nativeInitialPromptTokenCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L86)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L88)
 
 ```cpp
 std::optional<std::size_t> nativeInitialPromptTokenCount;
@@ -9757,9 +11729,23 @@ std::optional<std::size_t> nativeInitialPromptTokenCount;
 // runtime hash chain; not a new checkpoint or transcript wire field.
 ```
 
+### API-f0f58e492668 · ndnsf::di::NativeConversationCheckpoint::providersByRole
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L90)
+
+```cpp
+std::map<std::string, std::string> providersByRole;
+```
+
+原始接口说明：
+
+```text
+// Local journal metadata bound to the checkpoint's planRoleMapDigest.
+```
+
 ### API-dbba1c21bd87 · ndnsf::di::NativeConversationRecord
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L89)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L93)
 
 ```cpp
 struct NativeConversationRecord
@@ -9767,7 +11753,7 @@ struct NativeConversationRecord
 
 ### API-64c19a7c5245 · ndnsf::di::NativeConversationRecord::checkpoint
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L91)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L95)
 
 ```cpp
 NativeConversationCheckpoint checkpoint;
@@ -9775,7 +11761,7 @@ NativeConversationCheckpoint checkpoint;
 
 ### API-0d22a9cd84ed · ndnsf::di::NativeConversationRecord::serviceName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L96)
 
 ```cpp
 std::string serviceName;
@@ -9783,7 +11769,7 @@ std::string serviceName;
 
 ### API-5690843dc54b · ndnsf::di::NativeConversationRecord::planRoleMapDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L97)
 
 ```cpp
 std::string planRoleMapDigest;
@@ -9791,7 +11777,7 @@ std::string planRoleMapDigest;
 
 ### API-26566ce13de5 · ndnsf::di::NativeConversationRecord::requestContractDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L98)
 
 ```cpp
 std::string requestContractDigest;
@@ -9799,7 +11785,7 @@ std::string requestContractDigest;
 
 ### API-efbf17ec0bb6 · ndnsf::di::NativeConversationRecord::retentionDeadlineMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L99)
 
 ```cpp
 std::uint64_t retentionDeadlineMs = 0;
@@ -9807,7 +11793,7 @@ std::uint64_t retentionDeadlineMs = 0;
 
 ### API-9be0088f0685 · ndnsf::di::NativeConversationCoordinator
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L98)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L102)
 
 ```cpp
 class NativeConversationCoordinator
@@ -9815,7 +11801,7 @@ class NativeConversationCoordinator
 
 ### API-715961219fc8 · ndnsf::di::NativeConversationCoordinator::NativeConversationCoordinator
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L101)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L105)
 
 ```cpp
 explicit NativeConversationCoordinator(NativeConversationConfig config);
@@ -9823,7 +11809,7 @@ explicit NativeConversationCoordinator(NativeConversationConfig config);
 
 ### API-c1f8befe6bed · ndnsf::di::NativeConversationCoordinator::NativeConversationCoordinator
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L102)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L106)
 
 ```cpp
 explicit NativeConversationCoordinator(std::filesystem::path journalRoot);
@@ -9831,7 +11817,7 @@ explicit NativeConversationCoordinator(std::filesystem::path journalRoot);
 
 ### API-5e2b5596d390 · ndnsf::di::NativeConversationCoordinator::~NativeConversationCoordinator
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L103)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L107)
 
 ```cpp
 ~NativeConversationCoordinator();
@@ -9839,7 +11825,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-1e7281b52fd5 · ndnsf::di::NativeConversationCoordinator::beginTurn
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L109)
 
 ```cpp
 NativeConversationTurn beginTurn(const NativeConversationContinuation& continuation,
@@ -9849,7 +11835,7 @@ NativeConversationTurn beginTurn(const NativeConversationContinuation& continuat
 
 ### API-64921253514a · ndnsf::di::NativeConversationCoordinator::abortTurn
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L108)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L112)
 
 ```cpp
 void abortTurn(const NativeConversationTurn& turn, const NativeDiError& error);
@@ -9857,7 +11843,7 @@ void abortTurn(const NativeConversationTurn& turn, const NativeDiError& error);
 
 ### API-7e8b7a21dd40 · ndnsf::di::NativeConversationCoordinator::acceptTokenPrefix
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L113)
 
 ```cpp
 void acceptTokenPrefix(const NativeConversationTurn& turn,
@@ -9866,7 +11852,7 @@ void acceptTokenPrefix(const NativeConversationTurn& turn,
 
 ### API-6ebdf8bd1057 · ndnsf::di::NativeConversationCoordinator::replaceAttempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L111)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L115)
 
 ```cpp
 NativeConversationTurn replaceAttempt(const NativeConversationTurn& turn,
@@ -9876,7 +11862,7 @@ NativeConversationTurn replaceAttempt(const NativeConversationTurn& turn,
 
 ### API-756df4b2c62f · ndnsf::di::NativeConversationCoordinator::bindInitialPlanRoleMap
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L117)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L121)
 
 ```cpp
 NativeConversationTurn bindInitialPlanRoleMap(
@@ -9894,7 +11880,7 @@ NativeConversationTurn bindInitialPlanRoleMap(
 
 ### API-9c247829365b · ndnsf::di::NativeConversationCoordinator::bindAttemptPlanRoleMap
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L127)
 
 ```cpp
 NativeConversationTurn bindAttemptPlanRoleMap(
@@ -9912,7 +11898,7 @@ NativeConversationTurn bindAttemptPlanRoleMap(
 
 ### API-a550281a7724 · ndnsf::di::NativeConversationCoordinator::prepareCheckpoint
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L126)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L130)
 
 ```cpp
 NativeConversationCheckpoint prepareCheckpoint(
@@ -9921,7 +11907,7 @@ NativeConversationCheckpoint prepareCheckpoint(
 
 ### API-8c7c62356113 · ndnsf::di::NativeConversationCoordinator::commitTurn
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L128)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L132)
 
 ```cpp
 NativeConversationRecord commitTurn(const NativeConversationTurn& turn,
@@ -9930,7 +11916,7 @@ NativeConversationRecord commitTurn(const NativeConversationTurn& turn,
 
 ### API-64cbde6b1261 · ndnsf::di::NativeConversationCoordinator::restore
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L130)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L134)
 
 ```cpp
 void restore(const std::filesystem::path& journalRoot);
@@ -9938,7 +11924,7 @@ void restore(const std::filesystem::path& journalRoot);
 
 ### API-7014d4b50f1d · ndnsf::di::NativeConversationCoordinator::restore
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L131)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L135)
 
 ```cpp
 void restore();
@@ -9946,7 +11932,7 @@ void restore();
 
 ### API-3ce1aa996a84 · ndnsf::di::NativeConversationCoordinator::find
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L133)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L137)
 
 ```cpp
 std::optional<NativeConversationRecord> find(const std::string& conversationId) const;
@@ -9954,7 +11940,7 @@ std::optional<NativeConversationRecord> find(const std::string& conversationId) 
 
 ### API-9b5a70d7aba5 · ndnsf::di::nativeConversationCoordinatorFromConfig
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L144)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp#L148)
 
 ```cpp
 std::shared_ptr<NativeConversationCoordinator> nativeConversationCoordinatorFromConfig(
@@ -9974,11 +11960,11 @@ std::shared_ptr<NativeConversationCoordinator> nativeConversationCoordinatorFrom
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp
 
-源码 SHA-256：`83453f9f740fb306cfecc7edb289742774e112b986e51646999853036a97eb27`。
+源码 SHA-256：`101a497fa429f8eed20319510ca3c21242a2f78094eed0858ec6ee129ef2365d`。
 
 ### API-42c0f68df2b6 · ndnsf::di::NativeConversationJournalConfig
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L9)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L10)
 
 ```cpp
 struct NativeConversationJournalConfig
@@ -9986,7 +11972,7 @@ struct NativeConversationJournalConfig
 
 ### API-059326fa6d5f · ndnsf::di::NativeConversationJournalConfig::stateRoot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L11)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L12)
 
 ```cpp
 std::filesystem::path stateRoot;
@@ -9994,7 +11980,7 @@ std::filesystem::path stateRoot;
 
 ### API-c4763bd6d54e · ndnsf::di::NativeConversationJournalConfig::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L12)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L13)
 
 ```cpp
 std::string identity;
@@ -10002,7 +11988,7 @@ std::string identity;
 
 ### API-b65960111fee · ndnsf::di::NativeConversationJournalConfig::keys
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L13)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L14)
 
 ```cpp
 std::vector<NativeConversationJournalKey> keys;
@@ -10010,7 +11996,7 @@ std::vector<NativeConversationJournalKey> keys;
 
 ### API-f0808736a9e0 · ndnsf::di::NativeConversationJournalConfig::quotaBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L14)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L15)
 
 ```cpp
 std::size_t quotaBytes = 64 * 1024 * 1024;
@@ -10018,7 +12004,7 @@ std::size_t quotaBytes = 64 * 1024 * 1024;
 
 ### API-b05e21b32439 · ndnsf::di::NativeConversationJournalConfig::testOnlyAllowEphemeralRoot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L15)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L16)
 
 ```cpp
 bool testOnlyAllowEphemeralRoot = false;
@@ -10026,7 +12012,7 @@ bool testOnlyAllowEphemeralRoot = false;
 
 ### API-6a33d1d4f5b2 · ndnsf::di::NativeConversationJournal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L20)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L21)
 
 ```cpp
 class NativeConversationJournal
@@ -10034,7 +12020,7 @@ class NativeConversationJournal
 
 ### API-4732815463f3 · ndnsf::di::NativeConversationJournal::NativeConversationJournal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L23)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L24)
 
 ```cpp
 explicit NativeConversationJournal(NativeConversationJournalConfig config);
@@ -10042,7 +12028,7 @@ explicit NativeConversationJournal(NativeConversationJournalConfig config);
 
 ### API-5a5242ed9b55 · ndnsf::di::NativeConversationJournal::~NativeConversationJournal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L24)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L25)
 
 ```cpp
 ~NativeConversationJournal();
@@ -10050,7 +12036,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-3399d72ec793 · ndnsf::di::NativeConversationJournal::NativeConversationJournal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L25)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L26)
 
 ```cpp
 NativeConversationJournal(const NativeConversationJournal&) = delete;
@@ -10058,7 +12044,7 @@ NativeConversationJournal(const NativeConversationJournal&) = delete;
 
 ### API-c41b16e13ec9 · ndnsf::di::NativeConversationJournal::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L27)
 
 ```cpp
 NativeConversationJournal& operator=(const NativeConversationJournal&) = delete;
@@ -10066,7 +12052,7 @@ NativeConversationJournal& operator=(const NativeConversationJournal&) = delete;
 
 ### API-769463388461 · ndnsf::di::NativeConversationJournal::authenticationKeys
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L29)
 
 ```cpp
 std::vector<std::vector<std::uint8_t>> authenticationKeys() const;
@@ -10074,7 +12060,7 @@ std::vector<std::vector<std::uint8_t>> authenticationKeys() const;
 
 ### API-9c75b3875541 · ndnsf::di::NativeConversationJournal::stateRoot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L30)
 
 ```cpp
 std::filesystem::path stateRoot() const;
@@ -10082,20 +12068,21 @@ std::filesystem::path stateRoot() const;
 
 ### API-6a7283d6f35d · ndnsf::di::NativeConversationJournal::readConversations
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L31)
 
 ```cpp
 std::vector<NativeJson> readConversations(std::uint64_t nowMs) const;
 ```
 
-### API-32a8daf81dc3 · ndnsf::di::NativeConversationJournal::appendConversation
+### API-521bfaf77b62 · ndnsf::di::NativeConversationJournal::appendConversation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp#L32)
 
 ```cpp
 void appendConversation(const std::string& checkpointWire,
                           const NativeJson& transcript, std::uint64_t nowMs,
-                          std::optional<std::size_t> nativeInitialPromptTokenCount = std::nullopt);
+                          std::optional<std::size_t> nativeInitialPromptTokenCount = std::nullopt,
+                          const std::map<std::string, std::string>& providersByRole = {});
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp
@@ -10240,7 +12227,7 @@ void nativeValidateConversationTranscript(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp
 
-源码 SHA-256：`13edd9f34e5e67fc0c845a0550e7b613fd57fbac4c746030097f5e3f7a76635d`。
+源码 SHA-256：`7a5f40f871505de03e5c8ff2bfb0c6055a417187df24d7afde9fc67f61399f07`。
 
 ### API-69b7f83f3115 · ndnsf::di::nativeGenerationStatePrefixDigest
 
@@ -10414,7 +12401,7 @@ std::map<std::string, TensorBundle> initialInputs;
 
 ### API-d382c488af46 · ndnsf::di::NativeEpochCoordinatorConfig::prepareRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L69)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L70)
 
 ```cpp
 ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
@@ -10424,13 +12411,30 @@ ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
 
 ```text
 // DATA_DRIVEN_V2 prepares the runner only after authenticated Selection.
-// Carry that callback through each epoch instead of looking for a
-// metadata-only startup runner in NativeProviderRuntime.
+// Prepare lazily on the first worker execution, then retain that runner
+// for this invocation's sequential token/finalize epochs. A new invocation
+// prepares independently; no metadata-only startup runner is substituted.
+```
+
+### API-e0b567ac4a48 · ndnsf::di::NativeEpochCoordinatorConfig::roleSpecFactory
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L74)
+
+```cpp
+std::function<RoleSpec(std::size_t)> roleSpecFactory;
+```
+
+原始接口说明：
+
+```text
+// V3 Selection supplies exact endpoint-authorized role edges. Generation
+// epochs must reuse those edges instead of reconstructing legacy edges from
+// the plan, while retaining the plan-owned TOKEN_FEEDBACK control edge.
 ```
 
 ### API-1bd421ced5e5 · ndnsf::di::NativeEpochCoordinatorConfig::finalResponseScope
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L75)
 
 ```cpp
 std::string finalResponseScope = "final-response";
@@ -10438,7 +12442,7 @@ std::string finalResponseScope = "final-response";
 
 ### API-6b0cf5aba88f · ndnsf::di::NativeEpochCoordinatorConfig::maxEpochs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L71)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L76)
 
 ```cpp
 std::size_t maxEpochs = 0;
@@ -10446,7 +12450,7 @@ std::size_t maxEpochs = 0;
 
 ### API-678582a58583 · ndnsf::di::NativeEpochCoordinatorConfig::tokenInputName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L77)
 
 ```cpp
 std::string tokenInputName = "input_ids";
@@ -10454,7 +12458,7 @@ std::string tokenInputName = "input_ids";
 
 ### API-941105f11d97 · ndnsf::di::NativeEpochCoordinatorConfig::stateInputNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L78)
 
 ```cpp
 std::vector<std::string> stateInputNames;
@@ -10462,7 +12466,7 @@ std::vector<std::string> stateInputNames;
 
 ### API-2716e17307a5 · ndnsf::di::NativeEpochCoordinatorConfig::stateOutputNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L79)
 
 ```cpp
 std::vector<std::string> stateOutputNames;
@@ -10470,7 +12474,7 @@ std::vector<std::string> stateOutputNames;
 
 ### API-04308cdd9006 · ndnsf::di::NativeEpochCoordinatorConfig::stateIdentityTemplate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L83)
 
 ```cpp
 std::optional<DecodeStateIdentityV1> stateIdentityTemplate;
@@ -10486,7 +12490,7 @@ std::optional<DecodeStateIdentityV1> stateIdentityTemplate;
 
 ### API-fb232a9e8d35 · ndnsf::di::NativeEpochCoordinatorConfig::conversationStateBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L87)
 
 ```cpp
 std::optional<ConversationStateBinding> conversationStateBinding;
@@ -10502,7 +12506,7 @@ std::optional<ConversationStateBinding> conversationStateBinding;
 
 ### API-08e9a75665b0 · ndnsf::di::NativeEpochCoordinatorConfig::conversationStateLookupNowMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L88)
 
 ```cpp
 std::uint64_t conversationStateLookupNowMs = 0;
@@ -10510,7 +12514,7 @@ std::uint64_t conversationStateLookupNowMs = 0;
 
 ### API-7e5cfa27b173 · ndnsf::di::NativeEpochCoordinatorConfig::positionPolicyDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L86)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L91)
 
 ```cpp
 std::string positionPolicyDigest;
@@ -10525,7 +12529,7 @@ std::string positionPolicyDigest;
 
 ### API-f469e7b5210e · ndnsf::di::NativeEpochCoordinatorConfig::eosTokenIds
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L87)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L92)
 
 ```cpp
 std::set<std::int64_t> eosTokenIds;
@@ -10533,7 +12537,7 @@ std::set<std::int64_t> eosTokenIds;
 
 ### API-f4933eaef584 · ndnsf::di::NativeEpochCoordinatorConfig::samplingDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L93)
 
 ```cpp
 std::string samplingDigest;
@@ -10541,7 +12545,7 @@ std::string samplingDigest;
 
 ### API-edc9379e435a · ndnsf::di::NativeEpochCoordinatorConfig::samplingMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L97)
 
 ```cpp
 std::string samplingMode = "Greedy";
@@ -10557,7 +12561,7 @@ std::string samplingMode = "Greedy";
 
 ### API-56a847fd448f · ndnsf::di::NativeEpochCoordinatorConfig::samplingTemperature
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L98)
 
 ```cpp
 double samplingTemperature = 0.0;
@@ -10565,7 +12569,7 @@ double samplingTemperature = 0.0;
 
 ### API-efe974feeb9f · ndnsf::di::NativeEpochCoordinatorConfig::samplingTopK
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L99)
 
 ```cpp
 std::size_t samplingTopK = 1;
@@ -10573,7 +12577,7 @@ std::size_t samplingTopK = 1;
 
 ### API-78928580900e · ndnsf::di::NativeEpochCoordinatorConfig::samplingTopP
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L100)
 
 ```cpp
 double samplingTopP = 1.0;
@@ -10581,7 +12585,7 @@ double samplingTopP = 1.0;
 
 ### API-138286c92129 · ndnsf::di::NativeEpochCoordinatorConfig::samplingRepetitionPenalty
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L101)
 
 ```cpp
 double samplingRepetitionPenalty = 1.0;
@@ -10589,7 +12593,7 @@ double samplingRepetitionPenalty = 1.0;
 
 ### API-6567209547f4 · ndnsf::di::NativeEpochCoordinatorConfig::samplingSeed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L102)
 
 ```cpp
 std::uint64_t samplingSeed = 1'750'001;
@@ -10597,7 +12601,7 @@ std::uint64_t samplingSeed = 1'750'001;
 
 ### API-861da4ce7070 · ndnsf::di::NativeEpochCoordinatorConfig::stopStrings
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L98)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L103)
 
 ```cpp
 std::vector<std::string> stopStrings;
@@ -10605,7 +12609,7 @@ std::vector<std::string> stopStrings;
 
 ### API-af39914842a8 · ndnsf::di::NativeEpochCoordinatorConfig::textDecoder
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L101)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L106)
 
 ```cpp
 std::function<std::string(const std::vector<std::int64_t>&)> textDecoder;
@@ -10620,7 +12624,7 @@ std::function<std::string(const std::vector<std::int64_t>&)> textDecoder;
 
 ### API-272d63f42b0d · ndnsf::di::NativeEpochCoordinatorConfig::stableTextDecoder
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L104)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L109)
 
 ```cpp
 std::function<std::string(const std::vector<std::int64_t>&, bool)> stableTextDecoder;
@@ -10635,7 +12639,7 @@ std::function<std::string(const std::vector<std::int64_t>&, bool)> stableTextDec
 
 ### API-ecfe6f592f7c · ndnsf::di::NativeEpochCoordinatorConfig::requireTextOutput
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L110)
 
 ```cpp
 bool requireTextOutput = false;
@@ -10643,7 +12647,7 @@ bool requireTextOutput = false;
 
 ### API-b0159030e191 · ndnsf::di::NativeEpochCoordinatorConfig::checkpointFinalize
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L110)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L115)
 
 ```cpp
 bool checkpointFinalize = false;
@@ -10660,7 +12664,7 @@ bool checkpointFinalize = false;
 
 ### API-27b61f4beb7a · ndnsf::di::NativeEpochCoordinatorConfig::maxCheckpointFinalizeTokens
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L111)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L116)
 
 ```cpp
 std::size_t maxCheckpointFinalizeTokens = 32;
@@ -10668,7 +12672,7 @@ std::size_t maxCheckpointFinalizeTokens = 32;
 
 ### API-85e1ab3a70b2 · ndnsf::di::NativeEpochCoordinatorConfig::committedPrefixTokenIds
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L114)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L119)
 
 ```cpp
 std::vector<std::int64_t> committedPrefixTokenIds;
@@ -10683,7 +12687,7 @@ std::vector<std::int64_t> committedPrefixTokenIds;
 
 ### API-8376ed726b90 · ndnsf::di::NativeEpochCoordinatorConfig::stopCheck
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L124)
 
 ```cpp
 std::function<std::optional<NativeEpochStopReason>()> stopCheck;
@@ -10700,7 +12704,7 @@ std::function<std::optional<NativeEpochStopReason>()> stopCheck;
 
 ### API-7fcc2637a59e · ndnsf::di::NativeEpochCoordinatorConfig::executionGuard
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L122)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L127)
 
 ```cpp
 std::function<void()> executionGuard;
@@ -10715,7 +12719,7 @@ std::function<void()> executionGuard;
 
 ### API-372a48576990 · ndnsf::di::NativeEpochCoordinatorConfig::eventSink
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L128)
 
 ```cpp
 RoleExecutionContext::StreamEventSink eventSink;
@@ -10723,7 +12727,7 @@ RoleExecutionContext::StreamEventSink eventSink;
 
 ### API-0e856845de84 · ndnsf::di::NativeEpochCoordinatorConfig::resultObserver
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L124)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L129)
 
 ```cpp
 std::function<void(const RoleSpec&, const ProviderRoleResult&)> resultObserver;
@@ -10731,7 +12735,7 @@ std::function<void(const RoleSpec&, const ProviderRoleResult&)> resultObserver;
 
 ### API-aebf5f17e34e · ndnsf::di::NativeEpochCoordinatorResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L127)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L132)
 
 ```cpp
 struct NativeEpochCoordinatorResult
@@ -10739,7 +12743,7 @@ struct NativeEpochCoordinatorResult
 
 ### API-31bb5ab4a430 · ndnsf::di::NativeEpochCoordinatorResult::RuntimeMetricsObservation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L129)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L134)
 
 ```cpp
 struct RuntimeMetricsObservation
@@ -10747,7 +12751,7 @@ struct RuntimeMetricsObservation
 
 ### API-5c2c04caa5b6 · ndnsf::di::NativeEpochCoordinatorResult::RuntimeMetricsObservation::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L131)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L136)
 
 ```cpp
 std::string role;
@@ -10755,7 +12759,7 @@ std::string role;
 
 ### API-0da23911ecea · ndnsf::di::NativeEpochCoordinatorResult::RuntimeMetricsObservation::inferenceEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L137)
 
 ```cpp
 std::uint64_t inferenceEpoch = 0;
@@ -10763,7 +12767,7 @@ std::uint64_t inferenceEpoch = 0;
 
 ### API-fde0ec55f0b2 · ndnsf::di::NativeEpochCoordinatorResult::RuntimeMetricsObservation::metrics
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L133)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L138)
 
 ```cpp
 NativeRuntimeMetrics metrics;
@@ -10771,7 +12775,7 @@ NativeRuntimeMetrics metrics;
 
 ### API-79583734a680 · ndnsf::di::NativeEpochCoordinatorResult::CacheObservation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L141)
 
 ```cpp
 struct CacheObservation
@@ -10779,7 +12783,7 @@ struct CacheObservation
 
 ### API-4d9ee32770b8 · ndnsf::di::NativeEpochCoordinatorResult::CacheObservation::inferenceEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L138)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L143)
 
 ```cpp
 std::uint64_t inferenceEpoch = 0;
@@ -10787,7 +12791,7 @@ std::uint64_t inferenceEpoch = 0;
 
 ### API-cc311da255e9 · ndnsf::di::NativeEpochCoordinatorResult::CacheObservation::actualNewInputExtent
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L147)
 
 ```cpp
 std::size_t actualNewInputExtent = 0;
@@ -10803,7 +12807,7 @@ std::size_t actualNewInputExtent = 0;
 
 ### API-cbc31bc2deec · ndnsf::di::NativeEpochCoordinatorResult::CacheObservation::representedPrefixTokenCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L143)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L148)
 
 ```cpp
 std::size_t representedPrefixTokenCount = 0;
@@ -10811,7 +12815,7 @@ std::size_t representedPrefixTokenCount = 0;
 
 ### API-cedf3efca0a4 · ndnsf::di::NativeEpochCoordinatorResult::CacheObservation::prefixWorkAvoided
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L144)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L149)
 
 ```cpp
 std::size_t prefixWorkAvoided = 0;
@@ -10819,7 +12823,7 @@ std::size_t prefixWorkAvoided = 0;
 
 ### API-d3fc935970fe · ndnsf::di::NativeEpochCoordinatorResult::CacheObservation::decodeStateHit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L145)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L150)
 
 ```cpp
 bool decodeStateHit = false;
@@ -10827,7 +12831,7 @@ bool decodeStateHit = false;
 
 ### API-7d9501d9676d · ndnsf::di::NativeEpochCoordinatorResult::CacheObservation::conversationStateHit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L146)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L151)
 
 ```cpp
 bool conversationStateHit = false;
@@ -10835,7 +12839,7 @@ bool conversationStateHit = false;
 
 ### API-950f59db4ad4 · ndnsf::di::NativeEpochCoordinatorResult::finalPayload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L149)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L154)
 
 ```cpp
 std::optional<std::vector<std::uint8_t>> finalPayload;
@@ -10843,7 +12847,7 @@ std::optional<std::vector<std::uint8_t>> finalPayload;
 
 ### API-99198d64a17a · ndnsf::di::NativeEpochCoordinatorResult::epochsExecuted
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L150)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L155)
 
 ```cpp
 std::size_t epochsExecuted = 0;
@@ -10851,7 +12855,7 @@ std::size_t epochsExecuted = 0;
 
 ### API-12f06eb936ef · ndnsf::di::NativeEpochCoordinatorResult::eventsPublished
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L151)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L156)
 
 ```cpp
 std::size_t eventsPublished = 0;
@@ -10859,7 +12863,7 @@ std::size_t eventsPublished = 0;
 
 ### API-fa736cabc1fc · ndnsf::di::NativeEpochCoordinatorResult::prefixTokensRecomputed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L152)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L157)
 
 ```cpp
 std::size_t prefixTokensRecomputed = 0;
@@ -10867,7 +12871,7 @@ std::size_t prefixTokensRecomputed = 0;
 
 ### API-5aafa8de0c3c · ndnsf::di::NativeEpochCoordinatorResult::stoppedByUpstream
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L153)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L158)
 
 ```cpp
 bool stoppedByUpstream = false;
@@ -10875,7 +12879,7 @@ bool stoppedByUpstream = false;
 
 ### API-ac7031d73ffd · ndnsf::di::NativeEpochCoordinatorResult::finalizedRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L158)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L163)
 
 ```cpp
 std::optional<RoleSpec> finalizedRole;
@@ -10892,7 +12896,7 @@ std::optional<RoleSpec> finalizedRole;
 
 ### API-eb8ba551a7ac · ndnsf::di::NativeEpochCoordinatorResult::cacheObservations
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L159)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L164)
 
 ```cpp
 std::vector<CacheObservation> cacheObservations;
@@ -10900,7 +12904,7 @@ std::vector<CacheObservation> cacheObservations;
 
 ### API-da0343ac617e · ndnsf::di::NativeEpochCoordinatorResult::runtimeMetrics
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L160)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L165)
 
 ```cpp
 std::vector<RuntimeMetricsObservation> runtimeMetrics;
@@ -10908,7 +12912,7 @@ std::vector<RuntimeMetricsObservation> runtimeMetrics;
 
 ### API-d18cce8f82c2 · ndnsf::di::runNativeEpochCoordinator
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L168)
 
 ```cpp
 NativeEpochCoordinatorResult
@@ -10917,7 +12921,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config);
 
 ### API-b55b50f96f8e · ndnsf::di::nativeRoleHasOnlyInternalFeedbackOutputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L166)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp#L171)
 
 ```cpp
 bool
@@ -10926,7 +12930,7 @@ nativeRoleHasOnlyInternalFeedbackOutputs(const RoleSpec& role);
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp
 
-源码 SHA-256：`ce154d474a0800fdbf88dbeb4c97b56713feafcb001f75b25e4de803ae17f322`。
+源码 SHA-256：`1370186e1a7f857f435a6d9f7a8c7ae12bd74ab82b5b3fc6a5b6d3850e9bc082`。
 
 ### API-26fa27c8f4fa · ndnsf::di::ExecutionAttemptKey
 
@@ -11495,9 +13499,26 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::string tensorId;
 ```
 
+### API-6ef6c7f0be69 · ndnsf::di::NativeTensorEndpointV3::bundleTensorNames
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L143)
+
+```cpp
+std::vector<std::string> bundleTensorNames;
+```
+
+原始接口说明：
+
+```text
+// Concrete members carried by one logical transport tensor.  The signed
+// tensorId remains the adapter/transport identity; these names bind the
+// runtime bundle to the producer/consumer ONNX boundary without aliasing
+// several concrete tensors to one name.
+```
+
 ### API-1c603c615b3f · ndnsf::di::NativeTensorEndpointV3::tensorDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L144)
 
 ```cpp
 std::string tensorDigest;
@@ -11505,7 +13526,7 @@ std::string tensorDigest;
 
 ### API-b11a0b0ad189 · ndnsf::di::NativeTensorEndpointV3::layoutDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L140)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L145)
 
 ```cpp
 std::string layoutDigest;
@@ -11513,7 +13534,7 @@ std::string layoutDigest;
 
 ### API-4f699a7cfb0f · ndnsf::di::NativeTensorEndpointV3::targetLayoutDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L141)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L146)
 
 ```cpp
 std::string targetLayoutDigest;
@@ -11521,7 +13542,7 @@ std::string targetLayoutDigest;
 
 ### API-27e0e746e149 · ndnsf::di::NativeTensorEndpointV3::microbatch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L147)
 
 ```cpp
 std::uint64_t microbatch = 0;
@@ -11529,7 +13550,7 @@ std::uint64_t microbatch = 0;
 
 ### API-11b85168661e · ndnsf::di::NativeTensorEndpointV3::segmentCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L143)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L148)
 
 ```cpp
 std::size_t segmentCount = 0;
@@ -11537,7 +13558,7 @@ std::size_t segmentCount = 0;
 
 ### API-2433e1f679bb · ndnsf::di::NativeTensorEndpointV3::manifestDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L144)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L149)
 
 ```cpp
 std::string manifestDigest;
@@ -11545,7 +13566,7 @@ std::string manifestDigest;
 
 ### API-435544d40379 · ndnsf::di::NativeTensorEndpointV3::securityProfile
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L145)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L150)
 
 ```cpp
 std::string securityProfile;
@@ -11553,7 +13574,7 @@ std::string securityProfile;
 
 ### API-07f189cbe6b9 · ndnsf::di::NativeTensorEndpointV3::noProgressDeadlineMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L146)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L151)
 
 ```cpp
 std::uint64_t noProgressDeadlineMs = 0;
@@ -11561,7 +13582,7 @@ std::uint64_t noProgressDeadlineMs = 0;
 
 ### API-789a4dd6b1fb · ndnsf::di::NativeTensorEndpointV3::hardDeadlineMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L147)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L152)
 
 ```cpp
 std::uint64_t hardDeadlineMs = 0;
@@ -11569,7 +13590,7 @@ std::uint64_t hardDeadlineMs = 0;
 
 ### API-14a9c8f1071f · ndnsf::di::NativeTensorEndpointV3::endpointDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L148)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L153)
 
 ```cpp
 std::string endpointDigest;
@@ -11577,7 +13598,7 @@ std::string endpointDigest;
 
 ### API-65fab5e429c6 · ndnsf::di::tensorObjectNamePrefix
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L156)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L161)
 
 ```cpp
 std::string
@@ -11596,7 +13617,7 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint);
 
 ### API-41b311be4fde · ndnsf::di::tensorObjectManifestName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L160)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L165)
 
 ```cpp
 std::string
@@ -11611,7 +13632,7 @@ tensorObjectManifestName(const NativeTensorEndpointV3& endpoint);
 
 ### API-a70c7ff11c32 · ndnsf::di::tensorObjectSegmentName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L164)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L169)
 
 ```cpp
 std::string
@@ -11627,7 +13648,7 @@ tensorObjectSegmentName(const NativeTensorEndpointV3& endpoint,
 
 ### API-61ed0cf16156 · ndnsf::di::NativeReadinessPredicateV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L168)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L173)
 
 ```cpp
 struct NativeReadinessPredicateV3
@@ -11635,7 +13656,7 @@ struct NativeReadinessPredicateV3
 
 ### API-ce74cb202d4c · ndnsf::di::NativeReadinessPredicateV3::mode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L170)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L175)
 
 ```cpp
 std::string mode;
@@ -11643,7 +13664,7 @@ std::string mode;
 
 ### API-14be40b08bf0 · ndnsf::di::NativeReadinessPredicateV3::endpointDigests
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L171)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L176)
 
 ```cpp
 std::vector<std::string> endpointDigests;
@@ -11651,7 +13672,7 @@ std::vector<std::string> endpointDigests;
 
 ### API-7b87bb1e3dbe · ndnsf::di::NativeReadinessPredicateV3::quorum
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L172)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L177)
 
 ```cpp
 std::size_t quorum = 0;
@@ -11659,7 +13680,7 @@ std::size_t quorum = 0;
 
 ### API-717317ec333c · ndnsf::di::NativeRoleDataflowContractV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L175)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L180)
 
 ```cpp
 struct NativeRoleDataflowContractV3
@@ -11667,7 +13688,7 @@ struct NativeRoleDataflowContractV3
 
 ### API-59cf9bf1283d · ndnsf::di::NativeRoleDataflowContractV3::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L177)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L182)
 
 ```cpp
 std::string requestId;
@@ -11675,7 +13696,7 @@ std::string requestId;
 
 ### API-8b6e804c64d0 · ndnsf::di::NativeRoleDataflowContractV3::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L178)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L183)
 
 ```cpp
 std::uint64_t attempt = 0;
@@ -11683,7 +13704,7 @@ std::uint64_t attempt = 0;
 
 ### API-acae471aaa3b · ndnsf::di::NativeRoleDataflowContractV3::planDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L179)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L184)
 
 ```cpp
 std::string planDigest;
@@ -11691,7 +13712,7 @@ std::string planDigest;
 
 ### API-7f4add2b4e0f · ndnsf::di::NativeRoleDataflowContractV3::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L180)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L185)
 
 ```cpp
 std::string role;
@@ -11699,7 +13720,7 @@ std::string role;
 
 ### API-b5af1505ea91 · ndnsf::di::NativeRoleDataflowContractV3::mayPublish
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L181)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L186)
 
 ```cpp
 std::vector<NativeTensorEndpointV3> mayPublish;
@@ -11707,7 +13728,7 @@ std::vector<NativeTensorEndpointV3> mayPublish;
 
 ### API-d2ca9c72f344 · ndnsf::di::NativeRoleDataflowContractV3::mustFetch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L182)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L187)
 
 ```cpp
 std::vector<NativeTensorEndpointV3> mustFetch;
@@ -11715,7 +13736,7 @@ std::vector<NativeTensorEndpointV3> mustFetch;
 
 ### API-228bc7e42221 · ndnsf::di::NativeRoleDataflowContractV3::waitFor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L183)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L188)
 
 ```cpp
 std::vector<NativeReadinessPredicateV3> waitFor;
@@ -11723,7 +13744,7 @@ std::vector<NativeReadinessPredicateV3> waitFor;
 
 ### API-29732fcb658a · ndnsf::di::NativeRoleDataflowContractV3::terminalResponseOwner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L184)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L189)
 
 ```cpp
 bool terminalResponseOwner = false;
@@ -11731,7 +13752,7 @@ bool terminalResponseOwner = false;
 
 ### API-4af50bb9946a · ndnsf::di::NativeRoleDataflowContractV3::dataflowDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L185)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L190)
 
 ```cpp
 std::string dataflowDigest;
@@ -11739,7 +13760,7 @@ std::string dataflowDigest;
 
 ### API-3bf0dce41854 · ndnsf::di::NativeDeviceBindingV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L189)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L194)
 
 ```cpp
 struct NativeDeviceBindingV3
@@ -11747,7 +13768,7 @@ struct NativeDeviceBindingV3
 
 ### API-f0c808c95cc1 · ndnsf::di::NativeDeviceBindingV3::mode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L191)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L196)
 
 ```cpp
 std::string mode;
@@ -11755,7 +13776,7 @@ std::string mode;
 
 ### API-82755972a91c · ndnsf::di::NativeDeviceBindingV3::provider
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L192)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L197)
 
 ```cpp
 std::string provider;
@@ -11763,7 +13784,7 @@ std::string provider;
 
 ### API-669a148de908 · ndnsf::di::NativeDeviceBindingV3::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L193)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L198)
 
 ```cpp
 std::string role;
@@ -11771,7 +13792,7 @@ std::string role;
 
 ### API-d74d580d2e0d · ndnsf::di::NativeDeviceBindingV3::offerDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L194)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L199)
 
 ```cpp
 std::string offerDigest;
@@ -11779,7 +13800,7 @@ std::string offerDigest;
 
 ### API-c75f4858058d · ndnsf::di::NativeDeviceBindingV3::topologyProfileDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L195)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L200)
 
 ```cpp
 std::string topologyProfileDigest;
@@ -11787,7 +13808,7 @@ std::string topologyProfileDigest;
 
 ### API-c654a522946d · ndnsf::di::NativeDeviceBindingV3::resourceSnapshotDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L196)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L201)
 
 ```cpp
 std::string resourceSnapshotDigest;
@@ -11795,7 +13816,7 @@ std::string resourceSnapshotDigest;
 
 ### API-1e7527fe3501 · ndnsf::di::NativeDeviceBindingV3::resourceSequence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L197)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L202)
 
 ```cpp
 std::uint64_t resourceSequence = 0;
@@ -11803,7 +13824,7 @@ std::uint64_t resourceSequence = 0;
 
 ### API-a19647b320dd · ndnsf::di::NativeDeviceBindingV3::offerScopedDeviceHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L198)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L203)
 
 ```cpp
 std::string offerScopedDeviceHandle;
@@ -11811,7 +13832,7 @@ std::string offerScopedDeviceHandle;
 
 ### API-a35ad27e6202 · ndnsf::di::NativeDeviceBindingV3::sharingPolicy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L199)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L204)
 
 ```cpp
 std::string sharingPolicy;
@@ -11819,7 +13840,7 @@ std::string sharingPolicy;
 
 ### API-2b5fc22310fc · ndnsf::di::NativeExecutionPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L202)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L207)
 
 ```cpp
 struct NativeExecutionPlan
@@ -11827,7 +13848,7 @@ struct NativeExecutionPlan
 
 ### API-11141a572bf7 · ndnsf::di::NativeExecutionPlan::version
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L204)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L209)
 
 ```cpp
 int version = 1;
@@ -11835,7 +13856,7 @@ int version = 1;
 
 ### API-fa0eea52b399 · ndnsf::di::NativeExecutionPlan::serviceName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L205)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L210)
 
 ```cpp
 std::string serviceName;
@@ -11843,7 +13864,7 @@ std::string serviceName;
 
 ### API-f7cf67e01386 · ndnsf::di::NativeExecutionPlan::modelName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L206)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L211)
 
 ```cpp
 std::string modelName;
@@ -11851,7 +13872,7 @@ std::string modelName;
 
 ### API-61743cdaf59d · ndnsf::di::NativeExecutionPlan::modelFamily
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L207)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L212)
 
 ```cpp
 std::string modelFamily = "generic-onnx";
@@ -11859,7 +13880,7 @@ std::string modelFamily = "generic-onnx";
 
 ### API-56f747e47445 · ndnsf::di::NativeExecutionPlan::modelFormat
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L208)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L213)
 
 ```cpp
 std::string modelFormat = "unknown";
@@ -11867,7 +13888,7 @@ std::string modelFormat = "unknown";
 
 ### API-fead2826deb4 · ndnsf::di::NativeExecutionPlan::plannerKind
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L209)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L214)
 
 ```cpp
 std::string plannerKind = "onnx-dag";
@@ -11875,7 +13896,7 @@ std::string plannerKind = "onnx-dag";
 
 ### API-c298738cfc37 · ndnsf::di::NativeExecutionPlan::executionPolicy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L210)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L215)
 
 ```cpp
 std::string executionPolicy = "DATA_DRIVEN_V2";
@@ -11883,7 +13904,7 @@ std::string executionPolicy = "DATA_DRIVEN_V2";
 
 ### API-c2e18e6c282f · ndnsf::di::NativeExecutionPlan::streamingOperationStride
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L213)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L218)
 
 ```cpp
 std::uint64_t streamingOperationStride = 0;
@@ -11898,7 +13919,7 @@ std::uint64_t streamingOperationStride = 0;
 
 ### API-6168f93108ed · ndnsf::di::NativeExecutionPlan::roles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L214)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L219)
 
 ```cpp
 std::vector<std::string> roles;
@@ -11906,7 +13927,7 @@ std::vector<std::string> roles;
 
 ### API-dcc475bcd16a · ndnsf::di::NativeExecutionPlan::dependencies
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L215)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L220)
 
 ```cpp
 std::vector<NativeDependencySpec> dependencies;
@@ -11914,7 +13935,7 @@ std::vector<NativeDependencySpec> dependencies;
 
 ### API-d7347805eb4a · ndnsf::di::DiReservationPolicy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L221)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L226)
 
 ```cpp
 struct DiReservationPolicy
@@ -11922,7 +13943,7 @@ struct DiReservationPolicy
 
 ### API-f68f20710c5a · ndnsf::di::DiReservationPolicy::globalLimit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L223)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L228)
 
 ```cpp
 std::size_t globalLimit = 1;
@@ -11930,7 +13951,7 @@ std::size_t globalLimit = 1;
 
 ### API-8866bf64f5f4 · ndnsf::di::DiReservationPolicy::requesterLimit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L224)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L229)
 
 ```cpp
 std::size_t requesterLimit = 1;
@@ -11938,7 +13959,7 @@ std::size_t requesterLimit = 1;
 
 ### API-8a1b67dd8017 · ndnsf::di::DiReservationPolicy::serviceLimit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L225)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L230)
 
 ```cpp
 std::size_t serviceLimit = 1;
@@ -11946,7 +13967,7 @@ std::size_t serviceLimit = 1;
 
 ### API-36747f6f34c6 · ndnsf::di::DiReservationPolicy::tentativeLeaseMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L226)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L231)
 
 ```cpp
 std::uint64_t tentativeLeaseMs = 5000;
@@ -11954,7 +13975,7 @@ std::uint64_t tentativeLeaseMs = 5000;
 
 ### API-2c46a5fc0c36 · ndnsf::di::DiReservationRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L229)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L234)
 
 ```cpp
 struct DiReservationRequest
@@ -11962,7 +13983,7 @@ struct DiReservationRequest
 
 ### API-ab2eea297453 · ndnsf::di::DiReservationRequest::providerName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L231)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L236)
 
 ```cpp
 std::string providerName;
@@ -11970,7 +13991,7 @@ std::string providerName;
 
 ### API-ee27baf16f35 · ndnsf::di::DiReservationRequest::requesterName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L232)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L237)
 
 ```cpp
 std::string requesterName;
@@ -11978,7 +13999,7 @@ std::string requesterName;
 
 ### API-2871b471f827 · ndnsf::di::DiReservationRequest::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L233)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L238)
 
 ```cpp
 std::string requestId;
@@ -11986,7 +14007,7 @@ std::string requestId;
 
 ### API-8e9f2870c3ce · ndnsf::di::DiReservationRequest::serviceName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L234)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L239)
 
 ```cpp
 std::string serviceName;
@@ -11994,7 +14015,7 @@ std::string serviceName;
 
 ### API-6dd2b0eabb77 · ndnsf::di::DiReservationRequest::planDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L235)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L240)
 
 ```cpp
 std::string planDigest;
@@ -12002,7 +14023,7 @@ std::string planDigest;
 
 ### API-f7e88615d413 · ndnsf::di::DiReservationRequest::resourceBindingProof
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L236)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L241)
 
 ```cpp
 ndn::Buffer resourceBindingProof;
@@ -12010,7 +14031,7 @@ ndn::Buffer resourceBindingProof;
 
 ### API-c2f217f7b21b · ndnsf::di::DiReservationRequest::conflictKeys
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L237)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L242)
 
 ```cpp
 std::vector<std::string> conflictKeys;
@@ -12018,7 +14039,7 @@ std::vector<std::string> conflictKeys;
 
 ### API-24695ef0f0fa · ndnsf::di::DiReservationRequest::authorized
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L238)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L243)
 
 ```cpp
 bool authorized = false;
@@ -12026,7 +14047,7 @@ bool authorized = false;
 
 ### API-7a408a77a1c6 · ndnsf::di::DiReservationState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L241)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L246)
 
 ```cpp
 enum class DiReservationState
@@ -12034,7 +14055,7 @@ enum class DiReservationState
 
 ### API-27bb3321cd3a · ndnsf::di::DiReservationState::Tentative
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L241)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L246)
 
 ```cpp
 Tentative
@@ -12042,7 +14063,7 @@ Tentative
 
 ### API-5f72fa7e92ed · ndnsf::di::DiReservationState::Committed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L241)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L246)
 
 ```cpp
 Committed
@@ -12050,7 +14071,7 @@ Committed
 
 ### API-147b67668565 · ndnsf::di::DiReservationState::Released
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L241)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L246)
 
 ```cpp
 Released
@@ -12058,7 +14079,7 @@ Released
 
 ### API-f0f625c3f5ca · ndnsf::di::DiReservationState::Expired
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L241)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L246)
 
 ```cpp
 Expired
@@ -12066,7 +14087,7 @@ Expired
 
 ### API-0e690d7af755 · ndnsf::di::DiReservationLease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L243)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L248)
 
 ```cpp
 struct DiReservationLease
@@ -12074,7 +14095,7 @@ struct DiReservationLease
 
 ### API-62302cb398e1 · ndnsf::di::DiReservationLease::reservationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L245)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L250)
 
 ```cpp
 std::string reservationId;
@@ -12082,7 +14103,7 @@ std::string reservationId;
 
 ### API-a3082a9f9c7e · ndnsf::di::DiReservationLease::providerName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L246)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L251)
 
 ```cpp
 std::string providerName;
@@ -12090,7 +14111,7 @@ std::string providerName;
 
 ### API-813d8e40a396 · ndnsf::di::DiReservationLease::providerBootId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L247)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L252)
 
 ```cpp
 std::string providerBootId;
@@ -12098,7 +14119,7 @@ std::string providerBootId;
 
 ### API-260b4f6ba602 · ndnsf::di::DiReservationLease::requesterName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L248)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L253)
 
 ```cpp
 std::string requesterName;
@@ -12106,7 +14127,7 @@ std::string requesterName;
 
 ### API-3390c4b13de3 · ndnsf::di::DiReservationLease::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L249)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L254)
 
 ```cpp
 std::string requestId;
@@ -12114,7 +14135,7 @@ std::string requestId;
 
 ### API-8bcf1cf99af4 · ndnsf::di::DiReservationLease::serviceName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L250)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L255)
 
 ```cpp
 std::string serviceName;
@@ -12122,7 +14143,7 @@ std::string serviceName;
 
 ### API-30b5609bbe0a · ndnsf::di::DiReservationLease::planDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L251)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L256)
 
 ```cpp
 std::string planDigest;
@@ -12130,7 +14151,7 @@ std::string planDigest;
 
 ### API-030c7da48230 · ndnsf::di::DiReservationLease::resourceBindingProof
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L252)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L257)
 
 ```cpp
 ndn::Buffer resourceBindingProof;
@@ -12138,7 +14159,7 @@ ndn::Buffer resourceBindingProof;
 
 ### API-46fe304ea113 · ndnsf::di::DiReservationLease::conflictKeys
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L253)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L258)
 
 ```cpp
 std::vector<std::string> conflictKeys;
@@ -12146,7 +14167,7 @@ std::vector<std::string> conflictKeys;
 
 ### API-0e5e00029dad · ndnsf::di::DiReservationLease::expiresAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L254)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L259)
 
 ```cpp
 std::uint64_t expiresAtMs = 0;
@@ -12154,7 +14175,7 @@ std::uint64_t expiresAtMs = 0;
 
 ### API-fa7f489c6f8c · ndnsf::di::DiReservationLease::state
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L255)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L260)
 
 ```cpp
 DiReservationState state = DiReservationState::Tentative;
@@ -12162,7 +14183,7 @@ DiReservationState state = DiReservationState::Tentative;
 
 ### API-8febce4aee94 · ndnsf::di::DiReservationResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L258)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L263)
 
 ```cpp
 struct DiReservationResult
@@ -12170,7 +14191,7 @@ struct DiReservationResult
 
 ### API-3a8aedcbb9d6 · ndnsf::di::DiReservationResult::status
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L260)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L265)
 
 ```cpp
 bool status = false;
@@ -12178,7 +14199,7 @@ bool status = false;
 
 ### API-ee2685c13c75 · ndnsf::di::DiReservationResult::reasonCode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L261)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L266)
 
 ```cpp
 std::string reasonCode;
@@ -12186,7 +14207,7 @@ std::string reasonCode;
 
 ### API-8687ba1d0f72 · ndnsf::di::DiReservationResult::lease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L262)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L267)
 
 ```cpp
 DiReservationLease lease;
@@ -12194,7 +14215,7 @@ DiReservationLease lease;
 
 ### API-971533b3805d · ndnsf::di::DiReservationResult::idempotentReplay
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L263)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L268)
 
 ```cpp
 bool idempotentReplay = false;
@@ -12202,7 +14223,7 @@ bool idempotentReplay = false;
 
 ### API-24e4f1814711 · ndnsf::di::DiReservationAuthority
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L270)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L275)
 
 ```cpp
 class DiReservationAuthority
@@ -12210,7 +14231,7 @@ class DiReservationAuthority
 
 ### API-a09c0b4ff2db · ndnsf::di::DiReservationAuthority::DiReservationAuthority
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L273)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L278)
 
 ```cpp
 DiReservationAuthority(std::string providerBootId,
@@ -12219,7 +14240,7 @@ DiReservationAuthority(std::string providerBootId,
 
 ### API-becebaa4361d · ndnsf::di::DiReservationAuthority::~DiReservationAuthority
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L275)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L280)
 
 ```cpp
 ~DiReservationAuthority();
@@ -12227,7 +14248,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-4da27d4a41d7 · ndnsf::di::DiReservationAuthority::reserve
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L277)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L282)
 
 ```cpp
 DiReservationResult
@@ -12236,7 +14257,7 @@ DiReservationResult
 
 ### API-e7ae08d733f9 · ndnsf::di::DiReservationAuthority::commit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L280)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L285)
 
 ```cpp
 DiReservationResult commit(const std::string& reservationId,
@@ -12245,7 +14266,7 @@ DiReservationResult commit(const std::string& reservationId,
 
 ### API-d8945c619e67 · ndnsf::di::DiReservationAuthority::release
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L282)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L287)
 
 ```cpp
 bool release(const std::string& reservationId, const std::string& cause,
@@ -12254,7 +14275,7 @@ bool release(const std::string& reservationId, const std::string& cause,
 
 ### API-bd2209d9b7ad · ndnsf::di::DiReservationAuthority::cleanupExpired
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L285)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L290)
 
 ```cpp
 std::size_t cleanupExpired(std::uint64_t nowMs);
@@ -12262,7 +14283,7 @@ std::size_t cleanupExpired(std::uint64_t nowMs);
 
 ### API-264acbeeb76d · ndnsf::di::DiReservationAuthority::releaseAll
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L286)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L291)
 
 ```cpp
 void releaseAll(std::uint64_t nowMs, const std::string& cause = "PROVIDER_SHUTDOWN");
@@ -12270,7 +14291,7 @@ void releaseAll(std::uint64_t nowMs, const std::string& cause = "PROVIDER_SHUTDO
 
 ### API-0bf5758786ff · ndnsf::di::NativeProviderAssignment
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L307)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L312)
 
 ```cpp
 struct NativeProviderAssignment
@@ -12278,7 +14299,7 @@ struct NativeProviderAssignment
 
 ### API-f954f3d702d1 · ndnsf::di::NativeProviderAssignment::providerByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L309)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L314)
 
 ```cpp
 std::map<std::string, std::string> providerByRole;
@@ -12286,7 +14307,7 @@ std::map<std::string, std::string> providerByRole;
 
 ### API-aaf7e5522674 · ndnsf::di::NativePlanSession
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L312)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L317)
 
 ```cpp
 struct NativePlanSession
@@ -12294,7 +14315,7 @@ struct NativePlanSession
 
 ### API-b2ad1eba224f · ndnsf::di::NativePlanSession::sessionId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L314)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L319)
 
 ```cpp
 std::string sessionId;
@@ -12302,7 +14323,7 @@ std::string sessionId;
 
 ### API-9a8e51620fe1 · ndnsf::di::NativePlanSession::plan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L315)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L320)
 
 ```cpp
 NativeExecutionPlan plan;
@@ -12310,7 +14331,7 @@ NativeExecutionPlan plan;
 
 ### API-7c64840ad2c3 · ndnsf::di::NativePlanSession::assignment
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L316)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L321)
 
 ```cpp
 NativeProviderAssignment assignment;
@@ -12318,7 +14339,7 @@ NativeProviderAssignment assignment;
 
 ### API-d8d8de4b2065 · ndnsf::di::NativePlanSession::rolesByName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L317)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L322)
 
 ```cpp
 std::map<std::string, RoleSpec> rolesByName;
@@ -12326,7 +14347,7 @@ std::map<std::string, RoleSpec> rolesByName;
 
 ### API-ab3226ce686b · ndnsf::di::trimSlashes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L320)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L325)
 
 ```cpp
 std::string
@@ -12335,7 +14356,7 @@ trimSlashes(std::string value);
 
 ### API-9c5d6c535438 · ndnsf::di::replaceAll
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L323)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L328)
 
 ```cpp
 std::string
@@ -12344,7 +14365,7 @@ replaceAll(std::string value, const std::string& from, const std::string& to);
 
 ### API-2a79d388e0c0 · ndnsf::di::plannedDataNameFromTemplate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L326)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L331)
 
 ```cpp
 std::string
@@ -12360,7 +14381,7 @@ plannedDataNameFromTemplate(const std::string& objectNameTemplate,
 
 ### API-06fb96b0f4a5 · ndnsf::di::plannedSegmentName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L336)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L341)
 
 ```cpp
 std::string
@@ -12369,7 +14390,7 @@ plannedSegmentName(const std::string& plannedDataName, std::size_t segmentNo);
 
 ### API-ea701c89eff7 · ndnsf::di::plannedSegmentNamesForEdge
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L339)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L344)
 
 ```cpp
 std::vector<std::string>
@@ -12378,7 +14399,7 @@ plannedSegmentNamesForEdge(const DependencyEdge& edge);
 
 ### API-fd8c822ce4e1 · ndnsf::di::hasStaticSegmentPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L342)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L347)
 
 ```cpp
 bool
@@ -12387,7 +14408,7 @@ hasStaticSegmentPlan(const NativeDependencySpec& dependency);
 
 ### API-52c18bbc56f2 · ndnsf::di::providerForRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L345)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L350)
 
 ```cpp
 std::string
@@ -12398,7 +14419,7 @@ providerForRole(const NativeProviderAssignment& assignment,
 
 ### API-723ee18c3498 · ndnsf::di::roleSpecFor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L350)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L355)
 
 ```cpp
 RoleSpec
@@ -12411,7 +14432,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
 
 ### API-2bf789318c0b · ndnsf::di::roleSpecFor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L363)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L368)
 
 ```cpp
 RoleSpec
@@ -12436,7 +14457,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
 
 ### API-22338efc07a2 · ndnsf::di::roleSpecFor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L371)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L376)
 
 ```cpp
 RoleSpec
@@ -12449,7 +14470,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
 
 ### API-4c994f032427 · ndnsf::di::deployNativePlanSession
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L378)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp#L383)
 
 ```cpp
 NativePlanSession
@@ -12460,11 +14481,11 @@ deployNativePlanSession(NativeExecutionPlan plan,
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp
 
-源码 SHA-256：`9c3bc11155bb83ea6ab997fa3338e1e7415f2a5447cebfec6c3a39398be49376`。
+源码 SHA-256：`a106b45e7a15f1d7ccec3267079e24549e8e21ea5cbf4f20a6a027f35f5d3c83`。
 
 ### API-ddaba45809fc · ndnsf::di::NativeAssemblyTensorContractV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L18)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L20)
 
 ```cpp
 struct NativeAssemblyTensorContractV3
@@ -12472,7 +14493,7 @@ struct NativeAssemblyTensorContractV3
 
 ### API-37aced367ac7 · ndnsf::di::NativeAssemblyTensorContractV3::name
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L20)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L22)
 
 ```cpp
 std::string name;
@@ -12480,7 +14501,7 @@ std::string name;
 
 ### API-5e7f8281844a · ndnsf::di::NativeAssemblyTensorContractV3::dtype
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L21)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L23)
 
 ```cpp
 std::string dtype;
@@ -12488,7 +14509,7 @@ std::string dtype;
 
 ### API-2046c65ed3c3 · ndnsf::di::NativeAssemblyTensorContractV3::shape
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L23)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L25)
 
 ```cpp
 std::vector<std::variant<std::int64_t, std::string>> shape;
@@ -12502,7 +14523,7 @@ std::vector<std::variant<std::int64_t, std::string>> shape;
 
 ### API-2a63af0e0d9f · ndnsf::di::NativeSelectionRoleV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L28)
 
 ```cpp
 struct NativeSelectionRoleV3
@@ -12510,7 +14531,7 @@ struct NativeSelectionRoleV3
 
 ### API-42a6b297018f · ndnsf::di::NativeSelectionRoleV3::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L30)
 
 ```cpp
 std::string role;
@@ -12518,7 +14539,7 @@ std::string role;
 
 ### API-1c046d77d661 · ndnsf::di::NativeSelectionRoleV3::selectedRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L31)
 
 ```cpp
 std::string selectedRole;
@@ -12526,7 +14547,7 @@ std::string selectedRole;
 
 ### API-392e12e986ba · ndnsf::di::NativeSelectionRoleV3::rank
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L32)
 
 ```cpp
 std::uint64_t rank = 0;
@@ -12534,7 +14555,7 @@ std::uint64_t rank = 0;
 
 ### API-43434198f9c6 · ndnsf::di::NativeSelectionRoleV3::layerBegin
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L33)
 
 ```cpp
 std::uint64_t layerBegin = 0;
@@ -12542,7 +14563,7 @@ std::uint64_t layerBegin = 0;
 
 ### API-d3cbc2091caa · ndnsf::di::NativeSelectionRoleV3::layerEnd
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L34)
 
 ```cpp
 std::uint64_t layerEnd = 0;
@@ -12550,7 +14571,7 @@ std::uint64_t layerEnd = 0;
 
 ### API-6763cfd113d1 · ndnsf::di::NativeSelectionRoleV3::backend
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L35)
 
 ```cpp
 std::string backend;
@@ -12558,7 +14579,7 @@ std::string backend;
 
 ### API-1d2b0f1803df · ndnsf::di::NativeSelectionRoleV3::deviceSet
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L34)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L36)
 
 ```cpp
 std::vector<std::string> deviceSet;
@@ -12566,7 +14587,7 @@ std::vector<std::string> deviceSet;
 
 ### API-2eb442567451 · ndnsf::di::NativeSelectionRoleV3::requiredDeviceMemoryMb
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L37)
 
 ```cpp
 std::uint64_t requiredDeviceMemoryMb = 0;
@@ -12574,7 +14595,7 @@ std::uint64_t requiredDeviceMemoryMb = 0;
 
 ### API-ce7f70a42a6e · ndnsf::di::NativeSelectionRoleV3::artifactDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L38)
 
 ```cpp
 std::string artifactDigest;
@@ -12582,7 +14603,7 @@ std::string artifactDigest;
 
 ### API-f79a1bf065a1 · ndnsf::di::NativeSelectionRoleV3::recipeDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L39)
 
 ```cpp
 std::string recipeDigest;
@@ -12590,7 +14611,7 @@ std::string recipeDigest;
 
 ### API-776bcb23cf40 · ndnsf::di::NativeSelectionRoleV3::roleKind
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L40)
 
 ```cpp
 std::string roleKind;
@@ -12598,7 +14619,7 @@ std::string roleKind;
 
 ### API-6dee45f85d09 · ndnsf::di::NativeSelectionRoleV3::adapterId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L41)
 
 ```cpp
 std::string adapterId;
@@ -12606,7 +14627,7 @@ std::string adapterId;
 
 ### API-b8fc30835fe1 · ndnsf::di::NativeSelectionRoleV3::adapterVersion
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L42)
 
 ```cpp
 std::string adapterVersion;
@@ -12614,7 +14635,7 @@ std::string adapterVersion;
 
 ### API-e0cf3795a25d · ndnsf::di::NativeSelectionRoleV3::modelManifestDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L43)
 
 ```cpp
 std::string modelManifestDigest;
@@ -12622,7 +14643,7 @@ std::string modelManifestDigest;
 
 ### API-f4f0790bae28 · ndnsf::di::NativeSelectionRoleV3::artifactProfileDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L42)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L44)
 
 ```cpp
 std::string artifactProfileDigest;
@@ -12630,7 +14651,7 @@ std::string artifactProfileDigest;
 
 ### API-db345beffd90 · ndnsf::di::NativeSelectionRoleV3::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L43)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L45)
 
 ```cpp
 std::string graphDigest;
@@ -12638,7 +14659,7 @@ std::string graphDigest;
 
 ### API-8da5e8e150d8 · ndnsf::di::NativeSelectionRoleV3::canonicalInitializerDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L46)
 
 ```cpp
 std::string canonicalInitializerDigest;
@@ -12646,7 +14667,7 @@ std::string canonicalInitializerDigest;
 
 ### API-0b18bda98bb7 · ndnsf::di::NativeSelectionRoleV3::adapterDescriptorDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L45)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L47)
 
 ```cpp
 std::string adapterDescriptorDigest;
@@ -12654,7 +14675,7 @@ std::string adapterDescriptorDigest;
 
 ### API-9ec5144292aa · ndnsf::di::NativeSelectionRoleV3::assemblerDescriptorDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L46)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L48)
 
 ```cpp
 std::string assemblerDescriptorDigest;
@@ -12662,7 +14683,7 @@ std::string assemblerDescriptorDigest;
 
 ### API-3d454133dccf · ndnsf::di::NativeSelectionRoleV3::backendAbi
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L47)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L49)
 
 ```cpp
 std::string backendAbi;
@@ -12670,7 +14691,7 @@ std::string backendAbi;
 
 ### API-5e5a3b79a864 · ndnsf::di::NativeSelectionRoleV3::nodeIndices
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L48)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L50)
 
 ```cpp
 std::vector<std::uint64_t> nodeIndices;
@@ -12678,7 +14699,7 @@ std::vector<std::uint64_t> nodeIndices;
 
 ### API-e685e33821fb · ndnsf::di::NativeSelectionRoleV3::expectedInputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L51)
 
 ```cpp
 std::vector<NativeAssemblyTensorContractV3> expectedInputs;
@@ -12686,15 +14707,31 @@ std::vector<NativeAssemblyTensorContractV3> expectedInputs;
 
 ### API-da8a38504472 · ndnsf::di::NativeSelectionRoleV3::expectedOutputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L50)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L52)
 
 ```cpp
 std::vector<NativeAssemblyTensorContractV3> expectedOutputs;
 ```
 
+### API-acd4a6872ff6 · ndnsf::di::NativeSelectionRoleV3::materializedRole
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L56)
+
+```cpp
+bool materializedRole = false;
+```
+
+原始接口说明：
+
+```text
+// Internal worker binding: the parent rebuilt this role from the
+// authenticated post-Selection material manifest, so the worker receives
+// a compact role graph rather than the complete canonical graph.
+```
+
 ### API-9a85986f25ff · ndnsf::di::NativeSelectionRoleV3::precision
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L51)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L57)
 
 ```cpp
 std::string precision;
@@ -12702,7 +14739,7 @@ std::string precision;
 
 ### API-b70d29804310 · ndnsf::di::NativeSelectionRoleV3::quantization
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L58)
 
 ```cpp
 std::string quantization;
@@ -12710,7 +14747,7 @@ std::string quantization;
 
 ### API-dd4ae1b9338f · ndnsf::di::NativeSelectionRoleV3::layout
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L59)
 
 ```cpp
 std::string layout;
@@ -12718,7 +14755,7 @@ std::string layout;
 
 ### API-ed75fff6f354 · ndnsf::di::NativeSelectionRoleV3::padding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L54)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L60)
 
 ```cpp
 std::string padding;
@@ -12726,7 +14763,7 @@ std::string padding;
 
 ### API-e5e479a226f9 · ndnsf::di::NativeSelectionRoleV3::protectionEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L61)
 
 ```cpp
 std::string protectionEpoch = "plaintext-v1";
@@ -12734,7 +14771,7 @@ std::string protectionEpoch = "plaintext-v1";
 
 ### API-c0956548acbe · ndnsf::di::NativeSelectionRoleV3::mergeKind
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L64)
 
 ```cpp
 std::string mergeKind;
@@ -12749,7 +14786,7 @@ std::string mergeKind;
 
 ### API-5a7572e61853 · ndnsf::di::NativeSelectionRoleV3::postprocessIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L65)
 
 ```cpp
 std::string postprocessIdentity;
@@ -12757,7 +14794,7 @@ std::string postprocessIdentity;
 
 ### API-c11bf76f0244 · ndnsf::di::NativeSelectionRoleV3::postprocessOutputName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L66)
 
 ```cpp
 std::string postprocessOutputName;
@@ -12765,7 +14802,7 @@ std::string postprocessOutputName;
 
 ### API-e0ea55315ff3 · ndnsf::di::NativeSelectionRoleV3::postprocessConfidenceThreshold
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L61)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L67)
 
 ```cpp
 double postprocessConfidenceThreshold = 0.0;
@@ -12773,7 +14810,7 @@ double postprocessConfidenceThreshold = 0.0;
 
 ### API-dc8a7efd3afb · ndnsf::di::NativeSelectionRoleV3::postprocessSort
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L68)
 
 ```cpp
 std::string postprocessSort;
@@ -12781,7 +14818,7 @@ std::string postprocessSort;
 
 ### API-0c05cfa380c6 · ndnsf::di::NativeSelectionRoleV3::maxSourceBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L69)
 
 ```cpp
 std::uint64_t maxSourceBytes = 0;
@@ -12789,7 +14826,7 @@ std::uint64_t maxSourceBytes = 0;
 
 ### API-4a6f9be1317d · ndnsf::di::NativeSelectionRoleV3::maxAssembledBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L64)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L70)
 
 ```cpp
 std::uint64_t maxAssembledBytes = 0;
@@ -12797,7 +14834,7 @@ std::uint64_t maxAssembledBytes = 0;
 
 ### API-cca77dd5c039 · ndnsf::di::NativeSelectionRoleV3::maxNodes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L65)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L71)
 
 ```cpp
 std::uint64_t maxNodes = 0;
@@ -12805,7 +14842,7 @@ std::uint64_t maxNodes = 0;
 
 ### API-3dd07aef1794 · ndnsf::di::NativeGenerationExecutionContractV1
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L74)
 
 ```cpp
 struct NativeGenerationExecutionContractV1
@@ -12813,7 +14850,7 @@ struct NativeGenerationExecutionContractV1
 
 ### API-439f32a74799 · ndnsf::di::NativeGenerationExecutionContractV1::enabled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L76)
 
 ```cpp
 bool enabled = false;
@@ -12821,7 +14858,7 @@ bool enabled = false;
 
 ### API-774605ae7d9f · ndnsf::di::NativeGenerationExecutionContractV1::mode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L71)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L77)
 
 ```cpp
 std::string mode;
@@ -12829,7 +14866,7 @@ std::string mode;
 
 ### API-974a33076a63 · ndnsf::di::NativeGenerationExecutionContractV1::maxGeneratedTokens
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L78)
 
 ```cpp
 std::size_t maxGeneratedTokens = 0;
@@ -12837,7 +14874,7 @@ std::size_t maxGeneratedTokens = 0;
 
 ### API-f159681b3a7e · ndnsf::di::NativeGenerationExecutionContractV1::tokenInputName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L79)
 
 ```cpp
 std::string tokenInputName;
@@ -12845,7 +14882,7 @@ std::string tokenInputName;
 
 ### API-a9a1aa9f16bd · ndnsf::di::NativeGenerationExecutionContractV1::stateInputNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L80)
 
 ```cpp
 std::vector<std::string> stateInputNames;
@@ -12853,15 +14890,63 @@ std::vector<std::string> stateInputNames;
 
 ### API-1fcd6a49a68b · ndnsf::di::NativeGenerationExecutionContractV1::stateOutputNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L81)
 
 ```cpp
 std::vector<std::string> stateOutputNames;
 ```
 
+### API-6d1067e0a2f5 · ndnsf::di::NativeGenerationExecutionContractV1::stateSuccessorMap
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L85)
+
+```cpp
+std::string stateSuccessorMap;
+```
+
+原始接口说明：
+
+```text
+// Authenticated dynamic-past successor mapping. The value uses the same
+// canonical comma-separated input=output form consumed by the ONNX runner.
+// Empty preserves the legacy *_in/*_out contract for existing fixtures.
+```
+
+### API-87a09d6e441b · ndnsf::di::NativeGenerationExecutionContractV1::positionInputPolicy
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L86)
+
+```cpp
+std::string positionInputPolicy;
+```
+
+### API-19f4646880ca · ndnsf::di::NativeGenerationExecutionContractV1::attentionMaskInputName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L87)
+
+```cpp
+std::string attentionMaskInputName;
+```
+
+### API-5e5ca556ce7b · ndnsf::di::NativeGenerationExecutionContractV1::positionIdsInputName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L88)
+
+```cpp
+std::string positionIdsInputName;
+```
+
+### API-bdcffcf50b54 · ndnsf::di::NativeGenerationExecutionContractV1::cachePositionInputName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L89)
+
+```cpp
+std::string cachePositionInputName;
+```
+
 ### API-3d2924fc7e86 · ndnsf::di::NativeGenerationExecutionContractV1::eosTokenIds
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L90)
 
 ```cpp
 std::vector<std::int64_t> eosTokenIds;
@@ -12869,7 +14954,7 @@ std::vector<std::int64_t> eosTokenIds;
 
 ### API-b045de2c4c99 · ndnsf::di::NativeGenerationExecutionContractV1::samplingDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L91)
 
 ```cpp
 std::string samplingDigest;
@@ -12877,7 +14962,7 @@ std::string samplingDigest;
 
 ### API-85de6a1d48c7 · ndnsf::di::NativeGenerationExecutionContractV1::tokenizerDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L92)
 
 ```cpp
 std::string tokenizerDigest;
@@ -12885,7 +14970,7 @@ std::string tokenizerDigest;
 
 ### API-4012f96b1815 · ndnsf::di::NativeGenerationExecutionContractV1::samplingMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L93)
 
 ```cpp
 std::string samplingMode = "Greedy";
@@ -12893,7 +14978,7 @@ std::string samplingMode = "Greedy";
 
 ### API-1aa240b8f67f · ndnsf::di::NativeGenerationExecutionContractV1::samplingTemperature
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L94)
 
 ```cpp
 double samplingTemperature = 0.0;
@@ -12901,7 +14986,7 @@ double samplingTemperature = 0.0;
 
 ### API-9dd49186f6ee · ndnsf::di::NativeGenerationExecutionContractV1::samplingTopK
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L81)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L95)
 
 ```cpp
 std::uint64_t samplingTopK = 1;
@@ -12909,7 +14994,7 @@ std::uint64_t samplingTopK = 1;
 
 ### API-e778c5b88098 · ndnsf::di::NativeGenerationExecutionContractV1::samplingTopP
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L96)
 
 ```cpp
 double samplingTopP = 1.0;
@@ -12917,7 +15002,7 @@ double samplingTopP = 1.0;
 
 ### API-8b5f9b36de41 · ndnsf::di::NativeGenerationExecutionContractV1::samplingRepetitionPenalty
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L97)
 
 ```cpp
 double samplingRepetitionPenalty = 1.0;
@@ -12925,7 +15010,7 @@ double samplingRepetitionPenalty = 1.0;
 
 ### API-386c0e601295 · ndnsf::di::NativeGenerationExecutionContractV1::samplingSeed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L98)
 
 ```cpp
 std::uint64_t samplingSeed = 1'750'001;
@@ -12933,7 +15018,7 @@ std::uint64_t samplingSeed = 1'750'001;
 
 ### API-6baa34259950 · ndnsf::di::NativeGenerationExecutionContractV1::stopStrings
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L99)
 
 ```cpp
 std::vector<std::string> stopStrings;
@@ -12941,7 +15026,7 @@ std::vector<std::string> stopStrings;
 
 ### API-58989cd06886 · ndnsf::di::NativeGenerationExecutionContractV1::generationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L86)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L100)
 
 ```cpp
 std::string generationId;
@@ -12949,7 +15034,7 @@ std::string generationId;
 
 ### API-052eab27a057 · ndnsf::di::NativeGenerationExecutionContractV1::committedPrefixTokenIds
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L87)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L101)
 
 ```cpp
 std::vector<std::int64_t> committedPrefixTokenIds;
@@ -12957,7 +15042,7 @@ std::vector<std::int64_t> committedPrefixTokenIds;
 
 ### API-5592ce2faa09 · ndnsf::di::NativeGenerationExecutionContractV1::streamingOperationStride
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L102)
 
 ```cpp
 std::uint64_t streamingOperationStride = 0;
@@ -12965,7 +15050,7 @@ std::uint64_t streamingOperationStride = 0;
 
 ### API-18e41b9353b2 · ndnsf::di::NativeSelectionProjectionV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L91)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L105)
 
 ```cpp
 struct NativeSelectionProjectionV3
@@ -12973,7 +15058,7 @@ struct NativeSelectionProjectionV3
 
 ### API-38cbe0bdf9c9 · ndnsf::di::NativeSelectionProjectionV3::provider
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L107)
 
 ```cpp
 std::string provider;
@@ -12981,7 +15066,7 @@ std::string provider;
 
 ### API-e6e17f587a6a · ndnsf::di::NativeSelectionProjectionV3::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L108)
 
 ```cpp
 std::string requestId;
@@ -12989,7 +15074,7 @@ std::string requestId;
 
 ### API-fb112039d3ed · ndnsf::di::NativeSelectionProjectionV3::canonicalArtifactName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L99)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L113)
 
 ```cpp
 std::string canonicalArtifactName;
@@ -13006,7 +15091,7 @@ std::string canonicalArtifactName;
 
 ### API-106569a9e442 · ndnsf::di::NativeSelectionProjectionV3::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L100)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L114)
 
 ```cpp
 std::uint64_t attempt = 0;
@@ -13014,7 +15099,7 @@ std::uint64_t attempt = 0;
 
 ### API-2dbec3616cf1 · ndnsf::di::NativeSelectionProjectionV3::planCoreDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L101)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L115)
 
 ```cpp
 std::string planCoreDigest;
@@ -13022,7 +15107,7 @@ std::string planCoreDigest;
 
 ### API-e18e6a87e709 · ndnsf::di::NativeSelectionProjectionV3::planDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L102)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L116)
 
 ```cpp
 std::string planDigest;
@@ -13030,7 +15115,7 @@ std::string planDigest;
 
 ### API-24987c39c155 · ndnsf::di::NativeSelectionProjectionV3::ackClosedDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L103)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L117)
 
 ```cpp
 std::string ackClosedDigest;
@@ -13038,7 +15123,7 @@ std::string ackClosedDigest;
 
 ### API-8182818b9daf · ndnsf::di::NativeSelectionProjectionV3::offerDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L104)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L118)
 
 ```cpp
 std::string offerDigest;
@@ -13046,7 +15131,7 @@ std::string offerDigest;
 
 ### API-c2c99bba572e · ndnsf::di::NativeSelectionProjectionV3::securityPolicySnapshotDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L119)
 
 ```cpp
 std::string securityPolicySnapshotDigest;
@@ -13054,7 +15139,7 @@ std::string securityPolicySnapshotDigest;
 
 ### API-f441b19d61ee · ndnsf::di::NativeSelectionProjectionV3::requestContractDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L106)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L120)
 
 ```cpp
 std::string requestContractDigest;
@@ -13062,7 +15147,7 @@ std::string requestContractDigest;
 
 ### API-f6401c2b628f · ndnsf::di::NativeSelectionProjectionV3::deadlineMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L121)
 
 ```cpp
 std::uint64_t deadlineMs = 0;
@@ -13070,7 +15155,7 @@ std::uint64_t deadlineMs = 0;
 
 ### API-943d496b85ae · ndnsf::di::NativeSelectionProjectionV3::groupCapabilityV1
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L108)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L122)
 
 ```cpp
 std::string groupCapabilityV1;
@@ -13078,7 +15163,7 @@ std::string groupCapabilityV1;
 
 ### API-5388763153c4 · ndnsf::di::NativeSelectionProjectionV3::hasGrantBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L123)
 
 ```cpp
 bool hasGrantBinding = false;
@@ -13086,7 +15171,7 @@ bool hasGrantBinding = false;
 
 ### API-7fe408cb813d · ndnsf::di::NativeSelectionProjectionV3::grantName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L110)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L124)
 
 ```cpp
 std::string grantName;
@@ -13094,7 +15179,7 @@ std::string grantName;
 
 ### API-7b7ab994c120 · ndnsf::di::NativeSelectionProjectionV3::grantDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L111)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L125)
 
 ```cpp
 std::string grantDigest;
@@ -13102,7 +15187,7 @@ std::string grantDigest;
 
 ### API-f39df7638f14 · ndnsf::di::NativeSelectionProjectionV3::selectedRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L112)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L126)
 
 ```cpp
 NativeSelectionRoleV3 selectedRole;
@@ -13110,7 +15195,7 @@ NativeSelectionRoleV3 selectedRole;
 
 ### API-80c63bdadc42 · ndnsf::di::NativeSelectionProjectionV3::executionRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L113)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L127)
 
 ```cpp
 NativeExecutionRoleV3 executionRole;
@@ -13118,7 +15203,7 @@ NativeExecutionRoleV3 executionRole;
 
 ### API-d0edb636f52c · ndnsf::di::NativeSelectionProjectionV3::assembly
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L114)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L128)
 
 ```cpp
 NativeSelectionRoleV3 assembly;
@@ -13126,7 +15211,7 @@ NativeSelectionRoleV3 assembly;
 
 ### API-50c3b856de77 · ndnsf::di::NativeSelectionProjectionV3::dataflow
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L115)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L129)
 
 ```cpp
 NativeRoleDataflowContractV3 dataflow;
@@ -13134,7 +15219,7 @@ NativeRoleDataflowContractV3 dataflow;
 
 ### API-82fa2e6733f1 · ndnsf::di::NativeSelectionProjectionV3::deviceBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L116)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L130)
 
 ```cpp
 NativeDeviceBindingV3 deviceBinding;
@@ -13142,7 +15227,7 @@ NativeDeviceBindingV3 deviceBinding;
 
 ### API-7e109579ea98 · ndnsf::di::NativeSelectionProjectionV3::generationContract
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L117)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L131)
 
 ```cpp
 NativeGenerationExecutionContractV1 generationContract;
@@ -13150,7 +15235,7 @@ NativeGenerationExecutionContractV1 generationContract;
 
 ### API-5a1fa7785fed · ndnsf::di::NativeSelectionProjectionV3::conversationStateReference
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L132)
 
 ```cpp
 std::optional<ConversationStateReferenceV1> conversationStateReference;
@@ -13158,7 +15243,7 @@ std::optional<ConversationStateReferenceV1> conversationStateReference;
 
 ### API-862ce8e10ade · ndnsf::di::NativeSelectionProjectionV3::conversationTurnBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L133)
 
 ```cpp
 std::optional<ConversationTurnBindingV1> conversationTurnBinding;
@@ -13166,15 +15251,30 @@ std::optional<ConversationTurnBindingV1> conversationTurnBinding;
 
 ### API-e04906a7ec0c · ndnsf::di::NativeSelectionProjectionV3::plan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L120)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L134)
 
 ```cpp
 NativeExecutionPlan plan;
 ```
 
+### API-719e99097f7a · ndnsf::di::NativeSelectionProjectionV3::assemblyProgressSequence
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L138)
+
+```cpp
+std::shared_ptr<std::atomic<std::uint64_t>> assemblyProgressSequence;
+```
+
+原始接口说明：
+
+```text
+// Runtime-only state. Excluded from canonical JSON; all runner rebuilds for
+// this authenticated Selection share the same operation sequence.
+```
+
 ### API-b85edd87d70f · ndnsf::di::stringArrayFromJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L141)
 
 ```cpp
 std::vector<std::string>
@@ -13183,7 +15283,7 @@ stringArrayFromJson(const boost::property_tree::ptree& node, const std::string& 
 
 ### API-ea82f2d4c50f · ndnsf::di::nativeSelectionProjectionV3ToJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L129)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L147)
 
 ```cpp
 std::string nativeSelectionProjectionV3ToJson(const NativeSelectionProjectionV3& projection);
@@ -13199,7 +15299,7 @@ std::string nativeSelectionProjectionV3ToJson(const NativeSelectionProjectionV3&
 
 ### API-018ca5d16d82 · ndnsf::di::nativeExecutionPlansByServiceFromJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L131)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L149)
 
 ```cpp
 std::map<std::string, NativeExecutionPlan>
@@ -13208,7 +15308,7 @@ nativeExecutionPlansByServiceFromJson(std::istream& input);
 
 ### API-886791594edd · ndnsf::di::nativeExecutionPlanForServiceFromJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L134)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L152)
 
 ```cpp
 NativeExecutionPlan
@@ -13217,7 +15317,7 @@ nativeExecutionPlanForServiceFromJson(std::istream& input, const std::string& se
 
 ### API-1284233893a1 · ndnsf::di::nativeSelectionProjectionV3FromJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L137)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L155)
 
 ```cpp
 NativeSelectionProjectionV3
@@ -13227,7 +15327,7 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
 
 ### API-635fba0ca5fc · ndnsf::di::validateNativeSelectionProjectionSetV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L145)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L163)
 
 ```cpp
 void
@@ -13246,7 +15346,7 @@ validateNativeSelectionProjectionSetV3(
 
 ### API-6c83010e5497 · ndnsf::di::roleSpecFromSelectionProjectionV3
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L154)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L172)
 
 ```cpp
 RoleSpec
@@ -13263,6 +15363,24 @@ roleSpecFromSelectionProjectionV3(
  * into executable dependency edges. The legacy plan.dependencies graph is not
  * authoritative for a V3 Selection.
  */
+```
+
+### API-8bf1f0bd971d · ndnsf::di::roleSpecFromSelectionProjectionV3
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp#L178)
+
+```cpp
+RoleSpec
+roleSpecFromSelectionProjectionV3(
+  const NativeSelectionProjectionV3& projection,
+  const std::string& localProvider,
+  std::uint64_t sequence);
+```
+
+原始接口说明：
+
+```text
+/** Select one bounded generation epoch from the exact sealed endpoint set. */
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp
@@ -13381,6 +15499,49 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 void checkpoint(NativeFaultPoint point,
                   const std::string& role,
                   const std::string& sessionId);
+```
+
+## NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp
+
+源码 SHA-256：`51ce8f4792f8f1c09ba8fd32c6250b3351f3ea318b466ab542aac8f68368a6af`。
+
+### API-7e6a1f7b38b7 · ndnsf::di::MAX_NATIVE_GENERATED_TOKENS = 1025
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp#L8)
+
+```cpp
+inline constexpr std::size_t MAX_NATIVE_GENERATED_TOKENS = 1025;
+```
+
+原始接口说明：
+
+```text
+// Native generation budget; does not relax capability or Selection wire limits.
+```
+
+### API-969b54f01c7b · ndnsf::di::NATIVE_STREAM_TERMINAL_EVENT_COUNT = 1
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp#L13)
+
+```cpp
+inline constexpr std::size_t NATIVE_STREAM_TERMINAL_EVENT_COUNT = 1;
+```
+
+原始接口说明：
+
+```text
+// A streamed generation publishes one application event per token and one
+// terminal event. Keep this derived from the generation contract instead of
+// relying on StreamRequestOptions' generic default of 512 events.
+```
+
+### API-f7f09dfcb3e3 · ndnsf::di::nativeStreamEventBudgetForGeneration
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp#L15)
+
+```cpp
+constexpr std::size_t
+nativeStreamEventBudgetForGeneration(std::size_t maxGeneratedTokens) noexcept
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp
@@ -13603,7 +15764,7 @@ NativeGrantBinding acquire(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp
 
-源码 SHA-256：`aebfb75dfdfe1606be529190f4cb3007b72595a7629cd5f34eccc9ba05b5d8cf`。
+源码 SHA-256：`c2c6c7a449f53292dce6b696512a785895d0ec71e6dbdd49c237bfa8c13bd2f1`。
 
 ### API-9ef12cf5bbca · ndnsf::di::NativeRecipientKey
 
@@ -13689,9 +15850,23 @@ std::string reason;
 /** Empty on success; otherwise the registered rejection reason. */
 ```
 
+### API-352ac647408b · ndnsf::di::NativeGrantVerificationResult::keyId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L37)
+
+```cpp
+std::string keyId;
+```
+
+原始接口说明：
+
+```text
+/** Non-secret authority key identity carried by the verified grant. */
+```
+
 ### API-a305b9db4643 · ndnsf::di::NativeGrantVerificationResult::contentKey
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L38)
 
 ```cpp
 std::vector<std::uint8_t> contentKey;
@@ -13699,7 +15874,7 @@ std::vector<std::uint8_t> contentKey;
 
 ### API-a852cb6b33e0 · ndnsf::di::NativeGrantVerificationResult::expiresAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L39)
 
 ```cpp
 std::uint64_t expiresAtMs = 0;
@@ -13707,7 +15882,7 @@ std::uint64_t expiresAtMs = 0;
 
 ### API-0b70b5e2eba7 · ndnsf::di::NativeGrantVerificationResult::allowedResidencyTiers
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L40)
 
 ```cpp
 std::vector<std::string> allowedResidencyTiers;
@@ -13715,7 +15890,7 @@ std::vector<std::string> allowedResidencyTiers;
 
 ### API-a812c6a9b43a · ndnsf::di::canonicalNativeGrantName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L43)
 
 ```cpp
 std::string canonicalNativeGrantName(
@@ -13727,7 +15902,7 @@ std::string canonicalNativeGrantName(
 
 ### API-070f116bfa58 · ndnsf::di::verifyAndUnwrapNativeGrant
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp#L59)
 
 ```cpp
 NativeGrantVerificationResult
@@ -13831,7 +16006,7 @@ static std::map<std::string, NativeRoleProjectionInputs> build(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp
 
-源码 SHA-256：`6cb3602d035f0e52750017a3e1ffccbf50714c5842d450d883f1e8650ea99246`。
+源码 SHA-256：`3d2fd0254c1754455c23c689263fc8158bc1cb716111e97d50ddaf2f5c81d02a`。
 
 ### API-d2e9b0cd1af8 · ndn_service_framework::ServiceUser
 
@@ -15016,7 +17191,7 @@ void stop() noexcept;
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp
 
-源码 SHA-256：`d2126f2d4ff062ff6624c8c663bdfbdd629ce082a633faed9d081d662e634c55`。
+源码 SHA-256：`f6da78e8049509d3ed68d108c3ef0eed047a185a8c375932aaa749ebe614c00a`。
 
 ### API-4c2784e26e63 · ndnsf::di::NativeModelRunnerSpec
 
@@ -15066,9 +17241,25 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::map<std::string, std::string> metadata;
 ```
 
+### API-604712966619 · ndnsf::di::NativeModelRunnerSpec::lifetime
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L28)
+
+```cpp
+std::shared_ptr<const void> lifetime;
+```
+
+原始接口说明：
+
+```text
+// Optional owner kept by a runner while it opens/uses request-backed
+// material.  Cache publication clears this field from the immutable
+// metadata template so an entry cannot pin its own lease indefinitely.
+```
+
 ### API-1327c538108d · ndnsf::di::NativeRuntimeMetrics
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L34)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L38)
 
 ```cpp
 struct NativeRuntimeMetrics
@@ -15076,7 +17267,7 @@ struct NativeRuntimeMetrics
 
 ### API-f944421288a0 · ndnsf::di::NativeRuntimeMetrics::stateDeviceToHostBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L40)
 
 ```cpp
 std::uint64_t stateDeviceToHostBytes = 0;
@@ -15084,7 +17275,7 @@ std::uint64_t stateDeviceToHostBytes = 0;
 
 ### API-4076342082e4 · ndnsf::di::NativeRuntimeMetrics::stateHostToDeviceBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L41)
 
 ```cpp
 std::uint64_t stateHostToDeviceBytes = 0;
@@ -15092,7 +17283,7 @@ std::uint64_t stateHostToDeviceBytes = 0;
 
 ### API-be812c352ed5 · ndnsf::di::NativeRuntimeMetrics::activationInputBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L42)
 
 ```cpp
 std::uint64_t activationInputBytes = 0;
@@ -15100,7 +17291,7 @@ std::uint64_t activationInputBytes = 0;
 
 ### API-0f977c32c8dd · ndnsf::di::NativeRuntimeMetrics::activationOutputBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L43)
 
 ```cpp
 std::uint64_t activationOutputBytes = 0;
@@ -15108,7 +17299,7 @@ std::uint64_t activationOutputBytes = 0;
 
 ### API-1485232207f6 · ndnsf::di::NativeRuntimeMetrics::activationHostToDeviceBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L44)
 
 ```cpp
 std::uint64_t activationHostToDeviceBytes = 0;
@@ -15116,7 +17307,7 @@ std::uint64_t activationHostToDeviceBytes = 0;
 
 ### API-1b5a4a6d100c · ndnsf::di::NativeRuntimeMetrics::activationDeviceToHostBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L41)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L45)
 
 ```cpp
 std::uint64_t activationDeviceToHostBytes = 0;
@@ -15124,7 +17315,7 @@ std::uint64_t activationDeviceToHostBytes = 0;
 
 ### API-f8ed6f568b29 · ndnsf::di::NativeRuntimeMetrics::controlBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L42)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L46)
 
 ```cpp
 std::uint64_t controlBytes = 0;
@@ -15132,7 +17323,7 @@ std::uint64_t controlBytes = 0;
 
 ### API-18cd2d97d00e · ndnsf::di::NativeRuntimeMetrics::stateInputHits
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L43)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L47)
 
 ```cpp
 std::uint64_t stateInputHits = 0;
@@ -15140,7 +17331,7 @@ std::uint64_t stateInputHits = 0;
 
 ### API-bd623525181a · ndnsf::di::NativeRuntimeMetrics::stateInputMisses
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L48)
 
 ```cpp
 std::uint64_t stateInputMisses = 0;
@@ -15148,7 +17339,7 @@ std::uint64_t stateInputMisses = 0;
 
 ### API-dd707d25d7ac · ndnsf::di::NativeRuntimeMetrics::stateRecomputes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L45)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L49)
 
 ```cpp
 std::uint64_t stateRecomputes = 0;
@@ -15156,7 +17347,7 @@ std::uint64_t stateRecomputes = 0;
 
 ### API-4dfb36fcce50 · ndnsf::di::NativeRuntimeMetrics::stateReleases
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L46)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L50)
 
 ```cpp
 std::uint64_t stateReleases = 0;
@@ -15164,7 +17355,7 @@ std::uint64_t stateReleases = 0;
 
 ### API-7d4c5fd47995 · ndnsf::di::NativeOpaqueStateHandleV1
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L59)
 
 ```cpp
 struct NativeOpaqueStateHandleV1
@@ -15172,7 +17363,7 @@ struct NativeOpaqueStateHandleV1
 
 ### API-f7ec0b6cb86b · ndnsf::di::NativeOpaqueStateHandleV1::providerIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L61)
 
 ```cpp
 std::string providerIdentity;
@@ -15180,7 +17371,7 @@ std::string providerIdentity;
 
 ### API-0507ddb6a14d · ndnsf::di::NativeOpaqueStateHandleV1::providerBootId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L62)
 
 ```cpp
 std::string providerBootId;
@@ -15188,7 +17379,7 @@ std::string providerBootId;
 
 ### API-52eaaf165885 · ndnsf::di::NativeOpaqueStateHandleV1::sessionId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L63)
 
 ```cpp
 std::string sessionId;
@@ -15196,7 +17387,7 @@ std::string sessionId;
 
 ### API-b2475d64252e · ndnsf::di::NativeOpaqueStateHandleV1::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L64)
 
 ```cpp
 std::string role;
@@ -15204,7 +17395,7 @@ std::string role;
 
 ### API-c2322915df57 · ndnsf::di::NativeOpaqueStateHandleV1::token
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L61)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L65)
 
 ```cpp
 std::string token;
@@ -15212,7 +17403,7 @@ std::string token;
 
 ### API-f9a139f2f155 · ndnsf::di::NativeOpaqueStateHandleV1::stateInferenceEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L66)
 
 ```cpp
 std::uint64_t stateInferenceEpoch = 0;
@@ -15220,7 +17411,7 @@ std::uint64_t stateInferenceEpoch = 0;
 
 ### API-0967853f4727 · ndnsf::di::NativeOpaqueStateHandleV1::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L64)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L68)
 
 ```cpp
 void
@@ -15229,7 +17420,7 @@ void
 
 ### API-c781429949d5 · ndnsf::di::NativeConversationStateHandleV1
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L77)
 
 ```cpp
 struct NativeConversationStateHandleV1
@@ -15237,7 +17428,7 @@ struct NativeConversationStateHandleV1
 
 ### API-4f0d5a80a6f2 · ndnsf::di::NativeConversationStateHandleV1::opaque
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L79)
 
 ```cpp
 NativeOpaqueStateHandleV1 opaque;
@@ -15245,7 +17436,7 @@ NativeOpaqueStateHandleV1 opaque;
 
 ### API-dd1921b29a0e · ndnsf::di::NativeConversationStateHandleV1::conversationKey
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L80)
 
 ```cpp
 std::string conversationKey;
@@ -15253,7 +17444,7 @@ std::string conversationKey;
 
 ### API-fa576e8b7535 · ndnsf::di::NativeConversationStateHandleV1::logicalBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L81)
 
 ```cpp
 std::size_t logicalBytes = 0;
@@ -15261,7 +17452,7 @@ std::size_t logicalBytes = 0;
 
 ### API-374921fde2e0 · ndnsf::di::NativeConversationStateHandleV1::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L83)
 
 ```cpp
 void
@@ -15270,7 +17461,7 @@ void
 
 ### API-69121bfe40a6 · ndnsf::di::NativeModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L87)
 
 ```cpp
 class NativeModelRunner
@@ -15278,7 +17469,7 @@ class NativeModelRunner
 
 ### API-fdd44017e561 · ndnsf::di::NativeModelRunner::NativeModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L86)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L90)
 
 ```cpp
 NativeModelRunner();
@@ -15286,7 +17477,7 @@ NativeModelRunner();
 
 ### API-a4b136dffd90 · ndnsf::di::NativeModelRunner::~NativeModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L87)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L91)
 
 ```cpp
 virtual ~NativeModelRunner() noexcept;
@@ -15294,7 +17485,7 @@ virtual ~NativeModelRunner() noexcept;
 
 ### API-31ea9c220dd0 · ndnsf::di::NativeModelRunner::cacheIdentity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L98)
 
 ```cpp
 std::uint64_t
@@ -15313,7 +17504,7 @@ std::uint64_t
 
 ### API-463a0077f0d0 · ndnsf::di::NativeModelRunner::run
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L101)
 
 ```cpp
 virtual std::map<std::string, TensorBundle>
@@ -15322,7 +17513,7 @@ virtual std::map<std::string, TensorBundle>
 
 ### API-5dc0e1b54a31 · ndnsf::di::NativeModelRunner::runStreamed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L111)
 
 ```cpp
 virtual std::optional<std::map<std::string, TensorBundle>>
@@ -15343,7 +17534,7 @@ virtual std::optional<std::map<std::string, TensorBundle>>
 
 ### API-2cfb2b84d001 · ndnsf::di::NativeModelRunner::executionEvidence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L110)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L114)
 
 ```cpp
 virtual const std::optional<ExecutionEvidence>&
@@ -15352,7 +17543,7 @@ virtual const std::optional<ExecutionEvidence>&
 
 ### API-4b2196104500 · ndnsf::di::NativeModelRunner::executionEvidenceSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L113)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L117)
 
 ```cpp
 virtual std::optional<ExecutionEvidence>
@@ -15361,7 +17552,7 @@ virtual std::optional<ExecutionEvidence>
 
 ### API-f01b3f590527 · ndnsf::di::NativeModelRunner::runtimeMetricsSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L117)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L121)
 
 ```cpp
 virtual std::optional<NativeRuntimeMetrics>
@@ -15376,7 +17567,7 @@ virtual std::optional<NativeRuntimeMetrics>
 
 ### API-c976bf26ae49 · ndnsf::di::NativeModelRunner::supportsOpaqueStateHandles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L125)
 
 ```cpp
 virtual bool
@@ -15391,7 +17582,7 @@ virtual bool
 
 ### API-e88c46f6eec6 · ndnsf::di::NativeModelRunner::stateHandleSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L125)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L129)
 
 ```cpp
 virtual std::optional<NativeOpaqueStateHandleV1>
@@ -15406,7 +17597,7 @@ virtual std::optional<NativeOpaqueStateHandleV1>
 
 ### API-1169991f2f8f · ndnsf::di::NativeModelRunner::releaseSessionState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L129)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L133)
 
 ```cpp
 virtual void
@@ -15421,7 +17612,7 @@ virtual void
 
 ### API-7ebc69d744e3 · ndnsf::di::NativeModelRunner::supportsConversationStateTransfer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L133)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L137)
 
 ```cpp
 virtual bool
@@ -15436,7 +17627,7 @@ virtual bool
 
 ### API-f21738b27c8e · ndnsf::di::NativeModelRunner::promoteSessionStateToConversation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L137)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L141)
 
 ```cpp
 virtual std::optional<NativeConversationStateHandleV1>
@@ -15452,7 +17643,7 @@ virtual std::optional<NativeConversationStateHandleV1>
 
 ### API-626e73b085d2 · ndnsf::di::NativeModelRunner::restoreConversationState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L146)
 
 ```cpp
 virtual bool
@@ -15468,7 +17659,7 @@ virtual bool
 
 ### API-d1eaa1795fa0 · ndnsf::di::NativeModelRunner::pauseConversationStateToHost
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L147)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L151)
 
 ```cpp
 virtual bool
@@ -15483,7 +17674,7 @@ virtual bool
 
 ### API-e50a96663cc0 · ndnsf::di::NativeModelRunner::prefetchConversationStateToGpu
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L151)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L155)
 
 ```cpp
 virtual std::future<bool>
@@ -15498,7 +17689,7 @@ virtual std::future<bool>
 
 ### API-37803d0cfae6 · ndnsf::di::NativeModelRunner::cancelConversationStatePrefetch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L155)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L159)
 
 ```cpp
 virtual bool
@@ -15513,7 +17704,7 @@ virtual bool
 
 ### API-d33216dfdc48 · ndnsf::di::NativeModelRunner::releaseConversationState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L159)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L163)
 
 ```cpp
 virtual bool
@@ -15528,7 +17719,7 @@ virtual bool
 
 ### API-ddcb528e3187 · ndnsf::di::LambdaModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L167)
 
 ```cpp
 class LambdaModelRunner final : public NativeModelRunner
@@ -15536,7 +17727,7 @@ class LambdaModelRunner final : public NativeModelRunner
 
 ### API-787b90d199ca · ndnsf::di::LambdaModelRunner::LambdaModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L166)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L170)
 
 ```cpp
 explicit LambdaModelRunner(RoleRunner runner,
@@ -15545,7 +17736,7 @@ explicit LambdaModelRunner(RoleRunner runner,
 
 ### API-208a1a346f84 · ndnsf::di::LambdaModelRunner::run
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L169)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L173)
 
 ```cpp
 std::map<std::string, TensorBundle>
@@ -15554,7 +17745,7 @@ std::map<std::string, TensorBundle>
 
 ### API-f5f8fddcdb1c · ndnsf::di::LambdaModelRunner::executionEvidence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L172)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L176)
 
 ```cpp
 const std::optional<ExecutionEvidence>&
@@ -15563,7 +17754,7 @@ const std::optional<ExecutionEvidence>&
 
 ### API-c0ec3920f9ca · ndnsf::di::makeNativeModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L180)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L184)
 
 ```cpp
 std::shared_ptr<NativeModelRunner>
@@ -15572,7 +17763,7 @@ makeNativeModelRunner(RoleRunner runner);
 
 ### API-c6dbf295aea1 · ndnsf::di::makeNativeModelRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L183)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L187)
 
 ```cpp
 std::shared_ptr<NativeModelRunner>
@@ -15581,7 +17772,7 @@ makeNativeModelRunner(RoleRunner runner, ExecutionEvidence evidence);
 
 ### API-6246317594e1 · ndnsf::di::NativeModelRunnerFactory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L186)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L190)
 
 ```cpp
 class NativeModelRunnerFactory
@@ -15589,7 +17780,7 @@ class NativeModelRunnerFactory
 
 ### API-6da83f733ec5 · ndnsf::di::NativeModelRunnerFactory::~NativeModelRunnerFactory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L189)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L193)
 
 ```cpp
 virtual ~NativeModelRunnerFactory() = default;
@@ -15597,7 +17788,7 @@ virtual ~NativeModelRunnerFactory() = default;
 
 ### API-e082d295338d · ndnsf::di::NativeModelRunnerFactory::create
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L191)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L195)
 
 ```cpp
 virtual std::shared_ptr<NativeModelRunner>
@@ -15606,7 +17797,7 @@ virtual std::shared_ptr<NativeModelRunner>
 
 ### API-9e2f9bf37ee9 · ndnsf::di::RegistryNativeModelRunnerFactory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L195)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L199)
 
 ```cpp
 class RegistryNativeModelRunnerFactory final : public NativeModelRunnerFactory
@@ -15614,7 +17805,7 @@ class RegistryNativeModelRunnerFactory final : public NativeModelRunnerFactory
 
 ### API-126b2470d66b · ndnsf::di::RegistryNativeModelRunnerFactory::Creator
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L198)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L202)
 
 ```cpp
 using Creator = std::function<std::shared_ptr<NativeModelRunner>(
@@ -15623,7 +17814,7 @@ using Creator = std::function<std::shared_ptr<NativeModelRunner>(
 
 ### API-2ddf10c25f54 · ndnsf::di::RegistryNativeModelRunnerFactory::registerBackend
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L201)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L205)
 
 ```cpp
 void
@@ -15632,7 +17823,7 @@ void
 
 ### API-0da8edf97114 · ndnsf::di::RegistryNativeModelRunnerFactory::replaceBackend
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L204)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L208)
 
 ```cpp
 void
@@ -15641,7 +17832,7 @@ void
 
 ### API-1cb37f47b82d · ndnsf::di::RegistryNativeModelRunnerFactory::freeze
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L207)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L211)
 
 ```cpp
 void
@@ -15650,7 +17841,7 @@ void
 
 ### API-43961aa3489d · ndnsf::di::RegistryNativeModelRunnerFactory::frozen
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L210)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L214)
 
 ```cpp
 bool
@@ -15659,7 +17850,7 @@ bool
 
 ### API-176e6ac7f15c · ndnsf::di::RegistryNativeModelRunnerFactory::hasBackend
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L213)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L217)
 
 ```cpp
 bool
@@ -15668,7 +17859,7 @@ bool
 
 ### API-22cc410558bc · ndnsf::di::RegistryNativeModelRunnerFactory::create
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L216)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp#L220)
 
 ```cpp
 std::shared_ptr<NativeModelRunner>
@@ -16193,7 +18384,7 @@ NativeObservedProviderOfferV3 decodeNativeProviderOfferV3(const std::string& wir
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp
 
-源码 SHA-256：`0d8b5af463c5c38b15a307467fecd1a68c18c34fe9279f94a2522e94d315ea9a`。
+源码 SHA-256：`26281559dcbb8728826fbdce918e4f0f63edb80036ce375fd329bc2fa04df3ec`。
 
 ### API-cb0d41b849ed · ndn_service_framework::AckSelectionCandidate
 
@@ -16243,9 +18434,24 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::uint64_t deadlineMs = 0;
 ```
 
-### API-9c4070370160 · ndnsf::di::NativeAdmittedOfferV3
+### API-14a835ebed41 · ndnsf::di::NativeOfferBindingContext::preferredProvidersByRole
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L17)
+
+```cpp
+std::map<std::string, std::string> preferredProvidersByRole;
+```
+
+原始接口说明：
+
+```text
+// Local, authenticated conversation placement preference, never admission
+// authority or evidence that the Provider still retains usable KV state.
+```
+
+### API-9c4070370160 · ndnsf::di::NativeAdmittedOfferV3
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L20)
 
 ```cpp
 class NativeAdmittedOfferV3
@@ -16253,7 +18459,7 @@ class NativeAdmittedOfferV3
 
 ### API-cfea3b1d29f3 · ndnsf::di::NativeAdmittedOfferV3::observation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L22)
 
 ```cpp
 const NativeObservedProviderOfferV3& observation() const noexcept
@@ -16261,7 +18467,7 @@ const NativeObservedProviderOfferV3& observation() const noexcept
 
 ### API-c637feb0751f · ndnsf::di::NativeOfferAdmission
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L29)
 
 ```cpp
 class NativeOfferAdmission
@@ -16269,7 +18475,7 @@ class NativeOfferAdmission
 
 ### API-27702430c3a5 · ndnsf::di::NativeOfferAdmission::NativeOfferAdmission
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L31)
 
 ```cpp
 NativeOfferAdmission(const std::string& policyJson,
@@ -16279,7 +18485,7 @@ NativeOfferAdmission(const std::string& policyJson,
 
 ### API-07243d4d86b4 · ndnsf::di::NativeOfferAdmission::verify
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp#L34)
 
 ```cpp
 NativeAdmittedOfferV3 verify(const ndn_service_framework::AckSelectionCandidate& ack,
@@ -17055,7 +19261,7 @@ static std::vector<std::uint8_t> encode(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp
 
-源码 SHA-256：`698972b1a7d4c182a06c1d0e804a79a40e2eed4e504ebe134907988aeb7d2121`。
+源码 SHA-256：`23e231e07c70334fa983c13254ef2f9a211a89dedd53f208a42505ede1bd1ca5`。
 
 ### API-bd73fe2928e4 · ndnsf::di::NativeAdmittedOfferV3
 
@@ -17463,9 +19669,113 @@ std::string descriptorDigest() const;
 /** SHA-256 of canonicalJson(), including every declared capability/schema. */
 ```
 
+### API-dfa2bbceabe9 · ndnsf::di::NativeModelArtifactReference
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L91)
+
+```cpp
+struct NativeModelArtifactReference
+```
+
+### API-6c267d735d46 · ndnsf::di::NativeModelArtifactReference::repoNamespace
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L93)
+
+```cpp
+std::string repoNamespace;
+```
+
+### API-2af1b69a2d7e · ndnsf::di::NativeModelArtifactReference::objectName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L94)
+
+```cpp
+std::string objectName;
+```
+
+### API-161d53cdfb91 · ndnsf::di::NativeModelArtifactReference::manifestDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L95)
+
+```cpp
+std::string manifestDigest;
+```
+
+### API-abd2916a2e6c · ndnsf::di::NativeModelArtifactReference::objectDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L96)
+
+```cpp
+std::string objectDigest;
+```
+
+### API-5b000db7a87c · ndnsf::di::NativeModelArtifactReference::objectBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L97)
+
+```cpp
+std::uint64_t objectBytes = 0;
+```
+
+### API-7b08200754e7 · ndnsf::di::NativeModelArtifactReference::graphDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L98)
+
+```cpp
+std::string graphDigest;
+```
+
+### API-ad5218577621 · ndnsf::di::NativeModelArtifactReference::protectionEpoch
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L99)
+
+```cpp
+std::string protectionEpoch;
+```
+
+### API-aa682ef7955d · ndnsf::di::NativeModelArtifactReference::authorizationScope
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L100)
+
+```cpp
+std::string authorizationScope;
+```
+
+### API-b3a37f5b694f · ndnsf::di::NativeModelArtifactReference::recipeDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L101)
+
+```cpp
+std::string recipeDigest;
+```
+
+### API-8c8cace213ed · ndnsf::di::NativeModelArtifactReference::schemaVersion
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L102)
+
+```cpp
+std::uint32_t schemaVersion = 1;
+```
+
+### API-fa23a244c4e0 · ndnsf::di::NativeModelArtifactReference::validate
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L104)
+
+```cpp
+void validate() const;
+```
+
+### API-0bb597dd8df3 · ndnsf::di::NativeModelArtifactReference::canonicalJson
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L105)
+
+```cpp
+std::string canonicalJson() const;
+```
+
 ### API-778906aa65e6 · ndnsf::di::NativeModelDescriptor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L108)
 
 ```cpp
 struct NativeModelDescriptor
@@ -17473,7 +19783,7 @@ struct NativeModelDescriptor
 
 ### API-605732a3c999 · ndnsf::di::NativeModelDescriptor::modelName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L110)
 
 ```cpp
 std::string modelName;
@@ -17481,7 +19791,7 @@ std::string modelName;
 
 ### API-96ad4bb8e5be · ndnsf::di::NativeModelDescriptor::contentDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L91)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L111)
 
 ```cpp
 std::string contentDigest;
@@ -17489,7 +19799,7 @@ std::string contentDigest;
 
 ### API-a41ec35bf7c8 · ndnsf::di::NativeModelDescriptor::semanticsDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L112)
 
 ```cpp
 std::string semanticsDigest;
@@ -17497,7 +19807,7 @@ std::string semanticsDigest;
 
 ### API-043a8bb9d9f9 · ndnsf::di::NativeModelDescriptor::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L113)
 
 ```cpp
 std::string graphDigest;
@@ -17505,7 +19815,7 @@ std::string graphDigest;
 
 ### API-a19110fdb0b2 · ndnsf::di::NativeModelDescriptor::modelFormat
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L114)
 
 ```cpp
 std::string modelFormat;
@@ -17513,7 +19823,7 @@ std::string modelFormat;
 
 ### API-edc87d2c6cfd · ndnsf::di::NativeModelDescriptor::precision
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L115)
 
 ```cpp
 std::string precision;
@@ -17521,7 +19831,7 @@ std::string precision;
 
 ### API-a052a77c06da · ndnsf::di::NativeModelDescriptor::adapterId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L116)
 
 ```cpp
 std::string adapterId;
@@ -17529,7 +19839,7 @@ std::string adapterId;
 
 ### API-f79a1c4d7a02 · ndnsf::di::NativeModelDescriptor::adapterVersion
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L117)
 
 ```cpp
 std::string adapterVersion;
@@ -17537,7 +19847,7 @@ std::string adapterVersion;
 
 ### API-7a4a4f90a2da · ndnsf::di::NativeModelDescriptor::adapter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L99)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L119)
 
 ```cpp
 NativeAdapterDescriptor adapter;
@@ -17551,7 +19861,7 @@ NativeAdapterDescriptor adapter;
 
 ### API-bbbd6fbca81b · ndnsf::di::NativeModelDescriptor::sourceRevision
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L101)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L121)
 
 ```cpp
 std::string sourceRevision;
@@ -17563,9 +19873,37 @@ std::string sourceRevision;
 /** Optional source revision retained when a request is copied into a base descriptor. */
 ```
 
+### API-17191d18db7c · ndnsf::di::NativeModelDescriptor::artifactReference
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L123)
+
+```cpp
+std::optional<NativeModelArtifactReference> artifactReference;
+```
+
+原始接口说明：
+
+```text
+/** Prepared model source identity; absent for legacy direct native callers. */
+```
+
+### API-8d287d3e3a8c · ndnsf::di::NativeModelDescriptor::quantizationSubtype
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L125)
+
+```cpp
+std::string quantizationSubtype = "none";
+```
+
+原始接口说明：
+
+```text
+/** Stored/operator representation; "none" is the legacy public default. */
+```
+
 ### API-51616acc6619 · ndnsf::di::NativeModelDescriptor::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L103)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L127)
 
 ```cpp
 void validate() const;
@@ -17573,7 +19911,7 @@ void validate() const;
 
 ### API-b17e261bb798 · ndnsf::di::NativeModelDescriptor::canonicalJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L129)
 
 ```cpp
 std::string canonicalJson() const;
@@ -17587,7 +19925,7 @@ std::string canonicalJson() const;
 
 ### API-36a06c9fd450 · ndnsf::di::NativeModelDescriptor::modelDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L131)
 
 ```cpp
 std::string modelDigest() const;
@@ -17601,7 +19939,7 @@ std::string modelDigest() const;
 
 ### API-e3e236a76777 · ndnsf::di::NativeModelDescriptor::intentDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L133)
 
 ```cpp
 std::string intentDigest() const;
@@ -17615,7 +19953,7 @@ std::string intentDigest() const;
 
 ### API-844db9f558e1 · ndnsf::di::NativeModelDescriptor::fromCanonicalJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L111)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L135)
 
 ```cpp
 static NativeModelDescriptor fromCanonicalJson(const std::string& json);
@@ -17629,7 +19967,7 @@ static NativeModelDescriptor fromCanonicalJson(const std::string& json);
 
 ### API-66c305c7ac04 · ndnsf::di::NativeGraphNode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L114)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L138)
 
 ```cpp
 struct NativeGraphNode
@@ -17637,7 +19975,7 @@ struct NativeGraphNode
 
 ### API-4bc73bdc9ad7 · ndnsf::di::NativeGraphNode::id
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L116)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L140)
 
 ```cpp
 std::string id;
@@ -17645,7 +19983,7 @@ std::string id;
 
 ### API-b9424dfcb078 · ndnsf::di::NativeGraphNode::opType
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L117)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L141)
 
 ```cpp
 std::string opType;
@@ -17653,7 +19991,7 @@ std::string opType;
 
 ### API-31e286a62509 · ndnsf::di::NativeGraphNode::ordinal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L142)
 
 ```cpp
 std::uint64_t ordinal = 0;
@@ -17661,7 +19999,7 @@ std::uint64_t ordinal = 0;
 
 ### API-fcb57ab98cd5 · ndnsf::di::NativeTensorContract
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L145)
 
 ```cpp
 struct NativeTensorContract
@@ -17669,7 +20007,7 @@ struct NativeTensorContract
 
 ### API-b68d4d0755e2 · ndnsf::di::NativeTensorContract::name
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L147)
 
 ```cpp
 std::string name;
@@ -17677,7 +20015,7 @@ std::string name;
 
 ### API-a10ab62bcdb3 · ndnsf::di::NativeTensorContract::dtype
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L124)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L148)
 
 ```cpp
 std::string dtype;
@@ -17685,7 +20023,7 @@ std::string dtype;
 
 ### API-aa09c31d3e0a · ndnsf::di::NativeTensorContract::shape
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L125)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L149)
 
 ```cpp
 std::vector<std::variant<std::int64_t, std::string>> shape;
@@ -17693,7 +20031,7 @@ std::vector<std::variant<std::int64_t, std::string>> shape;
 
 ### API-704a800ddd3a · ndnsf::di::NativeTensorContract::estimatedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L126)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L150)
 
 ```cpp
 std::optional<std::uint64_t> estimatedBytes;
@@ -17701,7 +20039,7 @@ std::optional<std::uint64_t> estimatedBytes;
 
 ### API-5b2c45546bea · ndnsf::di::NativeTensorContract::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L128)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L152)
 
 ```cpp
 void validate() const;
@@ -17709,7 +20047,7 @@ void validate() const;
 
 ### API-42f655651220 · ndnsf::di::NativeGraphEdge
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L131)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L155)
 
 ```cpp
 struct NativeGraphEdge
@@ -17717,7 +20055,7 @@ struct NativeGraphEdge
 
 ### API-e43e58a4c2a2 · ndnsf::di::NativeGraphEdge::id
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L133)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L157)
 
 ```cpp
 std::string id;
@@ -17725,7 +20063,7 @@ std::string id;
 
 ### API-657bb4fe5dac · ndnsf::di::NativeGraphEdge::producer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L134)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L158)
 
 ```cpp
 std::string producer;
@@ -17733,7 +20071,7 @@ std::string producer;
 
 ### API-f986c1836e46 · ndnsf::di::NativeGraphEdge::consumers
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L135)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L159)
 
 ```cpp
 std::vector<std::string> consumers;
@@ -17741,7 +20079,7 @@ std::vector<std::string> consumers;
 
 ### API-87b4325bb2dc · ndnsf::di::NativeGraphEdge::tensor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L160)
 
 ```cpp
 NativeTensorContract tensor;
@@ -17749,7 +20087,7 @@ NativeTensorContract tensor;
 
 ### API-ddb5f230cbbc · ndnsf::di::NativeGraphSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L163)
 
 ```cpp
 struct NativeGraphSnapshot
@@ -17757,7 +20095,7 @@ struct NativeGraphSnapshot
 
 ### API-99b59b6c5fb2 · ndnsf::di::NativeGraphSnapshot::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L141)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L165)
 
 ```cpp
 std::string graphDigest;
@@ -17765,7 +20103,7 @@ std::string graphDigest;
 
 ### API-56bfbad6ca8b · ndnsf::di::NativeGraphSnapshot::nodes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L166)
 
 ```cpp
 std::vector<NativeGraphNode> nodes;
@@ -17773,7 +20111,7 @@ std::vector<NativeGraphNode> nodes;
 
 ### API-e8324a8239e4 · ndnsf::di::NativeGraphSnapshot::topologicalOrder
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L143)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L167)
 
 ```cpp
 std::vector<std::string> topologicalOrder;
@@ -17781,7 +20119,7 @@ std::vector<std::string> topologicalOrder;
 
 ### API-12ada36e9cfc · ndnsf::di::NativeGraphSnapshot::legalCutEdges
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L144)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L168)
 
 ```cpp
 std::vector<std::string> legalCutEdges;
@@ -17789,7 +20127,7 @@ std::vector<std::string> legalCutEdges;
 
 ### API-1ae151dbb4aa · ndnsf::di::NativeGraphSnapshot::modelInputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L145)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L169)
 
 ```cpp
 std::vector<NativeTensorContract> modelInputs;
@@ -17797,7 +20135,7 @@ std::vector<NativeTensorContract> modelInputs;
 
 ### API-90b5f28654fb · ndnsf::di::NativeGraphSnapshot::modelOutputs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L146)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L170)
 
 ```cpp
 std::vector<NativeTensorContract> modelOutputs;
@@ -17805,7 +20143,7 @@ std::vector<NativeTensorContract> modelOutputs;
 
 ### API-7bfdfc0bcd39 · ndnsf::di::NativeGraphSnapshot::edges
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L147)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L171)
 
 ```cpp
 std::vector<NativeGraphEdge> edges;
@@ -17813,7 +20151,7 @@ std::vector<NativeGraphEdge> edges;
 
 ### API-fbca915988d9 · ndnsf::di::NativeGraphSnapshot::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L149)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L173)
 
 ```cpp
 void validate(const NativeModelDescriptor& model) const;
@@ -17821,7 +20159,7 @@ void validate(const NativeModelDescriptor& model) const;
 
 ### API-28b3c67439a3 · ndnsf::di::NativeCandidateBudget
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L152)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L176)
 
 ```cpp
 struct NativeCandidateBudget
@@ -17829,7 +20167,7 @@ struct NativeCandidateBudget
 
 ### API-5c20621ace80 · ndnsf::di::NativeCandidateBudget::maxCandidates
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L154)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L178)
 
 ```cpp
 std::size_t maxCandidates = 1;
@@ -17837,7 +20175,7 @@ std::size_t maxCandidates = 1;
 
 ### API-045a803d37ca · ndnsf::di::NativeCandidateBudget::maxPolicyMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L155)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L179)
 
 ```cpp
 std::uint64_t maxPolicyMs = 100;
@@ -17845,7 +20183,7 @@ std::uint64_t maxPolicyMs = 100;
 
 ### API-298d90ad719d · ndnsf::di::NativeCandidateBudget::maxReentries
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L156)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L180)
 
 ```cpp
 std::size_t maxReentries = 1;
@@ -17853,7 +20191,7 @@ std::size_t maxReentries = 1;
 
 ### API-f9611080b5e5 · ndnsf::di::NativeCandidateBudget::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L158)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L182)
 
 ```cpp
 void validate() const;
@@ -17861,7 +20199,7 @@ void validate() const;
 
 ### API-8ec046edf2b9 · ndnsf::di::NativeRoleResourceRequirement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L161)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L185)
 
 ```cpp
 struct NativeRoleResourceRequirement
@@ -17869,7 +20207,7 @@ struct NativeRoleResourceRequirement
 
 ### API-f25de309052d · ndnsf::di::NativeRoleResourceRequirement::backends
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L187)
 
 ```cpp
 std::vector<std::string> backends;
@@ -17877,7 +20215,7 @@ std::vector<std::string> backends;
 
 ### API-ade37b8b17fd · ndnsf::di::NativeRoleResourceRequirement::weightBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L166)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L190)
 
 ```cpp
 std::optional<std::uint64_t> weightBytes;
@@ -17892,7 +20230,7 @@ std::optional<std::uint64_t> weightBytes;
 
 ### API-6374856178b5 · ndnsf::di::NativeRoleResourceRequirement::workspaceBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L167)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L191)
 
 ```cpp
 std::optional<std::uint64_t> workspaceBytes;
@@ -17900,7 +20238,7 @@ std::optional<std::uint64_t> workspaceBytes;
 
 ### API-17afba06504d · ndnsf::di::NativeRoleResourceRequirement::kvBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L168)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L192)
 
 ```cpp
 std::optional<std::uint64_t> kvBytes;
@@ -17908,7 +20246,7 @@ std::optional<std::uint64_t> kvBytes;
 
 ### API-0a1b0ab96f42 · ndnsf::di::NativeRoleResourceRequirement::activationBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L169)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L193)
 
 ```cpp
 std::optional<std::uint64_t> activationBytes;
@@ -17916,7 +20254,7 @@ std::optional<std::uint64_t> activationBytes;
 
 ### API-c7cd51767c6a · ndnsf::di::NativeRoleResourceRequirement::transientBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L170)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L194)
 
 ```cpp
 std::optional<std::uint64_t> transientBytes;
@@ -17924,7 +20262,7 @@ std::optional<std::uint64_t> transientBytes;
 
 ### API-4695746e6584 · ndnsf::di::NativeRoleResourceRequirement::safetyMargin
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L171)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L195)
 
 ```cpp
 double safetyMargin = 1.1;
@@ -17932,7 +20270,7 @@ double safetyMargin = 1.1;
 
 ### API-0ac7eb948966 · ndnsf::di::NativeRoleResourceRequirement::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L173)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L197)
 
 ```cpp
 void validate() const;
@@ -17940,7 +20278,7 @@ void validate() const;
 
 ### API-3200fa4c6827 · ndnsf::di::NativeRoleResourceRequirement::canonicalJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L175)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L199)
 
 ```cpp
 std::string canonicalJson() const;
@@ -17954,7 +20292,7 @@ std::string canonicalJson() const;
 
 ### API-3059eeee5733 · ndnsf::di::NativeRoleResourceRequirement::estimatedPeakGpuMemoryBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L177)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L201)
 
 ```cpp
 std::optional<std::uint64_t> estimatedPeakGpuMemoryBytes() const;
@@ -17968,7 +20306,7 @@ std::optional<std::uint64_t> estimatedPeakGpuMemoryBytes() const;
 
 ### API-0edcf641fc3f · ndnsf::di::NativeProviderPlanningView
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L180)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L204)
 
 ```cpp
 struct NativeProviderPlanningView
@@ -17976,7 +20314,7 @@ struct NativeProviderPlanningView
 
 ### API-11400ea6af37 · ndnsf::di::NativeProviderPlanningView::provider
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L182)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L206)
 
 ```cpp
 std::string provider;
@@ -17984,7 +20322,7 @@ std::string provider;
 
 ### API-94dff038f5f6 · ndnsf::di::NativeProviderPlanningView::offerDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L183)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L207)
 
 ```cpp
 std::string offerDigest;
@@ -17992,7 +20330,7 @@ std::string offerDigest;
 
 ### API-76c8c6748024 · ndnsf::di::NativeProviderPlanningView::acceptedRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L184)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L208)
 
 ```cpp
 std::vector<std::string> acceptedRoles;
@@ -18000,7 +20338,7 @@ std::vector<std::string> acceptedRoles;
 
 ### API-997d89d2a48a · ndnsf::di::NativeProviderPlanningView::backends
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L185)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L209)
 
 ```cpp
 std::vector<std::string> backends;
@@ -18008,7 +20346,7 @@ std::vector<std::string> backends;
 
 ### API-c32cf0b4f410 · ndnsf::di::NativeProviderPlanningView::residencyDigests
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L186)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L210)
 
 ```cpp
 std::vector<std::string> residencyDigests;
@@ -18016,7 +20354,7 @@ std::vector<std::string> residencyDigests;
 
 ### API-aa613202039d · ndnsf::di::NativeProviderPlanningView::freeBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L187)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L211)
 
 ```cpp
 std::uint64_t freeBytes = 0;
@@ -18024,7 +20362,7 @@ std::uint64_t freeBytes = 0;
 
 ### API-c8dc942f5a22 · ndnsf::di::NativeProviderPlanningView::resourceSequence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L188)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L212)
 
 ```cpp
 std::uint64_t resourceSequence = 0;
@@ -18032,7 +20370,7 @@ std::uint64_t resourceSequence = 0;
 
 ### API-63e7cbf58353 · ndnsf::di::NativeProviderPlanningView::preparationAccepted
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L189)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L213)
 
 ```cpp
 bool preparationAccepted = false;
@@ -18040,7 +20378,7 @@ bool preparationAccepted = false;
 
 ### API-c441e31ca5bf · ndnsf::di::NativeProviderPlanningView::executionAllowed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L190)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L214)
 
 ```cpp
 bool executionAllowed = false;
@@ -18048,7 +20386,7 @@ bool executionAllowed = false;
 
 ### API-299737ca8e52 · ndnsf::di::NativeProviderPlanningView::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L192)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L216)
 
 ```cpp
 void validate() const;
@@ -18056,7 +20394,7 @@ void validate() const;
 
 ### API-1f2e22041e57 · ndnsf::di::NativePlanningSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L195)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L219)
 
 ```cpp
 struct NativePlanningSnapshot
@@ -18064,7 +20402,7 @@ struct NativePlanningSnapshot
 
 ### API-d32a488e1444 · ndnsf::di::NativePlanningSnapshot::model
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L197)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L221)
 
 ```cpp
 NativeModelDescriptor model;
@@ -18072,7 +20410,7 @@ NativeModelDescriptor model;
 
 ### API-8ed67d7fdfa6 · ndnsf::di::NativePlanningSnapshot::graph
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L198)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L222)
 
 ```cpp
 NativeGraphSnapshot graph;
@@ -18080,7 +20418,7 @@ NativeGraphSnapshot graph;
 
 ### API-7bb3dc9748f4 · ndnsf::di::NativePlanningSnapshot::offers
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L199)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L223)
 
 ```cpp
 std::vector<NativeProviderPlanningView> offers;
@@ -18088,7 +20426,7 @@ std::vector<NativeProviderPlanningView> offers;
 
 ### API-a0b4226528e4 · ndnsf::di::NativePlanningSnapshot::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L200)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L224)
 
 ```cpp
 std::string requestId;
@@ -18096,7 +20434,7 @@ std::string requestId;
 
 ### API-f9e02b99708c · ndnsf::di::NativePlanningSnapshot::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L201)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L225)
 
 ```cpp
 std::uint64_t attempt = 1;
@@ -18104,7 +20442,7 @@ std::uint64_t attempt = 1;
 
 ### API-8fa29be159c0 · ndnsf::di::NativePlanningSnapshot::ackClosedDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L202)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L226)
 
 ```cpp
 std::string ackClosedDigest;
@@ -18112,7 +20450,7 @@ std::string ackClosedDigest;
 
 ### API-4f7f27197d86 · ndnsf::di::NativePlanningSnapshot::deadline
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L203)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L227)
 
 ```cpp
 std::chrono::steady_clock::time_point deadline;
@@ -18120,7 +20458,7 @@ std::chrono::steady_clock::time_point deadline;
 
 ### API-a020efd12b9d · ndnsf::di::NativePlanningSnapshot::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L205)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L229)
 
 ```cpp
 void validate() const;
@@ -18128,7 +20466,7 @@ void validate() const;
 
 ### API-efbb793ad76f · ndnsf::di::NativeHybridPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L209)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L233)
 
 ```cpp
 struct NativeHybridPlan
@@ -18136,7 +20474,7 @@ struct NativeHybridPlan
 
 ### API-4c1db1418c3e · ndnsf::di::NativeHybridPlan::stages
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L211)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L235)
 
 ```cpp
 std::uint64_t stages = 0;
@@ -18144,7 +20482,7 @@ std::uint64_t stages = 0;
 
 ### API-9eb5bc494042 · ndnsf::di::NativeHybridPlan::tensorDegrees
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L212)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L236)
 
 ```cpp
 std::vector<std::uint64_t> tensorDegrees;
@@ -18152,7 +20490,7 @@ std::vector<std::uint64_t> tensorDegrees;
 
 ### API-902a273cfee9 · ndnsf::di::NativeHybridPlan::rankLabels
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L213)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L237)
 
 ```cpp
 std::vector<std::string> rankLabels;
@@ -18160,7 +20498,7 @@ std::vector<std::string> rankLabels;
 
 ### API-d07910a1237b · ndnsf::di::NativeHybridPlan::redistributions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L214)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L238)
 
 ```cpp
 std::vector<RedistributionSpec> redistributions;
@@ -18168,7 +20506,7 @@ std::vector<RedistributionSpec> redistributions;
 
 ### API-bfc1e906a340 · ndnsf::di::NativeHybridPlan::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L217)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L241)
 
 ```cpp
 void validate() const;
@@ -18182,7 +20520,7 @@ void validate() const;
 
 ### API-d3b656f1ca66 · ndnsf::di::NativeHybridPlan::canonicalJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L218)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L242)
 
 ```cpp
 std::string canonicalJson() const;
@@ -18190,7 +20528,7 @@ std::string canonicalJson() const;
 
 ### API-290891e96421 · ndnsf::di::NativeEstimatedCost
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L221)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L245)
 
 ```cpp
 using NativeEstimatedCost = std::variant<std::monostate, std::int64_t, std::uint64_t, double>;
@@ -18198,7 +20536,7 @@ using NativeEstimatedCost = std::variant<std::monostate, std::int64_t, std::uint
 
 ### API-49d61b9bf2b3 · ndnsf::di::NativeSplitCandidate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L223)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L247)
 
 ```cpp
 struct NativeSplitCandidate
@@ -18206,7 +20544,7 @@ struct NativeSplitCandidate
 
 ### API-62234c5132aa · ndnsf::di::NativeSplitCandidate::source
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L225)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L249)
 
 ```cpp
 std::string source;
@@ -18214,7 +20552,7 @@ std::string source;
 
 ### API-94e840a7c00b · ndnsf::di::NativeSplitCandidate::splitter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L226)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L250)
 
 ```cpp
 NativeStrategyIdentity splitter;
@@ -18222,7 +20560,7 @@ NativeStrategyIdentity splitter;
 
 ### API-4a973421c606 · ndnsf::di::NativeSplitCandidate::model
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L227)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L251)
 
 ```cpp
 NativeModelDescriptor model;
@@ -18230,7 +20568,7 @@ NativeModelDescriptor model;
 
 ### API-1cace18e0abf · ndnsf::di::NativeSplitCandidate::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L228)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L252)
 
 ```cpp
 std::string graphDigest;
@@ -18238,7 +20576,7 @@ std::string graphDigest;
 
 ### API-4e35e78eefc5 · ndnsf::di::NativeSplitCandidate::executionPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L229)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L253)
 
 ```cpp
 NativeExecutionPlan executionPlan;
@@ -18246,7 +20584,7 @@ NativeExecutionPlan executionPlan;
 
 ### API-be060ef69118 · ndnsf::di::NativeSplitCandidate::fragmentsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L230)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L254)
 
 ```cpp
 std::map<std::string, std::string> fragmentsByRole;
@@ -18254,7 +20592,7 @@ std::map<std::string, std::string> fragmentsByRole;
 
 ### API-df1f042bf577 · ndnsf::di::NativeSplitCandidate::artifactsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L231)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L255)
 
 ```cpp
 std::map<std::string, std::vector<std::string>> artifactsByRole;
@@ -18262,7 +20600,7 @@ std::map<std::string, std::vector<std::string>> artifactsByRole;
 
 ### API-7f49986811b3 · ndnsf::di::NativeSplitCandidate::requirementsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L232)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L256)
 
 ```cpp
 std::map<std::string, NativeRoleResourceRequirement> requirementsByRole;
@@ -18270,7 +20608,7 @@ std::map<std::string, NativeRoleResourceRequirement> requirementsByRole;
 
 ### API-f44ecb898d7e · ndnsf::di::NativeSplitCandidate::crossPartitionTensors
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L233)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L257)
 
 ```cpp
 std::vector<std::string> crossPartitionTensors;
@@ -18278,7 +20616,7 @@ std::vector<std::string> crossPartitionTensors;
 
 ### API-49867e04f506 · ndnsf::di::NativeSplitCandidate::tensorDegreesByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L234)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L258)
 
 ```cpp
 std::map<std::string, std::uint64_t> tensorDegreesByRole;
@@ -18286,7 +20624,7 @@ std::map<std::string, std::uint64_t> tensorDegreesByRole;
 
 ### API-97186945924f · ndnsf::di::NativeSplitCandidate::rankArtifactDigestsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L235)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L259)
 
 ```cpp
 std::map<std::string, std::vector<std::string>> rankArtifactDigestsByRole;
@@ -18294,7 +20632,7 @@ std::map<std::string, std::vector<std::string>> rankArtifactDigestsByRole;
 
 ### API-274ed6f31f34 · ndnsf::di::NativeSplitCandidate::selectionPriority
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L236)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L260)
 
 ```cpp
 int selectionPriority = 0;
@@ -18302,7 +20640,7 @@ int selectionPriority = 0;
 
 ### API-6a4cc06aee50 · ndnsf::di::NativeSplitCandidate::inputIngressRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L237)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L261)
 
 ```cpp
 std::string inputIngressRole;
@@ -18310,7 +20648,7 @@ std::string inputIngressRole;
 
 ### API-a8d2fa8af102 · ndnsf::di::NativeSplitCandidate::resultEgressRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L238)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L262)
 
 ```cpp
 std::string resultEgressRole;
@@ -18318,7 +20656,7 @@ std::string resultEgressRole;
 
 ### API-4ccabe003318 · ndnsf::di::NativeSplitCandidate::mergeKind
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L239)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L263)
 
 ```cpp
 std::string mergeKind;
@@ -18326,7 +20664,7 @@ std::string mergeKind;
 
 ### API-6126ff23505e · ndnsf::di::NativeSplitCandidate::postprocessingJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L241)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L265)
 
 ```cpp
 std::string postprocessingJson = "{}";
@@ -18340,7 +20678,7 @@ std::string postprocessingJson = "{}";
 
 ### API-d64b4cc4e6b0 · ndnsf::di::NativeSplitCandidate::estimatedCosts
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L242)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L266)
 
 ```cpp
 std::map<std::string, NativeEstimatedCost> estimatedCosts;
@@ -18348,7 +20686,7 @@ std::map<std::string, NativeEstimatedCost> estimatedCosts;
 
 ### API-13175725b50a · ndnsf::di::NativeSplitCandidate::hybridPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L243)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L267)
 
 ```cpp
 std::optional<NativeHybridPlan> hybridPlan;
@@ -18356,7 +20694,7 @@ std::optional<NativeHybridPlan> hybridPlan;
 
 ### API-85717516b81b · ndnsf::di::NativeSplitCandidate::candidateDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L245)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L269)
 
 ```cpp
 std::string candidateDigest;
@@ -18370,7 +20708,7 @@ std::string candidateDigest;
 
 ### API-6fa12359a513 · ndnsf::di::NativeSplitCandidate::nodeRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L249)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L273)
 
 ```cpp
 std::map<std::string, std::string> nodeRoles;
@@ -18385,7 +20723,7 @@ std::map<std::string, std::string> nodeRoles;
 
 ### API-02d3afb4b136 · ndnsf::di::NativeSplitCandidate::roleStateInputsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L250)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L274)
 
 ```cpp
 std::map<std::string, std::vector<NativeTensorContract>> roleStateInputsByRole;
@@ -18393,7 +20731,7 @@ std::map<std::string, std::vector<NativeTensorContract>> roleStateInputsByRole;
 
 ### API-0d787cc47296 · ndnsf::di::NativeSplitCandidate::roleStateOutputsByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L251)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L275)
 
 ```cpp
 std::map<std::string, std::vector<NativeTensorContract>> roleStateOutputsByRole;
@@ -18401,7 +20739,7 @@ std::map<std::string, std::vector<NativeTensorContract>> roleStateOutputsByRole;
 
 ### API-4204edd696cc · ndnsf::di::NativeSplitCandidate::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L253)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L277)
 
 ```cpp
 void validate(const NativeGraphSnapshot& graph) const;
@@ -18409,7 +20747,7 @@ void validate(const NativeGraphSnapshot& graph) const;
 
 ### API-d780bcaa2b01 · ndnsf::di::NativeSplitCandidate::canonicalJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L255)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L279)
 
 ```cpp
 std::string canonicalJson() const;
@@ -18423,7 +20761,7 @@ std::string canonicalJson() const;
 
 ### API-7f7de9cdf234 · ndnsf::di::NativeSplitCandidate::computedDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L256)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L280)
 
 ```cpp
 std::string computedDigest() const;
@@ -18431,7 +20769,7 @@ std::string computedDigest() const;
 
 ### API-f67586c2ac92 · ndnsf::di::NativePlacementProposal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L259)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L283)
 
 ```cpp
 struct NativePlacementProposal
@@ -18439,7 +20777,7 @@ struct NativePlacementProposal
 
 ### API-891572dd8b75 · ndnsf::di::NativePlacementProposal::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L261)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L285)
 
 ```cpp
 std::string requestId;
@@ -18447,7 +20785,7 @@ std::string requestId;
 
 ### API-a40b80d425fa · ndnsf::di::NativePlacementProposal::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L262)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L286)
 
 ```cpp
 std::uint64_t attempt = 1;
@@ -18455,7 +20793,7 @@ std::uint64_t attempt = 1;
 
 ### API-2df9230bed61 · ndnsf::di::NativePlacementProposal::modelDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L263)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L287)
 
 ```cpp
 std::string modelDigest;
@@ -18463,7 +20801,7 @@ std::string modelDigest;
 
 ### API-fd402dc3fc3a · ndnsf::di::NativePlacementProposal::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L264)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L288)
 
 ```cpp
 std::string graphDigest;
@@ -18471,7 +20809,7 @@ std::string graphDigest;
 
 ### API-614e7e7fbe13 · ndnsf::di::NativePlacementProposal::candidateDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L265)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L289)
 
 ```cpp
 std::string candidateDigest;
@@ -18479,7 +20817,7 @@ std::string candidateDigest;
 
 ### API-1a435ae06cfa · ndnsf::di::NativePlacementProposal::strategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L266)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L290)
 
 ```cpp
 NativeStrategyIdentity strategy;
@@ -18487,7 +20825,7 @@ NativeStrategyIdentity strategy;
 
 ### API-6e945a32d1b0 · ndnsf::di::NativePlacementProposal::executionPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L267)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L291)
 
 ```cpp
 NativeExecutionPlan executionPlan;
@@ -18495,7 +20833,7 @@ NativeExecutionPlan executionPlan;
 
 ### API-4da1e46f8d78 · ndnsf::di::NativePlacementProposal::assignment
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L268)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L292)
 
 ```cpp
 NativeProviderAssignment assignment;
@@ -18503,7 +20841,7 @@ NativeProviderAssignment assignment;
 
 ### API-99236b6187cb · ndnsf::di::NativePlacementProposal::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L270)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L294)
 
 ```cpp
 void validate(const NativePlanningSnapshot& snapshot,
@@ -18512,7 +20850,7 @@ void validate(const NativePlanningSnapshot& snapshot,
 
 ### API-aa687dbaff22 · ndnsf::di::NativeModelSplitStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L274)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L298)
 
 ```cpp
 class NativeModelSplitStrategy
@@ -18520,7 +20858,7 @@ class NativeModelSplitStrategy
 
 ### API-06a9699ebb49 · ndnsf::di::NativeModelSplitStrategy::~NativeModelSplitStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L277)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L301)
 
 ```cpp
 virtual ~NativeModelSplitStrategy() = default;
@@ -18528,7 +20866,7 @@ virtual ~NativeModelSplitStrategy() = default;
 
 ### API-7516038e04c4 · ndnsf::di::NativeModelSplitStrategy::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L278)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L302)
 
 ```cpp
 virtual NativeStrategyIdentity identity() const = 0;
@@ -18536,7 +20874,7 @@ virtual NativeStrategyIdentity identity() const = 0;
 
 ### API-da75fc521e8b · ndnsf::di::NativeModelSplitStrategy::enumerate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L279)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L303)
 
 ```cpp
 virtual std::vector<NativeSplitCandidate> enumerate(
@@ -18547,7 +20885,7 @@ virtual std::vector<NativeSplitCandidate> enumerate(
 
 ### API-f3887f6fa66b · ndnsf::di::NativePlacementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L285)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L309)
 
 ```cpp
 class NativePlacementStrategy
@@ -18555,7 +20893,7 @@ class NativePlacementStrategy
 
 ### API-154778d422a9 · ndnsf::di::NativePlacementStrategy::~NativePlacementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L288)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L312)
 
 ```cpp
 virtual ~NativePlacementStrategy() = default;
@@ -18563,7 +20901,7 @@ virtual ~NativePlacementStrategy() = default;
 
 ### API-e2e35edf9182 · ndnsf::di::NativePlacementStrategy::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L289)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L313)
 
 ```cpp
 virtual NativeStrategyIdentity identity() const = 0;
@@ -18571,7 +20909,7 @@ virtual NativeStrategyIdentity identity() const = 0;
 
 ### API-0f4ac0e590fd · ndnsf::di::NativePlacementStrategy::proposeRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L290)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L314)
 
 ```cpp
 virtual NativeRolePlacementProposalV3 proposeRoles(
@@ -18582,7 +20920,7 @@ virtual NativeRolePlacementProposalV3 proposeRoles(
 
 ### API-fbcd6eeb24b6 · ndnsf::di::CooperativeModelSplitStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L298)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L322)
 
 ```cpp
 class CooperativeModelSplitStrategy
@@ -18590,7 +20928,7 @@ class CooperativeModelSplitStrategy
 
 ### API-27f4c10073d8 · ndnsf::di::CooperativeModelSplitStrategy::~CooperativeModelSplitStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L301)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L325)
 
 ```cpp
 virtual ~CooperativeModelSplitStrategy() = default;
@@ -18598,7 +20936,7 @@ virtual ~CooperativeModelSplitStrategy() = default;
 
 ### API-8cbd3774fb48 · ndnsf::di::CooperativeModelSplitStrategy::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L302)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L326)
 
 ```cpp
 virtual NativeStrategyIdentity identity() const = 0;
@@ -18606,7 +20944,7 @@ virtual NativeStrategyIdentity identity() const = 0;
 
 ### API-c8ce9964e586 · ndnsf::di::CooperativeModelSplitStrategy::enumerate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L303)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L327)
 
 ```cpp
 virtual std::vector<NativeSplitCandidate> enumerate(
@@ -18616,7 +20954,7 @@ virtual std::vector<NativeSplitCandidate> enumerate(
 
 ### API-db299d22f887 · ndnsf::di::CooperativePlacementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L308)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L332)
 
 ```cpp
 class CooperativePlacementStrategy
@@ -18624,7 +20962,7 @@ class CooperativePlacementStrategy
 
 ### API-b4c3c7641d04 · ndnsf::di::CooperativePlacementStrategy::~CooperativePlacementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L311)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L335)
 
 ```cpp
 virtual ~CooperativePlacementStrategy() = default;
@@ -18632,7 +20970,7 @@ virtual ~CooperativePlacementStrategy() = default;
 
 ### API-97dee4b108b2 · ndnsf::di::CooperativePlacementStrategy::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L312)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L336)
 
 ```cpp
 virtual NativeStrategyIdentity identity() const = 0;
@@ -18640,7 +20978,7 @@ virtual NativeStrategyIdentity identity() const = 0;
 
 ### API-76d35ae03400 · ndnsf::di::CooperativePlacementStrategy::proposeRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L313)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L337)
 
 ```cpp
 virtual NativeRolePlacementProposalV3 proposeRoles(
@@ -18652,7 +20990,7 @@ virtual NativeRolePlacementProposalV3 proposeRoles(
 
 ### API-c5fc2c63fdae · ndnsf::di::NativePlacementStrategyRegistry
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L321)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L345)
 
 ```cpp
 class NativePlacementStrategyRegistry
@@ -18660,7 +20998,7 @@ class NativePlacementStrategyRegistry
 
 ### API-be520e990dbd · ndnsf::di::NativePlacementStrategyRegistry::registerStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L324)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L348)
 
 ```cpp
 void registerStrategy(std::string id,
@@ -18669,7 +21007,7 @@ void registerStrategy(std::string id,
 
 ### API-81f52d03ed75 · ndnsf::di::NativePlacementStrategyRegistry::replaceStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L326)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L350)
 
 ```cpp
 void replaceStrategy(std::string id,
@@ -18678,7 +21016,7 @@ void replaceStrategy(std::string id,
 
 ### API-529e53f64810 · ndnsf::di::NativePlacementStrategyRegistry::freeze
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L328)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L352)
 
 ```cpp
 void freeze();
@@ -18686,7 +21024,7 @@ void freeze();
 
 ### API-aae1c1d8f0a2 · ndnsf::di::NativePlacementStrategyRegistry::frozen
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L329)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L353)
 
 ```cpp
 bool frozen() const noexcept
@@ -18694,7 +21032,7 @@ bool frozen() const noexcept
 
 ### API-267573d8d926 · ndnsf::di::NativePlacementStrategyRegistry::find
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L330)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L354)
 
 ```cpp
 std::shared_ptr<const CooperativePlacementStrategy> find(const std::string& id) const;
@@ -18702,7 +21040,7 @@ std::shared_ptr<const CooperativePlacementStrategy> find(const std::string& id) 
 
 ### API-8bc6b13ae342 · ndnsf::di::NativePreSplitFirstPlacement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L337)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L361)
 
 ```cpp
 class NativePreSplitFirstPlacement final : public NativePlacementStrategy,
@@ -18711,7 +21049,7 @@ class NativePreSplitFirstPlacement final : public NativePlacementStrategy,
 
 ### API-36d5faaf8ea6 · ndnsf::di::NativePreSplitFirstPlacement::NativePreSplitFirstPlacement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L341)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L365)
 
 ```cpp
 explicit NativePreSplitFirstPlacement(NativeStrategyIdentity identity = {
@@ -18721,7 +21059,7 @@ explicit NativePreSplitFirstPlacement(NativeStrategyIdentity identity = {
 
 ### API-5960132990e1 · ndnsf::di::NativePreSplitFirstPlacement::identity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L345)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L369)
 
 ```cpp
 NativeStrategyIdentity identity() const override;
@@ -18729,7 +21067,7 @@ NativeStrategyIdentity identity() const override;
 
 ### API-73513efe9d2d · ndnsf::di::NativePreSplitFirstPlacement::propose
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L347)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L371)
 
 ```cpp
 NativePlacementProposal propose(const NativePlanningSnapshot& snapshot,
@@ -18744,7 +21082,7 @@ NativePlacementProposal propose(const NativePlanningSnapshot& snapshot,
 
 ### API-22510777a99c · ndnsf::di::NativePreSplitFirstPlacement::proposeRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L350)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L374)
 
 ```cpp
 NativeRolePlacementProposalV3 proposeRoles(
@@ -18755,7 +21093,7 @@ NativeRolePlacementProposalV3 proposeRoles(
 
 ### API-ee5d5097f59f · ndnsf::di::NativePreSplitFirstPlacement::proposeRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L355)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L379)
 
 ```cpp
 NativeRolePlacementProposalV3 proposeRoles(
@@ -18767,7 +21105,7 @@ NativeRolePlacementProposalV3 proposeRoles(
 
 ### API-8481201cfbdd · ndnsf::di::NativeModelAdapter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L371)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L395)
 
 ```cpp
 class NativeModelAdapter
@@ -18775,7 +21113,7 @@ class NativeModelAdapter
 
 ### API-6866236593a1 · ndnsf::di::NativeModelAdapter::~NativeModelAdapter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L374)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L398)
 
 ```cpp
 virtual ~NativeModelAdapter() = default;
@@ -18783,7 +21121,7 @@ virtual ~NativeModelAdapter() = default;
 
 ### API-768854a63852 · ndnsf::di::NativeModelAdapter::adapterId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L375)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L399)
 
 ```cpp
 virtual std::string adapterId() const = 0;
@@ -18791,7 +21129,7 @@ virtual std::string adapterId() const = 0;
 
 ### API-88833eb9cefe · ndnsf::di::NativeModelAdapter::adapterVersion
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L376)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L400)
 
 ```cpp
 virtual std::string adapterVersion() const = 0;
@@ -18799,7 +21137,7 @@ virtual std::string adapterVersion() const = 0;
 
 ### API-5bce169c3a9c · ndnsf::di::NativeModelAdapter::inspect
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L377)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L401)
 
 ```cpp
 virtual NativeModelDescriptor inspect(const std::string& modelName,
@@ -18808,7 +21146,7 @@ virtual NativeModelDescriptor inspect(const std::string& modelName,
 
 ### API-0a4d581fb406 · ndnsf::di::NativeModelAdapter::encodeInput
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L379)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L403)
 
 ```cpp
 virtual std::vector<std::uint8_t> encodeInput(
@@ -18817,7 +21155,7 @@ virtual std::vector<std::uint8_t> encodeInput(
 
 ### API-6a251d8a5a23 · ndnsf::di::NativeModelAdapter::decodeResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L381)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L405)
 
 ```cpp
 virtual std::vector<std::uint8_t> decodeResult(
@@ -18826,7 +21164,7 @@ virtual std::vector<std::uint8_t> decodeResult(
 
 ### API-906c28e4614c · ndnsf::di::NativeModelAdapter::conversationInputTokens
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L384)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L408)
 
 ```cpp
 virtual std::vector<std::int64_t> conversationInputTokens(
@@ -18841,7 +21179,7 @@ virtual std::vector<std::int64_t> conversationInputTokens(
 
 ### API-b5d26eb3034f · ndnsf::di::NativeAdapterRegistry
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L388)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L412)
 
 ```cpp
 class NativeAdapterRegistry
@@ -18849,7 +21187,7 @@ class NativeAdapterRegistry
 
 ### API-26acfbfac56f · ndnsf::di::NativeAdapterRegistry::registerAdapter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L391)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L415)
 
 ```cpp
 void registerAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
@@ -18857,7 +21195,7 @@ void registerAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
 
 ### API-82e5be35a04b · ndnsf::di::NativeAdapterRegistry::replaceAdapter
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L392)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L416)
 
 ```cpp
 void replaceAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
@@ -18865,7 +21203,7 @@ void replaceAdapter(std::shared_ptr<const NativeModelAdapter> adapter);
 
 ### API-1da178c30b39 · ndnsf::di::NativeAdapterRegistry::freeze
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L393)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L417)
 
 ```cpp
 void freeze();
@@ -18873,7 +21211,7 @@ void freeze();
 
 ### API-2570d41eb65f · ndnsf::di::NativeAdapterRegistry::frozen
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L394)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L418)
 
 ```cpp
 bool frozen() const noexcept
@@ -18881,7 +21219,7 @@ bool frozen() const noexcept
 
 ### API-c11b46ff0831 · ndnsf::di::NativeAdapterRegistry::find
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L395)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L419)
 
 ```cpp
 std::shared_ptr<const NativeModelAdapter> find(const std::string& adapterId) const;
@@ -18889,7 +21227,7 @@ std::shared_ptr<const NativeModelAdapter> find(const std::string& adapterId) con
 
 ### API-54390fef89ed · ndnsf::di::nativePlanningDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L402)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L426)
 
 ```cpp
 std::string nativePlanningDigest(const std::string& canonical);
@@ -18897,7 +21235,7 @@ std::string nativePlanningDigest(const std::string& canonical);
 
 ### API-9ec898d308fb · ndnsf::di::nativePlanningDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L404)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp#L428)
 
 ```cpp
 std::string nativePlanningDigest(const std::uint8_t* data, std::size_t size);
@@ -18911,11 +21249,11 @@ std::string nativePlanningDigest(const std::uint8_t* data, std::size_t size);
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp
 
-源码 SHA-256：`ea80db09e0098e93e9569e893ef5b93aa83d448c860be5b2e7deff37a7eb0ed6`。
+源码 SHA-256：`bf2126b91629a00cf78a5fbc787484156f580ca019bb6bc01cb6fc1555cc40b7`。
 
 ### API-bdae707cb991 · ndnsf::di::NativeAssembledEntryContext
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L8)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L9)
 
 ```cpp
 struct NativeAssembledEntryContext
@@ -18923,7 +21261,7 @@ struct NativeAssembledEntryContext
 
 ### API-2a63b5d46969 · ndnsf::di::NativeAssembledEntryContext::modelManifestDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L10)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L11)
 
 ```cpp
 std::string modelManifestDigest;
@@ -18931,7 +21269,7 @@ std::string modelManifestDigest;
 
 ### API-a208254641a4 · ndnsf::di::NativeAssembledEntryContext::roleAssemblySpecDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L11)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L12)
 
 ```cpp
 std::string roleAssemblySpecDigest;
@@ -18939,7 +21277,7 @@ std::string roleAssemblySpecDigest;
 
 ### API-4c03dd3ab6ca · ndnsf::di::NativeAssembledEntryContext::storageProfileDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L12)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L13)
 
 ```cpp
 std::string storageProfileDigest;
@@ -18947,15 +21285,23 @@ std::string storageProfileDigest;
 
 ### API-aa3c3227ad1d · ndnsf::di::NativeAssembledEntryContext::entryKind
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L13)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L14)
 
 ```cpp
 std::string entryKind = "MODEL_PROTO";
 ```
 
+### API-c9858161925c · ndnsf::di::NativeAssembledEntryContext::keyReferenceDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L15)
+
+```cpp
+std::string keyReferenceDigest;
+```
+
 ### API-69025a8d2228 · ndnsf::di::nativeAssemblyDigestFromCanonicalProjection
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L17)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L19)
 
 ```cpp
 std::string nativeAssemblyDigestFromCanonicalProjection(const std::string& wire);
@@ -18969,7 +21315,7 @@ std::string nativeAssemblyDigestFromCanonicalProjection(const std::string& wire)
 
 ### API-f6948af9ef57 · ndnsf::di::sealNativeAssembledEntry
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L21)
 
 ```cpp
 std::vector<std::uint8_t> sealNativeAssembledEntry(
@@ -18980,7 +21326,7 @@ std::vector<std::uint8_t> sealNativeAssembledEntry(
 
 ### API-99b19244864a · ndnsf::di::openNativeAssembledEntry
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L24)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L26)
 
 ```cpp
 std::vector<std::uint8_t> openNativeAssembledEntry(
@@ -18990,14 +21336,47 @@ std::vector<std::uint8_t> openNativeAssembledEntry(
   std::uint64_t maxPlaintextBytes);
 ```
 
-### API-d44e0e66ec3f · ndnsf::di::registerNativePlaintextDirectory
+### API-fc540e1d98a7 · ndnsf::di::sealNativeAssembledEntryToFile
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L35)
 
 ```cpp
-void registerNativePlaintextDirectory(
-  ProtectedRuntime& runtime, const std::filesystem::path& directory,
-  const std::string& leaseId);
+std::string sealNativeAssembledEntryToFile(
+  const std::vector<std::uint8_t>& contentKey,
+  const std::vector<std::uint8_t>& plaintext,
+  const std::filesystem::path& wirePath,
+  const NativeAssembledEntryContext& context);
+```
+
+原始接口说明：
+
+```text
+// File-backed variants for production protected assembly.  They preserve the
+// canonical wire format while bounding encryption/decryption buffers instead
+// of materializing a second full model-sized vector.
+```
+
+### API-4737ecee8198 · ndnsf::di::openNativeAssembledEntryToFile
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L41)
+
+```cpp
+std::string openNativeAssembledEntryToFile(
+  const std::vector<std::uint8_t>& contentKey,
+  const std::filesystem::path& wirePath,
+  const std::filesystem::path& plaintextPath,
+  const NativeAssembledEntryContext& expected,
+  std::uint64_t maxPlaintextBytes,
+  const std::string& expectedWireDigest = {});
+```
+
+### API-8ee09010f73b · ndnsf::di::NativePlaintextFileEraser
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L51)
+
+```cpp
+using NativePlaintextFileEraser =
+  std::function<void(const std::filesystem::path& file)>;
 ```
 
 原始接口说明：
@@ -19007,9 +21386,37 @@ void registerNativePlaintextDirectory(
 // Cleanup walks the pinned directory fd, never following symlinks.
 ```
 
+### API-d44e0e66ec3f · ndnsf::di::registerNativePlaintextDirectory
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L54)
+
+```cpp
+void registerNativePlaintextDirectory(
+  ProtectedRuntime& runtime, const std::filesystem::path& directory,
+  const std::string& leaseId);
+```
+
+### API-ebe4059b464c · ndnsf::di::registerNativePlaintextDirectoryWithFileEraser
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L61)
+
+```cpp
+NativePlaintextFileEraser registerNativePlaintextDirectoryWithFileEraser(
+  ProtectedRuntime& runtime, const std::filesystem::path& directory,
+  const std::string& leaseId);
+```
+
+原始接口说明：
+
+```text
+// Register the same protected directory lease and return an eraser bound to
+// its pinned fd.  The eraser is for an authenticated direct child that must be
+// removed before the runtime's final directory drain.
+```
+
 ### API-d4c3bff7fbb3 · ndnsf::di::NativePlaintextBufferGuard
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L65)
 
 ```cpp
 struct NativePlaintextBufferGuard
@@ -19017,7 +21424,7 @@ struct NativePlaintextBufferGuard
 
 ### API-76fc0dc72c45 · ndnsf::di::NativePlaintextBufferGuard::& bytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L67)
 
 ```cpp
 std::vector<std::uint8_t>& bytes;
@@ -19025,7 +21432,7 @@ std::vector<std::uint8_t>& bytes;
 
 ### API-1f17fd53350b · ndnsf::di::NativePlaintextBufferGuard::~NativePlaintextBufferGuard
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp#L68)
 
 ```cpp
 ~NativePlaintextBufferGuard();
@@ -19118,7 +21525,7 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config);
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp
 
-源码 SHA-256：`7e98745a08f5389dc42264dd67be35c659010ff9c7d0764f14ad36a319425e95`。
+源码 SHA-256：`78711f9c3ab608146a0cff410339a5a83af331ff35f264bc347a60733c213365`。
 
 ### API-c2d578fb9ff0 · ndnsf::di::NativeProviderHandlerConfig
 
@@ -19526,25 +21933,48 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 bool requireExecutionAttemptBinding = false;
 ```
 
+### API-63cfa2e74d1c · ndnsf::di::NativeProviderHandlerConfig::dependencyFetchTimeoutMs
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L110)
+
+```cpp
+int dependencyFetchTimeoutMs = 30000;
+```
+
+原始接口说明：
+
+```text
+// Timeout for authenticated inter-Provider dependency reads only. It is
+// independent from fetchTimeoutMs, which bounds readiness and control ACKs.
+```
+
 ### API-da959292e2fb · ndnsf::di::NativeProviderHandlerConfig::fetchTimeoutMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L108)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L111)
 
 ```cpp
 int fetchTimeoutMs = 30000;
 ```
 
-### API-95b208d2498b · ndnsf::di::NativeProviderHandlerConfig::maxSegmentSize
+### API-712dd6ffef77 · ndnsf::di::NativeProviderHandlerConfig::maxSegmentSize
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L115)
 
 ```cpp
-std::size_t maxSegmentSize = 7600;
+std::size_t maxSegmentSize = 7000;
+```
+
+原始接口说明：
+
+```text
+// Match the maintained Python provider path. Exact V3 Data names carry
+// request/plan/role/tensor bindings, so the signed wire packet needs room
+// beyond the plaintext segment payload.
 ```
 
 ### API-86943de34316 · ndnsf::di::NativeProviderHandlerConfig::freshnessMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L110)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L116)
 
 ```cpp
 int freshnessMs = 60000;
@@ -19552,7 +21982,7 @@ int freshnessMs = 60000;
 
 ### API-ab600f2a3c08 · ndnsf::di::NativeProviderHandlerConfig::groupCoordinator
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L113)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L119)
 
 ```cpp
 std::shared_ptr<ProviderGroupCoordinator> groupCoordinator;
@@ -19567,7 +21997,7 @@ std::shared_ptr<ProviderGroupCoordinator> groupCoordinator;
 
 ### API-e95dd0f642e0 · ndnsf::di::NativeProviderHandlerConfig::groupCoordinatorFactory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L124)
 
 ```cpp
 ProviderGroupCoordinatorFactory groupCoordinatorFactory;
@@ -19584,7 +22014,7 @@ ProviderGroupCoordinatorFactory groupCoordinatorFactory;
 
 ### API-365db2d1f85d · ndnsf::di::NativeProviderHandlerConfig::protectedRuntimeFactory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L122)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L128)
 
 ```cpp
 ProtectedRuntimeFactory protectedRuntimeFactory;
@@ -19600,7 +22030,7 @@ ProtectedRuntimeFactory protectedRuntimeFactory;
 
 ### API-cfefc8adcaff · ndnsf::di::NativeProviderHandlerConfig::workerCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L129)
 
 ```cpp
 std::size_t workerCount = 1;
@@ -19608,15 +22038,30 @@ std::size_t workerCount = 1;
 
 ### API-ef0dcf86c2ca · ndnsf::di::NativeProviderHandlerConfig::workerQueueCapacity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L124)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L130)
 
 ```cpp
 std::size_t workerQueueCapacity = 1024;
 ```
 
+### API-be5c7027e803 · ndnsf::di::NativeProviderHandlerConfig::conversationRetentionMs
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L133)
+
+```cpp
+std::uint64_t conversationRetentionMs = 300'000;
+```
+
+原始接口说明：
+
+```text
+// Finite per-host KV retention policy; authenticated turn deadlines may
+// shorten it. Valid range: 1..3600000 ms. No per-turn sliding extension.
+```
+
 ### API-f294157b64c8 · ndnsf::di::NativeProviderHandlerConfig::* executionLeaseTable
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L125)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L134)
 
 ```cpp
 ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;
@@ -19624,7 +22069,7 @@ ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullpt
 
 ### API-6dd198cb8f6b · ndnsf::di::NativeProviderHandlerConfig::executionLeaseCleanupIntervalMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L126)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L135)
 
 ```cpp
 uint64_t executionLeaseCleanupIntervalMs = 1000;
@@ -19632,7 +22077,7 @@ uint64_t executionLeaseCleanupIntervalMs = 1000;
 
 ### API-6674e0f25752 · ndnsf::di::NativeProviderHandlerConfig::executionLeaseTargetService
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L127)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L136)
 
 ```cpp
 std::string executionLeaseTargetService;
@@ -19640,7 +22085,7 @@ std::string executionLeaseTargetService;
 
 ### API-a075e8bfe1cc · ndnsf::di::NativeProviderHandlerConfig::executionLeaseHardDeadlineMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L128)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L137)
 
 ```cpp
 uint64_t executionLeaseHardDeadlineMs = 120000;
@@ -19648,7 +22093,7 @@ uint64_t executionLeaseHardDeadlineMs = 120000;
 
 ### API-731395815118 · ndnsf::di::NativeProviderHandlerConfig::requireExecutionActivation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L133)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L142)
 
 ```cpp
 bool requireExecutionActivation = false;
@@ -19665,7 +22110,7 @@ bool requireExecutionActivation = false;
 
 ### API-a709aacecd72 · ndnsf::di::NativeProviderHandlerConfig::allowLegacyPeerReadinessBarrier
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L145)
 
 ```cpp
 bool allowLegacyPeerReadinessBarrier = false;
@@ -19680,7 +22125,7 @@ bool allowLegacyPeerReadinessBarrier = false;
 
 ### API-9d54b384f90d · ndnsf::di::NativeProviderHandlerConfig::kvStateStore
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L137)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L146)
 
 ```cpp
 std::shared_ptr<KvStateStore> kvStateStore;
@@ -19688,7 +22133,7 @@ std::shared_ptr<KvStateStore> kvStateStore;
 
 ### API-b298276a89d8 · ndnsf::di::NativeProviderHandlerConfig::kvOutputScope
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L138)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L147)
 
 ```cpp
 std::string kvOutputScope = "kv-state";
@@ -19696,7 +22141,7 @@ std::string kvOutputScope = "kv-state";
 
 ### API-592bed0d4f8f · ndnsf::di::NativeProviderHandlerConfig::kvSecurityEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L148)
 
 ```cpp
 std::uint64_t kvSecurityEpoch = 0;
@@ -19704,7 +22149,7 @@ std::uint64_t kvSecurityEpoch = 0;
 
 ### API-acd5373b043e · ndnsf::di::NativeProviderHandlerConfig::stageServiceTimeObserver
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L140)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L149)
 
 ```cpp
 std::shared_ptr<std::function<void(std::chrono::milliseconds)>>
@@ -19713,7 +22158,7 @@ std::shared_ptr<std::function<void(std::chrono::milliseconds)>>
 
 ### API-44d4d5d1d040 · ndnsf::di::NativeProviderHandlerConfig::executionEvidenceObserver
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L151)
 
 ```cpp
 std::shared_ptr<std::function<void(const ExecutionEvidence&)>>
@@ -19722,7 +22167,7 @@ std::shared_ptr<std::function<void(const ExecutionEvidence&)>>
 
 ### API-ba72518db501 · ndnsf::di::NativeProviderHandlerConfig::epochCoordinatorCompletionObserver
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L148)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L157)
 
 ```cpp
 std::shared_ptr<EpochCoordinatorCompletionObserver>
@@ -19740,15 +22185,56 @@ std::shared_ptr<EpochCoordinatorCompletionObserver>
 
 ### API-52b2c44272fe · ndnsf::di::NativeProviderHandlerConfig::nativeFailureObserver
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L150)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L159)
 
 ```cpp
 std::shared_ptr<NativeFailureObserver> nativeFailureObserver;
 ```
 
+### API-c7fde55a7790 · ndnsf::di::NativeProviderTimeoutBudget
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L162)
+
+```cpp
+struct NativeProviderTimeoutBudget
+```
+
+### API-dc17dc67ee27 · ndnsf::di::NativeProviderTimeoutBudget::dependencyFetchMs
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L164)
+
+```cpp
+int dependencyFetchMs = 30000;
+```
+
+### API-3d6e4129658e · ndnsf::di::NativeProviderTimeoutBudget::readinessMs
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L165)
+
+```cpp
+int readinessMs = 30000;
+```
+
+### API-d1864a675101 · ndnsf::di::NativeProviderTimeoutBudget::conversationControlMs
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L166)
+
+```cpp
+int conversationControlMs = 30000;
+```
+
+### API-e624b1e0be30 · ndnsf::di::nativeProviderTimeoutBudget
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L169)
+
+```cpp
+NativeProviderTimeoutBudget
+nativeProviderTimeoutBudget(const NativeProviderHandlerConfig& config);
+```
+
 ### API-94c5f69bcee3 · ndnsf::di::NativeProviderExecutionBindingResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L153)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L172)
 
 ```cpp
 struct NativeProviderExecutionBindingResult
@@ -19756,7 +22242,7 @@ struct NativeProviderExecutionBindingResult
 
 ### API-c491c5ec1779 · ndnsf::di::NativeProviderExecutionBindingResult::status
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L155)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L174)
 
 ```cpp
 bool status = false;
@@ -19764,7 +22250,7 @@ bool status = false;
 
 ### API-f37ef851867f · ndnsf::di::NativeProviderExecutionBindingResult::reason
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L156)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L175)
 
 ```cpp
 std::string reason;
@@ -19772,7 +22258,7 @@ std::string reason;
 
 ### API-b25d14bc95f8 · ndnsf::di::NativeProviderExecutionBindingResult::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L157)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L176)
 
 ```cpp
 ExecutionAttemptKey attempt;
@@ -19780,7 +22266,7 @@ ExecutionAttemptKey attempt;
 
 ### API-3f76bf3baae8 · ndnsf::di::validateNativeProviderExecutionPolicy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L160)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L179)
 
 ```cpp
 void
@@ -19790,7 +22276,7 @@ validateNativeProviderExecutionPolicy(
 
 ### API-2521b21f5850 · ndnsf::di::validateNativeProviderExecutionBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L164)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L183)
 
 ```cpp
 NativeProviderExecutionBindingResult
@@ -19803,7 +22289,7 @@ validateNativeProviderExecutionBinding(
 
 ### API-aeae26df57dd · ndnsf::di::validateNativeProviderRuntimeReadiness
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L171)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L190)
 
 ```cpp
 std::optional<std::string>
@@ -19817,7 +22303,7 @@ validateNativeProviderRuntimeReadiness(
 
 ### API-0935d46699f9 · ndnsf::di::validateNativePreparedRunnerSpec
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L179)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L198)
 
 ```cpp
 std::optional<std::string>
@@ -19828,7 +22314,7 @@ validateNativePreparedRunnerSpec(
 
 ### API-4a292d2817b4 · ndnsf::di::validateProtectedRuntimeBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L184)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L203)
 
 ```cpp
 std::optional<std::string>
@@ -19842,7 +22328,7 @@ validateProtectedRuntimeBinding(
 
 ### API-7eacef411cd6 · ndnsf::di::NativeProviderExecutionControlResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L192)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L211)
 
 ```cpp
 struct NativeProviderExecutionControlResult
@@ -19850,7 +22336,7 @@ struct NativeProviderExecutionControlResult
 
 ### API-cf1d77d2cbc4 · ndnsf::di::NativeProviderExecutionControlResult::recognized
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L194)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L213)
 
 ```cpp
 bool recognized = false;
@@ -19858,7 +22344,7 @@ bool recognized = false;
 
 ### API-4c65c44e120b · ndnsf::di::NativeProviderExecutionControlResult::status
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L195)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L214)
 
 ```cpp
 bool status = false;
@@ -19866,7 +22352,7 @@ bool status = false;
 
 ### API-4752b30b6e09 · ndnsf::di::NativeProviderExecutionControlResult::reason
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L196)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L215)
 
 ```cpp
 std::string reason;
@@ -19874,7 +22360,7 @@ std::string reason;
 
 ### API-deef36ff7cff · ndnsf::di::NativeProviderExecutionControlResult::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L197)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L216)
 
 ```cpp
 ExecutionAttemptKey attempt;
@@ -19882,7 +22368,7 @@ ExecutionAttemptKey attempt;
 
 ### API-0183870e0152 · ndnsf::di::applyNativeProviderExecutionControl
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L200)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L219)
 
 ```cpp
 NativeProviderExecutionControlResult
@@ -19893,7 +22379,7 @@ applyNativeProviderExecutionControl(
 
 ### API-d443c4b19858 · ndnsf::di::nativeProviderFinalResponsePayload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L205)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L224)
 
 ```cpp
 std::optional<std::vector<uint8_t>>
@@ -19904,7 +22390,7 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
 
 ### API-8b17cc76f657 · ndnsf::di::nativeProviderShouldExecuteLocalPlan
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L215)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L234)
 
 ```cpp
 bool
@@ -19927,7 +22413,7 @@ nativeProviderShouldExecuteLocalPlan(
 
 ### API-d9cfffc21612 · ndnsf::di::parseNativeProviderAssignmentFields
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L222)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L241)
 
 ```cpp
 std::map<std::string, std::string>
@@ -19937,7 +22423,7 @@ parseNativeProviderAssignmentFields(const ndn::Buffer& payload,
 
 ### API-cafd77f24972 · ndnsf::di::nativeRequestContractDigestMatches
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L226)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L245)
 
 ```cpp
 bool
@@ -19947,7 +22433,7 @@ nativeRequestContractDigestMatches(const std::string& expectedDigest,
 
 ### API-91f042ab5f4a · ndnsf::di::nativeProviderFieldValue
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L230)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L249)
 
 ```cpp
 inline std::string
@@ -19957,7 +22443,7 @@ nativeProviderFieldValue(const std::map<std::string, std::string>& fields,
 
 ### API-0e7b4f3e8e64 · ndnsf::di::nativeProviderDigestEquals
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L243)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L262)
 
 ```cpp
 inline bool
@@ -19966,7 +22452,7 @@ nativeProviderDigestEquals(const std::string& left, const std::string& right)
 
 ### API-e90d66b714fe · ndnsf::di::validateNativeProviderAssignmentPayload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L253)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L272)
 
 ```cpp
 inline std::optional<std::string>
@@ -19978,7 +22464,7 @@ validateNativeProviderAssignmentPayload(
 
 ### API-f1be0ecee573 · ndnsf::di::makeNativeProviderCollaborationHandler
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L290)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L309)
 
 ```cpp
 ndn_service_framework::ServiceProvider::CollaborationHandler
@@ -19987,7 +22473,7 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config);
 
 ### API-0582a7e2e528 · ndnsf::di::NativeProviderCollaborationRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L293)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L312)
 
 ```cpp
 struct NativeProviderCollaborationRuntime
@@ -19995,7 +22481,7 @@ struct NativeProviderCollaborationRuntime
 
 ### API-1a56af3ea0ba · ndnsf::di::NativeProviderCollaborationRuntime::handler
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L295)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L314)
 
 ```cpp
 ndn_service_framework::ServiceProvider::CollaborationHandler handler;
@@ -20003,7 +22489,7 @@ ndn_service_framework::ServiceProvider::CollaborationHandler handler;
 
 ### API-c657e939bae9 · ndnsf::di::NativeProviderCollaborationRuntime::capacitySnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L296)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L315)
 
 ```cpp
 std::function<ProviderRoleWorkerSnapshot()> capacitySnapshot;
@@ -20011,7 +22497,7 @@ std::function<ProviderRoleWorkerSnapshot()> capacitySnapshot;
 
 ### API-ef967811266f · ndnsf::di::NativeProviderCollaborationRuntime::decodeStateSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L297)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L316)
 
 ```cpp
 std::function<ProviderDecodeStateSnapshot()> decodeStateSnapshot;
@@ -20019,7 +22505,7 @@ std::function<ProviderDecodeStateSnapshot()> decodeStateSnapshot;
 
 ### API-faf04386b004 · ndnsf::di::NativeProviderCollaborationRuntime::conversationStateSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L298)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L317)
 
 ```cpp
 std::function<ConversationStateSnapshot()> conversationStateSnapshot;
@@ -20027,7 +22513,7 @@ std::function<ConversationStateSnapshot()> conversationStateSnapshot;
 
 ### API-305925fd7f68 · ndnsf::di::NativeProviderCollaborationRuntime::executionEvidence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L299)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L318)
 
 ```cpp
 std::vector<ExecutionEvidence> executionEvidence;
@@ -20035,7 +22521,7 @@ std::vector<ExecutionEvidence> executionEvidence;
 
 ### API-8ca184175ffe · ndnsf::di::makeNativeProviderCollaborationRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L302)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp#L321)
 
 ```cpp
 NativeProviderCollaborationRuntime
@@ -22385,7 +24871,7 @@ NativePlannedRequest planNativeRequestCooperative(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp
 
-源码 SHA-256：`028ce6a8f7736dac5d41455431e5e43b4d0c6fed5ea29ccf6a0e4521270992ea`。
+源码 SHA-256：`ce25ea24923635bd2ed17496b24cbdee26cf6e25571e62d2d2f6c76b3b80f575`。
 
 ### API-f50441580ce0 · ndnsf::di::NativePreparedInput
 
@@ -22593,9 +25079,24 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::uint64_t canonicalInitializerBytes = 0;
 ```
 
+### API-bbbb306c4b99 · ndnsf::di::NativeInspectedModel::canonicalInitializerDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L53)
+
+```cpp
+std::string canonicalInitializerDigest;
+```
+
+原始接口说明：
+
+```text
+// Normalized ONNX initializer identity used by assembly recipes. This is
+// distinct from the digest of the fetched external initializer object.
+```
+
 ### API-8ff4df6f4395 · ndnsf::di::NativeInspectedModel::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L55)
 
 ```cpp
 void validate() const;
@@ -22603,7 +25104,7 @@ void validate() const;
 
 ### API-03a40364e3fa · ndnsf::di::NativeArtifactBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L58)
 
 ```cpp
 struct NativeArtifactBinding
@@ -22611,7 +25112,7 @@ struct NativeArtifactBinding
 
 ### API-c07df2f85341 · ndnsf::di::NativeArtifactBinding::sourceByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L60)
 
 ```cpp
 std::map<std::string, std::string> sourceByRole;
@@ -22619,7 +25120,7 @@ std::map<std::string, std::string> sourceByRole;
 
 ### API-f53cfde068b8 · ndnsf::di::NativeArtifactBinding::artifactDigestByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L61)
 
 ```cpp
 std::map<std::string, std::string> artifactDigestByRole;
@@ -22627,7 +25128,7 @@ std::map<std::string, std::string> artifactDigestByRole;
 
 ### API-ba6206514b3d · ndnsf::di::NativeArtifactBinding::manifestDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L62)
 
 ```cpp
 std::string manifestDigest;
@@ -22635,15 +25136,30 @@ std::string manifestDigest;
 
 ### API-82e98baa1ff1 · ndnsf::di::NativeArtifactBinding::recipeDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L63)
 
 ```cpp
 std::string recipeDigest;
 ```
 
+### API-048902414e98 · ndnsf::di::NativeArtifactBinding::artifactPrefetchRequired
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L66)
+
+```cpp
+bool artifactPrefetchRequired = true;
+```
+
+原始接口说明：
+
+```text
+// False only for an explicitly authenticated metadata-only compatibility
+// receipt; assignedArtifact remains bound, but Core skips root prefetch.
+```
+
 ### API-dfd26503ab14 · ndnsf::di::NativeArtifactBinding::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L69)
 
 ```cpp
 std::string requestId;
@@ -22658,7 +25174,7 @@ std::string requestId;
 
 ### API-6a12f1a3a1e5 · ndnsf::di::NativeArtifactBinding::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L64)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L70)
 
 ```cpp
 std::uint64_t attempt = 0;
@@ -22666,7 +25182,7 @@ std::uint64_t attempt = 0;
 
 ### API-7ece98bac358 · ndnsf::di::NativeArtifactBinding::modelDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L65)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L71)
 
 ```cpp
 std::string modelDigest;
@@ -22674,7 +25190,7 @@ std::string modelDigest;
 
 ### API-e0f6146128cb · ndnsf::di::NativeArtifactBinding::graphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L72)
 
 ```cpp
 std::string graphDigest;
@@ -22682,7 +25198,7 @@ std::string graphDigest;
 
 ### API-b56805caa269 · ndnsf::di::NativeArtifactBinding::canonicalGraphDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L74)
 
 ```cpp
 std::string canonicalGraphDigest;
@@ -22690,7 +25206,7 @@ std::string canonicalGraphDigest;
 
 ### API-afb6ab3bb0d3 · ndnsf::di::NativeArtifactBinding::canonicalManifestJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L78)
 
 ```cpp
 std::string canonicalManifestJson;
@@ -22705,7 +25221,7 @@ std::string canonicalManifestJson;
 
 ### API-96ae02a209c0 · ndnsf::di::NativeArtifactBinding::artifactNameByRole
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L79)
 
 ```cpp
 std::map<std::string, std::string> artifactNameByRole;
@@ -22713,7 +25229,7 @@ std::map<std::string, std::string> artifactNameByRole;
 
 ### API-adc44a091a47 · ndnsf::di::NativeArtifactBinding::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L81)
 
 ```cpp
 void validate() const;
@@ -22721,7 +25237,7 @@ void validate() const;
 
 ### API-7062743de86a · ndnsf::di::NativeRequestControl
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L84)
 
 ```cpp
 struct NativeRequestControl
@@ -22729,7 +25245,7 @@ struct NativeRequestControl
 
 ### API-73cb82ec80ad · ndnsf::di::NativeRequestControl::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L86)
 
 ```cpp
 std::string requestId;
@@ -22737,7 +25253,7 @@ std::string requestId;
 
 ### API-ffbf12d851dc · ndnsf::di::NativeRequestControl::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L81)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L87)
 
 ```cpp
 std::uint64_t attempt = 0;
@@ -22745,7 +25261,7 @@ std::uint64_t attempt = 0;
 
 ### API-7792f54df113 · ndnsf::di::NativeRequestControl::deadline
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L88)
 
 ```cpp
 std::chrono::steady_clock::time_point deadline;
@@ -22753,7 +25269,7 @@ std::chrono::steady_clock::time_point deadline;
 
 ### API-0aa41cec797a · ndnsf::di::NativeRequestControl::cancelled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L91)
 
 ```cpp
 std::function<bool()> cancelled;
@@ -22768,7 +25284,7 @@ std::function<bool()> cancelled;
 
 ### API-b7439a52accb · ndnsf::di::NativeRequestControl::requireActive
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L87)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L93)
 
 ```cpp
 void requireActive() const;
@@ -22776,7 +25292,7 @@ void requireActive() const;
 
 ### API-936526ce9518 · ndnsf::di::NativeRequestPreparation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L96)
 
 ```cpp
 class NativeRequestPreparation
@@ -22784,7 +25300,7 @@ class NativeRequestPreparation
 
 ### API-b4f9c0cd4cf6 · ndnsf::di::NativeRequestPreparation::InspectPort
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L100)
 
 ```cpp
 using InspectPort = std::function<NativeInspectedModel(
@@ -22799,7 +25315,7 @@ using InspectPort = std::function<NativeInspectedModel(
 
 ### API-4adb642691d7 · ndnsf::di::NativeRequestPreparation::ArtifactPort
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L102)
 
 ```cpp
 using ArtifactPort = std::function<NativeArtifactBinding(
@@ -22809,7 +25325,7 @@ using ArtifactPort = std::function<NativeArtifactBinding(
 
 ### API-f2507fb8457f · ndnsf::di::NativeRequestPreparation::RolePort
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L99)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L105)
 
 ```cpp
 using RolePort = std::function<std::vector<NativeSelectionRoleV3>(
@@ -22818,7 +25334,7 @@ using RolePort = std::function<std::vector<NativeSelectionRoleV3>(
 
 ### API-13eab78269d3 · ndnsf::di::NativeRequestPreparation::NativeRequestPreparation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L102)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L108)
 
 ```cpp
 explicit NativeRequestPreparation(std::shared_ptr<const NativeAdapterRegistry> adapters,
@@ -22827,7 +25343,7 @@ explicit NativeRequestPreparation(std::shared_ptr<const NativeAdapterRegistry> a
 
 ### API-f8cbacddff79 · ndnsf::di::NativeRequestPreparation::prepareInput
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L111)
 
 ```cpp
 NativePreparedInput prepareInput(const NativeModelDescriptor& model,
@@ -22841,7 +25357,7 @@ NativePreparedInput prepareInput(const NativeModelDescriptor& model,
 
 ### API-dcca376d355a · ndnsf::di::NativeRequestPreparation::inspectModel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L113)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L119)
 
 ```cpp
 NativeInspectedModel inspectModel(const NativePreparedInput& input) const;
@@ -22849,7 +25365,7 @@ NativeInspectedModel inspectModel(const NativePreparedInput& input) const;
 
 ### API-a3b881844706 · ndnsf::di::NativeRequestPreparation::prepareRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L115)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L121)
 
 ```cpp
 std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
@@ -22858,7 +25374,7 @@ std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& mode
 
 ### API-d34af95dfbab · ndnsf::di::NativeRequestPreparation::validateRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L124)
 
 ```cpp
 static void validateRoles(const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
@@ -22867,7 +25383,7 @@ static void validateRoles(const NativeInspectedModel& model, const NativeSplitCa
 
 ### API-2d8e39c7fc67 · ndnsf::di::NativeRequestPreparation::ensureArtifacts
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L127)
 
 ```cpp
 NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
@@ -22878,7 +25394,7 @@ NativeArtifactBinding ensureArtifacts(const NativeInspectedModel& model,
 
 ### API-d192a8a670da · ndnsf::di::NativeRequestPreparation::bindPublishedRoles
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L128)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp#L134)
 
 ```cpp
 static std::vector<NativeSelectionRoleV3> bindPublishedRoles(
@@ -23147,7 +25663,7 @@ void validateNativeRolePlacement(const NativeRolePlacementProposalV3& proposal,
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp
 
-源码 SHA-256：`c2847e4063456dd4e6b2eaefcc2f52350284607dbe59dfd8778b9ef7a38b5fa3`。
+源码 SHA-256：`c2dd039412b9ee17de8e6695e6e1b1be217ea305dec31dc9d1e421583363207b`。
 
 ### API-f38e30d1c47e · ndnsf::di::NdnsfCollaborationDependencyIo
 
@@ -23157,7 +25673,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 class NdnsfCollaborationDependencyIo : public DependencyIo
 ```
 
-### API-d09720726315 · ndnsf::di::NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo
+### API-3aab1c24113f · ndnsf::di::NdnsfCollaborationDependencyIo::NdnsfCollaborationDependencyIo
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp#L22)
 
@@ -23165,7 +25681,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 explicit NdnsfCollaborationDependencyIo(
     ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
     int fetchTimeoutMs = 30000,
-    std::size_t maxSegmentSize = 7600,
+    std::size_t maxSegmentSize = 7000,
     int freshnessMs = 60000,
     std::shared_ptr<ProviderGroupCoordinator> groupCoordinator = nullptr,
     std::shared_ptr<ProtectedRuntime> protectedRuntime = nullptr);
@@ -23598,7 +26114,7 @@ std::size_t acceptedBytes() const noexcept;
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp
 
-源码 SHA-256：`35754fb41d48aa5e613524c9c994ff0ffbfb83737e8ef77d0facd84678509ff0`。
+源码 SHA-256：`ccef63c1965d8ece9396f1079b38ffd2a05fb36282e8e1a9263c0021ad2cc5f0`。
 
 ### API-6141c4d31889 · ndnsf::di::Subscription
 
@@ -23632,9 +26148,17 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 class CooperativePlacementStrategy
 ```
 
-### API-6654882f2530 · ndnsf::di::NativeApplicationInput
+### API-72e405c3a75b · ndnsf::di::User
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L26)
+
+```cpp
+class User
+```
+
+### API-6654882f2530 · ndnsf::di::NativeApplicationInput
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L27)
 
 ```cpp
 struct NativeApplicationInput
@@ -23642,7 +26166,7 @@ struct NativeApplicationInput
 
 ### API-812570ffa46e · ndnsf::di::NativeRequestOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L27)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L28)
 
 ```cpp
 struct NativeRequestOptions
@@ -23650,7 +26174,7 @@ struct NativeRequestOptions
 
 ### API-9f0a9cff63ed · ndnsf::di::DiError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L29)
 
 ```cpp
 class DiError
@@ -23658,7 +26182,7 @@ class DiError
 
 ### API-77e8f0092469 · ndnsf::di::Conversation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L30)
 
 ```cpp
 class Conversation
@@ -23666,7 +26190,7 @@ class Conversation
 
 ### API-235839627f0a · ndnsf::di::ConversationOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L31)
 
 ```cpp
 struct ConversationOptions
@@ -23674,7 +26198,7 @@ struct ConversationOptions
 
 ### API-425f0d0df8cf · ndnsf::di::detail::RuntimeState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L32)
 
 ```cpp
 struct RuntimeState
@@ -23682,7 +26206,7 @@ struct RuntimeState
 
 ### API-e4fa17a0102c · ndnsf::di::Spec185PreparedModelTestAccess
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L36)
 
 ```cpp
 struct Spec185PreparedModelTestAccess
@@ -23690,7 +26214,7 @@ struct Spec185PreparedModelTestAccess
 
 ### API-76d19e3f35a4 · ndnsf::di::DataRef
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L40)
 
 ```cpp
 class DataRef
@@ -23698,7 +26222,7 @@ class DataRef
 
 ### API-fb31f5ad5ad8 · ndnsf::di::DataRef::DataRef
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L42)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L43)
 
 ```cpp
 DataRef() = default;
@@ -23706,7 +26230,7 @@ DataRef() = default;
 
 ### API-f645b53ec065 · ndnsf::di::DataRef::fromPublishedMetadata
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L43)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L44)
 
 ```cpp
 static DataRef fromPublishedMetadata(const std::string& canonicalReferenceJson);
@@ -23714,7 +26238,7 @@ static DataRef fromPublishedMetadata(const std::string& canonicalReferenceJson);
 
 ### API-050f93d61ff2 · ndnsf::di::DataRef::canonicalMetadata
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L45)
 
 ```cpp
 const std::string& canonicalMetadata() const noexcept
@@ -23722,7 +26246,7 @@ const std::string& canonicalMetadata() const noexcept
 
 ### API-05eb036bc685 · ndnsf::di::Input
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L58)
 
 ```cpp
 class Input
@@ -23730,7 +26254,7 @@ class Input
 
 ### API-0985f0b65a85 · ndnsf::di::Input::inlineBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L61)
 
 ```cpp
 static Input inlineBytes(std::vector<std::uint8_t> payload,
@@ -23739,7 +26263,7 @@ static Input inlineBytes(std::vector<std::uint8_t> payload,
 
 ### API-c00024edabe3 · ndnsf::di::Input::text
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L63)
 
 ```cpp
 static Input text(std::string utf8);
@@ -23747,7 +26271,7 @@ static Input text(std::string utf8);
 
 ### API-7a52a2eda433 · ndnsf::di::Input::repository
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L64)
 
 ```cpp
 static Input repository(DataRef reference);
@@ -23755,7 +26279,7 @@ static Input repository(DataRef reference);
 
 ### API-e1608d4de9b1 · ndnsf::di::PlacementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L77)
 
 ```cpp
 class PlacementStrategy
@@ -23763,7 +26287,7 @@ class PlacementStrategy
 
 ### API-9bbf8a730a1b · ndnsf::di::PlacementStrategy::PlacementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L80)
 
 ```cpp
 PlacementStrategy() = delete;
@@ -23771,7 +26295,7 @@ PlacementStrategy() = delete;
 
 ### API-24b525ff5d88 · ndnsf::di::GenerationOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L94)
 
 ```cpp
 struct GenerationOptions
@@ -23779,7 +26303,7 @@ struct GenerationOptions
 
 ### API-7bf42a464763 · ndnsf::di::GenerationOptions::maxNewTokens
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L96)
 
 ```cpp
 std::size_t maxNewTokens = 32;
@@ -23787,7 +26311,7 @@ std::size_t maxNewTokens = 32;
 
 ### API-9187018b1e7b · ndnsf::di::StreamOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L98)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L99)
 
 ```cpp
 struct StreamOptions
@@ -23795,7 +26319,7 @@ struct StreamOptions
 
 ### API-f40ca65c3fd5 · ndnsf::di::StreamOptions::enabled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L100)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L101)
 
 ```cpp
 bool enabled = true;
@@ -23803,7 +26327,7 @@ bool enabled = true;
 
 ### API-a15a8a016ff7 · ndnsf::di::StreamOptions::allowReplacement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L101)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L102)
 
 ```cpp
 bool allowReplacement = false;
@@ -23811,15 +26335,38 @@ bool allowReplacement = false;
 
 ### API-178b14b2a079 · ndnsf::di::StreamOptions::maxReplacements
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L102)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L103)
 
 ```cpp
 std::uint8_t maxReplacements = 0;
 ```
 
-### API-3be4fcc801d4 · ndnsf::di::RequestOptions
+### API-21f460dfa18b · ndnsf::di::StreamOptions::interestLifetimeMs
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L106)
+
+```cpp
+std::uint32_t interestLifetimeMs = 500;
+```
+
+原始接口说明：
+
+```text
+// Bounded silence budget while a Provider performs post-Selection
+// material fetch and runner assembly before publishing the first event.
+```
+
+### API-67f753269c38 · ndnsf::di::StreamOptions::maxEventRetries
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L107)
+
+```cpp
+std::uint8_t maxEventRetries = 3;
+```
+
+### API-3be4fcc801d4 · ndnsf::di::RequestOptions
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L111)
 
 ```cpp
 struct RequestOptions
@@ -23827,7 +26374,7 @@ struct RequestOptions
 
 ### API-0a7119b435b7 · ndnsf::di::RequestOptions::timeout
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L108)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L113)
 
 ```cpp
 std::chrono::milliseconds timeout{30'000};
@@ -23835,7 +26382,7 @@ std::chrono::milliseconds timeout{30'000};
 
 ### API-ec2e0c26d1bc · ndnsf::di::RequestOptions::ackTimeout
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L114)
 
 ```cpp
 std::chrono::milliseconds ackTimeout{5'000};
@@ -23843,7 +26390,7 @@ std::chrono::milliseconds ackTimeout{5'000};
 
 ### API-22ec068ef758 · ndnsf::di::RequestOptions::placement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L110)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L115)
 
 ```cpp
 std::shared_ptr<const PlacementStrategy> placement;
@@ -23851,7 +26398,7 @@ std::shared_ptr<const PlacementStrategy> placement;
 
 ### API-7a57a9e05faa · ndnsf::di::RequestOptions::providerNames
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L112)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L117)
 
 ```cpp
 std::vector<std::string> providerNames;
@@ -23865,7 +26412,7 @@ std::vector<std::string> providerNames;
 
 ### API-6484f9b3f771 · ndnsf::di::RequestOptions::applicationRequestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L113)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L118)
 
 ```cpp
 std::string applicationRequestId;
@@ -23873,7 +26420,7 @@ std::string applicationRequestId;
 
 ### API-e12aaafdee86 · ndnsf::di::RequestOptions::outputMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L114)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L119)
 
 ```cpp
 std::string outputMode = "FULL";
@@ -23881,7 +26428,7 @@ std::string outputMode = "FULL";
 
 ### API-8e707ed7b8d1 · ndnsf::di::RequestOptions::generation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L115)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L120)
 
 ```cpp
 std::optional<GenerationOptions> generation;
@@ -23889,7 +26436,7 @@ std::optional<GenerationOptions> generation;
 
 ### API-b9a476bf0ce8 · ndnsf::di::RequestOptions::stream
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L116)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L121)
 
 ```cpp
 std::optional<StreamOptions> stream;
@@ -23897,7 +26444,7 @@ std::optional<StreamOptions> stream;
 
 ### API-24a95410ce8e · ndnsf::di::Result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L124)
 
 ```cpp
 struct Result
@@ -23905,7 +26452,7 @@ struct Result
 
 ### API-81f4495e2419 · ndnsf::di::Result::payload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L126)
 
 ```cpp
 std::vector<std::uint8_t> payload;
@@ -23913,7 +26460,7 @@ std::vector<std::uint8_t> payload;
 
 ### API-0639e1859e7a · ndnsf::di::Result::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L122)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L127)
 
 ```cpp
 std::string requestId;
@@ -23921,7 +26468,7 @@ std::string requestId;
 
 ### API-c01d90fb8f20 · ndnsf::di::Result::modelDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L128)
 
 ```cpp
 std::string modelDigest;
@@ -23929,7 +26476,7 @@ std::string modelDigest;
 
 ### API-cc084294044f · ndnsf::di::Result::planDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L124)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L129)
 
 ```cpp
 std::string planDigest;
@@ -23937,7 +26484,7 @@ std::string planDigest;
 
 ### API-f4a0b5cb6110 · ndnsf::di::Result::matchesFloat32Tensor
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L127)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L132)
 
 ```cpp
 bool matchesFloat32Tensor(const std::string& tensorName,
@@ -23953,7 +26500,7 @@ bool matchesFloat32Tensor(const std::string& tensorName,
 
 ### API-de6a02de4c16 · ndnsf::di::RequestStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L137)
 
 ```cpp
 enum class RequestStatus
@@ -23961,7 +26508,7 @@ enum class RequestStatus
 
 ### API-f72f584f985c · ndnsf::di::RequestStatus::Pending
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L137)
 
 ```cpp
 Pending
@@ -23969,7 +26516,7 @@ Pending
 
 ### API-c841c83a55e8 · ndnsf::di::RequestStatus::Succeeded
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L137)
 
 ```cpp
 Succeeded
@@ -23977,7 +26524,7 @@ Succeeded
 
 ### API-d4235de9af37 · ndnsf::di::RequestStatus::Failed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L137)
 
 ```cpp
 Failed
@@ -23985,7 +26532,7 @@ Failed
 
 ### API-38fe3c27fca0 · ndnsf::di::RequestStatus::Cancelled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L137)
 
 ```cpp
 Cancelled
@@ -23993,7 +26540,7 @@ Cancelled
 
 ### API-f5f15dbde3c0 · ndnsf::di::Event
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L134)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L139)
 
 ```cpp
 struct Event
@@ -24001,7 +26548,7 @@ struct Event
 
 ### API-b54fc6a5ba9e · ndnsf::di::Event::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L141)
 
 ```cpp
 std::string requestId;
@@ -24009,7 +26556,7 @@ std::string requestId;
 
 ### API-054a3c3a2edd · ndnsf::di::Event::payload
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L137)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L142)
 
 ```cpp
 std::vector<std::uint8_t> payload;
@@ -24017,7 +26564,7 @@ std::vector<std::uint8_t> payload;
 
 ### API-efab8e008e2b · ndnsf::di::Event::terminal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L138)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L143)
 
 ```cpp
 bool terminal = false;
@@ -24025,7 +26572,7 @@ bool terminal = false;
 
 ### API-768481d8304c · ndnsf::di::Event::sequence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L144)
 
 ```cpp
 std::uint64_t sequence = 0;
@@ -24033,7 +26580,7 @@ std::uint64_t sequence = 0;
 
 ### API-bb9a16849937 · ndnsf::di::StreamEvent
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L147)
 
 ```cpp
 using StreamEvent = Event;
@@ -24041,7 +26588,7 @@ using StreamEvent = Event;
 
 ### API-674157b6b8f6 · ndnsf::di::RequestDiagnostics
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L144)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L149)
 
 ```cpp
 struct RequestDiagnostics
@@ -24049,7 +26596,7 @@ struct RequestDiagnostics
 
 ### API-68a9576251f9 · ndnsf::di::RequestDiagnostics::observationDropped
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L146)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L151)
 
 ```cpp
 std::uint64_t observationDropped = 0;
@@ -24057,7 +26604,7 @@ std::uint64_t observationDropped = 0;
 
 ### API-ed862dcc86d2 · ndnsf::di::EventReader
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L150)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L155)
 
 ```cpp
 class EventReader
@@ -24065,7 +26612,7 @@ class EventReader
 
 ### API-28b6d6c10bd8 · ndnsf::di::EventReader::EventReader
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L153)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L158)
 
 ```cpp
 EventReader() noexcept = default;
@@ -24073,7 +26620,7 @@ EventReader() noexcept = default;
 
 ### API-eb51cde94eb8 · ndnsf::di::EventReader::EventReader
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L154)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L159)
 
 ```cpp
 EventReader(EventReader&&) noexcept = default;
@@ -24081,7 +26628,7 @@ EventReader(EventReader&&) noexcept = default;
 
 ### API-6dbd2ef8267d · ndnsf::di::EventReader::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L155)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L160)
 
 ```cpp
 EventReader& operator=(EventReader&&) noexcept = default;
@@ -24089,7 +26636,7 @@ EventReader& operator=(EventReader&&) noexcept = default;
 
 ### API-e483bebc55e1 · ndnsf::di::EventReader::EventReader
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L156)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L161)
 
 ```cpp
 EventReader(const EventReader&) = delete;
@@ -24097,7 +26644,7 @@ EventReader(const EventReader&) = delete;
 
 ### API-ab99dc50a1cc · ndnsf::di::EventReader::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L157)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L162)
 
 ```cpp
 EventReader& operator=(const EventReader&) = delete;
@@ -24105,7 +26652,7 @@ EventReader& operator=(const EventReader&) = delete;
 
 ### API-8c612258f271 · ndnsf::di::EventReader::~EventReader
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L158)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L163)
 
 ```cpp
 ~EventReader() noexcept;
@@ -24113,7 +26660,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-f33e82abb829 · ndnsf::di::EventReader::next
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L161)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L166)
 
 ```cpp
 std::optional<Event> next(std::chrono::milliseconds timeout);
@@ -24127,7 +26674,7 @@ std::optional<Event> next(std::chrono::milliseconds timeout);
 
 ### API-8fce73da41ed · ndnsf::di::EventReader::remainingTimeout
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L168)
 
 ```cpp
 std::chrono::milliseconds remainingTimeout() const;
@@ -24141,7 +26688,7 @@ std::chrono::milliseconds remainingTimeout() const;
 
 ### API-23f73b141f65 · ndnsf::di::EventReader::nextAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L165)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L170)
 
 ```cpp
 Subscription nextAsync(std::chrono::milliseconds timeout,
@@ -24156,7 +26703,7 @@ Subscription nextAsync(std::chrono::milliseconds timeout,
 
 ### API-434a707ed74d · ndnsf::di::EventReader::close
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L168)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L173)
 
 ```cpp
 void close() noexcept;
@@ -24170,7 +26717,7 @@ void close() noexcept;
 
 ### API-8418065e8bf4 · ndnsf::di::RequestHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L182)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L187)
 
 ```cpp
 class RequestHandle
@@ -24178,7 +26725,7 @@ class RequestHandle
 
 ### API-e8ff23a02287 · ndnsf::di::RequestHandle::RequestHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L185)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L190)
 
 ```cpp
 RequestHandle() = default;
@@ -24186,7 +26733,7 @@ RequestHandle() = default;
 
 ### API-30b97eaf8d62 · ndnsf::di::RequestHandle::id
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L186)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L191)
 
 ```cpp
 std::string id() const;
@@ -24194,7 +26741,7 @@ std::string id() const;
 
 ### API-0c2133cbf8e7 · ndnsf::di::RequestHandle::status
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L187)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L192)
 
 ```cpp
 RequestStatus status() const;
@@ -24202,7 +26749,7 @@ RequestStatus status() const;
 
 ### API-2a4e72c86a52 · ndnsf::di::RequestHandle::result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L188)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L193)
 
 ```cpp
 Result result() const;
@@ -24210,7 +26757,7 @@ Result result() const;
 
 ### API-e043a35be667 · ndnsf::di::RequestHandle::result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L189)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L194)
 
 ```cpp
 Result result(std::chrono::milliseconds timeout) const;
@@ -24218,7 +26765,7 @@ Result result(std::chrono::milliseconds timeout) const;
 
 ### API-80598d980f06 · ndnsf::di::RequestHandle::wait
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L190)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L195)
 
 ```cpp
 Result wait() const
@@ -24226,7 +26773,7 @@ Result wait() const
 
 ### API-064b64f0e506 · ndnsf::di::RequestHandle::wait
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L191)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L196)
 
 ```cpp
 Result wait(std::chrono::milliseconds timeout) const
@@ -24234,7 +26781,7 @@ Result wait(std::chrono::milliseconds timeout) const
 
 ### API-80da8e234f95 · ndnsf::di::RequestHandle::events
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L193)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L198)
 
 ```cpp
 EventReader events() const;
@@ -24248,7 +26795,7 @@ EventReader events() const;
 
 ### API-a4ee7f94a6f8 · ndnsf::di::RequestHandle::diagnostics
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L195)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L200)
 
 ```cpp
 RequestDiagnostics diagnostics() const;
@@ -24262,7 +26809,7 @@ RequestDiagnostics diagnostics() const;
 
 ### API-6c52a8434bef · ndnsf::di::RequestHandle::onCompletion
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L197)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L202)
 
 ```cpp
 Subscription onCompletion(
@@ -24277,7 +26824,7 @@ Subscription onCompletion(
 
 ### API-57d1bdf6fad6 · ndnsf::di::RequestHandle::resultAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L200)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L205)
 
 ```cpp
 Subscription resultAsync(
@@ -24293,7 +26840,7 @@ Subscription resultAsync(
 
 ### API-1dd1390ed061 · ndnsf::di::RequestHandle::observe
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L204)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L209)
 
 ```cpp
 Subscription observe(std::function<void(const Event&)> callback) const;
@@ -24307,7 +26854,7 @@ Subscription observe(std::function<void(const Event&)> callback) const;
 
 ### API-013e1ee16b5b · ndnsf::di::RequestHandle::cancel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L205)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L210)
 
 ```cpp
 void cancel() const;
@@ -24315,7 +26862,7 @@ void cancel() const;
 
 ### API-727997f40600 · ndnsf::di::PreparationReceipt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L218)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L223)
 
 ```cpp
 struct PreparationReceipt
@@ -24323,7 +26870,7 @@ struct PreparationReceipt
 
 ### API-50a46e7b7358 · ndnsf::di::PreparationReceipt::Origin
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L220)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L225)
 
 ```cpp
 enum class Origin
@@ -24331,7 +26878,7 @@ enum class Origin
 
 ### API-3319ad9f9e9f · ndnsf::di::PreparationReceipt::Origin::CacheHit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L220)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L225)
 
 ```cpp
 CacheHit
@@ -24339,7 +26886,7 @@ CacheHit
 
 ### API-8cd6ed3c6c88 · ndnsf::di::PreparationReceipt::Origin::JoinedInFlight
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L220)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L225)
 
 ```cpp
 JoinedInFlight
@@ -24347,7 +26894,7 @@ JoinedInFlight
 
 ### API-4b481e75d95b · ndnsf::di::PreparationReceipt::Origin::Fetched
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L220)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L225)
 
 ```cpp
 Fetched
@@ -24355,7 +26902,7 @@ Fetched
 
 ### API-894e86edea28 · ndnsf::di::PreparationReceipt::Origin::Refreshed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L220)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L225)
 
 ```cpp
 Refreshed
@@ -24363,7 +26910,7 @@ Refreshed
 
 ### API-5597b0c03b75 · ndnsf::di::PreparationReceipt::origin
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L221)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L226)
 
 ```cpp
 Origin origin = Origin::Fetched;
@@ -24371,7 +26918,7 @@ Origin origin = Origin::Fetched;
 
 ### API-9faa89defc72 · ndnsf::di::PreparationReceipt::preparationKeyDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L222)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L227)
 
 ```cpp
 std::string preparationKeyDigest;
@@ -24379,7 +26926,7 @@ std::string preparationKeyDigest;
 
 ### API-128cea642221 · ndnsf::di::PreparationReceipt::manifestDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L223)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L228)
 
 ```cpp
 std::string manifestDigest;
@@ -24387,7 +26934,7 @@ std::string manifestDigest;
 
 ### API-71a846b93d76 · ndnsf::di::PreparationReceipt::elapsed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L224)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L229)
 
 ```cpp
 std::chrono::milliseconds elapsed{0};
@@ -24395,7 +26942,7 @@ std::chrono::milliseconds elapsed{0};
 
 ### API-81b77dc66057 · ndnsf::di::PreparedModel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L228)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L233)
 
 ```cpp
 class PreparedModel
@@ -24403,7 +26950,7 @@ class PreparedModel
 
 ### API-89e08c435501 · ndnsf::di::PreparedModel::PreparedModel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L231)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L236)
 
 ```cpp
 PreparedModel() = delete;
@@ -24411,7 +26958,7 @@ PreparedModel() = delete;
 
 ### API-cdcf5940df61 · ndnsf::di::PreparedModel::manifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L233)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L238)
 
 ```cpp
 const ModelManifest& manifest() const noexcept;
@@ -24419,7 +26966,7 @@ const ModelManifest& manifest() const noexcept;
 
 ### API-237346b8c07c · ndnsf::di::PreparedModel::receipt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L234)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L239)
 
 ```cpp
 const PreparationReceipt& receipt() const noexcept;
@@ -24427,61 +26974,70 @@ const PreparationReceipt& receipt() const noexcept;
 
 ### API-9a3495208368 · ndnsf::di::PreparedModel::capabilities
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L235)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L240)
 
 ```cpp
 ModelCapabilities capabilities() const;
 ```
 
-### API-4cc1c2440308 · ndnsf::di::PreparedModel::request
+### API-424d55a584e1 · ndnsf::di::PreparedModel::request
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L238)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L246)
 
 ```cpp
-RequestHandle request(const Input& input, const RequestOptions& options = {}) const;
+[[deprecated("use User::request(model, input, options)")]]
+  RequestHandle request(const Input& input, const RequestOptions& options = {}) const;
 ```
 
 原始接口说明：
 
 ```text
-/** Submit a non-blocking request through the package's native client. */
+/**
+   * Compatibility entry point. Prefer User::request(model, input, options),
+   * which keeps request initiation owned by the User façade.
+   */
 ```
 
-### API-6f549e4a461e · ndnsf::di::PreparedModel::run
+### API-e5b5a169af6d · ndnsf::di::PreparedModel::run
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L241)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L250)
 
 ```cpp
-Result run(const Input& input, const RequestOptions& options = {}) const;
+[[deprecated("use User::run(model, input, options)")]]
+  Result run(const Input& input, const RequestOptions& options = {}) const;
 ```
 
 原始接口说明：
 
 ```text
-/** Submit and wait using the request's configured deadline. */
+/** Compatibility entry point; prefer User::run(model, input, options). */
 ```
 
-### API-351cb525a993 · ndnsf::di::PreparedModel::openConversation
+### API-d16a899f7df3 · ndnsf::di::PreparedModel::openConversation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L244)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp#L257)
 
 ```cpp
-Conversation openConversation(const ConversationOptions& options = {}) const;
+[[deprecated("use User::openConversation(model, options)")]]
+  Conversation openConversation(const ConversationOptions& options = {}) const;
 ```
 
 原始接口说明：
 
 ```text
-/** Open one model-bound native conversation using the Runtime coordinator. */
+/**
+   * Compatibility entry point. Prefer User::openConversation(model, options),
+   * which validates the model/User Runtime binding at the owner boundary.
+   */
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp
 
-源码 SHA-256：`a1887d5b962c4f331b763a184fc2cb63aa5caa84b6be8e0e1e50dd3668d21279`。
+源码 SHA-256：`de8b65ca31d65f1ae514dd607de08945220a584d29f359b7feb649c73e4c43c3`。
 
 ### API-4566a41b1d20 · ndnsf::di::FrozenPreparationRegistration
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L16)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L17)
 
 ```cpp
 struct FrozenPreparationRegistration
@@ -24489,7 +27045,7 @@ struct FrozenPreparationRegistration
 
 ### API-be7348f4caca · ndnsf::di::FrozenPreparationRegistration::key
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L18)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L19)
 
 ```cpp
 std::string key;
@@ -24497,7 +27053,7 @@ std::string key;
 
 ### API-f97ad4f8774f · ndnsf::di::FrozenPreparationRegistration::baseDirectory
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L20)
 
 ```cpp
 std::filesystem::path baseDirectory;
@@ -24505,7 +27061,7 @@ std::filesystem::path baseDirectory;
 
 ### API-fcbcb4bd4454 · ndnsf::di::FrozenPreparationRegistration::configurationJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L20)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L21)
 
 ```cpp
 std::string configurationJson;
@@ -24513,7 +27069,7 @@ std::string configurationJson;
 
 ### API-c2dc688e5bab · ndnsf::di::FrozenPreparationRegistration::configurationDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L21)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L22)
 
 ```cpp
 std::string configurationDigest;
@@ -24521,7 +27077,7 @@ std::string configurationDigest;
 
 ### API-46d688d6a6ba · ndnsf::di::FrozenPreparationRegistration::taskName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L22)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L23)
 
 ```cpp
 std::string taskName;
@@ -24529,7 +27085,7 @@ std::string taskName;
 
 ### API-a1b93a185477 · ndnsf::di::FrozenPreparationRegistration::taskContractDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L23)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L24)
 
 ```cpp
 std::string taskContractDigest;
@@ -24537,7 +27093,7 @@ std::string taskContractDigest;
 
 ### API-bc734865d4a9 · ndnsf::di::FrozenPreparationRegistration::inputLayoutDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L24)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L25)
 
 ```cpp
 std::string inputLayoutDigest;
@@ -24545,7 +27101,7 @@ std::string inputLayoutDigest;
 
 ### API-279f820da2c0 · ndnsf::di::PreparedModelPackage
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L34)
 
 ```cpp
 struct PreparedModelPackage
@@ -24553,7 +27109,7 @@ struct PreparedModelPackage
 
 ### API-e6e43c80c2f4 · ndnsf::di::PreparedModelPackage::catalog
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L36)
 
 ```cpp
 NativeRequestCatalog catalog;
@@ -24561,7 +27117,7 @@ NativeRequestCatalog catalog;
 
 ### API-ec70f8c4d9ed · ndnsf::di::PreparedModelPackage::registration
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L37)
 
 ```cpp
 std::shared_ptr<const FrozenPreparationRegistration> registration;
@@ -24569,7 +27125,7 @@ std::shared_ptr<const FrozenPreparationRegistration> registration;
 
 ### API-38cd6559b73c · ndnsf::di::PreparedModelPackage::manifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L38)
 
 ```cpp
 ModelManifest manifest;
@@ -24577,7 +27133,7 @@ ModelManifest manifest;
 
 ### API-ada7579bd284 · ndnsf::di::PreparedModelPackage::capabilities
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L39)
 
 ```cpp
 ModelCapabilities capabilities;
@@ -24585,7 +27141,7 @@ ModelCapabilities capabilities;
 
 ### API-ab47e58b2478 · ndnsf::di::PreparedModelPackage::preparationKeyDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L40)
 
 ```cpp
 std::string preparationKeyDigest;
@@ -24593,7 +27149,7 @@ std::string preparationKeyDigest;
 
 ### API-81b63d7d2bed · ndnsf::di::PreparedModelPackage::retainedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L41)
 
 ```cpp
 std::size_t retainedBytes = 0;
@@ -24601,7 +27157,7 @@ std::size_t retainedBytes = 0;
 
 ### API-b0a4f1ee7d11 · ndnsf::di::PreparedModelPackage::defaultPlacement
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L45)
 
 ```cpp
 std::shared_ptr<const CooperativePlacementStrategy> defaultPlacement;
@@ -24617,7 +27173,7 @@ std::shared_ptr<const CooperativePlacementStrategy> defaultPlacement;
 
 ### API-1cd3919ef938 · ndnsf::di::PreparedModelPackage::runtimeBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L47)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L48)
 
 ```cpp
 std::shared_ptr<void> runtimeBinding;
@@ -24628,6 +27184,35 @@ std::shared_ptr<void> runtimeBinding;
 ```text
 // Opaque Runtime identity used to reject a placement handle borrowed from a
 // different Runtime state. It carries no request or authorization data.
+```
+
+### API-5d3f302a9b01 · ndnsf::di::PreparedModelPackage::modelReference
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L50)
+
+```cpp
+std::optional<NativeModelArtifactReference> modelReference;
+```
+
+原始接口说明：
+
+```text
+/** Reference-only source identity emitted by User::request. */
+```
+
+### API-60717a73e147 · ndnsf::di::PreparedModelPackage::preparedPublication
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp#L53)
+
+```cpp
+std::optional<NativePreparedCanonicalPublication> preparedPublication;
+```
+
+原始接口说明：
+
+```text
+/** Prepare-time canonical publication receipt; request binding only derives
+   * role names from it and never performs another Core publication. */
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelTypes.hpp
@@ -24772,7 +27357,7 @@ std::string preparationKeyDigest;
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp
 
-源码 SHA-256：`566ae74474bcc9042867e2e02f50fef535023f2d0bbc3a39cd9172867b494f79`。
+源码 SHA-256：`1d01983b327e0db2c124bfb4076564ec64dcf19e0074dbc1aceb605f1f4c37fa`。
 
 ### API-25451b44b9a3 · ndnsf::di::ProtectedRuntimeState
 
@@ -24918,9 +27503,81 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::function<bool()> shouldCancel;
 ```
 
-### API-d9b8e8db7b45 · ndnsf::di::ProtectedRuntimeBindingV1
+### API-095e422b4d89 · ndnsf::di::NativeProtectedKeyReferenceV1
 
 public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L46)
+
+```cpp
+struct NativeProtectedKeyReferenceV1
+```
+
+### API-e1f886898917 · ndnsf::di::NativeProtectedKeyReferenceV1::authorityIdentity
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L48)
+
+```cpp
+std::string authorityIdentity;
+```
+
+### API-9fa920ebff43 · ndnsf::di::NativeProtectedKeyReferenceV1::providerIdentity
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L49)
+
+```cpp
+std::string providerIdentity;
+```
+
+### API-96c99b7bf5bb · ndnsf::di::NativeProtectedKeyReferenceV1::modelManifestDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L50)
+
+```cpp
+std::string modelManifestDigest;
+```
+
+### API-6639429db141 · ndnsf::di::NativeProtectedKeyReferenceV1::protectionEpoch
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L51)
+
+```cpp
+std::string protectionEpoch;
+```
+
+### API-363f9c899c74 · ndnsf::di::NativeProtectedKeyReferenceV1::keyId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L52)
+
+```cpp
+std::string keyId;
+```
+
+### API-e3db77c75bad · ndnsf::di::NativeProtectedKeyReferenceV1::validate
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L54)
+
+```cpp
+void validate() const;
+```
+
+### API-36d25ef54fdd · ndnsf::di::NativeProtectedKeyReferenceV1::canonical
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L55)
+
+```cpp
+std::string canonical() const;
+```
+
+### API-80591ed046c2 · ndnsf::di::NativeProtectedKeyReferenceV1::digest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L56)
+
+```cpp
+std::string digest() const;
+```
+
+### API-d9b8e8db7b45 · ndnsf::di::ProtectedRuntimeBindingV1
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L60)
 
 ```cpp
 struct ProtectedRuntimeBindingV1
@@ -24928,7 +27585,7 @@ struct ProtectedRuntimeBindingV1
 
 ### API-d62926b807bf · ndnsf::di::ProtectedRuntimeBindingV1::provider
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L48)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L62)
 
 ```cpp
 std::string provider;
@@ -24936,7 +27593,7 @@ std::string provider;
 
 ### API-5eb5b9808e36 · ndnsf::di::ProtectedRuntimeBindingV1::role
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L63)
 
 ```cpp
 std::string role;
@@ -24944,7 +27601,7 @@ std::string role;
 
 ### API-0ce866c7b6aa · ndnsf::di::ProtectedRuntimeBindingV1::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L50)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L64)
 
 ```cpp
 std::string requestId;
@@ -24952,7 +27609,7 @@ std::string requestId;
 
 ### API-76521b75301e · ndnsf::di::ProtectedRuntimeBindingV1::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L51)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L65)
 
 ```cpp
 std::uint64_t attempt = 0;
@@ -24960,7 +27617,7 @@ std::uint64_t attempt = 0;
 
 ### API-1150d659bb2c · ndnsf::di::ProtectedRuntimeBindingV1::planCoreDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L66)
 
 ```cpp
 std::string planCoreDigest;
@@ -24968,7 +27625,7 @@ std::string planCoreDigest;
 
 ### API-4c078e980ca9 · ndnsf::di::ProtectedRuntimeBindingV1::planDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L67)
 
 ```cpp
 std::string planDigest;
@@ -24976,7 +27633,7 @@ std::string planDigest;
 
 ### API-0f13ee764ff1 · ndnsf::di::ProtectedRuntimeBindingV1::securityPolicySnapshotDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L54)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L68)
 
 ```cpp
 std::string securityPolicySnapshotDigest;
@@ -24984,7 +27641,7 @@ std::string securityPolicySnapshotDigest;
 
 ### API-6b2803c232d6 · ndnsf::di::ProtectedRuntimeBindingV1::protectionEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L69)
 
 ```cpp
 std::string protectionEpoch;
@@ -24992,7 +27649,7 @@ std::string protectionEpoch;
 
 ### API-3b4b9cca686d · ndnsf::di::ProtectedRuntimeBindingV1::grantName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L56)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L70)
 
 ```cpp
 std::string grantName;
@@ -25000,7 +27657,7 @@ std::string grantName;
 
 ### API-9ecab4a620ff · ndnsf::di::ProtectedRuntimeBindingV1::grantDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L57)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L71)
 
 ```cpp
 std::string grantDigest;
@@ -25008,7 +27665,7 @@ std::string grantDigest;
 
 ### API-2972650b21f7 · ndnsf::di::ProtectedRuntimeBindingV1::capabilityDigest
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L72)
 
 ```cpp
 std::string capabilityDigest;
@@ -25016,7 +27673,7 @@ std::string capabilityDigest;
 
 ### API-8bc8af0fcf00 · ndnsf::di::ProtectedRuntimeBindingV1::groupId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L73)
 
 ```cpp
 std::string groupId;
@@ -25024,7 +27681,7 @@ std::string groupId;
 
 ### API-06f7974ffb8b · ndnsf::di::ProtectedRuntimeBindingV1::groupEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L74)
 
 ```cpp
 std::uint64_t groupEpoch = 0;
@@ -25032,7 +27689,7 @@ std::uint64_t groupEpoch = 0;
 
 ### API-64d1d5b0c669 · ndnsf::di::ProtectedRuntimeBindingV1::epochKeyId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L61)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L75)
 
 ```cpp
 std::string epochKeyId;
@@ -25040,7 +27697,7 @@ std::string epochKeyId;
 
 ### API-92ce59f0dab1 · ndnsf::di::ProtectedRuntimeBindingV1::providerBootId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L76)
 
 ```cpp
 std::string providerBootId;
@@ -25048,7 +27705,7 @@ std::string providerBootId;
 
 ### API-f1c0d9c386ad · ndnsf::di::ProtectedRuntimeBindingV1::fencingToken
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L77)
 
 ```cpp
 std::string fencingToken;
@@ -25056,7 +27713,7 @@ std::string fencingToken;
 
 ### API-3a64faeaa15b · ndnsf::di::ProtectedRuntimeBindingV1::revocationSequence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L67)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L81)
 
 ```cpp
 std::uint64_t revocationSequence = 1;
@@ -25072,7 +27729,7 @@ std::uint64_t revocationSequence = 1;
 
 ### API-b6a3048235b3 · ndnsf::di::ProtectedRuntimeBindingV1::expiresAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L82)
 
 ```cpp
 std::uint64_t expiresAtMs = 0;
@@ -25080,7 +27737,7 @@ std::uint64_t expiresAtMs = 0;
 
 ### API-a601830a1f02 · ndnsf::di::ProtectedRuntimeBindingV1::mayPublishEndpointDigests
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L69)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L83)
 
 ```cpp
 std::set<std::string> mayPublishEndpointDigests;
@@ -25088,7 +27745,7 @@ std::set<std::string> mayPublishEndpointDigests;
 
 ### API-0a0d07a7819e · ndnsf::di::ProtectedRuntimeBindingV1::mustFetchEndpointDigests
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L84)
 
 ```cpp
 std::set<std::string> mustFetchEndpointDigests;
@@ -25096,7 +27753,7 @@ std::set<std::string> mustFetchEndpointDigests;
 
 ### API-f77220bfff7c · ndnsf::di::ProtectedRuntimeBindingV1::mayPublishConsumerByEndpoint
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L71)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L85)
 
 ```cpp
 std::map<std::string, std::string> mayPublishConsumerByEndpoint;
@@ -25104,7 +27761,7 @@ std::map<std::string, std::string> mayPublishConsumerByEndpoint;
 
 ### API-493993fbe6ce · ndnsf::di::ProtectedRuntimeBindingV1::mustFetchProducerByEndpoint
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L86)
 
 ```cpp
 std::map<std::string, std::string> mustFetchProducerByEndpoint;
@@ -25112,7 +27769,7 @@ std::map<std::string, std::string> mustFetchProducerByEndpoint;
 
 ### API-bffd5e081a71 · ndnsf::di::ProtectedRuntimeBindingV1::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L88)
 
 ```cpp
 void validate() const;
@@ -25120,7 +27777,7 @@ void validate() const;
 
 ### API-7d07a511eeb7 · ndnsf::di::ProtectedRuntimeBindingV1::exactlyMatches
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L89)
 
 ```cpp
 bool exactlyMatches(const ProtectedRuntimeBindingV1& other) const noexcept;
@@ -25128,7 +27785,7 @@ bool exactlyMatches(const ProtectedRuntimeBindingV1& other) const noexcept;
 
 ### API-ee856585a5b7 · ndnsf::di::ProtectedRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L106)
 
 ```cpp
 class ProtectedRuntime
@@ -25136,7 +27793,7 @@ class ProtectedRuntime
 
 ### API-be125486f1e0 · ndnsf::di::ProtectedRuntime::Zeroizer
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L109)
 
 ```cpp
 using Zeroizer = std::function<void()>;
@@ -25144,7 +27801,7 @@ using Zeroizer = std::function<void()>;
 
 ### API-c2293f79d407 · ndnsf::di::ProtectedRuntime::ProtectedRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L111)
 
 ```cpp
 explicit ProtectedRuntime(ProtectedRuntimeBindingV1 expectedBinding,
@@ -25153,7 +27810,7 @@ explicit ProtectedRuntime(ProtectedRuntimeBindingV1 expectedBinding,
 
 ### API-c8461e7fbbce · ndnsf::di::ProtectedRuntime::~ProtectedRuntime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L99)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L113)
 
 ```cpp
 ~ProtectedRuntime();
@@ -25161,7 +27818,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-c5dea9871f7b · ndnsf::di::ProtectedRuntime::verifyGrant
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L102)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L116)
 
 ```cpp
 void verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
@@ -25176,7 +27833,7 @@ void verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
 
 ### API-3e8c6c7841fd · ndnsf::di::ProtectedRuntime::withContentKey
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L104)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L118)
 
 ```cpp
 void withContentKey(std::uint64_t nowMs,
@@ -25185,7 +27842,7 @@ void withContentKey(std::uint64_t nowMs,
 
 ### API-2d0fb81c36cb · ndnsf::di::ProtectedRuntime::verifyBindingConsistency
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L121)
 
 ```cpp
 void verifyBindingConsistency(const ProtectedRuntimeBindingV1& observedBinding,
@@ -25200,7 +27857,7 @@ void verifyBindingConsistency(const ProtectedRuntimeBindingV1& observedBinding,
 
 ### API-464f3d91ca0d · ndnsf::di::ProtectedRuntime::authorizeDataflow
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L123)
 
 ```cpp
 void authorizeDataflow(ProtectedDataflowDirection direction,
@@ -25212,7 +27869,7 @@ void authorizeDataflow(ProtectedDataflowDirection direction,
 
 ### API-2f5497be4710 · ndnsf::di::ProtectedRuntime::registerHostPlaintextLease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L114)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L128)
 
 ```cpp
 void registerHostPlaintextLease(std::string leaseId, Zeroizer zeroizer);
@@ -25220,7 +27877,7 @@ void registerHostPlaintextLease(std::string leaseId, Zeroizer zeroizer);
 
 ### API-ee4c58aa1785 · ndnsf::di::ProtectedRuntime::registerDevicePlaintextLease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L115)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L129)
 
 ```cpp
 void registerDevicePlaintextLease(std::string leaseId, Zeroizer zeroizer);
@@ -25228,7 +27885,7 @@ void registerDevicePlaintextLease(std::string leaseId, Zeroizer zeroizer);
 
 ### API-1fd018d498eb · ndnsf::di::ProtectedRuntime::cancel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L116)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L130)
 
 ```cpp
 void cancel(std::string reason);
@@ -25236,7 +27893,7 @@ void cancel(std::string reason);
 
 ### API-a1831e5438c9 · ndnsf::di::ProtectedRuntime::complete
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L117)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L131)
 
 ```cpp
 void complete();
@@ -25244,7 +27901,7 @@ void complete();
 
 ### API-02fd9812e17c · ndnsf::di::ProtectedRuntime::state
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L133)
 
 ```cpp
 ProtectedRuntimeState state() const noexcept;
@@ -25252,7 +27909,7 @@ ProtectedRuntimeState state() const noexcept;
 
 ### API-7520d0324c46 · ndnsf::di::ProtectedRuntime::terminalReason
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L120)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L134)
 
 ```cpp
 const std::string& terminalReason() const noexcept;
@@ -25260,10 +27917,18 @@ const std::string& terminalReason() const noexcept;
 
 ### API-de955c02d812 · ndnsf::di::ProtectedRuntime::binding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L135)
 
 ```cpp
 const ProtectedRuntimeBindingV1& binding() const noexcept;
+```
+
+### API-60508347b693 · ndnsf::di::ProtectedRuntime::keyReference
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp#L136)
+
+```cpp
+std::optional<NativeProtectedKeyReferenceV1> keyReference() const;
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp
@@ -25684,7 +28349,7 @@ static Provider fromServiceProviderForTest(
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp
 
-源码 SHA-256：`51ddd628e40e2dca51208fcfef7b9445bb0f177326b2fb2c13b7a379a48536f8`。
+源码 SHA-256：`f27d70766c1524ae3bb90db4272810758ee5e78e552af3c6a7f02283bfba9496`。
 
 ### API-bf8b979a972b · ndnsf::di::ProviderArtifactKey
 
@@ -25896,7 +28561,7 @@ std::uint64_t ciphertextBytes = 0;
 
 ### API-5d594c26c5cb · ndnsf::di::PreparedProviderArtifact::ciphertext
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L64)
 
 ```cpp
 std::shared_ptr<const std::vector<std::uint8_t>> ciphertext;
@@ -25905,13 +28570,14 @@ std::shared_ptr<const std::vector<std::uint8_t>> ciphertext;
 原始接口说明：
 
 ```text
-// Protected artifacts may be retained as ciphertext in memory.  The cache
-// never stores a plaintext path or mutable runner state.
+// Optional compatibility/test payload.  The production Provider keeps
+// protected ciphertext on disk and stores only its immutable path in the
+// runner metadata, so idle cache entries do not retain model-sized buffers.
 ```
 
 ### API-24da987ca77a · ndnsf::di::ProviderArtifactCacheConfig
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L67)
 
 ```cpp
 struct ProviderArtifactCacheConfig
@@ -25919,7 +28585,7 @@ struct ProviderArtifactCacheConfig
 
 ### API-311317b36af9 · ndnsf::di::ProviderArtifactCacheConfig::maxArtifactBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L69)
 
 ```cpp
 std::uint64_t maxArtifactBytes = 1ULL << 30;
@@ -25927,7 +28593,7 @@ std::uint64_t maxArtifactBytes = 1ULL << 30;
 
 ### API-06f8e102abcc · ndnsf::di::ProviderArtifactCacheConfig::maxArtifactEntries
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L69)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L70)
 
 ```cpp
 std::size_t maxArtifactEntries = 8;
@@ -25935,7 +28601,7 @@ std::size_t maxArtifactEntries = 8;
 
 ### API-53e5581144ba · ndnsf::di::ProviderArtifactCacheConfig::assemblyJobTimeout
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L71)
 
 ```cpp
 std::chrono::milliseconds assemblyJobTimeout{300000};
@@ -25943,7 +28609,7 @@ std::chrono::milliseconds assemblyJobTimeout{300000};
 
 ### API-c51a117bfc93 · ndnsf::di::ProviderArtifactCacheCounters
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L74)
 
 ```cpp
 struct ProviderArtifactCacheCounters
@@ -25951,7 +28617,7 @@ struct ProviderArtifactCacheCounters
 
 ### API-d0d65b981084 · ndnsf::di::ProviderArtifactCacheCounters::coldBuilds
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L76)
 
 ```cpp
 std::uint64_t coldBuilds = 0;
@@ -25959,7 +28625,7 @@ std::uint64_t coldBuilds = 0;
 
 ### API-8f3ce4bb4571 · ndnsf::di::ProviderArtifactCacheCounters::templateHits
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L77)
 
 ```cpp
 std::uint64_t templateHits = 0;
@@ -25967,7 +28633,7 @@ std::uint64_t templateHits = 0;
 
 ### API-175702be743c · ndnsf::di::ProviderArtifactCacheCounters::activeLeases
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L78)
 
 ```cpp
 std::uint64_t activeLeases = 0;
@@ -25975,7 +28641,7 @@ std::uint64_t activeLeases = 0;
 
 ### API-e89d93f5c6e7 · ndnsf::di::ProviderArtifactLease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L85)
 
 ```cpp
 class ProviderArtifactLease
@@ -25983,7 +28649,7 @@ class ProviderArtifactLease
 
 ### API-c4ead9cf7ac1 · ndnsf::di::ProviderArtifactLease::Release
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L87)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L88)
 
 ```cpp
 struct Release
@@ -25991,7 +28657,7 @@ struct Release
 
 ### API-d8791a685fb7 · ndnsf::di::ProviderArtifactLease::ProviderArtifactLease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L89)
 
 ```cpp
 ProviderArtifactLease() noexcept = default;
@@ -25999,7 +28665,7 @@ ProviderArtifactLease() noexcept = default;
 
 ### API-e19a5228d755 · ndnsf::di::ProviderArtifactLease::~ProviderArtifactLease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L89)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L90)
 
 ```cpp
 ~ProviderArtifactLease() noexcept;
@@ -26007,7 +28673,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-7f95d0e01136 · ndnsf::di::ProviderArtifactLease::ProviderArtifactLease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L91)
 
 ```cpp
 ProviderArtifactLease(const ProviderArtifactLease&) = delete;
@@ -26015,7 +28681,7 @@ ProviderArtifactLease(const ProviderArtifactLease&) = delete;
 
 ### API-a1151eb29341 · ndnsf::di::ProviderArtifactLease::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L91)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L92)
 
 ```cpp
 ProviderArtifactLease& operator=(const ProviderArtifactLease&) = delete;
@@ -26023,7 +28689,7 @@ ProviderArtifactLease& operator=(const ProviderArtifactLease&) = delete;
 
 ### API-e2ab968b0a31 · ndnsf::di::ProviderArtifactLease::ProviderArtifactLease
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L93)
 
 ```cpp
 ProviderArtifactLease(ProviderArtifactLease&& other) noexcept;
@@ -26031,7 +28697,7 @@ ProviderArtifactLease(ProviderArtifactLease&& other) noexcept;
 
 ### API-ae488a0ee1c0 · ndnsf::di::ProviderArtifactLease::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L94)
 
 ```cpp
 ProviderArtifactLease& operator=(ProviderArtifactLease&& other) noexcept;
@@ -26039,7 +28705,7 @@ ProviderArtifactLease& operator=(ProviderArtifactLease&& other) noexcept;
 
 ### API-c02a503cda8a · ndnsf::di::ProviderArtifactLease::valid
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L96)
 
 ```cpp
 bool valid() const noexcept
@@ -26047,7 +28713,7 @@ bool valid() const noexcept
 
 ### API-b6773acf5386 · ndnsf::di::ProviderArtifactLease::cacheHit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L97)
 
 ```cpp
 bool cacheHit() const noexcept
@@ -26055,7 +28721,7 @@ bool cacheHit() const noexcept
 
 ### API-c41aa7e7977e · ndnsf::di::ProviderArtifactLease::operator bool() const noexcept
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L98)
 
 ```cpp
 explicit operator bool() const noexcept
@@ -26063,7 +28729,7 @@ explicit operator bool() const noexcept
 
 ### API-90b997f33e86 · ndnsf::di::ProviderArtifactLease::operator->
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L98)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L99)
 
 ```cpp
 const PreparedProviderArtifact* operator->() const noexcept
@@ -26071,7 +28737,7 @@ const PreparedProviderArtifact* operator->() const noexcept
 
 ### API-43fef678ed03 · ndnsf::di::ProviderArtifactLease::operator*
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L99)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L100)
 
 ```cpp
 const PreparedProviderArtifact& operator*() const
@@ -26079,7 +28745,7 @@ const PreparedProviderArtifact& operator*() const
 
 ### API-96c45b47a34f · ndnsf::di::ProviderArtifactLease::get
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L100)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L101)
 
 ```cpp
 std::shared_ptr<const PreparedProviderArtifact> get() const noexcept
@@ -26087,7 +28753,7 @@ std::shared_ptr<const PreparedProviderArtifact> get() const noexcept
 
 ### API-2da9a48290b9 · ndnsf::di::ProviderArtifactLease::runnerSpec
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L106)
 
 ```cpp
 std::shared_ptr<const NativeModelRunnerSpec> runnerSpec() const noexcept
@@ -26103,7 +28769,7 @@ std::shared_ptr<const NativeModelRunnerSpec> runnerSpec() const noexcept
 
 ### API-58d018592310 · ndnsf::di::ProviderArtifactCache
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L122)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L123)
 
 ```cpp
 class ProviderArtifactCache
@@ -26111,7 +28777,7 @@ class ProviderArtifactCache
 
 ### API-009328abdeab · ndnsf::di::ProviderArtifactCache::Shared
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L125)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L126)
 
 ```cpp
 struct Shared
@@ -26119,7 +28785,7 @@ struct Shared
 
 ### API-6b41b9a0a450 · ndnsf::di::ProviderArtifactCache::Build
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L126)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L127)
 
 ```cpp
 using Build = std::function<std::shared_ptr<const PreparedProviderArtifact>(
@@ -26128,7 +28794,7 @@ using Build = std::function<std::shared_ptr<const PreparedProviderArtifact>(
 
 ### API-88b04d5fe928 · ndnsf::di::ProviderArtifactCache::BuildResult
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L129)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L130)
 
 ```cpp
 struct BuildResult
@@ -26136,7 +28802,7 @@ struct BuildResult
 
 ### API-8ac02878c416 · ndnsf::di::ProviderArtifactCache::BuildResult::artifact
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L131)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L132)
 
 ```cpp
 std::shared_ptr<const PreparedProviderArtifact> artifact;
@@ -26144,7 +28810,7 @@ std::shared_ptr<const PreparedProviderArtifact> artifact;
 
 ### API-1a75f2efe5b5 · ndnsf::di::ProviderArtifactCache::BuildResult::runnerSpec
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L134)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L136)
 
 ```cpp
 std::shared_ptr<const NativeModelRunnerSpec> runnerSpec;
@@ -26153,13 +28819,30 @@ std::shared_ptr<const NativeModelRunnerSpec> runnerSpec;
 原始接口说明：
 
 ```text
-// Optional immutable runner metadata.  ProviderArtifactCache clears its
-// path before publication; each request reconstructs a fresh path/context.
+// Optional immutable runner metadata.  The plaintext runner path is
+// cleared before publication; protected ciphertext paths remain as
+// content-addressed descriptors for lazy request-scoped reads.
+```
+
+### API-da925c67c5ab · ndnsf::di::ProviderArtifactCache::BuildResult::cleanup
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L140)
+
+```cpp
+std::function<void()> cleanup;
+```
+
+原始接口说明：
+
+```text
+// Optional cleanup for immutable on-disk material owned by this entry.
+// It runs only after the entry has no active leases and never handles
+// request-scoped plaintext.
 ```
 
 ### API-251ec721149e · ndnsf::di::ProviderArtifactCache::BuildWithRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L142)
 
 ```cpp
 using BuildWithRunner = std::function<BuildResult(const NativeRequestControl&)>;
@@ -26167,7 +28850,7 @@ using BuildWithRunner = std::function<BuildResult(const NativeRequestControl&)>;
 
 ### API-bf77c1ccb7d7 · ndnsf::di::ProviderArtifactCache::ProviderArtifactCache
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L138)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L144)
 
 ```cpp
 explicit ProviderArtifactCache(ProviderArtifactCacheConfig config = {});
@@ -26175,7 +28858,7 @@ explicit ProviderArtifactCache(ProviderArtifactCacheConfig config = {});
 
 ### API-59ffe5947836 · ndnsf::di::ProviderArtifactCache::~ProviderArtifactCache
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L145)
 
 ```cpp
 ~ProviderArtifactCache() noexcept;
@@ -26183,7 +28866,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-55600dd46c2f · ndnsf::di::ProviderArtifactCache::ProviderArtifactCache
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L140)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L146)
 
 ```cpp
 ProviderArtifactCache(const ProviderArtifactCache&) = delete;
@@ -26191,7 +28874,7 @@ ProviderArtifactCache(const ProviderArtifactCache&) = delete;
 
 ### API-6cf840b32fca · ndnsf::di::ProviderArtifactCache::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L141)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L147)
 
 ```cpp
 ProviderArtifactCache& operator=(const ProviderArtifactCache&) = delete;
@@ -26199,7 +28882,7 @@ ProviderArtifactCache& operator=(const ProviderArtifactCache&) = delete;
 
 ### API-3de70dde4526 · ndnsf::di::ProviderArtifactCache::acquire
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L143)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L149)
 
 ```cpp
 ProviderArtifactLease acquire(
@@ -26211,7 +28894,7 @@ ProviderArtifactLease acquire(
 
 ### API-703ea27575d5 · ndnsf::di::ProviderArtifactCache::acquireWithRunner
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L151)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L157)
 
 ```cpp
 ProviderArtifactLease acquireWithRunner(
@@ -26228,9 +28911,24 @@ ProviderArtifactLease acquireWithRunner(
 // runner from an immutable artifact hit without caching a live runner.
 ```
 
+### API-362d7a1b796a · ndnsf::di::ProviderArtifactCache::invalidate
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L165)
+
+```cpp
+void invalidate(const ProviderArtifactKey& key) noexcept;
+```
+
+原始接口说明：
+
+```text
+// Mark an immutable entry unusable after a failed path/digest/authentication
+// check.  Active leases defer removal until their final release.
+```
+
 ### API-64f335712df1 · ndnsf::di::ProviderArtifactCache::stop
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L157)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L167)
 
 ```cpp
 void stop() noexcept;
@@ -26238,7 +28936,7 @@ void stop() noexcept;
 
 ### API-8a088dd61f21 · ndnsf::di::ProviderArtifactCache::counters
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L158)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp#L168)
 
 ```cpp
 ProviderArtifactCacheCounters counters() const noexcept;
@@ -26246,7 +28944,7 @@ ProviderArtifactCacheCounters counters() const noexcept;
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp
 
-源码 SHA-256：`d1e5cb6e5bfcb59849a901cb8a2b69b43e40095b876ec384bf0c4dac44e51011`。
+源码 SHA-256：`4d2f79076177f9f7b84667390945372fc6ac464afe66b54500821bb4439e31f4`。
 
 ### API-926f922a2cb6 · ndnsf::di::ProviderGroupBytes
 
@@ -27168,9 +29866,27 @@ DataSegmentReplayWindow::Result
                 const std::string& expectedDataName = {});
 ```
 
+### API-ffd48d2ad27f · ndnsf::di::ProviderGroupCoordinator::beginOperation
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L250)
+
+```cpp
+bool beginOperation(std::uint64_t nowMs);
+```
+
+原始接口说明：
+
+```text
+/**
+   * Start a new transport operation without extending the group hard
+   * deadline.  The no-progress clock is scoped to the operation; runner
+   * preparation and idle time between operations must not terminate it.
+   */
+```
+
 ### API-5b657eee483e · ndnsf::di::ProviderGroupCoordinator::recordProgress
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L245)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L251)
 
 ```cpp
 bool recordProgress(std::uint64_t nowMs);
@@ -27178,7 +29894,7 @@ bool recordProgress(std::uint64_t nowMs);
 
 ### API-9887d5bcee03 · ndnsf::di::ProviderGroupCoordinator::deadlineExpired
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L246)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L252)
 
 ```cpp
 bool deadlineExpired(std::uint64_t nowMs) const;
@@ -27186,7 +29902,7 @@ bool deadlineExpired(std::uint64_t nowMs) const;
 
 ### API-81a1c154b272 · ndnsf::di::ProviderGroupCoordinator::cancel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L247)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L253)
 
 ```cpp
 void cancel(std::string reason);
@@ -27194,7 +29910,7 @@ void cancel(std::string reason);
 
 ### API-a8927b001a85 · ndnsf::di::ProviderGroupCoordinator::fail
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L248)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L254)
 
 ```cpp
 void fail(std::string reason);
@@ -27202,7 +29918,7 @@ void fail(std::string reason);
 
 ### API-63651552a66e · ndnsf::di::ProviderGroupCoordinator::terminal
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L249)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L255)
 
 ```cpp
 bool terminal() const noexcept;
@@ -27210,7 +29926,7 @@ bool terminal() const noexcept;
 
 ### API-e446b2dead01 · ndnsf::di::ProviderGroupCoordinator::cancelled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L250)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L256)
 
 ```cpp
 bool cancelled() const noexcept;
@@ -27218,7 +29934,7 @@ bool cancelled() const noexcept;
 
 ### API-3b0c20e97979 · ndnsf::di::ProviderGroupCoordinator::failed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L251)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L257)
 
 ```cpp
 bool failed() const noexcept;
@@ -27226,7 +29942,7 @@ bool failed() const noexcept;
 
 ### API-1044a640f164 · ndnsf::di::ProviderGroupCoordinator::terminalReason
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L252)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L258)
 
 ```cpp
 const std::string& terminalReason() const noexcept;
@@ -27234,7 +29950,7 @@ const std::string& terminalReason() const noexcept;
 
 ### API-c6565f4bba9b · ndnsf::di::ProviderGroupCoordinator::clearEpochKey
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L253)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L259)
 
 ```cpp
 void clearEpochKey() noexcept;
@@ -27242,7 +29958,7 @@ void clearEpochKey() noexcept;
 
 ### API-7896d9ce48a7 · ndnsf::di::ProviderGroupCoordinator::makeDataName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L255)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L261)
 
 ```cpp
 static std::string
@@ -27253,7 +29969,7 @@ static std::string
 
 ### API-33a33499f992 · ndnsf::di::ProviderGroupCoordinator::deriveOperationKey
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L260)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L266)
 
 ```cpp
 static ProviderGroupBytes
@@ -27264,7 +29980,7 @@ static ProviderGroupBytes
 
 ### API-283d8d522099 · ndnsf::di::ProviderGroupCoordinator::deriveNonce
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L265)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp#L271)
 
 ```cpp
 static ProviderGroupBytes
@@ -27721,7 +30437,7 @@ ProviderResourceSnapshot latest() const override;
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp
 
-源码 SHA-256：`fd9793997ca4b0f9e1959d7a2652436a1a8444485556fc870334710809b0f0cf`。
+源码 SHA-256：`700c835123670228b037b6b03266cc97ecee9a5210108e9eea1d39becdb9de71`。
 
 ### API-3d2cf66499d3 · ndnsf::di::InputFetchTiming
 
@@ -27940,9 +30656,26 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 std::optional<NativeOpaqueStateHandleV1> stateHandle;
 ```
 
+### API-ce71ea5cceba · ndnsf::di::ProviderRoleResult::providerDecodeState
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L69)
+
+```cpp
+std::optional<TensorBundle> providerDecodeState;
+```
+
+原始接口说明：
+
+```text
+// CPU/host-state runners publish a state-stripped dependency bundle, but
+// the outer Provider runtime still has to commit the exact state successor.
+// Keep that small state-only bundle separate from outputsByScope so an
+// outputBundleScope equal to a dependency scope cannot erase it.
+```
+
 ### API-6ad5a58af6ce · ndnsf::di::ProviderRoleResult::timing
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L65)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L70)
 
 ```cpp
 RoleTiming timing;
@@ -27950,7 +30683,7 @@ RoleTiming timing;
 
 ### API-ef6d0cfa5d98 · ndnsf::di::ProviderRoleResult::inputTimings
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L71)
 
 ```cpp
 std::vector<InputFetchTiming> inputTimings;
@@ -27958,7 +30691,7 @@ std::vector<InputFetchTiming> inputTimings;
 
 ### API-bfbd7cbb9e8a · ndnsf::di::ProviderRoleResult::outputTimings
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L67)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L72)
 
 ```cpp
 std::vector<OutputPublishTiming> outputTimings;
@@ -27966,7 +30699,7 @@ std::vector<OutputPublishTiming> outputTimings;
 
 ### API-60cf100a6a4b · ndnsf::di::ProviderRoleResult::exactForwardCacheHit
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L73)
 
 ```cpp
 bool exactForwardCacheHit = false;
@@ -27974,7 +30707,7 @@ bool exactForwardCacheHit = false;
 
 ### API-84a6fd7f0035 · ndnsf::di::ProviderRoleResult::exactForwardCacheKey
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L69)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L74)
 
 ```cpp
 std::string exactForwardCacheKey;
@@ -27982,7 +30715,7 @@ std::string exactForwardCacheKey;
 
 ### API-d5b916ae8180 · ndnsf::di::ProviderRoleWorkerSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L77)
 
 ```cpp
 struct ProviderRoleWorkerSnapshot
@@ -27990,7 +30723,7 @@ struct ProviderRoleWorkerSnapshot
 
 ### API-38c9dd8d5a36 · ndnsf::di::ProviderRoleWorkerSnapshot::workerCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L79)
 
 ```cpp
 std::size_t workerCount = 0;
@@ -27998,7 +30731,7 @@ std::size_t workerCount = 0;
 
 ### API-dc9aae49c85b · ndnsf::di::ProviderRoleWorkerSnapshot::readyQueueDepth
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L80)
 
 ```cpp
 std::size_t readyQueueDepth = 0;
@@ -28006,7 +30739,7 @@ std::size_t readyQueueDepth = 0;
 
 ### API-6ab70652f1b4 · ndnsf::di::ProviderRoleWorkerSnapshot::readyQueueCapacity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L81)
 
 ```cpp
 std::size_t readyQueueCapacity = 0;
@@ -28014,7 +30747,7 @@ std::size_t readyQueueCapacity = 0;
 
 ### API-19c9d3f27582 · ndnsf::di::ProviderRoleWorkerSnapshot::waitingForInputCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L82)
 
 ```cpp
 std::size_t waitingForInputCount = 0;
@@ -28022,7 +30755,7 @@ std::size_t waitingForInputCount = 0;
 
 ### API-be12cebd9019 · ndnsf::di::ProviderRoleWorkerSnapshot::activeWorkerCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L83)
 
 ```cpp
 std::size_t activeWorkerCount = 0;
@@ -28030,7 +30763,7 @@ std::size_t activeWorkerCount = 0;
 
 ### API-e1055fcae1ec · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitWorkerCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L84)
 
 ```cpp
 std::size_t dependencyWaitWorkerCount = 0;
@@ -28038,7 +30771,7 @@ std::size_t dependencyWaitWorkerCount = 0;
 
 ### API-b8ca0f032fd0 · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitQueueCapacity
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L85)
 
 ```cpp
 std::size_t dependencyWaitQueueCapacity = 0;
@@ -28046,7 +30779,7 @@ std::size_t dependencyWaitQueueCapacity = 0;
 
 ### API-ed22608127ff · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitQueuedCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L81)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L86)
 
 ```cpp
 std::size_t dependencyWaitQueuedCount = 0;
@@ -28054,7 +30787,7 @@ std::size_t dependencyWaitQueuedCount = 0;
 
 ### API-acfc11f61840 · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitActiveCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L87)
 
 ```cpp
 std::size_t dependencyWaitActiveCount = 0;
@@ -28062,7 +30795,7 @@ std::size_t dependencyWaitActiveCount = 0;
 
 ### API-7bb796166ff5 · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitCompleted
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L88)
 
 ```cpp
 std::size_t dependencyWaitCompleted = 0;
@@ -28070,7 +30803,7 @@ std::size_t dependencyWaitCompleted = 0;
 
 ### API-f3a1cb16f364 · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitCancelled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L89)
 
 ```cpp
 std::size_t dependencyWaitCancelled = 0;
@@ -28078,7 +30811,7 @@ std::size_t dependencyWaitCancelled = 0;
 
 ### API-2bec5daff665 · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitDeadlineExpired
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L90)
 
 ```cpp
 std::size_t dependencyWaitDeadlineExpired = 0;
@@ -28086,7 +30819,7 @@ std::size_t dependencyWaitDeadlineExpired = 0;
 
 ### API-92e1eaf737fb · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitFailed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L86)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L91)
 
 ```cpp
 std::size_t dependencyWaitFailed = 0;
@@ -28094,7 +30827,7 @@ std::size_t dependencyWaitFailed = 0;
 
 ### API-09efa3c58eca · ndnsf::di::ProviderRoleWorkerSnapshot::dependencyWaitRejected
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L87)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L92)
 
 ```cpp
 std::size_t dependencyWaitRejected = 0;
@@ -28102,7 +30835,7 @@ std::size_t dependencyWaitRejected = 0;
 
 ### API-6f2f7888e27e · ndnsf::di::ProviderRoleWorkerSnapshot::stopping
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L93)
 
 ```cpp
 bool stopping = false;
@@ -28110,7 +30843,7 @@ bool stopping = false;
 
 ### API-b570b16cbe80 · ndnsf::di::ProviderRoleWorkerSnapshot::pendingWorkCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L95)
 
 ```cpp
 std::size_t pendingWorkCount() const
@@ -28118,7 +30851,7 @@ std::size_t pendingWorkCount() const
 
 ### API-a195d0639d17 · ndnsf::di::ProviderRoleWorkerSnapshot::idleWorkerCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L100)
 
 ```cpp
 std::size_t idleWorkerCount() const
@@ -28126,7 +30859,7 @@ std::size_t idleWorkerCount() const
 
 ### API-86126eea732b · ndnsf::di::CollectiveExecutionBinding
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L112)
 
 ```cpp
 struct CollectiveExecutionBinding
@@ -28134,7 +30867,7 @@ struct CollectiveExecutionBinding
 
 ### API-81be28adbbf2 · ndnsf::di::CollectiveExecutionBinding::runtime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L114)
 
 ```cpp
 std::shared_ptr<CollectiveRuntime> runtime;
@@ -28142,7 +30875,7 @@ std::shared_ptr<CollectiveRuntime> runtime;
 
 ### API-e4139115350c · ndnsf::di::CollectiveExecutionBinding::rank
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L110)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L115)
 
 ```cpp
 std::string rank;
@@ -28150,7 +30883,7 @@ std::string rank;
 
 ### API-1fb2a9c4a97e · ndnsf::di::CollectiveExecutionBinding::inputSequence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L111)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L116)
 
 ```cpp
 std::uint64_t inputSequence = 1;
@@ -28158,7 +30891,7 @@ std::uint64_t inputSequence = 1;
 
 ### API-319760e94281 · ndnsf::di::DependencyIo
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L114)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L119)
 
 ```cpp
 class DependencyIo
@@ -28166,7 +30899,7 @@ class DependencyIo
 
 ### API-0e5327bb5cf8 · ndnsf::di::DependencyIo::~DependencyIo
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L117)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L122)
 
 ```cpp
 virtual ~DependencyIo() = default;
@@ -28174,7 +30907,7 @@ virtual ~DependencyIo() = default;
 
 ### API-3204cfae5a0a · ndnsf::di::DependencyIo::prefetchInput
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L124)
 
 ```cpp
 virtual std::future<TensorBundle>
@@ -28183,7 +30916,7 @@ virtual std::future<TensorBundle>
 
 ### API-ff02c7166881 · ndnsf::di::DependencyIo::publishOutput
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L122)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L127)
 
 ```cpp
 virtual void
@@ -28194,7 +30927,7 @@ virtual void
 
 ### API-d90dd18c3d60 · ndnsf::di::ProviderRoleWorker
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L128)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L133)
 
 ```cpp
 class ProviderRoleWorker
@@ -28202,7 +30935,7 @@ class ProviderRoleWorker
 
 ### API-d9b3ddb78a12 · ndnsf::di::ProviderRoleWorker::NativeRunnerPreparation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L131)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L136)
 
 ```cpp
 using NativeRunnerPreparation =
@@ -28211,7 +30944,7 @@ using NativeRunnerPreparation =
 
 ### API-34936d8a15d2 · ndnsf::di::ProviderRoleWorker::ProviderRoleWorker
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L134)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L139)
 
 ```cpp
 explicit ProviderRoleWorker(
@@ -28224,7 +30957,7 @@ explicit ProviderRoleWorker(
 
 ### API-57c202b3f9bb · ndnsf::di::ProviderRoleWorker::~ProviderRoleWorker
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L140)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L145)
 
 ```cpp
 ~ProviderRoleWorker();
@@ -28232,7 +30965,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-6b1f86899ddc · ndnsf::di::ProviderRoleWorker::executeAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L147)
 
 ```cpp
 std::future<ProviderRoleResult>
@@ -28247,7 +30980,7 @@ std::future<ProviderRoleResult>
 
 ### API-c4c1922308f2 · ndnsf::di::ProviderRoleWorker::executeAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L151)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L156)
 
 ```cpp
 std::future<ProviderRoleResult>
@@ -28262,7 +30995,7 @@ std::future<ProviderRoleResult>
 
 ### API-e891512a5391 · ndnsf::di::ProviderRoleWorker::executePreparedAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L164)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L169)
 
 ```cpp
 std::future<ProviderRoleResult>
@@ -28287,7 +31020,7 @@ std::future<ProviderRoleResult>
 
 ### API-93049956da87 · ndnsf::di::ProviderRoleWorker::executeCollectiveAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L174)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L179)
 
 ```cpp
 std::future<ProviderRoleResult>
@@ -28302,7 +31035,7 @@ std::future<ProviderRoleResult>
 
 ### API-13c2cbcb8d60 · ndnsf::di::ProviderRoleWorker::executeCollectiveAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L183)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L188)
 
 ```cpp
 std::future<ProviderRoleResult>
@@ -28317,7 +31050,7 @@ std::future<ProviderRoleResult>
 
 ### API-c1739a875eb6 · ndnsf::di::ProviderRoleWorker::snapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L192)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp#L197)
 
 ```cpp
 ProviderRoleWorkerSnapshot
@@ -28330,11 +31063,27 @@ ProviderRoleWorkerSnapshot
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp
 
-源码 SHA-256：`97308919f2b6edeb7c7079e94eb2f85f3cd43e16bece2bab53562ada20e33035`。
+源码 SHA-256：`64b536c79c926b5db081e7944dcd6ede6ec6669d06044be53157460fb796a179`。
+
+### API-1c29c5552f85 · ndnsf::di::RepositorySourceProvider
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L24)
+
+```cpp
+class RepositorySourceProvider
+```
+
+### API-620e8390f574 · ndnsf::di::RepositoryArtifactPublisher
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L25)
+
+```cpp
+class RepositoryArtifactPublisher
+```
 
 ### API-76dfc5acb12f · ndnsf::di::Milliseconds
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L22)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L27)
 
 ```cpp
 using Milliseconds = std::chrono::milliseconds;
@@ -28342,7 +31091,7 @@ using Milliseconds = std::chrono::milliseconds;
 
 ### API-893a5dc72219 · ndnsf::di::Subscription
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L23)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L28)
 
 ```cpp
 using Subscription = ndn_service_framework::OperationSubscription;
@@ -28350,7 +31099,7 @@ using Subscription = ndn_service_framework::OperationSubscription;
 
 ### API-6e7436445ebe · ndnsf::di::ModelRegistration
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L31)
 
 ```cpp
 struct ModelRegistration
@@ -28358,7 +31107,7 @@ struct ModelRegistration
 
 ### API-7d9e6f01688f · ndnsf::di::ModelRegistration::key
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L33)
 
 ```cpp
 std::string key;
@@ -28366,7 +31115,7 @@ std::string key;
 
 ### API-dfbfbecfe380 · ndnsf::di::ModelRegistration::nativeConfigPath
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L34)
 
 ```cpp
 std::string nativeConfigPath;
@@ -28374,15 +31123,44 @@ std::string nativeConfigPath;
 
 ### API-88e04e6da21a · ndnsf::di::RuntimeConfig
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L38)
 
 ```cpp
 struct RuntimeConfig
 ```
 
+### API-f829e8d87506 · ndnsf::di::RuntimeConfig::RepositorySourceLoader
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L52)
+
+```cpp
+using RepositorySourceLoader = std::function<NativeCanonicalSource(
+    const std::string& modelKey,
+    const std::string& catalogConfigurationJson,
+    std::uint64_t maxSourceBytes,
+    std::chrono::steady_clock::time_point deadline)>;
+```
+
+原始接口说明：
+
+```text
+/**
+   * Optional native repository source owner.  When present, Runtime::prepare
+   * calls this owner instead of the legacy local-file loader.  The configured
+   * native owner must perform manifest lookup, digest/size verification and
+   * one idempotent ingest-on-miss through its RepoCore/RepoClient boundary,
+   * then return only verified source buffers. Runtime rechecks those bytes
+   * against the frozen catalog; the callback is a trusted ownership boundary
+   * and its Repo operation is covered by the owner-specific C++ test.
+   * Lifecycle failures must use the typed repository/DI error surface rather
+   * than encoding state in arbitrary backend text. It must retain no request
+   * or grant state.
+   */
+```
+
 ### API-7f198b4aec3a · ndnsf::di::RuntimeConfig::nativeConfigPath
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L58)
 
 ```cpp
 std::string nativeConfigPath;
@@ -28390,7 +31168,7 @@ std::string nativeConfigPath;
 
 ### API-376064bed16f · ndnsf::di::RuntimeConfig::models
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L59)
 
 ```cpp
 std::vector<ModelRegistration> models;
@@ -28398,7 +31176,7 @@ std::vector<ModelRegistration> models;
 
 ### API-1ef195496a75 · ndnsf::di::RuntimeConfig::maxPreparedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L37)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L60)
 
 ```cpp
 std::size_t maxPreparedBytes = 536870912;
@@ -28406,7 +31184,7 @@ std::size_t maxPreparedBytes = 536870912;
 
 ### API-94757b793296 · ndnsf::di::RuntimeConfig::maxPreparedEntries
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L61)
 
 ```cpp
 std::size_t maxPreparedEntries = 8;
@@ -28414,15 +31192,72 @@ std::size_t maxPreparedEntries = 8;
 
 ### API-e416911993f5 · ndnsf::di::RuntimeConfig::preparationJobTimeout
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L62)
 
 ```cpp
 Milliseconds preparationJobTimeout{300000};
 ```
 
+### API-4d9c139a820b · ndnsf::di::RuntimeConfig::repositorySourceLoader
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L64)
+
+```cpp
+RepositorySourceLoader repositorySourceLoader;
+```
+
+原始接口说明：
+
+```text
+/** Compatibility seam retained for existing embedders during migration. */
+```
+
+### API-4b7ee53c1d66 · ndnsf::di::RuntimeConfig::repositorySourceProvider
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L66)
+
+```cpp
+std::shared_ptr<const RepositorySourceProvider> repositorySourceProvider;
+```
+
+原始接口说明：
+
+```text
+/** Preferred production Repo owner; appended to preserve aggregate order. */
+```
+
+### API-03841e26d754 · ndnsf::di::RuntimeConfig::repositoryArtifactPublisher
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L69)
+
+```cpp
+std::shared_ptr<const RepositoryArtifactPublisher> repositoryArtifactPublisher;
+```
+
+原始接口说明：
+
+```text
+/** Optional prepare-time durable artifact owner. A request never calls this
+   * boundary; it receives only the committed reference. */
+```
+
+### API-e2b118c08302 · ndnsf::di::RuntimeConfig::encryptedRangeStore
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L71)
+
+```cpp
+std::shared_ptr<ndn_service_framework::EncryptedLargeDataRangeStore> encryptedRangeStore;
+```
+
+原始接口说明：
+
+```text
+/** Ciphertext storage only; Core remains the protected Data producer. */
+```
+
 ### API-5575dc538daa · ndnsf::di::UserConfig
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L43)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L75)
 
 ```cpp
 struct UserConfig
@@ -28430,7 +31265,7 @@ struct UserConfig
 
 ### API-37940327866a · ndnsf::di::UserConfig::profileName
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L45)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L77)
 
 ```cpp
 std::string profileName;
@@ -28438,7 +31273,7 @@ std::string profileName;
 
 ### API-ea2b5360c142 · ndnsf::di::CachePolicy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L81)
 
 ```cpp
 enum class CachePolicy
@@ -28446,7 +31281,7 @@ enum class CachePolicy
 
 ### API-f0d77dcdae4f · ndnsf::di::CachePolicy::RequireReady
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L81)
 
 ```cpp
 RequireReady
@@ -28454,7 +31289,7 @@ RequireReady
 
 ### API-92a40bcecc77 · ndnsf::di::CachePolicy::UseOrWait
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L81)
 
 ```cpp
 UseOrWait
@@ -28462,7 +31297,7 @@ UseOrWait
 
 ### API-f011c549cede · ndnsf::di::CachePolicy::UseOrFetch
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L81)
 
 ```cpp
 UseOrFetch
@@ -28470,7 +31305,7 @@ UseOrFetch
 
 ### API-b01cb5847407 · ndnsf::di::CachePolicy::Refresh
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L81)
 
 ```cpp
 Refresh
@@ -28478,7 +31313,7 @@ Refresh
 
 ### API-05c81e60fd76 · ndnsf::di::PrepareOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L84)
 
 ```cpp
 struct PrepareOptions
@@ -28486,7 +31321,7 @@ struct PrepareOptions
 
 ### API-49fbc60cfec3 · ndnsf::di::PrepareOptions::cache
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L54)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L86)
 
 ```cpp
 CachePolicy cache = CachePolicy::UseOrFetch;
@@ -28494,7 +31329,7 @@ CachePolicy cache = CachePolicy::UseOrFetch;
 
 ### API-bc492ea56985 · ndnsf::di::PrepareOptions::timeout
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L55)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L87)
 
 ```cpp
 Milliseconds timeout{300000};
@@ -28502,7 +31337,7 @@ Milliseconds timeout{300000};
 
 ### API-d2923c5a9ace · ndnsf::di::DiError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L91)
 
 ```cpp
 class DiError : public std::runtime_error
@@ -28510,7 +31345,7 @@ class DiError : public std::runtime_error
 
 ### API-d1db854ed9cc · ndnsf::di::DiError::DiError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L94)
 
 ```cpp
 DiError(std::string code, std::string domain, std::string boundary,
@@ -28520,7 +31355,7 @@ DiError(std::string code, std::string domain, std::string boundary,
 
 ### API-cc18a645c6ee · ndnsf::di::DiError::code
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L98)
 
 ```cpp
 const std::string& code() const noexcept
@@ -28528,7 +31363,7 @@ const std::string& code() const noexcept
 
 ### API-3a59faf4a1cb · ndnsf::di::DiError::domain
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L67)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L99)
 
 ```cpp
 const std::string& domain() const noexcept
@@ -28536,7 +31371,7 @@ const std::string& domain() const noexcept
 
 ### API-dcf994c2e920 · ndnsf::di::DiError::boundary
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L100)
 
 ```cpp
 const std::string& boundary() const noexcept
@@ -28544,7 +31379,7 @@ const std::string& boundary() const noexcept
 
 ### API-a226c19259cd · ndnsf::di::DiError::requestId
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L69)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L101)
 
 ```cpp
 const std::string& requestId() const noexcept
@@ -28552,15 +31387,246 @@ const std::string& requestId() const noexcept
 
 ### API-6381cbf71343 · ndnsf::di::DiError::attempt
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L102)
 
 ```cpp
 std::uint64_t attempt() const noexcept
 ```
 
+### API-10c4d8bf10aa · ndnsf::di::RepositorySourceError
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L114)
+
+```cpp
+class RepositorySourceError : public DiError
+```
+
+### API-ffd6e6c1a8a9 · ndnsf::di::RepositorySourceError::Kind
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L117)
+
+```cpp
+enum class Kind
+```
+
+### API-801533eeb169 · ndnsf::di::RepositorySourceError::Kind::Unavailable
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L117)
+
+```cpp
+Unavailable
+```
+
+### API-f48128253c48 · ndnsf::di::RepositorySourceError::Kind::Timeout
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L117)
+
+```cpp
+Timeout
+```
+
+### API-2bc6ebade122 · ndnsf::di::RepositorySourceError::Kind::Cancelled
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L117)
+
+```cpp
+Cancelled
+```
+
+### API-e7755451276d · ndnsf::di::RepositorySourceError::Kind::Closed
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L117)
+
+```cpp
+Closed
+```
+
+### API-792b6c330b6a · ndnsf::di::RepositorySourceError::RepositorySourceError
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L119)
+
+```cpp
+RepositorySourceError(Kind kind, std::string message);
+```
+
+### API-dd54d4097c9e · ndnsf::di::RepositorySourceRequest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L123)
+
+```cpp
+struct RepositorySourceRequest
+```
+
+### API-0928ee3b89d6 · ndnsf::di::RepositorySourceRequest::modelKey
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L125)
+
+```cpp
+std::string modelKey;
+```
+
+### API-0a7f788409a6 · ndnsf::di::RepositorySourceRequest::catalogConfigurationJson
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L126)
+
+```cpp
+std::string catalogConfigurationJson;
+```
+
+### API-2e48589df2a9 · ndnsf::di::RepositorySourceRequest::maxSourceBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L127)
+
+```cpp
+std::uint64_t maxSourceBytes = 0;
+```
+
+### API-496698a6b23c · ndnsf::di::RepositorySourceRequest::deadline
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L128)
+
+```cpp
+std::chrono::steady_clock::time_point deadline{};
+```
+
+### API-b84e544d7039 · ndnsf::di::RepositoryPreparedLookupRequest
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L132)
+
+```cpp
+struct RepositoryPreparedLookupRequest
+```
+
+### API-f4b661319f13 · ndnsf::di::RepositoryPreparedLookupRequest::modelKey
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L134)
+
+```cpp
+std::string modelKey;
+```
+
+### API-9fc25fe042a7 · ndnsf::di::RepositoryPreparedLookupRequest::serviceName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L135)
+
+```cpp
+std::string serviceName;
+```
+
+### API-01df2cc416ff · ndnsf::di::RepositoryPreparedLookupRequest::catalogConfigurationJson
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L136)
+
+```cpp
+std::string catalogConfigurationJson;
+```
+
+### API-cc501d629e49 · ndnsf::di::RepositoryPreparedLookupRequest::maxPublicationBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L137)
+
+```cpp
+std::uint64_t maxPublicationBytes = 0;
+```
+
+### API-ab140bbb7b16 · ndnsf::di::RepositoryPreparedLookupRequest::deadline
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L138)
+
+```cpp
+std::chrono::steady_clock::time_point deadline{};
+```
+
+### API-1c29c5552f85 · ndnsf::di::RepositorySourceProvider
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L142)
+
+```cpp
+class RepositorySourceProvider
+```
+
+### API-ceea69e33892 · ndnsf::di::RepositorySourceProvider::Fallback
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L145)
+
+```cpp
+using Fallback = std::function<NativeCanonicalSource(const RepositorySourceRequest&)>;
+```
+
+### API-db50007e50c6 · ndnsf::di::RepositorySourceProvider::~RepositorySourceProvider
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L147)
+
+```cpp
+virtual ~RepositorySourceProvider() = default;
+```
+
+### API-2c83559a7bfe · ndnsf::di::RepositorySourceProvider::load
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L148)
+
+```cpp
+virtual NativeCanonicalSource load(const RepositorySourceRequest& request,
+                                     const Fallback& fallback) const = 0;
+```
+
+### API-d5bfbba76730 · ndnsf::di::RepositorySourceProvider::lookupPrepared
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L153)
+
+```cpp
+virtual std::optional<NativePreparedCanonicalPublication> lookupPrepared(
+    const RepositoryPreparedLookupRequest&) const
+```
+
+原始接口说明：
+
+```text
+/** A null result is a normal miss; an existing but corrupt receipt is an
+   * error and must not be converted into a new publication. */
+```
+
+### API-620e8390f574 · ndnsf::di::RepositoryArtifactPublisher
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L160)
+
+```cpp
+class RepositoryArtifactPublisher
+```
+
+### API-c32f49b9a63e · ndnsf::di::RepositoryArtifactPublisher::~RepositoryArtifactPublisher
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L163)
+
+```cpp
+virtual ~RepositoryArtifactPublisher() = default;
+```
+
+### API-19bc1ad2cecd · ndnsf::di::RepositoryArtifactPublisher::publish
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L165)
+
+```cpp
+virtual NativePreparedCanonicalPublication publish(
+    const std::string& modelKey,
+    const std::string& serviceName,
+    const NativeInspectedModel& model,
+    const NativeCanonicalSource& source,
+    const NativeCanonicalPublicationOptions& options,
+    const NativeRequestControl& control) const = 0;
+```
+
+### API-97223ff7d909 · ndnsf::di::RepositoryArtifactPublisher::rollback
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L173)
+
+```cpp
+virtual void rollback(const NativePreparedCanonicalPublication& publication) const noexcept = 0;
+```
+
 ### API-571ec031d469 · ndnsf::di::detail::RuntimeState
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L176)
 
 ```cpp
 struct RuntimeState
@@ -28568,7 +31634,7 @@ struct RuntimeState
 
 ### API-c4e030853441 · ndnsf::di::detail::RuntimeTestAccess
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L176)
 
 ```cpp
 struct RuntimeTestAccess
@@ -28576,7 +31642,7 @@ struct RuntimeTestAccess
 
 ### API-b0a837e47e0d · ndnsf::di::Runtime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L178)
 
 ```cpp
 class Runtime
@@ -28584,7 +31650,7 @@ class Runtime
 
 ### API-9d76fe9fabe1 · ndnsf::di::PreparationStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L179)
 
 ```cpp
 enum class PreparationStatus
@@ -28592,7 +31658,7 @@ enum class PreparationStatus
 
 ### API-60c272f2856d · ndnsf::di::PreparationStatus::Pending
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L179)
 
 ```cpp
 Pending
@@ -28600,7 +31666,7 @@ Pending
 
 ### API-87ec515144df · ndnsf::di::PreparationStatus::Ready
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L179)
 
 ```cpp
 Ready
@@ -28608,7 +31674,7 @@ Ready
 
 ### API-7373b56c6fed · ndnsf::di::PreparationStatus::Failed
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L179)
 
 ```cpp
 Failed
@@ -28616,7 +31682,7 @@ Failed
 
 ### API-7e10b8bcb870 · ndnsf::di::PreparationStatus::Cancelled
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L179)
 
 ```cpp
 Cancelled
@@ -28624,7 +31690,7 @@ Cancelled
 
 ### API-3f966de3081c · ndnsf::di::PreparationCompletion
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L180)
 
 ```cpp
 using PreparationCompletion = std::function<void(
@@ -28633,7 +31699,7 @@ using PreparationCompletion = std::function<void(
 
 ### API-27f834afff8e · ndnsf::di::PreparationHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L87)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L183)
 
 ```cpp
 class PreparationHandle
@@ -28641,7 +31707,7 @@ class PreparationHandle
 
 ### API-6146a7b82880 · ndnsf::di::PreparationHandle::PreparationHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L186)
 
 ```cpp
 PreparationHandle() noexcept = default;
@@ -28649,7 +31715,7 @@ PreparationHandle() noexcept = default;
 
 ### API-8d3915e6cb6f · ndnsf::di::PreparationHandle::PreparationHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L91)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L187)
 
 ```cpp
 PreparationHandle(PreparationHandle&&) noexcept = default;
@@ -28657,7 +31723,7 @@ PreparationHandle(PreparationHandle&&) noexcept = default;
 
 ### API-de378ef02a53 · ndnsf::di::PreparationHandle::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L188)
 
 ```cpp
 PreparationHandle& operator=(PreparationHandle&&) noexcept = default;
@@ -28665,7 +31731,7 @@ PreparationHandle& operator=(PreparationHandle&&) noexcept = default;
 
 ### API-67db2a4cefa0 · ndnsf::di::PreparationHandle::PreparationHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L189)
 
 ```cpp
 PreparationHandle(const PreparationHandle&) = default;
@@ -28673,7 +31739,7 @@ PreparationHandle(const PreparationHandle&) = default;
 
 ### API-e178100dc1e2 · ndnsf::di::PreparationHandle::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L190)
 
 ```cpp
 PreparationHandle& operator=(const PreparationHandle&) = default;
@@ -28681,7 +31747,7 @@ PreparationHandle& operator=(const PreparationHandle&) = default;
 
 ### API-409e5cce3dbb · ndnsf::di::PreparationHandle::~PreparationHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L191)
 
 ```cpp
 ~PreparationHandle() = default;
@@ -28689,7 +31755,7 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ### API-b732e7b5c4f5 · ndnsf::di::PreparationHandle::status
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L193)
 
 ```cpp
 PreparationStatus status() const;
@@ -28697,7 +31763,7 @@ PreparationStatus status() const;
 
 ### API-97c404c132b2 · ndnsf::di::PreparationHandle::result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L98)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L194)
 
 ```cpp
 PreparedModel result() const;
@@ -28705,7 +31771,7 @@ PreparedModel result() const;
 
 ### API-a0f2402e2f05 · ndnsf::di::PreparationHandle::result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L99)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L195)
 
 ```cpp
 PreparedModel result(Milliseconds timeout) const;
@@ -28713,7 +31779,7 @@ PreparedModel result(Milliseconds timeout) const;
 
 ### API-3c340f51b288 · ndnsf::di::PreparationHandle::resultAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L100)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L196)
 
 ```cpp
 Subscription resultAsync(Milliseconds timeout, PreparationCompletion callback) const;
@@ -28721,7 +31787,7 @@ Subscription resultAsync(Milliseconds timeout, PreparationCompletion callback) c
 
 ### API-54fb8dc8ab3b · ndnsf::di::PreparationHandle::onCompletion
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L101)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L197)
 
 ```cpp
 Subscription onCompletion(PreparationCompletion callback) const;
@@ -28729,7 +31795,7 @@ Subscription onCompletion(PreparationCompletion callback) const;
 
 ### API-bc4f73736973 · ndnsf::di::PreparationHandle::cancel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L102)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L198)
 
 ```cpp
 void cancel() const noexcept;
@@ -28737,7 +31803,7 @@ void cancel() const noexcept;
 
 ### API-2d321ca31e1d · ndnsf::di::User
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L148)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L244)
 
 ```cpp
 class User
@@ -28745,7 +31811,7 @@ class User
 
 ### API-1ffbf3c192a1 · ndnsf::di::User::User
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L151)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L247)
 
 ```cpp
 User() = default;
@@ -28753,7 +31819,7 @@ User() = default;
 
 ### API-40892aa84af4 · ndnsf::di::User::prepare
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L154)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L250)
 
 ```cpp
 PreparedModel prepare(const std::string& modelKey = "default",
@@ -28766,9 +31832,54 @@ PreparedModel prepare(const std::string& modelKey = "default",
 /** Prepare the registered model and return an immutable verified package. */
 ```
 
+### API-572592200039 · ndnsf::di::User::request
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L254)
+
+```cpp
+RequestHandle request(const PreparedModel& model, const Input& input,
+                        const RequestOptions& options = {}) const;
+```
+
+原始接口说明：
+
+```text
+/** Submit one request on behalf of this User using a prepared model. */
+```
+
+### API-4bb150007144 · ndnsf::di::User::run
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L258)
+
+```cpp
+Result run(const PreparedModel& model, const Input& input,
+             const RequestOptions& options = {}) const;
+```
+
+原始接口说明：
+
+```text
+/** Submit one request and wait on behalf of this User. */
+```
+
+### API-0b7b6809c52e · ndnsf::di::User::openConversation
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L262)
+
+```cpp
+Conversation openConversation(const PreparedModel& model,
+                                const ConversationOptions& options = {}) const;
+```
+
+原始接口说明：
+
+```text
+/** Open a conversation on behalf of this User using a prepared model. */
+```
+
 ### API-8c71ee44e6a4 · ndnsf::di::User::prepareAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L158)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L266)
 
 ```cpp
 PreparationHandle prepareAsync(const std::string& modelKey = "default",
@@ -28783,7 +31894,7 @@ PreparationHandle prepareAsync(const std::string& modelKey = "default",
 
 ### API-b0a837e47e0d · ndnsf::di::Runtime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L177)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L287)
 
 ```cpp
 class Runtime
@@ -28791,7 +31902,7 @@ class Runtime
 
 ### API-0a6a2d034949 · ndnsf::di::Runtime::Runtime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L180)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L290)
 
 ```cpp
 Runtime(const Runtime&) = delete;
@@ -28799,7 +31910,7 @@ Runtime(const Runtime&) = delete;
 
 ### API-191867509821 · ndnsf::di::Runtime::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L181)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L291)
 
 ```cpp
 Runtime& operator=(const Runtime&) = delete;
@@ -28807,7 +31918,7 @@ Runtime& operator=(const Runtime&) = delete;
 
 ### API-978ea38fddfd · ndnsf::di::Runtime::Runtime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L182)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L292)
 
 ```cpp
 Runtime(Runtime&&) = delete;
@@ -28815,7 +31926,7 @@ Runtime(Runtime&&) = delete;
 
 ### API-c5ee7a6a5e24 · ndnsf::di::Runtime::operator=
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L183)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L293)
 
 ```cpp
 Runtime& operator=(Runtime&&) = delete;
@@ -28823,7 +31934,7 @@ Runtime& operator=(Runtime&&) = delete;
 
 ### API-a83c029f14a8 · ndnsf::di::Runtime::open
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L192)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L302)
 
 ```cpp
 static std::shared_ptr<Runtime> open(RuntimeConfig config);
@@ -28843,7 +31954,7 @@ static std::shared_ptr<Runtime> open(RuntimeConfig config);
 
 ### API-a9d25cb5cd9c · ndnsf::di::Runtime::open
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L195)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L305)
 
 ```cpp
 static std::shared_ptr<Runtime> open(const ProviderConfig& config);
@@ -28857,7 +31968,7 @@ static std::shared_ptr<Runtime> open(const ProviderConfig& config);
 
 ### API-fd27f43bab2e · ndnsf::di::Runtime::user
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L198)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L308)
 
 ```cpp
 User user(UserConfig config = {});
@@ -28871,7 +31982,7 @@ User user(UserConfig config = {});
 
 ### API-59a7f3ecf031 · ndnsf::di::Runtime::placementStrategy
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L201)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L311)
 
 ```cpp
 std::shared_ptr<const PlacementStrategy> placementStrategy(const std::string& id) const;
@@ -28885,7 +31996,7 @@ std::shared_ptr<const PlacementStrategy> placementStrategy(const std::string& id
 
 ### API-9ed75681fa3a · ndnsf::di::Runtime::provider
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L204)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L314)
 
 ```cpp
 Provider provider(const ProviderConfig& config);
@@ -28899,7 +32010,7 @@ Provider provider(const ProviderConfig& config);
 
 ### API-e2632180a418 · ndnsf::di::Runtime::provider
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L205)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L315)
 
 ```cpp
 Provider provider();
@@ -28907,7 +32018,7 @@ Provider provider();
 
 ### API-396fdff8552a · ndnsf::di::Runtime::close
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L212)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L322)
 
 ```cpp
 void close() noexcept;
@@ -28925,7 +32036,7 @@ void close() noexcept;
 
 ### API-140c9bfb55f4 · ndnsf::di::Runtime::drain
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L219)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L329)
 
 ```cpp
 bool drain(Milliseconds timeout) const;
@@ -28943,7 +32054,7 @@ bool drain(Milliseconds timeout) const;
 
 ### API-06a1f8b07f76 · ndnsf::di::Runtime::drainAsync
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L229)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L339)
 
 ```cpp
 Subscription drainAsync(Milliseconds timeout,
@@ -28965,7 +32076,7 @@ Subscription drainAsync(Milliseconds timeout,
 
 ### API-33f54849b752 · ndnsf::di::Runtime::~Runtime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L232)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp#L342)
 
 ```cpp
 ~Runtime() noexcept;
@@ -28973,11 +32084,11 @@ public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndns
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp
 
-源码 SHA-256：`cad3780d7114fa5bf8a1ac0320544e9c1fd28bf53de526bb11f9ce57d28f0e0c`。
+源码 SHA-256：`d8c70188e993c29a1efe9d0ff8a947d8140549c2fff89e80455a91516d8e9179`。
 
 ### API-aca693867c27 · ndnsf::di::runtimeTimingOutputMutex
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L11)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L16)
 
 ```cpp
 inline std::mutex&
@@ -28994,7 +32105,7 @@ runtimeTimingOutputMutex()
 
 ### API-7383c9b71a77 · ndnsf::di::logRuntimeEvidence
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L22)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L27)
 
 ```cpp
 void
@@ -29012,7 +32123,7 @@ logRuntimeEvidence(const std::string& record);
 
 ### API-4e3f1f50c0bb · ndnsf::di::logRuntimeTrace
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L34)
 
 ```cpp
 void
@@ -29030,7 +32141,7 @@ logRuntimeTrace(const std::string& record);
 
 ### API-f69d1e4f9daf · ndnsf::di::logRuntimeInfo
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L32)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L37)
 
 ```cpp
 void
@@ -29039,7 +32150,7 @@ logRuntimeInfo(const std::string& record);
 
 ### API-6e0e1596cc81 · ndnsf::di::logRuntimeWarn
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L40)
 
 ```cpp
 void
@@ -29048,11 +32159,201 @@ logRuntimeWarn(const std::string& record);
 
 ### API-1e6c38bb0128 · ndnsf::di::logRuntimeError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L43)
 
 ```cpp
 void
 logRuntimeError(const std::string& record);
+```
+
+### API-3676005d4d27 · ndnsf::di::RuntimePhaseObservation
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L47)
+
+```cpp
+struct RuntimePhaseObservation
+```
+
+### API-fe1475404d25 · ndnsf::di::RuntimePhaseObservation::role
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L52)
+
+```cpp
+std::string role;
+```
+
+原始接口说明：
+
+```text
+// `role` is the emitting component (user, di-provider, or di-cli).  The
+// execution role is kept separately so a provider's stage role cannot
+// overwrite the component identity.
+```
+
+### API-824fea70cfaf · ndnsf::di::RuntimePhaseObservation::executionRole
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L53)
+
+```cpp
+std::string executionRole;
+```
+
+### API-40a43883498c · ndnsf::di::RuntimePhaseObservation::phase
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L54)
+
+```cpp
+std::string phase;
+```
+
+### API-0c8a49050b1d · ndnsf::di::RuntimePhaseObservation::scope
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L55)
+
+```cpp
+std::string scope;
+```
+
+### API-fe1d315e3780 · ndnsf::di::RuntimePhaseObservation::requestId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L56)
+
+```cpp
+std::string requestId;
+```
+
+### API-26bf3017ec54 · ndnsf::di::RuntimePhaseObservation::attempt
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L57)
+
+```cpp
+std::string attempt;
+```
+
+### API-daa0f9bd9125 · ndnsf::di::RuntimePhaseObservation::providerBootId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L58)
+
+```cpp
+std::string providerBootId;
+```
+
+### API-5a1a11f80710 · ndnsf::di::RuntimePhaseObservation::providerName
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L59)
+
+```cpp
+std::string providerName;
+```
+
+### API-d317877c8302 · ndnsf::di::RuntimePhaseObservation::sessionId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L60)
+
+```cpp
+std::string sessionId;
+```
+
+### API-2f709fb4babb · ndnsf::di::RuntimePhaseObservation::conversationId
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L61)
+
+```cpp
+std::string conversationId;
+```
+
+### API-5b118a490fe4 · ndnsf::di::RuntimePhaseObservation::inferenceEpoch
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L62)
+
+```cpp
+std::string inferenceEpoch;
+```
+
+### API-feea588f4328 · ndnsf::di::RuntimePhaseObservation::contextEpoch
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L63)
+
+```cpp
+std::string contextEpoch;
+```
+
+### API-91670b2731ea · ndnsf::di::RuntimePhaseObservation::tokenIndex
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L64)
+
+```cpp
+std::uint64_t tokenIndex = 0;
+```
+
+### API-9018be65a51d · ndnsf::di::RuntimePhaseObservation::steadyUs
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L65)
+
+```cpp
+std::uint64_t steadyUs = 0;
+```
+
+### API-7c8a2a7b3cdb · ndnsf::di::RuntimePhaseObservation::wallUs
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L66)
+
+```cpp
+std::uint64_t wallUs = 0;
+```
+
+### API-b98dd78a4c67 · ndnsf::di::parseRuntimePhaseObservation
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L74)
+
+```cpp
+std::optional<RuntimePhaseObservation>
+parseRuntimePhaseObservation(std::string_view record);
+```
+
+原始接口说明：
+
+```text
+/**
+ * Parse the canonical phase record emitted by the native timing path.
+ * Missing or malformed fields return nullopt; a missing field is never
+ * represented as a zero timestamp.
+ */
+```
+
+### API-2e18fce1f3cf · ndnsf::di::validateRuntimePhaseSequence
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L78)
+
+```cpp
+bool
+validateRuntimePhaseSequence(const std::vector<RuntimePhaseObservation>& observations,
+                             std::string* error = nullptr);
+```
+
+原始接口说明：
+
+```text
+/** Validate one request/attempt sequence without merging retry identities. */
+```
+
+### API-429adc189caa · ndnsf::di::logRuntimePhase
+
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp#L83)
+
+```cpp
+void
+logRuntimePhase(const std::string& role,
+                const std::string& phase,
+                const std::string& requestId,
+                const std::string& attempt = {},
+                const std::vector<std::pair<std::string, std::string>>& fields = {});
+```
+
+原始接口说明：
+
+```text
+/** Emit one structured phase record when NDNSF_PHASE_TIMING is enabled. */
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp
@@ -29650,11 +32951,11 @@ applyCertifiedTensorRedistributions(const RoleExecutionContext& context);
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp
 
-源码 SHA-256：`05bf7ba8a4b8981655d2e7bb69ecc1a0d8bf44fac22ebc32ec79f7678b2890eb`。
+源码 SHA-256：`afbe656d4ff44b153d2ed91058e58b59ee371e9539fe7eef711292f0ef1cac1b`。
 
 ### API-3d398e8f6e9f · ndnsf::di::Runtime
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L18)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L17)
 
 ```cpp
 class Runtime
@@ -29662,7 +32963,7 @@ class Runtime
 
 ### API-b8cea9597a61 · ndnsf::di::User
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L19)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L18)
 
 ```cpp
 class User
@@ -29670,7 +32971,7 @@ class User
 
 ### API-8c548bd7db9d · ndnsf::di::PreparedModel
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L20)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L19)
 
 ```cpp
 class PreparedModel
@@ -29678,7 +32979,7 @@ class PreparedModel
 
 ### API-01cdc3ce860a · ndnsf::di::Input
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L21)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L20)
 
 ```cpp
 class Input
@@ -29686,7 +32987,7 @@ class Input
 
 ### API-5fa5bd6b7db5 · ndnsf::di::RequestHandle
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L22)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L21)
 
 ```cpp
 class RequestHandle
@@ -29694,7 +32995,7 @@ class RequestHandle
 
 ### API-07c57aa6f346 · ndnsf::di::Result
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L23)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L22)
 
 ```cpp
 class Result
@@ -29702,7 +33003,7 @@ class Result
 
 ### API-491122f0daaa · ndnsf::di::Conversation
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L24)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L23)
 
 ```cpp
 class Conversation
@@ -29710,7 +33011,7 @@ class Conversation
 
 ### API-5d7ccc158f0d · ndnsf::di::DiError
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L25)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L24)
 
 ```cpp
 class DiError
@@ -29718,7 +33019,7 @@ class DiError
 
 ### API-c74754c2c285 · ndnsf::di::RuntimeConfig
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L26)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L25)
 
 ```cpp
 struct RuntimeConfig
@@ -29726,7 +33027,7 @@ struct RuntimeConfig
 
 ### API-da8f4405c567 · ndnsf::di::UserConfig
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L27)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L26)
 
 ```cpp
 struct UserConfig
@@ -29734,7 +33035,7 @@ struct UserConfig
 
 ### API-7d1381329a6b · ndnsf::di::PrepareOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L28)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L27)
 
 ```cpp
 struct PrepareOptions
@@ -29742,18 +33043,18 @@ struct PrepareOptions
 
 ### API-9b6906b47e38 · ndnsf::di::RequestOptions
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L28)
 
 ```cpp
 struct RequestOptions
 ```
 
-### API-26fc8f3a15eb · ndnsf::di::kPreparedModelRuntimeApiVersion = 1
+### API-5b06277eac9b · ndnsf::di::kPreparedModelRuntimeApiVersion = 2
 
-public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp#L30)
 
 ```cpp
-inline constexpr std::uint32_t kPreparedModelRuntimeApiVersion = 1;
+inline constexpr std::uint32_t kPreparedModelRuntimeApiVersion = 2;
 ```
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp
@@ -31035,11 +34336,11 @@ def register(registry, adapter):
 
 ## NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py
 
-源码 SHA-256：`d65c37e01914d69d3615b2333b285f92784d6198eb1481ad46aae96d7d81b50d`。
+源码 SHA-256：`4a9a7e5d6e40a52417134e3ff0368963da61512b57e904e2a642ca6dc848abc4`。
 
 ### API-3403d7e89a09 · CertifiedOnnxAssemblyRecipe
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L45)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L47)
 
 ```python
 class CertifiedOnnxAssemblyRecipe:
@@ -31053,7 +34354,7 @@ Digest-pinned adapter certificate for one Provider-local role slice.
 
 ### API-ae4744ceacfa · CertifiedOnnxAssemblyRecipe.model_manifest_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L48)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L50)
 
 ```python
 model_manifest_digest: str
@@ -31061,7 +34362,7 @@ model_manifest_digest: str
 
 ### API-5006386bf3c6 · CertifiedOnnxAssemblyRecipe.artifact_profile_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L49)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L51)
 
 ```python
 artifact_profile_digest: str
@@ -31069,7 +34370,7 @@ artifact_profile_digest: str
 
 ### API-58f70d972c87 · CertifiedOnnxAssemblyRecipe.graph_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L50)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L52)
 
 ```python
 graph_digest: str
@@ -31077,7 +34378,7 @@ graph_digest: str
 
 ### API-bd528747408c · CertifiedOnnxAssemblyRecipe.canonical_initializer_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L51)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L53)
 
 ```python
 canonical_initializer_digest: str
@@ -31085,7 +34386,7 @@ canonical_initializer_digest: str
 
 ### API-525c3dd4d30b · CertifiedOnnxAssemblyRecipe.adapter_descriptor_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L52)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L54)
 
 ```python
 adapter_descriptor_digest: str
@@ -31093,7 +34394,7 @@ adapter_descriptor_digest: str
 
 ### API-09a5acc0d613 · CertifiedOnnxAssemblyRecipe.assembler_descriptor_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L53)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L55)
 
 ```python
 assembler_descriptor_digest: str
@@ -31101,7 +34402,7 @@ assembler_descriptor_digest: str
 
 ### API-0e5e51aab9d7 · CertifiedOnnxAssemblyRecipe.backend_abi
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L54)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L56)
 
 ```python
 backend_abi: str
@@ -31109,7 +34410,7 @@ backend_abi: str
 
 ### API-39a292c7847c · CertifiedOnnxAssemblyRecipe.role_kind
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L55)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L57)
 
 ```python
 role_kind: str
@@ -31117,7 +34418,7 @@ role_kind: str
 
 ### API-063cafa31cdc · CertifiedOnnxAssemblyRecipe.layer_begin
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L56)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L58)
 
 ```python
 layer_begin: int
@@ -31125,7 +34426,7 @@ layer_begin: int
 
 ### API-b4c05c4c7341 · CertifiedOnnxAssemblyRecipe.layer_end
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L57)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L59)
 
 ```python
 layer_end: int
@@ -31133,7 +34434,7 @@ layer_end: int
 
 ### API-faf9e40669d9 · CertifiedOnnxAssemblyRecipe.node_indices
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L58)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L60)
 
 ```python
 node_indices: tuple[int, ...]
@@ -31141,7 +34442,7 @@ node_indices: tuple[int, ...]
 
 ### API-420d53337b7a · CertifiedOnnxAssemblyRecipe.input_names
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L59)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L61)
 
 ```python
 input_names: tuple[str, ...]
@@ -31149,7 +34450,7 @@ input_names: tuple[str, ...]
 
 ### API-56151beaa9f4 · CertifiedOnnxAssemblyRecipe.output_names
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L60)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L62)
 
 ```python
 output_names: tuple[str, ...]
@@ -31157,7 +34458,7 @@ output_names: tuple[str, ...]
 
 ### API-e0552d4ab2d3 · CertifiedOnnxAssemblyRecipe.expected_inputs
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L61)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L63)
 
 ```python
 expected_inputs: tuple[Mapping[str, object], ...]
@@ -31165,7 +34466,7 @@ expected_inputs: tuple[Mapping[str, object], ...]
 
 ### API-837cf4630a54 · CertifiedOnnxAssemblyRecipe.expected_outputs
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L62)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L64)
 
 ```python
 expected_outputs: tuple[Mapping[str, object], ...]
@@ -31173,7 +34474,7 @@ expected_outputs: tuple[Mapping[str, object], ...]
 
 ### API-98f61c27c4ec · CertifiedOnnxAssemblyRecipe.precision
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L63)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L65)
 
 ```python
 precision: str
@@ -31181,7 +34482,7 @@ precision: str
 
 ### API-c6edf704bcfb · CertifiedOnnxAssemblyRecipe.quantization
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L64)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L66)
 
 ```python
 quantization: str = "none"
@@ -31189,7 +34490,7 @@ quantization: str = "none"
 
 ### API-648445b45e8b · CertifiedOnnxAssemblyRecipe.layout
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L65)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L67)
 
 ```python
 layout: str = "native"
@@ -31197,7 +34498,7 @@ layout: str = "native"
 
 ### API-fce6ef8e4b44 · CertifiedOnnxAssemblyRecipe.padding
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L66)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L68)
 
 ```python
 padding: str = "none"
@@ -31205,7 +34506,7 @@ padding: str = "none"
 
 ### API-8e6cf7f6862a · CertifiedOnnxAssemblyRecipe.max_source_bytes
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L67)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L69)
 
 ```python
 max_source_bytes: int = 8 * 1024**3
@@ -31213,7 +34514,7 @@ max_source_bytes: int = 8 * 1024**3
 
 ### API-7a786554aa76 · CertifiedOnnxAssemblyRecipe.max_assembled_bytes
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L68)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L70)
 
 ```python
 max_assembled_bytes: int = 8 * 1024**3
@@ -31221,7 +34522,7 @@ max_assembled_bytes: int = 8 * 1024**3
 
 ### API-2e030f3c1fbb · CertifiedOnnxAssemblyRecipe.max_nodes
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L69)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L71)
 
 ```python
 max_nodes: int = 1_000_000
@@ -31229,7 +34530,7 @@ max_nodes: int = 1_000_000
 
 ### API-097c73415715 · CertifiedOnnxAssemblyRecipe.schema
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L70)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L72)
 
 ```python
 schema: str = "ndnsf-di-certified-onnx-assembly-v1"
@@ -31237,7 +34538,7 @@ schema: str = "ndnsf-di-certified-onnx-assembly-v1"
 
 ### API-bc836c44782a · CertifiedOnnxAssemblyRecipe.to_dict
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L113)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L115)
 
 ```python
 def to_dict(self) -> dict[str, object]:
@@ -31245,7 +34546,7 @@ def to_dict(self) -> dict[str, object]:
 
 ### API-4b12065808b1 · CertifiedOnnxAssemblyRecipe.digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L141)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L143)
 
 ```python
 def digest(self) -> str:
@@ -31253,7 +34554,7 @@ def digest(self) -> str:
 
 ### API-8a3556ed1f2f · CertifiedOnnxAssemblyRecipe.validate_role_spec
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L147)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L149)
 
 ```python
 def validate_role_spec(self, role_spec) -> None:
@@ -31261,7 +34562,7 @@ def validate_role_spec(self, role_spec) -> None:
 
 ### API-9b6ec8cae616 · CertifiedOnnxAssembly
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L214)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L216)
 
 ```python
 class CertifiedOnnxAssembly:
@@ -31269,7 +34570,7 @@ class CertifiedOnnxAssembly:
 
 ### API-49f4581d1071 · CertifiedOnnxAssembly.model_bytes
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L215)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L217)
 
 ```python
 model_bytes: bytes
@@ -31277,7 +34578,7 @@ model_bytes: bytes
 
 ### API-f48c51910648 · CertifiedOnnxAssembly.input_names
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L216)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L218)
 
 ```python
 input_names: tuple[str, ...]
@@ -31285,7 +34586,7 @@ input_names: tuple[str, ...]
 
 ### API-8941e4a4b192 · CertifiedOnnxAssembly.output_names
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L217)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L219)
 
 ```python
 output_names: tuple[str, ...]
@@ -31293,7 +34594,7 @@ output_names: tuple[str, ...]
 
 ### API-8a00a37f1a92 · CertifiedOnnxAssembly.node_count
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L218)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L220)
 
 ```python
 node_count: int
@@ -31301,21 +34602,22 @@ node_count: int
 
 ### API-f85f789e300f · CertifiedOnnxAssembly.model_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L219)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L221)
 
 ```python
 model_digest: str
 ```
 
-### API-e836ef84957e · assemble_certified_onnx_model
+### API-049fcd1cb23b · assemble_certified_onnx_model
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L222)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L277)
 
 ```python
 def assemble_certified_onnx_model(
     canonical_model: bytes,
     *,
     canonical_initializer: bytes | None = None,
+    canonical_initializer_path: str | Path | None = None,
     role_spec,
     recipe: CertifiedOnnxAssemblyRecipe,
 ) -> CertifiedOnnxAssembly:
@@ -31327,14 +34629,16 @@ def assemble_certified_onnx_model(
 Extract, check, and load one certified role from canonical ONNX bytes.
 
 Canonical packages may keep initializers in the separately addressable
-``model.onnx.data`` object.  The graph and initializer bytes are supplied
-independently so the caller can authenticate both objects before this
-provider-local assembly boundary.
+``model.onnx.data`` object.  Callers may supply its path so this boundary
+can stream it into the temporary assembly directory without retaining a
+second full sidecar in Python memory.  The graph identity pass reads
+initializer ranges one at a time for the complete normalized digest;
+selected-role materialization below is a separate, smaller operation.
 ```
 
 ### API-9da59692b064 · CachedSession
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L413)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L509)
 
 ```python
 class CachedSession:
@@ -31342,7 +34646,7 @@ class CachedSession:
 
 ### API-e636116413cc · CachedSession.session
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L414)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L510)
 
 ```python
 session: ort.InferenceSession
@@ -31350,7 +34654,7 @@ session: ort.InferenceSession
 
 ### API-440af952b011 · CachedSession.cache_hit
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L415)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L511)
 
 ```python
 cache_hit: bool
@@ -31358,7 +34662,7 @@ cache_hit: bool
 
 ### API-6c10bb4bb77f · CachedSession.session_ms
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L416)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L512)
 
 ```python
 session_ms: float
@@ -31366,7 +34670,7 @@ session_ms: float
 
 ### API-a674d898c33c · PrefetchedDependency
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L420)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L516)
 
 ```python
 class PrefetchedDependency:
@@ -31374,7 +34678,7 @@ class PrefetchedDependency:
 
 ### API-18dfcaed383b · PrefetchedDependency.key_scope
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L421)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L517)
 
 ```python
 key_scope: str
@@ -31382,7 +34686,7 @@ key_scope: str
 
 ### API-fa0f1394fb15 · PrefetchedDependency.producer
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L422)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L518)
 
 ```python
 producer: str
@@ -31390,7 +34694,7 @@ producer: str
 
 ### API-ca4fb1282d2c · PrefetchedDependency.future
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L423)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L519)
 
 ```python
 future: object
@@ -31398,7 +34702,7 @@ future: object
 
 ### API-117c02c6f75e · OnnxExecutionResult
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L427)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L523)
 
 ```python
 class OnnxExecutionResult:
@@ -31406,7 +34710,7 @@ class OnnxExecutionResult:
 
 ### API-1ec624f97d48 · OnnxExecutionResult.values
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L428)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L524)
 
 ```python
 values: dict[str, np.ndarray]
@@ -31414,7 +34718,7 @@ values: dict[str, np.ndarray]
 
 ### API-48cab48f6acd · OnnxExecutionResult.published_edges
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L429)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L525)
 
 ```python
 published_edges: tuple[str, ...] = ()
@@ -31422,7 +34726,7 @@ published_edges: tuple[str, ...] = ()
 
 ### API-bf381566adaf · OnnxExecutionResult.first_value
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L431)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L527)
 
 ```python
 def first_value(self) -> np.ndarray:
@@ -31430,7 +34734,7 @@ def first_value(self) -> np.ndarray:
 
 ### API-e097b4cc4f6d · OnnxExecutionResult.value
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L434)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L530)
 
 ```python
 def value(self, name: str, default_first: bool = True) -> np.ndarray:
@@ -31438,7 +34742,7 @@ def value(self, name: str, default_first: bool = True) -> np.ndarray:
 
 ### API-81cedf98a890 · role_topic_token
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L443)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L539)
 
 ```python
 def role_topic_token(role: str) -> str:
@@ -31446,7 +34750,7 @@ def role_topic_token(role: str) -> str:
 
 ### API-ed07e471ea4f · npz_payload
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L447)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L543)
 
 ```python
 def npz_payload(values: Mapping[str, np.ndarray]) -> bytes:
@@ -31454,7 +34758,7 @@ def npz_payload(values: Mapping[str, np.ndarray]) -> bytes:
 
 ### API-ca5ad726dfaa · load_npz_payload
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L456)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L552)
 
 ```python
 def load_npz_payload(payload: bytes) -> dict[str, np.ndarray]:
@@ -31462,7 +34766,7 @@ def load_npz_payload(payload: bytes) -> dict[str, np.ndarray]:
 
 ### API-961f36d1893e · encode_tensor_bundle
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L461)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L557)
 
 ```python
 def encode_tensor_bundle(payload: bytes) -> bytes:
@@ -31470,7 +34774,7 @@ def encode_tensor_bundle(payload: bytes) -> bytes:
 
 ### API-014e937e5daa · decode_tensor_bundle
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L467)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L563)
 
 ```python
 def decode_tensor_bundle(payload: bytes) -> bytes:
@@ -31478,7 +34782,7 @@ def decode_tensor_bundle(payload: bytes) -> bytes:
 
 ### API-b366ebe939ed · select_tensor_payload
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L474)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L570)
 
 ```python
 def select_tensor_payload(payload: bytes,
@@ -31487,7 +34791,7 @@ def select_tensor_payload(payload: bytes,
 
 ### API-540d61d1178a · verify_tensor_payload
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L494)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L590)
 
 ```python
 def verify_tensor_payload(payload: bytes,
@@ -31496,7 +34800,7 @@ def verify_tensor_payload(payload: bytes,
 
 ### API-76b8e57245ab · prefetch_dependency_inputs
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L500)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L596)
 
 ```python
 def prefetch_dependency_inputs(
@@ -31515,7 +34819,7 @@ Prefetch all planned large-object inputs for the current role.
 
 ### API-d443f83483ec · execute_onnx_dependency_chunk
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L526)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L622)
 
 ```python
 def execute_onnx_dependency_chunk(
@@ -31537,7 +34841,7 @@ Run one ONNX chunk and publish declared output-edge tensor bundles.
 
 ### API-9f6a2361b14f · ort_provider_chain
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L760)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py#L856)
 
 ```python
 def ort_provider_chain() -> list[str]:
@@ -31556,11 +34860,11 @@ allowlist; an unknown or unavailable provider fails before execution.
 
 ## NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py
 
-源码 SHA-256：`e5532328e8752bd626b5a668de8e4b826ee9d336367a091fdd7016f48480734d`。
+源码 SHA-256：`73bb276155daa4b8e161d78818afb7fd3d0791b495f37b838af626490adce6a9`。
 
 ### API-4771f16e0e44 · OnnxTensorInfo
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L71)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L73)
 
 ```python
 class OnnxTensorInfo:
@@ -31568,7 +34872,7 @@ class OnnxTensorInfo:
 
 ### API-4932ceb6c849 · OnnxTensorInfo.name
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L72)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L74)
 
 ```python
 name: str
@@ -31576,7 +34880,7 @@ name: str
 
 ### API-fcc8c7d9131b · OnnxTensorInfo.dtype
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L73)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L75)
 
 ```python
 dtype: str = ""
@@ -31584,7 +34888,7 @@ dtype: str = ""
 
 ### API-26ab53499d1f · OnnxTensorInfo.shape
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L74)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L76)
 
 ```python
 shape: tuple[int | str, ...] = ()
@@ -31592,7 +34896,7 @@ shape: tuple[int | str, ...] = ()
 
 ### API-87f5f88bf96c · OnnxTensorInfo.size_bytes
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L75)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L77)
 
 ```python
 size_bytes: int | None = None
@@ -31600,7 +34904,7 @@ size_bytes: int | None = None
 
 ### API-87b17ceff29a · OnnxTensorInfo.to_dict
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L77)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L79)
 
 ```python
 def to_dict(self) -> dict[str, Any]:
@@ -31608,7 +34912,7 @@ def to_dict(self) -> dict[str, Any]:
 
 ### API-aad321a83935 · OnnxNodeInfo
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L87)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L89)
 
 ```python
 class OnnxNodeInfo:
@@ -31616,7 +34920,7 @@ class OnnxNodeInfo:
 
 ### API-69d64c253416 · OnnxNodeInfo.index
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L88)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L90)
 
 ```python
 index: int
@@ -31624,7 +34928,7 @@ index: int
 
 ### API-86096f816c3c · OnnxNodeInfo.name
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L89)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L91)
 
 ```python
 name: str
@@ -31632,7 +34936,7 @@ name: str
 
 ### API-61bf4c38a49e · OnnxNodeInfo.op_type
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L90)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L92)
 
 ```python
 op_type: str
@@ -31640,7 +34944,7 @@ op_type: str
 
 ### API-3792c09cbad7 · OnnxNodeInfo.inputs
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L91)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L93)
 
 ```python
 inputs: tuple[str, ...]
@@ -31648,7 +34952,7 @@ inputs: tuple[str, ...]
 
 ### API-1e3853beffd0 · OnnxNodeInfo.outputs
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L92)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L94)
 
 ```python
 outputs: tuple[str, ...]
@@ -31656,7 +34960,7 @@ outputs: tuple[str, ...]
 
 ### API-f32c247d4596 · OnnxNodeInfo.to_dict
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L94)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L96)
 
 ```python
 def to_dict(self) -> dict[str, Any]:
@@ -31664,7 +34968,7 @@ def to_dict(self) -> dict[str, Any]:
 
 ### API-032b597812ff · OnnxGraphSummary
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L105)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L107)
 
 ```python
 class OnnxGraphSummary:
@@ -31672,7 +34976,7 @@ class OnnxGraphSummary:
 
 ### API-1961d0fc5f57 · OnnxGraphSummary.model_path
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L106)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L108)
 
 ```python
 model_path: str
@@ -31680,7 +34984,7 @@ model_path: str
 
 ### API-d2054d83e55a · OnnxGraphSummary.inputs
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L107)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L109)
 
 ```python
 inputs: tuple[str, ...]
@@ -31688,7 +34992,7 @@ inputs: tuple[str, ...]
 
 ### API-3472700df9d5 · OnnxGraphSummary.outputs
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L108)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L110)
 
 ```python
 outputs: tuple[str, ...]
@@ -31696,7 +35000,7 @@ outputs: tuple[str, ...]
 
 ### API-45dc39cf9505 · OnnxGraphSummary.initializers
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L109)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L111)
 
 ```python
 initializers: tuple[str, ...]
@@ -31704,7 +35008,7 @@ initializers: tuple[str, ...]
 
 ### API-a5c0587b0467 · OnnxGraphSummary.tensors
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L110)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L112)
 
 ```python
 tensors: dict[str, OnnxTensorInfo]
@@ -31712,7 +35016,7 @@ tensors: dict[str, OnnxTensorInfo]
 
 ### API-4841a48304a9 · OnnxGraphSummary.nodes
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L111)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L113)
 
 ```python
 nodes: tuple[OnnxNodeInfo, ...]
@@ -31720,7 +35024,7 @@ nodes: tuple[OnnxNodeInfo, ...]
 
 ### API-aa2fb8774837 · OnnxGraphSummary.tensor_producers
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L112)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L114)
 
 ```python
 tensor_producers: dict[str, int]
@@ -31728,7 +35032,7 @@ tensor_producers: dict[str, int]
 
 ### API-06e47cc825a3 · OnnxGraphSummary.tensor_consumers
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L113)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L115)
 
 ```python
 tensor_consumers: dict[str, tuple[int, ...]]
@@ -31736,7 +35040,7 @@ tensor_consumers: dict[str, tuple[int, ...]]
 
 ### API-ed5421059f7d · OnnxGraphSummary.tensor
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L115)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L117)
 
 ```python
 def tensor(self, name: str) -> OnnxTensorInfo:
@@ -31744,7 +35048,7 @@ def tensor(self, name: str) -> OnnxTensorInfo:
 
 ### API-c536a074394d · OnnxGraphSummary.tensor_size
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L118)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L120)
 
 ```python
 def tensor_size(self, name: str) -> int | None:
@@ -31752,7 +35056,7 @@ def tensor_size(self, name: str) -> int | None:
 
 ### API-caa25c545a0f · OnnxGraphSummary.to_dict
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L121)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L123)
 
 ```python
 def to_dict(self) -> dict[str, Any]:
@@ -31760,7 +35064,7 @@ def to_dict(self) -> dict[str, Any]:
 
 ### API-a45b98bed856 · CanonicalOnnxIdentity
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L141)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L143)
 
 ```python
 class CanonicalOnnxIdentity:
@@ -31774,7 +35078,7 @@ Packing-independent ONNX graph and initializer identity facts.
 
 ### API-f988817a095f · CanonicalOnnxIdentity.normalized_tensor_map_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L144)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L146)
 
 ```python
 normalized_tensor_map_digest: str
@@ -31782,7 +35086,7 @@ normalized_tensor_map_digest: str
 
 ### API-9ffe8f458f91 · CanonicalOnnxIdentity.normalized_initializer_content_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L145)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L147)
 
 ```python
 normalized_initializer_content_digest: str
@@ -31790,7 +35094,7 @@ normalized_initializer_content_digest: str
 
 ### API-5a07420cd5cb · CanonicalOnnxIdentity.parameter_config_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L146)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L148)
 
 ```python
 parameter_config_digest: str
@@ -31798,7 +35102,7 @@ parameter_config_digest: str
 
 ### API-76e0a96d468b · CanonicalOnnxIdentity.execution_semantics_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L147)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L149)
 
 ```python
 execution_semantics_digest: str
@@ -31806,7 +35110,7 @@ execution_semantics_digest: str
 
 ### API-d340e68cf7e2 · CanonicalOnnxIdentity.graph_digest
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L148)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L150)
 
 ```python
 graph_digest: str
@@ -31814,7 +35118,7 @@ graph_digest: str
 
 ### API-8a369de113bf · CanonicalOnnxIdentity.tensor_index
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L149)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L151)
 
 ```python
 tensor_index: tuple[dict[str, Any], ...]
@@ -31822,7 +35126,7 @@ tensor_index: tuple[dict[str, Any], ...]
 
 ### API-8e99ebe44a62 · CanonicalOnnxIdentity.to_dict
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L151)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L153)
 
 ```python
 def to_dict(self) -> dict[str, Any]:
@@ -31830,7 +35134,7 @@ def to_dict(self) -> dict[str, Any]:
 
 ### API-ce76070791f0 · canonical_onnx_identity
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L171)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L351)
 
 ```python
 def canonical_onnx_identity(
@@ -31853,7 +35157,7 @@ PyTorch and Transformers are neither imported nor required.
 
 ### API-2bd995c9f986 · OnnxSplitCandidate
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L285)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L505)
 
 ```python
 class OnnxSplitCandidate:
@@ -31861,7 +35165,7 @@ class OnnxSplitCandidate:
 
 ### API-2f11c918945b · OnnxSplitCandidate.cut_after_node
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L286)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L506)
 
 ```python
 cut_after_node: int
@@ -31869,7 +35173,7 @@ cut_after_node: int
 
 ### API-810b602114f3 · OnnxSplitCandidate.boundary_tensors
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L287)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L507)
 
 ```python
 boundary_tensors: tuple[str, ...]
@@ -31877,7 +35181,7 @@ boundary_tensors: tuple[str, ...]
 
 ### API-392520ff5cea · OnnxSplitCandidate.known_boundary_bytes
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L288)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L508)
 
 ```python
 known_boundary_bytes: int
@@ -31885,7 +35189,7 @@ known_boundary_bytes: int
 
 ### API-b553cd56c816 · OnnxSplitCandidate.unknown_size_tensors
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L289)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L509)
 
 ```python
 unknown_size_tensors: tuple[str, ...] = ()
@@ -31893,7 +35197,7 @@ unknown_size_tensors: tuple[str, ...] = ()
 
 ### API-731cb3c989d5 · OnnxSplitCandidate.to_dict
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L291)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L511)
 
 ```python
 def to_dict(self) -> dict[str, Any]:
@@ -31901,7 +35205,7 @@ def to_dict(self) -> dict[str, Any]:
 
 ### API-e7b4b0cba072 · onnx_plan_candidate_set
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L300)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L520)
 
 ```python
 def onnx_plan_candidate_set(candidates: Sequence[OnnxSplitCandidate], *,
@@ -31917,7 +35221,7 @@ Adapt ONNX analysis output to the planner-owned public contract.
 
 ### API-d7dd106bf864 · OnnxChunkSpec
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L316)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L536)
 
 ```python
 class OnnxChunkSpec:
@@ -31925,7 +35229,7 @@ class OnnxChunkSpec:
 
 ### API-93e9bb038ee3 · OnnxChunkSpec.role
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L317)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L537)
 
 ```python
 role: str
@@ -31933,7 +35237,7 @@ role: str
 
 ### API-5abbc181ff00 · OnnxChunkSpec.path
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L318)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L538)
 
 ```python
 path: str
@@ -31941,7 +35245,7 @@ path: str
 
 ### API-1285a7135d92 · OnnxChunkSpec.key_scope
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L319)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L539)
 
 ```python
 key_scope: str = ""
@@ -31949,7 +35253,7 @@ key_scope: str = ""
 
 ### API-add6cae72556 · OnnxChunkSpec.topic_prefix
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L320)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L540)
 
 ```python
 topic_prefix: str = "/activation"
@@ -31957,7 +35261,7 @@ topic_prefix: str = "/activation"
 
 ### API-b0fad9c448ec · OnnxChunkDependency
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L324)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L544)
 
 ```python
 class OnnxChunkDependency:
@@ -31965,7 +35269,7 @@ class OnnxChunkDependency:
 
 ### API-a520d33b454a · OnnxChunkDependency.producer
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L325)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L545)
 
 ```python
 producer: str
@@ -31973,7 +35277,7 @@ producer: str
 
 ### API-4447ed944a5a · OnnxChunkDependency.consumer
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L326)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L546)
 
 ```python
 consumer: str
@@ -31981,7 +35285,7 @@ consumer: str
 
 ### API-1bd1d49468b5 · OnnxChunkDependency.key_scope
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L327)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L547)
 
 ```python
 key_scope: str
@@ -31989,7 +35293,7 @@ key_scope: str
 
 ### API-1e9422f4d9f9 · OnnxChunkDependency.topic_prefix
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L328)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L548)
 
 ```python
 topic_prefix: str
@@ -31997,7 +35301,7 @@ topic_prefix: str
 
 ### API-bc7f3ad01a2e · OnnxChunkDependency.tensors
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L329)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L549)
 
 ```python
 tensors: tuple[str, ...]
@@ -32005,7 +35309,7 @@ tensors: tuple[str, ...]
 
 ### API-6fd5490764e5 · OnnxChunkDependency.known_boundary_bytes
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L330)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L550)
 
 ```python
 known_boundary_bytes: int
@@ -32013,7 +35317,7 @@ known_boundary_bytes: int
 
 ### API-a57ae88a1c60 · OnnxChunkDependency.unknown_size_tensors
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L331)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L551)
 
 ```python
 unknown_size_tensors: tuple[str, ...] = ()
@@ -32021,7 +35325,7 @@ unknown_size_tensors: tuple[str, ...] = ()
 
 ### API-8be2b809e63d · OnnxChunkDependency.to_inference_dependency
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L333)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L553)
 
 ```python
 def to_inference_dependency(self) -> InferenceDependency:
@@ -32029,7 +35333,7 @@ def to_inference_dependency(self) -> InferenceDependency:
 
 ### API-1c4ad3a83a43 · OnnxChunkDependency.to_dict
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L357)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L577)
 
 ```python
 def to_dict(self) -> dict[str, Any]:
@@ -32037,7 +35341,7 @@ def to_dict(self) -> dict[str, Any]:
 
 ### API-5723032af8ff · analyze_onnx_graph
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L369)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L589)
 
 ```python
 def analyze_onnx_graph(path: str | Path) -> OnnxGraphSummary:
@@ -32051,7 +35355,7 @@ Analyze one ONNX graph and return tensor/operator dependency metadata.
 
 ### API-794bd0faf2f2 · estimate_split_candidates
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L436)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L656)
 
 ```python
 def estimate_split_candidates(
@@ -32073,7 +35377,7 @@ kept explicit so a higher-level planner can reject or measure them.
 
 ### API-a0b7339e6eed · to_model_graph_snapshot
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L526)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L746)
 
 ```python
 def to_model_graph_snapshot(
@@ -32090,7 +35394,7 @@ Normalize ONNX dependencies into the model-family-neutral graph value.
 
 ### API-5867895bd3a5 · to_split_candidate
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L607)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L827)
 
 ```python
 def to_split_candidate(
@@ -32111,7 +35415,7 @@ Normalize one ONNX topological cut without inventing size bounds.
 
 ### API-9cc6f5530054 · build_sequential_chunk_dependencies
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L703)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L923)
 
 ```python
 def build_sequential_chunk_dependencies(
@@ -32133,7 +35437,7 @@ names at their boundaries.
 
 ### API-25426e42304a · build_chunk_dependencies
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L718)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L938)
 
 ```python
 def build_chunk_dependencies(
@@ -32153,7 +35457,7 @@ remains inside each exported ONNX chunk.
 
 ### API-a5c876ce4301 · write_onnx_graph_summary
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L871)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py#L1091)
 
 ```python
 def write_onnx_graph_summary(
@@ -67427,7 +70731,7 @@ def llm_splitter_output_from_result(
 
 ## NDNSF-DistributedInference/ndnsf_distributed_inference/native_assembly_helper.py
 
-源码 SHA-256：`8d0164f23219089986b59ff11ba12efcb411fe48fa41683b7bb663d004400eb1`。
+源码 SHA-256：`bd85dfb8124cebf8b586817a39cdcab25b2aebd96e76b4b7a6c18c59a8ff4090`。
 
 ### API-1369170689d2 · main
 
@@ -71382,7 +74686,7 @@ def main(argv: list[str] | None = None) -> int:
 
 ## NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py
 
-源码 SHA-256：`1c719e9bc130e41ab13a9624feb9f9d799fe3e7251dcb4e7fa472262cc40d961`。
+源码 SHA-256：`983ac718e0ad81f9f38fe039000b53762137d55aedc0b4050bba28cedf06a531`。
 
 ### API-dbe25bd95382 · LargePrefetchResult
 
@@ -72211,7 +75515,7 @@ Create an inference provider without exposing NDNSF Core objects.
 
 ### API-51f8faaaf7cb · DistributedInferenceProvider.add_role
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L1813)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L1840)
 
 ```python
 def add_role(
@@ -72229,7 +75533,7 @@ def add_role(
 
 ### API-dd521aef8288 · DistributedInferenceProvider.add_capability_handler
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L1895)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L1922)
 
 ```python
 def add_capability_handler(
@@ -72282,12 +75586,18 @@ Register one provider as capable of serving multiple inference roles.
 Providers normally use locally deployed artifacts recorded in the
 service policy. If an assignment carries an artifact name, the provider
 can still fetch and materialize it for compatibility with older dynamic
-provisioning flows.
+provisioning flows.  An ONNX artifact with an external canonical
+initializer must also carry ``canonical_initializer_path`` in the
+authenticated artifact reference (or the same key in its metadata);
+relative values are resolved beside the model.  The provider never
+derives an initializer filename from the model stem.  Inline ONNX
+artifacts do not need that path even when their normalized identity
+contains an initializer digest.
 ```
 
 ### API-dcc2b67b4ca7 · DistributedInferenceProvider.run
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L2842)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L2875)
 
 ```python
 def run(self) -> int:
@@ -72295,7 +75605,7 @@ def run(self) -> int:
 
 ### API-4748b7a3af71 · DistributedInferenceProvider.start
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L2845)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L2878)
 
 ```python
 def start(self) -> None:
@@ -72309,7 +75619,7 @@ Start Core after all service registrations are installed.
 
 ### API-a8b8c03a9c64 · DistributedInferenceProvider.stop
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L2849)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py#L2882)
 
 ```python
 def stop(self) -> int:

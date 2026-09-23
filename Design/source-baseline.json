@@ -1,6 +1,6 @@
 {
   "revision": "R3",
-  "snapshot_utc": "2026-09-15T12:57:11.195661+00:00",
+  "snapshot_utc": "2026-09-23T22:10:51.199602+00:00",
   "snapshot_local_date": "2026-09-07",
   "scope": [
     "NDNSF Core",
@@ -9,19 +9,19 @@
     "NDNSF-Repo"
   ],
   "branch": "Experimental",
-  "baseline_commit": "3c7c11c75d151ac87577e7a2ea2f863bfe551061",
-  "local_source_archive": ".codex-tmp/design-source-20260915T125711195661Z/reviewed-source.tar.gz",
-  "archive_sha256": "6d72749a0c319af067143dd4ed9ecc1f2323654344fda989a4de7acd37c9a8b7",
+  "baseline_commit": "2fb99301627dd61d3b14176e9e402f726b089e18",
+  "local_source_archive": ".codex-tmp/design-source-20260923T221051199602Z/reviewed-source.tar.gz",
+  "archive_sha256": "1c062b9f041e9bd49903ad92a7d1eb464bfde078058ca1eb8be48923e4c6b11a",
   "evidence_level": "重点流程源码核对；其余相关实现文件作为支持快照，不代表逐行审计；本轮无协议测试或运行资格验收",
   "files": {
     "Experiments/TigerCluster/README.md": {
-      "sha256": "c14a77c14af31efb35910b432f51943177e244c7dfea87c1b7e0bdc73b38ae5e",
-      "bytes": 3987,
+      "sha256": "d91c53a34d5b3b66785db8bf8cd4f78455de6f364a404a00752e9f1ee08f58b7",
+      "bytes": 4333,
       "matches_head": true
     },
     "Experiments/TigerCluster/docs/sif-build.md": {
-      "sha256": "201745f6cd9163ca7b12b47701ccf3c6727a7a7059fd5465885dfa5ad3b30042",
-      "bytes": 3877,
+      "sha256": "3f8ba3fa68ba3a08ebf889b3e495560a00efe87fa1b44b8a699ac47f27f54e91",
+      "bytes": 10259,
       "matches_head": true
     },
     "NDNSF-DistributedInference/README_ch.md": {
@@ -35,43 +35,43 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp": {
-      "sha256": "beece55c0994602bd8e8acc562d8e2f54668b40680077cc7dc29683c60de77f7",
-      "bytes": 69536,
+      "sha256": "cf69ebd72fe57cead120f35b249c7fd27421f40187d1524aa5645091f7f8af3a",
+      "bytes": 86207,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp": {
-      "sha256": "dd538c23e034046142ab9c1f0cf2fd1e4e9acabfa2e843212bc415fe85f0c096",
-      "bytes": 12695,
+      "sha256": "a8f51dff92a75a5be5044e699a977defddb5e47c89066e523c6c1ad45ccbc6e3",
+      "bytes": 14043,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp": {
-      "sha256": "171d61dc13d9e6ea95f05e062bfe23dd42de4cbf72db48cd76bb14e81e7745bc",
-      "bytes": 76482,
+      "sha256": "5da7b03d310c4e4d08437e345ab0c7d95ee34e75a18df884b03a85c99c4a83d6",
+      "bytes": 159648,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp": {
-      "sha256": "d7a30d51979dce301697d0848995715a276c79711fa23f0369bb60e51d063cda",
-      "bytes": 5981,
+      "sha256": "007ed53674c25bc0dca6fab9b2318d3eb2c0f27b622bf4e9846b8034d18dd07c",
+      "bytes": 20353,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp": {
-      "sha256": "a4f92f172acc36d79cb01f12a079ca69612eecb422b5f36a30f779d02a6c77c0",
-      "bytes": 81863,
+      "sha256": "b3ddd476c08f9bdf896a0169e493c4f51cad7208265883cdfee602fbbaed0248",
+      "bytes": 89925,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp": {
-      "sha256": "cd2703fb2088458fd8a1e5ddbe0fdee882b52ebfd4ccb6e6ec3af024e28a46eb",
-      "bytes": 7001,
+      "sha256": "86401b3e528992946887e5a5dcc1caec3d29e5ccc3758c2542917d5d369663eb",
+      "bytes": 8172,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.cpp": {
-      "sha256": "4e2fd9930d47e06c692c3b9fe924efbc59c24fda602206c39c120882da13da30",
-      "bytes": 11255,
+      "sha256": "8bd6b75c94a63840b5275ad86a83ae96860676eff673e7df0a076f4e575bf9ee",
+      "bytes": 13246,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp": {
-      "sha256": "d0d74aa21cc8f77bdbba7581e6619c1a00e5cf49d778ff46bd6ffb9e2ffd56e4",
-      "bytes": 2709,
+      "sha256": "e6c94c444dbdf43248f4a100c0ba04e2bc4d5dfb756db526d92fe4c2f7e38331",
+      "bytes": 2776,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.cpp": {
@@ -85,8 +85,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.cpp": {
-      "sha256": "e47997ddce2e479aaaff1a9831ead3e6f71449e87d424710ef7dabff15e2e437",
-      "bytes": 21586,
+      "sha256": "d22fb77bfadbc9058ad9bda1ab5f51402990398e036e2786ff7618c40fa21399",
+      "bytes": 21689,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.hpp": {
@@ -117,7 +117,7 @@
     "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp": {
       "sha256": "e3ddd2b32689f54d8dfb35bb4dafa022199cbe40e88a04d6b98ec91bdb311a3c",
       "bytes": 18818,
-      "matches_head": false
+      "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp": {
       "sha256": "00685529c75e43fb56e9f93ab9c3f62b7a9bb5608984c41dcdd9cde21dea81d9",
@@ -130,8 +130,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp": {
-      "sha256": "5519d1555b604a0c1f9c69f44d4aed98f76843ab3d1c48feaae1baaf9fde3ef3",
-      "bytes": 10976,
+      "sha256": "fe08c86606071212a38d36021e075e128dcdee24e2fe8302ff0b54d8996d5077",
+      "bytes": 11370,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/CollectiveRuntime.cpp": {
@@ -145,8 +145,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.cpp": {
-      "sha256": "68192534d13bdba0c1864c3960f8d431add7edf9406207b86fe2dfdc5df00d0d",
-      "bytes": 15009,
+      "sha256": "bcbefdd4464308365aec64f1847aed4aa159b8db2dbd676d7222ad1f50b5bd3c",
+      "bytes": 16980,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp": {
@@ -180,8 +180,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp": {
-      "sha256": "9c7ff205e528b09805764a128f0215d359d3499593ede7603f16df79e529a578",
-      "bytes": 2541,
+      "sha256": "502ba4e56209ae297ebb47d99639866a5f1b020ebfe67bd3e96c0bc4ac33a06f",
+      "bytes": 4213,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp": {
@@ -215,23 +215,23 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp": {
-      "sha256": "1ab8f1c41430812d9ca864d4b33b6cae052ae96ab85c8e092a983a22df976d87",
-      "bytes": 1639,
+      "sha256": "503471d250690f8955b4cb03bd313df1a453d3828cbc79a044ed2b5327fa8775",
+      "bytes": 1880,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.cpp": {
-      "sha256": "54bcc9bc757f6bf8df1643fac14f2ba1ae819522f846a3f9a594122f57ce91bf",
-      "bytes": 62417,
-      "matches_head": false
+      "sha256": "63f857ae52f2a92654117882215e227d8c65fbfe3bffd75d58faad5ed5f6aef8",
+      "bytes": 69759,
+      "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp": {
-      "sha256": "ad4c0d6fadafed3bdd737c020bba131d8c176d385614c4c4e6f4fdad698bd9c4",
-      "bytes": 5459,
+      "sha256": "405ccbdb18053eb9b21e19c1a650ce8d1df8e33c282f9c79476f4fe763850967",
+      "bytes": 7419,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactAuthorityWire.cpp": {
-      "sha256": "412d01d71d86b60599ed8a33981567ab0c1c92bfcb361e8b7d7e579f618654ad",
-      "bytes": 4753,
+      "sha256": "7b94efee480084aa4b5acd11400fd0b3a8ce9ef6769fff1d77b3adf8515fd9c7",
+      "bytes": 4809,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp": {
@@ -245,13 +245,23 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.cpp": {
-      "sha256": "acd1235629174e4bf3bd5981df146c11887156cf3abc1344ef3ea84eb7c567fc",
-      "bytes": 6946,
+      "sha256": "378c2451ab66392e112968cd3840cabb0f8229d8abb70b11fbb6980c04b0c745",
+      "bytes": 6998,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp": {
-      "sha256": "4e7e2b67fb564fdea8faf00fc0b070a4d9d48759ac430925b46865d9fd83fc2e",
-      "bytes": 4378,
+      "sha256": "0fcf61e6cc63516e31048e27eb81ee951a5f15047cd05120c07721cedcd92fe0",
+      "bytes": 4774,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.cpp": {
+      "sha256": "ff9cc2690ef6039034e46dbe82021bae58d7975d98e18abe8cb9867d96de41eb",
+      "bytes": 5140,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp": {
+      "sha256": "c86c0a8203ff02c59bef01d8bfc009f3f012f71b41a77303fc6f8bb4fe401cd5",
+      "bytes": 848,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.cpp": {
@@ -265,13 +275,13 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp": {
-      "sha256": "8a2d0726c4d30bbf5eac8944fb53ae8b49275843bc7a179c745e63ebd532bd94",
-      "bytes": 12116,
+      "sha256": "7fd4a57d2a6325790b359c61b0563351496e3b92c1e72a7d5e2ed77855fa9eef",
+      "bytes": 62954,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp": {
-      "sha256": "af841bfd888c7ed5da8706e77b9b9199a44ede407b8f3209b69dd9919815bb4b",
-      "bytes": 2429,
+      "sha256": "ed69dc50efad0a09ed0e02ab8fd5ce61d5263ba9ea740b14aa09ff638b4bb183",
+      "bytes": 10637,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp": {
@@ -280,28 +290,28 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp": {
-      "sha256": "06ba3ac8d52acaedd0aa802d8b5c015cd59bafff2985c05af5a7d3d47ae27b49",
-      "bytes": 25608,
+      "sha256": "b16c56a6a3bede48defa0580922b62042adaf9f612bef619e0b7002b3d3d7134",
+      "bytes": 100087,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp": {
-      "sha256": "b304f46bfb2cc0eeebd8de0cf7c0795ef2f34c881dae45c9dd4e278af4e9825f",
-      "bytes": 3239,
+      "sha256": "6885c12366a154ed39284e359694ff629e224ee58728eedc423ecb86a0c93dee",
+      "bytes": 5917,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.cpp": {
-      "sha256": "58330cbdff9b9ebca1e9c0e472af65a879ee982614e14b1e1675eb2fd75cec0f",
-      "bytes": 6683,
+      "sha256": "9fae5a1a0f4c13bcc255933e3cc7a578531c0d3f2c4a8b22ee6a3358b17733cf",
+      "bytes": 14597,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp": {
-      "sha256": "89dec2d204f938faa2f82691e1d4817cc2daf63d4f75df718634a78de2d23c9b",
-      "bytes": 2488,
+      "sha256": "0e1fe4bd958386cc13909c4faa185a2ef0960ebb084dd5778673b4346bfab8a7",
+      "bytes": 4046,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.cpp": {
-      "sha256": "6154f8e80c2c2d85c0d22345055699b06b0d3c5d94fff78f26969b09541f2430",
-      "bytes": 16478,
+      "sha256": "4758f39699a075380d59acfb08b8397318c077e3789737595124a8f7adc3888c",
+      "bytes": 16746,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp": {
@@ -335,23 +345,23 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.cpp": {
-      "sha256": "9323424ddce65b5d23e1b9148747deb361bb1fb6315f3a16fc7733e622fe1253",
-      "bytes": 28077,
+      "sha256": "cd2f73df8fd2c12e9d0b59d51d876b38cc618648e11b506f9d0dcf00684df630",
+      "bytes": 29689,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp": {
-      "sha256": "ef4d60c63ceed05702da97952a040e7a8a5641f3ad69db1fd0fc981da885537a",
-      "bytes": 5999,
+      "sha256": "c788c0a37aa02f29f18befc5517e2cafbafad7358f18e590d8846d235d92fdee",
+      "bytes": 6260,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.cpp": {
-      "sha256": "88bfeaaa0151cefce56eaf814d57576c934fe14a09e7051ec785aa98b048ca40",
-      "bytes": 15014,
+      "sha256": "957f67851ee71eefcb10f8500f65cf7518a0aa67c43230820564e6cd7c5f08cb",
+      "bytes": 15852,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp": {
-      "sha256": "83453f9f740fb306cfecc7edb289742774e112b986e51646999853036a97eb27",
-      "bytes": 1365,
+      "sha256": "101a497fa429f8eed20319510ca3c21242a2f78094eed0858ec6ee129ef2365d",
+      "bytes": 1470,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.cpp": {
@@ -365,13 +375,13 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp": {
-      "sha256": "fb0a2513c33f1f26d4805ee1721cd172bb9c06b4f3c40982b818bf2946d04866",
-      "bytes": 46659,
+      "sha256": "917725074b1c2f5df2aa09e4462ee6f2dcc36e6b85bbf75914c4bb4c29eb5d40",
+      "bytes": 51527,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp": {
-      "sha256": "13edd9f34e5e67fc0c845a0550e7b613fd57fbac4c746030097f5e3f7a76635d",
-      "bytes": 7417,
+      "sha256": "7a5f40f871505de03e5c8ff2bfb0c6055a417187df24d7afde9fc67f61399f07",
+      "bytes": 7804,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp": {
@@ -380,18 +390,18 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp": {
-      "sha256": "ce154d474a0800fdbf88dbeb4c97b56713feafcb001f75b25e4de803ae17f322",
-      "bytes": 11586,
+      "sha256": "1370186e1a7f857f435a6d9f7a8c7ae12bd74ab82b5b3fc6a5b6d3850e9bc082",
+      "bytes": 11901,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp": {
-      "sha256": "d0876f1750f5129423a181def4da551eebf5f1224f3b161f7d76021154209aa8",
-      "bytes": 65550,
+      "sha256": "11034b85e8df52730a025f4692293900967b7fa4b19226e58fbeec7f86eabe6e",
+      "bytes": 70423,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp": {
-      "sha256": "9c3bc11155bb83ea6ab997fa3338e1e7415f2a5447cebfec6c3a39398be49376",
-      "bytes": 5556,
+      "sha256": "a106b45e7a15f1d7ccec3267079e24549e8e21ea5cbf4f20a6a027f35f5d3c83",
+      "bytes": 6702,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.cpp": {
@@ -402,6 +412,11 @@
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp": {
       "sha256": "6af6496e6d9933262727e0741f020511043f49aa7550b016018af6bf2aebd4f7",
       "bytes": 887,
+      "matches_head": true
+    },
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp": {
+      "sha256": "51ce8f4792f8f1c09ba8fd32c6250b3351f3ea318b466ab542aac8f68368a6af",
+      "bytes": 689,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.cpp": {
@@ -415,13 +430,13 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp": {
-      "sha256": "d2be8684d8181a430030ffb793725e8c65fd7728230bf21edb677e2315b22c36",
-      "bytes": 35532,
+      "sha256": "2f5e6fdb65a85617fbb2cd9bb0ce830fa00dd9f2a72efec9967cb2eb18ae7471",
+      "bytes": 35564,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp": {
-      "sha256": "aebfb75dfdfe1606be529190f4cb3007b72595a7629cd5f34eccc9ba05b5d8cf",
-      "bytes": 2807,
+      "sha256": "c2c6c7a449f53292dce6b696512a785895d0ec71e6dbdd49c237bfa8c13bd2f1",
+      "bytes": 2902,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupKeyAdmission.cpp": {
@@ -435,8 +450,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.cpp": {
-      "sha256": "774abf1dc12ee605e0b5767ba6d3f265444b9ff98622ff122c7f4301afcbbe27",
-      "bytes": 11328,
+      "sha256": "0e9d8a7bc19a1c86dd66329543171bb437b354bb3b492b181c97df07a25f5412",
+      "bytes": 12705,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp": {
@@ -445,13 +460,13 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp": {
-      "sha256": "4e6c1741ab79bbffa435b825814de6c286a243aebb2003606cbe086178eea77a",
-      "bytes": 117255,
+      "sha256": "40a4ef9a193d00b139c984e7b9e7bdce17c1af847445015e861acd121627150a",
+      "bytes": 125596,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp": {
-      "sha256": "6cb3602d035f0e52750017a3e1ffccbf50714c5842d450d883f1e8650ea99246",
-      "bytes": 13457,
+      "sha256": "3d2fd0254c1754455c23c689263fc8158bc1cb716111e97d50ddaf2f5c81d02a",
+      "bytes": 13677,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp": {
@@ -470,8 +485,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp": {
-      "sha256": "d2126f2d4ff062ff6624c8c663bdfbdd629ce082a633faed9d081d662e634c55",
-      "bytes": 6962,
+      "sha256": "f6da78e8049509d3ed68d108c3ef0eed047a185a8c375932aaa749ebe614c00a",
+      "bytes": 7219,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.cpp": {
@@ -485,18 +500,18 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.cpp": {
-      "sha256": "da60eea6b3628c0af4d7f2e6d59b25e5e98ff4b0cf3ad01fde679d09ce1c9229",
-      "bytes": 6868,
+      "sha256": "5b84d9083bbee721c16a61685c3e96506c1b8780df00d95d2ea1eeb16aa9ac3c",
+      "bytes": 7326,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp": {
-      "sha256": "0d8b5af463c5c38b15a307467fecd1a68c18c34fe9279f94a2522e94d315ea9a",
-      "bytes": 1598,
+      "sha256": "26281559dcbb8728826fbdce918e4f0f63edb80036ce375fd329bc2fa04df3ec",
+      "bytes": 1814,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.cpp": {
-      "sha256": "28de14dcb672178d44e3e5e95e860f4917e5477cffadd2d91c6cf59265a54760",
-      "bytes": 14536,
+      "sha256": "495ca4907dc005b405edb31ab51b89857e1716a12f504c277acd42ca11748472",
+      "bytes": 17186,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp": {
@@ -505,8 +520,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp": {
-      "sha256": "16daa627a8bc54282e28a7e1f257f1e8a3b3c2c5b831f6a35dd04910a368674f",
-      "bytes": 19675,
+      "sha256": "d7081ebd6723c62caf5006d01d2e11c96509e1d9c906b578f5fd24487c021630",
+      "bytes": 19943,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp": {
@@ -515,23 +530,23 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp": {
-      "sha256": "55408fea854249e49ea20bc966dd0982811fd6b793f1b7671e2209493350368b",
-      "bytes": 37264,
+      "sha256": "ef05fa35ae280ebe90b9ac89a84ec2ee3462e8ca79c236c27a562e2bc15f53cc",
+      "bytes": 39056,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp": {
-      "sha256": "698972b1a7d4c182a06c1d0e804a79a40e2eed4e504ebe134907988aeb7d2121",
-      "bytes": 14711,
+      "sha256": "23e231e07c70334fa983c13254ef2f9a211a89dedd53f208a42505ede1bd1ca5",
+      "bytes": 15582,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp": {
-      "sha256": "24e472b04addd7654f9d6db76c82b858fa88e99c11ab6725646f5b51edae3bd3",
-      "bytes": 13286,
+      "sha256": "ac6d10b2224bc1720b2b4a9e3ba770c8c8ad26c4a0490199a3755b3a06ae1eba",
+      "bytes": 29310,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp": {
-      "sha256": "ea80db09e0098e93e9569e893ef5b93aa83d448c860be5b2e7deff37a7eb0ed6",
-      "bytes": 1423,
+      "sha256": "bf2126b91629a00cf78a5fbc787484156f580ca019bb6bc01cb6fc1555cc40b7",
+      "bytes": 2703,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp": {
@@ -555,13 +570,13 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp": {
-      "sha256": "37984face728f908337ece2c59b7c96cd288969bad84a6f8ae6468d691100149",
-      "bytes": 149358,
+      "sha256": "cac8ba833eed2cbd098bd8d4836e6a54907196355f5f965c64a9113b4b64af89",
+      "bytes": 170609,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp": {
-      "sha256": "7e98745a08f5389dc42264dd67be35c659010ff9c7d0764f14ad36a319425e95",
-      "bytes": 13154,
+      "sha256": "78711f9c3ab608146a0cff410339a5a83af331ff35f264bc347a60733c213365",
+      "bytes": 13983,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp": {
@@ -585,8 +600,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp": {
-      "sha256": "cb0b3f29606c189b050e90f2f9991f2a1aa72b81c453c9aa01d1ade93a9e5e84",
-      "bytes": 70583,
+      "sha256": "e0d1c3f2131698ffc93a21cf2ad30799566c0cfc3eabf6ba4aeae011b7e093c5",
+      "bytes": 72096,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp": {
@@ -605,9 +620,9 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.cpp": {
-      "sha256": "8b8eb886b8c5c0a3cc9205a0cb71620e709430f517dfff81c0c3545db8aaf26f",
-      "bytes": 9223,
-      "matches_head": false
+      "sha256": "bfdbba678c2ad0f3c60adeb8302a7d60ccbac47bee8b6399a4f420c3771fdee8",
+      "bytes": 10326,
+      "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp": {
       "sha256": "ea4e8ad6fd2e24f9e4b333140e3cd24f2f895748fce4ce246090368b8ad07c48",
@@ -615,8 +630,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.cpp": {
-      "sha256": "d1ddbf46d1050609069570387436a24b50a6dbabcfd02c98696aa5782ae9aa0c",
-      "bytes": 13942,
+      "sha256": "397ae95d18e699213b161b5aea8437922ab78cccd95ac2bd1445aef12495a8fe",
+      "bytes": 15381,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp": {
@@ -625,8 +640,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.cpp": {
-      "sha256": "1595dbf7f0c13088994524bdc03f1cf42c5c7bda29d4b1ed0f48090b4289da00",
-      "bytes": 36186,
+      "sha256": "ab7e9738a07cf17a139baf0ab69dc0c7cc148bb2c1e60b7f1fec0bd99cc1c452",
+      "bytes": 38763,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp": {
@@ -635,18 +650,18 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.cpp": {
-      "sha256": "a5fa91f52ead224a60daa2a71827e21eb00942fc42a41f7252b224b5f30f02cb",
-      "bytes": 21893,
+      "sha256": "aab54193bd61512e5e51effc732acd5c148e8a7915ad8ca976070463d9e80001",
+      "bytes": 22729,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp": {
-      "sha256": "028ce6a8f7736dac5d41455431e5e43b4d0c6fed5ea29ccf6a0e4521270992ea",
-      "bytes": 5375,
+      "sha256": "ce25ea24923635bd2ed17496b24cbdee26cf6e25571e62d2d2f6c76b3b80f575",
+      "bytes": 5759,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.cpp": {
-      "sha256": "068a27978582100f208825f27e907fd27c0d83555ac35116cf88b369ecfee727",
-      "bytes": 2290,
+      "sha256": "385b6a0af2511a9b5ebd265613d8c81a4788d8f0c42e58bc4e2d7b311c985a07",
+      "bytes": 8579,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp": {
@@ -655,8 +670,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSelectionJson.cpp": {
-      "sha256": "6f588d1df216144be553c4df790ea1f506dba08900d9c86e90d496d584d58d3a",
-      "bytes": 13696,
+      "sha256": "87390f82003eadf18d827d8ca2f396dc0f3c1c1ee44978ecb507f7f18759c9ef",
+      "bytes": 14308,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.cpp": {
@@ -680,8 +695,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.cpp": {
-      "sha256": "20922bbafd695ffca090aad403a6813c32e4f5c0e646adb811503c138b8f122b",
-      "bytes": 17846,
+      "sha256": "ef273276d4ec1803c4df3ac55183de2ac14747edd37e75db78d9a5b9265b31dc",
+      "bytes": 18338,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp": {
@@ -695,12 +710,12 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp": {
-      "sha256": "fcc610519b842f1d56e703b755d6f54df7178aa69cd4600a918968242f005879",
-      "bytes": 40864,
+      "sha256": "6a00297d969441be1de21af1fdf613d32d192561c8ae3d02938f30e09ab11b1b",
+      "bytes": 44561,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp": {
-      "sha256": "c2847e4063456dd4e6b2eaefcc2f52350284607dbe59dfd8778b9ef7a38b5fa3",
+      "sha256": "c2dd039412b9ee17de8e6695e6e1b1be217ea305dec31dc9d1e421583363207b",
       "bytes": 2124,
       "matches_head": true
     },
@@ -725,18 +740,18 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.cpp": {
-      "sha256": "c997cd4e9e09d6c5b0ab9981e9f8f3a4b20ff5ee5acf78792d16bd67896855a1",
-      "bytes": 37930,
+      "sha256": "130958b7909b7697b3575a798fb5e66133cb35c9e0587548f652636786747142",
+      "bytes": 38238,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp": {
-      "sha256": "35754fb41d48aa5e613524c9c994ff0ffbfb83737e8ef77d0facd84678509ff0",
-      "bytes": 9367,
+      "sha256": "ccef63c1965d8ece9396f1079b38ffd2a05fb36282e8e1a9263c0021ad2cc5f0",
+      "bytes": 10058,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelPackage.hpp": {
-      "sha256": "a1887d5b962c4f331b763a184fc2cb63aa5caa84b6be8e0e1e50dd3668d21279",
-      "bytes": 1719,
+      "sha256": "de8b65ca31d65f1ae514dd607de08945220a584d29f359b7feb649c73e4c43c3",
+      "bytes": 2091,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModelTypes.hpp": {
@@ -745,18 +760,18 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp": {
-      "sha256": "fd9849df683b1c9979ca933ca7b7580c66135be37040fe9fd0eb77a98ec89788",
-      "bytes": 16197,
+      "sha256": "9dd70a1a2243dd711311f178464db3ae1e0d690a3306052205681c2b37a7ec77",
+      "bytes": 19423,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp": {
-      "sha256": "566ae74474bcc9042867e2e02f50fef535023f2d0bbc3a39cd9172867b494f79",
-      "bytes": 5147,
+      "sha256": "1d01983b327e0db2c124bfb4076564ec64dcf19e0074dbc1aceb605f1f4c37fa",
+      "bytes": 5642,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.cpp": {
-      "sha256": "7b8307775c17f33ed929924046d7b7b28465cd3464260c2ccd3cc79bf6ee03e6",
-      "bytes": 81092,
+      "sha256": "952402384a482ef545e9558e7b2f37919ffe28d46808a9e4e6fab4cd4ee02404",
+      "bytes": 89997,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp": {
@@ -765,23 +780,23 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.cpp": {
-      "sha256": "ad532d9b94d912cb2138b85998d9394255e672371f665b90ab0b1ca7824c6087",
-      "bytes": 24707,
+      "sha256": "42879b14909812ef162a395732f98003116f90854b4f4ca8fbcad2488311873e",
+      "bytes": 30292,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp": {
-      "sha256": "51ddd628e40e2dca51208fcfef7b9445bb0f177326b2fb2c13b7a379a48536f8",
-      "bytes": 6116,
+      "sha256": "f27d70766c1524ae3bb90db4272810758ee5e78e552af3c6a7f02283bfba9496",
+      "bytes": 6691,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.cpp": {
-      "sha256": "446657f51ff20c46fa02671aaca7428ecc470472d85c6178d4a34252d2f8e208",
-      "bytes": 56179,
+      "sha256": "7b2d74e4f70c329c865d3fd228b0e077467aec2dcbac6c332c27245796a2531b",
+      "bytes": 56656,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp": {
-      "sha256": "d1e5cb6e5bfcb59849a901cb8a2b69b43e40095b876ec384bf0c4dac44e51011",
-      "bytes": 10491,
+      "sha256": "4d2f79076177f9f7b84667390945372fc6ac464afe66b54500821bb4439e31f4",
+      "bytes": 10763,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp": {
@@ -795,13 +810,13 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp": {
-      "sha256": "e06870e8e453ada630740c565a06fb358db5e0eb4a4d461daed146dd4e21e6ca",
-      "bytes": 40772,
+      "sha256": "190b698c24d26c4f00d983081c17333e6831d27883fccf0dcb6648991b795010",
+      "bytes": 47057,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp": {
-      "sha256": "fd9793997ca4b0f9e1959d7a2652436a1a8444485556fc870334710809b0f0cf",
-      "bytes": 9822,
+      "sha256": "700c835123670228b037b6b03266cc97ecee9a5210108e9eea1d39becdb9de71",
+      "bytes": 10170,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.cpp": {
@@ -815,28 +830,28 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.cpp": {
-      "sha256": "758082c757d3e28111eb8be3830197fa95529b63c8b4ae550133239daf4f6780",
-      "bytes": 86277,
-      "matches_head": false
+      "sha256": "425d20fcdd493dbf5c2f3059304270371c0d819154abafbb303c0fa23bb40968",
+      "bytes": 102090,
+      "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp": {
-      "sha256": "97308919f2b6edeb7c7079e94eb2f85f3cd43e16bece2bab53562ada20e33035",
-      "bytes": 7908,
+      "sha256": "64b536c79c926b5db081e7944dcd6ede6ec6669d06044be53157460fb796a179",
+      "bytes": 12745,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp": {
-      "sha256": "c71a581f7febf513a0f95ad49dcfabc865334f668f9a92f61d078b08f1e8d919",
-      "bytes": 1057,
+      "sha256": "2b36459f50a73737c7b0e353bafd36c9857e00e40c2e711c8ff0b17bfc65bfea",
+      "bytes": 18484,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp": {
-      "sha256": "cad3780d7114fa5bf8a1ac0320544e9c1fd28bf53de526bb11f9ce57d28f0e0c",
-      "bytes": 1253,
+      "sha256": "d8c70188e993c29a1efe9d0ff8a947d8140549c2fff89e80455a91516d8e9179",
+      "bytes": 2915,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp": {
-      "sha256": "bab37d6e210e681db7488b7e63cd5a9e38ffc4fd20016bd6addb6b6f0ce60ef3",
-      "bytes": 41582,
+      "sha256": "7598beee04af8fcb8f05fc4bf68507810346c68e6f294de75382c5ff32a2e8b0",
+      "bytes": 42020,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp": {
@@ -845,8 +860,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp": {
-      "sha256": "05bf7ba8a4b8981655d2e7bb69ecc1a0d8bf44fac22ebc32ec79f7678b2890eb",
-      "bytes": 985,
+      "sha256": "afbe656d4ff44b153d2ed91058e58b59ee371e9539fe7eef711292f0ef1cac1b",
+      "bytes": 958,
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp": {
@@ -857,7 +872,7 @@
     "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp": {
       "sha256": "62f14b85c9cf781cdf012661f9022717dea9799418126e58c766d2c4753cadfa",
       "bytes": 1068,
-      "matches_head": false
+      "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/extensions.hpp": {
       "sha256": "6ce53db857c43e24e18ecd25a7847cedacca8dcf1c052565eab232fb0e1bbd28",
@@ -905,13 +920,13 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/executor.py": {
-      "sha256": "d65c37e01914d69d3615b2333b285f92784d6198eb1481ad46aae96d7d81b50d",
-      "bytes": 34054,
+      "sha256": "4a9a7e5d6e40a52417134e3ff0368963da61512b57e904e2a642ca6dc848abc4",
+      "bytes": 39476,
       "matches_head": true
     },
     "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/onnx/graph.py": {
-      "sha256": "e5532328e8752bd626b5a668de8e4b826ee9d336367a091fdd7016f48480734d",
-      "bytes": 32393,
+      "sha256": "73bb276155daa4b8e161d78818afb7fd3d0791b495f37b838af626490adce6a9",
+      "bytes": 42443,
       "matches_head": true
     },
     "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/__init__.py": {
@@ -1285,8 +1300,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/ndnsf_distributed_inference/native_assembly_helper.py": {
-      "sha256": "8d0164f23219089986b59ff11ba12efcb411fe48fa41683b7bb663d004400eb1",
-      "bytes": 10192,
+      "sha256": "bd85dfb8124cebf8b586817a39cdcab25b2aebd96e76b4b7a6c18c59a8ff4090",
+      "bytes": 10199,
       "matches_head": true
     },
     "NDNSF-DistributedInference/ndnsf_distributed_inference/native_token_decode_helper.py": {
@@ -1440,8 +1455,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/ndnsf_distributed_inference/provider.py": {
-      "sha256": "1c719e9bc130e41ab13a9624feb9f9d799fe3e7251dcb4e7fa472262cc40d961",
-      "bytes": 139720,
+      "sha256": "983ac718e0ad81f9f38fe039000b53762137d55aedc0b4050bba28cedf06a531",
+      "bytes": 141831,
       "matches_head": true
     },
     "NDNSF-DistributedInference/ndnsf_distributed_inference/provider_api.py": {
@@ -1755,8 +1770,23 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/examples/DistributedRepoTieredCacheTest.cpp": {
-      "sha256": "c2aa1864c21fcc7d8013476def8a900ca59fc31efb1a9ea298d967373b6166e0",
-      "bytes": 11876,
+      "sha256": "71505c519a68811b33ba1d291347c9e33d066a6775c95d94b594c52ebe7df7b2",
+      "bytes": 13064,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/examples/Spec188RepoFileBackend.cpp": {
+      "sha256": "ad24f38283d0ae167fe1b0941cff470e502faab6564d64bec7e234c011b9f58c",
+      "bytes": 13801,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/examples/Spec188RepoMemoryBudget.cpp": {
+      "sha256": "33e66984f8f186eeab3adbca863a2b296eefa31c3ade6c58bc651554f9bdd264",
+      "bytes": 8734,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/examples/Spec188RepoRangeTransfer.cpp": {
+      "sha256": "38970fe04750bef68ddf34229b0d47af7e78a90ce47245e64526784453ec3063",
+      "bytes": 7671,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactManifest.hpp": {
@@ -1779,24 +1809,44 @@
       "bytes": 3923,
       "matches_head": true
     },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp": {
+      "sha256": "9895881c1fb3c69295dda39ab2e421c65e2ac40b24c547379abbb611366249d3",
+      "bytes": 4219,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp": {
+      "sha256": "7b508fd7a289ee23317e0a39f73378b956e4917ddeb66f46981c3a16797face4",
+      "bytes": 775,
+      "matches_head": true
+    },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp": {
-      "sha256": "a89eb7708c82d5b8d46241b5094c2daf697db3fc3738790fa4c8034a594769fc",
-      "bytes": 11103,
+      "sha256": "80a099e8f5d1173a43c746fd27122ac0e8cfc5950514ccc006b319906632200a",
+      "bytes": 13863,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp": {
-      "sha256": "68172acaf94a97a6d34b17499d782f59f60f31638961e6f9508cf609d31dc902",
-      "bytes": 3166,
+      "sha256": "d66b246bec48f3182330fbf2fe71f197dd49ecffcd5459723dde33b9b88e670f",
+      "bytes": 6109,
       "matches_head": true
     },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp": {
+      "sha256": "810cdda2940bb7ff9a29f43d58a7ad20d6df95cb647193056a937559fe819643",
+      "bytes": 7417,
+      "matches_head": false
+    },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp": {
-      "sha256": "9d2e986221293fc1be16416e61ab2b2c11970c284c7096a98be123e41747cea1",
-      "bytes": 3869,
+      "sha256": "293261c56fdf1ce967f3935ec78943fd6b0bcdbc0db1da932a0ffe3bd630d081",
+      "bytes": 4584,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp": {
-      "sha256": "74ca1596c71cf9db0fb6750a4dce787737a32152ed6a7c437d4dfabdc0f4f038",
-      "bytes": 1929,
+      "sha256": "fc7d99e87daa5cb0e44cfce54aeff785932f084905a6bff9e47a475a7493892f",
+      "bytes": 2872,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp": {
+      "sha256": "a898a39a70a905d5b90fe2afc6da67e2e59096245e0ddf8342424687c5be9859",
+      "bytes": 61377,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoStoreBackend.hpp": {
@@ -1805,9 +1855,9 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp": {
-      "sha256": "5c794bdc744abcc73b2f3c5ee5472d8726d4e6d24139a4e2cac949979a2b8abc",
-      "bytes": 8936,
-      "matches_head": true
+      "sha256": "7c6c438b98db47f6921b462c821399f2758512b31d4ea757370dd219bbdecc0a",
+      "bytes": 11466,
+      "matches_head": false
     },
     "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/__init__.py": {
       "sha256": "6a0c6dabc3c19809f23aecb8929eaac215108179a0773375d7ebe6e078853d35",
@@ -1860,13 +1910,13 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/pythonWrapper/setup.py": {
-      "sha256": "068f7b9d33ccd5beee231edd4f5602c9ffd2972466b13957c4d9b55c0e386151",
-      "bytes": 5395,
+      "sha256": "f2f38234553af725bf7ce51b10f2b1ebf5b03bfd46b3416dd1c830876e56860b",
+      "bytes": 15592,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/pythonWrapper/src/py_repoclient/_py_repoclient.cpp": {
-      "sha256": "8eccbeda14f44a8995a0ca3bb6873f9e32a5530e02860835f8f2d4b8c033fb03",
-      "bytes": 58149,
+      "sha256": "2f773044a11cb3672d800f26827928f5d2b48c088bdb215ec1973463e7857a92",
+      "bytes": 58339,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/src/ArtifactManifest.cpp": {
@@ -1885,24 +1935,24 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/src/RepoClient.cpp": {
-      "sha256": "dbc349e522ef7eec6e81b015cd6ae6b71e5fcea45bb2b25edd81fd9b0a409930",
-      "bytes": 23416,
+      "sha256": "9113d5463f40c9de022a5e73305575c11ed6011c26cf4be3239b221c62312c41",
+      "bytes": 28163,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/src/RepoCore.cpp": {
-      "sha256": "4f1be824ec3587ed163c91618d6e6aa993fa19ccd7c9d898c6741d3ea6acf713",
-      "bytes": 10663,
+      "sha256": "b24112b8a43d625a014f6acb7651a57d0feb016c6fa65da165f2c031506a71a1",
+      "bytes": 27969,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/src/RepoNode.cpp": {
-      "sha256": "dc001dc837e6f0b9c39ad2251a7058772b008fb348b026c97ec971ed7228e268",
-      "bytes": 19535,
+      "sha256": "983ec76ff194031f83c0d4d883983a5f4bf7c10ffc7b9e8e55e88481f91aa507",
+      "bytes": 22918,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/src/RepoProtocol.cpp": {
-      "sha256": "6c128287c59fe86f90fba5a5ae894399e010e757bc415da585f7c787f6e807ac",
-      "bytes": 17301,
-      "matches_head": true
+      "sha256": "344124b544c87ef9d6b888b21f80954ef1fa458f04eef8b640983258f48cebf7",
+      "bytes": 24809,
+      "matches_head": false
     },
     "NDNSF-DistributedRepo/src/RepoStoreBackend.cpp": {
       "sha256": "9027e7f78ed02b0c82ccd9d35a39f84a462244c1b01673156df31db601a075b5",
@@ -1910,18 +1960,23 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/src/RepoTypes.cpp": {
-      "sha256": "7e7e3c1ca029a455fc6bbe04ccc6f64a57f4ef90093ad8e9b0b5f07f40089ddf",
-      "bytes": 35053,
-      "matches_head": true
+      "sha256": "818099b323167197a552c7e6af9c7c282e69fe1cf750e32ae22055c618502bce",
+      "bytes": 45147,
+      "matches_head": false
     },
     "NDNSF-DistributedRepo/src/backends/FilesystemArtifactStore.cpp": {
-      "sha256": "637a31ea68440e264682910226a14ae1770d98004e4d889f839487978569e251",
-      "bytes": 30546,
+      "sha256": "7d36e09274b70acd3e2901801d82b722a58b0aeba8a12f69bfc5d828dd3c9962",
+      "bytes": 35216,
+      "matches_head": true
+    },
+    "NDNSF-DistributedRepo/src/backends/FilesystemRepoStoreBackend.cpp": {
+      "sha256": "1f37a309681e2e0e1d6b2eae6202f5ff55f331c1f84a55fbb2fc7c92347df65b",
+      "bytes": 35824,
       "matches_head": true
     },
     "NDNSF-DistributedRepo/wscript": {
-      "sha256": "e6f6c7449250519533ff29932d6d44766ef94e52c891a8d50578546d2cc9ea44",
-      "bytes": 3360,
+      "sha256": "cc8771058ba0feea43da16c38ad4c3a314ded8427605fd562925fd07e5efe242",
+      "bytes": 4608,
       "matches_head": true
     },
     "NDNSF-UAV-APP/README_ch.md": {
@@ -2185,8 +2240,8 @@
       "matches_head": true
     },
     "docs/native-build-parallelism.md": {
-      "sha256": "07dfb7553aac76ef9beb6b94d08ca434774244844c459b001b5f188799b11d89",
-      "bytes": 4564,
+      "sha256": "38a688103cd9cfc750b0bb7688370067456519fa8ac64469d681ed1e4391e118",
+      "bytes": 7329,
       "matches_head": true
     },
     "docs/ndnsf-core-app-boundary.md": {
@@ -2244,6 +2299,11 @@
       "bytes": 1108,
       "matches_head": true
     },
+    "ndn-service-framework/EncryptedLargeDataRangeStore.hpp": {
+      "sha256": "c7bf438da71f81947146526cda0601875d1ae28296ef173fa86fbb3d39a4c3ad",
+      "bytes": 2943,
+      "matches_head": false
+    },
     "ndn-service-framework/ExecutionLease.cpp": {
       "sha256": "e8746eb8d792e1a277e56cea769690eb6b706e59558da6ac982429f49855355a",
       "bytes": 22903,
@@ -2265,23 +2325,23 @@
       "matches_head": true
     },
     "ndn-service-framework/HybridMessageCrypto.cpp": {
-      "sha256": "7817d1905380c336d3d794ccc1f86e0ab1be522d0faacc0b999a5150dbfbf22d",
-      "bytes": 27283,
+      "sha256": "5dc8963f1a1e472af41f0354410fe1d5dce98d34979809ce2f4f96fc858aec63",
+      "bytes": 29100,
       "matches_head": true
     },
     "ndn-service-framework/HybridMessageCrypto.hpp": {
-      "sha256": "9920dee2217633f5bdcba7cbaeb30c829d53b95a710396836d363c00a5544d54",
-      "bytes": 8506,
+      "sha256": "2bc68797f9c285706c68f8f64a936b69b5a7bd30034900e22f25c1ef63be2102",
+      "bytes": 8827,
       "matches_head": true
     },
     "ndn-service-framework/InvocationStream.cpp": {
-      "sha256": "361ec0ee18e30ef1469d5e63ae2f4a7ae1a91c1a282cf3a8b822928cf4b56299",
-      "bytes": 83794,
+      "sha256": "03f8a9b89c77c6eb87836e0bc89cc98f29686090dc26299369fd931c0777d505",
+      "bytes": 89625,
       "matches_head": true
     },
     "ndn-service-framework/InvocationStream.hpp": {
-      "sha256": "47222788c5ace05054eeaead0bb36c95579bdc183322e096c0e66e698fd03291",
-      "bytes": 32565,
+      "sha256": "9d3d221eea087756f02f304b80cad626fcc21213774a5483fcff5de09ff1270e",
+      "bytes": 35094,
       "matches_head": true
     },
     "ndn-service-framework/LocalServiceRegistry.hpp": {
@@ -2290,13 +2350,13 @@
       "matches_head": true
     },
     "ndn-service-framework/NDNSFMessages.cpp": {
-      "sha256": "151417898191b8d287e0a76ee0d716a27bcd29c737f5a38fd9ab2c7be0e37344",
-      "bytes": 98351,
+      "sha256": "3ab61e4c01fc5587db7eca6f8b05c2a2d6df22dd790a035d9d6d5895fdf4838f",
+      "bytes": 98479,
       "matches_head": true
     },
     "ndn-service-framework/NDNSFMessages.hpp": {
-      "sha256": "cd1399f6ed1e09f6cbdb08ee6ddff5d956ec31351875291b56cb598ae3e6cfc1",
-      "bytes": 29727,
+      "sha256": "89d3a556bd7186c704e6f3d62e87bb1bbb4dc1e741168b43f8766deef5557714",
+      "bytes": 29777,
       "matches_head": true
     },
     "ndn-service-framework/NDNSFThreadPool.hpp": {
@@ -2415,23 +2475,23 @@
       "matches_head": true
     },
     "ndn-service-framework/ServiceProvider.cpp": {
-      "sha256": "b6b1db11dd5243a15de3b8f7a084c3483acbf77ea857ddb425f6c4a7bbcc0a11",
-      "bytes": 755025,
+      "sha256": "718ec2e3121aebdfe4b486b0e5e2d89b8df06d3bb6752064067a7a718cbd0f4f",
+      "bytes": 771871,
       "matches_head": true
     },
     "ndn-service-framework/ServiceProvider.hpp": {
-      "sha256": "381b163cbeb3fc94699c609f530b5d01b5c2cac4232a5c397e2d09ebf35a725a",
-      "bytes": 103442,
+      "sha256": "042e2578cdb6f960ea904f124639ea1f391c85f107725daa4323aa37711062c1",
+      "bytes": 103780,
       "matches_head": true
     },
     "ndn-service-framework/ServiceUser.cpp": {
-      "sha256": "80d680ac83e10dd40a9ac0b6f4165bdfb90d547f609d7780c4574dd842df36f2",
-      "bytes": 656768,
+      "sha256": "e4795decd8151c58266aad96b8f6a5f306774306ae501635a93b7e675d3e68c3",
+      "bytes": 737595,
       "matches_head": true
     },
     "ndn-service-framework/ServiceUser.hpp": {
-      "sha256": "55bcc34fdb82b739729ae76fd7476669f97147eaa2d17b9442f93e5df4a8caa9",
-      "bytes": 97210,
+      "sha256": "576b79d80c57e34851015a0e4e0cfab90fdcc691e11f073404923c44735d5f18",
+      "bytes": 103883,
       "matches_head": true
     },
     "ndn-service-framework/Stream.cpp": {
@@ -2455,13 +2515,13 @@
       "matches_head": true
     },
     "ndn-service-framework/TimelineTrace.cpp": {
-      "sha256": "7463209d47b209abb7563b9157ce33b7ab414719f97137a558e717b549ad4bf2",
-      "bytes": 5478,
+      "sha256": "8d5f37108df122088a390def3db9fc89706e7be3e85520ffd4597fe96abbe198",
+      "bytes": 8081,
       "matches_head": true
     },
     "ndn-service-framework/TimelineTrace.hpp": {
-      "sha256": "c320167ef449add0fa653c803453496b22aa54c53a59abe934571371b03ad3f1",
-      "bytes": 1425,
+      "sha256": "e847020e39f497b4bc5573aa4b2cf66deb48794281d4fb6b7884387df267f4e1",
+      "bytes": 1788,
       "matches_head": true
     },
     "ndn-service-framework/common.cpp": {
@@ -2555,8 +2615,8 @@
       "matches_head": true
     },
     "pythonWrapper/setup.py": {
-      "sha256": "b63a3fdeb52e27ba5f467be6567b92c9489d7a3367b5b8ab2eb29b9092815f2a",
-      "bytes": 6386,
+      "sha256": "55d56aefde837763cb448cb8e9e665982b21a9031738b0ae1f9052b4bb54a912",
+      "bytes": 15839,
       "matches_head": true
     },
     "pythonWrapper/src/ndnsf/_ndnsf.cpp": {
@@ -2565,8 +2625,8 @@
       "matches_head": true
     },
     "pythonWrapper/src/ndnsf/di_bindings.cpp": {
-      "sha256": "e214e8e6773a97bb3499b4f806a5132483bff268102e4fd725aa7ab344ae19da",
-      "bytes": 61182,
+      "sha256": "57ff4d082c742a9559033a5e7cb680422c56422011e72d0733bb4902f072b002",
+      "bytes": 62298,
       "matches_head": true
     },
     "pythonWrapper/src/ndnsf/di_bindings.hpp": {

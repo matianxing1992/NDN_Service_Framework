@@ -89,6 +89,11 @@ public:
     if (name.empty() || name.front() != '/' || size == 0 ||
         std::filesystem::file_size(file) != size)
       throw std::invalid_argument("encrypted Repo source identity is invalid");
+    if (options.retention == ndn_service_framework::EncryptedLargeDataRetention::Durable &&
+        (options.publicationIdentity.empty() || options.protectionEpoch.empty() ||
+         options.keyReferenceId.empty() || options.keyReferenceVersion.empty() ||
+         options.ciphertextManifestDigest.empty() || options.servingLocator.empty()))
+      throw std::invalid_argument("DURABLE_METADATA_INVALID");
     std::ifstream input(file, std::ios::binary);
     if (!input)
       throw std::runtime_error("cannot open encrypted Repo input");
@@ -120,6 +125,12 @@ public:
     manifest.size = size;
     manifest.operationId = "encrypted-" + std::to_string(ndn::random::generateSecureWord64()) +
       "-" + std::to_string(ndn::random::generateSecureWord64());
+    manifest.publicationIdentity = options.publicationIdentity;
+    manifest.protectionEpoch = options.protectionEpoch;
+    manifest.keyReferenceId = options.keyReferenceId;
+    manifest.keyReferenceVersion = options.keyReferenceVersion;
+    manifest.ciphertextManifestDigest = options.ciphertextManifestDigest;
+    manifest.servingLocator = options.servingLocator;
     auto lock = m_repo->acquirePublicationLock();
     if (m_repo->has(name))
       throw std::runtime_error("encrypted Repo name already committed");

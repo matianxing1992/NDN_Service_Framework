@@ -1,136 +1,63 @@
---- a/NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp
-+++ b/NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.cpp
-@@ -252 +252,2 @@
--      model.modelName.find("Yolo") == std::string::npos) {
-+      model.modelName.find("Yolo") == std::string::npos &&
-+      model.modelName.find("yolo") == std::string::npos) {
---- a/NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.cpp
-+++ b/NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.cpp
-@@ -192,2 +192,9 @@
--    static CacheJoinReaper reaper;
--    return reaper;
-+    // A cache worker may be the last owner of RuntimeState and therefore
-+    // destroy the cache while the process is already tearing down shared
-+    // libraries.  A function-local object would then be destroyed before a
-+    // late self-join handoff reaches enqueue(), leaving that worker with a
-+    // dangling reaper pointer.  Keep the reaper process-lived; its worker
-+    // thread and queue are reclaimed by process termination after all cache
-+    // workers have either joined or been handed off.
-+    static CacheJoinReaper* reaper = new CacheJoinReaper;
-+    return *reaper;
---- a/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.cpp
-+++ b/NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.cpp
-@@ -2,0 +3 @@
-+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
-@@ -4,0 +6,3 @@
+--- a/NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp
++++ b/NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp
+@@ -91,0 +92,5 @@
++    if (options.retention == ndn_service_framework::EncryptedLargeDataRetention::Durable &&
++        (options.publicationIdentity.empty() || options.protectionEpoch.empty() ||
++         options.keyReferenceId.empty() || options.keyReferenceVersion.empty() ||
++         options.ciphertextManifestDigest.empty() || options.servingLocator.empty()))
++      throw std::invalid_argument("DURABLE_METADATA_INVALID");
+@@ -122,0 +128,6 @@
++    manifest.publicationIdentity = options.publicationIdentity;
++    manifest.protectionEpoch = options.protectionEpoch;
++    manifest.keyReferenceId = options.keyReferenceId;
++    manifest.keyReferenceVersion = options.keyReferenceVersion;
++    manifest.ciphertextManifestDigest = options.ciphertextManifestDigest;
++    manifest.servingLocator = options.servingLocator;
+--- a/NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp
++++ b/NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp
+@@ -61,0 +62,9 @@
++  // Protected durable-publication identity. These are opaque, non-secret
++  // values owned by Core; Repo persists and returns them without interpreting
++  // keys or authorization.
++  std::string publicationIdentity;
++  std::string protectionEpoch;
++  std::string keyReferenceId;
++  std::string keyReferenceVersion;
++  std::string ciphertextManifestDigest;
++  std::string servingLocator;
+--- a/NDNSF-DistributedRepo/src/RepoProtocol.cpp
++++ b/NDNSF-DistributedRepo/src/RepoProtocol.cpp
+@@ -565,0 +566,7 @@
++  manifest.publicationIdentity = extractJsonString(manifestJson, "publicationIdentity");
++  manifest.protectionEpoch = extractJsonString(manifestJson, "protectionEpoch");
++  manifest.keyReferenceId = extractJsonString(manifestJson, "keyReferenceId");
++  manifest.keyReferenceVersion = extractJsonString(manifestJson, "keyReferenceVersion");
++  manifest.ciphertextManifestDigest = extractJsonString(
++    manifestJson, "ciphertextManifestDigest");
++  manifest.servingLocator = extractJsonString(manifestJson, "servingLocator");
+--- a/NDNSF-DistributedRepo/src/RepoTypes.cpp
++++ b/NDNSF-DistributedRepo/src/RepoTypes.cpp
+@@ -944,0 +945,7 @@
++  os << "\"publicationIdentity\":" << jsonQuote(publicationIdentity) << ",";
++  os << "\"protectionEpoch\":" << jsonQuote(protectionEpoch) << ",";
++  os << "\"keyReferenceId\":" << jsonQuote(keyReferenceId) << ",";
++  os << "\"keyReferenceVersion\":" << jsonQuote(keyReferenceVersion) << ",";
++  os << "\"ciphertextManifestDigest\":"
++     << jsonQuote(ciphertextManifestDigest) << ",";
++  os << "\"servingLocator\":" << jsonQuote(servingLocator) << ",";
+--- a/ndn-service-framework/EncryptedLargeDataRangeStore.hpp
++++ b/ndn-service-framework/EncryptedLargeDataRangeStore.hpp
+@@ -21,0 +22,10 @@
 +
-+#include <algorithm>
-+#include <cstring>
-@@ -55,2 +59 @@
--    if (!conversationInput.is_object() ||
--        conversationInput.value("kind", std::string{}) != "OPAQUE_BYTE_TOKEN_IDS")
-+    if (!conversationInput.is_object())
-@@ -58,10 +61,40 @@
--    // This operator-pinned fixture contract derives one canonical token from
--    // each encoded byte.  Callers cannot supply or replace this encoder; it is
--    // captured by the immutable adapter registry during preparation.
--    entry.conversationTokenEncoder = [] (const std::vector<std::uint8_t>& bytes) {
--      std::vector<std::int64_t> tokens;
--      tokens.reserve(bytes.size());
--      for (const auto byte : bytes)
--        tokens.push_back(static_cast<std::int64_t>(byte));
--      return tokens;
--    };
-+    const auto kind = conversationInput.value("kind", std::string{});
-+    if (kind == "OPAQUE_BYTE_TOKEN_IDS") {
-+      // This operator-pinned fixture contract derives one canonical token from
-+      // each encoded byte.  Callers cannot supply or replace this encoder; it
-+      // is captured by the immutable adapter registry during preparation.
-+      entry.conversationTokenEncoder = [] (const std::vector<std::uint8_t>& bytes) {
-+        std::vector<std::int64_t> tokens;
-+        tokens.reserve(bytes.size());
-+        for (const auto byte : bytes)
-+          tokens.push_back(static_cast<std::int64_t>(byte));
-+        return tokens;
-+      };
-+    }
-+    else if (kind == "TENSOR_BUNDLE_TOKEN_IDS") {
-+      const auto tensorName = conversationInput.value("tensor_name", "input_ids");
-+      if (tensorName.empty())
-+        throw std::invalid_argument("tensor-bundle conversation input tensor name is empty");
-+      // The native request payload is an authenticated tensor bundle.  A
-+      // tensor-bundle encoder must derive the same token suffix as the
-+      // execution coordinator, rather than hashing transport framing bytes.
-+      entry.conversationTokenEncoder = [tensorName] (const std::vector<std::uint8_t>& bytes) {
-+        if (!isEncodedTensorBundle(bytes))
-+          throw std::invalid_argument("conversation input is not an encoded tensor bundle");
-+        const auto tensors = decodeTensorBundle(bytes);
-+        const auto found = std::find_if(tensors.begin(), tensors.end(),
-+          [&tensorName] (const auto& tensor) { return tensor.name == tensorName; });
-+        if (found == tensors.end() || found->elementType != TensorElementType::Int64 ||
-+            found->shape.empty() || found->payload.empty() ||
-+            found->payload.size() % sizeof(std::int64_t) != 0)
-+          throw std::invalid_argument("conversation input token tensor is invalid");
-+        std::vector<std::int64_t> tokens(found->payload.size() / sizeof(std::int64_t));
-+        std::memcpy(tokens.data(), found->payload.data(), found->payload.size());
-+        if (std::any_of(tokens.begin(), tokens.end(), [] (const auto token) { return token < 0; }))
-+          throw std::invalid_argument("conversation input token ID is negative");
-+        return tokens;
-+      };
-+    }
-+    else {
-+      throw std::invalid_argument("unsupported native conversation input encoder");
-+    }
---- a/NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.cpp
-+++ b/NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.cpp
-@@ -937,0 +938,6 @@
-+      // Start the owned Face before publishing the ServiceUser/grant pair.
-+      // Thread or work-guard creation can fail; keeping the pair unpublished
-+      // leaves the Runtime retryable instead of making a later request skip
-+      // the only required start attempt.
-+      if (!state->coreOwner->ioThread.joinable())
-+        state->coreOwner->startIo(state->coreOwner);
-@@ -951,5 +957,5 @@
--  // operator transport.  Start the owned Face only when a native client is
--  // first materialized; this keeps preparation/configuration usable offline
--  // while preserving one Core IO owner for every submitted request.
--  if (!state->coreOwner->ioThread.joinable())
--    state->coreOwner->startIo(state->coreOwner);
-+  // operator transport.  Start the owned Face only when this call materialized
-+  // the Runtime's ServiceUser.  A test or embedding boundary may have already
-+  // supplied an external ServiceUser/Grant client; starting the unused Face in
-+  // that case would create a second transport owner and can report a local NFD
-+  // connection failure even though all request traffic uses the supplied Face.
-@@ -1468,0 +1475,13 @@
-+void detail::RuntimeTestAccess::bindProviderOnlyFixture(
-+  const std::shared_ptr<Runtime>& runtime, Provider provider)
-+{
-+  if (!runtime || !runtime->m_state || !provider.valid())
-+    throw std::invalid_argument("Provider-only Runtime test fixture binding is incomplete");
-+  std::lock_guard<std::mutex> lock(runtime->m_state->mutex);
-+  if (!runtime->m_state->providerOnly ||
-+      runtime->m_state->phase != detail::RuntimeState::Phase::Open)
-+    throw std::runtime_error(
-+      "Provider-only Runtime test fixture binding requires an open Provider Runtime");
-+  runtime->m_state->provider = std::make_shared<Provider>(std::move(provider));
-+}
-+
-@@ -1496,2 +1515,7 @@
--    if (owner)
--      owner->close();
-+    // Keep the Core operation worker alive until the caller registers its
-+    // drain barrier.  Runtime::close() is the non-blocking admission fence;
-+    // stopping the Core worker here races a subsequent drainAsync() that
-+    // still has to wait for NativeInferenceClient cleanup.  drain()/
-+    // drainAsync() close the owner after their waiter is installed, while
-+    // Runtime::~Runtime() remains the final close path for callers that do
-+    // not request an explicit drain.
---- a/NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp
-+++ b/NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp
-@@ -9,0 +10 @@
-+class Provider;
-@@ -27,0 +29,4 @@
-+
-+  /** Replace the unopened Provider-only owner with a borrowed-face fixture. */
-+  static void bindProviderOnlyFixture(
-+    const std::shared_ptr<Runtime>& runtime, Provider provider);
++  // Non-secret identity supplied by the Core/crypto owner. The Repo stores
++  // these values as opaque manifest metadata; it never unwraps or creates a
++  // key from them.
++  std::string publicationIdentity;
++  std::string protectionEpoch;
++  std::string keyReferenceId;
++  std::string keyReferenceVersion;
++  std::string ciphertextManifestDigest;
++  std::string servingLocator;
+@@ -63 +73 @@
+-      throw std::runtime_error("durable encrypted range commit unsupported");
++      throw std::runtime_error("DURABLE_RETENTION_UNSUPPORTED");

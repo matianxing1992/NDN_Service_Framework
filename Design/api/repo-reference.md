@@ -2665,9 +2665,244 @@ makeFilesystemArtifactRepositoryStore(const std::string& rootPath,
                                       const std::string& ownerId);
 ```
 
+## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp
+
+源码 SHA-256：`9895881c1fb3c69295dda39ab2e421c65e2ac40b24c547379abbb611366249d3`。
+
+### API-28deb226335c · ndnsf_distributed_repo::FilesystemRepoStoreBackend
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L27)
+
+```cpp
+class FilesystemRepoStoreBackend final : public RepoStoreBackend
+```
+
+### API-aa01e8688a43 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::FilesystemRepoStoreBackend
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L30)
+
+```cpp
+explicit FilesystemRepoStoreBackend(
+    std::string rootPath,
+    uint64_t maxRangeBytes = 16 * 1024 * 1024,
+    uint64_t vectorCompatibilityThreshold = 1 * 1024 * 1024,
+    std::string ownerId = "filesystem-repo");
+```
+
+### API-f3d7b6d1a134 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::put
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L36)
+
+```cpp
+void put(const RepoObjectManifest& manifest,
+           std::vector<uint8_t> payload) override;
+```
+
+### API-d4bdac188c3c · ndnsf_distributed_repo::FilesystemRepoStoreBackend::putManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L38)
+
+```cpp
+void putManifest(const RepoObjectManifest& manifest) override;
+```
+
+### API-3bba44ba8d4d · ndnsf_distributed_repo::FilesystemRepoStoreBackend::get
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L39)
+
+```cpp
+StoredObject get(const std::string& objectName) const override;
+```
+
+### API-6554fcb83f33 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::has
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L40)
+
+```cpp
+bool has(const std::string& objectName) const override;
+```
+
+### API-26fd7bc90f0a · ndnsf_distributed_repo::FilesystemRepoStoreBackend::erase
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L41)
+
+```cpp
+bool erase(const std::string& objectName) override;
+```
+
+### API-9291844b0818 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::size
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L42)
+
+```cpp
+size_t size() const override;
+```
+
+### API-10c7c15659b8 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::listManifests
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L43)
+
+```cpp
+std::vector<RepoObjectManifest> listManifests() const override;
+```
+
+### API-c5febc3516bb · ndnsf_distributed_repo::FilesystemRepoStoreBackend::usedBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L44)
+
+```cpp
+uint64_t usedBytes() const override;
+```
+
+### API-5a5d2bac40b8 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::putRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L46)
+
+```cpp
+void putRange(const RepoObjectManifest& manifest,
+                RepoByteRange range,
+                const std::vector<uint8_t>& bytes) override;
+```
+
+### API-c3921c75ac3f · ndnsf_distributed_repo::FilesystemRepoStoreBackend::commitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L49)
+
+```cpp
+void commitRanges(const RepoObjectManifest& manifest) override;
+```
+
+### API-55e62ff59549 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::getRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L50)
+
+```cpp
+std::vector<uint8_t> getRange(const std::string& objectName,
+                                RepoByteRange range) const override;
+```
+
+### API-e716a58e86b1 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::getManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L52)
+
+```cpp
+RepoObjectManifest getManifest(const std::string& objectName) const override;
+```
+
+### API-b6e0958ae519 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::supportsRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L53)
+
+```cpp
+bool supportsRange() const noexcept override;
+```
+
+### API-61bc78deff52 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::fullCopyFallbackCount
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L54)
+
+```cpp
+uint64_t fullCopyFallbackCount() const noexcept override;
+```
+
+### API-e0615acaf6fc · ndnsf_distributed_repo::FilesystemRepoStoreBackend::abortRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L55)
+
+```cpp
+void abortRanges(const std::string& objectName) override;
+```
+
+### API-c0d16892a4af · ndnsf_distributed_repo::FilesystemRepoStoreBackend::supportsManifestLookup
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L56)
+
+```cpp
+bool supportsManifestLookup() const noexcept override;
+```
+
+### API-19e3e0731a24 · ndnsf_distributed_repo::FilesystemRepoStoreBackend::recoverOrphans
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L59)
+
+```cpp
+uint64_t recoverOrphans();
+```
+
+原始接口说明：
+
+```text
+/** Remove uncommitted staging files and committed payloads with no manifest. */
+```
+
+### API-84b0e004f78f · ndnsf_distributed_repo::FilesystemRepoStoreBackend::rootPath
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L61)
+
+```cpp
+const std::string& rootPath() const noexcept;
+```
+
+### API-b6473163ec1c · ndnsf_distributed_repo::FilesystemRepoStoreBackend::vectorCompatibilityThreshold
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L62)
+
+```cpp
+uint64_t vectorCompatibilityThreshold() const noexcept;
+```
+
+### API-edf2e66bfb36 · ndnsf_distributed_repo::makeFilesystemRepoStore
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp#L96)
+
+```cpp
+std::shared_ptr<RepoStoreBackend>
+makeFilesystemRepoStore(const std::string& rootPath,
+                        uint64_t maxRangeBytes = 16 * 1024 * 1024,
+                        uint64_t vectorCompatibilityThreshold = 1 * 1024 * 1024,
+                        std::string ownerId = "filesystem-repo");
+```
+
+## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp
+
+源码 SHA-256：`7b508fd7a289ee23317e0a39f73378b956e4917ddeb66f46981c3a16797face4`。
+
+### API-e752727ded08 · ndnsf_distributed_repo::detail::FilesystemRepoStoreIoHooks
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp#L11)
+
+```cpp
+struct FilesystemRepoStoreIoHooks
+```
+
+### API-13015fc2cd5c · ndnsf_distributed_repo::detail::FilesystemRepoStoreIoHooks::(*fsync)
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp#L13)
+
+```cpp
+int (*fsync)(int) = nullptr;
+```
+
+### API-c8aa920408f5 · ndnsf_distributed_repo::detail::FilesystemRepoStoreIoHooks::(*close)
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp#L14)
+
+```cpp
+int (*close)(int) = nullptr;
+```
+
+### API-631b6a9d13ce · ndnsf_distributed_repo::detail::installFilesystemRepoStoreIoHooks
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp#L17)
+
+```cpp
+FilesystemRepoStoreIoHooks
+installFilesystemRepoStoreIoHooks(FilesystemRepoStoreIoHooks hooks) noexcept;
+```
+
 ## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp
 
-源码 SHA-256：`a89eb7708c82d5b8d46241b5094c2daf697db3fc3738790fa4c8034a594769fc`。
+源码 SHA-256：`80a099e8f5d1173a43c746fd27122ac0e8cfc5950514ccc006b319906632200a`。
 
 ### API-485b7754e578 · ndn_service_framework::LocalServiceRegistry
 
@@ -2761,9 +2996,47 @@ static std::vector<uint8_t> get(const RepoNode& node,
                                   const std::string& objectName);
 ```
 
-### API-a49e665e81ae · ndnsf_distributed_repo::RepoClient::getManifest
+### API-0d12013c95fd · ndnsf_distributed_repo::RepoClient::putRange
 
 public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L41)
+
+```cpp
+static void putRange(RepoNode& node,
+                       const RepoObjectManifest& manifest,
+                       RepoByteRange range,
+                       const std::vector<uint8_t>& bytes);
+```
+
+### API-895da86037de · ndnsf_distributed_repo::RepoClient::commitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L46)
+
+```cpp
+static RepoObjectManifest commitRanges(RepoNode& node,
+                                         const RepoObjectManifest& manifest);
+```
+
+### API-452a8d29ee35 · ndnsf_distributed_repo::RepoClient::abortRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L49)
+
+```cpp
+static void abortRanges(RepoNode& node, const std::string& objectName);
+```
+
+### API-69cc6153e49d · ndnsf_distributed_repo::RepoClient::getRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L51)
+
+```cpp
+static std::vector<uint8_t> getRange(const RepoNode& node,
+                                       const std::string& objectName,
+                                       RepoByteRange range);
+```
+
+### API-a49e665e81ae · ndnsf_distributed_repo::RepoClient::getManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L55)
 
 ```cpp
 static RepoObjectManifest getManifest(const RepoNode& node,
@@ -2772,7 +3045,7 @@ static RepoObjectManifest getManifest(const RepoNode& node,
 
 ### API-7fb155051f40 · ndnsf_distributed_repo::RepoClient::list
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L58)
 
 ```cpp
 static std::vector<RepoObjectManifest> list(const RepoNode& node);
@@ -2780,7 +3053,7 @@ static std::vector<RepoObjectManifest> list(const RepoNode& node);
 
 ### API-3597142a1d7d · ndnsf_distributed_repo::RepoClient::remove
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L46)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L60)
 
 ```cpp
 static bool remove(RepoNode& node,
@@ -2789,7 +3062,7 @@ static bool remove(RepoNode& node,
 
 ### API-325ed18957fe · ndnsf_distributed_repo::RepoClient::putDataPacket
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L50)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L64)
 
 ```cpp
 static RepoObjectManifest putDataPacket(RepoNode& node,
@@ -2804,7 +3077,7 @@ static RepoObjectManifest putDataPacket(RepoNode& node,
 
 ### API-c270a97a5de4 · ndnsf_distributed_repo::RepoClient::getDataPacket
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L54)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L68)
 
 ```cpp
 static std::vector<uint8_t> getDataPacket(const RepoNode& node,
@@ -2819,7 +3092,7 @@ static std::vector<uint8_t> getDataPacket(const RepoNode& node,
 
 ### API-208878700957 · ndnsf_distributed_repo::RepoClient::getDataPackets
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L76)
 
 ```cpp
 static std::vector<std::vector<uint8_t>> getDataPackets(
@@ -2839,7 +3112,7 @@ static std::vector<std::vector<uint8_t>> getDataPackets(
 
 ### API-e775c86b8dfa · ndnsf_distributed_repo::RepoClient::insert
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L80)
 
 ```cpp
 static RepoOperationStatus insert(
@@ -2849,7 +3122,7 @@ static RepoOperationStatus insert(
 
 ### API-6c0504f5e18f · ndnsf_distributed_repo::RepoClient::insertPayload
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L90)
 
 ```cpp
 static RepoOperationStatus insertPayload(
@@ -2875,7 +3148,7 @@ static RepoOperationStatus insertPayload(
 
 ### API-fb1a3c182f71 · ndnsf_distributed_repo::RepoClient::status
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L99)
 
 ```cpp
 static RepoOperationStatus status(const RepoNode& node,
@@ -2884,7 +3157,7 @@ static RepoOperationStatus status(const RepoNode& node,
 
 ### API-3426faf86399 · ndnsf_distributed_repo::RepoClient::catalogStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L102)
 
 ```cpp
 static RepoCatalogStatus catalogStatus(const RepoNode& node);
@@ -2892,7 +3165,7 @@ static RepoCatalogStatus catalogStatus(const RepoNode& node);
 
 ### API-92f825a0f88f · ndnsf_distributed_repo::RepoClient::cacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L104)
 
 ```cpp
 static RepoCacheStatus cacheStatus(const RepoNode& node);
@@ -2900,7 +3173,7 @@ static RepoCacheStatus cacheStatus(const RepoNode& node);
 
 ### API-c0c608b66946 · ndnsf_distributed_repo::RepoClient::catalogSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L106)
 
 ```cpp
 static RepoCatalogDelta catalogSnapshot(const RepoNode& node);
@@ -2908,7 +3181,7 @@ static RepoCatalogDelta catalogSnapshot(const RepoNode& node);
 
 ### API-8a6c373170d8 · ndnsf_distributed_repo::RepoClient::catalogDelta
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L108)
 
 ```cpp
 static RepoCatalogDelta catalogDelta(const RepoNode& node, uint64_t sinceEpoch);
@@ -2916,7 +3189,7 @@ static RepoCatalogDelta catalogDelta(const RepoNode& node, uint64_t sinceEpoch);
 
 ### API-fcda4ff0344b · ndnsf_distributed_repo::RepoClient::catalogLookup
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L110)
 
 ```cpp
 static RepoCatalogEntry catalogLookup(const RepoNode& node,
@@ -2925,7 +3198,7 @@ static RepoCatalogEntry catalogLookup(const RepoNode& node,
 
 ### API-c3a7ce1ceba6 · ndnsf_distributed_repo::RepoClient::putSegmented
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L108)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L122)
 
 ```cpp
 static RepoObjectManifest putSegmented(
@@ -2952,7 +3225,7 @@ static RepoObjectManifest putSegmented(
 
 ### API-2751d910144a · ndnsf_distributed_repo::RepoClient::getSegmented
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L133)
 
 ```cpp
 static std::vector<uint8_t> getSegmented(
@@ -2971,7 +3244,7 @@ static std::vector<uint8_t> getSegmented(
 
 ### API-06202a673376 · ndnsf_distributed_repo::RepoClient::getObject
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L128)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L142)
 
 ```cpp
 static std::vector<uint8_t> getObject(
@@ -2991,7 +3264,7 @@ static std::vector<uint8_t> getObject(
 
 ### API-1f4fb56a9f20 · ndnsf_distributed_repo::RepoClient::localPut
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L146)
 
 ```cpp
 static RepoObjectManifest localPut(
@@ -3004,7 +3277,7 @@ static RepoObjectManifest localPut(
 
 ### API-c1845fb1bb7b · ndnsf_distributed_repo::RepoClient::localGet
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L153)
 
 ```cpp
 static std::vector<uint8_t> localGet(
@@ -3013,9 +3286,56 @@ static std::vector<uint8_t> localGet(
     const std::string& objectName);
 ```
 
+### API-66a919717b9c · ndnsf_distributed_repo::RepoClient::localPutRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L158)
+
+```cpp
+static void localPutRange(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest,
+    RepoByteRange range,
+    const std::vector<uint8_t>& bytes);
+```
+
+### API-793cc9a5562b · ndnsf_distributed_repo::RepoClient::localCommitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L165)
+
+```cpp
+static RepoObjectManifest localCommitRanges(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest);
+```
+
+### API-e64a5d5c3bb7 · ndnsf_distributed_repo::RepoClient::localAbortRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L170)
+
+```cpp
+static void localAbortRanges(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+```
+
+### API-d1dae4071b6e · ndnsf_distributed_repo::RepoClient::localGetRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L175)
+
+```cpp
+static std::vector<uint8_t> localGetRange(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    RepoByteRange range);
+```
+
 ### API-40e3c3c734ba · ndnsf_distributed_repo::RepoClient::localGetManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L144)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L181)
 
 ```cpp
 static RepoObjectManifest localGetManifest(
@@ -3026,7 +3346,7 @@ static RepoObjectManifest localGetManifest(
 
 ### API-02eab20ad4cd · ndnsf_distributed_repo::RepoClient::localList
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L149)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L186)
 
 ```cpp
 static std::vector<RepoObjectManifest> localList(
@@ -3036,7 +3356,7 @@ static std::vector<RepoObjectManifest> localList(
 
 ### API-a4385e25551e · ndnsf_distributed_repo::RepoClient::localRemove
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L153)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L190)
 
 ```cpp
 static bool localRemove(
@@ -3047,7 +3367,7 @@ static bool localRemove(
 
 ### API-3a7b3f893966 · ndnsf_distributed_repo::RepoClient::localInsert
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L158)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L195)
 
 ```cpp
 static RepoOperationStatus localInsert(
@@ -3058,7 +3378,7 @@ static RepoOperationStatus localInsert(
 
 ### API-872743cdf7b1 · ndnsf_distributed_repo::RepoClient::localStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L200)
 
 ```cpp
 static RepoOperationStatus localStatus(
@@ -3069,7 +3389,7 @@ static RepoOperationStatus localStatus(
 
 ### API-f56247baadeb · ndnsf_distributed_repo::RepoClient::localCatalogStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L168)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L205)
 
 ```cpp
 static RepoCatalogStatus localCatalogStatus(
@@ -3079,7 +3399,7 @@ static RepoCatalogStatus localCatalogStatus(
 
 ### API-397b1cffb073 · ndnsf_distributed_repo::RepoClient::localCacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L172)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L209)
 
 ```cpp
 static RepoCacheStatus localCacheStatus(
@@ -3089,7 +3409,7 @@ static RepoCacheStatus localCacheStatus(
 
 ### API-e3118497bb4e · ndnsf_distributed_repo::RepoClient::localCatalogSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L176)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L213)
 
 ```cpp
 static RepoCatalogDelta localCatalogSnapshot(
@@ -3099,7 +3419,7 @@ static RepoCatalogDelta localCatalogSnapshot(
 
 ### API-ffd749a9351a · ndnsf_distributed_repo::RepoClient::localCatalogDelta
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L180)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L217)
 
 ```cpp
 static RepoCatalogDelta localCatalogDelta(
@@ -3110,7 +3430,7 @@ static RepoCatalogDelta localCatalogDelta(
 
 ### API-79b8e21f7245 · ndnsf_distributed_repo::RepoClient::localCatalogLookup
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L185)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L222)
 
 ```cpp
 static RepoCatalogEntry localCatalogLookup(
@@ -3121,7 +3441,7 @@ static RepoCatalogEntry localCatalogLookup(
 
 ### API-4386fdeceb10 · ndnsf_distributed_repo::RepoClient::localPutSegmented
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L194)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L231)
 
 ```cpp
 static RepoObjectManifest localPutSegmented(
@@ -3144,7 +3464,7 @@ static RepoObjectManifest localPutSegmented(
 
 ### API-302296fd05b8 · ndnsf_distributed_repo::RepoClient::localGetSegmented
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L205)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L242)
 
 ```cpp
 static std::vector<uint8_t> localGetSegmented(
@@ -3163,7 +3483,7 @@ static std::vector<uint8_t> localGetSegmented(
 
 ### API-c79276954c35 · ndnsf_distributed_repo::RepoClient::localGetObject
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L213)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L250)
 
 ```cpp
 static std::vector<uint8_t> localGetObject(
@@ -3182,7 +3502,7 @@ static std::vector<uint8_t> localGetObject(
 
 ### API-5eeb0c87367a · ndnsf_distributed_repo::RepoClient::makeManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L218)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L255)
 
 ```cpp
 static RepoObjectManifest makeManifest(std::string objectName,
@@ -3195,7 +3515,7 @@ static RepoObjectManifest makeManifest(std::string objectName,
 
 ### API-ecfbefc678b6 · ndnsf_distributed_repo::RepoClient::makeRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L225)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L262)
 
 ```cpp
 static ndn_service_framework::RequestMessage makeRequest(
@@ -3204,7 +3524,7 @@ static ndn_service_framework::RequestMessage makeRequest(
 
 ### API-25bae982ed92 · ndnsf_distributed_repo::RepoClient::requestCapability
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L228)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L265)
 
 ```cpp
 static ndn::Name requestCapability(
@@ -3217,7 +3537,7 @@ static ndn::Name requestCapability(
 
 ### API-8292ff8bb932 · ndnsf_distributed_repo::RepoClient::requestCacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L235)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L272)
 
 ```cpp
 static ndn::Name requestCacheStatus(
@@ -3230,7 +3550,7 @@ static ndn::Name requestCacheStatus(
 
 ### API-82d12b602301 · ndnsf_distributed_repo::RepoClient::requestStore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L242)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L279)
 
 ```cpp
 static ndn::Name requestStore(
@@ -3243,9 +3563,53 @@ static ndn::Name requestStore(
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
 ```
 
+### API-ba4932ad7a7c · ndnsf_distributed_repo::RepoClient::requestStoreRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L288)
+
+```cpp
+static ndn::Name requestStoreRange(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest,
+    RepoByteRange range,
+    const std::vector<uint8_t>& bytes,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+```
+
+### API-9e395287f016 · ndnsf_distributed_repo::RepoClient::requestCommitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L298)
+
+```cpp
+static ndn::Name requestCommitRanges(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+```
+
+### API-51323231f1bc · ndnsf_distributed_repo::RepoClient::requestAbortRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L306)
+
+```cpp
+static ndn::Name requestAbortRanges(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+```
+
 ### API-4afcb74c485b · ndnsf_distributed_repo::RepoClient::requestInsert
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L251)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L314)
 
 ```cpp
 static ndn::Name requestInsert(
@@ -3259,7 +3623,7 @@ static ndn::Name requestInsert(
 
 ### API-14b5e7834a74 · ndnsf_distributed_repo::RepoClient::requestFetch
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L259)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L322)
 
 ```cpp
 static ndn::Name requestFetch(
@@ -3271,9 +3635,24 @@ static ndn::Name requestFetch(
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
 ```
 
+### API-b8805478eb02 · ndnsf_distributed_repo::RepoClient::requestFetchRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L330)
+
+```cpp
+static ndn::Name requestFetchRange(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    RepoByteRange range,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+```
+
 ### API-efc7df94513b · ndnsf_distributed_repo::RepoClient::requestManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L267)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L339)
 
 ```cpp
 static ndn::Name requestManifest(
@@ -3287,7 +3666,7 @@ static ndn::Name requestManifest(
 
 ### API-39f96e0592f1 · ndnsf_distributed_repo::RepoClient::requestInventory
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L275)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L347)
 
 ```cpp
 static ndn::Name requestInventory(
@@ -3300,7 +3679,7 @@ static ndn::Name requestInventory(
 
 ### API-57dede3e422d · ndnsf_distributed_repo::RepoClient::requestDelete
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L282)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L354)
 
 ```cpp
 static ndn::Name requestDelete(
@@ -3314,7 +3693,7 @@ static ndn::Name requestDelete(
 
 ### API-53049cab0c37 · ndnsf_distributed_repo::RepoClient::requestStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L290)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp#L362)
 
 ```cpp
 static ndn::Name requestStatus(
@@ -3328,11 +3707,11 @@ static ndn::Name requestStatus(
 
 ## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp
 
-源码 SHA-256：`68172acaf94a97a6d34b17499d782f59f60f31638961e6f9508cf609d31dc902`。
+源码 SHA-256：`d66b246bec48f3182330fbf2fe71f197dd49ecffcd5459723dde33b9b88e670f`。
 
 ### API-d31864878741 · ndnsf_distributed_repo::RepoCore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L13)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L14)
 
 ```cpp
 class RepoCore
@@ -3340,7 +3719,7 @@ class RepoCore
 
 ### API-60b8aeb6825b · ndnsf_distributed_repo::RepoCore::RepoCore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L16)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L17)
 
 ```cpp
 RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBackend> store);
@@ -3348,7 +3727,7 @@ RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBackend> store);
 
 ### API-ac3b30e34e33 · ndnsf_distributed_repo::RepoCore::put
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L18)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L19)
 
 ```cpp
 RepoObjectManifest put(const std::string& objectName,
@@ -3361,15 +3740,29 @@ RepoObjectManifest put(const std::string& objectName,
 
 ### API-2e22038586e7 · ndnsf_distributed_repo::RepoCore::get
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L25)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L26)
 
 ```cpp
 std::vector<uint8_t> get(const std::string& objectName) const;
 ```
 
+### API-5f38d3a8932b · ndnsf_distributed_repo::RepoCore::has
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L29)
+
+```cpp
+bool has(const std::string& objectName) const;
+```
+
+原始接口说明：
+
+```text
+/** Typed presence check used by native source owners; avoids parsing error text. */
+```
+
 ### API-d77475516039 · ndnsf_distributed_repo::RepoCore::getManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L27)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L31)
 
 ```cpp
 RepoObjectManifest getManifest(const std::string& objectName) const;
@@ -3377,7 +3770,7 @@ RepoObjectManifest getManifest(const std::string& objectName) const;
 
 ### API-968f79944e62 · ndnsf_distributed_repo::RepoCore::list
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L29)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L33)
 
 ```cpp
 std::vector<RepoObjectManifest> list() const;
@@ -3385,7 +3778,7 @@ std::vector<RepoObjectManifest> list() const;
 
 ### API-7f708024d1f1 · ndnsf_distributed_repo::RepoCore::remove
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L31)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L35)
 
 ```cpp
 bool remove(const std::string& objectName);
@@ -3393,15 +3786,107 @@ bool remove(const std::string& objectName);
 
 ### API-562871d8a20e · ndnsf_distributed_repo::RepoCore::putManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L37)
 
 ```cpp
 RepoObjectManifest putManifest(const RepoObjectManifest& manifest);
 ```
 
+### API-760321b92a58 · ndnsf_distributed_repo::RepoCore::putRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L41)
+
+```cpp
+void putRange(const RepoObjectManifest& manifest,
+                RepoByteRange range,
+                const std::vector<uint8_t>& bytes);
+```
+
+原始接口说明：
+
+```text
+// Bounded large-object authority path.  The manifest is published only by
+// commitRanges after all ranges have been verified by the backend.
+```
+
+### API-5c1777f02274 · ndnsf_distributed_repo::RepoCore::commitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L44)
+
+```cpp
+RepoObjectManifest commitRanges(const RepoObjectManifest& manifest);
+```
+
+### API-9c7194d48fac · ndnsf_distributed_repo::RepoCore::abortRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L45)
+
+```cpp
+void abortRanges(const std::string& objectName);
+```
+
+### API-bf42d53fd48d · ndnsf_distributed_repo::RepoCore::getRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L46)
+
+```cpp
+std::vector<uint8_t> getRange(const std::string& objectName,
+                                RepoByteRange range) const;
+```
+
+### API-dd156005915f · ndnsf_distributed_repo::RepoCore::getRangeIfCurrent
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L52)
+
+```cpp
+std::vector<uint8_t> getRangeIfCurrent(const RepoObjectManifest& expected,
+                                       RepoByteRange range) const;
+```
+
+原始接口说明：
+
+```text
+/** Transaction-bound reads and cleanup. Check and action share m_mutex.
+   * expected.operationId must identify the unique publication transaction;
+   * callers must never reuse it for a replacement object. */
+```
+
+### API-e828ddbdf754 · ndnsf_distributed_repo::RepoCore::removeIfCurrent
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L54)
+
+```cpp
+bool removeIfCurrent(const RepoObjectManifest& expected);
+```
+
+### API-3719f07c7ad0 · ndnsf_distributed_repo::RepoCore::abortRangesIfOwned
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L55)
+
+```cpp
+bool abortRangesIfOwned(const RepoObjectManifest& expected);
+```
+
+### API-dff8b81e1132 · ndnsf_distributed_repo::RepoCore::putRangeIfAbsent
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L56)
+
+```cpp
+void putRangeIfAbsent(const RepoObjectManifest& manifest, RepoByteRange range,
+                        const std::vector<uint8_t>& bytes);
+```
+
+### API-13f2d71ca6aa · ndnsf_distributed_repo::RepoCore::commitRangesIfOwned
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L58)
+
+```cpp
+RepoObjectManifest commitRangesIfOwned(const RepoObjectManifest& manifest);
+```
+
 ### API-1f2e097e5ead · ndnsf_distributed_repo::RepoCore::putDataPacket
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L35)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L60)
 
 ```cpp
 RepoObjectManifest putDataPacket(const std::string& dataName,
@@ -3410,7 +3895,7 @@ RepoObjectManifest putDataPacket(const std::string& dataName,
 
 ### API-2fed25b48953 · ndnsf_distributed_repo::RepoCore::getDataPacket
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L38)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L63)
 
 ```cpp
 std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
@@ -3418,7 +3903,7 @@ std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
 
 ### API-49d0155d01b9 · ndnsf_distributed_repo::RepoCore::hasDataPacket
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L40)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L65)
 
 ```cpp
 bool hasDataPacket(const std::string& dataName) const;
@@ -3426,15 +3911,31 @@ bool hasDataPacket(const std::string& dataName) const;
 
 ### API-3206c71a31be · ndnsf_distributed_repo::RepoCore::handleStore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L42)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L67)
 
 ```cpp
 std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 ```
 
+### API-b0f1512c5d11 · ndnsf_distributed_repo::RepoCore::handleStoreRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L69)
+
+```cpp
+std::vector<uint8_t> handleStoreRange(const std::vector<uint8_t>& request);
+```
+
+### API-6c8a8a2e625c · ndnsf_distributed_repo::RepoCore::handleCommitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L71)
+
+```cpp
+std::vector<uint8_t> handleCommitRanges(const std::vector<uint8_t>& request);
+```
+
 ### API-36549131eb91 · ndnsf_distributed_repo::RepoCore::handleStoreManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L44)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L73)
 
 ```cpp
 std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
@@ -3442,15 +3943,23 @@ std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
 
 ### API-92e08a6818cc · ndnsf_distributed_repo::RepoCore::handleFetch
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L46)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L75)
 
 ```cpp
 std::vector<uint8_t> handleFetch(const std::vector<uint8_t>& request) const;
 ```
 
+### API-6783c1898c1c · ndnsf_distributed_repo::RepoCore::handleFetchRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L77)
+
+```cpp
+std::vector<uint8_t> handleFetchRange(const std::vector<uint8_t>& request) const;
+```
+
 ### API-ed4141f41c77 · ndnsf_distributed_repo::RepoCore::handleManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L48)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L79)
 
 ```cpp
 std::vector<uint8_t> handleManifest(const std::vector<uint8_t>& request) const;
@@ -3458,7 +3967,7 @@ std::vector<uint8_t> handleManifest(const std::vector<uint8_t>& request) const;
 
 ### API-bd972c448f2c · ndnsf_distributed_repo::RepoCore::handleInventory
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L50)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L81)
 
 ```cpp
 std::vector<uint8_t> handleInventory() const;
@@ -3466,7 +3975,7 @@ std::vector<uint8_t> handleInventory() const;
 
 ### API-037642dec848 · ndnsf_distributed_repo::RepoCore::handleCapability
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L52)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L83)
 
 ```cpp
 std::vector<uint8_t> handleCapability() const;
@@ -3474,7 +3983,7 @@ std::vector<uint8_t> handleCapability() const;
 
 ### API-d3f541f06e3e · ndnsf_distributed_repo::RepoCore::cacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L54)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L85)
 
 ```cpp
 RepoCacheStatus cacheStatus() const;
@@ -3482,7 +3991,7 @@ RepoCacheStatus cacheStatus() const;
 
 ### API-53fcc13b3a4f · ndnsf_distributed_repo::RepoCore::handleCacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L56)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L87)
 
 ```cpp
 std::vector<uint8_t> handleCacheStatus() const;
@@ -3490,7 +3999,7 @@ std::vector<uint8_t> handleCacheStatus() const;
 
 ### API-08ca9144cf52 · ndnsf_distributed_repo::RepoCore::catalogStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L89)
 
 ```cpp
 RepoCatalogStatus catalogStatus() const;
@@ -3498,7 +4007,7 @@ RepoCatalogStatus catalogStatus() const;
 
 ### API-b28b415568be · ndnsf_distributed_repo::RepoCore::catalogSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L91)
 
 ```cpp
 RepoCatalogDelta catalogSnapshot() const;
@@ -3506,7 +4015,7 @@ RepoCatalogDelta catalogSnapshot() const;
 
 ### API-e296daab62b3 · ndnsf_distributed_repo::RepoCore::catalogDelta
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L93)
 
 ```cpp
 RepoCatalogDelta catalogDelta(uint64_t sinceEpoch) const;
@@ -3514,7 +4023,7 @@ RepoCatalogDelta catalogDelta(uint64_t sinceEpoch) const;
 
 ### API-2c18852cdee0 · ndnsf_distributed_repo::RepoCore::catalogLookup
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L64)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L95)
 
 ```cpp
 RepoCatalogEntry catalogLookup(const std::string& objectName) const;
@@ -3522,7 +4031,7 @@ RepoCatalogEntry catalogLookup(const std::string& objectName) const;
 
 ### API-b1c6f23c92d2 · ndnsf_distributed_repo::RepoCore::handleCatalogStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L97)
 
 ```cpp
 std::vector<uint8_t> handleCatalogStatus() const;
@@ -3530,7 +4039,7 @@ std::vector<uint8_t> handleCatalogStatus() const;
 
 ### API-06099f302644 · ndnsf_distributed_repo::RepoCore::handleCatalogSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L99)
 
 ```cpp
 std::vector<uint8_t> handleCatalogSnapshot() const;
@@ -3538,7 +4047,7 @@ std::vector<uint8_t> handleCatalogSnapshot() const;
 
 ### API-2df1dde58126 · ndnsf_distributed_repo::RepoCore::handleCatalogDelta
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L101)
 
 ```cpp
 std::vector<uint8_t> handleCatalogDelta(const std::vector<uint8_t>& request) const;
@@ -3546,7 +4055,7 @@ std::vector<uint8_t> handleCatalogDelta(const std::vector<uint8_t>& request) con
 
 ### API-18441981c1be · ndnsf_distributed_repo::RepoCore::handleCatalogLookup
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L103)
 
 ```cpp
 std::vector<uint8_t> handleCatalogLookup(const std::vector<uint8_t>& request) const;
@@ -3554,15 +4063,84 @@ std::vector<uint8_t> handleCatalogLookup(const std::vector<uint8_t>& request) co
 
 ### API-2c82ef717273 · ndnsf_distributed_repo::RepoCore::handleDelete
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L105)
 
 ```cpp
 std::vector<uint8_t> handleDelete(const std::vector<uint8_t>& request);
 ```
 
+### API-bb5279af2b0c · ndnsf_distributed_repo::RepoCore::acquirePublicationLock
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoCore.hpp#L112)
+
+```cpp
+std::unique_lock<std::mutex> acquirePublicationLock() const
+```
+
+原始接口说明：
+
+```text
+/**
+   * Serialize a multi-object publication transaction that uses the bounded
+   * range API.  The lock is owned by this RepoCore instance, so independent
+   * RepoSourceProvider adapters cannot abort one another's staging reservation.
+   */
+```
+
+## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp
+
+源码 SHA-256：`810cdda2940bb7ff9a29f43d58a7ad20d6df95cb647193056a937559fe819643`。
+
+### API-6d9969718161 · ndnsf_distributed_repo::RepoEncryptedLargeDataStore
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp#L19)
+
+```cpp
+class RepoEncryptedLargeDataStore final
+  : public ndn_service_framework::EncryptedLargeDataRangeStore
+```
+
+### API-a84c4a7b0882 · ndnsf_distributed_repo::RepoEncryptedLargeDataStore::kWindow
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp#L66)
+
+```cpp
+static constexpr std::uint64_t kWindow = 1U << 20;
+```
+
+### API-8f3db249cdae · ndnsf_distributed_repo::RepoEncryptedLargeDataStore::RepoEncryptedLargeDataStore
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp#L67)
+
+```cpp
+explicit RepoEncryptedLargeDataStore(std::shared_ptr<RepoCore> repo)
+```
+
+### API-92e15f3eddc9 · ndnsf_distributed_repo::RepoEncryptedLargeDataStore::commitFile
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp#L74)
+
+```cpp
+std::shared_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource>
+  commitFile(const std::string& name, const std::filesystem::path& file,
+             std::uint64_t size, const std::function<void()>& requireActive = {}) override
+```
+
+### API-0825a1db6442 · ndnsf_distributed_repo::RepoEncryptedLargeDataStore::commitFile
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp#L82)
+
+```cpp
+std::shared_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource>
+  commitFile(const std::string& name, const std::filesystem::path& file,
+             std::uint64_t size,
+             const ndn_service_framework::EncryptedLargeDataCommitOptions& options,
+             const std::function<void()>& requireActive = {}) override
+```
+
 ## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp
 
-源码 SHA-256：`9d2e986221293fc1be16416e61ab2b2c11970c284c7096a98be123e41747cea1`。
+源码 SHA-256：`293261c56fdf1ce967f3935ec78943fd6b0bcdbc0db1da932a0ffe3bd630d081`。
 
 ### API-abe019f5e2fe · ndn_service_framework::LocalServiceRegistry
 
@@ -3668,9 +4246,44 @@ public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf
 std::vector<uint8_t> get(const std::string& objectName) const;
 ```
 
-### API-4039aaaba9f5 · ndnsf_distributed_repo::RepoNode::getManifest
+### API-11b6cfc6d218 · ndnsf_distributed_repo::RepoNode::putRange
 
 public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L47)
+
+```cpp
+void putRange(const RepoObjectManifest& manifest,
+                RepoByteRange range,
+                const std::vector<uint8_t>& bytes);
+```
+
+### API-c2fe73ec1de1 · ndnsf_distributed_repo::RepoNode::commitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L51)
+
+```cpp
+RepoObjectManifest commitRanges(const RepoObjectManifest& manifest);
+```
+
+### API-049649244e4e · ndnsf_distributed_repo::RepoNode::abortRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L53)
+
+```cpp
+void abortRanges(const std::string& objectName);
+```
+
+### API-7860028cc112 · ndnsf_distributed_repo::RepoNode::getRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L55)
+
+```cpp
+std::vector<uint8_t> getRange(const std::string& objectName,
+                                RepoByteRange range) const;
+```
+
+### API-4039aaaba9f5 · ndnsf_distributed_repo::RepoNode::getManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L58)
 
 ```cpp
 RepoObjectManifest getManifest(const std::string& objectName) const;
@@ -3678,7 +4291,7 @@ RepoObjectManifest getManifest(const std::string& objectName) const;
 
 ### API-e5c37cf7a489 · ndnsf_distributed_repo::RepoNode::list
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L49)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L60)
 
 ```cpp
 std::vector<RepoObjectManifest> list() const;
@@ -3686,7 +4299,7 @@ std::vector<RepoObjectManifest> list() const;
 
 ### API-8b111fd4033e · ndnsf_distributed_repo::RepoNode::remove
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L51)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L62)
 
 ```cpp
 bool remove(const std::string& objectName);
@@ -3694,7 +4307,7 @@ bool remove(const std::string& objectName);
 
 ### API-f3c27255a016 · ndnsf_distributed_repo::RepoNode::putDataPacket
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L64)
 
 ```cpp
 RepoObjectManifest putDataPacket(const std::string& dataName,
@@ -3703,7 +4316,7 @@ RepoObjectManifest putDataPacket(const std::string& dataName,
 
 ### API-ffce330c4a2c · ndnsf_distributed_repo::RepoNode::getDataPacket
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L56)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L67)
 
 ```cpp
 std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
@@ -3711,7 +4324,7 @@ std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
 
 ### API-12f2f69e6d35 · ndnsf_distributed_repo::RepoNode::hasDataPacket
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L58)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L69)
 
 ```cpp
 bool hasDataPacket(const std::string& dataName) const;
@@ -3719,7 +4332,7 @@ bool hasDataPacket(const std::string& dataName) const;
 
 ### API-773c650878f8 · ndnsf_distributed_repo::RepoNode::setDataReferenceFetcher
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L60)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L71)
 
 ```cpp
 void setDataReferenceFetcher(DataReferenceFetcher fetcher);
@@ -3727,7 +4340,7 @@ void setDataReferenceFetcher(DataReferenceFetcher fetcher);
 
 ### API-75a4c7b01100 · ndnsf_distributed_repo::RepoNode::insertWirePackets
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L73)
 
 ```cpp
 RepoOperationStatus insertWirePackets(
@@ -3737,15 +4350,39 @@ RepoOperationStatus insertWirePackets(
 
 ### API-8dc278e4ac0d · ndnsf_distributed_repo::RepoNode::handleStore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L77)
 
 ```cpp
 std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 ```
 
+### API-3bc7cf277835 · ndnsf_distributed_repo::RepoNode::handleStoreRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L79)
+
+```cpp
+std::vector<uint8_t> handleStoreRange(const std::vector<uint8_t>& request);
+```
+
+### API-2a92647d4756 · ndnsf_distributed_repo::RepoNode::handleCommitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L81)
+
+```cpp
+std::vector<uint8_t> handleCommitRanges(const std::vector<uint8_t>& request);
+```
+
+### API-107bf6f4f93c · ndnsf_distributed_repo::RepoNode::handleAbortRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L83)
+
+```cpp
+std::vector<uint8_t> handleAbortRanges(const std::vector<uint8_t>& request);
+```
+
 ### API-bee51ae28047 · ndnsf_distributed_repo::RepoNode::handleInsert
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L85)
 
 ```cpp
 std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request);
@@ -3753,7 +4390,7 @@ std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request);
 
 ### API-f07e54481a58 · ndnsf_distributed_repo::RepoNode::handleStoreManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L87)
 
 ```cpp
 std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
@@ -3761,15 +4398,23 @@ std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
 
 ### API-0797fa0783c8 · ndnsf_distributed_repo::RepoNode::handleFetch
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L72)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L89)
 
 ```cpp
 std::vector<uint8_t> handleFetch(const std::vector<uint8_t>& request) const;
 ```
 
+### API-44c7b72a6757 · ndnsf_distributed_repo::RepoNode::handleFetchRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L91)
+
+```cpp
+std::vector<uint8_t> handleFetchRange(const std::vector<uint8_t>& request) const;
+```
+
 ### API-40713d78c6ce · ndnsf_distributed_repo::RepoNode::handleManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L74)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L93)
 
 ```cpp
 std::vector<uint8_t> handleManifest(const std::vector<uint8_t>& request) const;
@@ -3777,7 +4422,7 @@ std::vector<uint8_t> handleManifest(const std::vector<uint8_t>& request) const;
 
 ### API-52cf1298ca87 · ndnsf_distributed_repo::RepoNode::handleInventory
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L95)
 
 ```cpp
 std::vector<uint8_t> handleInventory() const;
@@ -3785,7 +4430,7 @@ std::vector<uint8_t> handleInventory() const;
 
 ### API-834ffa287f91 · ndnsf_distributed_repo::RepoNode::handleCapability
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L97)
 
 ```cpp
 std::vector<uint8_t> handleCapability() const;
@@ -3793,7 +4438,7 @@ std::vector<uint8_t> handleCapability() const;
 
 ### API-4355c795e50f · ndnsf_distributed_repo::RepoNode::cacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L99)
 
 ```cpp
 RepoCacheStatus cacheStatus() const;
@@ -3801,7 +4446,7 @@ RepoCacheStatus cacheStatus() const;
 
 ### API-11119b284d36 · ndnsf_distributed_repo::RepoNode::handleCacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L101)
 
 ```cpp
 std::vector<uint8_t> handleCacheStatus() const;
@@ -3809,7 +4454,7 @@ std::vector<uint8_t> handleCacheStatus() const;
 
 ### API-7f0aab83de5e · ndnsf_distributed_repo::RepoNode::handleCatalogStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L103)
 
 ```cpp
 std::vector<uint8_t> handleCatalogStatus() const;
@@ -3817,7 +4462,7 @@ std::vector<uint8_t> handleCatalogStatus() const;
 
 ### API-b8d61e42054d · ndnsf_distributed_repo::RepoNode::handleCatalogSnapshot
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L86)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L105)
 
 ```cpp
 std::vector<uint8_t> handleCatalogSnapshot() const;
@@ -3825,7 +4470,7 @@ std::vector<uint8_t> handleCatalogSnapshot() const;
 
 ### API-d87560b98d15 · ndnsf_distributed_repo::RepoNode::handleCatalogDelta
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L107)
 
 ```cpp
 std::vector<uint8_t> handleCatalogDelta(const std::vector<uint8_t>& request) const;
@@ -3833,7 +4478,7 @@ std::vector<uint8_t> handleCatalogDelta(const std::vector<uint8_t>& request) con
 
 ### API-7b03b2871dce · ndnsf_distributed_repo::RepoNode::handleCatalogLookup
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L90)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L109)
 
 ```cpp
 std::vector<uint8_t> handleCatalogLookup(const std::vector<uint8_t>& request) const;
@@ -3841,7 +4486,7 @@ std::vector<uint8_t> handleCatalogLookup(const std::vector<uint8_t>& request) co
 
 ### API-28a4e0518655 · ndnsf_distributed_repo::RepoNode::handleDelete
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L92)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L111)
 
 ```cpp
 std::vector<uint8_t> handleDelete(const std::vector<uint8_t>& request);
@@ -3849,7 +4494,7 @@ std::vector<uint8_t> handleDelete(const std::vector<uint8_t>& request);
 
 ### API-4c7688bd5126 · ndnsf_distributed_repo::RepoNode::handleStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp#L113)
 
 ```cpp
 std::vector<uint8_t> handleStatus(const std::vector<uint8_t>& request) const;
@@ -3857,7 +4502,7 @@ std::vector<uint8_t> handleStatus(const std::vector<uint8_t>& request) const;
 
 ## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp
 
-源码 SHA-256：`74ca1596c71cf9db0fb6750a4dce787737a32152ed6a7c437d4dfabdc0f4f038`。
+源码 SHA-256：`fc7d99e87daa5cb0e44cfce54aeff785932f084905a6bff9e47a475a7493892f`。
 
 ### API-91fee41583ea · ndnsf_distributed_repo::makeRepoServiceName
 
@@ -3896,9 +4541,50 @@ encodeStoreRequest(const RepoObjectManifest& manifest,
                    const std::vector<uint8_t>& payload);
 ```
 
+### API-1b8102d0ddfc · ndnsf_distributed_repo::encodeRangeWriteRequest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L28)
+
+```cpp
+std::vector<uint8_t>
+encodeRangeWriteRequest(const RepoObjectManifest& manifest,
+                        RepoByteRange range,
+                        const std::vector<uint8_t>& bytes);
+```
+
+原始接口说明：
+
+```text
+/** Encode one bounded range write without concatenating the object payload. */
+```
+
+### API-807fc254226c · ndnsf_distributed_repo::encodeRangeReadRequest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L34)
+
+```cpp
+std::vector<uint8_t>
+encodeRangeReadRequest(const std::string& objectName, RepoByteRange range);
+```
+
+原始接口说明：
+
+```text
+/** Encode a bounded range read request. */
+```
+
+### API-ce734dee3cc9 · ndnsf_distributed_repo::encodeRangeAbortRequest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L37)
+
+```cpp
+std::vector<uint8_t>
+encodeRangeAbortRequest(const std::string& objectName);
+```
+
 ### API-d3df6e956b2c · ndnsf_distributed_repo::encodeManifestRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L27)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L40)
 
 ```cpp
 std::vector<uint8_t>
@@ -3907,7 +4593,7 @@ encodeManifestRequest(const RepoObjectManifest& manifest);
 
 ### API-2606214bcd0b · ndnsf_distributed_repo::encodeDataReferenceRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L30)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L43)
 
 ```cpp
 std::vector<uint8_t>
@@ -3916,7 +4602,7 @@ encodeDataReferenceRequest(const RepoDataReference& reference);
 
 ### API-16aec586027f · ndnsf_distributed_repo::encodeStatusRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L33)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L46)
 
 ```cpp
 std::vector<uint8_t>
@@ -3925,7 +4611,7 @@ encodeStatusRequest(const std::string& operationId);
 
 ### API-d7b129048041 · ndnsf_distributed_repo::encodeCatalogDeltaRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L36)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L49)
 
 ```cpp
 std::vector<uint8_t>
@@ -3934,7 +4620,7 @@ encodeCatalogDeltaRequest(uint64_t sinceEpoch);
 
 ### API-a1abea30fd5c · ndnsf_distributed_repo::encodeCatalogLookupRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L39)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L52)
 
 ```cpp
 std::vector<uint8_t>
@@ -3943,7 +4629,7 @@ encodeCatalogLookupRequest(const std::string& objectName);
 
 ### API-c435862740fd · ndnsf_distributed_repo::decodeStoreRequest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L42)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L55)
 
 ```cpp
 void
@@ -3952,9 +4638,41 @@ decodeStoreRequest(const std::vector<uint8_t>& request,
                    std::vector<uint8_t>& payload);
 ```
 
+### API-7b2af350eeae · ndnsf_distributed_repo::decodeRangeWriteRequest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L60)
+
+```cpp
+void
+decodeRangeWriteRequest(const std::vector<uint8_t>& request,
+                        RepoObjectManifest& manifest,
+                        RepoByteRange& range,
+                        std::vector<uint8_t>& bytes);
+```
+
+### API-5f6a95423625 · ndnsf_distributed_repo::decodeRangeReadRequest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L66)
+
+```cpp
+void
+decodeRangeReadRequest(const std::vector<uint8_t>& request,
+                       std::string& objectName,
+                       RepoByteRange& range);
+```
+
+### API-3722c745b7bc · ndnsf_distributed_repo::decodeRangeAbortRequest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L71)
+
+```cpp
+std::string
+decodeRangeAbortRequest(const std::vector<uint8_t>& request);
+```
+
 ### API-08dbe2447706 · ndnsf_distributed_repo::parseDataReferenceJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L47)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L74)
 
 ```cpp
 RepoDataReference
@@ -3963,7 +4681,7 @@ parseDataReferenceJson(const std::string& referenceJson);
 
 ### API-4e2a5e970a98 · ndnsf_distributed_repo::parseOperationStatusJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L50)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L77)
 
 ```cpp
 RepoOperationStatus
@@ -3972,7 +4690,7 @@ parseOperationStatusJson(const std::string& statusJson);
 
 ### API-71081b19dd5b · ndnsf_distributed_repo::parseManifestJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L53)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L80)
 
 ```cpp
 RepoObjectManifest
@@ -3981,7 +4699,7 @@ parseManifestJson(const std::string& manifestJson);
 
 ### API-3ea910007b7a · ndnsf_distributed_repo::parseCatalogEntryJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L56)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L83)
 
 ```cpp
 RepoCatalogEntry
@@ -3990,7 +4708,7 @@ parseCatalogEntryJson(const std::string& entryJson);
 
 ### API-c653af9f1037 · ndnsf_distributed_repo::parseCatalogStatusJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L59)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L86)
 
 ```cpp
 RepoCatalogStatus
@@ -3999,7 +4717,7 @@ parseCatalogStatusJson(const std::string& statusJson);
 
 ### API-fbf47299de04 · ndnsf_distributed_repo::parseCacheStatusJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L89)
 
 ```cpp
 RepoCacheStatus
@@ -4008,7 +4726,7 @@ parseCacheStatusJson(const std::string& statusJson);
 
 ### API-d06e24b1e720 · ndnsf_distributed_repo::parseCatalogDeltaJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L65)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L92)
 
 ```cpp
 RepoCatalogDelta
@@ -4017,7 +4735,7 @@ parseCatalogDeltaJson(const std::string& deltaJson);
 
 ### API-50eb1519bff1 · ndnsf_distributed_repo::parseInventoryJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L95)
 
 ```cpp
 std::vector<RepoObjectManifest>
@@ -4026,11 +4744,192 @@ parseInventoryJson(const std::string& inventoryJson);
 
 ### API-8709ef578559 · ndnsf_distributed_repo::encodeInventory
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L71)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoProtocol.hpp#L98)
 
 ```cpp
 std::string
 encodeInventory(const std::vector<RepoObjectManifest>& manifests);
+```
+
+## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp
+
+源码 SHA-256：`a898a39a70a905d5b90fe2afc6da67e2e59096245e0ddf8342424687c5be9859`。
+
+### API-6c2b2eb003f4 · ndnsf_distributed_repo::RepoSourceProvider
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L36)
+
+```cpp
+class RepoSourceProvider final : public ndnsf::di::RepositorySourceProvider,
+                                 public ndnsf::di::RepositoryArtifactPublisher
+```
+
+### API-981d072266a2 · ndnsf_distributed_repo::RepoSourceProvider::Fallback
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L74)
+
+```cpp
+using Fallback = ndnsf::di::RepositorySourceProvider::Fallback;
+```
+
+### API-1bf7e714cfca · ndnsf_distributed_repo::RepoSourceProvider::Stats
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L76)
+
+```cpp
+struct Stats
+```
+
+### API-4cb01db0c003 · ndnsf_distributed_repo::RepoSourceProvider::Stats::lookups
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L78)
+
+```cpp
+std::size_t lookups = 0;
+```
+
+### API-401bb52d99d2 · ndnsf_distributed_repo::RepoSourceProvider::Stats::missIngests
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L79)
+
+```cpp
+std::size_t missIngests = 0;
+```
+
+### API-f535bfe28b6e · ndnsf_distributed_repo::RepoSourceProvider::Stats::publicationCalls
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L80)
+
+```cpp
+std::size_t publicationCalls = 0;
+```
+
+### API-aa24f85e8eaf · ndnsf_distributed_repo::RepoSourceProvider::Stats::publicationHits
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L81)
+
+```cpp
+std::size_t publicationHits = 0;
+```
+
+### API-c2cbcf3878e5 · ndnsf_distributed_repo::RepoSourceProvider::MaterialSelectionResult
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L84)
+
+```cpp
+struct MaterialSelectionResult
+```
+
+### API-8eed88bb2450 · ndnsf_distributed_repo::RepoSourceProvider::MaterialSelectionResult::manifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L86)
+
+```cpp
+std::shared_ptr<ndnsf::di::NativeCanonicalSource::MaterialManifest> manifest;
+```
+
+### API-26236b230386 · ndnsf_distributed_repo::RepoSourceProvider::MaterialSelectionResult::payloads
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L87)
+
+```cpp
+std::vector<ndnsf::di::NativeCanonicalSource::MaterialPayload> payloads;
+```
+
+### API-6e47e597c673 · ndnsf_distributed_repo::RepoSourceProvider::MaterialSelectionResult::bytesRead
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L88)
+
+```cpp
+std::uint64_t bytesRead = 0;
+```
+
+### API-3d2d7931e4ec · ndnsf_distributed_repo::RepoSourceProvider::RepoSourceProvider
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L91)
+
+```cpp
+explicit RepoSourceProvider(std::shared_ptr<RepoCore> repo, Fallback fallback = {})
+```
+
+### API-c6d705862040 · ndnsf_distributed_repo::RepoSourceProvider::lookupPrepared
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L98)
+
+```cpp
+std::optional<ndnsf::di::NativePreparedCanonicalPublication> lookupPrepared(
+    const ndnsf::di::RepositoryPreparedLookupRequest& request) const override
+```
+
+### API-e1afe10249c1 · ndnsf_distributed_repo::RepoSourceProvider::load
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L315)
+
+```cpp
+ndnsf::di::NativeCanonicalSource load(
+    const ndnsf::di::RepositorySourceRequest& request,
+    const Fallback& fallback) const override
+```
+
+### API-6d4718153a0f · ndnsf_distributed_repo::RepoSourceProvider::publish
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L491)
+
+```cpp
+ndnsf::di::NativePreparedCanonicalPublication publish(
+    const std::string& modelKey,
+    const std::string& serviceName,
+    const ndnsf::di::NativeInspectedModel& model,
+    const ndnsf::di::NativeCanonicalSource& source,
+    const ndnsf::di::NativeCanonicalPublicationOptions& options,
+    const ndnsf::di::NativeRequestControl& control) const override
+```
+
+### API-eec87d0e0d98 · ndnsf_distributed_repo::RepoSourceProvider::rollback
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L946)
+
+```cpp
+void rollback(const ndnsf::di::NativePreparedCanonicalPublication& publication) const noexcept override
+```
+
+### API-180bd8606868 · ndnsf_distributed_repo::RepoSourceProvider::load
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L961)
+
+```cpp
+ndnsf::di::NativeCanonicalSource load(
+    const ndnsf::di::RepositorySourceRequest& request) const
+```
+
+### API-e815db54e08e · ndnsf_distributed_repo::RepoSourceProvider::loadMaterialSelection
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L968)
+
+```cpp
+MaterialSelectionResult loadMaterialSelection(
+    const std::string& rootDataName,
+    const std::string& expectedRootDigest,
+    const std::vector<std::uint64_t>& nodeIndices,
+    std::uint64_t maxBytes,
+    std::chrono::steady_clock::time_point deadline,
+    const std::function<void()>& ownerFence = {}) const
+```
+
+原始接口说明：
+
+```text
+/** Read the authenticated material index and only the node/shared payloads
+   * selected after ACK.  This is the Repo-side consumer seam; it never falls
+   * back to the complete canonical source or external initializer. */
+```
+
+### API-c23a0532bdb7 · ndnsf_distributed_repo::RepoSourceProvider::stats
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp#L1162)
+
+```cpp
+Stats stats() const noexcept
 ```
 
 ## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoStoreBackend.hpp
@@ -4518,7 +5417,7 @@ ArtifactLifecycleEvent transition(ArtifactLifecycleEvent event);
 
 ## NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp
 
-源码 SHA-256：`5c794bdc744abcc73b2f3c5ee5472d8726d4e6d24139a4e2cac949979a2b8abc`。
+源码 SHA-256：`7c6c438b98db47f6921b462c821399f2758512b31d4ea757370dd219bbdecc0a`。
 
 ### API-321fb3efa48d · ndnsf_distributed_repo::reason::* OperationConflict = "repo-operation-conflict"
 
@@ -4763,9 +5662,65 @@ public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf
 std::string policyEpoch;
 ```
 
+### API-95ddfdca0219 · ndnsf_distributed_repo::RepoObjectManifest::publicationIdentity
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L65)
+
+```cpp
+std::string publicationIdentity;
+```
+
+原始接口说明：
+
+```text
+// Protected durable-publication identity. These are opaque, non-secret
+// values owned by Core; Repo persists and returns them without interpreting
+// keys or authorization.
+```
+
+### API-a544aa064327 · ndnsf_distributed_repo::RepoObjectManifest::protectionEpoch
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L66)
+
+```cpp
+std::string protectionEpoch;
+```
+
+### API-70943fb2c856 · ndnsf_distributed_repo::RepoObjectManifest::keyReferenceId
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L67)
+
+```cpp
+std::string keyReferenceId;
+```
+
+### API-d42a6322cd02 · ndnsf_distributed_repo::RepoObjectManifest::keyReferenceVersion
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L68)
+
+```cpp
+std::string keyReferenceVersion;
+```
+
+### API-5d2c122dbc60 · ndnsf_distributed_repo::RepoObjectManifest::ciphertextManifestDigest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L69)
+
+```cpp
+std::string ciphertextManifestDigest;
+```
+
+### API-9ba74805828d · ndnsf_distributed_repo::RepoObjectManifest::servingLocator
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L70)
+
+```cpp
+std::string servingLocator;
+```
+
 ### API-a833fed88a5f · ndnsf_distributed_repo::RepoObjectManifest::generation
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L62)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L71)
 
 ```cpp
 uint64_t generation = 0;
@@ -4773,7 +5728,7 @@ uint64_t generation = 0;
 
 ### API-79d7926f4dab · ndnsf_distributed_repo::RepoObjectManifest::parentGeneration
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L63)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L72)
 
 ```cpp
 int64_t parentGeneration = -1;
@@ -4781,7 +5736,7 @@ int64_t parentGeneration = -1;
 
 ### API-15648caffe79 · ndnsf_distributed_repo::RepoObjectManifest::writeConsistency
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L64)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L73)
 
 ```cpp
 std::string writeConsistency = "ALL";
@@ -4789,7 +5744,7 @@ std::string writeConsistency = "ALL";
 
 ### API-5fc8a29fc6c2 · ndnsf_distributed_repo::RepoObjectManifest::requiredWriteAcks
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L65)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L74)
 
 ```cpp
 uint32_t requiredWriteAcks = 0;
@@ -4797,7 +5752,7 @@ uint32_t requiredWriteAcks = 0;
 
 ### API-a6de00a37ba1 · ndnsf_distributed_repo::RepoObjectManifest::confirmedReplicaNodes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L66)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L75)
 
 ```cpp
 std::vector<std::string> confirmedReplicaNodes;
@@ -4805,7 +5760,7 @@ std::vector<std::string> confirmedReplicaNodes;
 
 ### API-e596a7ed3f33 · ndnsf_distributed_repo::RepoObjectManifest::operationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L67)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L76)
 
 ```cpp
 std::string operationId;
@@ -4813,7 +5768,7 @@ std::string operationId;
 
 ### API-c753669abcdb · ndnsf_distributed_repo::RepoObjectManifest::lifecycleState
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L68)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L77)
 
 ```cpp
 std::string lifecycleState = "COMMITTED";
@@ -4821,7 +5776,7 @@ std::string lifecycleState = "COMMITTED";
 
 ### API-3d49ffac0813 · ndnsf_distributed_repo::RepoObjectManifest::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L70)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L79)
 
 ```cpp
 std::string toJson() const;
@@ -4829,7 +5784,7 @@ std::string toJson() const;
 
 ### API-3f6b7d7f5d0e · ndnsf_distributed_repo::RepoWriteIntent
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L73)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L82)
 
 ```cpp
 struct RepoWriteIntent
@@ -4837,7 +5792,7 @@ struct RepoWriteIntent
 
 ### API-358ae227cff4 · ndnsf_distributed_repo::RepoWriteIntent::operationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L75)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L84)
 
 ```cpp
 std::string operationId;
@@ -4845,7 +5800,7 @@ std::string operationId;
 
 ### API-4d08b3feddf6 · ndnsf_distributed_repo::RepoWriteIntent::objectName
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L76)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L85)
 
 ```cpp
 std::string objectName;
@@ -4853,7 +5808,7 @@ std::string objectName;
 
 ### API-4470a2546488 · ndnsf_distributed_repo::RepoWriteIntent::generation
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L77)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L86)
 
 ```cpp
 uint64_t generation = 0;
@@ -4861,7 +5816,7 @@ uint64_t generation = 0;
 
 ### API-3c50b7b3aa62 · ndnsf_distributed_repo::RepoWriteIntent::expectedGeneration
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L78)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L87)
 
 ```cpp
 int64_t expectedGeneration = -1;
@@ -4869,7 +5824,7 @@ int64_t expectedGeneration = -1;
 
 ### API-00617132940c · ndnsf_distributed_repo::RepoWriteIntent::digest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L79)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L88)
 
 ```cpp
 std::string digest;
@@ -4877,7 +5832,7 @@ std::string digest;
 
 ### API-8906f170b380 · ndnsf_distributed_repo::RepoWriteIntent::replicationFactor
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L80)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L89)
 
 ```cpp
 uint32_t replicationFactor = 1;
@@ -4885,7 +5840,7 @@ uint32_t replicationFactor = 1;
 
 ### API-d3060f207eca · ndnsf_distributed_repo::RepoWriteIntent::requiredAcks
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L81)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L90)
 
 ```cpp
 uint32_t requiredAcks = 1;
@@ -4893,7 +5848,7 @@ uint32_t requiredAcks = 1;
 
 ### API-f911f3beec97 · ndnsf_distributed_repo::RepoWriteIntent::consistency
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L82)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L91)
 
 ```cpp
 std::string consistency = "ALL";
@@ -4901,7 +5856,7 @@ std::string consistency = "ALL";
 
 ### API-07f08c8879b2 · ndnsf_distributed_repo::RepoWriteIntent::selectedReplicas
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L83)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L92)
 
 ```cpp
 std::vector<std::string> selectedReplicas;
@@ -4909,7 +5864,7 @@ std::vector<std::string> selectedReplicas;
 
 ### API-f92efbb5d6f0 · ndnsf_distributed_repo::RepoWriteIntent::state
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L84)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L93)
 
 ```cpp
 std::string state = "RECEIVED";
@@ -4917,7 +5872,7 @@ std::string state = "RECEIVED";
 
 ### API-6c8c7402407a · ndnsf_distributed_repo::RepoWriteIntent::createdAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L85)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L94)
 
 ```cpp
 uint64_t createdAtMs = 0;
@@ -4925,7 +5880,7 @@ uint64_t createdAtMs = 0;
 
 ### API-a857ad316755 · ndnsf_distributed_repo::RepoWriteIntent::updatedAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L86)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L95)
 
 ```cpp
 uint64_t updatedAtMs = 0;
@@ -4933,7 +5888,7 @@ uint64_t updatedAtMs = 0;
 
 ### API-b2b7f6345aa0 · ndnsf_distributed_repo::RepoWriteIntent::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L88)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L97)
 
 ```cpp
 std::string toJson() const;
@@ -4941,7 +5896,7 @@ std::string toJson() const;
 
 ### API-16ef9fff8266 · ndnsf_distributed_repo::RepoWriteReceipt
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L91)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L100)
 
 ```cpp
 struct RepoWriteReceipt
@@ -4949,7 +5904,7 @@ struct RepoWriteReceipt
 
 ### API-24062be77a45 · ndnsf_distributed_repo::RepoWriteReceipt::operationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L93)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L102)
 
 ```cpp
 std::string operationId;
@@ -4957,7 +5912,7 @@ std::string operationId;
 
 ### API-a3ed11e5bbdf · ndnsf_distributed_repo::RepoWriteReceipt::repoNode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L94)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L103)
 
 ```cpp
 std::string repoNode;
@@ -4965,7 +5920,7 @@ std::string repoNode;
 
 ### API-5943d155ed6a · ndnsf_distributed_repo::RepoWriteReceipt::objectName
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L95)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L104)
 
 ```cpp
 std::string objectName;
@@ -4973,7 +5928,7 @@ std::string objectName;
 
 ### API-8e01c80ebd8c · ndnsf_distributed_repo::RepoWriteReceipt::generation
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L96)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L105)
 
 ```cpp
 uint64_t generation = 0;
@@ -4981,7 +5936,7 @@ uint64_t generation = 0;
 
 ### API-65ecbce94ccf · ndnsf_distributed_repo::RepoWriteReceipt::digest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L97)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L106)
 
 ```cpp
 std::string digest;
@@ -4989,7 +5944,7 @@ std::string digest;
 
 ### API-f299d6daae9a · ndnsf_distributed_repo::RepoWriteReceipt::persistedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L98)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L107)
 
 ```cpp
 uint64_t persistedBytes = 0;
@@ -4997,7 +5952,7 @@ uint64_t persistedBytes = 0;
 
 ### API-239f19d81580 · ndnsf_distributed_repo::RepoWriteReceipt::state
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L99)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L108)
 
 ```cpp
 std::string state = "COMMITTED";
@@ -5005,7 +5960,7 @@ std::string state = "COMMITTED";
 
 ### API-2a029f9fdc20 · ndnsf_distributed_repo::RepoWriteReceipt::completedAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L100)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L109)
 
 ```cpp
 uint64_t completedAtMs = 0;
@@ -5013,7 +5968,7 @@ uint64_t completedAtMs = 0;
 
 ### API-794bba41abfc · ndnsf_distributed_repo::RepoWriteReceipt::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L102)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L111)
 
 ```cpp
 std::string toJson() const;
@@ -5021,7 +5976,7 @@ std::string toJson() const;
 
 ### API-bde3cf3318ea · ndnsf_distributed_repo::RepoCapacityReservation
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L105)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L114)
 
 ```cpp
 struct RepoCapacityReservation
@@ -5029,7 +5984,7 @@ struct RepoCapacityReservation
 
 ### API-3a52432f3fde · ndnsf_distributed_repo::RepoCapacityReservation::reservationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L107)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L116)
 
 ```cpp
 std::string reservationId;
@@ -5037,7 +5992,7 @@ std::string reservationId;
 
 ### API-d85426bd2db6 · ndnsf_distributed_repo::RepoCapacityReservation::operationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L108)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L117)
 
 ```cpp
 std::string operationId;
@@ -5045,7 +6000,7 @@ std::string operationId;
 
 ### API-cb6df33fd09b · ndnsf_distributed_repo::RepoCapacityReservation::reservedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L109)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L118)
 
 ```cpp
 uint64_t reservedBytes = 0;
@@ -5053,7 +6008,7 @@ uint64_t reservedBytes = 0;
 
 ### API-f864a10d0991 · ndnsf_distributed_repo::RepoCapacityReservation::state
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L110)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L119)
 
 ```cpp
 std::string state = "ACTIVE";
@@ -5061,7 +6016,7 @@ std::string state = "ACTIVE";
 
 ### API-590f4603c232 · ndnsf_distributed_repo::RepoCapacityReservation::expiresAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L111)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L120)
 
 ```cpp
 uint64_t expiresAtMs = 0;
@@ -5069,7 +6024,7 @@ uint64_t expiresAtMs = 0;
 
 ### API-3cd56731152f · ndnsf_distributed_repo::RepoCapacityReservation::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L113)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L122)
 
 ```cpp
 std::string toJson() const;
@@ -5077,7 +6032,7 @@ std::string toJson() const;
 
 ### API-6e62625063ae · ndnsf_distributed_repo::RepoDataReference
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L116)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L125)
 
 ```cpp
 struct RepoDataReference
@@ -5085,7 +6040,7 @@ struct RepoDataReference
 
 ### API-6cd2951edcea · ndnsf_distributed_repo::RepoDataReference::objectName
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L118)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L127)
 
 ```cpp
 std::string objectName;
@@ -5093,7 +6048,7 @@ std::string objectName;
 
 ### API-6b526809101e · ndnsf_distributed_repo::RepoDataReference::dataPrefix
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L119)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L128)
 
 ```cpp
 std::string dataPrefix;
@@ -5101,7 +6056,7 @@ std::string dataPrefix;
 
 ### API-bf646dcf1f2f · ndnsf_distributed_repo::RepoDataReference::firstSegment
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L120)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L129)
 
 ```cpp
 uint64_t firstSegment = 0;
@@ -5109,7 +6064,7 @@ uint64_t firstSegment = 0;
 
 ### API-753855b43bb4 · ndnsf_distributed_repo::RepoDataReference::finalSegment
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L121)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L130)
 
 ```cpp
 uint64_t finalSegment = 0;
@@ -5117,7 +6072,7 @@ uint64_t finalSegment = 0;
 
 ### API-0170d8043b5f · ndnsf_distributed_repo::RepoDataReference::hasFinalSegment
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L122)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L131)
 
 ```cpp
 bool hasFinalSegment = false;
@@ -5125,7 +6080,7 @@ bool hasFinalSegment = false;
 
 ### API-5c23994cc7d2 · ndnsf_distributed_repo::RepoDataReference::forwardingHint
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L123)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L132)
 
 ```cpp
 std::string forwardingHint;
@@ -5133,7 +6088,7 @@ std::string forwardingHint;
 
 ### API-4fcd70f7f39e · ndnsf_distributed_repo::RepoDataReference::expectedSha256
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L124)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L133)
 
 ```cpp
 std::string expectedSha256;
@@ -5141,7 +6096,7 @@ std::string expectedSha256;
 
 ### API-bd165f7e4314 · ndnsf_distributed_repo::RepoDataReference::expectedSize
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L125)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L134)
 
 ```cpp
 uint64_t expectedSize = 0;
@@ -5149,7 +6104,7 @@ uint64_t expectedSize = 0;
 
 ### API-368bb54bc14d · ndnsf_distributed_repo::RepoDataReference::storeWirePackets
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L126)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L135)
 
 ```cpp
 bool storeWirePackets = true;
@@ -5157,7 +6112,7 @@ bool storeWirePackets = true;
 
 ### API-dfd9e1a0ed3f · ndnsf_distributed_repo::RepoDataReference::objectType
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L127)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L136)
 
 ```cpp
 std::string objectType = "ndn-segmented-data";
@@ -5165,7 +6120,7 @@ std::string objectType = "ndn-segmented-data";
 
 ### API-17d7fcd4f482 · ndnsf_distributed_repo::RepoDataReference::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L129)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L138)
 
 ```cpp
 std::string toJson() const;
@@ -5173,7 +6128,7 @@ std::string toJson() const;
 
 ### API-fac832596964 · ndnsf_distributed_repo::RepoOperationStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L132)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L141)
 
 ```cpp
 struct RepoOperationStatus
@@ -5181,7 +6136,7 @@ struct RepoOperationStatus
 
 ### API-9e2fd5d41580 · ndnsf_distributed_repo::RepoOperationStatus::operationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L134)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L143)
 
 ```cpp
 std::string operationId;
@@ -5189,7 +6144,7 @@ std::string operationId;
 
 ### API-49f8417fa9aa · ndnsf_distributed_repo::RepoOperationStatus::operation
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L135)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L144)
 
 ```cpp
 std::string operation;
@@ -5197,7 +6152,7 @@ std::string operation;
 
 ### API-eb251c3546b7 · ndnsf_distributed_repo::RepoOperationStatus::state
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L136)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L145)
 
 ```cpp
 std::string state = "RECEIVED";
@@ -5205,7 +6160,7 @@ std::string state = "RECEIVED";
 
 ### API-8c265d25bcc4 · ndnsf_distributed_repo::RepoOperationStatus::objectName
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L137)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L146)
 
 ```cpp
 std::string objectName;
@@ -5213,7 +6168,7 @@ std::string objectName;
 
 ### API-db36c9a63025 · ndnsf_distributed_repo::RepoOperationStatus::message
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L138)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L147)
 
 ```cpp
 std::string message;
@@ -5221,7 +6176,7 @@ std::string message;
 
 ### API-ee40f8da6ede · ndnsf_distributed_repo::RepoOperationStatus::completedSegments
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L139)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L148)
 
 ```cpp
 uint64_t completedSegments = 0;
@@ -5229,7 +6184,7 @@ uint64_t completedSegments = 0;
 
 ### API-83bdb948716d · ndnsf_distributed_repo::RepoOperationStatus::totalSegments
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L140)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L149)
 
 ```cpp
 uint64_t totalSegments = 0;
@@ -5237,7 +6192,7 @@ uint64_t totalSegments = 0;
 
 ### API-32f772105186 · ndnsf_distributed_repo::RepoOperationStatus::createdAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L141)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L150)
 
 ```cpp
 uint64_t createdAtMs = 0;
@@ -5245,7 +6200,7 @@ uint64_t createdAtMs = 0;
 
 ### API-be902a2d1043 · ndnsf_distributed_repo::RepoOperationStatus::updatedAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L142)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L151)
 
 ```cpp
 uint64_t updatedAtMs = 0;
@@ -5253,7 +6208,7 @@ uint64_t updatedAtMs = 0;
 
 ### API-5066de68e2e3 · ndnsf_distributed_repo::RepoOperationStatus::expiresAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L143)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L152)
 
 ```cpp
 uint64_t expiresAtMs = 0;
@@ -5261,7 +6216,7 @@ uint64_t expiresAtMs = 0;
 
 ### API-dc294f2eb06a · ndnsf_distributed_repo::RepoOperationStatus::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L145)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L154)
 
 ```cpp
 std::string toJson() const;
@@ -5269,7 +6224,7 @@ std::string toJson() const;
 
 ### API-598dd9b84911 · ndnsf_distributed_repo::RepoOperationMetrics
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L157)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L166)
 
 ```cpp
 struct RepoOperationMetrics
@@ -5277,7 +6232,7 @@ struct RepoOperationMetrics
 
 ### API-1a829938a2ad · ndnsf_distributed_repo::RepoOperationMetrics::MAX_OPERATION_ID_BYTES
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L159)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L168)
 
 ```cpp
 static constexpr size_t MAX_OPERATION_ID_BYTES = 256;
@@ -5285,7 +6240,7 @@ static constexpr size_t MAX_OPERATION_ID_BYTES = 256;
 
 ### API-1d49f9cf1404 · ndnsf_distributed_repo::RepoOperationMetrics::operationId
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L161)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L170)
 
 ```cpp
 std::string operationId;
@@ -5293,7 +6248,7 @@ std::string operationId;
 
 ### API-a1d27a0bb698 · ndnsf_distributed_repo::RepoOperationMetrics::startedAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L162)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L171)
 
 ```cpp
 uint64_t startedAtMs = 0;
@@ -5301,7 +6256,7 @@ uint64_t startedAtMs = 0;
 
 ### API-a7c3e880bdbb · ndnsf_distributed_repo::RepoOperationMetrics::completedAtMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L163)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L172)
 
 ```cpp
 uint64_t completedAtMs = 0;
@@ -5309,7 +6264,7 @@ uint64_t completedAtMs = 0;
 
 ### API-7f1d414f4667 · ndnsf_distributed_repo::RepoOperationMetrics::phaseTimingsMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L164)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L173)
 
 ```cpp
 std::map<std::string, double> phaseTimingsMs;
@@ -5317,7 +6272,7 @@ std::map<std::string, double> phaseTimingsMs;
 
 ### API-487e53892892 · ndnsf_distributed_repo::RepoOperationMetrics::logicalPayloadBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L166)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L175)
 
 ```cpp
 uint64_t logicalPayloadBytes = 0;
@@ -5325,7 +6280,7 @@ uint64_t logicalPayloadBytes = 0;
 
 ### API-914dc4db03ae · ndnsf_distributed_repo::RepoOperationMetrics::dataWireBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L167)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L176)
 
 ```cpp
 uint64_t dataWireBytes = 0;
@@ -5333,7 +6288,7 @@ uint64_t dataWireBytes = 0;
 
 ### API-365b639f3adb · ndnsf_distributed_repo::RepoOperationMetrics::interestWireBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L168)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L177)
 
 ```cpp
 uint64_t interestWireBytes = 0;
@@ -5341,7 +6296,7 @@ uint64_t interestWireBytes = 0;
 
 ### API-59351d95af6b · ndnsf_distributed_repo::RepoOperationMetrics::wireBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L169)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L178)
 
 ```cpp
 uint64_t wireBytes = 0;
@@ -5349,7 +6304,7 @@ uint64_t wireBytes = 0;
 
 ### API-bf6e7f340273 · ndnsf_distributed_repo::RepoOperationMetrics::retransmittedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L170)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L179)
 
 ```cpp
 uint64_t retransmittedBytes = 0;
@@ -5357,7 +6312,7 @@ uint64_t retransmittedBytes = 0;
 
 ### API-42a3e2674de0 · ndnsf_distributed_repo::RepoOperationMetrics::payloadStoreBytesRead
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L171)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L180)
 
 ```cpp
 uint64_t payloadStoreBytesRead = 0;
@@ -5365,7 +6320,7 @@ uint64_t payloadStoreBytesRead = 0;
 
 ### API-f3c25ada0b3f · ndnsf_distributed_repo::RepoOperationMetrics::payloadStoreBytesWritten
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L172)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L181)
 
 ```cpp
 uint64_t payloadStoreBytesWritten = 0;
@@ -5373,7 +6328,7 @@ uint64_t payloadStoreBytesWritten = 0;
 
 ### API-67ebc96f8536 · ndnsf_distributed_repo::RepoOperationMetrics::metadataStoreBytesRead
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L173)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L182)
 
 ```cpp
 uint64_t metadataStoreBytesRead = 0;
@@ -5381,7 +6336,7 @@ uint64_t metadataStoreBytesRead = 0;
 
 ### API-6a6a747409d5 · ndnsf_distributed_repo::RepoOperationMetrics::metadataStoreBytesWritten
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L174)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L183)
 
 ```cpp
 uint64_t metadataStoreBytesWritten = 0;
@@ -5389,7 +6344,7 @@ uint64_t metadataStoreBytesWritten = 0;
 
 ### API-078426d79d43 · ndnsf_distributed_repo::RepoOperationMetrics::storageBytesRead
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L175)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L184)
 
 ```cpp
 uint64_t storageBytesRead = 0;
@@ -5397,7 +6352,7 @@ uint64_t storageBytesRead = 0;
 
 ### API-867a2f07db46 · ndnsf_distributed_repo::RepoOperationMetrics::storageBytesWritten
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L176)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L185)
 
 ```cpp
 uint64_t storageBytesWritten = 0;
@@ -5405,7 +6360,7 @@ uint64_t storageBytesWritten = 0;
 
 ### API-4132aa9a0665 · ndnsf_distributed_repo::RepoOperationMetrics::asymmetricVerifications
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L178)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L187)
 
 ```cpp
 uint64_t asymmetricVerifications = 0;
@@ -5413,7 +6368,7 @@ uint64_t asymmetricVerifications = 0;
 
 ### API-a59e11e501e3 · ndnsf_distributed_repo::RepoOperationMetrics::digestVerifications
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L179)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L188)
 
 ```cpp
 uint64_t digestVerifications = 0;
@@ -5421,7 +6376,7 @@ uint64_t digestVerifications = 0;
 
 ### API-0ac791e3e009 · ndnsf_distributed_repo::RepoOperationMetrics::asymmetricVerificationMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L180)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L189)
 
 ```cpp
 double asymmetricVerificationMs = 0.0;
@@ -5429,7 +6384,7 @@ double asymmetricVerificationMs = 0.0;
 
 ### API-2c24c0cf2a1f · ndnsf_distributed_repo::RepoOperationMetrics::digestVerificationMs
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L181)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L190)
 
 ```cpp
 double digestVerificationMs = 0.0;
@@ -5437,7 +6392,7 @@ double digestVerificationMs = 0.0;
 
 ### API-00dbc6ae9ad9 · ndnsf_distributed_repo::RepoOperationMetrics::controlOperations
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L183)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L192)
 
 ```cpp
 uint64_t controlOperations = 0;
@@ -5445,7 +6400,7 @@ uint64_t controlOperations = 0;
 
 ### API-51e5f02d8922 · ndnsf_distributed_repo::RepoOperationMetrics::metadataOperations
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L184)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L193)
 
 ```cpp
 uint64_t metadataOperations = 0;
@@ -5453,7 +6408,7 @@ uint64_t metadataOperations = 0;
 
 ### API-a07a3453ce80 · ndnsf_distributed_repo::RepoOperationMetrics::metadataRecordCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L185)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L194)
 
 ```cpp
 uint64_t metadataRecordCount = 0;
@@ -5461,7 +6416,7 @@ uint64_t metadataRecordCount = 0;
 
 ### API-c55085b3d3cb · ndnsf_distributed_repo::RepoOperationMetrics::requestedReplicaCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L187)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L196)
 
 ```cpp
 uint32_t requestedReplicaCount = 0;
@@ -5469,7 +6424,7 @@ uint32_t requestedReplicaCount = 0;
 
 ### API-2f7e1f06f53f · ndnsf_distributed_repo::RepoOperationMetrics::selectedReplicaCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L188)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L197)
 
 ```cpp
 uint32_t selectedReplicaCount = 0;
@@ -5477,7 +6432,7 @@ uint32_t selectedReplicaCount = 0;
 
 ### API-2ebb9f943c27 · ndnsf_distributed_repo::RepoOperationMetrics::committedReplicaCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L189)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L198)
 
 ```cpp
 uint32_t committedReplicaCount = 0;
@@ -5485,7 +6440,7 @@ uint32_t committedReplicaCount = 0;
 
 ### API-a8e104235004 · ndnsf_distributed_repo::RepoOperationMetrics::rejectedReplicaReceiptCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L190)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L199)
 
 ```cpp
 uint32_t rejectedReplicaReceiptCount = 0;
@@ -5493,7 +6448,7 @@ uint32_t rejectedReplicaReceiptCount = 0;
 
 ### API-d54412e66d9f · ndnsf_distributed_repo::RepoOperationMetrics::isCanonicalPhase
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L192)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L201)
 
 ```cpp
 static bool isCanonicalPhase(const std::string& phase);
@@ -5501,7 +6456,7 @@ static bool isCanonicalPhase(const std::string& phase);
 
 ### API-c01b0c62ffb1 · ndnsf_distributed_repo::RepoOperationMetrics::validate
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L193)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L202)
 
 ```cpp
 void validate() const;
@@ -5509,7 +6464,7 @@ void validate() const;
 
 ### API-1ad6824908a8 · ndnsf_distributed_repo::RepoOperationMetrics::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L194)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L203)
 
 ```cpp
 std::string toJson() const;
@@ -5517,7 +6472,7 @@ std::string toJson() const;
 
 ### API-e309b75b5c0a · ndnsf_distributed_repo::StorageCapability
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L197)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L206)
 
 ```cpp
 struct StorageCapability
@@ -5525,7 +6480,7 @@ struct StorageCapability
 
 ### API-ba50fad75c4c · ndnsf_distributed_repo::StorageCapability::repoNode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L199)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L208)
 
 ```cpp
 std::string repoNode;
@@ -5533,7 +6488,7 @@ std::string repoNode;
 
 ### API-9f4781ee3684 · ndnsf_distributed_repo::StorageCapability::freeBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L200)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L209)
 
 ```cpp
 uint64_t freeBytes = 0;
@@ -5541,7 +6496,7 @@ uint64_t freeBytes = 0;
 
 ### API-effdf3533d21 · ndnsf_distributed_repo::StorageCapability::usedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L201)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L210)
 
 ```cpp
 uint64_t usedBytes = 0;
@@ -5549,7 +6504,7 @@ uint64_t usedBytes = 0;
 
 ### API-849f3fd88159 · ndnsf_distributed_repo::StorageCapability::recentLoad
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L202)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L211)
 
 ```cpp
 double recentLoad = 0.0;
@@ -5557,7 +6512,7 @@ double recentLoad = 0.0;
 
 ### API-166eee4a150e · ndnsf_distributed_repo::StorageCapability::availabilityScore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L203)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L212)
 
 ```cpp
 double availabilityScore = 1.0;
@@ -5565,7 +6520,7 @@ double availabilityScore = 1.0;
 
 ### API-94f38e2899af · ndnsf_distributed_repo::StorageCapability::failureDomain
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L204)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L213)
 
 ```cpp
 std::string failureDomain;
@@ -5573,7 +6528,7 @@ std::string failureDomain;
 
 ### API-b4ae621c33c9 · ndnsf_distributed_repo::StorageCapability::storageClasses
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L205)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L214)
 
 ```cpp
 std::vector<std::string> storageClasses;
@@ -5581,7 +6536,7 @@ std::vector<std::string> storageClasses;
 
 ### API-fd77d428c5a2 · ndnsf_distributed_repo::StorageCapability::repoMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L206)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L215)
 
 ```cpp
 std::string repoMode = "persistent";
@@ -5589,7 +6544,7 @@ std::string repoMode = "persistent";
 
 ### API-5e0c664cbd56 · ndnsf_distributed_repo::StorageCapability::acceptsBackupReplica
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L207)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L216)
 
 ```cpp
 bool acceptsBackupReplica = true;
@@ -5597,7 +6552,7 @@ bool acceptsBackupReplica = true;
 
 ### API-0000061e134a · ndnsf_distributed_repo::StorageCapability::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L209)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L218)
 
 ```cpp
 std::string toJson() const;
@@ -5605,7 +6560,7 @@ std::string toJson() const;
 
 ### API-b8a4b2377a97 · ndnsf_distributed_repo::RepoCatalogEntry
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L212)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L221)
 
 ```cpp
 struct RepoCatalogEntry
@@ -5613,7 +6568,7 @@ struct RepoCatalogEntry
 
 ### API-fce6821ee321 · ndnsf_distributed_repo::RepoCatalogEntry::manifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L214)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L223)
 
 ```cpp
 RepoObjectManifest manifest;
@@ -5621,7 +6576,7 @@ RepoObjectManifest manifest;
 
 ### API-bc562951713b · ndnsf_distributed_repo::RepoCatalogEntry::sourceRepo
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L215)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L224)
 
 ```cpp
 std::string sourceRepo;
@@ -5629,7 +6584,7 @@ std::string sourceRepo;
 
 ### API-53700a791569 · ndnsf_distributed_repo::RepoCatalogEntry::repoMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L216)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L225)
 
 ```cpp
 std::string repoMode = "persistent";
@@ -5637,7 +6592,7 @@ std::string repoMode = "persistent";
 
 ### API-e7c479aa7cda · ndnsf_distributed_repo::RepoCatalogEntry::state
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L217)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L226)
 
 ```cpp
 std::string state = "AVAILABLE";
@@ -5645,7 +6600,7 @@ std::string state = "AVAILABLE";
 
 ### API-57364b362c96 · ndnsf_distributed_repo::RepoCatalogEntry::catalogEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L218)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L227)
 
 ```cpp
 uint64_t catalogEpoch = 0;
@@ -5653,7 +6608,7 @@ uint64_t catalogEpoch = 0;
 
 ### API-8af264400f2d · ndnsf_distributed_repo::RepoCatalogEntry::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L220)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L229)
 
 ```cpp
 std::string toJson() const;
@@ -5661,7 +6616,7 @@ std::string toJson() const;
 
 ### API-6cc44f774c08 · ndnsf_distributed_repo::RepoCatalogStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L223)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L232)
 
 ```cpp
 struct RepoCatalogStatus
@@ -5669,7 +6624,7 @@ struct RepoCatalogStatus
 
 ### API-1432b04967ad · ndnsf_distributed_repo::RepoCatalogStatus::repoNode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L225)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L234)
 
 ```cpp
 std::string repoNode;
@@ -5677,7 +6632,7 @@ std::string repoNode;
 
 ### API-2b53ea74670d · ndnsf_distributed_repo::RepoCatalogStatus::repoMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L226)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L235)
 
 ```cpp
 std::string repoMode = "persistent";
@@ -5685,7 +6640,7 @@ std::string repoMode = "persistent";
 
 ### API-05c7ff350de6 · ndnsf_distributed_repo::RepoCatalogStatus::catalogEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L227)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L236)
 
 ```cpp
 uint64_t catalogEpoch = 0;
@@ -5693,7 +6648,7 @@ uint64_t catalogEpoch = 0;
 
 ### API-f9ce99585437 · ndnsf_distributed_repo::RepoCatalogStatus::objectCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L228)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L237)
 
 ```cpp
 uint64_t objectCount = 0;
@@ -5701,15 +6656,30 @@ uint64_t objectCount = 0;
 
 ### API-0e86599af2f8 · ndnsf_distributed_repo::RepoCatalogStatus::acceptsBackupReplica
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L229)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L238)
 
 ```cpp
 bool acceptsBackupReplica = true;
 ```
 
+### API-f83392ebe316 · ndnsf_distributed_repo::RepoCatalogStatus::reconciliationRequired
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L241)
+
+```cpp
+bool reconciliationRequired = false;
+```
+
+原始接口说明：
+
+```text
+// True when the durable manifest store is ahead of the in-memory delta
+// journal and catalogSnapshot() is the reconciliation source of truth.
+```
+
 ### API-597f97961e38 · ndnsf_distributed_repo::RepoCatalogStatus::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L231)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L243)
 
 ```cpp
 std::string toJson() const;
@@ -5717,7 +6687,7 @@ std::string toJson() const;
 
 ### API-ce2a6aefcfec · ndnsf_distributed_repo::RepoCatalogDelta
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L234)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L246)
 
 ```cpp
 struct RepoCatalogDelta
@@ -5725,7 +6695,7 @@ struct RepoCatalogDelta
 
 ### API-315a0b237158 · ndnsf_distributed_repo::RepoCatalogDelta::repoNode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L236)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L248)
 
 ```cpp
 std::string repoNode;
@@ -5733,7 +6703,7 @@ std::string repoNode;
 
 ### API-d5ab27905ef6 · ndnsf_distributed_repo::RepoCatalogDelta::repoMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L237)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L249)
 
 ```cpp
 std::string repoMode = "persistent";
@@ -5741,7 +6711,7 @@ std::string repoMode = "persistent";
 
 ### API-bbb71bb51f65 · ndnsf_distributed_repo::RepoCatalogDelta::sinceEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L238)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L250)
 
 ```cpp
 uint64_t sinceEpoch = 0;
@@ -5749,7 +6719,7 @@ uint64_t sinceEpoch = 0;
 
 ### API-c6312b221e8c · ndnsf_distributed_repo::RepoCatalogDelta::catalogEpoch
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L239)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L251)
 
 ```cpp
 uint64_t catalogEpoch = 0;
@@ -5757,7 +6727,7 @@ uint64_t catalogEpoch = 0;
 
 ### API-9f2aafd4c1c4 · ndnsf_distributed_repo::RepoCatalogDelta::entries
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L240)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L252)
 
 ```cpp
 std::vector<RepoCatalogEntry> entries;
@@ -5765,7 +6735,7 @@ std::vector<RepoCatalogEntry> entries;
 
 ### API-f7ca2babffcc · ndnsf_distributed_repo::RepoCatalogDelta::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L242)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L254)
 
 ```cpp
 std::string toJson() const;
@@ -5773,7 +6743,7 @@ std::string toJson() const;
 
 ### API-3099c8329dd3 · ndnsf_distributed_repo::RepoCacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L245)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L257)
 
 ```cpp
 struct RepoCacheStatus
@@ -5781,7 +6751,7 @@ struct RepoCacheStatus
 
 ### API-67ff1666fe74 · ndnsf_distributed_repo::RepoCacheStatus::storageBackend
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L247)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L259)
 
 ```cpp
 std::string storageBackend = "unknown";
@@ -5789,7 +6759,7 @@ std::string storageBackend = "unknown";
 
 ### API-7a7333a9df95 · ndnsf_distributed_repo::RepoCacheStatus::authoritativeBackend
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L248)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L260)
 
 ```cpp
 std::string authoritativeBackend = "unknown";
@@ -5797,7 +6767,7 @@ std::string authoritativeBackend = "unknown";
 
 ### API-09aacc6ff8ee · ndnsf_distributed_repo::RepoCacheStatus::cachePolicy
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L249)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L261)
 
 ```cpp
 std::string cachePolicy = "disabled";
@@ -5805,7 +6775,7 @@ std::string cachePolicy = "disabled";
 
 ### API-05fd56a4ffc1 · ndnsf_distributed_repo::RepoCacheStatus::budgetBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L250)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L262)
 
 ```cpp
 uint64_t budgetBytes = 0;
@@ -5813,7 +6783,7 @@ uint64_t budgetBytes = 0;
 
 ### API-48d78cda1614 · ndnsf_distributed_repo::RepoCacheStatus::usedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L251)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L263)
 
 ```cpp
 uint64_t usedBytes = 0;
@@ -5821,7 +6791,7 @@ uint64_t usedBytes = 0;
 
 ### API-a44270bda3d1 · ndnsf_distributed_repo::RepoCacheStatus::entryCount
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L252)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L264)
 
 ```cpp
 uint64_t entryCount = 0;
@@ -5829,7 +6799,7 @@ uint64_t entryCount = 0;
 
 ### API-f8bd5a017ad7 · ndnsf_distributed_repo::RepoCacheStatus::hits
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L253)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L265)
 
 ```cpp
 uint64_t hits = 0;
@@ -5837,7 +6807,7 @@ uint64_t hits = 0;
 
 ### API-48e1eefa7fdb · ndnsf_distributed_repo::RepoCacheStatus::misses
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L254)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L266)
 
 ```cpp
 uint64_t misses = 0;
@@ -5845,7 +6815,7 @@ uint64_t misses = 0;
 
 ### API-4a3fe7ba2bd7 · ndnsf_distributed_repo::RepoCacheStatus::admissions
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L255)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L267)
 
 ```cpp
 uint64_t admissions = 0;
@@ -5853,7 +6823,7 @@ uint64_t admissions = 0;
 
 ### API-be574aa9398f · ndnsf_distributed_repo::RepoCacheStatus::evictions
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L256)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L268)
 
 ```cpp
 uint64_t evictions = 0;
@@ -5861,7 +6831,7 @@ uint64_t evictions = 0;
 
 ### API-26ef87b5f27f · ndnsf_distributed_repo::RepoCacheStatus::invalidations
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L257)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L269)
 
 ```cpp
 uint64_t invalidations = 0;
@@ -5869,7 +6839,7 @@ uint64_t invalidations = 0;
 
 ### API-def1c68c71a1 · ndnsf_distributed_repo::RepoCacheStatus::oversizedBypasses
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L258)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L270)
 
 ```cpp
 uint64_t oversizedBypasses = 0;
@@ -5877,7 +6847,7 @@ uint64_t oversizedBypasses = 0;
 
 ### API-b4cb8d9152da · ndnsf_distributed_repo::RepoCacheStatus::backingReads
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L259)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L271)
 
 ```cpp
 uint64_t backingReads = 0;
@@ -5885,15 +6855,30 @@ uint64_t backingReads = 0;
 
 ### API-1c9a5362ea99 · ndnsf_distributed_repo::RepoCacheStatus::backingWrites
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L260)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L272)
 
 ```cpp
 uint64_t backingWrites = 0;
 ```
 
+### API-a22f2a67eb87 · ndnsf_distributed_repo::RepoCacheStatus::reconciliationRequired
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L275)
+
+```cpp
+bool reconciliationRequired = false;
+```
+
+原始接口说明：
+
+```text
+// The authority is durable but cache epoch bookkeeping needs a later
+// reconciliation (for example after an allocation failure).
+```
+
 ### API-ff108d2eec80 · ndnsf_distributed_repo::RepoCacheStatus::toJson
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L262)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L277)
 
 ```cpp
 std::string toJson() const;
@@ -5901,7 +6886,7 @@ std::string toJson() const;
 
 ### API-ef5fd1b6a719 · ndnsf_distributed_repo::PlacementPolicy
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L265)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L280)
 
 ```cpp
 struct PlacementPolicy
@@ -5909,7 +6894,7 @@ struct PlacementPolicy
 
 ### API-dcfd42d581a3 · ndnsf_distributed_repo::PlacementPolicy::replicationFactor
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L267)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L282)
 
 ```cpp
 uint32_t replicationFactor = 1;
@@ -5917,7 +6902,7 @@ uint32_t replicationFactor = 1;
 
 ### API-7a891349395f · ndnsf_distributed_repo::PlacementPolicy::avoidSameFailureDomain
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L268)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L283)
 
 ```cpp
 bool avoidSameFailureDomain = true;
@@ -5925,7 +6910,7 @@ bool avoidSameFailureDomain = true;
 
 ### API-ff4eb0f14d2c · ndnsf_distributed_repo::PlacementPolicy::preferLowLoad
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L269)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L284)
 
 ```cpp
 bool preferLowLoad = true;
@@ -5933,7 +6918,7 @@ bool preferLowLoad = true;
 
 ### API-0cd134605034 · ndnsf_distributed_repo::PlacementPolicy::preferHighAvailability
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L270)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L285)
 
 ```cpp
 bool preferHighAvailability = true;
@@ -5941,7 +6926,7 @@ bool preferHighAvailability = true;
 
 ### API-a3b36935cc04 · ndnsf_distributed_repo::StoredObject
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L273)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L288)
 
 ```cpp
 struct StoredObject
@@ -5949,7 +6934,7 @@ struct StoredObject
 
 ### API-aa997530ea5e · ndnsf_distributed_repo::StoredObject::manifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L275)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L290)
 
 ```cpp
 RepoObjectManifest manifest;
@@ -5957,15 +6942,39 @@ RepoObjectManifest manifest;
 
 ### API-a2a66c4e4cee · ndnsf_distributed_repo::StoredObject::payload
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L276)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L291)
 
 ```cpp
 std::vector<uint8_t> payload;
 ```
 
+### API-e8e932718bcc · ndnsf_distributed_repo::RepoByteRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L299)
+
+```cpp
+struct RepoByteRange
+```
+
+### API-6dcf7cbe8b70 · ndnsf_distributed_repo::RepoByteRange::offsetBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L301)
+
+```cpp
+uint64_t offsetBytes = 0;
+```
+
+### API-27d88fdf58ef · ndnsf_distributed_repo::RepoByteRange::lengthBytes
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L302)
+
+```cpp
+uint64_t lengthBytes = 0;
+```
+
 ### API-2ab5138479d8 · ndnsf_distributed_repo::parseRepoDeploymentMode
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L279)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L305)
 
 ```cpp
 RepoDeploymentMode
@@ -5974,7 +6983,7 @@ parseRepoDeploymentMode(const std::string& value);
 
 ### API-760cf651edca · ndnsf_distributed_repo::toString
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L282)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L308)
 
 ```cpp
 std::string
@@ -5983,7 +6992,7 @@ toString(RepoDeploymentMode mode);
 
 ### API-1c5634a61cf6 · ndnsf_distributed_repo::enablesRemote
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L285)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L311)
 
 ```cpp
 bool
@@ -5992,7 +7001,7 @@ enablesRemote(RepoDeploymentMode mode);
 
 ### API-7c5c0fd2aa4d · ndnsf_distributed_repo::enablesEmbedded
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L288)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L314)
 
 ```cpp
 bool
@@ -6001,7 +7010,7 @@ enablesEmbedded(RepoDeploymentMode mode);
 
 ### API-45abb109267d · ndnsf_distributed_repo::isInAppRepo
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L291)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L317)
 
 ```cpp
 bool
@@ -6010,7 +7019,7 @@ isInAppRepo(const StorageCapability& capability);
 
 ### API-f94170df34dd · ndnsf_distributed_repo::isPersistentRepo
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L294)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L320)
 
 ```cpp
 bool
@@ -6019,7 +7028,7 @@ isPersistentRepo(const StorageCapability& capability);
 
 ### API-3e7f844b09d5 · ndnsf_distributed_repo::sha256Hex
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L297)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L323)
 
 ```cpp
 std::string
@@ -6028,7 +7037,7 @@ sha256Hex(const std::vector<uint8_t>& payload);
 
 ### API-df8d469dc16d · ndnsf_distributed_repo::selectReplicas
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L300)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L326)
 
 ```cpp
 std::vector<StorageCapability>
@@ -6039,7 +7048,7 @@ selectReplicas(const std::vector<StorageCapability>& candidates,
 
 ### API-da92a743c24d · ndnsf_distributed_repo::RepoStoreBackend
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L305)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L331)
 
 ```cpp
 class RepoStoreBackend
@@ -6047,7 +7056,7 @@ class RepoStoreBackend
 
 ### API-0588a3f36558 · ndnsf_distributed_repo::RepoStoreBackend::~RepoStoreBackend
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L308)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L334)
 
 ```cpp
 virtual ~RepoStoreBackend() = default;
@@ -6055,7 +7064,7 @@ virtual ~RepoStoreBackend() = default;
 
 ### API-503757c5cd68 · ndnsf_distributed_repo::RepoStoreBackend::put
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L312)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L338)
 
 ```cpp
 virtual void put(const RepoObjectManifest& manifest, std::vector<uint8_t> payload) = 0;
@@ -6070,7 +7079,7 @@ virtual void put(const RepoObjectManifest& manifest, std::vector<uint8_t> payloa
 
 ### API-a5ef7a8f0000 · ndnsf_distributed_repo::RepoStoreBackend::putManifest
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L316)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L342)
 
 ```cpp
 virtual void putManifest(const RepoObjectManifest& manifest) = 0;
@@ -6085,7 +7094,7 @@ virtual void putManifest(const RepoObjectManifest& manifest) = 0;
 
 ### API-21e9b51ab262 · ndnsf_distributed_repo::RepoStoreBackend::get
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L318)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L344)
 
 ```cpp
 virtual StoredObject get(const std::string& objectName) const = 0;
@@ -6093,7 +7102,7 @@ virtual StoredObject get(const std::string& objectName) const = 0;
 
 ### API-c8902f7fa75d · ndnsf_distributed_repo::RepoStoreBackend::has
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L320)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L346)
 
 ```cpp
 virtual bool has(const std::string& objectName) const = 0;
@@ -6101,7 +7110,7 @@ virtual bool has(const std::string& objectName) const = 0;
 
 ### API-301eaae0f6a9 · ndnsf_distributed_repo::RepoStoreBackend::erase
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L322)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L348)
 
 ```cpp
 virtual bool erase(const std::string& objectName) = 0;
@@ -6109,7 +7118,7 @@ virtual bool erase(const std::string& objectName) = 0;
 
 ### API-f2625f162a57 · ndnsf_distributed_repo::RepoStoreBackend::size
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L324)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L350)
 
 ```cpp
 virtual size_t size() const = 0;
@@ -6117,7 +7126,7 @@ virtual size_t size() const = 0;
 
 ### API-a6c7a869320b · ndnsf_distributed_repo::RepoStoreBackend::listManifests
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L326)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L352)
 
 ```cpp
 virtual std::vector<RepoObjectManifest> listManifests() const = 0;
@@ -6125,7 +7134,7 @@ virtual std::vector<RepoObjectManifest> listManifests() const = 0;
 
 ### API-84ba06e7584f · ndnsf_distributed_repo::RepoStoreBackend::usedBytes
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L328)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L354)
 
 ```cpp
 virtual uint64_t usedBytes() const = 0;
@@ -6133,39 +7142,153 @@ virtual uint64_t usedBytes() const = 0;
 
 ### API-e7afebaae123 · ndnsf_distributed_repo::RepoStoreBackend::cacheStatus
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L330)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L356)
 
 ```cpp
 virtual RepoCacheStatus cacheStatus() const;
 ```
 
+### API-3e256a872bb2 · ndnsf_distributed_repo::RepoStoreBackend::putRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L361)
+
+```cpp
+virtual void putRange(const RepoObjectManifest& manifest,
+                        RepoByteRange range,
+                        const std::vector<uint8_t>& bytes);
+```
+
+原始接口说明：
+
+```text
+// Large-object path.  Legacy vector backends keep the compatibility
+// defaults below; concrete file-backed authorities override these methods
+// so Core/Node/Client can transfer bounded ranges without full assembly.
+```
+
+### API-fd753350c5f6 · ndnsf_distributed_repo::RepoStoreBackend::commitRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L365)
+
+```cpp
+virtual void commitRanges(const RepoObjectManifest& manifest);
+```
+
+### API-7ce20db5f7b5 · ndnsf_distributed_repo::RepoStoreBackend::getRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L367)
+
+```cpp
+virtual std::vector<uint8_t>
+  getRange(const std::string& objectName, RepoByteRange range) const;
+```
+
+### API-50c837cc3fd2 · ndnsf_distributed_repo::RepoStoreBackend::getManifest
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L370)
+
+```cpp
+virtual RepoObjectManifest
+  getManifest(const std::string& objectName) const;
+```
+
+### API-f1051b481351 · ndnsf_distributed_repo::RepoStoreBackend::supportsRange
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L373)
+
+```cpp
+virtual bool supportsRange() const noexcept;
+```
+
+### API-da36ed92a38b · ndnsf_distributed_repo::RepoStoreBackend::fullCopyFallbackCount
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L377)
+
+```cpp
+virtual uint64_t fullCopyFallbackCount() const noexcept;
+```
+
+原始接口说明：
+
+```text
+// Number of times a caller requested the legacy full-vector path for an
+// object that is configured for bounded range transfer.
+```
+
+### API-ba7e5fa7621b · ndnsf_distributed_repo::RepoStoreBackend::pin
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L381)
+
+```cpp
+virtual void pin(const std::string& objectName) const;
+```
+
+原始接口说明：
+
+```text
+// Cache lease hooks.  The default is a no-op for non-caching authorities;
+// tiered stores use the count to keep active entries out of eviction.
+```
+
+### API-d111d7f8b620 · ndnsf_distributed_repo::RepoStoreBackend::unpin
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L382)
+
+```cpp
+virtual void unpin(const std::string& objectName) const;
+```
+
+### API-d9deb1ed5d03 · ndnsf_distributed_repo::RepoStoreBackend::abortRanges
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L384)
+
+```cpp
+virtual void abortRanges(const std::string& objectName);
+```
+
+### API-b65fcf59e794 · ndnsf_distributed_repo::RepoStoreBackend::supportsManifestLookup
+
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L387)
+
+```cpp
+virtual bool supportsManifestLookup() const noexcept;
+```
+
+原始接口说明：
+
+```text
+// True only when getManifest can be served without materializing payload.
+```
+
 ### API-facb8e6b44ed · ndnsf_distributed_repo::makeSqliteRepoStore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L333)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L390)
 
 ```cpp
 std::shared_ptr<RepoStoreBackend>
 makeSqliteRepoStore(const std::string& databasePath);
 ```
 
-### API-9a97af85a418 · ndnsf_distributed_repo::makeTieredRepoStore
+### API-303214c65dc8 · ndnsf_distributed_repo::makeTieredRepoStore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L336)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L393)
 
 ```cpp
 std::shared_ptr<RepoStoreBackend>
-makeTieredRepoStore(const std::string& databasePath, uint64_t memoryCacheBytes);
+makeTieredRepoStore(const std::string& databasePath, uint64_t memoryCacheBytes,
+                    uint64_t largeObjectThreshold = 1 * 1024 * 1024);
 ```
 
-### API-aca82839db26 · ndnsf_distributed_repo::makeTieredRepoStore
+### API-5e0a55a088cc · ndnsf_distributed_repo::makeTieredRepoStore
 
-public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L339)
+public / declared-interface；[源码](../../NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp#L397)
 
 ```cpp
 std::shared_ptr<RepoStoreBackend>
 makeTieredRepoStore(std::shared_ptr<RepoStoreBackend> authoritativeStore,
                     uint64_t memoryCacheBytes,
-                    std::string authoritativeBackend = "custom");
+                    std::string authoritativeBackend = "custom",
+                    uint64_t largeObjectThreshold = 1 * 1024 * 1024);
 ```
 
 ## NDNSF-DistributedRepo/pythonWrapper/py_repoclient/__init__.py
@@ -12446,11 +13569,113 @@ def is_internal_repo_service(service_name: str) -> bool:
 
 ## NDNSF-DistributedRepo/pythonWrapper/setup.py
 
-源码 SHA-256：`068f7b9d33ccd5beee231edd4f5602c9ffd2972466b13957c4d9b55c0e386151`。
+源码 SHA-256：`f2f38234553af725bf7ce51b10f2b1ebf5b03bfd46b3416dd1c830876e56860b`。
+
+### API-bf2d69fd47aa · dependency_roots
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L32)
+
+```python
+def dependency_roots() -> tuple[Path, ...]:
+```
+
+### API-1fdabe785c0f · reject_historical_local_paths
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L39)
+
+```python
+def reject_historical_local_paths(paths: list[str], owner: str) -> None:
+```
+
+原始接口说明：
+
+```text
+Fail closed when host binding discovery selects the retired tree.
+```
+
+### API-5d50a94b3116 · reject_historical_local_link_flags
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L53)
+
+```python
+def reject_historical_local_link_flags(flags: list[str], owner: str) -> None:
+```
+
+原始接口说明：
+
+```text
+Reject RPATH-like linker flags that name the retired tree.
+```
+
+### API-b5b3f4a6e713 · reject_non_global_dependency_paths
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L83)
+
+```python
+def reject_non_global_dependency_paths(paths: list[str], owner: str) -> None:
+```
+
+原始接口说明：
+
+```text
+Reject external dependency paths outside the declared global roots.
+```
+
+### API-510fdc09e64e · linker_path_values
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L103)
+
+```python
+def linker_path_values(flags: list[str]) -> list[str]:
+```
+
+### API-53843e398434 · validate_pkg_config_environment
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L124)
+
+```python
+def validate_pkg_config_environment() -> None:
+```
+
+### API-309d262c3b26 · validate_runtime_rpath
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L139)
+
+```python
+def validate_runtime_rpath(values: list[str], owner: str) -> None:
+```
+
+### API-99e5b1e96535 · native_library_dirs
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L163)
+
+```python
+def native_library_dirs() -> list[str]:
+```
+
+原始接口说明：
+
+```text
+Use one installed global NDNSF library root, never a checkout output.
+```
+
+### API-91a6ed14cd1b · validate_native_library_digests
+
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L202)
+
+```python
+def validate_native_library_digests(dirs: list[str]) -> None:
+```
+
+原始接口说明：
+
+```text
+Validate the installed-library receipt supplied by the build helper.
+```
 
 ### API-282eea0e442f · pkg_config
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L15)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L224)
 
 ```python
 def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -12458,7 +13683,7 @@ def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[st
 
 ### API-d77bf8412d49 · build_extension
 
-public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L40)
+public-by-name / declared-interface；[源码](../../NDNSF-DistributedRepo/pythonWrapper/setup.py#L251)
 
 ```python
 def build_extension() -> Extension:

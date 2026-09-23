@@ -59,6 +59,15 @@ struct RepoObjectManifest
   // are stored under these exact names, never under Repo-generated aliases.
   std::vector<std::string> packetNames;
   std::string policyEpoch;
+  // Protected durable-publication identity. These are opaque, non-secret
+  // values owned by Core; Repo persists and returns them without interpreting
+  // keys or authorization.
+  std::string publicationIdentity;
+  std::string protectionEpoch;
+  std::string keyReferenceId;
+  std::string keyReferenceVersion;
+  std::string ciphertextManifestDigest;
+  std::string servingLocator;
   uint64_t generation = 0;
   int64_t parentGeneration = -1;
   std::string writeConsistency = "ALL";

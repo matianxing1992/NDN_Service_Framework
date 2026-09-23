@@ -563,6 +563,13 @@ parseManifestJson(const std::string& manifestJson)
     manifest.lifecycleState = "COMMITTED";
   }
   manifest.policyEpoch = extractJsonString(manifestJson, "policyEpoch");
+  manifest.publicationIdentity = extractJsonString(manifestJson, "publicationIdentity");
+  manifest.protectionEpoch = extractJsonString(manifestJson, "protectionEpoch");
+  manifest.keyReferenceId = extractJsonString(manifestJson, "keyReferenceId");
+  manifest.keyReferenceVersion = extractJsonString(manifestJson, "keyReferenceVersion");
+  manifest.ciphertextManifestDigest = extractJsonString(
+    manifestJson, "ciphertextManifestDigest");
+  manifest.servingLocator = extractJsonString(manifestJson, "servingLocator");
   manifest.replicaNodes = extractJsonStringArray(manifestJson, "replicaNodes");
   manifest.confirmedReplicaNodes = extractJsonStringArray(
     manifestJson, "confirmedReplicaNodes");

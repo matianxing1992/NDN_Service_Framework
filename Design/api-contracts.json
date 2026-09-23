@@ -448,7 +448,7 @@
       "sections": [
         {
           "title": "对象与 manifest",
-          "text": "put(node, objectName, payload, options) 的本地重载接收 RepoNode 和字节，返回 RepoObjectManifest。StoreOptions 提供 objectType、replicationFactor、replicaNodes、policyEpoch。名字识别对象，摘要识别内容，segmentCount 描述分段数量，副本字段只是位置/策略信息，不能用其中一个替代全部验证。网络 helper 与本地静态调用不是同一传输或超时模型。"
+          "text": "put(node, objectName, payload, options) 的本地重载接收 RepoNode 和字节，返回 RepoObjectManifest。StoreOptions 提供 objectType、replicationFactor、replicaNodes、policyEpoch。名字识别对象，摘要识别内容，segmentCount 描述分段数量，副本字段只是位置/策略信息，不能用其中一个替代全部验证。protected durable publication 的 opaque identity、protection epoch、key-reference、ciphertext manifest digest 和 serving locator 由 Core 提供并由 Repo manifest 原样保存；Repo 不创建、解包或验证密钥，也不替代当前请求授权。网络 helper 与本地静态调用不是同一传输或超时模型。"
         },
         {
           "title": "原始 packet 例子",
