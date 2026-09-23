@@ -48,6 +48,21 @@ bool receiptToken(const std::string& value, std::size_t maxBytes, bool payloadId
   });
 }
 
+std::string durablePublicationIdentity(const std::string& service,
+                                       const std::string& catalogIdentity,
+                                       const std::string& label,
+                                       const std::vector<std::uint8_t>& bytes)
+{
+  const auto contentDigest = nativePlanningDigest(bytes.data(), bytes.size());
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-durable-large-publication-v1"},
+    {"service", service},
+    {"catalogIdentity", catalogIdentity},
+    {"label", label},
+    {"contentDigest", contentDigest},
+    {"bytes", bytes.size()}}));
+}
+
 struct PublicationJob
 {
   std::mutex mutex;
@@ -220,7 +235,29 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
       [user](const auto& publications) {
         if (user)
           onCoreIo(user, [&] { user->abortLargeDataPublications(publications); });
-      }, true, NativeCanonicalMaterialReceiptDataNameMaxBytes}, serviceName,
+      }, true, NativeCanonicalMaterialReceiptDataNameMaxBytes,
+      [user](const auto& request, const auto& bytes, const auto& label,
+             const auto& publicationIdentity, const auto& control) {
+        if (!user->supportsDurableEncryptedLargeData()) {
+          if (!user->isOnIoThread())
+            return user->publishEncryptedLargeDataFromWorker(
+              request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD,
+              [control] { control.requireActive(); });
+          return user->publishEncryptedLargeData(
+            request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, true,
+            [control] { control.requireActive(); });
+        }
+        ndn_service_framework::LargeDataPublishOptions publishOptions;
+        publishOptions.retention = ndn_service_framework::EncryptedLargeDataRetention::Durable;
+        publishOptions.publicationIdentity = publicationIdentity;
+        if (!user->isOnIoThread())
+          return user->publishEncryptedLargeDataFromWorker(
+            request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, publishOptions,
+            [control] { control.requireActive(); });
+        return user->publishEncryptedLargeData(
+          request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, true, publishOptions,
+          [control] { control.requireActive(); });
+      }}, serviceName,
       std::move(options), std::move(source))
 {
   if (!user) throw std::invalid_argument("missing Core publication owner");
@@ -867,7 +904,12 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
           throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
         publishedBytes += bytes.size();
         cache->publicationCalls.fetch_add(1, std::memory_order_relaxed);
-        auto result = transport.publish(request, bytes, label, control);
+        const auto catalogIdentity = options.publicationIdentityDigest.empty()
+          ? model.canonicalSourceDigest : options.publicationIdentityDigest;
+        auto result = transport.durablePublish
+          ? transport.durablePublish(request, bytes, label,
+              durablePublicationIdentity(service, catalogIdentity, label, bytes), control)
+          : transport.publish(request, bytes, label, control);
         if (!result.success)
           throw std::runtime_error("DI_NATIVE_ENCRYPTED_PUBLICATION_FAILED: " + result.errorMessage);
         publishedResults.push_back(std::move(result));
@@ -1174,7 +1216,12 @@ NativeUncachedPublication NativeCanonicalArtifactPublisher::publishUncached(
           throw std::runtime_error("DI_NATIVE_PUBLICATION_MATERIAL_LIMIT");
         publishedBytes += bytes.size();
         cache->publicationCalls.fetch_add(1, std::memory_order_relaxed);
-        auto result = transport.publish(request, bytes, label, control);
+        const auto catalogIdentity = options.publicationIdentityDigest.empty()
+          ? model.canonicalSourceDigest : options.publicationIdentityDigest;
+        auto result = transport.durablePublish
+          ? transport.durablePublish(request, bytes, label,
+              durablePublicationIdentity(service, catalogIdentity, label, bytes), control)
+          : transport.publish(request, bytes, label, control);
         // Capture the result before the second cancellation check.  If the
         // owner cancels in that exact window, the returned object still has a
         // complete rollback record.

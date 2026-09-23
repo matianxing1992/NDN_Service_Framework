@@ -132,9 +132,9 @@ Provider缓存只持有按policy可保留的材料及可验证身份；不永久
 
 ### T006 Target interface and current implementation boundary
 
-The following remains the target contract for complete protected reuse. B190-16
-implements only the durable identity metadata transport and Repo restart-read
-subset; it does not make the protected lookup path a hit.
+The following remains the target contract for complete protected reuse. B190-17
+extends B190-16 with a Core/Repo durable lookup-to-serving path, but it still does
+not complete cross-process key-reference recovery or Provider/assembled reuse.
 
 以下是实现前冻结的最小公共契约；它描述目标接口，不表示当前源码已经提供这些能力：
 
@@ -150,6 +150,12 @@ subset; it does not make the protected lookup path a hit.
   校验 ciphertext bytes；`EncryptedLargeDataRangeSource` 的 durable lease 析构只释放读取
   lease，不删除 committed object。删除只能由 Core 的显式 invalidation/GC 操作执行，并且
   必须检查 identity、无 active read 和当前失效状态。
+- `EncryptedLargeDataRangeStore::lookupDurable(publicationIdentity, requireActive)` 的 null
+  结果是正常 miss；Repo adapter 只能按稳定 identity 返回完整 manifest metadata 和 durable
+  range source。Core 命中前必须重新校验当前 plaintext digest/size、稳定 encrypted name、
+  metadata 完整性和首段可读性；命中后注册现有 serving owner，不能重新生成 key、重新加密或
+  再次提交大 payload。当前 B190-17 已实现并通过同进程 Core serving hit；跨进程 key/reference
+  恢复与当前 grant/Selection 绑定仍未完成。
 - `ServiceUser` 是 key-reference owner：冷发布时创建或恢复 opaque reference；重启后先校验
   identity、key version、policy epoch 和 reference digest，再重新注册合法 serving；随后每个新
   request 仍必须独立完成 grant verification、Selection 和 placement 检查。该恢复/serving
@@ -159,9 +165,9 @@ subset; it does not make the protected lookup path a hit.
   `bootId` 和旧 grant 不能成为 durable identity，也不能被恢复为旧 session/KV。
 
 当前 B190-16 已将上述 identity 字段加入 `RepoObjectManifest` 的 JSON 持久化与兼容解析，
-并在 Durable metadata 不完整时于提交前拒绝；`LargeDataPublishResult`、ServiceUser
-key-reference recovery、serving re-registration、稳定 protected assembled lookup 和
-Provider hit 仍是后续 T006 gate。
+并在 Durable metadata 不完整时于提交前拒绝；B190-17 已增加 Repo durable lookup 和
+ServiceUser 同进程 serving re-registration。跨进程 key-reference recovery、稳定 protected
+assembled lookup 和 Provider hit 仍是后续 T006 gate。
 
 只要其中任一 owner、reference、serving 或新 grant 绑定失败，结果就是 typed miss/rejection，
 而不是把“Repo 里还有文件”报告成 protected hit。实现必须先以 C++ 反例验证这组不变量，之后才可

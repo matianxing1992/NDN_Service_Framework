@@ -1,7 +1,7 @@
 [
   {
     "file": "pythonWrapper/src/ndnsf/_ndnsf.cpp",
-    "baseline_commit": "3c7c11c75d151ac87577e7a2ea2f863bfe551061",
+    "baseline_commit": "5e78bfeae084ad95a9a3bd41704651c69698736c",
     "matches_commit": true,
     "sha256": "3753d48efeb3256310d563d512e6ec4fc3ebd84b327e8e521a7edf804c776cd9",
     "entries": [
@@ -5504,8 +5504,8 @@
   },
   {
     "file": "pythonWrapper/src/ndnsf/di_bindings.cpp",
-    "baseline_commit": "3c7c11c75d151ac87577e7a2ea2f863bfe551061",
-    "matches_commit": false,
+    "baseline_commit": "5e78bfeae084ad95a9a3bd41704651c69698736c",
+    "matches_commit": true,
     "sha256": "57ff4d082c742a9559033a5e7cb680422c56422011e72d0733bb4902f072b002",
     "entries": [
       {

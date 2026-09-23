@@ -60,6 +60,8 @@ durableOptions()
   options.keyReferenceVersion = "v1";
   options.ciphertextManifestDigest = "sha256:ciphertext-manifest-7";
   options.servingLocator = "/protected/durable";
+  options.contentDigest = "sha256:plaintext-content-7";
+  options.plaintextSize = 9;
   return options;
 }
 
@@ -174,6 +176,8 @@ BOOST_AUTO_TEST_CASE(DurableIdentityMetadataSurvivesRepoOwnerRestart)
     BOOST_CHECK_EQUAL(committed.ciphertextManifestDigest,
                       options.ciphertextManifestDigest);
     BOOST_CHECK_EQUAL(committed.servingLocator, options.servingLocator);
+    BOOST_CHECK_EQUAL(committed.contentDigest, options.contentDigest);
+    BOOST_CHECK_EQUAL(committed.plaintextSize, options.plaintextSize);
     source.reset();
   }
 
@@ -193,7 +197,28 @@ BOOST_AUTO_TEST_CASE(DurableIdentityMetadataSurvivesRepoOwnerRestart)
   BOOST_CHECK_EQUAL(restored.ciphertextManifestDigest,
                     committed.ciphertextManifestDigest);
   BOOST_CHECK_EQUAL(restored.servingLocator, committed.servingLocator);
+  BOOST_CHECK_EQUAL(restored.contentDigest, committed.contentDigest);
+  BOOST_CHECK_EQUAL(restored.plaintextSize, committed.plaintextSize);
   BOOST_CHECK_EQUAL(fixture.repo->getRangeIfCurrent(restored, {0, 10}).size(), 10U);
+
+  // The Core-facing adapter must recover a durable range source by the
+  // stable publication identity, not by the request-scoped object name.
+  RepoEncryptedLargeDataStore restoredStore(fixture.repo);
+  const auto hit = restoredStore.lookupDurable(options.publicationIdentity);
+  BOOST_REQUIRE(hit);
+  BOOST_CHECK_EQUAL(hit->encryptedName, committed.objectName);
+  BOOST_CHECK_EQUAL(hit->publicationIdentity, options.publicationIdentity);
+  BOOST_CHECK_EQUAL(hit->protectionEpoch, options.protectionEpoch);
+  BOOST_CHECK_EQUAL(hit->keyReferenceId, options.keyReferenceId);
+  BOOST_CHECK_EQUAL(hit->keyReferenceVersion, options.keyReferenceVersion);
+  BOOST_CHECK_EQUAL(hit->ciphertextManifestDigest,
+                    options.ciphertextManifestDigest);
+  BOOST_CHECK_EQUAL(hit->servingLocator, options.servingLocator);
+  BOOST_CHECK_EQUAL(hit->contentDigest, options.contentDigest);
+  BOOST_CHECK_EQUAL(hit->plaintextSize, options.plaintextSize);
+  BOOST_REQUIRE(hit->source);
+  BOOST_CHECK(hit->source->isDurable());
+  BOOST_CHECK_EQUAL(hit->source->read(0, 10).size(), 10U);
 }
 
 BOOST_AUTO_TEST_CASE(DurableIdentityMetadataIsRequired)

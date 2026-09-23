@@ -1,5 +1,23 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-17 durable lookup-to-serving gate
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`.
+- **Boundary:** B190-16 had persisted durable identity metadata but no Core consumer, so a
+  Repo object could not become a served publication. The new Core path performs stable-identity
+  lookup before key generation/encryption, validates current content identity and the recovered
+  manifest/source, then registers the existing durable range source for segment serving.
+- **Validation:** ordinary root `build/` rebuilds succeeded for the affected Spec188/189/190
+  targets. `spec190-protected-material-reuse` 7 cases, `spec189-encrypted-repo` 7 cases and
+  `spec188-model-preparation-publication` 5 cases passed; the restart lookup and same-identity
+  durable serving cases were repeated three times. The repeat test observed one Repo object and
+  one Core publication after the second publish.
+- **Unobserved:** cross-process key-reference recovery, new-grant/Selection rebinding,
+  Provider/assembled hot hit, precise missing-object fetch, new-boot KV fencing and real
+  Qwen/MiniNDN qualification remain open. The normal protected assembler miss remains in force;
+  ASan/UBSan is deferred.
+- **Evidence:** [B190-17](../specs/190-multiturn-latency/evidence/b190-17.md).
+
 ## 2026-09-23 — Spec190 B190-16 durable protected identity metadata gate
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`.

@@ -157,6 +157,11 @@ private:
     // that end with prepareOnWorker remain source-compatible.
     std::uint64_t maxPublishedDataNameBytes =
       NativeCanonicalMaterialReceiptDataNameMaxBytes;
+    // Optional durable Core path.  Legacy test transports and transient
+    // publishers leave this empty and retain the historical publish call.
+    std::function<ndn_service_framework::LargeDataPublishResult(
+      const ndn_service_framework::PreparedServiceRequest&, const std::vector<std::uint8_t>&,
+      const std::string&, const std::string&, const NativeRequestControl&)> durablePublish;
   };
   NativeCanonicalArtifactPublisher(Transport transport, std::string serviceName,
     NativeCanonicalPublicationOptions options, SourcePort source);

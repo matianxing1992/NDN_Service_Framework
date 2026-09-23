@@ -220,6 +220,14 @@ namespace ndn_service_framework{
         mutable bool used = false;
     };
 
+    /** Core-owned policy for immutable large-data publication. */
+    struct LargeDataPublishOptions
+    {
+        EncryptedLargeDataRetention retention = EncryptedLargeDataRetention::Transient;
+        // Stable, non-secret identity supplied by the native preparation owner.
+        std::string publicationIdentity;
+    };
+
     struct LargeDataPublishResult
     {
         bool success = false;
@@ -230,6 +238,11 @@ namespace ndn_service_framework{
         std::string manifestDigest;
         std::string authorizationScope;
         std::string protectionEpoch;
+        std::string publicationIdentity;
+        std::string keyReferenceId;
+        std::string keyReferenceVersion;
+        std::string ciphertextManifestDigest;
+        std::string servingLocator;
         bool encrypted = true;
         std::string errorMessage;
         // Local names and scoped wrapped-key identity retained for an aborting
@@ -712,6 +725,16 @@ namespace ndn_service_framework{
                 bool retainWhileLeased = false,
                 const std::function<void()>& requireActive = {});
 
+            /** Durable variant used by native preparation owners. */
+            LargeDataPublishResult publishEncryptedLargeData(
+                const PreparedServiceRequest& ctx,
+                const std::vector<uint8_t>& plaintext,
+                const std::string& objectLabel,
+                ndn::time::milliseconds freshness,
+                bool retainWhileLeased,
+                const LargeDataPublishOptions& options,
+                const std::function<void()>& requireActive = {});
+
             /** Blocking worker entry: caller keeps this User and its running
              * Face alive through return. Hash/encryption/storage run here;
              * key preparation and serving registration are marshalled to I/O.
@@ -721,6 +744,15 @@ namespace ndn_service_framework{
                 const std::string& objectLabel,
                 ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD,
                 const std::function<void()>& requireActive = {});
+
+            LargeDataPublishResult publishEncryptedLargeDataFromWorker(
+                const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
+                const std::string& objectLabel, ndn::time::milliseconds freshness,
+                const LargeDataPublishOptions& options,
+                const std::function<void()>& requireActive = {});
+
+            /** True only when the configured range-store has durable ownership. */
+            bool supportsDurableEncryptedLargeData() const noexcept;
 
             /** Configure before the first publication, on the owning thread.
              * The store handles ciphertext only; Core keeps naming/signing. */
@@ -1882,7 +1914,8 @@ namespace ndn_service_framework{
             LargeDataPublishResult publishEncryptedLargeDataImpl(
                 const PreparedServiceRequest&, const std::vector<uint8_t>&,
                 const std::string&, ndn::time::milliseconds, bool,
-                const std::function<void()>&, bool marshalIo);
+                const std::function<void()>&, const LargeDataPublishOptions&,
+                bool marshalIo);
             void expireLargeDataPublication(const std::string& publicationKey,
                 std::weak_ptr<LargeDataFilePublication> publication);
             std::shared_ptr<EncryptedLargeDataRangeStore> m_largeDataRangeStore;

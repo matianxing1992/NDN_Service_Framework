@@ -1544,6 +1544,21 @@ namespace ndn_service_framework
             return name;
         }
 
+        ndn::Name
+        makeDurableLargeDataName(const ndn::Name& userPrefix,
+                                 const ndn::Name& serviceName,
+                                 const std::string& publicationIdentity,
+                                 const std::string& objectId)
+        {
+            if (publicationIdentity.size() != 71 ||
+                publicationIdentity.compare(0, 7, "sha256:") != 0)
+                throw std::invalid_argument("durable large-data publication identity is invalid");
+            ndn::Name name(userPrefix);
+            name.append("NDNSF").append("LARGE-DATA-DURABLE").append(serviceName)
+                .append(publicationIdentity.substr(7)).append(objectId).append("v1");
+            return name;
+        }
+
         std::optional<ndn::Name>
         extractPermissionControllerIdentity(const ndn::Interest& interest)
         {
@@ -5739,7 +5754,22 @@ namespace ndn_service_framework
         const std::function<void()>& requireActive)
     {
         return publishEncryptedLargeDataImpl(ctx, plaintext, objectLabel, freshness,
-                                              retainWhileLeased, requireActive, false);
+                                              retainWhileLeased, requireActive,
+                                              LargeDataPublishOptions{}, false);
+    }
+
+    LargeDataPublishResult ServiceUser::publishEncryptedLargeData(
+        const PreparedServiceRequest& ctx,
+        const std::vector<uint8_t>& plaintext,
+        const std::string& objectLabel,
+        ndn::time::milliseconds freshness,
+        bool retainWhileLeased,
+        const LargeDataPublishOptions& options,
+        const std::function<void()>& requireActive)
+    {
+        return publishEncryptedLargeDataImpl(ctx, plaintext, objectLabel, freshness,
+                                              retainWhileLeased, requireActive,
+                                              options, false);
     }
 
     LargeDataPublishResult ServiceUser::publishEncryptedLargeDataFromWorker(
@@ -5750,13 +5780,27 @@ namespace ndn_service_framework
         if (isOnIoThread())
             throw std::logic_error("large-data worker publication cannot run on Face I/O");
         return publishEncryptedLargeDataImpl(ctx, plaintext, objectLabel, freshness,
-                                              true, requireActive, true);
+                                              true, requireActive,
+                                              LargeDataPublishOptions{}, true);
+    }
+
+    LargeDataPublishResult ServiceUser::publishEncryptedLargeDataFromWorker(
+        const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
+        const std::string& objectLabel, ndn::time::milliseconds freshness,
+        const LargeDataPublishOptions& options,
+        const std::function<void()>& requireActive)
+    {
+        if (isOnIoThread())
+            throw std::logic_error("large-data worker publication cannot run on Face I/O");
+        return publishEncryptedLargeDataImpl(ctx, plaintext, objectLabel, freshness,
+                                              true, requireActive, options, true);
     }
 
     LargeDataPublishResult ServiceUser::publishEncryptedLargeDataImpl(
         const PreparedServiceRequest& ctx, const std::vector<uint8_t>& plaintext,
         const std::string& objectLabel, ndn::time::milliseconds freshness,
-        bool retainWhileLeased, const std::function<void()>& requireActive, bool marshalIo)
+        bool retainWhileLeased, const std::function<void()>& requireActive,
+        const LargeDataPublishOptions& options, bool marshalIo)
     {
         const auto onIo = [this, marshalIo](std::function<void()> work) {
             if (!marshalIo || isOnIoThread()) {
@@ -5782,12 +5826,26 @@ namespace ndn_service_framework
 
         result.objectId = sanitizeLargeDataObjectId(objectLabel);
         if (result.objectId.empty()) {
+            if (options.retention == EncryptedLargeDataRetention::Durable) {
+                result.errorMessage =
+                    "durable large-data publication requires a stable object label";
+                return result;
+            }
             result.objectId = "object-" + RandomString(16);
         }
 
-        ndn::Name encryptedDataName =
-            makeLargeDataName(identity, ctx.serviceName, ctx.requestId, result.objectId);
-        encryptedDataName.appendVersion();
+        const bool durable = options.retention == EncryptedLargeDataRetention::Durable;
+        if (durable && (options.publicationIdentity.size() != 71 ||
+                        options.publicationIdentity.compare(0, 7, "sha256:") != 0)) {
+            result.errorMessage = "durable large-data publication identity is invalid";
+            return result;
+        }
+        ndn::Name encryptedDataName = durable
+            ? makeDurableLargeDataName(identity, ctx.serviceName,
+                                       options.publicationIdentity, result.objectId)
+            : makeLargeDataName(identity, ctx.serviceName, ctx.requestId, result.objectId);
+        if (!durable)
+            encryptedDataName.appendVersion();
         static constexpr std::size_t maxSegmentBytes = 7000;
         const bool activePut =
             !isTruthyEnv("NDNSF_REQUEST_LARGE_DISABLE_ACTIVE_PUT");
@@ -5800,6 +5858,10 @@ namespace ndn_service_framework
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
             rangeStore = m_largeDataRangeStore;
+        }
+        if (durable && (!rangeStore || !rangeStore->supportsDurableRetention())) {
+            result.errorMessage = "DURABLE_RETENTION_UNSUPPORTED";
+            return result;
         }
         const bool fileBackedRequested = rangeStore || retainWhileLeased ||
             useFileBackedLargeData() || plaintext.size() >= fileBackedThresholdBytes;
@@ -5817,16 +5879,17 @@ namespace ndn_service_framework
             "/SERVICE" + ctx.serviceName.toUri()
         };
 
+        result.plaintextSize = plaintext.size();
+        result.contentDigest = sha256DigestString(
+            ndn::span<const uint8_t>(plaintext.data(), plaintext.size()), requireActive);
+        result.authorizationScope = attributes.front();
+
         bool wrappedKeyReferenceHeld = false;
         std::string wrappedKeyId;
         try {
             const auto messageType = std::string("REQUEST-LARGE");
             if (requireActive) requireActive();
             const auto accessAttribute = std::string("/SERVICE") + ctx.serviceName.toUri();
-            ndn::nacabe::SPtrVector<ndn::Data> wrappedContentData;
-            ndn::nacabe::SPtrVector<ndn::Data> wrappedCkData;
-            ndn::Buffer wrappedMessageKey;
-            bool hasWrappedMessageKey = false;
             HybridMessageKey key;
             onIo([&] {
                 if (!m_largeDataKeyReleaseState) {
@@ -5837,16 +5900,117 @@ namespace ndn_service_framework
                     ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
             });
             wrappedKeyId = key.keyId;
+            const auto keyReferenceText = key.keyId + "|" + key.epochId + "|" +
+                ctx.serviceName.toUri() + "|" + accessAttribute;
+            const auto currentKeyReferenceId = sha256DigestString(ndn::Buffer(
+                reinterpret_cast<const uint8_t*>(keyReferenceText.data()),
+                keyReferenceText.size()));
+
+            if (durable) {
+                const auto hit = rangeStore->lookupDurable(
+                    options.publicationIdentity, requireActive);
+                if (hit) {
+                    if (!hit->source || !hit->source->isDurable() ||
+                        hit->encryptedName != encryptedDataName.toUri() ||
+                        hit->publicationIdentity != options.publicationIdentity ||
+                        hit->contentDigest != result.contentDigest ||
+                        hit->plaintextSize != result.plaintextSize ||
+                        hit->protectionEpoch != key.epochId ||
+                        hit->keyReferenceId != currentKeyReferenceId ||
+                        hit->keyReferenceVersion.empty() ||
+                        hit->ciphertextManifestDigest.empty() ||
+                        hit->servingLocator != encryptedDataName.toUri() ||
+                        hit->source->size() == 0) {
+                        throw std::runtime_error("DURABLE_LOOKUP_METADATA_MISMATCH");
+                    }
+                    const auto firstRange = hit->source->read(
+                        0, std::min<std::uint64_t>(hit->source->size(), maxSegmentBytes));
+                    if (firstRange.empty())
+                        throw std::runtime_error("DURABLE_LOOKUP_UNREADABLE");
+
+                    encryptedDataName = ndn::Name(hit->encryptedName);
+                    result.encryptedDataName = encryptedDataName;
+                    result.publicationIdentity = hit->publicationIdentity;
+                    result.protectionEpoch = hit->protectionEpoch;
+                    result.keyReferenceId = hit->keyReferenceId;
+                    result.keyReferenceVersion = hit->keyReferenceVersion;
+                    result.manifestDigest = hit->ciphertextManifestDigest;
+                    result.ciphertextManifestDigest = hit->ciphertextManifestDigest;
+                    result.servingLocator = hit->servingLocator;
+                    result.fileBacked = true;
+
+                    const auto publicationKey = encryptedDataName.toUri();
+                    std::shared_ptr<LargeDataFilePublication> publication;
+                    bool scheduleExpiry = false;
+                    {
+                        std::lock_guard<std::mutex> lock(_cache_mutex);
+                        const auto existing = m_largeDataFiles.find(publicationKey);
+                        if (existing != m_largeDataFiles.end()) {
+                            publication = existing->second;
+                            if (retainWhileLeased) {
+                                auto lease = publication->servingLease.lock();
+                                if (!lease) {
+                                    result.servingLease = std::make_shared<unsigned char>(0);
+                                    publication->servingLease = result.servingLease;
+                                }
+                                else {
+                                    result.servingLease = std::move(lease);
+                                }
+                            }
+                        }
+                        else {
+                            publication = std::make_shared<LargeDataFilePublication>();
+                            publication->baseName = encryptedDataName;
+                            publication->fileSize = hit->source->size();
+                            publication->segmentCount = 1 +
+                                (publication->fileSize - 1) / maxSegmentBytes;
+                            publication->maxSegmentBytes = maxSegmentBytes;
+                            publication->freshness = freshness;
+                            publication->windowCapacity = largeDataWindowSegments();
+                            publication->rangeSource = hit->source;
+                            if (retainWhileLeased) {
+                                result.servingLease = std::make_shared<unsigned char>(0);
+                                publication->servingLease = result.servingLease;
+                            }
+                            const auto [it, inserted] = m_largeDataFiles.emplace(
+                                publicationKey, publication);
+                            if (!inserted)
+                                throw std::runtime_error(
+                                    "duplicate durable large-data publication name");
+                            (void)it;
+                            scheduleExpiry = true;
+                        }
+                    }
+                    if (scheduleExpiry) {
+                        const auto expiry = *fileBackedRetention;
+                        onIo([&] { m_scheduler.schedule(expiry, [this, publicationKey,
+                                                       weakPublication = std::weak_ptr<LargeDataFilePublication>(publication)] {
+                            expireLargeDataPublication(publicationKey, weakPublication);
+                        }); });
+                    }
+                    NDN_LOG_INFO("LARGE_DATA_PUBLISH_DURABLE_HIT"
+                                 << " name=" << result.encryptedDataName.toUri()
+                                 << " plaintextBytes=" << result.plaintextSize
+                                 << " envelopeBytes=" << hit->source->size());
+                    result.success = true;
+                    return result;
+                }
+            }
+
+            ndn::nacabe::SPtrVector<ndn::Data> wrappedContentData;
+            ndn::nacabe::SPtrVector<ndn::Data> wrappedCkData;
+            ndn::Buffer wrappedMessageKey;
+            bool hasWrappedMessageKey = false;
 
             // Keep the publication metadata in the native crypto owner.  A
             // DI caller may bind the returned object to its request, but it
             // cannot invent the protection epoch, scope, or manifest digest
             // in Python after this point.
-            result.plaintextSize = plaintext.size();
-            result.contentDigest = sha256DigestString(
-                ndn::span<const uint8_t>(plaintext.data(), plaintext.size()), requireActive);
             result.authorizationScope = accessAttribute;
             result.protectionEpoch = key.epochId;
+            result.publicationIdentity = durable ? options.publicationIdentity : std::string{};
+            result.keyReferenceVersion = durable ? "v1" : std::string{};
+            result.keyReferenceId = durable ? currentKeyReferenceId : std::string{};
 
             HybridMessageEnvelope envelope;
             envelope.setKeyId(key.keyId);
@@ -5987,8 +6151,25 @@ namespace ndn_service_framework
                     publication->windowCapacity = largeDataWindowSegments();
                     publication->reservedBytes = reservation;
                     if (rangeStore) {
-                        publication->rangeSource = rangeStore->commitFile(
-                            encryptedDataName.toUri(), filePath, encodedBytes, requireActive);
+                        if (durable) {
+                            EncryptedLargeDataCommitOptions commitOptions;
+                            commitOptions.retention = options.retention;
+                            commitOptions.publicationIdentity = result.publicationIdentity;
+                            commitOptions.protectionEpoch = result.protectionEpoch;
+                            commitOptions.keyReferenceId = result.keyReferenceId;
+                            commitOptions.keyReferenceVersion = result.keyReferenceVersion;
+                            commitOptions.ciphertextManifestDigest = result.manifestDigest;
+                            commitOptions.servingLocator = encryptedDataName.toUri();
+                            commitOptions.contentDigest = result.contentDigest;
+                            commitOptions.plaintextSize = result.plaintextSize;
+                            publication->rangeSource = rangeStore->commitFile(
+                                encryptedDataName.toUri(), filePath, encodedBytes,
+                                commitOptions, requireActive);
+                        }
+                        else {
+                            publication->rangeSource = rangeStore->commitFile(
+                                encryptedDataName.toUri(), filePath, encodedBytes, requireActive);
+                        }
                         if (!publication->rangeSource ||
                             publication->rangeSource->size() != encodedBytes)
                             throw std::runtime_error("invalid committed encrypted range source");
@@ -6052,6 +6233,8 @@ namespace ndn_service_framework
                         expireLargeDataPublication(publicationKey, weakPublication);
                     }); });
                     result.encryptedDataName = encryptedDataName;
+                    result.ciphertextManifestDigest = result.manifestDigest;
+                    result.servingLocator = encryptedDataName.toUri();
                     for (const auto& data : wrappedContentData)
                         result.rollbackDataNames.push_back(data->getFullName().toUri());
                     for (const auto& data : wrappedCkData)
@@ -6317,6 +6500,12 @@ namespace ndn_service_framework
         if (!m_largeDataFiles.empty())
             throw std::logic_error("cannot change range store after publication");
         m_largeDataRangeStore = std::move(store);
+    }
+
+    bool ServiceUser::supportsDurableEncryptedLargeData() const noexcept
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        return m_largeDataRangeStore && m_largeDataRangeStore->supportsDurableRetention();
     }
 
     void ServiceUser::expireLargeDataPublication(const std::string& publicationKey,

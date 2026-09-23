@@ -9766,7 +9766,7 @@ const std::string& protectionEpoch() const noexcept
 
 ## NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp
 
-源码 SHA-256：`ed69dc50efad0a09ed0e02ab8fd5ce61d5263ba9ea740b14aa09ff638b4bb183`。
+源码 SHA-256：`4a941a7a8fbb045360242555a08252291ff0095dd968aed1901dbc43e736996c`。
 
 ### API-3593192c813c · ndnsf::di::NativeCanonicalPublicationOptions
 
