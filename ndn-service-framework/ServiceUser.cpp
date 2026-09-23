@@ -457,6 +457,313 @@ namespace ndn_service_framework
             return std::filesystem::temp_directory_path() / "ndnsf-large-data";
         }
 
+        struct DurableLargeDataKeyReference
+        {
+            std::string publicationIdentity;
+            std::string serviceName;
+            std::string encryptedDataName;
+            std::string contentDigest;
+            std::uint64_t plaintextSize = 0;
+            std::uint64_t policyEpoch = 0;
+            std::string protectionEpoch;
+            std::string keyReferenceId;
+            std::string keyReferenceVersion;
+            std::string ciphertextManifestDigest;
+            std::string servingLocator;
+        };
+
+        // This store contains only Core-owned, non-secret identity metadata.
+        // Repo remains ciphertext-only; no content key, private key, grant, or
+        // request/KV state is written here.
+        constexpr char DURABLE_KEY_REFERENCE_MAGIC[] =
+            "NDNSF-DURABLE-LARGE-KEYREF-V1";
+        constexpr std::size_t DURABLE_KEY_REFERENCE_MAX_RECORDS = 4096;
+        constexpr std::uint64_t DURABLE_KEY_REFERENCE_MAX_FIELD = 1U << 20;
+        std::mutex durableKeyReferenceStoreMutex;
+
+        std::string
+        durableIdentityPathComponent(const ndn::Name& identity)
+        {
+            static constexpr char hex[] = "0123456789abcdef";
+            std::string result;
+            const auto uri = identity.toUri();
+            result.reserve(uri.size() * 3);
+            for (const auto ch : uri) {
+                const auto value = static_cast<unsigned char>(ch);
+                if (std::isalnum(value) || ch == '-' || ch == '_' || ch == '.') {
+                    result.push_back(ch);
+                }
+                else {
+                    result.push_back('_');
+                    result.push_back(hex[value >> 4]);
+                    result.push_back(hex[value & 0x0f]);
+                }
+            }
+            return result.empty() ? "root" : result;
+        }
+
+        std::filesystem::path
+        durableKeyReferenceStorePath(const ndn::Name& identity)
+        {
+            std::filesystem::path directory;
+            if (const char* raw = std::getenv("NDNSF_DURABLE_KEY_REFERENCE_DIR");
+                raw != nullptr && *raw != '\0') {
+                directory = raw;
+            }
+            else if (const char* raw = std::getenv("NDNSF_RUNTIME_STATE_DIR");
+                     raw != nullptr && *raw != '\0') {
+                directory = raw;
+            }
+            else if (const char* raw = std::getenv("XDG_STATE_HOME");
+                     raw != nullptr && *raw != '\0') {
+                directory = std::filesystem::path(raw) / "ndnsf" /
+                            "durable-key-references";
+            }
+            else {
+                const char* home = std::getenv("HOME");
+                directory = std::filesystem::path(home != nullptr ? home : "/tmp") /
+                            ".local" / "state" / "ndnsf" /
+                            "durable-key-references";
+            }
+            return directory / ("user-" + durableIdentityPathComponent(identity) + ".dkr");
+        }
+
+        bool
+        writeDurableKeyReferenceString(std::ofstream& stream, const std::string& value)
+        {
+            if (value.size() > DURABLE_KEY_REFERENCE_MAX_FIELD) {
+                return false;
+            }
+            const auto size = static_cast<std::uint64_t>(value.size());
+            stream.write(reinterpret_cast<const char*>(&size), sizeof(size));
+            if (size != 0) {
+                stream.write(value.data(), static_cast<std::streamsize>(size));
+            }
+            return static_cast<bool>(stream);
+        }
+
+        bool
+        readDurableKeyReferenceString(std::ifstream& stream, std::string& value)
+        {
+            std::uint64_t size = 0;
+            stream.read(reinterpret_cast<char*>(&size), sizeof(size));
+            if (!stream || size > DURABLE_KEY_REFERENCE_MAX_FIELD) {
+                return false;
+            }
+            value.assign(static_cast<std::size_t>(size), '\0');
+            if (size != 0) {
+                stream.read(value.data(), static_cast<std::streamsize>(size));
+            }
+            return static_cast<bool>(stream);
+        }
+
+        bool
+        writeDurableKeyReference(std::ofstream& stream,
+                                 const DurableLargeDataKeyReference& record)
+        {
+            return writeDurableKeyReferenceString(stream, record.publicationIdentity) &&
+                   writeDurableKeyReferenceString(stream, record.serviceName) &&
+                   writeDurableKeyReferenceString(stream, record.encryptedDataName) &&
+                   writeDurableKeyReferenceString(stream, record.contentDigest) &&
+                   (stream.write(reinterpret_cast<const char*>(&record.plaintextSize),
+                                 sizeof(record.plaintextSize)), static_cast<bool>(stream)) &&
+                   (stream.write(reinterpret_cast<const char*>(&record.policyEpoch),
+                                 sizeof(record.policyEpoch)), static_cast<bool>(stream)) &&
+                   writeDurableKeyReferenceString(stream, record.protectionEpoch) &&
+                   writeDurableKeyReferenceString(stream, record.keyReferenceId) &&
+                   writeDurableKeyReferenceString(stream, record.keyReferenceVersion) &&
+                   writeDurableKeyReferenceString(stream, record.ciphertextManifestDigest) &&
+                   writeDurableKeyReferenceString(stream, record.servingLocator);
+        }
+
+        bool
+        readDurableKeyReference(std::ifstream& stream,
+                                DurableLargeDataKeyReference& record)
+        {
+            return readDurableKeyReferenceString(stream, record.publicationIdentity) &&
+                   readDurableKeyReferenceString(stream, record.serviceName) &&
+                   readDurableKeyReferenceString(stream, record.encryptedDataName) &&
+                   readDurableKeyReferenceString(stream, record.contentDigest) &&
+                   (stream.read(reinterpret_cast<char*>(&record.plaintextSize),
+                                sizeof(record.plaintextSize)), static_cast<bool>(stream)) &&
+                   (stream.read(reinterpret_cast<char*>(&record.policyEpoch),
+                                sizeof(record.policyEpoch)), static_cast<bool>(stream)) &&
+                   readDurableKeyReferenceString(stream, record.protectionEpoch) &&
+                   readDurableKeyReferenceString(stream, record.keyReferenceId) &&
+                   readDurableKeyReferenceString(stream, record.keyReferenceVersion) &&
+                   readDurableKeyReferenceString(stream, record.ciphertextManifestDigest) &&
+                   readDurableKeyReferenceString(stream, record.servingLocator);
+        }
+
+        bool
+        isLowerHex(const std::string& value)
+        {
+            return std::all_of(value.begin(), value.end(), [] (unsigned char ch) {
+                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+            });
+        }
+
+        bool
+        isSha256Digest(const std::string& value)
+        {
+            return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+                   isLowerHex(value.substr(7));
+        }
+
+        bool
+        isValidDurableKeyReference(const DurableLargeDataKeyReference& record)
+        {
+            return isSha256Digest(record.publicationIdentity) &&
+                   !record.serviceName.empty() && record.serviceName.front() == '/' &&
+                   !record.encryptedDataName.empty() && record.encryptedDataName.front() == '/' &&
+                   isSha256Digest(record.contentDigest) && record.plaintextSize != 0 &&
+                   record.protectionEpoch.size() == 16 && isLowerHex(record.protectionEpoch) &&
+                   isSha256Digest(record.keyReferenceId) &&
+                   record.keyReferenceVersion == "v1" &&
+                   isSha256Digest(record.ciphertextManifestDigest) &&
+                   record.servingLocator == record.encryptedDataName;
+        }
+
+        std::vector<DurableLargeDataKeyReference>
+        readDurableKeyReferenceRecords(const std::filesystem::path& path, bool& valid)
+        {
+            valid = true;
+            if (!std::filesystem::exists(path)) {
+                return {};
+            }
+            std::ifstream stream(path, std::ios::binary);
+            if (!stream) {
+                valid = false;
+                return {};
+            }
+            std::string magic(sizeof(DURABLE_KEY_REFERENCE_MAGIC) - 1, '\0');
+            stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+            if (!stream || magic != DURABLE_KEY_REFERENCE_MAGIC) {
+                valid = false;
+                return {};
+            }
+            std::uint64_t count = 0;
+            stream.read(reinterpret_cast<char*>(&count), sizeof(count));
+            if (!stream || count > DURABLE_KEY_REFERENCE_MAX_RECORDS) {
+                valid = false;
+                return {};
+            }
+            std::vector<DurableLargeDataKeyReference> records;
+            records.reserve(static_cast<std::size_t>(count));
+            std::set<std::string> identities;
+            for (std::uint64_t i = 0; i < count; ++i) {
+                DurableLargeDataKeyReference record;
+                if (!readDurableKeyReference(stream, record) ||
+                    !isValidDurableKeyReference(record) ||
+                    !identities.insert(record.publicationIdentity).second) {
+                    valid = false;
+                    return {};
+                }
+                records.push_back(std::move(record));
+            }
+            if (stream.peek() != std::char_traits<char>::eof()) {
+                valid = false;
+                return {};
+            }
+            return records;
+        }
+
+        std::optional<DurableLargeDataKeyReference>
+        loadDurableKeyReference(const ndn::Name& identity,
+                                const std::string& publicationIdentity)
+        {
+            std::lock_guard<std::mutex> guard(durableKeyReferenceStoreMutex);
+            const auto path = durableKeyReferenceStorePath(identity);
+            if (!std::filesystem::exists(path)) {
+                return std::nullopt;
+            }
+            const auto lockPath = path.string() + ".lock";
+            FileLock lock(lockPath.c_str());
+            bool valid = false;
+            const auto records = readDurableKeyReferenceRecords(path, valid);
+            if (!valid) {
+                return std::nullopt;
+            }
+            for (const auto& record : records) {
+                if (record.publicationIdentity == publicationIdentity) {
+                    return record;
+                }
+            }
+            return std::nullopt;
+        }
+
+        bool
+        persistDurableKeyReference(const ndn::Name& identity,
+                                   const DurableLargeDataKeyReference& record)
+        {
+            if (!isValidDurableKeyReference(record)) {
+                return false;
+            }
+            std::lock_guard<std::mutex> guard(durableKeyReferenceStoreMutex);
+            const auto path = durableKeyReferenceStorePath(identity);
+            std::error_code error;
+            std::filesystem::create_directories(path.parent_path(), error);
+            if (error) {
+                return false;
+            }
+            ::chmod(path.parent_path().c_str(), 0700);
+            const auto lockPath = path.string() + ".lock";
+            FileLock lock(lockPath.c_str());
+            bool valid = false;
+            auto records = readDurableKeyReferenceRecords(path, valid);
+            if (!valid || records.size() >= DURABLE_KEY_REFERENCE_MAX_RECORDS) {
+                auto existing = std::find_if(records.begin(), records.end(),
+                    [&record] (const auto& candidate) {
+                        return candidate.publicationIdentity == record.publicationIdentity;
+                    });
+                if (!valid || existing == records.end()) {
+                    return false;
+                }
+            }
+            auto existing = std::find_if(records.begin(), records.end(),
+                [&record] (const auto& candidate) {
+                    return candidate.publicationIdentity == record.publicationIdentity;
+                });
+            if (existing == records.end()) {
+                records.push_back(record);
+            }
+            else {
+                *existing = record;
+            }
+
+            const auto temporary = path.string() + ".tmp." + std::to_string(::getpid());
+            {
+                std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+                if (!stream) {
+                    return false;
+                }
+                ::chmod(temporary.c_str(), 0600);
+                stream.write(DURABLE_KEY_REFERENCE_MAGIC,
+                             sizeof(DURABLE_KEY_REFERENCE_MAGIC) - 1);
+                const auto count = static_cast<std::uint64_t>(records.size());
+                stream.write(reinterpret_cast<const char*>(&count), sizeof(count));
+                for (const auto& item : records) {
+                    if (!writeDurableKeyReference(stream, item)) {
+                        stream.close();
+                        std::filesystem::remove(temporary, error);
+                        return false;
+                    }
+                }
+                stream.flush();
+                if (!stream) {
+                    stream.close();
+                    std::filesystem::remove(temporary, error);
+                    return false;
+                }
+            }
+            std::filesystem::rename(temporary, path, error);
+            if (error) {
+                std::filesystem::remove(temporary, error);
+                return false;
+            }
+            return true;
+        }
+
         std::uintmax_t
         largeDataFileMinimumFreeBytes()
         {
@@ -5890,53 +6197,51 @@ namespace ndn_service_framework
             const auto messageType = std::string("REQUEST-LARGE");
             if (requireActive) requireActive();
             const auto accessAttribute = std::string("/SERVICE") + ctx.serviceName.toUri();
-            HybridMessageKey key;
-            onIo([&] {
-                if (!m_largeDataKeyReleaseState) {
-                    m_largeDataKeyReleaseState = std::make_shared<LargeDataKeyReleaseState>();
-                    m_largeDataKeyReleaseState->crypto = &m_hybridMessageCrypto;
-                }
-                key = m_hybridMessageCrypto.getOrCreateSendKey(
-                    ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
-            });
-            wrappedKeyId = key.keyId;
-            const auto keyReferenceText = key.keyId + "|" + key.epochId + "|" +
-                ctx.serviceName.toUri() + "|" + accessAttribute;
-            const auto currentKeyReferenceId = sha256DigestString(ndn::Buffer(
-                reinterpret_cast<const uint8_t*>(keyReferenceText.data()),
-                keyReferenceText.size()));
-
+            std::optional<EncryptedLargeDataLookupResult> durableHit;
+            std::optional<DurableLargeDataKeyReference> durableReference;
             if (durable) {
-                const auto hit = rangeStore->lookupDurable(
+                durableHit = rangeStore->lookupDurable(
                     options.publicationIdentity, requireActive);
-                if (hit) {
-                    if (!hit->source || !hit->source->isDurable() ||
-                        hit->encryptedName != encryptedDataName.toUri() ||
-                        hit->publicationIdentity != options.publicationIdentity ||
-                        hit->contentDigest != result.contentDigest ||
-                        hit->plaintextSize != result.plaintextSize ||
-                        hit->protectionEpoch != key.epochId ||
-                        hit->keyReferenceId != currentKeyReferenceId ||
-                        hit->keyReferenceVersion.empty() ||
-                        hit->ciphertextManifestDigest.empty() ||
-                        hit->servingLocator != encryptedDataName.toUri() ||
-                        hit->source->size() == 0) {
+                if (durableHit) {
+                    durableReference = loadDurableKeyReference(
+                        identity, options.publicationIdentity);
+                    if (!durableReference ||
+                        durableReference->serviceName != ctx.serviceName.toUri() ||
+                        durableReference->encryptedDataName != encryptedDataName.toUri() ||
+                        durableReference->contentDigest != result.contentDigest ||
+                        durableReference->plaintextSize != result.plaintextSize ||
+                        durableReference->policyEpoch != getCurrentPolicyEpoch(ctx.serviceName) ||
+                        durableReference->protectionEpoch != durableHit->protectionEpoch ||
+                        durableReference->keyReferenceId != durableHit->keyReferenceId ||
+                        durableReference->keyReferenceVersion != durableHit->keyReferenceVersion ||
+                        durableReference->ciphertextManifestDigest !=
+                            durableHit->ciphertextManifestDigest ||
+                        durableReference->servingLocator != encryptedDataName.toUri() ||
+                        !durableHit->source || !durableHit->source->isDurable() ||
+                        durableHit->encryptedName != encryptedDataName.toUri() ||
+                        durableHit->publicationIdentity != options.publicationIdentity ||
+                        durableHit->contentDigest != result.contentDigest ||
+                        durableHit->plaintextSize != result.plaintextSize ||
+                        durableHit->keyReferenceVersion.empty() ||
+                        durableHit->ciphertextManifestDigest.empty() ||
+                        durableHit->servingLocator != encryptedDataName.toUri() ||
+                        durableHit->source->size() == 0) {
                         throw std::runtime_error("DURABLE_LOOKUP_METADATA_MISMATCH");
                     }
-                    const auto firstRange = hit->source->read(
-                        0, std::min<std::uint64_t>(hit->source->size(), maxSegmentBytes));
+                    const auto firstRange = durableHit->source->read(
+                        0, std::min<std::uint64_t>(durableHit->source->size(), maxSegmentBytes));
                     if (firstRange.empty())
                         throw std::runtime_error("DURABLE_LOOKUP_UNREADABLE");
 
-                    encryptedDataName = ndn::Name(hit->encryptedName);
+                    encryptedDataName = ndn::Name(durableHit->encryptedName);
                     result.encryptedDataName = encryptedDataName;
-                    result.publicationIdentity = hit->publicationIdentity;
-                    result.protectionEpoch = hit->protectionEpoch;
-                    result.keyReferenceId = hit->keyReferenceId;
-                    result.keyReferenceVersion = hit->keyReferenceVersion;
-                    result.manifestDigest = hit->ciphertextManifestDigest;
-                    result.ciphertextManifestDigest = hit->ciphertextManifestDigest;
-                    result.servingLocator = hit->servingLocator;
+                    result.publicationIdentity = durableHit->publicationIdentity;
+                    result.protectionEpoch = durableHit->protectionEpoch;
+                    result.keyReferenceId = durableHit->keyReferenceId;
+                    result.keyReferenceVersion = durableHit->keyReferenceVersion;
+                    result.manifestDigest = durableHit->ciphertextManifestDigest;
+                    result.ciphertextManifestDigest = durableHit->ciphertextManifestDigest;
+                    result.servingLocator = durableHit->servingLocator;
                     result.fileBacked = true;
 
                     const auto publicationKey = encryptedDataName.toUri();
@@ -5961,13 +6266,13 @@ namespace ndn_service_framework
                         else {
                             publication = std::make_shared<LargeDataFilePublication>();
                             publication->baseName = encryptedDataName;
-                            publication->fileSize = hit->source->size();
+                            publication->fileSize = durableHit->source->size();
                             publication->segmentCount = 1 +
                                 (publication->fileSize - 1) / maxSegmentBytes;
                             publication->maxSegmentBytes = maxSegmentBytes;
                             publication->freshness = freshness;
                             publication->windowCapacity = largeDataWindowSegments();
-                            publication->rangeSource = hit->source;
+                            publication->rangeSource = durableHit->source;
                             if (retainWhileLeased) {
                                 result.servingLease = std::make_shared<unsigned char>(0);
                                 publication->servingLease = result.servingLease;
@@ -5991,11 +6296,27 @@ namespace ndn_service_framework
                     NDN_LOG_INFO("LARGE_DATA_PUBLISH_DURABLE_HIT"
                                  << " name=" << result.encryptedDataName.toUri()
                                  << " plaintextBytes=" << result.plaintextSize
-                                 << " envelopeBytes=" << hit->source->size());
+                                 << " envelopeBytes=" << durableHit->source->size());
                     result.success = true;
                     return result;
                 }
             }
+
+            HybridMessageKey key;
+            onIo([&] {
+                if (!m_largeDataKeyReleaseState) {
+                    m_largeDataKeyReleaseState = std::make_shared<LargeDataKeyReleaseState>();
+                    m_largeDataKeyReleaseState->crypto = &m_hybridMessageCrypto;
+                }
+                key = m_hybridMessageCrypto.getOrCreateSendKey(
+                    ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
+            });
+            wrappedKeyId = key.keyId;
+            const auto keyReferenceText = key.keyId + "|" + key.epochId + "|" +
+                ctx.serviceName.toUri() + "|" + accessAttribute;
+            const auto currentKeyReferenceId = sha256DigestString(ndn::Buffer(
+                reinterpret_cast<const uint8_t*>(keyReferenceText.data()),
+                keyReferenceText.size()));
 
             ndn::nacabe::SPtrVector<ndn::Data> wrappedContentData;
             ndn::nacabe::SPtrVector<ndn::Data> wrappedCkData;
@@ -6165,7 +6486,7 @@ namespace ndn_service_framework
                             publication->rangeSource = rangeStore->commitFile(
                                 encryptedDataName.toUri(), filePath, encodedBytes,
                                 commitOptions, requireActive);
-                        }
+                            }
                         else {
                             publication->rangeSource = rangeStore->commitFile(
                                 encryptedDataName.toUri(), filePath, encodedBytes, requireActive);
@@ -6235,6 +6556,28 @@ namespace ndn_service_framework
                     result.encryptedDataName = encryptedDataName;
                     result.ciphertextManifestDigest = result.manifestDigest;
                     result.servingLocator = encryptedDataName.toUri();
+                    if (durable) {
+                        // The Core-owned reference becomes COMMITTED only
+                        // after Repo commit/read-back and local serving-owner
+                        // registration have succeeded.  A failed write leaves
+                        // an unreferenced durable object, never a false hit.
+                        const DurableLargeDataKeyReference keyReference{
+                            result.publicationIdentity,
+                            ctx.serviceName.toUri(),
+                            encryptedDataName.toUri(),
+                            result.contentDigest,
+                            result.plaintextSize,
+                            getCurrentPolicyEpoch(ctx.serviceName),
+                            result.protectionEpoch,
+                            result.keyReferenceId,
+                            result.keyReferenceVersion,
+                            result.manifestDigest,
+                            encryptedDataName.toUri()};
+                        if (!persistDurableKeyReference(identity, keyReference)) {
+                            throw std::runtime_error(
+                                "DURABLE_KEY_REFERENCE_STORE_UNAVAILABLE");
+                        }
+                    }
                     for (const auto& data : wrappedContentData)
                         result.rollbackDataNames.push_back(data->getFullName().toUri());
                     for (const auto& data : wrappedCkData)

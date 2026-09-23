@@ -39,6 +39,8 @@ struct RepoFixture
   std::shared_ptr<RepoCore> repo;
   RepoFixture()
   {
+    std::error_code stale;
+    std::filesystem::remove_all(root, stale);
     std::filesystem::create_directories(root);
     std::filesystem::permissions(root, std::filesystem::perms::owner_all);
     StorageCapability capability;
@@ -263,7 +265,10 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesRepoSourceWithoutSecondCommit)
   RepoFixture fixture;
   auto store = std::make_shared<RepoEncryptedLargeDataStore>(fixture.repo);
   const auto spool = (fixture.root / "spool").string();
+  const auto keyReferenceDir = (fixture.root / "key-references").string();
   ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue referenceDir("NDNSF_DURABLE_KEY_REFERENCE_DIR",
+                                      keyReferenceDir.c_str());
   ScopedEnvironmentValue retention("NDNSF_REQUEST_LARGE_DATA_RETENTION_MS", "1000");
   ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
   ndn::DummyClientFace face(keys);
@@ -302,6 +307,73 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesRepoSourceWithoutSecondCommit)
   BOOST_CHECK_EQUAL(second.ciphertextManifestDigest, first.ciphertextManifestDigest);
   BOOST_CHECK_EQUAL(fixture.repo->list().size(), committedObjects.size());
   BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(DurablePublicationReusesAfterServiceUserRestart)
+{
+  RepoFixture fixture;
+  auto store = std::make_shared<RepoEncryptedLargeDataStore>(fixture.repo);
+  const auto spool = (fixture.root / "spool").string();
+  const auto keyReferenceDir = (fixture.root / "key-references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue referenceDir("NDNSF_DURABLE_KEY_REFERENCE_DIR",
+                                      keyReferenceDir.c_str());
+  ScopedEnvironmentValue retention("NDNSF_REQUEST_LARGE_DATA_RETENTION_MS", "1000");
+  ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/restart-user"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/restart-authority"));
+  const ndn::Name service("/spec189/restart-model");
+  const std::vector<std::uint8_t> plaintext(40000, 0x31);
+  LargeDataPublishOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "sha256:" + std::string(64, 'b');
+
+  LargeDataPublishResult first;
+  {
+    InspectingUser user(face, ndn::Name("/spec189/restart"), certificate,
+                        authority, "examples/trust-any.conf");
+    user.useSigningKeyChainForSigningOnlyForTest(keys);
+    user.attachLocalMockPubSubForTest(pubsub(face, keys));
+    user.setEncryptedLargeDataRangeStore(store);
+    user.init();
+    user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+    first = user.publishEncryptedLargeData(
+      user.prepareServiceRequest(service.toUri()), plaintext, "model-material",
+      ndn::time::milliseconds(1), true, options);
+    BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  }
+
+  BOOST_REQUIRE(std::filesystem::is_directory(keyReferenceDir));
+  BOOST_REQUIRE(!std::filesystem::is_empty(keyReferenceDir));
+  BOOST_REQUIRE_EQUAL(fixture.repo->list().size(), 1U);
+
+  {
+    InspectingUser restarted(face, ndn::Name("/spec189/restart"), certificate,
+                              authority, "examples/trust-any.conf");
+    restarted.useSigningKeyChainForSigningOnlyForTest(keys);
+    restarted.attachLocalMockPubSubForTest(pubsub(face, keys));
+    restarted.setEncryptedLargeDataRangeStore(store);
+    restarted.init();
+    const auto second = restarted.publishEncryptedLargeData(
+      restarted.prepareServiceRequest(service.toUri()), plaintext, "model-material",
+      ndn::time::milliseconds(1), true, options);
+    BOOST_REQUIRE_MESSAGE(second.success, second.errorMessage);
+    BOOST_CHECK(second.fileBacked);
+    BOOST_CHECK_EQUAL(second.encryptedDataName.toUri(), first.encryptedDataName.toUri());
+    BOOST_CHECK_EQUAL(second.keyReferenceId, first.keyReferenceId);
+    BOOST_CHECK_EQUAL(second.ciphertextManifestDigest, first.ciphertextManifestDigest);
+
+    std::error_code referenceError;
+    std::filesystem::remove_all(keyReferenceDir, referenceError);
+    BOOST_REQUIRE(!referenceError);
+    const auto missingReference = restarted.publishEncryptedLargeData(
+      restarted.prepareServiceRequest(service.toUri()), plaintext, "model-material",
+      ndn::time::milliseconds(1), true, options);
+    BOOST_CHECK(!missingReference.success);
+    BOOST_CHECK_EQUAL(missingReference.errorMessage, "DURABLE_LOOKUP_METADATA_MISMATCH");
+  }
+  BOOST_CHECK_EQUAL(fixture.repo->list().size(), 1U);
 }
 
 BOOST_AUTO_TEST_CASE(OldLeaseCannotReadOrDeleteSameNameReplacement)
