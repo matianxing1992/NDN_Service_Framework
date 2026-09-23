@@ -1,16 +1,16 @@
 {
   "inputs": {
-    "api/behavior-coverage.json": "6d0d97e07dd3d02492ef98e439266983f18600eb07f3e458351aee570dadc51f",
+    "api/behavior-coverage.json": "e97fcf7114b5e3bed1f3a840a8bcb7362259fb30a05a21ba657f4a9ff6babcc0",
     "api/contract-map.json": "8c46ed721011f25b5cde54d1568b0b8f586a57926aa4dd8041a7c7619c6cf49f",
-    "api/inventory.json": "c80e6423c72bafacc42bdf32030e395f6e7a47e5ab9e91e38ca3c300bb853b02",
-    "api/python-bindings.json": "722a2857e58a65b18e687e9b863b7aaec7f576c2c29375395c58c71553d0450f",
+    "api/inventory.json": "c54e1b5e9e4b04d8a9a4e0baa46de7958fbad32f6d9a9a55b1228641b615db82",
+    "api/python-bindings.json": "0c7dbbd7cb591f76872a8809f23c8ed20c8b1c2bcf429a43d4e4338aca1dc413",
     "api/target-contract-map.json": "68d3d16bdf8c64b38c7902ee24583b4e23fe82dc922e5baa2463f44fb43f8cfe",
     "api/target-inventory.json": "35d39de622ae9c5f81ded338c70000f2f0f4afef1973812cd1de2f4d568c286d",
     "api-contracts.json": "c89df3230ac7991b1590691417f74c9bf6eca438a3346956bcd01736b5f300d7",
     "build-api-reference.py": "b093e25434714c8758c123985a6d60754e282e1d25c0ca689f839cc0cf2f01ad",
     "build-behavior-coverage.py": "c431209716c631f7e025410e8733ae1dab2e23501e07ebbd13d0a7bb7baa0759",
     "build.py": "1276ead3b32ac726ab9b732cb4b5b1225fbfa72502b473bd5fccdb6d798efd74",
-    "current-api.tex": "328330e7db512c52e41155b6101595df841bc578ba59848bb070aecb7dfb315e",
+    "current-api.tex": "170c77b0314c73035e7a9e13978a833bb6d95cc32518c3fdd071e2066764262d",
     "current-content.tex": "9d84c0bee91446e2e017998f87815e94b90fbdd791c3932822cc05b8b5d910a5",
     "current-design.tex": "a5107c81ada1292bac9303408588d1ec7abed2ec5cd27df85bfce2c309f96331",
     "current-diagrams.tex": "e16cc70a60bafccab4b90a5abdc3b0777e7dc1278e88b21b4d0066b1c8d36f55",
@@ -30,7 +30,7 @@
     "evidence/r0-git-verification.json": "6bdbfc42b2edde1d43d0bd61d0cc7d40ad44ceed79a3e7f6a61f9009fade9980",
     "evidence/r1-api-verification.json": "4273925070089df3c98a9229cf74653e76b2234f6b8162ed4cb4a8d35d6f906d",
     "evidence/r1-guide-verification.json": "5ddfd8d3ff031e358f708c2ea58a2047bb2752403c4baec2a63fb37a378f60e6",
-    "evidence/source-baseline-worktree.patch": "3761d5efde39eb4fd5099135cd8eb3354f9c0f0ba63f5db33e1706416ad5eb0b",
+    "evidence/source-baseline-worktree.patch": "763f642d535842fc0f31eafabf6503c93a6215e5e629fa8f8fb930b010fb296f",
     "evidence/target-source-baseline-worktree.patch": "f48a8c1a1b81be4e0cb7d5c4c0c7fd6d0da20d881728b1785fdc12e4ea7b53aa",
     "extract-cpp-api.cjs": "5ddfa8bc0a0be8b0927354ce74001fcd7cad14dc264f528c0628b938d210efa3",
     "extract-python-bindings.cjs": "721479213109d089ea21e14878e79e01ef855a614fa0661caa62028214cc2c8d",
@@ -39,8 +39,8 @@
     "refresh-snapshot.py": "fafa7334726ff319f2d8f8b17886adf62abc80adc49456460c1cdbb58f654d94",
     "render-api-contracts.py": "5da0adf44fb5287abe2fdd00165f8a98de2d2b879d76c60331779f14b49d1b09",
     "render-api-reference.py": "f36de2c9447300e0f0d3d9ad6bfbeb36f0324e4b7124dc42770d2cafeea0cfd4",
-    "snapshot.tex": "c815e3a614e84eb6d38e3624e6b3c6946392c529b8435982838a6f633eca4a0c",
-    "source-baseline.json": "05e3c94f0ed86b83655a73a7ee6d7845d643b0b9f23d8e7b88f439ca18e2cc03",
+    "snapshot.tex": "38b1612cb0274f0193e51b810fbfb0feb2f667dc17f36f0fae060bebf09c00db",
+    "source-baseline.json": "d93bc1e0ffc4f5111a2ee3468cb5ca2164c8d99d10cfdd5733fabcffe61c1dec",
     "target-api-contracts.json": "c5536a15a54ff8b4db56bf056d61084e4aaef18c8937dd147d23958c3eb305bc",
     "target-api.tex": "3d8752993880695a1aaed5da642024459fbe142a7d6b1fa54028fb3e921f0cad",
     "target-content.tex": "09ea5e0b5a2fba62121997c9a6ee5dbdef4782da549b1b962cc5c86533b61798",
@@ -55,8 +55,8 @@
     "verify.py": "5468712c08d32dce91aaa72b0e6c3eddf5ef0603daa0832826f752c6422232da"
   },
   "pdfs": {
-    "current-design.pdf": "4273493338ea499dca88e15b86b5fd209aed8249d02e0b3e050704d3bc0d7599",
-    "target-design.pdf": "4ec3f385638e996ac8579cfde09e2bcf4b5df3da52a90b9bf25216351acc36e1"
+    "current-design.pdf": "c55d1c2ac94ca2296de187cedda7a9ad4ae59d12da8cd2cf3d3b7b53b5c8adf3",
+    "target-design.pdf": "eb0b6d8c965af49d3de7043276340148f08dd28ea4511a05b676a7a93005c023"
   },
-  "run": ".codex-tmp/design-pdf-20260923T221114649558Z"
+  "run": ".codex-tmp/design-pdf-20260923T223841692364Z"
 }

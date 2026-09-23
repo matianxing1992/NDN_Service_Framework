@@ -134,7 +134,7 @@ ndn::Name RequestService(const ndn::Name& serviceName,
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 838 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 870 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-1009e77682c2}\quad public\par
@@ -147,7 +147,7 @@ ndn::Name RequestServiceTargeted(const ndn::Name& provider,
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 831 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 863 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-efa9e29aae17}\quad public\par
@@ -161,7 +161,7 @@ ndn::Name RequestServiceTargeted(const ndn::Name& provider,
                                            std::function<void()> onTimeout,
                                            int timeoutMs)
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 1118 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 1150 行。\par
 
 完整声明查询：\path{api/core-reference.md}。
 
@@ -278,7 +278,7 @@ ndn::Name BeginCollaboration(const ServiceName& service,
                                          TimeoutHandler onTimeout,
                                          const RequestId& requestId = RequestId());
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 971 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 1003 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-3ab0d3d87607}\quad public\par
@@ -288,7 +288,7 @@ bool CommitCollaborationPlan(const RequestId& requestId,
                                          const std::string& ackClosedDigest,
                                          CollaborationPlan plan);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 1021 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 1053 行。\par
 
 完整声明查询：\path{api/core-reference.md}。
 
@@ -340,7 +340,7 @@ std::shared_ptr<StreamedInvocationHandle<EventT, ResponseT>>
                 std::function<void(const StreamedInvocationError&)> onError,
                 size_t strategy = ndn_service_framework::tlv::FirstResponding)
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 892 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 924 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-2eecc93af394}\quad public\par
@@ -400,7 +400,7 @@ ndn::Name publishSignedAppData(
                 const ndn::Buffer& payload,
                 ndn::time::milliseconds freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 750 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 782 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-ef2281d2fe2d}\quad public\par
@@ -413,7 +413,7 @@ void fetchSignedAppData(
                 SignedAppDataHandler onData,
                 SignedAppDataFailureHandler onFailure);
 \end{Verbatim}
-\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 773 行。\par
+\textbf{源码：}\path{ndn-service-framework/ServiceUser.hpp}，第 805 行。\par
 
 \Needspace{7\baselineskip}
 \textbf{API-68706878d1a8}\quad public\par

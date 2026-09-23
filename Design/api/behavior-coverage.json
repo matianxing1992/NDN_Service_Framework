@@ -30564,6 +30564,26 @@
       ]
     },
     {
+      "api_id": "API-d3a8501fdf4f",
+      "file": "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp",
+      "name": "ndnsf_distributed_repo::RepoEncryptedLargeDataStore::lookupDurable",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        171
+      ]
+    },
+    {
+      "api_id": "API-5877e46e0982",
+      "file": "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp",
+      "name": "ndnsf_distributed_repo::RepoEncryptedLargeDataStore::supportsDurableRetention",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        203
+      ]
+    },
+    {
       "api_id": "API-e2ea3cdb1b60",
       "file": "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp",
       "name": "ndnsf_distributed_repo::RepoNode::RepoNode",
@@ -31640,7 +31660,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        79
+        81
       ]
     },
     {
@@ -31650,7 +31670,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        97
+        99
       ]
     },
     {
@@ -31660,7 +31680,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        111
+        113
       ]
     },
     {
@@ -31670,7 +31690,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        122
+        124
       ]
     },
     {
@@ -31680,7 +31700,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        138
+        140
       ]
     },
     {
@@ -31690,7 +31710,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        154
+        156
       ]
     },
     {
@@ -31700,7 +31720,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        201
+        203
       ]
     },
     {
@@ -31710,7 +31730,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        202
+        204
       ]
     },
     {
@@ -31720,7 +31740,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        203
+        205
       ]
     },
     {
@@ -31730,7 +31750,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        218
+        220
       ]
     },
     {
@@ -31740,7 +31760,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        229
+        231
       ]
     },
     {
@@ -31750,7 +31770,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        243
+        245
       ]
     },
     {
@@ -31760,7 +31780,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        254
+        256
       ]
     },
     {
@@ -31770,7 +31790,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        277
+        279
       ]
     },
     {
@@ -31780,7 +31800,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        305
+        307
       ]
     },
     {
@@ -31790,7 +31810,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        308
+        310
       ]
     },
     {
@@ -31800,7 +31820,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        311
+        313
       ]
     },
     {
@@ -31810,7 +31830,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        314
+        316
       ]
     },
     {
@@ -31820,7 +31840,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        317
+        319
       ]
     },
     {
@@ -31830,7 +31850,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        320
+        322
       ]
     },
     {
@@ -31840,7 +31860,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        323
+        325
       ]
     },
     {
@@ -31850,7 +31870,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        326
+        328
       ]
     },
     {
@@ -31860,7 +31880,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        334
+        336
       ]
     },
     {
@@ -31870,7 +31890,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        338
+        340
       ]
     },
     {
@@ -31880,7 +31900,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        342
+        344
       ]
     },
     {
@@ -31890,7 +31910,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        344
+        346
       ]
     },
     {
@@ -31900,7 +31920,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        346
+        348
       ]
     },
     {
@@ -31910,7 +31930,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        348
+        350
       ]
     },
     {
@@ -31920,7 +31940,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        350
+        352
       ]
     },
     {
@@ -31930,7 +31950,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        352
+        354
       ]
     },
     {
@@ -31940,7 +31960,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        354
+        356
       ]
     },
     {
@@ -31950,7 +31970,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        356
+        358
       ]
     },
     {
@@ -31960,7 +31980,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        361
+        363
       ]
     },
     {
@@ -31970,7 +31990,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        365
+        367
       ]
     },
     {
@@ -31980,7 +32000,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        367
+        369
       ]
     },
     {
@@ -31990,7 +32010,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        370
+        372
       ]
     },
     {
@@ -32000,7 +32020,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        373
+        375
       ]
     },
     {
@@ -32010,7 +32030,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        377
+        379
       ]
     },
     {
@@ -32020,7 +32040,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        381
+        383
       ]
     },
     {
@@ -32030,7 +32050,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        382
+        384
       ]
     },
     {
@@ -32040,7 +32060,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        384
+        386
       ]
     },
     {
@@ -32050,7 +32070,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        387
+        389
       ]
     },
     {
@@ -32060,7 +32080,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        390
+        392
       ]
     },
     {
@@ -32070,7 +32090,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        393
+        395
       ]
     },
     {
@@ -32080,7 +32100,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        397
+        399
       ]
     },
     {
@@ -43266,7 +43286,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        39
+        59
       ]
     },
     {
@@ -43276,7 +43296,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        40
+        60
       ]
     },
     {
@@ -43286,7 +43306,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        42
+        62
       ]
     },
     {
@@ -43296,7 +43316,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        44
+        64
       ]
     },
     {
@@ -43306,7 +43326,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        45
+        65
       ]
     },
     {
@@ -43316,7 +43336,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        57
+        77
       ]
     },
     {
@@ -43326,7 +43346,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        58
+        78
       ]
     },
     {
@@ -43336,7 +43356,27 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        67
+        87
+      ]
+    },
+    {
+      "api_id": "API-2dfa3e9f5ed0",
+      "file": "ndn-service-framework/EncryptedLargeDataRangeStore.hpp",
+      "name": "ndn_service_framework::EncryptedLargeDataRangeStore::lookupDurable",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        103
+      ]
+    },
+    {
+      "api_id": "API-4bb4ea2e4c19",
+      "file": "ndn-service-framework/EncryptedLargeDataRangeStore.hpp",
+      "name": "ndn_service_framework::EncryptedLargeDataRangeStore::supportsDurableRetention",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        110
       ]
     },
     {
@@ -53779,7 +53819,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        274
+        287
       ]
     },
     {
@@ -53789,7 +53829,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        278
+        291
       ]
     },
     {
@@ -53799,7 +53839,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        304
+        317
       ]
     },
     {
@@ -53809,7 +53849,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        413
+        426
       ]
     },
     {
@@ -53819,7 +53859,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        414
+        427
       ]
     },
     {
@@ -53829,7 +53869,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        422
+        435
       ]
     },
     {
@@ -53839,7 +53879,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        432
+        445
       ]
     },
     {
@@ -53849,7 +53889,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        440
+        453
       ]
     },
     {
@@ -53859,7 +53899,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        446
+        459
       ]
     },
     {
@@ -53869,7 +53909,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        454
+        467
       ]
     },
     {
@@ -53879,7 +53919,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        455
+        468
       ]
     },
     {
@@ -53889,7 +53929,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        464
+        477
       ]
     },
     {
@@ -53899,7 +53939,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        469
+        482
       ]
     },
     {
@@ -53909,7 +53949,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        471
+        484
       ]
     },
     {
@@ -53919,7 +53959,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        477
+        490
       ]
     },
     {
@@ -53929,7 +53969,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        483
+        496
       ]
     },
     {
@@ -53939,7 +53979,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        487
+        500
       ]
     },
     {
@@ -53949,7 +53989,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        491
+        504
       ]
     },
     {
@@ -53959,7 +53999,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        494
+        507
       ]
     },
     {
@@ -53969,7 +54009,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        501
+        514
       ]
     },
     {
@@ -53979,7 +54019,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        506
+        519
       ]
     },
     {
@@ -53989,7 +54029,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        512
+        525
       ]
     },
     {
@@ -53999,7 +54039,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        515
+        528
       ]
     },
     {
@@ -54009,7 +54049,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        516
+        529
       ]
     },
     {
@@ -54019,7 +54059,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        518
+        531
       ]
     },
     {
@@ -54029,7 +54069,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        519
+        532
       ]
     },
     {
@@ -54039,7 +54079,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        522
+        535
       ]
     },
     {
@@ -54049,7 +54089,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        525
+        538
       ]
     },
     {
@@ -54059,7 +54099,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        530
+        543
       ]
     },
     {
@@ -54069,7 +54109,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        534
+        547
       ]
     },
     {
@@ -54079,7 +54119,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        543
+        556
       ]
     },
     {
@@ -54089,7 +54129,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        546
+        559
       ]
     },
     {
@@ -54099,7 +54139,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        549
+        562
       ]
     },
     {
@@ -54109,7 +54149,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        553
+        566
       ]
     },
     {
@@ -54119,7 +54159,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        561
+        574
       ]
     },
     {
@@ -54129,7 +54169,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        562
+        575
       ]
     },
     {
@@ -54139,7 +54179,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        563
+        576
       ]
     },
     {
@@ -54149,7 +54189,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        565
+        578
       ]
     },
     {
@@ -54159,7 +54199,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        566
+        579
       ]
     },
     {
@@ -54169,7 +54209,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        567
+        580
       ]
     },
     {
@@ -54179,7 +54219,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        570
+        583
       ]
     },
     {
@@ -54189,7 +54229,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        572
+        585
       ]
     },
     {
@@ -54199,7 +54239,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        576
+        589
       ]
     },
     {
@@ -54209,7 +54249,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        577
+        590
       ]
     },
     {
@@ -54219,7 +54259,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        578
+        591
       ]
     },
     {
@@ -54229,7 +54269,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        581
+        594
       ]
     },
     {
@@ -54239,7 +54279,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        585
+        598
       ]
     },
     {
@@ -54249,7 +54289,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        586
+        599
       ]
     },
     {
@@ -54259,7 +54299,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        587
+        600
       ]
     },
     {
@@ -54269,7 +54309,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        588
+        601
       ]
     },
     {
@@ -54279,7 +54319,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        590
+        603
       ]
     },
     {
@@ -54289,7 +54329,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        591
+        604
       ]
     },
     {
@@ -54299,7 +54339,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        592
+        605
       ]
     },
     {
@@ -54309,7 +54349,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        593
+        606
       ]
     },
     {
@@ -54319,7 +54359,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        594
+        607
       ]
     },
     {
@@ -54329,7 +54369,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        595
+        608
       ]
     },
     {
@@ -54339,7 +54379,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        596
+        609
       ]
     },
     {
@@ -54349,7 +54389,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        597
+        610
       ]
     },
     {
@@ -54359,7 +54399,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        598
+        611
       ]
     },
     {
@@ -54369,7 +54409,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        599
+        612
       ]
     },
     {
@@ -54379,7 +54419,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        600
+        613
       ]
     },
     {
@@ -54389,7 +54429,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        601
+        614
       ]
     },
     {
@@ -54399,7 +54439,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        602
+        615
       ]
     },
     {
@@ -54409,7 +54449,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        603
+        616
       ]
     },
     {
@@ -54419,7 +54459,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        604
+        617
       ]
     },
     {
@@ -54429,7 +54469,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        609
+        622
       ]
     },
     {
@@ -54439,7 +54479,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        611
+        624
       ]
     },
     {
@@ -54449,7 +54489,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        612
+        625
       ]
     },
     {
@@ -54459,7 +54499,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        620
+        633
       ]
     },
     {
@@ -54469,7 +54509,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        626
+        639
       ]
     },
     {
@@ -54479,7 +54519,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        639
+        652
       ]
     },
     {
@@ -54489,7 +54529,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        662
+        675
       ]
     },
     {
@@ -54499,7 +54539,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        663
+        676
       ]
     },
     {
@@ -54509,7 +54549,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        664
+        677
       ]
     },
     {
@@ -54519,7 +54559,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        665
+        678
       ]
     },
     {
@@ -54529,7 +54569,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        666
+        679
       ]
     },
     {
@@ -54539,7 +54579,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        667
+        680
       ]
     },
     {
@@ -54549,7 +54589,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        668
+        681
       ]
     },
     {
@@ -54559,7 +54599,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        670
+        683
       ]
     },
     {
@@ -54569,7 +54609,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        673
+        686
       ]
     },
     {
@@ -54579,7 +54619,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        677
+        690
       ]
     },
     {
@@ -54589,7 +54629,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        681
+        694
       ]
     },
     {
@@ -54599,7 +54639,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        685
+        698
       ]
     },
     {
@@ -54609,7 +54649,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        691
+        704
       ]
     },
     {
@@ -54619,7 +54659,17 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        707
+        720
+      ]
+    },
+    {
+      "api_id": "API-0432650dfc30",
+      "file": "ndn-service-framework/ServiceUser.hpp",
+      "name": "ndn_service_framework::ServiceUser::publishEncryptedLargeData",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        729
       ]
     },
     {
@@ -54629,7 +54679,27 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        719
+        742
+      ]
+    },
+    {
+      "api_id": "API-b32d3d3431bb",
+      "file": "ndn-service-framework/ServiceUser.hpp",
+      "name": "ndn_service_framework::ServiceUser::publishEncryptedLargeDataFromWorker",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        748
+      ]
+    },
+    {
+      "api_id": "API-bd2c24dbabc5",
+      "file": "ndn-service-framework/ServiceUser.hpp",
+      "name": "ndn_service_framework::ServiceUser::supportsDurableEncryptedLargeData",
+      "status": "SIGNATURE_ONLY",
+      "contracts": [],
+      "declaration_lines": [
+        755
       ]
     },
     {
@@ -54639,7 +54709,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        727
+        759
       ]
     },
     {
@@ -54649,7 +54719,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        733
+        765
       ]
     },
     {
@@ -54659,7 +54729,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        737
+        769
       ]
     },
     {
@@ -54671,7 +54741,7 @@
         "AC-07"
       ],
       "declaration_lines": [
-        750
+        782
       ]
     },
     {
@@ -54681,7 +54751,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        761
+        793
       ]
     },
     {
@@ -54693,7 +54763,7 @@
         "AC-07"
       ],
       "declaration_lines": [
-        773
+        805
       ]
     },
     {
@@ -54703,7 +54773,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        780
+        812
       ]
     },
     {
@@ -54713,7 +54783,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        788
+        820
       ]
     },
     {
@@ -54723,7 +54793,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        795
+        827
       ]
     },
     {
@@ -54733,7 +54803,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        803
+        835
       ]
     },
     {
@@ -54743,7 +54813,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        811
+        843
       ]
     },
     {
@@ -54753,7 +54823,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        821
+        853
       ]
     },
     {
@@ -54763,7 +54833,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        828
+        860
       ]
     },
     {
@@ -54775,7 +54845,7 @@
         "AC-03"
       ],
       "declaration_lines": [
-        831
+        863
       ]
     },
     {
@@ -54787,7 +54857,7 @@
         "AC-03"
       ],
       "declaration_lines": [
-        838
+        870
       ]
     },
     {
@@ -54797,7 +54867,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        845
+        877
       ]
     },
     {
@@ -54807,7 +54877,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        853
+        885
       ]
     },
     {
@@ -54817,7 +54887,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        861
+        893
       ]
     },
     {
@@ -54827,7 +54897,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        872
+        904
       ]
     },
     {
@@ -54837,7 +54907,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        882
+        914
       ]
     },
     {
@@ -54849,7 +54919,7 @@
         "AC-06"
       ],
       "declaration_lines": [
-        892
+        924
       ]
     },
     {
@@ -54859,7 +54929,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        935
+        967
       ]
     },
     {
@@ -54869,7 +54939,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        964
+        996
       ]
     },
     {
@@ -54881,7 +54951,7 @@
         "AC-05"
       ],
       "declaration_lines": [
-        971
+        1003
       ]
     },
     {
@@ -54891,7 +54961,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        980
+        1012
       ]
     },
     {
@@ -54901,7 +54971,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1000
+        1032
       ]
     },
     {
@@ -54913,7 +54983,7 @@
         "AC-05"
       ],
       "declaration_lines": [
-        1021
+        1053
       ]
     },
     {
@@ -54923,7 +54993,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1030
+        1062
       ]
     },
     {
@@ -54933,7 +55003,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1033
+        1065
       ]
     },
     {
@@ -54943,7 +55013,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1072
+        1104
       ]
     },
     {
@@ -54955,7 +55025,7 @@
         "AC-03"
       ],
       "declaration_lines": [
-        1118
+        1150
       ]
     },
     {
@@ -54965,7 +55035,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1161
+        1193
       ]
     },
     {
@@ -54975,7 +55045,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1165
+        1197
       ]
     },
     {
@@ -54985,7 +55055,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1174
+        1206
       ]
     },
     {
@@ -54995,7 +55065,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1179
+        1211
       ]
     },
     {
@@ -55005,7 +55075,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1182
+        1214
       ]
     },
     {
@@ -55015,7 +55085,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1185
+        1217
       ]
     },
     {
@@ -55025,7 +55095,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1188
+        1220
       ]
     },
     {
@@ -55035,7 +55105,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1191
+        1223
       ]
     },
     {
@@ -55045,7 +55115,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1197
+        1229
       ]
     },
     {
@@ -55055,7 +55125,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1201
+        1233
       ]
     },
     {
@@ -55065,7 +55135,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1203
+        1235
       ]
     },
     {
@@ -55075,7 +55145,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1209
+        1241
       ]
     },
     {
@@ -55085,7 +55155,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1212
+        1244
       ]
     },
     {
@@ -55095,7 +55165,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1218
+        1250
       ]
     },
     {
@@ -55105,7 +55175,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1219
+        1251
       ]
     },
     {
@@ -55115,7 +55185,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1223
+        1255
       ]
     },
     {
@@ -55125,7 +55195,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1225
+        1257
       ]
     },
     {
@@ -55135,7 +55205,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1227
+        1259
       ]
     },
     {
@@ -55145,7 +55215,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1229
+        1261
       ]
     },
     {
@@ -55155,7 +55225,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1231
+        1263
       ]
     },
     {
@@ -55165,7 +55235,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1233
+        1265
       ]
     },
     {
@@ -55175,7 +55245,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1235
+        1267
       ]
     },
     {
@@ -55185,7 +55255,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1239
+        1271
       ]
     },
     {
@@ -55195,7 +55265,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1242
+        1274
       ]
     },
     {
@@ -55205,7 +55275,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1244
+        1276
       ]
     },
     {
@@ -55215,7 +55285,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1251
+        1283
       ]
     },
     {
@@ -55225,7 +55295,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1252
+        1284
       ]
     },
     {
@@ -55235,7 +55305,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1253
+        1285
       ]
     },
     {
@@ -55245,7 +55315,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1255
+        1287
       ]
     },
     {
@@ -55255,7 +55325,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1257
+        1289
       ]
     },
     {
@@ -55265,7 +55335,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1260
+        1292
       ]
     },
     {
@@ -55275,7 +55345,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1268
+        1300
       ]
     },
     {
@@ -55285,7 +55355,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1273
+        1305
       ]
     },
     {
@@ -55295,7 +55365,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1282
+        1314
       ]
     },
     {
@@ -55305,7 +55375,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1300
+        1332
       ]
     },
     {
@@ -55315,7 +55385,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1306
+        1338
       ]
     },
     {
@@ -55325,7 +55395,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1308
+        1340
       ]
     },
     {
@@ -55335,7 +55405,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1314
+        1346
       ]
     },
     {
@@ -55345,7 +55415,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1319
+        1351
       ]
     },
     {
@@ -55355,7 +55425,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1323
+        1355
       ]
     },
     {
@@ -55365,7 +55435,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1328
+        1360
       ]
     },
     {
@@ -55375,7 +55445,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1338
+        1370
       ]
     },
     {
@@ -55385,7 +55455,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1340
+        1372
       ]
     },
     {
@@ -55395,7 +55465,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1342
+        1374
       ]
     },
     {
@@ -55405,7 +55475,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1344
+        1376
       ]
     },
     {
@@ -55415,7 +55485,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1346
+        1378
       ]
     },
     {
@@ -55425,7 +55495,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1347
+        1379
       ]
     },
     {
@@ -55435,7 +55505,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1350
+        1382
       ]
     },
     {
@@ -55445,7 +55515,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1352
+        1384
       ]
     },
     {
@@ -55455,7 +55525,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1358
+        1390
       ]
     },
     {
@@ -55465,7 +55535,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1361
+        1393
       ]
     },
     {
@@ -55475,7 +55545,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1363
+        1395
       ]
     },
     {
@@ -55485,7 +55555,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1368
+        1400
       ]
     },
     {
@@ -55495,7 +55565,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1370
+        1402
       ]
     },
     {
@@ -55505,7 +55575,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1385
+        1417
       ]
     },
     {
@@ -55515,7 +55585,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1386
+        1418
       ]
     },
     {
@@ -55525,7 +55595,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1387
+        1419
       ]
     },
     {
@@ -55535,7 +55605,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1388
+        1420
       ]
     },
     {
@@ -55545,7 +55615,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1389
+        1421
       ]
     },
     {
@@ -55555,7 +55625,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1391
+        1423
       ]
     },
     {
@@ -55565,7 +55635,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1393
+        1425
       ]
     },
     {
@@ -55575,7 +55645,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1559
+        1591
       ]
     },
     {
@@ -55585,7 +55655,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1563
+        1595
       ]
     },
     {
@@ -55595,7 +55665,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1566
+        1598
       ]
     },
     {
@@ -55605,7 +55675,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1576
+        1608
       ]
     },
     {
@@ -55615,7 +55685,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1577
+        1609
       ]
     },
     {
@@ -55625,7 +55695,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1584
+        1616
       ]
     },
     {
@@ -55635,7 +55705,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1586
+        1618
       ]
     },
     {
@@ -55645,7 +55715,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1597
+        1629
       ]
     },
     {
@@ -55655,7 +55725,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1599
+        1631
       ]
     },
     {
@@ -55665,7 +55735,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1601
+        1633
       ]
     },
     {
@@ -55675,7 +55745,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1603
+        1635
       ]
     },
     {
@@ -55685,7 +55755,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1613
+        1645
       ]
     },
     {
@@ -55695,7 +55765,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1624
+        1656
       ]
     },
     {
@@ -55705,7 +55775,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1628
+        1660
       ]
     },
     {
@@ -55715,7 +55785,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1634
+        1666
       ]
     },
     {
@@ -55725,7 +55795,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1636
+        1668
       ]
     },
     {
@@ -55735,7 +55805,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1639
+        1671
       ]
     },
     {
@@ -55745,7 +55815,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1642
+        1674
       ]
     },
     {
@@ -55755,7 +55825,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1645
+        1677
       ]
     },
     {
@@ -55765,7 +55835,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1647
+        1679
       ]
     },
     {
@@ -55775,7 +55845,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1653
+        1685
       ]
     },
     {
@@ -55785,7 +55855,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1654
+        1686
       ]
     },
     {
@@ -55795,7 +55865,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1658
+        1690
       ]
     },
     {
@@ -55805,7 +55875,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1659
+        1691
       ]
     },
     {
@@ -55815,7 +55885,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1660
+        1692
       ]
     },
     {
@@ -55825,7 +55895,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1663
+        1695
       ]
     },
     {
@@ -55835,7 +55905,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1665
+        1697
       ]
     },
     {
@@ -55845,7 +55915,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1667
+        1699
       ]
     },
     {
@@ -55855,7 +55925,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1668
+        1700
       ]
     },
     {
@@ -55865,7 +55935,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1669
+        1701
       ]
     },
     {
@@ -55875,7 +55945,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1672
+        1704
       ]
     },
     {
@@ -55885,7 +55955,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1675
+        1707
       ]
     },
     {
@@ -55895,7 +55965,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1677
+        1709
       ]
     },
     {
@@ -55905,7 +55975,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1681
+        1713
       ]
     },
     {
@@ -55915,7 +55985,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1684
+        1716
       ]
     },
     {
@@ -55925,7 +55995,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1686
+        1718
       ]
     },
     {
@@ -55935,7 +56005,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1691
+        1723
       ]
     },
     {
@@ -55945,7 +56015,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1696
+        1728
       ]
     },
     {
@@ -55955,7 +56025,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1700
+        1732
       ]
     },
     {
@@ -55965,7 +56035,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1701
+        1733
       ]
     },
     {
@@ -55975,7 +56045,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1702
+        1734
       ]
     },
     {
@@ -55985,7 +56055,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1703
+        1735
       ]
     },
     {
@@ -55995,7 +56065,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1704
+        1736
       ]
     },
     {
@@ -56005,7 +56075,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1705
+        1737
       ]
     },
     {
@@ -56015,7 +56085,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1710
+        1742
       ]
     },
     {
@@ -56025,7 +56095,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1713
+        1745
       ]
     },
     {
@@ -56035,7 +56105,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1715
+        1747
       ]
     },
     {
@@ -56045,7 +56115,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1718
+        1750
       ]
     },
     {
@@ -56055,7 +56125,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1720
+        1752
       ]
     },
     {
@@ -56065,7 +56135,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1722
+        1754
       ]
     },
     {
@@ -56075,7 +56145,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1725
+        1757
       ]
     },
     {
@@ -56085,7 +56155,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1728
+        1760
       ]
     },
     {
@@ -56095,7 +56165,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1731
+        1763
       ]
     },
     {
@@ -56105,7 +56175,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1734
+        1766
       ]
     },
     {
@@ -56115,7 +56185,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1736
+        1768
       ]
     },
     {
@@ -56125,7 +56195,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1739
+        1771
       ]
     },
     {
@@ -56135,7 +56205,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1741
+        1773
       ]
     },
     {
@@ -56145,7 +56215,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1744
+        1776
       ]
     },
     {
@@ -56155,7 +56225,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1748
+        1780
       ]
     },
     {
@@ -56165,7 +56235,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1759
+        1791
       ]
     },
     {
@@ -56175,7 +56245,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1764
+        1796
       ]
     },
     {
@@ -56185,7 +56255,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1765
+        1797
       ]
     },
     {
@@ -56195,7 +56265,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1766
+        1798
       ]
     },
     {
@@ -56205,7 +56275,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1768
+        1800
       ]
     },
     {
@@ -56215,7 +56285,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1772
+        1804
       ]
     },
     {
@@ -56225,7 +56295,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1774
+        1806
       ]
     },
     {
@@ -56235,7 +56305,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1777
+        1809
       ]
     },
     {
@@ -56245,7 +56315,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1782
+        1814
       ]
     },
     {
@@ -56255,7 +56325,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1786
+        1818
       ]
     },
     {
@@ -56265,7 +56335,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1789
+        1821
       ]
     },
     {
@@ -56275,7 +56345,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1790
+        1822
       ]
     },
     {
@@ -56285,7 +56355,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1793
+        1825
       ]
     },
     {
@@ -56295,7 +56365,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1795
+        1827
       ]
     },
     {
@@ -56305,7 +56375,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1798
+        1830
       ]
     },
     {
@@ -56315,17 +56385,17 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1803
+        1835
       ]
     },
     {
-      "api_id": "API-4cd252659444",
+      "api_id": "API-2a216fd0d308",
       "file": "ndn-service-framework/ServiceUser.hpp",
       "name": "ndn_service_framework::ServiceUser::publishEncryptedLargeDataImpl",
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1882
+        1914
       ]
     },
     {
@@ -56335,7 +56405,7 @@
       "status": "SIGNATURE_ONLY",
       "contracts": [],
       "declaration_lines": [
-        1886
+        1919
       ]
     },
     {

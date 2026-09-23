@@ -258,6 +258,52 @@ BOOST_AUTO_TEST_CASE(DuplicateAndInvalidInputDoNotRemoveCommittedData)
   BOOST_CHECK(!fixture.repo->has("/ciphertext/object"));
 }
 
+BOOST_AUTO_TEST_CASE(DurablePublicationReusesRepoSourceWithoutSecondCommit)
+{
+  RepoFixture fixture;
+  auto store = std::make_shared<RepoEncryptedLargeDataStore>(fixture.repo);
+  const auto spool = (fixture.root / "spool").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue retention("NDNSF_REQUEST_LARGE_DATA_RETENTION_MS", "1000");
+  ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/reuse-user"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/reuse-authority"));
+  InspectingUser user(face, ndn::Name("/spec189/reuse"), certificate,
+                      authority, "examples/trust-any.conf");
+  user.useSigningKeyChainForSigningOnlyForTest(keys);
+  user.attachLocalMockPubSubForTest(pubsub(face, keys));
+  user.setEncryptedLargeDataRangeStore(store);
+  user.init();
+  face.processEvents(ndn::time::milliseconds(1));
+
+  const ndn::Name service("/spec189/reuse-model");
+  user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+  const auto request = user.prepareServiceRequest(service.toUri());
+  const std::vector<std::uint8_t> plaintext(40000, 0x2a);
+  LargeDataPublishOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "sha256:" + std::string(64, 'a');
+
+  const auto first = user.publishEncryptedLargeData(
+    request, plaintext, "model-material", ndn::time::milliseconds(1), true, options);
+  BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+  BOOST_REQUIRE(first.fileBacked);
+  const auto committedObjects = fixture.repo->list();
+  BOOST_REQUIRE_EQUAL(committedObjects.size(), 1U);
+  const auto firstName = first.encryptedDataName.toUri();
+
+  const auto second = user.publishEncryptedLargeData(
+    request, plaintext, "model-material", ndn::time::milliseconds(1), true, options);
+  BOOST_REQUIRE_MESSAGE(second.success, second.errorMessage);
+  BOOST_CHECK(second.fileBacked);
+  BOOST_CHECK_EQUAL(second.encryptedDataName.toUri(), firstName);
+  BOOST_CHECK_EQUAL(second.publicationIdentity, first.publicationIdentity);
+  BOOST_CHECK_EQUAL(second.ciphertextManifestDigest, first.ciphertextManifestDigest);
+  BOOST_CHECK_EQUAL(fixture.repo->list().size(), committedObjects.size());
+  BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 1U);
+}
+
 BOOST_AUTO_TEST_CASE(OldLeaseCannotReadOrDeleteSameNameReplacement)
 {
   for (bool sameBytes : {false, true}) {

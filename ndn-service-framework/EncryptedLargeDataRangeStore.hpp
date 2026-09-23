@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,6 +30,25 @@ struct EncryptedLargeDataCommitOptions
   std::string keyReferenceVersion;
   std::string ciphertextManifestDigest;
   std::string servingLocator;
+  // Plaintext identity is metadata only; the backend stores no plaintext.
+  // These fields let a durable lookup prove that a caller's current input
+  // is the same immutable publication before it reuses ciphertext.
+  std::string contentDigest;
+  std::uint64_t plaintextSize = 0;
+};
+
+struct EncryptedLargeDataLookupResult
+{
+  std::string encryptedName;
+  std::string publicationIdentity;
+  std::string protectionEpoch;
+  std::string keyReferenceId;
+  std::string keyReferenceVersion;
+  std::string ciphertextManifestDigest;
+  std::string servingLocator;
+  std::string contentDigest;
+  std::uint64_t plaintextSize = 0;
+  std::shared_ptr<const class EncryptedLargeDataRangeSource> source;
 };
 
 /** Immutable encrypted envelope. The last owner releases its storage lease.
@@ -73,6 +93,21 @@ public:
       throw std::runtime_error("DURABLE_RETENTION_UNSUPPORTED");
     return commitFile(encryptedName, file, size, requireActive);
   }
+
+  /**
+   * Find an immutable Durable ciphertext by its Core-owned publication
+   * identity.  A null result is a normal miss.  Backends that do not own a
+   * persistent namespace must keep the default miss rather than pretending
+   * that a request-scoped source survived a restart.
+   */
+  virtual std::optional<EncryptedLargeDataLookupResult> lookupDurable(
+    const std::string&, const std::function<void()>& = {}) const
+  {
+    return std::nullopt;
+  }
+
+  /** Whether this adapter has an owner that can survive the request lease. */
+  virtual bool supportsDurableRetention() const noexcept { return false; }
 };
 
 } // namespace ndn_service_framework

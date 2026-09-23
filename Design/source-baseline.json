@@ -1,6 +1,6 @@
 {
   "revision": "R3",
-  "snapshot_utc": "2026-09-23T22:10:51.199602+00:00",
+  "snapshot_utc": "2026-09-23T22:38:33.933974+00:00",
   "snapshot_local_date": "2026-09-07",
   "scope": [
     "NDNSF Core",
@@ -9,9 +9,9 @@
     "NDNSF-Repo"
   ],
   "branch": "Experimental",
-  "baseline_commit": "2fb99301627dd61d3b14176e9e402f726b089e18",
-  "local_source_archive": ".codex-tmp/design-source-20260923T221051199602Z/reviewed-source.tar.gz",
-  "archive_sha256": "1c062b9f041e9bd49903ad92a7d1eb464bfde078058ca1eb8be48923e4c6b11a",
+  "baseline_commit": "5e78bfeae084ad95a9a3bd41704651c69698736c",
+  "local_source_archive": ".codex-tmp/design-source-20260923T223833933974Z/reviewed-source.tar.gz",
+  "archive_sha256": "9428e94f359825daf3a25dfb25eb421b005eecc49104448a0932b61b9fec323f",
   "evidence_level": "重点流程源码核对；其余相关实现文件作为支持快照，不代表逐行审计；本轮无协议测试或运行资格验收",
   "files": {
     "Experiments/TigerCluster/README.md": {
@@ -275,14 +275,14 @@
       "matches_head": true
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp": {
-      "sha256": "7fd4a57d2a6325790b359c61b0563351496e3b92c1e72a7d5e2ed77855fa9eef",
-      "bytes": 62954,
-      "matches_head": true
+      "sha256": "292b9d82ed76547b010c4438310ada6f7cb8b897e8eeed326faa8bb84e52b1c7",
+      "bytes": 65554,
+      "matches_head": false
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp": {
-      "sha256": "ed69dc50efad0a09ed0e02ab8fd5ce61d5263ba9ea740b14aa09ff638b4bb183",
-      "bytes": 10637,
-      "matches_head": true
+      "sha256": "4a941a7a8fbb045360242555a08252291ff0095dd968aed1901dbc43e736996c",
+      "bytes": 11036,
+      "matches_head": false
     },
     "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp": {
       "sha256": "ea9ae087d474cfde3e5a341cffef2ac3d472f0426ea847c6002ad94adcfe9e81",
@@ -1830,8 +1830,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp": {
-      "sha256": "810cdda2940bb7ff9a29f43d58a7ad20d6df95cb647193056a937559fe819643",
-      "bytes": 7417,
+      "sha256": "04625f0b934f73566636363dda5c1837b63c3a3489d1832f14dc97dc4cedcc42",
+      "bytes": 9337,
       "matches_head": false
     },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoNode.hpp": {
@@ -1855,8 +1855,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp": {
-      "sha256": "7c6c438b98db47f6921b462c821399f2758512b31d4ea757370dd219bbdecc0a",
-      "bytes": 11466,
+      "sha256": "8bef923de11e496c0115bebe1d5ce2aeb210f998d7024a47fa3e5a9dfa5c152d",
+      "bytes": 11525,
       "matches_head": false
     },
     "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/__init__.py": {
@@ -1950,8 +1950,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/src/RepoProtocol.cpp": {
-      "sha256": "344124b544c87ef9d6b888b21f80954ef1fa458f04eef8b640983258f48cebf7",
-      "bytes": 24809,
+      "sha256": "0b7722c69af1894aaf502e7abda09d68bcb45c8bab901636cd85d14262afe957",
+      "bytes": 24964,
       "matches_head": false
     },
     "NDNSF-DistributedRepo/src/RepoStoreBackend.cpp": {
@@ -1960,8 +1960,8 @@
       "matches_head": true
     },
     "NDNSF-DistributedRepo/src/RepoTypes.cpp": {
-      "sha256": "818099b323167197a552c7e6af9c7c282e69fe1cf750e32ae22055c618502bce",
-      "bytes": 45147,
+      "sha256": "12903aad8086994d29f0827ff2a2ff5b7ce33fd1129d4b77609a82c285d411be",
+      "bytes": 45266,
       "matches_head": false
     },
     "NDNSF-DistributedRepo/src/backends/FilesystemArtifactStore.cpp": {
@@ -2300,8 +2300,8 @@
       "matches_head": true
     },
     "ndn-service-framework/EncryptedLargeDataRangeStore.hpp": {
-      "sha256": "c7bf438da71f81947146526cda0601875d1ae28296ef173fa86fbb3d39a4c3ad",
-      "bytes": 2943,
+      "sha256": "1ef8f485af9f3b8cb8499d0a63201599dbed1c437512729acbdbdeb597c08ca9",
+      "bytes": 4267,
       "matches_head": false
     },
     "ndn-service-framework/ExecutionLease.cpp": {
@@ -2485,14 +2485,14 @@
       "matches_head": true
     },
     "ndn-service-framework/ServiceUser.cpp": {
-      "sha256": "e4795decd8151c58266aad96b8f6a5f306774306ae501635a93b7e675d3e68c3",
-      "bytes": 737595,
-      "matches_head": true
+      "sha256": "f9f4dc939caa982fcd98c5642de9c91493bdeb838263dd9bca58a1dee5037468",
+      "bytes": 748398,
+      "matches_head": false
     },
     "ndn-service-framework/ServiceUser.hpp": {
-      "sha256": "576b79d80c57e34851015a0e4e0cfab90fdcc691e11f073404923c44735d5f18",
-      "bytes": 103883,
-      "matches_head": true
+      "sha256": "ee67e863526f1d91679f7f81e8f32a2edf52d3e319faef9ee938383f9b20f83a",
+      "bytes": 105479,
+      "matches_head": false
     },
     "ndn-service-framework/Stream.cpp": {
       "sha256": "1a3b791dd739339f3b61a7c2bc52257aedbb126e5afce99abf0ead63f9a0de80",

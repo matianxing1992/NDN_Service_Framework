@@ -949,6 +949,8 @@ RepoObjectManifest::toJson() const
   os << "\"ciphertextManifestDigest\":"
      << jsonQuote(ciphertextManifestDigest) << ",";
   os << "\"servingLocator\":" << jsonQuote(servingLocator) << ",";
+  os << "\"contentDigest\":" << jsonQuote(contentDigest) << ",";
+  os << "\"plaintextSize\":" << plaintextSize << ",";
   os << "\"replicaNodes\":[";
   for (size_t i = 0; i < replicaNodes.size(); ++i) {
     if (i != 0) {

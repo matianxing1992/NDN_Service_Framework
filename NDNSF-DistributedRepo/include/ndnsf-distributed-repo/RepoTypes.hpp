@@ -68,6 +68,8 @@ struct RepoObjectManifest
   std::string keyReferenceVersion;
   std::string ciphertextManifestDigest;
   std::string servingLocator;
+  std::string contentDigest;
+  uint64_t plaintextSize = 0;
   uint64_t generation = 0;
   int64_t parentGeneration = -1;
   std::string writeConsistency = "ALL";

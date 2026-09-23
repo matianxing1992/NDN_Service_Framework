@@ -92,7 +92,8 @@ public:
     if (options.retention == ndn_service_framework::EncryptedLargeDataRetention::Durable &&
         (options.publicationIdentity.empty() || options.protectionEpoch.empty() ||
          options.keyReferenceId.empty() || options.keyReferenceVersion.empty() ||
-         options.ciphertextManifestDigest.empty() || options.servingLocator.empty()))
+         options.ciphertextManifestDigest.empty() || options.servingLocator.empty() ||
+         options.contentDigest.empty() || options.plaintextSize == 0))
       throw std::invalid_argument("DURABLE_METADATA_INVALID");
     std::ifstream input(file, std::ios::binary);
     if (!input)
@@ -131,6 +132,8 @@ public:
     manifest.keyReferenceVersion = options.keyReferenceVersion;
     manifest.ciphertextManifestDigest = options.ciphertextManifestDigest;
     manifest.servingLocator = options.servingLocator;
+    manifest.contentDigest = options.contentDigest;
+    manifest.plaintextSize = options.plaintextSize;
     auto lock = m_repo->acquirePublicationLock();
     if (m_repo->has(name))
       throw std::runtime_error("encrypted Repo name already committed");
@@ -164,6 +167,40 @@ public:
       throw;
     }
   }
+
+  std::optional<ndn_service_framework::EncryptedLargeDataLookupResult>
+  lookupDurable(const std::string& publicationIdentity,
+                const std::function<void()>& requireActive = {}) const override
+  {
+    if (publicationIdentity.empty())
+      return std::nullopt;
+    if (requireActive) requireActive();
+    auto lock = m_repo->acquirePublicationLock();
+    std::optional<ndn_service_framework::EncryptedLargeDataLookupResult> found;
+    for (const auto& manifest : m_repo->list()) {
+      if (requireActive) requireActive();
+      if (manifest.objectType != "encrypted-large-data-envelope" ||
+          manifest.publicationIdentity != publicationIdentity)
+        continue;
+      if (manifest.protectionEpoch.empty() || manifest.keyReferenceId.empty() ||
+          manifest.keyReferenceVersion.empty() || manifest.ciphertextManifestDigest.empty() ||
+          manifest.servingLocator.empty() || manifest.contentDigest.empty() ||
+          manifest.plaintextSize == 0 || manifest.size == 0)
+        throw std::runtime_error("DURABLE_METADATA_INVALID");
+      if (found)
+        throw std::runtime_error("DURABLE_IDENTITY_CONFLICT");
+      auto source = std::make_shared<Source>(
+        m_repo, manifest, ndn_service_framework::EncryptedLargeDataRetention::Durable);
+      found = ndn_service_framework::EncryptedLargeDataLookupResult{
+        manifest.objectName, manifest.publicationIdentity, manifest.protectionEpoch,
+        manifest.keyReferenceId, manifest.keyReferenceVersion,
+        manifest.ciphertextManifestDigest, manifest.servingLocator,
+        manifest.contentDigest, manifest.plaintextSize, std::move(source)};
+    }
+    return found;
+  }
+
+  bool supportsDurableRetention() const noexcept override { return true; }
 
 private:
   std::shared_ptr<RepoCore> m_repo;

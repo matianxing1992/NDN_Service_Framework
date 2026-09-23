@@ -570,6 +570,8 @@ parseManifestJson(const std::string& manifestJson)
   manifest.ciphertextManifestDigest = extractJsonString(
     manifestJson, "ciphertextManifestDigest");
   manifest.servingLocator = extractJsonString(manifestJson, "servingLocator");
+  manifest.contentDigest = extractJsonString(manifestJson, "contentDigest");
+  manifest.plaintextSize = extractJsonUInt(manifestJson, "plaintextSize", 0);
   manifest.replicaNodes = extractJsonStringArray(manifestJson, "replicaNodes");
   manifest.confirmedReplicaNodes = extractJsonStringArray(
     manifestJson, "confirmedReplicaNodes");
