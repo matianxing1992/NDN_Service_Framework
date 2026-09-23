@@ -318,6 +318,19 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec190 T006 first atomic gate: explicit transient/durable encrypted
+    # Repo retention and generation-fenced source release.  This selector does
+    # not exercise protected key recovery or remove the assembler miss gate.
+    bld.program(target='../spec190-protected-material-reuse',
+                name='spec190-protected-material-reuse',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-protected-material-reuse.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec189 T003-R1 preparation-owner accounting selector.  It records
     # source/material/publication categories, the conservative ORT budget and
     # terminal cleanup on a cancellation boundary through the production

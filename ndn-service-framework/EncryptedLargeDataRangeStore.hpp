@@ -4,10 +4,22 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace ndn_service_framework {
+
+enum class EncryptedLargeDataRetention
+{
+  Transient,
+  Durable,
+};
+
+struct EncryptedLargeDataCommitOptions
+{
+  EncryptedLargeDataRetention retention = EncryptedLargeDataRetention::Transient;
+};
 
 /** Immutable encrypted envelope. The last owner releases its storage lease.
  * No key, plaintext, NDN name rewriting or signing belongs to this interface. */
@@ -16,6 +28,10 @@ class EncryptedLargeDataRangeSource
 public:
   virtual ~EncryptedLargeDataRangeSource() = default;
   virtual std::uint64_t size() const noexcept = 0;
+  /** True only when the committed object is not owned by this request lease. */
+  virtual bool isDurable() const noexcept { return false; }
+  /** Explicit owner-driven invalidation; implementations must be idempotent. */
+  virtual void release() const noexcept {}
   virtual std::vector<std::uint8_t> read(std::uint64_t offset,
                                        std::uint64_t length) const = 0;
 };
@@ -32,6 +48,21 @@ public:
   virtual std::shared_ptr<const EncryptedLargeDataRangeSource> commitFile(
     const std::string& encryptedName, const std::filesystem::path& file,
     std::uint64_t size, const std::function<void()>& requireActive = {}) = 0;
+
+  /**
+   * Explicit retention is deliberately a separate overload.  Adapters that
+   * only implement the legacy transient path must fail closed for Durable;
+   * they must not silently turn a durable request into request-scoped data.
+   */
+  virtual std::shared_ptr<const EncryptedLargeDataRangeSource> commitFile(
+    const std::string& encryptedName, const std::filesystem::path& file,
+    std::uint64_t size, const EncryptedLargeDataCommitOptions& options,
+    const std::function<void()>& requireActive = {})
+  {
+    if (options.retention != EncryptedLargeDataRetention::Transient)
+      throw std::runtime_error("durable encrypted range commit unsupported");
+    return commitFile(encryptedName, file, size, requireActive);
+  }
 };
 
 } // namespace ndn_service_framework

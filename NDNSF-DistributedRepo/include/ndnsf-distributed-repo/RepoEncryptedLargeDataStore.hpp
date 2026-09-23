@@ -7,6 +7,7 @@
 #include <ndn-cxx/util/random.hpp>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -21,10 +22,23 @@ class RepoEncryptedLargeDataStore final
   class Source final : public ndn_service_framework::EncryptedLargeDataRangeSource
   {
   public:
-    Source(std::shared_ptr<RepoCore> repo, RepoObjectManifest manifest)
-      : m_repo(std::move(repo)), m_manifest(std::move(manifest)) {}
+    Source(std::shared_ptr<RepoCore> repo, RepoObjectManifest manifest,
+           ndn_service_framework::EncryptedLargeDataRetention retention)
+      : m_repo(std::move(repo)), m_manifest(std::move(manifest)), m_retention(retention) {}
     ~Source() override
     {
+      if (m_retention == ndn_service_framework::EncryptedLargeDataRetention::Durable)
+        return;
+      release();
+    }
+    bool isDurable() const noexcept override
+    {
+      return m_retention == ndn_service_framework::EncryptedLargeDataRetention::Durable;
+    }
+    void release() const noexcept override
+    {
+      if (m_released.exchange(true))
+        return;
       // A same-name replacement belongs to a different transaction.
       try {
         m_repo->removeIfCurrent(m_manifest);
@@ -44,6 +58,8 @@ class RepoEncryptedLargeDataStore final
   private:
     std::shared_ptr<RepoCore> m_repo;
     RepoObjectManifest m_manifest;
+    ndn_service_framework::EncryptedLargeDataRetention m_retention;
+    mutable std::atomic<bool> m_released{false};
   };
 
 public:
@@ -58,6 +74,16 @@ public:
   std::shared_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource>
   commitFile(const std::string& name, const std::filesystem::path& file,
              std::uint64_t size, const std::function<void()>& requireActive = {}) override
+  {
+    return commitFile(name, file, size,
+      ndn_service_framework::EncryptedLargeDataCommitOptions{}, requireActive);
+  }
+
+  std::shared_ptr<const ndn_service_framework::EncryptedLargeDataRangeSource>
+  commitFile(const std::string& name, const std::filesystem::path& file,
+             std::uint64_t size,
+             const ndn_service_framework::EncryptedLargeDataCommitOptions& options,
+             const std::function<void()>& requireActive = {}) override
   {
     if (requireActive) requireActive();
     if (name.empty() || name.front() != '/' || size == 0 ||
@@ -119,7 +145,7 @@ public:
       // Exercise the normal authority read path before returning a lease.
       if (m_repo->getRangeIfCurrent(committed, {0, std::min(size, kWindow)}).empty())
         throw std::runtime_error("encrypted Repo commit is not readable");
-      return std::make_shared<Source>(m_repo, committed);
+      return std::make_shared<Source>(m_repo, committed, options.retention);
     }
     catch (...) {
       try { m_repo->abortRangesIfOwned(manifest); } catch (...) {}

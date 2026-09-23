@@ -1,5 +1,21 @@
 # Failure Log and Evidence Index
 
+## Spec190 T006 — retention boundary Changed gate opened (2026-09-23)
+
+CD-09 target contract and the scoped C++ re-review identified the first owner-correct
+atomic repair: explicit transient/durable retention and idempotent Repo source release.
+The current protected path still has no durable key-reference recovery, so this gate does
+not authorize removing the assembler protected miss or claiming protected material reuse.
+The legacy `commitFile` call remains transient; the next selector must prove durable
+object survival, explicit generation-fenced release, cancellation rollback and stale
+replacement safety. No code or runtime result exists yet; evidence is recorded in
+[`B190-12`](../specs/190-multiturn-latency/evidence/b190-12.md).
+
+The first root `build/` attempt reached `spec190-protected-material-reuse.t.cpp` and stopped
+before link because its negative legacy adapter hid the new inherited options overload. This
+is a fixture-only compile boundary; no production binary or runtime result is inferred. The
+fixture repair is recorded in B190-12 and requires a fresh compile/link plus the named selector.
+
 ## Spec190 scope decision — defer sanitizer gates for current execution (2026-09-23)
 
 用户明确取消当前 Spec190 的 ASan/UBSan 构建门。该决定已通过只读 Spec 审查、结构门禁和

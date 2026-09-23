@@ -22,6 +22,21 @@ current implementation。冻结内容包括 `Transient/Durable` retention、opaq
 及 fail-closed typed miss。下一 gate 是基于该契约的 C++ 五 lane static re-review；在 review
 和 Changed gate 通过前不改 protected miss 门、不运行真实 Qwen，T007 继续锁定。
 
+2026-09-23 16:22 -05:00：完成契约后的 scoped static re-review，确定第一个 owner-correct
+atomic gate 是 `EncryptedLargeDataRangeStore` 的显式 `Transient/Durable` retention 与
+`RepoEncryptedLargeDataStore::Source` 的显式 release：默认旧 API 保持 transient，durable
+提交不能静默降级，Source 析构不删除 committed object，显式 release 才允许失效删除。
+本 gate 不接入 protected 默认路径、不持久化 key、不解除 assembler miss；下一步只改该公共
+边界、Repo adapter、C++ selector/Waf target，完成 compile-link 和 named regression 后再审查
+Core key-reference owner。
+
+2026-09-23 16:31 -05:00：B190-12 retention atomic gate 已通过：普通根 `build/` 重新配置，
+新 `spec190-protected-material-reuse` 43/43 compile-link，5 个 C++ case 连续 3 次通过；
+既有 `spec189-encrypted-repo` 在公共头变更后 120/120 重建，6 个回归通过。已修复一次
+测试夹具 overload hiding 编译边界。T006 仍未完成：key-reference persistence/recovery、
+新 grant 绑定、Provider serving/assembled protected hit 和真实重启均未验证；下一 gate 是
+Core crypto-owner 的 scoped static re-review，不能跳到 T007。
+
 2026-09-23 16:02 -05:00：用户明确取消 ASan/UBSan 资格方向，fresh sanitizer `-j2` 从 `1/120`
 推进到 `8/120` 后受控停止；可用内存约 5.4 GiB，最近 `vmstat` 没有持续 `si/so`，但没有产生
 sanitizer 结果。根 `build/` 仅约 80 KiB 配置、没有可复用对象；后续普通 Waf 构建固定使用根
@@ -830,7 +845,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
 | [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
-| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | CD-09 已冻结 target interface；下一 gate 为 C++ 五 lane static re-review 和 Changed gate，未实现前禁止解除 protected miss 门 | 2026-09-23 16:28 -05:00 |
+| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)：retention/source-lifetime atomic gate compile-link + C++ 5-case×3 PASS；key-reference/recovery/assembled hit 未完成，禁止解除 protected miss 门 | 2026-09-23 16:31 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
 | [T009 Finalize and drain](#t009-finalize-and-drain) | NOT_STARTED | T008 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 15:08 -05:00 |
@@ -973,7 +988,9 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 **Design binding**：CD-09，当前BLOCK生产编码；先在契约冻结durable key-reference/serving恢复、新grant绑定及retention公共签名、owner/错误/取消/失效流程，标明与原request-scoped API兼容；独立只读审查后才解除该gate。
 **Steps**：复用现有crypto-owner而非在Repo藏key→完整加密identity/receipt与恢复事务→显式durable与transient清理分离→当前Selection后校验材料/assembled命中→缺层走原保护fetch→旧grant/key/boot等C++反例→冻结组合审查/回归。
 **Acceptance**：`ProtectedMaterialReuse`旧/错grant、失效key、错AAD/ciphertext、非法保留policy仍拒绝；合法restart后真实Repo lookup/read/serving可用，相同protected identity大payload不重复STORE；材料/assembled热命中零material网络payload，缺一对象只取该role必要范围；保留原副本安全与迟到清理边界。Provider新boot必须新session，旧KV receipt不能命中；不能把T007明文diagnostic通过计为本任务通过。
-**Exit**：新安全契约和生产回归均完成，真实Qwen证明交T011；接口未闭合保持BLOCK，不删除原安全门。B190-11。
+**Exit**：retention/source-lifetime atomic gate 已完成；新安全契约、Core key-reference/recovery、
+Provider serving/assembled hit 和生产回归仍未完成，真实Qwen证明交T011；接口未闭合保持
+`PARTIAL`，不删除原安全门。B190-12。
 
 ## Phase 7: T007
 
