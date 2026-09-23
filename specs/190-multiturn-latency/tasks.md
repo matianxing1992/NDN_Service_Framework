@@ -11,6 +11,11 @@ durable evidence，T003 的 r34 真实三轮链路已补齐任务表状态为 DO
 和 Repo lookup/repair C++ gate 已补齐状态为 DONE；下一项严格 active task 为 T006，不能跳到
 T007 或真实 T011。sanitizer 若未来恢复，必须另开 scope/build/evidence gate。
 
+2026-09-23 16:10 -05:00：T006 `ProtectedMaterialReuse` 进入 `IN_PROGRESS`。先完成
+crypto-owner/key-reference/retention、encrypted Repo backing、assembler protected-miss
+门和 Provider serving lease 的只读静态审查；在接口与安全失败流闭合前，不修改生产代码、不
+解除 protected miss、不运行真实 Qwen。下一 gate 是 T006 五 lane static review 与 Changed gate。
+
 2026-09-23 16:02 -05:00：用户明确取消 ASan/UBSan 资格方向，fresh sanitizer `-j2` 从 `1/120`
 推进到 `8/120` 后受控停止；可用内存约 5.4 GiB，最近 `vmstat` 没有持续 `si/so`，但没有产生
 sanitizer 结果。根 `build/` 仅约 80 KiB 配置、没有可复用对象；后续普通 Waf 构建固定使用根
@@ -819,7 +824,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
 | [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
-| [T006 Protected material reuse](#t006-protected-material-reuse) | NOT_STARTED | T005 | 轮到 T006 后先冻结 crypto-owner 恢复/key-reference/retention 接口；当前不得提前评估或编码，禁止直接移除 protected miss 门 | 2026-09-22 15:08 -05:00 |
+| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | 先冻结 crypto-owner/key-reference/retention、encrypted Repo backing、assembler protected-miss 和 serving lease 的静态契约；禁止直接移除 protected miss 门 | 2026-09-23 16:10 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
 | [T009 Finalize and drain](#t009-finalize-and-drain) | NOT_STARTED | T008 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 15:08 -05:00 |
