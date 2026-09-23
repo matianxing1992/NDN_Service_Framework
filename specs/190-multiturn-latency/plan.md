@@ -140,7 +140,10 @@ CodeGraph定位后核对实际源码，T006实现接线仍为gap，不以已有h
 ## Dynamic Validation
 
 T001/T002：none（时间/认证语义由C++可控时钟及现有安全selector证明）；
-T003/T007/T009：asan-ubsan，callback/owner/并发lease风险；匹配ABI的独立定向构建，不借旧失配目录。
+T003/T007/T009：以 C++ callback/owner/并发lease selector 和真实 production runtime 证明。
+原计划的 ASan/UBSan 独立构建门在 2026-09-23 经用户明确取消，当前 Spec190 执行不把 sanitizer
+compile/runtime 作为任务 Exit；这不是 sanitizer-clean 声明，若后续重新纳入必须建立新的 scope
+decision、独立 build identity 和对应 evidence batch。
 T007另有有界TSan selector `ResidentSessionConcurrency`，仅对生产cache owner的
 acquire/release/evict/close/single-flight竞争做至少20次、总预算120秒的调度交错回归；
 不把ASan无报告当race证明。该selector可用受控loader隔离ORT内部线程，不能替代另行真实ORT输出/加载复用测试，
@@ -149,9 +152,9 @@ acquire/release/evict/close/single-flight竞争做至少20次、总预算120秒�
 加载失败重试、两会话同key、正在使用时换key、迟到FINALIZE/重复控制。
 每native selector至少3次；异步生命周期定向case至少20次，预算每case90秒（正常不应睡满）。
 Freeze→Sample→Run→Classify；Face/io/scheduler owner晚于worker销毁，或显式join/drain证明安全。
-不能降低生产close契约迁就fixture，sanitizer未跑就保留该验收缺口。
-T008：计数/序列化C++反例+适用asan；T004/T005：真实文件backend恢复、双进程flock、部分提交/断电边界
-故障注入及asan；T006复用现有C++授权/crypto负例，新增重启/lease动态门。不能用目录存在、Python配置
+不能降低生产close契约迁就fixture；T008：计数/序列化C++反例；T004/T005：真实文件backend恢复、
+双进程flock、部分提交/断电边界故障注入；T006复用现有C++授权/crypto负例，新增重启/lease动态门。
+不能用目录存在、Python配置
 检查、缓存标志或r260未采集的零日志行来证明material bytes=0。
 
 ## Pre-Qualification Design-Code Convergence

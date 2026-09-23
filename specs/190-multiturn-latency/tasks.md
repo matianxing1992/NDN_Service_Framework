@@ -5,6 +5,12 @@
 
 ## Current Checkpoint
 
+2026-09-23 16:08 -05:00：用户明确将本 Spec190 执行中的 ASan/UBSan 构建门 deferred；已同步
+`plan.md` 的 Dynamic Validation 和各任务 Exit，不再把未执行 sanitizer 结果伪称 PASS。按最新
+durable evidence，T003 的 r34 真实三轮链路已补齐任务表状态为 DONE，T005 的普通根 `build/`
+和 Repo lookup/repair C++ gate 已补齐状态为 DONE；下一项严格 active task 为 T006，不能跳到
+T007 或真实 T011。sanitizer 若未来恢复，必须另开 scope/build/evidence gate。
+
 2026-09-23 16:02 -05:00：用户明确取消 ASan/UBSan 资格方向，fresh sanitizer `-j2` 从 `1/120`
 推进到 `8/120` 后受控停止；可用内存约 5.4 GiB，最近 `vmstat` 没有持续 `si/so`，但没有产生
 sanitizer 结果。根 `build/` 仅约 80 KiB 配置、没有可复用对象；后续普通 Waf 构建固定使用根
@@ -810,9 +816,9 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | --- | --- | --- | --- | --- |
 | [T001 Phase timing](#t001-phase-timing) | DONE | — | [b190-01](evidence/b190-01.md)；216/216 compile-link，`Spec190Timing` C++ regression 3/3，静态复核 PASS；MiniNDN/Qwen/performance unobserved | 2026-09-22 04:33 -05:00 |
 | [T002 ACK window](#t002-ack-window) | DONE | T001 | [b190-02](evidence/b190-02.md)；Qwen 1000ms profile、非法值校验、C++ compile-link、Python 8/8、`Spec190AckWindow` 3/3、静态复核 PASS；真实两节点/Trust Schema签名验收未运行 | 2026-09-22 05:10 -05:00 |
-| [T003 Live turns](#t003-live-turns) | PARTIAL | T002 | [b190-03](evidence/b190-03.md)、[b190-06](evidence/b190-06.md)；实现/静态/受影响目标 compile-link PASS；source identity subtype C++ gate 6/6、inline bounded-chunk C++ 回归 25/25、既有 external bounded-chunk 回归 26/26；focused C++ gates、Spec182 activation 9/9、worker protocol 30/30 已通过；本轮 `worker-child-skip-ort-session`、`worker-file-backed-response` 与 file-backed S7 digest-reuse gate 的静态/compile-link/focused C++ 验证通过；完整 `unit-tests` 仍受既有 `di-native-planning.t.cpp` 编译边界影响；direct INT8 candidate 已完成固定缓存下载和 ORT one-token smoke，但 fresh r6 在 preparation 首边界触发 `DI_NATIVE_PUBLICATION_MATERIAL_PAYLOAD_TOO_LARGE`，未进入 ACK/Selection/assembly；B190-03A native assembler/ORT one-token+continuation gate 尚未完成；run-04/07/14/16/18/19/20/29/30/31/32/34/43/46 的资源边界、run-05/11 的 group progress 边界、run-12/13/15/17/33/44/45/50 的 launcher 预检边界、run-21/22/23/24 的安装/barrier/oracle evidence 边界、r24 的日志磁盘边界均已保留；不得解锁 T004 | 2026-09-23 |
+| [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
-| [T005 Query and reuse](#t005-query-and-reuse) | PARTIAL | T004 | prepare-before-STORE lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup 和 initializer/layer identity focused PASS；普通根 `build/` `-j3` 与 C++ 4-case ×3 PASS；ASan/UBSan deferred by user | 2026-09-23 16:03 -05:00 |
+| [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
 | [T006 Protected material reuse](#t006-protected-material-reuse) | NOT_STARTED | T005 | 轮到 T006 后先冻结 crypto-owner 恢复/key-reference/retention 接口；当前不得提前评估或编码，禁止直接移除 protected miss 门 | 2026-09-22 15:08 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
@@ -912,7 +918,7 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 失败/取消没有正常terminal也有界退出，不能只用EventReader内存fixture证明flush。
 **Exit evidence**：r34 integrated PASS；三轮真实 requester/Provider logs、`run-record.json`、
 `ndn-cache-purge.json` 和 `SPEC189_CPP_ORACLE_PASS` 保存在 [B190-03](evidence/b190-03.md)。
-**Exit**：B190-03A 已明确 PASS 且 C++driver与fixture闭合，同模型同handle证明交T011；不靠checkpoint文件重开新Conversation通过。Batch B190-03，asan-ubsan。
+**Exit**：B190-03A 已明确 PASS 且 C++driver与fixture闭合，同模型同handle证明交T011；不靠checkpoint文件重开新Conversation通过。Batch B190-03；sanitizer deferred by user scope。
 
 ## Phase 4: T004
 
@@ -934,7 +940,7 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 
 **Prepare-level requirement**：production `user.prepare(model)`在拆层/导出/打包前查Repo；完整命中直接复用已校验prepared receipt。C++ fixture记录split/export/package/STORE计数：第二次调用及新进程重启后均为0，返回材料/IO契约与冷准备等价；变化内容/配置必须miss，部分缺失仅重建缺失依赖闭包。hash/必要inspection与授权成本单列，不能先完整准备再只去重STORE。
 
-- [ ] T005 [US5] Reuse verified committed publications before STORE in `NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp`, `NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.cpp`, and `tests/unit-tests/spec190-repo-lookup-reuse.t.cpp`.
+- [x] T005 [US5] Reuse verified committed publications before STORE in `NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoSourceProvider.hpp`, `NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.cpp`, and `tests/unit-tests/spec190-repo-lookup-reuse.t.cpp`.
 
 **Outcome / owner**：User prepare查询完整publication identity，命中直接引用，避免重复ingest/分层/存储及大型vector物化。
 **Read**：CD-08；RepoSourceProvider::load/publish和已有Spec189RepoPublication回归；Runtime.hpp两个Repository port、RepoClient::requestManifest。
@@ -942,7 +948,7 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 **Design binding**：CD-08；稳定完整identity替代仅sourceDigest根；旧port默认nullopt兼容，不改原请求授权/Selection。
 **Steps**：已有首写/复用回归扩到真正close-reopen→完整identity/key冲突反例→小manifest先查的native快路径→miss才bounded publish/root-last，命中保留rollbackOwned=false→复审/构建/定向测试。
 **Acceptance**：`RepoLookupReuse`第二run STORE/新payload/materialization计数0；请求元数据/本地hash读另计；同source不同initializer/profile/layer不可错误命中；缺子对象只补缺失；unauthorized/conflict/unavailable不当miss盲写；lookup/publish竞争、取消不删他人已提交对象，误清理旧run材料反例必须失败。
-**Exit**：native canonical复用通过，不据此声明protected密文/网络serving复用已实现。B190-10，asan+事务故障矩阵。
+**Exit**：native canonical复用通过，不据此声明protected密文/网络serving复用已实现。B190-10 事务故障矩阵通过；sanitizer deferred by user scope。
 
 ## Phase 6: T006
 
@@ -970,7 +976,7 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 **Design binding**：CD-04；fresh wrapper + shared load owner；原单参数入口保持；独立request与load证据。
 **Steps**：C++自生成小ONNX/外部权重fixture→完整key与lease状态→single-flight/idle清理/close→fresh evidence与真实ORT调用→Provider host/库默认接线→显式disabled控制→逐项静态复审及组合测试。
 **Acceptance**：`ResidentSession`实际ORT两次输出正确、同key只加载一次；key每个关键字段变更miss；并发/TTL/换模型/evict/close/loading-failure/cancel均不泄漏或UAF；失效授权即使已有session也拒绝；旧profile不能改request/attempt，重复EndProfiling反例；所有临时ONNX由RAII清理。首次loader请求取消但另有合法waiter、全部waiter取消、close后load迟到完成均有C++反例，不得借发起请求ctx延长生命或重新插入已关闭cache。并发evict/acquire、在用项retire拒绝新租用、close后禁止cold fallback、drain超时/最终成功均验证；1slot默认只作用本profile的显式resident配置，原无cache入口和其他profile行为不变。
-**Exit**：native fixture通过、owner计数闭合；Qwen驻留命中/资源趋势交T011。Batch B190-05，asan-ubsan，另跑有界TSan `ResidentSessionConcurrency` 覆盖acquire/release/evict/close/single-flight竞态（plan定义范围/预算）；加密临时backing和CUDA bypass记录，不声称其驻留已支持。
+**Exit**：native fixture通过、owner计数闭合；Qwen驻留命中/资源趋势交T011。Batch B190-05，sanitizer deferred by user scope；另跑有界TSan `ResidentSessionConcurrency` 覆盖acquire/release/evict/close/single-flight竞态（plan定义范围/预算）；加密临时backing和CUDA bypass记录，不声称其驻留已支持。
 
 ## Phase 8: T008
 
@@ -985,7 +991,7 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 **Steps**：扩展既有Provider-local KV C++fixture捕获实际bundle→构造prompt/delta/decode/finalize动态输入→独立解码/计算shape字节→接入生产wire/retry/本地copy分层指标→仅修有反例证明的多发/复制→冻结复审/回归。
 **Acceptance**：`StageTransferBudget`注入额外KV、weights、full logits、重复bundle、缺失position/lineage和乱序必须检出；实际tensor集合及数值与sealedcontract一致，允许合法metadata/重传但单独计；cumulative snapshot不能重复累计。layer/assembled/resident三个状态分列，C++fixture注入已知非零材料传输验证计数，不以尚未实现的热缓存作本项前置。
 **Material acceptance owner**：热材料零payload与缺对象精确补取完整归T006原生生产回归及T011真实系统验收，SC-007/009保持不变；T008只完成stage数据契约与流量计量，不宣称保护材料缓存已有命中能力。
-**Exit**：C++预算/正确性反例闭合，未采集字段标unknown；不靠降低logging或断言network=0常量通过。B190-08。
+**Exit**：C++预算/正确性反例闭合，未采集字段标unknown；不靠降低logging或断言network=0常量通过。B190-08；sanitizer deferred by user scope。
 
 ## Phase 9: T009
 
@@ -1000,7 +1006,7 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 **Steps**：T001关联COMMIT发布/验证/ack、durable journal commit、FINALIZE发布/服务存活/接收/接受→找首次缺失或拒绝原因→补最小C++重现→修发布生命周期/身份/处理或唤醒，而非删barrier→复审/回归。若同handle已完全解决，只保留必要诊断与回归，不强造Core重构。不得直接增加新握手协议掩盖现有控制消息未送达。
 **Acceptance**：`TerminalDrain`：正常FINALIZE提前结束等待；丢失FINALIZE已commit的KV保留到原expiry；未commit超时rollback；重复/乱序/错身份不双提交；journal失败补偿；关闭中迟到回调安全；drain返回结果真实。必须覆盖两角色仅一侧COMMIT成功/另一侧commit ACK丢失：不成功checkpoint、不进入下一轮、已提交侧补偿；与持久commit之后丢FINALIZE保留KV的情况严格区分。fixture显式拥有Face/io/scheduler直到worker join，重复20次；原生受控时钟验证健康FINALIZE不依赖补偿超时推进，真实owner回调完成/退出与异常保留期限均在本项测试通过。
 **System acceptance owner**：MiniNDN健康checkpoint→Provider terminal≤2秒由T011完整负责，SC-003/005门不变；达不到须重开本项修复并重验受影响候选，不能以压缩超时通过，也不能称系统指标已由本项fixture证明。
-**Exit**：有首边界证据和生产回归，保持持久提交含义；真实时延交T011。Batch B190-04，asan-ubsan。
+**Exit**：有首边界证据和生产回归，保持持久提交含义；真实时延交T011。Batch B190-04；sanitizer deferred by user scope。
 
 ## Phase 10: T010
 

@@ -1,5 +1,13 @@
 # Failure Log and Evidence Index
 
+## Spec190 scope decision — defer sanitizer gates for current execution (2026-09-23)
+
+用户明确取消当前 Spec190 的 ASan/UBSan 构建门。该决定已通过只读 Spec 审查、结构门禁和
+`verify-spec-kit-sync.py --require-entrypoints`，同步到 `plan.md`、`tasks.md`、B190-03 和
+B190-10；它只改变当前验收范围，不声称 sanitizer-clean，也不取消 C++ compile/link、named
+production selector、事务故障、生命周期和真实三轮链路要求。若未来恢复 sanitizer，必须另建
+scope/build/evidence gate，不能复用本次普通 build 结果。
+
 ## Spec190 T005 — ordinary root `build/` `-j3` compile and focused regression PASS (2026-09-23)
 
 2026-09-23：按用户要求放弃 sanitizer 构建，重新配置仓库根 `build/` 的普通 `--with-tests`
