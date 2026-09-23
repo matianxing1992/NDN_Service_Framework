@@ -36,6 +36,40 @@ namespace ndnsf_distributed_repo {
 class RepoSourceProvider final : public ndnsf::di::RepositorySourceProvider,
                                  public ndnsf::di::RepositoryArtifactPublisher
 {
+  class RangeSource final : public ndnsf::di::NativeCanonicalByteRangeSource
+  {
+  public:
+    RangeSource(std::shared_ptr<RepoCore> repo, RepoObjectManifest manifest)
+      : m_repo(std::move(repo)), m_manifest(std::move(manifest))
+    {
+      if (!m_repo || m_manifest.objectName.empty() || m_manifest.size == 0)
+        throw std::invalid_argument("Repo source range identity is incomplete");
+    }
+
+    std::uint64_t size() const noexcept override { return m_manifest.size; }
+
+    std::vector<std::uint8_t> read(std::uint64_t offset,
+                                   std::uint64_t length) const override
+    {
+      constexpr std::uint64_t kWindow = 1U << 20;
+      if (offset > size() || length > size() - offset || length > kWindow)
+        throw std::out_of_range("Repo source range exceeds bounded window");
+      if (length == 0)
+        return {};
+      const auto current = m_repo->getManifest(m_manifest.objectName);
+      if (current.objectName != m_manifest.objectName ||
+          current.sha256 != m_manifest.sha256 || current.size != m_manifest.size ||
+          current.generation != m_manifest.generation ||
+          current.operationId != m_manifest.operationId)
+        throw std::runtime_error("Repo source publication identity changed");
+      return m_repo->getRange(m_manifest.objectName, {offset, length});
+    }
+
+  private:
+    std::shared_ptr<RepoCore> m_repo;
+    RepoObjectManifest m_manifest;
+  };
+
 public:
   using Fallback = ndnsf::di::RepositorySourceProvider::Fallback;
 
@@ -59,6 +93,223 @@ public:
   {
     if (!m_repo)
       throw std::invalid_argument("RepoSourceProvider requires RepoCore");
+  }
+
+  std::optional<ndnsf::di::NativePreparedCanonicalPublication> lookupPrepared(
+    const ndnsf::di::RepositoryPreparedLookupRequest& request) const override
+  {
+    if (std::chrono::steady_clock::now() >= request.deadline)
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Timeout,
+        "repository prepared lookup deadline expired");
+    if (request.modelKey.empty() || request.serviceName.empty() ||
+        request.catalogConfigurationJson.empty())
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        "repository prepared lookup identity is incomplete");
+
+    const auto catalog = ndnsf::di::nativeParseJson(request.catalogConfigurationJson);
+    const auto model = ndnsf::di::NativeModelDescriptor::fromCanonicalJson(
+      ndnsf::di::nativeCanonicalJson(catalog.at("model")));
+    const auto& source = catalog.at("source");
+    const auto& recipe = catalog.at("recipe");
+    const auto& publication = catalog.at("publication");
+    const auto artifactRoot = publication.at("artifact_root").get<std::string>();
+    const auto identity = ndnsf::di::nativePlanningDigest(request.catalogConfigurationJson);
+    const auto root = artifactRoot + "/prepared/" + identity.substr(7);
+    const auto rootName = root + "/manifest";
+    // Publish commits the root and its dependency objects under the same Repo
+    // publication lock.  Lookup must take that lock as well, otherwise a
+    // concurrent reader can observe a root before the referenced objects are
+    // committed and incorrectly classify a valid publication as corrupt.
+    auto repoPublicationLock = m_repo->acquirePublicationLock();
+    if (!m_repo->has(rootName))
+      return std::nullopt;
+
+    const auto reject = [] (const std::string& reason = {}) {
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        "repository prepared receipt is corrupt or conflicts with the requested catalog" +
+          (reason.empty() ? std::string{} : ": " + reason));
+    };
+    const auto checkObject = [&] (const std::string& name, const std::string& digest,
+                                  std::uint64_t bytes) {
+      if (name.empty() || digest.size() != 71 || digest.compare(0, 7, "sha256:") != 0)
+        reject("object identity is incomplete");
+      if (!m_repo->has(name))
+        return false;
+      const auto manifest = m_repo->getManifest(name);
+      if (manifest.objectName != name || manifest.sha256 != digest.substr(7) ||
+          manifest.size != bytes)
+        reject("object manifest differs from the receipt");
+      return true;
+    };
+
+    const auto rootManifest = m_repo->getManifest(rootName);
+    const auto rootBytes = m_repo->get(rootName);
+    const auto manifestJson = std::string(rootBytes.begin(), rootBytes.end());
+    if (rootManifest.size != manifestJson.size() ||
+        "sha256:" + rootManifest.sha256 != ndnsf::di::nativePlanningDigest(manifestJson))
+      reject("root manifest digest or size is invalid");
+    if (request.maxPublicationBytes != 0 && rootBytes.size() > request.maxPublicationBytes)
+      reject("root publication exceeds the lookup bound");
+
+    ndnsf::di::NativeJson rootJson;
+    try {
+      rootJson = ndnsf::di::nativeParseJson(manifestJson);
+      const auto& metadata = rootJson.at("metadata");
+      const auto expectedSourceBytes = source.value(
+        "bytes", metadata.value("canonicalSourceBytes", std::uint64_t{0}));
+      const auto expectedInitializerBytes = source.value(
+        "initializer_bytes", metadata.value("canonicalInitializerBytes", std::uint64_t{0}));
+      const auto expectedInitializerName = source.value("initializer_digest", std::string{}).empty()
+        ? std::string{} : root + "/initializer";
+      if (rootJson.value("schema", std::string{}) !=
+            "ndnsf-di-canonical-model-manifest-v1")
+        reject("root schema differs from the requested catalog");
+      if (rootJson.value("state", std::string{}) != "ACTIVE")
+        reject("root state is not ACTIVE");
+      if (rootJson.value("publicationIdentityDigest", std::string{}) != identity)
+        reject("root publication identity differs from the requested catalog");
+      if (rootJson.value("artifactProfileDigest", std::string{}) !=
+            recipe.at("artifact_profile_digest").get<std::string>())
+        reject("root artifact profile differs from the requested catalog");
+      if (rootJson.value("modelIdentityDigest", std::string{}) != model.contentDigest)
+        reject("root model identity differs from the requested catalog");
+      if (rootJson.value("modelName", std::string{}) != model.modelName)
+        reject("root model name differs from the requested catalog");
+      if (metadata.value("modelKey", std::string{}) != request.modelKey)
+        reject("root model key differs from the requested catalog");
+      if (metadata.value("serviceName", std::string{}) != request.serviceName)
+        reject("root service name differs from the requested catalog");
+      if (metadata.value("canonicalSourceDataName", std::string{}) != root + "/source")
+        reject("root canonical source name differs from the requested catalog");
+      if (metadata.value("canonicalSourceDigest", std::string{}) != source.at("digest").get<std::string>())
+        reject("root canonical source digest differs from the requested catalog");
+      if (metadata.value("canonicalSourceBytes", std::uint64_t{0}) != expectedSourceBytes)
+        reject("root canonical source size differs from the requested catalog");
+      if (metadata.value("canonicalInitializerDataName", std::string{}) != expectedInitializerName)
+        reject("root initializer name differs from the requested catalog");
+      if (metadata.value("canonicalInitializerObjectDigest", std::string{}) !=
+            source.value("initializer_digest", std::string{}))
+        reject("root initializer digest differs from the requested catalog");
+      if (metadata.value("canonicalGraphDigest", std::string{}) !=
+            source.at("canonical_graph_digest").get<std::string>())
+        reject("root graph digest differs from the requested catalog");
+      if (metadata.value("packageManifestDigest", std::string{}) !=
+            publication.value("package_manifest_digest",
+                             source.at("model_manifest_digest").get<std::string>()))
+        reject("root package manifest differs from the requested catalog");
+
+      if (!checkObject(root + "/source", source.at("digest").get<std::string>(), expectedSourceBytes))
+        return std::nullopt;
+      if (!expectedInitializerName.empty())
+        if (!checkObject(expectedInitializerName, source.at("initializer_digest").get<std::string>(),
+                         expectedInitializerBytes))
+          return std::nullopt;
+
+      const auto layerDigests = rootJson.value("layerManifestDigests",
+                                                std::vector<std::string>{});
+      if (layerDigests != publication.value("layer_manifest_digests",
+                                             std::vector<std::string>{}))
+        reject("layer manifest list differs from the root receipt");
+      const auto layerReferences = rootJson.value("layerReferences", ndnsf::di::NativeJson::array());
+      if (layerReferences.size() != layerDigests.size())
+        reject("layer reference count differs from the root receipt");
+      std::vector<std::string> layerNames;
+      for (std::size_t i = 0; i < layerReferences.size(); ++i) {
+        const auto& item = layerReferences.at(i);
+        const auto name = item.value("dataName", std::string{});
+        if (item.value("digest", std::string{}) != layerDigests[i] || name.empty())
+          reject("layer reference differs from the root receipt");
+        if (!checkObject(name, layerDigests[i], item.value("bytes", std::uint64_t{0})))
+          return std::nullopt;
+        layerNames.push_back(name);
+      }
+
+      ndnsf::di::NativePreparedCanonicalPublication receipt;
+      receipt.sourceDataName = root + "/source";
+      receipt.initializerDataName = expectedInitializerName;
+      receipt.rootDataName = rootName;
+      receipt.canonicalManifestJson = manifestJson;
+      receipt.manifestDigest = ndnsf::di::nativePlanningDigest(manifestJson);
+      receipt.artifactProfileDigest = rootJson.at("artifactProfileDigest").get<std::string>();
+      receipt.layerDataNames = std::move(layerNames);
+      receipt.layerManifestDigests = layerDigests;
+      receipt.rollbackOwned = false;
+
+      const auto materialName = metadata.value("materialManifestDataName", std::string{});
+      if (!materialName.empty()) {
+        const auto materialDigest = metadata.at("materialManifestDigest").get<std::string>();
+        const auto materialBytes = metadata.at("materialManifestBytes").get<std::uint64_t>();
+        if (!checkObject(materialName, materialDigest, materialBytes))
+          return std::nullopt;
+        const auto materialWire = m_repo->get(materialName);
+        auto material = ndnsf::di::parseNativeCanonicalMaterialManifest(materialWire);
+        if (material->manifestDigest != metadata.value("materialIdentityDigest", std::string{}) ||
+            material->sourceDigest != source.at("digest").get<std::string>() ||
+            material->graphDigest != source.at("canonical_graph_digest").get<std::string>())
+          reject("material manifest identity differs from the source");
+        receipt.materialManifestDataName = materialName;
+        receipt.materialManifestDigest = materialDigest;
+        receipt.materialManifestBytes = materialBytes;
+        receipt.materialManifest = std::move(material);
+        const auto materialReceiptName = metadata.value("materialReceiptDataName", std::string{});
+        const auto materialReceiptDigest = metadata.value("materialReceiptDigest", std::string{});
+        const auto materialReceiptBytes = metadata.value("materialReceiptBytes", std::uint64_t{0});
+        const bool hasMaterialReceipt = metadata.contains("materialReceiptDataName") ||
+          metadata.contains("materialReceiptDigest") || metadata.contains("materialReceiptBytes");
+        if (hasMaterialReceipt &&
+            (materialReceiptName.empty() || materialReceiptDigest.empty() || materialReceiptBytes == 0))
+          reject("material receipt fields are incomplete");
+        if (hasMaterialReceipt) {
+          if (!checkObject(materialReceiptName, materialReceiptDigest, materialReceiptBytes))
+            return std::nullopt;
+          receipt.materialReceiptDataName = materialReceiptName;
+          receipt.materialReceiptDigest = materialReceiptDigest;
+          receipt.materialReceiptBytes = materialReceiptBytes;
+        }
+        const auto objects = metadata.value("materialObjects", ndnsf::di::NativeJson::array());
+        if (!objects.is_array())
+          reject("material payload list is not an array");
+        std::set<std::string> expectedPayloadIds;
+        for (const auto& reference : receipt.materialManifest->references) {
+          expectedPayloadIds.insert(reference.payloadId);
+          expectedPayloadIds.insert(reference.chunkPayloadIds.begin(), reference.chunkPayloadIds.end());
+        }
+        std::set<std::string> seenPayloadIds;
+        for (const auto& object : objects) {
+          const auto payloadId = object.value("payloadId", std::string{});
+          const auto name = object.value("dataName", std::string{});
+          const auto digest = object.value("digest", std::string{});
+          const auto bytes = object.value("bytes", std::uint64_t{0});
+          if (payloadId.empty() || !seenPayloadIds.insert(payloadId).second ||
+              !expectedPayloadIds.count(payloadId))
+            reject("material payload reference is invalid or duplicated");
+          if (!checkObject(name, digest, bytes))
+            return std::nullopt;
+          receipt.materialPayloadIds.push_back(payloadId);
+          receipt.materialDataNames.push_back(name);
+          receipt.materialDigests.push_back(digest);
+        }
+        if (seenPayloadIds != expectedPayloadIds)
+          reject("material payload references are incomplete");
+      }
+      receipt.validate();
+      return receipt;
+    }
+    catch (const ndnsf::di::RepositorySourceError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        std::string("repository prepared receipt is invalid: ") + error.what());
+    }
+    catch (...) {
+      reject();
+    }
+    return std::nullopt;
   }
 
   ndnsf::di::NativeCanonicalSource load(
@@ -211,7 +462,7 @@ public:
           // The first fallback already loaded and validated the complete
           // canonical source. Reuse its initializer instead of reading the
           // large source a second time on an external-data model.
-          initializerBytes = std::move(sourceValue.initializerBytes);
+          initializerBytes = sourceValue.initializerBytes->copy();
         }
         else {
           if (!sourceFallback)
@@ -219,7 +470,7 @@ public:
               ndnsf::di::RepositorySourceError::Kind::Unavailable,
               "repository initializer is absent and no fallback is configured");
           auto fallbackValue = sourceFallback(request);
-          initializerBytes = std::move(fallbackValue.initializerBytes);
+          initializerBytes = fallbackValue.initializerBytes->copy();
         }
         if (!initializerBytes || initializerBytes->empty() ||
             initializerBytes->size() > request.maxSourceBytes ||
@@ -231,6 +482,8 @@ public:
         ingestObject(initializerName, *initializerBytes, "canonical-initializer");
       }
       sourceValue.initializerBytes = readObject(initializerName, initializerDigest, 0);
+      sourceValue.initializerRangeSource = std::make_shared<RangeSource>(
+        m_repo, m_repo->getManifest(initializerName));
     }
     return sourceValue;
   }
@@ -297,7 +550,13 @@ public:
       previousEnd = layer.layerEnd;
     }
 
-    const auto suffix = model.canonicalSourceDigest.substr(7);
+    const auto publicationIdentity = options.publicationIdentityDigest.empty()
+      ? model.canonicalSourceDigest : options.publicationIdentityDigest;
+    if (publicationIdentity.size() != 71 || publicationIdentity.compare(0, 7, "sha256:") != 0)
+      throw ndnsf::di::RepositorySourceError(
+        ndnsf::di::RepositorySourceError::Kind::Unavailable,
+        "repository publication identity digest is invalid");
+    const auto suffix = publicationIdentity.substr(7);
     const auto root = options.artifactRoot + "/prepared/" + suffix;
     const auto sourceName = root + "/source";
     const auto initializerName = root + "/initializer";
@@ -331,7 +590,7 @@ public:
       if (source.initializerBytes) add(source.initializerBytes->size());
       for (const auto& layer : source.layerPayloads) add(layer.bytes.size());
       if (source.materialManifest) {
-        for (const auto& payload : source.materialManifest->payloads) add(payload.bytes.size());
+        for (const auto& payload : source.materialManifest->payloads) add(payload.byteSize());
         add(source.materialManifest->canonicalJson().size());
       }
     };
@@ -383,6 +642,7 @@ public:
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "repository prepared artifact identity conflicts with the requested model");
       };
+      bool complete = true;
       try {
         const auto rootJson = ndnsf::di::nativeParseJson(manifestJson);
         const auto metadata = rootJson.at("metadata");
@@ -393,6 +653,8 @@ public:
             rootJson.value("state", std::string{}) != "ACTIVE" ||
             rootJson.value("artifactProfileDigest", std::string{}) !=
               options.artifactProfileDigest ||
+            rootJson.value("publicationIdentityDigest", std::string{}) !=
+              publicationIdentity ||
             rootJson.value("modelIdentityDigest", std::string{}) !=
               model.descriptor.contentDigest ||
             rootJson.value("modelName", std::string{}) != model.descriptor.modelName ||
@@ -431,6 +693,8 @@ public:
         const auto checkObject = [&] (const std::string& name,
                                       const std::string& expectedDigest,
                                       std::uint64_t expectedBytes) {
+          if (!m_repo->has(name))
+            return false;
           const auto manifest = m_repo->getManifest(name);
           if (expectedDigest.size() < 7 || expectedDigest.compare(0, 7, "sha256:") != 0 ||
               manifest.objectName != name || manifest.size != expectedBytes ||
@@ -451,11 +715,13 @@ public:
           }
           if (ndnsf::di::nativePlanningDigest(bytes.data(), bytes.size()) != expectedDigest)
             rejectConflict();
+          return true;
         };
-        checkObject(sourceName, model.canonicalSourceDigest, model.canonicalSourceBytes);
+        complete = checkObject(sourceName, model.canonicalSourceDigest,
+                               model.canonicalSourceBytes) && complete;
         if (source.initializerBytes)
-          checkObject(initializerName, model.canonicalInitializerObjectDigest,
-                      model.canonicalInitializerBytes);
+          complete = checkObject(initializerName, model.canonicalInitializerObjectDigest,
+                                 model.canonicalInitializerBytes) && complete;
         if (!source.layerPayloads.empty()) {
           const auto& layerReferences = rootJson.at("layerReferences");
           for (std::size_t i = 0; i < source.layerPayloads.size(); ++i) {
@@ -470,13 +736,13 @@ public:
                 reference.value("digest", std::string{}) != layer.digest ||
                 reference.value("bytes", std::uint64_t{0}) != layer.bytes.size())
               rejectConflict();
-            checkObject(layerName, layer.digest, layer.bytes.size());
+            complete = checkObject(layerName, layer.digest, layer.bytes.size()) && complete;
           }
         }
         if (source.materialManifest) {
-          checkObject(materialManifestName,
+          complete = checkObject(materialManifestName,
             ndnsf::di::nativePlanningDigest(source.materialManifest->canonicalJson()),
-            source.materialManifest->canonicalJson().size());
+            source.materialManifest->canonicalJson().size()) && complete;
           const auto& materialObjects = metadata.at("materialObjects");
           if (!materialObjects.is_array() || materialObjects.size() != materialPayloadIds.size())
             rejectConflict();
@@ -485,13 +751,18 @@ public:
             if (object.value("payloadId", std::string{}) != materialPayloadIds[i] ||
                 object.value("dataName", std::string{}) != materialNames[i] ||
                 object.value("digest", std::string{}) != materialDigests[i] ||
-                object.value("bytes", std::uint64_t{0}) != source.materialManifest->payloads[i].bytes.size())
+                object.value("bytes", std::uint64_t{0}) != source.materialManifest->payloads[i].byteSize())
               rejectConflict();
-            checkObject(materialNames[i], materialDigests[i], source.materialManifest->payloads[i].bytes.size());
+            complete = checkObject(materialNames[i], materialDigests[i],
+                                   source.materialManifest->payloads[i].byteSize()) && complete;
           }
         }
-        checkObject(rootName, ndnsf::di::nativePlanningDigest(manifestJson),
-                    manifestJson.size());
+        if (complete) {
+          complete = checkObject(rootName, ndnsf::di::nativePlanningDigest(manifestJson),
+                                 manifestJson.size());
+          if (!complete)
+            rejectConflict();
+        }
       }
       catch (const ndnsf::di::RepositorySourceError&) {
         throw;
@@ -499,9 +770,11 @@ public:
       catch (...) {
         rejectConflict();
       }
-      const auto receipt = makeReceipt(manifestJson);
-      ++m_publicationHits;
-      return receipt;
+      if (complete) {
+        const auto receipt = makeReceipt(manifestJson);
+        ++m_publicationHits;
+        return receipt;
+      }
     }
 
     std::vector<RepoObjectManifest> ownedManifests;
@@ -607,7 +880,7 @@ public:
       }
       if (source.materialManifest) {
         for (std::size_t i = 0; i < source.materialManifest->payloads.size(); ++i)
-          putRanges(materialNames[i], source.materialManifest->payloads[i].bytes,
+          putRanges(materialNames[i], source.materialManifest->payloads[i].copyBytes(),
                     "ndnsf-di-canonical-material");
         const auto materialManifestJson = source.materialManifest->canonicalJson();
         const std::vector<std::uint8_t> materialManifestBytes(
@@ -636,12 +909,13 @@ public:
           materialObjects.push_back({{"payloadId", materialPayloadIds[i]},
                                      {"dataName", materialNames[i]},
                                      {"digest", materialDigests[i]},
-                                     {"bytes", source.materialManifest->payloads[i].bytes.size()}});
+                                     {"bytes", source.materialManifest->payloads[i].byteSize()}});
         metadata["materialObjects"] = std::move(materialObjects);
       }
       ndnsf::di::NativeJson rootJson{
         {"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
         {"artifactProfileDigest", options.artifactProfileDigest},
+        {"publicationIdentityDigest", publicationIdentity},
         {"modelIdentityDigest", model.descriptor.contentDigest},
         {"modelName", model.descriptor.modelName}, {"metadata", std::move(metadata)}};
       if (!options.layerManifestDigests.empty()) {
@@ -826,6 +1100,7 @@ public:
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "selected material dependency is absent from manifest");
       selectedIds.insert(match->payloadId);
+      selectedIds.insert(match->chunkPayloadIds.begin(), match->chunkPayloadIds.end());
     }
     for (const auto& reference : resultManifest->references) {
       if (reference.kind == "shared-initializer" &&
@@ -843,6 +1118,7 @@ public:
       const auto digest = object->second.value("digest", std::string{});
       const auto expectedSize = object->second.value("bytes", std::uint64_t{0});
       const auto* reference = static_cast<const ndnsf::di::NativeCanonicalSource::MaterialReference*>(nullptr);
+      bool directReference = false;
       for (const auto& candidate : resultManifest->references) {
         if (candidate.payloadId == payloadId) {
           if (reference != nullptr &&
@@ -850,16 +1126,26 @@ public:
             throw ndnsf::di::RepositorySourceError(
               ndnsf::di::RepositorySourceError::Kind::Unavailable,
               "material payload references disagree");
-          if (reference == nullptr)
-            reference = &candidate;
+          reference = &candidate;
+          directReference = true;
+        }
+        else if (std::find(candidate.chunkPayloadIds.begin(),
+                           candidate.chunkPayloadIds.end(), payloadId) !=
+                 candidate.chunkPayloadIds.end()) {
+          if (reference != nullptr && reference->payloadId != candidate.payloadId)
+            throw ndnsf::di::RepositorySourceError(
+              ndnsf::di::RepositorySourceError::Kind::Unavailable,
+              "material payload belongs to multiple references");
+          reference = &candidate;
         }
       }
       if (dataName.empty() || digest.empty() || expectedSize == 0)
         throw ndnsf::di::RepositorySourceError(
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "selected material payload receipt is incomplete");
-      if (reference == nullptr || reference->digest != digest ||
-          reference->bytes != expectedSize)
+      if (reference == nullptr ||
+          (directReference && (reference->digest != digest ||
+                               reference->bytes != expectedSize)))
         throw ndnsf::di::RepositorySourceError(
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "selected material payload differs from manifest reference");

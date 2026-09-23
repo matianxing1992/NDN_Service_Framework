@@ -85,4 +85,25 @@ def build(bld):
                 use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 install_path=None)
 
+    bld.program(name='Spec188RepoFileBackend',
+                target='Spec188RepoFileBackend',
+                source=['examples/Spec188RepoFileBackend.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path=None)
+
+    bld.program(name='Spec188RepoMemoryBudget',
+                target='Spec188RepoMemoryBudget',
+                source=['examples/Spec188RepoMemoryBudget.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path=None)
+
+    bld.program(name='Spec188RepoRangeTransfer',
+                target='Spec188RepoRangeTransfer',
+                source=['examples/Spec188RepoRangeTransfer.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path=None)
+
     bld.add_post_fun(_install_py_repoclient)

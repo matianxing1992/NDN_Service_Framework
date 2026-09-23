@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
@@ -59,6 +60,35 @@ int64ArrayFromJson(const boost::property_tree::ptree& node, const std::string& k
     values.push_back(item.second.get_value<std::int64_t>());
   }
   return values;
+}
+
+bool
+validStateSuccessorMap(const std::string& encoded,
+                        const std::vector<std::string>& stateInputs,
+                        const std::vector<std::string>& stateOutputs)
+{
+  if (encoded.empty()) {
+    return true;
+  }
+  std::set<std::string> inputs;
+  std::set<std::string> outputs;
+  std::size_t start = 0;
+  while (start < encoded.size()) {
+    const auto end = encoded.find(',', start);
+    const auto item = encoded.substr(start, end == std::string::npos
+      ? std::string::npos : end - start);
+    const auto separator = item.find('=');
+    if (separator == std::string::npos || separator == 0 ||
+        separator + 1 >= item.size() || item.find('=', separator + 1) != std::string::npos ||
+        !inputs.insert(item.substr(0, separator)).second ||
+        !outputs.insert(item.substr(separator + 1)).second) {
+      return false;
+    }
+    start = end == std::string::npos ? encoded.size() : end + 1;
+  }
+  return inputs.size() == stateInputs.size() && outputs.size() == stateOutputs.size() &&
+    std::set<std::string>(stateInputs.begin(), stateInputs.end()) == inputs &&
+    std::set<std::string>(stateOutputs.begin(), stateOutputs.end()) == outputs;
 }
 
 std::vector<NativeAssemblyTensorContractV3>
@@ -347,6 +377,7 @@ tensorEndpointFromV3Json(const boost::property_tree::ptree& node)
     endpoint.consumerRoles = {endpoint.consumerRole};
   }
   endpoint.tensorId = node.get<std::string>("tensor_id", "");
+  endpoint.bundleTensorNames = stringArrayFromJson(node, "bundle_tensor_names");
   endpoint.tensorDigest = node.get<std::string>("tensor_digest", "");
   endpoint.layoutDigest = node.get<std::string>("layout_digest", "");
   endpoint.targetLayoutDigest = node.get<std::string>(
@@ -360,6 +391,13 @@ tensorEndpointFromV3Json(const boost::property_tree::ptree& node)
   endpoint.hardDeadlineMs =
     node.get<std::uint64_t>("hard_deadline_ms", 0);
   endpoint.endpointDigest = node.get<std::string>("endpoint_digest", "");
+  const std::set<std::string> bundleTensorNames(
+    endpoint.bundleTensorNames.begin(), endpoint.bundleTensorNames.end());
+  if (bundleTensorNames.size() != endpoint.bundleTensorNames.size() ||
+      std::any_of(endpoint.bundleTensorNames.begin(), endpoint.bundleTensorNames.end(),
+                  [] (const auto& name) { return name.empty(); })) {
+    throw std::invalid_argument("invalid V3 bundle tensor names");
+  }
   const bool roleSource = endpoint.sourceKind == "ROLE";
   const bool applicationInput = endpoint.sourceKind == "APPLICATION_INPUT";
   if (endpoint.producerNamespace.empty() ||
@@ -530,6 +568,7 @@ sameTensorEndpoint(const NativeTensorEndpointV3& left,
          left.producerRank == right.producerRank &&
          left.consumerRoles == right.consumerRoles &&
          left.tensorId == right.tensorId &&
+         left.bundleTensorNames == right.bundleTensorNames &&
          left.tensorDigest == right.tensorDigest &&
          left.layoutDigest == right.layoutDigest &&
          left.targetLayoutDigest == right.targetLayoutDigest &&
@@ -891,6 +930,16 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       *generation, "state_input_names");
     contract.stateOutputNames = stringArrayFromJson(
       *generation, "state_output_names");
+    contract.stateSuccessorMap = generation->get<std::string>(
+      "state_successor_map", generation->get<std::string>("kv_tensor_map", ""));
+    contract.positionInputPolicy = generation->get<std::string>(
+      "position_input_policy", "");
+    contract.attentionMaskInputName = generation->get<std::string>(
+      "attention_mask_input_name", "");
+    contract.positionIdsInputName = generation->get<std::string>(
+      "position_ids_input_name", "");
+    contract.cachePositionInputName = generation->get<std::string>(
+      "cache_position_input_name", "");
     contract.eosTokenIds = int64ArrayFromJson(*generation, "eos_token_ids");
     contract.samplingDigest = generation->get<std::string>(
       "sampling_digest", "");
@@ -919,6 +968,12 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       contract.stateInputNames.begin(), contract.stateInputNames.end());
     const std::set<std::string> uniqueOutputs(
       contract.stateOutputNames.begin(), contract.stateOutputNames.end());
+    if (!validStateSuccessorMap(contract.stateSuccessorMap,
+                                contract.stateInputNames,
+                                contract.stateOutputNames)) {
+      throw std::invalid_argument(
+        "V3 Selection generation successor map is incomplete");
+    }
     const auto feedbackCount = std::count_if(
       projection.plan.dependencies.begin(), projection.plan.dependencies.end(),
       [] (const auto& dependency) {
@@ -946,7 +1001,7 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
                     return !value.empty() && value.size() <= 256;
                   });
     if (contract.mode != "TOKEN_STREAMING" ||
-        contract.maxGeneratedTokens == 0 || contract.maxGeneratedTokens > 64 ||
+        contract.maxGeneratedTokens == 0 || contract.maxGeneratedTokens > MAX_NATIVE_GENERATED_TOKENS ||
         contract.tokenInputName.empty() || contract.stateInputNames.empty() ||
         contract.stateInputNames.size() != contract.stateOutputNames.size() ||
         uniqueInputs.size() != contract.stateInputNames.size() ||
@@ -1304,7 +1359,50 @@ roleSpecFromSelectionProjectionV3(
   const NativeSelectionProjectionV3& projection,
   const std::string& localProvider)
 {
+  return roleSpecFromSelectionProjectionV3(projection, localProvider, 0);
+}
+
+RoleSpec
+roleSpecFromSelectionProjectionV3(
+  const NativeSelectionProjectionV3& projection,
+  const std::string& localProvider,
+  std::uint64_t sequence)
+{
   const auto& dataflow = projection.dataflow;
+  const auto& generation = projection.generationContract;
+  if ((!generation.enabled && sequence != 0) ||
+      (generation.enabled && (generation.streamingOperationStride == 0 ||
+       generation.maxGeneratedTokens == 0 || generation.maxGeneratedTokens > MAX_NATIVE_GENERATED_TOKENS ||
+       sequence > generation.maxGeneratedTokens))) {
+    throw std::invalid_argument("V3 generation sequence exceeds sealed bounds");
+  }
+  if (generation.enabled) {
+    const auto verifyEpochs = [&](const std::vector<NativeTensorEndpointV3>& endpoints) {
+      std::map<std::string, std::set<std::uint64_t>> epochsByTransfer;
+      for (const auto& endpoint : endpoints) {
+        if (endpoint.sourceKind != "ROLE") continue;
+        const auto epoch = endpoint.round / generation.streamingOperationStride;
+        auto base = endpoint;
+        base.round %= generation.streamingOperationStride;
+        base.endpointDigest.clear();
+        base.manifestDigest.clear();
+        const auto key = nativeCanonicalJson(nativeEndpointJson(base));
+        if (epoch > generation.maxGeneratedTokens ||
+            !epochsByTransfer[key].insert(epoch).second)
+          throw std::invalid_argument("V3 generation endpoint epoch is repeated or outside bounds");
+      }
+      for (const auto& transfer : epochsByTransfer)
+        if (transfer.second.size() != generation.maxGeneratedTokens + 1)
+          throw std::invalid_argument("V3 generation endpoint epochs are incomplete");
+    };
+    verifyEpochs(dataflow.mayPublish);
+    verifyEpochs(dataflow.mustFetch);
+  }
+  const auto atSequence = [&](const NativeTensorEndpointV3& endpoint) {
+    if (!generation.enabled) return true;
+    if (endpoint.sourceKind == "APPLICATION_INPUT") return sequence == 0;
+    return endpoint.round / generation.streamingOperationStride == sequence;
+  };
   if (dataflow.role.empty() ||
       dataflow.role != projection.executionRole.roleId ||
       dataflow.requestId != projection.requestId ||
@@ -1383,6 +1481,7 @@ roleSpecFromSelectionProjectionV3(
     edge.expectedSegments = 0;
     edge.expectedBytes = 0;
     edge.tensors = {endpoint.tensorId};
+    edge.bundleTensorNames = endpoint.bundleTensorNames;
     edge.requestId = projection.requestId;
     edge.attemptEpoch = projection.attempt;
     edge.useNdnsfDataV1 = true;
@@ -1451,11 +1550,11 @@ roleSpecFromSelectionProjectionV3(
   spec.attemptEpoch = projection.attempt;
   spec.outputs.reserve(dataflow.mayPublish.size());
   for (const auto& endpoint : dataflow.mayPublish) {
-    spec.outputs.push_back(makeEdge(endpoint, true));
+    if (atSequence(endpoint)) spec.outputs.push_back(makeEdge(endpoint, true));
   }
   spec.inputs.reserve(dataflow.mustFetch.size());
   for (const auto& endpoint : dataflow.mustFetch) {
-    spec.inputs.push_back(makeEdge(endpoint, false));
+    if (atSequence(endpoint)) spec.inputs.push_back(makeEdge(endpoint, false));
   }
   return spec;
 }

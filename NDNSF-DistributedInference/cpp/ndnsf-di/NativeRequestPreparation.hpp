@@ -48,6 +48,9 @@ struct NativeInspectedModel
   std::uint64_t canonicalSourceBytes = 0;
   std::string canonicalInitializerObjectDigest;
   std::uint64_t canonicalInitializerBytes = 0;
+  // Normalized ONNX initializer identity used by assembly recipes. This is
+  // distinct from the digest of the fetched external initializer object.
+  std::string canonicalInitializerDigest;
 
   void validate() const;
 };
@@ -58,6 +61,9 @@ struct NativeArtifactBinding
   std::map<std::string, std::string> artifactDigestByRole;
   std::string manifestDigest;
   std::string recipeDigest;
+  // False only for an explicitly authenticated metadata-only compatibility
+  // receipt; assignedArtifact remains bound, but Core skips root prefetch.
+  bool artifactPrefetchRequired = true;
   // Filled by ensureArtifacts from the checked request/model, not by its
   // publication port. The sealer refuses a foreign or unbound result.
   std::string requestId;

@@ -1849,7 +1849,8 @@ StreamEventConsumer::StreamEventConsumer(
   std::shared_ptr<StreamInvocationLifecycle> lifecycle, VerifyCallback verify,
   EventCallback onEvent, CompletionCallback onComplete, ErrorCallback onError,
   RetryCallback onRetry, RetryAccountingCallback onRetryAccounting,
-  std::string expectedProgressOperationId)
+  std::string expectedProgressOperationId,
+  std::vector<StreamProgressBinding> expectedProgressBindings)
   : binding_(std::move(binding))
   , options_(std::move(options))
   , eventKey_(std::move(eventKey))
@@ -1861,6 +1862,7 @@ StreamEventConsumer::StreamEventConsumer(
   , onRetry_(std::move(onRetry))
   , onRetryAccounting_(std::move(onRetryAccounting))
   , expectedProgressOperationId_(std::move(expectedProgressOperationId))
+  , expectedProgressBindings_(std::move(expectedProgressBindings))
   , callbackQueue_(options_.callbackQueueCapacity)
 {
   options_.validate();
@@ -1921,6 +1923,25 @@ StreamEventConsumer::prefetchWindow()
   // test transports may invoke synchronously.
   for (const auto& name : names) {
     onRetry_(name);
+  }
+}
+
+void
+StreamEventConsumer::addExpectedProgressBinding(StreamProgressBinding binding)
+{
+  if (binding.providerName.empty() || binding.selectionDigest.empty() ||
+      binding.operationId.empty()) {
+    throw std::invalid_argument("stream progress binding must be complete");
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (std::find_if(expectedProgressBindings_.begin(),
+                  expectedProgressBindings_.end(),
+                  [&binding](const auto& existing) {
+                    return existing.providerName == binding.providerName &&
+                           existing.selectionDigest == binding.selectionDigest &&
+                           existing.operationId == binding.operationId;
+                  }) == expectedProgressBindings_.end()) {
+    expectedProgressBindings_.push_back(std::move(binding));
   }
 }
 
@@ -2043,9 +2064,19 @@ StreamEventConsumer::requestGapRetry()
       return;
     }
     if (retryCount_ >= options_.maxEventRetries) {
-      exhausted = true;
+      if (retryBudgetArmed_) {
+        exhausted = true;
+      }
+      else {
+        // No application event has been published yet.  This is the normal
+        // post-Selection assembly window for a large native model, not a
+        // missing retained event.  Keep polling until the enclosing request
+        // deadline cancels the operation; once the first event is observed,
+        // the existing bounded gap budget applies unchanged.
+        retryCount_ = 0;
+      }
     }
-    else {
+    if (!exhausted) {
       ++retryCount_;
       retryInFlightCursor_ = expectedCursor_;
       nextRetryAt_ = now + std::chrono::milliseconds(options_.interestLifetimeMs);
@@ -2252,6 +2283,7 @@ StreamEventConsumer::bufferOrDeliver(InvocationEventMessage event)
     if (!started_ || failed_ || complete_) {
       return false;
     }
+    retryBudgetArmed_ = true;
     if (event.cursor < expectedCursor_) {
       return true; // exact duplicate or a late retry
     }
@@ -2355,64 +2387,87 @@ StreamEventConsumer::observeAuthenticatedProgress(
   if (binding_.deadlineEpochMs != 0 && epochNow >= binding_.deadlineEpochMs) {
     return false;
   }
-  if (!status.providerName.equals(binding_.producer) ||
-      !status.serviceName.equals(binding_.serviceName) ||
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (failed_ || complete_ || observedEnd_) {
+    return false;
+  }
+  const auto statusProvider = status.providerName.toUri();
+  if (!status.serviceName.equals(binding_.serviceName) ||
       !status.requestId.equals(binding_.requestId) ||
       status.selectionDigest.empty()) {
     return false;
   }
-  const auto selectionDigest = computeStreamSha256(
-    ndn::span<const std::uint8_t>(
-      reinterpret_cast<const std::uint8_t*>(status.selectionDigest.data()),
-      status.selectionDigest.size()));
-  if (selectionDigest != binding_.planDigest) {
+  if (expectedProgressBindings_.empty()) {
+    if (!status.providerName.equals(binding_.producer)) {
+      return false;
+    }
+    const auto selectionDigest = computeStreamSha256(
+      ndn::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(status.selectionDigest.data()),
+        status.selectionDigest.size()));
+    if (selectionDigest != binding_.planDigest) {
+      return false;
+    }
+  }
+  else if (std::none_of(expectedProgressBindings_.begin(),
+                        expectedProgressBindings_.end(),
+                        [&statusProvider, &status](const auto& expected) {
+                          return expected.providerName == statusProvider &&
+                                 expected.selectionDigest == status.selectionDigest;
+                        })) {
     return false;
   }
 
-  const CollaborationMemberStatus* candidate = nullptr;
+  bool acceptedStatus = false;
   for (const auto& member : status.memberStatuses) {
-    if (!member.providerName.equals(binding_.producer) ||
+    if (!member.providerName.equals(status.providerName) ||
+        ((!expectedProgressBindings_.empty()
+          ? std::none_of(expectedProgressBindings_.begin(),
+                        expectedProgressBindings_.end(),
+                        [&statusProvider, &status, &member](const auto& expected) {
+                          return expected.providerName == statusProvider &&
+                                 expected.selectionDigest == status.selectionDigest &&
+                                 expected.operationId == member.operationId;
+                        })
+          : !member.providerName.equals(binding_.producer))) ||
         !member.serviceName.equals(binding_.serviceName) ||
         !member.requestId.equals(binding_.requestId) ||
         member.selectionDigest != status.selectionDigest ||
         member.operation != "ensure-deployment" ||
         member.operationId.empty() || member.sequence == 0 ||
-        expectedProgressOperationId_.empty() ||
-        member.operationId != expectedProgressOperationId_ ||
+        (expectedProgressBindings_.empty() &&
+         (expectedProgressOperationId_.empty() ||
+          member.operationId != expectedProgressOperationId_)) ||
         member.state != "RUNNING" ||
         member.detailsSchema != "ndnsf-di-preparation-progress-v1") {
       continue;
     }
-    if (candidate == nullptr || member.epoch > candidate->epoch ||
-        (member.epoch == candidate->epoch &&
-         member.sequence > candidate->sequence)) {
-      candidate = &member;
+    // A signed, selection-bound RUNNING status is an authenticated liveness
+    // signal even when the Provider has not advanced its sequence since the
+    // previous status query.  Long ONNX assembly can legitimately publish the
+    // same status while the worker is busy; do not turn that live operation
+    // into a transport-gap failure.  The enclosing request deadline remains
+    // the hard upper bound.
+    acceptedStatus = true;
+    const std::string memberKey = statusProvider + "\x1f" +
+                                  status.selectionDigest + "\x1f" +
+                                  member.operationId;
+    const auto progressState = progressStates_.find(memberKey);
+    if (progressState != progressStates_.end() &&
+        (member.epoch < progressState->second.first ||
+         (member.epoch == progressState->second.first &&
+          member.sequence <= progressState->second.second))) {
+      continue;
     }
+    // A single signed status may contain several role members.  Record every
+    // fresh allowlisted tuple, rather than only the highest sequence, so a
+    // stale replay of one role cannot hide a fresh milestone from another.
+    progressStates_[memberKey] = {member.epoch, member.sequence};
   }
-  if (candidate == nullptr) {
+  if (!acceptedStatus) {
     return false;
   }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (failed_ || complete_ || observedEnd_) {
-    return false;
-  }
-  // One stream consumer belongs to one terminal Provider role.  Keep the
-  // first authenticated assembly operation as its source and ignore status
-  // members from other roles in the same collaboration snapshot.
-  if (!progressOperationId_.empty() &&
-      progressOperationId_ != candidate->operationId) {
-    return false;
-  }
-  if (progressOperationId_ == candidate->operationId &&
-      (candidate->epoch < progressEpoch_ ||
-       (candidate->epoch == progressEpoch_ &&
-        candidate->sequence <= progressSequence_))) {
-    return false;
-  }
-  progressOperationId_ = candidate->operationId;
-  progressEpoch_ = candidate->epoch;
-  progressSequence_ = candidate->sequence;
+  retryBudgetArmed_ = true;
   retryCount_ = 0;
   nextRetryAt_ = std::chrono::steady_clock::time_point{};
   return true;

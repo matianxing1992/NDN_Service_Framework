@@ -1360,6 +1360,23 @@ ProviderGroupCoordinator::acceptSegment(
 }
 
 bool
+ProviderGroupCoordinator::beginOperation(std::uint64_t nowMs)
+{
+  if (!m_hasCapability || terminal()) {
+    return false;
+  }
+  if (deadlineExpired(nowMs)) {
+    fail("NDNSF_DATA_V1_HARD_DEADLINE");
+    return false;
+  }
+  // A capability can span multiple dependency operations.  Reset only the
+  // transport-progress baseline here; the authenticated group hard deadline
+  // remains anchored to the first accepted segment.
+  m_lastProgressMs = nowMs;
+  return true;
+}
+
+bool
 ProviderGroupCoordinator::recordProgress(std::uint64_t nowMs)
 {
   if (!m_hasCapability || terminal()) {

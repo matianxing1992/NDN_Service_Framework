@@ -286,6 +286,8 @@ def test_native_helper_requires_and_assembles_external_initializer() -> None:
         result = _run_helper(
             model, "/provider/external", root,
             initializer=initializer, identity=identity)
+        assembled = onnx.load(result["model_path"], load_external_data=False)
+        assert {item.name for item in assembled.graph.initializer} == {"weight"}
         session = ort.InferenceSession(
             Path(result["model_path"]).read_bytes(),
             providers=["CPUExecutionProvider"],

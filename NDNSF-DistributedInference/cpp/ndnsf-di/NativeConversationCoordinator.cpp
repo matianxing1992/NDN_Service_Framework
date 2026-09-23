@@ -19,6 +19,20 @@ void digestField(const std::string& value)
 }
 bool prefix(const std::vector<std::int64_t>& before, const std::vector<std::int64_t>& after)
 { return after.size() >= before.size() && std::equal(before.begin(), before.end(), after.begin()); }
+void validateLocalPlacement(const std::map<std::string, std::string>& placement,
+                            const NativeJson& checkpoint)
+{
+  if (placement.empty()) return; // Legacy records carry no local preference.
+  const auto& receipts = checkpoint.at("roleReceiptDigests");
+  require(placement.size() == receipts.size(), "conversation local placement role cover mismatch");
+  NativeJson roles = NativeJson::array();
+  for (const auto& [role, provider] : placement) {
+    require(receipts.contains(role) && !provider.empty(), "conversation local placement role mismatch");
+    roles.push_back(NativeJson::array({role, provider}));
+  }
+  require(nativePlanningDigest(nativeCanonicalJson(roles)) == checkpoint.at("planRoleMapDigest"),
+          "conversation local placement digest mismatch");
+}
 std::string ticket()
 {
   unsigned char bytes[16];
@@ -217,6 +231,7 @@ NativeConversationTurn NativeConversationCoordinator::beginTurn(
       "DI_NATIVE_CONVERSATION_PARENT_MISMATCH");
     const auto current = s.records.find(c.conversationId);
     require(current != s.records.end(), "conversation transcript unavailable");
+    turn.providersByRole = current->second.checkpoint.providersByRole;
     const auto previous = current->second.checkpoint.transcript.at("canonicalTokenIds").get<std::vector<std::int64_t>>();
     require(prefix(previous, c.canonicalTokenIds) && previous.size() < c.canonicalTokenIds.size(),
       "conversation append prefix mismatch");
@@ -284,6 +299,7 @@ NativeConversationTurn NativeConversationCoordinator::bindInitialPlanRoleMap(
   const auto digest = nativePlanningDigest(nativeCanonicalJson(roleMap));
   pending.turn.parent.planRoleMapDigest = digest;
   pending.turn.parent.expectedRoles = std::move(roles);
+  pending.turn.providersByRole = providersByRole;
   pending.parentPlanRoleMapDigest = digest;
   return pending.turn;
 }
@@ -312,6 +328,7 @@ NativeConversationTurn NativeConversationCoordinator::bindAttemptPlanRoleMap(
   const auto digest = nativePlanningDigest(nativeCanonicalJson(roleMap));
   require(digest != pending.parentPlanRoleMapDigest, "conversation replacement plan map unchanged");
   pending.turn.parent.planRoleMapDigest = digest;
+  pending.turn.providersByRole = providersByRole;
   return pending.turn;
 }
 
@@ -333,9 +350,10 @@ NativeConversationCheckpoint NativeConversationCoordinator::prepareCheckpoint(
   tokens.insert(tokens.end(), owned.acceptedTokenIds.begin(), owned.acceptedTokenIds.end());
   require(tokens == completed.tokenIds, "conversation completed prefix mismatch");
   digestField(completed.modelContractDigest); digestField(completed.tokenizerDigest); digestField(completed.chatTemplateDigest);
-  auto expires = std::min(owned.parent.retentionDeadlineMs,
-    now > std::numeric_limits<std::uint64_t>::max() - 300000 ?
-      std::numeric_limits<std::uint64_t>::max() : now + 300000);
+  // The owner supplies a bounded absolute deadline. Each Provider receipt
+  // further limits it to actual state retention; do not silently replace an
+  // explicitly configured conversation lifetime with an unrelated default.
+  auto expires = owned.parent.retentionDeadlineMs;
   NativeJson digests = NativeJson::object(), receipts = NativeJson::array();
   std::set<std::string> roles(owned.parent.expectedRoles.begin(), owned.parent.expectedRoles.end());
   std::string model;
@@ -376,6 +394,8 @@ NativeConversationCheckpoint NativeConversationCoordinator::prepareCheckpoint(
   nativeValidateConversationTranscript(transcript, cp, nativeInitialPromptTokenCount);
   auto result = recordFromWire(cp, wire, std::move(transcript)).checkpoint;
   result.nativeInitialPromptTokenCount = nativeInitialPromptTokenCount;
+  validateLocalPlacement(owned.providersByRole, cp);
+  result.providersByRole = owned.providersByRole;
   result.requestId = owned.executionRequestId; result.parentCheckpointDigest = owned.parent.parentCheckpointDigest;
   pending.prepared = result; pending.promote = completed.commitProviderState; pending.rollback = completed.rollbackProviderState;
   pending.commitGate = completed.durableCommitGate; pending.finalize = completed.finalizeProviderState;
@@ -394,6 +414,7 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
   auto cp = nativeReadConversationCheckpoint(pending.prepared->wire, s.config.authenticationKeys, s.config.nowMs());
   auto record = recordFromWire(cp, pending.prepared->wire, pending.prepared->transcript);
   record.checkpoint.nativeInitialPromptTokenCount = pending.prepared->nativeInitialPromptTokenCount;
+  record.checkpoint.providersByRole = pending.prepared->providersByRole;
   record.requestContractDigest = pending.turn.parent.requestContractDigest;
   record.checkpoint.requestId = pending.turn.executionRequestId;
   record.checkpoint.parentCheckpointDigest = pending.turn.parent.parentCheckpointDigest;
@@ -420,7 +441,8 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
       auto& current = s.find(turn);
       s.parent(current.turn, &current.parentPlanRoleMapDigest);
       if (s.config.journal) s.config.journal->appendConversation(record.checkpoint.wire,
-        record.checkpoint.transcript, s.config.nowMs(), record.checkpoint.nativeInitialPromptTokenCount);
+        record.checkpoint.transcript, s.config.nowMs(), record.checkpoint.nativeInitialPromptTokenCount,
+        record.checkpoint.providersByRole);
       const auto found = s.records.find(record.checkpoint.conversationId);
       if (found == s.records.end()) s.records.insert(std::move(node));
       else std::swap(found->second, node.mapped());
@@ -481,6 +503,11 @@ void NativeConversationCoordinator::restore()
     s.scope(cp); nativeValidateConversationTranscript(body.at("transcript"), cp, nativeInitialPromptTokenCount);
     auto record = recordFromWire(cp, wire, body.at("transcript"));
     record.checkpoint.nativeInitialPromptTokenCount = nativeInitialPromptTokenCount;
+    if (body.contains("providersByRole")) {
+      record.checkpoint.providersByRole = body.at("providersByRole").get<std::map<std::string, std::string>>();
+      require(!record.checkpoint.providersByRole.empty(), "conversation local placement is empty");
+      validateLocalPlacement(record.checkpoint.providersByRole, cp);
+    }
     const auto found = restored.find(record.checkpoint.conversationId);
     if (found != restored.end()) {
       if (found->second.checkpoint.wire == wire) continue;

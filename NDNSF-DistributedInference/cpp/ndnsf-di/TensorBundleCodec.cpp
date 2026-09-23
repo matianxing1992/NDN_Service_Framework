@@ -293,14 +293,12 @@ decodeGenerationEpochLineage(const std::vector<std::uint8_t>& wire)
 } // namespace
 
 void
-GenerationEpochLineageV1::validate() const
+GenerationEpochLineageV1::validateCore() const
 {
   validateLineageString(requestId, "requestId");
   validateLineageString(planDigest, "planDigest");
   validateLineageString(generationId, "generationId");
   validateLineageString(transitionKind, "transitionKind");
-  validateLineageString(producerRole, "producerRole");
-  validateLineageString(consumerRole, "consumerRole");
   if (attemptEpoch == 0 || streamEpoch == 0 || logicalPrefixTokenCount == 0 ||
       !isSha256Digest(planDigest) || !isSha256Digest(logicalPrefixDigest) ||
       !isSha256Digest(positionDigest) ||
@@ -311,6 +309,22 @@ GenerationEpochLineageV1::validate() const
       (transitionKind != GenerationEpochLineageV1::PREFILL && inferenceEpoch == 0)) {
     throw std::invalid_argument("GenerationEpochLineageV1 core identity is invalid");
   }
+}
+
+void
+GenerationEpochLineageV1::validate() const
+{
+  validateCore();
+  if (producerRole.empty()) {
+    throw std::invalid_argument(
+      "GenerationEpochLineageV1 invalid producerRole: requestId=" +
+      requestId + " attemptEpoch=" + std::to_string(attemptEpoch) +
+      " inferenceEpoch=" + std::to_string(inferenceEpoch) +
+      " consumerRole=" + consumerRole + " operationIndex=" +
+      std::to_string(operationIndex));
+  }
+  validateLineageString(producerRole, "producerRole");
+  validateLineageString(consumerRole, "consumerRole");
 }
 
 bool

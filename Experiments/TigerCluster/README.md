@@ -25,8 +25,9 @@ Tiger分布式推理、SIF构建及Slurm配置的统一入口。当前生产/合
 所有后续SIF构建统一使用 **Apptainer 1.5.3**，实验机也须先核对/升级；命令固定传入 `--expected-apptainer 1.5.3`。登录节点的1.3不作为构建目标，完整规则见[SIF build](docs/sif-build.md#apptainer-version-policy)。历史镜像不因版本升级自动获得新资格。
 
 当前分层交付为 [base SIF + NDNSF](docs/two-layer-delivery.md)：base 提供全部外部依赖与 SDK，
-NDNSF 层统一承载本仓库各模块；可从已有 base 补齐依赖，无需从头重建。兼容入口见 [SIF + APP delivery](docs/sif-app-delivery.md)；
-完整应用 SIF 入口仍保留以回放历史候选。
+NDNSF 层统一承载本仓库模块的选定目标；可从已有 base 补齐依赖，无需从头重建。
+当前正常路径为 `build-local-sif.sh` + Waf-installed 完整 SIF，不需要外置 APP。
+[SIF + APP delivery](docs/sif-app-delivery.md) 仅供历史兼容，不是新镜像的额外构建步骤。
 
 从仓库根运行，参数沿用原脚本契约：
 

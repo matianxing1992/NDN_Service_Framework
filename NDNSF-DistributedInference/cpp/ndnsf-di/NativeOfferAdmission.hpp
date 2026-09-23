@@ -12,6 +12,9 @@ struct NativeOfferBindingContext {
   std::uint64_t attempt = 0;
   std::string serviceName, modelDigest, graphDigest;
   std::uint64_t deadlineMs = 0;
+  // Local, authenticated conversation placement preference, never admission
+  // authority or evidence that the Provider still retains usable KV state.
+  std::map<std::string, std::string> preferredProvidersByRole;
 };
 /** Only the admission owner constructs verified observations; no lease authority. */
 class NativeAdmittedOfferV3 {

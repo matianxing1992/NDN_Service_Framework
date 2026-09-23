@@ -2078,6 +2078,7 @@ namespace ndn_service_framework
         m_testNacProducer = std::make_unique<ndn::nacabe::CacheProducer>(
             m_face, keyChain, nac_validator, identityCert,
             attrAuthorityCertificate);
+        m_testNacProducer->refreshPublicParameters();
     }
 
     void
@@ -2099,6 +2100,20 @@ namespace ndn_service_framework
     ServiceUser::isNacConsumerReadyForTest()
     {
         return activeNacConsumer().readyForDecryption();
+    }
+
+    bool
+    ServiceUser::isNacProducerReadyForTest()
+    {
+        const auto& producer = activeNacProducer();
+        return !producer.getPublicParamsDataName().empty() &&
+               !producer.getPublicParamsDigest().empty();
+    }
+
+    void
+    ServiceUser::refreshNacProducerForTest()
+    {
+        activeNacProducer().refreshPublicParameters();
     }
 
     void
@@ -2541,17 +2556,39 @@ namespace ndn_service_framework
         interest.setInterestLifetime(ndn::time::milliseconds(
             std::max(1, timeoutMs)));
 
+        const bool traceStatus = std::getenv("NDNSF_SELECTION_STATUS_TRACE") != nullptr;
+        if (traceStatus) {
+            NDN_LOG_INFO("NDNSF_SELECTION_STATUS_QUERY event=expressed"
+                         << " provider=" << providerName.toUri()
+                         << " service=" << serviceName.toUri()
+                         << " selectionDigest=" << selectionDigest
+                         << " timeoutMs=" << timeoutMs);
+        }
+
         const auto timeoutHandler = std::move(onTimeout);
         m_face.expressInterest(
             interest,
             [this, providerName, serviceName, selectionDigest,
-             onStatus = std::move(onStatus), timeoutHandler](
+             onStatus = std::move(onStatus), timeoutHandler, traceStatus](
                 const ndn::Interest&, const ndn::Data& data) {
+                if (traceStatus) {
+                    NDN_LOG_INFO("NDNSF_SELECTION_STATUS_QUERY event=data-received"
+                                 << " provider=" << providerName.toUri()
+                                 << " service=" << serviceName.toUri()
+                                 << " selectionDigest=" << selectionDigest
+                                 << " name=" << data.getName().toUri());
+                }
                 validator->validate(
                     data,
-                    [providerName, serviceName, selectionDigest, onStatus](
+                    [providerName, serviceName, selectionDigest, onStatus, traceStatus](
                         const ndn::Data& validatedData) {
                         if (!isSignedByIdentity(validatedData, providerName)) {
+                            if (traceStatus) {
+                                NDN_LOG_WARN("NDNSF_SELECTION_STATUS_QUERY event=signer-mismatch"
+                                             << " provider=" << providerName.toUri()
+                                             << " service=" << serviceName.toUri()
+                                             << " selectionDigest=" << selectionDigest);
+                            }
                             return;
                         }
                         auto status = parseSelectionExecutionStatusPayload(
@@ -2559,22 +2596,63 @@ namespace ndn_service_framework
                         if (!status.providerName.equals(providerName) ||
                             !status.serviceName.equals(serviceName) ||
                             status.selectionDigest != selectionDigest) {
+                            if (traceStatus) {
+                                NDN_LOG_WARN("NDNSF_SELECTION_STATUS_QUERY event=payload-mismatch"
+                                             << " provider=" << providerName.toUri()
+                                             << " service=" << serviceName.toUri()
+                                             << " selectionDigest=" << selectionDigest
+                                             << " payloadProvider=" << status.providerName.toUri()
+                                             << " payloadService=" << status.serviceName.toUri()
+                                             << " payloadDigest=" << status.selectionDigest);
+                            }
                             return;
+                        }
+                        if (traceStatus) {
+                            NDN_LOG_INFO("NDNSF_SELECTION_STATUS_QUERY event=accepted"
+                                         << " provider=" << providerName.toUri()
+                                         << " service=" << serviceName.toUri()
+                                         << " selectionDigest=" << selectionDigest
+                                         << " state="
+                                         << selectionExecutionStateToString(status.state)
+                                         << " members=" << status.memberStatuses.size());
                         }
                         if (onStatus) onStatus(status);
                     },
-                    [timeoutHandler](const ndn::Data& badData,
+                    [timeoutHandler, providerName, serviceName, selectionDigest, traceStatus](
+                        const ndn::Data& badData,
                                      const ndn::security::ValidationError&) {
+                        if (traceStatus) {
+                            NDN_LOG_WARN("NDNSF_SELECTION_STATUS_QUERY event=validation-failed"
+                                         << " provider=" << providerName.toUri()
+                                         << " service=" << serviceName.toUri()
+                                         << " selectionDigest=" << selectionDigest
+                                         << " name=" << badData.getName().toUri());
+                        }
                         if (timeoutHandler) timeoutHandler(badData.getName());
                     });
             },
-            [timeoutHandler](
+            [timeoutHandler, providerName, serviceName, selectionDigest, traceStatus](
                 const ndn::Interest& interest, const ndn::lp::Nack&) {
+                if (traceStatus) {
+                    NDN_LOG_WARN("NDNSF_SELECTION_STATUS_QUERY event=nack"
+                                 << " provider=" << providerName.toUri()
+                                 << " service=" << serviceName.toUri()
+                                 << " selectionDigest=" << selectionDigest
+                                 << " name=" << interest.getName().toUri());
+                }
                 if (timeoutHandler) {
                     timeoutHandler(interest.getName());
                 }
             },
-            [timeoutHandler](const ndn::Interest& interest) {
+            [timeoutHandler, providerName, serviceName, selectionDigest, traceStatus](
+                const ndn::Interest& interest) {
+                if (traceStatus) {
+                    NDN_LOG_WARN("NDNSF_SELECTION_STATUS_QUERY event=timeout"
+                                 << " provider=" << providerName.toUri()
+                                 << " service=" << serviceName.toUri()
+                                 << " selectionDigest=" << selectionDigest
+                                 << " name=" << interest.getName().toUri());
+                }
                 if (timeoutHandler) {
                     timeoutHandler(interest.getName());
                 }
@@ -2673,6 +2751,33 @@ namespace ndn_service_framework
             options.queryTimeoutMs);
 
         m_scheduler.schedule(ndn::time::milliseconds(options.queryIntervalMs),
+            [this, requestId, providerName, selectionDigest] {
+                scheduleSelectionStatusQuery(requestId,
+                                             providerName,
+                                             selectionDigest);
+            });
+    }
+
+    void ServiceUser::scheduleInitialSelectionStatusQuery(
+        const ndn::Name& requestId,
+        const ndn::Name& providerName,
+        const std::string& selectionDigest)
+    {
+        auto pending = m_pendingCalls.find(requestId);
+        if (pending == m_pendingCalls.end() ||
+            !pending->second.trackSelectionStatus ||
+            !pending->second.selectionStatusOptions.enabled ||
+            pending->second.hasResponse || pending->second.timedOut) {
+            return;
+        }
+        const auto intervalMs = std::max(
+            1, pending->second.selectionStatusOptions.queryIntervalMs);
+        // Selection is published before the Provider has necessarily
+        // decrypted it and created the digest-bound status record.  Delay the
+        // first query by the same bounded interval used by the retry loop so
+        // the initial Interest cannot race status registration.  Subsequent
+        // queries are scheduled by scheduleSelectionStatusQuery().
+        m_scheduler.schedule(ndn::time::milliseconds(intervalMs),
             [this, requestId, providerName, selectionDigest] {
                 scheduleSelectionStatusQuery(requestId,
                                              providerName,
@@ -3050,6 +3155,7 @@ namespace ndn_service_framework
         m_timelineTrace = enabled;
         if (enabled) {
             setenv("NDNSF_TIMELINE_TRACE", "1", 1);
+            setenv("NDNSF_PHASE_TIMING", "1", 1);
         }
     }
 
@@ -5576,7 +5682,12 @@ namespace ndn_service_framework
         if (m_timelineTrace) {
             logTimelineTrace("user", "request_publish_done", requestId,
                              {{"serviceName", serviceName.toUri()},
-                              {"strategy", std::to_string(strategy)}});
+                              {"strategy", std::to_string(strategy)},
+                              {"attempt", pendingIt != m_pendingCalls.end() &&
+                                  pendingIt->second.streamOptions &&
+                                  pendingIt->second.streamOptions->attemptEpoch != 0 ?
+                                std::to_string(pendingIt->second.streamOptions->attemptEpoch) :
+                                "request"}});
         }
 
         m_strategyMap.emplace(requestId, strategy);
@@ -6753,7 +6864,11 @@ namespace ndn_service_framework
                   << " serviceName=" << serviceName.toUri());
         if (m_timelineTrace) {
             logTimelineTrace("user", "request_created", requestId,
-                             {{"serviceName", serviceName.toUri()}});
+                             {{"serviceName", serviceName.toUri()},
+                              {"attempt", requestMessage.hasStreamRequestOptions() &&
+                                  requestMessage.getStreamRequestOptions().attemptEpoch != 0 ?
+                                std::to_string(requestMessage.getStreamRequestOptions().attemptEpoch) :
+                                "request"}});
         }
 
         admitOrQueuePendingCall(requestId, false, false);
@@ -8193,6 +8308,16 @@ namespace ndn_service_framework
                 throw std::invalid_argument(
                     "collaboration plan selected outside ACK_CLOSED");
             }
+            // Validate the complete selection before creating any external
+            // assignment objects or marking this deferred plan committed.
+            if (!authorizeControllerTransition(participant.service,
+                                               ProtectedTransition::SELECTION)) {
+                throw std::runtime_error("collaboration Selection authorization rejected");
+            }
+            if (participant.assignmentPayload.empty() ||
+                participant.assignmentPayload.size() > 4 * 1024 * 1024) {
+                throw std::length_error("collaboration assignment outside external Data bounds");
+            }
         }
 
         const auto commitDigest = deferredPlanCommitDigest(
@@ -8248,9 +8373,18 @@ namespace ndn_service_framework
                   << " ackClosedDigest=" << ackClosedDigest
                   << " planDigest=" << commitDigest
                   << " selectedCount=" << selected.size());
-        if (!evaluateAckSelection(requestId)) {
-            throw std::runtime_error(
-                "committed collaboration plan produced no Selection");
+        try {
+            if (!evaluateAckSelection(requestId)) {
+                throw std::runtime_error(
+                    "committed collaboration plan produced no Selection");
+            }
+        }
+        catch (...) {
+            // Publication may have partially reached the network. Fail closed
+            // instead of leaving selected state that makes a retry look like
+            // an idempotently successful commit. A new invocation is required.
+            CancelCollaboration(requestId);
+            throw;
         }
         return true;
     }
@@ -9460,6 +9594,20 @@ namespace ndn_service_framework
                 return false;
             }
 
+            const auto phaseAttempt = pendingCall->second.streamOptions &&
+                pendingCall->second.streamOptions->attemptEpoch != 0 ?
+                std::to_string(pendingCall->second.streamOptions->attemptEpoch) :
+                std::string("request");
+            // All authenticated ACK fields and replay/provider checks have
+            // passed, but the ACK has not yet been inserted or allowed to
+            // trigger ACK_CLOSED/Selection.  This is the actual verification
+            // boundary for the phase timeline.
+            logPhaseTiming(
+                "user", "ackVerified", parsedV2->requestId,
+                {{"attempt", phaseAttempt},
+                 {"providerName", parsedV2->providerName.toUri()},
+                 {"executionRole", "user"}});
+
             pendingCall->second.providerTokens[parsedV2->providerName.toUri()] =
                 ackMessage.getProviderToken();
             const uint64_t ackStartUs = pendingCall->second.publishedAtUs != 0 ?
@@ -10227,7 +10375,11 @@ namespace ndn_service_framework
                              {{"ackCount", std::to_string(
                                   pendingCall->second.requestAcks.size())},
                               {"successfulAckCount", std::to_string(
-                                  successfulAckCount)}});
+                                  successfulAckCount)},
+                              {"attempt", pendingCall->second.streamOptions &&
+                                  pendingCall->second.streamOptions->attemptEpoch != 0 ?
+                                std::to_string(pendingCall->second.streamOptions->attemptEpoch) :
+                                "request"}});
         }
 
         bool selected = false;
@@ -10263,7 +10415,11 @@ namespace ndn_service_framework
             logTimelineTrace("user", "ack_selection_done", requestId,
                              {{"selected", selected ? "true" : "false"},
                               {"successfulProviderCount", std::to_string(
-                                  pendingCall->second.successfulAckProviders.size())}});
+                                  pendingCall->second.successfulAckProviders.size())},
+                              {"attempt", pendingCall->second.streamOptions &&
+                                  pendingCall->second.streamOptions->attemptEpoch != 0 ?
+                                std::to_string(pendingCall->second.streamOptions->attemptEpoch) :
+                                "request"}});
         }
         if (selected && hasSelectedCandidate) {
             pendingCall->second.providerSelected = true;
@@ -10339,13 +10495,22 @@ namespace ndn_service_framework
         closure.digest = pendingCall.collaborationAckClosedDigest;
         closure.closedAtUs = pendingCall.collaborationAcksClosedAtUs;
         closure.requestDeadlineUs = pendingCall.requestDeadlineUs;
+        logPhaseTiming(
+            "user", "ackClosed", requestId,
+            {{"attempt", pendingCall.streamOptions ?
+                            std::to_string(pendingCall.streamOptions->attemptEpoch) :
+                            "request"},
+             {"candidateCount", std::to_string(closure.candidates.size())}});
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=COLLAB_ACK_CLOSED"
                   << " timestamp_us=" << closure.closedAtUs
                   << " requestId=" << requestId.toUri()
                   << " candidateCount=" << closure.candidates.size()
                   << " digest=" << closure.digest);
         try {
-            pendingCall.collaborationAckClosedHandler(closure);
+            // A synchronous commit failure may cancel and erase PendingCall.
+            // Keep the executing callback alive independently of its owner.
+            const auto handler = pendingCall.collaborationAckClosedHandler;
+            handler(closure);
         }
         catch (const std::exception& error) {
             NDN_LOG_ERROR("Deferred collaboration ACK_CLOSED callback failed: "
@@ -10465,6 +10630,59 @@ namespace ndn_service_framework
         return true;
     }
 
+    // This helper must also run before the first envelope encoding: the wire
+    // envelope is bounded to 1 MiB, while external opaque assignments allow
+    // up to 4 MiB. Both Selection paths share the same publication contract.
+    static bool externalizeCollaborationEnvelope(
+        ServiceUser& user,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        CollaborationAssignmentEnvelope& envelope,
+        std::vector<LargeDataPublishResult>* transaction = nullptr)
+    {
+        if (envelope.opaquePayload.size() > 4 * 1024 * 1024) {
+            throw std::length_error(
+                "collaboration assignment exceeds external Data bound");
+        }
+        if (parseLargeDataReferencePayload(envelope.opaquePayload) ||
+            envelope.opaquePayload.size() <= 4096) {
+            return false;
+        }
+        PreparedServiceRequest context;
+        context.serviceName = serviceName;
+        context.requestId = requestId;
+        const std::string digest = sha256DigestString(envelope.opaquePayload);
+        std::vector<uint8_t> plaintext(envelope.opaquePayload.begin(),
+                                       envelope.opaquePayload.end());
+        const auto published = user.publishEncryptedLargeData(
+            context, plaintext,
+            "selection-assignment-" + providerName.toUri() + "-" +
+                envelope.role + "-" + digest.substr(7, 16));
+        if (!published.success) {
+            throw std::runtime_error(
+                "failed to externalize collaboration assignment: " + published.errorMessage);
+        }
+        if (transaction) transaction->push_back(published);
+        LargeDataReference reference;
+        reference.dataName = published.encryptedDataName;
+        reference.objectType = "application/vnd.ndnsf.collaboration-assignment-v1";
+        reference.objectId = published.objectId;
+        reference.plaintextSize = envelope.opaquePayload.size();
+        reference.encrypted = true;
+        reference.digest = digest;
+        envelope.opaquePayload = encodeLargeDataReferencePayload(reference);
+        NDN_LOG_INFO("NDNSF_COLLAB_ASSIGNMENT_EXTERNALIZED requestId="
+                     << requestId.toUri()
+                     << " providerName=" << providerName.toUri()
+                     << " serviceName=" << serviceName.toUri()
+                     << " role=" << envelope.role
+                     << " plaintextBytes=" << reference.plaintextSize
+                     << " referenceBytes=" << envelope.opaquePayload.size()
+                     << " dataName=" << reference.dataName.toUri());
+        return true;
+    }
+
     ndn::Buffer ServiceUser::externalizeLargeCollaborationAssignment(
         const ndn::Name& providerName,
         const ndn::Name& serviceName,
@@ -10477,9 +10695,6 @@ namespace ndn_service_framework
         // segmented, service-authorized Data path; the SVS piggyback limit is
         // intentionally not a correctness or performance repair mechanism.
         static constexpr size_t INLINE_OPAQUE_LIMIT = 4096;
-        static constexpr size_t MAX_EXTERNAL_ASSIGNMENT_BYTES = 4 * 1024 * 1024;
-        static const std::string OBJECT_TYPE =
-            "application/vnd.ndnsf.collaboration-assignment-v1";
 
         std::vector<ndn::Buffer> assignmentItems;
         try {
@@ -10510,50 +10725,12 @@ namespace ndn_service_framework
                 }
                 continue;
             }
-            if (parseLargeDataReferencePayload(envelope.opaquePayload) ||
-                envelope.opaquePayload.size() <= INLINE_OPAQUE_LIMIT) {
+            if (!externalizeCollaborationEnvelope(
+                    *this, providerName, serviceName, requestId, envelope)) {
                 continue;
             }
-            if (envelope.opaquePayload.size() > MAX_EXTERNAL_ASSIGNMENT_BYTES) {
-                throw std::length_error(
-                    "collaboration assignment exceeds external Data bound");
-            }
-
-            PreparedServiceRequest context;
-            context.serviceName = serviceName;
-            context.requestId = requestId;
-            const std::string digest = sha256DigestString(envelope.opaquePayload);
-            std::vector<uint8_t> plaintext(envelope.opaquePayload.begin(),
-                                           envelope.opaquePayload.end());
-            const auto published = publishEncryptedLargeData(
-                context,
-                plaintext,
-                "selection-assignment-" + providerName.toUri() + "-" +
-                    envelope.role + "-" + digest.substr(7, 16));
-            if (!published.success) {
-                throw std::runtime_error(
-                    "failed to externalize collaboration assignment: " +
-                    published.errorMessage);
-            }
-
-            LargeDataReference reference;
-            reference.dataName = published.encryptedDataName;
-            reference.objectType = OBJECT_TYPE;
-            reference.objectId = published.objectId;
-            reference.plaintextSize = envelope.opaquePayload.size();
-            reference.encrypted = true;
-            reference.digest = digest;
-            envelope.opaquePayload = encodeLargeDataReferencePayload(reference);
             item = encodeCollaborationAssignmentEnvelope(envelope);
             externalized = true;
-            NDN_LOG_INFO("NDNSF_COLLAB_ASSIGNMENT_EXTERNALIZED requestId="
-                         << requestId.toUri()
-                         << " providerName=" << providerName.toUri()
-                         << " serviceName=" << serviceName.toUri()
-                         << " role=" << envelope.role
-                         << " plaintextBytes=" << reference.plaintextSize
-                         << " referenceBytes=" << envelope.opaquePayload.size()
-                         << " dataName=" << reference.dataName.toUri());
         }
 
         return externalized ? encodeOpaqueAssignmentSet(assignmentItems) :
@@ -10562,6 +10739,16 @@ namespace ndn_service_framework
 
     bool ServiceUser::evaluateCustomAckSelection(PendingCall& pendingCall)
     {
+        // Only newly externalized objects belong to this local transaction.
+        // On failure remove staging; already queued packets expire normally.
+        struct AssignmentPublicationGuard {
+            ServiceUser& user;
+            std::vector<LargeDataPublishResult> objects;
+            bool complete = false;
+            ~AssignmentPublicationGuard() {
+                if (!complete) user.abortLargeDataPublications(objects);
+            }
+        } publications{*this, {}, false};
         pendingCall.customSelectedAcks.clear();
         pendingCall.successfulAckProviders.clear();
         pendingCall.selectedProvider = ndn::Name();
@@ -10593,6 +10780,15 @@ namespace ndn_service_framework
                               << pendingCall.requestMessage.getUserToken()
                               << ": " << validationError);
                 return false;
+            }
+            for (const auto& participant : selectedParticipants) {
+                if (!authorizeControllerTransition(participant.service,
+                                                   ProtectedTransition::SELECTION)) {
+                    throw std::runtime_error("collaboration Selection authorization rejected");
+                }
+                if (participant.assignmentPayload.size() > 4 * 1024 * 1024) {
+                    throw std::length_error("collaboration assignment exceeds external Data bound");
+                }
             }
             for (const auto& participant : selectedParticipants) {
                 for (const auto& storedAck : candidateAcks) {
@@ -10705,6 +10901,9 @@ namespace ndn_service_framework
                         // The envelope is framework metadata; the application
                         // assignment remains opaque and is carried unchanged.
                         envelope.opaquePayload = std::move(assignment);
+                        externalizeCollaborationEnvelope(
+                            *this, storedAck.providerName, storedAck.serviceName,
+                            storedAck.requestId, envelope, &publications.objects);
                         assignment =
                             encodeCollaborationAssignmentEnvelope(envelope);
                     }
@@ -10803,6 +11002,10 @@ namespace ndn_service_framework
             }
         }
 
+        // Once Selection publication can start, references may escape. Keep
+        // their bounded serving lifetime even if a later publication fails;
+        // the commit caller terminates the invocation rather than retrying it.
+        publications.complete = true;
         if (usesR1ReservationSelection(pendingCall)) {
             // The timeout-closure path publishes one exact-target decision
             // for every reservation-bearing positive ACK.
@@ -11452,18 +11655,24 @@ namespace ndn_service_framework
                               {"serviceName", ackV2->serviceName.toUri()},
                               {"ackName", subscription.name.toUri()},
                               {"contentBytes", std::to_string(subscription.data.size())}});
+            auto pendingCall = m_pendingCalls.find(ackV2->requestId);
+            const auto phaseAttempt = pendingCall != m_pendingCalls.end() &&
+                pendingCall->second.streamOptions &&
+                pendingCall->second.streamOptions->attemptEpoch != 0 ?
+                std::to_string(pendingCall->second.streamOptions->attemptEpoch) :
+                std::string("request");
             if (m_timelineTrace) {
                 logTimelineTrace("user", "first_ack_observed", ackV2->requestId,
                                  {{"providerName", ackV2->providerName.toUri()},
                                   {"serviceName", ackV2->serviceName.toUri()},
-                                  {"ackName", subscription.name.toUri()}});
+                                  {"ackName", subscription.name.toUri()},
+                                  {"attempt", phaseAttempt}});
             }
             logAckMatchAttempt(ackV2->requestId,
                                subscription.name,
                                ackV2->providerName,
                                ackReceiveUs,
                                "pre_decrypt");
-            auto pendingCall = m_pendingCalls.find(ackV2->requestId);
             const bool mayCollectResponseRetryCandidate =
                 pendingCall != m_pendingCalls.end() &&
                 pendingCall->second.responseRetryEnabled &&
@@ -12521,55 +12730,81 @@ void ServiceUser::finishRequestAckOnEventLoop(
         const std::string selectionDigest = computeSelectionDigest(selectionMessage);
 
         if (pendingIt != m_pendingCalls.end() &&
-            pendingIt->second.streamOptions) {
-            bool initializeForProvider = true;
-            std::string expectedProgressOperationId;
-            if (pendingIt->second.isCollaboration) {
-                // A multi-role streamed collaboration has one terminal role.
-                // Every selected Provider still receives its own Selection,
-                // but only that role owns the user-side event/End consumer.
-                initializeForProvider = false;
-                const auto& plan = pendingIt->second.collaborationPlan;
+            pendingIt->second.streamOptions &&
+            m_streamConsumers.find(requestId) == m_streamConsumers.end()) {
+            if (!pendingIt->second.isCollaboration) {
+                if (!initializeStreamConsumer(providerName, serviceName, requestId,
+                                               selectionDigest)) {
+                    throw std::runtime_error(
+                        "failed to initialize streamed event consumer");
+                }
+            }
+            else {
+                // Initialize before the terminal Selection is published when
+                // possible.  Other Providers may be published later, so their
+                // exact bindings are added after each Selection is committed.
                 const CollaborationRoleSpec* terminalRole = nullptr;
+                const SelectedParticipant* terminalParticipant = nullptr;
                 for (const auto& participant :
                      pendingIt->second.collaborationCommittedParticipants) {
-                    if (!participant.provider.equals(providerName) ||
-                        !participant.service.equals(serviceName)) {
-                        continue;
-                    }
                     const auto roleIt = std::find_if(
-                        plan.roles.begin(), plan.roles.end(),
+                        pendingIt->second.collaborationPlan.roles.begin(),
+                        pendingIt->second.collaborationPlan.roles.end(),
                         [&participant](const CollaborationRoleSpec& role) {
                             return role.role == participant.role &&
                                    role.service == participant.service;
                         });
-                    if (roleIt == plan.roles.end()) {
+                    if (roleIt == pendingIt->second.collaborationPlan.roles.end()) {
                         throw std::runtime_error(
                             "streamed collaboration participant role is not in plan");
                     }
                     if (roleIt->terminalResponseOwner) {
-                        if (terminalRole != nullptr &&
-                            terminalRole->role != roleIt->role) {
+                        if (terminalRole != nullptr) {
                             throw std::runtime_error(
-                                "streamed collaboration has multiple terminal roles for one Provider");
+                                "streamed collaboration has multiple terminal roles");
                         }
                         terminalRole = &*roleIt;
+                        terminalParticipant = &participant;
                     }
                 }
-                initializeForProvider = terminalRole != nullptr;
-                if (initializeForProvider) {
-                    expectedProgressOperationId =
-                        selectionDigest + ":" + terminalRole->role +
-                        ":assembly-progress";
+                if (terminalRole != nullptr && terminalParticipant != nullptr &&
+                    terminalParticipant->provider.equals(providerName)) {
+                    std::vector<StreamProgressBinding> progressBindings;
+                    for (const auto& participant :
+                         pendingIt->second.collaborationCommittedParticipants) {
+                        std::string participantDigest;
+                        if (participant.provider.equals(providerName)) {
+                            participantDigest = selectionDigest;
+                        }
+                        else {
+                            const auto digestIt =
+                                pendingIt->second.selectionDigestsByProvider.find(
+                                    participant.provider.toUri());
+                            if (digestIt !=
+                                pendingIt->second.selectionDigestsByProvider.end()) {
+                                participantDigest = digestIt->second;
+                            }
+                        }
+                        if (participantDigest.empty()) {
+                            continue;
+                        }
+                        progressBindings.push_back({
+                            participant.provider.toUri(), participantDigest,
+                            participantDigest + ":" + participant.role +
+                              ":assembly-progress"});
+                    }
+                    if (!initializeStreamConsumer(
+                            terminalParticipant->provider,
+                            terminalParticipant->service,
+                            requestId,
+                            selectionDigest,
+                            selectionDigest + ":" + terminalRole->role +
+                              ":assembly-progress",
+                            std::move(progressBindings))) {
+                        throw std::runtime_error(
+                            "failed to initialize streamed collaboration consumer");
+                    }
                 }
-            }
-            if (initializeForProvider && m_streamConsumers.find(requestId) ==
-                m_streamConsumers.end() &&
-                !initializeStreamConsumer(providerName, serviceName, requestId,
-                                           selectionDigest,
-                                           expectedProgressOperationId)) {
-                throw std::runtime_error(
-                    "failed to initialize streamed event consumer");
             }
         }
 
@@ -12604,6 +12839,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
         if (pendingIt != m_pendingCalls.end()) {
             pendingIt->second.selectionPublishedAtUs = nowMicroseconds();
+            logPhaseTiming(
+                "user", "selectionCommitted", requestId,
+                {{"attempt", pendingIt->second.streamOptions ?
+                                std::to_string(pendingIt->second.streamOptions->attemptEpoch) :
+                                "request"},
+                 {"providerName", providerName.toUri()}});
             addUniqueName(pendingIt->second.selectionPublishedProviders, providerName);
             pendingIt->second.selectionDigestsByProvider[providerName.toUri()] =
                 selectionDigest;
@@ -12617,9 +12858,25 @@ void ServiceUser::finishRequestAckOnEventLoop(
             status.updatedAtUs = nowMicroseconds();
             pendingIt->second.selectionStatusesByProvider[providerName.toUri()] =
                 status;
+            if (pendingIt->second.isCollaboration) {
+                if (const auto consumerIt = m_streamConsumers.find(requestId);
+                    consumerIt != m_streamConsumers.end()) {
+                    for (const auto& participant :
+                         pendingIt->second.collaborationCommittedParticipants) {
+                        if (participant.provider.equals(providerName)) {
+                            consumerIt->second->addExpectedProgressBinding({
+                                providerName.toUri(), selectionDigest,
+                                selectionDigest + ":" + participant.role +
+                                  ":assembly-progress"});
+                        }
+                    }
+                }
+            }
             if (pendingIt->second.trackSelectionStatus &&
                 pendingIt->second.selectionStatusOptions.enabled) {
-                scheduleSelectionStatusQuery(requestId, providerName, selectionDigest);
+                scheduleInitialSelectionStatusQuery(requestId,
+                                                     providerName,
+                                                     selectionDigest);
             }
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::SELECTION_PUBLISHED);
@@ -12815,6 +13072,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
 
         pendingIt->second.selectionPublishedAtUs = nowMicroseconds();
+        logPhaseTiming(
+            "user", "selectionCommitted", requestId,
+            {{"attempt", pendingIt->second.streamOptions ?
+                            std::to_string(pendingIt->second.streamOptions->attemptEpoch) :
+                            "request"},
+             {"selectedCount", std::to_string(selectedAcks.size())}});
         for (const auto& selectedAck : selectedAcks) {
             NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CUSTOM_ACK_SELECTED timestamp_us="
                       << nowMicroseconds()
@@ -12842,9 +13105,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 status;
             if (pendingIt->second.trackSelectionStatus &&
                 pendingIt->second.selectionStatusOptions.enabled) {
-                scheduleSelectionStatusQuery(requestId,
-                                             selectedAck.providerName,
-                                             selectionDigest);
+                scheduleInitialSelectionStatusQuery(requestId,
+                                                     selectedAck.providerName,
+                                                     selectionDigest);
             }
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::SELECTION_PUBLISHED);
@@ -14317,7 +14580,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                                const ndn::Name& serviceName,
                                                const ndn::Name& requestId,
                                                const std::string& selectionDigest,
-                                               const std::string& expectedProgressOperationId)
+                                               const std::string& expectedProgressOperationId,
+                                               std::vector<StreamProgressBinding>
+                                                 expectedProgressBindings)
     {
         auto pending = m_pendingCalls.find(requestId);
         if (pending == m_pendingCalls.end() || !pending->second.streamOptions ||
@@ -14527,12 +14792,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 std::lock_guard<std::mutex> lock(state->mutex);
                 ++state->metrics.retryCount;
             },
-            expectedProgressOperationId);
+            expectedProgressOperationId,
+            std::move(expectedProgressBindings));
         consumer->setAuthorizationCallback(
             [this, serviceName] {
                 return authorizeControllerTransition(
                     serviceName, ProtectedTransition::STREAM_EVENT);
-            });
+        });
         *consumerSlot = consumer;
         consumer->start();
         m_streamConsumers[requestId] = consumer;

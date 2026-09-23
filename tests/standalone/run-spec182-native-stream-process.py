@@ -42,20 +42,23 @@ provider_b='/example/hello/provider-b'
 provider_names=[provider_a]
 if args.replacement and not args.replacement_no_backup:
  provider_names.append(provider_b)
-# make descriptor/catalog
-sys.path[:0]=[str(ROOT/'NDNSF-DistributedInference'),str(ROOT/'NDNSF-DistributedRepo/pythonWrapper')]
-from ndnsf_distributed_inference.splitter import AdapterDescriptor, ModelDescriptor, _canonical_bytes
+# make descriptor/catalog.  These helpers are deliberately pure Python fixture
+# metadata; the process driver must not import the native Python wrapper when
+# the selected C++ binaries are sanitizer-instrumented.
+sys.path.insert(0, str(ROOT/'tests/standalone'))
+from spec185_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor
 def dg(x): return 'sha256:'+hashlib.sha256(x.encode()).hexdigest()
 src=(ROOT/'tests/fixtures/spec175/tiny-causal-lm-v1/one-role/role-0.onnx').read_bytes(); src_digest='sha256:'+hashlib.sha256(src).hexdigest()
 stream_role='/LLM/Pipeline/Stage/0'
 stream_graph='sha256:fd13cfff524de62eb16c000c68cb9a09adcf5baa1083556acff0dc6c58228274'
-ad=AdapterDescriptor('qwen-fixture','1',dg('fixture-adapter-state'),'fixture-abi-v1',('onnx',),('task',),('onnxruntime',),('float32',),dg('fixture-input-schema'),dg('fixture-options-schema'),dg('fixture-result-schema'),dg('fixture-graph-schema'),dg('fixture-split-schema'),dg('fixture-state-schema'),True,True,True)
-model=ModelDescriptor('QwenFixture',dg('QwenFixture-content'),dg('QwenFixture-semantics'),stream_graph,'onnx','float32',ad,'pinned-r1')
+ad=adapter_descriptor('qwen-fixture','1',dg('fixture-adapter-state'),'fixture-abi-v1',('onnx',),('task',),('onnxruntime',),('float32',),dg('fixture-input-schema'),dg('fixture-options-schema'),dg('fixture-result-schema'),dg('fixture-graph-schema'),dg('fixture-split-schema'),dg('fixture-state-schema'),True,True,True)
+model=model_descriptor('QwenFixture',dg('QwenFixture-content'),dg('QwenFixture-semantics'),stream_graph,'onnx','float32',ad,'pinned-r1')
+adapter_digest=digest(ad)
 package=dg('stream-package-manifest'); profile=dg('stream-artifact-profile'); asm=dg('stream-assembler'); offer_policy=dg('stream-offer-policy'); artifact=dg('stream-artifact')
 node_mapping={'embedding':[0],'layer-00':list(range(1,8)),'layer-01':list(range(8,15)),'layer-02':list(range(15,22)),'layer-03':list(range(22,29)),'final-norm-head':[29,30]}
 state_inputs={stream_role:{'attention_kv_in':['attention_kv_in'],'recurrent_state_in':['recurrent_state_in'],'convolution_state_in':['convolution_state_in']}}
 state_outputs={stream_role:{'attention_kv_out':['attention_kv_out'],'recurrent_state_out':['recurrent_state_out'],'convolution_state_out':['convolution_state_out']}}
-catalog={"schema":"ndnsf-di-native-request-catalog-v1","model":json.loads(_canonical_bytes(model).decode()),"source":{"data_name":"/catalog/qwen/source","digest":src_digest,"model_manifest_digest":package,"canonical_graph_digest":"sha256:b162fb0cb3735aa3209939521052ca5ff290aadbf9a1f9567f35f7d3dc912ef4"},"recipe":{"artifact_profile_digest":profile,"assembler_descriptor_digest":asm,"backend_abi":"onnxruntime-cpu-v1","precision":"float32","quantization":"none","layout":"native","padding":"none","protection_epoch":"epoch-1","max_source_bytes":1000000,"max_assembled_bytes":1000000,"max_nodes":64},"publication":{"artifact_root":"/Model/QwenFixture/artifacts","package_manifest_digest":package},"input_format":"OPAQUE","max_payload_bytes":4096,"splitter":{"kind":"QWEN","layer_ranges":[[0,4]],"artifact_digests_by_role":{stream_role:artifact},"weight_bytes_by_role":{stream_role:1},"roles":[stream_role],"tensor_degrees":[1],"input_ingress_role":stream_role,"result_egress_role":stream_role},"node_mapping":node_mapping,"state_inputs":state_inputs,"state_outputs":state_outputs}
+catalog={"schema":"ndnsf-di-native-request-catalog-v1","model":json.loads(canonical_bytes(model).decode()),"source":{"data_name":"/catalog/qwen/source","digest":src_digest,"model_manifest_digest":package,"canonical_graph_digest":"sha256:b162fb0cb3735aa3209939521052ca5ff290aadbf9a1f9567f35f7d3dc912ef4"},"recipe":{"artifact_profile_digest":profile,"assembler_descriptor_digest":asm,"backend_abi":"onnxruntime-cpu-v1","precision":"float32","quantization":"none","layout":"native","padding":"none","protection_epoch":"epoch-1","max_source_bytes":1000000,"max_assembled_bytes":1000000,"max_nodes":64},"publication":{"artifact_root":"/Model/QwenFixture/artifacts","package_manifest_digest":package},"input_format":"OPAQUE","max_payload_bytes":4096,"conversation_input":{"kind":"TENSOR_BUNDLE_TOKEN_IDS","tensor_name":"input_ids"},"splitter":{"kind":"QWEN","layer_ranges":[[0,4]],"artifact_digests_by_role":{stream_role:artifact},"weight_bytes_by_role":{stream_role:1},"roles":[stream_role],"tensor_degrees":[1],"input_ingress_role":stream_role,"result_egress_role":stream_role},"node_mapping":node_mapping,"state_inputs":state_inputs,"state_outputs":state_outputs}
 plan={"version":2,"services":[{"service":"/Inference/NativeStream","schemaVersion":2,"model":"/Model/QwenFixture","modelFamily":"qwen","modelFormat":"onnx","plannerKind":"native-qwen-layer","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2","roles":[stream_role],"dependencies":[],"planner":{"schemaVersion":2,"modelFamily":"qwen","modelFormat":"onnx","plannerKind":"native-qwen-layer","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2"}}]}
 manifest={"services":[{"name":"/Inference/NativeStream","model":"/Model/QwenFixture","roles":[stream_role],"artifacts":[{"artifact":"/Artifact/Qwen/Stage/0","backend":"onnxruntime-cpu","kind":"model","role":stream_role,"metadata":{"streamingGeneration":"true","statefulModel":"true","maxGeneratedTokens":"8","eosTokenIds":"2","samplingDigest":"sha256:f924aa62a0ced09ee7e05e43971f95cdae88f7cc116b2dd9bf6ca8d6661d224b","inputNames":"input_ids,attention_kv_in,recurrent_state_in,convolution_state_in","outputNames":"logits,attention_kv_out,recurrent_state_out,convolution_state_out","stateInputNames":"attention_kv_in,recurrent_state_in,convolution_state_in","stateOutputNames":"attention_kv_out,recurrent_state_out,convolution_state_out","executionProvider":"cpu","fragmentDigest":artifact}}],"input":{"codec":"tensor-bundle","fields":{"input_ids":{"dtype":"int64"}}},"output":{"codec":"json"}}]}
 # provider plan and manifest files generated later
@@ -109,7 +112,7 @@ for name,data in provider_keys.items():
  (provider_dir/'recipient-key-map.json').write_text(json.dumps({name:str(provider_dir/'recipient-private.pem')}))
 # authority config
 recipient_public_key_files={name:'../'+data['dir']+'/public.pem' for name,data in provider_keys.items()}
-ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":120000,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":recipient_public_key_files,"publication_sources":{package:{"model_name":model.model_name,"model_content_digest":model.content_digest,"canonical_source_digest":src_digest,"artifact_profile_digest":profile}}}}
+ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":120000,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":recipient_public_key_files,"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"artifact_profile_digest":profile}}}}
 (run_root/'authority/authority.json').write_text(json.dumps(ac))
 # requester files
 (run_root/'requester/requester-private.pem').write_bytes(reqpriv.read_bytes());(run_root/'requester/requester-private.pem').chmod(0o600); shutil.copy2(authpub,run_root/'requester/authority-public.pem'); (run_root/'requester/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text()); (run_root/'requester/model.onnx').write_bytes(src); (run_root/'requester/catalog.json').write_text(json.dumps(catalog));
@@ -135,7 +138,7 @@ for index,name in enumerate(provider_names):
 # offer policy
 op={"schema":"spec180-provider-offer-trust-v1","candidateId":"b2","candidateDigest":offer_policy,"trustSchema":"/example/hello/trust","entries":offer_entries}
 # requester config
-rc={"schema":"ndnsf-di-native-requester-v1","catalog":dict(catalog,source=dict(catalog['source'],file='model.onnx')),"core":{"requester_identity":"/example/hello/user","authority_identity":"/example/hello/controller","group":"/example/hello/group","trust_schema_file":"trust-schema.conf"},"grant":{"authority_identity":"/example/hello/authority","authority_service":"/HELLO","authority_public_key_file":"authority-public.pem","requester_private_key_file":"requester-private.pem","protection_epoch":"epoch-1"},"offer_admission":{"policy":op,"public_key_files":public_key_files,"candidate_digest":offer_policy},"limits":{"bootstrap_ms":30000,"max_source_bytes":1000000,"max_assembled_bytes":1000000},"request":{"service":"/Inference/NativeStream","task":"task","adapter_composition_digest":ad.descriptor_digest,"task_descriptor_digest":dg('task'),"generation_mode":"TOKEN_STREAMING","tokenizer_digest":"sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6","input_layout_digest":dg('input-layout'),"security_policy_digest":dg('security'),"max_candidates":1,"max_policy_ms":1000,"provider_names":provider_names,"max_reentries":1,"no_progress_ms":5000,"timeout_ms":30000,"ack_timeout_ms":5000}}
+rc={"schema":"ndnsf-di-native-requester-v1","catalog":dict(catalog,source=dict(catalog['source'],file='model.onnx')),"core":{"requester_identity":"/example/hello/user","authority_identity":"/example/hello/controller","group":"/example/hello/group","trust_schema_file":"trust-schema.conf"},"grant":{"authority_identity":"/example/hello/authority","authority_service":"/HELLO","authority_public_key_file":"authority-public.pem","requester_private_key_file":"requester-private.pem","protection_epoch":"epoch-1"},"offer_admission":{"policy":op,"public_key_files":public_key_files,"candidate_digest":offer_policy},"limits":{"bootstrap_ms":30000,"max_source_bytes":1000000,"max_assembled_bytes":1000000},"request":{"service":"/Inference/NativeStream","task":"task","adapter_composition_digest":adapter_digest,"task_descriptor_digest":dg('task'),"generation_mode":"TOKEN_STREAMING","tokenizer_digest":"sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6","input_layout_digest":dg('input-layout'),"security_policy_digest":dg('security'),"max_candidates":1,"max_policy_ms":1000,"provider_names":provider_names,"max_reentries":1,"no_progress_ms":5000,"timeout_ms":30000,"ack_timeout_ms":5000}}
 if args.replacement:
  rc['request']['allow_replacement']=True; rc['request']['max_replacements']=1
 options={"useCache":True,"outputMode":"TOKEN_STREAMING","generationId":"0123456789abcdef0123456789abcdef","maxNewTokens":8,"tokenizerDigest":"sha256:bf0f0fa65dc5aafe690ee497b4c8e2abe408fb4788c5ef035964dc94f15ca5a6","eosTokenIds":[2],"sampling":{"mode":"Greedy","temperature":0.0,"topK":1,"topP":1.0,"repetitionPenalty":1.0,"seed":1750001},"stopStrings":[],"tokenInputName":"input_ids","stateInputNames":["attention_kv_in","recurrent_state_in","convolution_state_in"],"stateOutputNames":["attention_kv_out","recurrent_state_out","convolution_state_out"]}
@@ -154,7 +157,7 @@ for dirname,_ in provider_dirs:
 # input bundle
 payload=struct.pack('<q',3); outb=b'NDITB001'+struct.pack('<I',1)+struct.pack('<I',9)+b'input_ids'+struct.pack('<I',3)+struct.pack('<I',2)+struct.pack('<q',1)+struct.pack('<q',1)+struct.pack('<Q',len(payload))+payload;(run_root/'requester/input.bin').write_bytes(outb)
 # launch env
-base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_socket),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin','NDNSF_CONTROLLER_GENERATION_STATE':str(run_root/'shared/controller-generation.state'),'NDN_LOG':'ndn_service_framework.*=TRACE'})
+base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_socket),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin','NDNSF_CONTROLLER_GENERATION_STATE':str(run_root/'shared/controller-generation.state'),'NDN_LOG':'ndn_service_framework.*=TRACE','NDNSF_DI_RUNTIME_TIMING':'1'})
 def launch(cmd,env,name):
  p=b.run(cmd,env,run_root/(name+'.log'),wait=False)
  (run_root/(name+'.pid')).write_text(str(p.pid)+'\n')
@@ -194,9 +197,8 @@ try:
   b.wait_marker(rq,run_root/'requester.log','providerName='+provider_a+' status=true',30)
   os.kill(p.pid,signal.SIGSTOP); stopped_provider_a=True
  rq.wait();print('requester rc',rq.returncode)
- if args.conversation and rq.returncode == 0:
+ if args.conversation and (run_root/'requester/conversation-state.json').is_file():
   state_path=run_root/'requester/conversation-state.json'
-  if not state_path.is_file(): raise RuntimeError('conversation checkpoint handoff missing')
   if args.recovery:
    p.kill(); stopped=p.wait(); children.remove(p); print('provider first rc',stopped)
    p=launch(pm,pe,'provider-restart'); children.append(p)
@@ -218,52 +220,14 @@ try:
   wrong['conversation']['turn']['parent_checkpoint_digest']='sha256:'+'0'*64
   (run_root/'requester/config-wrong-parent.json').write_text(json.dumps(wrong))
   rq3=launch([str(REQUESTER),'--config',str(run_root/'requester/config-wrong-parent.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output-wrong-parent.bin')],re,'requester-wrong-parent');children.append(rq3); rq3.wait(); print('requester-wrong-parent rc',rq3.returncode)
+ elif args.conversation:
+  # Leave the missing checkpoint for the C++ oracle to report from the
+  # retained requester log; this driver only controls process lifecycle.
+  print('conversation checkpoint handoff unavailable')
  print('ROOT',run_root)
- if args.replacement:
-  expected_markers={'requester.log': (('NATIVE_REQUEST_STAGE_FAILED',) if args.replacement_no_backup else ('NATIVE_STREAM_ORACLE_PASS','NATIVE_REQUEST_SUCCEEDED'))}
-  if not args.replacement_no_backup:
-   expected_markers['provider-b.log']=('NDNSF_DI_GRANT_VERIFICATION','NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED')
- else:
-  expected_markers={
-   'requester.log': (('NATIVE_STREAM_ORACLE_PASS', 'NATIVE_REQUEST_SUCCEEDED', 'NATIVE_CONVERSATION_CHECKPOINT_WRITTEN') if args.conversation else ('NATIVE_STREAM_ORACLE_PASS', 'NATIVE_REQUEST_SUCCEEDED')),
-   **({'requester-second.log': (('NATIVE_REQUEST_SUCCEEDED',) if not args.recovery else ('NATIVE_STREAM_FAILED',)), 'requester-wrong-parent.log': ('DI_NATIVE_CONVERSATION_PARENT_MISMATCH',)} if args.conversation else {}),
-   'provider.log': ('NDNSF_DI_GRANT_VERIFICATION', 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED'),
-   **({'provider-restart.log': ('NDNSF_DI_NATIVE_PROVIDER_READY', 'PROVIDER_CONVERSATION_STATE_MISSING')} if args.recovery else {}),
-  }
- for name, markers in expected_markers.items():
-  log_path=run_root/name
-  if not log_path.is_file():
-   raise RuntimeError(f'missing expected log: {log_path}')
-  lines=log_path.read_text(errors='replace').splitlines()
-  matched=[line for line in lines if any(marker in line for marker in markers)]
-  print(name, matched)
-  missing=[marker for marker in markers if not any(marker in line for line in lines)]
-  if missing: raise RuntimeError(f'missing expected markers in {name}: {missing}')
- if args.replacement:
-  first_provider_log=(run_root/'provider.log').read_text(errors='replace')
-  if 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED' in first_provider_log or 'NATIVE_STREAM_ORACLE_PASS' in first_provider_log:
-   raise RuntimeError('failed first Provider emitted execution evidence')
-  if args.replacement_no_backup:
-   if rq.returncode == 0: raise RuntimeError('no-backup replacement unexpectedly succeeded')
-   if 'DI_NATIVE_NO_ADMITTED_PROVIDER' not in (run_root/'requester.log').read_text(errors='replace'):
-    raise RuntimeError('no-backup replacement did not report no admitted Provider')
-  else:
-   if rq.returncode != 0: raise RuntimeError('replacement Provider request failed')
-   second_provider_log=(run_root/'provider-b.log').read_text(errors='replace')
-   if 'attempt-2' not in second_provider_log and '"attemptEpoch":"2"' not in second_provider_log:
-    raise RuntimeError('replacement Provider did not expose attempt 2')
- elif rq.returncode: raise RuntimeError('request failed')
- if args.conversation and rq.returncode == 0:
-  if args.recovery:
-   if rq2.returncode == 0: raise RuntimeError('recovery append unexpectedly succeeded')
-   second_log=(run_root/'requester-second.log').read_text(errors='replace')
-   if 'NATIVE_REQUEST_SUCCEEDED' in second_log or 'NATIVE_CONVERSATION_CHECKPOINT_WRITTEN' in second_log:
-    raise RuntimeError('recovery append emitted a success/checkpoint marker')
-   restart_log=(run_root/'provider-restart.log').read_text(errors='replace')
-   if 'NDNSF_DI_EXECUTION_EVIDENCE_OBSERVED' in restart_log or 'STREAM_EVENT_OBSERVED' in restart_log:
-    raise RuntimeError('recovery restart executed or published a duplicate prefix')
-  elif rq2.returncode != 0: raise RuntimeError('conversation append request failed')
-  if rq3.returncode == 0: raise RuntimeError('wrong parent unexpectedly succeeded')
+ # The Python process driver deliberately stops at lifecycle orchestration.
+ # The C++ parent selector reads these retained logs and owns every business
+ # oracle for stream, conversation, recovery and replacement outcomes.
 finally:
  if 'stopped_provider_a' in locals() and stopped_provider_a and p.poll() is None:
   os.kill(p.pid,signal.SIGCONT)

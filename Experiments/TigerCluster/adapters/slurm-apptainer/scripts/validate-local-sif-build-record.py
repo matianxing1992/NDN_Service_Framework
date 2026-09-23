@@ -75,9 +75,13 @@ def validate(record_path: Path | str, sif_path: Path | str,
         "status": "PASS",
         "schemaVersion": BOUNDARY_SCHEMA,
         "containerNativeBuild": True,
-        "staleBaseArtifactsReplaced": True,
         "hostBinaryInputs": [],
     }
+    if boundary.get("runtimeLayout") == "installed-v1":
+        required_boundary.update(cleanDependencyBaseRequired=True,
+                                 staleBaseArtifactsReplaced=False)
+    else:
+        required_boundary["staleBaseArtifactsReplaced"] = True
     for key, expected in required_boundary.items():
         if boundary.get(key) != expected:
             _fail("SPEC170_BUILD_RECORD_BOUNDARY_INVALID", key)

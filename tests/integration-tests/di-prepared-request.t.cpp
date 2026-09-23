@@ -53,6 +53,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <sys/wait.h>
 
 namespace {
 
@@ -869,6 +870,31 @@ RuntimeConfig runtimeConfig(const RuntimeFixture& fixture)
   return config;
 }
 
+PreparedModel prepareWithInProcessPump(
+  const std::shared_ptr<Runtime>& runtime,
+  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment)
+{
+  if (!runtime)
+    throw std::invalid_argument("Spec185 prepared model requires Runtime");
+  std::atomic<bool> pumping{true};
+  std::thread pump([&] {
+    while (pumping.load(std::memory_order_acquire)) {
+      environment.pumpUntilWithAttributeAuthority([] { return false; });
+    }
+  });
+  try {
+    auto prepared = runtime->user().prepare();
+    pumping.store(false, std::memory_order_release);
+    pump.join();
+    return prepared;
+  }
+  catch (...) {
+    pumping.store(false, std::memory_order_release);
+    pump.join();
+    throw;
+  }
+}
+
 struct InProcessRuntimeBinding
 {
   // Declared before Runtime in each test so the borrowed ServiceUser and Face
@@ -1588,7 +1614,8 @@ BOOST_AUTO_TEST_CASE(PreparedRequestsSharePackageButAllocateIndependentIds)
   InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
   binding = bindInProcessRuntime(fixture, runtime);
-  auto prepared = runtime->user().prepare();
+  auto user = runtime->user();
+  auto prepared = user.prepare();
   // This request goes through Runtime::prepare's production client factory;
   // the immediate cancellation keeps this identity probe independent of a
   // Provider response while still using the fixture-owned real Face.
@@ -1596,8 +1623,8 @@ BOOST_AUTO_TEST_CASE(PreparedRequestsSharePackageButAllocateIndependentIds)
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
-  auto first = prepared.request(bytes, options);
-  auto second = prepared.request(bytes, options);
+  auto first = user.request(prepared, bytes, options);
+  auto second = user.request(prepared, bytes, options);
   BOOST_REQUIRE(!first.id().empty());
   BOOST_REQUIRE(!second.id().empty());
   BOOST_CHECK(first.id() != second.id());
@@ -1609,10 +1636,21 @@ BOOST_AUTO_TEST_CASE(PreparedRequestsSharePackageButAllocateIndependentIds)
   unsupportedMode.timeout = std::chrono::milliseconds(500);
   unsupportedMode.ackTimeout = std::chrono::milliseconds(50);
   unsupportedMode.outputMode = "TOKEN_STREAMING";
-  BOOST_CHECK_EXCEPTION(prepared.request(bytes, unsupportedMode), DiError,
+  BOOST_CHECK_EXCEPTION(user.request(prepared, bytes, unsupportedMode), DiError,
                         [] (const DiError& error) {
                           return error.code() == "UNSUPPORTED_CAPABILITY";
                         });
+
+  auto otherRuntime = Runtime::open(runtimeConfig(fixture));
+  auto otherUser = otherRuntime->user();
+  BOOST_CHECK_EXCEPTION(otherUser.request(prepared, bytes, options), DiError,
+                        [] (const DiError& error) {
+                          return error.code() == "MODEL_RUNTIME_MISMATCH" &&
+                                 error.boundary() == "request";
+                        });
+  otherRuntime->close();
+  BOOST_REQUIRE(otherRuntime->drain(std::chrono::seconds(2)));
+
   first.cancel();
   second.cancel();
   BOOST_CHECK(first.status() == RequestStatus::Cancelled ||
@@ -2177,37 +2215,13 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     ndn_service_framework::test::NdnsfIntegrationEnvironment>(profile);
   environment->bootstrap();
 
-  auto runtime = Runtime::open(runtimeConfig(fixture));
-  auto prepared = runtime->user().prepare();
-  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
-  const auto model = package->catalog.model.descriptor;
-  const auto candidates = package->catalog.splitter->enumerate(
-    model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
-  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
-  const auto roles = candidates.front().executionPlan.roles;
-  BOOST_REQUIRE(!roles.empty());
-  BOOST_REQUIRE(std::all_of(roles.begin(), roles.end(), [] (const std::string& role) {
-    return !role.empty() && role.front() == '/';
-  }));
-
   const auto serviceName = environment->profile().serviceName.toUri();
   const auto requesterName = environment->user().getName().toUri();
   const auto providerName = environment->provider().getName().toUri();
-  const auto providerBootId = environment->provider().getProviderBootEpoch();
   const auto offerKey = deterministicEd25519Key(0x31);
   const auto offerKeyId = nativePlanningDigest(rawPublicKey(offerKey));
-  NativeProviderOfferV3Config offerConfig;
-  offerConfig.provider = providerName;
-  offerConfig.service = serviceName;
-  offerConfig.bootEpoch = providerName + ":" + providerBootId;
-  offerConfig.signerKeyId = offerKeyId;
-  offerConfig.acceptedRoles = roles;
-  offerConfig.backends = {"onnxruntime-cpu"};
-  offerConfig.hasModel = true;
-  offerConfig.signDigest = [offerKey] (const std::string& value) {
-    return signDigest(offerKey, value);
-  };
-  const auto candidatePolicyDigest = nativePlanningDigest("spec185-served-provider-policy");
+  const auto candidatePolicyDigest = nativePlanningDigest(
+    "spec185-served-provider-policy");
   const auto policy = nativeCanonicalJson(NativeJson{
     {"schema", "spec180-provider-offer-trust-v1"},
     {"candidateId", "spec185-served-provider"},
@@ -2222,6 +2236,57 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     policy, std::map<std::string, std::string>{{offerKeyId, publicKeyPem(offerKey)}},
     candidatePolicyDigest);
 
+  // Bind the prepared model to the same LocalMock ServiceUser that has a
+  // routed Attribute Authority.  Runtime::open is intentionally metadata-only;
+  // a pre-bind avoids constructing an unroutable production ServiceUser just
+  // to publish the model before the provider fixture is installed.
+  const auto earlyRequesterKey = deterministicEd25519Key(0x41);
+  const auto earlyAuthorityKey = deterministicEd25519Key(0x51);
+  NativeAuthenticatedGrantClient::Issue earlyIssue = [] (
+    const NativeSignedGrantRequest&, const std::string&, std::uint64_t,
+    const NativeGrantControl& control) {
+    control.check();
+    return NativeKeyGrant{};
+  };
+  NativeAuthenticatedGrantClient::Publish earlyPublish = [] (
+    const std::string& name, const std::string&, const NativeGrantControl& control) {
+    control.check();
+    return name;
+  };
+  auto earlyGrants = std::make_shared<NativeAuthenticatedGrantClient>(
+    requesterName, earlyRequesterKey, profile.attributeAuthority.toUri(),
+    rawPublicKey(earlyAuthorityKey), "epoch-1", std::move(earlyIssue),
+    std::move(earlyPublish));
+  auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment->user(), [] (ndn_service_framework::ServiceUser*) {});
+
+  auto runtime = Runtime::open(runtimeConfig(fixture));
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    runtime, environmentUser, earlyGrants, admission);
+  auto prepared = prepareWithInProcessPump(runtime, *environment);
+  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+  const auto model = package->catalog.model.descriptor;
+  const auto candidates = package->catalog.splitter->enumerate(
+    model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto roles = candidates.front().executionPlan.roles;
+  BOOST_REQUIRE(!roles.empty());
+  BOOST_REQUIRE(std::all_of(roles.begin(), roles.end(), [] (const std::string& role) {
+    return !role.empty() && role.front() == '/';
+  }));
+
+  const auto providerBootId = environment->provider().getProviderBootEpoch();
+  NativeProviderOfferV3Config offerConfig;
+  offerConfig.provider = providerName;
+  offerConfig.service = serviceName;
+  offerConfig.bootEpoch = providerName + ":" + providerBootId;
+  offerConfig.signerKeyId = offerKeyId;
+  offerConfig.acceptedRoles = roles;
+  offerConfig.backends = {"onnxruntime-cpu"};
+  offerConfig.hasModel = true;
+  offerConfig.signDigest = [offerKey] (const std::string& value) {
+    return signDigest(offerKey, value);
+  };
   const auto requesterKey = deterministicEd25519Key(0x41);
   const auto authorityKey = deterministicEd25519Key(0x51);
   const auto recipientKey = deterministicEd25519Key(0x61);
@@ -2367,8 +2432,6 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto selectionKey = environment->user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
   environment->provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
 
-  auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
-    &environment->user(), [] (ndn_service_framework::ServiceUser*) {});
   InProcessRuntimeBinding binding;
   binding.environment = environment;
   binding.user = environmentUser;
@@ -2429,35 +2492,13 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   profile.deferBridgeDelivery = true;
   ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
-  auto runtime = Runtime::open(runtimeConfig(fixture));
-  auto prepared = runtime->user().prepare();
-  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
   const auto serviceName = environment.profile().serviceName.toUri();
   const auto requesterName = environment.user().getName().toUri();
   const auto providerName = environment.provider().getName().toUri();
-  const auto model = package->catalog.model.descriptor;
-  const auto candidates = package->catalog.splitter->enumerate(
-    model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
-  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
-  const auto roles = candidates.front().executionPlan.roles;
-  BOOST_REQUIRE(!roles.empty());
-  const auto terminalRole = candidates.front().resultEgressRole;
-  BOOST_REQUIRE(!terminalRole.empty());
-
   const auto offerKey = deterministicEd25519Key(0x71);
   const auto offerKeyId = nativePlanningDigest(rawPublicKey(offerKey));
-  NativeProviderOfferV3Config offerConfig;
-  offerConfig.provider = providerName;
-  offerConfig.service = serviceName;
-  offerConfig.bootEpoch = providerName + ":" + environment.provider().getProviderBootEpoch();
-  offerConfig.signerKeyId = offerKeyId;
-  offerConfig.acceptedRoles = roles;
-  offerConfig.backends = {"onnxruntime-cpu"};
-  offerConfig.hasModel = true;
-  offerConfig.signDigest = [offerKey] (const std::string& value) {
-    return signDigest(offerKey, value);
-  };
-  const auto candidatePolicyDigest = nativePlanningDigest("spec185-t007-provider-policy");
+  const auto candidatePolicyDigest = nativePlanningDigest(
+    "spec185-t007-provider-policy");
   const auto policy = nativeCanonicalJson(NativeJson{
     {"schema", "spec180-provider-offer-trust-v1"},
     {"candidateId", "spec185-t007"}, {"candidateDigest", candidatePolicyDigest},
@@ -2470,7 +2511,49 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   auto admission = std::make_shared<NativeOfferAdmission>(
     policy, std::map<std::string, std::string>{{offerKeyId, publicKeyPem(offerKey)}},
     candidatePolicyDigest);
+  const auto earlyRequesterKey = deterministicEd25519Key(0x81);
+  const auto earlyAuthorityKey = deterministicEd25519Key(0x91);
+  NativeAuthenticatedGrantClient::Issue earlyIssue = [] (
+    const NativeSignedGrantRequest&, const std::string&, std::uint64_t,
+    const NativeGrantControl& control) {
+    control.check();
+    return NativeKeyGrant{};
+  };
+  NativeAuthenticatedGrantClient::Publish earlyPublish = [] (
+    const std::string& name, const std::string&, const NativeGrantControl& control) {
+    control.check();
+    return name;
+  };
+  auto earlyGrants = std::make_shared<NativeAuthenticatedGrantClient>(
+    requesterName, earlyRequesterKey, "/aa", rawPublicKey(earlyAuthorityKey),
+    "epoch-1", std::move(earlyIssue), std::move(earlyPublish));
+  auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment.user(), [] (ndn_service_framework::ServiceUser*) {});
+  auto runtime = Runtime::open(runtimeConfig(fixture));
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    runtime, environmentUser, earlyGrants, admission);
+  auto prepared = prepareWithInProcessPump(runtime, environment);
+  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+  const auto model = package->catalog.model.descriptor;
+  const auto candidates = package->catalog.splitter->enumerate(
+    model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto roles = candidates.front().executionPlan.roles;
+  BOOST_REQUIRE(!roles.empty());
+  const auto terminalRole = candidates.front().resultEgressRole;
+  BOOST_REQUIRE(!terminalRole.empty());
 
+  NativeProviderOfferV3Config offerConfig;
+  offerConfig.provider = providerName;
+  offerConfig.service = serviceName;
+  offerConfig.bootEpoch = providerName + ":" + environment.provider().getProviderBootEpoch();
+  offerConfig.signerKeyId = offerKeyId;
+  offerConfig.acceptedRoles = roles;
+  offerConfig.backends = {"onnxruntime-cpu"};
+  offerConfig.hasModel = true;
+  offerConfig.signDigest = [offerKey] (const std::string& value) {
+    return signDigest(offerKey, value);
+  };
   const auto requesterKey = deterministicEd25519Key(0x81);
   const auto authorityKey = deterministicEd25519Key(0x91);
   const auto recipientKey = deterministicEd25519Key(0xa1);
@@ -2673,8 +2756,6 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   environment.user().cacheHybridReceiveKeyForTest(responseKey.keyId, responseKey.epochId, responseKey.key);
   const auto selectionKey = environment.user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
   environment.provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
-  auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
-    &environment.user(), [] (ndn_service_framework::ServiceUser*) {});
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(runtime, environmentUser, grants, admission);
 
   auto conversation = prepared.openConversation();
@@ -3142,7 +3223,8 @@ struct Spec189RepoOwnerFixture
 };
 
 Spec189RepoOwnerFixture
-makeSpec189RepoOwner(const RuntimeFixture& fixture)
+makeSpec189RepoOwner(const RuntimeFixture& fixture,
+                     const std::filesystem::path& fixedRoot = {})
 {
   const auto config = nativeParseJson(readTextFile(fixture.configPath));
   const auto& source = config.at("catalog").at("source");
@@ -3156,7 +3238,8 @@ makeSpec189RepoOwner(const RuntimeFixture& fixture)
                              sourcePath.string());
 
   Spec189RepoOwnerFixture owner;
-  owner.root = fixture.root / ("repo-source-" + std::to_string(::getpid()));
+  owner.root = fixedRoot.empty() ? fixture.root / ("repo-source-" + std::to_string(::getpid()))
+                                 : fixedRoot;
   std::filesystem::create_directories(owner.root);
   std::error_code permissionsError;
   std::filesystem::permissions(owner.root, std::filesystem::perms::owner_all,
@@ -3252,6 +3335,194 @@ BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
                 second.status() == RequestStatus::Failed);
 }
 
+BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossRuntimeRestart)
+{
+  RuntimeFixture fixture;
+  auto owner = makeSpec189RepoOwner(fixture);
+  const auto root = owner.root;
+
+  {
+    InProcessRuntimeBinding binding;
+    auto config = runtimeConfig(fixture);
+    config.repositorySourceProvider = owner.sourceProvider;
+    config.repositoryArtifactPublisher = owner.concreteProvider;
+    auto runtime = Runtime::open(std::move(config));
+    binding = bindInProcessRuntime(fixture, runtime);
+    auto prepared = runtime->user().prepare();
+    const auto stats = owner.concreteProvider->stats();
+    BOOST_REQUIRE_EQUAL(stats.lookups, 1U);
+    BOOST_REQUIRE_EQUAL(stats.missIngests, 1U);
+    BOOST_REQUIRE_EQUAL(stats.publicationCalls, 1U);
+    BOOST_REQUIRE_MESSAGE(owner.repo->has(owner.objectName),
+                          "first Runtime prepare did not commit the source object");
+    runtime->close();
+    BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
+  }
+
+  // Release every first-process owner before opening the same fixed Repo root.
+  // Keep cleanup with the restarted owner so two fixture destructors cannot
+  // race to remove one persistent root.
+  owner.sourceProvider.reset();
+  owner.concreteProvider.reset();
+  owner.repo.reset();
+  owner.root.clear();
+  auto restartedOwner = makeSpec189RepoOwner(fixture);
+  BOOST_CHECK_EQUAL(restartedOwner.root, root);
+
+  {
+    InProcessRuntimeBinding binding;
+    auto config = runtimeConfig(fixture);
+    config.repositorySourceProvider = restartedOwner.sourceProvider;
+    config.repositoryArtifactPublisher = restartedOwner.concreteProvider;
+    auto runtime = Runtime::open(std::move(config));
+    binding = bindInProcessRuntime(fixture, runtime);
+    auto prepared = runtime->user().prepare();
+    const auto stats = restartedOwner.concreteProvider->stats();
+    BOOST_CHECK_EQUAL(stats.lookups, 1U);
+    BOOST_CHECK_EQUAL(stats.missIngests, 0U);
+    BOOST_CHECK_EQUAL(stats.publicationCalls, 0U);
+    BOOST_CHECK(!prepared.manifest().preparationKeyDigest.empty());
+    runtime->close();
+    BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
+  }
+}
+
+struct Spec190ProcessStats
+{
+  std::uint64_t lookups = 0;
+  std::uint64_t missIngests = 0;
+  std::uint64_t publicationCalls = 0;
+  std::uint32_t status = 1;
+};
+
+BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossProcessRestartChild)
+{
+  const auto* rootValue = std::getenv("SPEC190_PROCESS_RESTART_ROOT");
+  const auto* fdValue = std::getenv("SPEC190_PROCESS_RESTART_FD");
+  BOOST_REQUIRE_MESSAGE(rootValue != nullptr && *rootValue != '\0' &&
+                        fdValue != nullptr && *fdValue != '\0',
+                        "process restart child environment is incomplete");
+
+  Spec190ProcessStats result;
+  try {
+    RuntimeFixture fixture;
+    auto childOwner = makeSpec189RepoOwner(fixture, rootValue);
+    {
+      InProcessRuntimeBinding binding;
+      auto config = runtimeConfig(fixture);
+      config.repositorySourceProvider = childOwner.sourceProvider;
+      config.repositoryArtifactPublisher = childOwner.concreteProvider;
+      auto runtime = Runtime::open(std::move(config));
+      binding = bindInProcessRuntime(fixture, runtime);
+      auto prepared = runtime->user().prepare();
+      (void)prepared;
+      const auto stats = childOwner.concreteProvider->stats();
+      result.lookups = stats.lookups;
+      result.missIngests = stats.missIngests;
+      result.publicationCalls = stats.publicationCalls;
+      runtime->close();
+      if (!runtime->drain(std::chrono::seconds(2)))
+        throw std::runtime_error("child Runtime drain failed");
+    }
+    childOwner.sourceProvider.reset();
+    childOwner.concreteProvider.reset();
+    childOwner.repo.reset();
+    childOwner.root.clear();
+    result.status = 0;
+  }
+  catch (...) {
+    result.status = 1;
+  }
+
+  const int fd = std::stoi(fdValue);
+  const auto* bytes = reinterpret_cast<const std::uint8_t*>(&result);
+  std::size_t remaining = sizeof(result);
+  while (remaining != 0) {
+    const auto written = ::write(fd, bytes, remaining);
+    if (written <= 0)
+      break;
+    bytes += written;
+    remaining -= static_cast<std::size_t>(written);
+  }
+  ::close(fd);
+  BOOST_REQUIRE_EQUAL(remaining, 0U);
+  BOOST_REQUIRE_EQUAL(result.status, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossProcessRestart)
+{
+  RuntimeFixture fixture;
+  auto owner = makeSpec189RepoOwner(fixture);
+  const auto root = owner.root;
+
+  {
+    InProcessRuntimeBinding binding;
+    auto config = runtimeConfig(fixture);
+    config.repositorySourceProvider = owner.sourceProvider;
+    config.repositoryArtifactPublisher = owner.concreteProvider;
+    auto runtime = Runtime::open(std::move(config));
+    binding = bindInProcessRuntime(fixture, runtime);
+    auto prepared = runtime->user().prepare();
+    (void)prepared;
+    const auto stats = owner.concreteProvider->stats();
+    BOOST_REQUIRE_EQUAL(stats.lookups, 1U);
+    BOOST_REQUIRE_EQUAL(stats.missIngests, 1U);
+    BOOST_REQUIRE_EQUAL(stats.publicationCalls, 1U);
+    runtime->close();
+    BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
+  }
+
+  owner.sourceProvider.reset();
+  owner.concreteProvider.reset();
+  owner.repo.reset();
+  owner.root.clear();
+
+  int pipeFds[2] = {-1, -1};
+  BOOST_REQUIRE_EQUAL(::pipe(pipeFds), 0);
+  const auto readAll = [] (int fd, void* data, std::size_t size) {
+    auto* bytes = static_cast<std::uint8_t*>(data);
+    while (size != 0) {
+      const auto read = ::read(fd, bytes, size);
+      if (read <= 0)
+        return false;
+      bytes += read;
+      size -= static_cast<std::size_t>(read);
+    }
+    return true;
+  };
+
+  const auto child = ::fork();
+  BOOST_REQUIRE_MESSAGE(child >= 0, "fork failed for process restart selector");
+  if (child == 0) {
+    ::close(pipeFds[0]);
+    const std::string rootText = root.string();
+    const std::string fdText = std::to_string(pipeFds[1]);
+    ::setenv("SPEC190_PROCESS_RESTART_ROOT", rootText.c_str(), 1);
+    ::setenv("SPEC190_PROCESS_RESTART_FD", fdText.c_str(), 1);
+    ::execl("/proc/self/exe", "/proc/self/exe",
+            "--run_test=Spec185PreparedRequest/Spec190PrepareReusesCommittedReceiptAcrossProcessRestartChild",
+            "--log_level=message", static_cast<char*>(nullptr));
+    ::_exit(127);
+  }
+
+  ::close(pipeFds[1]);
+  Spec190ProcessStats childStats;
+  const bool received = readAll(pipeFds[0], &childStats, sizeof(childStats));
+  ::close(pipeFds[0]);
+  int waitStatus = 0;
+  BOOST_REQUIRE_EQUAL(::waitpid(child, &waitStatus, 0), child);
+  BOOST_REQUIRE_MESSAGE(received && WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0,
+                        "exec child process prepare/restart selector failed");
+  BOOST_REQUIRE_EQUAL(childStats.status, 0U);
+  BOOST_CHECK_EQUAL(childStats.lookups, 1U);
+  BOOST_CHECK_EQUAL(childStats.missIngests, 0U);
+  BOOST_CHECK_EQUAL(childStats.publicationCalls, 0U);
+
+  auto restartedOwner = makeSpec189RepoOwner(fixture, root);
+  BOOST_CHECK_EQUAL(restartedOwner.root, root);
+  BOOST_CHECK(restartedOwner.repo->has(restartedOwner.objectName));
+}
+
 BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
 {
   RuntimeFixture fixture;
@@ -3330,6 +3601,11 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
   // Repo stores ciphertext envelopes; the authenticated plaintext manifest is
   // the immutable receipt returned by the Core publisher.
   const auto root = nativeParseJson(publication.canonicalManifestJson);
+  // The authority grant uses one ordinary RequestMessage for this root; the
+  // material object index lives in the separately fetched receipt so the
+  // business root remains below the transport-safe inline cap.
+  BOOST_CHECK_LT(publication.canonicalManifestJson.size(),
+                 NativeGrantInlineManifestMaxBytes);
   BOOST_CHECK_EQUAL(root.at("schema").get<std::string>(),
                     "ndnsf-di-canonical-model-manifest-v1");
   BOOST_CHECK_EQUAL(root.at("state").get<std::string>(), "ACTIVE");
@@ -3345,6 +3621,8 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
   // and that each protected object is reachable without using RepoCore::get().
   BOOST_REQUIRE_MESSAGE(!publication.materialManifestDataName.empty(),
                         "protected material manifest was not published");
+  BOOST_REQUIRE_MESSAGE(!publication.materialReceiptDataName.empty(),
+                        "protected material receipt was not published");
   BOOST_REQUIRE_EQUAL(publication.materialPayloadIds.size(),
                       publication.materialDataNames.size());
   BOOST_REQUIRE_EQUAL(publication.materialPayloadIds.size(),
@@ -3365,29 +3643,29 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
       throw std::runtime_error("protected material range read returned a short payload");
   };
   requireBoundedRepoRead(publication.materialManifestDataName);
-  const auto& materialObjects = root.at("metadata").at("materialObjects");
-  BOOST_REQUIRE(materialObjects.is_array());
-  BOOST_REQUIRE_EQUAL(materialObjects.size(), publication.materialPayloadIds.size());
+  requireBoundedRepoRead(publication.materialReceiptDataName);
+  BOOST_CHECK(!root.at("metadata").contains("materialObjects"));
   BOOST_CHECK_EQUAL(root.at("metadata").at("materialManifestDataName").get<std::string>(),
                     publication.materialManifestDataName);
   BOOST_CHECK_EQUAL(root.at("metadata").at("materialManifestDigest").get<std::string>(),
                     publication.materialManifestDigest);
+  BOOST_CHECK_EQUAL(root.at("metadata").at("materialReceiptDataName").get<std::string>(),
+                    publication.materialReceiptDataName);
+  BOOST_CHECK_EQUAL(root.at("metadata").at("materialReceiptDigest").get<std::string>(),
+                    publication.materialReceiptDigest);
+  BOOST_CHECK_EQUAL(root.at("metadata").at("materialReceiptBytes").get<std::uint64_t>(),
+                    publication.materialReceiptBytes);
+  std::set<std::string> materialBundles;
   for (std::size_t i = 0; i < publication.materialPayloadIds.size(); ++i) {
     BOOST_REQUIRE_MESSAGE(repo->has(publication.materialDataNames.at(i)),
                           "protected material payload was not committed to Repo");
     BOOST_CHECK_EQUAL(repo->getManifest(publication.materialDataNames.at(i)).objectType,
                       "encrypted-large-data-envelope");
     requireBoundedRepoRead(publication.materialDataNames.at(i));
-    BOOST_CHECK_EQUAL(materialObjects.at(i).at("payloadId").get<std::string>(),
-                      publication.materialPayloadIds.at(i));
-    BOOST_CHECK_EQUAL(materialObjects.at(i).at("dataName").get<std::string>(),
-                      publication.materialDataNames.at(i));
-    BOOST_CHECK_EQUAL(materialObjects.at(i).at("digest").get<std::string>(),
-                      publication.materialDigests.at(i));
+    materialBundles.insert(publication.materialDataNames.at(i));
   }
   const auto objectCountAfterFirst = repo->list().size();
-  BOOST_REQUIRE_GE(objectCountAfterFirst,
-                   publication.materialPayloadIds.size() + 2U);
+  BOOST_REQUIRE_GE(objectCountAfterFirst, materialBundles.size() + 2U);
 
   auto secondPreparation = startPreparedModelObservation(runtime);
   pumpUntilPreparedModelReady(*binding.environment, secondPreparation,

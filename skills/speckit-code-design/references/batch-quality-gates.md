@@ -270,6 +270,14 @@ source-closure、oracle 或反事实检查，并说明该检查如何覆盖上�
 写出不修订的明确理由和替代门禁；未完成这项反馈时保持 `PARTIAL`。仍未观测的风险必须
 继续列在 `unobserved`，不得由局部通过或更短的构建耗时覆盖。
 
+真实实验还必须反复执行
+[experiment-static-review-loop.md](experiment-static-review-loop.md)：冻结候选和原始运行，
+分类首个生产边界，登记覆盖该边界的 `Changed gate`，固定新快照并复审真实 caller、
+配置/策略、测试/harness/oracle、build/source closure 与负例，然后才可重建和重跑。只改
+run id、超时、日志级别或复制 digest 不构成改变的静态门；如果没有可复核的 Changed gate，
+保持 `PARTIAL`/`BLOCKED` 并停止实验重试。该循环与四类 miss 复盘共用一份 evidence，不新增
+按重试次数拆分的行政任务。
+
 ## Batch Retrospective
 
 关闭批次时，结果记录必须各写一项 `static`、`compile/link`、`runtime/test` 和

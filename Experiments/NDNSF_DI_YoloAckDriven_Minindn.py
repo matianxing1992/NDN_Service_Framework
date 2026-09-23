@@ -156,6 +156,49 @@ def sif_python_prefix(base_env: Mapping[str, str]) -> str:
     return ""
 
 
+def _install_minindn_environment_compat() -> None:
+    """Preserve ``KEY=value`` entries when the local MiniNDN starts a node.
+
+    The maintained MiniNDN checkout used by this repository still splits
+    environment entries on every ``=``.  Values such as ``PYTHONPATH`` and
+    signed configuration strings can therefore raise ``IndexError`` or lose
+    their suffix before the first NFD child starts.  Keep the compatibility
+    fix in this experiment adapter so the external MiniNDN checkout remains
+    untouched and newer versions can use the same entry point.
+    """
+    import minindn.apps.application as application
+    import minindn.util as util
+
+    def get_environment(node, env_dict=None):
+        home_dir = node.params["params"]["homeDir"]
+        output = node.popen(["printenv"], cwd=home_dir).communicate()[0]
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        environment = {}
+        for entry in str(output).splitlines():
+            if "=" not in entry:
+                continue
+            key, value = entry.split("=", 1)
+            if key:
+                environment[key] = value
+        environment["HOME"] = home_dir
+        if env_dict is not None:
+            environment.update({key: str(value)
+                                for key, value in env_dict.items()})
+        return environment
+
+    def get_popen(host, cmd, envDict=None, **params):
+        return host.popen(cmd, cwd=host.params["params"]["homeDir"],
+                          env=get_environment(host, envDict), **params)
+
+    # Both modules keep their own imported function objects.  Updating both
+    # modules before the legacy helper is imported covers NFD/Application and
+    # the legacy ``start`` wrapper with one process-local implementation.
+    for module in (util, application):
+        module.popenGetEnv = get_environment
+        module.getPopen = get_popen
+
+
 class Spec180SifNfd:
     """NFD application wrapper for the host-orchestrated exact-SIF replay.
 
@@ -534,6 +577,7 @@ class MiniNdnCaseRuntime:
 
     def _legacy_module(self):
         if self._legacy is None:
+            _install_minindn_environment_compat()
             import importlib
             sys.path.insert(0, str(ROOT / "Experiments"))
             self._legacy = importlib.import_module("NDNSF_DI_Yolo2x2_Minindn")
@@ -1188,9 +1232,17 @@ class MiniNdnCaseRuntime:
                     or not request_output.parent.is_dir()
                     or not os.access(request_output.parent, os.W_OK)):
                 raise RunnerError("SPEC187_NATIVE_REQUEST_OUTPUT_INVALID")
+            native_selector_suite = os.environ.get(
+                "SPEC187_NATIVE_SUITE", "Spec187YoloMiniNdn").strip()
+            native_selector_case = os.environ.get(
+                "SPEC187_NATIVE_CASE", "NativeRequesterThroughMiniNdn").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_]+", native_selector_suite):
+                raise RunnerError("SPEC187_NATIVE_SUITE_INVALID")
+            if not re.fullmatch(r"[A-Za-z0-9_]+", native_selector_case):
+                raise RunnerError("SPEC187_NATIVE_CASE_INVALID")
             selector_command = " ".join(shlex.quote(item) for item in (
                 str(selector_command_path),
-                "--run_test=Spec187YoloMiniNdn/NativeRequesterThroughMiniNdn",
+                "--run_test=" + native_selector_suite + "/" + native_selector_case,
                 "--log_level=test_suite",
                 "--color_output=no",
             ))
@@ -1794,7 +1846,33 @@ def _validate_output_root(value: str) -> Path:
     path = Path(value)
     if not path.is_absolute():
         raise RunnerError("OUTPUT_ROOT_NOT_ABSOLUTE")
+    if sif_runtime_enabled():
+        # Exact-SIF children can see only the declared ROOT/results bind.  Do
+        # not accept an otherwise valid host directory that will disappear
+        # from the container namespace after MiniNDN has already started.
+        bind_root = (ROOT / "results").resolve()
+        try:
+            relative = path.relative_to(bind_root)
+        except ValueError as exc:
+            raise RunnerError("OUTPUT_ROOT_OUTSIDE_RESULTS") from exc
+        if not relative.parts:
+            raise RunnerError("OUTPUT_ROOT_MUST_BE_CHILD")
+        if ".." in relative.parts:
+            raise RunnerError("OUTPUT_ROOT_PATH_TRAVERSAL")
+        current = bind_root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise RunnerError("OUTPUT_ROOT_SYMLINK")
     path = path.resolve()
+    if sif_runtime_enabled():
+        bind_root = (ROOT / "results").resolve()
+        try:
+            resolved_relative = path.relative_to(bind_root)
+        except ValueError as exc:
+            raise RunnerError("OUTPUT_ROOT_OUTSIDE_RESULTS") from exc
+        if not resolved_relative.parts:
+            raise RunnerError("OUTPUT_ROOT_MUST_BE_CHILD")
     if not path.exists():
         raise RunnerError("OUTPUT_ROOT_MISSING")
     if not path.is_dir():
@@ -1883,9 +1961,24 @@ def _ldd_library_map(binary: Path) -> dict[str, Path]:
         raise RunnerError("NATIVE_LIBRARY_CLOSURE_PROBE_FAILED:" + str(binary))
     libraries: dict[str, Path] = {}
     for line in result.stdout.splitlines():
-        match = re.match(r"\s*(lib[^\s]+)\s+=>\s+(\/[^\s]+)", line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "=> not found" in stripped:
+            raise RunnerError("NATIVE_LIBRARY_CLOSURE_UNRESOLVED:" + stripped)
+        if stripped.startswith("linux-vdso"):
+            continue
+        match = re.fullmatch(r"(lib[^\s]+)\s+=>\s+(\/[^\s]+)\s+\(0x[0-9a-fA-F]+\)",
+                             stripped)
         if match:
             libraries[match.group(1)] = Path(match.group(2)).resolve()
+            continue
+        direct = re.fullmatch(r"(\/[^\s]+)\s+\(0x[0-9a-fA-F]+\)", stripped)
+        if direct:
+            path = Path(direct.group(1)).resolve()
+            libraries[path.name] = path
+            continue
+        raise RunnerError("NATIVE_LIBRARY_CLOSURE_UNRECOGNIZED:" + stripped)
     return libraries
 
 
@@ -1924,9 +2017,14 @@ def _validate_native_library_closure() -> None:
         raise RunnerError("NATIVE_LIBRARY_CLOSURE_NFD_NDN_CXX_MISSING")
     cxx_paths = {"extension": maps["extension"][cxx_name],
                  "nfd": maps["nfd"][nfd_cxx_name]}
-    # Check transitive native dependencies too: otherwise an ndn-svs or NAC-ABE
-    # build can silently introduce a second ndn-cxx into the client process.
-    for dependency_name in ("libndn-svs.so", "libnac-abe.so"):
+    # Check transitive native dependencies too: otherwise the framework, DI,
+    # ndn-svs or NAC-ABE build can silently introduce a second ndn-cxx into the
+    # client process.  The binding has direct ndn-cxx NEEDED entries, so a
+    # stale extension can appear to match NFD while its framework dependency
+    # was built against a different same-SONAME library.
+    for dependency_name in ("libndn-service-framework.so",
+                            "libndnsf-distributed-inference.so",
+                            "libndn-svs.so", "libnac-abe.so"):
         dependency = next((name for name in maps["extension"]
                            if name.startswith(dependency_name)), None)
         if dependency is None:
@@ -1938,6 +2036,13 @@ def _validate_native_library_closure() -> None:
             cxx_paths["extension->" + dependency_name] = dependency_map[dependency_cxx]
     identities = {label: (str(path), digest_file(path))
                   for label, path in cxx_paths.items()}
+    if not sif_runtime_enabled():
+        legacy_prefix = (ROOT / ".local-boost171" / "lib").resolve()
+        legacy_hits = sorted({str(path) for path in cxx_paths.values()
+                              if path == legacy_prefix or legacy_prefix in path.parents})
+        if legacy_hits:
+            raise RunnerError("NATIVE_LIBRARY_CLOSURE_LEGACY_LOCAL_PREFIX:" +
+                              ",".join(legacy_hits))
     if len(set(identities.values())) != 1:
         detail = ",".join(
             label + "=" + path + "#" + digest

@@ -482,6 +482,14 @@ namespace ndn_service_framework{
              * parameter traffic alone. */
             bool isNacConsumerReadyForTest();
 
+            /** Return whether the active LocalMock NAC-ABE Producer has
+             * obtained public parameters. */
+            bool isNacProducerReadyForTest();
+
+            /** Re-issue the LocalMock NAC-ABE Producer public-parameter
+             * fetch after fixture transport wiring is complete. */
+            void refreshNacProducerForTest();
+
             /** Seed a receive key for a LocalMock ingress test. */
             void cacheHybridReceiveKeyForTest(const std::string& keyId,
                                               const std::string& epochId,
@@ -1568,9 +1576,11 @@ namespace ndn_service_framework{
             void onStreamEvent(const ndn::svs::SVSPubSub::SubscriptionData& subscription);
             bool initializeStreamConsumer(const ndn::Name& providerName,
                                           const ndn::Name& serviceName,
-                                          const ndn::Name& requestId,
-                                          const std::string& selectionDigest,
-                                          const std::string& expectedProgressOperationId = {});
+                                      const ndn::Name& requestId,
+                                      const std::string& selectionDigest,
+                                      const std::string& expectedProgressOperationId = {},
+                                      std::vector<StreamProgressBinding>
+                                        expectedProgressBindings = {});
             void armStreamInactivityTimer(const ndn::Name& requestId,
                                           uint64_t interestLifetimeMs);
             void disarmStreamInactivityTimer(const ndn::Name& requestId);
@@ -1659,6 +1669,9 @@ namespace ndn_service_framework{
             void scheduleSelectionStatusQuery(const ndn::Name& requestId,
                                               const ndn::Name& providerName,
                                               const std::string& selectionDigest);
+            void scheduleInitialSelectionStatusQuery(const ndn::Name& requestId,
+                                                      const ndn::Name& providerName,
+                                                      const std::string& selectionDigest);
             void querySelectionStatusForTimeoutDiagnostics(const ndn::Name& requestId,
                                                            const PendingCall& pendingCall);
             static SelectionExecutionStatus parseSelectionExecutionStatusPayload(
@@ -1825,7 +1838,7 @@ namespace ndn_service_framework{
             bool m_useTokens = true;
             // Allow Python/experiment launchers to enable the existing
             // ndn-cxx TimelineTrace logger without a wrapper-only API seam.
-            bool m_timelineTrace = timelineTraceEnvEnabled();
+            bool m_timelineTrace = timelineTraceEnvEnabled() || phaseTimingEnvEnabled();
             size_t m_currentPolicyEpoch = 0;
             size_t m_requiredKeyEpoch = 0;
             mutable std::mutex m_controllerVersionMutex;

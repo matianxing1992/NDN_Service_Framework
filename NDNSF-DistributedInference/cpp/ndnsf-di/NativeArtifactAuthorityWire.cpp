@@ -52,7 +52,8 @@ requestFromValue(const NativeJson& value)
 std::string
 nativeGrantAuthorityRequestJson(const NativeGrantAuthorityRequest& value)
 {
-  if (value.expiresAtMs == 0 || value.publishedManifestJson.size() > 1024 * 1024) {
+  if (value.expiresAtMs == 0 ||
+      value.publishedManifestJson.size() > NativeGrantInlineManifestMaxBytes) {
     throw std::invalid_argument("grant authority request expiry or manifest is invalid");
   }
   const NativeJson envelope{
@@ -76,7 +77,8 @@ nativeGrantAuthorityRequestFromJson(const std::string& wire)
   result.request = requestFromValue(value.at("request"));
   result.expiresAtMs = value.at("expiresAtMs").get<std::uint64_t>();
   result.publishedManifestJson = value.at("publishedManifestJson").get<std::string>();
-  if (result.expiresAtMs == 0 || result.publishedManifestJson.size() > 1024 * 1024 ||
+  if (result.expiresAtMs == 0 ||
+      result.publishedManifestJson.size() > NativeGrantInlineManifestMaxBytes ||
       nativeGrantAuthorityRequestJson(result) != wire) {
     throw std::invalid_argument("grant authority request is not canonical");
   }

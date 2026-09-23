@@ -148,6 +148,105 @@ BOOST_AUTO_TEST_CASE(QwenLayerSplitProducesCanonicalRankOneCandidate)
                     splitter.enumerate(modelDescriptor, graphSnapshot, {}).front().candidateDigest);
 }
 
+BOOST_AUTO_TEST_CASE(SmolLm2LlamaLayerSplitProducesDynamicPastContract)
+{
+  const auto graphDigest = digest("smollm2-graph");
+  auto graphSnapshot = graph(graphDigest,
+    {"embedding", "layer-00", "layer-01", "final-norm-head"});
+  auto modelDescriptor = model("llama", "SmolLM2-135M", graphDigest);
+  const std::vector<std::string> roles = {
+    "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"};
+  qwen::NativeQwenLayerSplit splitter(
+    {{0, 1}, {1, 2}},
+    {{roles[0], digest("smollm2-artifact-0")},
+     {roles[1], digest("smollm2-artifact-1")}},
+    {{roles[0], 1}, {roles[1], 1}}, roles, {1, 1}, {}, {}, "llama");
+  const auto candidates = splitter.enumerate(modelDescriptor, graphSnapshot,
+                                             NativeCandidateBudget{2, 100, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto& candidate = candidates.front();
+  BOOST_CHECK_EQUAL(candidate.executionPlan.modelFamily, "llama");
+  BOOST_CHECK_EQUAL(candidate.executionPlan.plannerKind, "native-llama-layer");
+  BOOST_REQUIRE_EQUAL(candidate.roleStateInputsByRole.at(roles[0]).size(), 2U);
+  BOOST_CHECK_EQUAL(candidate.roleStateInputsByRole.at(roles[0])[0].name, "past_key.0");
+  BOOST_CHECK_EQUAL(candidate.roleStateOutputsByRole.at(roles[0])[1].name, "present_value.0");
+  BOOST_CHECK_EQUAL(candidate.executionPlan.dependencies.front().topicPrefix,
+                    "/NDNSF/DI/LLAMA");
+}
+
+BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
+{
+  std::ifstream sourceFile("../tests/fixtures/spec182/qwen-native-config.onnx", std::ios::binary);
+  BOOST_REQUIRE(sourceFile.good());
+  const std::string sourceText((std::istreambuf_iterator<char>(sourceFile)),
+                               std::istreambuf_iterator<char>());
+  const std::vector<std::uint8_t> sourceBytes(sourceText.begin(), sourceText.end());
+  const auto graphDigest = digest("smollm2-catalog-graph");
+  auto descriptor = model("llama", "SmolLM2-135M", graphDigest);
+  descriptor.sourceRevision = "1";
+  const std::vector<std::string> roles{
+    "/LLM/Pipeline/Stage/0", "/LLM/Pipeline/Stage/1"};
+  qwen::NativeQwenLayerSplit planner(
+    {{0, 1}, {1, 2}},
+    {{roles[0], digest("smollm2-artifact-0")},
+     {roles[1], digest("smollm2-artifact-1")}},
+    {{roles[0], 1}, {roles[1], 1}}, roles, {1, 1}, {}, {}, "llama");
+  const auto graphNodes = NativeJson{"embedding", "layer-00", "layer-01", "final-norm-head"};
+  const auto graphEdges = NativeJson{"hidden-embedding-to-layer-00", "hidden-layer-0-to-1",
+                                     "hidden-layer-1-to-final"};
+  descriptor.graphDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"model", descriptor.modelName}, {"revision", descriptor.sourceRevision},
+    {"precision", descriptor.precision}, {"decode_mode", "single-token-autoregressive"},
+    {"modality", "text-only"}, {"mtp_enabled", false}, {"thinking_mode", "disabled"},
+    {"layer_ranges", NativeJson::array({NativeJson::array({0, 1}), NativeJson::array({1, 2})})},
+    {"nodes", graphNodes}, {"edges", graphEdges}, {"legal_cuts", graphEdges}}));
+  NativeJson configuration = NativeJson::object();
+  configuration["schema"] = "ndnsf-di-native-request-catalog-v1";
+  configuration["model"] = nativeParseJson(descriptor.canonicalJson());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(10),
+    [] {}, 1024 * 1024, 1024 * 1024};
+  const auto sourceIdentity = canonicalOnnxSourceIdentity(
+    NativeCanonicalSource{sourceBytes, {}}, control);
+  configuration["source"] = NativeJson{
+    {"data_name", "/Model/SmolLM2/135M/source"},
+    {"digest", nativePlanningDigest(sourceBytes.data(), sourceBytes.size())},
+    {"model_manifest_digest", digest("smollm2-manifest")},
+    {"canonical_graph_digest", sourceIdentity.graphDigest}};
+  configuration["recipe"] = NativeJson{
+    {"artifact_profile_digest", digest("smollm2-profile")},
+    {"assembler_descriptor_digest", digest("smollm2-assembler")},
+    {"backend_abi", "llama-native-onnxruntime-cpu-v1"},
+    {"precision", "float32"}, {"quantization", "none"}, {"layout", "NCHW"},
+    {"padding", "none"}, {"protection_epoch", "smollm2-epoch"},
+    {"max_source_bytes", 1 << 20}, {"max_assembled_bytes", 1 << 20}, {"max_nodes", 16}};
+  configuration["publication"] = NativeJson{{"artifact_root", "/Artifact/SmolLM2"}};
+  configuration["input_format"] = "OPAQUE";
+  configuration["max_payload_bytes"] = 1024;
+  configuration["splitter"] = NativeJson{
+    {"kind", "LLAMA"}, {"layer_ranges", {{0, 1}, {1, 2}}},
+    {"artifact_digests_by_role", {{roles[0], digest("smollm2-artifact-0")},
+                                   {roles[1], digest("smollm2-artifact-1")}}},
+    {"weight_bytes_by_role", {{roles[0], 1}, {roles[1], 1}}},
+    {"roles", roles}, {"tensor_degrees", {1, 1}},
+    {"input_ingress_role", roles[0]}, {"result_egress_role", roles[1]}};
+  configuration["node_mapping"] = NativeJson{
+    {"embedding", {0}}, {"layer-00", {1}}, {"layer-01", {2}},
+    {"final-norm-head", {3, 4, 5, 6}}};
+  NativeCanonicalSource source;
+  source.modelBytes = sourceBytes;
+  BOOST_TEST_CHECKPOINT("before Smol catalog load");
+  const auto loaded = NativeRequestCatalog::load(configuration.dump(), source, control);
+  BOOST_TEST_CHECKPOINT("after Smol catalog load");
+  BOOST_REQUIRE(loaded.splitter);
+  BOOST_CHECK_EQUAL(loaded.splitter->identity().name, "native-llama-layer-split");
+  const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph,
+                                                      NativeCandidateBudget{2, 1024, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  BOOST_CHECK_EQUAL(candidates.front().executionPlan.modelFamily, "llama");
+  BOOST_CHECK_EQUAL(candidates.front().executionPlan.dependencies.front().topicPrefix,
+                    "/NDNSF/DI/LLAMA");
+}
+
 BOOST_AUTO_TEST_CASE(QwenLayerSplitRejectsInvalidRankAndGraph)
 {
   const auto graphDigest = digest("qwen-invalid-graph");

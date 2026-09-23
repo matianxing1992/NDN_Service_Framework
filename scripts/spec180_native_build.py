@@ -937,6 +937,12 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
             pass
     commands = [{"argv": command, "cwd": str(root), "WAFDIR": waf_tool["directory"]}]
     if not reusable:
+        # This branch is reached only when the prior receipt cannot authorize
+        # reuse (or binding=always was requested).  Force the extension so a
+        # header/ABI change that setuptools does not list in setup.py cannot
+        # leave an old object behind.  Native implementation-only changes are
+        # excluded by binding_abi_sources() and therefore take the reusable
+        # branch without invoking this high-memory compile.
         command = [python, "setup.py", "build_ext", "--inplace", "--force"]
         build_env = dict(env, NDNSF_LIBRARY_DIR=str(GLOBAL_NATIVE_LIBRARY_DIR),
                          NDNSF_NDN_SVS_SOURCE_TREE=svs["source_tree"],

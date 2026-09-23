@@ -75,6 +75,9 @@ closure 后，官方 review-agent 的 `No findings` 才能成为静态门结果�
 若失败属于编译/链接或运行/测试漏检，重试前必须在同一结果记录中链接首个失败证据，
 并写明新增或改变的静态检查及其覆盖 lane；重复同类漏检时先更新共享 skill、模板或
 checklist，或记录明确的替代门禁。只重跑原命令不构成漏检修复，也不能提升任务状态。
+真实生产实验、MiniNDN 或模型重试还要执行
+[experiment-static-review-loop.md](experiment-static-review-loop.md) 的冻结候选、首个边界、Changed gate、
+不可变快照复审和定向重跑顺序；它与本节共用一份 evidence，不另建按重试次数拆分的记录。
 
 ## One Completion Record
 

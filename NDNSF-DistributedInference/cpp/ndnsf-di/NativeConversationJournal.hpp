@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include <filesystem>
 #include <memory>
+#include <map>
 
 namespace ndnsf::di {
 
@@ -30,7 +31,8 @@ public:
   std::vector<NativeJson> readConversations(std::uint64_t nowMs) const;
   void appendConversation(const std::string& checkpointWire,
                           const NativeJson& transcript, std::uint64_t nowMs,
-                          std::optional<std::size_t> nativeInitialPromptTokenCount = std::nullopt);
+                          std::optional<std::size_t> nativeInitialPromptTokenCount = std::nullopt,
+                          const std::map<std::string, std::string>& providersByRole = {});
 
 private:
   struct Impl;

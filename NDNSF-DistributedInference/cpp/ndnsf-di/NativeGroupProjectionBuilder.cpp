@@ -187,6 +187,34 @@ std::map<std::string, NativeRoleProjectionInputs> NativeGroupProjectionBuilder::
     };
     for (auto& endpoint : projection.second.dataflow.mayPublish) remap(endpoint);
     for (auto& endpoint : projection.second.dataflow.mustFetch) remap(endpoint);
+    if (core.generationContract.enabled) {
+      const auto epochs = core.generationContract.maxGeneratedTokens + 1;
+      const auto stride = core.generationContract.streamingOperationStride;
+      const auto expand = [epochs, stride](std::vector<NativeTensorEndpointV3>& endpoints) {
+        // Bound allocation before materializing the exact signed endpoint set.
+        // Every serialized endpoint occupies more than 128 bytes. This is an
+        // allocation bound, not proof of the complete Selection wire size.
+        if (endpoints.size() > ((1U << 20) / 128) / epochs)
+          throw std::invalid_argument("generation endpoint expansion exceeds wire bounds");
+        const auto base = endpoints;
+        endpoints.clear();
+        for (const auto& endpoint : base) {
+          if (endpoint.sourceKind != "ROLE") {
+            endpoints.push_back(endpoint);
+            continue;
+          }
+          if (endpoint.round >= stride)
+            throw std::invalid_argument("generation endpoint exceeds operation stride");
+          for (std::uint64_t epoch = 0; epoch < epochs; ++epoch) {
+            auto derived = endpoint;
+            derived.round += epoch * stride;
+            endpoints.push_back(std::move(derived));
+          }
+        }
+      };
+      expand(projection.second.dataflow.mayPublish);
+      expand(projection.second.dataflow.mustFetch);
+    }
   }
   NativePlanProjectionBuilder::certify(projections, sealed);
   return projections;

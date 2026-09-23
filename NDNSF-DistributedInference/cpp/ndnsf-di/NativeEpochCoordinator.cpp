@@ -101,6 +101,31 @@ feedbackScopeFor(const RoleSpec& role)
   return std::nullopt;
 }
 
+RoleSpec
+roleSpecForEpoch(const NativeEpochCoordinatorConfig& config, std::size_t sequence)
+{
+  auto role = config.roleSpecFactory
+    ? config.roleSpecFactory(sequence)
+    : roleSpecFor(config.plan, config.role, config.sessionId,
+                  config.assignment, config.localProvider, sequence);
+  const auto bindFeedback = [&](DependencyEdge& edge) {
+    if (edge.operationKind != "TOKEN_FEEDBACK") return;
+    // Plan-owned feedback is appended to the sealed projection. Bind its
+    // missing identity to the accepted request, including next-epoch outputs;
+    // never rewrite protected pipeline edges or mask a conflicting digest.
+    if (!config.lineagePlanDigest.empty()) {
+      if (!edge.planDigest.empty() && edge.planDigest != config.lineagePlanDigest)
+        throw std::runtime_error("GENERATION_FEEDBACK_PLAN_DIGEST_MISMATCH");
+      edge.planDigest = config.lineagePlanDigest;
+    }
+    edge.requestId = config.requestId.empty() ? config.sessionId : config.requestId;
+    edge.attemptEpoch = config.attemptEpoch;
+  };
+  for (auto& edge : role.inputs) bindFeedback(edge);
+  for (auto& edge : role.outputs) bindFeedback(edge);
+  return role;
+}
+
 GenerationEpochLineageV1
 lineageForEdge(GenerationEpochLineageV1 lineage, const DependencyEdge& edge);
 
@@ -174,7 +199,7 @@ publishTerminalActivation(const NativeEpochCoordinatorConfig& config,
                             std::nullopt)
 {
   for (const auto& edge : role.outputs) {
-    if (edge.operationKind == "ACTIVATION") {
+    if (edge.operationKind == "ACTIVATION" || edge.operationKind == "PIPELINE") {
       auto marker = makeTerminalActivation();
       if (lineage) {
         marker = attachGenerationEpochLineage(
@@ -418,6 +443,14 @@ nextGenerationLineage(const NativeEpochCoordinatorConfig& config,
 GenerationEpochLineageV1
 lineageForEdge(GenerationEpochLineageV1 lineage, const DependencyEdge& edge)
 {
+  if (edge.producerRole.empty()) {
+    throw std::invalid_argument(
+      "GenerationEpochLineageV1 invalid producerRole: operation=" +
+      edge.operationKind + " scope=" + edge.scope +
+      " producer=" + edge.producerRole + " consumer=" +
+      edge.consumerRole + " operationIndex=" +
+      std::to_string(edge.collectiveOperationIndex));
+  }
   lineage.producerRole = edge.producerRole;
   lineage.consumerRole = edge.consumerRole;
   lineage.operationIndex = edge.collectiveOperationIndex;
@@ -431,7 +464,12 @@ extractAndVerifyInputLineage(const RoleSpec& role,
 {
   std::optional<GenerationEpochLineageV1> accepted;
   for (const auto& edge : role.inputs) {
+    // The native Qwen planner names an ordinary stage handoff PIPELINE.  It
+    // carries the same authenticated generation lineage that the historical
+    // Python hidden-state payload carried explicitly; excluding it makes a
+    // non-ingress stage incorrectly fall back to a local input_ids lookup.
     if (edge.operationKind != "ACTIVATION" &&
+        edge.operationKind != "PIPELINE" &&
         edge.operationKind != "TOKEN_FEEDBACK") {
       continue;
     }
@@ -507,18 +545,39 @@ lastLogits(const std::map<std::string, TensorBundle>& outputs)
   }
   const auto tensors = decodeTensorBundle(encoded->second.payload);
   const auto& logits = findTensor(tensors, "logits");
-  if (logits.elementType != TensorElementType::Float32 || logits.shape.empty() ||
-      logits.payload.size() % sizeof(float) != 0) {
+  if ((logits.elementType != TensorElementType::Float32 &&
+       logits.elementType != TensorElementType::Float16) ||
+      logits.shape.empty() || logits.payload.empty()) {
     throw std::invalid_argument("native epoch coordinator logits are invalid");
   }
+  const auto elementBytes = tensorElementByteSize(logits.elementType);
   const auto vocabulary = static_cast<std::size_t>(logits.shape.back());
-  if (vocabulary == 0 || logits.payload.size() % (vocabulary * sizeof(float)) != 0) {
+  if (vocabulary == 0 || vocabulary > logits.payload.size() / elementBytes ||
+      logits.payload.size() % (vocabulary * elementBytes) != 0) {
     throw std::invalid_argument("native epoch coordinator logits vocabulary is invalid");
   }
-  const auto sequence = logits.payload.size() / (vocabulary * sizeof(float));
-  const auto* values = reinterpret_cast<const float*>(logits.payload.data());
-  const auto* begin = values + (sequence - 1) * vocabulary;
-  std::vector<float> result(begin, begin + vocabulary);
+  // Preserve the model/wire dtype. Sampling consumes only the final row,
+  // converting IEEE binary16 numerically rather than reinterpreting its bytes.
+  const auto* row = logits.payload.data() + logits.payload.size() - vocabulary * elementBytes;
+  std::vector<float> result(vocabulary);
+  for (std::size_t index = 0; index < vocabulary; ++index) {
+    if (logits.elementType == TensorElementType::Float32) {
+      std::memcpy(&result[index], row + index * elementBytes, sizeof(float));
+    }
+    else {
+      std::uint16_t bits;
+      std::memcpy(&bits, row + index * elementBytes, sizeof(bits));
+      const auto exponent = (bits >> 10) & 0x1f;
+      const auto fraction = bits & 0x3ff;
+      if (exponent == 0x1f) {
+        throw std::invalid_argument("native epoch coordinator logits are non-finite");
+      }
+      const float magnitude = exponent == 0
+        ? std::ldexp(static_cast<float>(fraction), -24)
+        : std::ldexp(static_cast<float>(1024 + fraction), static_cast<int>(exponent) - 25);
+      result[index] = (bits & 0x8000) ? -magnitude : magnitude;
+    }
+  }
   if (std::any_of(result.begin(), result.end(), [] (const float value) {
         return !std::isfinite(value);
       })) {
@@ -793,11 +852,26 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       "native checkpoint finalization bound is out of range");
   }
   const auto feedback = feedbackScopeFor(
-    roleSpecFor(config.plan, config.role, config.sessionId,
-                config.assignment, config.localProvider, 0));
+    roleSpecForEpoch(config, 0));
   const bool terminalRole = feedback.has_value();
   if (!terminalRole && config.eventSink) {
     throw std::invalid_argument("only the terminal role may publish token events");
+  }
+
+  if (config.prepareRunner) {
+    // Keep preparation lazy and on the selected role's worker. Callback
+    // copies must share ownership: copying a mutable lambda with a runner
+    // value would otherwise recreate the ONNX session on every token.
+    // This slot belongs only to this coordinator invocation (role/attempt).
+    // roleFuture.get() below serializes all accesses, while shared ownership
+    // keeps the slot alive until the last queued worker callback is released.
+    auto slot = std::make_shared<std::shared_ptr<NativeModelRunner>>();
+    config.prepareRunner = [prepare = std::move(config.prepareRunner), slot] {
+      if (!*slot) {
+        *slot = prepare();
+      }
+      return *slot;
+    };
   }
 
   NativeEpochCoordinatorResult result;
@@ -817,8 +891,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
   for (std::size_t epoch = 0; epoch <= config.maxEpochs; ++epoch) {
     throwIfStopped(config);
     traceEpoch("epoch_start", config.role, epoch);
-    auto role = roleSpecFor(config.plan, config.role, config.sessionId,
-                            config.assignment, config.localProvider, epoch);
+    auto role = roleSpecForEpoch(config, epoch);
     role.requestId = config.requestId.empty() ? config.sessionId : config.requestId;
     role.attemptEpoch = config.attemptEpoch;
     for (auto& edge : role.inputs) {
@@ -852,6 +925,21 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
                        }),
         executable.inputs.end());
     }
+    else {
+      // APPLICATION_INPUT is the authenticated request-backed prefill.  The
+      // historical Qwen wrapper consumes it once, then switches to the
+      // requester-owned TOKEN_FEEDBACK input while KV state carries the
+      // prefix.  Re-fetching it on a decode epoch incorrectly presents a
+      // request ingress edge as Provider dataflow (producerRole is empty),
+      // which ProtectedRuntime must reject because it is intentionally absent
+      // from the inter-Provider endpoint binding.
+      executable.inputs.erase(
+        std::remove_if(executable.inputs.begin(), executable.inputs.end(),
+                       [] (const auto& edge) {
+                         return edge.operationKind == "APPLICATION_INPUT";
+                       }),
+        executable.inputs.end());
+    }
     std::map<std::string, TensorBundle> inputs;
     if (epoch == 0) {
       inputs.insert(config.initialInputs.begin(), config.initialInputs.end());
@@ -865,15 +953,17 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     bool checkpointFinalization = false;
     std::optional<GenerationEpochLineageV1> terminalLineage;
     for (const auto& edge : executable.inputs) {
-      if (edge.operationKind != "ACTIVATION") {
+      if (edge.operationKind != "ACTIVATION" && edge.operationKind != "PIPELINE") {
         continue;
       }
       const auto found = inputs.find(edge.scope);
-      if (found != inputs.end() && isTerminalActivation(found->second)) {
-        terminalLineage = extractGenerationEpochLineage(found->second);
-        checkpointFinalization = terminalLineage.has_value() &&
-          terminalLineage->transitionKind ==
-            GenerationEpochLineageV1::CHECKPOINT_FINALIZE;
+      if (found != inputs.end()) {
+        const auto lineage = extractGenerationEpochLineage(found->second);
+        const bool finalize = lineage && lineage->transitionKind ==
+          GenerationEpochLineageV1::CHECKPOINT_FINALIZE;
+        if (!finalize && !isTerminalActivation(found->second)) continue;
+        terminalLineage = lineage;
+        checkpointFinalization = finalize;
         if (!config.checkpointFinalize || !checkpointFinalization) {
           publishTerminalActivation(config, role);
           result.stoppedByUpstream = true;
@@ -966,9 +1056,9 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         throw std::runtime_error(
           "CHECKPOINT_FINALIZE lineage exceeds the sealed bound");
       }
-      // A state-only finalization must not publish a regular activation. The
-      // marker is forwarded after the candidate state commits below.
-      executable.outputs.clear();
+      // Keep the real activation outputs needed to advance the next role's
+      // state. The worker stages these finalized bundles without publishing;
+      // the coordinator publishes only after the local state commit below.
     }
     throwIfStopped(config);
     // DATA_DRIVEN_V2 normally supplies a post-Selection preparation callback.
@@ -1040,8 +1130,17 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           result.finalizedRole = executable;
         }
         if (checkpointFinalization) {
-          publishTerminalActivation(config, role, epochLineage);
-          result.stoppedByUpstream = true;
+          for (const auto& edge : executable.outputs) {
+            throwIfStopped(config);
+            const auto output = roleResult.outputsByScope.find(edge.scope);
+            if (output == roleResult.outputsByScope.end())
+              throw std::runtime_error("CHECKPOINT_FINALIZE activation output is missing");
+            config.io->publishOutput(config.sessionId, edge, output->second);
+          }
+          if (executable.candidateDecodeStateIdentity) stateRelease.retain();
+          // A committed state-only finalization is successful completion,
+          // not an upstream STOP. The ordinary terminal-control branches
+          // retain their stoppedByUpstream result.
           return result;
         }
         continue;
@@ -1116,9 +1215,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       // identical to the input edge that the upstream role will fetch on its
       // next epoch.  Publishing the current projection would create a
       // one-epoch operation/name mismatch under a streaming stride.
-      const auto nextRole = roleSpecFor(
-        config.plan, config.role, config.sessionId, config.assignment,
-        config.localProvider, epoch + 1);
+      const auto nextRole = roleSpecForEpoch(config, epoch + 1);
       const auto feedbackEdge = std::find_if(
         nextRole.outputs.begin(), nextRole.outputs.end(), [] (const auto& edge) {
           return edge.operationKind == "TOKEN_FEEDBACK";

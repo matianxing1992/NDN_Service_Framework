@@ -612,7 +612,7 @@ main(int argc, char** argv)
         face.processEvents(ndn::time::milliseconds(100));
       }
       fetchThread.join();
-      const auto result = fetchResult;
+      auto result = std::move(fetchResult);
       if (expectLargeDataFailure) {
         if (!result.success && !result.errorMessage.empty()) {
           NDN_LOG_INFO( "LARGE_DATA_UNAUTHORIZED_FAILURE_CLEAN error="

@@ -56,10 +56,22 @@ NDNSF.
 
 ## 2. Installation
 
-The recommended installer is the top-level stack script:
+The host installer is the top-level stack script. It currently targets the
+Ubuntu x86-64 system Boost 1.71 closure; it is not a generic installer for
+arbitrary distributions or SIF images. Before running it, install the global
+ONNX Runtime SDK (1.26+), ONNX full-protobuf headers and `libonnx.a` /
+`libonnx_proto.a`, and `libndnsf_tokenizer_bridge.a`. The script checks these
+prerequisites but does not build them. Dependency repositories are reused as-is
+or cloned at their default branch: this does not pin a reproducible source
+baseline or establish API compatibility merely from package version numbers.
+
+Use a Python virtual environment for the bindings, retaining access to the
+chosen interpreter; privileged C++ installation is handled separately:
 
 ```bash
-sudo ./install_ndnsf_stack.sh
+python3 -m venv .venv
+sudo -v
+./install_ndnsf_stack.sh --python "$PWD/.venv/bin/python" --jobs 4
 ```
 
 It installs the stack in dependency order:
@@ -96,7 +108,10 @@ sudo ./install_ndnsf_stack.sh --with-nfd-nlsr-deps
 ```
 
 `apt-get install` is idempotent, so already installed packages are skipped by
-the package manager.
+the package manager. Use `--no-system-packages` to skip apt entirely. The default
+packages include Protobuf and gtkmm, which the current Waf configuration
+requires even when optional NFD/NLSR package installation is not requested.
+`--jobs N` (or `NDNSF_BUILD_JOBS`) controls build parallelism, defaulting to four.
 
 By default, dependency source trees are reused or cloned under `dependencies/` next to `install_ndnsf_stack.sh`. The directory is created automatically if it does not
 exist. Use `--deps-dir` to choose a different source directory:
@@ -134,6 +149,12 @@ use:
 ```bash
 ./install_ndnsf_stack.sh --no-system-install
 ```
+
+This mode builds C++ only and exits with status 2 to indicate that the complete
+stack was not installed; it does not install Python bindings. `--no-configure`
+is rejected before any installation because the global closure must be checked
+on every build. A dependency check alone is available with
+`./install_ndnsf_stack.sh --check-dependencies`.
 
 Useful variants:
 

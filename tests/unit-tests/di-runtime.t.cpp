@@ -10,6 +10,7 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
+#include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -413,41 +414,15 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
       "local", {"filesystem"}, "persistent", true},
     ndnsf_distributed_repo::makeFilesystemRepoStore(
       (files.root() / "repo").string(), 64 * 1024, 1 << 20));
-  std::atomic<unsigned> repoLookups{0};
-  std::atomic<unsigned> repoIngests{0};
-  config.repositorySourceLoader = [repo, repoPayload, &repoLookups, &repoIngests](
-    const std::string&, const std::string& catalogJson, std::uint64_t maxSourceBytes,
-    std::chrono::steady_clock::time_point deadline) {
-    if (std::chrono::steady_clock::now() >= deadline)
-      throw std::runtime_error("repository source deadline expired");
-    ++repoLookups;
-    const auto catalog = ndnsf::di::nativeParseJson(catalogJson);
-    const auto& source = catalog.at("source");
-    const auto objectName = source.at("data_name").get<std::string>();
-    const auto expectedDigest = source.at("digest").get<std::string>();
-    if (repoPayload.size() > maxSourceBytes)
-      throw std::runtime_error("repository source exceeds preparation limit");
-    auto verify = [&] {
-      const auto manifest = repo->getManifest(objectName);
-      if ("sha256:" + manifest.sha256 != expectedDigest ||
-          manifest.size != repoPayload.size())
-        throw std::runtime_error("repository manifest does not match pinned source");
-      const auto bytes = repo->get(objectName);
-      if (bytes.size() != manifest.size)
-        throw std::runtime_error("repository payload size differs from manifest");
-      return ndnsf::di::NativeCanonicalSource{bytes, std::nullopt};
-    };
-    try {
-      return verify();
-    }
-    catch (const std::out_of_range& error) {
-      if (std::string(error.what()).find("repo-object-not-found") == std::string::npos)
-        throw;
-      ++repoIngests;
-      repo->put(objectName, repoPayload, "spec188-model-source");
-      return verify();
-    }
-  };
+  auto sourceOwner = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
+    repo, [repoPayload] (const ndnsf::di::RepositorySourceRequest& request) {
+      if (repoPayload.size() > request.maxSourceBytes)
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "fallback source exceeds preparation limit");
+      return ndnsf::di::NativeCanonicalSource{repoPayload, std::nullopt};
+    });
+  config.repositorySourceProvider = sourceOwner;
   // A repository-backed configuration deliberately has no local source
   // locator.  Runtime::open must accept the pinned identity and defer all
   // bytes to the configured owner.
@@ -534,6 +509,9 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
     runtime, fixtureUser, std::move(grants), std::move(admission));
   auto prepared = runtime->user().prepare();
+  const auto ownerStats = sourceOwner->stats();
+  BOOST_CHECK_EQUAL(ownerStats.lookups, 1U);
+  BOOST_CHECK_EQUAL(ownerStats.missIngests, 1U);
   std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
   ndnsf::di::NativeJson oracle;
   oracleFile >> oracle;
@@ -541,8 +519,6 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   BOOST_CHECK_EQUAL(prepared.manifest().taskName, "task");
   BOOST_CHECK_EQUAL(prepared.manifest().canonicalGraphDigest, files.canonicalGraphDigest);
   BOOST_CHECK(prepared.receipt().origin == ndnsf::di::PreparationReceipt::Origin::Fetched);
-  BOOST_CHECK_EQUAL(repoLookups.load(), 1U);
-  BOOST_CHECK_EQUAL(repoIngests.load(), 1U);
   ndnsf::di::PrepareOptions invalid;
   invalid.timeout = std::chrono::milliseconds(-1);
   BOOST_CHECK_EXCEPTION(runtime->user().prepare("default", invalid), DiError,
@@ -576,8 +552,9 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   auto asyncPrepared = asyncHandle.result(std::chrono::seconds(5));
   BOOST_CHECK(asyncHandle.status() == ndnsf::di::PreparationStatus::Ready);
   BOOST_CHECK_EQUAL(asyncPrepared.manifest().modelName, "yolo26n");
-  BOOST_CHECK_EQUAL(repoLookups.load(), 1U);
-  BOOST_CHECK_EQUAL(repoIngests.load(), 1U);
+  const auto finalOwnerStats = sourceOwner->stats();
+  BOOST_CHECK_EQUAL(finalOwnerStats.lookups, 1U);
+  BOOST_CHECK_EQUAL(finalOwnerStats.missIngests, 1U);
   runtime->close();
   BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }

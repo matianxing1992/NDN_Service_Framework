@@ -969,6 +969,7 @@ PYBIND11_MODULE(_py_repoclient, m)
     .def_readwrite("catalog_epoch", &repo::RepoCatalogStatus::catalogEpoch)
     .def_readwrite("object_count", &repo::RepoCatalogStatus::objectCount)
     .def_readwrite("accepts_backup_replica", &repo::RepoCatalogStatus::acceptsBackupReplica)
+    .def_readwrite("reconciliation_required", &repo::RepoCatalogStatus::reconciliationRequired)
     .def("to_json", &repo::RepoCatalogStatus::toJson);
 
   py::class_<repo::RepoCatalogDelta>(m, "RepoCatalogDelta")
@@ -996,6 +997,7 @@ PYBIND11_MODULE(_py_repoclient, m)
     .def_readwrite("oversized_bypasses", &repo::RepoCacheStatus::oversizedBypasses)
     .def_readwrite("backing_reads", &repo::RepoCacheStatus::backingReads)
     .def_readwrite("backing_writes", &repo::RepoCacheStatus::backingWrites)
+    .def_readwrite("reconciliation_required", &repo::RepoCacheStatus::reconciliationRequired)
     .def("to_json", &repo::RepoCacheStatus::toJson);
 
   m.def("sha256_hex",

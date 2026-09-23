@@ -5,15 +5,97 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <map>
 #include <vector>
 
 namespace ndnsf::di {
+
+/** Shared ownership for a canonical byte object.
+ *
+ * The source is copied through several immutable preparation records.  Keeping
+ * the vector behind shared ownership makes those copies cheap and, more
+ * importantly, lets producer-side material payloads refer to bounded ranges
+ * without duplicating a multi-gigabyte external initializer.
+ */
+class NativeCanonicalByteBuffer
+{
+public:
+  using value_type = std::uint8_t;
+  using vector_type = std::vector<value_type>;
+  using iterator = vector_type::iterator;
+  using const_iterator = vector_type::const_iterator;
+
+  NativeCanonicalByteBuffer() = default;
+  explicit NativeCanonicalByteBuffer(std::size_t size)
+    : m_bytes(std::make_shared<vector_type>(size))
+  {}
+  NativeCanonicalByteBuffer(vector_type bytes)
+    : m_bytes(std::make_shared<vector_type>(std::move(bytes)))
+  {}
+
+  NativeCanonicalByteBuffer& operator=(vector_type bytes)
+  {
+    m_bytes = std::make_shared<vector_type>(std::move(bytes));
+    return *this;
+  }
+
+  bool empty() const noexcept { return !m_bytes || m_bytes->empty(); }
+  std::size_t size() const noexcept { return m_bytes ? m_bytes->size() : 0; }
+  const value_type* data() const noexcept { return m_bytes ? m_bytes->data() : nullptr; }
+  value_type* data() noexcept { return m_bytes ? m_bytes->data() : nullptr; }
+  const_iterator begin() const noexcept { return m_bytes ? m_bytes->begin() : const_iterator{}; }
+  const_iterator end() const noexcept { return m_bytes ? m_bytes->end() : const_iterator{}; }
+  iterator begin() noexcept { return m_bytes ? m_bytes->begin() : iterator{}; }
+  iterator end() noexcept { return m_bytes ? m_bytes->end() : iterator{}; }
+  const value_type& operator[](std::size_t index) const { return (*m_bytes)[index]; }
+  value_type& operator[](std::size_t index) { return (*m_bytes)[index]; }
+
+  /** Preserve legacy call sites that consume a const std::vector reference. */
+  operator const vector_type&() const
+  {
+    static const vector_type empty;
+    return m_bytes ? *m_bytes : empty;
+  }
+
+  const vector_type& asVector() const noexcept { return static_cast<const vector_type&>(*this); }
+  vector_type& asVector() noexcept
+  {
+    if (!m_bytes)
+      m_bytes = std::make_shared<vector_type>();
+    return *m_bytes;
+  }
+  operator vector_type&() { return asVector(); }
+  vector_type copy() const { return asVector(); }
+
+  /** Return the shared allocation for zero-copy producer-side range views. */
+  std::shared_ptr<const vector_type> shared() const noexcept { return m_bytes; }
+
+private:
+  std::shared_ptr<vector_type> m_bytes;
+};
+
+/** Immutable bounded range reader for producer-side material publication.
+ *
+ * A preparation source may need the complete initializer while validating the
+ * ONNX graph, but publication only needs one bounded material chunk at a time.
+ * This interface lets a Repo-backed source release that complete byte vector
+ * before the protected publication loop starts.
+ */
+class NativeCanonicalByteRangeSource
+{
+public:
+  virtual ~NativeCanonicalByteRangeSource() = default;
+  virtual std::uint64_t size() const noexcept = 0;
+  virtual std::vector<std::uint8_t> read(std::uint64_t offset,
+                                         std::uint64_t length) const = 0;
+};
 
 // Protected material bundles are deliberately bounded so a post-Selection
 // consumer can reserve the complete fetched object before touching the Repo.
@@ -48,9 +130,9 @@ struct NativeCanonicalSource
   struct MaterialReference
   {
     std::string payloadId;
-    // External initializers use one small TensorProto header plus ordered raw
-    // byte chunks.  The legacy single-payload form remains valid for inline
-    // initializers and existing manifests.
+    // External initializers and large inline raw initializers use one small
+    // TensorProto header plus ordered raw byte chunks. The legacy single-payload
+    // form remains valid for small inline initializers and existing manifests.
     std::vector<std::string> chunkPayloadIds;
     std::string kind;
     std::string logicalName;
@@ -66,6 +148,83 @@ struct NativeCanonicalSource
     std::string payloadId;
     std::string digest;
     std::vector<std::uint8_t> bytes;
+
+    // A producer may authenticate and publish a bounded view of an immutable
+    // source object instead of copying the range into bytes.  Consumer-fetched
+    // payloads continue to use bytes, so this is wire/internal compatible.
+    std::shared_ptr<const std::vector<std::uint8_t>> backing;
+    std::size_t backingOffset = 0;
+    std::size_t backingSize = 0;
+
+    // Inline TensorProto raw_data is owned by a string in protobuf. Move that
+    // allocation into shared backing before creating chunk views so manifest
+    // derivation does not allocate a second full initializer-sized vector.
+    std::shared_ptr<const std::string> stringBacking;
+    std::size_t stringOffset = 0;
+    std::size_t stringSize = 0;
+
+    // A producer may retain only an authenticated bounded range reader after
+    // source inspection.  Consumer-fetched payloads remain byte-owned.
+    std::shared_ptr<const NativeCanonicalByteRangeSource> rangeSource;
+    std::uint64_t rangeOffset = 0;
+    std::uint64_t rangeSize = 0;
+
+    bool empty() const noexcept { return byteSize() == 0; }
+    std::size_t byteSize() const noexcept
+    {
+      return rangeSource ? static_cast<std::size_t>(rangeSize) :
+        (backing ? backingSize : (stringBacking ? stringSize : bytes.size()));
+    }
+    const std::uint8_t* data() const noexcept
+    {
+      if (rangeSource)
+        return nullptr;
+      if (backing)
+        return backing->data() + backingOffset;
+      if (stringBacking)
+        return reinterpret_cast<const std::uint8_t*>(stringBacking->data()) + stringOffset;
+      return bytes.data();
+    }
+    std::vector<std::uint8_t> copyBytes() const
+    {
+      if (rangeSource) {
+        if (rangeOffset > rangeSource->size() ||
+            rangeSize > rangeSource->size() - rangeOffset)
+          throw std::out_of_range("native canonical material range is out of bounds");
+        auto result = rangeSource->read(rangeOffset, rangeSize);
+        if (result.size() != rangeSize)
+          throw std::runtime_error("native canonical material range has unexpected size");
+        return result;
+      }
+      if (!backing)
+        return stringBacking
+          ? std::vector<std::uint8_t>(data(), data() + stringSize) : bytes;
+      return std::vector<std::uint8_t>(data(), data() + backingSize);
+    }
+
+    /** Scrub only payload-owned plaintext; source owners retain shared views. */
+    void scrub() noexcept
+    {
+      if (rangeSource || backing || stringBacking)
+        return;
+      std::fill(bytes.begin(), bytes.end(), 0);
+    }
+
+    /** Release this payload after its final authenticated consumer. */
+    void release() noexcept
+    {
+      scrub();
+      std::vector<std::uint8_t>{}.swap(bytes);
+      backing.reset();
+      stringBacking.reset();
+      rangeSource.reset();
+      backingOffset = 0;
+      backingSize = 0;
+      stringOffset = 0;
+      stringSize = 0;
+      rangeOffset = 0;
+      rangeSize = 0;
+    }
   };
 
   /** Versioned, topology-independent preparation materials.  The graph
@@ -92,7 +251,8 @@ struct NativeCanonicalSource
   };
 
   std::vector<std::uint8_t> modelBytes;
-  std::optional<std::vector<std::uint8_t>> initializerBytes;
+  std::optional<NativeCanonicalByteBuffer> initializerBytes;
+  std::shared_ptr<const NativeCanonicalByteRangeSource> initializerRangeSource;
   std::shared_ptr<const MaterialManifest> materialManifest;
   // Bytes fetched after Selection.  They are deliberately separate from the
   // producer-owned manifest payload list so a Provider cannot imply that the
@@ -124,6 +284,18 @@ struct NativeCanonicalSource
     std::vector<std::uint8_t> bytes;
   };
   std::vector<LayerPayload> layerPayloads;
+};
+
+/**
+ * Borrowed fd for a worker-side materialized role source.  The owner keeps the
+ * descriptor open for the duration of assembleInProcess; the parser validates
+ * the regular-file size and SHA-256 before consuming it and never closes it.
+ */
+struct NativeOnnxModelFileInput
+{
+  int fd = -1;
+  std::uint64_t bytes = 0;
+  std::string digest;
 };
 
 using NativeCertifiedRecipe = NativeSelectionRoleV3;
@@ -245,14 +417,34 @@ parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes);
 
 /** Rebuild one selected role model from the template, selected nodes and
  * explicit shared initializer payloads.  No complete source/initializer is
- * required by this operation. */
+ * required by this operation.  When boundary contracts are supplied, the
+ * materialized graph input/output declarations are rebuilt in that exact
+ * order.  This is the native equivalent of the old stage exporter: an
+ * internal handoff tensor such as `hidden_states_out` is a stage output even
+ * though it is not a canonical source graph output. */
 std::vector<std::uint8_t>
-materializeNativeCanonicalModel(const NativeCanonicalSource& source,
+materializeNativeCanonicalModel(NativeCanonicalSource& source,
+                                const std::vector<std::uint64_t>& nodeIndices,
+                                const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
+                                const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
+                                const NativeAssemblyControl& control);
+
+/** Compatibility entry for producer/fixture callers that retain the source
+ * graph boundary.  Provider post-Selection assembly must use the overload
+ * above with the authenticated role contracts. */
+std::vector<std::uint8_t>
+materializeNativeCanonicalModel(NativeCanonicalSource& source,
                                 const std::vector<std::uint64_t>& nodeIndices,
                                 const NativeAssemblyControl& control);
 
 /** Validate a prepared material manifest against the authenticated ONNX source. */
 void validateNativeCanonicalMaterialManifest(
+  const NativeCanonicalSource& source,
+  const NativeCanonicalSource::MaterialManifest& manifest,
+  const NativeAssemblyControl& control);
+
+/** Validate only a durable reference index restored before payload fetch. */
+void validateNativeCanonicalMaterialReferenceIndex(
   const NativeCanonicalSource& source,
   const NativeCanonicalSource::MaterialManifest& manifest,
   const NativeAssemblyControl& control);

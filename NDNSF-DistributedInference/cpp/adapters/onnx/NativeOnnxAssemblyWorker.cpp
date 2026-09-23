@@ -17,6 +17,7 @@
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
+#include <openssl/crypto.h>
 #include <openssl/sha.h>
 
 #include <algorithm>
@@ -29,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <filesystem>
 #include <fcntl.h>
 #include <limits>
 #include <mutex>
@@ -38,6 +40,7 @@
 #include <stdexcept>
 #include <string>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -90,6 +93,36 @@ hexDigestOfFile(int fd)
     out.push_back("0123456789abcdef"[value & 0x0f]);
   }
   return out;
+}
+
+std::vector<std::uint8_t>
+readBoundedModelFile(const std::filesystem::path& path,
+                    std::uint64_t maxBytes)
+{
+  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) workerFail("SOURCE_FILE");
+  struct ScopedFile
+  {
+    int fd = -1;
+    ~ScopedFile() { if (fd >= 0) close(fd); }
+  } file{fd};
+  struct stat status{};
+  if (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
+      status.st_size <= 0 || static_cast<std::uint64_t>(status.st_size) > maxBytes) {
+    workerFail("SOURCE_FILE");
+  }
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(status.st_size));
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    const ssize_t got = read(fd, bytes.data() + offset, bytes.size() - offset);
+    if (got > 0) {
+      offset += static_cast<std::size_t>(got);
+      continue;
+    }
+    if (got < 0 && errno == EINTR) continue;
+    workerFail("SOURCE_FILE");
+  }
+  return bytes;
 }
 
 // JSON string escaping matching python json.dumps(ensure_ascii=False): bytes
@@ -649,7 +682,7 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe)
   for (const auto& contract : recipe.expectedOutputs) {
     outputNames.push_back(contract.name);
   }
-  return jsonSortedObject({
+  std::vector<std::pair<std::string, std::string>> members{
     {"adapterDescriptorDigest",
      '"' + jsonString(recipe.adapterDescriptorDigest) + '"'},
     {"artifactProfileDigest",
@@ -678,7 +711,13 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe)
     {"quantization", '"' + jsonString(recipe.quantization) + '"'},
     {"roleKind", '"' + jsonString(recipe.roleKind) + '"'},
     {"schema", '"' + std::string(kNativeOnnxCertifiedRecipeSchema) + '"'},
-  });
+  };
+  // Keep the legacy recipe digest unchanged for ordinary full-source roles.
+  // A materialized role is a different authenticated worker input and must
+  // bind the compact-graph checker rule into the recipe digest.
+  if (recipe.materializedRole)
+    members.emplace_back("materializedRole", "true");
+  return jsonSortedObject(std::move(members));
 }
 
 namespace {
@@ -710,6 +749,13 @@ readCertifiedSlice(const JsonNode& recipeNode, NativeCertifiedRecipe& out,
   }
   out.roleKind = roleKind->text;
   out.backendAbi = backendAbi->text;
+  if (const auto* materializedRole = requireObjectMember(recipeNode, "materializedRole")) {
+    if (materializedRole->type != JsonNode::Type::Bool) {
+      failure = "certified materializedRole flag is invalid";
+      return false;
+    }
+    out.materializedRole = materializedRole->boolean;
+  }
 
   const char* kDigestKeys[] = {
     "modelManifestDigest", "artifactProfileDigest", "graphDigest",
@@ -922,17 +968,28 @@ childDiag(const std::string& message)
 } // namespace
 
 std::string
-buildNativeOnnxWorkerRequestMetadata(const NativeCertifiedRecipe& recipe)
+buildNativeOnnxWorkerRequestMetadata(const NativeCertifiedRecipe& recipe,
+                                     std::optional<std::uint64_t> sourceBytes,
+                                     const std::string& sourceDigest)
 {
   const std::string canonicalRecipe = canonicalNativeOnnxRecipeJson(recipe);
-  return jsonSortedObject({
+  std::vector<std::pair<std::string, std::string>> fields{
     {"backend", '"' + jsonString(recipe.backend) + '"'},
     {"adapterId", '"' + jsonString(recipe.adapterId) + '"'},
     {"recipe", canonicalRecipe},
     {"recipeDigest",
      '"' + jsonString(digestOfRecipeJson(canonicalRecipe)) + '"'},
     {"schema", '"' + std::string(kNativeOnnxAssemblyRequestSchema) + '"'},
-  });
+  };
+  if (sourceBytes.has_value() || !sourceDigest.empty()) {
+    if (!sourceBytes.has_value() || *sourceBytes == 0 ||
+        !isSha256Digest(sourceDigest)) {
+      workerFail("WORKER_METADATA");
+    }
+    fields.emplace_back("sourceBytes", jsonUint(*sourceBytes));
+    fields.emplace_back("sourceDigest", '"' + jsonString(sourceDigest) + '"');
+  }
+  return jsonSortedObject(fields);
 }
 
 NativeOnnxMetadataCheck
@@ -966,6 +1023,25 @@ validateNativeOnnxWorkerMetadata(const std::string& json)
     check.failureCode = "DI_NATIVE_ONNX_WORKER_METADATA";
     check.failureMessage = "request metadata recipeDigest is invalid";
     return check;
+  }
+  const auto* sourceBytes = root.find("sourceBytes");
+  const auto* sourceDigest = root.find("sourceDigest");
+  if ((sourceBytes == nullptr) != (sourceDigest == nullptr)) {
+    check.failureCode = "DI_NATIVE_ONNX_WORKER_METADATA";
+    check.failureMessage = "source identity must contain bytes and digest";
+    return check;
+  }
+  if (sourceBytes != nullptr) {
+    std::uint64_t parsedBytes = 0;
+    if (!unsignedFromJson(*sourceBytes, parsedBytes) || parsedBytes == 0 ||
+        sourceDigest->type != JsonNode::Type::String ||
+        !isSha256Digest(sourceDigest->text)) {
+      check.failureCode = "DI_NATIVE_ONNX_WORKER_METADATA";
+      check.failureMessage = "source identity is invalid";
+      return check;
+    }
+    check.value.sourceBytes = parsedBytes;
+    check.value.sourceDigest = sourceDigest->text;
   }
 
   NativeCertifiedRecipe slice;
@@ -1012,8 +1088,10 @@ NativeOnnxRequestDecoder::feed(const std::uint8_t* data, std::size_t size)
   }
   for (;;) {
     if (m_phase == Phase::Header) {
-      // 8B magic + 3 x u64le lengths + 1B hasInitializer.  Accumulated in a
-      // member because header bytes may trickle in across feed calls.
+      // 8B magic + 3 x u64le lengths + 1B flags.  Bit 0 declares an
+      // initializer segment and bit 1 declares a file-backed model.  The
+      // header is accumulated in a member because bytes may trickle in across
+      // feed calls.
       static constexpr std::size_t kHeaderSize = 33;
       const std::size_t take = std::min(size, kHeaderSize - m_headerBytes);
       std::memcpy(m_headerData.data() + m_headerBytes, data, take);
@@ -1031,14 +1109,19 @@ NativeOnnxRequestDecoder::feed(const std::uint8_t* data, std::size_t size)
       m_header.modelLength = readU64le(header + 16);
       m_header.initializerLength = readU64le(header + 24);
       const std::uint8_t flag = header[32];
-      if (flag > 1 || (flag == 0 && m_header.initializerLength != 0)) {
+      if ((flag & ~static_cast<std::uint8_t>(0x3)) != 0 ||
+          ((flag & 0x1) == 0 && m_header.initializerLength != 0) ||
+          ((flag & 0x2) != 0 && m_header.modelLength == 0)) {
         m_result = Result::ProtocolError;
         m_phase = Phase::Done;
         return m_result;
       }
-      m_header.hasInitializer = flag != 0;
+      m_header.hasInitializer = (flag & 0x1) != 0;
+      m_header.hasModelFile = (flag & 0x2) != 0;
       m_metadataRemaining = m_header.metadataLength;
-      m_modelRemaining = m_header.modelLength;
+      // A file-backed model declares its length for the child-side fstat
+      // check but carries no model payload through the pipe.
+      m_modelRemaining = m_header.hasModelFile ? 0 : m_header.modelLength;
       m_initializerRemaining = m_header.initializerLength;
       // The request frame is produced by a bounded parent, but the child
       // still treats its pipe as untrusted input.  Apply a fixed total
@@ -1162,10 +1245,13 @@ NativeOnnxResponseDecoder::feed(const std::uint8_t* data, std::size_t size)
       m_header.metadataLength = metadataLength;
       m_header.modelLength = readU64le(header + 12);
       m_header.status = header[20];
-      if (m_header.status > 2 ||
+      if (m_header.status > kNativeOnnxWorkerDigestOnlyStatus ||
           m_header.metadataLength > kNativeOnnxWorkerMaxMetadataBytes ||
           (m_header.status == 0 && m_header.modelLength == 0) ||
-          (m_header.status != 0 && m_header.modelLength != 0)) {
+          (m_header.status != 0 && m_header.status !=
+             kNativeOnnxWorkerDigestOnlyStatus && m_header.modelLength != 0) ||
+          (m_header.status == kNativeOnnxWorkerDigestOnlyStatus &&
+             m_header.modelLength != 0)) {
         m_result = Result::ProtocolError;
         m_phase = Phase::Done;
         return m_result;
@@ -1243,7 +1329,9 @@ composeNativeOnnxWorkerResponse(std::uint8_t status,
                                 const std::string& metadata,
                                 const std::vector<std::uint8_t>& model)
 {
-  if (status > 2 || (status != 0) != model.empty() ||
+  if (status > kNativeOnnxWorkerDigestOnlyStatus ||
+      (status == 0 && model.empty()) ||
+      (status != 0 && !model.empty()) ||
       metadata.size() > kNativeOnnxWorkerMaxMetadataBytes) {
     workerFail("WORKER_PROTOCOL");
   }
@@ -1265,7 +1353,7 @@ composeNativeOnnxWorkerResponse(std::uint8_t status,
 NativeOnnxWorkerOutcome
 finalizeNativeOnnxWorkerResponse(bool childExitZero, std::uint8_t status,
                                  const std::string& metadataJson,
-                                 const std::vector<std::uint8_t>& modelBytes,
+                                 std::vector<std::uint8_t> modelBytes,
                                  const NativeCertifiedRecipe& recipe,
                                  std::uint64_t maxAssembledBytes,
                                  bool activeAfterResponse)
@@ -1387,7 +1475,7 @@ finalizeNativeOnnxWorkerResponse(bool childExitZero, std::uint8_t status,
     ++position;
   }
   outcome.ok = true;
-  outcome.value.modelBytes = modelBytes;
+  outcome.value.modelBytes = std::move(modelBytes);
   outcome.value.nodeCount = recipe.nodeIndices.size();
   outcome.value.inputNames.reserve(inputNames->array.size());
   for (const auto& name : inputNames->array) {
@@ -1437,9 +1525,11 @@ entryActiveGate(const NativeAssemblyControl& control)
 void
 entryBudgetGate(const NativeCanonicalSource& source,
                 const NativeCertifiedRecipe& recipe,
-                const NativeAssemblyControl& control)
+                const NativeAssemblyControl& control,
+                std::uint64_t fileBytes = 0)
 {
-  if (source.modelBytes.size() > control.maxSourceBytes) {
+  const auto sourceBytes = fileBytes != 0 ? fileBytes : source.modelBytes.size();
+  if (sourceBytes > control.maxSourceBytes) {
     workerFail("SOURCE_LIMIT");
   }
   if (source.initializerBytes &&
@@ -1458,6 +1548,33 @@ entryBudgetGate(const NativeCanonicalSource& source,
 
 // Fixed worker endpoints; every other parent descriptor is CLOEXEC so the
 // child exec never inherits it (the child additionally sweeps fd >= 3).
+class ScopedFd
+{
+public:
+  ScopedFd() = default;
+  explicit ScopedFd(int fd) : m_fd(fd) {}
+  ~ScopedFd() { reset(); }
+
+  ScopedFd(const ScopedFd&) = delete;
+  ScopedFd& operator=(const ScopedFd&) = delete;
+
+  void reset(int fd = -1)
+  {
+    if (m_fd >= 0) ::close(m_fd);
+    m_fd = fd;
+  }
+  int get() const noexcept { return m_fd; }
+  int release() noexcept
+  {
+    const int fd = m_fd;
+    m_fd = -1;
+    return fd;
+  }
+
+private:
+  int m_fd = -1;
+};
+
 class WorkerProcess
 {
 public:
@@ -1466,11 +1583,14 @@ public:
     if (toChild >= 0) close(toChild);
     if (fromChild >= 0) close(fromChild);
     if (childErr >= 0) close(childErr);
+    if (m_modelFd >= 0) close(m_modelFd);
   }
 
   void start(const NativeOnnxWorkerLocation& location,
-             std::uint64_t metadataBytes)
+             std::uint64_t metadataBytes,
+             int modelFd = -1)
   {
+    m_modelFd = modelFd;
     int stdinPipe[2] = {-1, -1};
     int stdoutPipe[2] = {-1, -1};
     int stderrPipe[2] = {-1, -1};
@@ -1500,6 +1620,8 @@ public:
     posix_spawn_file_actions_adddup2(&actions, stdinPipe[0], STDIN_FILENO);
     posix_spawn_file_actions_adddup2(&actions, stdoutPipe[1], STDOUT_FILENO);
     posix_spawn_file_actions_adddup2(&actions, stderrPipe[1], STDERR_FILENO);
+    if (m_modelFd >= 0)
+      posix_spawn_file_actions_adddup2(&actions, m_modelFd, 3);
     // Own process group so cancellation can TERM/KILL the whole child side.
     posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setpgroup(&attributes, 0);
@@ -1525,10 +1647,15 @@ public:
     // Fixed argv: the declared metadata length is the actually serialized
     // metadata length the parent just produced.
     const std::string metadataArg = std::to_string(metadataBytes);
-    const char* argv[] = {
+    const char* argvWithModel[] = {
+      location.path.c_str(), "--stdio-v1", "--metadata-bytes",
+      metadataArg.c_str(), "--model-fd", "3", nullptr,
+    };
+    const char* argvWithoutModel[] = {
       location.path.c_str(), "--stdio-v1", "--metadata-bytes",
       metadataArg.c_str(), nullptr,
     };
+    const char* const* argv = m_modelFd >= 0 ? argvWithModel : argvWithoutModel;
 
     // Ignore SIGPIPE around the transport so writes to an exited child
     // surface as EPIPE instead of killing the caller.
@@ -1549,6 +1676,10 @@ public:
     close(stdinPipe[0]);
     close(stdoutPipe[1]);
     close(stderrPipe[1]);
+    if (m_modelFd >= 0) {
+      close(m_modelFd);
+      m_modelFd = -1;
+    }
     if (spawnResult != 0) {
       started = false;
       workerFail("WORKER_SPAWN");
@@ -1607,6 +1738,7 @@ public:
   int toChild = -1;
   int fromChild = -1;
   int childErr = -1;
+  int m_modelFd = -1;
 };
 
 } // namespace
@@ -1647,10 +1779,34 @@ NativeCertifiedAssembly
 runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
                               const NativeCanonicalSource& source,
                               const NativeCertifiedRecipe& recipe,
-                              const NativeAssemblyControl& control)
+                              const NativeAssemblyControl& control,
+                              NativeCanonicalSource* sourceToReleaseAfterWrite,
+                              const std::filesystem::path& modelFile)
 {
   entryActiveGate(control);
-  entryBudgetGate(source, recipe, control);
+  const bool fileBacked = !modelFile.empty();
+  if (fileBacked && (!recipe.materializedRole || !source.modelBytes.empty()))
+    workerFail("SOURCE_OWNERSHIP");
+
+  ScopedFd modelInput;
+  std::uint64_t modelFileBytes = 0;
+  std::string modelFileDigest;
+  if (fileBacked) {
+    modelInput.reset(open(modelFile.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (modelInput.get() < 0)
+      workerFail("SOURCE_FILE");
+    struct stat status{};
+    if (fstat(modelInput.get(), &status) != 0 || !S_ISREG(status.st_mode) ||
+        status.st_size <= 0) {
+      workerFail("SOURCE_FILE");
+    }
+    modelFileBytes = static_cast<std::uint64_t>(status.st_size);
+    modelFileDigest = hexDigestOfFile(modelInput.get());
+    if (modelFileDigest.empty() || lseek(modelInput.get(), 0, SEEK_SET) < 0) {
+      workerFail("SOURCE_FILE");
+    }
+  }
+  entryBudgetGate(source, recipe, control, modelFileBytes);
 
   // The digest the worker revalidates must be the role's certified digest
   // when one is provided; the derived digest is authoritative for the
@@ -1660,7 +1816,10 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
   if (!recipe.recipeDigest.empty() && recipe.recipeDigest != derivedDigest) {
     workerFail("RECIPE");
   }
-  const std::string metadata = buildNativeOnnxWorkerRequestMetadata(recipe);
+  const std::string metadata = buildNativeOnnxWorkerRequestMetadata(
+    recipe, fileBacked ? std::optional<std::uint64_t>(modelFileBytes) :
+                         std::nullopt,
+    fileBacked ? modelFileDigest : std::string{});
   // Keep the parent bounded while sending a large canonical initializer.  The
   // old composer materialized metadata + model + initializer as one more
   // contiguous vector before the nonblocking pipe could consume it.  Each
@@ -1677,21 +1836,24 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
     }
   };
   writeU64le(8, static_cast<std::uint64_t>(metadata.size()));
-  writeU64le(16, static_cast<std::uint64_t>(source.modelBytes.size()));
+  writeU64le(16, fileBacked ? modelFileBytes :
+                            static_cast<std::uint64_t>(source.modelBytes.size()));
   writeU64le(24, static_cast<std::uint64_t>(
     source.initializerBytes ? source.initializerBytes->size() : 0));
-  requestHeader[32] = source.initializerBytes.has_value() ? 1 : 0;
+  requestHeader[32] = static_cast<std::uint8_t>(
+    (source.initializerBytes.has_value() ? 1 : 0) | (fileBacked ? 2 : 0));
   struct RequestPart
   {
     const std::uint8_t* data = nullptr;
     std::size_t size = 0;
   };
   const auto* initializer = source.initializerBytes ?
-    &*source.initializerBytes : nullptr;
+    &source.initializerBytes->asVector() : nullptr;
   const std::array<RequestPart, 4> requestParts{{
     {requestHeader.data(), requestHeader.size()},
     {reinterpret_cast<const std::uint8_t*>(metadata.data()), metadata.size()},
-    {source.modelBytes.data(), source.modelBytes.size()},
+    {fileBacked ? nullptr : source.modelBytes.data(),
+     fileBacked ? 0 : source.modelBytes.size()},
     {initializer ? initializer->data() : nullptr,
      initializer ? initializer->size() : 0},
   }};
@@ -1712,12 +1874,76 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
   WorkerProcess child;
 
   try {
-    child.start(location, metadata.size());
+    child.start(location, metadata.size(), modelInput.release());
 
     std::size_t writePart = 0;
     std::size_t writeOffset = 0;
     bool writeDone = false;
     bool stdoutEof = false;
+    bool parentSourceReleased = false;
+
+    // The request parts borrow the caller's canonical source.  Once the last
+    // byte has entered the pipe, the child owns the only remaining copy needed
+    // for assembly and the parent must release its large plaintext buffers.
+    // Keep the default API non-destructive; production activation opts in by
+    // passing its mutable source explicitly.  The requestParts array retains
+    // stale addresses after this point but is never dereferenced again.
+    const auto releaseParentSource = [&] {
+      if (parentSourceReleased || sourceToReleaseAfterWrite == nullptr)
+        return;
+      auto& releasable = *sourceToReleaseAfterWrite;
+      if (!releasable.modelBytes.empty()) {
+        OPENSSL_cleanse(releasable.modelBytes.data(), releasable.modelBytes.size());
+        std::vector<std::uint8_t>{}.swap(releasable.modelBytes);
+      }
+      if (releasable.initializerBytes) {
+        auto& initializerBytes = releasable.initializerBytes->asVector();
+        if (!initializerBytes.empty()) {
+          OPENSSL_cleanse(initializerBytes.data(), initializerBytes.size());
+          std::vector<std::uint8_t>{}.swap(initializerBytes);
+        }
+        releasable.initializerBytes.reset();
+      }
+      for (auto& payload : releasable.materialPayloads)
+        payload.scrub();
+      std::vector<NativeCanonicalSource::MaterialPayload>{}.swap(
+        releasable.materialPayloads);
+      releasable.materialManifest.reset();
+      releasable.initializerRangeSource.reset();
+      parentSourceReleased = true;
+    };
+    const auto closeInput = [&] {
+      if (!writeDone) {
+        writeDone = true;
+        releaseParentSource();
+      }
+      if (child.toChild >= 0) {
+        close(child.toChild);
+        child.toChild = -1;
+      }
+    };
+    const auto drainChildStderr = [&] {
+      if (child.childErr < 0) return;
+      for (;;) {
+        std::array<std::uint8_t, 4096> buffer{};
+        const ssize_t got = read(child.childErr, buffer.data(), buffer.size());
+        if (got > 0) {
+          if (!stderrTruncated) {
+            const std::size_t take =
+              std::min<std::size_t>(got,
+                65536 - std::min<std::size_t>(stderrLog.size(), 65536));
+            if (take != 0) {
+              stderrLog.append(
+                reinterpret_cast<const char*>(buffer.data()), take);
+            }
+            if (stderrLog.size() >= 65536) stderrTruncated = true;
+          }
+          continue;
+        }
+        if (got < 0 && (errno == EAGAIN || errno == EINTR)) break;
+        break;
+      }
+    };
 
     for (;;) {
       entryActiveGate(control);  // every round; throws on cancel/deadline
@@ -1748,9 +1974,7 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
           writeOffset = 0;
         }
         if (writePart == requestParts.size()) {
-          writeDone = true;
-          close(child.toChild);
-          child.toChild = -1;
+          closeInput();
         }
       }
       if (!writeDone) {
@@ -1796,9 +2020,7 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
               writeOffset = 0;
             }
             if (writePart == requestParts.size()) {
-              writeDone = true;
-              close(child.toChild);
-              child.toChild = -1;
+              closeInput();
               continue;
             }
             const auto& part = requestParts[writePart];
@@ -1812,22 +2034,16 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
                 writeOffset = 0;
               }
               if (writePart == requestParts.size()) {
-                writeDone = true;
-                close(child.toChild);
-                child.toChild = -1;
+                closeInput();
               }
             }
             else if (written < 0 && errno != EINTR && errno != EAGAIN) {
               // EPIPE: the child closed its stdin; exit decides the outcome.
-              writeDone = true;
-              close(child.toChild);
-              child.toChild = -1;
+              closeInput();
             }
           }
           else if ((events & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
-            writeDone = true;
-            close(child.toChild);
-            child.toChild = -1;
+            closeInput();
           }
         }
         else if (fds[i].fd == child.fromChild &&
@@ -1880,13 +2096,36 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
     // Frame complete and child reaped; every byte up to EOF was fed to the
     // decoder, so trailing/second-frame bytes were already rejected there.
     // Now revalidate content and authorization.
+    // The completion condition can become true in the same poll cycle as the
+    // child's final stderr write. Drain once after reap so graph-stage
+    // diagnostics are not lost before the failure is reported to Provider.
+    drainChildStderr();
     const std::string metadataJson(response.metadata().begin(),
                                    response.metadata().end());
     entryActiveGate(control);  // the mandatory final requireActive
+    std::vector<std::uint8_t> responseModel;
+    std::uint8_t responseStatus = response.header().status;
+    if (responseStatus == kNativeOnnxWorkerDigestOnlyStatus) {
+      if (modelFile.empty()) workerFail("WORKER_PROTOCOL");
+      entryActiveGate(control);
+      responseModel = readBoundedModelFile(modelFile,
+                                           control.maxAssembledBytes);
+      entryActiveGate(control);
+      // The staged file is the parent-owned immutable input for this
+      // file-backed request. The child has already exited, so loading it
+      // here cannot overlap the child's response model buffer.
+      responseStatus = 0;
+    }
+    else {
+      responseModel = response.takeModel();
+    }
     const NativeOnnxWorkerOutcome outcome = finalizeNativeOnnxWorkerResponse(
-      child.exitedZero(), response.header().status, metadataJson,
-      response.model(), recipe, control.maxAssembledBytes, true);
+      child.exitedZero(), responseStatus, metadataJson,
+      std::move(responseModel), recipe, control.maxAssembledBytes, true);
     if (!outcome.ok) {
+      if (!stderrLog.empty()) {
+        childDiag("child-stderr: " + stderrLog);
+      }
       throw std::runtime_error(outcome.failureCode);
     }
     return outcome.value;
@@ -1908,7 +2147,7 @@ namespace {
 // sweep itself needs an open directory handle, so the numeric descriptors
 // are collected first and closed after the handle is gone.
 bool
-closeNonStdioDescriptors()
+closeNonStdioDescriptors(int keepFd = -1)
 {
   DIR* dir = opendir("/proc/self/fd");
   if (dir == nullptr) return false;
@@ -1918,7 +2157,7 @@ closeNonStdioDescriptors()
     char* end = nullptr;
     const long value = strtol(entry->d_name, &end, 10);
     if (end == entry->d_name || *end != '\0') continue;  // ".", "..", others
-    if (value >= 0 && value != dirFd) {
+    if (value >= 0 && value != dirFd && value != keepFd) {
       victims.push_back(static_cast<int>(value));
     }
   }
@@ -1951,19 +2190,51 @@ bool
 writeResponseFrame(std::uint8_t status, const std::string& metadata,
                    const std::vector<std::uint8_t>& model)
 {
-  const std::vector<std::uint8_t> frame =
-    composeNativeOnnxWorkerResponse(status, metadata, model);
-  std::size_t offset = 0;
-  while (offset < frame.size()) {
-    const ssize_t written =
-      write(STDOUT_FILENO, frame.data() + offset, frame.size() - offset);
-    if (written < 0) {
-      if (errno == EINTR) continue;
-      return false;
-    }
-    offset += static_cast<std::size_t>(written);
+  if (status > kNativeOnnxWorkerDigestOnlyStatus ||
+      (status == 0 && model.empty()) ||
+      (status != 0 && !model.empty()) ||
+      metadata.size() > kNativeOnnxWorkerMaxMetadataBytes ||
+      metadata.size() > std::numeric_limits<std::uint32_t>::max()) {
+    workerFail("WORKER_PROTOCOL");
   }
-  return true;
+
+  std::array<std::uint8_t, 21> header{};
+  std::memcpy(header.data(), kNdnSf182ResponseMagic,
+              sizeof(kNdnSf182ResponseMagic));
+  const auto putU32le = [&header](std::size_t offset, std::uint32_t value) {
+    for (int i = 0; i < 4; ++i) {
+      header[offset + static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>((value >> (8 * i)) & 0xff);
+    }
+  };
+  const auto putU64le = [&header](std::size_t offset, std::uint64_t value) {
+    for (int i = 0; i < 8; ++i) {
+      header[offset + static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>((value >> (8 * i)) & 0xff);
+    }
+  };
+  putU32le(8, static_cast<std::uint32_t>(metadata.size()));
+  putU64le(12, static_cast<std::uint64_t>(model.size()));
+  header[20] = status;
+
+  const auto writePart = [](const std::uint8_t* data, std::size_t size) {
+    std::size_t offset = 0;
+    while (offset < size) {
+      const ssize_t written = write(STDOUT_FILENO, data + offset,
+                                    size - offset);
+      if (written < 0) {
+        if (errno == EINTR) continue;
+        return false;
+      }
+      if (written == 0) return false;
+      offset += static_cast<std::size_t>(written);
+    }
+    return true;
+  };
+  return writePart(header.data(), header.size()) &&
+    writePart(reinterpret_cast<const std::uint8_t*>(metadata.data()),
+              metadata.size()) &&
+    writePart(model.data(), model.size());
 }
 
 bool
@@ -1996,13 +2267,25 @@ buildResultMetadata(const NativeCertifiedAssembly& assembly)
 int
 runNativeOnnxAssemblyWorkerMain(int argc, char** argv)
 {
-  if (!closeNonStdioDescriptors() || !makeStdioBlocking()) {
-    childDiag("cannot prepare the protocol descriptors");
-    return 2;
+  const bool hasModelArg = argc == 6 &&
+    std::strcmp(argv[4], "--model-fd") == 0;
+  int modelFd = -1;
+  if (hasModelArg) {
+    std::uint64_t parsedFd = 0;
+    if (!parseStrictDecimal(argv[5], parsedFd) || parsedFd != 3) {
+      childDiag("model-fd must be the fixed descriptor 3");
+      return 2;
+    }
+    modelFd = 3;
   }
-  if (argc != 4 || std::strcmp(argv[1], "--stdio-v1") != 0 ||
+  if ((argc != 4 && !hasModelArg) ||
+      std::strcmp(argv[1], "--stdio-v1") != 0 ||
       std::strcmp(argv[2], "--metadata-bytes") != 0) {
     childDiag("invalid invocation mode");
+    return 2;
+  }
+  if (!closeNonStdioDescriptors(modelFd) || !makeStdioBlocking()) {
+    childDiag("cannot prepare the protocol descriptors");
     return 2;
   }
   std::uint64_t declaredMetadata = 0;
@@ -2061,16 +2344,38 @@ runNativeOnnxAssemblyWorkerMain(int argc, char** argv)
     return status == 1 ? 1 : 2;
   }
 
+  if (request.header().hasModelFile != metadata.value.sourceBytes.has_value() ||
+      (request.header().hasModelFile &&
+       (modelFd < 0 || request.header().modelLength !=
+          *metadata.value.sourceBytes))) {
+    if (writeErrorFrame(2, "DI_NATIVE_ONNX_WORKER_METADATA",
+                        "file-backed model identity does not match the frame")) {
+      childDiag("file-backed model identity does not match the frame");
+    }
+    return 2;
+  }
+
   NativeCanonicalSource source;
   source.modelBytes = std::move(request.model());
   if (request.header().hasInitializer) {
     source.initializerBytes = std::move(request.initializer());
   }
   try {
+    std::optional<NativeOnnxModelFileInput> modelFile;
+    if (request.header().hasModelFile) {
+      modelFile = NativeOnnxModelFileInput{
+        modelFd, *metadata.value.sourceBytes, metadata.value.sourceDigest};
+    }
     NativeCertifiedAssembly assembly =
-      assembleInProcess(source, metadata.value.recipe);
+      assembleInProcess(source, metadata.value.recipe, &source,
+                        modelFile ? &*modelFile : nullptr);
     const std::string resultMetadata = buildResultMetadata(assembly);
-    if (!writeResponseFrame(0, resultMetadata, assembly.modelBytes)) {
+    const auto responseStatus = request.header().hasModelFile
+      ? kNativeOnnxWorkerDigestOnlyStatus : static_cast<std::uint8_t>(0);
+    const bool wroteResponse = responseStatus == kNativeOnnxWorkerDigestOnlyStatus
+      ? writeResponseFrame(responseStatus, resultMetadata, {})
+      : writeResponseFrame(responseStatus, resultMetadata, assembly.modelBytes);
+    if (!wroteResponse) {
       return 2;
     }
     return 0;

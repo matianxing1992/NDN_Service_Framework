@@ -611,25 +611,41 @@ BOOST_AUTO_TEST_CASE(ReaderEventCopyFailurePreservesCursorAndPendingRead)
   BOOST_CHECK(runtime->drain(std::chrono::seconds(1)));
 }
 
-BOOST_AUTO_TEST_CASE(PendingReaderEventCopyFailurePreservesPendingRead)
+BOOST_AUTO_TEST_CASE(PendingReaderEventCopyFailureReportsStickyGap)
 {
   auto runtime = OperationRuntime::create();
   OperationState<int, ThrowingEvent> state(runtime);
   auto reader = state.openReader();
+  std::atomic<int> callbacks{0};
+  std::atomic<int> errorCode{-1};
   std::promise<int> delivered;
   auto deliveredFuture = delivered.get_future();
   auto subscription = reader.nextAsync(std::chrono::seconds(5),
-    [&delivered] (std::optional<ThrowingEvent> event, std::exception_ptr error) {
+    [&delivered, &callbacks, &errorCode] (std::optional<ThrowingEvent> event,
+                                          std::exception_ptr error) {
+      ++callbacks;
+      if (error) {
+        try {
+          std::rethrow_exception(error);
+        }
+        catch (const OperationError& operationError) {
+          errorCode.store(static_cast<int>(operationError.code()));
+        }
+        catch (...) {}
+      }
       delivered.set_value(!error && event ? event->value : -1);
     });
   ThrowingEvent::throwOnCopy.store(true);
-  BOOST_CHECK_THROW(state.publish(ThrowingEvent(11), 1), std::runtime_error);
+  BOOST_REQUIRE(state.publish(ThrowingEvent(11), 1));
   ThrowingEvent::throwOnCopy.store(false);
-  BOOST_REQUIRE(deliveredFuture.wait_for(std::chrono::milliseconds(100)) !=
-                std::future_status::ready);
-  BOOST_REQUIRE(state.publish(ThrowingEvent(13), 1));
   BOOST_REQUIRE(deliveredFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
-  BOOST_CHECK_EQUAL(deliveredFuture.get(), 11);
+  BOOST_CHECK_EQUAL(deliveredFuture.get(), -1);
+  BOOST_CHECK_EQUAL(callbacks.load(), 1);
+  BOOST_CHECK_EQUAL(errorCode.load(), static_cast<int>(OperationErrorCode::EventGap));
+  BOOST_CHECK_EXCEPTION(reader.next(std::chrono::milliseconds(0)), OperationError,
+                        [] (const OperationError& error) {
+                          return error.code() == OperationErrorCode::EventGap;
+                        });
   subscription.unsubscribe();
   reader.close();
   state.cancel();

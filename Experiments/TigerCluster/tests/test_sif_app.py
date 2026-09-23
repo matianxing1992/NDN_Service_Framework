@@ -13,6 +13,16 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = ROOT / "adapters/slurm-apptainer/scripts"
+
+
+def test_complete_installed_runtime_does_not_require_legacy_app_export(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    record = tmp_path / 'build-record.json'
+    record.write_text(json.dumps({'containerNativeBuild': {'runtimeLayout': 'installed-v1'}}))
+    monkeypatch.setattr(builder, 'load_module',
+                        lambda *args: SimpleNamespace(validate=lambda *a, **k: None))
+    with pytest.raises(builder.BuildSifAppError, match='APP_EXPORT_NOT_REQUIRED_FOR_INSTALLED_RUNTIME'):
+        builder.load_build_record(record, tmp_path / 'runtime.sif', 'sha256:' + 'a' * 64)
 spec = importlib.util.spec_from_file_location("sif_app_validator", SCRIPT_DIR / "validate-sif-app.py")
 validator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validator)
@@ -50,6 +60,7 @@ def _fixture(tmp_path):
         "bin/di-native-fault-provider": b"fault",
         "bin/App_ServiceController": b"controller",
         "bin/DI_NativeArtifactAuthority": b"authority",
+        "bin/spec187-yolo-minindn": b"selector",
         "python/ndnsf/__init__.py": b"",
         "python/ndnsf_distributed_inference/__init__.py": b"",
     }
@@ -98,7 +109,8 @@ def _fixture(tmp_path):
         "files": rows,
         "entrypoints": ["/opt/ndnsf-di/app/bin/" + name
                         for name in ("di-native-provider", "di-native-fault-provider",
-                                     "App_ServiceController", "DI_NativeArtifactAuthority")],
+                                     "App_ServiceController", "DI_NativeArtifactAuthority",
+                                     "spec187-yolo-minindn")],
         "runtimeContract": {"cleanenv": True, "containall": True,
                              "appFallback": "forbidden", "modelMount": "/models:ro",
                              "artifactMount": "/artifacts:ro",
@@ -125,7 +137,7 @@ def test_pair_manifest_verifies_all_bytes_and_identity(tmp_path):
     app, base, manifest = _fixture(tmp_path)
     result = validator.validate(manifest, app, base)
     assert result["status"] == "PASS"
-    assert result["files"] == 17
+    assert result["files"] == 18
 
 
 @pytest.mark.parametrize("mutation", ["changed", "extra", "escaped"])

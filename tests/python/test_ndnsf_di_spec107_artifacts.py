@@ -284,17 +284,22 @@ class Spec107ArtifactsTest(unittest.TestCase):
                 })
             service_manifest.write_text(json.dumps({
                 "schema": "ndnsf-di-qwen-onnx-service-manifest-v1",
+                "modelFamily": "qwen",
                 "model": "Qwen/Qwen2.5-0.5B-Instruct",
                 "modelRevision": "frozen", "stageCount": 3,
+                "eosTokenIds": [151645],
                 "layerCount": 24, "expectedTopToken": 2025,
                 "stagedValidation": None, "stages": stages,
             }), encoding="utf-8")
             runtime_manifest = root / "reviewed-qwen-runtime.json"
             runtime_manifest.write_text(json.dumps({
                 "schema": "ndnsf-di-qwen-onnx-pipeline-runtime-v1",
+                "modelFamily": "qwen",
                 "model": "Qwen/Qwen2.5-0.5B-Instruct",
+                "modelRevision": "frozen",
                 "prompt": "NDNSF deployment pilot", "runtime": "qwen-onnx",
                 "stages": 3, "inputIds": [[1]], "attentionMask": [[1]],
+                "eosTokenIds": [151645],
                 "expectedTopToken": 2025,
             }), encoding="utf-8")
             output = root / "prepared"

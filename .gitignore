@@ -25,6 +25,8 @@ docs/
 !docs/
 docs/*
 !docs/native-build-parallelism.md
+!docs/native-dependency-closure.md
+!docs/build-and-test.md
 !docs/README.md
 !docs/architecture.md
 !docs/failure-log.md
@@ -73,6 +75,11 @@ Experiments/pythonEnv/
 /build-clang*/
 /build-gcc*/
 /build-spec179*/
+
+# Codex/experiment scratch outputs are evidence inputs, not source.  Keep them
+# out of Git and CodeGraph; durable summaries belong under specs/*/evidence/.
+.codex-tmp/
+Experiments/TigerCluster/images/
 
 # Local experiment results (MiniNDN run keys are generated per campaign —
 # never commit; redacted evidence lives under specs/<n>/evidence/)

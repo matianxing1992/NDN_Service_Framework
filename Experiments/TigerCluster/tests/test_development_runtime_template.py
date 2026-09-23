@@ -19,7 +19,7 @@ def test_installed_di_headers_reject_stale_missing_and_extra(tmp_path):
     text = TEMPLATE.read_text().split("cat > /opt/ndnsf-stage/manifest/verify-native.py <<'PY'\n", 1)[1].split('\nPY', 1)[0]
     tree = ast.parse(text)
     function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'verify_di_headers')
-    namespace = {'Path': Path}
+    namespace = {'Path': Path, 'json': json, 'hashlib': hashlib, 'os': os}
     exec(compile(ast.Module(body=[function], type_ignores=[]), '<header-verifier>', 'exec'), namespace)
     verify = namespace['verify_di_headers']
     base, replay = tmp_path / 'base', tmp_path / 'replay'
@@ -29,6 +29,13 @@ def test_installed_di_headers_reject_stale_missing_and_extra(tmp_path):
     target.mkdir(parents=True)
     (source / 'api.hpp').write_text('current declaration')
     (source / 'tokenizer-abi.h').write_text('public ABI declaration')
+    # Private source headers must not be exported merely because they exist.
+    (source / 'private.hpp').write_text('internal implementation')
+    (base / 'manifest').mkdir()
+    (base / 'manifest/waf-install.json').write_text(json.dumps({
+        'include/NDNSF-DistributedInference/cpp/' + name: {
+            'sha256': hashlib.sha256((source / name).read_bytes()).hexdigest()}
+        for name in ('api.hpp', 'tokenizer-abi.h')}))
     with pytest.raises(RuntimeError, match='DI_INSTALLED_HEADERS_MISMATCH'):
         verify(base, replay)
     (target / 'api.hpp').write_text('stale declaration')
@@ -40,6 +47,46 @@ def test_installed_di_headers_reject_stale_missing_and_extra(tmp_path):
     (target / 'extra.hpp').write_text('retired declaration')
     with pytest.raises(RuntimeError, match='DI_INSTALLED_HEADERS_MISMATCH'):
         verify(base, replay)
+
+
+@pytest.mark.parametrize('mutation,error', [
+    ('none', None), ('changed', 'HASH_MISMATCH'),
+    ('missing', 'FILE_MISSING'), ('symlink', 'LINK_MISMATCH'),
+    ('escape', 'PATH_ESCAPE'), ('directory-link', 'SYMLINK_ESCAPE'),
+])
+def test_waf_receipt_checks_installed_payload_without_native_execution(tmp_path, mutation, error):
+    text = TEMPLATE.read_text().split("cat > /opt/ndnsf-stage/manifest/verify-native.py <<'PY'\n", 1)[1].split('\nPY', 1)[0]
+    functions = [node for node in ast.parse(text).body if isinstance(node, ast.FunctionDef)
+                 and node.name in ('digest', 'verify_waf_install')]
+    namespace = {'Path': Path, 'json': json, 'hashlib': hashlib, 'os': os}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), '<payload-verifier>', 'exec'), namespace)
+    base = tmp_path / 'runtime'
+    (base / 'lib').mkdir(parents=True)
+    (base / 'manifest').mkdir()
+    library = base / 'lib/example.so.1'
+    library.write_bytes(b'fixture, not ELF')
+    link = base / 'lib/example.so'
+    link.symlink_to('example.so.1')
+    receipt = {'lib/example.so.1': {'sha256': hashlib.sha256(library.read_bytes()).hexdigest()},
+               'lib/example.so': {'symlink': 'example.so.1'}}
+    if mutation == 'changed':
+        library.write_bytes(b'changed')
+    elif mutation == 'missing':
+        library.unlink()
+    elif mutation == 'symlink':
+        link.unlink()
+        link.symlink_to('other.so')
+    elif mutation == 'escape':
+        receipt = {'../outside': {'sha256': '0' * 64}}
+    elif mutation == 'directory-link':
+        (base / 'lib').rename(tmp_path / 'external-lib')
+        (base / 'lib').symlink_to(tmp_path / 'external-lib', target_is_directory=True)
+    (base / 'manifest/waf-install.json').write_text(json.dumps(receipt))
+    if error:
+        with pytest.raises(AssertionError, match=error):
+            namespace['verify_waf_install'](base)
+    else:
+        namespace['verify_waf_install'](base)
 
 
 def test_ndnsd_prefix_check_survives_system_include_filter(tmp_path):
@@ -54,7 +101,7 @@ def test_ndnsd_prefix_check_survives_system_include_filter(tmp_path):
     actual = subprocess.check_output(['pkg-config', '--variable=includedir', 'ndnsd'], env=env, text=True)
     assert actual.strip() == str(include)
     text = TEMPLATE.read_text()
-    assert 'pkg-config --variable=includedir ndnsd' in text
+    assert 'pkg-config --variable=includedir "$package"' in text
     assert 'pkg-config --cflags-only-I ndnsd' not in text
 
 spec = importlib.util.spec_from_file_location(
@@ -89,29 +136,16 @@ def test_rendered_template_preserves_container_build_boundary(tmp_path):
     result = boundary.validate_definition(path)
     assert result["status"] == "PASS" and result["hostBinaryInputs"] == []
     assert result["baseImage"] == str(tmp_path / "base.sif")
+    assert result["runtimeLayout"] == "installed-v1"
+    assert result["cleanDependencyBaseRequired"] is True
+    assert result["staleBaseArtifactsReplaced"] is False
     text = path.read_text()
-    assert "/opt/ndnsf-stage/lib/libndnsf-distributed-inference.so" in text
-    assert "/opt/ndnsf-app/bin" in text
-    assert "test ! -e /opt/ndnsf-app" in text
-    assert "test ! -L /opt/ndnsf-app" in text
-    assert "install -m 0755 /opt/ndnsf-candidate/lib/libndnsf-distributed-inference.so" in text
-    for name in ("libndn-service-framework.so.0.1.0", "libndn-svs.so.0.1.0",
-                 "libnac-abe.so", "libndnsd.so.0.1.0", "libopenabe.so",
-                 "librelic.so", "librelic_ec.so"):
-        assert f"/opt/ndnsf-candidate/lib/{name}" in text
-    assert "install -m 0755 /opt/ndnsf-candidate/bin/di-native-provider /opt/ndnsf-app/bin/di-native-provider" in text
-    assert "install -m 0755 /opt/ndnsf-candidate/bin/di-native-fault-provider /opt/ndnsf-app/bin/di-native-fault-provider" in text
-    assert "install -m 0755 /opt/ndnsf-candidate/bin/App_ServiceController /opt/ndnsf-app/bin/App_ServiceController" in text
-    assert "install -m 0755 /opt/ndnsf-candidate/bin/DI_NativeArtifactAuthority /opt/ndnsf-app/bin/DI_NativeArtifactAuthority" in text
-    assert "cp -aL /opt/ndnsf-candidate/python/. /opt/ndnsf-app/python/" in text
-    assert "cp -aL /opt/ndnsf-candidate/replay/. /opt/ndnsf-app/replay/" in text
-    assert "cp -aL /opt/ndnsf-candidate/lib/. /opt/ndnsf-app/lib/" not in text
-    assert "APP_NATIVE_LIBRARY_CLOSURE_MISMATCH" in text
-    assert "APP_LAYOUT_VERIFY=ndnsf-app-v2" in text
-    assert "NDNSF_RUNTIME_RPATH='$ORIGIN/../../lib:/opt/ndn-base/lib'" in text
+    assert "BASE_CONTAINS_NDNSF" in text
+    assert "install -d /opt/ndnsf-app" not in text
+    assert "APP_NATIVE_LIBRARY_CLOSURE_MISMATCH" not in text
     assert "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib" in text
-    assert "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib:/opt/ndn-base/lib" not in text
-    assert "export NDNSF_NAC_ABE_PREFIX=/opt/ndnsf-stage" in text
+    assert "export NDNSF_NAC_ABE_PREFIX=/opt/ndn-base" in text
+    assert "NDNSF_RUNTIME_RPATH='/opt/ndnsf-di/current/lib:/opt/ndn-base/lib'" in text
 
 
 def test_explicit_core_directory_rejects_dependency_only_base(tmp_path):
@@ -123,6 +157,96 @@ def test_explicit_core_directory_rejects_dependency_only_base(tmp_path):
     with pytest.raises(boundary.Spec170BuildBoundaryError,
                        match="PYTHON_STAGE_LIBRARY_CLOSURE_MISMATCH"):
         boundary.validate_definition(path)
+
+
+@pytest.mark.parametrize('old,new,reason', [
+    ('./waf install -j4 -v --destdir=/opt/ndnsf-waf-dest', './waf -j4', 'WAF_INSTALL_CONTRACT_MISSING'),
+    ('NDNSF_SKIP_DEV_PIP_INSTALL=1', 'NDNSF_SKIP_DEV_PIP_INSTALL=0', 'WAF_INSTALL_CONTRACT_MISSING'),
+    ('--with-tests', '', 'WAF_INSTALL_CONTRACT_MISSING'),
+    ('%files from builder\n    /opt/ndnsf-stage /opt/ndnsf-candidate', '%files from builder', 'WAF_INSTALL_TRANSFER_MISSING'),
+    ('cp -a /opt/ndnsf-candidate/. /opt/ndnsf-di/current/', ':', 'WAF_INSTALL_FINAL_COPY_MISSING'),
+])
+def test_waf_install_contract_cannot_be_silently_bypassed(tmp_path, old, new, reason):
+    path = render(tmp_path)
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new, 1))
+    with pytest.raises(boundary.Spec170BuildBoundaryError, match=reason):
+        boundary.validate_definition(path)
+
+
+def test_waf_payload_replaces_production_copy_list():
+    text = TEMPLATE.read_text()
+    for stale in ('install -m 0755 build/lib',
+                  'install -m 0755 build/examples/di-native-provider ',
+                  'install -m 0755 build/examples/App_ServiceController ',
+                  'install -m 0644 build/libndn-service-framework.pc',
+                  'shutil.copy2(source /'):
+        assert stale not in text
+    assert 'cp -a /opt/ndnsf-candidate/. /opt/ndnsf-di/current/' in text
+    assert 'di-native-assembly-worker' in text
+    assert '$ORIGIN/../../lib:/opt/ndn-base/lib' in text
+    assert 'NDNSF_DI_WORKER_BINARY=/opt/ndnsf-di/current/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker' in text
+    # Optional test fixtures now share the same Waf install boundary.
+    copies = re.findall(r'install -m 0755 (build/\S+)', text)
+    assert copies == []
+    assert '--install-experiment-fixtures' in text
+
+
+@pytest.mark.parametrize('bad', [
+    'install -m 0755 build/libndn-service-framework.so /opt/ndnsf-stage/lib/',
+    'install -d /opt/ndnsf-app',
+    'cp -a /opt/ndn-base/include/nac-abe /opt/ndnsf-stage/include/',
+    './waf configure --ndn-svs-source-tree=/opt/ndn-base/sdk/sources/ndn-svs',
+])
+def test_installed_runtime_rejects_legacy_install_shortcuts(tmp_path, bad):
+    path = render(tmp_path)
+    path.write_text(path.read_text().replace('%post\n', '%post\n    ' + bad + '\n', 1))
+    with pytest.raises(boundary.Spec170BuildBoundaryError,
+                       match='DUPLICATE_INSTALL_OR_BASE_MUTATION'):
+        boundary.validate_definition(path)
+
+
+def test_experiment_install_is_explicit_and_waf_owned():
+    text = (ROOT / 'wscript').read_text()
+    assert "'--install-experiment-fixtures', action='store_true', default=False" in text
+    for path, target in [('examples/wscript', 'di-native-fault-provider'),
+                         ('tests/wscript', 'spec187-yolo-minindn')]:
+        tree = ast.parse((ROOT / path).read_text())
+        call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                    and any(kw.arg == 'name' and isinstance(kw.value, ast.Constant)
+                            and kw.value.value == target for kw in node.keywords))
+        install = next(kw.value for kw in call.keywords if kw.arg == 'install_path')
+        assert isinstance(install, ast.IfExp)
+        assert install.test.attr == 'INSTALL_EXPERIMENT_FIXTURES'
+        assert install.body.value == '${BINDIR}'
+        assert install.orelse.value is None
+
+
+def test_build_drivers_pin_version_without_login_node_probe():
+    scripts = TEMPLATE.parent.parent / 'scripts'
+    for name in ('build-local-sif.sh', 'build-sif-from-archive-legacy.sh'):
+        text = (scripts / name).read_text()
+        assert '[ "$expected_version" = 1.5.3 ]' in text
+        assert '$(ssh ' not in text
+        subprocess.run(['/bin/bash', '-n', str(scripts / name)], check=True)
+
+
+def test_selected_waf_install_posts_header_generators_without_building():
+    # Execute only the install-task posting branch against inert task objects;
+    # never load Waf or run configure/build/install in this test.
+    from types import SimpleNamespace
+    tree = ast.parse((ROOT / 'wscript').read_text())
+    build = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'build')
+    branch = build.body[-1]
+    assert isinstance(branch, ast.If)
+    posted = []
+    header = SimpleNamespace(features=['install_task'], post=lambda: posted.append('headers'))
+    native = SimpleNamespace(features=['cxxprogram'], post=lambda: posted.append('native'))
+    for command in ('build', 'install'):
+        bld = SimpleNamespace(cmd=command, groups=[[header, native]])
+        exec(compile(ast.Module(body=[branch], type_ignores=[]), '<install-posting>', 'exec'), {'bld': bld})
+    assert posted == ['headers']
 
 
 def test_repository_runtime_environment_survives_inherited_sdk(tmp_path):
@@ -166,7 +290,7 @@ def test_builder_consumes_certified_base_without_external_builds(tmp_path):
     stages = {s.name: s for s in boundary._parse_stages(text)}
     builder = stages['builder'].sections['post']
     assert '/opt/ndn-base/manifest/dependency-sdk.py verify' in builder
-    assert '"/opt/ndn-base/lib/$library" "/opt/ndnsf-stage/lib/$library"' in builder
+    assert '"/opt/ndn-base/lib/$library" "/opt/ndnsf-stage/lib/$library"' not in builder
     assert 'BASE_DEPENDENCY_IDENTITY_MISMATCH' in builder
     assert 'BASE_NATIVE_INPUT_IDENTITY_MISMATCH' in builder
     for forbidden in ['apt-get', '/src/nac-abe -B', '/src/onnx -B',
@@ -174,8 +298,8 @@ def test_builder_consumes_certified_base_without_external_builds(tmp_path):
                       '/build-input/wheels']:
         assert forbidden not in text
     assert 'BASE_RUNTIME_PACKAGE_CHANGED' in stages['final'].sections['post']
-    assert '--ndn-svs-source-tree=/opt/ndn-base/sdk/sources/ndn-svs' in builder
-    assert '--ndn-svs-build-tree=/opt/ndn-base/sdk/sources/ndn-svs/build' in builder
+    assert '--ndn-svs-source-tree=' not in builder
+    assert '--ndn-svs-build-tree=' not in builder
     for line in builder.splitlines():
         if 'export LD_LIBRARY_PATH=' in line:
             assert '/opt/ndn-base/sdk' not in line

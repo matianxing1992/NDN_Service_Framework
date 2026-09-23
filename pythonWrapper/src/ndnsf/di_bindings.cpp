@@ -685,7 +685,7 @@ bindDistributedInference(py::module_& module)
       source.modelBytes.assign(model.begin(), model.end());
       if (!initializer_bytes.is_none()) {
         const std::string initializer = initializer_bytes.cast<py::bytes>();
-        source.initializerBytes.emplace(initializer.begin(), initializer.end());
+        source.initializerBytes = std::vector<std::uint8_t>(initializer.begin(), initializer.end());
       }
       const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::hours(1);
@@ -1156,6 +1156,25 @@ bindDistributedInference(py::module_& module)
     }, py::arg("model_key") = "default", py::kw_only(),
        py::arg("options") = di::PrepareOptions{},
        py::arg("timeout_s") = py::none())
+    .def("request", [] (const di::User& user, const di::PreparedModel& model,
+                          const di::Input& input, const di::RequestOptions& options) {
+      py::gil_scoped_release release;
+      return user.request(model, input, options);
+    }, py::arg("model"), py::arg("input"), py::kw_only(),
+       py::arg("options") = di::RequestOptions{})
+    .def("run", [] (const di::User& user, const di::PreparedModel& model,
+                     const di::Input& input, const di::RequestOptions& options) {
+      py::gil_scoped_release release;
+      return user.run(model, input, options);
+    }, py::arg("model"), py::arg("input"), py::kw_only(),
+       py::arg("options") = di::RequestOptions{})
+    .def("open_conversation", [] (const di::User& user,
+                                    const di::PreparedModel& model,
+                                    const di::ConversationOptions& options) {
+      py::gil_scoped_release release;
+      return user.openConversation(model, options);
+    }, py::arg("model"), py::kw_only(),
+       py::arg("options") = di::ConversationOptions{})
     .def("start_prepare", [] (const di::User& user, const std::string& modelKey,
                                 di::PrepareOptions options, const py::object& timeout) {
       const auto normalized = prepareOptionsWithTimeout(std::move(options), timeout);

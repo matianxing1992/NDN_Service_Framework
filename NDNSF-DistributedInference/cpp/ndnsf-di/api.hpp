@@ -1,9 +1,8 @@
 #ifndef NDNSF_DI_API_HPP
 #define NDNSF_DI_API_HPP
 
-// Stable application entry point. Runtime/User and the immutable PreparedModel
-// view are defined by the owning implementation batches; later batches add
-// request values.
+// Stable application entry point. User owns request initiation; PreparedModel
+// is the immutable verified model handle passed to User operations.
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
@@ -28,7 +27,7 @@ struct UserConfig;
 struct PrepareOptions;
 struct RequestOptions;
 
-inline constexpr std::uint32_t kPreparedModelRuntimeApiVersion = 1;
+inline constexpr std::uint32_t kPreparedModelRuntimeApiVersion = 2;
 
 } // namespace ndnsf::di
 

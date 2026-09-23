@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON:-python3}"
-PIP_ARGS=()
+JOBS="${NDNSF_BUILD_JOBS:-4}"
 WAF_CONFIGURE_ARGS=()
 RUN_WAF_CONFIGURE=auto
 RUN_SYSTEM_INSTALL=1
@@ -35,10 +35,6 @@ BOOST_LIBRARY_DIR="/usr/lib/x86_64-linux-gnu"
 BOOST_VERSION_NUMBER="107100"
 GLOBAL_IDENTITY_DIR="/usr/local/share/ndnsf"
 GLOBAL_IDENTITY_FILE="$GLOBAL_IDENTITY_DIR/global-dependency-identity.json"
-GLOBAL_IDENTITY_LIBRARIES=(
-  "libndn-cxx.so" "libndnsd.so" "libndn-svs.so" "libnac-abe.so"
-  "libopenabe.so" "libonnxruntime.so"
-)
 
 # Minimum installed package metadata accepted by this host workflow.  A
 # missing/older package or a package outside /usr/local is rebuilt and
@@ -80,7 +76,8 @@ Options:
   --with-nfd-nlsr-deps     Install OS packages commonly needed to build NFD/NLSR.
   --check-dependencies     Verify the installed global closure and exit.
   --configure              Always run ./waf configure before building.
-  --no-configure           Skip ./waf configure.
+  --no-configure           Unsupported: every install must revalidate configure.
+  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or 4).
   --with-examples          Pass --with-examples to ./waf configure.
   --with-tests             Pass --with-tests to ./waf configure.
   --no-system-install      Skip ./waf install; useful for source-tree testing.
@@ -121,6 +118,9 @@ Notes:
   - --no-system-install is build-only and intentionally stops before Python
     bindings; it cannot produce a complete stack without the global Core/DI
     install.
+  - This is a host installer for the system Boost 1.71 / x86-64 closure, not
+    a portable clean-machine or SIF bootstrap script. Preinstall ONNX Runtime
+    1.26+, ONNX full-protobuf headers/archives and the Rust tokenizer archive.
 EOF
 }
 
@@ -140,6 +140,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --deps-dir)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--deps-dir requires a path' >&2; exit 2; }
       DEPS_DIR="$2"
       shift 2
       ;;
@@ -204,7 +205,13 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --python)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--python requires an executable' >&2; exit 2; }
       PYTHON_BIN="$2"
+      shift 2
+      ;;
+    --jobs)
+      [[ $# -ge 2 ]] || { echo '--jobs requires a positive integer' >&2; exit 2; }
+      JOBS="$2"
       shift 2
       ;;
     -h|--help)
@@ -218,6 +225,17 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Reject unsupported options before apt, dependency installation, or configure.
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo '--jobs must be a positive integer' >&2; exit 2; }
+if [[ "$RUN_WAF_CONFIGURE" == "0" ]]; then
+  echo '--no-configure is not allowed for the global-closure installer' >&2
+  exit 2
+fi
+# Resolve user-relative paths before changing to the repository root.
+DEPS_DIR="$(realpath -m -- "$DEPS_DIR")"
+PYTHON_BIN="$(command -v -- "$PYTHON_BIN")" || { echo 'Python executable not found' >&2; exit 2; }
+PYTHON_BIN="$(realpath -s -- "$PYTHON_BIN")"
 
 run() {
   echo "+ $*"
@@ -242,7 +260,11 @@ pip_install() {
     install_args+=("--user")
   fi
   install_args+=("$path")
-  run "$PYTHON_BIN" -m pip install "${install_args[@]}"
+  run env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+    -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
+    -u CPLUS_INCLUDE_PATH -u LDSHARED -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR \
+    PATH="$SYSTEM_PATH" CC=/usr/bin/gcc CXX=/usr/bin/g++ \
+    "$PYTHON_BIN" -m pip install "${install_args[@]}"
 }
 
 run_waf_clean() {
@@ -651,6 +673,8 @@ require_global_external_closure() {
   require_global_file "$GLOBAL_LIBRARY_DIR/libonnx.a"
   require_global_file "$GLOBAL_LIBRARY_DIR/libonnx_proto.a"
   require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
+  require_global_file "$GLOBAL_DEPENDENCY_PREFIX/include/onnx/checker.h"
+  require_global_file "$GLOBAL_DEPENDENCY_PREFIX/include/onnx/shape_inference/implementation.h"
   require_global_dependency_identity
 }
 
@@ -705,7 +729,7 @@ install_common_system_packages() {
       autoconf automake libtool m4 bison flex ninja-build \
       libgmp-dev libssl-dev \
       libboost-all-dev libsqlite3-dev libpcap-dev libsodium-dev libz-dev \
-      liblog4cxx-dev sqlite3
+      liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler libgtkmm-3.0-dev
     )
     if [[ "$INSTALL_TEST_PACKAGES" == "1" ]]; then
       packages+=(libgtest-dev doxygen graphviz)
@@ -734,7 +758,7 @@ ensure_source_tree() {
   local dir="$DEPS_DIR/$name"
 
   mkdir -p "$DEPS_DIR"
-  if [[ -d "$dir/.git" ]]; then
+  if [[ -e "$dir/.git" ]]; then
     echo "==> Reusing dependency source: $dir"
   elif [[ -e "$dir" ]]; then
     echo "Dependency path exists but is not a git repository: $dir" >&2
@@ -757,16 +781,16 @@ build_openabe_dependency() {
 
   dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" | tail -n 1)"
   echo "==> Building OpenABE from the dependency source tree"
-  run bash -lc "cd '$dir' && . ./env && \
+  run bash -e -c "cd \"\$1\" && . ./env && \
     unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS CXXFLAGS CPPFLAGS LDFLAGS \
       LD_LIBRARY_PATH LIBRARY_PATH CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
       BOOST_ROOT BOOST_INCLUDEDIR BOOST_LIBRARYDIR && \
     export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
       AR=/usr/bin/ar RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
       BOOST_ROOT= BOOST_INCLUDEDIR= BOOST_LIBRARYDIR= && \
-    make clean >/dev/null 2>&1 || true; \
-    make -C deps/openssl && make -C deps/relic && make -C deps/gtest && \
-    BISON=\$(command -v bison) FLEX=\$(command -v flex) make"
+    { make clean >/dev/null 2>&1 || true; } && \
+    make -j'$JOBS' -C deps/openssl && make -j'$JOBS' -C deps/relic && make -j'$JOBS' -C deps/gtest && \
+    BISON=\$(command -v bison) FLEX=\$(command -v flex) make -j'$JOBS'" _ "$dir"
   echo "==> Installing OpenABE into the global prefix $OPENABE_PREFIX"
   sudo_run env \
     -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
@@ -774,13 +798,13 @@ build_openabe_dependency() {
     -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
     PATH="$SYSTEM_PATH" CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
     AR=/usr/bin/ar RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
-    bash -lc \
-    "cd '$dir' && . ./env && unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS \
+    bash -e -c \
+    "cd \"\$1\" && . ./env && unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS \
       CXXFLAGS CPPFLAGS LDFLAGS LD_LIBRARY_PATH LIBRARY_PATH CPATH \
       C_INCLUDE_PATH CPLUS_INCLUDE_PATH BOOST_ROOT BOOST_INCLUDEDIR \
       BOOST_LIBRARYDIR && export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc \
       CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
-      NM=/usr/bin/nm STRIP=/usr/bin/strip && make INSTALL_PREFIX='$OPENABE_PREFIX' install"
+      NM=/usr/bin/nm STRIP=/usr/bin/strip && make INSTALL_PREFIX='$OPENABE_PREFIX' install" _ "$dir"
   sudo_run ldconfig
 }
 
@@ -798,7 +822,7 @@ build_waf_dependency() {
 
   dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
   echo "==> Building dependency $name"
-  run bash -lc "cd '$dir' && \
+  run bash -e -c "cd \"\$1\" || exit; \
     env -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
       -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
       -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
@@ -819,13 +843,13 @@ build_waf_dependency() {
       PATH='$SYSTEM_PATH' PKGCONFIG='$PKG_CONFIG_BIN' \
       CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar \
       AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
-      ./waf -j4"
+      ./waf -j'$JOBS'" _ "$dir"
   echo "==> Installing dependency $name"
   sudo_run env -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
     PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" \
     CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar \
     AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
-    bash -lc "cd '$dir' && ./waf install"
+    bash -e -c 'cd "$1" && ./waf install' _ "$dir"
   sudo_run ldconfig
 }
 
@@ -845,7 +869,7 @@ build_cmake_dependency() {
   build_dir="$dir/.ndnsf-global-build-${name//[^A-Za-z0-9]/_}-$$"
   echo "==> Building dependency $name"
   if [[ "$name" == "NAC-ABE" && -n "$OPENABE_PREFIX" && -f "$OPENABE_PREFIX/lib/libopenabe.so" ]]; then
-    run bash -lc "cd '$dir' && env \
+    run bash -e -c "cd \"\$1\" && env \
       -u PKG_CONFIG_PATH \
       -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
       PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
@@ -857,10 +881,12 @@ build_cmake_dependency() {
       CXXFLAGS='-I$OPENABE_PREFIX/include' \
       LDFLAGS='-L$OPENABE_PREFIX/lib -Wl,-rpath,$OPENABE_PREFIX/lib' \
       LD_LIBRARY_PATH='$OPENABE_PREFIX/lib' \
-      cmake -S . -B '$build_dir' \
+      cmake -S . -B \"\$2\" \
         -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
         -DCMAKE_LINKER=/usr/bin/ld -DCMAKE_AR=/usr/bin/ar -DCMAKE_RANLIB=/usr/bin/ranlib \
         -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' \
+        -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=ON \
+        -DBOOST_INCLUDEDIR='$BOOST_INCLUDE_DIR' -DBOOST_LIBRARYDIR='$BOOST_LIBRARY_DIR' \
         -DCMAKE_BUILD_RPATH='$OPENABE_PREFIX/lib' \
         -DCMAKE_INSTALL_RPATH='$OPENABE_PREFIX/lib' && \
       env -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH \
@@ -870,9 +896,9 @@ build_cmake_dependency() {
         -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
         PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
         AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
-        cmake --build '$build_dir' --parallel 4"
+        cmake --build \"\$2\" --parallel '$JOBS'" _ "$dir" "$build_dir"
   else
-    run bash -lc "cd '$dir' && env \
+    run bash -e -c "cd \"\$1\" && env \
       -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH -u CMAKE_LIBRARY_PATH \
       -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH -u CXXFLAGS \
       -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
@@ -880,10 +906,12 @@ build_cmake_dependency() {
       -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
       PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
       AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
-      cmake -S . -B '$build_dir' \
+      cmake -S . -B \"\$2\" \
       -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
       -DCMAKE_LINKER=/usr/bin/ld -DCMAKE_AR=/usr/bin/ar -DCMAKE_RANLIB=/usr/bin/ranlib \
-      -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' && \
+      -DCMAKE_INSTALL_PREFIX='$GLOBAL_DEPENDENCY_PREFIX' \
+      -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=ON \
+      -DBOOST_INCLUDEDIR='$BOOST_INCLUDE_DIR' -DBOOST_LIBRARYDIR='$BOOST_LIBRARY_DIR' && \
       env -u PKG_CONFIG_PATH -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH \
         -u CMAKE_LIBRARY_PATH -u CMAKE_FRAMEWORK_PATH -u CMAKE_APPBUNDLE_PATH \
         -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
@@ -891,13 +919,13 @@ build_cmake_dependency() {
         -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
         PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
         AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
-        cmake --build '$build_dir' --parallel 4"
+        cmake --build \"\$2\" --parallel '$JOBS'" _ "$dir" "$build_dir"
   fi
   echo "==> Installing dependency $name"
-  sudo_run bash -lc "cd '$dir' && env -u BOOST_ROOT -u BOOST_INCLUDEDIR \
+  sudo_run bash -e -c "cd \"\$1\" && env -u BOOST_ROOT -u BOOST_INCLUDEDIR \
     -u BOOST_LIBRARYDIR PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ \
     LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
-    cmake --install '$build_dir'"
+    cmake --install \"\$2\"" _ "$dir" "$build_dir"
   rm -rf "$build_dir"
   sudo_run ldconfig
 }
@@ -905,6 +933,13 @@ build_cmake_dependency() {
 install_external_dependencies() {
   echo "==> Checking external NDN dependencies"
   echo "==> Dependency source directory: $DEPS_DIR"
+  # These SDKs are not built here. Fail before changing other installed libraries.
+  require_global_sdk_pkg "onnxruntime" "1.26.0" "libonnxruntime.so"
+  require_global_file "$GLOBAL_LIBRARY_DIR/libonnx.a"
+  require_global_file "$GLOBAL_LIBRARY_DIR/libonnx_proto.a"
+  require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
+  require_global_file "$GLOBAL_DEPENDENCY_PREFIX/include/onnx/checker.h"
+  require_global_file "$GLOBAL_DEPENDENCY_PREFIX/include/onnx/shape_inference/implementation.h"
   if [[ -f "$GLOBAL_IDENTITY_FILE" ]] && ! has_global_dependency_identity; then
     if ! has_global_onnx_identity; then
       echo "Global ONNX Runtime identity changed; this installer cannot rebuild ONNX Runtime. Reinstall the canonical global SDK and refresh the identity receipt before continuing." >&2
@@ -913,7 +948,7 @@ install_external_dependencies() {
     echo "==> Global dependency identity is stale; rebuilding the installed closure"
     FORCE_DEPENDENCIES=1
   fi
-  if [[ "$FORCE_DEPENDENCIES" == "1" ]] || ! has_global_boost || \
+  if [[ "$INSTALL_SYSTEM_PACKAGES" == "1" ]] || [[ "$FORCE_DEPENDENCIES" == "1" ]] || ! has_global_boost || \
      ! is_pkg_installed "libndn-cxx" "$MIN_NDNCXX_VERSION" || \
      ! is_pkg_installed "ndnsd" "$MIN_NDNSD_VERSION" || \
      ! is_pkg_installed "libndn-svs" "$MIN_NDNSVS_VERSION" || \
@@ -976,7 +1011,7 @@ else
 fi
 
 echo "==> Building C++ libraries and bundled subprojects"
-run_waf_clean
+run_waf_clean -j"$JOBS"
 
 if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   echo "==> Installing C++ libraries and headers"
@@ -992,7 +1027,8 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
-    NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR" ./waf install
+    NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR" ./waf install -j"$JOBS"
+  sudo_run /sbin/ldconfig
   require_global_file "$GLOBAL_LIBRARY_DIR/libndn-service-framework.so"
   require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf-distributed-inference.so"
 else

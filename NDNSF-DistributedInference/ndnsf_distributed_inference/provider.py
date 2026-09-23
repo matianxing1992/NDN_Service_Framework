@@ -1326,6 +1326,7 @@ class DistributedInferenceProvider:
             # runs in _qualify_protected_assembly afterwards.
             return execution
         artifact = dict(local_artifacts.get(ctx.assignment.role, {}))
+        artifact_metadata = dict(artifact.get("metadata") or {})
         model_path = str(artifact.get("path", ""))
         if not model_path or not Path(model_path).is_file():
             raise RuntimeError(
@@ -1366,14 +1367,40 @@ class DistributedInferenceProvider:
             # model itself is the certified slice (and re-inlining every
             # initializer would only exceed the assembled-byte envelope).
             return execution
-        canonical_initializer: bytes | None = None
-        weights_path = Path(model_path).with_name(
-            Path(model_path).stem + ".weights")
-        if weights_path.is_file():
-            canonical_initializer = weights_path.read_bytes()
+        try:
+            import onnx
+            from onnx import external_data_helper
+            graph_only = onnx.load(model_path, load_external_data=False)
+            has_external_initializer = any(
+                external_data_helper.uses_external_data(initializer)
+                for initializer in graph_only.graph.initializer)
+        except Exception as exc:
+            raise RuntimeError(
+                "certified role assembly cannot inspect the canonical ONNX graph") from exc
+        # The initializer is a separately authenticated canonical object.  It
+        # must be supplied by the deployment/reference manifest; deriving a
+        # sibling name from the model stem (for example ``.weights``) can bind
+        # assembly to an unrelated file or silently omit the required object.
+        initializer_ref = artifact.get("canonical_initializer_path")
+        if initializer_ref in (None, ""):
+            initializer_ref = artifact_metadata.get("canonical_initializer_path")
+        if initializer_ref in (None, ""):
+            initializer_ref = artifact_metadata.get("canonicalInitializerPath")
+        canonical_initializer_path: Path | None = None
+        if initializer_ref not in (None, ""):
+            candidate = Path(str(initializer_ref)).expanduser()
+            if not candidate.is_absolute():
+                candidate = Path(model_path).expanduser().parent / candidate
+            if candidate.is_symlink() or not candidate.is_file():
+                raise RuntimeError(
+                    "authenticated canonical initializer path is not a regular file")
+            canonical_initializer_path = candidate.resolve()
+        elif has_external_initializer:
+            raise RuntimeError(
+                "certified role assembly requires an authenticated canonical initializer path")
         assembly = assemble_certified_onnx_model(
             Path(model_path).read_bytes(),
-            canonical_initializer=canonical_initializer,
+            canonical_initializer_path=canonical_initializer_path,
             role_spec=v3_role_spec,
             recipe=recipe,
         )
@@ -1937,7 +1964,13 @@ class DistributedInferenceProvider:
         Providers normally use locally deployed artifacts recorded in the
         service policy. If an assignment carries an artifact name, the provider
         can still fetch and materialize it for compatibility with older dynamic
-        provisioning flows.
+        provisioning flows.  An ONNX artifact with an external canonical
+        initializer must also carry ``canonical_initializer_path`` in the
+        authenticated artifact reference (or the same key in its metadata);
+        relative values are resolved beside the model.  The provider never
+        derives an initializer filename from the model stem.  Inline ONNX
+        artifacts do not need that path even when their normalized identity
+        contains an initializer digest.
         """
 
         role_list = [_validate_list_token(str(role), "role") for role in roles]

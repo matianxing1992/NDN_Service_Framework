@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include <openssl/evp.h>
@@ -68,6 +69,12 @@ BOOST_AUTO_TEST_CASE(ClientRejectsMissingCoreOwner)
     NativeInferenceClient(nullptr, adapters), NativeDiError);
   BOOST_CHECK_THROW(
     NativeInferenceClient(nullptr, nullptr), NativeDiError);
+}
+
+BOOST_AUTO_TEST_CASE(NativeGenerationStreamBudgetIncludesTerminalEvent)
+{
+  BOOST_CHECK_EQUAL(nativeStreamEventBudgetForGeneration(1), 2U);
+  BOOST_CHECK_EQUAL(nativeStreamEventBudgetForGeneration(1025), 1026U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -56,6 +56,24 @@ def test_v3_container_native_record_is_accepted(tmp_path: Path) -> None:
     assert MODULE.validate(record, sif, _digest(sif))["status"] == "PASS"
 
 
+@pytest.mark.parametrize('clean,expected', [(True, True), (False, False), (None, False)])
+def test_installed_runtime_requires_dependency_only_base(tmp_path: Path, clean, expected) -> None:
+    sif = tmp_path / "runtime.sif"
+    sif.write_bytes(b"fixture, not a real SIF")
+    record = _write_record(tmp_path, sif)
+    body = json.loads(record.read_text())
+    body['containerNativeBuild'].update(runtimeLayout='installed-v1',
+                                      staleBaseArtifactsReplaced=False,
+                                      cleanDependencyBaseRequired=clean)
+    body['recordDigest'] = MODULE._record_digest(body)
+    record.write_text(json.dumps(body))
+    if expected:
+        assert MODULE.validate(record, sif, _digest(sif))['status'] == 'PASS'
+    else:
+        with pytest.raises(MODULE.BuildRecordError, match='BOUNDARY_INVALID'):
+            MODULE.validate(record, sif, _digest(sif))
+
+
 def test_metadata_only_record_check_skips_sif_read_but_keeps_size_contract(
     tmp_path: Path,
 ) -> None:

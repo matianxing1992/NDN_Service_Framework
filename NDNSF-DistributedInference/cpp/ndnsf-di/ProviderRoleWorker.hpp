@@ -62,6 +62,11 @@ struct ProviderRoleResult
   std::optional<ExecutionEvidence> executionEvidence;
   std::optional<NativeRuntimeMetrics> runtimeMetrics;
   std::optional<NativeOpaqueStateHandleV1> stateHandle;
+  // CPU/host-state runners publish a state-stripped dependency bundle, but
+  // the outer Provider runtime still has to commit the exact state successor.
+  // Keep that small state-only bundle separate from outputsByScope so an
+  // outputBundleScope equal to a dependency scope cannot erase it.
+  std::optional<TensorBundle> providerDecodeState;
   RoleTiming timing;
   std::vector<InputFetchTiming> inputTimings;
   std::vector<OutputPublishTiming> outputTimings;

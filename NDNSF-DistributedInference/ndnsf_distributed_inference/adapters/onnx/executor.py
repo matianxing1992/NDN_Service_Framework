@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
+import shutil
+import stat
 from io import BytesIO
 from pathlib import Path
 import re
@@ -219,31 +221,98 @@ class CertifiedOnnxAssembly:
     model_digest: str
 
 
+def _stage_initializer_source(
+    destination: Path,
+    *,
+    payload: bytes | None,
+    source_path: str | Path | None,
+) -> int:
+    """Stage external weights without retaining a second full sidecar copy."""
+    if (payload is None) == (source_path is None):
+        raise ValueError("exactly one canonical initializer source is required")
+    if source_path is not None:
+        candidate = Path(source_path).expanduser()
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ValueError("canonical ONNX initializer path is not a regular file")
+        candidate = candidate.resolve()
+        # Read through one stable descriptor.  A pre-read stat followed by a
+        # hard-link would let a mutable Repo-cache inode change while the
+        # assembler is validating it, so the bytes used for identity and
+        # extraction could differ from the bytes counted by the envelope.
+        try:
+            source_fd = os.open(
+                candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError as exc:
+            raise ValueError(
+                "canonical ONNX initializer cannot be opened safely") from exc
+        try:
+            before = os.fstat(source_fd)
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError(
+                    "canonical ONNX initializer path is not a regular file")
+            with os.fdopen(source_fd, "rb", closefd=False) as source, \
+                    destination.open("wb") as target:
+                shutil.copyfileobj(source, target, length=8 * 1024 * 1024)
+                target.flush()
+            after = os.fstat(source_fd)
+            identity = (before.st_dev, before.st_ino, before.st_size,
+                        before.st_mtime_ns)
+            if identity != (after.st_dev, after.st_ino, after.st_size,
+                            after.st_mtime_ns):
+                raise ValueError(
+                    "canonical ONNX initializer changed during staging")
+            staged = destination.stat()
+            if (not stat.S_ISREG(staged.st_mode)
+                    or staged.st_size != before.st_size):
+                raise ValueError(
+                    "staged canonical ONNX initializer size changed")
+            return int(staged.st_size)
+        finally:
+            os.close(source_fd)
+    data = bytes(payload)
+    destination.write_bytes(data)
+    return len(data)
+
+
 def assemble_certified_onnx_model(
     canonical_model: bytes,
     *,
     canonical_initializer: bytes | None = None,
+    canonical_initializer_path: str | Path | None = None,
     role_spec,
     recipe: CertifiedOnnxAssemblyRecipe,
 ) -> CertifiedOnnxAssembly:
     """Extract, check, and load one certified role from canonical ONNX bytes.
 
     Canonical packages may keep initializers in the separately addressable
-    ``model.onnx.data`` object.  The graph and initializer bytes are supplied
-    independently so the caller can authenticate both objects before this
-    provider-local assembly boundary.
+    ``model.onnx.data`` object.  Callers may supply its path so this boundary
+    can stream it into the temporary assembly directory without retaining a
+    second full sidecar in Python memory.  The graph identity pass reads
+    initializer ranges one at a time for the complete normalized digest;
+    selected-role materialization below is a separate, smaller operation.
     """
     recipe.validate_role_spec(role_spec)
     source = bytes(canonical_model)
     if not source or len(source) > recipe.max_source_bytes:
         raise ValueError("canonical ONNX source exceeds its resource envelope")
+    if canonical_initializer is not None and canonical_initializer_path is not None:
+        raise ValueError("canonical initializer bytes and path are mutually exclusive")
     initializer_source = (None if canonical_initializer is None
                           else bytes(canonical_initializer))
-    if (initializer_source is not None
-            and len(initializer_source) > recipe.max_source_bytes):
+    initializer_source_size = (
+        len(initializer_source) if initializer_source is not None else None)
+    if initializer_source_size is None and canonical_initializer_path is not None:
+        initializer_candidate = Path(canonical_initializer_path).expanduser()
+        if (initializer_candidate.is_symlink()
+                or not initializer_candidate.is_file()):
+            raise ValueError("canonical ONNX initializer path is not a regular file")
+        initializer_source_size = int(initializer_candidate.stat().st_size)
+    if (initializer_source_size is not None
+            and initializer_source_size > recipe.max_source_bytes):
         raise ValueError("canonical ONNX initializer exceeds its resource envelope")
     try:
         import onnx
+        from onnx import external_data_helper
     except ImportError as exc:  # pragma: no cover - deployment gate covers this
         raise RuntimeError("Provider-local assembly requires onnx") from exc
 
@@ -295,17 +364,33 @@ def assemble_certified_onnx_model(
                 except TypeError:  # pragma: no cover - old protobuf compatibility
                     normalized_source = encoded_model.SerializeToString()
                 source_path.write_bytes(normalized_source)
-            if has_external_initializers and initializer_source is None:
+            if (has_external_initializers and initializer_source is None
+                    and canonical_initializer_path is None):
                 raise ValueError(
                     "canonical ONNX external initializer bytes are required")
             if (not has_external_initializers
-                    and initializer_source is not None):
+                    and (initializer_source is not None
+                         or canonical_initializer_path is not None)):
                 raise ValueError(
                     "canonical ONNX initializer supplied for inline model")
-            if initializer_source is not None:
-                initializer_path.write_bytes(initializer_source)
-            model = onnx.load(str(source_path), load_external_data=True)
-            onnx.checker.check_model(model, full_check=True)
+            if has_external_initializers:
+                staged_initializer_size = _stage_initializer_source(
+                    initializer_path, payload=initializer_source,
+                    source_path=canonical_initializer_path)
+                if staged_initializer_size > recipe.max_source_bytes:
+                    raise ValueError(
+                        "staged canonical ONNX initializer exceeds its resource envelope")
+            # Keep the graph protobuf resident without materializing the full
+            # external initializer object.  The selected role is materialized
+            # below after graph extraction; loading the complete 1.5-GB Qwen
+            # initializer here defeats bounded provider-local assembly.
+            model = onnx.load(str(source_path), load_external_data=False)
+            # Check the serialized path so ONNX resolves external locations
+            # relative to the staged graph.  Checking the graph-only object
+            # directly would resolve the same location against the process
+            # CWD even in structural mode.  Selected tensors are checked fully
+            # again after they are inlined below.
+            onnx.checker.check_model(str(source_path), full_check=False)
         except ValueError:
             raise
         except Exception as exc:
@@ -315,6 +400,9 @@ def assemble_certified_onnx_model(
         if recipe.layer_end > len(model.graph.node):
             raise ValueError("certified ONNX node cover escapes the graph")
         from .graph import canonical_onnx_identity
+        # This is a bounded sequential identity verification, not model
+        # materialization: graph.py clears each tensor's raw_data before the
+        # next range is loaded.  Only the Extractor result below is embedded.
         canonical_identity = canonical_onnx_identity(source_path)
         if canonical_identity.graph_digest != recipe.graph_digest:
             raise ValueError("canonical ONNX graph digest mismatch")
@@ -322,12 +410,20 @@ def assemble_certified_onnx_model(
                 != recipe.canonical_initializer_digest):
             raise ValueError("canonical ONNX initializer digest mismatch")
         try:
-            onnx.utils.extract_model(
-                str(source_path), str(output_path),
+            # Extract from the graph-only model, then load only the external
+            # tensors referenced by this role.  Selected tensors are embedded
+            # in the returned wire so ORT can consume it without a sidecar,
+            # while unrelated provider ranges never enter this process.
+            assembled = onnx.utils.Extractor(model).extract_model(
                 list(recipe.input_names), list(recipe.output_names),
-                check_model=True,
             )
-            assembled = onnx.load(str(output_path), load_external_data=True)
+            for initializer in assembled.graph.initializer:
+                if external_data_helper.uses_external_data(initializer):
+                    external_data_helper.load_external_data_for_tensor(
+                        initializer, str(source_path.parent))
+                    initializer.ClearField("external_data")
+                    initializer.data_location = onnx.TensorProto.DEFAULT
+            onnx.save(assembled, str(output_path))
             onnx.checker.check_model(assembled, full_check=True)
         except Exception as exc:
             raise ValueError("adapter-certified ONNX extraction failed") from exc

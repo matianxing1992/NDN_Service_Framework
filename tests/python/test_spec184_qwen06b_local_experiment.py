@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import struct
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,17 +23,180 @@ def load_module():
     return module
 
 
-def test_example_profile_resolves_one_native_build_boundary():
+def load_native_module():
+    spec = importlib.util.spec_from_file_location(
+        "spec187_qwen06b_native_minindn",
+        ROOT / "Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("configured,expected", [
+    (None, "*=WARN"), ("", "*=WARN"), ("*=ERROR:ndnsf.di.RuntimeEvidence=WARN",
+                                           "*=ERROR:ndnsf.di.RuntimeEvidence=WARN"),
+])
+def test_native_environment_enables_required_evidence(monkeypatch, tmp_path,
+                                                      configured, expected):
+    module = load_native_module()
+    monkeypatch.delenv("NDNSF_NDN_LOG", raising=False)
+    if configured is not None:
+        monkeypatch.setenv("NDNSF_NDN_LOG", configured)
+    assert module.env_for(tmp_path, "ucla")["NDN_LOG"] == expected
+
+
+def test_native_wait_aborts_on_prefixed_provider_terminal_record(tmp_path):
+    module = load_native_module()
+    provider_log = tmp_path / "provider.log"
+    provider_log.write_text(
+        "1790000000.000 WARN: [ndnsf.di.RuntimeEvidence] "
+        "NDNSF_DI_PROVIDER_STAGE stage=TERMINAL status=failed reason=test-boundary\n")
+    requester_log = tmp_path / "requester.log"
+    requester_log.write_text("")
+    process = SimpleNamespace(poll=lambda: None)
+    with pytest.raises(RuntimeError, match="test-boundary"):
+        module.wait_for_native_round(process, requester_log, [provider_log], 1)
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_native_wait_reaps_before_accepting_success_marker(monkeypatch, tmp_path, exit_code):
+    module = load_native_module()
+    request_log = tmp_path / "requester.log"
+    request_log.write_text("NATIVE_REQUEST_SUCCEEDED\n")
+    process = SimpleNamespace(returncode=None, polls=0)
+
+    def poll():
+        process.polls += 1
+        if process.polls == 2:
+            request_log.write_text(
+                "NATIVE_REQUEST_SUCCEEDED\nNATIVE_CONVERSATION_CHECKPOINT_WRITTEN\n")
+            process.returncode = exit_code
+        return process.returncode
+
+    process.poll = poll
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    text = module.wait_for_native_round(process, request_log, [], 1)
+    assert process.polls == 2
+    assert process.returncode == exit_code
+    assert "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN" in text
+
+
+def test_native_wait_does_not_hide_provider_failure_behind_success_marker(tmp_path):
+    module = load_native_module()
+    request_log = tmp_path / "requester.log"
+    request_log.write_text("NATIVE_REQUEST_SUCCEEDED\n")
+    provider_log = tmp_path / "provider.log"
+    provider_log.write_text("NDNSF_DI_NATIVE_FAILURE terminal-finalize-failed\n")
+    process = SimpleNamespace(poll=lambda: 0)
+    with pytest.raises(RuntimeError, match="terminal-finalize-failed"):
+        module.wait_for_native_round(process, request_log, [provider_log], 1)
+
+
+def test_example_profile_resolves_two_nodes_and_installed_native_boundary():
     module = load_module()
     profile, profile_sha = module.load_profile(
         ROOT / "Experiments/profiles/ndnsf-di-qwen06b-local.example.json"
     )
-    assert profile["buildDir"].endswith("build-spec184-b5-candidate-r4")
-    assert profile["controllerBinary"].endswith(
-        "build-spec184-b5-candidate-r4/examples/App_ServiceController"
-    )
+    assert profile["buildDir"].endswith("build-spec189-oracle")
+    assert profile["stageNodes"] == ["ucla", "arizona"]
+    for key, binary in (
+        ("controllerBinary", "App_ServiceController"),
+        ("authorityBinary", "DI_NativeArtifactAuthority"),
+        ("requesterBinary", "DI_NativeRequester"),
+        ("providerBinary", "di-native-provider"),
+        ("oracleBinary", "spec189-two-provider-oracle"),
+    ):
+        assert profile[key] == "/usr/local/bin/" + binary
+    assert profile["assemblyWorkerBinary"] == (
+        "/usr/local/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker")
     assert profile_sha.startswith("sha256:")
     assert len(profile_sha) == len("sha256:") + 64
+
+
+def test_generated_command_preserves_installed_paths_and_digests(tmp_path: Path):
+    module = load_module()
+    profile, _ = module.load_profile(
+        ROOT / "Experiments/profiles/ndnsf-di-qwen06b-local.example.json")
+    args = SimpleNamespace(
+        stage_manifest=tmp_path / "manifest.json", stage_root=tmp_path,
+        rounds=1, max_new_tokens=1025, require_multi_token=True,
+        nlsr_wait_s=8, startup_timeout_s=60,
+        input_token_ids="", delta_token_ids="", negative_parent=False,
+        cache_dir=tmp_path / "shared-cache")
+    names = ("controller", "authority", "requester", "provider", "assemblyWorker", "oracle")
+    digest = "sha256:" + "a" * 64
+    candidate = {
+        "modelManifest": {"sha256": digest}, "tokenizer": {"sha256": digest},
+        "topology": {"sha256": digest},
+        "binaries": {name: {"sha256": "sha256:" + format(index, "064x")}
+                     for index, name in enumerate(names, 1)},
+    }
+    command = module.command_for(args, profile, tmp_path / "run", candidate)
+    for field, option in (
+        ("controllerBinary", "--controller-binary"),
+        ("authorityBinary", "--authority-binary"),
+        ("requesterBinary", "--requester-binary"),
+        ("providerBinary", "--provider-binary"),
+        ("assemblyWorkerBinary", "--assembly-worker-binary"),
+        ("oracleBinary", "--oracle-binary"),
+    ):
+        assert command.count(option) == 1
+        assert command[command.index(option) + 1] == profile[field]
+        name = field[:-len("Binary")]
+        assert command[command.index(option + "-sha256") + 1] == candidate["binaries"][name]["sha256"]
+    assert command[command.index("--stage-nodes") + 1] == "ucla,arizona"
+    assert command[command.index("--model-family") + 1] == "qwen"
+    assert command[command.index("--model-name") + 1] == ""
+    assert command[command.index("--artifact-cache-root") + 1] == str(
+        (tmp_path / "shared-cache").resolve())
+    assert command[command.index("--max-new-tokens") + 1] == "1025"
+    assert "--require-multi-token" in command
+    assert "--direct-start" in command
+
+
+def test_qwen_token_budget_contract_is_1025():
+    module = load_module()
+    native = load_native_module()
+    assert module.MAX_NEW_TOKENS == 1025
+    assert native.MAX_NEW_TOKENS == 1025
+
+
+def test_artifact_cache_root_cannot_be_run_scoped(tmp_path: Path):
+    module = load_module()
+    run_root = tmp_path / "run" / "workload"
+    with pytest.raises(ValueError, match="CACHE_ROOT_MUST_BE_OUTSIDE_RUN_ROOT"):
+        module.resolve_artifact_cache_root(run_root / "cache", run_root)
+
+
+def test_native_model_source_cache_reuses_exact_identity_only(tmp_path: Path):
+    module = load_native_module()
+    identity = module.model_source_cache_identity(
+        "Qwen/Qwen3-0.6B", "sha256:" + "1" * 64, "sha256:" + "2" * 64,
+        "sha256:" + "3" * 64, "sha256:" + "4" * 64,
+        "sha256:" + "5" * 64, "sha256:" + "6" * 64)
+    cache_root = tmp_path / "shared-cache"
+    first, first_namespace = module.resolve_model_source_repository(cache_root, identity)
+    second, second_namespace = module.resolve_model_source_repository(cache_root, identity)
+    assert second == first
+    assert second_namespace == first_namespace
+    assert json.loads((first / "cache-identity.json").read_text()) == identity
+
+    source = b"immutable canonical source"
+    source_digest = module.digest_bytes(source)
+    payload = first / "payloads" / "sha256" / source_digest[7:9] / source_digest[7:]
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(source)
+    assert module.validate_model_source_repository(first, [(source_digest, len(source))])
+
+    changed = dict(identity, initializerDigest="sha256:" + "7" * 64)
+    changed_repo, changed_namespace = module.resolve_model_source_repository(
+        cache_root, changed)
+    assert changed_repo != first
+    assert changed_namespace != first_namespace
+    assert not module.validate_model_source_repository(
+        changed_repo, [(source_digest, len(source))])
 
 
 def test_profile_rejects_unknown_fields_before_execution(tmp_path: Path):
@@ -76,6 +241,23 @@ def test_candidate_digest_is_canonical_and_changes_with_inputs():
     assert first.startswith("sha256:")
 
 
+def test_model_identity_normalizes_int8_without_hiding_activation_contract():
+    module = load_module()
+    identity = module.normalized_model_identity({
+        "modelFamily": "qwen", "model": "Qwen/Qwen3-0.6B",
+        "dtype": "float32", "modelFormat": "onnx", "quantization": "INT8",
+    })
+    assert identity["quantization"] == "int8"
+    assert identity["quantizationSubtype"] == "weight_only_int8"
+    assert identity["dtype"] == "float32"
+    assert identity["modelFormat"] == "onnx"
+
+
+def test_conversation_journal_quota_matches_native_limit():
+    module = load_native_module()
+    assert module.NATIVE_CONVERSATION_JOURNAL_MAX_BYTES == 64 * 1024 * 1024
+
+
 def test_model_layer_requires_explicit_canonical_source():
     module = load_module()
     result = module.canonical_source_info(None, None)
@@ -100,6 +282,147 @@ def test_model_layer_accepts_small_canonical_onnx_fixture():
         ROOT / "tests/fixtures/spec182/qwen-native-config.onnx", None)
     assert result["status"] == "PASS"
     assert result["nodeCount"] > 0
+
+
+def test_canonical_source_summary_cache_avoids_reparsing_same_content(monkeypatch, tmp_path):
+    module = load_module()
+    source = ROOT / "tests/fixtures/spec182/qwen-native-config.onnx"
+    cache_root = tmp_path / "cache"
+    first = module.canonical_source_info(source, None, cache_root)
+    assert first["status"] == "PASS"
+
+    class FailingOnnx:
+        @staticmethod
+        def load(*_args, **_kwargs):
+            raise AssertionError("cached canonical summary should avoid ONNX parsing")
+
+    monkeypatch.setitem(sys.modules, "onnx", FailingOnnx)
+    second = module.canonical_source_info(source, None, cache_root)
+    assert second == first
+
+
+def test_real_initializer_budget_matches_local_qwen_artifact():
+    module = load_module()
+    assert module.MODEL_SOURCE_MAX_BYTES >= 2 * 1024 * 1024 * 1024
+
+
+def test_node_mapping_requires_complete_semantic_keys(tmp_path: Path):
+    module = load_module()
+    mapping = tmp_path / "mapping.json"
+    mapping.write_text(json.dumps({"mapping": {"embedding": [0]}}), encoding="utf-8")
+    stages = [{"layerRange": {"start": 0, "endExclusive": 1}}]
+    result = module.node_mapping_info(mapping, stages)
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "MODEL_NODE_MAPPING_COVER_INVALID"
+
+
+def test_native_qwen_state_successors_are_name_bound_not_positional():
+    module = load_native_module()
+    stages = [{
+        "layerRange": {"start": 0, "endExclusive": 1},
+        "cacheInputs": ["past_value.0", "past_key.0"],
+        "cacheOutputs": ["present_key.0", "present_value.0"],
+    }]
+    assert module.qwen_state_successor_pairs(stages) == [
+        ("past_key.0", "present_key.0"),
+        ("past_value.0", "present_value.0"),
+    ]
+
+
+def test_native_qwen_state_contract_maps_semantic_names_to_exported_onnx_names():
+    module = load_native_module()
+    assert module.canonical_qwen_state_successor_pairs([{
+        "layerRange": {"start": 0, "endExclusive": 1},
+        "cacheInputs": ["past_key.0", "past_value.0"],
+        "cacheOutputs": ["present_key.0", "present_value.0"],
+    }]) == [
+        ("past_key_values.0.key", "present.0.key"),
+        ("past_key_values.0.value", "present.0.value"),
+    ]
+    assert module.canonical_qwen_state_name("past_key_values.0.key") == (
+        "past_key_values.0.key")
+
+
+@pytest.mark.parametrize("name", ["past_key_values.0", "present_key.0.tensor", "hidden_states"])
+def test_native_qwen_state_contract_rejects_unknown_source_mapping_name(name):
+    module = load_native_module()
+    with pytest.raises(ValueError, match="QWEN_CANONICAL_STATE_NAME_INVALID"):
+        module.canonical_qwen_state_name(name)
+
+
+def test_native_qwen_state_successors_reject_mismatched_layer():
+    module = load_native_module()
+    stages = [{
+        "layerRange": {"start": 0, "endExclusive": 1},
+        "cacheInputs": ["past_key.0", "past_value.0"],
+        "cacheOutputs": ["present_key.0", "present_value.1"],
+    }]
+    with pytest.raises(ValueError, match="QWEN_STATE_LAYER_COVER_INVALID"):
+        module.qwen_state_successor_pairs(stages)
+
+
+def test_native_qwen_tensor_bundle_declares_one_int64_tensor():
+    module = load_native_module()
+    payload = module.tensor_bundle([7, 8])
+    type_offset = 8 + 4 + 4 + len(b"input_ids")
+    assert struct.unpack_from("<I", payload, type_offset)[0] == 3  # Int64
+    rank_offset = type_offset + 4
+    assert struct.unpack_from("<I", payload, rank_offset)[0] == 2
+    assert struct.unpack_from("<q", payload, rank_offset + 4)[0] == 1
+    assert struct.unpack_from("<q", payload, rank_offset + 12)[0] == 2
+    size_offset = rank_offset + 20
+    assert struct.unpack_from("<Q", payload, size_offset)[0] == 16
+    assert payload[size_offset + 8:] == struct.pack("<qq", 7, 8)
+
+
+def test_native_materialize_input_uses_hardlink_for_readonly_source(tmp_path: Path):
+    module = load_native_module()
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "run" / "source.bin"
+    source.write_bytes(b"immutable model source")
+    source.chmod(0o444)
+    result = module.materialize_input(source, destination, module.digest_file(source), "TEST")
+    assert result["method"] == "hardlink"
+    assert destination.stat().st_ino == source.stat().st_ino
+
+
+def test_native_materialize_input_rejects_mutable_source(tmp_path: Path):
+    module = load_native_module()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"mutable model source")
+    with pytest.raises(RuntimeError, match="TEST_SOURCE_NOT_IMMUTABLE"):
+        module.materialize_input(source, tmp_path / "run" / "source.bin", None, "TEST")
+
+
+def test_native_encrypted_repository_path_is_empty_and_external(tmp_path: Path):
+    module = load_native_module()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    external = tmp_path / "tmpfs" / "encrypted-repo"
+    resolved = module.resolve_encrypted_repository_path(run_root, external)
+    assert resolved == external.resolve()
+    assert resolved.is_dir()
+    assert resolved.stat().st_mode & 0o777 == 0o700
+
+    (resolved / "leftover").write_bytes(b"old run")
+    with pytest.raises(RuntimeError, match="ENCRYPTED_REPOSITORY_PATH_BUSY"):
+        module.resolve_encrypted_repository_path(run_root, external)
+
+
+def test_native_encrypted_repository_path_cannot_be_inside_run_root(tmp_path: Path):
+    module = load_native_module()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    with pytest.raises(RuntimeError, match="ENCRYPTED_REPOSITORY_PATH_MUST_BE_OUTSIDE_RUN_ROOT"):
+        module.resolve_encrypted_repository_path(run_root, run_root / "external")
+
+
+def test_native_digest_gate_requires_expected_identity(tmp_path: Path):
+    module = load_native_module()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"candidate")
+    with pytest.raises(SystemExit, match="TEST_DIGEST_REQUIRED"):
+        module.require_file_digest(source, None, "TEST")
 
 
 def test_runtime_failure_is_classified_after_startup_markers(tmp_path: Path):

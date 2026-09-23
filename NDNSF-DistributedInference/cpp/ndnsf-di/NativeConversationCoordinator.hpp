@@ -43,6 +43,8 @@ struct NativeConversationTurn
   bool aborted = false;
   std::string ticket;
   std::string executionRequestId;
+  // Owner-restored placement; not accepted from an external continuation hint.
+  std::map<std::string, std::string> providersByRole;
 };
 
 struct NativeCompletedAttempt
@@ -84,6 +86,8 @@ struct NativeConversationCheckpoint
   // Local recovery metadata, validated against the authenticated receipt's
   // runtime hash chain; not a new checkpoint or transcript wire field.
   std::optional<std::size_t> nativeInitialPromptTokenCount;
+  // Local journal metadata bound to the checkpoint's planRoleMapDigest.
+  std::map<std::string, std::string> providersByRole;
 };
 
 struct NativeConversationRecord

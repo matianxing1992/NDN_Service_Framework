@@ -11,12 +11,16 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
 
 #include <onnx/onnx_pb.h>
+#include <onnx/checker.h>
 
 #include <fstream>
+#include <atomic>
 #include <future>
 #include <thread>
 #include <algorithm>
+#include <filesystem>
 #include <limits>
+#include <random>
 #include <utility>
 
 namespace ndnsf::di {
@@ -130,6 +134,8 @@ struct TransportFixture
   std::vector<std::string> requests;
   std::vector<std::string> labels;
   std::size_t beginCalls = 0;
+  std::size_t abortCalls = 0;
+  std::size_t abortedPublications = 0;
   std::function<void(LargeDataPublishResult&)> mutate;
   NativeCanonicalPublisherTestAccess::Transport transport()
   {
@@ -150,6 +156,10 @@ struct TransportFixture
         result.authorizationScope = "/SERVICE/service"; result.protectionEpoch = "Core epoch";
         if (mutate) mutate(result);
         return result;
+      },
+      [this](const auto& publications) {
+        ++abortCalls;
+        abortedPublications += publications.size();
       }};
   }
 };
@@ -206,6 +216,9 @@ BOOST_AUTO_TEST_CASE(CatalogComposesOwnedInputInspectionRolesAndPublication)
     alternate.model.descriptor.contentDigest = nativePlanningDigest("second-model");
     auto catalog = std::make_unique<NativeCanonicalPreparationCatalog>(
       std::vector<NativeCanonicalCatalogEntry>{entry, alternate}, control);
+    const auto sourceSnapshot = catalog->sourceRefFor(entry.model.descriptor);
+    BOOST_REQUIRE(sourceSnapshot);
+    BOOST_REQUIRE(!sourceSnapshot->modelBytes.empty());
     const auto registry = catalog->adapters();
     BOOST_CHECK(registry->frozen());
     const auto preparation = NativeCanonicalCatalogTestAccess::create(*catalog, io.transport());
@@ -234,6 +247,7 @@ BOOST_AUTO_TEST_CASE(CatalogComposesOwnedInputInspectionRolesAndPublication)
     BOOST_CHECK_EQUAL(abstract.roleStateInputsByRole.at("/role").front().name, "state-in");
     BOOST_CHECK_THROW(catalog->makePreparation(nullptr, "/service"), std::invalid_argument);
     catalog.reset(); // Returned ports own the pinned state, not the factory.
+    BOOST_CHECK(!sourceSnapshot->modelBytes.empty());
     input.source->modelBytes.clear(); // Caller mutation must not change the owned publication source.
     const std::vector<std::uint8_t> payload = external ? std::vector<std::uint8_t>{'{', '}'} :
       std::vector<std::uint8_t>{0, 255, 1};
@@ -325,6 +339,186 @@ BOOST_AUTO_TEST_CASE(StateBindingConsumesActualCausalOnnxExport)
   BOOST_CHECK_THROW(owner.bindStateContracts(input.model, input.candidate, mapping, cancelled), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
+{
+  // This is intentionally a small deterministic model: it exercises the
+  // production source inspector, role preparer, canonical split contracts,
+  // and the same certified assembly chain used by the worker without
+  // downloading a Qwen-sized artifact in a unit test.
+  const auto root = std::filesystem::temp_directory_path() /
+                    "spec189-generated-multilayer-fc";
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  struct Cleanup
+  {
+    std::filesystem::path path;
+    void clear() noexcept
+    {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+    }
+    ~Cleanup() noexcept
+    {
+      clear();
+    }
+  } cleanup{root};
+
+  const auto modelPath = root / "model.onnx";
+  if (!std::filesystem::exists(modelPath)) {
+    onnx::ModelProto generated;
+    generated.set_ir_version(8);
+    generated.add_opset_import()->set_version(17);
+    generated.mutable_graph()->set_name("spec189-random-multilayer-fc");
+    const auto addValue = [] (onnx::ValueInfoProto* value, const std::string& name,
+                              std::int64_t width) {
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto::FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+      tensor->mutable_shape()->add_dim()->set_dim_value(width);
+    };
+    addValue(generated.mutable_graph()->add_input(), "X", 2);
+    addValue(generated.mutable_graph()->add_output(), "Y", 2);
+    addValue(generated.mutable_graph()->add_value_info(), "H0", 3);
+    addValue(generated.mutable_graph()->add_value_info(), "H1", 3);
+    addValue(generated.mutable_graph()->add_value_info(), "H2", 3);
+
+    std::mt19937 generator(189U);
+    std::uniform_real_distribution<float> distribution(-0.5F, 0.5F);
+    const auto addInitializer = [&] (const std::string& name,
+                                     std::initializer_list<std::int64_t> shape,
+                                     std::size_t count) {
+      auto* tensor = generated.mutable_graph()->add_initializer();
+      tensor->set_name(name);
+      tensor->set_data_type(onnx::TensorProto::FLOAT);
+      for (const auto dimension : shape) tensor->add_dims(dimension);
+      std::vector<float> values;
+      values.reserve(count);
+      for (std::size_t i = 0; i < count; ++i) values.push_back(distribution(generator));
+      tensor->set_raw_data(reinterpret_cast<const char*>(values.data()),
+                           values.size() * sizeof(float));
+    };
+    addInitializer("W0", {2, 3}, 6);
+    addInitializer("B0", {3}, 3);
+    addInitializer("W1", {3, 2}, 6);
+
+    auto* matmul0 = generated.mutable_graph()->add_node();
+    matmul0->set_name("fc-0"); matmul0->set_op_type("MatMul");
+    matmul0->add_input("X"); matmul0->add_input("W0"); matmul0->add_output("H0");
+    auto* add0 = generated.mutable_graph()->add_node();
+    add0->set_name("bias-0"); add0->set_op_type("Add");
+    add0->add_input("H0"); add0->add_input("B0"); add0->add_output("H1");
+    auto* relu = generated.mutable_graph()->add_node();
+    relu->set_name("activation-0"); relu->set_op_type("Relu");
+    relu->add_input("H1"); relu->add_output("H2");
+    auto* matmul1 = generated.mutable_graph()->add_node();
+    matmul1->set_name("fc-1"); matmul1->set_op_type("MatMul");
+    matmul1->add_input("H2"); matmul1->add_input("W1"); matmul1->add_output("Y");
+
+    std::string wire;
+    BOOST_REQUIRE(generated.SerializeToString(&wire));
+    std::filesystem::create_directories(root);
+    std::ofstream output(modelPath, std::ios::binary);
+    BOOST_REQUIRE(output.good());
+    output.write(wire.data(), static_cast<std::streamsize>(wire.size()));
+  }
+
+  NativeCanonicalSource source;
+  std::ifstream input(modelPath, std::ios::binary);
+  BOOST_REQUIRE(input.good());
+  source.modelBytes.assign(std::istreambuf_iterator<char>(input), {});
+  BOOST_REQUIRE(!source.modelBytes.empty());
+
+  auto descriptor = fixture::completeModel({
+    "spec189-generated-fc", nativePlanningDigest("generated-content"),
+    nativePlanningDigest("generated-semantics"), nativePlanningDigest("placeholder-graph"),
+    "onnx", "float32", "spec189-generated-adapter", "1"});
+  NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 1U << 20, 1U << 20};
+  const auto sourceGraph = inspectNativeOnnxSourceGraph(source, descriptor, control);
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  BOOST_REQUIRE_EQUAL(sourceGraph.graph.nodes.size(), 4U);
+  BOOST_CHECK_EQUAL(sourceGraph.graph.nodes.front().opType, "MatMul");
+  BOOST_CHECK_EQUAL(sourceGraph.graph.nodes.back().opType, "MatMul");
+  descriptor.graphDigest = sourceGraph.graph.graphDigest;
+
+  NativeInspectedModel inspected;
+  inspected.descriptor = descriptor;
+  inspected.graph = sourceGraph.graph;
+  inspected.canonicalSourceName = "/spec189/generated-fc/model.onnx";
+  inspected.canonicalSourceDigest = nativePlanningDigest(
+    source.modelBytes.data(), source.modelBytes.size());
+  inspected.canonicalSourceBytes = source.modelBytes.size();
+  inspected.modelManifestDigest = nativePlanningDigest("generated-manifest");
+  inspected.canonicalGraphDigest = identity.graphDigest;
+
+  const std::string firstRole = "/role/0";
+  const std::string secondRole = "/role/1";
+  NativeSplitCandidate candidate;
+  candidate.source = "PRE_SPLIT";
+  candidate.splitter = {"spec189-generated-splitter", "1",
+                        nativePlanningDigest("generated-splitter")};
+  candidate.model = descriptor;
+  candidate.graphDigest = sourceGraph.graph.graphDigest;
+  candidate.executionPlan.roles = {firstRole, secondRole};
+  candidate.executionPlan.dependencies = {
+    NativeDependencySpec{
+      {firstRole}, {secondRole}, "generated-h2", "/spec189/generated",
+      "/spec189/generated/{sessionId}/{producerRole}/{sequence}", 1, 64, {"H2"}}};
+  candidate.fragmentsByRole = {{firstRole, nativePlanningDigest("fragment-0")},
+                               {secondRole, nativePlanningDigest("fragment-1")}};
+  candidate.artifactsByRole = {
+    {firstRole, {nativePlanningDigest("artifact-0")}},
+    {secondRole, {nativePlanningDigest("artifact-1")}}};
+  candidate.rankArtifactDigestsByRole = candidate.artifactsByRole;
+  candidate.tensorDegreesByRole = {{firstRole, 1}, {secondRole, 1}};
+  candidate.requirementsByRole = {
+    {firstRole, {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0}},
+    {secondRole, {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0}}};
+  candidate.crossPartitionTensors = {"H2"};
+  candidate.inputIngressRole = firstRole;
+  candidate.resultEgressRole = secondRole;
+  for (std::size_t index = 0; index < sourceGraph.graph.nodes.size(); ++index) {
+    candidate.nodeRoles[sourceGraph.graph.nodes[index].id] = index < 3 ? firstRole : secondRole;
+  }
+  candidate.candidateDigest = candidate.computedDigest();
+
+  const NativeRoleRecipeProfile profile{
+    nativePlanningDigest("generated-profile"),
+    // The generated inline FLOAT initializers use the current normalization
+    // revision, so keep the production descriptor gate explicit in the test.
+    "sha256:5291ee00f425c59605f72e26c9b27a73aca43b976421218515fc1a38085c7a89",
+    "onnxruntime-cpu-v1", "float32", "none", "row-major", "none",
+    "plaintext-v1", 1U << 20, 1U << 20, 8};
+  const NativeCanonicalRolePreparer preparer(inspected, source, profile, control);
+  NativeRequestControl requestControl{
+    "/spec189-generated-model", 1, Clock::now() + std::chrono::seconds(30), {}};
+  const auto roles = preparer.prepare(inspected, candidate, requestControl);
+  BOOST_REQUIRE_EQUAL(roles.size(), 2U);
+  BOOST_REQUIRE_EQUAL(roles[0].nodeIndices.size(), 3U);
+  BOOST_REQUIRE_EQUAL(roles[1].nodeIndices.size(), 1U);
+  BOOST_CHECK(roles[0].expectedInputs.front().name == "X");
+  BOOST_CHECK(roles[0].expectedOutputs.front().name == "H2");
+  BOOST_CHECK(roles[1].expectedInputs.front().name == "H2");
+  BOOST_CHECK(roles[1].expectedOutputs.front().name == "Y");
+  BOOST_CHECK(roles[0].nodeIndices != roles[1].nodeIndices);
+
+  const auto first = assembleNativeCertifiedOnnxModel(source, roles[0], control);
+  const auto second = assembleNativeCertifiedOnnxModel(source, roles[1], control);
+  BOOST_CHECK_EQUAL(first.nodeCount, 3U);
+  BOOST_CHECK_EQUAL(second.nodeCount, 1U);
+  BOOST_CHECK_EQUAL(first.inputNames.front(), "X");
+  BOOST_CHECK_EQUAL(first.outputNames.front(), "H2");
+  BOOST_CHECK_EQUAL(second.inputNames.front(), "H2");
+  BOOST_CHECK_EQUAL(second.outputNames.front(), "Y");
+  BOOST_CHECK(!first.modelBytes.empty());
+  BOOST_CHECK(!second.modelBytes.empty());
+  BOOST_CHECK_NE(first.modelDigest, second.modelDigest);
+
+  cleanup.clear();
+  BOOST_CHECK(!std::filesystem::exists(root));
+}
+
 BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
 {
   for (bool external : {false, true}) {
@@ -340,7 +534,7 @@ BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
     const auto result = preparation.ensureArtifacts(input.model, input.candidate, input.proposal(), input.control);
     BOOST_REQUIRE_EQUAL(io.payloads.size(), external ? 3 : 2);
     BOOST_CHECK(io.payloads[0] == input.source->modelBytes);
-    if (external) BOOST_CHECK(io.payloads[1] == *input.source->initializerBytes);
+    if (external) BOOST_CHECK(io.payloads[1] == input.source->initializerBytes->asVector());
     BOOST_CHECK(std::all_of(io.requests.begin(), io.requests.end(), [&](const auto& r) { return r == io.requests.front(); }));
     BOOST_CHECK_EQUAL(result.requestId, input.control.requestId);
     BOOST_CHECK_EQUAL(result.canonicalGraphDigest, input.model.canonicalGraphDigest);
@@ -379,7 +573,7 @@ BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionB
   BOOST_CHECK(oversizedNameIo.payloads.empty());
   std::uint64_t materialBytes = input.source->materialManifest->canonicalJson().size();
   for (const auto& payload : input.source->materialManifest->payloads)
-    materialBytes += payload.bytes.size();
+    materialBytes += payload.byteSize();
   const auto receiptBudget = NativeCanonicalMaterialReceiptEnvelopeMaxBytes +
     static_cast<std::uint64_t>(input.source->materialManifest->payloads.size()) *
       NativeCanonicalMaterialReceiptRecordMaxBytes;
@@ -387,18 +581,23 @@ BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionB
   BOOST_REQUIRE_LE(materialBytes, std::numeric_limits<std::uint64_t>::max() -
                                   receiptBudget - rootBudget);
   const auto publicationBudget = materialBytes + receiptBudget + rootBudget;
+  auto materialOnly = std::make_shared<NativeCanonicalSource>();
+  materialOnly->materialManifest = input.source->materialManifest;
+  const auto materialResolver = [materialOnly](const auto&, const auto&) {
+    return std::shared_ptr<const NativeCanonicalSource>(materialOnly);
+  };
 
   input.options.maxPublicationBytes = publicationBudget - 1;
   TransportFixture rejectedIo;
   auto rejected = NativeCanonicalPublisherTestAccess::create(
-    rejectedIo.transport(), input.options, input.resolver());
+    rejectedIo.transport(), input.options, materialResolver);
   BOOST_CHECK_THROW(rejected.prepare(input.model, input.control), std::runtime_error);
   BOOST_CHECK(rejectedIo.payloads.empty());
 
   input.options.maxPublicationBytes = publicationBudget;
   TransportFixture io;
   auto publisher = NativeCanonicalPublisherTestAccess::create(
-    io.transport(), input.options, input.resolver());
+    io.transport(), input.options, materialResolver);
   const auto receipt = publisher.prepare(input.model, input.control);
   BOOST_CHECK(receipt.sourceDataName.empty());
   BOOST_CHECK(receipt.initializerDataName.empty());
@@ -477,7 +676,9 @@ BOOST_AUTO_TEST_CASE(ExternalInitializerUsesBoundedChunksAndReassemblesAfterSele
     const auto payload = std::find_if(manifest->payloads.begin(), manifest->payloads.end(),
       [&chunkId] (const auto& item) { return item.payloadId == chunkId; });
     BOOST_REQUIRE(payload != manifest->payloads.end());
-    BOOST_CHECK_LE(payload->bytes.size(), NativeCanonicalMaterialBundleMaxBytes);
+    BOOST_CHECK_LE(payload->byteSize(), NativeCanonicalMaterialBundleMaxBytes);
+    BOOST_CHECK(payload->bytes.empty());
+    BOOST_CHECK(payload->backing == source.initializerBytes->shared());
   }
 
   source.materialManifest = manifest;
@@ -495,6 +696,188 @@ BOOST_AUTO_TEST_CASE(ExternalInitializerUsesBoundedChunksAndReassemblesAfterSele
                          [] (const char actual, const std::uint8_t expected) {
                            return static_cast<std::uint8_t>(static_cast<unsigned char>(actual)) == expected;
                          }));
+}
+
+BOOST_AUTO_TEST_CASE(InlineInitializerUsesBoundedChunksAndReassemblesAfterSelection)
+{
+  NativeCanonicalSource source;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.mutable_graph()->set_name("spec190-inline-chunked-initializer");
+  auto* input = model.mutable_graph()->add_input();
+  input->set_name("X");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT16);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* output = model.mutable_graph()->add_output();
+  output->set_name("Y");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT16);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* node = model.mutable_graph()->add_node();
+  node->set_op_type("MatMul");
+  node->add_input("X");
+  node->add_input("weight");
+  node->add_output("Y");
+  constexpr std::size_t rawBytes = 3U * 1024U * 1024U + 16U;
+  auto* initializer = model.mutable_graph()->add_initializer();
+  initializer->set_name("weight");
+  initializer->set_data_type(onnx::TensorProto::FLOAT16);
+  initializer->add_dims(static_cast<std::int64_t>(rawBytes / 2));
+  std::string raw(rawBytes, '\0');
+  for (std::size_t i = 0; i < rawBytes; ++i)
+    raw[i] = static_cast<char>(i * 19U + 7U);
+  initializer->set_raw_data(raw);
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  source.modelBytes.assign(wire.begin(), wire.end());
+
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 8U * 1024U * 1024U,
+    16U * 1024U * 1024U};
+  const auto manifest = deriveNativeCanonicalMaterialManifest(source, control);
+  BOOST_REQUIRE(manifest);
+  validateNativeCanonicalMaterialManifest(source, *manifest, control);
+  const auto reference = std::find_if(manifest->references.begin(), manifest->references.end(),
+    [] (const auto& item) { return item.kind == "shared-initializer"; });
+  BOOST_REQUIRE(reference != manifest->references.end());
+  BOOST_REQUIRE_EQUAL(reference->chunkPayloadIds.size(), 4U);
+  BOOST_CHECK(reference->bytes < NativeCanonicalMaterialBundleMaxBytes);
+  for (const auto& chunkId : reference->chunkPayloadIds) {
+    const auto payload = std::find_if(manifest->payloads.begin(), manifest->payloads.end(),
+      [&chunkId] (const auto& item) { return item.payloadId == chunkId; });
+    BOOST_REQUIRE(payload != manifest->payloads.end());
+    BOOST_CHECK_LE(payload->byteSize(), NativeCanonicalMaterialBundleMaxBytes);
+    BOOST_CHECK(payload->bytes.empty());
+    BOOST_CHECK(payload->stringBacking);
+  }
+
+  source.materialManifest = manifest;
+  source.materialPayloads = manifest->payloads;
+  const auto assembled = materializeNativeCanonicalModel(source, {0}, control);
+  onnx::ModelProto roundTrip;
+  BOOST_REQUIRE(roundTrip.ParseFromArray(assembled.data(), static_cast<int>(assembled.size())));
+  BOOST_REQUIRE_EQUAL(roundTrip.graph().initializer_size(), 1);
+  BOOST_REQUIRE_EQUAL(roundTrip.graph().initializer(0).raw_data().size(), rawBytes);
+  BOOST_CHECK_EQUAL(roundTrip.graph().initializer(0).raw_data(), raw);
+}
+
+BOOST_AUTO_TEST_CASE(InlineInitializerAtBundleBoundaryUsesChunks)
+{
+  NativeCanonicalSource source;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.mutable_graph()->set_name("spec190-inline-boundary-initializer");
+  auto* input = model.mutable_graph()->add_input();
+  input->set_name("X");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::UINT8);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* output = model.mutable_graph()->add_output();
+  output->set_name("Y");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::UINT8);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  auto* node = model.mutable_graph()->add_node();
+  node->set_op_type("Identity");
+  node->add_input("X");
+  node->add_output("Y");
+  auto* initializer = model.mutable_graph()->add_initializer();
+  initializer->set_name("weight");
+  initializer->set_data_type(onnx::TensorProto::UINT8);
+  initializer->add_dims(static_cast<std::int64_t>(NativeCanonicalMaterialBundleMaxBytes));
+  initializer->set_raw_data(std::string(NativeCanonicalMaterialBundleMaxBytes, '\x5a'));
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  source.modelBytes.assign(wire.begin(), wire.end());
+
+  const NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(30), [] {}, 8U * 1024U * 1024U,
+    16U * 1024U * 1024U};
+  const auto manifest = deriveNativeCanonicalMaterialManifest(source, control);
+  BOOST_REQUIRE(manifest);
+  validateNativeCanonicalMaterialManifest(source, *manifest, control);
+  const auto reference = std::find_if(manifest->references.begin(), manifest->references.end(),
+    [] (const auto& item) { return item.kind == "shared-initializer"; });
+  BOOST_REQUIRE(reference != manifest->references.end());
+  BOOST_REQUIRE_EQUAL(reference->chunkPayloadIds.size(), 1U);
+  const auto payload = std::find_if(manifest->payloads.begin(), manifest->payloads.end(),
+    [&reference] (const auto& item) { return item.payloadId == reference->chunkPayloadIds.front(); });
+  BOOST_REQUIRE(payload != manifest->payloads.end());
+  BOOST_CHECK_EQUAL(payload->byteSize(), NativeCanonicalMaterialBundleMaxBytes);
+}
+
+BOOST_AUTO_TEST_CASE(ModelIdentityBindsWeightOnlyQuantizationSubtype)
+{
+  auto model = fixture::completeModel(NativeModelDescriptor{
+    "fixture", nativePlanningDigest("content"), nativePlanningDigest("semantics"), nativePlanningDigest("graph"), "onnx", "float32",
+    "fixture", "1", {}, "revision"});
+  BOOST_CHECK_EQUAL(model.quantizationSubtype, "none");
+  const auto legacyJson = model.canonicalJson();
+  BOOST_CHECK(legacyJson.find("quantization_subtype") == std::string::npos);
+
+  model.quantizationSubtype = "weight_only_int8";
+  const auto quantizedJson = model.canonicalJson();
+  BOOST_CHECK(quantizedJson.find("weight_only_int8") != std::string::npos);
+  BOOST_CHECK(model.modelDigest() != fixture::completeModel(NativeModelDescriptor{
+    "fixture", nativePlanningDigest("content"), nativePlanningDigest("semantics"), nativePlanningDigest("graph"), "onnx", "float32",
+    "fixture", "1", {}, "revision"}).modelDigest());
+
+  auto decoded = NativeModelDescriptor::fromCanonicalJson(quantizedJson);
+  BOOST_CHECK_EQUAL(decoded.quantizationSubtype, "weight_only_int8");
+  model.quantizationSubtype = "unsupported";
+  BOOST_CHECK_THROW(model.validate(), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(MaterializedRoleRebuildsInternalStageBoundary)
+{
+  NativeCanonicalSource source;
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  model.add_opset_import()->set_version(17);
+  model.mutable_graph()->set_name("spec189-role-boundary");
+  auto* input = model.mutable_graph()->add_input();
+  input->set_name("x");
+  input->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  input->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(4);
+  auto* output = model.mutable_graph()->add_output();
+  output->set_name("z");
+  output->mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::FLOAT);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(1);
+  output->mutable_type()->mutable_tensor_type()->mutable_shape()->add_dim()->set_dim_value(4);
+  auto* first = model.mutable_graph()->add_node();
+  first->set_op_type("Identity");
+  first->add_input("x");
+  first->add_output("hidden_states_out");
+  auto* second = model.mutable_graph()->add_node();
+  second->set_op_type("Identity");
+  second->add_input("hidden_states_out");
+  second->add_output("z");
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  source.modelBytes.assign(wire.begin(), wire.end());
+
+  NativeAssemblyControl control{
+    Clock::now() + std::chrono::seconds(10), [] {}, 1U << 20, 1U << 20};
+  source.materialManifest = deriveNativeCanonicalMaterialManifest(source, control);
+  BOOST_REQUIRE(source.materialManifest);
+  source.materialPayloads = source.materialManifest->payloads;
+  const std::vector<NativeAssemblyTensorContractV3> inputs{
+    {"x", "float32", {std::int64_t(1), std::int64_t(4)}}};
+  const std::vector<NativeAssemblyTensorContractV3> outputs{
+    {"hidden_states_out", "float32", {std::int64_t(1), std::int64_t(4)}}};
+
+  const auto assembled = materializeNativeCanonicalModel(
+    source, {0}, inputs, outputs, control);
+  onnx::ModelProto role;
+  BOOST_REQUIRE(role.ParseFromArray(assembled.data(), static_cast<int>(assembled.size())));
+  BOOST_REQUIRE_NO_THROW(onnx::checker::check_model(role, true));
+  BOOST_REQUIRE_EQUAL(role.graph().node_size(), 1);
+  BOOST_REQUIRE_EQUAL(role.graph().input_size(), 1);
+  BOOST_REQUIRE_EQUAL(role.graph().output_size(), 1);
+  BOOST_CHECK_EQUAL(role.graph().input(0).name(), "x");
+  BOOST_CHECK_EQUAL(role.graph().output(0).name(), "hidden_states_out");
+  BOOST_CHECK_EQUAL(role.graph().output(0).type().tensor_type().elem_type(),
+                    onnx::TensorProto::FLOAT);
+  BOOST_REQUIRE_EQUAL(role.graph().output(0).type().tensor_type().shape().dim_size(), 2);
+  BOOST_CHECK_EQUAL(role.graph().output(0).type().tensor_type().shape().dim(1).dim_value(), 4);
 }
 
 BOOST_AUTO_TEST_CASE(RejectsSourceAndCanonicalIdentityBeforePublication)
@@ -755,8 +1138,11 @@ BOOST_AUTO_TEST_CASE(QueuedCancellationAndTimeoutReleaseSourceAndSuppressLateWor
     if (!timeout) cancelled = true;
     BOOST_REQUIRE(pending.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
     BOOST_CHECK_THROW(pending.get(), std::runtime_error);
-    BOOST_CHECK(source.expired());
     work();
+    const auto releaseDeadline = Clock::now() + std::chrono::seconds(2);
+    while (!source.expired() && Clock::now() < releaseDeadline)
+      std::this_thread::yield();
+    BOOST_CHECK(source.expired());
     BOOST_CHECK(io.payloads.empty());
   }
 }
@@ -779,12 +1165,43 @@ BOOST_AUTO_TEST_CASE(PreservesCoreFailureBoundary)
 BOOST_AUTO_TEST_CASE(CancellationAfterSourceSuppressesInitializerAndRoot)
 {
   Input input(true); TransportFixture io;
-  bool cancelled = false;
-  input.control.cancelled = [&] { return cancelled; };
-  io.mutate = [&](auto&) { cancelled = true; };
-  auto publisher = NativeCanonicalPublisherTestAccess::create(io.transport(), input.options, input.resolver());
-  BOOST_CHECK_THROW(publisher(input.model, input.candidate, input.roles, input.control), std::runtime_error);
+  std::atomic<bool> cancelled{false};
+  std::atomic<bool> ownerReleased{false};
+  std::atomic<bool> rollbackObserved{false};
+  input.control.cancelled = [&] { return cancelled.load(std::memory_order_acquire); };
+  auto transport = io.transport();
+  auto publish = transport.publish;
+  transport.publish = [&](const PreparedServiceRequest& request, const std::vector<std::uint8_t>& bytes,
+                          const std::string& label, const NativeRequestControl& control) {
+    auto result = publish(request, bytes, label, control);
+    if (label == "di-canonical-source") {
+      cancelled.store(true, std::memory_order_release);
+      const auto until = Clock::now() + std::chrono::seconds(2);
+      while (!ownerReleased.load(std::memory_order_acquire) && Clock::now() < until)
+        std::this_thread::yield();
+    }
+    return result;
+  };
+  auto abort = transport.abort;
+  transport.abort = [&](const auto& publications) {
+    abort(publications);
+    rollbackObserved.store(true, std::memory_order_release);
+  };
+  auto publisher = NativeCanonicalPublisherTestAccess::create(transport, input.options,
+    [&](const auto&, const auto&) { return std::exchange(input.source, {}); });
+  auto pending = std::async(std::launch::async, [&] {
+    return publisher(input.model, input.candidate, input.roles, input.control);
+  });
+  BOOST_REQUIRE(pending.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+  BOOST_CHECK_THROW(pending.get(), std::runtime_error);
+  ownerReleased.store(true, std::memory_order_release);
+  const auto until = Clock::now() + std::chrono::seconds(2);
+  while (!rollbackObserved.load(std::memory_order_acquire) && Clock::now() < until)
+    std::this_thread::yield();
+  BOOST_REQUIRE(rollbackObserved.load(std::memory_order_acquire));
   BOOST_CHECK_EQUAL(io.payloads.size(), 1);
+  BOOST_CHECK_EQUAL(io.abortCalls, 1U);
+  BOOST_CHECK_EQUAL(io.abortedPublications, 1U);
 }
 
 BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
@@ -815,10 +1232,10 @@ BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
     face.getIoContext().restart(); face.getIoContext().poll();
   }
   const auto result = pending.get();
-  const auto name = ndn::Name(result.sourceByRole.at("/role"));
-  BOOST_CHECK(user->hasCachedDataForTest(name));
-  BOOST_CHECK_NE(user->getCachedDataContentForTest(name),
-    ndn::Buffer(result.canonicalManifestJson.begin(), result.canonicalManifestJson.end()));
+  // Worker publication is owner-bound and therefore uses Core's file-backed
+  // serving path; the encrypted body is not retained in the IMS.  The
+  // publication receipt itself remains the observable ownership contract.
+  BOOST_CHECK_EQUAL(user->getLargeDataServingMetricsForTest().publicationCount, 2U);
   BOOST_CHECK_NE(result.manifestDigest, input.model.modelManifestDigest);
   // prepare uses the production worker entry rather than running the model
   // hash/encryption/store inside the posted Face callback.

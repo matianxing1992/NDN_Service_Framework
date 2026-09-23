@@ -50,6 +50,10 @@ struct NativeSelectionRoleV3
   std::vector<std::uint64_t> nodeIndices;
   std::vector<NativeAssemblyTensorContractV3> expectedInputs;
   std::vector<NativeAssemblyTensorContractV3> expectedOutputs;
+  // Internal worker binding: the parent rebuilt this role from the
+  // authenticated post-Selection material manifest, so the worker receives
+  // a compact role graph rather than the complete canonical graph.
+  bool materializedRole = false;
   std::string precision;
   std::string quantization;
   std::string layout;
@@ -75,6 +79,14 @@ struct NativeGenerationExecutionContractV1
   std::string tokenInputName;
   std::vector<std::string> stateInputNames;
   std::vector<std::string> stateOutputNames;
+  // Authenticated dynamic-past successor mapping. The value uses the same
+  // canonical comma-separated input=output form consumed by the ONNX runner.
+  // Empty preserves the legacy *_in/*_out contract for existing fixtures.
+  std::string stateSuccessorMap;
+  std::string positionInputPolicy;
+  std::string attentionMaskInputName;
+  std::string positionIdsInputName;
+  std::string cachePositionInputName;
   std::vector<std::int64_t> eosTokenIds;
   std::string samplingDigest;
   std::string tokenizerDigest;
@@ -161,6 +173,13 @@ RoleSpec
 roleSpecFromSelectionProjectionV3(
   const NativeSelectionProjectionV3& projection,
   const std::string& localProvider = "");
+
+/** Select one bounded generation epoch from the exact sealed endpoint set. */
+RoleSpec
+roleSpecFromSelectionProjectionV3(
+  const NativeSelectionProjectionV3& projection,
+  const std::string& localProvider,
+  std::uint64_t sequence);
 
 } // namespace ndnsf::di
 

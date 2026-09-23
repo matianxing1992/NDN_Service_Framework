@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
 
+#include <atomic>
 #include <limits>
 
 namespace ndnsf::di {
@@ -8,7 +9,10 @@ struct NativeCanonicalPreparationCatalog::State
 {
   struct Record {
     NativeInspectedModel model;
-    std::shared_ptr<const NativeCanonicalSource> source;
+    // This pointer is replaced atomically when the full source is no longer
+    // needed.  A caller receives an owning immutable snapshot, so releasing
+    // the catalog's transient owner cannot invalidate a concurrent reader.
+    mutable std::shared_ptr<const NativeCanonicalSource> source;
     NativeCanonicalRolePreparer roles;
     NativeCanonicalPublicationOptions publication;
   };
@@ -70,7 +74,10 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
       entry.source.materialManifest->validate();
     if (!entry.source.materialManifest)
       throw std::invalid_argument("native catalog material manifest is missing");
-    validateNativeCanonicalMaterialManifest(entry.source, *entry.source.materialManifest, control);
+    if (entry.source.materialManifest->payloadsComplete)
+      validateNativeCanonicalMaterialManifest(entry.source, *entry.source.materialManifest, control);
+    else
+      validateNativeCanonicalMaterialReferenceIndex(entry.source, *entry.source.materialManifest, control);
     if (entry.source.materialManifest->sourceDigest != entry.model.canonicalSourceDigest ||
         entry.source.materialManifest->graphDigest != entry.model.canonicalGraphDigest ||
         (!entry.model.canonicalInitializerDigest.empty() &&
@@ -112,7 +119,8 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
       throw std::invalid_argument("native publication budget is not positive");
     const auto key = model.canonicalJson();
     State::Record record{std::move(entry.model),
-      std::make_shared<const NativeCanonicalSource>(std::move(entry.source)), std::move(roles), std::move(entry.publication)};
+      std::make_shared<const NativeCanonicalSource>(std::move(entry.source)),
+      std::move(roles), std::move(entry.publication)};
     if (!state->records.emplace(key, std::move(record)).second)
       throw std::invalid_argument("native preparation catalog repeats a model identity");
   }
@@ -132,20 +140,22 @@ std::shared_ptr<const NativeAdapterRegistry> NativeCanonicalPreparationCatalog::
   return m_state->adapters;
 }
 
-const NativeCanonicalSource&
+std::shared_ptr<const NativeCanonicalSource>
 NativeCanonicalPreparationCatalog::sourceRefFor(const NativeModelDescriptor& model) const
 {
-  const auto source = m_state->find(model).source;
+  const auto& record = m_state->find(model);
+  const auto source = std::atomic_load_explicit(&record.source, std::memory_order_acquire);
   if (!source)
     throw std::runtime_error("native preparation source is no longer resident");
-  return *source;
+  return source;
 }
 
 std::weak_ptr<const NativeCanonicalSource>
 NativeCanonicalPreparationCatalog::sourceLifetimeForTest(
   const NativeModelDescriptor& model) const
 {
-  return m_state->find(model).source;
+  const auto& record = m_state->find(model);
+  return std::atomic_load_explicit(&record.source, std::memory_order_acquire);
 }
 
 void
@@ -154,13 +164,40 @@ NativeCanonicalPreparationCatalog::releaseTransientSource() const noexcept
   if (!m_state)
     return;
   for (auto& item : m_state->records)
-    item.second.source.reset();
+    std::atomic_store_explicit(&item.second.source,
+      std::shared_ptr<const NativeCanonicalSource>{}, std::memory_order_release);
+}
+
+void
+NativeCanonicalPreparationCatalog::releaseTransientSourceBytes() const
+{
+  if (!m_state)
+    return;
+  for (auto& item : m_state->records) {
+    const auto source = std::atomic_load_explicit(&item.second.source,
+                                                  std::memory_order_acquire);
+    if (!source)
+      continue;
+    if (!source->materialManifest ||
+        (source->modelBytes.empty() && !source->initializerBytes))
+      continue;
+    // Do not mutate a source object that may still be observed by a caller.
+    // Publish a small immutable replacement and let existing owning snapshots
+    // drain naturally.  This avoids both a data race and shrink_to_fit()
+    // allocation/termination inside a noexcept cleanup path.
+    auto reduced = std::make_shared<NativeCanonicalSource>();
+    reduced->materialManifest = source->materialManifest;
+    std::atomic_store_explicit(&item.second.source,
+      std::shared_ptr<const NativeCanonicalSource>(std::move(reduced)),
+      std::memory_order_release);
+  }
 }
 
 NativeCanonicalSource NativeCanonicalPreparationCatalog::sourceFor(
   const NativeModelDescriptor& model) const
 {
-  const auto source = m_state->find(model).source;
+  const auto& record = m_state->find(model);
+  const auto source = std::atomic_load_explicit(&record.source, std::memory_order_acquire);
   if (!source)
     throw std::runtime_error("native preparation source is no longer resident");
   return *source;
@@ -207,10 +244,16 @@ NativeCanonicalPreparationCatalog::preparePublication(
   const NativeModelDescriptor& model, const NativeRequestControl& control) const
 {
   const auto& record = m_state->find(model);
+  // Material-backed publication has already authenticated and indexed the
+  // complete source during catalog construction.  Release the duplicate
+  // source/initializer buffers before the publisher starts encrypting the
+  // material bundles; the immutable manifest and payloads remain available.
+  releaseTransientSourceBytes();
   NativeCanonicalArtifactPublisher publisher(user, std::move(serviceName), record.publication,
     [state = m_state](const auto& inspected, const auto& requestControl) {
       requestControl.requireActive();
-      const auto source = state->find(inspected).source;
+      const auto& record = state->find(inspected);
+      const auto source = std::atomic_load_explicit(&record.source, std::memory_order_acquire);
       if (!source)
         throw std::runtime_error("native preparation source is no longer resident");
       return source;
@@ -233,7 +276,8 @@ NativeCanonicalPreparationCatalog::makePreparation(
   for (const auto& item : state->records) {
     const auto source = [state](const NativeInspectedModel& model, const NativeRequestControl& control) {
       control.requireActive();
-      const auto source = state->find(model).source;
+      const auto& record = state->find(model);
+      const auto source = std::atomic_load_explicit(&record.source, std::memory_order_acquire);
       if (!source)
         throw std::runtime_error("native preparation source is no longer resident");
       return source;

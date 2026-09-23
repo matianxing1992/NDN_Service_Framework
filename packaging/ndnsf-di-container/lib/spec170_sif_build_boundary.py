@@ -118,6 +118,79 @@ def _looks_like_compiled_host_input(source: str, destination: str,
     return _contains_compiled_payload(candidate)
 
 
+def _validate_installed_runtime(definition, text, builder, final):
+    """Current complete SIF: an unchanged dependency base and one install tree.
+
+    Historical APP definitions retain the legacy validation below. This is a
+    structural preflight only; build/import/ABI verification is still required.
+    """
+    post = builder.sections.get("post", "")
+    final_post = final.sections.get("post", "")
+    required = (
+        "NDNSF_RUNTIME_LAYOUT=installed-v1", "NDNSF_CONTAINER_BUILD=1",
+        "NDNSF_SKIP_DEV_PIP_INSTALL=1", "NDNSF_WAF_INSTALL_PAYLOAD=1",
+        "./waf install -j4 -v --destdir=/opt/ndnsf-waf-dest",
+        "--with-tests", "--install-experiment-fixtures",
+        "--libexecdir=/opt/ndnsf-di/current/libexec", "di-native-assembly-worker",
+        "cp -a /opt/ndnsf-waf-dest/opt/ndnsf-di/current/. /opt/ndnsf-stage/waf-install/",
+        "cp -a /opt/ndnsf-stage/waf-install/. /opt/ndnsf-stage/",
+        "export NDNSF_NAC_ABE_PREFIX=/opt/ndn-base",
+        "unset NDNSF_NDN_SVS_SOURCE_TREE NDNSF_NDN_SVS_BUILD_TREE",
+        "NDNSF_LIBRARY_DIR=/opt/ndnsf-stage/lib",
+        "--no-index --no-deps --no-build-isolation",
+        "BASE_DEPENDENCY_IDENTITY_MISMATCH", "BASE_NATIVE_INPUT_IDENTITY_MISMATCH",
+        "BASE_CONTAINS_NDNSF", "CONTAINER_PYTHON_HEADERS_MISSING",
+        "EXTENSION_SOABI", "LOADED_LIBRARY_MISMATCH", "LINKED_LIBRARY_ORIGIN_MISMATCH",
+        "NATIVE_DEPENDENCY_MISSING", "UNDECLARED_HOST_LIBRARY",
+        "WAF_INSTALL_HASH_MISMATCH", "FINAL_WAF_INSTALL_RECEIPT_CHANGED",
+        "FINAL_ARTIFACT_OR_CLOSURE_MISMATCH",
+        "container-configure-closure.json", "container-native-build.json",
+        "verify-native.py builder",
+    )
+    if any(marker not in post for marker in required):
+        _fail("WRONG_BUILD_BOUNDARY_WAF_INSTALL_CONTRACT_MISSING")
+    if list(_file_entries(final.sections.get("files from builder", ""))) != [
+            ("/opt/ndnsf-stage", "/opt/ndnsf-candidate")]:
+        _fail("WRONG_BUILD_BOUNDARY_WAF_INSTALL_TRANSFER_MISSING")
+    for marker in (
+            "BASE_CONTAINS_NDNSF", "BASE_RUNTIME_PACKAGE_CHANGED",
+            "cp -a /opt/ndnsf-candidate/. /opt/ndnsf-di/current/",
+            "cp -a /opt/ndnsf-di/current/python/. /opt/venv/lib/python3.10/site-packages/",
+            "dependency-sdk.py verify", "verify-native.py final",
+            "sha256sum", "extension_count", "repo_extension_count"):
+        if marker not in final_post:
+            _fail("WRONG_BUILD_BOUNDARY_WAF_INSTALL_FINAL_COPY_MISSING", marker)
+    for value in re.findall(r"\bNDNSF_LIBRARY_DIR=([^\s]+)", post):
+        if value.strip("\"'") != "/opt/ndnsf-stage/lib":
+            _fail("WRONG_BUILD_BOUNDARY_PYTHON_STAGE_LIBRARY_CLOSURE_MISMATCH")
+    forbidden = ("--ndn-svs-source-tree=", "--ndn-svs-build-tree=",
+                 "install -m 0755 build/", "install -m 0644 build/",
+                 "apt-get", "cp -a /opt/ndn-base/include/",
+                 "install -m 0755 \"/opt/ndn-base/lib/",
+                 "install -d /opt/ndnsf-app", "/usr/local/lib/libndnsd")
+    if any(marker in post + final_post for marker in forbidden):
+        _fail("WRONG_BUILD_BOUNDARY_DUPLICATE_INSTALL_OR_BASE_MUTATION")
+    if re.search(r"(?:^|[\s'\"])/home/", post + final_post):
+        _fail("WRONG_BUILD_BOUNDARY_HOST_HOME_REFERENCE")
+    labels = final.sections.get("labels", "")
+    for marker in (
+            "org.ndnsf.di.runtime-layout installed-v1",
+            "org.ndnsf.di.build-boundary container-runtime-in-sif",
+            "org.ndnsf.di.native-build-manifest /opt/ndnsf-di/current/manifest/container-native-build.json"):
+        if marker not in labels:
+            _fail("WRONG_BUILD_BOUNDARY_LABEL_MISSING")
+    return {
+        "schemaVersion": "spec170-sif-build-boundary-v2", "status": "PASS",
+        "definition": str(definition),
+        "definitionSha256": "sha256:" + hashlib.sha256(text.encode()).hexdigest(),
+        "builderStage": "builder", "finalStage": "final", "baseImage": builder.source,
+        "hostBinaryInputs": [], "containerNativeBuild": True,
+        "runtimeLayout": "installed-v1", "cleanDependencyBaseRequired": True,
+        "staleBaseArtifactsReplaced": False,
+        "manifestPath": "/opt/ndnsf-di/current/manifest/container-native-build.json",
+    }
+
+
 def validate_definition(path: Path | str) -> dict[str, object]:
     definition = Path(path).resolve()
     try:
@@ -156,6 +229,8 @@ def validate_definition(path: Path | str) -> dict[str, object]:
         _fail("WRONG_BUILD_BOUNDARY_BASE_IDENTITY_MISMATCH")
 
     builder_post = builder.sections.get("post", "")
+    if "NDNSF_RUNTIME_LAYOUT" in builder_post or "org.ndnsf.di.runtime-layout" in text:
+        return _validate_installed_runtime(definition, text, builder, final)
     required_builder_markers = {
         "NDNSF_CONTAINER_BUILD=1": "CONTAINER_BUILD_MARKER_MISSING",
         "di-native-provider": "PROVIDER_BUILD_MISSING",

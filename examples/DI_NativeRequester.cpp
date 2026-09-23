@@ -302,6 +302,41 @@ streamEventText(const Event& event)
 }
 
 void
+waitForTestStreamBarrier(const ptree& config, const std::filesystem::path& base,
+                         std::size_t turnIndex, std::size_t observedEvents)
+{
+  if (turnIndex != 0 || observedEvents != 1)
+    return;
+  const auto barrier = config.get_child_optional("test_stream_barrier");
+  if (!barrier)
+    return;
+  if (!config.get<bool>("test_only", false))
+    throw std::invalid_argument("test_stream_barrier requires test_only=true");
+  const auto readyValue = barrier->get_optional<std::string>("ready_file");
+  const auto releaseValue = barrier->get_optional<std::string>("release_file");
+  const auto timeoutMs = barrier->get<std::uint64_t>("timeout_ms", 10000);
+  if (!readyValue || !releaseValue || readyValue->empty() || releaseValue->empty() ||
+      timeoutMs == 0 || timeoutMs > 60000)
+    throw std::invalid_argument("test_stream_barrier is invalid");
+  const auto ready = relativeTo(base, *readyValue);
+  const auto release = relativeTo(base, *releaseValue);
+  std::ofstream readyOutput(ready, std::ios::trunc);
+  if (!readyOutput)
+    throw std::runtime_error("test stream barrier ready file could not be written");
+  readyOutput << "first-event-flushed\n";
+  readyOutput.flush();
+  const auto deadline = std::chrono::steady_clock::now() +
+    std::chrono::milliseconds(timeoutMs);
+  while (!std::filesystem::exists(release)) {
+    if (interrupted)
+      throw std::runtime_error("NATIVE_REQUEST_INTERRUPTED");
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("test stream barrier release timed out");
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
+void
 writeCheckpoint(const Conversation& conversation, const std::filesystem::path& path)
 {
   const auto bytes = conversation.checkpoint().bytes();
@@ -311,18 +346,74 @@ writeCheckpoint(const Conversation& conversation, const std::filesystem::path& p
     throw std::runtime_error("conversation checkpoint could not be written");
 }
 
+struct TurnSpec
+{
+  std::filesystem::path input;
+  std::filesystem::path options;
+  std::filesystem::path output;
+  std::optional<std::filesystem::path> checkpoint;
+};
+
+std::vector<TurnSpec>
+readTurnSpecs(const ptree& config, const std::filesystem::path& base,
+             const std::optional<std::filesystem::path>& legacyInput,
+             const std::optional<std::filesystem::path>& legacyOutput)
+{
+  const auto turns = config.get_child_optional("turns");
+  if (!turns) {
+    if (!legacyInput || !legacyOutput)
+      throw std::invalid_argument(
+        "requester turns are absent; provide --input and --output for a single turn");
+    return {{*legacyInput, {}, *legacyOutput, std::nullopt}};
+  }
+
+  std::vector<TurnSpec> result;
+  for (const auto& item : *turns) {
+    if (!item.first.empty())
+      throw std::invalid_argument("turns must be an array");
+    const auto input = item.second.get_optional<std::string>("input_file");
+    const auto options = item.second.get_optional<std::string>("options_file");
+    const auto output = item.second.get_optional<std::string>("output_file");
+    if (!input || input->empty() || !options || options->empty() ||
+        !output || output->empty())
+      throw std::invalid_argument(
+        "each turns entry requires input_file, options_file, and output_file");
+    const auto checkpoint = item.second.get_optional<std::string>(
+      "checkpoint_output_file");
+    result.push_back({relativeTo(base, *input), relativeTo(base, *options),
+                      relativeTo(base, *output), checkpoint
+                        ? std::optional<std::filesystem::path>(relativeTo(base, *checkpoint))
+                        : std::nullopt});
+  }
+  if (result.empty())
+    throw std::invalid_argument("turns must contain at least one entry");
+  return result;
+}
+
+void
+writeResult(const Result& result, const std::filesystem::path& path)
+{
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output || (!result.payload.empty() && !output.write(
+      reinterpret_cast<const char*>(result.payload.data()), result.payload.size())))
+    throw std::runtime_error("requester output could not be written");
+}
+
 int
 run(int argc, char** argv)
 {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "Usage: DI_NativeRequester --config FILE --input FILE --output FILE\n"
+    std::cout << "Usage: DI_NativeRequester --config FILE [--input FILE --output FILE]\n"
                  "Config schema: ndnsf-di-native-requester-v1\n"
-                 "The request is routed through Runtime -> User::prepare -> PreparedModel.\n";
+                 "A config with a turns array runs every turn in one native Conversation.\n"
+                 "The request is routed through Runtime -> User::prepare -> User::request.\n";
     return 0;
   }
-  if (argc != 7 || std::string(argv[1]) != "--config" ||
-      std::string(argv[3]) != "--input" || std::string(argv[5]) != "--output") {
-    std::cerr << "Usage: DI_NativeRequester --config FILE --input FILE --output FILE\n";
+  const bool legacyArgs = argc == 7 && std::string(argv[1]) == "--config" &&
+    std::string(argv[3]) == "--input" && std::string(argv[5]) == "--output";
+  const bool turnsArgs = argc == 3 && std::string(argv[1]) == "--config";
+  if (!legacyArgs && !turnsArgs) {
+    std::cerr << "Usage: DI_NativeRequester --config FILE [--input FILE --output FILE]\n";
     return 2;
   }
 
@@ -332,6 +423,14 @@ run(int argc, char** argv)
   if (config.get<std::string>("schema", {}) != "ndnsf-di-native-requester-v1")
     throw std::invalid_argument("unsupported requester configuration schema");
   const auto& request = config.get_child("request");
+  const auto turns = readTurnSpecs(
+    config, base,
+    legacyArgs ? std::optional<std::filesystem::path>(
+      std::filesystem::absolute(argv[4]).lexically_normal()) : std::nullopt,
+    legacyArgs ? std::optional<std::filesystem::path>(
+      std::filesystem::absolute(argv[6]).lexically_normal()) : std::nullopt);
+  if (turns.size() > 1 && !config.get_child_optional("conversation"))
+    throw std::invalid_argument("NATIVE_TURNS_REQUIRES_CONVERSATION");
 
   RuntimeConfig runtimeConfig;
   runtimeConfig.nativeConfigPath = configPath.string();
@@ -404,8 +503,6 @@ run(int argc, char** argv)
   auto user = runtime->user();
   const auto prepared = user.prepare("default", prepareOptions);
 
-  const auto payload = readBytes(argv[4], MAX_NATIVE_INPUT_BYTES);
-  const auto optionsBytes = readOptions(request, base);
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(
     request.get<std::uint64_t>("timeout_ms", options.timeout.count()));
@@ -462,7 +559,7 @@ run(int argc, char** argv)
 
   std::signal(SIGINT, onSignal);
   std::signal(SIGTERM, onSignal);
-  std::cout << "NATIVE_REQUEST_ROUTE=Runtime.open->User.prepare->PreparedModel.request\n";
+  std::cout << "NATIVE_REQUEST_ROUTE=Runtime.open->User.prepare->User.request\n";
 
   std::optional<Conversation> conversation;
   if (const auto conversationConfig = config.get_child_optional("conversation")) {
@@ -501,82 +598,162 @@ run(int argc, char** argv)
     }
     if (checkpoint)
       conversationOptions.checkpoint = ConversationCheckpoint::fromBytes(*checkpoint);
-    conversation.emplace(prepared.openConversation(conversationOptions));
+    conversation.emplace(user.openConversation(prepared, conversationOptions));
   }
 
-  RequestHandle handle = conversation
-    ? conversation->request(Input::inlineBytes(payload, optionsBytes), options)
-    : prepared.request(Input::inlineBytes(payload, optionsBytes), options);
-  while (handle.status() == RequestStatus::Pending) {
-    if (interrupted) {
-      handle.cancel();
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-  const auto result = handle.result(std::chrono::milliseconds(0));
-
-  std::size_t observedEvents = 0;
-  bool terminalSeen = false;
   std::vector<std::int64_t> streamExpected;
   if (const auto oracle = config.get_child_optional("stream_oracle"))
     streamExpected = integerArray(*oracle, "token_ids");
-  if (streaming) {
-    auto reader = handle.events();
-    while (true) {
-      const auto event = reader.next(std::chrono::milliseconds(0));
-      if (!event)
-        break;
-      if (event->terminal) {
-        terminalSeen = true;
-        break;
+  for (std::size_t turnIndex = 0; turnIndex < turns.size(); ++turnIndex) {
+    const auto& turn = turns[turnIndex];
+    const auto payload = readBytes(turn.input, MAX_NATIVE_INPUT_BYTES);
+    const auto optionsBytes = turn.options.empty()
+      ? readOptions(request, base) : readBytes(turn.options, 4 * 1024 * 1024);
+    RequestHandle handle = conversation
+      ? conversation->request(Input::inlineBytes(payload, optionsBytes), options)
+      : user.request(prepared, Input::inlineBytes(payload, optionsBytes), options);
+    std::cout << "NATIVE_CONVERSATION_TURN_START index=" << turnIndex
+              << " request=" << handle.id() << std::endl;
+
+    std::size_t observedEvents = 0;
+    bool terminalSeen = false;
+    Result result;
+    if (streaming) {
+      auto reader = handle.events();
+      bool livePendingReported = false;
+      std::cout << "NATIVE_STREAM_READER_OPENED index=" << turnIndex
+                << " request=" << handle.id() << std::endl;
+      while (!terminalSeen) {
+        if (interrupted) {
+          handle.cancel();
+          throw std::runtime_error("NATIVE_REQUEST_INTERRUPTED");
+        }
+        const auto remaining = reader.remainingTimeout();
+        if (remaining.count() <= 0) {
+          handle.cancel();
+          throw std::runtime_error(
+            "NATIVE_STREAM_ORACLE_FAILED: terminal event timeout");
+        }
+        const auto wait = std::min(remaining, std::chrono::milliseconds(100));
+        if (!livePendingReported && observedEvents == 0 &&
+            handle.status() == RequestStatus::Pending) {
+          std::cout << "NATIVE_STREAM_LIVE_PENDING index=" << turnIndex
+                    << " request=" << handle.id() << std::endl;
+          livePendingReported = true;
+        }
+        std::optional<Event> event;
+        try {
+          event = reader.next(wait);
+        }
+        catch (const DiError& error) {
+          // EventReader::next reports a bounded local read timeout as
+          // WAIT_TIMEOUT.  A streamed request may legitimately remain quiet
+          // while ACK/Selection completes authenticated material fetch and
+          // runner assembly; only the absolute request deadline is terminal.
+          if (error.code() != "WAIT_TIMEOUT")
+            throw;
+          if (handle.status() == RequestStatus::Pending)
+            continue;
+          result = handle.result(std::chrono::milliseconds(0));
+          throw std::runtime_error(
+            "NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
+        }
+        if (!event) {
+          // A local read timeout is not EOF.  Continue until the business
+          // deadline; a failed handle is surfaced by result() below.
+          if (handle.status() != RequestStatus::Pending) {
+            result = handle.result(std::chrono::milliseconds(0));
+            throw std::runtime_error(
+              "NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
+          }
+          continue;
+        }
+        if (event->terminal) {
+          terminalSeen = true;
+          std::cout << "NATIVE_STREAM_TERMINAL index=" << turnIndex
+                    << " request=" << handle.id() << std::endl;
+          break;
+        }
+        const auto firstEventStatus = observedEvents == 0
+          ? handle.status() : RequestStatus::Pending;
+        const bool firstEventPending = observedEvents == 0 &&
+          firstEventStatus == RequestStatus::Pending;
+        if (observedEvents == 0 && config.get_child_optional("test_stream_barrier") &&
+            !firstEventPending)
+          throw std::runtime_error(
+            "NATIVE_STREAM_ORACLE_FAILED: first event arrived after native completion");
+        if (!streamExpected.empty()) {
+          if (observedEvents >= streamExpected.size())
+            throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: too many events");
+          validateStreamEvent(streamExpected, *event, observedEvents);
+        }
+        const bool firstEvent = observedEvents == 0;
+        std::cout << streamEventText(*event);
+        ++observedEvents;
+        // NativeInferenceClient records API queue delivery separately.  This
+        // marker follows actual text output from the requester executable and
+        // its flush boundary, with a distinct execution role.
+        std::cout.flush();
+        if (firstEvent) {
+          std::cout << "NATIVE_STREAM_FIRST_EVENT index=" << turnIndex
+                    << " request=" << handle.id() << std::endl;
+          std::cout << "NATIVE_STREAM_FIRST_EVENT_STATUS="
+                    << (firstEventPending ? "PENDING" : "TERMINAL")
+                    << " index=" << turnIndex << " request=" << handle.id() << std::endl;
+        }
+        logRuntimePhase(
+          "di-cli", "tokenEmitted", handle.id(), "request",
+          {{"executionRole", "cli-output"},
+           {"conversationId", "none"},
+           {"tokenIndex", std::to_string(observedEvents)}});
+        waitForTestStreamBarrier(config, base, turnIndex, observedEvents);
       }
-      if (!streamExpected.empty()) {
-        if (observedEvents >= streamExpected.size())
-          throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: too many events");
-        validateStreamEvent(streamExpected, *event, observedEvents);
-      }
-      std::cout << streamEventText(*event);
-      ++observedEvents;
-      // NativeInferenceClient records API queue delivery separately.  This
-      // marker follows actual text output from the requester executable and
-      // its flush boundary, with a distinct execution role.
-      std::cout.flush();
-      logRuntimePhase(
-        "di-cli", "tokenEmitted", handle.id(), "request",
-        {{"executionRole", "cli-output"},
-         {"conversationId", "none"},
-         {"tokenIndex", std::to_string(observedEvents)}});
+      auto completionWait = reader.remainingTimeout();
+      if (completionWait.count() <= 0)
+        completionWait = std::chrono::milliseconds(100);
+      result = handle.result(completionWait);
+      std::cout << "NATIVE_STREAM_EVENTS index=" << turnIndex
+                << " NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
     }
-    std::cout << "NATIVE_STREAM_EVENTS=" << observedEvents << '\n';
-  }
-  if (streaming && !terminalSeen)
-    throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
-  validateStreamOracle(config, result, observedEvents);
-  if (const auto oracle = config.get_child_optional("oracle")) {
-    const auto tensor = oracle->get<std::string>("tensor", {});
-    const auto expected = floatArray(*oracle, "float32");
-    const auto tolerance = oracle->get<double>("tolerance", 1e-5);
-    if (tensor.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0 ||
-        !result.matchesFloat32Tensor(tensor, expected, tolerance))
-      throw std::runtime_error("NATIVE_NUMERICAL_ORACLE_FAILED: tensor value mismatch");
-    std::cout << "NATIVE_NUMERICAL_ORACLE_PASS tensor=" << tensor
-              << " values=" << expected.size() << '\n';
-  }
-  if (conversation) {
-    if (const auto conversationConfig = config.get_child_optional("conversation")) {
-      if (const auto path = conversationConfig->get_optional<std::string>("checkpoint_output_file")) {
-        writeCheckpoint(*conversation, relativeTo(base, *path));
-        std::cout << "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN\n";
+    else {
+      result = handle.result();
+    }
+    if (streaming && !terminalSeen)
+      throw std::runtime_error("NATIVE_STREAM_ORACLE_FAILED: terminal event missing");
+    validateStreamOracle(config, result, observedEvents);
+    if (const auto oracle = config.get_child_optional("oracle")) {
+      const auto tensor = oracle->get<std::string>("tensor", {});
+      const auto expected = floatArray(*oracle, "float32");
+      const auto tolerance = oracle->get<double>("tolerance", 1e-5);
+      if (tensor.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0 ||
+          !result.matchesFloat32Tensor(tensor, expected, tolerance))
+        throw std::runtime_error("NATIVE_NUMERICAL_ORACLE_FAILED: tensor value mismatch");
+      std::cout << "NATIVE_NUMERICAL_ORACLE_PASS tensor=" << tensor
+                << " values=" << expected.size() << '\n';
+    }
+    if (conversation) {
+      if (const auto conversationConfig = config.get_child_optional("conversation")) {
+        std::optional<std::filesystem::path> path;
+        if (turn.checkpoint)
+          path = *turn.checkpoint;
+        else if (const auto configured = conversationConfig->get_optional<std::string>(
+                   "checkpoint_output_file"))
+          path = relativeTo(base, *configured);
+        if (path) {
+          writeCheckpoint(*conversation, *path);
+          std::cout << "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN index="
+                    << turnIndex << '\n';
+        }
       }
     }
+    writeResult(result, turn.output);
+    std::cout << "NATIVE_CONVERSATION_TURN_COMPLETE index=" << turnIndex
+              << " request=" << handle.id() << " plan=" << result.planDigest << '\n';
+    std::cout << "NATIVE_REQUEST_SUCCEEDED request=" << handle.id()
+              << " plan=" << result.planDigest << '\n';
   }
-  std::ofstream output(argv[6], std::ios::binary | std::ios::trunc);
-  if (!output || (!result.payload.empty() && !output.write(
-      reinterpret_cast<const char*>(result.payload.data()), result.payload.size())))
-    throw std::runtime_error("requester output could not be written");
-  std::cout << "NATIVE_REQUEST_SUCCEEDED request=" << handle.id()
-            << " plan=" << result.planDigest << '\n';
+  if (turns.size() > 1)
+    std::cout << "NATIVE_CONVERSATION_TURNS_SUCCEEDED count=" << turns.size() << '\n';
   runtime->close();
   (void)runtime->drain(std::chrono::seconds(5));
   return 0;

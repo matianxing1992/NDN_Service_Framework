@@ -136,6 +136,11 @@ struct NativeTensorEndpointV3
   std::string consumerRole;
   std::vector<std::string> consumerRoles;
   std::string tensorId;
+  // Concrete members carried by one logical transport tensor.  The signed
+  // tensorId remains the adapter/transport identity; these names bind the
+  // runtime bundle to the producer/consumer ONNX boundary without aliasing
+  // several concrete tensors to one name.
+  std::vector<std::string> bundleTensorNames;
   std::string tensorDigest;
   std::string layoutDigest;
   std::string targetLayoutDigest;

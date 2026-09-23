@@ -164,7 +164,9 @@ validateMaterialFetches(const std::filesystem::path& path,
     const auto kind = field(line, "kind");
     const auto name = field(line, "name");
     const auto expectedDigest = field(line, "expectedDigest");
-    if (kind != "root" && kind != "material-manifest" && kind != "material-payload") {
+    if (kind != "root" && kind != "material-manifest" &&
+        kind != "material-receipt" && kind != "material-bundle" &&
+        kind != "material-payload") {
       throw std::runtime_error(
         "SPEC189_CPP_ORACLE_FAIL boundary=MATERIAL_FETCH reason=unknown-kind log=" +
         path.string());
@@ -174,7 +176,11 @@ validateMaterialFetches(const std::filesystem::path& path,
         "SPEC189_CPP_ORACLE_FAIL boundary=MATERIAL_FETCH reason=identity-missing log=" +
         path.string());
     }
-    const Key key{kind, name};
+    // Current canonical material publication emits one verified payload event
+    // per payload digest without begin/returned events. A bundle name is a
+    // parent for many such chunks, so kind+name alone is not an identity key.
+    const Key key = kind == "material-payload"
+      ? Key{kind, name + "#" + expectedDigest} : Key{kind, name};
     if (state[key] == 0) {
       expectedDigests[key] = expectedDigest;
     }
@@ -183,6 +189,36 @@ validateMaterialFetches(const std::filesystem::path& path,
         "SPEC189_CPP_ORACLE_FAIL boundary=MATERIAL_FETCH reason=material-identity-changed log=" +
         path.string());
     }
+    if (status == "verified" && kind == "material-payload" && state[key] == 0) {
+      if (completed["material-receipt"] == 1 &&
+          state[Key{"material-bundle", name}] != 3) {
+        throw std::runtime_error(
+          "SPEC189_CPP_ORACLE_FAIL boundary=MATERIAL_FETCH reason=unauthenticated-parent log=" +
+          path.string());
+      }
+      const auto bytes = field(line, "bytes");
+      const auto digest = field(line, "digest");
+      if (bytes.empty() || digest.empty() || digest != expectedDigest) {
+        throw std::runtime_error(
+          "SPEC189_CPP_ORACLE_FAIL boundary=MATERIAL_FETCH reason=verification-evidence-mismatch log=" +
+          path.string());
+      }
+      try {
+        if (bytes.find_first_not_of("0123456789") != std::string::npos ||
+            std::stoull(bytes) == 0) {
+          throw std::runtime_error("zero-byte material");
+        }
+      }
+      catch (const std::exception&) {
+        throw std::runtime_error(
+          "SPEC189_CPP_ORACLE_FAIL boundary=MATERIAL_FETCH reason=invalid-bytes log=" +
+          path.string());
+      }
+      state[key] = 3;
+      ++completed[kind];
+      ++result.postSelection;
+      continue;
+    }
     if (status == "begin") {
       if (state[key] != 0) {
         throw std::runtime_error(
@@ -190,6 +226,8 @@ validateMaterialFetches(const std::filesystem::path& path,
           path.string());
       }
       if ((kind == "material-manifest" && completed["root"] != 1) ||
+          (kind == "material-receipt" && completed["material-manifest"] != 1) ||
+          (kind == "material-bundle" && completed["material-receipt"] != 1) ||
           (kind == "material-payload" && completed["material-manifest"] != 1)) {
         throw std::runtime_error(
           "SPEC189_CPP_ORACLE_FAIL boundary=MATERIAL_FETCH reason=unauthenticated-parent log=" +
@@ -257,7 +295,11 @@ validateMaterialFetches(const std::filesystem::path& path,
         " log=" + path.string());
     }
   }
+  const bool currentMaterialSequence = completed["material-receipt"] != 0 ||
+    completed["material-bundle"] != 0;
   if (completed["root"] != 1 || completed["material-manifest"] != 1 ||
+      (currentMaterialSequence &&
+       (completed["material-receipt"] != 1 || completed["material-bundle"] == 0)) ||
       completed["material-payload"] == 0 ||
       std::any_of(state.begin(), state.end(), [](const auto& entry) { return entry.second != 3; })) {
     throw std::runtime_error(

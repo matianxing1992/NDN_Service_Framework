@@ -605,6 +605,61 @@ BOOST_AUTO_TEST_CASE(CoordinatorEnforcesProgressAndHardDeadline)
                     "NDNSF_DATA_V1_HARD_DEADLINE");
 }
 
+BOOST_AUTO_TEST_CASE(CoordinatorScopesNoProgressToEachOperation)
+{
+  auto operation = makeGroupOperation();
+  operation.consumerRanks = {"0"};
+  ProviderGroupCoordinator producer(makeCoordinatorOptions());
+  const auto capability = producer.createCapability(
+    "request", "attempt", "plan", "group", 1,
+    {{"/provider/P0", 0, "offer", "/p0"}},
+    {operation}, 32, 10, 1000);
+  const auto sealed = producer.sealOperation(
+    operation, "0", "src", "dst", "tensor", {{'x', 'y'}}, 100);
+
+  ProviderGroupCoordinator consumer(makeCoordinatorOptions());
+  consumer.installCapability(capability, std::vector<uint8_t>(32, 0x5a), true);
+  BOOST_REQUIRE(consumer.acceptSegment(
+                  sealed.manifest, sealed.segments.front()) ==
+                DataSegmentReplayWindow::Result::Accepted);
+
+  // A long runner-preparation/idle interval starts a new transport operation
+  // but does not extend the authenticated hard deadline.
+  BOOST_CHECK(consumer.beginOperation(500));
+  BOOST_CHECK(!consumer.terminal());
+  BOOST_CHECK(consumer.recordProgress(509));
+
+  // Once the operation is active, the existing no-progress failure remains.
+  BOOST_CHECK(!consumer.recordProgress(520));
+  BOOST_CHECK(consumer.failed());
+  BOOST_CHECK_EQUAL(consumer.terminalReason(),
+                    "NDNSF_DATA_V1_NO_PROGRESS");
+}
+
+BOOST_AUTO_TEST_CASE(CoordinatorAllowsInitialProducerReadinessWait)
+{
+  auto operation = makeGroupOperation();
+  operation.consumerRanks = {"0"};
+  ProviderGroupCoordinator producer(makeCoordinatorOptions());
+  const auto capability = producer.createCapability(
+    "request", "attempt", "plan", "group", 1,
+    {{"/provider/P0", 0, "offer", "/p0"}},
+    {operation}, 32, 10, 1000);
+
+  ProviderGroupCoordinator consumer(makeCoordinatorOptions());
+  consumer.installCapability(capability, std::vector<uint8_t>(32, 0x5a), true);
+
+  // The first manifest may become available after the normal no-progress
+  // window while the producer is still preparing its runner.  Re-baselining
+  // at manifest availability must keep the group live without extending the
+  // authenticated hard deadline.
+  BOOST_CHECK(consumer.beginOperation(100));
+  BOOST_CHECK(consumer.beginOperation(500));
+  BOOST_CHECK(!consumer.terminal());
+  BOOST_CHECK(consumer.recordProgress(509));
+  BOOST_CHECK(!consumer.terminal());
+}
+
 BOOST_AUTO_TEST_CASE(FixedFiftySeedDataV1FaultMatrix)
 {
   for (std::uint64_t seed = 0; seed < 50; ++seed) {

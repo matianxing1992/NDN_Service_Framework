@@ -308,6 +308,91 @@ struct ConversationOwnerFixture
 }
 
 BOOST_AUTO_TEST_SUITE(Spec182Conversation)
+BOOST_AUTO_TEST_CASE(PlacementSurvivesJournalReopenAndExplicitLongRetention)
+{
+  ConversationOwnerFixture fixture;
+  const std::map<std::string, std::string> placement{
+    {"/role/A", "/provider/A"}, {"/role/B", "/provider/B"}};
+  auto first = fixture.continuation(1);
+  first.planRoleMapDigest.clear(); first.expectedRoles.clear();
+  first.retentionDeadlineMs = fixture.now + 900'000;
+  std::string wire;
+  std::string roleDigest;
+  {
+    NativeConversationCoordinator owner(fixture.config);
+    const auto initial = owner.beginTurn(first, "/request/1");
+    const auto turn = owner.bindInitialPlanRoleMap(initial, placement);
+    BOOST_CHECK(turn.providersByRole == placement);
+    roleDigest = turn.parent.planRoleMapDigest;
+    auto completed = fixture.completed(1);
+    for (auto& receipt : completed.authenticatedReceipts) {
+      receipt["planRoleMapDigest"] = roleDigest;
+      receipt["expiresAtMs"] = first.retentionDeadlineMs;
+      receipt.erase("receiptDigest"); receipt.erase("signature");
+      receipt["receiptDigest"] = digest(nativeConversationCanonicalJson(receipt));
+    }
+    owner.acceptTokenPrefix(turn, {11});
+    const auto prepared = owner.prepareCheckpoint(turn, completed);
+    BOOST_CHECK_EQUAL(NativeJson::parse(prepared.wire).at("expiresAtMs").get<std::uint64_t>(),
+                      first.retentionDeadlineMs);
+    wire = owner.commitTurn(turn, prepared).checkpoint.wire;
+  }
+  // Reopen after the old implicit five-minute cap, not merely a new request
+  // against a still-live in-memory coordinator. The fixture removes its journal.
+  fixture.now += 400'000;
+  fixture.config.journal.reset();
+  fixture.config.journal = std::make_shared<NativeConversationJournal>(NativeConversationJournalConfig{
+    fixture.root, "fixture-owner", {{"fixture-key", fixture.config.authenticationKeys.front()}},
+    64 * 1024 * 1024, true});
+  {
+    NativeConversationCoordinator recovered(fixture.config);
+    auto next = fixture.continuation(2, wire);
+    next.planRoleMapDigest = roleDigest;
+    next.retentionDeadlineMs = first.retentionDeadlineMs;
+    const auto turn = recovered.beginTurn(next, "/request/2");
+    BOOST_CHECK(turn.providersByRole == placement);
+    auto completed = fixture.completed(2);
+    const auto receiptDeadline = fixture.now + 100'000;
+    for (auto& receipt : completed.authenticatedReceipts) {
+      receipt["planRoleMapDigest"] = roleDigest;
+      receipt["expiresAtMs"] = receiptDeadline;
+      receipt.erase("receiptDigest"); receipt.erase("signature");
+      receipt["receiptDigest"] = digest(nativeConversationCanonicalJson(receipt));
+    }
+    recovered.acceptTokenPrefix(turn, {13});
+    const auto prepared = recovered.prepareCheckpoint(turn, completed);
+    BOOST_CHECK_EQUAL(NativeJson::parse(prepared.wire).at("expiresAtMs").get<std::uint64_t>(),
+                      receiptDeadline);
+    BOOST_CHECK(prepared.providersByRole == placement);
+    recovered.commitTurn(turn, prepared);
+    fixture.now = receiptDeadline;
+  }
+  NativeConversationCoordinator expired(fixture.config);
+  auto next = fixture.continuation(2, wire);
+  next.planRoleMapDigest = roleDigest; next.retentionDeadlineMs = first.retentionDeadlineMs;
+  // Even a still-unexpired old parent cannot replace the committed successor.
+  BOOST_CHECK_THROW(expired.beginTurn(next, "/request/stale"), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedJournalPlacementMustMatchCheckpointDigest)
+{
+  ConversationOwnerFixture fixture;
+  NativeConversationCheckpoint checkpoint;
+  {
+    auto config = fixture.config;
+    config.journal.reset(); // Produce a valid checkpoint without appending yet.
+    NativeConversationCoordinator owner(config);
+    const auto turn = owner.beginTurn(fixture.continuation(1), "/request/1");
+    owner.acceptTokenPrefix(turn, {11});
+    checkpoint = owner.commitTurn(turn, owner.prepareCheckpoint(turn, fixture.completed(1))).checkpoint;
+  }
+  // Authentic encryption alone cannot bless a role mapping that does not hash
+  // to the parent checkpoint. This intentionally malformed test journal is RAII-owned.
+  fixture.config.journal->appendConversation(checkpoint.wire, checkpoint.transcript, fixture.now,
+    checkpoint.nativeInitialPromptTokenCount, {{"/role/A", "/wrong/A"}, {"/role/B", "/wrong/B"}});
+  BOOST_CHECK_THROW(NativeConversationCoordinator(fixture.config), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(ExplicitOwnerConfigurationFencesPathOnlyConstruction)
 {
   ConversationOwnerFixture fixture;
@@ -473,6 +558,9 @@ BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndnsf::di
 
+#ifndef SPEC189_CONVERSATION_ONLY
+// The standalone conversation target does not link the unrelated sampling
+// fixture owned by the aggregate asynchronous-runtime test suite.
 namespace {
 using namespace ndnsf::di;
 std::vector<std::int64_t> sampled(std::vector<std::vector<float>> logits,
@@ -557,3 +645,4 @@ BOOST_AUTO_TEST_CASE(Spec182SamplingDoublePrecisionAndTies)
     }) == std::vector<std::int64_t>({0, 0, 1}));
 }
 BOOST_AUTO_TEST_SUITE_END()
+#endif // SPEC189_CONVERSATION_ONLY

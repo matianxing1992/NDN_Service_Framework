@@ -66,6 +66,11 @@ struct PreparationSpec
   using SourceLoader = std::function<NativeCanonicalSource(
     const PreparationSpec&, std::chrono::steady_clock::time_point)>;
   SourceLoader loadSource;
+  /** Optional committed-publication lookup performed before source parsing and
+   * STORE. A hit carries only immutable receipt/reference metadata. */
+  using PreparedLookup = std::function<std::optional<NativePreparedCanonicalPublication>(
+    const PreparationSpec&, std::chrono::steady_clock::time_point)>;
+  PreparedLookup lookupPrepared;
   /** Runtime-owned prepare-time publication port. It returns names/digests,
    * never source bytes, and is optional for offline cache-only fixtures. */
   using PublicationPreparer = std::function<NativePreparedCanonicalPublication(

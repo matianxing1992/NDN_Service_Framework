@@ -992,7 +992,21 @@ def qwen_onnx_stage_spec(*, role: str,
                          stages: int,
                          layer_count: int,
                          model_name: str,
-                         stateful: bool = False) -> dict[str, Any]:
+                         stateful: bool = False,
+                         model_family: str = "qwen") -> dict[str, Any]:
+    model_family = str(model_family or "qwen").strip().lower()
+    if model_family not in {"qwen", "llama"}:
+        raise ValueError(f"unsupported ONNX model family: {model_family}")
+    supported_llama_models = {
+        "HuggingFaceTB/SmolLM2-135M",
+        "HuggingFaceTB/SmolLM2-360M",
+    }
+    if model_family == "llama" and model_name not in supported_llama_models:
+        raise ValueError(
+            "llama ONNX export supports only the maintained SmolLM2 checkpoints: "
+            f"{sorted(supported_llama_models)}")
+    if model_family == "qwen" and "smollm" in model_name.lower():
+        raise ValueError("qwen ONNX export cannot bind a SmolLM2 checkpoint")
     spec = qwen_transformer_stage_spec(
         role=role,
         stages=stages,
@@ -1000,8 +1014,9 @@ def qwen_onnx_stage_spec(*, role: str,
         model_name=model_name,
     )
     spec.update({
-        "schema": "ndnsf-di-qwen-onnx-stage-artifact-v1",
+        "schema": f"ndnsf-di-{model_family}-onnx-stage-artifact-v1",
         "runtime": QWEN_ONNX_RUNTIME,
+        "modelFamily": model_family,
         "modelFormat": "onnx",
         "runtimeBackend": "onnxruntime",
     })
@@ -2320,8 +2335,6 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
                             stateful: bool = False) -> dict[str, Any]:
     import torch
 
-    wrapper, stage_index, stage_count, start, end = _onnx_stage_wrapper(
-        model, stateful=stateful)
     hidden_size = int(model.config.hidden_size)
     seq_len = int(sample_input_ids.shape[1])
     model_type = str(
@@ -2331,6 +2344,28 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
     )
     if model_type == "qwen3_5_text":
         model_type = "qwen3_5"
+
+    # Torch < 2.6's legacy ONNX symbolic cannot serialize the SDPA
+    # floating-point scale used by Qwen3 and Llama-family checkpoints.
+    # Eager attention is mathematically equivalent for this export and keeps
+    # the compatibility decision explicit; it does not alter the native ONNX
+    # Runtime execution contract.
+    export_attention_implementation = str(
+        getattr(getattr(model, "config", None), "_attn_implementation", "")
+        or "sdpa"
+    )
+    torch_version = []
+    for component in str(getattr(torch, "__version__", "0.0")).split(".")[:2]:
+        digits = "".join(character for character in component if character.isdigit())
+        torch_version.append(int(digits or 0))
+    if (model_type in {"qwen3", "llama"}
+            and export_attention_implementation == "sdpa"
+            and tuple(torch_version) < (2, 6)):
+        model.config._attn_implementation = "eager"
+        export_attention_implementation = "eager"
+
+    wrapper, stage_index, stage_count, start, end = _onnx_stage_wrapper(
+        model, stateful=stateful)
     if export_dtype == "float16":
         tensor_dtype = torch.float16
     elif export_dtype == "float32":
@@ -2653,6 +2688,7 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
             else "fixed-context-padded-v1" if fixed_context
             else "dynamic-past-key-v1"
         ),
+        "exportAttentionImplementation": export_attention_implementation,
         "tensorContracts": {
             value.name: contract(value)
             for value in [*graph.input, *graph.output]
@@ -2787,11 +2823,25 @@ def write_qwen_onnx_stage_artifacts(
     allow_download: bool = False,
     dtype: str = "float32",
     stateful: bool = False,
+    model_family: str = "qwen",
 ) -> list[SplitArtifact]:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    root = Path(output_dir) / "qwen-onnx-stage-artifacts"
+    model_family = str(model_family or "qwen").strip().lower()
+    if model_family not in {"qwen", "llama"}:
+        raise ValueError(f"unsupported ONNX model family: {model_family}")
+    supported_llama_models = {
+        "HuggingFaceTB/SmolLM2-135M",
+        "HuggingFaceTB/SmolLM2-360M",
+    }
+    if model_family == "llama" and model_name not in supported_llama_models:
+        raise ValueError(
+            "llama ONNX export supports only the maintained SmolLM2 checkpoints: "
+            f"{sorted(supported_llama_models)}")
+    if model_family == "qwen" and "smollm" in model_name.lower():
+        raise ValueError("qwen ONNX export cannot bind a SmolLM2 checkpoint")
+    root = Path(output_dir) / f"{model_family}-onnx-stage-artifacts"
     root.mkdir(parents=True, exist_ok=True)
     local_files_only = not allow_download
     torch_dtype = (torch.float32 if dtype == "float32" else
@@ -2802,7 +2852,7 @@ def write_qwen_onnx_stage_artifacts(
         local_files_only=local_files_only,
         trust_remote_code=True,
     )
-    tokenizer_dir = Path(output_dir) / "qwen-onnx-tokenizer"
+    tokenizer_dir = Path(output_dir) / f"{model_family}-onnx-tokenizer"
     tokenizer_dir.mkdir(parents=True, exist_ok=True)
     tokenizer.save_pretrained(str(tokenizer_dir))
     tokenizer_json = tokenizer_dir / "tokenizer.json"
@@ -2850,6 +2900,17 @@ def write_qwen_onnx_stage_artifacts(
     hidden_size = int(model_config.hidden_size)
     resolved_revision = str(
         getattr(model_config, "_commit_hash", "") or model_revision)
+    eos_token_ids = getattr(tokenizer, "eos_token_id", None)
+    if eos_token_ids is None:
+        eos_token_ids = getattr(model_config, "eos_token_id", None)
+    if isinstance(eos_token_ids, int):
+        eos_token_ids = [eos_token_ids]
+    if not isinstance(eos_token_ids, (list, tuple)):
+        raise RuntimeError(
+            f"{model_family.upper()}_EOS_TOKEN_IDS_MISSING: tokenizer/config has no eos token")
+    eos_token_ids = [int(item) for item in eos_token_ids]
+    if not eos_token_ids or any(item < 0 for item in eos_token_ids):
+        raise RuntimeError(f"{model_family.upper()}_EOS_TOKEN_IDS_INVALID")
     full_state = full_model.state_dict()
     stage_packages: list[tuple[str, dict[str, Any], Path]] = []
     for role in roles:
@@ -2859,10 +2920,11 @@ def write_qwen_onnx_stage_artifacts(
             layer_count=layer_count,
             model_name=model_name,
             stateful=stateful,
+            model_family=model_family,
         )
-        pt_path = root / f"stage-{spec['stageIndex']}-qwen-onnx-export.pt"
+        pt_path = root / f"stage-{spec['stageIndex']}-{model_family}-onnx-export.pt"
         package = {
-            "schema": "ndnsf-di-qwen-stage-weights-v1",
+            "schema": f"ndnsf-di-{model_family}-stage-weights-v1",
             "spec": {
                 **spec,
                 "runtime": QWEN_TRANSFORMERS_RUNTIME,
@@ -2887,7 +2949,7 @@ def write_qwen_onnx_stage_artifacts(
     artifacts: list[SplitArtifact] = []
     for role, spec, pt_path in stage_packages:
         stage_model = qwen_transformer_model_from_stage_package(pt_path)
-        filename = f"stage-{spec['stageIndex']}-qwen.onnx"
+        filename = f"stage-{spec['stageIndex']}-{model_family}.onnx"
         onnx_path = root / filename
         export_info = _export_qwen_onnx_stage(
             stage_model,
@@ -2899,7 +2961,7 @@ def write_qwen_onnx_stage_artifacts(
         artifacts.append(SplitArtifact(
             role=role,
             path=str(onnx_path),
-            artifact_name=f"/Model/LLM/Pipeline/QwenOnnx/{role.strip('/')}",
+            artifact_name=f"/Model/LLM/Pipeline/{model_family.title()}Onnx/{role.strip('/')}",
             filename=filename,
             kind="onnx-model",
             backend="onnxruntime",
@@ -2909,9 +2971,10 @@ def write_qwen_onnx_stage_artifacts(
                 "stageCount": spec["stageCount"],
                 "layerCount": spec["layerCount"],
                 "layerRange": dict(spec["layerRange"]),
-                "modelFamily": "llm",
+                "modelFamily": model_family,
                 "modelFormat": "onnx",
                 "runtimeBackend": "onnxruntime",
+                "materialization": "exporter-contract-only",
                 "hiddenSize": hidden_size,
                 "inputNames": export_info["inputNames"],
                 "outputNames": export_info["outputNames"],
@@ -2920,6 +2983,8 @@ def write_qwen_onnx_stage_artifacts(
                 "stateInputNames": export_info["stateInputNames"],
                 "stateOutputNames": export_info["stateOutputNames"],
                 "sequencePolicy": export_info["sequencePolicy"],
+                "exportAttentionImplementation": export_info[
+                    "exportAttentionImplementation"],
                 "tensorContracts": export_info["tensorContracts"],
             },
         ))
@@ -2946,9 +3011,12 @@ def write_qwen_onnx_stage_artifacts(
                 "staged Qwen ONNX top token differs from frozen full-model baseline: "
                 f"{validation['topToken']} != {expected_top_token}")
         runtime_summary = {
-            "schema": "ndnsf-di-qwen-onnx-pipeline-runtime-v1",
+            "schema": f"ndnsf-di-{model_family}-onnx-pipeline-runtime-v1",
+            "modelFamily": model_family,
             "model": model_name,
-            "modelRevision": model_revision,
+            # Keep the runtime summary on the canonical revision discovered by
+            # the loader; the service manifest uses this same value.
+            "modelRevision": resolved_revision,
             "dtype": dtype,
             "prompt": prompt,
             "runtime": QWEN_ONNX_RUNTIME,
@@ -2958,15 +3026,17 @@ def write_qwen_onnx_stage_artifacts(
             "inputIds": input_ids.cpu().tolist(),
             "attentionMask": attention_mask.cpu().tolist(),
             "expectedTopToken": expected_top_token,
+            "eosTokenIds": eos_token_ids,
             "stagedValidation": validation,
             "fullMs": full_ms,
         }
-        (Path(output_dir) / "qwen-pipeline-runtime.json").write_text(
+        (Path(output_dir) / f"{model_family}-pipeline-runtime.json").write_text(
             json.dumps(runtime_summary, indent=2, sort_keys=True),
             encoding="utf-8",
         )
     manifest = {
-        "schema": "ndnsf-di-qwen-onnx-service-manifest-v1",
+        "schema": f"ndnsf-di-{model_family}-onnx-service-manifest-v1",
+        "modelFamily": model_family,
         "model": model_name,
         "modelRevision": resolved_revision,
         "dtype": dtype,
@@ -2981,6 +3051,7 @@ def write_qwen_onnx_stage_artifacts(
             else "dynamic-past-key-v1"),
         "stages": [],
     }
+    manifest["eosTokenIds"] = eos_token_ids
     for artifact in artifacts:
         path = Path(artifact.path)
         manifest["stages"].append({
@@ -2997,9 +3068,12 @@ def write_qwen_onnx_stage_artifacts(
             "stateInputNames": artifact.metadata["stateInputNames"],
             "stateOutputNames": artifact.metadata["stateOutputNames"],
             "sequencePolicy": artifact.metadata["sequencePolicy"],
+            "materialization": artifact.metadata["materialization"],
+            "exportAttentionImplementation": artifact.metadata[
+                "exportAttentionImplementation"],
             "tensorContracts": artifact.metadata["tensorContracts"],
         })
-    (Path(output_dir) / "qwen-onnx-service-manifest.json").write_text(
+    (Path(output_dir) / f"{model_family}-onnx-service-manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return artifacts
 
@@ -3015,10 +3089,13 @@ def with_qwen_onnx_artifacts(
     allow_download: bool = False,
     dtype: str = "float32",
     stateful: bool = False,
+    model_family: str = "qwen",
+    target_service: str | None = None,
 ) -> SplitterOutput:
+    target_service = target_service or SERVICE
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
-        if service.name != SERVICE:
+        if service.name != target_service:
             services.append(service)
             continue
         services.append(SplitServiceSpec(
@@ -3036,6 +3113,7 @@ def with_qwen_onnx_artifacts(
                 allow_download=allow_download,
                 dtype=dtype,
                 stateful=stateful,
+                model_family=model_family,
             ),
             input_schema=dict(service.input_schema),
             output_schema=dict(service.output_schema),
@@ -3048,6 +3126,7 @@ def with_qwen_onnx_artifacts(
                 "model": model_name,
                 "modelRevision": model_revision,
                 "dtype": dtype,
+                "modelFamily": model_family,
             },
         ))
     return SplitterOutput(
@@ -3073,9 +3152,16 @@ def reuse_qwen_onnx_stage_artifacts(
     artifact_store: str | Path,
     service_manifest_path: str | Path,
     runtime_manifest_path: str | Path,
+    model_family: str = "qwen",
+    expected_model_name: str | None = None,
+    expected_model_revision: str | None = None,
+    expected_stage_count: int | None = None,
 ) -> list[SplitArtifact]:
     """Bind reviewed Qwen metadata to a verified read-only Spec 107 store."""
 
+    model_family = str(model_family or "qwen").strip().lower()
+    if model_family not in {"qwen", "llama"}:
+        raise ValueError(f"unsupported ONNX model family: {model_family}")
     store = Path(artifact_store).resolve()
     store_manifest_path = store / "artifact-set.json"
     try:
@@ -3098,13 +3184,51 @@ def reuse_qwen_onnx_stage_artifacts(
         raise RuntimeError("Qwen artifact store content address mismatch")
     store_rows = store_manifest.get("artifacts")
     service_rows = service_manifest.get("stages")
+    service_eos = service_manifest.get("eosTokenIds")
+    runtime_rows = runtime_manifest.get("stages")
     if (
-        not isinstance(store_rows, list) or len(store_rows) != 3
-        or not isinstance(service_rows, list) or len(service_rows) != 3
-        or service_manifest.get("schema") != "ndnsf-di-qwen-onnx-service-manifest-v1"
-        or int(service_manifest.get("stageCount", 0)) != 3
+        not isinstance(store_rows, list) or len(store_rows) != len(roles)
+        or not isinstance(service_rows, list) or len(service_rows) != len(roles)
+        or service_manifest.get("schema") != f"ndnsf-di-{model_family}-onnx-service-manifest-v1"
+        or service_manifest.get("modelFamily") != model_family
+        or int(service_manifest.get("stageCount", 0)) != len(roles)
+        or not isinstance(service_eos, list) or not service_eos
+        or any(isinstance(item, bool) or not isinstance(item, int) or item < 0
+               for item in service_eos)
     ):
-        raise RuntimeError("Qwen reusable manifests require exactly three stages")
+        raise RuntimeError(
+            "reusable ONNX manifests must contain exactly the requested stage count")
+    expected_runtime_schema = f"ndnsf-di-{model_family}-onnx-pipeline-runtime-v1"
+    if (runtime_manifest.get("schema") != expected_runtime_schema or
+            runtime_manifest.get("modelFamily") != model_family):
+        raise RuntimeError("reusable ONNX runtime manifest family/schema mismatch")
+    runtime_eos = runtime_manifest.get("eosTokenIds")
+    if (not isinstance(runtime_eos, list) or not runtime_eos or
+            any(isinstance(item, bool) or not isinstance(item, int) or item < 0
+                for item in runtime_eos)):
+        raise RuntimeError("reusable ONNX runtime manifest EOS contract is invalid")
+    if service_eos != runtime_eos:
+        raise RuntimeError("reusable ONNX manifest EOS contracts disagree")
+    if (isinstance(runtime_rows, bool) or not isinstance(runtime_rows, int) or
+            runtime_rows != len(roles)):
+        raise RuntimeError("reusable ONNX runtime stage count does not match roles")
+    service_model = str(service_manifest.get("model", ""))
+    runtime_model = str(runtime_manifest.get("model", ""))
+    service_revision = str(service_manifest.get("modelRevision", ""))
+    runtime_revision = str(runtime_manifest.get("modelRevision", ""))
+    if (not service_model or service_model != runtime_model or
+            service_revision != runtime_revision):
+        raise RuntimeError("reusable ONNX model identity manifests disagree")
+    if expected_model_name is not None and service_model != expected_model_name:
+        raise RuntimeError("reusable ONNX model does not match requested checkpoint")
+    # ``main`` is resolved to a commit hash by the loader.  Enforce explicit
+    # immutable revisions while accepting the documented symbolic default.
+    if (expected_model_revision not in (None, "", "main") and
+            service_revision != expected_model_revision):
+        raise RuntimeError("reusable ONNX revision does not match requested revision")
+    if (expected_stage_count is not None and
+            len(roles) != int(expected_stage_count)):
+        raise RuntimeError("reusable ONNX stage count does not match requested policy")
     store_by_role = {str(row.get("role", "")): row for row in store_rows}
     service_by_role = {str(row.get("role", "")): row for row in service_rows}
     if set(store_by_role) != set(roles) or set(service_by_role) != set(roles):
@@ -3142,19 +3266,20 @@ def reuse_qwen_onnx_stage_artifacts(
         artifacts.append(SplitArtifact(
             role=role,
             path=str(artifact_path),
-            artifact_name=f"/Model/LLM/Pipeline/QwenOnnx/{role.strip('/')}",
+            artifact_name=f"/Model/LLM/Pipeline/{model_family.title()}Onnx/{role.strip('/')}",
             filename=artifact_path.name,
             kind="onnx-model",
             backend="onnxruntime",
             metadata={
                 "runtime": QWEN_ONNX_RUNTIME,
                 "stageIndex": int(metadata_row["stageIndex"]),
-                "stageCount": 3,
+                "stageCount": len(roles),
                 "layerCount": int(service_manifest.get("layerCount", 0)),
                 "layerRange": dict(metadata_row["layerRange"]),
-                "modelFamily": "llm",
+                "modelFamily": model_family,
                 "modelFormat": "onnx",
                 "runtimeBackend": "onnxruntime",
+                "materialization": "exporter-contract-only",
                 "inputNames": list(metadata_row["inputNames"]),
                 "outputNames": list(metadata_row["outputNames"]),
                 "cacheInputs": list(metadata_row["cacheInputs"]),
@@ -3171,10 +3296,10 @@ def reuse_qwen_onnx_stage_artifacts(
     output.mkdir(parents=True, exist_ok=True)
     rebound_manifest = dict(service_manifest)
     rebound_manifest["stages"] = rebound_rows
-    (output / "qwen-onnx-service-manifest.json").write_text(
+    (output / f"{model_family}-onnx-service-manifest.json").write_text(
         json.dumps(rebound_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8")
-    (output / "qwen-pipeline-runtime.json").write_text(
+    (output / f"{model_family}-pipeline-runtime.json").write_text(
         json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8")
     return artifacts
@@ -3187,10 +3312,16 @@ def with_reused_qwen_onnx_artifacts(
     artifact_store: str | Path,
     service_manifest_path: str | Path,
     runtime_manifest_path: str | Path,
+    model_family: str = "qwen",
+    target_service: str | None = None,
+    expected_model_name: str | None = None,
+    expected_model_revision: str | None = None,
+    expected_stage_count: int | None = None,
 ) -> SplitterOutput:
+    target_service = target_service or SERVICE
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
-        if service.name != SERVICE:
+        if service.name != target_service:
             services.append(service)
             continue
         services.append(SplitServiceSpec(
@@ -3204,6 +3335,10 @@ def with_reused_qwen_onnx_artifacts(
                 artifact_store=artifact_store,
                 service_manifest_path=service_manifest_path,
                 runtime_manifest_path=runtime_manifest_path,
+                model_family=model_family,
+                expected_model_name=expected_model_name,
+                expected_model_revision=expected_model_revision,
+                expected_stage_count=expected_stage_count,
             ),
             input_schema=dict(service.input_schema),
             output_schema=dict(service.output_schema),
@@ -3213,6 +3348,7 @@ def with_reused_qwen_onnx_artifacts(
                 **dict(service.metadata),
                 "execution_implemented": True,
                 "runtime": QWEN_ONNX_RUNTIME,
+                "modelFamily": model_family,
                 "artifactRetention": "content-addressed-read-only",
             },
         ))
@@ -3415,6 +3551,13 @@ def probe_qwen_transformers_model_type(model_type: str) -> None:
             "transformers.models.qwen3_5.configuration_qwen3_5",
             "transformers.models.qwen3_5.modeling_qwen3_5",
         ),
+        # SmolLM2 uses the standard Llama decoder contract.  Keep this
+        # branch explicit so a real SmolLM2 stage cannot silently fall back to
+        # the Qwen fixture path.
+        "llama": (
+            "transformers.models.llama.configuration_llama",
+            "transformers.models.llama.modeling_llama",
+        ),
     }
     model_type = str(model_type or "")
     if model_type not in modules:
@@ -3534,6 +3677,19 @@ def qwen_transformer_model_from_stage_package(
     model_type, config_dict = _normalize_qwen_stage_config(
         dict(package.get("config", {})))
     _require_qwen_transformers_runtime(model_type)
+    attn_impl = str(package.get("attnImplementation") or "sdpa")
+    torch_version = tuple(
+        int("".join(character for character in component
+                     if character.isdigit()) or 0)
+        for component in str(getattr(torch, "__version__", "0.0")).split(".")[:2]
+    )
+    # Select the implementation before constructing decoder layers.  Llama
+    # and Qwen3 bind their attention class in DecoderLayer.__init__; changing
+    # only config after construction leaves an already-created SDPA module in
+    # place and does not fix Torch < 2.6 legacy ONNX export.
+    if (model_type in {"qwen3", "llama"} and attn_impl == "sdpa"
+            and torch_version < (2, 6)):
+        attn_impl = "eager"
     if model_type == "qwen2":
         from transformers import AutoConfig
         from transformers.models.qwen2.modeling_qwen2 import (
@@ -3565,12 +3721,21 @@ def qwen_transformer_model_from_stage_package(
         )
 
         config = Qwen3_5TextConfig.from_dict(config_dict)
+    elif model_type == "llama":
+        from transformers.models.llama.configuration_llama import LlamaConfig
+        from transformers.models.llama.modeling_llama import (
+            LlamaDecoderLayer as DecoderLayer,
+            LlamaRMSNorm as RMSNorm,
+            LlamaRotaryEmbedding as RotaryEmbedding,
+        )
+
+        config = LlamaConfig.from_dict(config_dict)
     else:
         raise ValueError(
-            "lightweight Qwen stage only supports qwen2, qwen3, or "
-            f"qwen3_5, got {model_type}"
+            "lightweight transformer stage only supports qwen2, qwen3, "
+            "qwen3_5, or llama, got "
+            f"{model_type}"
         )
-    attn_impl = package.get("attnImplementation") or "sdpa"
     try:
         config._attn_implementation = attn_impl
     except Exception:
@@ -4837,12 +5002,26 @@ def write_policy(
     qwen_allow_download: bool = False,
     qwen_dtype: str = "float32",
     qwen_stateful: bool = False,
+    qwen_model_family: str = "qwen",
     qwen_content_store: str = "",
     qwen_artifact_store: str = "",
     qwen_service_manifest: str = "",
     qwen_runtime_manifest: str = "",
     tiny_onnx_fixture_root: str = "",
 ) -> Path:
+    if qwen_model_family not in {"qwen", "llama"}:
+        raise ValueError(f"unsupported ONNX model family: {qwen_model_family}")
+    if qwen_model_family == "llama":
+        policy_models = {
+            "HuggingFaceTB/SmolLM2-135M": "/Model/SmolLM2/135M",
+            "HuggingFaceTB/SmolLM2-360M": "/Model/SmolLM2/360M",
+        }
+        if qwen_model not in policy_models or model != policy_models[qwen_model]:
+            raise ValueError(
+                "llama policy must bind the supported SmolLM2 checkpoint and URI: "
+                f"checkpoint={qwen_model} model={model}")
+    elif "smollm" in qwen_model.lower() or str(model).startswith("/Model/SmolLM2/"):
+        raise ValueError("qwen policy cannot bind a SmolLM2 checkpoint or model URI")
     output_dir = Path(path).parent
     request = llm_planner_request(
         planner_kind=PlannerKind.LLM_PIPELINE,
@@ -4880,6 +5059,10 @@ def write_policy(
             stages=stages,
         )
     elif runtime == QWEN_TRANSFORMERS_RUNTIME:
+        if qwen_model_family != "qwen":
+            raise ValueError(
+                "llama family requires the ONNX exporter; the maintained "
+                "transformers path is Qwen-only")
         splitter = with_qwen_transformer_artifacts(
             splitter,
             output_dir=output_dir,
@@ -4892,6 +5075,8 @@ def write_policy(
             content_store=qwen_content_store,
         )
     elif runtime == QWEN_ONNX_RUNTIME:
+        if qwen_model_family == "qwen" and "smollm" in qwen_model.lower():
+            raise ValueError("qwen family cannot bind a SmolLM2 checkpoint")
         reuse_inputs = (
             qwen_artifact_store, qwen_service_manifest, qwen_runtime_manifest)
         if any(reuse_inputs) and not all(reuse_inputs):
@@ -4904,6 +5089,11 @@ def write_policy(
                 artifact_store=qwen_artifact_store,
                 service_manifest_path=qwen_service_manifest,
                 runtime_manifest_path=qwen_runtime_manifest,
+                model_family=qwen_model_family,
+                target_service=service,
+                expected_model_name=qwen_model,
+                expected_model_revision=qwen_revision,
+                expected_stage_count=stages,
             )
         else:
             splitter = with_qwen_onnx_artifacts(
@@ -4916,6 +5106,8 @@ def write_policy(
                 allow_download=qwen_allow_download,
                 dtype=qwen_dtype,
                 stateful=qwen_stateful,
+                model_family=qwen_model_family,
+                target_service=service,
             )
     policy = Path(path)
     splitter.write_policy_config(policy)

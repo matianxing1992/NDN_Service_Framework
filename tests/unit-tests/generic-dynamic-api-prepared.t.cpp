@@ -347,6 +347,34 @@ BOOST_AUTO_TEST_CASE(LargeDataPublicationEmitsBoundedFinalizedSegments)
                                 payload.begin(), payload.end());
 }
 
+BOOST_AUTO_TEST_CASE(LargeDataImsLimitIsExplicitAndFailClosed)
+{
+  // A large-object requester opts into its finite staging capacity through
+  // the process environment.  A deliberately tiny limit must reject before
+  // encryption or any Data publication; the historical default remains
+  // untouched for ordinary callers.
+  ScopedEnvironmentValue imsLimit("NDNSF_REQUEST_LARGE_IMS_LIMIT", "2");
+  ScopedEnvironmentValue activePut("NDNSF_REQUEST_LARGE_DISABLE_ACTIVE_PUT", "0");
+  ndn::security::KeyChain keyChain("pib-memory:large-data-ims-limit",
+                                   "tpm-memory:large-data-ims-limit");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/large-ims-limit");
+  const ndn::Name serviceName("/HELLO/LARGE");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-ims-limit"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
+                        "examples/trust-any.conf");
+  const auto ctx = user.prepareServiceRequest(serviceName.toUri());
+  const std::vector<uint8_t> payload(7001, 0x5a);
+  const auto before = face.sentData.size();
+  const auto published = user.publishEncryptedLargeData(
+      ctx, payload, "large-ims-limit");
+  BOOST_CHECK(!published.success);
+  BOOST_CHECK_EQUAL(published.errorMessage,
+                    "large-data publication exceeds transactional IMS staging capacity");
+  BOOST_CHECK_EQUAL(face.sentData.size(), before);
+}
+
 BOOST_AUTO_TEST_CASE(MissingLargeDataFetchFailsCleanly)
 {
   ScopedEnvironmentValue fetchTimeout("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", "100");

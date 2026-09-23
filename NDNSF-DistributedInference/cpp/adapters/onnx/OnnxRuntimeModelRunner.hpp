@@ -32,16 +32,25 @@ struct StatefulOnnxIoContractV1
   std::vector<std::string> stateOutputNames;
   std::vector<std::string> stateFamilies{
     "attention_kv", "recurrent_state", "convolution_state"};
+  // Dynamic-past models may use names that do not follow the legacy *_in /
+  // *_out convention.  The adapter supplies an explicit output-to-input map
+  // for those contracts; an empty map retains the legacy family rules.
+  std::map<std::string, std::string> successorInputByOutput;
 
   std::string stateInputForOutput(const std::string& outputName) const
   {
     if (std::find(stateOutputNames.begin(), stateOutputNames.end(), outputName) ==
-        stateOutputNames.end() || outputName.size() <= 4 ||
-        outputName.compare(outputName.size() - 4, 4, "_out") != 0) {
+        stateOutputNames.end()) {
       throw std::invalid_argument(
         "stateful ONNX output has no declared successor input: " + outputName);
     }
-    const auto inputName = outputName.substr(0, outputName.size() - 4) + "_in";
+    const auto mapped = successorInputByOutput.find(outputName);
+    const auto inputName = mapped != successorInputByOutput.end()
+      ? mapped->second
+      : (outputName.size() > 4 &&
+         outputName.compare(outputName.size() - 4, 4, "_out") == 0
+           ? outputName.substr(0, outputName.size() - 4) + "_in"
+           : std::string{});
     if (std::find(stateInputNames.begin(), stateInputNames.end(), inputName) ==
         stateInputNames.end()) {
       throw std::invalid_argument(
@@ -75,7 +84,7 @@ struct StatefulOnnxIoContractV1
       throw std::invalid_argument(
         "stateful ONNX state input/output counts differ");
     }
-    if (stateFamilies != std::vector<std::string>{
+    if (!stateFamilies.empty() && stateFamilies != std::vector<std::string>{
           "attention_kv", "recurrent_state", "convolution_state"}) {
       throw std::invalid_argument("stateful ONNX I/O state families are not canonical");
     }
@@ -92,17 +101,31 @@ struct StatefulOnnxIoContractV1
           "stateful ONNX I/O family is incomplete: " + family);
       }
     }
+    if (stateFamilies.empty() && successorInputByOutput.size() != stateOutputNames.size()) {
+      throw std::invalid_argument(
+        "dynamic stateful ONNX I/O successor map is incomplete");
+    }
     for (const auto& outputName : stateOutputNames) {
       stateInputForOutput(outputName);
     }
     for (const auto& inputName : stateInputNames) {
-      if (inputName.size() <= 3 ||
-          inputName.compare(inputName.size() - 3, 3, "_in") != 0) {
+      if (successorInputByOutput.empty() &&
+          (inputName.size() <= 3 ||
+           inputName.compare(inputName.size() - 3, 3, "_in") != 0)) {
         throw std::invalid_argument(
           "stateful ONNX input has no declared predecessor output: " + inputName);
       }
-      const auto outputName = inputName.substr(0, inputName.size() - 3) + "_out";
-      if (!contains(stateOutputNames, outputName)) {
+      if (successorInputByOutput.empty()) {
+        const auto outputName = inputName.substr(0, inputName.size() - 3) + "_out";
+        if (!contains(stateOutputNames, outputName)) {
+          throw std::invalid_argument(
+            "stateful ONNX input is missing its predecessor output: " + inputName);
+        }
+      }
+      else if (std::none_of(successorInputByOutput.begin(), successorInputByOutput.end(),
+                            [&inputName] (const auto& item) {
+                              return item.second == inputName;
+                            })) {
         throw std::invalid_argument(
           "stateful ONNX input is missing its predecessor output: " + inputName);
       }

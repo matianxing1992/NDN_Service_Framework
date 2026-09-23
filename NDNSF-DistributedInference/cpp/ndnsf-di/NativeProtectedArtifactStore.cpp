@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
+#include <ndn-cxx/util/sha256.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
@@ -11,6 +12,8 @@
 #include <cerrno>
 #include <dirent.h>
 #include <fcntl.h>
+#include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -21,6 +24,8 @@
 namespace ndnsf::di {
 namespace {
 using Bytes = std::vector<std::uint8_t>;
+constexpr std::size_t GcmTagBytes = 16;
+constexpr std::size_t StreamChunkBytes = 1U << 20;
 
 std::runtime_error rejected(const std::string& reason)
 {
@@ -111,13 +116,14 @@ Bytes crypt(bool encrypt, const Bytes& key, const Bytes& nonce,
 }
 
 std::string manifest(const NativeAssembledEntryContext& value,
-                     const std::string& aad, const Bytes& nonce, const Bytes& cipher)
+                     const std::string& aad, const Bytes& nonce,
+                     const std::string& cipherDigest, std::uint64_t cipherLength)
 {
   // Fields are fixed identifiers or validated lowercase digests, so no
   // untrusted text enters this canonical JSON serialization.
   return "{\"aead\":\"AES-256-GCM\",\"ciphertextDigest\":\"" +
-    digest(cipher.data(), cipher.size()) + "\",\"ciphertextLength\":" +
-    std::to_string(cipher.size()) + ",\"entryKind\":\"" + value.entryKind +
+    cipherDigest + "\",\"ciphertextLength\":" +
+    std::to_string(cipherLength) + ",\"entryKind\":\"" + value.entryKind +
     "\",\"kdf\":\"HKDF-SHA256\",\"kdfContextDigest\":\"" +
     digest(reinterpret_cast<const unsigned char*>(aad.data()), aad.size()) +
     "\",\"modelManifestDigest\":\"" + value.modelManifestDigest +
@@ -125,6 +131,117 @@ std::string manifest(const NativeAssembledEntryContext& value,
     "\",\"roleAssemblySpecDigest\":\"" + value.roleAssemblySpecDigest +
     "\",\"schema\":\"ndnsf-di-assembled-ciphertext-v1\",\"storageProfileDigest\":\"" +
     value.storageProfileDigest + "\"}";
+}
+
+std::string manifest(const NativeAssembledEntryContext& value,
+                     const std::string& aad, const Bytes& nonce,
+                     const Bytes& cipher)
+{
+  return manifest(value, aad, nonce, digest(cipher.data(), cipher.size()), cipher.size());
+}
+
+std::string finalDigest(ndn::util::Sha256& hash)
+{
+  auto value = hash.toString();
+  std::transform(value.begin(), value.end(), value.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return "sha256:" + value;
+}
+
+std::filesystem::path temporaryPath(const std::filesystem::path& path,
+                                     const char* suffix)
+{
+  return path.parent_path() /
+    (path.filename().string() + suffix + std::to_string(::getpid()));
+}
+
+void removeFileSecurely(const std::filesystem::path& path) noexcept
+{
+  const int file = ::open(path.c_str(), O_WRONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (file >= 0) {
+    struct stat opened{};
+    if (::fstat(file, &opened) == 0 && S_ISREG(opened.st_mode)) {
+      std::array<unsigned char, 65536> zero{};
+      off_t offset = 0;
+      while (offset < opened.st_size) {
+        const auto count = ::pwrite(file, zero.data(),
+          std::min<off_t>(zero.size(), opened.st_size - offset), offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) break;
+        offset += count;
+      }
+      (void)::fsync(file);
+    }
+    ::close(file);
+  }
+  std::error_code ignored;
+  std::filesystem::remove(path, ignored);
+}
+
+struct TemporaryFiles
+{
+  std::vector<std::filesystem::path> paths;
+  bool active = true;
+
+  ~TemporaryFiles()
+  {
+    if (!active) return;
+    for (const auto& path : paths)
+      removeFileSecurely(path);
+  }
+};
+
+void writeBytes(std::ofstream& output, const std::uint8_t* bytes, std::size_t size)
+{
+  if (size == 0) return;
+  output.write(reinterpret_cast<const char*>(bytes), static_cast<std::streamsize>(size));
+  if (!output.good()) throw rejected("protected artifact file write failed");
+}
+
+void readBytes(std::ifstream& input, std::uint8_t* bytes, std::size_t size)
+{
+  if (size == 0) return;
+  input.read(reinterpret_cast<char*>(bytes), static_cast<std::streamsize>(size));
+  if (input.gcount() != static_cast<std::streamsize>(size))
+    throw rejected("protected artifact file read failed");
+}
+
+std::uint64_t decodeLength(const std::array<std::uint8_t, 8>& bytes)
+{
+  std::uint64_t value = 0;
+  for (const auto byte : bytes)
+    value = (value << 8) | byte;
+  return value;
+}
+
+std::array<std::uint8_t, 8> encodeLength(std::uint64_t value)
+{
+  std::array<std::uint8_t, 8> bytes{};
+  for (int index = 7; index >= 0; --index) {
+    bytes[index] = static_cast<std::uint8_t>(value & 255);
+    value >>= 8;
+  }
+  return bytes;
+}
+
+std::string nonceText(const boost::property_tree::ptree& fields)
+{
+  const auto value = fields.get<std::string>("nonce", "");
+  if (value.size() != 24 || !std::all_of(value.begin(), value.end(), [] (char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+      })) {
+    throw rejected("assembled nonce is malformed");
+  }
+  return value;
+}
+
+Bytes decodeNonce(const std::string& text)
+{
+  Bytes nonce;
+  for (std::size_t i = 0; i < text.size(); i += 2)
+    nonce.push_back(std::stoul(text.substr(i, 2), nullptr, 16));
+  return nonce;
 }
 
 void eraseDirectoryFd(int fd);
@@ -337,6 +454,225 @@ std::vector<std::uint8_t> openNativeAssembledEntry(
   auto key = hkdf(bundle, expected.entryKind);
   NativePlaintextBufferGuard keyGuard{key};
   return crypt(false, key, nonce, cipher, aad);
+}
+
+std::string sealNativeAssembledEntryToFile(
+  const Bytes& contentKey, const Bytes& plaintext,
+  const std::filesystem::path& wirePath, const NativeAssembledEntryContext& context)
+{
+  if (contentKey.size() != 32 || plaintext.empty())
+    throw rejected("assembled key or plaintext is invalid");
+  const auto aad = contextBytes(context);
+  auto bundle = hkdf(contentKey, aad);
+  NativePlaintextBufferGuard bundleGuard{bundle};
+  auto key = hkdf(bundle, context.entryKind);
+  NativePlaintextBufferGuard keyGuard{key};
+  Bytes nonce(12);
+  if (RAND_bytes(nonce.data(), nonce.size()) != 1)
+    throw rejected("assembled nonce generation failed");
+
+  std::filesystem::create_directories(wirePath.parent_path());
+  const auto bodyPath = temporaryPath(wirePath, ".body-tmp-");
+  const auto wireTempPath = temporaryPath(wirePath, ".wire-tmp-");
+  TemporaryFiles cleanup{{bodyPath, wireTempPath}};
+  ndn::util::Sha256 cipherHash;
+  std::uint64_t cipherLength = 0;
+  {
+    std::ofstream body(bodyPath, std::ios::binary | std::ios::trunc);
+    if (!body.good()) throw rejected("protected artifact body open failed");
+    auto cipher = std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)>(
+      EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
+    if (!cipher) throw rejected("AEAD allocation failed");
+    int written = 0;
+    if (EVP_CipherInit_ex(cipher.get(), EVP_aes_256_gcm(), nullptr,
+                          key.data(), nonce.data(), 1) != 1 ||
+        EVP_CipherUpdate(cipher.get(), nullptr, &written,
+                         reinterpret_cast<const unsigned char*>(aad.data()),
+                         static_cast<int>(aad.size())) != 1) {
+      throw rejected("assembled encryption initialization failed");
+    }
+    Bytes output(StreamChunkBytes + GcmTagBytes);
+    for (std::size_t offset = 0; offset < plaintext.size();) {
+      const auto count = std::min(StreamChunkBytes, plaintext.size() - offset);
+      int outputBytes = 0;
+      if (EVP_CipherUpdate(cipher.get(), output.data(), &outputBytes,
+                           plaintext.data() + offset, static_cast<int>(count)) != 1)
+        throw rejected("assembled encryption failed");
+      writeBytes(body, output.data(), static_cast<std::size_t>(outputBytes));
+      if (outputBytes != 0) {
+        cipherHash.update(ndn::span<const std::uint8_t>(output.data(), outputBytes));
+        cipherLength += static_cast<std::uint64_t>(outputBytes);
+      }
+      offset += count;
+    }
+    int finalBytes = 0;
+    if (EVP_CipherFinal_ex(cipher.get(), output.data(), &finalBytes) != 1)
+      throw rejected("assembled encryption finalization failed");
+    writeBytes(body, output.data(), static_cast<std::size_t>(finalBytes));
+    if (finalBytes != 0) {
+      cipherHash.update(ndn::span<const std::uint8_t>(output.data(), finalBytes));
+      cipherLength += static_cast<std::uint64_t>(finalBytes);
+    }
+    std::array<std::uint8_t, GcmTagBytes> tag{};
+    if (EVP_CIPHER_CTX_ctrl(cipher.get(), EVP_CTRL_GCM_GET_TAG,
+                            static_cast<int>(tag.size()), tag.data()) != 1)
+      throw rejected("assembled encryption tag failed");
+    writeBytes(body, tag.data(), tag.size());
+    cipherHash.update(ndn::span<const std::uint8_t>(tag.data(), tag.size()));
+    cipherLength += tag.size();
+    if (cipherLength != plaintext.size() + GcmTagBytes)
+      throw rejected("assembled encryption size mismatch");
+    body.flush();
+    if (!body.good()) throw rejected("protected artifact body flush failed");
+  }
+
+  const auto cipherDigest = finalDigest(cipherHash);
+  const auto manifestText = manifest(context, aad, nonce, cipherDigest, cipherLength);
+  const auto header = encodeLength(manifestText.size());
+  ndn::util::Sha256 wireHash;
+  {
+    std::ofstream output(wireTempPath, std::ios::binary | std::ios::trunc);
+    if (!output.good()) throw rejected("protected artifact wire open failed");
+    writeBytes(output, header.data(), header.size());
+    wireHash.update(ndn::span<const std::uint8_t>(header.data(), header.size()));
+    const auto* manifestBytes = reinterpret_cast<const std::uint8_t*>(manifestText.data());
+    writeBytes(output, manifestBytes, manifestText.size());
+    wireHash.update(ndn::span<const std::uint8_t>(manifestBytes, manifestText.size()));
+
+    std::ifstream body(bodyPath, std::ios::binary);
+    if (!body.good()) throw rejected("protected artifact body reopen failed");
+    Bytes buffer(StreamChunkBytes);
+    while (body) {
+      body.read(reinterpret_cast<char*>(buffer.data()),
+                static_cast<std::streamsize>(buffer.size()));
+      const auto count = static_cast<std::size_t>(body.gcount());
+      if (count == 0) break;
+      writeBytes(output, buffer.data(), count);
+      wireHash.update(ndn::span<const std::uint8_t>(buffer.data(), count));
+    }
+    if (!body.eof()) throw rejected("protected artifact body copy failed");
+    output.flush();
+    if (!output.good()) throw rejected("protected artifact wire flush failed");
+  }
+  const auto wireDigest = finalDigest(wireHash);
+  std::filesystem::rename(wireTempPath, wirePath);
+  removeFileSecurely(bodyPath);
+  cleanup.active = false;
+  return wireDigest;
+}
+
+std::string openNativeAssembledEntryToFile(
+  const Bytes& contentKey, const std::filesystem::path& wirePath,
+  const std::filesystem::path& plaintextPath,
+  const NativeAssembledEntryContext& expected, std::uint64_t maxPlaintextBytes,
+  const std::string& expectedWireDigest)
+{
+  if (contentKey.size() != 32 || maxPlaintextBytes == 0)
+    throw rejected("assembled key or plaintext limit is invalid");
+  std::error_code fileError;
+  const auto wireBytes = std::filesystem::file_size(wirePath, fileError);
+  constexpr std::uint64_t framingOverhead = 8 + 65536 + GcmTagBytes;
+  if (fileError || wireBytes < 8 + 1 + GcmTagBytes ||
+      (maxPlaintextBytes > std::numeric_limits<std::uint64_t>::max() - framingOverhead) ||
+      wireBytes > maxPlaintextBytes + framingOverhead)
+    throw rejected("assembled ciphertext exceeds framing or resource limit");
+
+  std::ifstream input(wirePath, std::ios::binary);
+  if (!input.good()) throw rejected("assembled ciphertext file open failed");
+  std::array<std::uint8_t, 8> header{};
+  readBytes(input, header.data(), header.size());
+  const auto manifestLength = decodeLength(header);
+  if (manifestLength == 0 || manifestLength > 65536 ||
+      wireBytes < header.size() + manifestLength + GcmTagBytes)
+    throw rejected("assembled ciphertext framing is invalid");
+  const auto cipherLength = wireBytes - header.size() - manifestLength;
+  if (cipherLength < GcmTagBytes || cipherLength - GcmTagBytes > maxPlaintextBytes)
+    throw rejected("assembled ciphertext exceeds framing or resource limit");
+  std::string json(manifestLength, '\0');
+  readBytes(input, reinterpret_cast<std::uint8_t*>(json.data()), json.size());
+  boost::property_tree::ptree fields;
+  std::istringstream manifestInput(json);
+  try {
+    boost::property_tree::read_json(manifestInput, fields);
+  }
+  catch (...) {
+    throw rejected("assembled manifest is malformed");
+  }
+  const auto nonce = decodeNonce(nonceText(fields));
+  const auto aad = contextBytes(expected);
+  auto bundle = hkdf(contentKey, aad);
+  NativePlaintextBufferGuard bundleGuard{bundle};
+  auto key = hkdf(bundle, expected.entryKind);
+  NativePlaintextBufferGuard keyGuard{key};
+
+  std::filesystem::create_directories(plaintextPath.parent_path());
+  const auto plaintextTempPath = temporaryPath(plaintextPath, ".tmp-");
+  TemporaryFiles cleanup{{plaintextTempPath}};
+  std::ofstream output(plaintextTempPath, std::ios::binary | std::ios::trunc);
+  if (!output.good()) throw rejected("protected plaintext file open failed");
+
+  auto cipher = std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)>(
+    EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
+  if (!cipher) throw rejected("AEAD allocation failed");
+  int written = 0;
+  if (EVP_CipherInit_ex(cipher.get(), EVP_aes_256_gcm(), nullptr,
+                        key.data(), nonce.data(), 0) != 1 ||
+      EVP_CipherUpdate(cipher.get(), nullptr, &written,
+                       reinterpret_cast<const unsigned char*>(aad.data()),
+                       static_cast<int>(aad.size())) != 1) {
+    throw rejected("assembled decryption initialization failed");
+  }
+
+  ndn::util::Sha256 cipherHash;
+  ndn::util::Sha256 wireHash;
+  wireHash.update(ndn::span<const std::uint8_t>(header.data(), header.size()));
+  wireHash.update(ndn::span<const std::uint8_t>(
+    reinterpret_cast<const std::uint8_t*>(json.data()), json.size()));
+  Bytes inputBuffer(StreamChunkBytes);
+  Bytes outputBuffer(StreamChunkBytes + GcmTagBytes);
+  std::uint64_t remaining = cipherLength - GcmTagBytes;
+  std::uint64_t plaintextWritten = 0;
+  while (remaining != 0) {
+    const auto count = static_cast<std::size_t>(std::min<std::uint64_t>(
+      remaining, inputBuffer.size()));
+    readBytes(input, inputBuffer.data(), count);
+    wireHash.update(ndn::span<const std::uint8_t>(inputBuffer.data(), count));
+    cipherHash.update(ndn::span<const std::uint8_t>(inputBuffer.data(), count));
+    int outputBytes = 0;
+    if (EVP_CipherUpdate(cipher.get(), outputBuffer.data(), &outputBytes,
+                         inputBuffer.data(), static_cast<int>(count)) != 1)
+      throw rejected("assembled decryption failed");
+    writeBytes(output, outputBuffer.data(), static_cast<std::size_t>(outputBytes));
+    plaintextWritten += static_cast<std::uint64_t>(outputBytes);
+    remaining -= count;
+  }
+  std::array<std::uint8_t, GcmTagBytes> tag{};
+  readBytes(input, tag.data(), tag.size());
+  wireHash.update(ndn::span<const std::uint8_t>(tag.data(), tag.size()));
+  cipherHash.update(ndn::span<const std::uint8_t>(tag.data(), tag.size()));
+  const auto cipherDigest = finalDigest(cipherHash);
+  const auto expectedManifest = manifest(expected, aad, nonce, cipherDigest, cipherLength);
+  if (json != expectedManifest)
+    throw rejected("assembled authentication context or manifest mismatch");
+  const auto wireDigest = finalDigest(wireHash);
+  if (!expectedWireDigest.empty() && wireDigest != expectedWireDigest)
+    throw rejected("assembled ciphertext digest mismatch");
+  if (EVP_CIPHER_CTX_ctrl(cipher.get(), EVP_CTRL_GCM_SET_TAG,
+                          static_cast<int>(tag.size()), tag.data()) != 1)
+    throw rejected("assembled decryption tag setup failed");
+  int finalBytes = 0;
+  if (EVP_CipherFinal_ex(cipher.get(), outputBuffer.data(), &finalBytes) != 1)
+    throw rejected("assembled entry failed AEAD authentication");
+  writeBytes(output, outputBuffer.data(), static_cast<std::size_t>(finalBytes));
+  plaintextWritten += static_cast<std::uint64_t>(finalBytes);
+  if (plaintextWritten != cipherLength - GcmTagBytes)
+    throw rejected("assembled decryption size mismatch");
+  output.flush();
+  if (!output.good()) throw rejected("protected plaintext file flush failed");
+  output.close();
+  std::filesystem::rename(plaintextTempPath, plaintextPath);
+  cleanup.active = false;
+  return wireDigest;
 }
 
 NativePlaintextFileEraser registerNativePlaintextDirectoryWithFileEraser(

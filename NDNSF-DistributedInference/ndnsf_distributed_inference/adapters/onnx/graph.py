@@ -413,7 +413,13 @@ def canonical_onnx_identity(
                 array_bytes = array.tobytes(order="C")
                 content_digest = "sha256:" + hashlib.sha256(array_bytes).hexdigest()
                 dtype_name = str(array.dtype.newbyteorder("<"))
-                shape = tuple(int(value) for value in array.shape)
+                # TensorProto.dims is authoritative for canonical identity.
+                # numpy_helper.to_array() infers a one-element typed tensor as
+                # shape [1] when dims is omitted, while the native ONNX
+                # identity treats that representation as a scalar shape [].
+                # Using the wire-level dims keeps Python and C++ identities
+                # stable for quantization scales and zero-points.
+                shape = tuple(int(value) for value in initializer.dims)
                 byte_length = int(array.nbytes)
                 byte_order = "little" if array.dtype.itemsize > 1 else "na"
             content_to_names.setdefault(content_digest, []).append(initializer.name)

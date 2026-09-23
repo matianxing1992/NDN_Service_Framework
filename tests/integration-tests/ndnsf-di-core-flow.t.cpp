@@ -22,6 +22,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/EncryptedLargeDataRangeStore.hpp"
 #include "ndn-service-framework/InvocationStream.hpp"
 #include "ndnsf-integration-fixture.hpp"
 
@@ -10442,6 +10443,269 @@ BOOST_AUTO_TEST_CASE(PreconfiguredEnvironmentRunsSameProviderMultiRoleCollaborat
   BOOST_CHECK(!timedOut);
   environment.updateRequestResidue(scope, {});
   environment.resetRequest(scope);
+}
+
+BOOST_AUTO_TEST_CASE(CoreCommitAssignmentSizeBoundariesRoundTrip)
+{
+  // One table drives the real deferred commit and Provider preparation path.
+  // In particular, the selector supplies raw bytes, never a hand-built reference.
+  struct Case {
+    const char* name;
+    size_t bytes;
+    bool secondOversize = false;
+    bool revoke = false;
+    bool failPublication = false;
+  };
+  constexpr size_t MiB = 1024 * 1024;
+  const Case cases[] = {
+    {"small-inline", 128}, {"exact-inline", 4096},
+    {"large-reference", 13 * MiB / 4}, {"exact-external", 4 * MiB},
+    {"oversize", 4 * MiB + 1},
+    {"second-role-oversize", 13 * MiB / 4, true},
+    {"revoked-before-commit", 13 * MiB / 4, false, true},
+    {"publication-failure-cancels", 13 * MiB / 4, false, false, true}
+  };
+  class PayloadSelection final : public ParticipantSelectionPolicy {
+  public:
+    explicit PayloadSelection(std::vector<ndn::Buffer> values)
+      : payloads(std::move(values)) {}
+    std::vector<SelectedParticipant> select(
+        const std::vector<AckCandidate>& candidates,
+        const std::vector<CollaborationRoleSpec>& roles) const override
+    {
+      if (candidates.size() != 1 || roles.size() != payloads.size()) return {};
+      std::vector<SelectedParticipant> selected;
+      for (size_t i = 0; i < roles.size(); ++i) {
+        const auto& role = roles[i];
+        selected.push_back({role.role, role.service, candidates.front().providerName,
+          role.requiredArtifact, false, 0, payloads[i], candidates.front(), {}});
+      }
+      return selected;
+    }
+    std::vector<ndn::Buffer> payloads;
+  };
+  // Preflight failures must not even begin a publication, including one later
+  // rolled back. Their first payloads exceed the production file threshold.
+  // The injected publication failure must reach this trap exactly once, then
+  // cancel the invocation. Positive cases use the production store/fetch path.
+  class ForbiddenPublicationStore final : public EncryptedLargeDataRangeStore {
+  public:
+    size_t calls = 0;
+    std::shared_ptr<const EncryptedLargeDataRangeSource> commitFile(
+        const std::string&, const std::filesystem::path&, std::uint64_t,
+        const std::function<void()>&) override
+    {
+      ++calls;
+      throw std::runtime_error("unexpected assignment publication before rejection");
+    }
+  };
+  for (const auto& test : cases) {
+    BOOST_TEST_CONTEXT(test.name) {
+      const bool rejected = test.bytes > 4 * MiB || test.secondOversize || test.revoke || test.failPublication;
+      const ndn::Name serviceName("/Inference/NativeTracer");
+      // V2 treats legacy request IDs as one component (only the reserved
+      // /NDNSF/DI/REQUEST/... suffix supports multiple components). A plain
+      // /core-assignment/<case> made core-test-1 stop at ACK_CLOSED=0: the
+      // Provider parsed core-assignment as part of the unauthorized service.
+      const ndn::Name requestId(std::string("/core-assignment-") + test.name);
+      // Callback state precedes the environment: Faces, schedulers and runtime
+      // owners are destroyed before anything captured by their callbacks.
+      struct State {
+        bool ackClosed = false, committed = false, threw = false;
+        bool retryThrew = false, retryCommitted = false, timedOut = false;
+        bool completed = false;
+        size_t selections = 0, handlers = 0;
+        std::string retryError;
+        HybridMessageKey selectionKey;
+        ndn::Buffer expected;
+      } state;
+      state.expected.resize(test.bytes);
+      for (size_t i = 0; i < state.expected.size(); ++i)
+        state.expected[i] = static_cast<uint8_t>((i * 131 + 17) % 251);
+      auto forbiddenStore = std::make_shared<ForbiddenPublicationStore>();
+      ndn_service_framework::test::BootstrapProfile profile;
+      profile.serviceName = serviceName;
+      profile.providerCount = 1;
+      ndn_service_framework::test::RequestScope scope;
+      ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+      environment.bootstrap();
+      scope = environment.beginRequest(test.name);
+      if (rejected) environment.user().setEncryptedLargeDataRangeStore(forbiddenStore);
+
+      environment.provider().addCollaborationHandler(serviceName,
+        [&] (ServiceProvider::CollaborationContext& context, const RequestMessage&) {
+          ++state.handlers;
+          const auto& restored = context.assignment().assignmentPayload;
+          BOOST_CHECK(restored == state.expected);
+          BOOST_CHECK(!parseLargeDataReferencePayload(restored));
+          context.publishFinalResponse(ndn::Buffer{0x6f, 0x6b});
+        });
+      environment.enableProductionIngressForTest();
+      environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
+      for (const auto* direction : {"ACK", "RESPONSE"}) {
+        const auto key = environment.provider().prepareHybridSendKeyForTest(serviceName, direction);
+        environment.user().cacheHybridReceiveKeyForTest(key.keyId, key.epochId, key.key);
+      }
+      state.selectionKey = environment.user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
+      environment.provider().cacheHybridReceiveKeyForTest(
+        state.selectionKey.keyId, state.selectionKey.epochId, state.selectionKey.key);
+      const auto assignmentKey = environment.user().prepareHybridSendKeyForTest(serviceName, "REQUEST-LARGE");
+      environment.provider().cacheHybridReceiveKeyForTest(
+        assignmentKey.keyId, assignmentKey.epochId, assignmentKey.key);
+
+      // Observe, but do not inject/decrypt on behalf of the Provider. Its
+      // production subscription independently processes this same Selection.
+      environment.providerPubSub().subscribeToProducer(profile.userNode,
+        [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+          const auto parsed = parseServiceSelectionNameV2(publication.name);
+          if (!parsed || parsed->requestId != requestId) return;
+          ++state.selections;
+          HybridMessageEnvelope encrypted;
+          BOOST_REQUIRE(encrypted.WireDecode(ndn::Block(publication.data)));
+          const auto aad = hybridAssociatedData(publication.name, "SELECTION", requestId,
+            serviceName, environment.user().getName(), encrypted.getKeyId(), encrypted.getEpochId());
+          ndn::Buffer plaintext;
+          BOOST_REQUIRE(hybridAesGcmDecrypt(state.selectionKey.key, encrypted,
+            ndn::span<const uint8_t>(aad.data(), aad.size()), plaintext));
+          ServiceSelectionMessage selection;
+          BOOST_REQUIRE(selection.WireDecode(ndn::Block(plaintext)));
+          BOOST_REQUIRE_EQUAL(selection.getProviderEntries().size(), 1U);
+          CollaborationAssignmentEnvelope envelope;
+          BOOST_REQUIRE(decodeCollaborationAssignmentEnvelope(
+            selection.getProviderEntries().front().assignmentPayload, envelope));
+          const auto reference = parseLargeDataReferencePayload(envelope.opaquePayload);
+          if (test.bytes <= 4096) {
+            BOOST_CHECK(!reference);
+            BOOST_CHECK(envelope.opaquePayload == state.expected);
+          }
+          else {
+            BOOST_REQUIRE(reference);
+            BOOST_CHECK(reference->encrypted);
+            BOOST_CHECK_EQUAL(reference->objectType, "application/vnd.ndnsf.collaboration-assignment-v1");
+            BOOST_CHECK_EQUAL(reference->plaintextSize, state.expected.size());
+            BOOST_CHECK_EQUAL(reference->digest, sha256TensorBytes(state.expected));
+            BOOST_CHECK_LT(envelope.opaquePayload.size(), 4096U);
+          }
+        }, true);
+      environment.user().setRequestPublisher(
+        [&] (const ndn::Name&, const ndn::Name& requestName,
+             const std::vector<ndn::Name>&, const ndn::Name&, const RequestMessage& request, size_t) {
+          const auto parsed = parseRequestNameV2(requestName);
+          BOOST_REQUIRE(parsed);
+          BOOST_REQUIRE_EQUAL(parsed->serviceName, serviceName);
+          BOOST_REQUIRE_EQUAL(parsed->requestId, requestId);
+          BOOST_REQUIRE_EQUAL(parsed->requesterName, environment.user().getName());
+          const auto block = request.WireEncode();
+          const auto encrypted = makeTestHybridPublication(requestName, serviceName, requestId,
+            environment.user().getName(), "REQUEST", ndn::Buffer(block.data(), block.size()));
+          environment.provider().cacheHybridReceiveKeyForTest(
+            encrypted.key.keyId, encrypted.key.epochId, encrypted.key.key);
+          environment.userPubSub().publish(requestName,
+            ndn::span<const uint8_t>(encrypted.wire.data(), encrypted.wire.size()));
+          environment.markRequestPublished(scope);
+        });
+      const auto returnedId = environment.user().BeginCollaboration(
+        serviceName, ndn::Buffer{0x01}, 200, 10000,
+        [&] (const CollaborationAckClosure& closure) {
+          state.ackClosed = true;
+          BOOST_REQUIRE_EQUAL(closure.candidates.size(), 1U);
+          // Own the closure independently of the pending invocation. Most
+          // cases follow DI's asynchronous commit; the publication failure
+          // deliberately exercises Core's synchronous ACK callback protection.
+          auto commit = [&, closure] {
+            CollaborationPlan plan;
+            plan.ackCollectionTimeMs = 200;
+            plan.timeoutMs = 10000;
+            CollaborationRoleSpec role;
+            role.role = "/first";
+            role.service = serviceName;
+            role.requiredArtifact = ndn::Name("/artifact/first");
+            role.terminalResponseOwner = true;
+            plan.roles.push_back(role);
+            std::vector<ndn::Buffer> payloads{state.expected};
+            if (test.secondOversize) {
+              role.role = "/second";
+              role.requiredArtifact = ndn::Name("/artifact/second");
+              role.terminalResponseOwner = false;
+              plan.roles.push_back(role);
+              payloads.emplace_back();
+              payloads.back().resize(4 * MiB + 1);
+              std::fill(payloads.back().begin(), payloads.back().end(), 0x5a);
+            }
+            plan.participantSelector = std::make_shared<PayloadSelection>(std::move(payloads));
+            if (test.revoke) {
+              const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+              PolicyStatusData status;
+              status.setServiceName(serviceName);
+              status.setControllerVersion(ControllerVersion{now, 1});
+              status.setValidity(now - 1000, now + 60000);
+              status.setPolicyDigest("sha256:" + std::string(64, '0'));
+              status.setControllerCertificate(ndn::Name("/controller/core-assignment"));
+              BOOST_REQUIRE(environment.user().installControllerStatus(status));
+              status.setControllerVersion(ControllerVersion{now, 2});
+              RevocationTarget target;
+              target.kind = RevocationKind::IDENTITY;
+              target.targetIdentity = environment.user().getName();
+              status.addRevocation(target);
+              BOOST_REQUIRE(environment.user().installControllerStatus(status));
+            }
+            try { state.committed = environment.user().CommitCollaborationPlan(closure.requestId, closure.digest, plan); }
+            catch (const std::exception&) { state.threw = true; }
+            if (rejected) {
+              // A failed first commit must never become an idempotent success.
+              try { state.retryCommitted = environment.user().CommitCollaborationPlan(closure.requestId, closure.digest, plan); }
+              catch (const std::exception& error) {
+                state.retryThrew = true;
+                state.retryError = error.what();
+              }
+            }
+          };
+          if (test.failPublication)
+            commit();
+          else
+            environment.user().postToIo(std::move(commit));
+        },
+        [&] (const ResponseMessage& response) {
+          state.completed = response.getStatus() && response.getPayload() == ndn::Buffer{0x6f, 0x6b};
+        },
+        [&] (const ndn::Name&) { state.timedOut = true; }, requestId);
+      BOOST_REQUIRE_EQUAL(returnedId, requestId);
+      const auto done = [&] { return state.completed || state.threw || state.timedOut; };
+      for (size_t round = 0; round < 8 && !done(); ++round)
+        environment.pumpUntil(done);
+      if (rejected) {
+        // Pump queued Selection/handler work too; absence is not tested only
+        // inside the synchronous throw boundary.
+        environment.pumpUntil([] { return false; });
+        BOOST_CHECK(state.threw);
+        BOOST_CHECK(state.retryThrew);
+        BOOST_CHECK(!state.committed);
+        BOOST_CHECK(!state.retryCommitted);
+        BOOST_CHECK_EQUAL(state.selections, 0U);
+        BOOST_CHECK_EQUAL(state.handlers, 0U);
+        BOOST_CHECK_EQUAL(forbiddenStore->calls, test.failPublication ? 1U : 0U);
+        if (test.failPublication)
+          BOOST_CHECK(state.retryError.find("invocation is unavailable") != std::string::npos);
+        BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 0U);
+      }
+      else {
+        BOOST_CHECK(!state.threw);
+        BOOST_CHECK(state.committed);
+        BOOST_CHECK(state.completed);
+        BOOST_CHECK(!state.timedOut);
+        BOOST_CHECK_EQUAL(state.selections, 1U);
+        BOOST_CHECK_EQUAL(state.handlers, 1U);
+        if (test.bytes > 4096)
+          BOOST_CHECK_GT(environment.user().getLargeDataServingMetricsForTest().segmentReadCount, 0U);
+        else
+          BOOST_CHECK_EQUAL(environment.user().getLargeDataServingMetricsForTest().publicationCount, 0U);
+      }
+      BOOST_CHECK(state.ackClosed);
+      environment.updateRequestResidue(scope, {});
+      environment.resetRequest(scope);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(Spec175DiWriterExposesCursorAndOneTerminal)

@@ -32,6 +32,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
     ])
     for target, sanitize in [('spec181-native-grant-integration', False),
                              ('spec181-native-grant-asan', True)]:
@@ -53,6 +54,7 @@ def build(bld):
                            'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.cpp',
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.cpp',
+                           'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
                        ]),
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
@@ -290,6 +292,32 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec190 T004 stable per-node Repo owner/restart selector.  This stays a
+    # small native storage proof: three new processes reopen one fixed root,
+    # while the active-owner and corrupt-sidecar negatives remain fail-closed.
+    bld.program(target='../spec190-repo-restart',
+                name='spec190-repo-restart',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-repo-restart.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec190 T005 prepare-before-STORE durable receipt lookup.  This selector
+    # keeps the Repo lookup identity and publication counter independent from
+    # the larger Runtime integration target.
+    bld.program(target='../spec190-repo-lookup-reuse',
+                name='spec190-repo-lookup-reuse',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-repo-lookup-reuse.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3 ONNXRUNTIME',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec189 T003-R1 preparation-owner accounting selector.  It records
     # source/material/publication categories, the conservative ORT budget and
     # terminal cleanup on a cancellation boundary through the production
@@ -361,6 +389,176 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Exercise the real shared logging sink without model or network fixtures.
+    bld.program(target='../spec189-evidence-lines', name='spec189-evidence-lines',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec189-evidence-lines.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp')],
+                includes=framework_includes, use='NDN_CXX BOOST',
+                cxxflags=['-fPIC', '-O0', '-g0'], install_path=None)
+
+    # Spec190 phase timing parser and canonical evidence record.  The test
+    # uses the production native timing sink and does not substitute a Python
+    # parser or a fake runtime event source.
+    bld.program(target='../spec190-latency-tests', name='spec190-latency-tests',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-timing.t.cpp'),
+                        bld.path.parent.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp')],
+                includes=framework_includes, use='NDN_CXX BOOST',
+                cxxflags=['-fPIC', '-O0', '-g0'], install_path=None)
+
+    # Spec190 ACK-window selector.  It exercises the production ServiceUser
+    # deferred-collaboration path with real ACK authentication/admission,
+    # deadline scheduling, duplicate/unauthorized/negative ACK handling, and
+    # immutable ACK_CLOSED state; it is not a Python timing simulation.
+    bld.program(target='../spec190-ack-window', name='spec190-ack-window',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-ack-window.t.cpp')] +
+                       framework_sources,
+                includes=framework_includes, use=framework_use,
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'], install_path=None)
+
+    # Spec190 live-turn parent/pipe oracle.  With the two environment
+    # variables set it invokes the real native requester and observes flushed
+    # events before terminal; without them the expensive model qualification
+    # remains explicitly unobserved rather than being replaced by a fake
+    # EventReader fixture.
+    bld.program(target='../spec190-live-turns', name='spec190-live-turns',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-live-turns.t.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-conversation.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' +
+                    framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()],
+                install_path=None)
+
+    # Spec190 cold-assembly admission regression.  The fixture holds the
+    # production lock in one process and invokes the production assembler from
+    # a second process; material fetch must not begin before admission.
+    bld.program(target='../spec190-cold-assembly-gate',
+                name='spec190-cold-assembly-gate',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-cold-assembly-gate.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' +
+                    framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()],
+                install_path=None)
+
+    # Exercise the real native coordinator/sampler with typed logits fixtures.
+    bld.program(target='../spec189-logits-dtype', name='spec189-logits-dtype',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec189-logits-dtype.t.cpp'),
+                        bld.path.find_node('unit-tests/di-qwen-generation-session.t.cpp'),
+                        bld.path.find_node('unit-tests/di-native-conversation.t.cpp'),
+                        bld.path.find_node('unit-tests/spec189-conversation-retention.t.cpp'),
+                        bld.path.find_node('unit-tests/spec189-epoch-finalization.t.cpp')],
+                includes=framework_includes,
+                defines=['SPEC189_CONVERSATION_ONLY'],
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                cxxflags=['-fPIC', '-O0', '-g0'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Sealer/group-builder/serialized V3 epoch contract, linked to production.
+    bld.program(target='../spec189-epoch-projection', name='spec189-epoch-projection',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
+                        bld.path.find_node('unit-tests/di-native-v3-placement.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec189 output-contract regression: keep the passthrough-aware runner
+    # preparation assertion independently runnable when the aggregate unit
+    # target is blocked by unrelated dirty-tree tests.
+    bld.program(target='../spec189-preparation-alias',
+                name='spec189-preparation-alias',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-native-preparation-context.t.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec190 readiness-progress regression.  Keep the cross-Provider group
+    # oracle independently runnable so the maintained all-unit target's
+    # unrelated Spec182 fixture failure cannot hide this T003 gate.
+    bld.program(target='../spec190-readiness-progress',
+                name='spec190-readiness-progress',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-cross-provider-group.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' +
+                    framework_use,
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec190 T003 materialized-role assembly regression.  This uses the
+    # production certified assembly chain and ORT load, while keeping the
+    # memory-saving role branch independently runnable from the broad unit
+    # target.
+    bld.program(target='../spec190-materialized-role',
+                name='spec190-materialized-role',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-materialized-role.t.cpp'),
+                        bld.path.find_node('unit-tests/di-native-onnx-recipe.t.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' +
+                    framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec189 provider failure-cleanup selector: stale .staging/protected
+    # assembly trees are reclaimable, live PID leases and valid assembled cache
+    # entries are not.
+    bld.program(target='../spec189-provider-staging-cleanup',
+                name='spec189-provider-staging-cleanup',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec189-provider-staging-cleanup.t.cpp'),
+                        bld.path.parent.find_node(
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec189 selection-status negative-cache regression: an unbound status
+    # query must not publish a service-less Data packet that can mask the
+    # authenticated assembly heartbeat after Selection admission.
+    bld.program(target='../spec189-selection-status',
+                name='spec189-selection-status',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec189-selection-status.t.cpp')] +
+                       framework_sources,
+                includes=framework_includes,
+                use=framework_use,
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec189 T004 production-handle request gate.  It reuses the maintained
     # in-process Runtime fixture; the wire-only selector above remains the
     # direct envelope oracle.  Keep this after the complete DI source closure
@@ -394,6 +592,17 @@ def build(bld):
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Core assignment regression links the production shared libraries;
+    # do not compile a second copy of all DI sources into this focused driver.
+    bld.program(target='../spec189-core-assignment', name='spec189-core-assignment',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec185 B0C DI delegation selector.  Link the production
     # NativeInferenceClient and the complete DI source closure.  The target
@@ -446,7 +655,11 @@ def build(bld):
                          'SPEC187_YOLO_SELECTOR'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
-                rpath=[bld.bldnode.abspath()], install_path=None)
+                # The container fixture is copied beside the installed runtime;
+                # use configure's declared runtime RPATH, not the source tree.
+                rpath=[] if os.environ.get('NDNSF_CONTAINER_BUILD') == '1'
+                else [bld.bldnode.abspath()],
+                install_path='${BINDIR}' if bld.env.INSTALL_EXPERIMENT_FIXTURES else None)
 
     # Spec188 repeats the same candidate-bound YOLO request through the
     # maintained MiniNDN runner.  Keep a distinct selector/suite identity so

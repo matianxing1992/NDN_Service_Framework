@@ -44,7 +44,7 @@ writeTinyOnnxFixture()
 int
 main()
 {
-  static_assert(ndnsf::di::kPreparedModelRuntimeApiVersion == 1);
+  static_assert(ndnsf::di::kPreparedModelRuntimeApiVersion == 2);
   static_assert(ndnsf::di::kPreparedModelRuntimeProviderApiVersion == 1);
   static_assert(ndnsf::di::kPreparedModelRuntimeExtensionsApiVersion == 1);
   static_assert(std::is_destructible_v<ndnsf::di::OnnxRuntimeModelRunner>);

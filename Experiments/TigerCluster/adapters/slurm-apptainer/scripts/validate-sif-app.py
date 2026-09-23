@@ -41,6 +41,7 @@ REQUIRED_FILES = {
     "bin/di-native-fault-provider",
     "bin/App_ServiceController",
     "bin/DI_NativeArtifactAuthority",
+    "bin/spec187-yolo-minindn",
     "python/ndnsf_distributed_inference/__init__.py",
     "manifest/app-runtime.lock.json",
     "manifest/source-seal.json",

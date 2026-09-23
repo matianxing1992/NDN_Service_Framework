@@ -1,5 +1,180 @@
 # Spec 设计变更记录
 
+## Spec190 single-supervisor MiniNDN startup and swap diagnostics — 2026-09-23
+
+- **Status**: `PARTIAL`；真实 r16 仍在资源边界停止，不能视为 T003 或两 Provider 验收通过。
+- **Delta**: LocalExperiment 作为唯一 host resource supervisor；Native MiniNDN runner 接收
+  `--direct-start` 后直接创建 MiniNDN，消除内层重复 supervisor。`ownedSwap` 继续写入 raw
+  resource samples 作为诊断，不再单独触发停止；`MemAvailable`、`SwapFree`、磁盘和 deadline
+  仍是硬门。该调整只改变实验编排/资源观测，不放宽 grant、ACK、Selection、Repo、assembly、
+  ORT、terminal 或 cleanup 契约。
+- **Static boundary**: C++ `assembleInProcess` file-backed worker 使用
+  `loadRuntimeSession=false`；Provider 父进程在 worker 完成后创建 authoritative ORT session，
+  因此不新增 worker/runner 重叠层或 adapter。定向 Python 回归 `61 passed`；真实 r16 原始证据
+  与未闭合边界见 [b190-03](../specs/190-multiturn-latency/evidence/b190-03.md)。
+- **Installation correction**: r17 发现 root 使用的已安装 ONNX adapter 未包含当前
+  `TensorProto.dims` canonical-identity 修复，产生 `SOURCE_IDENTITY_MISMATCH`；仅以
+  `--no-deps` 重装现有 adapter，使安装模块与源码 hash 一致。该闭合 installation
+  provenance，不改变模型/协议/授权契约；fresh r18 尚未运行。
+
+## Spec190 direct-start simplification and Stage-0 ORT boundary — 2026-09-23
+
+- **Status**: `PARTIAL`；r18 已越过 ACK/Selection 并进入 Provider-0 C++ ORT 执行，但在
+  `/model/Gather_5` 发生输入索引越界，未形成 terminal/EOS/KV 验收。
+- **Delta**: `--direct-start` 现在在当前 Native MiniNDN 进程直接进入 supervised 主路径，
+  不递归重新解析命令，也不创建内部 worker/supervisor。LocalExperiment 仍是唯一 host
+  resource supervisor；必要的模型身份、授权、ACK、Selection、Repo、assembly、ORT 和
+  cleanup 约束保持不变。
+- **Evidence**: r18 外层资源 guard 未触发、无残留进程；Provider-0 达到
+  `MODEL_MATERIALIZED`、`WORKER_START`、`RUNNER_SPEC_READY`、`RUNNER_CREATE_BEGIN`，随后
+  C++ ORT 报 `indices element out of data bounds, idx=1 ... [-1,0]`。下一 Changed gate
+  限定为 Stage-0 prefill `attention_mask`/`position_ids`/shape 追踪，不增加 launcher 层。
+
+## SIF Waf install payload — 2026-09-22
+
+- **Status**: `NO_DESIGN_CHANGE`；脚本静态检查通过，不表示镜像构建或运行验收。
+- **Scope**: 模板将根 Waf 的 DESTDIR 安装树作为原生文件唯一安装来源；
+  第二轮以 `installed-v1` 收敛完整 SIF；测试附件改由 Waf 显式 opt-in 安装，
+  外部依赖直接消费 base SDK，不再强制外置 APP 导出。Python 绑定仍在容器内构建。
+  构建选项和 build-record 布局契约见对应脚本/审查，不涉及运行协议/API；遵守 B1–B3、S1–S3。
+- **Owner**: 根 Waf 管安装清单，SIF 模板管搬运/核对，base 管外部依赖；
+  不修改 Core/DI/UAV/Repo 协议、公开 API、当前/目标设计正文或 PDF。
+- **Evidence**: [static review](../Experiments/TigerCluster/docs/waf-install-static-review-20260922.md)。
+  静态/离线脚本检查不能替代 compile-link、ABI 或完整 SIF 运行验证。
+
+## Spec185 User-owned request initiation — 2026-09-22
+
+- **Status**: `PARTIAL`，见[API owner correction evidence](../specs/185-prepared-model-runtime/evidence/api-owner-correction-20260922.md)。
+- **Delta**: 普通应用请求入口从语义上归属于 `User`：新增
+  `User::request/run(const PreparedModel&, ...)` 与
+  `User::openConversation(const PreparedModel&, ...)`。入口使用既有 package
+  `runtimeBinding` 校验模型和 User 属于同一 Runtime，再复用原生
+  `PreparedModel::requestInternal`、coordinator 和 lease；没有新增 Core wire、
+  client、operation state machine 或 Provider 逻辑。旧 PreparedModel 入口暂保留
+  为 compiler-deprecated compatibility wrapper。
+- **Documentation**: Spec185 C++ contract、API catalog、caller matrix、quickstart、
+  examples 和 request evidence 已改为 User-owned route；当前/目标 Design PDF
+  尚未刷新，不能把文档改动写成完整设计交付。
+- **Binding**: Python thin binding 已同步暴露 `User.request/run/open_conversation`；
+  旧 `PreparedModel` binding 仍作为兼容入口保留。候选 DI 库优先加载下 Python
+  定向套件 `10 passed`，但这不替代 C++ request selector 的 runtime 证明。
+- **Validation boundary**: affected DI library 与 `spec189-prepared-request`
+  target compile-link PASS；focused runtime selector 在既有 preparation/fixture
+  边界 30 秒 `RC=124`，因此不改变 T005/T006/T013 的原验收结论，也不宣称本次
+  API correction runtime PASS。
+
+## Spec190 Multi-turn token latency — 2026-09-22
+
+- **Serial revision**: 仅执行契约变更，无产品API变化；tasks改STRICT_SERIAL单链，旧T008/009/010/011/006/007分别为新T006/007/008/009/010/011。下述先前T011安全门现为T009；历史证据不改写，双PDF不因调度重排重建。
+
+- **Status**: `PLANNED`，见[Spec190](../specs/190-multiturn-latency/spec.md)、[设计契约](../specs/190-multiturn-latency/contracts/design.md)与[任务](../specs/190-multiturn-latency/tasks.md)。
+- **Owner / principles**: Core仍拥有通用ACK/认证/传输，DI拥有Conversation、FINALIZE控制和CPU session驻留；G1–G6、C1–C3、D1–D4、B1–B3、M1–M3不变。
+- **Proposed delta**: Qwen profile ACK目标1000ms；原生实时token与同handle多轮；定位并修复约30秒FINALIZE收尾；loaded-session与请求证据/KV分离、有界租约和退出释放。
+- **Scope revision**: 按用户补充纳入stage传输预算与每node固定持久Repo；`user.prepare(model)`命中prepared receipt免重复拆层/导出/STORE。Repo遵循R1–R6，Core继续拥有加密/授权；CD-09恢复接口冻结前T011 BLOCK，不能以compatibility替代真实Repo。见[材料复用契约](../specs/190-multiturn-latency/contracts/material-reuse.md)。
+- **Boundary**: 本轮仅源码/已有raw分析及规划审计，无产品API/实现变化；当前/冻结目标PDF不自动覆盖。实施时随对应任务同步适用中文API与双PDF，不能把本Spec规划写成当前源码行为。Spec189保持PARTIAL。
+
+## Spec189 Request-scoped epoch runner reuse — 2026-09-22
+
+- **Status**: `PARTIAL`，见[r260](../specs/189-qwen-two-provider-minindn/evidence/b189-r260-runner-reuse.md)。
+- **Owner / principles**: DI coordinator拥有一次request/role内延迟准备的runner；G1–G6、D1–D4。
+- **Implemented delta**: 同一调用的token epochs与finalize共享runner，不跨request/role/attempt，
+  保留每epoch授权、KV、取消与提交检查；不改wire或公共ABI，不改ACK/cleanup预算。
+- **Boundary**: C++45 cases/1042 assertions三次通过；真实三轮相同32token、KV恢复、
+  每Provider每轮一次准备、C++缓存诊断及cleanup通过。用户追加的
+  短期跨request驻留另记PLANNED，需分离loaded-session与request证据/KV、显式evict及
+  shutdown drain/release。API参考/双PDF未同步，不改冻结目标。
+
+## Spec189 Conversation affinity and retention — 2026-09-22
+
+- **Status**: `PARTIAL`，见[r259契约与验证](../specs/189-qwen-two-provider-minindn/evidence/b189-r259-affinity-retention.md)。
+- **Owner / principles**: DI coordinator拥有本地认证映射，既有placement子类执行偏好，
+  Provider拥有KV保留与receipt；遵守G1–G6、D1–D4、B1–B3、M1–M3，不下沉Core。
+- **Delta**: 本地journal加密正文可选保存role→Provider映射并核对checkpoint摘要；
+  续轮通过本地planning context传入既有策略。网络checkpoint/transcript不变，旧journal
+  无偏好仍走原选后校验。Provider retention显式有界，receipt不得超过实际KV寿命；
+  coordinator不再暗中把明确配置截为5分钟，不自动续期或复活过期状态。
+- **Boundary**: 涉及DI内部结构/Journal函数ABI，受影响原生CLI已重编；C++定向回归
+  三次通过、真实两Provider三轮缓存诊断及cleanup通过。binding fresh rebuild、当前API
+  清单和双PDF仍待同步；中文契约见r259 Design binding，冻结目标不自动覆盖，正式资格未关闭。
+
+## Spec189 Core assignment externalization order — 2026-09-21
+
+- **Status**: `PARTIAL`。Core共享外置helper提前到首次envelope编码前，保留1MiB/4MiB
+  门和原加密Data引用契约；完整选中集合先过授权/大小预检，失败按发布阶段清理或保留
+  bounded serving，提交异常取消invocation。DI保留Core错误原因，不改公共签名或ABI。
+- **Evidence**: [r257](../specs/189-qwen-two-provider-minindn/evidence/b189-r257-core-assignment-externalization.md)，
+  Core八场景163 assertions三次PASS；真实双Provider10token/EOS缓存诊断PASS。
+  API参考已同步行为/验证范围；PDF尚未刷新，不称完整文档交付或Repo产品验收完成。
+
+## Spec189 bounded multi-token generation — 2026-09-21
+
+- **Status**: `PARTIAL`。既有token预算上限64调整为1024；EOS/EOT优先，未引入字符限制、
+  API字段或ABI布局变化。仍保留1MiB capability与4MiB Selection约束。
+- **Boundary**: C++实现、C++行为oracle、Python仅编排；缓存诊断不计完整Repo资格。
+  当前/目标PDF与公开API参考尚未同步，本轮不将文档交付记为完成。
+- **Evidence**: [r256](../specs/189-qwen-two-provider-minindn/evidence/b189-r256-multitoken-stop.md)。
+
+## Spec189 finalization result and feedback identity — 2026-09-21
+
+- **Status**: `PARTIAL`。纠正既有 C++ coordinator 实现：成功完成 checkpoint
+  finalization 不再报告 stoppedByUpstream；普通 STOP 不变。TOKEN_FEEDBACK
+  从 accepted 配置补齐身份，非空冲突摘要拒绝；PIPELINE 受保护边不改。
+- **Boundary**: 不改 API 签名、ABI、wire 或授权范围，不提前 Provider terminal。
+  当前/目标公开接口和设计 PDF 无新增契约；仅分置两 Provider 为本次验证目标，
+  不据此声称共置 placement 或全路径资格通过。
+- **Evidence**: [r254](../specs/189-qwen-two-provider-minindn/evidence/b189-r254-finalize-feedback.md)。
+
+## Spec189 atomic runtime evidence — 2026-09-21
+
+- **Status**: `PARTIAL`。Provider 请求期机器记录先组装整行，再使用既有
+  RuntimeTiming/ndn-cxx 后端；动态 CR/LF 归一化，防止多个 writer 交错破坏
+  grant/attempt/plan 摘要。旧 stdout observer 同步解析实际日志流。
+- **Design boundary**: 不改变公共 API 签名、wire、模型准备/执行或授权状态；
+  不提前输出终态，也不降低 oracle 校验。当前/目标 API 和 PDF 无契约变更；
+  本条仅记录内部诊断输出与编排 observer 迁移，不宣称模型资格完成。
+- **Evidence**: [r252](../specs/189-qwen-two-provider-minindn/evidence/b189-r252-evidence-lines.md)。
+  五 lane 静态复审通过，定向构建/测试进行中；独立 FINALIZE 收尾观测仍待处理。
+
+## Spec189 cross-process cold-assembly admission — 2026-09-21
+
+- **Status**: `PARTIAL` / internal native resource-admission behavior。Provider
+  在 recipe-addressed cache miss 后进入 assembler cold path 前，通过共享
+  `cold-assembly.lock` 和 advisory `flock` 串行化 model-sized working set；cache
+  hit 不等待。等待循环保留 request cancellation、hard deadline 和 assembly
+  timeout 检查，并输出 `COLD_ASSEMBLY_WAIT` / `COLD_ASSEMBLY_ENTERED`；RAII 保证
+  异常、超时和正常 cleanup 释放锁。
+- **Design boundary**: 生产 Provider 使用固定 artifact-cache root 下的共享锁；
+  直接 assembler caller 未提供路径时从 cache root 父目录派生。该变化不改变
+  cache recipe identity、model bytes、grant、ACK、Selection、placement、runner、
+  KV、terminal 或 cross-Provider authorization；它只限制 cooperating NDNSF
+  Provider 进程的冷启动并发。真实 MiniNDN run 尚未越过 `PROVIDER_READY` 后的
+  request/assembly boundary，因此不能把资源改善写成 qualification PASS。
+- **Source / evidence**: `NativeCanonicalOnnxAssembler.{hpp,cpp}`、`Provider.cpp`；
+  affected build/install 和 focused selector 结果，以及 raw launcher `137` 边界见
+  [Spec189 r244 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r244-cold-assembly-gate-20260921.md)。
+
+## Spec189 recipe-addressed assembled-cache identity — 2026-09-21
+
+- **Status**: `PARTIAL` / internal native cache behavior。assembled cache 的
+  lookup key 从组装完成后的 `model.onnx` SHA 改为组装前已认证的
+  `recipeDigest`；目录为 `assembled/<safe-role>/<recipeDigest>/model.onnx`。
+  `manifest.json` 保存并校验 `assembledModelDigest` 以及 root/graph/initializer/role
+  identity，命中前再计算文件 SHA。这样首次运行可按 model/layer/node/backend
+  contract 查找，不扫描同 role 的未知版本，也不把结果摘要错误当作输入键。
+- **Design boundary**: `recipeDigest` 继续包含 model manifest/root、canonical
+  graph、role/node/layer set、tensor boundary、initializer、backend ABI、precision、
+  layout、padding、assembler profile 和 limits。纯 ONNX bytes 的跨 CPU/GPU 复用
+  仍可作为未来拆分的文件层优化；当前缓存交付 runner-compatible assembly contract，
+  所以 backend identity 保留。authenticated Selection/grant、普通 protected Repo
+  的 encrypted semantics、runner/KV/lease 生命周期和 wire contract 不变。
+- **Source / evidence**: `NativeCanonicalOnnxAssembler.{hpp,cpp}`、
+  `DI_NativeProviderExecutable.cpp`、`di-prepared-provider.t.cpp`；详见
+  [Spec189 recipe-key evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-cache-recipe-key-20260921.md)。
+  `di-native-canonical-publisher.t.cpp` 新增固定种子多层 ONNX 的准备/拆分/组装
+  selector；`Spec185ProviderAssembly` `20/20`、canonical publisher `16/16`
+  （397 assertions）、模型准备 case `1/1`、Python launcher/cache tests `29 passed`；
+  真实 MiniNDN/Qwen two-provider 仍保持 `RUNTIME_UNQUALIFIED`，因此不关闭产品任务。
+
 ## Spec189 initial producer-readiness deadline boundary — 2026-09-20
 
 - **Status**: `PARTIAL` / `NO_PUBLIC_API_CHANGE`。r140 暴露了一个生产时序边界：Provider-1 在 Provider-0 发布首个 placement-bound tensor manifest 前开始精确获取，但首个 manifest Interest 也被 `noProgressDeadlineMs` 截断。当前修复让 `NdnsfCollaborationDependencyIo::prefetchInput` 的首个 V3 manifest 等待使用 request hard deadline 与 dependency fetch budget；manifest 成功后，segment fetch 仍受原有 no-progress 与 fetch budget 约束。
@@ -638,3 +813,210 @@ R2 新增 D-002（文档校验与行为补充）及 TG-01 至 TG-05（PLANNED）
 - 源码范围 / 文档提交定位：`ndn-service-framework/ServiceUser.cpp`；验证记录与当前失败边界见 [r152 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r152-qwen-selection-boundary-20260920.md)。
 - 验证命令、结果与持久证据：`./waf --out=build-spec189-oracle build --targets=integration-tests -j4` `rc=0`；`Spec175InvocationStream/NormalServiceOnlyRequestPublishesOrderedEventsAndOneResult`、`Spec175InvocationStream/TargetedStreamBootstrapsAndUsesOneSelection`、`Spec170NdnsfDiCoreFlow/ProductionNativeHandlersRunStreamedD2bRequestToFinalResponse`、`Spec170NdnsfDiCoreFlow/PreconfiguredEnvironmentRunsFourProviderRoleSplitCollaboration` 均 `PASS`。真实 Qwen r152 仍为 `PARTIAL`，未宣称资格 PASS。
 - 状态 / 剩余验收 / 下一步：`PARTIAL`；先定位 Selection publication/consumer 的实际 wire boundary，再运行 stable-root warm/cold 对照和完整 two-provider handoff。
+
+### D-189-SOURCE-CACHE：system-wide canonical source Repo reuse
+
+- 日期 / Spec / 任务与契约 ID：2026-09-20；[Spec189](../specs/189-qwen-two-provider-minindn/spec.md)；T003/T005/T006；`Q189-PREP`、`Q189-REPO`、`Q189-ASSEMBLY`。
+- 模块 / 当前与目标章节：`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`、requester canonical source Repo；prepare-time source ownership and cache boundary。
+- 原设计 / 新设计 / 修改原因：原 launcher 将 canonical source Repo 放在每个 run 的 `requester/canonical-repo`，导致相同 digest 的 graph/initializer 在重启时重新 ingest 到新的磁盘目录。当前按 model manifest、source/graph/initializer、node-mapping 和 tokenizer digest 派生系统唯一 namespace，在运行前校验 content-addressed payload 的大小与 SHA-256；命中时复用 Repo，缺失对象才走现有 fallback ingest。
+- 当前已实现部分 / 目标未实现部分：source cache identity、原子 marker、hash/size 校验和 requester 配置接线已实现；r155 已完成首次 source Repo 写入并证明 ACK/Selection/grant 可继续运行。Provider 侧 encrypted transport 仍保持 run-scoped，protected grant-bound material 不跨请求复用；assembled role cache、runner、terminal 和 warm-hit 仍未完成验收。
+- 兼容性、迁移或撤回影响：不改变 NDNSF wire、ACK/Selection/grant、ONNX input/KV/output 或 llama adapter；不同候选进入不同 digest namespace，identity mismatch fail-closed。旧 run-scoped source Repo 不自动迁移，也不删除历史 raw evidence。
+- 源码范围 / 文档提交定位：`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`、`tests/python/test_spec189_model_source_cache.py`；[r155 source-cache evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r155-source-cache-memory-boundary-20260920.md)。
+- 验证命令、结果与持久证据：`py_compile` 通过；`pytest -q tests/python/test_spec189_model_source_cache.py` 为 `2 passed`；r155 preflight emitted `MODEL_SOURCE_CACHE` and persisted both expected source objects. The same run stopped at `RESOURCE_BOUNDARY:MemAvailable` during Provider material/assembly, so this focused source-cache result is not a product qualification PASS。
+- 状态 / 剩余验收 / 下一步：`PARTIAL`；先完成 assembly memory-peak/cache-owner diagnosis，再做一次 source-cache `hashesVerified=true` preflight and only then attempt a warm Provider path if the assembled cache is complete.
+
+### D-189-ASSEMBLY-RELEASE：释放 source protobuf 后进入 assembled runtime
+
+- 日期 / Spec / 任务与契约 ID：2026-09-20；[Spec189](../specs/189-qwen-two-provider-minindn/spec.md)；T003/T006/T007；`Q189-ASSEMBLY`。
+- 模块 / 当前与目标章节：`NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp`；Provider assembly working-set boundary。
+- 原设计 / 新设计 / 修改原因：原 assembler 在 extraction 后继续持有完整 authenticated source `ModelProto`，同时保留选定 role 的 assembled graph，并经过二次 checker、wire serialization 和 ORT session load，造成 source、selected model 和 runtime buffers 的重叠 working set。当前在 extraction 完成且所需字段已复制后，显式 swap/release 完整 source protobuf，再进入 S6/S7/runtime phase；不改变 assembled graph、digest、ONNX input/KV/output 或 wire contract。
+- 当前已实现部分 / 目标未实现部分：source release 已通过 `Spec182OnnxActivation/ActivationAssemblesRealModelThroughWorkerFixedManifest` 和 `Spec182OnnxExtraction` `11/11` focused checks；r156 真实 run 越过 r155 的 `MemAvailable` boundary 并到达 Provider-0 `RUNNER_READY`。完整 two-provider terminal、model output、warm assembled cache、repeat 和 qualification 仍未完成。
+- 兼容性、迁移或撤回影响：只改变 protobuf lifetime/peak working set，不改变 cache identity、Selection/grant、role assignment、lineage 或 ONNX contract；失败时仍由既有 assembly/runner validation fail closed。
+- 源码范围 / 文档提交定位：`NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp`；[r156 evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r156-worker-release-lineage-boundary-20260920.md)。
+- 验证命令、结果与持久证据：affected DI native closure built/installed with `-j4`; activation selector `PASS`; extraction selector `11/11 PASS`; r156 resource guard `boundary=null`, `cleanup=PASS`, `min MemAvailable=2326757376`, `maxOwnedSwapBytes=205512704`。其后的 first product boundary 是 `GenerationEpochLineageV1 invalid producerRole`，所以不能把本轮记为 full qualification。
+- 状态 / 剩余验收 / 下一步：`PARTIAL`；先修复 generation lineage edge binding，再用新 run ID 复测同一 source-cache/assembly path。
+
+### D-189-LINEAGE-CORE：区分 core lineage 与 edge-local routing 校验
+
+- 日期 / Spec / 任务与契约 ID：2026-09-20；[Spec189](../specs/189-qwen-two-provider-minindn/spec.md)；T006/T007；`Q189-ASSEMBLY`、`Q189-WIRE`。
+- 模块 / 当前与目标章节：`GenerationEpochLineageV1`、`OnnxRuntimeModelRunner`；Provider 本地 ONNX position materialization 与 encrypted dependency edge publication。
+- 原设计 / 新设计 / 修改原因：原 `materializeCausalPositionInputsV1()` 在 Provider 尚未绑定 edge-local `producerRole`/`consumerRole` 时调用完整 `validate()`，误拒绝带有合法 request/generation core state 的初始 lineage。当前增加 `validateCore()`，仅本地 position derivation 使用 core 校验；wire encode/decode 和 edge publication 继续要求完整 producer/consumer routing 校验。
+- 当前已实现部分 / 目标未实现部分：校验范围修正和 r161 首个失败边界已确认；新的 affected DI 构建与真实 r162 two-provider run 尚未完成，因此 terminal、model output、repeat、resource envelope 和 qualification 仍未完成。
+- 兼容性、迁移或撤回影响：不改变 lineage wire 字段、digest、Selection/grant 或 ONNX input/KV/output contract；完整 wire validation 保持 fail-closed。撤回时恢复本地 materializer 的 full validation，但会重新触发 r161 的初始 edge-less lineage rejection。
+- 源码范围 / 文档提交定位：`NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp`、`TensorBundleCodec.cpp`、`NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp`；证据为 [r161 boundary](../specs/189-qwen-two-provider-minindn/evidence/b189-r161-lineage-validation-diagnostic-20260920.md)。
+- 验证命令、结果与持久证据：r161 已通过合法日志、source-cache hit、真实 MiniNDN 到 Provider assembly/runner 边界；`ndnsf-distributed-inference` 与 `di-native-provider` 已用 system compiler/binutils、`-j4` 成功构建并安装；r162 runtime 验证待执行。
+- 状态 / 剩余验收 / 下一步：`PARTIAL`；重建/安装 affected DI targets，以新 run ID 验证 local materialization 后的 edge binding、Provider-1 assembly、terminal response 和 cleanup。
+
+### D-189-CACHE-COMPAT：Selection 后临时跳过 Repo material fetch 的缓存兼容诊断
+
+- 日期 / Spec / 任务与契约 ID：2026-09-20；[Spec189](../specs/189-qwen-two-provider-minindn/spec.md)；T006/T009；FR-031、`Q189-REPO`、`Q189-ASSEMBLY`。
+- 模块 / 当前与目标章节：`NativeCanonicalOnnxAssembler`、`DI_NativeRequester`、`di-native-provider`、Qwen MiniNDN launcher；Selection 后的 source materialization 资源诊断。
+- 原设计 / 新设计 / 修改原因：普通路径在 authenticated Selection/grant/placement 后通过 Repo 获取 root/source/material。为验证 Qwen3-0.6B 的内存边界，当前增加显式、默认关闭的 `cache-compatibility` diagnostic：requester 交付绑定 system-wide plain source-cache namespace 的 metadata-only receipt，不创建 run-scoped encrypted Repo；Provider 复核 source cache 的 identity schema、model/manifest digest、大小和 SHA-256 后，跳过该阶段的 Repo material fetch，由既有 native assembly/ONNX/lineage/runner 校验继续消费本地文件。
+- 当前安全与契约边界：普通 authenticated prepare、manifest、ACK、Selection、授权和 placement 仍必须执行；material-backed source 不支持；若 protected role 已建立 `ProtectedRuntime`，显式 diagnostic 可使用 verified local source，但普通 protected Repo qualification 仍走 grant-bound encrypted path；缺缓存或任何校验不匹配 fail closed；不改变 ONNX input/KV/output、lineage wire 或正式 Repo contract。该模式只能作为诊断证据，不能满足 FR-003/FR-019 或 `QWEN_TWO_PROVIDER_PASS`。
+- 当前已实现部分 / 目标未实现部分：requester publisher、provider assembler、CLI 参数传播和兼容模式 run-scoped Repo 抑制已完成；Python `py_compile`、静态分支审查、`ndnsf-distributed-inference,DI_NativeRequester,di-native-provider` 210-task build、两个 global install、CLI 和 `ldd` 检查均通过。旧 r163 runtime 在 ACK 前触发 `RESOURCE_BOUNDARY:diskFree`；r164 也在 host admission 阶段因 `diskFreeBytes=4232839168` 低于 4 GiB 门限停止，未进入 requester/Provider；两 Provider terminal/output/drain/repeat 与资格仍待完成。
+- 源码与证据：`NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.{hpp,cpp}`、`examples/DI_NativeRequester.cpp`、`examples/DI_NativeProviderExecutable.cpp`、`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`；[static evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r163-cache-compatibility-static-20260920.md)、[r163 disk evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r163-disk-boundary-20260920.md)、[r164 disk evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r164-requester-cache-disk-boundary-20260920.md)、[r162 stop evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-r162-cache-compatibility-stop-20260920.md)。
+- 状态 / 剩余验收 / 下一步：`PARTIAL`；先获得足够磁盘空间，再用新的 run ID 运行该诊断，记录是否越过 materialization 以及实际 RSS/MemAvailable/ownedSwap；失败后先定位首个边界，再修复并重新执行静态审查。
+
+### D-190-FILEBACKED-WORKER：assembly worker 使用 file-backed canonical source，并按调用链重排未启动任务
+
+- 日期 / Spec / 任务与契约 ID：2026-09-22；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`Q190-ASSEMBLY`、`FR-014`。
+- 模块 / 当前与目标章节：`NativeOnnxAssemblyWorker`、`NativeOnnxRecipeAssembler`、`NativeCanonicalOnnxAssembler`；Spec190 execution order。
+- 原设计 / 新设计 / 修改原因：原生产 worker 通过父子管道接收 model-sized bytes，父进程还保留完整 source vector；当前 parent 传递只读 fd 3，worker 用 zero-copy protobuf stream 读取并校验长度/source identity，materialized-role 在 worker 前释放 source vector。该改变减少 pipe/父子 duplicate，不放宽 structural/digest/IO/wire fail-closed 校验。与此同时，未启动任务按生产调用链从固定 Repo owner、prepare lookup、protected material、resident session、stage transfer 到 FINALIZE/drain 重排。
+- 当前已实现部分 / 目标未实现部分：file-backed request/frame/metadata、subprocess parity 和生产接线已通过受影响 compile-link 及精确 C++ selectors；run-38 的 Provider-0 完成 worker/cache finalization/`RUNNER_READY`，但 Provider-1 仍以 `RESOURCE_BOUNDARY:MemAvailable` 停止。normal encrypted Repo 的跨进程 protected assembled-cache 仍明确 miss，持久 hash/cache 命中未实现；T003 `PARTIAL`，T004 `NOT_STARTED`。
+- 兼容性、迁移或撤回影响：in-process parity 入口保持旧内存路径；worker 请求 bit/metadata 扩展只由当前 production caller 生成；fd 不继承给无关子进程。撤回时恢复内联 model bytes，但不改变 runner、Repo、Selection 或授权契约。
+- 源码与文档提交定位：`NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.{hpp,cpp}`、`NativeOnnxRecipeAssembler.{hpp,cpp}`、`NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp`、`tests/unit-tests/di-native-onnx-recipe.t.cpp`、`tests/wscript`、`specs/190-multiturn-latency/{spec,plan,tasks}.md`；[T003 evidence](../specs/190-multiturn-latency/evidence/b190-03.md)。
+- 验证与状态：窄目标 `115/115` compile-link；file-backed frame/metadata/subprocess selectors `1/1`，materialized-role exact selector `1/1`，cold gate `1/1`，readiness `15/15`；run-35/36/37 为 preflight boundary，run-38 `cleanup=PASS` 但 normal Repo `UNQUALIFIED`。旧全量 materialized-role suite 因既有超大负例未完成，记为 `UNOBSERVED`。
+- 状态 / 剩余验收 / 下一步：`PARTIAL` / `OPEN_FOR_NEXT_BATCH`；当前只允许完成 T003。T003 完成后按新序列执行 `T004 RepoRestart → T005 RepoLookupReuse → T006 ProtectedMaterialReuse → T007 ResidentSession → T008 StageTransferBudget → T009 TerminalDrain → T010 Convergence → T011 MatchedExperiment`，不跳项、不把 persistent protected cache miss 当作正常命中。
+
+### D-189-HASH-CACHE：assembled plaintext cache 的 hash-only admission — 2026-09-21
+
+- **Status**: `PARTIAL` / internal native cache simplification。authenticated
+  Selection/grant 通过后，Provider 在系统唯一的 `assembled/<role>/` 下扫描
+  content-addressed entry，只读取 `model.onnx`，并以目录名中的 SHA-256 与文件流式
+  SHA-256 相等作为命中条件；不再要求 `manifest.json` 或 `manifest.signature`。
+- **Design boundary**: 这只简化本地已装配模型的完整性/复用检查；它不是 authenticity
+  或新的授权边界。普通 protected Repo 路径仍保持 grant-bound encrypted staging；仅
+  显式 cache-compatibility diagnostic 在既有 `ProtectedRuntime` 和 Selection/grant
+  成功后允许 protected role 使用该 hash-only assembled cache，并跳过第二份 staging。
+  `artifactDigest` 仍表示 placement/layer identity，不被误用为 assembled 文件摘要。
+- **Source / evidence**: `NativeCanonicalOnnxAssembler.{hpp,cpp}`、`Provider.cpp`、
+  `tests/integration-tests/di-prepared-provider.t.cpp`；[B189 assembled-model cache
+  evidence](../specs/189-qwen-two-provider-minindn/evidence/b189-assembled-model-cache-20260921.md)。
+  同批还修正了 streaming SHA-256 size guard 的 unsigned-underflow 边界。
+- **Validation boundary**: affected DI closure 已 build/install，`Spec185ProviderAssembly`
+  19/19 focused cases 通过；这不证明真实 Qwen two-provider 的 assembly、handoff、terminal
+  或 qualification。r211 的首个当前生产边界仍是 `NATIVE_REQUEST_TIMEOUT boundary=Core`。
+
+### D-189-HASH-CACHE-REPAIR：显式 cache-compatibility 的 protected assembled 命中 — 2026-09-21
+
+- **变更原因**：r229 证明原 hash-only assembled lookup 只接受 `plaintext-v1`，而显式
+  cache-compatibility diagnostic 仍带 authenticated protected epoch，导致已组装模型未被
+  复用并退回大模型 cold assembly；Provider 命中分支还必须跳过 encrypted artifact
+  lifetime/path 读取。
+- **当前契约**：Selection/grant/placement 和 `ProtectedRuntime` 仍是门槛；诊断模式才可
+  扫描 `assembled/<safe-role>/<64-hex>/model.onnx`，重新计算 SHA-256 后复用；首次
+  protected diagnostic assembly 将解密后的最终模型写入同一内容寻址目录。普通 protected
+  Repo 仍只保留 grant-bound encrypted artifact，不跨 grant 复用该明文缓存；material-backed
+  source 仍 fail closed。
+- **验证与边界**：受影响 Waf build 与 `Spec185ProviderAssembly` 19/19 通过；r229 原始
+  run 在 `RUNNER_PREPARATION_FACTORY_BEGIN` 有界停止，未产生 worker/runner/ORT/terminal，
+  因此状态仍为 `PARTIAL`/`RUNTIME_UNQUALIFIED`。post-repair immutable snapshots 为
+  `.codex-tmp/spec189-r229-cache-repair-static-review-v1/` 和 `...-v2/`；新的真实
+  cache-hit runtime 与正式 protected Repo qualification 仍待执行。
+# Spec189 r258 — Chained multi-turn KV (PARTIAL)
+
+2026-09-22：逐轮checkpoint接续归MiniNDN配置编排；会话校验、Provider KV恢复和
+finalization仍归原生C++。新增精确恢复观测区别于模型cache hit，C++ oracle扩展逐轮
+检查。遵守G1–G6、D1–D4、B1–B3、M1–M3，不改变公开会话API或冻结目标。
+当前尚未运行，双PDF及整体API交付保持PARTIAL；见
+[r258](../specs/189-qwen-two-provider-minindn/evidence/b189-r258-multiturn-kv.md)。
+
+### D-190-ASSEMBLY-WORKER-ORT：分离 assembly worker 校验与生产 runner 加载
+
+- 日期 / Spec / 任务与契约 ID：2026-09-22；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`Q190-ASSEMBLY`。
+- 模块 / 当前与目标章节：`NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp`；assembly worker 与 Provider runner preparation。
+- 原设计 / 新设计 / 修改原因：静态审查确认 worker 响应契约只要求 canonical source/recipe 的结构、digest、node coverage、boundary IO、wire 和响应字段校验；worker 内完整 ORT session 不会替代 parent/provider 随后的生产 runner 创建与 warmup，反而会与已驻留 runner 形成第二份 model-sized graph。当前 internal chain 增加 `loadRuntimeSession` seam：公共 `assembleNativeCertifiedOnnxModel` parity 路径保留 ORT load，生产 child `assembleInProcess` 跳过重复 ORT load，由 `OnnxRuntimeModelRunner` 在 `RUNNER_READY` 前承担唯一 authoritative load/warmup。
+- 当前已实现部分 / 目标未实现部分：受影响 DI/worker/provider/test targets compile-link、安装及 focused C++ 回归通过；run-34 证明 Provider-0 可完成 worker、cache finalization、runner create 和 `RUNNER_READY`，但 Provider-1 仍在 model materialization/structural assembly 阶段触发 `RESOURCE_BOUNDARY:MemAvailable`。因此 T003 仍 `PARTIAL`；CD-04 的 resident session cache 仍是 planned target，不得反写为 current behavior。
+- 兼容性、迁移或撤回影响：不改变 worker fail-closed structural/digest/IO/wire contract、Repo、ACK/Selection、ONNX input/KV/output 或公开 runner factory API；撤回该 gate 会恢复重复 cold ORT load，但不改变后续 authoritative runner load。未改变目标设计 PDF 或 planned CD-04。
+- 源码与证据：`NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp`；[Spec190 T003 evidence](../specs/190-multiturn-latency/evidence/b190-03.md)；[run-34 boundary](../specs/190-multiturn-latency/evidence/b190-03.md#run-34-normal-repo-result)。
+- 验证与状态：Waf affected compile-link PASS（48.955s）；`spec190-materialized-role` 1/1、cold assembly selector 1/1、`spec190-readiness-progress` 15/15；normal Repo run-34 `UNQUALIFIED`，cleanup PASS，无 terminal/run-record/oracle 完整结果；T004 未启动。
+
+### D-190-FILEBACKED-RESPONSE：file-backed assembly worker 的 digest-only response
+
+- 日期 / Spec / 任务与契约 ID：2026-09-22；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`Q190-ASSEMBLY`、`FR-014`。
+- 模块 / 当前与目标章节：`NativeOnnxAssemblyWorker`、`NativeOnnxRecipeAssembler`；file-backed worker parent/child response lifecycle。
+- 原设计 / 新设计 / 修改原因：file-backed request 已避免 parent 通过 stdin 向 child 传入 model-sized bytes，但 child 原先仍把完整 assembled model 通过 stdout response 返回，造成 parent response buffer、worker result 和 finalizer input 的第二次重叠。当前 file-backed child 成功时返回 status `3` 的 digest-only frame；parent 在 reap 后从受限、已校验的 `modelFile` 读取最终 bytes，再复用原有 digest/recipe/contract finalizer。普通 inline request 保留 status `0` 的 model payload，未知 status 与不一致 frame 继续 fail-closed。
+- 当前已实现部分 / 目标未实现部分：status-3 decoder/composer/child/parent 接线通过静态复审、`133/133` compile-link、focused C++ regression 和真实第一轮 two-provider execution；run-43 第二轮仍因 Provider-1 materialization/assembly 的 resident-runner overlap 触发 `RESOURCE_BOUNDARY:ownedSwap`。跨 request persistent assembled runner/cache reuse、三轮 terminal、C++ oracle 和完整资格仍未完成。
+- 兼容性、迁移或撤回影响：只扩展现有 worker response status contract；status `0` inline compatibility 保持，生产 file-backed caller 才使用 status `3`。不改变 Repo、ACK/Selection/grant、authoritative ORT session、ONNX input/KV/output 或公开 runner API；撤回时恢复 file-backed response 的 model payload，不改变结构校验。
+- 源码与证据：`NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.{hpp,cpp}`、`NativeOnnxRecipeAssembler.{hpp,cpp}`、`NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp`、`tests/unit-tests/di-native-onnx-recipe.t.cpp`、`tests/wscript`；[T003 evidence](../specs/190-multiturn-latency/evidence/b190-03.md)。
+- 验证与状态：`133/133` compile-link；worker protocol decoder/composer 3 selectors `1/1`、file-backed subprocess `1/1`、materialized-role `1/1`、cold gate `1/1`、readiness `15/15`；run-43 第一轮 terminal 成功，第二轮 `RESOURCE_BOUNDARY:ownedSwap`，cleanup PASS。状态 `PARTIAL`；T004 仍 `NOT_STARTED`。
+
+### D-190-CACHE-DIR：prepare 显式绑定跨 run immutable cache root
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`CD-07`、`CD-08`。
+- 模块 / 当前与目标章节：`Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py`；LocalExperiment `prepare`/launch contract；native runner 已有 `--artifact-cache-root`。
+- 原设计 / 新设计 / 修改原因：原 launcher 只依赖 native runner 的默认缓存根，prepare 记录中没有显式的跨 run cache destination。现在 `prepare` 接受 `--cache-dir`（兼容 `--artifact-cache-root`），记录绝对 `cacheRoot` 并显式传给 native runner。缓存根必须在 run evidence/workload 外；它只承载按完整 source identity/recipe digest 分区的 immutable source/provider cache，不接管 request、授权、encrypted Repo、日志或 KV 生命周期。
+- 当前已实现部分 / 目标未实现部分：wrapper 参数传播、路径 fail-closed 检查、exact identity reuse/hash-verified object 测试完成；真实固定 Repo owner、重启后的 production `user.prepare` lookup/store 计数、protected material reuse 和两节点终态仍未实现/观测。
+- 兼容性、迁移或撤回影响：默认值保持 native runner 原有 `/var/tmp/ndnsf-di-native-artifacts`；旧 prepared bundle 未强制新增字段，仍可按原 launch command 校验；撤回只移除 wrapper 参数，不改变 C++ source/assembled cache owner。
+- 源码与证据：`Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py`、`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`、`tests/python/test_spec184_qwen06b_local_experiment.py`；[B190-05](../specs/190-multiturn-latency/evidence/b190-05.md)。
+- 验证与状态：`py_compile` PASS；LocalExperiment 定向测试 `32 passed`；未启动新的 normal Repo run，状态 `PARTIAL`，T003 仍 `PARTIAL`，T004 仍 `NOT_STARTED`。本变更不是公开 C++ `User::prepare` 签名或 Core API 变化，因此不改写 Core API reference/PDF。
+
+### D-190-INT8-SOURCE-COMPATIBILITY：预构建 weight-only INT8 source compatibility gate
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003/B190-03A；`CD-INT8`、`FR-007`、`FR-014`。
+- 模块 / 当前与目标章节：`NDNSF-DistributedInference` canonical catalog/publication/assembler/ORT runner；Spec190 model-source compatibility recovery gate。
+- 原设计 / 新设计 / 修改原因：仅替换原始 ONNX 的 FP16/INT8 表示同时影响 source identity、initializer shape/digest、材料分段、Repo publication、assembled cache 和 runner contract。当前直接候选的公开 IO/KV 已通过 ORT CPU smoke，但 r6 在 inline initializer 超过 1 MiB material bundle 上限处停止。新增受限目标：支持固定摘要的 `ONNX + weight_only_int8` 候选，其 public control/activation/KV/output 仍为现有 `INT64/FP32` contract；全图 INT8、signed-INT8 wire 和量化导出仍排除。
+- 当前已实现部分 / 目标未实现部分：固定缓存下载、候选静态统计、Python wire-shape 修正和 ORT one-token smoke 已完成；C++ quantization subtype descriptor、inline bounded chunk/reassembly、ownership ledger、direct candidate native gate 和 two-provider chain 尚未实现/验证。r6 没有 ACK、Selection、assembly、terminal 或 qualification 结果。
+- 兼容性、迁移或撤回影响：不得提高 1 MiB payload 上限，不得把 FP32 public precision 改名为 all-INT8，不得因 cache hit 绕过 grant/ACK/Selection/placement。只有真实 C++ IO/KV mismatch 才允许增加独立 adapter；若失败，候选保持 `UNQUALIFIED`，T003 不解锁 T004。
+- 源码与证据：`NativeCanonicalArtifactPublisher.cpp`、`NativeCanonicalOnnxAssembler.cpp`、`NativePlanning.*`、Python ONNX graph adapter；[Spec190 audit](../specs/190-multiturn-latency/audit.md#2026-09-23-direct-int8-source-compatibility-audit)、[r6 evidence](../specs/190-multiturn-latency/evidence/b190-03.md#direct-int8-candidate-downloaded-and-r6-preparation-boundary-2026-09-23)。
+- 验证与状态：candidate ORT CPU one-token smoke PASS；direct production r6 `PREPARATION_FAILED / DI_NATIVE_PUBLICATION_MATERIAL_PAYLOAD_TOO_LARGE`，cleanup PASS；本轮为全局静态审计和计划修订，状态 `PARTIAL`，T004 仍 `NOT_STARTED`。尚无公开 C++ API 变更或 PDF 实现快照更新。
+
+### D-190-INT8-IDENTITY-MATERIAL-REPAIR：量化 subtype 身份与 inline material bounded chunks — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003/B190-03A；`CD-INT8`、`FR-007`、`FR-014`。
+- 模块 / 当前与目标章节：`NativePlanning` model identity；`NativeOnnxRecipeAssembler` canonical material publication/reassembly；Python candidate manifest normalization。
+- 原设计 / 新设计 / 修改原因：旧 descriptor canonical JSON 不区分 `none` 与 `weight_only_int8`，且 inline `raw_data` 直接形成超过 1 MiB material payload。现在非默认 quantization subtype 进入 model identity，legacy `none` 保持旧 canonical JSON；大 inline initializer 移入共享 backing 并按现有 bounded chunk contract 发布、校验和重组，不提高 payload 上限。
+- 当前已实现部分 / 目标未实现部分：C++ identity selector `6/6`、inline bounded-chunk selector `25/25`、external parity selector `26/26` 和受影响 targets compile-link 已通过；direct candidate native assembler/ORT continuation、normal Repo、ACK/Selection、两 Provider terminal 与完整 T003 仍未完成。fixture dataflow 在 `NativeExecutionPlanJson.cpp:1413` 停止，最新 direct r7 在 root-owner preflight 停止。
+- 兼容性、迁移或撤回影响：仅允许 `none` 与 `weight_only_int8`；不改变 public FP32 activation/KV/output contract，不绕过 grant/ACK/Selection/placement，不把 focused gates 计为 qualification。撤回时可移除 subtype 解析和 inline backing path，但须同时移除对应 tests 与 evidence update。
+- 源码与证据：`NativePlanning.*`、`NativeRequestCatalog.cpp`、`NativeCanonicalRolePreparer.cpp`、`NativeOnnxRecipeAssembler.*`、`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`；[T003 evidence](../specs/190-multiturn-latency/evidence/b190-03.md)；[failure log](../docs/failure-log.md)。
+- 验证与状态：system-first Waf affected targets compile-link PASS；named C++ selectors `6/6`、`25/25`、`26/26` PASS；Python syntax PASS；native fixture is `FAIL_FIXTURE_DATAFLOW` and direct r7 is `FAIL_PRECHECK` because root owner is unavailable. 状态仍 `PARTIAL`，T004 仍 `NOT_STARTED`；current API text updated, PDF implementation snapshot not rebuilt in this unit。
+
+### D-190-TOKEN-BUDGET-1025：normal launcher token budget correction — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`CD-02`、`SC-001`。
+- 模块 / 当前与目标章节：`Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py`、`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`；normal-run workload contract。
+- 原设计 / 新设计 / 修改原因：当前验收要求每轮最多 `1025` 个新 token，并以 EOS 或预算结束；wrapper 原来把上限错误限制为 `64`，native runner 原来限制为 `1024`，导致有效验收参数在 prepare/native preflight 前被拒绝。两层现在统一接受 `1..1025`；本次不改变采样、EOS、KV、Repo 或资源门。
+- 当前已实现部分 / 目标未实现部分：两层 validation、command forwarding regression 和 launcher syntax 已通过；r11 尚未完成，因此真实三轮 EOS/terminal/性能仍未观测。
+- 兼容性、迁移或撤回影响：低于 1025 的旧命令仍合法；超过 1025 继续 fail-closed。撤回需同时恢复两层上限、测试和 Spec190 参数记录；不涉及公开 C++ API 或安装 ABI。
+- 源码与证据：`Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py`、`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`、`tests/python/test_spec184_qwen06b_local_experiment.py`；[B190-03](../specs/190-multiturn-latency/evidence/b190-03.md#normal-launcher-pty-path-and-token-budget-correction-2026-09-23)。
+- 验证与状态：`33 passed`、两 launcher `py_compile`、`git diff --check`；r10 使用错误的 `2` token budget 且未产生可用终态，r11 待重新 prepare/run。状态 `PARTIAL`，T003 仍 `PARTIAL`，T004 仍 `NOT_STARTED`。
+
+### D-190-INSTALL-CLOSURE-QUANTIZATION：native requester 安装闭包修复 — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`CD-INT8`、`FR-007`。
+- 模块 / 当前与目标章节：`NativePlanning` model descriptor canonicalization；normal Repo requester 的 source/build/install closure。
+- 原设计 / 新设计 / 修改原因：r11 使用当前 `quantization_subtype=weight_only_int8` 配置，但旧安装的 `DI_NativeRequester` 不认识该字段，在 preparation 以 unknown/lossy descriptor 停止。未放宽生产校验；按当前源码重新构建并安装 `ndnsf-distributed-inference` 与 requester，使运行时二进制与源码契约一致。
+- 当前已实现部分 / 目标未实现部分：受影响目标 `119/119` 编译通过，安装后 requester 与 build artifact hash 一致，`ModelIdentityBindsWeightOnlyQuantizationSubtype` 通过 `1/1`、`6/6 assertions`。r11 仍未到 Repo/ACK/Selection/assembly/terminal；r12 尚未运行。
+- 兼容性、迁移或撤回影响：这是本地安装闭包修复，不改变 wire/API、量化 subtype 规则、授权、Selection 或 cache 语义；回退必须恢复匹配的旧源码与二进制，不能只替换单个 requester。
+- 源码与证据：`NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.cpp`、`build-spec189-oracle`、`/usr/local/bin/DI_NativeRequester`；[B190-03](../specs/190-multiturn-latency/evidence/b190-03.md#r11-preparation-boundary-and-installed-requester-closure-repair-2026-09-23)。
+- 验证与状态：system-first Waf `119/119` build/install PASS；named identity selector PASS；Waf editable Python binding phase 仍报告 `NDNSF_GLOBAL_NATIVE_DIGESTS`，不计 native runtime PASS。r12 normal Repo chain 待执行；状态 `PARTIAL`，T003 仍 `PARTIAL`，T004 仍 `NOT_STARTED`。
+
+### D-190-SERIALIZED-MATERIAL-BOUNDARY：inline material boundary repair — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`CD-INT8`、`FR-014`。
+- 模块 / 当前与目标章节：`NativeOnnxRecipeAssembler` material manifest production and validation。
+- 原设计 / 新设计 / 修改原因：Qwen INT8 有 initializer 的 `raw_data` 恰好为 `1 MiB`，但序列化 TensorProto 为 `1,048,617` 字节；旧实现只按 raw size 选择 inline branch，并在验证处再次只按 raw size 判断，造成边界 payload 超过 1 MiB 上限后失败。现在两处均把 raw size 和 serialized TensorProto size 纳入 branch/validation 条件，边界对象转为 bounded chunks。
+- 当前已实现部分 / 目标未实现部分：生产与验证条件已统一；新增 exact-boundary C++ regression，连同现有 large-inline regression 通过 `2/2`、`31/31 assertions`。固定库尚未安装，r12 后续完整 Repo 链路尚未重跑。
+- 兼容性、迁移或撤回影响：不提高 material payload cap，不改变 digest、授权、Selection、backend 或 public FP32/KV/output contract；仅修复已支持的 bounded chunk representation 在精确边界上的遗漏。
+- 源码与证据：`NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp`、`tests/unit-tests/di-native-canonical-publisher.t.cpp`；[B190-03](../specs/190-multiturn-latency/evidence/b190-03.md#r12-preparation-boundary-and-serialized-size-boundary-repair-2026-09-23)。
+- 验证与状态：affected native targets compile/link PASS；`Spec182CanonicalPublisher/InlineInitializer*` PASS；尚未 install 或重跑 normal Repo，状态 `PARTIAL`，T003 仍 `PARTIAL`，T004 仍 `NOT_STARTED`。
+
+### D-190-SHARED-TOKEN-LIMIT：统一 native token budget boundary — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`CD-02`、`SC-001`。
+- 模块 / 当前与目标章节：`NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp`；`NativeRequestEnvelope`、projection/role contract；Spec190 normal launcher。
+- 原设计 / 新设计 / 修改原因：r13 证明 wrapper/native CLI 的 `1025` 上限与共享 C++ envelope 的 `1024` 不一致，request 在真实 User.request 阶段被拒绝。共享 C++ 常量提升为 `1025`；边界回归同时要求 `1025` 通过、`1026` 失败，保留所有其他 generation/options 校验。
+- 当前已实现部分 / 目标未实现部分：代码和 C++ selector 修改已写入，尚未完成本次受影响目标编译、安装和 fresh normal Repo 重跑；ACK/Selection/placement/assembly/terminal/EOS/three-turn 仍未验证。
+- 兼容性、迁移或撤回影响：`1..1025` 合法，`0` 和 `>1025` 仍 fail-closed；不改变 ACK window、EOS、KV、Repo、授权或资源策略。撤回需同步恢复共享常量及边界 selector，不能只回退 wrapper。
+- 源码与证据：`NativeGenerationLimits.hpp`、`tests/unit-tests/distributed-inference-native-plan.t.cpp`；[r13 Changed gate](../specs/190-multiturn-latency/evidence/b190-03.md#r13-request-contract-boundary-and-shared-token-limit-changed-gate-2026-09-23)。
+- 验证与状态：受影响 `spec189-epoch-projection` compile/link PASS；`NativeGenerationBudgetAccepts1025AndRetainsWireBounds` 为 `1 test / 22 assertions PASS`；安装库与 build library hash 均为 `ed36d1d0260fe5098fc46dc5cfbab7801172e9881ee81e9e0550bddf6ffb8fb5`，安装头文件为 `1025`。r14 越过 request contract 后暴露新的 Qwen state-name boundary，T003 继续 `PARTIAL`，T004 仍 `NOT_STARTED`。
+
+### D-190-QWEN-CANONICAL-STATE-NAMES：Qwen semantic KV 到 ONNX source 名称绑定 — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`CD-INT8`、`FR-007`、`FR-014`。
+- 模块 / 当前与目标章节：`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py` 的 stage/catalog/options 生成；`NativeCanonicalRolePreparer::bindStateContracts` 的 source-boundary 校验；Qwen ONNX state/KV contract。
+- 原设计 / 新设计 / 修改原因：semantic conversation vocabulary `past_key.N` 等不等于该 Qwen export 的 ONNX source names。r14 证明 identity mapping 在 ACK 后由 C++ 正确拒绝；修复只在 Qwen profile 生成 authenticated mapping，将 inputs 映射为 `past_key_values.N.key/value`、outputs 映射为 `present.N.key/value`，并让 runner metadata、generation options 与 successor map 使用同一 canonical names。保留 C++ source-boundary fail-closed 校验，不增加 provider adapter、不放宽 state contract。
+- 当前已实现部分 / 目标未实现部分：r14 首边界已静态定位并保留；mapping 修复、C++/Python 回归、fresh normal Repo 和三轮 EOS/KV/cleanup 尚未完成，T003 继续 `PARTIAL`。
+- 兼容性、迁移或撤回影响：只影响 Qwen native ONNX profile；generic fixtures 和 semantic API vocabulary 不改变。撤回需同步移除 mapping helper、metadata/options wiring 及对应 positive/negative tests；不得恢复把 semantic 名称直接当 source name 的行为。
+- 源码与证据：`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`、`NativeCanonicalRolePreparer.cpp`、`tests/unit-tests/di-native-canonical-publisher.t.cpp`、`tests/python/test_spec184_qwen06b_local_experiment.py`；[r14 evidence](../specs/190-multiturn-latency/evidence/b190-03.md#r14-post-ack-state-contract-boundary-and-qwen-canonical-name-changed-gate-2026-09-23)。
+- 验证与状态：`py_compile PASS`；Qwen launcher 定向回归 `39 passed`；已有 C++ `StateBindingConsumesActualCausalOnnxExport` 为 `1 test / 29 assertions PASS`；production `stage_plan_and_manifest` 输出 canonical input/output/successor names。未改 C++ source，故复用已安装 binder target 进行 focused source-bound regression；完整 Repo/Selection/assembly/terminal/EOS 仍未观测。当前 gate `static=PASS`、`compile-link=PASS`（existing target）、`runtime-test=PASS`、`unobserved=full normal chain`，Closure decision `OPEN_FOR_NEXT_BATCH`，T003 `PARTIAL`，T004 `NOT_STARTED`。
+
+### D-190-STARTUP-COMPATIBILITY-CACHE：启动前兼容性摘要与重复校验收敛 — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T003；`CD-INT8`、`FR-007`、`FR-014`。
+- 模块 / 当前与目标章节：`Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py` 的 candidate preflight；`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py` 的 pre-materialization identity gate。
+- 原设计 / 新设计 / 修改原因：启动器原本每次都重新解析同一个大型 canonical ONNX，且 native runner 的首次 identity gate 内重复执行 receipt/binary digest loop。现在 outer preflight 按 canonical source SHA-256 持久缓存仅 graph summary；candidate identity 显式记录 model format、quantization 与 quantization subtype；native runner 保留首次检查和 MiniNDN 前 TOCTOU fence，只删除同一检查块的重复循环。
+- 当前已实现部分 / 目标未实现部分：cache hit/negative isolation、identity normalization、旧重复校验删除和 real candidate `check` 已通过；fixed C++ library 尚未安装，Repo/ACK/Selection/placement/assembly/terminal/EOS/three-turn 仍未验证，驻留 runner/Repo reuse 仍为后续任务。
+- 兼容性、迁移或撤回影响：cache 不保存或复制模型字节，不改变 material cap、source/initializer/binary digest、grant、ACK、Selection、placement、cleanup 或 native runner contract；不同 source digest 使用不同 summary namespace。撤回只移除 summary cache 和 candidate identity 加字段，保留两处必要 identity checks。
+- 源码与证据：`Experiments/NDNSF_DI_Qwen06B_LocalExperiment.py`、`Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py`、`tests/python/test_spec184_qwen06b_local_experiment.py`；[B190-03 startup Changed gate](../specs/190-multiturn-latency/evidence/b190-03.md#startup-simplification-changed-gate-2026-09-23)。
+- 验证与状态：Spec Kit entrypoint `11/11 PASS`；两个 launcher `py_compile PASS`；Python launcher regression `35 passed`；r12-input outer check `PASS`。本单元没有 native compile/link 或 MiniNDN run；T003 继续 `PARTIAL`，T004 仍 `NOT_STARTED`。

@@ -20,7 +20,7 @@ record=''
 source_seal=''
 archive_format=auto
 remote_host=itiger
-expected_version=''
+expected_version='1.5.3'
 while (($#)); do
   case "$1" in
     --archive) archive=$2; shift 2 ;;
@@ -41,9 +41,9 @@ case "$archive_format" in oci-archive|docker-archive|auto) ;; *) usage ;; esac
 
 normalize_version() { printf '%s\n' "$1" | sed -E 's/[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/'; }
 local_version=$(apptainer version)
-if [ -z "$expected_version" ]; then
-  expected_version=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$remote_host" 'apptainer version')
-fi
+# Compatibility conversion never contacts the login node to select a build
+# version. --remote-host is retained only for old command-line compatibility.
+[ "$expected_version" = 1.5.3 ] || { echo LOCAL_SIF_APPTAINER_POLICY_REQUIRES_1_5_3 >&2; exit 4; }
 [ "$(normalize_version "$local_version")" = "$(normalize_version "$expected_version")" ] || {
   echo "LOCAL_SIF_APPTAINER_VERSION_MISMATCH local=$local_version remote=$expected_version" >&2
   exit 4

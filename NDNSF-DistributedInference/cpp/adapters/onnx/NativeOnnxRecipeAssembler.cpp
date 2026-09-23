@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 // Spec 182 unifies the DI ONNX world on the official 1.17 full-protobuf
 // headers (ONNX_USE_LITE_PROTO=OFF) installed by the configured ONNX prefix;
@@ -13,14 +14,20 @@
 #endif
 
 #include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <optional>
@@ -31,9 +38,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace ndnsf::di {
 namespace {
+
+[[noreturn]] void fail(const char* code);
 
 std::string digest(const std::uint8_t* data, std::size_t size)
 {
@@ -53,9 +64,70 @@ std::string digest(const std::vector<std::uint8_t>& bytes)
   return digest(bytes.data(), bytes.size());
 }
 
-void fail(const char* code)
+std::string digestModelFile(const NativeOnnxModelFileInput& file)
+{
+  if (file.fd < 0 || file.bytes == 0 || file.digest.empty())
+    fail("SOURCE_FILE");
+  struct stat status{};
+  if (fstat(file.fd, &status) != 0 || !S_ISREG(status.st_mode) ||
+      status.st_size < 0 || static_cast<std::uint64_t>(status.st_size) != file.bytes)
+    fail("SOURCE_FILE");
+  if (lseek(file.fd, 0, SEEK_SET) < 0)
+    fail("SOURCE_FILE");
+  SHA256_CTX context;
+  SHA256_Init(&context);
+  std::array<std::uint8_t, 1U << 20> buffer{};
+  std::uint64_t total = 0;
+  for (;;) {
+    const ssize_t count = read(file.fd, buffer.data(), buffer.size());
+    if (count == 0) break;
+    if (count < 0) {
+      if (errno == EINTR) continue;
+      fail("SOURCE_FILE");
+    }
+    const auto received = static_cast<std::uint64_t>(count);
+    if (received > file.bytes || total > file.bytes - received)
+      fail("SOURCE_FILE");
+    SHA256_Update(&context, buffer.data(), static_cast<std::size_t>(count));
+    total += received;
+  }
+  if (total != file.bytes || lseek(file.fd, 0, SEEK_SET) < 0)
+    fail("SOURCE_FILE");
+  unsigned char hash[SHA256_DIGEST_LENGTH];
+  SHA256_Final(hash, &context);
+  std::ostringstream out;
+  out << "sha256:";
+  for (unsigned char value : hash) {
+    out << "0123456789abcdef"[value >> 4]
+        << "0123456789abcdef"[value & 0x0f];
+  }
+  const auto computed = out.str();
+  if (computed != file.digest)
+    fail("SOURCE_DIGEST");
+  return computed;
+}
+
+[[noreturn]] void fail(const char* code)
 {
   throw std::runtime_error(std::string("DI_NATIVE_ONNX_") + code);
+}
+
+[[noreturn]] void failGraph(const char* stage, const std::exception& error)
+{
+  std::string detail = error.what();
+  for (char& value : detail) {
+    if (value == '\r' || value == '\n' || value == '\t') value = ' ';
+    else if (static_cast<unsigned char>(value) < 0x20) value = ' ';
+  }
+  if (detail.size() > 512) detail.resize(512);
+  logRuntimeEvidence(std::string("NDNSF_DI_NATIVE_ONNX_GRAPH_DETAIL stage=") + stage + " error=" + detail);
+  fail("GRAPH");
+}
+
+[[noreturn]] void failGraphStage(const char* stage)
+{
+  logRuntimeEvidence(std::string("NDNSF_DI_NATIVE_ONNX_GRAPH_DETAIL stage=") + stage);
+  fail("GRAPH");
 }
 
 void checkActive(const NativeAssemblyControl& control)
@@ -74,6 +146,92 @@ std::uint64_t checkedAdd(std::uint64_t left, std::uint64_t right)
   }
   return left + right;
 }
+
+/**
+ * Keep the certified model on disk while ONNX Runtime constructs its own
+ * graph/session representation.  Loading from the in-memory vector leaves
+ * the serialized model alive beside ORT's copy and is particularly expensive
+ * for a cold multi-provider assembly.  The file is private, unlinked on every
+ * exit path, and read back only after the ORT session has been destroyed so
+ * the worker still returns the exact bytes validated by the parent protocol.
+ */
+class ScopedOnnxRuntimeModelFile
+{
+public:
+  explicit ScopedOnnxRuntimeModelFile(const std::vector<std::uint8_t>& bytes)
+  {
+    std::array<char, 64> pattern{};
+    std::snprintf(pattern.data(), pattern.size(), "/tmp/ndnsf-di-onnx-XXXXXX");
+    const int fd = ::mkstemp(pattern.data());
+    if (fd < 0) {
+      throw std::runtime_error("DI_NATIVE_ONNX_RUNTIME_STAGING_CREATE");
+    }
+    m_path = pattern.data();
+    if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+      ::close(fd);
+      cleanup();
+      throw std::runtime_error("DI_NATIVE_ONNX_RUNTIME_STAGING_PERMISSIONS");
+    }
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+      const auto written = ::write(fd, bytes.data() + offset, bytes.size() - offset);
+      if (written > 0) {
+        offset += static_cast<std::size_t>(written);
+        continue;
+      }
+      if (written < 0 && errno == EINTR) continue;
+      ::close(fd);
+      cleanup();
+      throw std::runtime_error("DI_NATIVE_ONNX_RUNTIME_STAGING_WRITE");
+    }
+    if (::fsync(fd) != 0 || ::close(fd) != 0) {
+      cleanup();
+      throw std::runtime_error("DI_NATIVE_ONNX_RUNTIME_STAGING_FLUSH");
+    }
+  }
+
+  ~ScopedOnnxRuntimeModelFile() noexcept
+  {
+    cleanup();
+  }
+
+  ScopedOnnxRuntimeModelFile(const ScopedOnnxRuntimeModelFile&) = delete;
+  ScopedOnnxRuntimeModelFile& operator=(const ScopedOnnxRuntimeModelFile&) = delete;
+
+  const char* c_str() const noexcept { return m_path.c_str(); }
+
+  std::vector<std::uint8_t> read(std::uint64_t maxBytes) const
+  {
+    std::error_code error;
+    const auto size = std::filesystem::file_size(m_path, error);
+    if (error || size == 0 || size > maxBytes) {
+      throw std::runtime_error("DI_NATIVE_ONNX_RUNTIME_STAGING_READ");
+    }
+    std::ifstream input(m_path, std::ios::binary);
+    if (!input.good()) {
+      throw std::runtime_error("DI_NATIVE_ONNX_RUNTIME_STAGING_READ");
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+    if (!input.read(reinterpret_cast<char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()))) {
+      throw std::runtime_error("DI_NATIVE_ONNX_RUNTIME_STAGING_READ");
+    }
+    return bytes;
+  }
+
+private:
+  void cleanup() noexcept
+  {
+    if (!m_path.empty()) {
+      std::error_code ignored;
+      std::filesystem::remove(m_path, ignored);
+      m_path.clear();
+    }
+  }
+
+private:
+  std::string m_path;
+};
 
 std::uint64_t parseUint(const std::string& value, const char* field)
 {
@@ -221,8 +379,19 @@ std::string deterministicMessageBytes(const google::protobuf::MessageLite& messa
 
 std::vector<std::uint8_t> deterministicMessageVector(const google::protobuf::MessageLite& message)
 {
-  const auto wire = deterministicMessageBytes(message);
-  return std::vector<std::uint8_t>(wire.begin(), wire.end());
+  const auto size = message.ByteSizeLong();
+  if (size > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+    fail("SERIALIZE_LIMIT");
+  // Keep the large material-backed model in one serialization buffer.  The
+  // previous string-then-vector path retained two full copies until the
+  // temporary string was destroyed, which inflated the first Provider's
+  // working set immediately before the worker boundary.
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  google::protobuf::io::ArrayOutputStream array(bytes.data(), static_cast<int>(bytes.size()));
+  google::protobuf::io::CodedOutputStream coded(&array);
+  coded.SetSerializationDeterministic(true);
+  if (!message.SerializeToCodedStream(&coded) || coded.HadError()) fail("SERIALIZE");
+  return bytes;
 }
 
 // Reverse DFS from one requested output tensor, stopping at graph input and
@@ -310,7 +479,7 @@ collectBoundaryIo(const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>
     const auto* value = original.count(contract.name) != 0
       ? original[contract.name]
       : (inferred.count(contract.name) != 0 ? inferred[contract.name] : nullptr);
-    if (value == nullptr) fail("GRAPH");
+    if (value == nullptr) failGraphStage("boundary-io");
     result.push_back(value);
   }
   return result;
@@ -324,7 +493,7 @@ collectBoundaryIo(const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>
 // rejections (python _collect_reachable_tensors).  No other source metadata
 // is copied.
 onnx::ModelProto
-makeExtractedModel(const onnx::ModelProto& inferredSource,
+makeExtractedModel(onnx::ModelProto& inferredSource,
                    const std::vector<std::size_t>& reachable,
                    const std::vector<const onnx::ValueInfoProto*>& inputs,
                    const std::vector<const onnx::ValueInfoProto*>& outputs,
@@ -339,7 +508,7 @@ makeExtractedModel(const onnx::ModelProto& inferredSource,
   }
   if (graph.sparse_initializer_size() != 0 ||
       graph.quantization_annotation_size() != 0)
-    fail("GRAPH");
+    failGraphStage("unsupported-graph-fields");
   onnx::ModelProto result;
   result.set_ir_version(inferredSource.ir_version());
   result.set_producer_name("onnx.utils.extract_model");
@@ -349,9 +518,16 @@ makeExtractedModel(const onnx::ModelProto& inferredSource,
   outGraph->set_name("Extracted from {" + graph.name() + "}");
   for (const std::size_t index : reachable)
     *outGraph->add_node() = graph.node(static_cast<int>(index));
-  for (const auto& initializer : graph.initializer())
-    if (keepNames.count(initializer.name()) != 0)
-      *outGraph->add_initializer() = initializer;
+  for (int i = 0; i < graph.initializer_size(); ++i) {
+    const auto& initializer = graph.initializer(i);
+    if (keepNames.count(initializer.name()) == 0)
+      continue;
+    // The source graph is discarded immediately after extraction. Transfer
+    // the selected TensorProto instead of copying its potentially GiB-sized
+    // raw_data string while the source graph is still resident.
+    auto* output = outGraph->add_initializer();
+    output->Swap(inferredSource.mutable_graph()->mutable_initializer(i));
+  }
   for (const auto& value : graph.value_info())
     if (keepNames.count(value.name()) != 0)
       *outGraph->add_value_info() = value;
@@ -460,13 +636,28 @@ namespace {
 // in-process chain called checkActive(control).
 NativeOnnxIdentity
 canonicalOnnxModelIdentity(const onnx::ModelProto& model,
-                           const NativeAssemblyControl& control);
+                           const NativeAssemblyControl& control,
+                           const std::vector<std::uint8_t>* externalBytes = nullptr);
+
+void materializeShapeInferenceInitializers(
+  onnx::ModelProto& inferred,
+  const onnx::ModelProto& sourceModel,
+  const std::vector<std::uint8_t>* externalBytes,
+  const NativeAssemblyControl& control,
+  std::uint64_t* materializedBudget);
+
+void materializeSelectedExternalInitializers(
+  onnx::ModelProto& model,
+  const std::vector<std::size_t>& selectedNodes,
+  const std::vector<std::uint8_t>& externalBytes,
+  const NativeAssemblyControl& control);
 
 onnx::ModelProto
 ownedSourceModel(const NativeCanonicalSource& source,
                  const NativeAssemblyControl& control,
                  bool inlineExternal = true,
-                 std::uint64_t* materializedBudget = nullptr);
+                 std::uint64_t* materializedBudget = nullptr,
+                 const NativeOnnxModelFileInput* modelFile = nullptr);
 
 NativeCertifiedAssembly
 assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
@@ -474,19 +665,26 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
                            std::uint64_t maxSourceBytes,
                            std::uint64_t maxAssembledBytes,
                            const std::function<void()>& onRound,
-                           NativeCanonicalSource* sourceToReleaseAfterParse)
+                           NativeCanonicalSource* sourceToReleaseAfterParse,
+                           bool loadRuntimeSession,
+                           const NativeOnnxModelFileInput* modelFile = nullptr)
 {
   onRound();
+  const std::uint64_t sourceBytes = modelFile != nullptr
+    ? modelFile->bytes : static_cast<std::uint64_t>(source.modelBytes.size());
   if (maxSourceBytes == 0 || maxAssembledBytes == 0 ||
-      source.modelBytes.empty() || source.modelBytes.size() > maxSourceBytes ||
-      source.modelBytes.size() > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+      sourceBytes == 0 || sourceBytes > maxSourceBytes ||
+      (modelFile == nullptr &&
+       source.modelBytes.size() > static_cast<std::uint64_t>(std::numeric_limits<int>::max())))
     fail("SOURCE_LIMIT");
+  if (modelFile != nullptr && !source.modelBytes.empty())
+    fail("SOURCE_OWNERSHIP");
   if (source.initializerBytes &&
       (source.initializerBytes->empty() ||
        source.initializerBytes->size() > maxSourceBytes ||
        source.initializerBytes->size() >
          static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
-       checkedAdd(source.modelBytes.size(), source.initializerBytes->size()) >
+       checkedAdd(sourceBytes, source.initializerBytes->size()) >
          checkedAdd(maxSourceBytes, maxSourceBytes)))
     fail("INITIALIZER_LIMIT");
   if (recipe.adapterId.empty() || recipe.backend.empty() || recipe.roleKind.empty() ||
@@ -498,18 +696,61 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   validateContracts(recipe.expectedOutputs, outputNames);
   if (inputNames.empty() || outputNames.empty()) fail("IO_CONTRACT");
 
+  // OA04 materialized-role certificate path.  The parent has already
+  // authenticated the manifest, selected node payloads, initializer payloads,
+  // role boundary, deterministic wire, and role graph/initializer identity in
+  // materializeNativeCanonicalModel/canonicalOnnxSourceIdentity.  It then
+  // writes that exact byte vector through an atomic staging file.  Re-parsing
+  // the same 752 MiB role in the child would recreate the complete protobuf
+  // graph and run the second full checker without adding an independent
+  // authorization decision; run-46 showed that copy as the first owned-swap
+  // boundary beside another Provider's resident runner.
+  //
+  // Keep the child-side certificate bounded to the immutable file identity and
+  // the recipe/contract shape.  The parent reads the file only after the child
+  // has exited, and the Provider creates the single authoritative ORT session
+  // afterwards.  Inline callers and the ORT-enabled parity entry retain the
+  // full parse/check path below.
+  if (modelFile != nullptr && recipe.materializedRole && !loadRuntimeSession) {
+    if (source.initializerBytes)
+      fail("EXTERNAL_BINDING");
+    if (modelFile->bytes > maxAssembledBytes)
+      fail("SERIALIZE_LIMIT");
+    for (std::size_t index = 0; index < recipe.nodeIndices.size(); ++index) {
+      if (recipe.nodeIndices[index] != index)
+        fail("NODE_COVER");
+    }
+    const auto modelDigest = digestModelFile(*modelFile);
+    onRound();
+    NativeCertifiedAssembly result;
+    result.modelDigest = modelDigest;
+    result.nodeCount = recipe.nodeIndices.size();
+    for (const auto& contract : recipe.expectedInputs)
+      result.inputNames.push_back(contract.name);
+    for (const auto& contract : recipe.expectedOutputs)
+      result.outputNames.push_back(contract.name);
+    return result;
+  }
+
   NativeAssemblyControl sourceControl;
   sourceControl.deadline = std::chrono::steady_clock::time_point::max();
   sourceControl.requireActive = onRound;
   sourceControl.maxSourceBytes = maxSourceBytes;
   sourceControl.maxAssembledBytes = maxAssembledBytes;
-  // Reuse the strict owned-source path here.  It validates duplicate and
-  // consistent external metadata, traverses function/nested tensors, and
-  // applies the ONNX 1.17 length=0-to-EOF rule before returning the one model
-  // object that the checker, identity and extractor all share.
-  onnx::ModelProto original = ownedSourceModel(source, sourceControl);
+  // The cold canonical-source path must present the same owned, in-memory
+  // model to ONNX full-checking that the old Python/native preparation path
+  // validated.  ONNX checker resolves EXTERNAL TensorProto locations through
+  // `model.onnx.data`; Provider memory has no such filesystem object.  The
+  // material-backed path is handled separately below and never enters this
+  // full-source copy: it already carries a selected role model rebuilt from
+  // authenticated material payloads.
+  const auto* externalBytes = source.initializerBytes
+    ? &source.initializerBytes->asVector() : nullptr;
+  onnx::ModelProto original = ownedSourceModel(source, sourceControl, true,
+                                               nullptr, modelFile);
   if (!original.has_graph() || original.graph().node_size() == 0 ||
-      original.graph().node_size() > static_cast<int>(recipe.maxNodes)) fail("GRAPH");
+      original.graph().node_size() > static_cast<int>(recipe.maxNodes))
+    failGraphStage("source-graph");
 
   std::set<std::uint64_t> selected;
   for (const auto index : recipe.nodeIndices) {
@@ -537,28 +778,121 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
     try {
       onnx::checker::check_model(original, true);
     }
-    catch (const std::exception&) {
-      fail("GRAPH");
+    catch (const std::exception& error) {
+      failGraph("canonical-check", error);
     }
   }
 
-  // The shared source control keeps the strict source, identity, and
-  // cancellation checks on one bounded path for the worker and in-process
-  // entries; no second source parse is needed here.
-  // S4: the certified identity of the post-inline original must equal the
-  // recipe digests; a mismatch means the recipe was sealed for different
-  // source bytes (executor.py canonical ONNX digest mismatch errors).
-  // ``original`` already owns the authenticated, external-data-inlined model
-  // used by the checker and extractor.  Re-parsing ``source`` here would
-  // allocate a second protobuf graph plus another copy of the 1.5 GiB
-  // initializer before identity verification.  Derive the identity from the
-  // existing model so the worker's peak remains within the request envelope.
-  // The bounded OA04 child has no other consumer of these request buffers
-  // after this call returns.  Release them before S4-S7 so shape inference,
-  // extraction and ORT do not retain both the transport source and the
-  // authenticated inlined model.  OA01 passes nullptr and remains
-  // non-destructive for its caller-owned source.
-  if (sourceToReleaseAfterParse != nullptr) {
+  // S4: compare the authenticated graph/initializer identity without making
+  // a protobuf-owned copy of the external bytes.
+  const auto identity = canonicalOnnxModelIdentity(original, sourceControl,
+                                                    externalBytes);
+  if (identity.graphDigest != recipe.graphDigest ||
+      identity.initializerDigest != recipe.canonicalInitializerDigest)
+    fail("RECIPE");
+  onRound();
+
+  // S5: retain the authenticated materialized role directly, or infer shapes
+  // and extract the selected role from a canonical source.  The latter path
+  // materializes only shape-value initializers; ordinary Qwen weight tensors
+  // remain external until the selected role is extracted.  A deep
+  // `inferred = original` copy here duplicates the complete source graph and
+  // its external-backed tensors before extraction, which is precisely the
+  // peak this bounded worker is intended to avoid.
+  std::vector<std::string> certifiedNodeBytes;
+  certifiedNodeBytes.reserve(recipe.nodeIndices.size());
+  for (const auto index : recipe.nodeIndices) {
+    certifiedNodeBytes.push_back(deterministicMessageBytes(
+      original.graph().node(static_cast<int>(index))));
+  }
+  onnx::ModelProto assembled;
+  if (recipe.materializedRole) {
+    // A materialized role was rebuilt from authenticated selected node and
+    // initializer payloads immediately before this worker was spawned.  The
+    // parent has already bound its graph/initializer identity to that role
+    // model, and the recipe is rewritten to the compact contiguous cover.
+    // Re-running source shape inference and reachability extraction here
+    // creates a second model-sized protobuf graph without adding a new
+    // authorization or integrity check.  Keep the identity, node-byte,
+    // contract, full-check and ORT checks below; only reuse this already
+    // certified role graph.
+    for (std::size_t index = 0; index < recipe.nodeIndices.size(); ++index) {
+      if (recipe.nodeIndices[index] != index)
+        fail("NODE_COVER");
+    }
+    if (original.graph().node_size() !=
+        static_cast<int>(recipe.nodeIndices.size()))
+      fail("NODE_COVER");
+    assembled.Swap(&original);
+  }
+  else {
+      materializeShapeInferenceInitializers(
+        original, original, externalBytes, sourceControl, nullptr);
+      try {
+        onnx::shape_inference::InferShapes(original);
+      }
+      catch (const std::exception& error) {
+        failGraph("shape-inference", error);
+      }
+      onRound();
+      const auto& inferredGraph = original.graph();
+      std::unordered_set<std::string> extractionBoundaryNames;
+      for (const auto& input : inferredGraph.input()) extractionBoundaryNames.insert(input.name());
+      for (const auto& contract : recipe.expectedInputs)
+        extractionBoundaryNames.insert(contract.name);
+      std::unordered_set<std::size_t> unreachable;
+      for (int i = 0; i < inferredGraph.node_size(); ++i)
+        unreachable.insert(static_cast<std::size_t>(i));
+      std::unordered_set<std::size_t> reachable;
+      for (const auto& contract : recipe.expectedOutputs)
+        dfsReachNodes(contract.name, extractionBoundaryNames, inferredGraph.node(),
+                      unreachable, reachable);
+      std::vector<std::size_t> selectedNodes;
+      // The certified recipe owns the complete node cover for this role.  Output
+      // reachability still determines the required execution subgraph, but a
+      // valid source may contain certified side-effect-free nodes that are not on
+      // a path to one of the declared outputs.  Retain those explicitly selected
+      // nodes so the assembled graph remains byte-identical to the authenticated
+      // cover instead of silently changing the recipe identity.
+      std::set<std::size_t> selectedAndReachable(reachable.begin(), reachable.end());
+      selectedAndReachable.insert(selected.begin(), selected.end());
+      selectedNodes.reserve(selectedAndReachable.size());
+      for (const std::size_t index : selectedAndReachable) selectedNodes.push_back(index);
+      std::sort(selectedNodes.begin(), selectedNodes.end());  // original order
+      if (externalBytes != nullptr) {
+        materializeSelectedExternalInitializers(
+          original, selectedNodes, *externalBytes, sourceControl);
+      }
+      // The selected TensorProto values now own their authenticated bytes, so
+      // the worker request buffer can be scrubbed before serialization and ORT
+      // load. This is the key cache-compatible memory boundary.
+      if (sourceToReleaseAfterParse != nullptr) {
+        if (sourceToReleaseAfterParse != &source)
+          fail("SOURCE_OWNERSHIP");
+        std::fill(sourceToReleaseAfterParse->modelBytes.begin(),
+                  sourceToReleaseAfterParse->modelBytes.end(), 0);
+        std::vector<std::uint8_t>{}.swap(sourceToReleaseAfterParse->modelBytes);
+        if (sourceToReleaseAfterParse->initializerBytes) {
+          auto& initializerBytes = sourceToReleaseAfterParse->initializerBytes->asVector();
+          if (!initializerBytes.empty())
+            OPENSSL_cleanse(initializerBytes.data(), initializerBytes.size());
+          std::vector<std::uint8_t>{}.swap(initializerBytes);
+          sourceToReleaseAfterParse->initializerBytes.reset();
+        }
+        sourceToReleaseAfterParse->initializerRangeSource.reset();
+      }
+      const auto inputs = collectBoundaryIo(inferredGraph.input(),
+                                            inferredGraph.value_info(),
+                                            recipe.expectedInputs);
+      const auto outputs = collectBoundaryIo(inferredGraph.output(),
+                                             inferredGraph.value_info(),
+                                             recipe.expectedOutputs);
+      const auto functions = referredLocalFunctions(original, selectedNodes,
+                                                    inferredGraph.node());
+      assembled = makeExtractedModel(original, selectedNodes,
+                                     inputs, outputs, functions);
+  }
+  if (sourceToReleaseAfterParse != nullptr && recipe.materializedRole) {
     if (sourceToReleaseAfterParse != &source)
       fail("SOURCE_OWNERSHIP");
     std::fill(sourceToReleaseAfterParse->modelBytes.begin(),
@@ -573,66 +907,18 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
     }
     sourceToReleaseAfterParse->initializerRangeSource.reset();
   }
-  const auto identity = canonicalOnnxModelIdentity(original, sourceControl);
-  if (identity.graphDigest != recipe.graphDigest ||
-      identity.initializerDigest != recipe.canonicalInitializerDigest)
-    fail("RECIPE");
-  onRound();
 
-  // S5: infer shapes on the authenticated model, transferring ownership
-  // instead of deep-copying the complete inlined initializer.  The S6 node
-  // cover comparison needs only deterministic bytes for the certified nodes;
-  // retain those compact bytes before moving the full protobuf into the
-  // inference object.  A deep copy here duplicates the multi-GiB initializer
-  // while the worker already owns the request source.
-  std::vector<std::string> certifiedNodeBytes;
-  certifiedNodeBytes.reserve(recipe.nodeIndices.size());
-  for (const auto index : recipe.nodeIndices) {
-    certifiedNodeBytes.push_back(deterministicMessageBytes(
-      original.graph().node(static_cast<int>(index))));
+  // `original` still owns the complete authenticated source graph and all of
+  // its initializers after extraction.  Keeping it alive through the second
+  // checker, wire serialization, and ORT session load makes the worker retain
+  // the full source plus the selected role simultaneously.  Extraction has
+  // copied every field needed by S6/S7, so release that graph before entering
+  // the final validation/runtime phase.  The scope ensures protobuf storage is
+  // actually destroyed rather than merely cleared and retained by an arena.
+  {
+    onnx::ModelProto releasedOriginal;
+    original.Swap(&releasedOriginal);
   }
-  onnx::ModelProto inferred = std::move(original);
-  try {
-    onnx::shape_inference::InferShapes(inferred);
-  }
-  catch (const std::exception&) {
-    fail("GRAPH");
-  }
-  onRound();
-  const auto& inferredGraph = inferred.graph();
-  std::unordered_set<std::string> extractionBoundaryNames;
-  for (const auto& input : inferredGraph.input()) extractionBoundaryNames.insert(input.name());
-  for (const auto& contract : recipe.expectedInputs)
-    extractionBoundaryNames.insert(contract.name);
-  std::unordered_set<std::size_t> unreachable;
-  for (int i = 0; i < inferredGraph.node_size(); ++i)
-    unreachable.insert(static_cast<std::size_t>(i));
-  std::unordered_set<std::size_t> reachable;
-  for (const auto& contract : recipe.expectedOutputs)
-    dfsReachNodes(contract.name, extractionBoundaryNames, inferredGraph.node(),
-                  unreachable, reachable);
-  std::vector<std::size_t> selectedNodes;
-  // The certified recipe owns the complete node cover for this role.  Output
-  // reachability still determines the required execution subgraph, but a
-  // valid source may contain certified side-effect-free nodes that are not on
-  // a path to one of the declared outputs.  Retain those explicitly selected
-  // nodes so the assembled graph remains byte-identical to the authenticated
-  // cover instead of silently changing the recipe identity.
-  std::set<std::size_t> selectedAndReachable(reachable.begin(), reachable.end());
-  selectedAndReachable.insert(selected.begin(), selected.end());
-  selectedNodes.reserve(selectedAndReachable.size());
-  for (const std::size_t index : selectedAndReachable) selectedNodes.push_back(index);
-  std::sort(selectedNodes.begin(), selectedNodes.end());  // original order
-  const auto inputs = collectBoundaryIo(inferredGraph.input(),
-                                        inferredGraph.value_info(),
-                                        recipe.expectedInputs);
-  const auto outputs = collectBoundaryIo(inferredGraph.output(),
-                                         inferredGraph.value_info(),
-                                         recipe.expectedOutputs);
-  const auto functions = referredLocalFunctions(inferred, selectedNodes,
-                                                inferredGraph.node());
-  onnx::ModelProto assembled = makeExtractedModel(inferred, selectedNodes,
-                                                  inputs, outputs, functions);
 
   // S6: the assembled model passes the full checker again, its node cover
   // equals the certified indices with byte-identical nodes, and its io
@@ -640,8 +926,8 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   try {
     onnx::checker::check_model(assembled, true);
   }
-  catch (const std::exception&) {
-    fail("GRAPH");
+  catch (const std::exception& error) {
+    failGraph("assembled-check", error);
   }
   onRound();
   if (assembled.graph().node_size() != static_cast<int>(recipe.nodeIndices.size()))
@@ -656,29 +942,82 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   compareBoundaryContracts(recipe.expectedOutputs, assembled.graph().output());
   onRound();
 
-  // S7: deterministic wire within the resource envelope, then a real CPU
-  // session load of exactly these bytes; the session is destroyed before the
-  // result leaves this function.
-  auto bytes = deterministicWire(assembled, maxAssembledBytes);
+  // S7: deterministic wire within the resource envelope.  The public
+  // in-process parity path also loads a real CPU session here, while the
+  // production worker skips that duplicate load: its parent creates and
+  // warms the authoritative OnnxRuntimeModelRunner before RUNNER_READY.
+  // Keeping the switch at this internal seam preserves the parity helper
+  // without retaining a second model-sized ORT graph in the worker.
+  // A materialized role is already an authenticated, deterministic ONNX file.
+  // The file-backed worker has parsed that file and completed S1-S6 against
+  // it, while the parent will read the same immutable file after the child
+  // exits.  Serializing the protobuf once more here would create a second
+  // model-sized buffer solely to rediscover the file digest, which is the
+  // cold-worker peak this path is intended to avoid.  Inline/parity callers
+  // still take the original deterministic serialization path.
+  std::vector<std::uint8_t> bytes;
+  std::string assembledDigest;
+  if (modelFile != nullptr) {
+    if (!recipe.materializedRole || modelFile->bytes == 0 ||
+        modelFile->bytes > maxAssembledBytes || modelFile->digest.empty())
+      fail("SERIALIZE_LIMIT");
+    assembledDigest = modelFile->digest;
+  }
+  else {
+    bytes = deterministicWire(assembled, maxAssembledBytes);
+    assembledDigest = digest(bytes);
+  }
+  {
+    onnx::ModelProto releasedAssembled;
+    assembled.Swap(&releasedAssembled);
+  }
   onRound();
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
-  try {
-    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "ndnsf-certified-assembly");
-    Ort::SessionOptions options;
-    options.SetGraphOptimizationLevel(ORT_ENABLE_ALL);
-    Ort::Session session(env, bytes.data(), static_cast<int>(bytes.size()), options);
-  }
-  catch (const std::exception&) {
-    fail("GRAPH");
+  if (loadRuntimeSession) {
+    try {
+      // Loading from a byte vector keeps the complete serialized role model
+      // resident while ORT builds its graph/session representation.  Stage the
+      // already-certified bytes privately, release the vector, and read it back
+      // only after the validation session is destroyed.  The returned bytes and
+      // digest therefore remain identical to the protocol artifact.
+      ScopedOnnxRuntimeModelFile stagedModel(bytes);
+      std::vector<std::uint8_t>{}.swap(bytes);
+      {
+        Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "ndnsf-certified-assembly");
+        Ort::SessionOptions options;
+        // Match the production OnnxRuntimeModelRunner's bounded CPU session.
+        // The default ORT intra-op pool allocates per-thread scratch state while
+        // validating a model-sized role and needlessly raises the cold-worker
+        // peak beside another Provider's resident runner.
+        options.SetIntraOpNumThreads(1);
+        // Do not retain a second prepacked weight copy while another Provider's
+        // runner is resident.  The production runner uses the same setting;
+        // this validation session must exercise the same bounded CPU contract.
+        options.AddConfigEntry("session.disable_prepacking", "1");
+        // This worker only proves that the certified bytes can create a real CPU
+        // session; S6 has already performed the full graph/IO checks.  Do not
+        // build an optimized execution graph here: the selected Provider creates
+        // the production BASIC session after the worker exits, and performing
+        // BASIC optimization twice is the cold-start peak seen with two roles.
+        options.SetGraphOptimizationLevel(ORT_DISABLE_ALL);
+        Ort::Session session(env, stagedModel.c_str(), options);
+      }
+      bytes = stagedModel.read(maxAssembledBytes);
+    }
+    catch (const std::exception& error) {
+      failGraph("ort-session", error);
+    }
   }
 #else
-  // The ONNX graph/protobuf helpers remain linkable in a disabled build, but
-  // the certified assembly gate requires the optional ORT C++ runtime.
-  fail("RUNTIME_UNAVAILABLE");
+  if (loadRuntimeSession) {
+    // The ONNX graph/protobuf helpers remain linkable in a disabled build, but
+    // the certified in-process parity gate requires the optional ORT runtime.
+    fail("RUNTIME_UNAVAILABLE");
+  }
 #endif
   onRound();
   NativeCertifiedAssembly result;
-  result.modelDigest = digest(bytes);
+  result.modelDigest = assembledDigest;
   result.modelBytes = std::move(bytes);
   result.nodeCount = recipe.nodeIndices.size();
   for (const auto& contract : recipe.expectedInputs) result.inputNames.push_back(contract.name);
@@ -698,20 +1037,24 @@ assembleNativeCertifiedOnnxModel(const NativeCanonicalSource& source,
   checkActive(control);
   return assembleCertifiedOnnxChain(source, recipe, control.maxSourceBytes,
                                     control.maxAssembledBytes,
-                                    [&control] { checkActive(control); }, nullptr);
+                                    [&control] { checkActive(control); }, nullptr,
+                                    true);
 }
 
 NativeCertifiedAssembly
 assembleInProcess(const NativeCanonicalSource& source,
                   const NativeCertifiedRecipe& recipe,
-                  NativeCanonicalSource* sourceToReleaseAfterParse)
+                  NativeCanonicalSource* sourceToReleaseAfterParse,
+                  const NativeOnnxModelFileInput* modelFile)
 {
   // OA04: the bounded worker child runs the identical chain against the
   // certified recipe budget with no cancellation callback of its own; the
-  // parent transport owns cancellation by killing this process.
+  // parent transport owns cancellation by killing this process.  The worker
+  // performs structural/digest/IO validation; the parent owns the single
+  // authoritative ORT load and warmup before publishing RUNNER_READY.
   return assembleCertifiedOnnxChain(source, recipe, recipe.maxSourceBytes,
                                     recipe.maxAssembledBytes, [] {},
-                                    sourceToReleaseAfterParse);
+                                    sourceToReleaseAfterParse, false, modelFile);
 }
 
 // ---------------------------------------------------------------------------
@@ -1526,31 +1869,77 @@ void materializeShapeInferenceInitializers(
   checkActive(control);
 }
 
+// Materialize only the external initializers referenced by the selected role.
+// The complete source graph remains external, so the worker does not create a
+// second full-size raw_data copy before extraction.  The extracted model later
+// takes ownership of these TensorProto values with Swap().
+void materializeSelectedExternalInitializers(
+  onnx::ModelProto& model,
+  const std::vector<std::size_t>& selectedNodes,
+  const std::vector<std::uint8_t>& externalBytes,
+  const NativeAssemblyControl& control)
+{
+  std::unordered_set<std::string> required;
+  const auto& graph = model.graph();
+  for (const auto index : selectedNodes) {
+    if (index >= static_cast<std::size_t>(graph.node_size()))
+      fail("NODE_COVER");
+    for (const auto& input : graph.node(static_cast<int>(index)).input())
+      if (!input.empty())
+        required.insert(input);
+  }
+  std::vector<onnx::TensorProto*> tensors;
+  collectModelTensors(model, tensors);
+  for (auto* tensor : tensors) {
+    checkActive(control);
+    if (tensor->data_location() != onnx::TensorProto::EXTERNAL ||
+        required.count(tensor->name()) == 0)
+      continue;
+    auto material = materializeExternalTensor(*tensor, &externalBytes, &control);
+    tensor->Swap(&material);
+  }
+  checkActive(control);
+}
+
 // Shared OA05-for-identity entry: source limits, parse, external binding and
 // memory-only inlining.  It deliberately does not full-check or shape-infer.
 onnx::ModelProto ownedSourceModel(const NativeCanonicalSource& source,
                                   const NativeAssemblyControl& control,
                                   bool inlineExternal,
-                                  std::uint64_t* materializedBudget)
+                                  std::uint64_t* materializedBudget,
+                                  const NativeOnnxModelFileInput* modelFile)
 {
   checkActive(control);
-  if (control.maxSourceBytes == 0 ||
-      source.modelBytes.empty() || source.modelBytes.size() > control.maxSourceBytes ||
-      source.modelBytes.size() > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+  const std::uint64_t sourceBytes = modelFile != nullptr
+    ? modelFile->bytes : static_cast<std::uint64_t>(source.modelBytes.size());
+  if (control.maxSourceBytes == 0 || sourceBytes == 0 ||
+      sourceBytes > control.maxSourceBytes ||
+      (modelFile == nullptr &&
+       source.modelBytes.size() > static_cast<std::uint64_t>(std::numeric_limits<int>::max())))
     fail("SOURCE_LIMIT");
+  if (modelFile != nullptr && !source.modelBytes.empty())
+    fail("SOURCE_OWNERSHIP");
   if (source.initializerBytes &&
       (source.initializerBytes->empty() ||
        source.initializerBytes->size() > control.maxSourceBytes ||
        source.initializerBytes->size() >
          static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
-       checkedAdd(source.modelBytes.size(), source.initializerBytes->size()) >
+       checkedAdd(sourceBytes, source.initializerBytes->size()) >
          checkedAdd(control.maxSourceBytes, control.maxSourceBytes)))
     fail("INITIALIZER_LIMIT");
 
   onnx::ModelProto model;
-  if (!model.ParseFromArray(source.modelBytes.data(),
-                            static_cast<int>(source.modelBytes.size())))
+  if (modelFile != nullptr) {
+    (void) digestModelFile(*modelFile);
+    google::protobuf::io::FileInputStream input(modelFile->fd);
+    input.SetCloseOnDelete(false);
+    if (!model.ParseFromZeroCopyStream(&input))
+      fail("PARSE");
+  }
+  else if (!model.ParseFromArray(source.modelBytes.data(),
+                                 static_cast<int>(source.modelBytes.size()))) {
     fail("PARSE");
+  }
   std::vector<onnx::TensorProto*> externalTensors;
   collectModelTensors(model, externalTensors);
   const bool hasExternal = std::any_of(
@@ -1950,8 +2339,8 @@ NativeJson materialReferenceJson(const NativeCanonicalSource::MaterialReference&
     {"payloadId", reference.payloadId},
     {"sharedDigest", reference.sharedDigest}};
   // Keep the v1 canonical JSON byte-compatible for legacy single-payload
-  // references.  The optional field is emitted only for chunked external
-  // initializers, so parsing an old manifest does not change its digest.
+  // references.  The optional field is emitted only for chunked external or
+  // large inline initializers, so parsing an old manifest does not change its digest.
   if (!reference.chunkPayloadIds.empty()) {
     NativeJson chunks = NativeJson::array();
     for (const auto& payloadId : reference.chunkPayloadIds)
@@ -1999,11 +2388,18 @@ void NativeCanonicalSource::MaterialManifest::validate() const
     const bool invalidRange = payload.rangeSource &&
       (payload.rangeSize == 0 || payload.rangeOffset > payload.rangeSource->size() ||
        payload.rangeSize > payload.rangeSource->size() - payload.rangeOffset);
+    const bool invalidString = payload.stringBacking &&
+      (payload.stringSize == 0 || payload.stringOffset > payload.stringBacking->size() ||
+       payload.stringSize > payload.stringBacking->size() - payload.stringOffset);
+    const unsigned backingKinds = static_cast<unsigned>(payload.backing != nullptr) +
+      static_cast<unsigned>(payload.stringBacking != nullptr) +
+      static_cast<unsigned>(payload.rangeSource != nullptr);
     if (payload.payloadId.empty() || !validDigest(payload.digest) || payload.empty() ||
-        (payload.backing && payload.rangeSource) || invalidRange ||
+        backingKinds > 1 || invalidRange || invalidString ||
         (payload.backing &&
          (payload.backingOffset > payload.backing->size() ||
           payload.backingSize > payload.backing->size() - payload.backingOffset)) ||
+        payload.byteSize() > NativeCanonicalMaterialBundleMaxBytes ||
         payload.byteSize() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         !payloadIds.insert(payload.payloadId).second)
       throw std::invalid_argument("native canonical material payload is invalid");
@@ -2078,7 +2474,7 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
                                       const NativeAssemblyControl& control)
 {
   checkActive(control);
-  const auto model = ownedSourceModel(source, control, false);
+  auto model = ownedSourceModel(source, control, false);
   const auto entries = buildTensorIndex(
     model, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr, &control);
   auto result = std::make_shared<NativeCanonicalSource::MaterialManifest>();
@@ -2111,7 +2507,7 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
   std::map<std::string, std::string> initializerPayloadByDigest;
   for (int i = 0; i < model.graph().initializer_size(); ++i) {
     checkActive(control);
-    const auto& initializer = model.graph().initializer(i);
+    auto& initializer = *model.mutable_graph()->mutable_initializer(i);
     initializerNames.insert(initializer.name());
     const auto normalized = std::find_if(entries.begin(), entries.end(),
       [&initializer] (const auto& item) { return item.name == initializer.name(); });
@@ -2181,6 +2577,61 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
           chunk.backingOffset = chunkOffset;
           chunk.backingSize = chunkBytes;
         }
+        result->payloads.push_back(std::move(chunk));
+        chunkPayloadIds.push_back(chunkPayloadId);
+        consumed += chunkBytes;
+      }
+      result->references.push_back({
+        headerPayloadId, std::move(chunkPayloadIds), "shared-initializer", initializer.name(), 0,
+        headerDigest, headerBytes.size(), {}, normalized->contentDigest});
+    }
+    else if (initializer.raw_data().size() > NativeCanonicalMaterialBundleMaxBytes ||
+             static_cast<std::uint64_t>(initializer.ByteSizeLong()) >
+               NativeCanonicalMaterialBundleMaxBytes) {
+      // Inline quantized ONNX commonly stores a large raw_data field directly
+      // in the model protobuf. Use the serialized TensorProto size as well as
+      // raw_data: a raw field exactly at the bundle limit can still exceed the
+      // limit after protobuf metadata is included. Move that allocation into
+      // shared string backing, emit a small authenticated TensorProto header,
+      // and publish only bounded views. This keeps the inline source contract
+      // equivalent to external initializer chunking without creating a second
+      // full byte vector.
+      auto rawBacking = std::make_shared<std::string>(std::move(*initializer.mutable_raw_data()));
+      auto header = initializer;
+      header.clear_raw_data();
+      header.clear_float_data();
+      header.clear_int32_data();
+      header.clear_string_data();
+      header.clear_int64_data();
+      header.clear_double_data();
+      header.clear_uint64_data();
+      header.clear_external_data();
+      header.set_data_location(onnx::TensorProto::DEFAULT);
+      const auto headerBytes = deterministicMessageVector(header);
+      const auto headerDigest = digest(headerBytes);
+      const auto headerPayloadId = std::string("initializer-header-") + headerDigest.substr(7);
+      accountMaterial(headerBytes.size());
+      result->payloads.push_back({headerPayloadId, headerDigest, headerBytes});
+
+      std::vector<std::string> chunkPayloadIds;
+      std::uint64_t consumed = 0;
+      std::uint64_t chunkIndex = 0;
+      while (consumed < rawBacking->size()) {
+        checkActive(control);
+        const auto chunkBytes = static_cast<std::size_t>(std::min<std::uint64_t>(
+          NativeCanonicalMaterialBundleMaxBytes,
+          static_cast<std::uint64_t>(rawBacking->size()) - consumed));
+        const auto chunkOffset = static_cast<std::size_t>(consumed);
+        const auto chunkDigest = digest(
+          reinterpret_cast<const std::uint8_t*>(rawBacking->data()) + chunkOffset, chunkBytes);
+        const auto chunkPayloadId = headerPayloadId + "-chunk-" + std::to_string(chunkIndex++);
+        accountMaterial(chunkBytes);
+        NativeCanonicalSource::MaterialPayload chunk;
+        chunk.payloadId = chunkPayloadId;
+        chunk.digest = chunkDigest;
+        chunk.stringBacking = rawBacking;
+        chunk.stringOffset = chunkOffset;
+        chunk.stringSize = chunkBytes;
         result->payloads.push_back(std::move(chunk));
         chunkPayloadIds.push_back(chunkPayloadId);
         consumed += chunkBytes;
@@ -2295,14 +2746,16 @@ parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes)
 std::vector<std::uint8_t>
 materializeNativeCanonicalModel(NativeCanonicalSource& source,
                                 const std::vector<std::uint64_t>& nodeIndices,
+                                const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
+                                const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
                                 const NativeAssemblyControl& control)
 {
   checkActive(control);
   if (!source.materialManifest || nodeIndices.empty())
     fail("MATERIAL_SELECTION");
   source.materialManifest->validate();
-  std::map<std::string, const NativeCanonicalSource::MaterialPayload*> payloads;
-  for (const auto& payload : source.materialPayloads) {
+  std::map<std::string, NativeCanonicalSource::MaterialPayload*> payloads;
+  for (auto& payload : source.materialPayloads) {
     const auto payloadBytes = payload.copyBytes();
     if (payload.payloadId.empty() || payload.empty() ||
         digest(payloadBytes.data(), payloadBytes.size()) != payload.digest ||
@@ -2357,6 +2810,84 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
       model.graph().initializer_size() != 0)
     fail("MATERIAL_TEMPLATE");
 
+  // The legacy Qwen exporter created each stage with explicit role I/O.  A
+  // canonical graph only contains the full-model boundary, so merely copying
+  // its template leaves an internal handoff (for example
+  // `hidden_states_out`) absent from graph.output and makes the subsequent
+  // native extractor reject an otherwise valid selected node set.  Rebuild
+  // the role boundary from the authenticated preparation contracts before
+  // adding nodes.  The contracts carry the same dtype/shape information that
+  // the old exporter wrote into its stage ONNX files.
+  if (!expectedInputs.empty() || !expectedOutputs.empty()) {
+    if (expectedInputs.empty() || expectedOutputs.empty())
+      fail("MATERIAL_BOUNDARY");
+    std::set<std::string> inputNames;
+    std::set<std::string> outputNames;
+    validateContracts(expectedInputs, inputNames);
+    validateContracts(expectedOutputs, outputNames);
+    const auto dtypeCode = [] (const std::string& value) -> std::int32_t {
+      static const std::map<std::string, std::int32_t> labels{
+        {"float32", onnx::TensorProto::FLOAT},
+        {"uint8", onnx::TensorProto::UINT8},
+        {"int8", onnx::TensorProto::INT8},
+        {"uint16", onnx::TensorProto::UINT16},
+        {"int16", onnx::TensorProto::INT16},
+        {"int32", onnx::TensorProto::INT32},
+        {"int64", onnx::TensorProto::INT64},
+        {"string", onnx::TensorProto::STRING},
+        {"bool", onnx::TensorProto::BOOL},
+        {"float16", onnx::TensorProto::FLOAT16},
+        {"float64", onnx::TensorProto::DOUBLE},
+        {"uint32", onnx::TensorProto::UINT32},
+        {"uint64", onnx::TensorProto::UINT64},
+        {"complex64", onnx::TensorProto::COMPLEX64},
+        {"complex128", onnx::TensorProto::COMPLEX128},
+        {"bfloat16", onnx::TensorProto::BFLOAT16}};
+      const auto named = labels.find(value);
+      if (named != labels.end()) return named->second;
+      if (value.empty() || !std::all_of(value.begin(), value.end(), [] (unsigned char c) {
+            return std::isdigit(c) != 0;
+          }))
+        fail("MATERIAL_BOUNDARY");
+      try {
+        const auto parsed = std::stoll(value);
+        if (parsed < 0 || parsed > std::numeric_limits<std::int32_t>::max())
+          fail("MATERIAL_BOUNDARY");
+        return static_cast<std::int32_t>(parsed);
+      }
+      catch (const std::exception&) {
+        fail("MATERIAL_BOUNDARY");
+      }
+    };
+    const auto valueInfo = [&] (const NativeAssemblyTensorContractV3& contract) {
+      onnx::ValueInfoProto value;
+      value.set_name(contract.name);
+      auto* tensor = value.mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(dtypeCode(contract.dtype));
+      auto* shape = tensor->mutable_shape();
+      for (const auto& dimension : contract.shape) {
+        auto* dim = shape->add_dim();
+        if (std::holds_alternative<std::int64_t>(dimension)) {
+          const auto number = std::get<std::int64_t>(dimension);
+          if (number < 0) fail("MATERIAL_BOUNDARY");
+          dim->set_dim_value(number);
+        }
+        else {
+          const auto& symbol = std::get<std::string>(dimension);
+          if (symbol.empty()) fail("MATERIAL_BOUNDARY");
+          dim->set_dim_param(symbol);
+        }
+      }
+      return value;
+    };
+    model.mutable_graph()->clear_input();
+    model.mutable_graph()->clear_output();
+    for (const auto& contract : expectedInputs)
+      *model.mutable_graph()->add_input() = valueInfo(contract);
+    for (const auto& contract : expectedOutputs)
+      *model.mutable_graph()->add_output() = valueInfo(contract);
+  }
+
   std::set<std::uint64_t> seenNodes;
   std::set<std::string> dependencies;
   std::optional<std::uint64_t> previousNodeIndex;
@@ -2385,6 +2916,31 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
     if (match == nullptr || payloads.find(match->payloadId) == payloads.end())
       fail("MATERIAL_INITIALIZER");
   }
+  // A selected initializer may be backed by many authenticated bundle
+  // objects.  Keep only the objects that still have a reference consumer:
+  // once the final header/chunk has been copied into TensorProto, release its
+  // backing immediately instead of retaining the whole bundle set until the
+  // role model is complete.  The count also preserves correctness if a
+  // manifest legitimately reuses one payload in more than one initializer.
+  std::map<std::string, std::size_t> remainingPayloadUses;
+  for (const auto& reference : source.materialManifest->references) {
+    if (reference.kind != "shared-initializer" ||
+        dependencies.count(reference.logicalName) == 0)
+      continue;
+    ++remainingPayloadUses[reference.payloadId];
+    for (const auto& chunkPayloadId : reference.chunkPayloadIds)
+      ++remainingPayloadUses[chunkPayloadId];
+  }
+  const auto releaseMaterialPayload = [&] (const std::string& payloadId) {
+    const auto remaining = remainingPayloadUses.find(payloadId);
+    if (remaining == remainingPayloadUses.end() || remaining->second == 0)
+      return;
+    if (--remaining->second == 0) {
+      const auto payload = payloads.find(payloadId);
+      if (payload != payloads.end())
+        payload->second->release();
+    }
+  };
   const auto materializeInitializer = [&] (const auto& reference) {
     const auto header = payloads.find(reference.payloadId);
     if (header == payloads.end())
@@ -2397,6 +2953,7 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
         fail("MATERIAL_INITIALIZER");
       if (reference.digest != header->second->digest || reference.bytes != headerBytes.size())
         fail("MATERIAL_INITIALIZER");
+      releaseMaterialPayload(reference.payloadId);
       return initializer;
     }
     onnx::TensorProto initializer;
@@ -2409,8 +2966,10 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
     for (const auto& chunkId : reference.chunkPayloadIds) {
       checkActive(control);
       const auto chunk = payloads.find(chunkId);
-      if (chunk == payloads.end() || chunk->second->byteSize() > NativeCanonicalMaterialBundleMaxBytes)
+      if (chunk == payloads.end() ||
+          chunk->second->byteSize() > NativeCanonicalMaterialBundleMaxBytes) {
         fail("MATERIAL_INITIALIZER");
+      }
       rawBytes = checkedAdd(rawBytes, chunk->second->byteSize());
     }
     const auto modelBytesBeforeInitializer = static_cast<std::uint64_t>(model.ByteSizeLong());
@@ -2437,7 +2996,9 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
         fail("MATERIAL_INITIALIZER");
       const auto chunkBytes = chunk->second->copyBytes();
       raw.insert(raw.end(), chunkBytes.begin(), chunkBytes.end());
+      releaseMaterialPayload(chunkId);
     }
+    releaseMaterialPayload(reference.payloadId);
     initializer.set_raw_data(reinterpret_cast<const char*>(raw.data()), static_cast<int>(raw.size()));
     raw.clear();
     raw.shrink_to_fit();
@@ -2479,6 +3040,14 @@ materializeNativeCanonicalModel(NativeCanonicalSource& source,
       finalWorkingSet > control.maxAssembledBytes)
     fail("MATERIAL_LIMIT");
   return result;
+}
+
+std::vector<std::uint8_t>
+materializeNativeCanonicalModel(NativeCanonicalSource& source,
+                                const std::vector<std::uint64_t>& nodeIndices,
+                                const NativeAssemblyControl& control)
+{
+  return materializeNativeCanonicalModel(source, nodeIndices, {}, {}, control);
 }
 
 void validateNativeCanonicalMaterialManifest(
@@ -2548,8 +3117,9 @@ void validateNativeCanonicalMaterialManifest(
         });
       if (sourceInitializer == model.graph().initializer().end())
         throw std::invalid_argument("native canonical material initializer payload is invalid");
+      const bool hasChunks = !reference.chunkPayloadIds.empty();
       auto expectedHeader = *sourceInitializer;
-      if (sourceInitializer->data_location() == onnx::TensorProto::EXTERNAL) {
+      if (sourceInitializer->data_location() == onnx::TensorProto::EXTERNAL || hasChunks) {
         expectedHeader.clear_raw_data();
         expectedHeader.clear_float_data();
         expectedHeader.clear_int32_data();
@@ -2575,21 +3145,35 @@ void validateNativeCanonicalMaterialManifest(
         }
       }
       else {
-        if (sourceInitializer->data_location() != onnx::TensorProto::EXTERNAL ||
-            !source.initializerBytes)
+        if (sourceInitializer->data_location() != onnx::TensorProto::EXTERNAL &&
+            sourceInitializer->raw_data().size() <= NativeCanonicalMaterialBundleMaxBytes &&
+            static_cast<std::uint64_t>(sourceInitializer->ByteSizeLong()) <=
+              NativeCanonicalMaterialBundleMaxBytes)
           throw std::invalid_argument("native canonical material initializer chunks are invalid");
-        const auto offsetText = externalValue(*sourceInitializer, "offset");
-        const auto lengthText = externalValue(*sourceInitializer, "length");
-        const auto offset = offsetText.empty() ? std::uint64_t{0} : parseUint(offsetText, "OFFSET");
-        if (offset > source.initializerBytes->size())
-          throw std::invalid_argument("native canonical material initializer chunks are invalid");
-        auto length = lengthText.empty()
-          ? static_cast<std::uint64_t>(source.initializerBytes->size()) - offset
-          : parseUint(lengthText, "LENGTH");
-        if (length == 0)
-          length = static_cast<std::uint64_t>(source.initializerBytes->size()) - offset;
-        if (length > source.initializerBytes->size() - offset)
-          throw std::invalid_argument("native canonical material initializer chunks are invalid");
+        std::uint64_t offset = 0;
+        std::uint64_t length = 0;
+        const std::uint8_t* expectedBytes = nullptr;
+        if (sourceInitializer->data_location() == onnx::TensorProto::EXTERNAL) {
+          if (!source.initializerBytes)
+            throw std::invalid_argument("native canonical material initializer chunks are invalid");
+          const auto offsetText = externalValue(*sourceInitializer, "offset");
+          const auto lengthText = externalValue(*sourceInitializer, "length");
+          offset = offsetText.empty() ? std::uint64_t{0} : parseUint(offsetText, "OFFSET");
+          if (offset > source.initializerBytes->size())
+            throw std::invalid_argument("native canonical material initializer chunks are invalid");
+          length = lengthText.empty()
+            ? static_cast<std::uint64_t>(source.initializerBytes->size()) - offset
+            : parseUint(lengthText, "LENGTH");
+          if (length == 0)
+            length = static_cast<std::uint64_t>(source.initializerBytes->size()) - offset;
+          if (length > source.initializerBytes->size() - offset)
+            throw std::invalid_argument("native canonical material initializer chunks are invalid");
+          expectedBytes = source.initializerBytes->data() + offset;
+        }
+        else {
+          length = sourceInitializer->raw_data().size();
+          expectedBytes = reinterpret_cast<const std::uint8_t*>(sourceInitializer->raw_data().data());
+        }
         std::uint64_t total = 0;
         for (const auto& chunkId : reference.chunkPayloadIds) {
           const auto chunk = std::find_if(manifest.payloads.begin(), manifest.payloads.end(),
@@ -2597,6 +3181,10 @@ void validateNativeCanonicalMaterialManifest(
           if (chunk == manifest.payloads.end() ||
               chunk->byteSize() > NativeCanonicalMaterialBundleMaxBytes)
             throw std::invalid_argument("native canonical material initializer chunks are invalid");
+          const auto chunkBytes = chunk->copyBytes();
+          if (total > length || chunk->byteSize() > length - total ||
+              !std::equal(chunkBytes.begin(), chunkBytes.end(), expectedBytes + total))
+            throw std::invalid_argument("native canonical material initializer chunks differ");
           total = checkedAdd(total, chunk->byteSize());
         }
         if (total != length)
@@ -2626,13 +3214,30 @@ void validateNativeCanonicalMaterialManifest(
     throw std::invalid_argument("native canonical material coverage is incomplete");
 }
 
+void validateNativeCanonicalMaterialReferenceIndex(
+  const NativeCanonicalSource& source,
+  const NativeCanonicalSource::MaterialManifest& manifest,
+  const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  if (manifest.payloadsComplete)
+    throw std::invalid_argument("native canonical material index is complete");
+  manifest.validate();
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  if (manifest.sourceDigest != nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) ||
+      manifest.graphDigest != identity.graphDigest || manifest.initializerDigest != identity.initializerDigest)
+    throw std::invalid_argument("native canonical material reference identity differs");
+  checkActive(control);
+}
+
 namespace {
 NativeOnnxIdentity
 canonicalOnnxModelIdentity(const onnx::ModelProto& model,
-                           const NativeAssemblyControl& control)
+                           const NativeAssemblyControl& control,
+                           const std::vector<std::uint8_t>* externalBytes)
 {
   checkActive(control);
-  const auto entries = buildTensorIndex(model, nullptr, &control);
+  const auto entries = buildTensorIndex(model, externalBytes, &control);
   NativeOnnxIdentity identity;
   identity.graphDigest = sha256HexOf(graphFactsJson(model, entries));
   identity.initializerDigest = sha256HexOf(initializerContentJson(entries));

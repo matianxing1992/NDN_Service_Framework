@@ -31,7 +31,8 @@ public:
       "/LLM/Pipeline/Stage/2"},
     std::vector<std::uint64_t> tensorDegrees = {1, 1, 1},
     std::string inputIngressRole = {},
-    std::string resultEgressRole = {});
+    std::string resultEgressRole = {},
+    std::string modelFamily = "qwen");
 
   NativeStrategyIdentity identity() const override;
   /** Build the maintained semantic graph from pinned model metadata. This is
@@ -65,6 +66,7 @@ private:
   std::vector<std::uint64_t> m_tensorDegrees;
   std::string m_inputIngressRole;
   std::string m_resultEgressRole;
+  std::string m_modelFamily;
 };
 
 } // namespace ndnsf::di::qwen

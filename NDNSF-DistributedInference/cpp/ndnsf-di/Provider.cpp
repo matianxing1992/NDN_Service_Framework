@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
@@ -7,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -43,8 +45,6 @@
 #include <thread>
 #include <unistd.h>
 #include <utility>
-#include <fcntl.h>
-#include <sys/stat.h>
 
 namespace ndnsf::di {
 
@@ -74,9 +74,26 @@ namespace {
 void
 reportArtifactCleanupFailure(const char* phase) noexcept
 {
-  std::fprintf(stderr,
-               "NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED phase=%s\n",
-               phase == nullptr ? "unknown" : phase);
+  try {
+    logRuntimeEvidence(std::string("NDNSF_DI_PROVIDER_ARTIFACT_CLEANUP_FAILED phase=") +
+                       (phase == nullptr ? "unknown" : phase));
+  }
+  catch (...) { /* Cleanup must remain noexcept, including logging failures. */ }
+}
+
+void
+logProviderPreparationProgress(const NativeSelectionProjectionV3& projection,
+                               const char* phase,
+                               const char* detail = nullptr) noexcept
+{
+  try {
+    std::ostringstream record;
+    record << "NDNSF_DI_PROVIDER_PREPARATION phase=" << (phase ? phase : "unknown")
+           << " requestId=" << projection.requestId << " provider=" << projection.provider
+           << " role=" << projection.assembly.selectedRole << " detail=" << (detail ? detail : "");
+    logRuntimeEvidence(record.str());
+  }
+  catch (...) { /* Progress reporting must not terminate model preparation. */ }
 }
 
 struct ProviderArtifactCleanupGuard
@@ -443,40 +460,6 @@ providerCachedModelPath(const std::string& cacheDir,
     assembledDigest.substr(7) / "model.onnx";
 }
 
-std::vector<std::uint8_t>
-providerReadBounded(const std::filesystem::path& path, std::uint64_t maxBytes)
-{
-  struct stat expected{};
-  if (::lstat(path.c_str(), &expected) != 0 || !S_ISREG(expected.st_mode) ||
-      expected.st_size <= 0 || static_cast<std::uint64_t>(expected.st_size) > maxBytes)
-    throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
-  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-  if (fd < 0)
-    throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
-  struct stat opened{};
-  const bool sameFile = ::fstat(fd, &opened) == 0 && S_ISREG(opened.st_mode) &&
-    opened.st_dev == expected.st_dev && opened.st_ino == expected.st_ino &&
-    opened.st_size == expected.st_size;
-  if (!sameFile) {
-    ::close(fd);
-    throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
-  }
-  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(opened.st_size));
-  std::size_t offset = 0;
-  while (offset < bytes.size()) {
-    const auto count = ::read(fd, bytes.data() + offset, bytes.size() - offset);
-    if (count < 0 && errno == EINTR)
-      continue;
-    if (count <= 0) {
-      ::close(fd);
-      throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
-    }
-    offset += static_cast<std::size_t>(count);
-  }
-  ::close(fd);
-  return bytes;
-}
-
 std::uint64_t
 providerNowMs()
 {
@@ -496,26 +479,19 @@ providerProtectedStaging(const std::filesystem::path& cacheDir)
   const auto created = ::mkdtemp(mutablePattern.data());
   if (created == nullptr)
     throw std::runtime_error("DI_PROVIDER_PROTECTED_STAGING_UNAVAILABLE");
-  return std::filesystem::path(created);
+  const auto directory = std::filesystem::path(created);
+  markNativeArtifactStagingLease(directory);
+  return directory;
 }
 
 void
-providerWriteFile(const std::filesystem::path& path,
-                  const std::vector<std::uint8_t>& bytes)
+cleanupProviderArtifactStaging(const std::filesystem::path& cacheDir,
+                               const Milliseconds assemblyJobTimeout) noexcept
 {
-  const auto temporary = path.parent_path() /
-    (path.filename().string() + ".tmp-" + std::to_string(::getpid()));
-  {
-    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-    if (!output)
-      throw std::runtime_error("DI_PROVIDER_PROTECTED_WRITE_UNAVAILABLE");
-    output.write(reinterpret_cast<const char*>(bytes.data()),
-                 static_cast<std::streamsize>(bytes.size()));
-    output.flush();
-    if (!output)
-      throw std::runtime_error("DI_PROVIDER_PROTECTED_WRITE_UNAVAILABLE");
-  }
-  std::filesystem::rename(temporary, path);
+  const auto minimum = Milliseconds(std::chrono::minutes(10));
+  const auto configured = assemblyJobTimeout + std::chrono::minutes(1);
+  const auto staleAfter = std::max(minimum, configured);
+  (void)cleanupNativeArtifactStaging(cacheDir, staleAfter);
 }
 
 std::pair<std::string, std::string>
@@ -1108,6 +1084,8 @@ Provider Provider::fromConfig(const ProviderConfig& config)
 {
   if (!config.m_impl)
     throw std::invalid_argument("Provider requires a validated ProviderConfig");
+  cleanupProviderArtifactStaging(config.m_impl->artifactCacheDir,
+                                 config.m_impl->assemblyJobTimeout);
   std::error_code ec;
   if (!std::filesystem::is_regular_file(config.m_impl->trustSchema, ec) || ec ||
       std::filesystem::file_size(config.m_impl->trustSchema, ec) == 0 || ec)
@@ -1196,6 +1174,8 @@ Provider Provider::fromServiceProviderForTest(
 {
   if (!config.m_impl)
     throw std::invalid_argument("Provider requires a validated ProviderConfig");
+  cleanupProviderArtifactStaging(config.m_impl->artifactCacheDir,
+                                 config.m_impl->assemblyJobTimeout);
   auto state = std::make_shared<State>();
   state->config = config.m_impl;
   state->artifactCache = std::make_shared<ProviderArtifactCache>(
@@ -1696,8 +1676,13 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
         spec = nativeYoloMergeRunnerSpecFromProjection(projection);
       }
       else {
+        logProviderPreparationProgress(projection, "FACTORY_ENTER", "onnx");
         NativeCanonicalOnnxAssemblerOptions options;
         options.cacheDir = cacheDir;
+        const auto cachePath = std::filesystem::path(cacheDir);
+        options.coldAssemblyLockPath =
+          (cachePath.is_absolute() ? cachePath : std::filesystem::absolute(cachePath))
+            .parent_path() / "cold-assembly.lock";
         options.providerIdentity = providerIdentity;
         options.assemblyTimeoutMs = static_cast<std::uint64_t>(
           std::max<std::int64_t>(1, assemblyTimeout.count()));
@@ -1717,10 +1702,16 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             signAssemblyManifest(*keyChain, providerCert, bytes);
         };
         if (!artifactCache) {
+          logProviderPreparationProgress(projection, "ASSEMBLY_CALL_BEGIN",
+                                         "canonical-onnx-no-cache");
           spec = prepareNativeCanonicalOnnxRole(ctx, projection, options);
+          logProviderPreparationProgress(projection, "ASSEMBLY_CALL_DONE",
+                                         "canonical-onnx-no-cache");
           metrics->sourceFetches.fetch_add(1, std::memory_order_relaxed);
         }
         else {
+          logProviderPreparationProgress(projection, "CACHE_ACQUIRE_BEGIN",
+                                         "provider-artifact-cache");
           NativeRequestControl control;
           control.requestId = projection.requestId;
           control.attempt = projection.attempt;
@@ -1748,19 +1739,33 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
               options.assemblyTimeoutMs = static_cast<std::uint64_t>(std::max<std::int64_t>(
                 1, std::chrono::duration_cast<Milliseconds>(
                   jobControl.deadline - std::chrono::steady_clock::now()).count()));
+              logProviderPreparationProgress(projection, "CACHE_BUILD_BEGIN",
+                                             "cache-flight-creator");
               NativeModelRunnerSpec built;
+              logProviderPreparationProgress(projection, "CACHE_LOOKUP_BEGIN",
+                                             "recipe-addressed");
               if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
                     projection, options, sourceIdentity.first, sourceIdentity.second)) {
                 built = *cached;
                 diskCacheHit->store(true, std::memory_order_relaxed);
+                logProviderPreparationProgress(projection, "CACHE_LOOKUP_HIT",
+                                               "recipe-addressed");
               }
               else {
+                logProviderPreparationProgress(projection, "CACHE_LOOKUP_MISS",
+                                               "cold-assembly");
+                logProviderPreparationProgress(projection, "ASSEMBLY_CALL_BEGIN",
+                                               "canonical-onnx");
                 built = prepareNativeCanonicalOnnxRole(ctx, projection, options);
+                logProviderPreparationProgress(projection, "ASSEMBLY_CALL_DONE",
+                                               "canonical-onnx");
                 metrics->sourceFetches.fetch_add(1, std::memory_order_relaxed);
                 metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
               }
+              const bool reusedPlaintextCache =
+                diskCacheHit->load(std::memory_order_relaxed);
               ProviderArtifactCleanupGuard cleanupGuard;
-              if (protectedRuntime) {
+              if (protectedRuntime && !reusedPlaintextCache) {
                 auto directoryOwner = built.lifetime;
                 if (!directoryOwner)
                   throw std::runtime_error("DI_PROVIDER_ARTIFACT_DIRECTORY_OWNER_MISSING");
@@ -1773,12 +1778,13 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                   options.cacheDir, path->second);
               }
               auto artifact = std::make_shared<PreparedProviderArtifact>();
-              artifact->encryptedObjectName = protectedRuntime
+              artifact->encryptedObjectName = protectedRuntime && !reusedPlaintextCache
                 ? "local-protected-assembled-ciphertext"
                 : "local-immutable-assembled-artifact";
-              artifact->ciphertextDigest = protectedRuntime
-                ? built.metadata.at("encryptedArtifactDigest")
-                : built.metadata.at("assembledModelDigest");
+              artifact->ciphertextDigest =
+                (protectedRuntime && !reusedPlaintextCache)
+                  ? built.metadata.at("encryptedArtifactDigest")
+                  : built.metadata.at("assembledModelDigest");
               artifact->formatVersion = "ndnsf-di-native-assembled-artifact-v1";
               artifact->canonicalMetadataJson =
                 std::string("{\"schema\":\"ndnsf-di-provider-artifact-v1\","
@@ -1790,7 +1796,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 "\",\"role\":\"" + projection.assembly.selectedRole +
                 "\",\"recipeDigest\":\"" + projection.assembly.recipeDigest +
                 "\",\"backendAbi\":\"" + projection.assembly.backendAbi + "\"}";
-              if (protectedRuntime) {
+              if (protectedRuntime && !reusedPlaintextCache) {
                 const auto encryptedPath = built.metadata.find("encryptedArtifactPath");
                 if (encryptedPath == built.metadata.end() || encryptedPath->second.empty())
                   throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
@@ -1823,13 +1829,18 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             });
           if (!lease.runnerSpec())
             throw std::runtime_error("DI_PROVIDER_ARTIFACT_RUNNER_TEMPLATE_MISSING");
+          logProviderPreparationProgress(projection, "CACHE_ACQUIRE_DONE",
+                                         diskCacheHit->load(std::memory_order_relaxed)
+                                           ? "cache-hit" : "cache-built");
           spec = *lease.runnerSpec();
           // The runner opens the assembled path after this factory returns.
           // Keep the cache lease in the runner's copied spec until that
           // construction has completed (and for the lifetime of any runner
           // that continues to use the file).  ProviderArtifactCache strips
           // this field from its own metadata-only template.
-          if (protectedRuntime) {
+          const bool diskPlaintextCacheHit =
+            diskCacheHit->load(std::memory_order_relaxed);
+          if (protectedRuntime && !diskPlaintextCacheHit) {
             const auto staging = providerProtectedStaging(cacheDir);
             try {
               const auto path = lease.runnerSpec()->metadata.find("encryptedArtifactPath");
@@ -1837,10 +1848,6 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
               const auto ciphertextPath = requireProviderArtifactPathUnderCacheRoot(
                 options.cacheDir, path->second);
-              const auto ciphertext = providerReadBounded(
-                ciphertextPath, projection.assembly.maxAssembledBytes + 65536);
-              if (sha256TensorBytes(ciphertext) != lease->ciphertextDigest)
-                throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_DIGEST_MISMATCH");
               spec.metadata["encryptedArtifactPath"] = ciphertextPath.string();
               registerNativePlaintextDirectory(
                 *protectedRuntime, staging,
@@ -1851,13 +1858,12 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 options.roleAssemblySpecDigest,
                 sha256TensorBytes(std::vector<std::uint8_t>(profile.begin(), profile.end())),
                 "MODEL_PROTO"};
-              std::vector<std::uint8_t> plaintext;
-              NativePlaintextBufferGuard plaintextGuard{plaintext};
               protectedRuntime->withContentKey(providerNowMs(), [&] (const auto& key) {
-                plaintext = openNativeAssembledEntry(
-                  key, ciphertext, context,
-                  projection.assembly.maxAssembledBytes);
-                providerWriteFile(staging / "model.onnx", plaintext);
+                const auto actualDigest = openNativeAssembledEntryToFile(
+                  key, ciphertextPath, staging / "model.onnx", context,
+                  projection.assembly.maxAssembledBytes, lease->ciphertextDigest);
+                if (actualDigest != lease->ciphertextDigest)
+                  throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_DIGEST_MISMATCH");
               });
               spec.path = (staging / "model.onnx").string();
             }
@@ -1869,6 +1875,11 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             }
           }
           else {
+            // A hash-verified assembled/model.onnx entry is reusable after
+            // authenticated Selection even when this role uses protected
+            // runtime keys.  Keep the protected runtime as the authorization
+            // boundary, but do not decrypt/recreate a second model-sized
+            // staging copy for a cache hit.
             const auto cachedModelPath = requireProviderArtifactPathUnderCacheRoot(
               options.cacheDir,
               providerCachedModelPath(cacheDir, projection, lease->ciphertextDigest));
@@ -1883,6 +1894,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       }
       if (projection.assembly.mergeKind == "NATIVE_POSTPROCESS")
         metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
+      logProviderPreparationProgress(projection, "FACTORY_DONE", "runner-spec");
       bindNativeRunnerPreparationContext(spec, projection,
         {providerIdentity, providerBootId, providerStartedAtMs, cacheDir});
       return spec;

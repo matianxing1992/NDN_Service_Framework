@@ -11,10 +11,12 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -24,6 +26,103 @@
 namespace {
 
 using namespace spec189::oracle;
+using ndnsf::di::NativeJson;
+
+[[noreturn]] void chainFailure(const std::string& reason)
+{
+  throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=CONVERSATION reason=" + reason);
+}
+
+std::string roundJson(const std::string& stem, unsigned round)
+{
+  return stem + (round == 0 ? "" : "-" + std::to_string(round)) + ".json";
+}
+
+NativeJson readJson(const std::filesystem::path& path)
+{
+  if (!std::filesystem::is_regular_file(path)) chainFailure("missing-round-file");
+  return ndnsf::di::nativeParseJson(readFile(path));
+}
+
+// Strict marker fields only for new round-routing evidence. The historical
+// single-round parsers retain their existing contracts.
+std::map<std::string, std::string> markerFields(const std::string& record,
+                                              const std::string& marker)
+{
+  std::map<std::string, std::string> fields;
+  std::istringstream input(record.substr(record.find(marker) + marker.size()));
+  std::string token;
+  while (input >> token) {
+    const auto eq = token.find('=');
+    if (eq == std::string::npos || eq == 0 ||
+        !fields.emplace(token.substr(0, eq), token.substr(eq + 1)).second)
+      chainFailure("ambiguous-marker-fields");
+  }
+  return fields;
+}
+
+std::uint64_t nonnegativeInteger(const NativeJson& value)
+{
+  if (!value.is_number_integer() ||
+      (value.is_number_unsigned() ? value.get<std::uint64_t>() > INT64_MAX
+                                 : value.get<std::int64_t>() < 0))
+    chainFailure("invalid-integer");
+  return value.get<std::uint64_t>();
+}
+
+std::size_t tokenCount(const NativeJson& value)
+{
+  if (!value.is_array() || value.empty()) chainFailure("invalid-input-tokens");
+  for (const auto& token : value) nonnegativeInteger(token);
+  return value.size();
+}
+
+// Reuse the unchanged shared file-based stage/material gates on request-scoped
+// evidence. Never alter the run directory. Temporary views retain line order,
+// include conflicting identities of the SAME request, and are RAII-cleaned.
+struct RoundEvidence {
+  std::filesystem::path root;
+  RoundEvidence()
+  {
+    auto pattern = (std::filesystem::temp_directory_path() / "spec189-round-oracle-XXXXXX").string();
+    std::vector<char> name(pattern.begin(), pattern.end());
+    name.push_back('\0');
+    const auto created = ::mkdtemp(name.data());
+    if (!created) chainFailure("temporary-evidence-unavailable");
+    root = created;
+  }
+  ~RoundEvidence() { std::error_code error; std::filesystem::remove_all(root, error); }
+  RoundEvidence(const RoundEvidence&) = delete;
+  RoundEvidence& operator=(const RoundEvidence&) = delete;
+  void write(const std::string& name, const std::string& text) const
+  {
+    std::ofstream output(root / name);
+    output << text;
+    output.close();
+    if (!output) chainFailure("temporary-evidence-write-failed");
+  }
+};
+
+std::string scopeProvider(const std::string& text, const std::string& request)
+{
+  std::istringstream input(text);
+  std::string line, scoped;
+  while (std::getline(input, line)) {
+    const bool complete = !input.eof();
+    for (const auto* marker : {"NDNSF_DI_NATIVE_SELECTION_ACCEPTED", "NDNSF_DI_GRANT_VERIFIED",
+           "NDNSF_DI_PROVIDER_STAGE", "NDNSF_DI_PROVIDER_MATERIAL_FETCH",
+           "NDNSF_DI_CONVERSATION_KV_RESTORED"}) {
+      if (line.find(marker) == std::string::npos) continue;
+      if (!complete) chainFailure("partial-provider-record");
+      const auto fields = markerFields(line, marker);
+      const auto id = fields.find("requestId");
+      if (id == fields.end() || id->second.empty()) chainFailure("provider-request-missing");
+      if (id->second == request) scoped += line + '\n';
+      break;
+    }
+  }
+  return scoped;
+}
 
 std::vector<std::string>
 recordsContaining(const std::string& text, const std::string& needle)
@@ -194,7 +293,47 @@ validateProvider(const std::filesystem::path& path,
 }
 
 void
-validatePlacementOnly(const std::filesystem::path& root)
+validateCacheCompatibilityMode(const std::filesystem::path& root, unsigned round = 0)
+{
+  // Mode declarations must not contain ambiguous duplicate keys. This is
+  // evidence of an explicitly selected diagnostic mode, not cache hash proof.
+  const auto modeFields = [](const std::string& record, const std::string& marker) {
+    std::map<std::string, std::string> values;
+    std::istringstream tokens(record.substr(record.find(marker) + marker.size()));
+    std::string token;
+    while (tokens >> token) {
+      const auto equal = token.find('=');
+      if (equal == std::string::npos || equal == 0 ||
+          !values.emplace(token.substr(0, equal), token.substr(equal + 1)).second)
+        throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=CACHE_MODE reason=ambiguous-mode-fields");
+    }
+    return values;
+  };
+  const auto requester = readFile(root / ("requester-" + std::to_string(round) + ".log"));
+  const auto requests = recordsContaining(requester, "NDNSF_DI_CACHE_COMPATIBILITY_REQUESTER");
+  if (requests.size() != 1)
+    throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=CACHE_MODE reason=requester-mode-missing-or-mixed");
+  auto requestMode = modeFields(requests.front(), "NDNSF_DI_CACHE_COMPATIBILITY_REQUESTER");
+  if (requestMode["enabled"] != "true" || requestMode["protectedPublication"] != "skipped")
+    throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=CACHE_MODE reason=requester-mode-missing-or-mixed");
+  if (requester.find("NDNSF_DI_PROVIDER_MATERIAL_FETCH") != std::string::npos)
+    throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=CACHE_MODE reason=material-events-in-cache-mode");
+  for (const auto* name : {"provider-0.log", "provider-1.log"}) {
+    const auto text = readFile(root / name);
+    const auto configs = recordsContaining(text, "NDNSF_DI_CACHE_COMPATIBILITY_CONFIG");
+    if (configs.size() != 1)
+      throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=CACHE_MODE reason=provider-mode-missing-or-mixed");
+    auto providerMode = modeFields(configs.front(), "NDNSF_DI_CACHE_COMPATIBILITY_CONFIG");
+    if (providerMode["sourceDir"].empty() || providerMode["repoFetch"] != "skipped-after-selection")
+      throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=CACHE_MODE reason=provider-mode-missing-or-mixed");
+    if (text.find("NDNSF_DI_PROVIDER_MATERIAL_FETCH") != std::string::npos)
+      throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=CACHE_MODE reason=material-events-in-cache-mode");
+  }
+}
+
+void
+validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility = false,
+                      bool emitPass = true)
 {
   const auto requester = readFile(root / "requester-0.log");
   if (lineContaining(requester, "NDNSF_DI_NATIVE_SELECTION_COMMITTED") == 0) {
@@ -268,11 +407,14 @@ validatePlacementOnly(const std::filesystem::path& root)
     throw std::runtime_error(
       "SPEC189_CPP_ORACLE_FAIL boundary=SELECTION reason=range-coverage-mismatch");
   }
+  // Explicit diagnostic scope only: all placement/grant checks above remain,
+  // but neither material qualification nor a placement PASS is claimed.
+  if (cacheCompatibility) return;
   const auto leftFetches = validateMaterialFetches(
     root / "provider-0.log", first, left.provider);
   const auto rightFetches = validateMaterialFetches(
     root / "provider-1.log", second, right.provider);
-  std::cout << "SPEC189_CPP_PLACEMENT_PASS "
+  if (emitPass) std::cout << "SPEC189_CPP_PLACEMENT_PASS "
             << ndnsf::di::nativeCanonicalJson(ndnsf::di::NativeJson{
                  {"requestId", left.requestId},
                  {"attemptEpoch", left.attemptEpoch},
@@ -288,6 +430,210 @@ validatePlacementOnly(const std::filesystem::path& root)
             << '\n';
 }
 
+ndnsf::di::NativeJson
+validateMultiTokenOutput(const std::filesystem::path& root, unsigned round = 0,
+                         bool requireMultiToken = true)
+{
+  using ndnsf::di::NativeJson;
+  const auto fail = [](const std::string& reason) {
+    throw std::runtime_error("SPEC189_CPP_ORACLE_FAIL boundary=GENERATION reason=" + reason);
+  };
+  const auto config = readJson(root / "requester" / roundJson("config", round));
+  const auto& request = config.at("request");
+  // Qualify only the launcher's per-round, non-replacement recipe.
+  // Reject a different options source instead of silently inspecting unused data.
+  if (request.value("options_file", "") != roundJson("options", round) ||
+      (request.contains("allow_replacement") && request.at("allow_replacement") != false) ||
+      (request.contains("max_replacements") && request.at("max_replacements") != 0))
+    fail("unsupported-request-config");
+  const auto options = readJson(root / "requester" / roundJson("options", round));
+  const auto output = readJson(root / "requester" / ("output-" + std::to_string(round) + ".bin"));
+  const auto validToken = [](const NativeJson& value) {
+    return value.is_number_integer() &&
+      (value.is_number_unsigned() ? value.get<std::uint64_t>() <= INT64_MAX : value.get<std::int64_t>() >= 0);
+  };
+  if (!options.contains("maxNewTokens") || !validToken(options.at("maxNewTokens")) ||
+      !options.contains("eosTokenIds") || !options.at("eosTokenIds").is_array() ||
+      options.at("eosTokenIds").empty()) fail("invalid-generation-options");
+  const auto maximum = options.at("maxNewTokens").get<std::uint64_t>();
+  if (maximum < (requireMultiToken ? 2U : 1U) || maximum > 1024) fail("invalid-generation-options");
+  if (request.contains("max_new_tokens") &&
+      (!validToken(request.at("max_new_tokens")) ||
+       request.at("max_new_tokens").get<std::uint64_t>() != maximum))
+    fail("generation-budget-override-mismatch");
+  std::vector<std::int64_t> eos;
+  for (const auto& value : options.at("eosTokenIds")) {
+    if (!validToken(value)) fail("invalid-generation-options");
+    eos.push_back(value.get<std::int64_t>());
+  }
+  if (output.value("schema", "") != "NDNSF-DI-FINAL-V1" ||
+      !output.contains("text") || !output.at("text").is_string() ||
+      output.at("text").get<std::string>().empty() ||
+      !output.contains("tokenIds") || !output.at("tokenIds").is_array())
+    fail("invalid-final-output");
+  const auto& tokens = output.at("tokenIds");
+  if (tokens.size() < (requireMultiToken ? 2U : 1U) || tokens.size() > maximum) fail("not-bounded-multi-token");
+  for (std::size_t i = 0; i != tokens.size(); ++i) {
+    if (!validToken(tokens[i])) fail("invalid-final-token");
+    if (i + 1 < tokens.size() &&
+        std::find(eos.begin(), eos.end(), tokens[i].get<std::int64_t>()) != eos.end())
+      fail("tokens-after-eos");
+  }
+  const bool ended = std::find(eos.begin(), eos.end(), tokens.back().get<std::int64_t>()) != eos.end();
+  const auto reason = output.value("finishReason", "");
+  const auto hint = output.value("finishHint", "");
+  if (!((reason == "eos" && hint == "EOS" && ended) ||
+        (reason == "max_tokens" && hint == "MAX_TOKENS" && !ended && tokens.size() == maximum)))
+    fail("invalid-stop-reason");
+  const auto requester = readFile(root / ("requester-" + std::to_string(round) + ".log"));
+  const auto eventRecords = recordsContaining(requester, "NATIVE_STREAM_EVENTS=");
+  if (eventRecords.size() != 1) fail("stream-count-missing-or-duplicate");
+  const auto count = field(eventRecords.front(), "NATIVE_STREAM_EVENTS");
+  if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos ||
+      std::stoull(count) != tokens.size()) fail("stream-count-mismatch");
+  if (recordsContaining(requester, "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN").size() != 1)
+    fail("checkpoint-missing-or-duplicate");
+  return NativeJson{{"generatedTokens", tokens.size()}, {"maxNewTokens", maximum},
+                    {"finishReason", reason}};
+}
+
+NativeJson validateRounds(const std::filesystem::path& root, unsigned rounds,
+                         bool cacheCompatibility, bool requireMultiToken)
+{
+  std::set<std::string> requestIds;
+  NativeJson receipt{{"schema", "spec189-cpp-oracle-v1"}, {"providers", 2},
+                     {"terminal", true}, {"rounds", rounds}, {"roundResults", NativeJson::array()}};
+  NativeJson previous, initial;
+  std::map<std::string, NativeJson> roleBindings;
+  RoundEvidence view;
+  for (unsigned round = 0; round < rounds; ++round) {
+    const auto logPath = root / ("requester-" + std::to_string(round) + ".log");
+    if (!std::filesystem::is_regular_file(logPath)) chainFailure("missing-round-file");
+    const auto requester = readFile(logPath);
+    const auto successes = recordsContaining(requester, "NATIVE_REQUEST_SUCCEEDED");
+    if (successes.size() != 1) chainFailure("requester-not-success");
+    auto success = markerFields(successes.front(), "NATIVE_REQUEST_SUCCEEDED");
+    const auto requestId = success["request"], planDigest = success["plan"];
+    if (requestId.empty() || planDigest.empty()) chainFailure("requester-identity-missing");
+    if (!requestIds.insert(requestId).second) chainFailure("duplicate-request-id");
+    if (requester.find("NATIVE_REQUEST_FAILED") != std::string::npos ||
+        requester.find("NATIVE_REQUEST_STAGE_FAILED") != std::string::npos)
+      chainFailure("requester-failed");
+    const auto commits = recordsContaining(requester, "NDNSF_DI_NATIVE_SELECTION_COMMITTED");
+    if (commits.size() != 1) chainFailure("selection-commit-missing-or-duplicate");
+    auto commit = markerFields(commits.front(), "NDNSF_DI_NATIVE_SELECTION_COMMITTED");
+    if (commit["requestId"] != requestId || commit["planDigest"] != planDigest ||
+        commit["attemptEpoch"].empty()) chainFailure("identity-mismatch");
+    if (cacheCompatibility) validateCacheCompatibilityMode(root, round);
+    view.write("requester-0.log", requester);
+    for (unsigned provider = 0; provider < 2; ++provider) {
+      const auto name = "provider-" + std::to_string(provider) + ".log";
+      const auto scoped = scopeProvider(readFile(root / name), requestId);
+      const auto selections = recordsContaining(scoped, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
+      if (selections.size() != 1) chainFailure("round-selection-missing-or-duplicate");
+      auto selected = markerFields(selections.front(), "NDNSF_DI_NATIVE_SELECTION_ACCEPTED");
+      if (selected["planDigest"] != planDigest || selected["attemptEpoch"] != commit["attemptEpoch"])
+        chainFailure("identity-mismatch");
+      view.write(name, scoped);
+    }
+    // All existing full-path material and authorization gates remain in force;
+    // suppress intermediate PASS so a bad later round cannot yield any PASS.
+    validatePlacementOnly(view.root, cacheCompatibility, false);
+    std::string observedRequest = requestId, observedPlan = planDigest;
+    bool terminal = false;
+    for (unsigned provider = 0; provider < 2; ++provider)
+      validateProvider(view.root / ("provider-" + std::to_string(provider) + ".log"),
+        "/example/ndnsf-qwen06b/provider-" + std::to_string(provider),
+        observedRequest, observedPlan, terminal);
+    if (!terminal) chainFailure("tail-terminal-missing");
+
+    const auto generation = validateMultiTokenOutput(root, round, requireMultiToken);
+    const auto config = readJson(root / "requester" / roundJson("config", round));
+    const auto checkpoint = readJson(root / "requester" / roundJson("conversation-state", round));
+    const auto& conversation = config.at("conversation");
+    const auto& turn = conversation.at("turn");
+    if (conversation.value("checkpoint_output_file", "") != roundJson("conversation-state", round))
+      chainFailure("checkpoint-output-path-mismatch");
+    if (checkpoint.value("schema", "") != "ndnsf-di-conversation-checkpoint-v1" ||
+        nonnegativeInteger(checkpoint.at("version")) != 1 ||
+        nonnegativeInteger(checkpoint.at("contextEpoch")) != round + 1 ||
+        nonnegativeInteger(checkpoint.at("parentContextEpoch")) != round)
+      chainFailure("checkpoint-epoch-mismatch");
+    for (const auto* key : {"conversationId", "serviceName", "requesterIdentity", "modelContractDigest",
+                            "securityDomainDigest", "planRoleMapDigest", "checkpointDigest"}) {
+      if (!checkpoint.at(key).is_string() || checkpoint.at(key).get<std::string>().empty())
+        chainFailure("checkpoint-binding-missing");
+      if (round && std::string(key) != "checkpointDigest" && checkpoint.at(key) != initial.at(key))
+        chainFailure("checkpoint-binding-mismatch");
+    }
+    const auto& owner = conversation.at("owner");
+    if (owner.at("requester_identity") != checkpoint.at("requesterIdentity") ||
+        owner.at("service_name") != checkpoint.at("serviceName") ||
+        owner.at("security_domain_digest") != checkpoint.at("securityDomainDigest") ||
+        config.at("request").at("service") != checkpoint.at("serviceName") ||
+        config.at("request").at("security_policy_digest") != checkpoint.at("securityDomainDigest"))
+      chainFailure("config-binding-mismatch");
+    std::uint64_t parentCount = 0;
+    std::size_t inputCount = 0;
+    if (round == 0) {
+      if (turn.value("mode", "") != "FULL_CONTEXT" || turn.contains("parent_state_file") ||
+          nonnegativeInteger(turn.at("parent_context_epoch")) != 0 ||
+          turn.at("conversation_id") != checkpoint.at("conversationId"))
+        chainFailure("initial-context-mismatch");
+      inputCount = tokenCount(turn.at("canonical_token_ids"));
+      initial = checkpoint;
+    }
+    else {
+      if (turn.value("mode", "") != "APPEND_DELTA" ||
+          turn.value("parent_state_file", "") != roundJson("conversation-state", round - 1) ||
+          (turn.contains("parent_context_epoch") && nonnegativeInteger(turn.at("parent_context_epoch")) != round) ||
+          (turn.contains("conversation_id") && turn.at("conversation_id") != initial.at("conversationId")) ||
+          (turn.contains("parent_checkpoint_digest") && turn.at("parent_checkpoint_digest") != previous.at("checkpointDigest")))
+        chainFailure("parent-config-mismatch");
+      parentCount = nonnegativeInteger(previous.at("prefixTokenCount"));
+      inputCount = tokenCount(turn.at("delta_token_ids"));
+    }
+    const auto count = nonnegativeInteger(checkpoint.at("prefixTokenCount"));
+    if (count < parentCount || count - parentCount != inputCount + generation.at("generatedTokens").get<std::size_t>())
+      chainFailure("checkpoint-prefix-mismatch");
+    const auto& roleReceipts = checkpoint.at("roleReceiptDigests");
+    if (!roleReceipts.is_object() || roleReceipts.size() != 2) chainFailure("checkpoint-roles-mismatch");
+    for (unsigned provider = 0; provider < 2; ++provider) {
+      const auto path = view.root / ("provider-" + std::to_string(provider) + ".log");
+      const auto text = readFile(path);
+      const auto placement = validatePlacementProvider(path,
+        "/example/ndnsf-qwen06b/provider-" + std::to_string(provider));
+      const auto& s = placement.selection;
+      if (!roleReceipts.contains(s.role) || !roleReceipts.at(s.role).is_string() ||
+          roleReceipts.at(s.role).get<std::string>().empty()) chainFailure("checkpoint-roles-mismatch");
+      const NativeJson binding{{"role", s.role}, {"manifest", s.manifestDigest}, {"graph", s.graphDigest},
+        {"initializer", s.initializerDigest}, {"artifact", s.artifactDigest}, {"begin", s.layerBegin}, {"end", s.layerEnd}};
+      if (!round) roleBindings[s.provider] = binding;
+      else if (roleBindings.at(s.provider) != binding) chainFailure("placement-binding-changed");
+      if (!round) continue;
+      const auto restores = recordsContaining(text, "NDNSF_DI_CONVERSATION_KV_RESTORED");
+      if (restores.size() != 1) chainFailure("restore-missing-or-duplicate");
+      auto restore = markerFields(restores.front(), "NDNSF_DI_CONVERSATION_KV_RESTORED");
+      if (restore["requestId"] != requestId || restore["role"] != s.role ||
+          restore["parentContextEpoch"] != std::to_string(round) ||
+          restore["prefixTokenCount"] != std::to_string(parentCount))
+        chainFailure("restore-binding-mismatch");
+      const auto restoredAt = lineContaining(text, restores.front());
+      const auto stages = markers(text);
+      const auto completed = std::find_if(stages.begin(), stages.end(), [](const Marker& marker) {
+        return marker.stage == "EXECUTION_COMPLETED";
+      });
+      if (restoredAt <= placement.grantLine || completed == stages.end() || restoredAt >= completed->line)
+        chainFailure("restore-outside-execution");
+    }
+    receipt["roundResults"].push_back(NativeJson{{"round", round}, {"requestId", requestId},
+      {"planDigest", planDigest}, {"generation", generation}, {"contextEpoch", round + 1},
+      {"parentContextEpoch", round}, {"prefixTokenCount", count}});
+    previous = checkpoint;
+  }
+  return receipt;
+}
+
 } // namespace
 
 int
@@ -295,29 +641,52 @@ main(int argc, char** argv)
 {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: " << argv[0]
-              << " [--placement-only] --run-root DIRECTORY\n";
+              << " [--placement-only | --cache-compatibility] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n";
     return 0;
   }
-  const bool placementOnly = argc == 4 && std::string(argv[1]) == "--placement-only";
+  bool placementOnly = false, cacheCompatibility = false, multiToken = false, invalidOptions = false;
+  unsigned rounds = 1;
+  bool roundsSeen = false;
   const char* runRootArg = nullptr;
-  if (placementOnly && std::string(argv[2]) == "--run-root")
-    runRootArg = argv[3];
-  else if (!placementOnly && argc == 3 && std::string(argv[1]) == "--run-root")
-    runRootArg = argv[2];
-  if (runRootArg == nullptr) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string option(argv[i]);
+    if (option == "--placement-only" && !placementOnly) placementOnly = true;
+    else if (option == "--cache-compatibility" && !cacheCompatibility) cacheCompatibility = true;
+    else if (option == "--require-multi-token" && !multiToken) multiToken = true;
+    else if (option == "--run-root" && !runRootArg && i + 1 < argc) runRootArg = argv[++i];
+    else if (option == "--rounds" && !roundsSeen && i + 1 < argc) {
+      roundsSeen = true;
+      const std::string count(argv[++i]);
+      if (count.size() != 1 || count[0] < '1' || count[0] > '8') invalidOptions = true;
+      else rounds = static_cast<unsigned>(count[0] - '0');
+    }
+    else invalidOptions = true;
+  }
+  if (runRootArg == nullptr || invalidOptions || (placementOnly && (cacheCompatibility || multiToken || rounds > 1))) {
     std::cerr << "usage: " << argv[0]
-              << " [--placement-only] --run-root DIRECTORY\n";
+              << " [--placement-only | --cache-compatibility] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n";
     return 2;
   }
   try {
     const auto root = std::filesystem::absolute(runRootArg);
+    if (rounds > 1) {
+      auto receipt = validateRounds(root, rounds, cacheCompatibility, multiToken);
+      if (cacheCompatibility) {
+        receipt["scope"] = "cache-compatible-execution";
+        receipt["materialFetch"] = "NOT_EVALUATED";
+        receipt["fullPathQualification"] = "NOT_RUN";
+      }
+      std::cout << (cacheCompatibility ? "SPEC189_CPP_CACHE_DIAGNOSTIC_PASS " : "SPEC189_CPP_ORACLE_PASS ")
+                << ndnsf::di::nativeCanonicalJson(receipt) << '\n';
+      return 0;
+    }
     if (placementOnly) {
       validatePlacementOnly(root);
       return 0;
     }
-    // Full execution verdicts include the same authenticated placement and
-    // material checks as the diagnostic placement-only entry.
-    validatePlacementOnly(root);
+    if (cacheCompatibility) validateCacheCompatibilityMode(root);
+    // The default full execution path retains the placement material gate.
+    validatePlacementOnly(root, cacheCompatibility);
     const auto requester = readFile(root / "requester-0.log");
     const auto requesterRecord = recordContaining(
       requester, "NATIVE_REQUEST_SUCCEEDED");
@@ -353,7 +722,13 @@ main(int argc, char** argv)
                                   {"planDigest", planDigest},
                                   {"providers", 2},
                                   {"terminal", true}};
-    std::cout << "SPEC189_CPP_ORACLE_PASS "
+    if (multiToken) receipt["generation"] = validateMultiTokenOutput(root);
+    if (cacheCompatibility) {
+      receipt["scope"] = "cache-compatible-execution";
+      receipt["materialFetch"] = "NOT_EVALUATED";
+      receipt["fullPathQualification"] = "NOT_RUN";
+    }
+    std::cout << (cacheCompatibility ? "SPEC189_CPP_CACHE_DIAGNOSTIC_PASS " : "SPEC189_CPP_ORACLE_PASS ")
               << ndnsf::di::nativeCanonicalJson(receipt) << '\n';
     return 0;
   }

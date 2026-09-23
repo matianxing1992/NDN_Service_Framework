@@ -85,6 +85,26 @@ struct NativeAdapterDescriptor
   std::string descriptorDigest() const;
 };
 
+/** Immutable model-source reference projected by a prepared request.  It is
+ * an identity/capability tuple only; payload bytes and arbitrary fetch URLs
+ * are deliberately outside this type. */
+struct NativeModelArtifactReference
+{
+  std::string repoNamespace;
+  std::string objectName;
+  std::string manifestDigest;
+  std::string objectDigest;
+  std::uint64_t objectBytes = 0;
+  std::string graphDigest;
+  std::string protectionEpoch;
+  std::string authorizationScope;
+  std::string recipeDigest;
+  std::uint32_t schemaVersion = 1;
+
+  void validate() const;
+  std::string canonicalJson() const;
+};
+
 struct NativeModelDescriptor
 {
   std::string modelName;
@@ -99,6 +119,10 @@ struct NativeModelDescriptor
   NativeAdapterDescriptor adapter;
   /** Optional source revision retained when a request is copied into a base descriptor. */
   std::string sourceRevision;
+  /** Prepared model source identity; absent for legacy direct native callers. */
+  std::optional<NativeModelArtifactReference> artifactReference;
+  /** Stored/operator representation; "none" is the legacy public default. */
+  std::string quantizationSubtype = "none";
 
   void validate() const;
   /** Canonical Python ModelDescriptor schema, including adapter and source_revision. */

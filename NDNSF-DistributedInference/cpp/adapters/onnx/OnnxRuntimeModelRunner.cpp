@@ -10,9 +10,11 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 
 namespace ndnsf::di {
 namespace {
@@ -110,7 +112,8 @@ resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
 void
 CausalPositionInputContractV1::validate(const StatefulOnnxIoContractV1& io) const
 {
-  if (policy != "qwen-causal-position-v1" ||
+  if ((policy != "qwen-causal-position-v1" &&
+       policy != "llama-causal-position-v1") ||
       attentionMaskInputName.empty() || positionIdsInputName.empty()) {
     throw std::invalid_argument(
       "stateful ONNX causal position policy is incomplete");
@@ -134,7 +137,10 @@ materializeCausalPositionInputsV1(
   std::uint32_t newTokenCount)
 {
   contract.validate(io);
-  lineage.validate();
+  // The initial input lineage is core-authenticated before this Provider has
+  // bound the output edge's producer/consumer roles.  Full validation remains
+  // mandatory when lineage is encoded or published on the wire.
+  lineage.validateCore();
   if (newTokenCount == 0 ||
       lineage.logicalPrefixTokenCount < newTokenCount) {
     throw std::invalid_argument(
@@ -310,7 +316,17 @@ makeSessionOptions(const OnnxRuntimeProviderSelection& selection,
 {
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(1);
-  options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+  // The assembly worker already validates and emits the canonical graph with
+  // optimizations disabled.  Do not retain a second optimized graph copy in
+  // each resident role session while the request keeps both sessions alive.
+  options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_DISABLE_ALL);
+  // Qwen's KV/state dimensions change between prefill and decode.  A session
+  // memory pattern learned from the warmup shape can retain a larger plan
+  // than the next token needs while both role sessions remain resident.
+  options.DisableMemPattern();
+  // A second prepacked weight copy is unnecessary for this bounded
+  // model-runner and overlaps with another Provider during cold assembly.
+  options.AddConfigEntry("session.disable_prepacking", "1");
   const auto profilePrefix = runnerMetadataValue(
     spec, {"providerProfilePrefix", "provider_profile_prefix"});
   if (!profilePrefix.empty()) {
@@ -634,7 +650,9 @@ std::vector<int64_t>
 shapeForInput(const NativeModelRunnerSpec& spec,
               const std::string& inputName,
               std::size_t index,
-              const std::vector<int64_t>& modelShape)
+              const std::vector<int64_t>& modelShape,
+              bool preserveZeroDynamicDimensions = false,
+              const std::vector<std::string>& symbolicDimensions = {})
 {
   auto shape = parseShape(metadataValue(
     spec,
@@ -650,9 +668,31 @@ shapeForInput(const NativeModelRunnerSpec& spec,
     return shape;
   }
   shape = modelShape;
-  for (auto& dim : shape) {
+  for (std::size_t dimensionIndex = 0;
+       dimensionIndex < shape.size(); ++dimensionIndex) {
+    auto& dim = shape[dimensionIndex];
     if (dim <= 0) {
-      dim = 1;
+      std::string symbolic;
+      if (dimensionIndex < symbolicDimensions.size()) {
+        symbolic = symbolicDimensions[dimensionIndex];
+        std::transform(symbolic.begin(), symbolic.end(), symbolic.begin(),
+                       [] (unsigned char ch) {
+                         return static_cast<char>(std::tolower(ch));
+                       });
+      }
+      const bool isSequenceDimension =
+        symbolic.find("past") != std::string::npos ||
+        symbolic.find("cache") != std::string::npos ||
+        symbolic.find("sequence") != std::string::npos ||
+        symbolic.find("seq") != std::string::npos;
+      // A dynamic KV/past dimension is a real zero-length tensor at the
+      // beginning of a Qwen prefill.  The historical Python pipeline creates
+      // exactly that state; replacing it with one makes the causal mask one
+      // token longer than the input and fails in the first Add node.  Keep
+      // the old conservative fallback for ordinary inputs and warm-up, but
+      // let the caller opt into the initial-state contract explicitly for
+      // sequence-like symbolic dimensions.
+      dim = preserveZeroDynamicDimensions && isSequenceDimension ? 0 : 1;
     }
   }
   return shape;
@@ -817,6 +857,25 @@ public:
         if (name.size() > 4 && name.compare(name.size() - 4, 4, "_out") == 0) {
           contract.stateOutputNames.push_back(name);
         }
+      }
+    }
+    const auto stateMap = runnerMetadataValue(
+      spec, {"stateSuccessorMap", "state_successor_map", "kvTensorMap",
+             "kv_tensor_map"});
+    if (!stateMap.empty()) {
+      for (const auto& entry : splitNames(stateMap)) {
+        const auto separator = entry.find('=');
+        if (separator == std::string::npos || separator == 0 ||
+            separator + 1 >= entry.size()) {
+          throw std::invalid_argument(
+            "stateful ONNX successor map contains an invalid pair");
+        }
+        const auto inputName = entry.substr(0, separator);
+        const auto outputName = entry.substr(separator + 1);
+        contract.successorInputByOutput[outputName] = inputName;
+      }
+      if (!contract.successorInputByOutput.empty()) {
+        contract.stateFamilies.clear();
       }
     }
     contract.validate();
@@ -999,16 +1058,63 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
     const std::string inputName(name.get());
     auto typeInfo = m_impl->session.GetInputTypeInfo(index);
     auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
+    const auto symbolicDimensions = tensorInfo.GetSymbolicDimensions();
+    std::vector<std::string> symbolicDimensionNames;
+    symbolicDimensionNames.reserve(symbolicDimensions.size());
+    for (const auto* symbolic : symbolicDimensions) {
+      symbolicDimensionNames.emplace_back(symbolic == nullptr ? "" : symbolic);
+    }
+    const bool isStateInput = m_impl->statefulIo &&
+      std::find(m_impl->statefulIo->stateInputNames.begin(),
+                m_impl->statefulIo->stateInputNames.end(), inputName) !=
+        m_impl->statefulIo->stateInputNames.end();
     NamedTensor tensor;
     tensor.name = inputName;
     tensor.elementType = fromOnnxElementType(tensorInfo.GetElementType());
     tensor.shape = shapeForInput(
-      m_spec, inputName, index, tensorInfo.GetShape());
+      m_spec, inputName, index, tensorInfo.GetShape(), isStateInput,
+      symbolicDimensionNames);
     tensor.payload.assign(
       elementCount(tensor.shape) * tensorElementByteSize(tensor.elementType),
       0);
     warmup.inputsByScope.emplace(
       inputName, makeEncodedTensorBundle(inputName, {std::move(tensor)}));
+  }
+  if (m_impl->causalPositionInputs) {
+    // A causal graph does not accept an all-zero attention mask as a
+    // readiness probe: Qwen derives a gather index from that mask and can
+    // reject the probe before any request lineage exists.  Keep warmup local
+    // and unauthenticated, but use the smallest semantically valid prefill
+    // values.  Real requests still materialize these inputs from authenticated
+    // GenerationEpochLineageV1 below.
+    const auto setWarmupInt64 = [&] (const std::string& name,
+                                    std::int64_t value) {
+      if (name.empty()) {
+        return;
+      }
+      const auto found = warmup.inputsByScope.find(name);
+      if (found == warmup.inputsByScope.end()) {
+        throw std::invalid_argument(
+          "causal ONNX warmup input is missing from the graph: " + name);
+      }
+      const auto templateTensor = tensorForInput(found->second, name, {});
+      if (templateTensor.elementType != TensorElementType::Int64) {
+        throw std::invalid_argument(
+          "causal ONNX warmup input is not Int64: " + name);
+      }
+      const auto count = elementCount(templateTensor.shape);
+      std::vector<std::int64_t> values(count, value);
+      std::vector<std::uint8_t> payload(values.size() * sizeof(std::int64_t));
+      std::memcpy(payload.data(), values.data(), payload.size());
+      warmup.inputsByScope[name] = makeEncodedTensorBundle(
+        name,
+        {NamedTensor{name, TensorElementType::Int64,
+                     templateTensor.shape, std::move(payload)}});
+    };
+    const auto& causal = *m_impl->causalPositionInputs;
+    setWarmupInt64(causal.attentionMaskInputName, 1);
+    setWarmupInt64(causal.positionIdsInputName, 0);
+    setWarmupInt64(causal.cachePositionInputName, 0);
   }
   (void)run(warmup);
   if (m_evidence) {
@@ -1123,11 +1229,20 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     const auto& inputName = inputNames[i];
     auto typeInfo = m_impl->session.GetInputTypeInfo(i);
     auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
-    inputShapes.push_back(shapeForInput(m_spec, inputName, i, tensorInfo.GetShape()));
+    const auto symbolicDimensions = tensorInfo.GetSymbolicDimensions();
+    std::vector<std::string> symbolicDimensionNames;
+    symbolicDimensionNames.reserve(symbolicDimensions.size());
+    for (const auto* symbolic : symbolicDimensions) {
+      symbolicDimensionNames.emplace_back(symbolic == nullptr ? "" : symbolic);
+    }
     const bool isStateInput = m_impl->statefulIo &&
       std::find(m_impl->statefulIo->stateInputNames.begin(),
                 m_impl->statefulIo->stateInputNames.end(), inputName) !=
         m_impl->statefulIo->stateInputNames.end();
+    inputShapes.push_back(shapeForInput(
+      m_spec, inputName, i, tensorInfo.GetShape(),
+      isStateInput && effectiveContext.inferenceEpoch == 0,
+      symbolicDimensionNames));
     if (deviceResidentState && isStateInput &&
         (effectiveContext.inferenceEpoch > 0 || restoringConversation)) {
       const std::map<std::string, Ort::Value>* stateMap = nullptr;
@@ -1252,11 +1367,36 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     outputNames = m_impl->statefulIo->outputNames;
   }
 
+  if (runtimeTimingEnabled()) {
+    std::ostringstream record;
+    record << "NDNSF_DI_NATIVE_OUTPUT_CONTRACT"
+           << " role=" << m_spec.role
+           << " outputs=";
+    for (std::size_t index = 0; index < outputNames.size(); ++index) {
+      if (index != 0) record << ',';
+      const auto alias = metadataValue(
+        m_spec,
+        {"outputAlias." + outputNames[index],
+         "output_alias." + outputNames[index]});
+      record << outputNames[index] << "->" << (alias.empty() ? "<identity>" : alias);
+    }
+    logRuntimeInfo(record.str());
+  }
+
   const auto runStart = std::chrono::steady_clock::now();
   std::vector<Ort::Value> outputs;
   std::optional<Ort::IoBinding> ioBinding;
   std::optional<Ort::MemoryInfo> cudaMemoryInfo;
   std::size_t deviceStateOutputsBound = 0;
+  const auto phaseAttempt = effectiveContext.attemptEpoch == 0
+    ? std::string("request") : std::to_string(effectiveContext.attemptEpoch);
+  const auto phaseFields = std::vector<std::pair<std::string, std::string>>{
+    {"executionRole", m_spec.role},
+    {"providerBootId", effectiveContext.providerBootId.empty() ?
+                           std::string("none") : effectiveContext.providerBootId},
+    {"sessionId", effectiveContext.sessionId},
+    {"inferenceEpoch", std::to_string(effectiveContext.inferenceEpoch)},
+  };
   if (deviceResidentState) {
     ioBinding.emplace(m_impl->session);
     cudaMemoryInfo.emplace(
@@ -1289,7 +1429,11 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
         ioBinding->BindOutput(name.c_str(), memoryInfo.GetConst());
       }
     }
+    logRuntimePhase("di-provider", "ortRunBegin", effectiveContext.requestId,
+                    phaseAttempt, phaseFields);
     m_impl->session.Run(Ort::RunOptions{nullptr}, *ioBinding);
+    logRuntimePhase("di-provider", "ortRunEnd", effectiveContext.requestId,
+                    phaseAttempt, phaseFields);
     ioBinding->SynchronizeOutputs();
     outputs = ioBinding->GetOutputValues();
   }
@@ -1299,6 +1443,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     for (const auto& name : outputNames) {
       outputNamePtrs.push_back(name.c_str());
     }
+    logRuntimePhase("di-provider", "ortRunBegin", effectiveContext.requestId,
+                    phaseAttempt, phaseFields);
     outputs = m_impl->session.Run(
       Ort::RunOptions{nullptr},
       inputNamePtrs.data(),
@@ -1306,6 +1452,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       inputValues.size(),
       outputNamePtrs.data(),
       outputNamePtrs.size());
+    logRuntimePhase("di-provider", "ortRunEnd", effectiveContext.requestId,
+                    phaseAttempt, phaseFields);
   }
   const auto runDone = std::chrono::steady_clock::now();
   const bool captureRequestProfile =
@@ -1405,7 +1553,15 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
         return tensor.name == name;
       });
     if (duplicate == namedOutputs.end()) {
-      namedOutputs.push_back(passthroughTensorFor(effectiveContext, name));
+      try {
+        namedOutputs.push_back(passthroughTensorFor(effectiveContext, name));
+      }
+      catch (const std::out_of_range&) {
+        const auto causal = causalPositionInputs.find(name);
+        if (causal == causalPositionInputs.end())
+          throw;
+        namedOutputs.push_back(tensorForInput(causal->second, name, {}));
+      }
     }
   }
 
@@ -1621,8 +1777,15 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
     auto typeInfo = m_impl->session.GetInputTypeInfo(inputIndex);
     auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
     const auto elementType = fromOnnxElementType(tensorInfo.GetElementType());
+    const auto symbolicDimensions = tensorInfo.GetSymbolicDimensions();
+    std::vector<std::string> symbolicDimensionNames;
+    symbolicDimensionNames.reserve(symbolicDimensions.size());
+    for (const auto* symbolic : symbolicDimensions) {
+      symbolicDimensionNames.emplace_back(symbolic == nullptr ? "" : symbolic);
+    }
     const auto shape = shapeForInput(
-      m_spec, name, inputIndex, tensorInfo.GetShape());
+      m_spec, name, inputIndex, tensorInfo.GetShape(), true,
+      symbolicDimensionNames);
     NamedTensor tensor;
     tensor.name = name;
     tensor.elementType = elementType;
@@ -1707,11 +1870,7 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
     if (!deviceResidentState) {
       for (const auto& stateOutput : m_impl->statefulIo->stateOutputNames) {
         const auto& tensor = findTensor(tensors, stateOutput);
-        if (stateOutput.size() <= 4 ||
-            stateOutput.compare(stateOutput.size() - 4, 4, "_out") != 0) {
-          throw std::invalid_argument("streaming ONNX state output is not suffixed _out");
-        }
-        const auto nextInput = stateOutput.substr(0, stateOutput.size() - 4) + "_in";
+        const auto nextInput = m_impl->statefulIo->stateInputForOutput(stateOutput);
         epochContext.inputsByScope[nextInput] = makeEncodedTensorBundle(
           nextInput,
           {NamedTensor{nextInput, tensor.elementType, tensor.shape, tensor.payload}});

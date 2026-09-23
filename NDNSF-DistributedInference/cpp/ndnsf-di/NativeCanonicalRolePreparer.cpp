@@ -48,7 +48,8 @@ NativeCanonicalRolePreparer::NativeCanonicalRolePreparer(NativeInspectedModel mo
   m_model.validate();
   const auto& p = m_profile;
   if (!digest(p.artifactProfileDigest) || !digest(p.assemblerDescriptorDigest) ||
-      p.backendAbi.empty() || p.precision != m_model.descriptor.precision || p.quantization.empty() ||
+      p.backendAbi.empty() || p.precision != m_model.descriptor.precision ||
+      p.quantization != m_model.descriptor.quantizationSubtype ||
       p.layout.empty() || p.padding.empty() || p.protectionEpoch.empty() || !p.maxSourceBytes ||
       !p.maxAssembledBytes || !p.maxNodes || p.maxNodes > std::uint64_t(std::numeric_limits<int>::max()))
     throw std::invalid_argument("native role recipe profile is incomplete");

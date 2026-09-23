@@ -2,7 +2,7 @@
   "inputs": {
     "api/behavior-coverage.json": "edcd1e1afb21ab47b8a10dfb548b57136ee01ba2d2fe97d7769119c06b0eef8a",
     "api/contract-map.json": "8c46ed721011f25b5cde54d1568b0b8f586a57926aa4dd8041a7c7619c6cf49f",
-    "api/inventory.json": "20da237d03f4ef840706a52a0a2cf5d9902cd7e00c4cc8f79c7f1972030a2c6a",
+    "api/inventory.json": "086863f1b637f6c607e9262988432985f377ae8adda0e7de7d68f0e583307070",
     "api/python-bindings.json": "e6d77937cd740b35eb75c25601e18d4d7a8b7252c0d47f31a9415d8027ae106a",
     "api/target-contract-map.json": "68d3d16bdf8c64b38c7902ee24583b4e23fe82dc922e5baa2463f44fb43f8cfe",
     "api/target-inventory.json": "35d39de622ae9c5f81ded338c70000f2f0f4afef1973812cd1de2f4d568c286d",
@@ -10,7 +10,7 @@
     "build-api-reference.py": "b093e25434714c8758c123985a6d60754e282e1d25c0ca689f839cc0cf2f01ad",
     "build-behavior-coverage.py": "c431209716c631f7e025410e8733ae1dab2e23501e07ebbd13d0a7bb7baa0759",
     "build.py": "1276ead3b32ac726ab9b732cb4b5b1225fbfa72502b473bd5fccdb6d798efd74",
-    "current-api.tex": "0308b42494c638f1c9545beb73213d1dbd15de952b11d70b7d6045138c78236d",
+    "current-api.tex": "4916ae6a3ab2b76d3dfddd283799db74eb6eec2af9abedc5ea72325d49d1e77e",
     "current-content.tex": "49b810d8c8174c7edf1bef2337bf780fec2cc2ac97a8e5238fa701040d714d78",
     "current-design.tex": "a5107c81ada1292bac9303408588d1ec7abed2ec5cd27df85bfce2c309f96331",
     "current-diagrams.tex": "e16cc70a60bafccab4b90a5abdc3b0777e7dc1278e88b21b4d0066b1c8d36f55",
@@ -55,8 +55,8 @@
     "verify.py": "5468712c08d32dce91aaa72b0e6c3eddf5ef0603daa0832826f752c6422232da"
   },
   "pdfs": {
-    "current-design.pdf": "5d41a247e798352e5c05f5794c17f04cf88a11f216d9afb3e35c49881eba1c57",
-    "target-design.pdf": "c86b76eee4b9fd55a1e46314a8bfbee58b70e69ba37d4fa61328a040c1b727bd"
+    "current-design.pdf": "0763f19a15e698b8130ae0dbe34f8869aad4971fbc1e1952d9035d2f047d759c",
+    "target-design.pdf": "73ab6231dd6149f48bb8313cd70329f08e3d04e66307de691c94082bcdb103b8"
   },
-  "run": ".codex-tmp/design-pdf-20260915T130303244487Z"
+  "run": ".codex-tmp/design-pdf-20260917T214100268780Z"
 }

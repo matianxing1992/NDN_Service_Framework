@@ -31,6 +31,19 @@ bool isDigest(const std::string& value)
     });
 }
 
+bool isCanonicalName(const std::string& value)
+{
+  if (value.size() < 2 || value.front() != '/')
+    return false;
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    const auto c = static_cast<unsigned char>(value[i]);
+    if (c < 0x21 || c == 0x7f || (c == '/' &&
+        (i + 1 == value.size() || value[i + 1] == '/')))
+      return false;
+  }
+  return true;
+}
+
 bool contains(const std::vector<std::string>& values, const std::string& value)
 {
   return std::find(values.begin(), values.end(), value) != values.end();
@@ -162,6 +175,7 @@ NativeModelDescriptor NativeModelDescriptor::fromCanonicalJson(const std::string
   model.modelFormat = root.at("model_format").get<std::string>();
   model.precision = root.at("precision").get<std::string>();
   model.sourceRevision = root.at("source_revision").get<std::string>();
+  model.quantizationSubtype = root.value("quantization_subtype", "none");
   auto& adapter = model.adapter;
   adapter.name = a.at("name").get<std::string>();
   adapter.version = a.at("version").get<std::string>();
@@ -199,9 +213,11 @@ std::string NativeModelDescriptor::intentDigest() const
 void NativeModelDescriptor::validate() const
 {
   if (modelName.empty() || modelFormat.empty() || precision.empty() ||
-      adapterId.empty() || adapterVersion.empty()) {
+      adapterId.empty() || adapterVersion.empty() || quantizationSubtype.empty()) {
     throw std::invalid_argument("model descriptor is incomplete");
   }
+  if (quantizationSubtype != "none" && quantizationSubtype != "weight_only_int8")
+    throw std::invalid_argument("unsupported model quantization subtype");
   requireDigest(contentDigest, "model contentDigest");
   requireDigest(semanticsDigest, "model semanticsDigest");
   requireDigest(graphDigest, "model graphDigest");
@@ -212,13 +228,38 @@ void NativeModelDescriptor::validate() const
     throw std::invalid_argument("model descriptor is incompatible with its adapter");
 }
 
-std::string NativeModelDescriptor::canonicalJson() const
+void NativeModelArtifactReference::validate() const
+{
+  if (schemaVersion != 1 || !isCanonicalName(repoNamespace) || !isCanonicalName(objectName) ||
+      objectBytes == 0 || protectionEpoch.empty() || protectionEpoch == "plaintext-v1" ||
+      !isCanonicalName(authorizationScope) ||
+      !isDigest(manifestDigest) || !isDigest(objectDigest) || !isDigest(graphDigest) ||
+      !isDigest(recipeDigest))
+    throw std::invalid_argument("model artifact reference is incomplete or invalid");
+}
+
+std::string NativeModelArtifactReference::canonicalJson() const
 {
   validate();
   return nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-model-artifact-reference-v1"},
+    {"schema_version", schemaVersion}, {"repo_namespace", repoNamespace},
+    {"object_name", objectName}, {"manifest_digest", manifestDigest},
+    {"object_digest", objectDigest}, {"object_bytes", objectBytes},
+    {"graph_digest", graphDigest}, {"protection_epoch", protectionEpoch},
+    {"authorization_scope", authorizationScope}, {"recipe_digest", recipeDigest}});
+}
+
+std::string NativeModelDescriptor::canonicalJson() const
+{
+  validate();
+  auto result = NativeJson{
     {"model_name", modelName}, {"content_digest", contentDigest}, {"semantics_digest", semanticsDigest},
     {"graph_digest", graphDigest}, {"model_format", modelFormat}, {"precision", precision},
-    {"adapter", nativeParseJson(adapter.canonicalJson())}, {"source_revision", sourceRevision}});
+    {"adapter", nativeParseJson(adapter.canonicalJson())}, {"source_revision", sourceRevision}};
+  if (quantizationSubtype != "none")
+    result["quantization_subtype"] = quantizationSubtype;
+  return nativeCanonicalJson(result);
 }
 
 std::string NativeModelDescriptor::modelDigest() const

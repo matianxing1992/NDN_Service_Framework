@@ -1,5 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
@@ -24,6 +26,8 @@
 #include <thread>
 #include <atomic>
 #include <future>
+#include <sstream>
+#include <set>
 
 namespace {
 using namespace ndnsf::di;
@@ -408,6 +412,183 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
             endpoint.layoutDigest, endpoint.targetLayoutDigest, endpoint.tensorDigest, {{1, 2, 3}}, now);
           BOOST_CHECK(consumer->openSegment(transfer.manifest, transfer.segments.front()) == ProviderGroupBytes({1, 2, 3}));
         }
+        {
+          // Exercise trusted construction and the complete wire boundary, not
+          // a hand-built endpoint/digest oracle. Keep the outer fixture intact.
+          auto generationPlan = execution;
+          // The older builder-only fixture omitted wire-required dependency
+          // fields. Supply them on this copy before the parser roundtrip.
+          generationPlan.dependencies.front().topicPrefix = "/tensor";
+          generationPlan.dependencies.front().objectNameTemplate =
+            "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+          auto generationSealing = sealing;
+          const auto options = NativeJson{{"useCache", true}, {"outputMode", "TOKEN_STREAMING"},
+            {"maxNewTokens", 1}, {"tokenizerDigest", nativePlanningDigest("tokenizer")},
+            {"eosTokenIds", NativeJson::array({2})}}.dump();
+          generationSealing.generationContract = nativeGenerationFromOptions(
+            {options.begin(), options.end()}, std::string(32, 'a'));
+          generationSealing.generationContract.streamingOperationStride = 3;
+          generationPlan.streamingOperationStride = 3;
+          NativeDependencySpec feedback;
+          feedback.producers = {execution.roles.back()};
+          feedback.consumers = {execution.roles.front()};
+          feedback.keyScope = "generation-feedback";
+          feedback.topicPrefix = "/token-feedback";
+          feedback.objectNameTemplate = "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+          feedback.tensors = {"input_ids"};
+          feedback.operationKind = "TOKEN_FEEDBACK";
+          feedback.useNdnsfDataV1 = true;
+          feedback.collectiveOperationIndex = 2;
+          std::set<std::string> providers;
+          for (const auto& assignment : proposal.providerByRole) providers.insert(assignment.second);
+          feedback.collectiveProducerRank = std::to_string(std::distance(providers.begin(),
+            providers.find(proposal.providerByRole.at(execution.roles.back()))));
+          // These digests configure the input feedback contract only. All
+          // endpoint/manifest identities below come from production builders.
+          feedback.collectiveSourceLayoutDigest = feedback.collectiveTargetLayoutDigest =
+            nativePlanningDigest(nativeCanonicalJson(NativeJson{{"tensor", "input_ids"},
+              {"layout", "int64[1,1]"}, {"operation", "TOKEN_FEEDBACK"}}));
+          feedback.collectiveTensorDigest = nativePlanningDigest(
+            nativeCanonicalJson(NativeJson::array({"input_ids"})));
+          generationPlan.dependencies.push_back(feedback);
+          {
+            // Production builder/sealer, not a hand-computed wire-size model.
+            // Preserve the existing 4 MiB gate: an oversized 1024-token
+            // projection must fail this regression rather than relax the gate.
+            auto largeSealing = generationSealing;
+            largeSealing.generationContract.maxGeneratedTokens = 1024;
+            const auto largePlan = projectionPlan(NativePlanSealer::sealCore(
+              input.inspected, input.split, proposal, generationPlan, input.offers,
+              input.ackDigest, largeSealing));
+            const auto largeGroups = NativeGroupProjectionBuilder::build(
+              largePlan, input.split, keys, requestContext, 4096);
+            for (const auto& role : execution.roles) {
+              const auto projected = NativePlanSealer::project(largePlan,
+                proposal.providerByRole.at(role), largeGroups.at(role));
+              const auto wire = NativePlanSealer::encode(projected);
+              BOOST_TEST_MESSAGE("1024-token Selection role=" << role << " bytes=" << wire.size());
+              BOOST_REQUIRE_LE(wire.size(), 4U << 20);
+              std::istringstream stream(std::string(wire.begin(), wire.end()));
+              const auto decoded = nativeSelectionProjectionV3FromJson(stream, role);
+              BOOST_CHECK_EQUAL(decoded.generationContract.maxGeneratedTokens, 1024);
+              const auto& endpoints = role == execution.roles.front() ?
+                decoded.dataflow.mayPublish : decoded.dataflow.mustFetch;
+              BOOST_REQUIRE_EQUAL(endpoints.size(), 2U * 1025U);
+              for (const std::uint64_t epoch : {0U, 64U, 1024U}) {
+                const auto local = roleSpecFromSelectionProjectionV3(decoded, decoded.provider, epoch);
+                BOOST_CHECK_EQUAL((role == execution.roles.front() ? local.outputs : local.inputs).size(), 2);
+              }
+              BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(decoded, decoded.provider, 1025),
+                                std::invalid_argument);
+            }
+          }
+          const auto generationSealed = projectionPlan(NativePlanSealer::sealCore(
+            input.inspected, input.split, proposal, generationPlan, input.offers,
+            input.ackDigest, generationSealing));
+          const auto generationGroups = NativeGroupProjectionBuilder::build(
+            generationSealed, input.split, keys, requestContext, 4096);
+          std::vector<NativeSelectionProjectionV3> parsed;
+          for (const auto& role : execution.roles) {
+            const auto projection = NativePlanSealer::project(generationSealed,
+              proposal.providerByRole.at(role), generationGroups.at(role));
+            const auto wire = NativePlanSealer::encode(projection);
+            std::istringstream stream(std::string(wire.begin(), wire.end()));
+            parsed.push_back(nativeSelectionProjectionV3FromJson(stream, role));
+            BOOST_CHECK_EQUAL(parsed.back().generationContract.maxGeneratedTokens, 1);
+            BOOST_CHECK_EQUAL(parsed.back().generationContract.streamingOperationStride, 3);
+          }
+          BOOST_REQUIRE_EQUAL(parsed.size(), 2);
+          validateNativeSelectionProjectionSetV3(parsed);
+          BOOST_REQUIRE_EQUAL(parsed[0].dataflow.mayPublish.size(), 4);
+          BOOST_REQUIRE_EQUAL(parsed[1].dataflow.mustFetch.size(), 4);
+          BOOST_REQUIRE_EQUAL(parsed[1].dataflow.waitFor.size(), 1);
+          const auto& readiness = parsed[1].dataflow.waitFor.front().endpointDigests;
+          BOOST_REQUIRE_EQUAL(readiness.size(), 2);
+          for (const auto& endpoint : parsed[1].dataflow.mustFetch) {
+            const bool ready = std::find(readiness.begin(), readiness.end(), endpoint.endpointDigest) != readiness.end();
+            BOOST_CHECK_EQUAL(ready, endpoint.round < 3);
+          }
+          for (const auto& projection : parsed) {
+            const auto capabilityWire = ndn_service_framework::selectionGatedUnhex(projection.groupCapabilityV1);
+            const auto capability = ProviderGroupCoordinator::decodeCapability(
+              {capabilityWire.begin(), capabilityWire.end()});
+            BOOST_REQUIRE_EQUAL(capability.permittedOperations.size(), 6);
+            for (std::uint64_t epoch = 0; epoch != 2; ++epoch) {
+              const auto op = std::find_if(capability.permittedOperations.begin(), capability.permittedOperations.end(),
+                [&](const auto& value) { return value.operationIndex == 2 + 3 * epoch; });
+              BOOST_REQUIRE(op != capability.permittedOperations.end());
+              BOOST_CHECK_EQUAL(op->kind, "TOKEN_FEEDBACK");
+              BOOST_REQUIRE_EQUAL(op->producerRanks.size(), 1);
+              BOOST_CHECK_EQUAL(op->producerRanks.front(), feedback.collectiveProducerRank);
+            }
+          }
+          const auto generationCoordinator = [&](const NativeSelectionProjectionV3& projection) {
+            ProviderGroupCoordinatorOptions coordinatorOptions;
+            coordinatorOptions.localProvider = projection.provider;
+            coordinatorOptions.unwrapEpochKey = [&](const std::string& id, const ProviderGroupBytes& wrapped) {
+              const auto plain = ndn_service_framework::unwrapSelectionGatedInputKey(
+                ndn::Buffer(wrapped.begin(), wrapped.end()), certificates.at(id).getName(), keyChain);
+              return ProviderGroupBytes(plain.begin(), plain.end());
+            };
+            auto owner = std::make_shared<ProviderGroupCoordinator>(coordinatorOptions);
+            const auto wire = ndn_service_framework::selectionGatedUnhex(projection.groupCapabilityV1);
+            owner->installCapability(ProviderGroupCoordinator::decodeCapability({wire.begin(), wire.end()}), {}, true);
+            return owner;
+          };
+          const auto generationProducer = generationCoordinator(parsed[0]);
+          const auto generationConsumer = generationCoordinator(parsed[1]);
+          for (const auto& endpoint : parsed[0].dataflow.mayPublish) {
+            const auto& operations = generationProducer->capability().permittedOperations;
+            const auto op = std::find_if(operations.begin(), operations.end(),
+              [&](const auto& value) { return value.operationIndex == endpoint.round; });
+            BOOST_REQUIRE(op != operations.end());
+            BOOST_CHECK_EQUAL(op->kind, endpoint.operation);
+            BOOST_REQUIRE_EQUAL(op->producerRanks.size(), 1);
+            BOOST_CHECK_EQUAL(op->producerRanks.front(), std::to_string(endpoint.producerRank));
+            const auto transfer = generationProducer->sealOperation(*op, std::to_string(endpoint.producerRank),
+              endpoint.layoutDigest, endpoint.targetLayoutDigest, endpoint.tensorDigest, {{1, 2, 3}}, now);
+            BOOST_CHECK(generationConsumer->openSegment(transfer.manifest, transfer.segments.front()) ==
+              ProviderGroupBytes({1, 2, 3}));
+          }
+          const auto prefill = roleSpecFromSelectionProjectionV3(parsed[0], parsed[0].provider, 0);
+          BOOST_REQUIRE_EQUAL(prefill.outputs.size(), 2);
+          for (std::uint64_t epoch = 0; epoch != 2; ++epoch) {
+            const auto sender = roleSpecFromSelectionProjectionV3(parsed[0], parsed[0].provider, epoch);
+            const auto receiver = roleSpecFromSelectionProjectionV3(parsed[1], parsed[1].provider, epoch);
+            BOOST_REQUIRE_EQUAL(sender.outputs.size(), 2);
+            BOOST_REQUIRE_EQUAL(receiver.inputs.size(), 2);
+            std::set<std::string> tensors;
+            for (std::size_t i = 0; i != 2; ++i) {
+              const auto& out = sender.outputs[i];
+              const auto& in = receiver.inputs[i];
+              BOOST_REQUIRE_EQUAL(out.tensors.size(), 1);
+              BOOST_CHECK(out.tensors == in.tensors);
+              tensors.insert(out.tensors.front());
+              BOOST_CHECK_EQUAL(out.plannedDataName, in.plannedDataName);
+              BOOST_CHECK_EQUAL(out.endpointDigest, in.endpointDigest);
+              BOOST_CHECK_EQUAL(out.manifestContractDigest, in.manifestContractDigest);
+              BOOST_CHECK_EQUAL(out.collectiveOperationIndex, prefill.outputs[i].collectiveOperationIndex + 3 * epoch);
+              if (epoch) {
+                BOOST_CHECK_NE(out.plannedDataName, prefill.outputs[i].plannedDataName);
+                BOOST_CHECK_NE(out.endpointDigest, prefill.outputs[i].endpointDigest);
+                BOOST_CHECK_NE(out.manifestContractDigest, prefill.outputs[i].manifestContractDigest);
+              }
+            }
+            BOOST_CHECK(tensors == std::set<std::string>({"hidden", "mask"}));
+          }
+          for (const auto& projection : parsed) {
+            BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(projection, projection.provider, 2), std::invalid_argument);
+            auto missing = projection;
+            auto& missingEndpoints = missing.dataflow.mayPublish.empty() ? missing.dataflow.mustFetch : missing.dataflow.mayPublish;
+            missingEndpoints.pop_back();
+            BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(missing, missing.provider, 0), std::invalid_argument);
+            auto duplicate = projection;
+            auto& duplicateEndpoints = duplicate.dataflow.mayPublish.empty() ? duplicate.dataflow.mustFetch : duplicate.dataflow.mayPublish;
+            const auto endpoint = duplicateEndpoints.back();
+            duplicateEndpoints.push_back(endpoint);
+            BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(duplicate, duplicate.provider, 1), std::invalid_argument);
+          }
+        }
         BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(swapped, input.split, keys, context), std::invalid_argument);
         auto expired = requestContext; expired.nowMs = swapped.core.expiresAtMs;
         BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(swapped, input.split, keys, expired), std::invalid_argument);
@@ -559,6 +740,38 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   BOOST_CHECK_EQUAL(selected.front().provider.toUri(), planned.terminalProvider);
   BOOST_CHECK_EQUAL(selected.front().artifactDataName.toUri(), "/catalog/root");
   BOOST_CHECK(!selected.front().assignmentPayload.empty());
+  // Exercise real planner forwarding before publication. The probe deliberately
+  // stops at the strategy boundary; it is not a successful inference fixture.
+  struct PreferenceObserved {};
+  class PreferenceProbe final : public NativePlacementStrategy {
+  public:
+    std::map<std::string, std::string> expected;
+    NativeStrategyIdentity identity() const override { return NativePreSplitFirstPlacement().identity(); }
+    NativeRolePlacementProposalV3 proposeRoles(const NativeOfferBindingContext& context,
+      const std::string&, const std::vector<NativeSelectionRoleV3>&,
+      const std::vector<NativeAdmittedOfferV3>&, std::uint64_t) const override
+    {
+      BOOST_CHECK(context.preferredProvidersByRole == expected);
+      throw PreferenceObserved{};
+    }
+  } probe;
+  NativeConversationTurn continuation;
+  continuation.parent.parentContextEpoch = 1;
+  continuation.providersByRole = {{input.roles.front().role, "/provider/b"}};
+  probe.expected = continuation.providersByRole;
+  BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled,
+    &continuation), PreferenceObserved);
+  continuation.attempt = 2;
+  probe.expected.clear();
+  BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled,
+    &continuation), PreferenceObserved);
+  continuation.attempt = 1;
+  continuation.parent.parentContextEpoch = 0;
+  BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled,
+    &continuation), PreferenceObserved);
   cancelled->store(true);
   BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
     NativePreSplitFirstPlacement(), preparation, admission, closure, control, input.context.deadlineMs, cancelled), std::runtime_error);
@@ -1114,6 +1327,7 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
         if (sample.at("name") == "published_rank_cover") {
           input.inspected.canonicalInitializerBytes = 7;
           input.inspected.canonicalInitializerObjectDigest = nativePlanningDigest("weights");
+          input.inspected.canonicalInitializerDigest = input.roles.front().canonicalInitializerDigest;
         }
         for (auto& item : published.sourceByRole) {
           published.artifactNameByRole[item.first] = "/artifact/stable/" + nativePlanningDigest(item.first).substr(7);
@@ -1351,6 +1565,42 @@ BOOST_AUTO_TEST_CASE(RealSdkPlacementAndExactReuseBoundaries)
         input.roles, input.offers, 200).providerByRole);
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(ConversationAffinityPrecedesCostButNotFeasibility)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[0]); // Both CPU Providers feasible; default chooses a.
+  NativePreSplitFirstPlacement strategy;
+  const auto role = input.roles.front().role;
+  BOOST_CHECK_EQUAL(strategy.proposeRoles(input.context, input.ackDigest,
+    input.roles, input.offers, 200).providerByRole.at(role), "/provider/a");
+  input.context.preferredProvidersByRole = {{role, "/provider/b"}};
+  auto result = strategy.proposeRoles(input.context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_CHECK_EQUAL(result.providerByRole.at(role), "/provider/b");
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(result, input.roles, input.offers, 200));
+  input.context.preferredProvidersByRole[role] = "/not-admitted";
+  BOOST_CHECK_EQUAL(strategy.proposeRoles(input.context, input.ackDigest,
+    input.roles, input.offers, 200).providerByRole.at(role), "/provider/a");
+  // A preferred name cannot make an unsupported backend feasible.
+  input.context.preferredProvidersByRole[role] = "/provider/b";
+  input.roles.front().backend = "unsupported";
+  BOOST_CHECK_THROW(strategy.proposeRoles(input.context, input.ackDigest,
+    input.roles, input.offers, 200), NativeNoFeasiblePlacement);
+}
+
+BOOST_AUTO_TEST_CASE(ConversationAffinityPrecedesSpreadingAndPreservesDeviceExclusion)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]); // rank_cover: two devices per Provider.
+  for (const auto& role : input.roles)
+    input.context.preferredProvidersByRole[role.role + "#" + std::to_string(role.rank)] = "/provider/a";
+  const auto result = NativePreSplitFirstPlacement().proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE_EQUAL(result.providerByRole.size(), 2);
+  for (const auto& item : result.providerByRole) BOOST_CHECK_EQUAL(item.second, "/provider/a");
+  BOOST_CHECK(result.roles[0].deviceSet != result.roles[1].deviceSet);
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(result, input.roles, input.offers, 200));
 }
 
 BOOST_AUTO_TEST_CASE(V3PlacementCoLocatesRanksOnDistinctDevicesWhenTopologyIsSmall)

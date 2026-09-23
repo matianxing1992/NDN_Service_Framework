@@ -27,6 +27,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstring>
+#include <limits>
 #include <vector>
 
 namespace ndnsf::di::tests {
@@ -206,6 +208,191 @@ recipeDigestFor(const NativeSelectionRoleV3& role)
   return digest(wire.str());
 }
 
+std::string
+candidateTensorDtype(const onnx::ValueInfoProto& value)
+{
+  if (!value.has_type() || !value.type().has_tensor_type()) {
+    throw std::invalid_argument("Spec190 candidate tensor has no tensor type: " + value.name());
+  }
+  switch (value.type().tensor_type().elem_type()) {
+    case onnx::TensorProto::FLOAT:
+      return "float32";
+    case onnx::TensorProto::FLOAT16:
+      return "float16";
+    case onnx::TensorProto::INT64:
+      return "int64";
+    default:
+      throw std::invalid_argument("Spec190 candidate tensor dtype is unsupported: " + value.name());
+  }
+}
+
+std::vector<std::variant<std::int64_t, std::string>>
+candidateTensorShape(const onnx::ValueInfoProto& value)
+{
+  const auto& tensor = value.type().tensor_type();
+  if (!tensor.has_shape()) {
+    throw std::invalid_argument("Spec190 candidate tensor has no shape: " + value.name());
+  }
+  std::vector<std::variant<std::int64_t, std::string>> shape;
+  for (const auto& dimension : tensor.shape().dim()) {
+    if (dimension.has_dim_value()) {
+      shape.emplace_back(dimension.dim_value());
+    }
+    else if (dimension.has_dim_param() && !dimension.dim_param().empty()) {
+      shape.emplace_back(dimension.dim_param());
+    }
+    else {
+      throw std::invalid_argument("Spec190 candidate tensor has an unnamed dynamic dimension: " +
+                                  value.name());
+    }
+  }
+  return shape;
+}
+
+std::vector<NativeAssemblyTensorContractV3>
+candidateTensorContracts(const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>& values)
+{
+  std::vector<NativeAssemblyTensorContractV3> result;
+  result.reserve(values.size());
+  for (const auto& value : values) {
+    result.push_back({value.name(), candidateTensorDtype(value), candidateTensorShape(value)});
+  }
+  return result;
+}
+
+std::string
+joinCandidateNames(const std::vector<std::string>& names)
+{
+  std::ostringstream result;
+  for (std::size_t index = 0; index < names.size(); ++index) {
+    if (index != 0) result << ',';
+    result << names[index];
+  }
+  return result.str();
+}
+
+NativeSelectionProjectionV3
+makeDirectInt8CandidateProjection(const onnx::ModelProto& model,
+                                   const NativeOnnxIdentity& identity,
+                                   const std::string& sourceDigest,
+                                   const std::string& rootDigest,
+                                   std::size_t sourceBytes)
+{
+  constexpr const char* role = "/LLM/Pipeline/Stage/0";
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/provider/spec190/int8/p0";
+  projection.requestId = "/request/spec190-int8-native";
+  projection.canonicalArtifactName = "/spec190/int8/candidate/root";
+  projection.attempt = 1;
+  projection.planDigest = zeroDigest('d');
+  projection.plan.serviceName = "/LLM/Qwen";
+  projection.plan.modelName = "Qwen3-0.6B-ONNX-weight-only-int8";
+  projection.plan.modelFamily = "qwen";
+  projection.plan.modelFormat = "onnx";
+  projection.plan.executionPolicy = "DATA_DRIVEN_V2";
+  projection.plan.roles = {role};
+
+  auto& assembly = projection.assembly;
+  assembly.role = role;
+  assembly.selectedRole = role;
+  assembly.rank = 0;
+  assembly.layerBegin = 0;
+  assembly.layerEnd = static_cast<std::uint64_t>(model.graph().node_size());
+  assembly.backend = "onnxruntime";
+  assembly.adapterId = "onnx";
+  assembly.deviceSet = {"cpu"};
+  assembly.artifactDigest = sourceDigest;
+  assembly.roleKind = "PIPELINE_RANGE";
+  assembly.modelManifestDigest = rootDigest;
+  assembly.artifactProfileDigest = zeroDigest('b');
+  assembly.graphDigest = identity.graphDigest;
+  assembly.canonicalInitializerDigest = identity.initializerDigest;
+  assembly.adapterDescriptorDigest = zeroDigest('1');
+  assembly.assemblerDescriptorDigest = zeroDigest('2');
+  assembly.backendAbi = "onnxruntime-cpu-v1";
+  assembly.precision = "float32";
+  assembly.quantization = "weight_only_int8";
+  assembly.layout = "native";
+  assembly.padding = "none";
+  assembly.maxSourceBytes = static_cast<std::uint64_t>(sourceBytes) + (64U << 20);
+  assembly.maxAssembledBytes = static_cast<std::uint64_t>(sourceBytes) * 4U;
+  assembly.maxNodes = static_cast<std::uint64_t>(model.graph().node_size());
+  for (std::uint64_t index = 0; index < assembly.maxNodes; ++index)
+    assembly.nodeIndices.push_back(index);
+  assembly.expectedInputs = candidateTensorContracts(model.graph().input());
+  assembly.expectedOutputs = candidateTensorContracts(model.graph().output());
+  assembly.recipeDigest = recipeDigestFor(assembly);
+  projection.selectedRole = assembly;
+  projection.executionRole.roleId = role;
+  projection.executionRole.stageId = "stage-0";
+  projection.executionRole.rank = 0;
+  projection.executionRole.layerBegin = assembly.layerBegin;
+  projection.executionRole.layerEnd = assembly.layerEnd;
+  projection.executionRole.backend = assembly.backend;
+  projection.executionRole.adapterId = assembly.adapterId;
+
+  projection.dataflow.role = role;
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = projection.attempt;
+  projection.dataflow.planDigest = projection.planDigest;
+
+  auto& generation = projection.generationContract;
+  generation.enabled = true;
+  generation.mode = "qwen-causal";
+  generation.maxGeneratedTokens = 2;
+  generation.tokenInputName = "input_ids";
+  generation.positionInputPolicy = "qwen-causal-position-v1";
+  generation.attentionMaskInputName = "attention_mask";
+  generation.positionIdsInputName = "position_ids";
+  generation.samplingDigest = zeroDigest('e');
+  generation.tokenizerDigest = zeroDigest('f');
+  generation.streamingOperationStride = 1;
+  std::vector<std::string> successorPairs;
+  for (const auto& input : assembly.expectedInputs) {
+    if (input.name.rfind("past_key_values.", 0) != 0)
+      continue;
+    generation.stateInputNames.push_back(input.name);
+    const auto outputName = "present." + input.name.substr(std::string("past_key_values.").size());
+    generation.stateSuccessorMap += (generation.stateSuccessorMap.empty() ? "" : ",") +
+      input.name + "=" + outputName;
+  }
+  for (const auto& output : assembly.expectedOutputs) {
+    if (output.name.rfind("present.", 0) == 0)
+      generation.stateOutputNames.push_back(output.name);
+  }
+  if (generation.stateInputNames.empty() ||
+      generation.stateInputNames.size() != generation.stateOutputNames.size()) {
+    throw std::invalid_argument("Spec190 candidate state contract is incomplete");
+  }
+  return projection;
+}
+
+NamedTensor
+makeInt64CandidateTensor(const std::string& name, std::int64_t value)
+{
+  std::vector<std::uint8_t> bytes(sizeof(value));
+  std::memcpy(bytes.data(), &value, sizeof(value));
+  return {name, TensorElementType::Int64, {1, 1}, std::move(bytes)};
+}
+
+NamedTensor
+makeInt64CandidateVector(const std::string& name, const std::vector<std::int64_t>& values)
+{
+  std::vector<std::uint8_t> bytes(values.size() * sizeof(std::int64_t));
+  std::memcpy(bytes.data(), values.data(), bytes.size());
+  return {name, TensorElementType::Int64,
+          {1, static_cast<std::int64_t>(values.size())}, std::move(bytes)};
+}
+
+const NamedTensor*
+findCandidateTensor(const std::vector<NamedTensor>& tensors, const std::string& name)
+{
+  const auto found = std::find_if(tensors.begin(), tensors.end(), [&name] (const auto& tensor) {
+    return tensor.name == name;
+  });
+  return found == tensors.end() ? nullptr : &*found;
+}
+
 class ScopedEnv
 {
 public:
@@ -322,7 +509,17 @@ runRegisteredProviderAssemblyCase(std::size_t providerCount)
     digest(rootPayload), profileDigest, graphDigest, initializerDigest);
   projection.canonicalArtifactName = rootName.toUri();
   projection.requestId = "/request/spec175-registered/" + suffix;
+  // The production role-spec projector requires the authenticated V3
+  // dataflow envelope to bind the local role to this exact request attempt
+  // and sealed plan.  This fixture exercises the real assembler/runner path,
+  // so keep those bindings explicit instead of relying on empty defaults.
+  projection.attempt = 1;
   projection.planDigest = zeroDigest('d');
+  projection.executionRole.roleId = projection.assembly.role;
+  projection.dataflow.role = projection.executionRole.roleId;
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = projection.attempt;
+  projection.dataflow.planDigest = projection.planDigest;
 
   ScopedEnv pythonPath(
     "PYTHONPATH", "NDNSF-DistributedInference:NDNSF-DistributedRepo/pythonWrapper");
@@ -623,7 +820,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
   std::map<std::string, std::vector<std::uint8_t>> payloads;
   std::map<std::string, std::string> payloadNames;
   for (const auto& payload : materialSource.materialManifest->payloads) {
-    payloads.emplace(payload.payloadId, payload.bytes);
+    payloads.emplace(payload.payloadId, payload.copyBytes());
     payloadNames.emplace(payload.payloadId,
       "/spec189/material/payload/" + payload.payloadId);
   }
@@ -632,7 +829,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerBoundsSelectedPayloadFetches)
   for (std::size_t index = 0; index < materialSource.materialManifest->payloads.size(); ++index) {
     if (index != 0) materialObjects << ',';
     const auto& payload = materialSource.materialManifest->payloads[index];
-    materialObjects << "{\"bytes\":" << payload.bytes.size()
+    materialObjects << "{\"bytes\":" << payload.byteSize()
                     << ",\"dataName\":" << jsonQuote(payloadNames.at(payload.payloadId))
                     << ",\"digest\":" << jsonQuote(payload.digest)
                     << ",\"payloadId\":" << jsonQuote(payload.payloadId) << '}';
@@ -855,7 +1052,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   for (std::size_t index = 0; index < materialSource.materialManifest->payloads.size(); ++index) {
     if (index != 0) materialObjects << ',';
     const auto& payload = materialSource.materialManifest->payloads.at(index);
-    materialObjects << "{\"bytes\":" << payload.bytes.size()
+    materialObjects << "{\"bytes\":" << payload.byteSize()
                     << ",\"dataName\":" << jsonQuote(payloadNames.at(payload.payloadId))
                     << ",\"digest\":" << jsonQuote(payload.digest)
                     << ",\"payloadId\":" << jsonQuote(payload.payloadId) << '}';
@@ -898,7 +1095,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
   std::uint64_t selectedPayloadBytes = 0;
   for (const auto& payload : materialSource.materialManifest->payloads)
     if (selectedIds.count(payload.payloadId) != 0)
-      selectedPayloadBytes += payload.bytes.size();
+    selectedPayloadBytes += payload.byteSize();
   // Mirror the production material-backed peak reservation: the selected
   // payloads stay owned while the chunked initializer is copied into a
   // TensorProto and the final model is serialized.  Compute the model/header
@@ -929,8 +1126,8 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
       [&] (const auto& payload) { return payload.payloadId == nodeReference->payloadId; });
     BOOST_REQUIRE(nodePayload != materialSource.materialManifest->payloads.end());
     onnx::NodeProto node;
-    BOOST_REQUIRE(node.ParseFromArray(nodePayload->bytes.data(),
-                                      static_cast<int>(nodePayload->bytes.size())));
+    BOOST_REQUIRE(node.ParseFromArray(nodePayload->data(),
+                                      static_cast<int>(nodePayload->byteSize())));
     *assemblyModel.mutable_graph()->add_node() = std::move(node);
   }
   const auto initializerReference = std::find_if(
@@ -985,7 +1182,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
         [&] (const auto& item) { return item.payloadId == payloadId; });
       if (payload == materialSource.materialManifest->payloads.end())
         return std::nullopt;
-      return ndn::Buffer(payload->bytes.data(), payload->bytes.size());
+      return ndn::Buffer(payload->data(), payload->byteSize());
     }
     return std::nullopt;
   };
@@ -1051,7 +1248,7 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
         [&] (const auto& item) { return item.payloadId == payloadId; });
       if (payload == materialSource.materialManifest->payloads.end())
         return std::nullopt;
-      return ndn::Buffer(payload->bytes.data(), payload->bytes.size());
+      return ndn::Buffer(payload->data(), payload->byteSize());
     }
     return std::nullopt;
   };
@@ -1297,6 +1494,200 @@ BOOST_AUTO_TEST_CASE(Spec189MaterialConsumerFetchesOneSelectedBundle)
 BOOST_AUTO_TEST_CASE(RegisteredOneProviderAssemblyLoadsOrt)
 {
   runRegisteredProviderAssemblyCase(1);
+}
+
+BOOST_AUTO_TEST_CASE(DirectInt8CandidateAssemblyRunsOrtAndContinuation)
+{
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  BOOST_TEST_MESSAGE("Spec190 direct INT8 C++ gate skipped: ONNX Runtime backend is disabled");
+  return;
+#else
+  const char* runGate = std::getenv("NDNSF_SPEC190_RUN_INT8");
+  const char* modelPath = std::getenv("NDNSF_SPEC190_INT8_ONNX");
+  if (runGate == nullptr || std::string(runGate) != "1") {
+    BOOST_TEST_MESSAGE("Spec190 direct INT8 C++ gate skipped: set NDNSF_SPEC190_RUN_INT8=1");
+    return;
+  }
+  BOOST_REQUIRE(modelPath != nullptr && *modelPath != '\0');
+  const auto candidate = std::filesystem::path(modelPath);
+  BOOST_REQUIRE(std::filesystem::is_regular_file(candidate));
+  const auto source = readBytes(candidate);
+  BOOST_REQUIRE(!source.empty());
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromArray(source.data(), static_cast<int>(source.size())));
+  const auto sourceDigest = digest(source);
+  const auto sourceBytes = source.size();
+
+  NativeCanonicalSource canonicalSource;
+  canonicalSource.modelBytes = source;
+  NativeAssemblyControl identityControl;
+  identityControl.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(10);
+  identityControl.requireActive = [] {};
+  identityControl.maxSourceBytes = static_cast<std::uint64_t>(sourceBytes) + (64U << 20);
+  identityControl.maxAssembledBytes = static_cast<std::uint64_t>(sourceBytes) * 4U;
+  const auto identity = canonicalOnnxSourceIdentity(canonicalSource, identityControl);
+  BOOST_REQUIRE(!identity.graphDigest.empty());
+  BOOST_REQUIRE(!identity.initializerDigest.empty());
+
+  const ndn::Name rootName("/spec190/int8/candidate/root");
+  const ndn::Name sourceName("/spec190/int8/candidate/source");
+  const auto rootJson = std::string(
+    "{\"artifactProfileDigest\":\"") + zeroDigest('b') +
+    "\",\"metadata\":{\"canonicalSourceBytes\":" +
+    std::to_string(sourceBytes) +
+    ",\"canonicalSourceDataName\":\"" + sourceName.toUri() +
+    "\",\"canonicalSourceDigest\":\"" + sourceDigest +
+    "\"},\"modelIdentityDigest\":\"" + zeroDigest('a') +
+    "\",\"modelName\":\"Qwen3-0.6B-ONNX-weight-only-int8\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
+    "\"state\":\"ACTIVE\"}";
+  const std::vector<std::uint8_t> rootPayload(rootJson.begin(), rootJson.end());
+  const auto rootDigest = digest(rootPayload);
+  auto projection = makeDirectInt8CandidateProjection(
+    model, identity, sourceDigest, rootDigest, sourceBytes);
+
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [rootName, rootPayload] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != rootName) return std::nullopt;
+    return ndn::Buffer(rootPayload.data(), rootPayload.size());
+  };
+  fetchers.fetchEncryptedLargeData = [sourceName, source] (
+      const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name != sourceName || service != ndn::Name("/LLM/Qwen"))
+      return std::nullopt;
+    return ndn::Buffer(source.data(), source.size());
+  };
+
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.workerLocation = testWorkerLocation();
+  options.cacheDir = (std::filesystem::temp_directory_path() /
+                       "spec190-direct-int8-cpp-gate").string();
+  options.providerIdentity = projection.provider;
+  options.assemblyTimeoutMs = 600000;
+  options.signManifest = [] (const std::string& bytes) {
+    return std::string("spec190-int8-cpp-gate-") + digest(bytes);
+  };
+  std::error_code cleanupError;
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+  const auto prepared = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_REQUIRE(std::filesystem::is_regular_file(prepared.path));
+
+  auto runnerSpec = prepared;
+  bindNativeRunnerPreparationContext(
+    runnerSpec, projection,
+    {projection.provider, "spec190-int8-cpp-boot", 1, options.cacheDir});
+  std::vector<std::string> inputNames;
+  inputNames.reserve(projection.assembly.expectedInputs.size());
+  for (const auto& input : projection.assembly.expectedInputs) {
+    inputNames.push_back(input.name);
+  }
+  std::vector<std::string> outputNames;
+  outputNames.reserve(projection.assembly.expectedOutputs.size());
+  for (const auto& output : projection.assembly.expectedOutputs)
+    outputNames.push_back(output.name);
+  runnerSpec.metadata["inputNames"] = joinCandidateNames(inputNames);
+  runnerSpec.metadata["outputNames"] = joinCandidateNames(outputNames);
+
+  {
+    OnnxRuntimeModelRunner runner(std::move(runnerSpec));
+    const auto evidence = runner.executionEvidenceSnapshot();
+    BOOST_REQUIRE(evidence);
+    BOOST_CHECK(evidence->loadCompleted);
+    BOOST_CHECK(evidence->warmupCompleted);
+    BOOST_CHECK(evidence->realCompute);
+    BOOST_CHECK_EQUAL(evidence->deviceKind, "cpu");
+
+    RoleExecutionContext first;
+    first.sessionId = "spec190-int8-cpp-session";
+    first.requestId = projection.requestId;
+    first.role = projection.assembly.role;
+    first.providerBootId = "spec190-int8-cpp-boot";
+    first.attemptEpoch = 1;
+    first.inferenceEpoch = 0;
+    GenerationEpochLineageV1 firstLineage;
+    firstLineage.requestId = first.requestId;
+    firstLineage.attemptEpoch = first.attemptEpoch;
+    firstLineage.planDigest = projection.planDigest;
+    firstLineage.generationId = "spec190-int8-generation";
+    firstLineage.streamEpoch = 1;
+    firstLineage.inferenceEpoch = first.inferenceEpoch;
+    firstLineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+    firstLineage.logicalPrefixDigest = zeroDigest('e');
+    firstLineage.logicalPrefixTokenCount = 1;
+    firstLineage.positionDigest = zeroDigest('f');
+    firstLineage.validateCore();
+    first.generationLineage = firstLineage;
+    first.generationInputTokenCount = 1;
+    first.inputsByScope.emplace(
+      "input_ids", makeEncodedTensorBundle(
+        "input_ids", {makeInt64CandidateTensor("input_ids", 3)}));
+    first.inputsByScope.emplace(
+      "attention_mask", makeEncodedTensorBundle(
+        "attention_mask", {makeInt64CandidateVector("attention_mask", {1})}));
+    first.inputsByScope.emplace(
+      "position_ids", makeEncodedTensorBundle(
+        "position_ids", {makeInt64CandidateTensor("position_ids", 0)}));
+    const auto firstOutputs = runner.run(first);
+    const auto firstBundle = firstOutputs.find("onnx-output-bundle");
+    BOOST_REQUIRE(firstBundle != firstOutputs.end());
+    const auto firstTensors = decodeTensorBundle(firstBundle->second.payload);
+    const auto* firstLogits = findCandidateTensor(firstTensors, "logits");
+    BOOST_REQUIRE(firstLogits != nullptr);
+    BOOST_CHECK(firstLogits->elementType == TensorElementType::Float32);
+    BOOST_CHECK(firstLogits->shape ==
+                (std::vector<std::int64_t>{1, 1, 151936}));
+
+    RoleExecutionContext continuation;
+    continuation.sessionId = first.sessionId;
+    continuation.requestId = projection.requestId;
+    continuation.role = projection.assembly.role;
+    continuation.providerBootId = first.providerBootId;
+    continuation.attemptEpoch = 1;
+    continuation.inferenceEpoch = 1;
+    GenerationEpochLineageV1 continuationLineage = firstLineage;
+    continuationLineage.inferenceEpoch = continuation.inferenceEpoch;
+    continuationLineage.transitionKind = GenerationEpochLineageV1::DECODE;
+    continuationLineage.logicalPrefixTokenCount = 2;
+    continuationLineage.validateCore();
+    continuation.generationLineage = continuationLineage;
+    continuation.generationInputTokenCount = 1;
+    continuation.inputsByScope.emplace(
+      "input_ids", makeEncodedTensorBundle(
+        "input_ids", {makeInt64CandidateTensor("input_ids", 4)}));
+    continuation.inputsByScope.emplace(
+      "attention_mask", makeEncodedTensorBundle(
+        "attention_mask", {makeInt64CandidateVector("attention_mask", {1, 1})}));
+    continuation.inputsByScope.emplace(
+      "position_ids", makeEncodedTensorBundle(
+        "position_ids", {makeInt64CandidateTensor("position_ids", 1)}));
+    for (std::size_t index = 0; index < projection.generationContract.stateInputNames.size(); ++index) {
+      const auto& inputName = projection.generationContract.stateInputNames.at(index);
+      const auto& outputName = projection.generationContract.stateOutputNames.at(index);
+      const auto* predecessor = findCandidateTensor(firstTensors, outputName);
+      BOOST_REQUIRE(predecessor != nullptr);
+      auto successor = *predecessor;
+      successor.name = inputName;
+      continuation.inputsByScope.emplace(
+        inputName, makeEncodedTensorBundle(inputName, {std::move(successor)}));
+    }
+    const auto secondOutputs = runner.run(continuation);
+    const auto secondBundle = secondOutputs.find("onnx-output-bundle");
+    BOOST_REQUIRE(secondBundle != secondOutputs.end());
+    const auto secondTensors = decodeTensorBundle(secondBundle->second.payload);
+    const auto* secondLogits = findCandidateTensor(secondTensors, "logits");
+    BOOST_REQUIRE(secondLogits != nullptr);
+    BOOST_CHECK(secondLogits->elementType == TensorElementType::Float32);
+    BOOST_CHECK(secondLogits->shape ==
+                (std::vector<std::int64_t>{1, 1, 151936}));
+    const auto* secondPresent = findCandidateTensor(secondTensors, "present.0.key");
+    BOOST_REQUIRE(secondPresent != nullptr);
+    BOOST_CHECK(secondPresent->shape ==
+                (std::vector<std::int64_t>{1, 8, 2, 128}));
+  }
+  std::filesystem::remove_all(options.cacheDir, cleanupError);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(RegisteredTwoProviderAssemblyLoadsOrt)
