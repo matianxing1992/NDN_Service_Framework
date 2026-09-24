@@ -1535,6 +1535,15 @@ PreparationHandle User::prepareAsync(const std::string& modelKey,
                               m_state->config.repositorySourceProvider,
                               m_state->config.repositoryArtifactPublisher);
   spec.runtimeBinding = m_state->runtimeBinding;
+  if (m_state->config.repositorySourceProvider) {
+    const auto provider = m_state->config.repositorySourceProvider;
+    spec.lookupPrepared = [provider](const PreparationSpec& current,
+                                      std::chrono::steady_clock::time_point deadline) {
+      return provider->lookupPrepared(RepositoryPreparedLookupRequest{
+        current.key, current.publicationServiceName, current.catalogConfigurationJson,
+        current.maxAssembledBytes, deadline});
+    };
+  }
   const auto publicationServiceName = spec.publicationServiceName;
   spec.preparePublication = [state = m_state, modelKey, publicationServiceName](
     const NativeCanonicalPreparationCatalog& catalog, const NativeInspectedModel& model,
