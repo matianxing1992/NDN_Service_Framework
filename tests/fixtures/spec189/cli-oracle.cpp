@@ -14,7 +14,8 @@
 #include <unistd.h>
 
 namespace {
-std::string provider(unsigned index, bool materials, bool terminal, unsigned begin, unsigned end)
+std::string provider(unsigned index, bool materials, bool terminal, unsigned begin, unsigned end,
+                     bool cacheHit = false)
 {
   const auto name = "/example/ndnsf-qwen06b/provider-" + std::to_string(index);
   const auto identity = " requestId=request attemptEpoch=1 provider=" + name +
@@ -37,6 +38,10 @@ std::string provider(unsigned index, bool materials, bool terminal, unsigned beg
           " bytes=12 digest=" + digest + "\n";
       }
     }
+  }
+  if (cacheHit) {
+    text += "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_HIT" + identity +
+      " detail=recipe-addressed\n";
   }
   text += stage("RUNNER_READY");
   if (begin != 0) text += stage("DEPENDENCY_FETCH", "begin") + stage("DEPENDENCY_FETCH", "complete");
@@ -233,7 +238,8 @@ int main(int argc, char** argv)
       text = replaceAll(text, "planDigest=plan", "planDigest=plan-" + std::to_string(round));
       return replaceAll(text, "plan=plan", "plan=plan-" + std::to_string(round));
     };
-    const auto chain = [&](unsigned rounds = 3, bool materials = false, unsigned budget = 1024) {
+    const auto chain = [&](unsigned rounds = 3, bool materials = false, unsigned budget = 1024,
+                           bool residentCache = false) {
       std::pair<std::string, std::string> logs{materials ? "" : providerMode, materials ? "" : providerMode};
       unsigned prefix = 0;
       for (unsigned round = 0; round < rounds; ++round) {
@@ -272,7 +278,9 @@ int main(int argc, char** argv)
           (materials ? "" : requesterMode) + roundText(requester, round) +
           "NATIVE_STREAM_EVENTS=" + std::to_string(generated) + "\nNATIVE_CONVERSATION_CHECKPOINT_WRITTEN\n");
         for (unsigned p = 0; p < 2; ++p) {
-          auto events = roundText(provider(p, materials, p == 1, p * 14, (p + 1) * 14), round);
+          const bool roundMaterials = materials && (!residentCache || round == 0);
+          auto events = roundText(provider(p, roundMaterials, p == 1, p * 14, (p + 1) * 14,
+                                           residentCache && round != 0), round);
           if (round) {
             const auto restore = "1790044168 WARN: [ndnsf.di.RuntimeEvidence] "
               "NDNSF_DI_CONVERSATION_KV_RESTORED requestId=request-" + std::to_string(round) +
@@ -295,6 +303,18 @@ int main(int argc, char** argv)
     check(logs.first, logs.second, "", three);
     logs = chain(3, true);
     check(logs.first, logs.second, "", {"--rounds", "3", "--require-multi-token"});
+    logs = chain(3, true, 1024, true);
+    check(logs.first, logs.second, "", {"--rounds", "3", "--require-multi-token"});
+    logs = chain(3, true, 1024, true);
+    logs = {replaceAll(logs.first, "phase=CACHE_LOOKUP_HIT", "phase=CACHE_LOOKUP_MISSING"), logs.second};
+    check(logs.first, logs.second, "incomplete-material-sequence", {"--rounds", "3"});
+    logs = chain(3, true, 1024, true);
+    const auto cachedMaterial = logs.first.find("NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_HIT");
+    if (cachedMaterial == std::string::npos) throw std::runtime_error("cache fixture marker missing");
+    logs.first.insert(cachedMaterial, "NDNSF_DI_PROVIDER_MATERIAL_FETCH requestId=request-1 "
+      "attemptEpoch=1 provider=/example/ndnsf-qwen06b/provider-0 role=role0 planDigest=plan-1 "
+      "kind=root name=/root status=empty expectedDigest=root bytes=0 digest=\n");
+    check(logs.first, logs.second, "material-events-on-cache-hit", {"--rounds", "3"});
     logs = chain(2, false, 1);
     check(logs.first, logs.second, "", {"--cache-compatibility", "--rounds", "2"});
     check(logs.first, logs.second, "invalid-generation-options",

@@ -111,7 +111,7 @@ std::string scopeProvider(const std::string& text, const std::string& request)
     const bool complete = !input.eof();
     for (const auto* marker : {"NDNSF_DI_NATIVE_SELECTION_ACCEPTED", "NDNSF_DI_GRANT_VERIFIED",
            "NDNSF_DI_PROVIDER_STAGE", "NDNSF_DI_PROVIDER_MATERIAL_FETCH",
-           "NDNSF_DI_CONVERSATION_KV_RESTORED"}) {
+           "NDNSF_DI_PROVIDER_PREPARATION", "NDNSF_DI_CONVERSATION_KV_RESTORED"}) {
       if (line.find(marker) == std::string::npos) continue;
       if (!complete) chainFailure("partial-provider-record");
       const auto fields = markerFields(line, marker);
@@ -410,9 +410,41 @@ validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility
   // Explicit diagnostic scope only: all placement/grant checks above remain,
   // but neither material qualification nor a placement PASS is claimed.
   if (cacheCompatibility) return;
-  const auto leftFetches = validateMaterialFetches(
+  const auto validateProviderMaterial = [](const std::filesystem::path& path,
+                                           const PlacementObservation& placement,
+                                           const std::string& expectedProvider) {
+    const auto text = readFile(path);
+    const auto hits = recordsContaining(text,
+      "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_HIT");
+    const auto misses = recordsContaining(text,
+      "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_MISS");
+    if (hits.size() > 1 || misses.size() > 1 || (!hits.empty() && !misses.empty())) {
+      throw std::runtime_error(
+        "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=ambiguous-cache-result log=" +
+        path.string());
+    }
+    if (hits.empty()) {
+      return validateMaterialFetches(path, placement, expectedProvider);
+    }
+    const auto cacheHit = hits.front();
+    if (field(cacheHit, "requestId") != placement.selection.requestId ||
+        field(cacheHit, "provider") != expectedProvider ||
+        field(cacheHit, "role") != placement.selection.role ||
+        field(cacheHit, "detail").empty()) {
+      throw std::runtime_error(
+        "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=identity-mismatch log=" +
+        path.string());
+    }
+    if (text.find("NDNSF_DI_PROVIDER_MATERIAL_FETCH") != std::string::npos) {
+      throw std::runtime_error(
+        "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=material-events-on-cache-hit log=" +
+        path.string());
+    }
+    return MaterialFetchObservation{};
+  };
+  const auto leftFetches = validateProviderMaterial(
     root / "provider-0.log", first, left.provider);
-  const auto rightFetches = validateMaterialFetches(
+  const auto rightFetches = validateProviderMaterial(
     root / "provider-1.log", second, right.provider);
   if (emitPass) std::cout << "SPEC189_CPP_PLACEMENT_PASS "
             << ndnsf::di::nativeCanonicalJson(ndnsf::di::NativeJson{
