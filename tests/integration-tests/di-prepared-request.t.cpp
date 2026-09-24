@@ -1781,37 +1781,15 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   profile.providerIdentity = ndn::Name("/provider");
   profile.attributeAuthority = ndn::Name("/aa");
   profile.serviceName = ndn::Name("/Inference");
-  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
-  environment.bootstrap();
-  // Construct the fixture before Runtime so the borrowed test transport
-  // remains alive until the Runtime owner has completed its drain fence.
-  auto runtime = Runtime::open(runtimeConfig(fixture));
-  auto prepared = runtime->user().prepare();
-  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+  auto environment = std::make_shared<
+    ndn_service_framework::test::NdnsfIntegrationEnvironment>(profile);
+  environment->bootstrap();
 
-  const auto serviceName = environment.profile().serviceName.toUri();
-  const auto requesterName = environment.user().getName().toUri();
-  const auto providerName = environment.provider().getName().toUri();
-  const auto model = package->catalog.model.descriptor;
-  const auto candidates = package->catalog.splitter->enumerate(
-    model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
-  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
-  const auto roles = candidates.front().executionPlan.roles;
-  BOOST_REQUIRE(!roles.empty());
-
+  const auto serviceName = environment->profile().serviceName.toUri();
+  const auto requesterName = environment->user().getName().toUri();
+  const auto providerName = environment->provider().getName().toUri();
   const auto offerKey = deterministicEd25519Key(0x31);
   const auto offerKeyId = nativePlanningDigest(rawPublicKey(offerKey));
-  NativeProviderOfferV3Config offerConfig;
-  offerConfig.provider = providerName;
-  offerConfig.service = serviceName;
-  offerConfig.bootEpoch = providerName + ":" + environment.provider().getProviderBootEpoch();
-  offerConfig.signerKeyId = offerKeyId;
-  offerConfig.acceptedRoles = roles;
-  offerConfig.backends = {"onnxruntime-cpu"};
-  offerConfig.hasModel = true;
-  offerConfig.signDigest = [offerKey] (const std::string& value) {
-    return signDigest(offerKey, value);
-  };
   const auto candidatePolicyDigest = nativePlanningDigest("spec185-t005-provider-policy");
   const auto policy = nativeCanonicalJson(NativeJson{
     {"schema", "spec180-provider-offer-trust-v1"},
@@ -1819,20 +1797,68 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
     {"trustSchema", "/spec185/t005/trust"},
     {"entries", NativeJson::array({NativeJson{
       {"provider", providerName}, {"service", serviceName},
-      {"keyLocatorPrefix", environment.provider().getSigningKeyName().toUri()},
+      {"keyLocatorPrefix", environment->provider().getSigningKeyName().toUri()},
       {"signerKeyId", offerKeyId},
-      {"certificateName", environment.provider().getSigningCertificateName().toUri()}}})}});
+      {"certificateName", environment->provider().getSigningCertificateName().toUri()}}})}});
   auto admission = std::make_shared<NativeOfferAdmission>(
     policy, std::map<std::string, std::string>{{offerKeyId, publicKeyPem(offerKey)}},
     candidatePolicyDigest);
 
+  // Preparation publishes the canonical encrypted material before the first
+  // request.  Bind the same LocalMock Core user and a request-independent
+  // grant client before prepare(), then replace only the grant client after
+  // the package supplies the manifest-bound grant inputs below.
   const auto requesterKey = deterministicEd25519Key(0x41);
   const auto authorityKey = deterministicEd25519Key(0x51);
+  const auto authorityName = environment->profile().attributeAuthority.toUri();
+  const std::string protectionEpoch = "epoch-1";
+  NativeAuthenticatedGrantClient::Issue earlyIssue = [] (
+    const NativeSignedGrantRequest&, const std::string&, std::uint64_t,
+    const NativeGrantControl& control) {
+    control.check();
+    return NativeKeyGrant{};
+  };
+  NativeAuthenticatedGrantClient::Publish earlyPublish = [] (
+    const std::string& name, const std::string&, const NativeGrantControl& control) {
+    control.check();
+    return name;
+  };
+  auto earlyGrants = std::make_shared<NativeAuthenticatedGrantClient>(
+    requesterName, requesterKey, authorityName, rawPublicKey(authorityKey),
+    protectionEpoch, std::move(earlyIssue), std::move(earlyPublish));
+
+  // Construct the fixture before Runtime so the borrowed test transport
+  // remains alive until the Runtime owner has completed its drain fence.
+  auto runtime = Runtime::open(runtimeConfig(fixture));
+  auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment->user(), [] (ndn_service_framework::ServiceUser*) {});
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    runtime, environmentUser, earlyGrants, admission);
+  auto prepared = prepareWithInProcessPump(runtime, *environment);
+  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+
+  const auto model = package->catalog.model.descriptor;
+  const auto candidates = package->catalog.splitter->enumerate(
+    model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto roles = candidates.front().executionPlan.roles;
+  BOOST_REQUIRE(!roles.empty());
+
+  NativeProviderOfferV3Config offerConfig;
+  offerConfig.provider = providerName;
+  offerConfig.service = serviceName;
+  offerConfig.bootEpoch = providerName + ":" + environment->provider().getProviderBootEpoch();
+  offerConfig.signerKeyId = offerKeyId;
+  offerConfig.acceptedRoles = roles;
+  offerConfig.backends = {"onnxruntime-cpu"};
+  offerConfig.hasModel = true;
+  offerConfig.signDigest = [offerKey] (const std::string& value) {
+    return signDigest(offerKey, value);
+  };
   const auto recipientKey = deterministicEd25519Key(0x61);
   const auto registration = nativeParseJson(package->registration->configurationJson);
-  const auto protectionEpoch = registration.at("grant").at(
-    "protection_epoch").get<std::string>();
-  const auto authorityName = environment.profile().attributeAuthority.toUri();
+  BOOST_REQUIRE_EQUAL(registration.at("grant").at("protection_epoch").get<std::string>(),
+                      protectionEpoch);
   NativeGrantIssuerConfig issuerConfig;
   issuerConfig.authorityIdentity = authorityName;
   issuerConfig.requesterIdentity = requesterName;
@@ -1881,7 +1907,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   auto selectionByRequest = std::make_shared<std::map<std::string, std::string>>();
   auto grantRequestIds = std::make_shared<std::map<std::string, std::set<std::string>>>();
   const auto acceptedRepositoryDigest = nativePlanningDigest("spec185-t005-repository-ciphertext");
-  environment.provider().addCollaborationHandler(
+  environment->provider().addCollaborationHandler(
     ndn::Name(serviceName),
     [offerConfig, acceptedRepositoryDigest, wrongDigestRejected, ackCount,
      observationMutex, ackRequestIds] (
@@ -1946,21 +1972,19 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
         responseCount->fetch_add(1, std::memory_order_relaxed);
     });
 
-  environment.enableProductionIngressForTest();
-  environment.provider().markHybridResponseKeyWrappedForTest(serviceName);
-  const auto ackKey = environment.provider().prepareHybridSendKeyForTest(serviceName, "ACK");
-  const auto responseKey = environment.provider().prepareHybridSendKeyForTest(serviceName, "RESPONSE");
-  environment.user().cacheHybridReceiveKeyForTest(ackKey.keyId, ackKey.epochId, ackKey.key);
-  environment.user().cacheHybridReceiveKeyForTest(responseKey.keyId, responseKey.epochId, responseKey.key);
-  const auto selectionKey = environment.user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
-  environment.provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
+  environment->enableProductionIngressForTest();
+  environment->provider().markHybridResponseKeyWrappedForTest(serviceName);
+  const auto ackKey = environment->provider().prepareHybridSendKeyForTest(serviceName, "ACK");
+  const auto responseKey = environment->provider().prepareHybridSendKeyForTest(serviceName, "RESPONSE");
+  environment->user().cacheHybridReceiveKeyForTest(ackKey.keyId, ackKey.epochId, ackKey.key);
+  environment->user().cacheHybridReceiveKeyForTest(responseKey.keyId, responseKey.epochId, responseKey.key);
+  const auto selectionKey = environment->user().prepareHybridSendKeyForTest(serviceName, "SELECTION");
+  environment->provider().cacheHybridReceiveKeyForTest(selectionKey.keyId, selectionKey.epochId, selectionKey.key);
 
   // Keep the Provider fixture's transport and grant owner, but invoke the
   // production Runtime::makeRuntimeClient factory through the prepared
   // package's frozen clientFactory.  This test-only override is internal and
   // never changes the public Runtime/PreparedModel API or its owner registry.
-  auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
-    &environment.user(), [] (ndn_service_framework::ServiceUser*) {});
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
     runtime, environmentUser, grants, admission);
   auto providerPrepared = prepared;
@@ -2061,7 +2085,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   // one bounded pump, so continue with another bounded pump before joining
   // the workers.  This keeps the test driver alive through the real Face
   // scheduler boundary without relying on std::future's shared state.
-  pumpUntilConversationResultsReady(environment, firstObservation, secondObservation,
+  pumpUntilConversationResultsReady(*environment, firstObservation, secondObservation,
                                     std::chrono::seconds(10));
   const auto firstResult = firstObservation->get();
   const auto secondResult = secondObservation->get();
@@ -2106,7 +2130,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   // scheduling and transport boundaries that this regression protects.
   auto runObservation = startPreparedRunObservation(
     providerPrepared, Input::inlineBytes({0x0a, 0x0b, 0x0c}), options);
-  pumpUntilPreparedRunReady(environment, runObservation, std::chrono::seconds(10));
+  pumpUntilPreparedRunReady(*environment, runObservation, std::chrono::seconds(10));
   const auto runResult = runObservation->get();
   BOOST_CHECK_EQUAL(std::string(runResult.payload.begin(), runResult.payload.end()),
                     "spec185-provider-response");
@@ -2138,7 +2162,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
     Input::repository(DataRef::fromPublishedMetadata(nativeCanonicalJson(wrongReference))), options);
   auto wrongDigestObservation = startConversationResultObservation(
     wrongDigestRequest, std::chrono::seconds(5));
-  pumpUntilConversationResultReady(environment, wrongDigestObservation,
+  pumpUntilConversationResultReady(*environment, wrongDigestObservation,
                                    std::chrono::seconds(5));
   bool wrongDigestFailed = false;
   try {
@@ -2156,7 +2180,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   const auto now = static_cast<std::uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
-  const auto currentVersion = environment.user().getControllerVersion();
+  const auto currentVersion = environment->user().getControllerVersion();
   const auto nextEpoch = currentVersion ? currentVersion->controllerEpoch + 1 : 2;
   ndn_service_framework::PolicyStatusData revokedStatus;
   revokedStatus.setServiceName(ndn::Name(serviceName));
@@ -2168,12 +2192,12 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   revokedUser.kind = ndn_service_framework::RevocationKind::IDENTITY;
   revokedUser.targetIdentity = ndn::Name(requesterName);
   revokedStatus.addRevocation(revokedUser);
-  BOOST_REQUIRE(environment.user().installControllerStatus(revokedStatus));
+  BOOST_REQUIRE(environment->user().installControllerStatus(revokedStatus));
 
   auto revokedRequest = providerPrepared.request(Input::inlineBytes({0x06, 0x07, 0x08}), options);
   auto revokedObservation = startConversationResultObservation(
     revokedRequest, std::chrono::seconds(5));
-  pumpUntilConversationResultReady(environment, revokedObservation,
+  pumpUntilConversationResultReady(*environment, revokedObservation,
                                    std::chrono::seconds(5));
   bool revokedFailed = false;
   try {
@@ -2191,8 +2215,8 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   // Face; otherwise SegmentFetcher retains pending interests into the
   // sanitizer exit path even though the request itself is terminal.
   bool userReadyAfterRevocation = false;
-  environment.pumpUntilWithAttributeAuthority([&] {
-    userReadyAfterRevocation = environment.user().isNacConsumerReadyForTest();
+  environment->pumpUntilWithAttributeAuthority([&] {
+    userReadyAfterRevocation = environment->user().isNacConsumerReadyForTest();
     return userReadyAfterRevocation;
   });
   BOOST_CHECK(userReadyAfterRevocation);
@@ -2204,7 +2228,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   auto drainObservation = startBooleanResultObservation([runtime] {
     return runtime->drain(std::chrono::seconds(2));
   });
-  pumpUntilBooleanResultReady(environment, drainObservation, std::chrono::seconds(2));
+  pumpUntilBooleanResultReady(*environment, drainObservation, std::chrono::seconds(2));
   BOOST_CHECK(drainObservation->get());
 }
 
