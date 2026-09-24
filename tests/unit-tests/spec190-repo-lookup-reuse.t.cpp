@@ -10,6 +10,7 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -70,16 +71,18 @@ struct Fixture
   std::filesystem::path root = std::filesystem::temp_directory_path() /
     ("spec190-repo-lookup-" + std::to_string(::getpid()));
   std::shared_ptr<RepoCore> repo;
+  std::shared_ptr<FilesystemRepoStoreBackend> backend;
 
-  std::shared_ptr<RepoCore> openRepo() const
+  std::shared_ptr<RepoCore> openRepo()
   {
     StorageCapability capability;
     capability.repoNode = "/spec190/local-repo";
     capability.freeBytes = 16U * 1024U * 1024U;
     capability.repoMode = "persistent";
+    backend = std::make_shared<FilesystemRepoStoreBackend>(
+      root.string(), 4U * 1024U * 1024U, 1U * 1024U * 1024U, "spec190-test");
     return std::make_shared<RepoCore>(
-      std::move(capability), makeFilesystemRepoStore(root.string(), 4U * 1024U * 1024U,
-                                                     1U * 1024U * 1024U, "spec190-test"));
+      std::move(capability), backend);
   }
 
   Fixture()
@@ -97,6 +100,7 @@ struct Fixture
   ~Fixture()
   {
     repo.reset();
+    backend.reset();
     std::error_code error;
     std::filesystem::remove_all(root, error);
     std::filesystem::remove(root.string() + ".authority.lock", error);
@@ -227,6 +231,7 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   // new RepoCore/provider and must not publish or inherit a live receipt.
   provider.reset();
   fixture.repo.reset();
+  fixture.backend.reset();
   const auto child = ::fork();
   BOOST_REQUIRE(child >= 0);
   if (child == 0) {
@@ -280,6 +285,40 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
                         [&cancelled] { return cancelled.load(std::memory_order_acquire); }}),
                     std::exception);
   BOOST_CHECK(restarted.lookupPrepared({
+    "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10)}));
+
+  // The sidecar remains unchanged while the committed payload is corrupted.
+  // A complete reference-only hit must verify payload bytes and fail closed,
+  // rather than trusting the sidecar digest alone.
+  const auto sourceManifest = fixture.repo->getManifest(committed.sourceDataName);
+  const auto sourcePayload = std::filesystem::path(fixture.backend->rootPath()) /
+    "payloads" / "sha256" / sourceManifest.sha256.substr(0, 2) / sourceManifest.sha256;
+  std::uint8_t originalByte = 0;
+  {
+    std::fstream payload(sourcePayload, std::ios::in | std::ios::out | std::ios::binary);
+    BOOST_REQUIRE(payload);
+    payload.read(reinterpret_cast<char*>(&originalByte), 1);
+    BOOST_REQUIRE_EQUAL(payload.gcount(), 1);
+    payload.clear();
+    payload.seekp(0);
+    const auto corruptByte = static_cast<std::uint8_t>(originalByte ^ 0xffU);
+    payload.write(reinterpret_cast<const char*>(&corruptByte), 1);
+    BOOST_REQUIRE(payload.good());
+  }
+  const auto unchangedSidecar = fixture.repo->getManifest(committed.sourceDataName);
+  BOOST_CHECK_EQUAL(unchangedSidecar.sha256, sourceManifest.sha256);
+  BOOST_CHECK_THROW(restarted.lookupPrepared({
+    "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10)}), RepositorySourceError);
+  {
+    std::fstream payload(sourcePayload, std::ios::in | std::ios::out | std::ios::binary);
+    BOOST_REQUIRE(payload);
+    payload.seekp(0);
+    payload.write(reinterpret_cast<const char*>(&originalByte), 1);
+    BOOST_REQUIRE(payload.good());
+  }
+  BOOST_REQUIRE(restarted.lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
     std::chrono::steady_clock::now() + std::chrono::seconds(10)}));
 }

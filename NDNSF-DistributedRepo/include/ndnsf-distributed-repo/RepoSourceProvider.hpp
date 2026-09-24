@@ -7,18 +7,22 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <openssl/evp.h>
 #include <random>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -147,6 +151,48 @@ public:
       if (manifest.objectName != name || manifest.sha256 != digest.substr(7) ||
           manifest.size != bytes)
         reject("object manifest differs from the receipt");
+
+      // The sidecar is only an authenticated description of the payload; it
+      // is not proof that the payload file still contains the described bytes.
+      // Verify the content in bounded ranges before allowing a reference-only
+      // preparation hit.  Do not call RepoCore::get here: source and layer
+      // objects may be much larger than the vector compatibility threshold.
+      auto hashContext = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>(
+        EVP_MD_CTX_new(), EVP_MD_CTX_free);
+      if (!hashContext || EVP_DigestInit_ex(hashContext.get(), EVP_sha256(), nullptr) != 1)
+        reject("object payload digest initialization failed");
+      constexpr std::uint64_t kReadWindow = 1U << 20;
+      for (std::uint64_t offset = 0; offset < manifest.size;) {
+        if (std::chrono::steady_clock::now() >= request.deadline)
+          throw ndnsf::di::RepositorySourceError(
+            ndnsf::di::RepositorySourceError::Kind::Timeout,
+            "repository prepared lookup payload digest deadline expired");
+        const auto length = std::min(kReadWindow, manifest.size - offset);
+        const auto part = m_repo->getRange(name, {offset, length});
+        if (part.size() != length ||
+            EVP_DigestUpdate(hashContext.get(), part.data(), part.size()) != 1)
+          reject("object payload range or digest update failed");
+        offset += length;
+      }
+      std::array<unsigned char, EVP_MAX_MD_SIZE> actualBytes{};
+      unsigned actualSize = 0;
+      if (EVP_DigestFinal_ex(hashContext.get(), actualBytes.data(), &actualSize) != 1)
+        reject("object payload digest finalization failed");
+      std::ostringstream actualDigest;
+      actualDigest << std::hex << std::setfill('0');
+      for (unsigned i = 0; i < actualSize; ++i)
+        actualDigest << std::setw(2) << static_cast<unsigned int>(actualBytes[i]);
+      if (actualDigest.str() != manifest.sha256)
+        reject("object payload differs from its manifest");
+
+      // A concurrent replacement must not be mistaken for the object just
+      // hashed.  Normal publication serializes through the same lock, while
+      // this recheck also protects the lookup against a lower-level writer.
+      const auto current = m_repo->getManifest(name);
+      if (current.objectName != manifest.objectName || current.sha256 != manifest.sha256 ||
+          current.size != manifest.size || current.generation != manifest.generation ||
+          current.operationId != manifest.operationId)
+        reject("object manifest changed during verification");
       return true;
     };
 
