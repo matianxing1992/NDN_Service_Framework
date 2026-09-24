@@ -1,5 +1,24 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-23 real OS exec-restart Core serving gate
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
+- **Changed gate:** the existing C++ `spec189-encrypted-repo` target now has an
+  `fork`+`exec` selector. The parent releases the Repo authoritative owner before
+  the child reopens the fixed filesystem root, reconstructs `ServiceUser`, performs
+  durable lookup, and serves the stored envelope through the production Interest
+  callback.
+- **Validation:** ordinary root `build/` `spec189-encrypted-repo` was `120/120`;
+  the selector passed three consecutive times; the complete target passed `11/11`.
+  The committed object count stayed `1` and its ciphertext digest stayed unchanged.
+- **Preserved failures:** the first cold LocalMock attempt stopped at missing wrapped
+  NAC-ABE test material; the next attempt stopped at the parent-held Repo lock. Both
+  raw logs remain under `.codex-tmp/spec190-b190-22-exec-restart-20260923T2010/`.
+- **Unobserved:** Provider actual decrypt/unwrap after restart, online current
+  grant/Selection/placement rebinding, revoke invalidation, precise missing-object
+  fetch, tamper/signature qualification and real Qwen/MiniNDN remain open.
+- **Evidence:** [B190-23](../specs/190-multiturn-latency/evidence/b190-23.md).
+
 ## 2026-09-23 — Spec190 B190-22 cross-process protected serving static re-review
 
 - **Status:** `ROOT_CAUSE` / T006 remains `PARTIAL`; T007 remains locked.
