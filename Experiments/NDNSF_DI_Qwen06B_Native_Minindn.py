@@ -1163,6 +1163,21 @@ def split_native_turn_logs(text: str, rounds: int) -> list[str]:
     return result
 
 
+def conversation_turn_request_id(text: str) -> str:
+    """Return the request ID declared by one native conversation turn."""
+    marker = "NATIVE_CONVERSATION_TURN_START "
+    for line in text.splitlines():
+        if marker not in line:
+            continue
+        _, _, payload = line.partition(marker)
+        for token in payload.split():
+            key, equal, value = token.partition("=")
+            if equal and key == "request" and value:
+                return value
+        break
+    raise RuntimeError("native conversation turn request marker is missing")
+
+
 def validate_native_output(path: Path) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -1296,8 +1311,8 @@ def _structured_marker_fields(line: str, marker: str) -> dict[str, str] | None:
     return fields
 
 
-def phase_timing_summary(text: str) -> dict:
-    """Summarize C++ monotonic phase records without replacing raw logs."""
+def phase_timing_summary(text: str, request_id: str | None = None) -> dict:
+    """Summarize C++ phase records, optionally for one request only."""
     observations = []
     for line in text.splitlines():
         fields = _structured_marker_fields(line, "NDNSF_PHASE_TIMING")
@@ -1305,6 +1320,8 @@ def phase_timing_summary(text: str) -> dict:
             continue
         required = ("requestId", "phase", "steady_us", "timestamp_us")
         if any(name not in fields for name in required):
+            continue
+        if request_id is not None and fields["requestId"] != request_id:
             continue
         try:
             steady = int(fields["steady_us"])
@@ -2636,12 +2653,15 @@ def main(argv=None, *, _supervised=False) -> int:
             for round_index in range(args.rounds):
                 output_path = requester_dir / f"output-{round_index}.bin"
                 output_summary = validate_native_output(output_path)
+                turn_request_id = conversation_turn_request_id(turn_texts[round_index])
                 round_records.append({"round": round_index, "returncode": first_proc.returncode,
+                                      "requestId": turn_request_id,
                                       "log": str(run_root / f"requester-{round_index}.log"),
                                       "output": str(output_path),
                                       "providerFinalization": process_barrier if round_index == args.rounds - 1 else {
                                           "observation": "covered-by-final-process-barrier"},
-                                      "phaseTiming": phase_timing_summary(turn_text),
+                                      "phaseTiming": phase_timing_summary(
+                                          turn_texts[round_index], turn_request_id),
                                       **output_summary})
         if args.negative_parent:
             cfg = json.loads((requester_dir / "config.json").read_text())
