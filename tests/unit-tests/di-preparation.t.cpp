@@ -17,7 +17,9 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 
 namespace ndnsf::di {
 
@@ -319,6 +321,10 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   BOOST_REQUIRE_EQUAL(snapshots.size(), 1U);
   BOOST_CHECK_EQUAL(snapshots.back().sourceBytes, 0U);
   BOOST_CHECK_EQUAL(snapshots.back().initializerBytes, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().splitCount, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().exportCount, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().packageCount, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().storeCount, 0U);
 
   // A new cache owner represents the durable lookup boundary.  The closure
   // intentionally still rejects canonical source reads, so this proves that
@@ -333,6 +339,93 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   BOOST_CHECK_EQUAL(snapshots.size(), 2U);
   BOOST_CHECK_EQUAL(snapshots.back().sourceBytes, 0U);
   BOOST_CHECK_EQUAL(snapshots.back().initializerBytes, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().splitCount, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().exportCount, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().packageCount, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().storeCount, 0U);
+
+  // A new OS process must cross the same durable lookup boundary.  The child
+  // owns a fresh ModelPreparationCache and still cannot invoke source-backed
+  // split/export/package/STORE work for this complete reference-only hit.
+  struct ChildResult
+  {
+    int code = 1;
+    unsigned sourceLoads = 0;
+    std::size_t parseCount = 0;
+    std::size_t splitCount = 0;
+    std::size_t exportCount = 0;
+    std::size_t packageCount = 0;
+    std::size_t storeCount = 0;
+  } childResult;
+  int pipeFds[2] = {-1, -1};
+  BOOST_REQUIRE_EQUAL(::pipe(pipeFds), 0);
+  const auto child = ::fork();
+  BOOST_REQUIRE(child >= 0);
+  if (child == 0) {
+    ::close(pipeFds[0]);
+    try {
+      std::vector<PreparationSpec::MemorySnapshot> childSnapshots;
+      auto childSpec = spec;
+      childSpec.memoryObserver = [&childSnapshots] (const auto& snapshot) {
+        childSnapshots.push_back(snapshot);
+      };
+      ModelPreparationCache processRestarted(8 << 20, 1, std::chrono::seconds(5));
+      const auto processPrepared = processRestarted.prepare(childSpec);
+      if (processPrepared.receipt().origin != PreparationReceipt::Origin::Fetched ||
+          processRestarted.parseCount() != 1U || childSnapshots.size() != 1U ||
+          sourceLoads.load() != 0U) {
+        childResult.code = 2;
+      }
+      else {
+        const auto& snapshot = childSnapshots.back();
+        childResult.code = 0;
+        childResult.sourceLoads = sourceLoads.load();
+        childResult.parseCount = processRestarted.parseCount();
+        childResult.splitCount = snapshot.splitCount;
+        childResult.exportCount = snapshot.exportCount;
+        childResult.packageCount = snapshot.packageCount;
+        childResult.storeCount = snapshot.storeCount;
+      }
+    }
+    catch (...) {
+      childResult.code = 3;
+    }
+    (void)::write(pipeFds[1], &childResult, sizeof(childResult));
+    ::close(pipeFds[1]);
+    _exit(childResult.code == 0 ? 0 : 1);
+  }
+  ::close(pipeFds[1]);
+  std::size_t received = 0;
+  auto* bytes = reinterpret_cast<std::uint8_t*>(&childResult);
+  while (received < sizeof(childResult)) {
+    const auto count = ::read(pipeFds[0], bytes + received, sizeof(childResult) - received);
+    BOOST_REQUIRE(count > 0);
+    received += static_cast<std::size_t>(count);
+  }
+  ::close(pipeFds[0]);
+  int childStatus = 0;
+  BOOST_REQUIRE_EQUAL(::waitpid(child, &childStatus, 0), child);
+  BOOST_REQUIRE(WIFEXITED(childStatus));
+  BOOST_CHECK_EQUAL(WEXITSTATUS(childStatus), 0);
+  BOOST_CHECK_EQUAL(childResult.code, 0);
+  BOOST_CHECK_EQUAL(childResult.sourceLoads, 0U);
+  BOOST_CHECK_EQUAL(childResult.parseCount, 1U);
+  BOOST_CHECK_EQUAL(childResult.splitCount, 0U);
+  BOOST_CHECK_EQUAL(childResult.exportCount, 0U);
+  BOOST_CHECK_EQUAL(childResult.packageCount, 0U);
+  BOOST_CHECK_EQUAL(childResult.storeCount, 0U);
+
+  // A malformed durable receipt must fail closed before a source fallback or
+  // publication attempt.  This is deliberately a fresh cache owner.
+  auto corrupted = spec;
+  corrupted.lookupPrepared = [] (const PreparationSpec&,
+                                 std::chrono::steady_clock::time_point) {
+    NativePreparedCanonicalPublication invalid;
+    invalid.rootDataName = "/qwen/reference/corrupted-root";
+    return std::optional<NativePreparedCanonicalPublication>{std::move(invalid)};
+  };
+  ModelPreparationCache corruptedCache(8 << 20, 1, std::chrono::seconds(5));
+  BOOST_CHECK_THROW(corruptedCache.prepare(corrupted), std::exception);
 
   const auto restoreControl = NativeAssemblyControl{
     std::chrono::steady_clock::now() + std::chrono::seconds(5), [] {}, 1U << 20, 1U << 20};
@@ -709,10 +802,19 @@ BOOST_AUTO_TEST_CASE(PreparedPackageOwnsPublicationLeaseUntilCacheEviction)
   published.preparePublication = [publisher = std::move(publisher)]
     (const NativeCanonicalPreparationCatalog&, const NativeInspectedModel& model,
      const NativeRequestControl& control) { return publisher.prepare(model, control); };
+  std::vector<PreparationSpec::MemorySnapshot> stageSnapshots;
+  published.memoryObserver = [&stageSnapshots] (const auto& snapshot) {
+    stageSnapshots.push_back(snapshot);
+  };
 
   ModelPreparationCache cache(8 << 20, 1, std::chrono::seconds(5));
   std::optional<PreparedModel> prepared{cache.prepare(published)};
   BOOST_REQUIRE_EQUAL(publicationCalls.load(std::memory_order_relaxed), 2U);
+  BOOST_REQUIRE_EQUAL(stageSnapshots.size(), 1U);
+  BOOST_CHECK_EQUAL(stageSnapshots.back().splitCount, 1U);
+  BOOST_CHECK_EQUAL(stageSnapshots.back().exportCount, 1U);
+  BOOST_CHECK_EQUAL(stageSnapshots.back().packageCount, 1U);
+  BOOST_CHECK_EQUAL(stageSnapshots.back().storeCount, 1U);
   BOOST_REQUIRE(!weakPublicationLease.expired());
   publicationLease.reset();
 

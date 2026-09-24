@@ -33,6 +33,14 @@ struct PreparationSpec
     std::size_t encryptedPublicationBytes = 0;
     std::size_t ortPreparationBudgetBytes = 0;
     std::size_t peakBytes = 0;
+    // Logical source-backed preparation stages.  A complete reference-only
+    // lookup must leave all four counters at zero; packageCount means the
+    // canonical material package path, not construction of a small in-memory
+    // PreparedModel view around a hit.
+    std::size_t splitCount = 0;
+    std::size_t exportCount = 0;
+    std::size_t packageCount = 0;
+    std::size_t storeCount = 0;
     bool sourceOwnerReleased = false;
     bool cacheEntryCommitted = false;
     /** True when rollback was invoked; the callback's remote deletion result

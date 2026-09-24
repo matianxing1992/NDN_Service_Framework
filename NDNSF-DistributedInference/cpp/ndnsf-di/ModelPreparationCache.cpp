@@ -471,6 +471,10 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     updatePeak();
     catalog = NativeRequestCatalog::load(spec.catalogConfigurationJson,
                                          std::move(source), control);
+    // NativeRequestCatalog construction is the source-backed split/planning
+    // boundary.  A complete reference-only hit takes the branch above and
+    // must not claim this expensive preparation stage.
+    memory.splitCount = 1;
   }
   requireActive(deadline, spec.cancelled);
   if (!catalog.preparation || !catalog.splitter || !catalog.cooperativeSplitter)
@@ -630,6 +634,10 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   if (publicationRepairRequired && !spec.preparePublication)
     throw std::runtime_error("DI_NATIVE_PREPARATION_PARTIAL_PUBLICATION_OWNER_MISSING");
   if ((!preparedPublication || publicationRepairRequired) && spec.preparePublication) {
+    // The publication owner performs the export/material packaging work before
+    // committing the root.  Keep the attempted export separate from the
+    // successful STORE handoff so failure evidence remains unambiguous.
+    memory.exportCount = 1;
     NativeRequestControl publicationControl{
       "prepare/" + spec.key, 1, deadline, spec.cancelled};
     preparedPublication = spec.preparePublication(*catalog.preparation,
@@ -639,6 +647,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     if (!preparedPublication->missingDataNames.empty())
       throw std::runtime_error("DI_NATIVE_PREPARATION_PARTIAL_PUBLICATION_UNRESOLVED");
     memory.encryptedPublicationBytes = preparedPublication->publishedBytes;
+    memory.storeCount = 1;
     updatePeak();
   }
   addSize(retained, static_cast<std::size_t>(spec.maxSourceBytes));
@@ -652,6 +661,8 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     FrozenPreparationRegistration{spec.key, spec.baseDirectory, spec.configurationJson,
       spec.configurationDigest, spec.taskName, spec.taskContractDigest, spec.inputLayoutDigest});
   const auto preparation = catalog.preparation;
+  if (!completePreparedHit)
+    memory.packageCount = 1;
   const bool releaseTransientSource = preparedPublication.has_value();
   auto package = std::make_shared<PreparedModelPackage>(
     PreparedModelPackage{std::move(catalog), std::move(registration), manifest,
