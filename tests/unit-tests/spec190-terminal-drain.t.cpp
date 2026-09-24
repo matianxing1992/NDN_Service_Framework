@@ -73,7 +73,8 @@ struct ConversationFixture
 
   NativeCompletedAttempt completed(std::vector<std::string>& order,
                                   bool failFinalize = false,
-                                  bool failCommit = false)
+                                  bool failCommit = false,
+                                  bool oneSidedCommitAckLoss = false)
   {
     const auto& transcript = oracle.at("cases")[2].at("transcript");
     NativeCompletedAttempt result;
@@ -91,11 +92,18 @@ struct ConversationFixture
       result.authenticatedReceipts.push_back(nativeParseJson(
         nativeConversationBase64Decode(encoded.get<std::string>())));
     }
-    result.commitProviderState = [&order, failCommit](const std::string&) {
+    result.commitProviderState = [&order, failCommit, oneSidedCommitAckLoss](const std::string&) {
       order.push_back("COMMIT");
+      if (oneSidedCommitAckLoss) {
+        order.push_back("COMMIT/provider-a");
+        order.push_back("COMMIT_ACK_LOST/provider-b");
+        throw std::runtime_error("provider-b commit acknowledgement lost");
+      }
       if (failCommit) throw std::runtime_error("commit control unavailable");
     };
-    result.rollbackProviderState = [&order] { order.push_back("ROLLBACK"); };
+    result.rollbackProviderState = [&order, oneSidedCommitAckLoss] {
+      order.push_back(oneSidedCommitAckLoss ? "ROLLBACK/provider-a" : "ROLLBACK");
+    };
     result.durableCommitGate = [&order](const std::function<void()>& publish) {
       order.push_back("JOURNAL");
       publish();
@@ -181,6 +189,25 @@ BOOST_AUTO_TEST_CASE(UncommittedPromotionFailureRollsBackBeforeDrain)
   BOOST_REQUIRE_EQUAL(order.size(), 2U);
   BOOST_CHECK_EQUAL(order[0], "COMMIT");
   BOOST_CHECK_EQUAL(order[1], "ROLLBACK");
+}
+
+BOOST_AUTO_TEST_CASE(OneSidedCommitAckLossCompensatesCommittedProvider)
+{
+  ConversationFixture fixture;
+  NativeConversationCoordinator coordinator(fixture.config);
+  const auto turn = coordinator.beginTurn(fixture.continuation(), "/request/1");
+  coordinator.acceptTokenPrefix(turn, {11});
+  std::vector<std::string> order;
+  const auto checkpoint = coordinator.prepareCheckpoint(
+    turn, fixture.completed(order, false, false, true));
+  BOOST_CHECK_THROW(coordinator.commitTurn(turn, checkpoint), std::runtime_error);
+  BOOST_CHECK(!coordinator.find(turn.parent.conversationId));
+  BOOST_CHECK_EQUAL(fixture.config.journal->readConversations(fixture.now).size(), 0U);
+  BOOST_REQUIRE_EQUAL(order.size(), 4U);
+  BOOST_CHECK_EQUAL(order[0], "COMMIT");
+  BOOST_CHECK_EQUAL(order[1], "COMMIT/provider-a");
+  BOOST_CHECK_EQUAL(order[2], "COMMIT_ACK_LOST/provider-b");
+  BOOST_CHECK_EQUAL(order[3], "ROLLBACK/provider-a");
 }
 
 BOOST_AUTO_TEST_CASE(FacePublicationIsCountedUntilItsIoCallbackRuns)
