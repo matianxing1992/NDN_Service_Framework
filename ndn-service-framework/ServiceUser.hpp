@@ -29,6 +29,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <set>
 #include <string>
 #include <tuple>
@@ -1318,6 +1319,15 @@ namespace ndn_service_framework{
                 const PolicyStatusData* status = nullptr,
                 bool grantOnlyDkeyRefresh = false);
             /**
+             * Retire only protected publications older than a strictly newer
+             * service-scoped ControllerVersion.  The caller holds the
+             * protected-reuse write fence; this method never touches Repo
+             * durable ownership or performs Face/I/O work.
+             */
+            void retireProtectedPublications(
+                const ndn::Name& serviceName,
+                const ControllerVersion& version);
+            /**
              * Run the DKEY-only refresh leg of a Controller-status install
              * (grant-only target-policy replacement, FR-017/SC-022).  Called
              * from invalidateControllerScopedCaches on a version-advance
@@ -1910,6 +1920,20 @@ namespace ndn_service_framework{
             mutable std::mutex _cache_mutex;
             struct LargeDataFilePublication;
             struct LargeDataKeyReleaseState;
+            struct ProtectedImsOwner
+            {
+                std::string serviceName;
+                ControllerVersion version;
+            };
+            struct ProtectedPublicationPending
+            {
+                std::string serviceName;
+                std::string publicationKey;
+                ControllerVersion version;
+                bool versioned = false;
+                std::vector<std::string> imsNames;
+                bool cancelled = false;
+            };
             std::shared_ptr<LargeDataKeyReleaseState> m_largeDataKeyReleaseState;
             LargeDataPublishResult publishEncryptedLargeDataImpl(
                 const PreparedServiceRequest&, const std::vector<uint8_t>&,
@@ -1922,6 +1946,25 @@ namespace ndn_service_framework{
             std::map<std::string, std::shared_ptr<LargeDataFilePublication>>
                 m_largeDataFiles;
             std::uintmax_t m_largeDataReservedBytes = 0;
+            // Linearization fence for protected durable publication reuse.
+            // Status transitions take the write side; final hit/registration
+            // takes the read side.  No Repo/FileLock/Face callback is taken
+            // while the write side is held.
+            mutable std::shared_mutex m_protectedReuseMutex;
+            // Serializes the short durable-reference commit protocol with a
+            // status transition.  It is acquired before
+            // m_protectedReuseMutex; no Face callback or cache lock is held
+            // while waiting for it.
+            mutable std::mutex m_protectedReferenceCommitMutex;
+            std::map<std::string, std::map<std::string, ProtectedImsOwner>>
+                m_protectedImsOwners;
+            std::map<std::string, ProtectedPublicationPending>
+                m_protectedPendingPublications;
+            std::uint64_t m_protectedPendingSequence = 0;
+            // Interest prefixes retired by a policy transition suppress an
+            // IMS fallback even if a stale packet survived an unexpected
+            // local cleanup path.
+            std::set<std::string> m_retiredProtectedPrefixes;
 
             OptionalServiceDiscovery m_ServiceDiscovery;
             ServiceAuthorizationTable m_authorizations;
