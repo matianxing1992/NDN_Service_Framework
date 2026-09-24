@@ -802,7 +802,8 @@ def manifest_eos_token_ids(model_manifest: dict) -> list[int]:
 
 
 def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dict],
-                            max_tokens: int, tokenizer_digest: str):
+                            max_tokens: int, tokenizer_digest: str,
+                            resident_session: bool = False):
     raw_quantization = str(model_manifest.get("quantization", "none")).lower()
     quantization = "weight_only_int8" if raw_quantization == "int8" else raw_quantization
     eos_token_ids = manifest_eos_token_ids(model_manifest)
@@ -883,6 +884,8 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
             "materialization": "post-selection-canonical-assembly",
             "backend": "onnxruntime", "metadata": metadata,
         })
+        if resident_session:
+            artifacts[-1]["metadata"]["residentSession"] = "true"
     model_name = str(model_manifest["model"])
     revision = str(model_manifest.get("modelRevision", ""))
     model_uri = MODEL_URI
@@ -1390,6 +1393,8 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument(
         "--cache-compatibility-mode", action="store_true",
         help="diagnostic mode: after authenticated Selection, Providers read the verified system-wide source cache and skip Repo material fetch")
+    parser.add_argument("--resident-session", action="store_true",
+                        help="request the bounded CPU ONNX resident-session cache for this candidate")
     parser.add_argument("--encrypted-repository-path", type=Path, default=None,
                         help="optional empty run-scoped ciphertext Repo directory on a separate filesystem")
     parser.add_argument("--rounds", type=int, default=3)
@@ -1728,7 +1733,8 @@ def main(argv=None, *, _supervised=False) -> int:
         "objects": len(source_cache_objects),
     }, sort_keys=True), flush=True)
     stage_plan, service_manifest = stage_plan_and_manifest(
-        run_root, model_manifest, stages, args.max_new_tokens, tokenizer_digest)
+        run_root, model_manifest, stages, args.max_new_tokens, tokenizer_digest,
+        args.resident_session)
     provider_names = [f"{APP_ROOT}/provider-{index}" for index in range(len(stages))]
     role_map_digest = digest_bytes(canonical_bytes(list(zip(
         [stage["role"] for stage in stages], provider_names))))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -41,3 +42,54 @@ def test_qwen_profile_rejects_non_positive_or_deadline_sized_ack_window(ack_time
     module = load_module()
     with pytest.raises(ValueError, match="ACK window"):
         module.qwen_runtime_budgets(1024, 2048, ack_timeout_ms=ack_timeout_ms)
+
+
+def test_qwen_stage_plan_marks_resident_session_only_when_requested(tmp_path: Path):
+    module = load_module()
+    stages = [
+        {
+            "role": "/LLM/Pipeline/Stage/0",
+            "path": "/tmp/stage-0.onnx",
+            "sha256": "sha256:" + "1" * 64,
+            "layerRange": {"start": 0, "endExclusive": 1},
+            "inputNames": ["input_ids", "attention_mask", "position_ids",
+                            "past_key.0", "past_value.0"],
+            "outputNames": ["hidden_states_out", "present_key.0",
+                             "present_value.0"],
+            "cacheInputs": ["past_key.0", "past_value.0"],
+            "cacheOutputs": ["present_key.0", "present_value.0"],
+        },
+        {
+            "role": "/LLM/Pipeline/Stage/1",
+            "path": "/tmp/stage-1.onnx",
+            "sha256": "sha256:" + "2" * 64,
+            "layerRange": {"start": 1, "endExclusive": 2},
+            "inputNames": ["hidden_states", "attention_mask", "position_ids",
+                            "past_key.1", "past_value.1"],
+            "outputNames": ["logits", "present_key.1", "present_value.1"],
+            "cacheInputs": ["past_key.1", "past_value.1"],
+            "cacheOutputs": ["present_key.1", "present_value.1"],
+        },
+    ]
+    model = {
+        "model": "Qwen/Qwen3-0.6B",
+        "modelRevision": "test-revision",
+        "dtype": "float32",
+        "quantization": "int8",
+        "eosTokenIds": [151645],
+    }
+
+    cold_dir = tmp_path / "cold"
+    resident_dir = tmp_path / "resident"
+    cold_dir.mkdir()
+    resident_dir.mkdir()
+    _, cold_manifest = module.stage_plan_and_manifest(
+        cold_dir, model, stages, 2, "sha256:" + "3" * 64)
+    _, resident_manifest = module.stage_plan_and_manifest(
+        resident_dir, model, stages, 2, "sha256:" + "3" * 64,
+        resident_session=True)
+
+    cold = json.loads(cold_manifest.read_text())
+    resident = json.loads(resident_manifest.read_text())
+    assert "residentSession" not in cold["services"][0]["artifacts"][0]["metadata"]
+    assert resident["services"][0]["artifacts"][0]["metadata"]["residentSession"] == "true"

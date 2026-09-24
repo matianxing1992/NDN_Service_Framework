@@ -389,6 +389,11 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.cpp',
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp',
+        # Standalone Provider/ORT targets compile OnnxRuntimeModelRunner.cpp
+        # directly; keep the resident-session implementation in the same
+        # source closure instead of relying on a shared-library transitive
+        # symbol that those targets do not link.
+        'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.cpp',
         # prepareNativeCanonicalOnnxRole activates through the OA02 worker
         # subprocess transport, which lives in this TU.
         'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
