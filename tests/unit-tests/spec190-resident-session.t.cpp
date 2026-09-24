@@ -15,6 +15,7 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 namespace ndnsf::di::test {
 namespace {
@@ -270,6 +271,107 @@ BOOST_AUTO_TEST_CASE(CancelledCreatorDoesNotPublishWithoutWaiter)
   BOOST_CHECK_EQUAL(cache->counters().residentEntries, 0);
   BOOST_CHECK_EQUAL(cache->counters().loads, 0);
   BOOST_CHECK(cache->drain(100ms));
+}
+
+BOOST_AUTO_TEST_CASE(ResidentSessionConcurrency)
+{
+  constexpr unsigned workerCount = 4;
+  auto cache = std::make_shared<OnnxRuntimeSessionCache>(
+    OnnxRuntimeSessionCache::Config{1s, 2});
+
+  auto resident = cache->acquire("resident-a", [] {
+    return std::shared_ptr<void>(std::make_shared<int>(59));
+  });
+  BOOST_REQUIRE(resident);
+  resident = {};
+
+  std::promise<void> loaderEntered;
+  auto loaderEnteredFuture = loaderEntered.get_future();
+  std::promise<void> releaseLoader;
+  auto releaseLoaderFuture = releaseLoader.get_future().share();
+  auto closingCreator = std::async(std::launch::async, [&] {
+    return cache->acquire("closing-load", [&] {
+      loaderEntered.set_value();
+      releaseLoaderFuture.wait();
+      return std::shared_ptr<void>(std::make_shared<int>(61));
+    });
+  });
+  loaderEnteredFuture.wait();
+
+  std::atomic<bool> start{false};
+  std::atomic<unsigned> ready{0};
+  std::atomic<unsigned> held{0};
+  std::atomic<unsigned> successes{0};
+  std::atomic<unsigned> rejections{0};
+  std::promise<void> releaseWorkers;
+  auto releaseWorkersFuture = releaseWorkers.get_future().share();
+  std::vector<std::future<void>> workers;
+  workers.reserve(workerCount);
+  for (unsigned worker = 0; worker < workerCount; ++worker) {
+    workers.emplace_back(std::async(std::launch::async, [&, worker] {
+      ready.fetch_add(1);
+      while (!start.load()) {
+        std::this_thread::yield();
+      }
+      for (unsigned iteration = 0; iteration < 32; ++iteration) {
+        try {
+          auto lease = cache->acquire("resident-a", [] {
+            return std::shared_ptr<void>(std::make_shared<int>(67));
+          }, std::chrono::steady_clock::now() + 200ms);
+          ++successes;
+          if (iteration == 0) {
+            held.fetch_add(1);
+            releaseWorkersFuture.wait();
+          }
+          if ((iteration + worker) % 2 == 0) {
+            cache->evict("resident-a");
+          }
+          std::this_thread::sleep_for(50us);
+        }
+        catch (const std::runtime_error&) {
+          ++rejections;
+        }
+      }
+    }));
+  }
+  const auto readyDeadline = std::chrono::steady_clock::now() + 500ms;
+  while (ready.load() != workerCount &&
+         std::chrono::steady_clock::now() < readyDeadline) {
+    std::this_thread::yield();
+  }
+  BOOST_REQUIRE_EQUAL(ready.load(), workerCount);
+  start.store(true);
+
+  const auto heldDeadline = std::chrono::steady_clock::now() + 500ms;
+  while (held.load() != workerCount &&
+         std::chrono::steady_clock::now() < heldDeadline) {
+    std::this_thread::yield();
+  }
+  releaseWorkers.set_value();
+  BOOST_REQUIRE_EQUAL(held.load(), workerCount);
+
+  std::atomic<bool> stopEvictor{false};
+  auto evictor = std::async(std::launch::async, [&] {
+    while (!stopEvictor.load()) {
+      cache->evict("resident-a");
+      cache->evict("missing");
+      std::this_thread::yield();
+    }
+  });
+  cache->close();
+  releaseLoader.set_value();
+  stopEvictor.store(true);
+
+  BOOST_CHECK_THROW(closingCreator.get(), std::runtime_error);
+  for (auto& worker : workers) {
+    worker.get();
+  }
+  evictor.get();
+  BOOST_CHECK(successes.load() > 0);
+  BOOST_CHECK(rejections.load() > 0);
+  BOOST_CHECK_EQUAL(cache->counters().activeLeases, 0);
+  BOOST_CHECK_EQUAL(cache->counters().inFlightLoads, 0);
+  BOOST_CHECK(cache->drain(500ms));
 }
 
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
