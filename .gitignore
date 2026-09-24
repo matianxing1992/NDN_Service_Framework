@@ -112,7 +112,6 @@ tests/container/**/actual/
 /specs/
 /.specify/
 /.codex/
-/.codex-tmp/
 /CODEX*.md
 /**/CODEX*.md
 /**/codex*.md
