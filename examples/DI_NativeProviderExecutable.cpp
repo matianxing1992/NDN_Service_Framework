@@ -1846,6 +1846,18 @@ main(int argc, char** argv)
             // the exact model path is produced after Selection by the factory.
             auto metadataSpecs = withExecutionEvidenceContext(
               specs, options, providerBootId, providerStartedAtMs);
+            // The post-Selection factory reconstructs a role spec from the
+            // canonical assembly cache. Preserve the validated resident
+            // opt-in across that reconstruction; otherwise the preparation
+            // context adds a request profile and disables the ORT session
+            // cache even though the service manifest requested residency.
+            std::map<std::string, bool> residentSessionByRole;
+            for (const auto& item : metadataSpecs) {
+              const auto found = item.second.metadata.find("residentSession");
+              residentSessionByRole[item.first] =
+                found != item.second.metadata.end() &&
+                (found->second == "true" || found->second == "1");
+            }
             auto materializedSpecs = metadataSpecs;
             auto runners = orderedSpecs(plan, materializedSpecs, allowedRoles);
             {
@@ -1910,6 +1922,7 @@ main(int argc, char** argv)
               [assemblyCacheDir,
                cacheCompatibilitySourceDir = options.cacheCompatibilitySourceDir,
                assemblyProviderIdentity,
+               residentSessionByRole,
                assemblyTimeoutMs = options.assemblyTimeoutMs,
                assemblyWorkerLocation,
                providerCert,
@@ -1966,6 +1979,9 @@ main(int argc, char** argv)
                                                    "canonical-onnx");
                   }
                 }
+                const auto resident = residentSessionByRole.find(spec.role);
+                if (resident != residentSessionByRole.end() && resident->second)
+                  spec.metadata["residentSession"] = "true";
                 logProviderPreparationProgress(projection, "FACTORY_BIND_BEGIN",
                                                "runner-context");
                 bindNativeRunnerPreparationContext(spec, projection,
