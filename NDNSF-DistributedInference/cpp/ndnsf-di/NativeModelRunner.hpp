@@ -26,6 +26,11 @@ struct NativeModelRunnerSpec
   // material.  Cache publication clears this field from the immutable
   // metadata template so an entry cannot pin its own lease indefinitely.
   std::shared_ptr<const void> lifetime;
+  // Provider-owned authorization lease for a protected resident session.  It
+  // is deliberately separate from lifetime: the session cache may retain an
+  // opaque ORT session, but this lease is acquired per request and never
+  // carries a ProtectedRuntime or content key into the cache.
+  std::shared_ptr<const void> protectedResidentUse;
 };
 
 /**

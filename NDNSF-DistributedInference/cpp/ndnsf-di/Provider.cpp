@@ -73,6 +73,19 @@ struct ProviderConfig::Impl
 
 namespace {
 
+std::shared_ptr<ProtectedResidentAuthority>
+makeProtectedResidentAuthority(const std::shared_ptr<OnnxRuntimeSessionCache>& sessionCache)
+{
+  auto authority = std::make_shared<ProtectedResidentAuthority>();
+  const std::weak_ptr<OnnxRuntimeSessionCache> weakSessionCache(sessionCache);
+  authority->setRetireCallback([weakSessionCache] (const std::string& identity) {
+    if (const auto cache = weakSessionCache.lock()) {
+      cache->evict(identity);
+    }
+  });
+  return authority;
+}
+
 void
 reportArtifactCleanupFailure(const char* phase) noexcept
 {
@@ -743,6 +756,7 @@ struct Provider::State
   std::shared_ptr<ProviderMetrics> metrics = std::make_shared<ProviderMetrics>();
   std::shared_ptr<ProviderArtifactCache> artifactCache;
   std::shared_ptr<OnnxRuntimeSessionCache> sessionCache;
+  std::shared_ptr<ProtectedResidentAuthority> protectedResidentAuthority;
   std::shared_ptr<const ProviderConfig::Impl> config;
   std::shared_ptr<ndn::Face> face;
   bool ownsFace = false;
@@ -1124,6 +1138,8 @@ Provider Provider::fromConfig(const ProviderConfig& config)
                                 config.m_impl->maxArtifactEntries,
                                 config.m_impl->assemblyJobTimeout});
   state->sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+  state->protectedResidentAuthority =
+    makeProtectedResidentAuthority(state->sessionCache);
   state->asyncRuntime = ndn_service_framework::OperationRuntime::create();
   state->face = std::make_shared<ndn::Face>();
   state->ownsFace = true;
@@ -1212,6 +1228,8 @@ Provider Provider::fromServiceProviderForTest(
                                 config.m_impl->maxArtifactEntries,
                                 config.m_impl->assemblyJobTimeout});
   state->sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+  state->protectedResidentAuthority =
+    makeProtectedResidentAuthority(state->sessionCache);
   state->asyncRuntime = ndn_service_framework::OperationRuntime::create();
   state->face = std::shared_ptr<ndn::Face>(&face, [] (ndn::Face*) {});
   state->ownsFace = false;
@@ -1658,6 +1676,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       throw std::runtime_error("Provider ServiceProvider is unavailable");
     nativeConfig.providerBootId = serviceProvider->getProviderBootEpoch();
     nativeConfig.workerCount = m_state->config->workerCount;
+    nativeConfig.protectedResidentAuthority = m_state->protectedResidentAuthority;
   }
   catch (const DiError&) {
     throw;
@@ -1692,13 +1711,14 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
   const auto expectedManifestDigest = m_state->manifestDigest;
   const auto providerStartedAtMs = m_state->providerStartedAtMs;
   const auto artifactCache = m_state->artifactCache;
+  const auto protectedResidentAuthority = m_state->protectedResidentAuthority;
   auto* keyChain = m_state->keyChain != nullptr
     ? m_state->keyChain.get() : m_state->borrowedKeyChain;
   nativeConfig.runnerPreparationFactory =
     [cacheDir = config->artifactCacheDir.string(), providerIdentity,
      workerLocation, providerBootId, assemblyTimeout = config->assemblyJobTimeout,
      providerCert, keyChain, expectedManifestDigest, providerStartedAtMs,
-     artifactCache, residentSessionByRole,
+     artifactCache, protectedResidentAuthority, residentSessionByRole,
      metrics = m_state->metrics] (
       ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
       const NativeSelectionProjectionV3& projection,
@@ -1942,6 +1962,45 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       logProviderPreparationProgress(projection, "FACTORY_DONE", "runner-spec");
       bindNativeRunnerPreparationContext(spec, projection,
         {providerIdentity, providerBootId, providerStartedAtMs, cacheDir});
+      logRuntimeEvidence(
+        std::string("NDNSF_DI_PROTECTED_RESIDENT_ADMISSION_CHECK role=") + spec.role +
+        " kind=" + spec.kind +
+        " mergeKind=" + projection.assembly.mergeKind +
+        " resident=" +
+        ((spec.metadata.count("residentSession") != 0 &&
+          spec.metadata.at("residentSession") == "true") ? "true" : "false") +
+        " protectedRuntime=" + (protectedRuntime ? "true" : "false") +
+        " authority=" + (protectedResidentAuthority ? "true" : "false"));
+      if (protectedRuntime && protectedResidentAuthority &&
+          projection.assembly.mergeKind != "NATIVE_POSTPROCESS" &&
+          spec.kind == "onnx" &&
+          spec.metadata.count("residentSession") != 0 &&
+          spec.metadata.at("residentSession") == "true") {
+        ProtectedResidentIdentityV1 identity;
+        identity.provider = providerIdentity;
+        identity.providerBootId = providerBootId;
+        identity.role = spec.role;
+        identity.modelManifestDigest = projection.assembly.modelManifestDigest;
+        identity.graphDigest = projection.assembly.graphDigest;
+        identity.initializerDigest = projection.assembly.canonicalInitializerDigest;
+        identity.artifactDigest = projection.assembly.artifactDigest;
+        identity.recipeDigest = projection.assembly.recipeDigest;
+        identity.backend = projection.assembly.backend;
+        identity.backendAbi = projection.assembly.backendAbi;
+        identity.protectionEpoch = projection.selectedRole.protectionEpoch;
+        identity.planCoreDigest = projection.planCoreDigest;
+        identity.planDigest = projection.planDigest;
+        identity.securityPolicySnapshotDigest =
+          projection.securityPolicySnapshotDigest;
+        identity.grantDigest = projection.grantDigest;
+        identity.fencingToken = protectedRuntime->binding().fencingToken;
+        identity.revocationSequence = protectedRuntime->binding().revocationSequence;
+        auto use = protectedResidentAuthority->acquire(
+          identity, *protectedRuntime, providerNowMs());
+        spec.metadata["protectedResidentIdentity"] = use.identity();
+        spec.protectedResidentUse =
+          std::make_shared<ProtectedResidentAuthority::Use>(std::move(use));
+      }
       return spec;
     };
 #if defined(NDNSF_DI_PROVIDER_TEST_SEAM)
@@ -2160,6 +2219,8 @@ void Provider::stop() const noexcept
   }
   if (needNativeStop && nativeHost)
     nativeHost->stop();
+  if (m_state->protectedResidentAuthority)
+    m_state->protectedResidentAuthority->retireAll();
   if (m_state->artifactCache)
     m_state->artifactCache->stop();
   if (m_state->sessionCache)
@@ -2183,6 +2244,8 @@ bool Provider::drain(Milliseconds timeout) const
   }
   if (nativeHost)
     nativeHost->stop();
+  if (m_state->protectedResidentAuthority)
+    m_state->protectedResidentAuthority->retireAll();
   if (m_state->artifactCache)
     m_state->artifactCache->stop();
   if (m_state->sessionCache)
@@ -2191,6 +2254,9 @@ bool Provider::drain(Milliseconds timeout) const
   if (!drained)
     return false;
   if (m_state->sessionCache && !m_state->sessionCache->drain(timeout))
+    return false;
+  if (m_state->protectedResidentAuthority &&
+      !m_state->protectedResidentAuthority->drain(timeout))
     return false;
   const auto stopped = stopIo();
   if (stopped)

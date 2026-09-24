@@ -524,7 +524,8 @@ BOOST_AUTO_TEST_CASE(ResidentOnnxSessionBypassesProtectedAndProfiling)
   const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
   const auto modelDigest = sha256TensorBytes(bytes);
   const auto spec = makeResidentSpec(path, modelDigest);
-  auto cache = std::make_shared<OnnxRuntimeSessionCache>();
+  auto cache = std::make_shared<OnnxRuntimeSessionCache>(
+    OnnxRuntimeSessionCache::Config{120s, 2});
   RegistryNativeModelRunnerFactory factory;
   registerOnnxRuntimeBackend(factory, cache);
   factory.freeze();
@@ -539,6 +540,21 @@ BOOST_AUTO_TEST_CASE(ResidentOnnxSessionBypassesProtectedAndProfiling)
   BOOST_REQUIRE(protectedRunner);
   protectedRunner.reset();
 
+  // A protected resident may enter the same cache only after the Provider's
+  // authority has issued both an opaque use lease and its stable identity.
+  // This test uses a non-secret marker as the type-erased lease; authority
+  // binding and retirement are covered by the protected-runtime selectors.
+  auto admittedSpec = protectedSpec;
+  admittedSpec.metadata["protectedResidentIdentity"] =
+    "ndnsf-di-protected-resident-test-identity";
+  admittedSpec.protectedResidentUse = std::make_shared<int>(1);
+  auto admittedFirst = factory.create(admittedSpec);
+  auto admittedSecond = factory.create(admittedSpec);
+  BOOST_REQUIRE(admittedFirst);
+  BOOST_REQUIRE(admittedSecond);
+  admittedFirst.reset();
+  admittedSecond.reset();
+
   auto profiledSpec = spec;
   profiledSpec.metadata["providerProfilePrefix"] = path.string() + ".profile";
   auto profiledRunner = factory.create(profiledSpec);
@@ -546,9 +562,9 @@ BOOST_AUTO_TEST_CASE(ResidentOnnxSessionBypassesProtectedAndProfiling)
   profiledRunner.reset();
 
   const auto counters = cache->counters();
-  BOOST_CHECK_EQUAL(counters.loads, 1);
-  BOOST_CHECK_EQUAL(counters.hits, 0);
-  BOOST_CHECK_EQUAL(counters.residentEntries, 1);
+  BOOST_CHECK_EQUAL(counters.loads, 2);
+  BOOST_CHECK_EQUAL(counters.hits, 1);
+  BOOST_CHECK_EQUAL(counters.residentEntries, 2);
   cache->close();
   BOOST_CHECK(cache->drain(100ms));
 }

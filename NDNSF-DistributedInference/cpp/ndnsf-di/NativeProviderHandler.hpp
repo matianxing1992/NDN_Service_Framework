@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ExecutionLease.hpp"
@@ -97,6 +98,10 @@ struct NativeProviderHandlerConfig
   // Normal V3 path: invoked on a bounded Provider worker after Selection to
   // fetch/assemble/validate one exact role, then return its local ORT spec.
   RunnerPreparationFactory runnerPreparationFactory;
+  // Provider-owned gate for protected resident sessions.  The handler never
+  // stores request content keys in this owner; it only receives a per-request
+  // Use token through the prepared runner spec.
+  std::shared_ptr<ProtectedResidentAuthority> protectedResidentAuthority;
   // Explicit rollback-only compatibility for old preassembled V3 fixtures.
   bool allowPreassembledV3Compatibility = false;
   std::string finalResponseScope = "final-response";

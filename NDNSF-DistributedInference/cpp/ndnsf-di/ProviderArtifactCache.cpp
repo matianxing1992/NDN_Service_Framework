@@ -312,6 +312,7 @@ void publish(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
     auto metadataOnly = std::make_shared<NativeModelRunnerSpec>(*result.runnerSpec);
     metadataOnly->path.clear();
     metadataOnly->lifetime.reset();
+    metadataOnly->protectedResidentUse.reset();
     // A protected artifact is backed by the immutable ciphertext file written
     // by the assembler.  Keep that descriptor so a cache hit can reopen the
     // ciphertext on demand; retaining the bytes themselves would make the

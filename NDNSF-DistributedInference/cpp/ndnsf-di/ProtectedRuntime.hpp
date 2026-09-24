@@ -4,8 +4,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
 
 #include <cstdint>
+#include <condition_variable>
+#include <chrono>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -13,6 +16,8 @@
 #include <vector>
 
 namespace ndnsf::di {
+
+class ProtectedRuntime;
 
 enum class ProtectedRuntimeState
 {
@@ -87,6 +92,100 @@ struct ProtectedRuntimeBindingV1
 
   void validate() const;
   bool exactlyMatches(const ProtectedRuntimeBindingV1& other) const noexcept;
+};
+
+/**
+ * Stable, non-secret identity for one provider-owned protected resident.
+ *
+ * Request id, attempt and expiry are deliberately absent.  The full
+ * canonical form retains the current request/grant binding for authorization
+ * checks, while cacheKey() excludes request-local plan/grant digests so a
+ * valid next turn can reuse the same model session.  The resident never owns
+ * a ProtectedRuntime or a content key.
+ */
+struct ProtectedResidentIdentityV1
+{
+  std::string provider;
+  std::string providerBootId;
+  std::string role;
+  std::string modelManifestDigest;
+  std::string graphDigest;
+  std::string initializerDigest;
+  std::string artifactDigest;
+  std::string recipeDigest;
+  std::string backend;
+  std::string backendAbi;
+  std::string protectionEpoch;
+  std::string planCoreDigest;
+  std::string planDigest;
+  std::string securityPolicySnapshotDigest;
+  std::string grantDigest;
+  std::string fencingToken;
+  std::uint64_t revocationSequence = 1;
+
+  void validate() const;
+  std::string canonical() const;
+  std::string cacheKey() const;
+  std::string cacheScopeKey() const;
+};
+
+/**
+ * Provider-owned authorization gate for protected resident sessions.
+ *
+ * This authority stores only identity and active-use counts.  It never stores
+ * model bytes, content keys, or a request-scoped ProtectedRuntime.  Retiring
+ * an identity prevents new uses and invokes the optional cache-eviction
+ * callback; existing uses must drain before the authority entry disappears.
+ */
+class ProtectedResidentAuthority
+{
+public:
+  struct Counters
+  {
+    std::uint64_t activeUses = 0;
+    std::uint64_t residentEntries = 0;
+  };
+
+  struct Shared;
+
+  class Use
+  {
+  public:
+    Use() noexcept = default;
+    ~Use() noexcept;
+    Use(const Use&) = delete;
+    Use& operator=(const Use&) = delete;
+    Use(Use&& other) noexcept;
+    Use& operator=(Use&& other) noexcept;
+
+    bool valid() const noexcept { return static_cast<bool>(m_release); }
+    explicit operator bool() const noexcept { return valid(); }
+    const std::string& identity() const noexcept { return m_identity; }
+
+  private:
+    struct Release;
+    Use(std::shared_ptr<Release> release, std::string identity) noexcept;
+    std::shared_ptr<Release> m_release;
+    std::string m_identity;
+    friend class ProtectedResidentAuthority;
+  };
+
+  ProtectedResidentAuthority();
+  ~ProtectedResidentAuthority() noexcept;
+  ProtectedResidentAuthority(const ProtectedResidentAuthority&) = delete;
+  ProtectedResidentAuthority& operator=(const ProtectedResidentAuthority&) = delete;
+
+  Use acquire(const ProtectedResidentIdentityV1& identity,
+              const ProtectedRuntime& runtime,
+              std::uint64_t nowMs);
+  void retire(const ProtectedResidentIdentityV1& identity) noexcept;
+  void retireAll() noexcept;
+  void setRetireCallback(std::function<void(const std::string&)> callback) noexcept;
+  bool drain(std::chrono::milliseconds timeout);
+  Counters counters() const noexcept;
+
+private:
+  std::shared_ptr<Shared> m_shared;
 };
 
 /**

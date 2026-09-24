@@ -241,6 +241,10 @@ residentSessionIdentity(const NativeModelRunnerSpec& spec,
   const auto metadata = [&spec] (std::initializer_list<const char*> keys) {
     return runnerMetadataValue(spec, keys);
   };
+  const auto protectedIdentity = metadata({"protectedResidentIdentity"});
+  if (!protectedIdentity.empty()) {
+    return protectedIdentity;
+  }
   const auto modelDigest = metadata({"assembledModelDigest", "artifactDigest",
                                      "evidence.artifactDigest", "digest", "sha256"});
   const auto graphDigest = metadata({"graphDigest", "graph_digest"});
@@ -1161,10 +1165,15 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   const bool protectedBacking =
     m_spec.metadata.count("encryptedArtifactPath") != 0 ||
     runnerMetadataBool(m_spec, {"protectedRuntime", "protected_runtime"});
+  const bool protectedResidentAdmitted =
+    static_cast<bool>(m_spec.protectedResidentUse) &&
+    !runnerMetadataValue(m_spec, {"protectedResidentIdentity"}).empty();
   const bool profilingRequested = !runnerMetadataValue(
     m_spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty();
-  const auto identity = residentRequested && !protectedBacking &&
-    !profilingRequested && selection.selectedProvider == "cpu"
+  const bool residentEligible = !profilingRequested &&
+    selection.selectedProvider == "cpu" &&
+    (!protectedBacking || protectedResidentAdmitted);
+  const auto identity = residentRequested && residentEligible
       ? residentSessionIdentity(m_spec, selection) : std::string{};
   if (!sessionCache || identity.empty()) {
     m_impl = std::make_unique<Impl>(m_spec);

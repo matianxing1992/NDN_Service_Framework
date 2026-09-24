@@ -1798,6 +1798,32 @@ trustedDecodeStateTemplateFor(
   return result;
 }
 
+ProtectedResidentIdentityV1
+protectedResidentIdentityFor(const NativeSelectionProjectionV3& projection,
+                             const ProtectedRuntime& runtime,
+                             const std::string& providerBootId)
+{
+  ProtectedResidentIdentityV1 identity;
+  identity.provider = projection.provider;
+  identity.providerBootId = providerBootId;
+  identity.role = projection.executionRole.roleId;
+  identity.modelManifestDigest = projection.assembly.modelManifestDigest;
+  identity.graphDigest = projection.assembly.graphDigest;
+  identity.initializerDigest = projection.assembly.canonicalInitializerDigest;
+  identity.artifactDigest = projection.assembly.artifactDigest;
+  identity.recipeDigest = projection.assembly.recipeDigest;
+  identity.backend = projection.assembly.backend;
+  identity.backendAbi = projection.assembly.backendAbi;
+  identity.protectionEpoch = projection.selectedRole.protectionEpoch;
+  identity.planCoreDigest = projection.planCoreDigest;
+  identity.planDigest = projection.planDigest;
+  identity.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+  identity.grantDigest = projection.grantDigest;
+  identity.fencingToken = runtime.binding().fencingToken;
+  identity.revocationSequence = runtime.binding().revocationSequence;
+  return identity;
+}
+
 std::optional<std::string>
 validateProtectedRuntimeBinding(
   const NativeSelectionProjectionV3& projection,
@@ -2181,13 +2207,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           *selectionProjection, config.providerBootId, assignmentFields);
         logProviderBoundaryStdout("PROTECTED_BINDING_VALIDATE_BEGIN", stageRequestId,
                                   ctx.localProvider().toUri(), role);
-        if (const auto error = validateProtectedRuntimeBinding(
+          if (const auto error = validateProtectedRuntimeBinding(
               *selectionProjection, *protectedRuntime, groupCoordinator,
               config.providerBootId, fencingToken)) {
           logProviderStageMarker("GRANT_REJECTED", stageRequestId,
                                  ctx.localProvider().toUri(), role,
                                  requestPlanDigest, "failed", *error,
                                  stageAttemptEpoch);
+          if (config.protectedResidentAuthority) {
+            config.protectedResidentAuthority->retire(
+              protectedResidentIdentityFor(*selectionProjection, *protectedRuntime,
+                                           config.providerBootId));
+          }
           protectedRuntime->cancel(*error);
           ctx.fail(*error);
           return;

@@ -96,6 +96,45 @@ logProviderPreparationProgress(const NativeSelectionProjectionV3& projection,
   }
 }
 
+std::shared_ptr<ProtectedResidentAuthority>
+makeProtectedResidentAuthority(const std::shared_ptr<OnnxRuntimeSessionCache>& sessionCache)
+{
+  auto authority = std::make_shared<ProtectedResidentAuthority>();
+  const std::weak_ptr<OnnxRuntimeSessionCache> weakSessionCache(sessionCache);
+  authority->setRetireCallback([weakSessionCache] (const std::string& identity) {
+    if (const auto cache = weakSessionCache.lock()) {
+      cache->evict(identity);
+    }
+  });
+  return authority;
+}
+
+ProtectedResidentIdentityV1
+protectedResidentIdentityFor(const NativeSelectionProjectionV3& projection,
+                             const ProtectedRuntime& runtime,
+                             const std::string& providerBootId)
+{
+  ProtectedResidentIdentityV1 identity;
+  identity.provider = projection.provider;
+  identity.providerBootId = providerBootId;
+  identity.role = projection.executionRole.roleId;
+  identity.modelManifestDigest = projection.assembly.modelManifestDigest;
+  identity.graphDigest = projection.assembly.graphDigest;
+  identity.initializerDigest = projection.assembly.canonicalInitializerDigest;
+  identity.artifactDigest = projection.assembly.artifactDigest;
+  identity.recipeDigest = projection.assembly.recipeDigest;
+  identity.backend = projection.assembly.backend;
+  identity.backendAbi = projection.assembly.backendAbi;
+  identity.protectionEpoch = projection.selectedRole.protectionEpoch;
+  identity.planCoreDigest = projection.planCoreDigest;
+  identity.planDigest = projection.planDigest;
+  identity.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+  identity.grantDigest = projection.grantDigest;
+  identity.fencingToken = runtime.binding().fencingToken;
+  identity.revocationSequence = runtime.binding().revocationSequence;
+  return identity;
+}
+
 void
 logExecutionEvidenceUpdateSummary(const ExecutionEvidence& evidence)
 {
@@ -1433,6 +1472,7 @@ main(int argc, char** argv)
     // Keep the ORT session cache owner-local but shared by every runner made
     // by this Provider, so resident sessions can be reused across turns.
     auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+    auto protectedResidentAuthority = makeProtectedResidentAuthority(sessionCache);
     registerOnnxRuntimeBackend(*factory, sessionCache);
     factory->registerBackend(
       "native-yolo-postprocess",
@@ -1814,6 +1854,7 @@ main(int argc, char** argv)
          providerBootId,
          providerStartedAtMs,
          factory,
+         protectedResidentAuthority,
          providerCert,
          controllerCert,
          controllerIdentity,
@@ -1887,6 +1928,7 @@ main(int argc, char** argv)
             config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
+            config.protectedResidentAuthority = protectedResidentAuthority;
             installNativeProtectedGrantFactory(config);
             config.planDigest = sha256File(options.planPath);
             if (const auto* mutation = std::getenv("SPEC180_YN_MUTATION")) {
@@ -1938,6 +1980,7 @@ main(int argc, char** argv)
                providerCert,
                providerBootId,
                providerStartedAtMs,
+               protectedResidentAuthority,
                &keyChain] (
                 ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
                 const NativeSelectionProjectionV3& projection,
@@ -2017,6 +2060,38 @@ main(int argc, char** argv)
                          << " profile="
                          << (boundProfile != spec.metadata.end() ? "true" : "false");
                   logRuntimeEvidence(record.str());
+                }
+                {
+                  const auto boundResident = spec.metadata.find("residentSession");
+                  std::ostringstream record;
+                  record << "NDNSF_DI_PROTECTED_RESIDENT_ADMISSION_CHECK role="
+                         << spec.role
+                         << " kind=" << spec.kind
+                         << " mergeKind=" << projection.assembly.mergeKind
+                         << " resident="
+                         << (boundResident != spec.metadata.end() &&
+                             (boundResident->second == "true" ||
+                              boundResident->second == "1") ? "true" : "false")
+                         << " protectedRuntime="
+                         << (protectedRuntime ? "true" : "false")
+                         << " authority="
+                         << (protectedResidentAuthority ? "true" : "false");
+                  logRuntimeEvidence(record.str());
+                }
+                if (protectedRuntime && protectedResidentAuthority &&
+                    projection.assembly.mergeKind != "NATIVE_POSTPROCESS" &&
+                    spec.kind == "onnx" &&
+                    spec.metadata.count("residentSession") != 0 &&
+                    spec.metadata.at("residentSession") == "true") {
+                  const auto identity = protectedResidentIdentityFor(
+                    projection, *protectedRuntime, providerBootId);
+                  auto use = protectedResidentAuthority->acquire(
+                    identity, *protectedRuntime,
+                    static_cast<std::uint64_t>(std::max<long long>(0, epochMs())));
+                  spec.metadata["protectedResidentIdentity"] = use.identity();
+                  spec.protectedResidentUse =
+                    std::make_shared<ProtectedResidentAuthority::Use>(
+                      std::move(use));
                 }
                 logProviderPreparationProgress(projection, "FACTORY_DONE", "runner-spec");
                 return spec;
@@ -2207,6 +2282,25 @@ main(int argc, char** argv)
           }
         };
 
+      auto shutdownResidentState = [&] {
+        nativeRegistration.close();
+        providerHost->stop();
+        nativeRegistration = {};
+        providerHost.reset();
+        protectedResidentAuthority->retireAll();
+        sessionCache->close();
+        const bool sessionsDrained = sessionCache->drain(
+          std::chrono::milliseconds(5000));
+        const bool residentsDrained = protectedResidentAuthority->drain(
+          std::chrono::milliseconds(5000));
+        std::ostringstream record;
+        record << "NDNSF_DI_PROTECTED_RESIDENT_SHUTDOWN"
+               << " sessionsDrained=" << (sessionsDrained ? "true" : "false")
+               << " residentsDrained=" << (residentsDrained ? "true" : "false");
+        logRuntimeEvidence(record.str());
+        return sessionsDrained && residentsDrained;
+      };
+
       provider->fetchPermissionsFromController(controllerIdentity);
       {
         std::ostringstream record;
@@ -2242,6 +2336,7 @@ main(int argc, char** argv)
                                     return provisioningDone->load(
                                       std::memory_order_acquire);
                                   });
+        shutdownResidentState();
         return 2;
       }
       {
@@ -2303,7 +2398,9 @@ main(int argc, char** argv)
                                       std::memory_order_acquire);
                                   });
       }
-      return provisionFailed->load(std::memory_order_acquire) ? 2 : 0;
+      const bool residentCleanupOk = shutdownResidentState();
+      return provisionFailed->load(std::memory_order_acquire) || !residentCleanupOk
+        ? 2 : 0;
     }
 
     specs = withExecutionEvidenceContext(

@@ -498,4 +498,390 @@ ProtectedRuntime::keyReference() const
   return m_keyReference;
 }
 
+void
+ProtectedResidentIdentityV1::validate() const
+{
+  const auto require = [] (const std::string& value, const char* field) {
+    requireText(value, field);
+  };
+  require(provider, "protected.resident.provider");
+  require(providerBootId, "protected.resident.providerBootId");
+  require(role, "protected.resident.role");
+  require(modelManifestDigest, "protected.resident.modelManifestDigest");
+  require(graphDigest, "protected.resident.graphDigest");
+  require(initializerDigest, "protected.resident.initializerDigest");
+  require(artifactDigest, "protected.resident.artifactDigest");
+  require(recipeDigest, "protected.resident.recipeDigest");
+  require(backend, "protected.resident.backend");
+  require(backendAbi, "protected.resident.backendAbi");
+  require(protectionEpoch, "protected.resident.protectionEpoch");
+  require(planCoreDigest, "protected.resident.planCoreDigest");
+  require(planDigest, "protected.resident.planDigest");
+  require(securityPolicySnapshotDigest,
+          "protected.resident.securityPolicySnapshotDigest");
+  require(grantDigest, "protected.resident.grantDigest");
+  require(fencingToken, "protected.resident.fencingToken");
+  if (protectionEpoch == "plaintext-v1" || revocationSequence == 0) {
+    throw std::invalid_argument("protected resident identity is not protected");
+  }
+}
+
+std::string
+ProtectedResidentIdentityV1::canonical() const
+{
+  validate();
+  std::ostringstream result;
+  const auto frame = [&result] (const std::string& value) {
+    result << value.size() << ':' << value;
+  };
+  frame("ndnsf-di-protected-resident-v1");
+  frame(provider);
+  frame(providerBootId);
+  frame(role);
+  frame(modelManifestDigest);
+  frame(graphDigest);
+  frame(initializerDigest);
+  frame(artifactDigest);
+  frame(recipeDigest);
+  frame(backend);
+  frame(backendAbi);
+  frame(protectionEpoch);
+  frame(planCoreDigest);
+  frame(planDigest);
+  frame(securityPolicySnapshotDigest);
+  frame(grantDigest);
+  frame(fencingToken);
+  frame(std::to_string(revocationSequence));
+  return result.str();
+}
+
+std::string
+ProtectedResidentIdentityV1::cacheScopeKey() const
+{
+  validate();
+  std::ostringstream result;
+  const auto frame = [&result] (const std::string& value) {
+    result << value.size() << ':' << value;
+  };
+  frame("ndnsf-di-protected-resident-scope-v1");
+  frame(provider);
+  frame(providerBootId);
+  frame(role);
+  frame(modelManifestDigest);
+  frame(graphDigest);
+  frame(initializerDigest);
+  frame(artifactDigest);
+  frame(recipeDigest);
+  frame(backend);
+  frame(backendAbi);
+  frame(protectionEpoch);
+  return result.str();
+}
+
+std::string
+ProtectedResidentIdentityV1::cacheKey() const
+{
+  validate();
+  std::ostringstream result;
+  const auto frame = [&result] (const std::string& value) {
+    result << value.size() << ':' << value;
+  };
+  frame("ndnsf-di-protected-resident-cache-v1");
+  frame(cacheScopeKey());
+  frame(securityPolicySnapshotDigest);
+  frame(std::to_string(revocationSequence));
+  return result.str();
+}
+
+struct ProtectedResidentAuthority::Use::Release
+{
+  std::shared_ptr<ProtectedResidentAuthority::Shared> shared;
+  std::string identity;
+
+  ~Release() noexcept;
+};
+
+struct ProtectedResidentAuthority::Shared
+{
+  struct Entry
+  {
+    std::size_t activeUses = 0;
+    bool retired = false;
+    std::string scopeKey;
+  };
+
+  mutable std::mutex mutex;
+  std::condition_variable condition;
+  std::map<std::string, Entry> entries;
+  std::uint64_t activeUses = 0;
+  std::function<void(const std::string&)> retireCallback;
+};
+
+ProtectedResidentAuthority::Use::Release::~Release() noexcept
+{
+  if (!shared) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(shared->mutex);
+  const auto found = shared->entries.find(identity);
+  if (found != shared->entries.end()) {
+    if (found->second.activeUses != 0) {
+      --found->second.activeUses;
+    }
+    if (shared->activeUses != 0) {
+      --shared->activeUses;
+    }
+    if (found->second.retired && found->second.activeUses == 0) {
+      shared->entries.erase(found);
+    }
+  }
+  shared->condition.notify_all();
+}
+
+namespace {
+
+bool
+protectedResidentStateAllowsUse(ProtectedRuntimeState state) noexcept
+{
+  return state == ProtectedRuntimeState::GrantVerified ||
+         state == ProtectedRuntimeState::HostPlaintextLeased ||
+         state == ProtectedRuntimeState::DevicePlaintextLeased;
+}
+
+void
+requireResidentBinding(const ProtectedResidentIdentityV1& identity,
+                       const ProtectedRuntime& runtime,
+                       std::uint64_t nowMs)
+{
+  if (!protectedResidentStateAllowsUse(runtime.state())) {
+    throw std::runtime_error(
+      "DI_PROTECTED_RESIDENT_AUTHORITY_REJECTED: runtime is not authorized");
+  }
+  const auto& binding = runtime.binding();
+  if (binding.expiresAtMs <= nowMs ||
+      binding.provider != identity.provider ||
+      binding.planCoreDigest != identity.planCoreDigest ||
+      binding.planDigest != identity.planDigest ||
+      binding.securityPolicySnapshotDigest != identity.securityPolicySnapshotDigest ||
+      binding.protectionEpoch != identity.protectionEpoch ||
+      binding.grantDigest != identity.grantDigest ||
+      binding.providerBootId != identity.providerBootId ||
+      binding.fencingToken != identity.fencingToken ||
+      binding.revocationSequence != identity.revocationSequence) {
+    throw std::runtime_error(
+      "DI_PROTECTED_RESIDENT_AUTHORITY_REJECTED: binding identity mismatch");
+  }
+  const auto keyReference = runtime.keyReference();
+  if (!keyReference || keyReference->providerIdentity != identity.provider ||
+      keyReference->modelManifestDigest != identity.modelManifestDigest ||
+      keyReference->protectionEpoch != identity.protectionEpoch) {
+    throw std::runtime_error(
+      "DI_PROTECTED_RESIDENT_AUTHORITY_REJECTED: key identity mismatch");
+  }
+}
+
+} // namespace
+
+ProtectedResidentAuthority::Use::Use(
+  std::shared_ptr<Release> release, std::string identity) noexcept
+  : m_release(std::move(release))
+  , m_identity(std::move(identity))
+{
+}
+
+ProtectedResidentAuthority::Use::~Use() noexcept = default;
+
+ProtectedResidentAuthority::Use::Use(Use&& other) noexcept
+  : m_release(std::move(other.m_release))
+  , m_identity(std::move(other.m_identity))
+{
+}
+
+ProtectedResidentAuthority::Use&
+ProtectedResidentAuthority::Use::operator=(Use&& other) noexcept
+{
+  if (this == &other) {
+    return *this;
+  }
+  m_release = std::move(other.m_release);
+  m_identity = std::move(other.m_identity);
+  return *this;
+}
+
+ProtectedResidentAuthority::ProtectedResidentAuthority()
+  : m_shared(std::make_shared<Shared>())
+{
+}
+
+ProtectedResidentAuthority::~ProtectedResidentAuthority() noexcept
+{
+  retireAll();
+}
+
+ProtectedResidentAuthority::Use
+ProtectedResidentAuthority::acquire(
+  const ProtectedResidentIdentityV1& identity,
+  const ProtectedRuntime& runtime,
+  std::uint64_t nowMs)
+{
+  identity.validate();
+  requireResidentBinding(identity, runtime, nowMs);
+  const auto key = identity.cacheKey();
+  const auto scopeKey = identity.cacheScopeKey();
+  const auto shared = m_shared;
+  std::vector<std::string> evictedKeys;
+  std::function<void(const std::string&)> callback;
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    callback = shared->retireCallback;
+    for (auto it = shared->entries.begin(); it != shared->entries.end();) {
+      if (it->first != key && it->second.scopeKey == scopeKey) {
+        it->second.retired = true;
+        evictedKeys.push_back(it->first);
+        if (it->second.activeUses == 0) {
+          it = shared->entries.erase(it);
+          continue;
+        }
+      }
+      ++it;
+    }
+    auto& entry = shared->entries[key];
+    if (entry.retired) {
+      throw std::runtime_error(
+        "DI_PROTECTED_RESIDENT_AUTHORITY_REJECTED: identity is retired");
+    }
+    entry.scopeKey = scopeKey;
+    ++entry.activeUses;
+    ++shared->activeUses;
+  }
+  if (callback) {
+    for (const auto& evictedKey : evictedKeys) {
+      try {
+        callback(evictedKey);
+      }
+      catch (...) {
+      }
+    }
+  }
+  auto release = std::make_shared<Use::Release>();
+  release->shared = shared;
+  release->identity = key;
+  return Use(std::move(release), key);
+}
+
+void
+ProtectedResidentAuthority::retire(
+  const ProtectedResidentIdentityV1& identity) noexcept
+{
+  std::string key;
+  std::string scopeKey;
+  try {
+    key = identity.cacheKey();
+    scopeKey = identity.cacheScopeKey();
+  }
+  catch (...) {
+    return;
+  }
+  std::vector<std::string> keys;
+  std::function<void(const std::string&)> callback;
+  bool notify = false;
+  const auto shared = m_shared;
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    for (auto it = shared->entries.begin(); it != shared->entries.end();) {
+      if (it->first == key || it->second.scopeKey == scopeKey) {
+        it->second.retired = true;
+        keys.push_back(it->first);
+        if (it->second.activeUses == 0) {
+          it = shared->entries.erase(it);
+          continue;
+        }
+      }
+      ++it;
+    }
+    callback = shared->retireCallback;
+    notify = !keys.empty();
+    shared->condition.notify_all();
+  }
+  if (notify && callback) {
+    for (const auto& evictedKey : keys) {
+      try {
+        callback(evictedKey);
+      }
+      catch (...) {
+      }
+    }
+  }
+}
+
+void
+ProtectedResidentAuthority::retireAll() noexcept
+{
+  std::vector<std::string> keys;
+  std::function<void(const std::string&)> callback;
+  const auto shared = m_shared;
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    callback = shared->retireCallback;
+    keys.reserve(shared->entries.size());
+    for (auto it = shared->entries.begin(); it != shared->entries.end();) {
+      it->second.retired = true;
+      keys.push_back(it->first);
+      if (it->second.activeUses == 0) {
+        it = shared->entries.erase(it);
+      }
+      else {
+        ++it;
+      }
+    }
+    shared->condition.notify_all();
+  }
+  if (callback) {
+    for (const auto& key : keys) {
+      try {
+        callback(key);
+      }
+      catch (...) {
+      }
+    }
+  }
+}
+
+void
+ProtectedResidentAuthority::setRetireCallback(
+  std::function<void(const std::string&)> callback) noexcept
+{
+  const auto shared = m_shared;
+  std::lock_guard<std::mutex> lock(shared->mutex);
+  shared->retireCallback = std::move(callback);
+}
+
+bool
+ProtectedResidentAuthority::drain(std::chrono::milliseconds timeout)
+{
+  if (timeout.count() < 0) {
+    throw std::invalid_argument(
+      "protected resident authority drain timeout is negative");
+  }
+  const auto shared = m_shared;
+  std::unique_lock<std::mutex> lock(shared->mutex);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (shared->activeUses != 0) {
+    if (shared->condition.wait_until(lock, deadline) == std::cv_status::timeout &&
+        shared->activeUses != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+ProtectedResidentAuthority::Counters
+ProtectedResidentAuthority::counters() const noexcept
+{
+  const auto shared = m_shared;
+  std::lock_guard<std::mutex> lock(shared->mutex);
+  return Counters{shared->activeUses,
+                  static_cast<std::uint64_t>(shared->entries.size())};
+}
+
 } // namespace ndnsf::di

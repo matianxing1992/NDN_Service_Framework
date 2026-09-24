@@ -74,6 +74,32 @@ struct BoundGrantFixture
   }
 };
 
+ProtectedResidentIdentityV1
+residentIdentity(const ProtectedRuntimeBindingV1& binding,
+                 const std::string& modelManifestDigest)
+{
+  ProtectedResidentIdentityV1 identity;
+  identity.provider = binding.provider;
+  identity.providerBootId = binding.providerBootId;
+  identity.role = binding.role;
+  identity.modelManifestDigest = modelManifestDigest;
+  identity.graphDigest = "sha256:" + std::string(64, '1');
+  identity.initializerDigest = "sha256:" + std::string(64, '2');
+  identity.artifactDigest = "sha256:" + std::string(64, '3');
+  identity.recipeDigest = "sha256:" + std::string(64, '4');
+  identity.backend = "onnxruntime";
+  identity.backendAbi = "sha256:" + std::string(64, '5');
+  identity.protectionEpoch = binding.protectionEpoch;
+  identity.planCoreDigest = binding.planCoreDigest;
+  identity.planDigest = binding.planDigest;
+  identity.securityPolicySnapshotDigest =
+    binding.securityPolicySnapshotDigest;
+  identity.grantDigest = binding.grantDigest;
+  identity.fencingToken = binding.fencingToken;
+  identity.revocationSequence = binding.revocationSequence;
+  return identity;
+}
+
 class NoDependencyIo final : public DependencyIo
 {
 public:
@@ -593,5 +619,66 @@ BOOST_FIXTURE_TEST_CASE(NativeProtectedDirectoryCleansOriginalAndPreservesReplac
   BOOST_CHECK(std::filesystem::exists(staging / "replacement"));
   BOOST_CHECK_EQUAL(std::filesystem::file_size(root / "canonical"), 12);
   std::filesystem::remove_all(root);
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedResidentAuthorityRetiresAndDrains, BoundGrantFixture)
+{
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  const auto identity = residentIdentity(binding, config.modelManifestDigest);
+  ProtectedResidentAuthority authority;
+  std::string evicted;
+  authority.setRetireCallback([&] (const std::string& key) { evicted = key; });
+
+  auto use = authority.acquire(identity, runtime, now);
+  BOOST_REQUIRE(use);
+  BOOST_CHECK_EQUAL(use.identity(), identity.cacheKey());
+  BOOST_CHECK_EQUAL(authority.counters().activeUses, 1U);
+  BOOST_CHECK_EQUAL(authority.counters().residentEntries, 1U);
+
+  authority.retire(identity);
+  BOOST_CHECK_EQUAL(evicted, identity.cacheKey());
+  BOOST_CHECK_EQUAL(authority.counters().activeUses, 1U);
+  BOOST_CHECK_THROW(authority.acquire(identity, runtime, now), std::runtime_error);
+  BOOST_CHECK(!authority.drain(std::chrono::milliseconds(1)));
+
+  use = {};
+  BOOST_CHECK(authority.drain(std::chrono::milliseconds(100)));
+  BOOST_CHECK_EQUAL(authority.counters().activeUses, 0U);
+  BOOST_CHECK_EQUAL(authority.counters().residentEntries, 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedResidentCacheKeyExcludesRequestLocalGrantDigests,
+                        BoundGrantFixture)
+{
+  const auto identity = residentIdentity(binding, config.modelManifestDigest);
+  auto nextTurn = identity;
+  nextTurn.planCoreDigest = "sha256:" + std::string(64, '6');
+  nextTurn.planDigest = "sha256:" + std::string(64, '7');
+  nextTurn.grantDigest = "sha256:" + std::string(64, '8');
+  nextTurn.fencingToken = "fence-next-turn";
+  BOOST_CHECK_NE(identity.canonical(), nextTurn.canonical());
+  BOOST_CHECK_EQUAL(identity.cacheKey(), nextTurn.cacheKey());
+  BOOST_CHECK_EQUAL(identity.cacheScopeKey(), nextTurn.cacheScopeKey());
+}
+
+BOOST_FIXTURE_TEST_CASE(ProtectedResidentAuthorityRejectsExpiredOrSubstitutedBinding,
+                        BoundGrantFixture)
+{
+  ProtectedRuntime runtime(binding, config);
+  runtime.verifyGrant(binding, now);
+  const auto identity = residentIdentity(binding, config.modelManifestDigest);
+  ProtectedResidentAuthority authority;
+
+  auto expired = identity;
+  BOOST_CHECK_THROW(authority.acquire(expired, runtime, binding.expiresAtMs),
+                    std::runtime_error);
+
+  auto substituted = identity;
+  substituted.fencingToken = "fence-substituted";
+  BOOST_CHECK_THROW(authority.acquire(substituted, runtime, now),
+                    std::runtime_error);
+  BOOST_CHECK_EQUAL(authority.counters().activeUses, 0U);
+  BOOST_CHECK_EQUAL(authority.counters().residentEntries, 0U);
 }
 }
