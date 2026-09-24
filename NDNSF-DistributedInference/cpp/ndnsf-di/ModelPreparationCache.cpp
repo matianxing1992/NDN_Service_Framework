@@ -401,7 +401,7 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     throw std::invalid_argument("preparation memory snapshot is missing");
   requireActive(deadline, spec.cancelled);
   if (spec.configurationJson.empty() || spec.catalogConfigurationJson.empty() ||
-      spec.maxSourceBytes == 0 || spec.maxAssembledBytes == 0 || !spec.loadSource)
+      spec.maxSourceBytes == 0 || spec.maxAssembledBytes == 0)
     throw std::invalid_argument("preparation source/configuration is incomplete");
   validateSpecIdentity(spec);
 
@@ -431,31 +431,47 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   }
   const bool publicationRepairRequired = preparedPublication &&
     !preparedPublication->missingDataNames.empty();
-  NativeCanonicalSource source = spec.loadSource(spec, deadline);
-  // A Repo hit normally carries a reference-only material index so a
-  // complete hit can avoid material payload reads.  A partial publication is
-  // different: the publisher must receive a complete manifest in order to
-  // validate and repair the missing objects.  Let NativeRequestCatalog derive
-  // that complete manifest from the bounded canonical source in this case.
-  if (preparedPublication && preparedPublication->materialManifest &&
-      (!publicationRepairRequired || preparedPublication->materialManifest->payloadsComplete))
-    source.materialManifest = preparedPublication->materialManifest;
-  requireActive(deadline, spec.cancelled);
-  if (source.modelBytes.empty() || source.modelBytes.size() > spec.maxSourceBytes)
-    throw std::invalid_argument("canonical model source is empty or exceeds its bound");
-  if (source.initializerBytes && source.initializerBytes->size() > spec.maxSourceBytes)
-    throw std::invalid_argument("canonical initializer exceeds its bound");
-  memory.sourceBytes = source.modelBytes.size();
-  memory.initializerBytes = source.initializerBytes ? source.initializerBytes->size() : 0;
-  updatePeak();
-
   NativeAssemblyControl control{
     deadline,
     [deadline, cancelled = spec.cancelled] { requireActive(deadline, cancelled); },
     spec.maxSourceBytes,
     spec.maxAssembledBytes};
-  auto catalog = NativeRequestCatalog::load(spec.catalogConfigurationJson,
-                                            std::move(source), control);
+  const bool completePreparedHit = preparedPublication && !publicationRepairRequired &&
+    !preparedPublication->preparedMetadataJson.empty();
+  NativeCanonicalSource source;
+  NativeRequestCatalog catalog;
+  if (completePreparedHit) {
+    // A complete hit restores only bounded graph facts from the authenticated
+    // root. Canonical model and initializer bytes are not reread.
+    source.materialManifest = preparedPublication->materialManifest;
+    source.preparedMetadataJson = preparedPublication->preparedMetadataJson;
+    catalog = NativeRequestCatalog::load(spec.catalogConfigurationJson,
+                                         std::move(source), control);
+    memory.sourceBytes = 0;
+    memory.initializerBytes = 0;
+    updatePeak();
+  }
+  else {
+    if (!spec.loadSource)
+      throw std::invalid_argument("preparation source loader is missing for a cold or partial path");
+    source = spec.loadSource(spec, deadline);
+    // Partial publication repair must rebuild a complete material manifest
+    // from bounded canonical source bytes; reference-only metadata is for a
+    // complete hit only.
+    if (preparedPublication && preparedPublication->materialManifest &&
+        (!publicationRepairRequired || preparedPublication->materialManifest->payloadsComplete))
+      source.materialManifest = preparedPublication->materialManifest;
+    requireActive(deadline, spec.cancelled);
+    if (source.modelBytes.empty() || source.modelBytes.size() > spec.maxSourceBytes)
+      throw std::invalid_argument("canonical model source is empty or exceeds its bound");
+    if (source.initializerBytes && source.initializerBytes->size() > spec.maxSourceBytes)
+      throw std::invalid_argument("canonical initializer exceeds its bound");
+    memory.sourceBytes = source.modelBytes.size();
+    memory.initializerBytes = source.initializerBytes ? source.initializerBytes->size() : 0;
+    updatePeak();
+    catalog = NativeRequestCatalog::load(spec.catalogConfigurationJson,
+                                         std::move(source), control);
+  }
   requireActive(deadline, spec.cancelled);
   if (!catalog.preparation || !catalog.splitter || !catalog.cooperativeSplitter)
     throw std::runtime_error("DI_NATIVE_PREPARATION_UNSUPPORTED_CAPABILITY");
@@ -476,16 +492,18 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     }
     updatePeak();
 
-    // Validate the canonical ONNX graph separately from the adapter's planning
-    // graph.  This catches a semantic graph accidentally being used as source
-    // identity and also validates any pinned initializer object.
-    const auto sourceIdentity = inspectNativeOnnxSourceGraph(
-      *preparedSource, descriptor, control);
-    if (sourceIdentity.canonicalIdentity.graphDigest != catalog.model.canonicalGraphDigest)
-      throw std::invalid_argument("prepared model canonical graph identity differs");
-    if (catalog.model.canonicalInitializerBytes != 0 &&
-        sourceIdentity.canonicalIdentity.initializerDigest != catalog.model.canonicalInitializerDigest)
-      throw std::invalid_argument("prepared model initializer identity differs");
+    if (!completePreparedHit) {
+      // Validate the canonical ONNX graph separately from the adapter's
+      // planning graph. This catches a semantic graph accidentally being used
+      // as source identity and also validates any pinned initializer object.
+      const auto sourceIdentity = inspectNativeOnnxSourceGraph(
+        *preparedSource, descriptor, control);
+      if (sourceIdentity.canonicalIdentity.graphDigest != catalog.model.canonicalGraphDigest)
+        throw std::invalid_argument("prepared model canonical graph identity differs");
+      if (catalog.model.canonicalInitializerBytes != 0 &&
+          sourceIdentity.canonicalIdentity.initializerDigest != catalog.model.canonicalInitializerDigest)
+        throw std::invalid_argument("prepared model initializer identity differs");
+    }
   }
   const auto adapter = catalog.preparation->adapters()->find(descriptor.adapterId);
   if (!adapter || adapter->adapterVersion() != descriptor.adapterVersion)
@@ -547,8 +565,13 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   }
 
   std::size_t retained = 0;
-  addSize(retained, catalog.model.canonicalSourceBytes);
-  addSize(retained, catalog.model.canonicalInitializerBytes);
+  // A complete reference-only hit carries logical source identity but no
+  // canonical source or initializer bytes. Do not charge those absent bytes
+  // as retained process memory or let them evict an unrelated package.
+  if (!completePreparedHit) {
+    addSize(retained, catalog.model.canonicalSourceBytes);
+    addSize(retained, catalog.model.canonicalInitializerBytes);
+  }
   addSize(retained, spec.configurationJson.size());
   addSize(retained, spec.catalogConfigurationJson.size());
   addSize(retained, catalog.model.descriptor.canonicalJson().size());

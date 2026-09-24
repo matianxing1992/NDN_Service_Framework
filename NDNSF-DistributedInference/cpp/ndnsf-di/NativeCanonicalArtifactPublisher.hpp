@@ -84,6 +84,16 @@ struct NativePreparedCanonicalPublication
   std::shared_ptr<const NativeCanonicalSource::MaterialManifest> materialManifest;
   // Package/request copies retain Core's serving pins after prepare returns.
   std::vector<std::shared_ptr<void>> servingLeases;
+  // Root-last, reference-only catalog metadata used to rebuild a fresh native
+  // package without rereading canonical source bytes on a complete hit.
+  // Kept at the end to preserve existing aggregate initialization order.
+  std::string preparedMetadataJson;
+  // Durable Repo publications keep potentially larger reference-only metadata
+  // outside the 4 KiB business root; the root authenticates this object by
+  // name, digest, and size.
+  std::string preparedMetadataDataName;
+  std::string preparedMetadataDigest;
+  std::uint64_t preparedMetadataBytes = 0;
 
   void validate() const;
 };

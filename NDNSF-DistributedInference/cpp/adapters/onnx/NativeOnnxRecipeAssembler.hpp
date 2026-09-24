@@ -284,6 +284,9 @@ struct NativeCanonicalSource
     std::vector<std::uint8_t> bytes;
   };
   std::vector<LayerPayload> layerPayloads;
+  // Versioned reference-only preparation metadata. It contains bounded graph
+  // inspection facts, never canonical model or initializer bytes.
+  std::string preparedMetadataJson;
 };
 
 /**

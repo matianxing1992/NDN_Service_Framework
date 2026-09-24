@@ -47,12 +47,6 @@ NativeCanonicalRolePreparer::NativeCanonicalRolePreparer(NativeInspectedModel mo
   control.requireActive();
   m_model.validate();
   const auto& p = m_profile;
-  if (!digest(p.artifactProfileDigest) || !digest(p.assemblerDescriptorDigest) ||
-      p.backendAbi.empty() || p.precision != m_model.descriptor.precision ||
-      p.quantization != m_model.descriptor.quantizationSubtype ||
-      p.layout.empty() || p.padding.empty() || p.protectionEpoch.empty() || !p.maxSourceBytes ||
-      !p.maxAssembledBytes || !p.maxNodes || p.maxNodes > std::uint64_t(std::numeric_limits<int>::max()))
-    throw std::invalid_argument("native role recipe profile is incomplete");
   if (source.modelBytes.empty() || source.modelBytes.size() != m_model.canonicalSourceBytes ||
       source.modelBytes.size() > p.maxSourceBytes ||
       nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) != m_model.canonicalSourceDigest ||
@@ -66,12 +60,37 @@ NativeCanonicalRolePreparer::NativeCanonicalRolePreparer(NativeInspectedModel mo
   bounded.maxSourceBytes = std::min(control.maxSourceBytes, p.maxSourceBytes);
   bounded.maxAssembledBytes = std::min(control.maxAssembledBytes, p.maxAssembledBytes);
   m_sourceGraph = inspectNativeOnnxSourceGraph(source, m_model.descriptor, bounded);
+  checkOnnxAssemblerDescriptorBinding(p.assemblerDescriptorDigest, source, bounded);
+  validateFrozen(control);
+}
+
+NativeCanonicalRolePreparer::NativeCanonicalRolePreparer(NativeInspectedModel model,
+  NativeOnnxGraphInspection sourceGraph, NativeRoleRecipeProfile profile,
+  const NativeAssemblyControl& control, NodeMap mapping)
+  : m_model(std::move(model)), m_profile(std::move(profile)),
+    m_sourceGraph(std::move(sourceGraph)), m_mapping(std::move(mapping))
+{
+  if (!control.requireActive) throw std::invalid_argument("native role preparation requires an owner fence");
+  control.requireActive();
+  validateFrozen(control);
+}
+
+void NativeCanonicalRolePreparer::validateFrozen(const NativeAssemblyControl& control)
+{
+  control.requireActive();
+  m_model.validate();
+  const auto& p = m_profile;
+  if (!digest(p.artifactProfileDigest) || !digest(p.assemblerDescriptorDigest) ||
+      p.backendAbi.empty() || p.precision != m_model.descriptor.precision ||
+      p.quantization != m_model.descriptor.quantizationSubtype ||
+      p.layout.empty() || p.padding.empty() || p.protectionEpoch.empty() || !p.maxSourceBytes ||
+      !p.maxAssembledBytes || !p.maxNodes || p.maxNodes > std::uint64_t(std::numeric_limits<int>::max()))
+    throw std::invalid_argument("native role recipe profile is incomplete");
   if (m_sourceGraph.canonicalIdentity.graphDigest != m_model.canonicalGraphDigest ||
       (m_model.canonicalInitializerBytes != 0 &&
        m_sourceGraph.canonicalIdentity.initializerDigest != m_model.canonicalInitializerDigest) ||
-      m_sourceGraph.graph.nodes.size() > p.maxNodes)
+      m_sourceGraph.graph.nodes.size() > p.maxNodes || m_sourceGraph.graphMetadataJson.empty())
     throw std::invalid_argument("native role canonical source identity or node bound differs");
-  checkOnnxAssemblerDescriptorBinding(p.assemblerDescriptorDigest, source, bounded);
   if (m_mapping.empty()) {
     if (m_sourceGraph.graph.graphDigest != m_model.graph.graphDigest)
       throw std::invalid_argument("native semantic graph requires an explicit ONNX node mapping");

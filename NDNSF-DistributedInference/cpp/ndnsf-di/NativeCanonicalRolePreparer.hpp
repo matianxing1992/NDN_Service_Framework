@@ -28,6 +28,8 @@ public:
   using NodeMap = std::map<std::string, std::vector<std::uint64_t>>;
   NativeCanonicalRolePreparer(NativeInspectedModel model, const NativeCanonicalSource& source,
     NativeRoleRecipeProfile profile, const NativeAssemblyControl& control, NodeMap mapping = {});
+  NativeCanonicalRolePreparer(NativeInspectedModel model, NativeOnnxGraphInspection sourceGraph,
+    NativeRoleRecipeProfile profile, const NativeAssemblyControl& control, NodeMap mapping = {});
   NativeRequestPreparation::RolePort rolePort() const;
   // Before candidate selection only: returns a new, fully digested candidate.
   NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
@@ -37,6 +39,7 @@ public:
     const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
 
 private:
+  void validateFrozen(const NativeAssemblyControl& control);
   NativeInspectedModel m_model;
   NativeRoleRecipeProfile m_profile;
   NativeOnnxGraphInspection m_sourceGraph;

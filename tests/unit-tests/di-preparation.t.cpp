@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 #include <boost/test/unit_test.hpp>
@@ -200,6 +201,124 @@ BOOST_AUTO_TEST_CASE(ColdPreparationPublishesOnlyVerifiedImmutablePackage)
                     prepared.manifest().preparationKeyDigest);
   BOOST_CHECK_EQUAL(cache.parseCount(), 1U);
   BOOST_CHECK_EQUAL(fixture.fetches, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogWithoutSourceLoader)
+{
+  const auto digest = [] (const std::string& value) { return nativePlanningDigest(value); };
+  const std::string role = "/Qwen/Stage/0";
+  auto descriptor = fixture::completeModel({
+    "QwenReferenceFixture", digest("qwen-content"), digest("qwen-semantics"),
+    digest("placeholder-graph"), "onnx", "float32", "qwen", "1"});
+  descriptor.sourceRevision = "revision";
+  const NativeJson ranges = NativeJson::array({NativeJson::array({0, 1})});
+  const NativeJson nodes = NativeJson{"embedding", "layer-00", "final-norm-head"};
+  const NativeJson edges = NativeJson{"hidden-embedding-to-layer-00", "hidden-layer-0-to-final"};
+  descriptor.graphDigest = digest(nativeCanonicalJson(NativeJson{
+    {"model", descriptor.modelName}, {"revision", descriptor.sourceRevision},
+    {"precision", descriptor.precision}, {"decode_mode", "single-token-autoregressive"},
+    {"modality", "text-only"}, {"mtp_enabled", false}, {"thinking_mode", "disabled"},
+    {"layer_ranges", ranges}, {"nodes", nodes}, {"edges", edges}, {"legal_cuts", edges}}));
+
+  const auto sourceDigest = digest("reference-source");
+  const auto manifestDigest = digest("reference-manifest");
+  const auto canonicalGraphDigest = digest("reference-canonical-graph");
+  const auto profileDigest = digest("reference-profile");
+  const auto assemblerDigest = digest("reference-assembler");
+  const auto catalog = NativeJson{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/qwen/reference/source"}, {"digest", sourceDigest},
+                 {"model_manifest_digest", manifestDigest}, {"canonical_graph_digest", canonicalGraphDigest}}},
+    {"recipe", {{"artifact_profile_digest", profileDigest},
+                 {"assembler_descriptor_digest", assemblerDigest}, {"backend_abi", "qwen-reference-abi"},
+                 {"precision", "float32"}, {"quantization", "none"}, {"layout", "NCHW"},
+                 {"padding", "none"}, {"protection_epoch", "reference-epoch"},
+                 {"max_source_bytes", 1U << 20}, {"max_assembled_bytes", 1U << 20}, {"max_nodes", 16}}},
+    {"publication", {{"artifact_root", "/qwen/reference/artifacts"}}},
+    {"input_format", "OPAQUE"}, {"max_payload_bytes", 1024},
+    {"splitter", {{"kind", "QWEN"}, {"layer_ranges", {{0, 1}}},
+                   {"artifact_digests_by_role", {{role, digest("reference-artifact")}}},
+                   {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}},
+                   {"tensor_degrees", {1}}, {"input_ingress_role", role},
+                   {"result_egress_role", role}}},
+    {"node_mapping", NativeJson::object()}, {"state_inputs", NativeJson::object()},
+    {"state_outputs", NativeJson::object()}};
+
+  NativeJson encodedNodes = NativeJson::array();
+  NativeJson canonicalNodeIndices = NativeJson::object();
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    encodedNodes.push_back({{"id", nodes.at(i)}, {"opType", nodes.at(i)}, {"ordinal", i}});
+    canonicalNodeIndices[nodes.at(i).get<std::string>()] = i;
+  }
+  const auto preparedMetadata = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-prepared-metadata-v1"},
+    {"descriptor", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"name", "/qwen/reference/source"}, {"digest", sourceDigest}, {"bytes", 777},
+                 {"manifest_digest", manifestDigest}, {"graph_digest", canonicalGraphDigest},
+                 {"initializer_object_digest", ""}, {"initializer_bytes", 0}, {"initializer_digest", ""}}},
+    {"sourceGraph", {{"graphDigest", descriptor.graphDigest}, {"nodes", encodedNodes},
+                      {"modelOutputs", NativeJson::array()}, {"graphMetadataJson", "{}"},
+                      {"canonicalNodeIndices", canonicalNodeIndices},
+                      {"canonicalIdentity", {{"graphDigest", canonicalGraphDigest},
+                                              {"initializerDigest", ""}}}}}});
+
+  NativePreparedCanonicalPublication publication;
+  publication.sourceDataName = "/qwen/reference/source";
+  publication.rootDataName = "/qwen/reference/artifacts/manifest";
+  publication.canonicalManifestJson = "{}";
+  publication.manifestDigest = digest("{}");
+  publication.preparedMetadataJson = preparedMetadata;
+  auto materialManifest = std::make_shared<NativeCanonicalSource::MaterialManifest>();
+  materialManifest->sourceDigest = sourceDigest;
+  materialManifest->graphDigest = canonicalGraphDigest;
+  materialManifest->initializerDigest = digest("reference-no-initializer");
+  materialManifest->templatePayloadId = "reference-template";
+  materialManifest->payloadsComplete = false;
+  materialManifest->references.push_back({"reference-template", {}, "graph-template", "__template__", 0,
+                                          digest("reference-template-bytes"), 1, {}, ""});
+  materialManifest->manifestDigest = digest(materialManifest->canonicalJson());
+  materialManifest->validate();
+  publication.materialManifest = materialManifest;
+
+  PreparationSpec spec;
+  spec.key = "qwen-reference-hit";
+  spec.baseDirectory = ".";
+  spec.catalogConfigurationJson = nativeCanonicalJson(catalog);
+  const NativeJson runtime{
+    {"schema", "ndnsf-di-native-requester-v1"},
+    {"request", {{"task", "task"}, {"task_descriptor_digest", digest("task")},
+                  {"input_layout_digest", digest("input")}, {"generation_mode", "TOKEN_DIAGNOSTIC"}}},
+    {"catalog", catalog},
+    {"limits", {{"max_source_bytes", 1U << 20}, {"max_assembled_bytes", 1U << 20}}}};
+  spec.configurationJson = nativeCanonicalJson(runtime);
+  spec.configurationDigest = digest(spec.configurationJson);
+  spec.taskName = "task";
+  spec.taskContractDigest = digest("task");
+  spec.inputLayoutDigest = digest("input");
+  spec.maxSourceBytes = 1U << 20;
+  spec.maxAssembledBytes = 1U << 20;
+  std::atomic<unsigned> sourceLoads{0};
+  spec.loadSource = [&sourceLoads] (const PreparationSpec&, std::chrono::steady_clock::time_point) {
+    ++sourceLoads;
+    throw std::runtime_error("complete prepared hit loaded canonical source");
+    return NativeCanonicalSource{};
+  };
+  spec.lookupPrepared = [publication] (const PreparationSpec&, std::chrono::steady_clock::time_point) {
+    return std::optional<NativePreparedCanonicalPublication>{publication};
+  };
+  std::vector<PreparationSpec::MemorySnapshot> snapshots;
+  spec.memoryObserver = [&snapshots] (const auto& snapshot) { snapshots.push_back(snapshot); };
+
+  ModelPreparationCache cache(8 << 20, 1, std::chrono::seconds(5));
+  const auto prepared = cache.prepare(spec);
+  BOOST_CHECK(prepared.receipt().origin == PreparationReceipt::Origin::Fetched);
+  BOOST_CHECK_EQUAL(sourceLoads.load(), 0U);
+  BOOST_CHECK_EQUAL(cache.parseCount(), 1U);
+  BOOST_CHECK_EQUAL(prepared.manifest().modelName, "QwenReferenceFixture");
+  BOOST_REQUIRE_EQUAL(snapshots.size(), 1U);
+  BOOST_CHECK_EQUAL(snapshots.back().sourceBytes, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().initializerBytes, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(Spec189PreparationMemorySnapshotCoversOwnersAndCancellation)

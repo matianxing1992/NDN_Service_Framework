@@ -132,6 +132,29 @@ void NativePreparedCanonicalPublication::validate() const
       canonicalManifestJson.size() > 4 * 1024 ||
       nativePlanningDigest(canonicalManifestJson) != manifestDigest)
     throw std::invalid_argument("native prepared canonical publication is incomplete");
+  if (!preparedMetadataJson.empty()) {
+    try {
+      const auto metadata = nativeParseJson(preparedMetadataJson);
+      if (!metadata.is_object() ||
+          metadata.value("schema", std::string{}) != "ndnsf-di-prepared-metadata-v1" ||
+          preparedMetadataJson.size() > 256 * 1024 ||
+          nativeCanonicalJson(metadata) != preparedMetadataJson)
+        throw std::invalid_argument("native prepared metadata is invalid");
+    }
+    catch (...) {
+      throw std::invalid_argument("native prepared metadata is invalid");
+    }
+  }
+  const bool hasPreparedMetadataReference = !preparedMetadataDataName.empty() ||
+    !preparedMetadataDigest.empty() || preparedMetadataBytes != 0;
+  if (hasPreparedMetadataReference) {
+    if (!validName(preparedMetadataDataName) || !digest(preparedMetadataDigest) ||
+        preparedMetadataBytes == 0 ||
+        (!preparedMetadataJson.empty() &&
+         (preparedMetadataBytes != preparedMetadataJson.size() ||
+          preparedMetadataDigest != nativePlanningDigest(preparedMetadataJson))))
+      throw std::invalid_argument("native prepared metadata reference is invalid");
+  }
 
   if (!hasMaterial && sourceDataName.empty())
     throw std::invalid_argument("native prepared source receipt is incomplete");

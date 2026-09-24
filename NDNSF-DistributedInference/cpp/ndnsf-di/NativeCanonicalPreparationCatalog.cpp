@@ -62,7 +62,11 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     const bool entryHasConversationTokenEncoder =
       static_cast<bool>(entry.conversationTokenEncoder);
     // Validate every model/source before making any publication port available.
-    NativeCanonicalRolePreparer roles(entry.model, entry.source, entry.recipe, control, std::move(entry.nodes));
+    NativeCanonicalRolePreparer roles = entry.sourceGraphInspection
+      ? NativeCanonicalRolePreparer(entry.model, std::move(*entry.sourceGraphInspection),
+                                   entry.recipe, control, std::move(entry.nodes))
+      : NativeCanonicalRolePreparer(entry.model, entry.source, entry.recipe, control,
+                                   std::move(entry.nodes));
     // Material derivation is part of the authenticated prepare boundary.  It
     // records graph-template/node/shared-initializer objects before the
     // transient source owner can be released; no Provider placement is chosen
@@ -76,8 +80,12 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
       throw std::invalid_argument("native catalog material manifest is missing");
     if (entry.source.materialManifest->payloadsComplete)
       validateNativeCanonicalMaterialManifest(entry.source, *entry.source.materialManifest, control);
-    else
+    else if (!entry.source.modelBytes.empty())
       validateNativeCanonicalMaterialReferenceIndex(entry.source, *entry.source.materialManifest, control);
+    // A complete prepared hit carries the authenticated reference index and
+    // bounded graph metadata, but deliberately has no canonical ONNX bytes.
+    // MaterialManifest::validate() above checks the index structure; the
+    // source/graph identity checks below bind it to the restored catalog.
     if (entry.source.materialManifest->sourceDigest != entry.model.canonicalSourceDigest ||
         entry.source.materialManifest->graphDigest != entry.model.canonicalGraphDigest ||
         (!entry.model.canonicalInitializerDigest.empty() &&

@@ -172,6 +172,8 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   model.descriptor = modelDescriptor();
   NativeCanonicalSource source;
   source.modelBytes = {0x01, 0x02, 0x03};
+  source.preparedMetadataJson = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-prepared-metadata-v1"}, {"fixture", "external-root-last"}});
   model.canonicalSourceDigest = nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size());
   model.canonicalSourceBytes = source.modelBytes.size();
   model.canonicalGraphDigest = digest("graph");
@@ -197,6 +199,9 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
   BOOST_REQUIRE(hit);
   BOOST_CHECK_EQUAL(hit->rootDataName, committed.rootDataName);
   BOOST_CHECK_EQUAL(hit->sourceDataName, committed.sourceDataName);
+  BOOST_CHECK_EQUAL(hit->preparedMetadataJson, source.preparedMetadataJson);
+  BOOST_CHECK_EQUAL(hit->preparedMetadataDataName, committed.preparedMetadataDataName);
+  BOOST_CHECK(fixture.repo->has(committed.preparedMetadataDataName));
   BOOST_CHECK_EQUAL(provider->stats().publicationCalls, 1U);
 
   auto changed = catalog;

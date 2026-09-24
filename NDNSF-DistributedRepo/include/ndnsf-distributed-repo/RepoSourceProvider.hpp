@@ -205,6 +205,48 @@ public:
             publication.value("package_manifest_digest",
                              source.at("model_manifest_digest").get<std::string>()))
         reject("root package manifest differs from the requested catalog");
+      // Legacy roots have no reference-only native catalog metadata. Return
+      // their validated receipt for the existing source-backed path; the
+      // preparation owner only takes the complete-hit restore branch when
+      // current metadata is present. A malformed current metadata object is
+      // a repository error, not a cold miss.
+      std::optional<ndnsf::di::NativeJson> preparedMetadata;
+      std::string preparedMetadataDataName;
+      std::string preparedMetadataDigest;
+      std::uint64_t preparedMetadataBytes = 0;
+      if (metadata.contains("preparedMetadata")) {
+        preparedMetadata = metadata.at("preparedMetadata");
+        if (!preparedMetadata->is_object())
+          reject("prepared metadata is not an object");
+        if (preparedMetadata->value("schema", std::string{}) !=
+              "ndnsf-di-prepared-metadata-v1")
+          return std::nullopt;
+      }
+      const bool hasPreparedMetadataReference = metadata.contains("preparedMetadataDataName") ||
+        metadata.contains("preparedMetadataDigest") || metadata.contains("preparedMetadataBytes");
+      if (hasPreparedMetadataReference) {
+        if (preparedMetadata.has_value())
+          reject("prepared metadata has both inline and external forms");
+        preparedMetadataDataName = metadata.value("preparedMetadataDataName", std::string{});
+        preparedMetadataDigest = metadata.value("preparedMetadataDigest", std::string{});
+        preparedMetadataBytes = metadata.value("preparedMetadataBytes", std::uint64_t{0});
+        if (preparedMetadataDataName.empty() || preparedMetadataDigest.empty() || preparedMetadataBytes == 0 ||
+            preparedMetadataBytes > 256U * 1024U)
+          reject("prepared metadata reference is incomplete");
+        if (checkObject(preparedMetadataDataName, preparedMetadataDigest, preparedMetadataBytes)) {
+          const auto metadataBytes = m_repo->get(preparedMetadataDataName);
+          const std::string metadataWire(metadataBytes.begin(), metadataBytes.end());
+          if (metadataWire.size() != preparedMetadataBytes ||
+              ndnsf::di::nativePlanningDigest(metadataWire) != preparedMetadataDigest)
+            reject("prepared metadata digest or size is invalid");
+          const auto value = ndnsf::di::nativeParseJson(metadataWire);
+          if (!value.is_object() || value.value("schema", std::string{}) !=
+                "ndnsf-di-prepared-metadata-v1" ||
+              ndnsf::di::nativeCanonicalJson(value) != metadataWire)
+            reject("prepared metadata object is invalid");
+          preparedMetadata = value;
+        }
+      }
 
       (void)checkObject(root + "/source", source.at("digest").get<std::string>(), expectedSourceBytes);
       if (!expectedInitializerName.empty())
@@ -234,6 +276,11 @@ public:
       receipt.initializerDataName = expectedInitializerName;
       receipt.rootDataName = rootName;
       receipt.canonicalManifestJson = manifestJson;
+      if (preparedMetadata)
+        receipt.preparedMetadataJson = ndnsf::di::nativeCanonicalJson(*preparedMetadata);
+      receipt.preparedMetadataDataName = preparedMetadataDataName;
+      receipt.preparedMetadataDigest = preparedMetadataDigest;
+      receipt.preparedMetadataBytes = preparedMetadataBytes;
       receipt.manifestDigest = ndnsf::di::nativePlanningDigest(manifestJson);
       receipt.artifactProfileDigest = rootJson.at("artifactProfileDigest").get<std::string>();
       receipt.layerDataNames = std::move(layerNames);
@@ -567,6 +614,20 @@ public:
     const auto sourceName = root + "/source";
     const auto initializerName = root + "/initializer";
     const auto rootName = root + "/manifest";
+    const auto preparedMetadataName = root + "/prepared-metadata";
+    ndnsf::di::NativeJson preparedMetadata = ndnsf::di::NativeJson::object();
+    const auto preparedMetadataDigest = source.preparedMetadataJson.empty()
+      ? std::string{} : ndnsf::di::nativePlanningDigest(source.preparedMetadataJson);
+    const auto preparedMetadataBytes = static_cast<std::uint64_t>(source.preparedMetadataJson.size());
+    if (!source.preparedMetadataJson.empty()) {
+      preparedMetadata = ndnsf::di::nativeParseJson(source.preparedMetadataJson);
+      if (!preparedMetadata.is_object() ||
+          preparedMetadata.value("schema", std::string{}) !=
+            "ndnsf-di-prepared-metadata-v1")
+        throw ndnsf::di::RepositorySourceError(
+          ndnsf::di::RepositorySourceError::Kind::Unavailable,
+          "repository prepared metadata schema is unsupported");
+    }
     const auto materialManifestName = root + "/material-manifest";
     std::vector<std::string> materialPayloadIds;
     std::vector<std::string> materialNames;
@@ -599,6 +660,8 @@ public:
         for (const auto& payload : source.materialManifest->payloads) add(payload.byteSize());
         add(source.materialManifest->canonicalJson().size());
       }
+      if (!source.preparedMetadataJson.empty())
+        add(source.preparedMetadataJson.size());
     };
     ++m_publicationCalls;
 
@@ -616,6 +679,11 @@ public:
       receipt.materialDataNames = materialNames;
       receipt.materialDigests = materialDigests;
       receipt.canonicalManifestJson = manifestJson;
+      receipt.preparedMetadataJson = source.preparedMetadataJson;
+      receipt.preparedMetadataDataName = source.preparedMetadataJson.empty()
+        ? std::string{} : preparedMetadataName;
+      receipt.preparedMetadataDigest = preparedMetadataDigest;
+      receipt.preparedMetadataBytes = preparedMetadataBytes;
       receipt.manifestDigest = ndnsf::di::nativePlanningDigest(manifestJson);
       receipt.artifactProfileDigest = options.artifactProfileDigest;
       receipt.layerManifestDigests = options.layerManifestDigests;
@@ -634,6 +702,8 @@ public:
                                        receipt.materialDataNames.begin(), receipt.materialDataNames.end());
       if (!receipt.materialManifestDataName.empty())
         receipt.rollbackDataNames.push_back(receipt.materialManifestDataName);
+      if (!receipt.preparedMetadataDataName.empty())
+        receipt.rollbackDataNames.push_back(receipt.preparedMetadataDataName);
       receipt.rollbackDataNames.push_back(rootName);
       receipt.validate();
       return receipt;
@@ -691,6 +761,10 @@ public:
               materialPayloadIds.size() ||
             metadata.value("packageManifestDigest", std::string{}) !=
               options.packageManifestDigest ||
+            metadata.value("preparedMetadataDataName", std::string{}) !=
+              (source.preparedMetadataJson.empty() ? std::string{} : preparedMetadataName) ||
+            metadata.value("preparedMetadataDigest", std::string{}) != preparedMetadataDigest ||
+            metadata.value("preparedMetadataBytes", std::uint64_t{0}) != preparedMetadataBytes ||
             layerDigests != options.layerManifestDigests ||
             rootJson.value("layerReferences", ndnsf::di::NativeJson::array()).size() !=
               source.layerPayloads.size())
@@ -725,6 +799,9 @@ public:
         };
         complete = checkObject(sourceName, model.canonicalSourceDigest,
                                model.canonicalSourceBytes) && complete;
+        if (!source.preparedMetadataJson.empty())
+          complete = checkObject(preparedMetadataName, preparedMetadataDigest,
+                                 preparedMetadataBytes) && complete;
         if (source.initializerBytes)
           complete = checkObject(initializerName, model.canonicalInitializerObjectDigest,
                                  model.canonicalInitializerBytes) && complete;
@@ -894,6 +971,12 @@ public:
         putRanges(materialManifestName, materialManifestBytes,
                   "ndnsf-di-canonical-material-manifest");
       }
+      if (!source.preparedMetadataJson.empty()) {
+        const std::vector<std::uint8_t> preparedMetadataBytesWire(
+          source.preparedMetadataJson.begin(), source.preparedMetadataJson.end());
+        putRanges(preparedMetadataName, preparedMetadataBytesWire,
+                  "ndnsf-di-prepared-metadata-v1");
+      }
       ndnsf::di::NativeJson metadata{
         {"modelKey", modelKey}, {"serviceName", serviceName},
         {"canonicalSourceDataName", sourceName},
@@ -904,6 +987,11 @@ public:
         {"canonicalInitializerBytes", model.canonicalInitializerBytes},
         {"canonicalGraphDigest", model.canonicalGraphDigest},
         {"packageManifestDigest", options.packageManifestDigest}};
+      if (!source.preparedMetadataJson.empty()) {
+        metadata["preparedMetadataDataName"] = preparedMetadataName;
+        metadata["preparedMetadataDigest"] = preparedMetadataDigest;
+        metadata["preparedMetadataBytes"] = preparedMetadataBytes;
+      }
       if (source.materialManifest) {
         metadata["materialManifestDataName"] = materialManifestName;
         metadata["materialManifestDigest"] =

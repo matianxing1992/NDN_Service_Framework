@@ -18,6 +18,7 @@ struct NativeCanonicalCatalogEntry
   NativeCanonicalSource source;
   NativeRoleRecipeProfile recipe;
   NativeCanonicalRolePreparer::NodeMap nodes;
+  std::optional<NativeOnnxGraphInspection> sourceGraphInspection;
   NativeCanonicalPublicationOptions publication;
   NativeCatalogModelAdapter::Format format = NativeCatalogModelAdapter::Format::OpaqueBytes;
   std::size_t maxPayloadBytes = 0;

@@ -8,6 +8,95 @@
 #include <cstring>
 
 namespace ndnsf::di {
+namespace {
+
+NativeJson tensorContractJson(const NativeTensorContract& value)
+{
+  NativeJson shape = NativeJson::array();
+  for (const auto& dimension : value.shape)
+    shape.push_back(std::holds_alternative<std::string>(dimension)
+      ? NativeJson(std::get<std::string>(dimension))
+      : NativeJson(std::get<std::int64_t>(dimension)));
+  return NativeJson{{"name", value.name}, {"dtype", value.dtype}, {"shape", std::move(shape)},
+    {"estimatedBytes", value.estimatedBytes ? NativeJson(*value.estimatedBytes) : NativeJson(nullptr)}};
+}
+
+NativeTensorContract tensorContractFromJson(const NativeJson& value)
+{
+  NativeTensorContract result;
+  result.name = value.at("name").get<std::string>();
+  result.dtype = value.at("dtype").get<std::string>();
+  for (const auto& dimension : value.at("shape")) {
+    if (dimension.is_string()) result.shape.emplace_back(dimension.get<std::string>());
+    else result.shape.emplace_back(dimension.get<std::int64_t>());
+  }
+  if (!value.at("estimatedBytes").is_null())
+    result.estimatedBytes = value.at("estimatedBytes").get<std::uint64_t>();
+  result.validate();
+  return result;
+}
+
+std::string preparedMetadataJson(const NativeInspectedModel& model,
+                                 const NativeOnnxGraphInspection& sourceGraph)
+{
+  NativeJson nodes = NativeJson::array();
+  for (const auto& node : sourceGraph.graph.nodes)
+    nodes.push_back({{"id", node.id}, {"opType", node.opType}, {"ordinal", node.ordinal}});
+  NativeJson outputs = NativeJson::array();
+  for (const auto& output : sourceGraph.graph.modelOutputs)
+    outputs.push_back(tensorContractJson(output));
+  NativeJson nodeIndices = NativeJson::object();
+  for (const auto& item : sourceGraph.canonicalNodeIndices)
+    nodeIndices[item.first] = item.second;
+  return nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-prepared-metadata-v1"},
+    {"descriptor", nativeParseJson(model.descriptor.canonicalJson())},
+    {"source", {{"name", model.canonicalSourceName},
+                 {"digest", model.canonicalSourceDigest},
+                 {"bytes", model.canonicalSourceBytes},
+                 {"manifest_digest", model.modelManifestDigest},
+                 {"graph_digest", model.canonicalGraphDigest},
+                 {"initializer_object_digest", model.canonicalInitializerObjectDigest},
+                 {"initializer_bytes", model.canonicalInitializerBytes},
+                 {"initializer_digest", model.canonicalInitializerDigest}}},
+    {"sourceGraph", {{"graphDigest", sourceGraph.graph.graphDigest},
+                      {"nodes", std::move(nodes)},
+                      {"modelOutputs", std::move(outputs)},
+                      {"graphMetadataJson", sourceGraph.graphMetadataJson},
+                      {"canonicalNodeIndices", std::move(nodeIndices)},
+                      {"canonicalIdentity", {{"graphDigest", sourceGraph.canonicalIdentity.graphDigest},
+                                               {"initializerDigest", sourceGraph.canonicalIdentity.initializerDigest}}}}}
+  });
+}
+
+NativeOnnxGraphInspection sourceGraphFromPreparedMetadata(const NativeJson& metadata)
+{
+  if (metadata.value("schema", std::string{}) != "ndnsf-di-prepared-metadata-v1")
+    throw std::invalid_argument("unsupported native prepared metadata schema");
+  const auto& encoded = metadata.at("sourceGraph");
+  NativeOnnxGraphInspection result;
+  result.graph.graphDigest = encoded.at("graphDigest").get<std::string>();
+  result.graphMetadataJson = encoded.at("graphMetadataJson").get<std::string>();
+  if (result.graphMetadataJson.empty())
+    throw std::invalid_argument("native prepared graph metadata is empty");
+  for (const auto& node : encoded.at("nodes"))
+    result.graph.nodes.push_back({node.at("id").get<std::string>(),
+      node.at("opType").get<std::string>(), node.at("ordinal").get<std::uint64_t>()});
+  for (const auto& output : encoded.at("modelOutputs"))
+    result.graph.modelOutputs.push_back(tensorContractFromJson(output));
+  for (const auto& item : encoded.at("canonicalNodeIndices").items())
+    result.canonicalNodeIndices[item.key()] = item.value().get<std::uint64_t>();
+  const auto& identity = encoded.at("canonicalIdentity");
+  result.canonicalIdentity.graphDigest = identity.at("graphDigest").get<std::string>();
+  result.canonicalIdentity.initializerDigest = identity.at("initializerDigest").get<std::string>();
+  result.nodeNames.reserve(result.graph.nodes.size());
+  for (const auto& node : result.graph.nodes)
+    result.nodeNames.push_back(node.id);
+  return result;
+}
+
+} // namespace
+
 NativeRequestCatalog NativeRequestCatalog::load(const std::string& configurationJson,
   NativeCanonicalSource source, const NativeAssemblyControl& control)
 {
@@ -21,27 +110,47 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   auto& model = entry.model;
   model.descriptor = NativeModelDescriptor::fromCanonicalJson(nativeCanonicalJson(root.at("model")));
   const auto& sourceConfig = root.at("source");
+  const bool referenceOnly = source.modelBytes.empty() && !source.preparedMetadataJson.empty();
   model.canonicalSourceName = sourceConfig.at("data_name").get<std::string>();
   model.canonicalSourceDigest = sourceConfig.at("digest").get<std::string>();
   model.modelManifestDigest = sourceConfig.at("model_manifest_digest").get<std::string>();
   model.canonicalGraphDigest = sourceConfig.at("canonical_graph_digest").get<std::string>();
-  model.canonicalSourceBytes = source.modelBytes.size();
-  if (nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) != model.canonicalSourceDigest)
-    throw std::invalid_argument("request source bytes differ from pinned digest");
-  if (source.initializerBytes) {
-    model.canonicalInitializerBytes = source.initializerBytes->size();
-    model.canonicalInitializerObjectDigest = sourceConfig.at("initializer_digest").get<std::string>();
-    if (nativePlanningDigest(source.initializerBytes->data(), source.initializerBytes->size()) !=
-        model.canonicalInitializerObjectDigest)
-      throw std::invalid_argument("request initializer bytes differ from pinned digest");
+  if (referenceOnly) {
+    const auto metadata = nativeParseJson(source.preparedMetadataJson);
+    if (metadata.value("schema", std::string{}) != "ndnsf-di-prepared-metadata-v1")
+      throw std::invalid_argument("unsupported native prepared metadata schema");
+    const auto& facts = metadata.at("source");
+    if (facts.at("name").get<std::string>() != model.canonicalSourceName ||
+        facts.at("digest").get<std::string>() != model.canonicalSourceDigest ||
+        facts.at("manifest_digest").get<std::string>() != model.modelManifestDigest ||
+        facts.at("graph_digest").get<std::string>() != model.canonicalGraphDigest ||
+        metadata.at("descriptor") != nativeParseJson(model.descriptor.canonicalJson()))
+      throw std::invalid_argument("native prepared metadata differs from catalog identity");
+    model.canonicalSourceBytes = facts.at("bytes").get<std::uint64_t>();
+    model.canonicalInitializerBytes = facts.value("initializer_bytes", std::uint64_t{0});
+    model.canonicalInitializerObjectDigest = facts.value("initializer_object_digest", std::string{});
+    model.canonicalInitializerDigest = facts.value("initializer_digest", std::string{});
+    entry.sourceGraphInspection = sourceGraphFromPreparedMetadata(metadata);
   }
-  else if (sourceConfig.contains("initializer_digest"))
-    throw std::invalid_argument("pinned initializer object is missing");
-  if (source.initializerBytes && model.descriptor.modelFormat == "onnx") {
-    // The catalog pins the fetched external object above. Assembly recipes
-    // bind a separate digest over normalized ONNX initializer contents.
-    model.canonicalInitializerDigest = canonicalOnnxSourceIdentity(
-      source, control).initializerDigest;
+  else {
+    model.canonicalSourceBytes = source.modelBytes.size();
+    if (nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size()) != model.canonicalSourceDigest)
+      throw std::invalid_argument("request source bytes differ from pinned digest");
+    if (source.initializerBytes) {
+      model.canonicalInitializerBytes = source.initializerBytes->size();
+      model.canonicalInitializerObjectDigest = sourceConfig.at("initializer_digest").get<std::string>();
+      if (nativePlanningDigest(source.initializerBytes->data(), source.initializerBytes->size()) !=
+          model.canonicalInitializerObjectDigest)
+        throw std::invalid_argument("request initializer bytes differ from pinned digest");
+    }
+    else if (sourceConfig.contains("initializer_digest"))
+      throw std::invalid_argument("pinned initializer object is missing");
+    if (source.initializerBytes && model.descriptor.modelFormat == "onnx") {
+      // The catalog pins the fetched external object above. Assembly recipes
+      // bind a separate digest over normalized ONNX initializer contents.
+      model.canonicalInitializerDigest = canonicalOnnxSourceIdentity(
+        source, control).initializerDigest;
+    }
   }
   const auto& recipe = root.at("recipe");
   entry.recipe = {recipe.at("artifact_profile_digest"), recipe.at("assembler_descriptor_digest"),
@@ -130,6 +239,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     result.splitter = std::move(strategy);
   }
   else if (split.at("kind") == "YOLO") {
+    if (referenceOnly)
+      throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
     model.graph = inspectNativeOnnxPlanningGraph(source, model.descriptor, control).graph;
     std::vector<yolo::NativeYoloCatalogComponent> components;
     for (const auto& item : split.at("components")) {
@@ -154,6 +265,14 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   result.stateMapping.inputs = root.value("state_inputs", NativeStateTensorMapping::Roles{});
   result.stateMapping.outputs = root.value("state_outputs", NativeStateTensorMapping::Roles{});
   result.model = model;
+  if (!referenceOnly) {
+    entry.sourceGraphInspection = inspectNativeOnnxSourceGraph(source, model.descriptor, control);
+    // Only adapters with a reference-only restore contract publish this
+    // metadata. Unsupported adapters remain on the source-backed path and
+    // therefore cannot create a receipt that a later prepare cannot restore.
+    if (splitterKind == "QWEN" || splitterKind == "LLAMA")
+      source.preparedMetadataJson = preparedMetadataJson(model, *entry.sourceGraphInspection);
+  }
   entry.source = std::move(source);
   std::vector<NativeCanonicalCatalogEntry> entries;
   entries.push_back(std::move(entry));
