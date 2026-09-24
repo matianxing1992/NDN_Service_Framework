@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
 #include <boost/test/unit_test.hpp>
@@ -137,6 +138,17 @@ public:
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec190TerminalDrain)
+
+BOOST_AUTO_TEST_CASE(ControlSequenceGuardRejectsDuplicateAndReorderedHistory)
+{
+  NativeProviderControlSequenceGuard guard;
+  BOOST_CHECK(guard.observe(7) == NativeProviderControlSequenceGuard::Decision::Accepted);
+  BOOST_CHECK(guard.observe(7) == NativeProviderControlSequenceGuard::Decision::Duplicate);
+  BOOST_CHECK(guard.observe(6) == NativeProviderControlSequenceGuard::Decision::Reordered);
+  BOOST_CHECK(guard.observe(0) == NativeProviderControlSequenceGuard::Decision::Reordered);
+  BOOST_CHECK(guard.observe(8) == NativeProviderControlSequenceGuard::Decision::Accepted);
+  BOOST_CHECK(guard.observe(6) == NativeProviderControlSequenceGuard::Decision::Reordered);
+}
 
 BOOST_AUTO_TEST_CASE(HealthyFinalizeFollowsDurableJournalAndClosesEarly)
 {

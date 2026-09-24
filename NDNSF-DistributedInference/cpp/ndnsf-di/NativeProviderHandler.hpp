@@ -24,6 +24,42 @@
 
 namespace ndnsf::di {
 
+/**
+ * Request-local monotonicity gate for authenticated conversation controls.
+ * The provider receives the complete request-scoped history on each poll, so
+ * duplicate history and late lower sequence numbers must be distinguished
+ * before payload/state processing.
+ */
+class NativeProviderControlSequenceGuard
+{
+public:
+  enum class Decision
+  {
+    Accepted,
+    Duplicate,
+    Reordered,
+  };
+
+  Decision
+  observe(std::uint64_t sequence)
+  {
+    if (m_processed.count(sequence) != 0) {
+      return Decision::Duplicate;
+    }
+    if (sequence == 0 ||
+        (m_highest != 0 && sequence <= m_highest)) {
+      return Decision::Reordered;
+    }
+    m_processed.insert(sequence);
+    m_highest = sequence;
+    return Decision::Accepted;
+  }
+
+private:
+  std::set<std::uint64_t> m_processed;
+  std::uint64_t m_highest = 0;
+};
+
 struct NativeProviderHandlerConfig
 {
   using ProviderGroupCoordinatorFactory = std::function<

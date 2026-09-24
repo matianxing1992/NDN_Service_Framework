@@ -3428,8 +3428,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             // poll.  Keep control handling idempotent at the wire-sequence level so
             // a committed turn emits one acknowledgement per requester control,
             // rather than replaying the same historical COMMIT until the deadline.
-            std::set<std::uint64_t> processedControlSequences;
-            std::uint64_t highestControlSequence = 0;
+            NativeProviderControlSequenceGuard controlSequenceGuard;
             while (true) {
               const auto now = static_cast<std::uint64_t>(
                 std::max<long long>(0, epochMs()));
@@ -3446,17 +3445,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   logControl("rejected", {}, "producer_binding", item.sequence);
                   continue;
                 }
-                if (processedControlSequences.count(item.sequence) != 0) {
+                const auto sequenceDecision = controlSequenceGuard.observe(item.sequence);
+                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Duplicate) {
                   logControl("rejected", {}, "duplicate_sequence", item.sequence);
                   continue;
                 }
-                if (item.sequence == 0 ||
-                    (highestControlSequence != 0 && item.sequence <= highestControlSequence)) {
+                if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Reordered) {
                   logControl("rejected", {}, "reordered_sequence", item.sequence);
                   continue;
                 }
-                processedControlSequences.insert(item.sequence);
-                highestControlSequence = item.sequence;
                 ConversationPromotionControl control;
                 try {
                   control = parseConversationPromotionControl(item.payload);
