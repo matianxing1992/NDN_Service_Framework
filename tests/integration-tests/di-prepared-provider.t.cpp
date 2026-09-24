@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
@@ -39,6 +40,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <sys/wait.h>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -1530,6 +1532,106 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheRequiresAuthorizedRuntime)
 
 BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthorization)
 {
+  if (const char* child = std::getenv("NDNSF_SPEC190_PROTECTED_EXEC_CHILD");
+      child != nullptr && std::string(child) == "1") {
+    const char* rawRoot = std::getenv("NDNSF_SPEC190_PROTECTED_EXEC_ROOT");
+    BOOST_REQUIRE(rawRoot != nullptr);
+    const std::filesystem::path root(rawRoot);
+    const auto readText = [] (const std::filesystem::path& path) {
+      std::ifstream input(path, std::ios::binary);
+      return std::string(std::istreambuf_iterator<char>(input),
+                         std::istreambuf_iterator<char>());
+    };
+    const auto readBytes = [&] (const std::filesystem::path& path) {
+      const auto value = readText(path);
+      return std::vector<std::uint8_t>(value.begin(), value.end());
+    };
+
+    std::istringstream projectionInput(readText(root / "projection.json"));
+    const auto childProjection = nativeSelectionProjectionV3FromJson(
+      projectionInput, "/LLM/Pipeline/Stage/0");
+    const auto providerBootId = readText(root / "provider-boot-id");
+    const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+
+    ProtectedRuntimeBindingV1 binding;
+    binding.provider = childProjection.provider;
+    binding.role = childProjection.executionRole.roleId;
+    binding.requestId = childProjection.requestId;
+    binding.attempt = childProjection.attempt;
+    binding.planCoreDigest = childProjection.planCoreDigest;
+    binding.planDigest = childProjection.planDigest;
+    binding.securityPolicySnapshotDigest = childProjection.securityPolicySnapshotDigest;
+    binding.protectionEpoch = childProjection.selectedRole.protectionEpoch;
+    binding.grantName = childProjection.grantName;
+    binding.grantDigest = childProjection.grantDigest;
+    binding.providerBootId = providerBootId;
+    binding.fencingToken = nativeProtectedFencingToken(
+      childProjection, providerBootId, {});
+    binding.expiresAtMs = childProjection.deadlineMs;
+
+    NativeProtectedGrantConfig grantConfig;
+    grantConfig.authorityIdentity = readText(root / "authority-identity");
+    grantConfig.authorityPublicKeyRaw = readText(root / "authority-public-key");
+    const auto recipientSeed = readBytes(root / "recipient-seed");
+    grantConfig.recipientKey = {
+      NativeRecipientKey::Kind::Ed25519Seed,
+      std::string(recipientSeed.begin(), recipientSeed.end())};
+    grantConfig.modelManifestDigest =
+      childProjection.selectedRole.modelManifestDigest;
+    const auto grantWire = readText(root / "grant.wire.json");
+    grantConfig.fetchGrant = [grantWire] (const std::string&) {
+      return grantWire;
+    };
+    auto runtime = std::make_shared<ProtectedRuntime>(
+      binding, std::move(grantConfig));
+    runtime->verifyGrant(binding, now);
+
+    NativeCanonicalOnnxAssemblerOptions options;
+    options.cacheDir = readText(root / "cache-dir");
+    options.providerIdentity = childProjection.provider;
+    options.roleAssemblySpecDigest = readText(root / "role-assembly-spec-digest");
+    options.protectedRuntime = runtime;
+    const auto hot = tryLoadNativeCanonicalOnnxRoleFromCache(
+      childProjection, options, readText(root / "source-name"),
+      readText(root / "source-digest"));
+    BOOST_REQUIRE(hot);
+    BOOST_CHECK(hot->path.empty());
+    BOOST_CHECK_EQUAL(hot->metadata.at("protectedCacheHit"), "true");
+    BOOST_CHECK_EQUAL(hot->metadata.at("protectedArtifactPersistent"), "true");
+
+    const auto plaintextDir = root / "child-plaintext";
+    std::filesystem::create_directories(plaintextDir);
+    std::filesystem::permissions(
+      plaintextDir, std::filesystem::perms::owner_all,
+      std::filesystem::perm_options::replace);
+    registerNativePlaintextDirectory(*runtime, plaintextDir, "spec190-exec-child");
+    const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
+    const NativeAssembledEntryContext context{
+      childProjection.assembly.modelManifestDigest,
+      options.roleAssemblySpecDigest,
+      providerAssemblyDigest(std::vector<std::uint8_t>(profile.begin(), profile.end())),
+      "MODEL_PROTO", runtime->keyReference()->digest()};
+    runtime->withContentKey(now, [&] (const auto& key) {
+      const auto digest = openNativeAssembledEntryToFile(
+        key, std::filesystem::path(hot->metadata.at("encryptedArtifactPath")),
+        plaintextDir / "model.onnx", context,
+        childProjection.assembly.maxAssembledBytes,
+        hot->metadata.at("encryptedArtifactDigest"));
+      BOOST_CHECK_EQUAL(digest, hot->metadata.at("encryptedArtifactDigest"));
+    });
+    const auto plaintext = providerAssemblyRead(plaintextDir / "model.onnx");
+    BOOST_CHECK_EQUAL(providerAssemblyDigest(plaintext),
+                      hot->metadata.at("assembledModelDigest"));
+    runtime->complete();
+    BOOST_CHECK(!std::filesystem::exists(plaintextDir));
+    std::ofstream(root / "child-success")
+      << providerBootId << "\n" << childProjection.grantDigest << "\n"
+      << hot->metadata.at("encryptedArtifactDigest") << "\n";
+    return;
+  }
+
   const auto fixture = providerAssemblyFixture();
   BOOST_REQUIRE(!fixture.empty());
   const auto source = providerAssemblyRead(fixture);
@@ -1719,6 +1821,76 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
     }),
     std::exception);
   options.protectedRuntime->complete();
+
+  // A new Provider boot must be able to use the immutable ciphertext with a
+  // newly issued grant.  The child receives only the current Selection/grant
+  // fixture and non-secret cache identity; it does not inherit the parent
+  // ProtectedRuntime, content key, plaintext, or request/session KV.
+  auto childProjection = projection;
+  childProjection.requestId = "/spec190/provider/protected/exec-child";
+  childProjection.dataflow.requestId = childProjection.requestId;
+  const auto childNow = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  childProjection.deadlineMs = childNow + 60'000;
+  auto childGrantRequest = grantRequest;
+  childGrantRequest.requestId = childProjection.requestId;
+  childGrantRequest.issuedAtMs = 1;
+  const auto childGrant = NativeArtifactGrantIssuer(issuerConfig).issue(
+    childGrantRequest.sign(*requesterPrivate), childNow, childNow + 60'000);
+  childProjection.grantName = childGrant.grantName;
+  childProjection.grantDigest = childGrant.grantDigest;
+
+  const auto execRoot = std::filesystem::path(cacheDir + "-exec");
+  std::filesystem::remove_all(execRoot, cleanupError);
+  std::filesystem::create_directories(execRoot);
+  std::filesystem::permissions(
+    execRoot, std::filesystem::perms::owner_all,
+    std::filesystem::perm_options::replace);
+  const auto writeText = [] (const std::filesystem::path& path,
+                             const std::string& value) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output)
+      throw std::runtime_error("cannot create protected exec fixture file");
+    output.write(value.data(), static_cast<std::streamsize>(value.size()));
+    if (!output.good())
+      throw std::runtime_error("cannot write protected exec fixture file");
+  };
+  writeText(execRoot / "projection.json",
+            nativeSelectionProjectionV3ToJson(childProjection));
+  writeText(execRoot / "provider-boot-id", "spec190-protected-boot-after-exec");
+  writeText(execRoot / "cache-dir", cacheDir);
+  writeText(execRoot / "role-assembly-spec-digest", roleAssemblySpecDigest);
+  writeText(execRoot / "source-name", sourceName.toUri());
+  writeText(execRoot / "source-digest", sourceDigest);
+  writeText(execRoot / "authority-identity", issuerConfig.authorityIdentity);
+  writeText(execRoot / "authority-public-key", publicKeyBytes(authorityPrivate));
+  writeText(execRoot / "recipient-seed", recipientSeed);
+  writeText(execRoot / "grant.wire.json", childGrant.wireJson);
+
+  ScopedEnvironmentVariable childMode(
+    "NDNSF_SPEC190_PROTECTED_EXEC_CHILD", "1");
+  ScopedEnvironmentVariable childRoot(
+    "NDNSF_SPEC190_PROTECTED_EXEC_ROOT", execRoot.string().c_str());
+  const auto executable = boost::unit_test::framework::master_test_suite().argv[0];
+  BOOST_REQUIRE(executable != nullptr);
+  const auto child = ::fork();
+  BOOST_REQUIRE(child >= 0);
+  if (child == 0) {
+    ::execl(executable, executable,
+            "--run_test=Spec185ProviderAssembly/Spec188ProviderReferenceAssembly/ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthorization",
+            "--log_level=error", static_cast<char*>(nullptr));
+    ::_exit(127);
+  }
+  int status = 0;
+  while (::waitpid(child, &status, 0) < 0) {
+    if (errno != EINTR)
+      BOOST_FAIL("waitpid failed for protected assembled exec child");
+  }
+  BOOST_REQUIRE(WIFEXITED(status));
+  BOOST_CHECK_EQUAL(WEXITSTATUS(status), 0);
+  BOOST_CHECK(std::filesystem::is_regular_file(execRoot / "child-success"));
+  std::filesystem::remove_all(execRoot, cleanupError);
   std::filesystem::remove_all(cacheDir, cleanupError);
 }
 
