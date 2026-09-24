@@ -112,13 +112,21 @@ tests/container/**/actual/
 # repository contents. Keep these rules in the shared ignore file rather than
 # relying only on .git/info/exclude, so a clone cannot accidentally stage them.
 /specs/
+/**/specs/
 /.specify/
+/**/.specify/
 /.codex/
+/**/.codex/
 /.agents/
+/**/.agents/
 /.claude/
+/**/.claude/
 /.deepseek/
+/**/.deepseek/
 /AGENTS.md
+/**/AGENTS.md
 /CLAUDE.md
+/**/CLAUDE.md
 /CODEX*.md
 /**/CODEX*.md
 /**/codex*.md
