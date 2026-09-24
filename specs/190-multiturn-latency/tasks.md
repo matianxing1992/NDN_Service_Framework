@@ -5,6 +5,15 @@
 
 ## Current Checkpoint
 
+2026-09-23 20:40 -05:00：B190-26 完成 T006 默认 protected grant factory 的静态接线审查。
+确认 `Provider::serve` 安装 production factory，`NativeProviderHandler` 在已校验
+Selection projection 后调用并校验 binding；但现有 served-Provider C++ fixtures 都通过
+`testProtectedRuntimeFactory` 覆盖默认 factory，独立 grant target 也绕过了 Provider/Selection
+直接测试 credentials/transport/runtime。因此没有新增编译或运行结果，T006 仍 `PARTIAL`。
+下一 Changed gate 固定为不注入 test factory 的 C++ production-wiring selector，必须通过
+真实 route-backed exact grant fetch，覆盖 `Selection → GRANT_VERIFIED → assembly/terminal → cleanup`；
+T007 继续锁定。详见 [B190-26](evidence/b190-26.md)。
+
 2026-09-23 20:37 -05:00：B190-25 的 protected assembled 跨 Provider OS
 `exec` gate 已通过。父进程完成一次 protected cold assembly 后释放 runtime；子进程以
 不同 `providerBootId` 和新签发 grant 重建 `ProtectedRuntime`，命中同一稳定密文，走生产
@@ -974,7 +983,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
 | [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
-| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)、[B190-17](evidence/b190-17.md)、[B190-18](evidence/b190-18.md)、[B190-19](evidence/b190-19.md)、[B190-20](evidence/b190-20.md)、[B190-21](evidence/b190-21.md)、[B190-22](evidence/b190-22.md)、[B190-23](evidence/b190-23.md)、[B190-24](evidence/b190-24.md)、[B190-25](evidence/b190-25.md)：retention、key-reference/AAD、Repo durable identity metadata/restart read、Core durable lookup-to-serving、Core-owned reference recovery、policy-transition serving fence、protected assembled ciphertext reuse、真实 OS `exec` Core serving、Provider 原生 fetch/decrypt 和新 boot/new grant protected assembled ciphertext reopen 已分别通过；online Controller confirmation、durable key recovery、NAC-ABE inline unwrap、current grant-Selection-placement rebinding、revoke invalidation、精确 missing-object fetch 和完整 protected restart 未完成，禁止解除 protected miss 门 | 2026-09-23 20:37 -05:00 |
+| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)、[B190-17](evidence/b190-17.md)、[B190-18](evidence/b190-18.md)、[B190-19](evidence/b190-19.md)、[B190-20](evidence/b190-20.md)、[B190-21](evidence/b190-21.md)、[B190-22](evidence/b190-22.md)、[B190-23](evidence/b190-23.md)、[B190-24](evidence/b190-24.md)、[B190-25](evidence/b190-25.md)、[B190-26](evidence/b190-26.md)：production default factory 已静态确认安装并在 Selection 后执行，但当前端到端 C++ fixtures 仍注入 test factory，默认 route-backed grant fetch/Provider production wiring 尚未运行；online Controller confirmation、durable key recovery、NAC-ABE inline unwrap、current grant-Selection-placement rebinding、revoke invalidation、精确 missing-object fetch 和完整 protected restart 未完成，禁止解除 protected miss 门 | 2026-09-23 20:40 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
 | [T009 Finalize and drain](#t009-finalize-and-drain) | NOT_STARTED | T008 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 15:08 -05:00 |

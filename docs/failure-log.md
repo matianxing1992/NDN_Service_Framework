@@ -1,5 +1,30 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-26 default protected grant factory wiring audit
+
+- **Status:** `ROOT_CAUSE` / T006 remains `PARTIAL`; T007 remains locked.
+- **First boundary:** no runtime failure was retried. The first unresolved
+  boundary is coverage: `Provider::serve` installs the production
+  `installNativeProtectedGrantFactory`, and `NativeProviderHandler` calls it
+  after Selection projection checks, but the current served-Provider C++
+  fixtures replace it with `testProtectedRuntimeFactory`. The standalone native
+  grant target checks credentials/transport/runtime directly and bypasses
+  Provider/Selection.
+- **Static finding:** the default factory is statically wired and fail-closed;
+  its real route-backed exact Data fetch and end-to-end Selection→grant→assembly
+  behavior are not yet observed. The transport owns a new `ndn::Face`, so a
+  LocalMock borrowed Face cannot prove it without a real NFD/route-backed fixture
+  or an explicitly accepted production transport dependency.
+- **Next Changed gate:** add one C++ production-wiring selector that does not
+  inject a protected factory, publishes/fetches the exact Selection-referenced
+  grant through the production transport, and asserts grant verification,
+  assembly/terminal and cleanup plus wrong-name/digest, expiry/revoke and
+  cancel/timeout negatives. No source or build change was made in B190-26.
+- **Validation:** static source/CodeGraph review only; compile-link/runtime and
+  dynamic validation were not run. The independent review-agent dispatch timed
+  out twice and was not counted as evidence.
+- **Evidence:** [B190-26](../specs/190-multiturn-latency/evidence/b190-26.md).
+
 ## 2026-09-23 — Spec190 B190-25 protected assembled cache across Provider exec
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
