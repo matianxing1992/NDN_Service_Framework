@@ -148,6 +148,68 @@ BOOST_AUTO_TEST_CASE(CloseRejectsLateLoaderPublication)
   }), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(CancelledCreatorLeavesResultToValidWaiter)
+{
+  auto cache = std::make_shared<OnnxRuntimeSessionCache>();
+  std::promise<void> loaderStarted;
+  auto started = loaderStarted.get_future();
+  std::promise<void> releaseLoader;
+  auto release = releaseLoader.get_future().share();
+  std::atomic<bool> creatorCancelled{false};
+  auto creator = std::async(std::launch::async, [&] {
+    return cache->acquire("creator-cancel", [&] {
+      loaderStarted.set_value();
+      release.wait();
+      return std::shared_ptr<void>(std::make_shared<int>(29));
+    }, std::chrono::steady_clock::time_point::max(), [&] {
+      return creatorCancelled.load();
+    });
+  });
+  started.wait();
+  auto waiter = std::async(std::launch::async, [&] {
+    return cache->acquire("creator-cancel", [] {
+      return std::shared_ptr<void>(std::make_shared<int>(31));
+    });
+  });
+  std::this_thread::sleep_for(2ms);
+  creatorCancelled.store(true);
+  releaseLoader.set_value();
+
+  BOOST_CHECK_THROW(creator.get(), std::runtime_error);
+  auto waiterLease = waiter.get();
+  BOOST_REQUIRE(waiterLease);
+  BOOST_CHECK_EQUAL(cache->counters().loads, 1);
+  BOOST_CHECK_EQUAL(cache->counters().activeLeases, 1);
+  waiterLease = {};
+  BOOST_CHECK(cache->drain(100ms));
+}
+
+BOOST_AUTO_TEST_CASE(CancelledCreatorDoesNotPublishWithoutWaiter)
+{
+  auto cache = std::make_shared<OnnxRuntimeSessionCache>();
+  std::promise<void> loaderStarted;
+  auto started = loaderStarted.get_future();
+  std::promise<void> releaseLoader;
+  auto release = releaseLoader.get_future().share();
+  std::atomic<bool> creatorCancelled{false};
+  auto creator = std::async(std::launch::async, [&] {
+    return cache->acquire("creator-cancelled-alone", [&] {
+      loaderStarted.set_value();
+      release.wait();
+      return std::shared_ptr<void>(std::make_shared<int>(37));
+    }, std::chrono::steady_clock::time_point::max(), [&] {
+      return creatorCancelled.load();
+    });
+  });
+  started.wait();
+  creatorCancelled.store(true);
+  releaseLoader.set_value();
+  BOOST_CHECK_THROW(creator.get(), std::runtime_error);
+  BOOST_CHECK_EQUAL(cache->counters().residentEntries, 0);
+  BOOST_CHECK_EQUAL(cache->counters().loads, 0);
+  BOOST_CHECK(cache->drain(100ms));
+}
+
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
 
 std::filesystem::path

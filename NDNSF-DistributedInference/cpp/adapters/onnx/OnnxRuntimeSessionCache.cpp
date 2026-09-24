@@ -265,21 +265,37 @@ OnnxRuntimeSessionCache::acquire(const std::string& identity,
       throw cacheError("DI_ONNX_SESSION_CACHE_LOAD_FAILED",
                        "loader returned an empty session");
     }
+    // The loader is deliberately not force-stopped: an ORT constructor may
+    // not be cancellable.  Its owner can nevertheless cancel its own lease
+    // while the load is in flight.  A remaining waiter may consume the
+    // immutable result; with no remaining waiter the result must not become a
+    // resident entry just because the loader finished late.
+    const bool creatorCancelled = (cancelled && cancelled()) ||
+      (deadline != Clock::time_point::max() && Clock::now() >= deadline);
     std::unique_lock<std::mutex> lock(shared->mutex);
-    const bool publish = !shared->closed && !job->cancelled && job->waiters != 0;
+    const bool hasOtherWaiter = job->waiters > 1;
+    const bool publish = !shared->closed && !job->cancelled && job->waiters != 0 &&
+      (!creatorCancelled || hasOtherWaiter);
     job->done = true;
     if (publish) {
       Shared::Entry entry;
       entry.value = value;
-      entry.activeLeases = 1;
+      entry.activeLeases = creatorCancelled ? 0 : 1;
       shared->entries.emplace(identity, std::move(entry));
-      ++shared->activeLeases;
+      if (!creatorCancelled) {
+        ++shared->activeLeases;
+      }
       ++shared->loads;
       if (job->waiters != 0) {
         --job->waiters;
       }
       shared->jobs.erase(identity);
       job->condition.notify_all();
+      if (creatorCancelled) {
+        lock.unlock();
+        throw cacheError("DI_ONNX_SESSION_CACHE_CANCELLED",
+                         "session load owner expired or cancelled");
+      }
       auto release = std::make_shared<Lease::Release>();
       release->shared = shared;
       release->identity = identity;
