@@ -148,6 +148,60 @@ BOOST_AUTO_TEST_CASE(CloseRejectsLateLoaderPublication)
   }), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(CloseRejectsCreatorAndWaiter)
+{
+  auto cache = std::make_shared<OnnxRuntimeSessionCache>();
+  std::promise<void> loaderStarted;
+  auto started = loaderStarted.get_future();
+  std::promise<void> releaseLoader;
+  auto release = releaseLoader.get_future().share();
+  auto creator = std::async(std::launch::async, [&] {
+    return cache->acquire("close-waiters", [&] {
+      loaderStarted.set_value();
+      release.wait();
+      return std::shared_ptr<void>(std::make_shared<int>(41));
+    });
+  });
+  started.wait();
+  auto waiterJoined = std::make_shared<std::promise<void>>();
+  auto waiterJoinedFuture = waiterJoined->get_future();
+  auto waiterCallbackEntered = std::make_shared<std::atomic<bool>>(false);
+  auto waiter = std::async(std::launch::async, [&] {
+    return cache->acquire(
+      "close-waiters", [] {
+        return std::shared_ptr<void>(std::make_shared<int>(43));
+      }, std::chrono::steady_clock::time_point::max(),
+      [waiterJoined, waiterCallbackEntered] {
+        if (!waiterCallbackEntered->exchange(true))
+          waiterJoined->set_value();
+        return false;
+      });
+  });
+  waiterJoinedFuture.wait();
+  cache->close();
+  releaseLoader.set_value();
+  BOOST_CHECK_THROW(creator.get(), std::runtime_error);
+  BOOST_CHECK_THROW(waiter.get(), std::runtime_error);
+  BOOST_CHECK_EQUAL(cache->counters().residentEntries, 0);
+  BOOST_CHECK(cache->drain(100ms));
+}
+
+BOOST_AUTO_TEST_CASE(EvictActiveEntryRejectsReplacement)
+{
+  OnnxRuntimeSessionCache cache(OnnxRuntimeSessionCache::Config{120s, 1});
+  auto lease = cache.acquire("active-eviction", [] {
+    return std::shared_ptr<void>(std::make_shared<int>(47));
+  });
+  BOOST_REQUIRE(lease);
+  BOOST_CHECK(cache.evict("active-eviction"));
+  BOOST_CHECK_THROW(cache.acquire("active-eviction", [] {
+    return std::shared_ptr<void>(std::make_shared<int>(53));
+  }), std::runtime_error);
+  lease = {};
+  BOOST_CHECK(!cache.evict("active-eviction"));
+  BOOST_CHECK(cache.drain(100ms));
+}
+
 BOOST_AUTO_TEST_CASE(CancelledCreatorLeavesResultToValidWaiter)
 {
   auto cache = std::make_shared<OnnxRuntimeSessionCache>();
@@ -348,6 +402,52 @@ BOOST_AUTO_TEST_CASE(ResidentOnnxSessionReusesLoadAndIsolatesRequests)
   cache->close();
   BOOST_CHECK_THROW(factory.create(spec), std::runtime_error);
   third.reset();
+  BOOST_CHECK(cache->drain(100ms));
+}
+
+BOOST_AUTO_TEST_CASE(ResidentOnnxSessionBypassesProtectedAndProfiling)
+{
+  const auto path = writeTinyOnnxFixture();
+  struct Cleanup
+  {
+    std::filesystem::path path;
+    ~Cleanup()
+    {
+      std::error_code error;
+      std::filesystem::remove(path, error);
+      std::filesystem::remove(path.string() + ".profile", error);
+    }
+  } cleanup{path};
+  std::ifstream input(path, std::ios::binary);
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
+  const auto modelDigest = sha256TensorBytes(bytes);
+  const auto spec = makeResidentSpec(path, modelDigest);
+  auto cache = std::make_shared<OnnxRuntimeSessionCache>();
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory, cache);
+  factory.freeze();
+
+  auto ordinary = factory.create(spec);
+  BOOST_REQUIRE(ordinary);
+  ordinary.reset();
+
+  auto protectedSpec = spec;
+  protectedSpec.metadata["encryptedArtifactPath"] = path.string();
+  auto protectedRunner = factory.create(protectedSpec);
+  BOOST_REQUIRE(protectedRunner);
+  protectedRunner.reset();
+
+  auto profiledSpec = spec;
+  profiledSpec.metadata["providerProfilePrefix"] = path.string() + ".profile";
+  auto profiledRunner = factory.create(profiledSpec);
+  BOOST_REQUIRE(profiledRunner);
+  profiledRunner.reset();
+
+  const auto counters = cache->counters();
+  BOOST_CHECK_EQUAL(counters.loads, 1);
+  BOOST_CHECK_EQUAL(counters.hits, 0);
+  BOOST_CHECK_EQUAL(counters.residentEntries, 1);
+  cache->close();
   BOOST_CHECK(cache->drain(100ms));
 }
 
