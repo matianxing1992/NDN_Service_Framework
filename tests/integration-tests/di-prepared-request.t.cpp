@@ -30,6 +30,8 @@
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 
+#include <ndn-cxx/security/signing-helpers.hpp>
+
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 
@@ -2329,25 +2331,28 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     return std::vector<std::uint8_t>(32, 0x77);
   };
   auto grantIssuer = std::make_shared<NativeArtifactGrantIssuer>(std::move(issuerConfig));
-  auto issuedGrants = std::make_shared<std::map<std::string, NativeKeyGrant>>();
-  auto issuedGrantsMutex = std::make_shared<std::mutex>();
-  NativeAuthenticatedGrantClient::Issue issue = [grantIssuer, issuedGrants,
-                                                   issuedGrantsMutex] (
+  auto publishedGrantWires = std::make_shared<std::map<std::string, std::string>>();
+  auto publishedGrantWiresMutex = std::make_shared<std::mutex>();
+  auto grantPublications = std::make_shared<std::atomic<unsigned>>(0);
+  NativeAuthenticatedGrantClient::Issue issue = [grantIssuer] (
     const NativeSignedGrantRequest& request, const std::string& publishedManifest,
     std::uint64_t expiresAtMs, const NativeGrantControl& control) {
     control.check();
     const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<
       std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     auto grant = grantIssuer->issue(request, nowMs, expiresAtMs, publishedManifest);
-    {
-      std::lock_guard<std::mutex> lock(*issuedGrantsMutex);
-      (*issuedGrants)[grant.grantDigest] = grant;
-    }
     return grant;
   };
-  NativeAuthenticatedGrantClient::Publish publish = [] (
-    const std::string& name, const std::string&, const NativeGrantControl& control) {
+  NativeAuthenticatedGrantClient::Publish publish = [publishedGrantWires,
+                                                       publishedGrantWiresMutex,
+                                                       grantPublications] (
+    const std::string& name, const std::string& wire, const NativeGrantControl& control) {
     control.check();
+    {
+      std::lock_guard<std::mutex> lock(*publishedGrantWiresMutex);
+      (*publishedGrantWires)[name] = wire;
+    }
+    grantPublications->fetch_add(1, std::memory_order_relaxed);
     return name;
   };
   auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
@@ -2407,21 +2412,105 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     "SPEC181_PROVIDER_RECIPIENT_KEY_MAP",
     (credentialsRoot / "recipients.json").c_str());
   auto exactGrantFetches = std::make_shared<std::atomic<unsigned>>(0);
-  auto protectedGrantFetcher = [issuedGrants, issuedGrantsMutex, exactGrantFetches] (
-    const std::string& name, int, const std::function<bool()>& cancelled) {
-    if (cancelled && cancelled())
-      throw std::runtime_error("Spec185 served Provider grant fetch cancelled");
-    NativeKeyGrant grant;
+  auto grantDataFetches = std::make_shared<std::atomic<unsigned>>(0);
+  auto grantInterestSignals = std::make_shared<std::atomic<unsigned>>(0);
+  auto grantFetchDispatches = std::make_shared<std::atomic<unsigned>>(0);
+  // Publish the grant through the Provider's actual borrowed Face and make
+  // the factory fetch it with an exact Interest.  Provider::startIo owns this
+  // Face's io_context, so both the producer relay and expressInterest are
+  // dispatched onto that owner instead of racing the handler worker.
+  auto grantInterestRelay = environment->providerFace().onSendInterest.connect(
+    [environment, publishedGrantWires, publishedGrantWiresMutex, grantDataFetches,
+     grantInterestSignals]
+    (const ndn::Interest& interest) {
+      std::string wire;
+      {
+        std::lock_guard<std::mutex> lock(*publishedGrantWiresMutex);
+        const auto found = publishedGrantWires->find(interest.getName().toUri());
+        if (found == publishedGrantWires->end())
+          return;
+        wire = found->second;
+      }
+      grantInterestSignals->fetch_add(1, std::memory_order_relaxed);
+      ndn::Data data(interest.getName());
+      data.setFreshnessPeriod(ndn::time::milliseconds(60'000));
+      data.setContent(ndn::Buffer(wire.begin(), wire.end()));
+      environment->keyChain().sign(data, ndn::security::signingByCertificate(
+        environment->provider().getSigningCertificateName()));
+      grantDataFetches->fetch_add(1, std::memory_order_relaxed);
+      environment->providerFace().getIoContext().post(
+        [environment, data = std::move(data)] {
+          environment->providerFace().receive(data);
+        });
+    });
+  auto protectedGrantFetcher = [environment, exactGrantFetches, grantFetchDispatches,
+                                grantPublications, grantInterestSignals, grantDataFetches] (
+    const std::string& name, int timeoutMs, const std::function<bool()>& cancelled) {
+    struct FetchState
     {
-      std::lock_guard<std::mutex> lock(*issuedGrantsMutex);
-      const auto found = std::find_if(issuedGrants->begin(), issuedGrants->end(),
-        [&name] (const auto& item) { return item.second.grantName == name; });
-      if (found == issuedGrants->end())
-        throw std::runtime_error("Spec185 served Provider exact grant publication missing");
-      grant = found->second;
+      std::mutex mutex;
+      std::condition_variable condition;
+      bool done = false;
+      bool received = false;
+      std::string payload;
+      ndn::PendingInterestHandle pending;
+    };
+    auto state = std::make_shared<FetchState>();
+    auto* face = &environment->providerFace();
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(std::max(1, timeoutMs));
+    grantFetchDispatches->fetch_add(1, std::memory_order_relaxed);
+    face->getIoContext().post([state, face, name] {
+      ndn::Interest interest{ndn::Name(name)};
+      interest.setCanBePrefix(false);
+      interest.setMustBeFresh(false);
+      interest.setInterestLifetime(ndn::time::milliseconds(500));
+      state->pending = face->expressInterest(interest,
+        [state, name] (const ndn::Interest&, const ndn::Data& data) {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          if (data.getName().toUri() == name && data.getContent().value_size() <= 65536) {
+            state->payload.assign(reinterpret_cast<const char*>(data.getContent().value()),
+                                  data.getContent().value_size());
+            state->received = true;
+          }
+          state->done = true;
+          state->condition.notify_all();
+        },
+        [state] (const ndn::Interest&, const ndn::lp::Nack&) {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->done = true;
+          state->condition.notify_all();
+        },
+        [state] (const ndn::Interest&) {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->done = true;
+          state->condition.notify_all();
+        });
+    });
+    std::unique_lock<std::mutex> lock(state->mutex);
+    while (!state->done) {
+      if (cancelled && cancelled()) {
+        face->getIoContext().post([state] { state->pending.cancel(); });
+        throw std::runtime_error("Spec185 served Provider grant fetch cancelled");
+      }
+      if (state->condition.wait_until(lock, deadline) == std::cv_status::timeout)
+        break;
+    }
+    if (!state->done || !state->received) {
+      face->getIoContext().post([state] { state->pending.cancel(); });
+      throw std::runtime_error(
+        "Spec185 served Provider exact grant Data fetch failed" +
+        std::string(" publications=") + std::to_string(
+          grantPublications->load(std::memory_order_relaxed)) +
+        " dispatches=" + std::to_string(
+          grantFetchDispatches->load(std::memory_order_relaxed)) +
+        " exactInterests=" + std::to_string(
+          grantInterestSignals->load(std::memory_order_relaxed)) +
+        " data=" + std::to_string(
+          grantDataFetches->load(std::memory_order_relaxed)));
     }
     exactGrantFetches->fetch_add(1, std::memory_order_relaxed);
-    return grant.wireJson;
+    return state->payload;
   };
   auto ackHandler = [offerConfig] (const ndn_service_framework::RequestMessage& request) {
     const auto payload = request.getPayload();
@@ -2477,6 +2566,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK(!result.planDigest.empty());
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
   BOOST_CHECK(exactGrantFetches->load(std::memory_order_relaxed) > 0U);
+  BOOST_CHECK(grantDataFetches->load(std::memory_order_relaxed) > 0U);
   const auto counters = facade.counters();
   BOOST_CHECK_EQUAL(counters.assemblies, 1U);
   BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
