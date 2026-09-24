@@ -5,6 +5,20 @@
 
 ## Current Checkpoint
 
+2026-09-23 20:03 -05:00：B190-21 已完成 native protected assembled ciphertext reuse gate。
+冷组装现在把密文持久化到由 `recipeDigest + roleAssemblySpecDigest + keyReferenceDigest`
+确定的稳定目录；新授权 lookup 只返回密文 descriptor，Provider 在当前授权 runtime 下解密到
+新的 request-scoped plaintext staging。C++ 回归覆盖稳定路径命中、无重复 source fetch、实际
+解密、错误 key-reference/AAD 拒绝，以及独立 grant 不共享内存 runner 但复用同一合法密文；普通
+根 `build/` 的 `spec185-provider-assembly` 为 110/110，assembly worker 为 6/6，相关 4 个
+selector 和完整 21 cases 通过，新 selector 连续 3 次通过。既有独立-grant 回归的旧“必须二次
+冷组装”断言已改为验证内存 runner 隔离与 durable ciphertext 复用。
+T006 仍 `PARTIAL`：真实 OS restart/decrypt serving、在线 Controller confirmation、grant/
+Selection/placement rebinding、revoke invalidation、精确 missing-object fetch、manifest
+signature/tamper boundary 和真实 Qwen/MiniNDN 未观测；T007 继续锁定。详见
+[B190-21](evidence/b190-21.md)。下一 gate 是 Core/Provider 跨进程 key-reference/serving
+恢复与真实 placement fetch，再决定是否进入 T007。
+
 2026-09-23 19:34 -05:00：B190-20 已完成 policy-transition protected-serving fence。新增
 `ControllerVersion` service-scoped retirement、pending publication/final reference commit
 fence、protected response read-side fence 和 durable V2 fail-closed/rebind；C++ oracle 已覆盖
@@ -13,9 +27,9 @@ publication 在版本推进后返回 `DURABLE_STALE_CONTROLLER_VERSION`。普通
 `spec189-encrypted-repo` 为 120/120 compile-link，完整 10 cases 通过并连续 3 次重复通过。
 T006 仍 `PARTIAL`：真实 OS restart/decrypt serving、在线 Controller confirmation、grant/
 Selection/placement rebinding、Provider/assembled hit、精确 missing-object fetch 和真实
-Qwen/MiniNDN 未观测；protected assembler miss 保持，T007 继续锁定。详见
-[B190-20](evidence/b190-20.md)。下一 gate 是 T006 剩余 Core durable restart/authorization
-binding，再进入 Provider/assembled hit 审查。
+Qwen/MiniNDN 未观测；protected assembler hit 尚未具备完整跨进程资格。详见
+[B190-20](evidence/b190-20.md)。下一 gate 是 B190-21 后的 Core durable
+restart/authorization binding 与 Provider/assembled 跨进程审查。
 
 2026-09-23 18:45 -05:00：B190-19 完成 T006 全局静态审查。独立复核发现不能直接把
 “删除 `.dkr` reference”当作撤销修复：必须先区分首次 status restore 与真正版本推进，

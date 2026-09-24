@@ -99,7 +99,9 @@ withNativeArtifactDirectoryFinalization(const std::string& directory,
  * manifest.json records the post-assembly model SHA-256. Both identities are
  * checked before a hit is returned. Missing, stale, or corrupt entries return
  * nullopt and leave the normal fetch/assembly path available. Protected
- * artifacts remain request scoped.
+ * entries retain only authenticated ciphertext under a key-reference-bound
+ * stable directory; the current grant/Selection still authorizes each hit and
+ * Provider creates request-scoped plaintext staging.
  */
 std::optional<NativeModelRunnerSpec>
 tryLoadNativeCanonicalOnnxRoleFromCache(

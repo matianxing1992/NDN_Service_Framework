@@ -170,8 +170,11 @@ ServiceUser 同进程 serving re-registration；B190-18 又增加了 Core-owned�
 记录及缺失/损坏 reference 的 fail-closed 检查。该记录不保存 plaintext、private key、完整
 grant/request 或会话 KV，也不让 Repo 生成或解包密钥。B190-18 的 restart selector 仍是同一
 测试 owner 内的 User close/reopen，不是完整 OS 进程重启或真实 Provider 解密 serving。
-跨进程 key/reference recovery、当前 grant/Selection/placement rebinding、revoke invalidation、
-稳定 protected assembled lookup 和 Provider hit 仍是后续 T006 gate。
+稳定 protected assembled lookup 和 Provider hit 已由 B190-21 部分推进：native assembler
+现在持久化 key-reference-bound ciphertext，Provider 可在新授权 lookup 后重新打开并解密，
+但不共享 grant-bound 的内存 runner。跨进程 key/reference recovery、当前
+grant/Selection/placement rebinding、revoke invalidation 和精确 missing-object fetch
+仍是后续 T006 gate。
 
 只要其中任一 owner、reference、serving 或新 grant 绑定失败，结果就是 typed miss/rejection，
 而不是把“Repo 里还有文件”报告成 protected hit。实现必须先以 C++ 反例验证这组不变量，之后才可

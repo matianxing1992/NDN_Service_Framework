@@ -1,5 +1,32 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-21 protected assembled ciphertext reuse
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
+- **First boundary:** the protected assembled lookup was previously forced to
+  miss, and cold assembly's final protected directory was request-owned. After
+  enabling a durable lookup, the Provider also needed to distinguish a
+  ciphertext descriptor from a plaintext path before creating request staging.
+- **Repair:** use a stable `recipe + role assembly-spec + key-reference` path
+  for the encrypted assembled entry; validate the protected manifest and
+  current runtime; return no plaintext path from lookup; decrypt only into a
+  private request-scoped staging directory; keep the in-memory runner cache
+  grant-bound. The existing independent-grant test was updated after static
+  inspection showed that the intended behavior is separate runners with shared
+  key-reference-bound ciphertext, not two cold assemblies.
+- **Validation:** ordinary root `build/` `spec185-provider-assembly` rebuilt
+  `110/110`; `di-native-assembly-worker` rebuilt `6/6`; the new protected-hit
+  selector passed once and three times consecutively; three existing protected
+  selectors and the complete 21-case target passed.
+- **Unobserved:** OS Provider restart/key-reference recovery, online Controller
+  confirmation, grant/Selection/placement rebinding, revoke invalidation,
+  precise missing-object fetch, manifest tamper/signature qualification and
+  real Qwen/MiniNDN remain open. ASan/UBSan are deferred by scope.
+- **Changed gate:** the native protected assembled path is now conditionally
+  reusable only with an authorized current runtime and authenticated ciphertext;
+  plaintext remains request-scoped. This is a partial gate, not complete T006.
+- **Evidence:** [B190-21](../specs/190-multiturn-latency/evidence/b190-21.md).
+
 ## 2026-09-23 — Spec190 B190-20 policy-transition protected-serving fence
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.

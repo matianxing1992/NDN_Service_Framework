@@ -1,5 +1,23 @@
 # Spec 设计变更记录
 
+## Spec190 native protected assembled ciphertext reuse — 2026-09-23
+
+- **Status**: `PARTIAL`；B190-21 只闭合 native assembled cache 的稳定密文路径和
+  Provider 当前进程解密，不把 T006 写成完整 protected reuse，也不解锁 T007。
+- **Delta**: 普通 protected assembled entry 由 `recipeDigest`、role assembly-spec
+  digest 和 opaque key-reference digest 寻址；持久目录只保留 authenticated ciphertext
+  与 manifest，lookup 返回 descriptor，Provider 在当前 `ProtectedRuntime` 下建立新的
+  request-scoped plaintext staging。内存 runner/artifact cache 仍按 grant identity 隔离。
+  request ID、attempt、旧 grant、Provider boot 和 KV 不进入 durable assembled identity。
+- **Boundary**: 这不是公共 API 或 wire schema 变更。C++ regression 已证明稳定路径命中、
+  实际解密、错误 key-reference/AAD 拒绝和 independent-grant runner 隔离；尚未证明 OS
+  restart/key-reference recovery、在线 Controller、grant/Selection/placement rebinding、
+  revoke invalidation、精确 missing-object fetch、manifest tamper qualification 或真实
+  Qwen/MiniNDN。
+- **Evidence**: [B190-21](../specs/190-multiturn-latency/evidence/b190-21.md)；普通根
+  `build/` 的 affected target 与 assembly worker compile/link，以及完整 21-case C++ target
+  均通过。
+
 ## Spec190 Core-owned protected reference recovery — 2026-09-23
 
 - **Status**: `PARTIAL`；B190-18 只推进 T006 的 Core durable reference recovery，不解除
