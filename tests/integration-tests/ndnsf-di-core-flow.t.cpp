@@ -5055,7 +5055,9 @@ struct Spec175NativeTinyStreamResult
   std::vector<std::size_t> fullPrefixControlInputExtents;
   std::size_t conversationReceipts = 0;
   std::size_t conversationCommitAcks = 0;
+  std::size_t conversationRollbackAcks = 0;
   std::size_t conversationControlsPublished = 0;
+  bool conversationCommitAckDropped = false;
   std::string conversationControlError;
 };
 
@@ -5082,6 +5084,7 @@ enum class Spec190NativeConversationFault
   None,
   CommitAndFinalize,
   LostFinalize,
+  CommitAckLoss,
   WrongRole,
   Malformed,
   NoControl,
@@ -5846,6 +5849,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   BOOST_REQUIRE_EQUAL(recoveryRequestId.size(), 1U);
   std::optional<test::RequestScope> requestScope;
   auto retentionExpirations = std::make_shared<std::atomic_size_t>(0);
+  auto conversationCommitAckDropped = std::make_shared<std::atomic<bool>>(false);
   test::FaultProfile transportFaults;
   switch (caseOptions.fault) {
     case Spec175NativeTinyFault::ReorderEvent3After4:
@@ -5887,6 +5891,24 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       transportFaults.tamperStreamDataCursor = 1;
       transportFaults.tamperStreamDataCount = 1;
       break;
+  }
+  if (caseOptions.conversationFault == Spec190NativeConversationFault::CommitAckLoss) {
+    const auto droppedProvider =
+      environment.provider(roleProviderIndex.back()).getName();
+    environment.provider(roleProviderIndex.back())
+      .setCollaborationPublicationInterceptorForTest(
+        [droppedProvider, conversationCommitAckDropped] (const ndn::Name& dataName) {
+          const auto parsed = parseCollaborationDataName(dataName);
+          if (!parsed || parsed->producerName != droppedProvider ||
+              parsed->keyScope != "ndnsf-di-conversation-state-v1" ||
+              parsed->topic != ndn::Name("/ndnsf-di/conversation/commit")) {
+            return true;
+          }
+          if (!conversationCommitAckDropped->exchange(true)) {
+            return false;
+          }
+          return true;
+        });
   }
   const auto samplingDigest = std::string("sha256:") +
     "1750001000000000000000000000000000000000000000000000000000000000";
@@ -6251,7 +6273,14 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     handlerConfig.maxSegmentSize = 4096;
     handlerConfig.freshnessMs = 60000;
     if (conversationRequest) {
-      handlerConfig.fetchTimeoutMs = 2000;
+      // The requester waits up to 5 s for the complete COMMIT ACK set and
+      // then publishes compensating ROLLBACK controls.  Only that fault needs
+      // the longer Provider control window; the normal and lost-FINALIZE
+      // fixtures retain the 2 s baseline so their stream terminal budget is
+      // not changed.
+      handlerConfig.fetchTimeoutMs =
+        caseOptions.conversationFault ==
+            Spec190NativeConversationFault::CommitAckLoss ? 6000 : 2000;
     }
     handlerConfig.enableNativeEpochCoordinator = true;
     handlerConfig.maxGenerationEpochs = maxGenerationEpochs;
@@ -6708,6 +6737,16 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     streamOptions.maxEventRetries = 1;
     streamOptions.interestLifetimeMs = 1000;
   }
+  if (conversationRequest) {
+    if (caseOptions.conversationFault ==
+        Spec190NativeConversationFault::CommitAckLoss) {
+      // The requester waits up to 5 s for the complete COMMIT ACK set before
+      // publishing compensating ROLLBACK controls.  Keep event recovery open
+      // for that fault without extending the normal lost-FINALIZE path.
+      streamOptions.interestLifetimeMs = 1000;
+      streamOptions.maxEventRetries = 8;
+    }
+  }
   {
     ndn::Buffer generation(sizeof(streamOptions.generationId));
     ndn::random::generateSecureBytes(
@@ -6723,7 +6762,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       std::chrono::system_clock::now().time_since_epoch()).count();
     streamOptions.deadlineEpochMs = static_cast<std::uint64_t>(now - 1);
   }
-  if (caseOptions.fault != Spec175NativeTinyFault::None) {
+  if (caseOptions.fault != Spec175NativeTinyFault::None ||
+      caseOptions.conversationFault != Spec190NativeConversationFault::None) {
     requestScope = environment.beginRequest(requestId.toUri(), transportFaults);
   }
   bool replacementStarted = false;
@@ -6866,6 +6906,7 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
               publishControl(receipt, "COMMIT", role, true);
               break;
             case Spec190NativeConversationFault::LostFinalize:
+            case Spec190NativeConversationFault::CommitAckLoss:
             case Spec190NativeConversationFault::None:
             case Spec190NativeConversationFault::CommitAndFinalize:
               publishControl(receipt, "COMMIT", role, false);
@@ -6888,6 +6929,20 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         result.conversationCommitAcks = commitAcks.size();
         if (commitAcks.size() != providerCount) {
           result.conversationControlError = "conversation commit ack set incomplete";
+          if (caseOptions.conversationFault ==
+              Spec190NativeConversationFault::CommitAckLoss) {
+            for (const auto& record : receipts) {
+              const auto receipt = nativeParseJson(std::string(
+                record.payload.begin(), record.payload.end()));
+              publishControl(receipt, "ROLLBACK",
+                             receipt.value("roleName", std::string{}), false);
+            }
+            const auto rollbackAcks = environment.user().waitForVerifiedCollaborationData(
+              requestId, "ndnsf-di-conversation-state-v1",
+              ndn::Name("/ndnsf-di/conversation/rollback"), providerCount,
+              5000, true);
+            result.conversationRollbackAcks = rollbackAcks.size();
+          }
           conversationControllerFinished->store(true, std::memory_order_release);
           return;
         }
@@ -6915,7 +6970,15 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   const auto returnedRequestId = environment.user().BeginCollaboration(
     serviceName, requestPayload, 1000, 8000,
     [&] (const CollaborationAckClosure& closure) { commitPlan(closure); },
-    [&] (const ResponseMessage&) {},
+    [&] (const ResponseMessage& response) {
+      if (response.getStatus()) {
+        result.completed = true;
+      }
+      else {
+        result.failed = true;
+        result.error = response.getErrorInfo();
+      }
+    },
     [&] (const ndn::Name&) { result.timedOut = true; },
     requestId,
     CollaborationAckCoverageHandler(),
@@ -7087,6 +7150,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   result.providerFailures =
     providerFailures->load(std::memory_order_relaxed);
   result.bridgeStats = environment.bridgeStats();
+  result.conversationCommitAckDropped =
+    conversationCommitAckDropped->load(std::memory_order_acquire);
   result.retentionSuppressions =
     retentionSuppressions->load(std::memory_order_relaxed);
   result.retentionExpirations =
@@ -7138,6 +7203,10 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   finalProvider.setStreamRetentionInterceptorForTest({});
   finalProvider.setStreamRetentionExpiryObserverForTest({});
   finalProvider.setStreamPublicationInterceptorForTest({});
+  if (caseOptions.conversationFault == Spec190NativeConversationFault::CommitAckLoss) {
+    environment.provider(roleProviderIndex.back())
+      .setCollaborationPublicationInterceptorForTest({});
+  }
   if (requestScope) {
     environment.flushReorderedPackets();
     environment.updateRequestResidue(*requestScope, {});
@@ -7180,6 +7249,7 @@ BOOST_AUTO_TEST_CASE(Spec190ProductionConversationControlsCommitAndFinalize)
                     << " failed=" << result.failed
                     << " receipts=" << result.conversationReceipts
                     << " commitAcks=" << result.conversationCommitAcks
+                    << " rollbackAcks=" << result.conversationRollbackAcks
                     << " controls=" << result.conversationControlsPublished
                     << " error=" << result.error
                     << " controllerError=" << result.conversationControlError);
@@ -7204,6 +7274,7 @@ BOOST_AUTO_TEST_CASE(Spec190ProductionConversationLostFinalizeRetainsCommittedSt
                     << " failed=" << result.failed
                     << " receipts=" << result.conversationReceipts
                     << " commitAcks=" << result.conversationCommitAcks
+                    << " rollbackAcks=" << result.conversationRollbackAcks
                     << " controls=" << result.conversationControlsPublished
                     << " error=" << result.error);
   BOOST_REQUIRE(result.ackClosed);
@@ -7213,6 +7284,35 @@ BOOST_AUTO_TEST_CASE(Spec190ProductionConversationLostFinalizeRetainsCommittedSt
   BOOST_REQUIRE_EQUAL(result.conversationReceipts, 2U);
   BOOST_REQUIRE_EQUAL(result.conversationCommitAcks, 2U);
   BOOST_REQUIRE_EQUAL(result.conversationControlsPublished, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec190ProductionConversationOneSidedCommitAckLossRollsBack)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "spec190-production-one-sided-commit-ack-loss";
+  options.conversationFault = Spec190NativeConversationFault::CommitAckLoss;
+  const auto result = runSpec175NativeTinyMultiProviderCase(2, std::move(options));
+  BOOST_TEST_MESSAGE("Spec190 production one-sided commit-ack-loss completed="
+                    << result.completed
+                    << " failed=" << result.failed
+                    << " receipts=" << result.conversationReceipts
+                    << " commitAcks=" << result.conversationCommitAcks
+                    << " rollbackAcks=" << result.conversationRollbackAcks
+                    << " controls=" << result.conversationControlsPublished
+                    << " dropped=" << result.conversationCommitAckDropped
+                    << " error=" << result.error
+                    << " controllerError=" << result.conversationControlError);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.completed);
+  BOOST_REQUIRE(result.failed);
+  BOOST_REQUIRE_EQUAL(result.conversationReceipts, 2U);
+  BOOST_REQUIRE_EQUAL(result.conversationCommitAcks, 1U);
+  BOOST_REQUIRE_EQUAL(result.conversationRollbackAcks, 2U);
+  BOOST_REQUIRE_EQUAL(result.conversationControlsPublished, 4U);
+  BOOST_REQUIRE(result.conversationCommitAckDropped);
+  BOOST_REQUIRE_EQUAL(result.conversationControlError,
+                      "conversation commit ack set incomplete");
 }
 
 BOOST_AUTO_TEST_CASE(Spec190ProductionConversationRejectsWrongRoleControl)

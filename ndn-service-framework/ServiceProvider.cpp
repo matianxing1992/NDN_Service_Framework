@@ -1778,6 +1778,14 @@ namespace ndn_service_framework
     }
 
     void
+    ServiceProvider::setCollaborationPublicationInterceptorForTest(
+        CollaborationPublicationInterceptorForTest interceptor)
+    {
+        std::lock_guard<std::mutex> lock(m_collaborationPublicationInterceptorMutex);
+        m_collaborationPublicationInterceptorForTest = std::move(interceptor);
+    }
+
+    void
     ServiceProvider::setStreamRetentionInterceptorForTest(
         StreamRetentionInterceptorForTest interceptor)
     {
@@ -6783,6 +6791,17 @@ namespace ndn_service_framework
                                      << " provider=" << identity.toUri()
                                      << " requestId=" << requestId.toUri()
                                      << " dataName=" << name.toUri());
+                    }
+                    CollaborationPublicationInterceptorForTest interceptor;
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            m_collaborationPublicationInterceptorMutex);
+                        interceptor = m_collaborationPublicationInterceptorForTest;
+                    }
+                    if (interceptor && !interceptor(name)) {
+                        NDN_LOG_INFO("NDNSF_COLLAB_TEST_PUBLICATION_SUPPRESSED name="
+                                     << name);
+                        return;
                     }
                     publishSvs(m_svsps, name, block);
                     if (collaborationAuthTrace) {

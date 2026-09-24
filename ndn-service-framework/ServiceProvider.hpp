@@ -615,6 +615,13 @@ namespace ndn_service_framework{
             using StreamPublicationInterceptorForTest =
                 std::function<bool(const ndn::Data& data)>;
 
+            /** Test-only hook at the encrypted collaboration publication
+             * boundary. Returning false suppresses the SVS publication after
+             * the real Provider has built the collaboration Data name and
+             * encrypted payload. */
+            using CollaborationPublicationInterceptorForTest =
+                std::function<bool(const ndn::Name& dataName)>;
+
             /** Test-only hook that can suppress retention before publication. */
             using StreamRetentionInterceptorForTest =
                 std::function<bool(const ndn::Data& data)>;
@@ -760,6 +767,8 @@ namespace ndn_service_framework{
             /** Install or clear the LocalMock streamed-event publication hook. */
             void setStreamPublicationInterceptorForTest(
                 StreamPublicationInterceptorForTest interceptor);
+            void setCollaborationPublicationInterceptorForTest(
+                CollaborationPublicationInterceptorForTest interceptor);
             void setStreamRetentionInterceptorForTest(
                 StreamRetentionInterceptorForTest interceptor);
             void setStreamRetentionExpiryObserverForTest(
@@ -1838,6 +1847,8 @@ namespace ndn_service_framework{
             StreamPublicationInterceptorForTest m_streamPublicationInterceptorForTest;
             StreamRetentionInterceptorForTest m_streamRetentionInterceptorForTest;
             StreamRetentionExpiryObserverForTest m_streamRetentionExpiryObserverForTest;
+            mutable std::mutex m_collaborationPublicationInterceptorMutex;
+            CollaborationPublicationInterceptorForTest m_collaborationPublicationInterceptorForTest;
             std::shared_ptr<MessageValidator> validator;
             std::vector<std::string> m_serviceNames;
 
