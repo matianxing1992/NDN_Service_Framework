@@ -1,5 +1,21 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-24 Provider production fetch/decrypt gate
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
+- **Changed gate:** the native `spec189-encrypted-repo` target now exercises a
+  durable Core envelope through production `ServiceProvider::fetchAndDecryptLargeData`,
+  including SegmentFetcher, wire decode, receive-key lookup, AES-GCM verification and
+  plaintext comparison.
+- **Validation:** ordinary root build `120/120`; the new selector passed three
+  consecutive times; the complete target passed `12/12`; Repo committed object count
+  stayed at `1`.
+- **Qualification boundary:** the current key is explicitly injected by the existing
+  C++ test hook. This closes only the Provider fetch/decrypt path, not OS Provider
+  restart, durable key recovery, NAC-ABE inline unwrap, current authorization
+  rebinding, revoke, or full T006.
+- **Evidence:** [B190-24](../specs/190-multiturn-latency/evidence/b190-24.md).
+
 ## 2026-09-23 — Spec190 B190-23 real OS exec-restart Core serving gate
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.

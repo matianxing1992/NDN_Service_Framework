@@ -578,6 +578,66 @@ BOOST_AUTO_TEST_CASE(DurablePublicationServesAfterExecRestart)
                     committedManifest.sha256);
 }
 
+BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
+{
+  ScopedEnvironmentValue fetchTimeout("NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS", "2000");
+  RepoFixture fixture;
+  auto store = std::make_shared<RepoEncryptedLargeDataStore>(fixture.repo);
+  const auto spool = (fixture.root / "spool").string();
+  const auto keyReferenceDir = (fixture.root / "key-references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue referenceDir("NDNSF_DURABLE_KEY_REFERENCE_DIR",
+                                      keyReferenceDir.c_str());
+  ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto userCertificate = makeRsaIdentity(
+    keys, ndn::Name("/spec189/provider-fetch-user"));
+  const auto providerCertificate = makeRsaIdentity(
+    keys, ndn::Name("/spec189/provider-fetch-node"));
+  const auto authority = makeRsaIdentity(
+    keys, ndn::Name("/spec189/provider-fetch-authority"));
+  InspectingUser user(face, ndn::Name("/spec189/provider-fetch"),
+                      userCertificate, authority, "examples/trust-any.conf");
+  user.useSigningKeyChainForSigningOnlyForTest(keys);
+  user.attachLocalMockPubSubForTest(pubsub(face, keys));
+  user.setEncryptedLargeDataRangeStore(store);
+  user.init();
+  face.processEvents(ndn::time::milliseconds(1));
+
+  const ndn::Name service("/spec189/provider-fetch-model");
+  const auto sendKey = user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+  const std::vector<std::uint8_t> plaintext(40000, 0x63);
+  LargeDataPublishOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "sha256:" + std::string(64, 'd');
+  const auto publication = user.publishEncryptedLargeData(
+    user.prepareServiceRequest(service.toUri()), plaintext, "model-material",
+    ndn::time::milliseconds(60000), true, options);
+  BOOST_REQUIRE_MESSAGE(publication.success, publication.errorMessage);
+  BOOST_REQUIRE(publication.fileBacked);
+  BOOST_REQUIRE_EQUAL(fixture.repo->list().size(), 1U);
+
+  LocalServiceProvider provider(face, ndn::Name("/spec189/provider-fetch"),
+                                providerCertificate, authority,
+                                "examples/trust-any.conf");
+  provider.useSigningKeyChainForTest(keys);
+  // This is an explicit current-key fixture, not a recovered old grant or KV.
+  // The selector therefore proves the production fetch/decrypt path only.
+  provider.cacheHybridReceiveKeyForTest(sendKey.keyId, sendKey.epochId, sendKey.key);
+  auto pending = std::async(std::launch::async, [&] {
+    return provider.fetchAndDecryptLargeData(publication.encryptedDataName,
+                                             service.toUri());
+  });
+  while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+    face.processEvents(ndn::time::milliseconds(1));
+  }
+  const auto fetched = pending.get();
+  BOOST_REQUIRE_MESSAGE(fetched.success, fetched.errorMessage);
+  BOOST_CHECK_EQUAL_COLLECTIONS(fetched.plaintext.begin(), fetched.plaintext.end(),
+                                plaintext.begin(), plaintext.end());
+  BOOST_CHECK_EQUAL(fixture.repo->list().size(), 1U);
+}
+
 BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRetiresOnlyOlderServiceOwner)
 {
   RepoFixture fixture;
