@@ -146,7 +146,8 @@ public:
     std::shared_ptr<NativeModelRunnerFactory> runnerFactory,
     NativeProviderHandlerConfig::RunnerPreparationFactory preparationFactory,
     NativeProviderHandlerConfig::ProtectedRuntimeFactory protectedRuntimeFactory = {},
-    ndn_service_framework::ServiceProvider::AckStrategyHandler ackHandler = {});
+    ndn_service_framework::ServiceProvider::AckStrategyHandler ackHandler = {},
+    NativeProviderHandlerConfig::ProtectedGrantFetcher protectedGrantFetcher = {});
 #endif
 
 private:
