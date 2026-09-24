@@ -1951,6 +1951,8 @@ main(int argc, char** argv)
                   if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
                         projection, assemblyOptions)) {
                     spec = *cached;
+                    materializeNativeCanonicalOnnxCacheHit(
+                      spec, projection, assemblyOptions);
                     logProviderPreparationProgress(projection, "CACHE_LOOKUP_HIT",
                                                    "recipe-addressed");
                   }

@@ -110,6 +110,18 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const std::string& canonicalSourceName = {},
   const std::string& canonicalSourceDigest = {});
 
+/**
+ * Materialize the request-scoped plaintext for a protected assembled-cache
+ * hit.  Cache lookup deliberately returns only the authenticated ciphertext
+ * descriptor; this helper binds the current ProtectedRuntime, decrypts into
+ * private staging, and fills the runner path before runner validation.
+ */
+void
+materializeNativeCanonicalOnnxCacheHit(
+  NativeModelRunnerSpec& spec,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options);
+
 NativeModelRunnerSpec
 prepareNativeCanonicalOnnxRole(
   const NativeCanonicalOnnxFetchers& fetchers,

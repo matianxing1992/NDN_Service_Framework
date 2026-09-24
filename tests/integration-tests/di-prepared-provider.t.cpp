@@ -1799,7 +1799,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
   options.protectedRuntime->complete();
 
   options.protectedRuntime = makeRuntime();
-  const auto hot = tryLoadNativeCanonicalOnnxRoleFromCache(
+  auto hot = tryLoadNativeCanonicalOnnxRoleFromCache(
     projection, options, sourceName.toUri(), sourceDigest);
   BOOST_REQUIRE(hot);
   BOOST_CHECK(hot->path.empty());
@@ -1809,30 +1809,24 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
   BOOST_CHECK_EQUAL(rootFetches.load(std::memory_order_relaxed), 1U);
   BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
 
-  const auto plaintextDir = std::filesystem::path(cacheDir) / ".staging" / "hot-test";
-  std::filesystem::create_directories(plaintextDir);
-  std::filesystem::permissions(
-    plaintextDir, std::filesystem::perms::owner_all,
-    std::filesystem::perm_options::replace);
-  registerNativePlaintextDirectory(*options.protectedRuntime, plaintextDir, "spec190-hot");
+  materializeNativeCanonicalOnnxCacheHit(*hot, projection, options);
+  BOOST_REQUIRE(std::filesystem::is_regular_file(hot->path));
+  const auto plaintextDir = std::filesystem::path(hot->path).parent_path();
   const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
   const NativeAssembledEntryContext context{
     rootDigest, roleAssemblySpecDigest,
     providerAssemblyDigest(std::vector<std::uint8_t>(profile.begin(), profile.end())),
     "MODEL_PROTO", options.protectedRuntime->keyReference()->digest()};
-  options.protectedRuntime->withContentKey(now, [&] (const auto& key) {
-    const auto digest = openNativeAssembledEntryToFile(
-      key, ciphertextPath, plaintextDir / "model.onnx", context,
-      projection.assembly.maxAssembledBytes, hot->metadata.at("encryptedArtifactDigest"));
-    BOOST_CHECK_EQUAL(digest, hot->metadata.at("encryptedArtifactDigest"));
-  });
-  const auto plaintext = providerAssemblyRead(plaintextDir / "model.onnx");
+  const auto hotNow = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto plaintext = providerAssemblyRead(hot->path);
   BOOST_CHECK_EQUAL(providerAssemblyDigest(plaintext), hot->metadata.at("assembledModelDigest"));
 
   auto wrongContext = context;
   wrongContext.keyReferenceDigest = zeroDigest('f');
   BOOST_CHECK_THROW(
-    options.protectedRuntime->withContentKey(now, [&] (const auto& key) {
+    options.protectedRuntime->withContentKey(hotNow, [&] (const auto& key) {
       (void)openNativeAssembledEntryToFile(
         key, ciphertextPath, plaintextDir / "wrong.onnx", wrongContext,
         projection.assembly.maxAssembledBytes, hot->metadata.at("encryptedArtifactDigest"));

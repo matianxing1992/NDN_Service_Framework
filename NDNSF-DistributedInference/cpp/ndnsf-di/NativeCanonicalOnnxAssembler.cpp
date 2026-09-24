@@ -936,6 +936,65 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   return std::nullopt;
 }
 
+void
+materializeNativeCanonicalOnnxCacheHit(
+  NativeModelRunnerSpec& spec,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options)
+{
+  if (!spec.path.empty())
+    return;
+  const auto encryptedPath = spec.metadata.find("encryptedArtifactPath");
+  if (encryptedPath == spec.metadata.end() || encryptedPath->second.empty())
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_HIT_PATH_MISSING");
+  if (!options.protectedRuntime)
+    throw std::runtime_error("DI_PROTECTED_RUNTIME_UNAVAILABLE_FOR_CACHE_HIT");
+  const auto keyReference = options.protectedRuntime->keyReference();
+  if (!keyReference)
+    throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
+
+  const auto ciphertextPath = std::filesystem::path(encryptedPath->second);
+  requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, ciphertextPath);
+  if (!std::filesystem::is_regular_file(ciphertextPath))
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CIPHERTEXT_UNAVAILABLE");
+
+  const auto staging = makeStagingDirectory(std::filesystem::path(options.cacheDir));
+  try {
+    registerNativePlaintextDirectory(
+      *options.protectedRuntime, staging,
+      "cache-hit-" + staging.filename().string());
+    const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
+    const NativeAssembledEntryContext context{
+      projection.assembly.modelManifestDigest,
+      options.roleAssemblySpecDigest,
+      sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())),
+      "MODEL_PROTO",
+      keyReference->digest()};
+    const auto expectedDigest = spec.metadata.find("encryptedArtifactDigest");
+    std::string actualDigest;
+    options.protectedRuntime->withContentKey(nowMs(), [&] (const auto& key) {
+      actualDigest = openNativeAssembledEntryToFile(
+        key, ciphertextPath, staging / "model.onnx", context,
+        projection.assembly.maxAssembledBytes,
+        expectedDigest == spec.metadata.end() ? std::string{} : expectedDigest->second);
+    });
+    if (expectedDigest != spec.metadata.end() && actualDigest != expectedDigest->second)
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_CIPHERTEXT_DIGEST_MISMATCH");
+    spec.metadata["encryptedArtifactPath"] = ciphertextPath.string();
+    spec.path = (staging / "model.onnx").string();
+  }
+  catch (...) {
+    try {
+      options.protectedRuntime->cancel("native assembled cache-hit materialization failed");
+    }
+    catch (...) {
+      // Preserve the materialization failure; ProtectedRuntime still owns the
+      // best-effort zeroization boundary for the registered staging lease.
+    }
+    throw;
+  }
+}
+
 namespace {
 
 struct NativeAssemblyArtifactDirectoryOwner
