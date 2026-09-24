@@ -421,8 +421,9 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "fallback source exceeds preparation limit");
       return ndnsf::di::NativeCanonicalSource{repoPayload, std::nullopt};
-    });
+  });
   config.repositorySourceProvider = sourceOwner;
+  config.repositoryArtifactPublisher = sourceOwner;
   // A repository-backed configuration deliberately has no local source
   // locator.  Runtime::open must accept the pinned identity and defer all
   // bytes to the configured owner.
@@ -482,14 +483,17 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
     }
   } fixtureIo(fixtureFace);
 
-  const auto requesterKey = testEd25519Key('r');
-  auto grants = std::make_shared<ndnsf::di::NativeAuthenticatedGrantClient>(
-    "/user", requesterKey, "/aa", std::string(32, 'a'), "epoch-1",
-    [] (const ndnsf::di::NativeSignedGrantRequest&, const std::string&, std::uint64_t,
-        const ndnsf::di::NativeGrantControl&) { return ndnsf::di::NativeKeyGrant{}; },
-    [] (const std::string&, const std::string&, const ndnsf::di::NativeGrantControl&) {
-      return std::string("/fixture/grant");
-    });
+  const auto makeGrants = [] {
+    const auto requesterKey = testEd25519Key('r');
+    return std::make_shared<ndnsf::di::NativeAuthenticatedGrantClient>(
+      "/user", requesterKey, "/aa", std::string(32, 'a'), "epoch-1",
+      [] (const ndnsf::di::NativeSignedGrantRequest&, const std::string&, std::uint64_t,
+          const ndnsf::di::NativeGrantControl&) { return ndnsf::di::NativeKeyGrant{}; },
+      [] (const std::string&, const std::string&, const ndnsf::di::NativeGrantControl&) {
+        return std::string("/fixture/grant");
+      });
+  };
+  auto grants = makeGrants();
   std::ifstream configInput(configPath);
   ndnsf::di::NativeJson runtimeJson;
   configInput >> runtimeJson;
@@ -507,7 +511,7 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   // destruction releases Runtime/ServiceUser before Face and KeyChain.
   auto runtime = Runtime::open(config);
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
-    runtime, fixtureUser, std::move(grants), std::move(admission));
+    runtime, fixtureUser, std::move(grants), admission);
   auto prepared = runtime->user().prepare();
   const auto ownerStats = sourceOwner->stats();
   BOOST_CHECK_EQUAL(ownerStats.lookups, 1U);
@@ -519,6 +523,7 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   BOOST_CHECK_EQUAL(prepared.manifest().taskName, "task");
   BOOST_CHECK_EQUAL(prepared.manifest().canonicalGraphDigest, files.canonicalGraphDigest);
   BOOST_CHECK(prepared.receipt().origin == ndnsf::di::PreparationReceipt::Origin::Fetched);
+  BOOST_CHECK_EQUAL(sourceOwner->stats().publicationCalls, 1U);
   ndnsf::di::PrepareOptions invalid;
   invalid.timeout = std::chrono::milliseconds(-1);
   BOOST_CHECK_EXCEPTION(runtime->user().prepare("default", invalid), DiError,
@@ -548,15 +553,28 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   unsupportedRuntime->close();
   BOOST_CHECK(unsupportedRuntime->drain(std::chrono::seconds(2)));
 
-  auto asyncHandle = runtime->user().prepareAsync();
+  runtime->close();
+  BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
+
+  // A fresh Runtime has no in-memory preparation entry.  Its async public
+  // entry must therefore use the same committed-publication lookup as the
+  // blocking entry, instead of reloading source bytes and calling publish.
+  auto asyncRuntime = Runtime::open(config);
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    asyncRuntime, fixtureUser, makeGrants(), admission);
+  auto asyncHandle = asyncRuntime->user().prepareAsync();
   auto asyncPrepared = asyncHandle.result(std::chrono::seconds(5));
   BOOST_CHECK(asyncHandle.status() == ndnsf::di::PreparationStatus::Ready);
   BOOST_CHECK_EQUAL(asyncPrepared.manifest().modelName, "yolo26n");
   const auto finalOwnerStats = sourceOwner->stats();
-  BOOST_CHECK_EQUAL(finalOwnerStats.lookups, 1U);
+  // The current lookup path still performs the bounded source read needed to
+  // reconstruct the native catalog; the important reuse invariant here is no
+  // second publication/ingest after the prepared receipt is found.
+  BOOST_CHECK_EQUAL(finalOwnerStats.lookups, 2U);
   BOOST_CHECK_EQUAL(finalOwnerStats.missIngests, 1U);
-  runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
+  BOOST_CHECK_EQUAL(finalOwnerStats.publicationCalls, 1U);
+  asyncRuntime->close();
+  BOOST_CHECK(asyncRuntime->drain(std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_CASE(InvalidRuntimeLimitsAndProfileFailClosed)

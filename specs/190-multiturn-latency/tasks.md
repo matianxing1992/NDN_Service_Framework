@@ -5,6 +5,16 @@
 
 ## Current Checkpoint
 
+2026-09-23 21:32 -05:00：B190-30 完成 T005 的异步入口纠偏。全链路静态复审发现同步
+`User::prepare()` 已设置 `lookupPrepared`，但 `User::prepareAsync()` 漏掉同一 closure，
+新 Runtime 的异步准备会绕过 committed receipt 并再次进入 publication 路径。现在两个入口
+使用相同的 bounded/deadline-aware Repo lookup；C++ fresh-Runtime selector 以同一
+`RepoSourceProvider` 同时作为 source/publisher，验证首轮 `publicationCalls=1`、第二个
+Runtime 的 `prepareAsync()` 完成后仍为 `publicationCalls=1`、`missIngests=1`，独立重复
+3 次通过。当前 lookup 命中后仍有一次有界 source read 用于 native catalog 重建，未宣称
+零读取。T005 保持 `[x]`，T006 继续 `PARTIAL`，T007 继续锁定。详见
+[B190-30](evidence/b190-30.md)。
+
 2026-09-23 21:36 -05:00：B190-29 在 B190-28 已通过的 served-Provider 默认
 protected-grant selector 上补齐 exact missing-grant negative。首次运行因测试
 代码在把 fetcher `std::move` 进 Provider 后再次调用 moved-from lambda 而发生
@@ -1145,6 +1155,9 @@ examples/DI_NativeRequester.cpp、tests/wscript；不重做通用logging框架�
 **Steps**：已有首写/复用回归扩到真正close-reopen→完整identity/key冲突反例→小manifest先查的native快路径→miss才bounded publish/root-last，命中保留rollbackOwned=false→复审/构建/定向测试。
 **Acceptance**：`RepoLookupReuse`第二run STORE/新payload/materialization计数0；请求元数据/本地hash读另计；同source不同initializer/profile/layer不可错误命中；缺子对象只补缺失；unauthorized/conflict/unavailable不当miss盲写；lookup/publish竞争、取消不删他人已提交对象，误清理旧run材料反例必须失败。
 **Exit**：native canonical复用通过，不据此声明protected密文/网络serving复用已实现。B190-10 事务故障矩阵通过；sanitizer deferred by user scope。
+
+**Current Checkpoint**：异步 `User::prepareAsync()` 已通过与同步入口一致的
+`lookupPrepared` C++ 回归，见 [B190-30](evidence/b190-30.md)。
 
 ## Phase 6: T006
 

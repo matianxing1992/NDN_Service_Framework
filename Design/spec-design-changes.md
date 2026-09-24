@@ -1,5 +1,19 @@
 # Spec 设计变更记录
 
+## Spec190 async prepare Repo lookup parity — 2026-09-23
+
+- **Status**: `NO_DESIGN_CHANGE`；B190-30 修正 T005 公开异步入口与既有 CD-08
+  契约的不一致，T006 仍 `PARTIAL`。
+- **Delta**: `User::prepareAsync()` 现在与同步 `User::prepare()` 一样，在 source
+  load/publication 前调用可选的 bounded `lookupPrepared`。命中仍要求当前 catalog
+  和 receipt 校验；没有改变 publication identity、Repo wire、授权或 public API。
+- **Boundary**: 当前命中后仍会做一次有界 source read 以重建 native catalog；这不是
+  第二次 STORE/ingest，也不等同于 protected material/network zero-byte qualification。
+  T006 的 current grant、Selection/placement、Provider restart 和 real route 仍未闭合。
+- **Evidence**: [B190-30](../specs/190-multiturn-latency/evidence/b190-30.md)；affected
+  C++ target compile/link passed，fresh-Runtime async selector 独立 3 次通过；当前/目标
+  PDF 无语义变化，不刷新 PDF。
+
 ## Spec190 Face-backed exact protected grant fixture — 2026-09-23
 
 - **Status**: `PARTIAL` / `NO_DESIGN_CHANGE`；B190-28 只修正 T006 C++ fixture

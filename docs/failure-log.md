@@ -1,5 +1,28 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-30 async prepare Repo lookup parity
+
+- **Status:** `ADVANCE` for the T005 async-entry correction; T005 remains complete,
+  T006 remains `PARTIAL` and T007 remains locked.
+- **First boundary:** static review found that synchronous `User::prepare()` wired
+  `RepositorySourceProvider::lookupPrepared`, while `User::prepareAsync()` did not.
+  A fresh async Runtime could therefore bypass the committed receipt and reach the
+  source/publication path again. The first selector after the code repair used only a
+  source provider, so its `publicationCalls=0` could not prove Repo reuse; that fixture
+  boundary is preserved under `.codex-tmp/spec190-b190-30-async-lookup-r1/`.
+- **Changed gate:** the async entry now installs the same bounded, deadline-aware
+  lookup closure as the blocking entry. The C++ fixture injects one
+  `RepoSourceProvider` as both source provider and artifact publisher; after closing
+  the first Runtime, a fresh Runtime's `prepareAsync()` completes without a second
+  publication/ingest (`publicationCalls=1`, `missIngests=1`).
+- **Validation:** `spec185-runtime` compile-link passed; the named C++ selector passed
+  independently three times. A bounded source read remains part of native catalog
+  reconstruction and is not claimed as zero-byte material traffic.
+- **Qualification boundary:** this closes only async/sync Repo lookup parity. Protected
+  material reuse, real NFD/MiniNDN, grant/Selection/placement rebinding, revoke,
+  Provider restart serving, exact missing-layer fetch and real Qwen remain open.
+- **Evidence:** [B190-30](../specs/190-multiturn-latency/evidence/b190-30.md).
+
 ## 2026-09-23 — Spec190 B190-29 exact missing-grant negative
 
 - **Status:** `ADVANCE` for the T006 exact-grant negative sub-gate; T006 remains
