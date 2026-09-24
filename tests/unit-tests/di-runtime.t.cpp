@@ -17,6 +17,7 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
@@ -524,6 +525,7 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   BOOST_CHECK_EQUAL(prepared.manifest().canonicalGraphDigest, files.canonicalGraphDigest);
   BOOST_CHECK(prepared.receipt().origin == ndnsf::di::PreparationReceipt::Origin::Fetched);
   BOOST_CHECK_EQUAL(sourceOwner->stats().publicationCalls, 1U);
+
   ndnsf::di::PrepareOptions invalid;
   invalid.timeout = std::chrono::milliseconds(-1);
   BOOST_CHECK_EXCEPTION(runtime->user().prepare("default", invalid), DiError,
@@ -556,9 +558,46 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   runtime->close();
   BOOST_REQUIRE(runtime->drain(std::chrono::seconds(2)));
 
-  // A fresh Runtime has no in-memory preparation entry.  Its async public
-  // entry must therefore use the same committed-publication lookup as the
-  // blocking entry, instead of reloading source bytes and calling publish.
+  // Freeze the committed publication only after the original Runtime has
+  // drained. Remove exactly one child, then verify that a fresh production
+  // prepare observes a partial receipt before the existing source/publication
+  // owners repair it. The root is never removed or rewritten; this is the
+  // T005 handoff that the direct Repo unit test cannot observe through
+  // ModelPreparationCache.
+  const auto beforeRepair = repo->list();
+  BOOST_REQUIRE(!beforeRepair.empty());
+  const auto findObjectWithSuffix = [&] (const char* suffix) {
+    const std::string marker(suffix);
+    for (const auto& manifest : beforeRepair) {
+      if (manifest.objectName.size() >= marker.size() &&
+          manifest.objectName.compare(manifest.objectName.size() - marker.size(),
+                                      marker.size(), marker) == 0)
+        return manifest.objectName;
+    }
+    return std::string{};
+  };
+  const auto sourceName = findObjectWithSuffix("/source");
+  const auto rootName = findObjectWithSuffix("/manifest");
+  BOOST_REQUIRE(!sourceName.empty());
+  BOOST_REQUIRE(!rootName.empty());
+  const auto rootBeforeRepair = repo->getManifest(rootName);
+  BOOST_REQUIRE(repo->remove(sourceName));
+  BOOST_CHECK(!repo->has(sourceName));
+
+  const auto catalogJson = ndnsf::di::nativeCanonicalJson(runtimeJson.at("catalog"));
+  auto partial = sourceOwner->lookupPrepared({
+    "default", "/Inference", catalogJson, config.maxPreparedBytes,
+    std::chrono::steady_clock::now() + std::chrono::seconds(5)});
+  BOOST_REQUIRE(partial);
+  BOOST_CHECK_EQUAL(partial->rootDataName, rootName);
+  BOOST_REQUIRE(partial->materialManifest);
+  BOOST_CHECK(!partial->materialManifest->payloadsComplete);
+  BOOST_REQUIRE_EQUAL(partial->missingDataNames.size(), 1U);
+  BOOST_CHECK_EQUAL(partial->missingDataNames.front(), sourceName);
+
+  // A fresh Runtime has no in-memory preparation entry. Its async public
+  // entry must therefore use the same partial-publication lookup, restore the
+  // missing child, and retain the unchanged root and existing objects.
   auto asyncRuntime = Runtime::open(config);
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
     asyncRuntime, fixtureUser, makeGrants(), admission);
@@ -566,13 +605,34 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   auto asyncPrepared = asyncHandle.result(std::chrono::seconds(5));
   BOOST_CHECK(asyncHandle.status() == ndnsf::di::PreparationStatus::Ready);
   BOOST_CHECK_EQUAL(asyncPrepared.manifest().modelName, "yolo26n");
+  const auto afterRepair = repo->list();
+  BOOST_REQUIRE_EQUAL(afterRepair.size(), beforeRepair.size());
+  BOOST_CHECK(repo->has(sourceName));
+  BOOST_CHECK_EQUAL(repo->getManifest(rootName).sha256, rootBeforeRepair.sha256);
+  for (const auto& before : beforeRepair) {
+    const auto found = std::find_if(afterRepair.begin(), afterRepair.end(),
+      [&before] (const auto& current) {
+        return current.objectName == before.objectName;
+      });
+    BOOST_REQUIRE(found != afterRepair.end());
+    BOOST_CHECK_EQUAL(found->objectType, before.objectType);
+    BOOST_CHECK_EQUAL(found->sha256, before.sha256);
+    BOOST_CHECK_EQUAL(found->size, before.size);
+    BOOST_CHECK_EQUAL(found->segmentCount, before.segmentCount);
+    if (before.objectName != sourceName)
+      BOOST_CHECK_EQUAL(found->operationId, before.operationId);
+  }
   const auto finalOwnerStats = sourceOwner->stats();
-  // The current lookup path still performs the bounded source read needed to
-  // reconstruct the native catalog; the important reuse invariant here is no
-  // second publication/ingest after the prepared receipt is found.
+  // The partial lookup causes one bounded source reconstruction and one
+  // publication repair check. No unrelated Repo object is recreated or
+  // rewritten.
   BOOST_CHECK_EQUAL(finalOwnerStats.lookups, 2U);
+  // The canonical /fixture/source object remains present; only its prepared
+  // publication child was removed, so source loading does not perform a
+  // second fallback ingest.
   BOOST_CHECK_EQUAL(finalOwnerStats.missIngests, 1U);
-  BOOST_CHECK_EQUAL(finalOwnerStats.publicationCalls, 1U);
+  BOOST_CHECK_EQUAL(finalOwnerStats.publicationCalls, 2U);
+  BOOST_CHECK_EQUAL(finalOwnerStats.publicationHits, 0U);
   asyncRuntime->close();
   BOOST_CHECK(asyncRuntime->drain(std::chrono::seconds(2)));
 }

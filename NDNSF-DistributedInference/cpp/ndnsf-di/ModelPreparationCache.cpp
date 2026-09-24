@@ -432,7 +432,13 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
   const bool publicationRepairRequired = preparedPublication &&
     !preparedPublication->missingDataNames.empty();
   NativeCanonicalSource source = spec.loadSource(spec, deadline);
-  if (preparedPublication && preparedPublication->materialManifest)
+  // A Repo hit normally carries a reference-only material index so a
+  // complete hit can avoid material payload reads.  A partial publication is
+  // different: the publisher must receive a complete manifest in order to
+  // validate and repair the missing objects.  Let NativeRequestCatalog derive
+  // that complete manifest from the bounded canonical source in this case.
+  if (preparedPublication && preparedPublication->materialManifest &&
+      (!publicationRepairRequired || preparedPublication->materialManifest->payloadsComplete))
     source.materialManifest = preparedPublication->materialManifest;
   requireActive(deadline, spec.cancelled);
   if (source.modelBytes.empty() || source.modelBytes.size() > spec.maxSourceBytes)
