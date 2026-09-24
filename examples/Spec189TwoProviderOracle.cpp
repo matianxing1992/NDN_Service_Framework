@@ -292,6 +292,107 @@ validateProvider(const std::filesystem::path& path,
   terminalSeen = terminalSeen || terminal;
 }
 
+void validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility,
+                           bool emitPass);
+NativeJson validateMultiTokenOutput(const std::filesystem::path& root, unsigned round,
+                                    bool requireMultiToken);
+
+void
+validateRevocationFailure(const std::filesystem::path& root)
+{
+  // Reuse the normal production-path checks for the successful first round;
+  // this mode adds the C++ assertion for the expected post-revocation stop.
+  const auto firstRequester = readFile(root / "requester-0.log");
+  const auto firstSuccesses = recordsContaining(firstRequester, "NATIVE_REQUEST_SUCCEEDED");
+  const auto firstCommits = recordsContaining(
+    firstRequester, "NDNSF_DI_NATIVE_SELECTION_COMMITTED");
+  if (firstSuccesses.size() != 1 || firstCommits.size() != 1) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=FIRST_ROUND_IDENTITY reason=success-or-commit-missing-or-duplicate");
+  }
+  const auto firstSuccess = firstSuccesses.front();
+  const auto firstCommit = firstCommits.front();
+  const auto firstRequestId = field(firstSuccess, "request");
+  const auto firstPlanDigest = field(firstSuccess, "plan");
+  const auto firstCommitRequestId = field(firstCommit, "requestId");
+  const auto firstCommitPlanDigest = field(firstCommit, "planDigest");
+  const auto firstAttemptEpoch = field(firstCommit, "attemptEpoch");
+  if (firstRequestId.empty() || firstPlanDigest.empty() ||
+      firstCommitRequestId != firstRequestId || firstCommitPlanDigest != firstPlanDigest ||
+      firstAttemptEpoch.empty()) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=FIRST_ROUND_IDENTITY reason=success-commit-mismatch");
+  }
+  validatePlacementOnly(root, false, false);
+  const auto generationText = readFile(root / "controller.log");
+  const auto applied = recordsContaining(
+    generationText, "NDNSF_REVOCATION_APPLIED success=1");
+  const auto triggered = recordsContaining(
+    generationText, "NDNSF_REVOCATION_TRIGGERED");
+  if (applied.size() != 1 || triggered.size() != 1) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=REVOCATION reason=controller-marker-missing-or-duplicate");
+  }
+  const auto appliedLine = lineContaining(generationText, applied.front());
+  const auto triggeredLine = lineContaining(generationText, triggered.front());
+  const auto generation = field(applied.front(), "generation");
+  const auto epoch = field(applied.front(), "epoch");
+  const auto isPositiveInteger = [](const std::string& value) {
+    return !value.empty() && value.find_first_not_of("0123456789") == std::string::npos &&
+      std::stoull(value) > 0;
+  };
+  if (appliedLine == 0 || triggeredLine == 0 || appliedLine >= triggeredLine ||
+      !isPositiveInteger(generation) || !isPositiveInteger(epoch)) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=REVOCATION reason=controller-marker-order-or-version-invalid");
+  }
+
+  const auto continuation = readFile(root / "requester-revoked.log");
+  const auto preparationFailures = recordsContaining(
+    continuation,
+    "NATIVE_REQUEST_STAGE_FAILED code=PREPARATION_FAILED boundary=preparation");
+  if (preparationFailures.size() != 1 ||
+      continuation.find("PROTECTED_CONTROLLER_VERSION_UNAVAILABLE") == std::string::npos ||
+      continuation.find("NATIVE_REQUEST_SUCCEEDED") != std::string::npos) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=REVOCATION reason=continuation-not-fail-closed");
+  }
+
+  std::string requestId = firstRequestId;
+  std::string planDigest = firstPlanDigest;
+  bool terminalSeen = false;
+  for (unsigned provider = 0; provider < 2; ++provider) {
+    const auto path = root / ("provider-" + std::to_string(provider) + ".log");
+    const auto text = readFile(path);
+    if (recordsContaining(text, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED").size() != 1 ||
+        recordsContaining(text, "stage=ASSEMBLY_STARTED").size() != 1 ||
+        recordsContaining(text, "stage=RUNNER_READY").size() != 1 ||
+        recordsContaining(text, "stage=EXECUTION_COMPLETED").size() != 1) {
+      throw std::runtime_error(
+        "SPEC189_CPP_ORACLE_FAIL boundary=REVOCATION reason=provider-execution-after-revoke log=" +
+        path.string());
+    }
+    validateProvider(path, "/example/ndnsf-qwen06b/provider-" + std::to_string(provider),
+                     requestId, planDigest, terminalSeen);
+  }
+  if (!terminalSeen) {
+    throw std::runtime_error(
+      "SPEC189_CPP_ORACLE_FAIL boundary=REVOCATION reason=first-round-terminal-missing");
+  }
+  const auto generationResult = validateMultiTokenOutput(root, 0, true);
+  auto pass = NativeJson::object();
+  pass["scope"] = "t007-resident-revocation";
+  pass["controllerGeneration"] = generation;
+  pass["controllerEpoch"] = epoch;
+  pass["requestId"] = requestId;
+  pass["providers"] = 2;
+  pass["continuationBoundary"] = "PREPARATION_FAILED";
+  pass["generatedTokens"] = generationResult.at("generatedTokens");
+  std::cout << "SPEC189_CPP_REVOCATION_FAIL_CLOSED_PASS "
+            << ndnsf::di::nativeCanonicalJson(pass)
+            << '\n';
+}
+
 void
 validateCacheCompatibilityMode(const std::filesystem::path& root, unsigned round = 0)
 {
@@ -673,10 +774,11 @@ main(int argc, char** argv)
 {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: " << argv[0]
-              << " [--placement-only | --cache-compatibility] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n";
+              << " [--placement-only | --cache-compatibility | --expect-revocation-failure] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n";
     return 0;
   }
-  bool placementOnly = false, cacheCompatibility = false, multiToken = false, invalidOptions = false;
+  bool placementOnly = false, cacheCompatibility = false, expectedRevocationFailure = false,
+       multiToken = false, invalidOptions = false;
   unsigned rounds = 1;
   bool roundsSeen = false;
   const char* runRootArg = nullptr;
@@ -684,6 +786,8 @@ main(int argc, char** argv)
     const std::string option(argv[i]);
     if (option == "--placement-only" && !placementOnly) placementOnly = true;
     else if (option == "--cache-compatibility" && !cacheCompatibility) cacheCompatibility = true;
+    else if (option == "--expect-revocation-failure" && !expectedRevocationFailure)
+      expectedRevocationFailure = true;
     else if (option == "--require-multi-token" && !multiToken) multiToken = true;
     else if (option == "--run-root" && !runRootArg && i + 1 < argc) runRootArg = argv[++i];
     else if (option == "--rounds" && !roundsSeen && i + 1 < argc) {
@@ -694,13 +798,19 @@ main(int argc, char** argv)
     }
     else invalidOptions = true;
   }
-  if (runRootArg == nullptr || invalidOptions || (placementOnly && (cacheCompatibility || multiToken || rounds > 1))) {
+  if (runRootArg == nullptr || invalidOptions ||
+      (placementOnly && (cacheCompatibility || expectedRevocationFailure || multiToken || rounds > 1)) ||
+      (expectedRevocationFailure && (placementOnly || cacheCompatibility || multiToken || roundsSeen))) {
     std::cerr << "usage: " << argv[0]
-              << " [--placement-only | --cache-compatibility] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n";
+              << " [--placement-only | --cache-compatibility | --expect-revocation-failure] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n";
     return 2;
   }
   try {
     const auto root = std::filesystem::absolute(runRootArg);
+    if (expectedRevocationFailure) {
+      validateRevocationFailure(root);
+      return 0;
+    }
     if (rounds > 1) {
       auto receipt = validateRounds(root, rounds, cacheCompatibility, multiToken);
       if (cacheCompatibility) {

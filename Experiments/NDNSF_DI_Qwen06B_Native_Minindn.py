@@ -1204,6 +1204,27 @@ def run_cpp_oracle(binary: Path, run_root: Path, cache_compatibility: bool,
             "status": "CACHE_DIAGNOSTIC_PASS" if cache_compatibility else "PASS"}
 
 
+def run_cpp_revocation_oracle(binary: Path, run_root: Path, timeout: float) -> dict:
+    """Assert the expected post-revocation failure in the C++ production oracle."""
+    arguments = [str(binary), "--expect-revocation-failure", "--run-root", str(run_root)]
+    log = run_root / "spec189-cpp-revocation-oracle.log"
+    try:
+        with log.open("w") as handle:
+            result = subprocess.run(arguments, cwd=str(ROOT), stdout=handle,
+                                    stderr=subprocess.STDOUT, text=True,
+                                    timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"SPEC189_CPP_REVOCATION_ORACLE_FAIL boundary=timeout log={log}") from error
+    output = log.read_text(errors="replace")
+    marker = "SPEC189_CPP_REVOCATION_FAIL_CLOSED_PASS "
+    if (result.returncode != 0 or
+            not any(line.startswith(marker) for line in output.splitlines())):
+        raise RuntimeError(f"SPEC189_CPP_REVOCATION_ORACLE_FAIL rc={result.returncode}: {log}")
+    return {"binary": str(binary), "log": str(log), "returncode": result.returncode,
+            "scope": "t007-resident-revocation", "status": "PASS"}
+
+
 def continuation_config(first_config: dict, round_index: int, delta_ids: list[int]) -> dict:
     """Wire each requester to its immediate parent; native code owns validation."""
     if not 1 <= round_index < MAX_QWEN_ROUNDS:
@@ -2479,6 +2500,8 @@ def main(argv=None, *, _supervised=False) -> int:
                 raise RuntimeError(
                     "revoked continuation reached a Provider execution stage: " +
                     json.dumps(provider_execution_after_revoke, sort_keys=True))
+            oracle_record = run_cpp_revocation_oracle(
+                oracle_binary, run_root, max(30.0, args.startup_timeout_s))
             first_output = requester_dir / "output-0.bin"
             round_records = [{"round": 0, "returncode": first_proc.returncode,
                               "log": str(run_root / "requester-0.log"),
@@ -2550,10 +2573,7 @@ def main(argv=None, *, _supervised=False) -> int:
             round_records.append({"round": "negative-parent", "returncode": proc.returncode, "log": str(log)})
         # Every round crosses the observation barrier; the C++ oracle checks
         # each request identity, generation result, and chained KV checkpoint.
-        if args.revoke_after_first_round:
-            oracle_record = {"scope": "revocation-expected-failure",
-                             "status": "NOT_RUN"}
-        else:
+        if not args.revoke_after_first_round:
             oracle_record = run_cpp_oracle(oracle_binary, run_root,
                                           args.cache_compatibility_mode,
                                           max(30.0, args.startup_timeout_s), args.require_multi_token,
@@ -2571,7 +2591,8 @@ def main(argv=None, *, _supervised=False) -> int:
                   "runtimeBudgets": runtime_budgets,
                   "rounds": round_records,
                   "cppOracle": oracle_record,
-                  "status": ("PARTIAL" if revocation_record is not None
+                  "status": ("PASS" if revocation_record is not None and
+                             oracle_record["status"] == "PASS"
                              else oracle_record["status"])}
         if revocation_record is not None:
             record["revocation"] = revocation_record
