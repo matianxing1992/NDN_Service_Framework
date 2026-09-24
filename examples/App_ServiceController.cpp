@@ -8,6 +8,8 @@
 #include <ndn-cxx/util/scheduler.hpp>
 
 #include <chrono>
+#include <filesystem>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -126,6 +128,7 @@ main(int argc, char** argv)
       getOption(argc, argv, "--controller-prefix", DEFAULT_CONTROLLER_PREFIX.toUri()));
     const auto revokeAfterMs = getIntegerOption(argc, argv, "--revoke-after-ms", -1);
     const auto revokeRetryAfterMs = getIntegerOption(argc, argv, "--revoke-retry-after-ms", -1);
+    const auto revokeTriggerFile = getOption(argc, argv, "--revoke-trigger-file", "");
     const auto runForMs = getIntegerOption(argc, argv, "--run-for-ms", 0);
     // Deterministic grant-only version advance (Spec179 MiniNDN gate): issue
     // one additional role-specific grant at a bounded offset while the global
@@ -138,9 +141,11 @@ main(int argc, char** argv)
     const auto grantRole = getOption(argc, argv, "--grant-additional-role", "user");
     if (grantRole != "user" && grantRole != "provider")
       throw std::invalid_argument("--grant-additional-role must be user or provider");
-    if (revokeAfterMs < -1 || runForMs < 0 || grantAfterMs < -1)
+    if (revokeAfterMs < -1 || runForMs < 0 || grantAfterMs < -1 ||
+        (revokeAfterMs >= 0 && !revokeTriggerFile.empty()) ||
+        (!revokeTriggerFile.empty() && revokeRetryAfterMs >= 0))
       throw std::invalid_argument(
-        "--revoke-after-ms/--run-for-ms/--grant-additional-after-ms must be >= 0 or omitted");
+        "--revoke-after-ms/--revoke-trigger-file/--run-for-ms/--grant-additional-after-ms have invalid combination");
     if (revokeRetryAfterMs < -1 ||
         (revokeRetryAfterMs >= 0 && (revokeAfterMs < 0 || revokeRetryAfterMs <= revokeAfterMs)))
       throw std::invalid_argument("--revoke-retry-after-ms must follow --revoke-after-ms");
@@ -188,7 +193,7 @@ main(int argc, char** argv)
     controller.setControllerPrefix(controllerPrefix);
     controller.setBootstrapTokenFile(bootstrapTokenFile);
 
-    if (revokeAfterMs >= 0) {
+    if (revokeAfterMs >= 0 || !revokeTriggerFile.empty()) {
       const auto kind = parseRevocationKind(
         getOption(argc, argv, "--revoke-kind", "identity"));
       ndn_service_framework::RevocationTarget target;
@@ -216,10 +221,54 @@ main(int argc, char** argv)
                     << " kind=" << static_cast<int>(target.kind)
                     << " generation=" << version.controllerGenerationTimestamp
                     << " epoch=" << version.controllerEpoch << std::endl;
+          return success;
         };
-      scheduler.schedule(ndn::time::milliseconds(revokeAfterMs), applyRevocation);
-      if (revokeRetryAfterMs >= 0)
-        scheduler.schedule(ndn::time::milliseconds(revokeRetryAfterMs), applyRevocation);
+      if (revokeAfterMs >= 0) {
+        scheduler.schedule(ndn::time::milliseconds(revokeAfterMs),
+          [&applyRevocation] { (void)applyRevocation(); });
+        if (revokeRetryAfterMs >= 0)
+          scheduler.schedule(ndn::time::milliseconds(revokeRetryAfterMs),
+            [&applyRevocation] { (void)applyRevocation(); });
+      }
+      else {
+        // A run-scoped trigger lets an integration harness place revocation
+        // after a verified request boundary without guessing Controller
+        // startup or model preparation time.  The normal timed path above is
+        // unchanged, and the trigger is consumed at most once.
+        const auto triggerPath = std::make_shared<std::filesystem::path>(revokeTriggerFile);
+        const auto applied = std::make_shared<bool>(false);
+        const auto poll = std::make_shared<std::function<void()>>();
+        *poll = [&scheduler, triggerPath, applied, poll, applyRevocation] {
+          if (*applied)
+            return;
+          std::error_code error;
+          const bool regular = std::filesystem::is_regular_file(*triggerPath, error);
+          if (error) {
+            std::cout << "NDNSF_REVOCATION_TRIGGER_ERROR code="
+                      << error.value() << std::endl;
+            scheduler.schedule(ndn::time::milliseconds(20), *poll);
+            return;
+          }
+          if (regular) {
+            const bool success = applyRevocation();
+            if (!success) {
+              // Keep the trigger pending so a transient generation/ABE failure
+              // can recover; never advertise a failed revoke as consumed.
+              std::cout << "NDNSF_REVOCATION_TRIGGER_FAILED" << std::endl;
+              scheduler.schedule(ndn::time::milliseconds(20), *poll);
+              return;
+            }
+            *applied = true;
+            // The callback owns itself only while waiting for the trigger;
+            // clear that owner after the one-shot action to avoid a cycle.
+            *poll = {};
+            std::cout << "NDNSF_REVOCATION_TRIGGERED" << std::endl;
+            return;
+          }
+          scheduler.schedule(ndn::time::milliseconds(20), *poll);
+        };
+        scheduler.schedule(ndn::time::milliseconds(20), *poll);
+      }
     }
 
     if (grantAfterMs >= 0) {

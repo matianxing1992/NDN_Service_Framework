@@ -1067,7 +1067,8 @@ def provider_terminal_failure(provider_logs: list[Path]) -> str | None:
     return None
 
 
-def purge_minindn_large_data_cache(nodes, run_root: Path) -> None:
+def purge_minindn_large_data_cache(nodes, run_root: Path,
+                                   trigger: str = "all-conversation-turns-complete") -> None:
     """Evict model/preparation data only after the complete request chain.
 
     The authenticated Repo remains the source of truth.  This only removes
@@ -1095,7 +1096,7 @@ def purge_minindn_large_data_cache(nodes, run_root: Path) -> None:
             records.append({"node": node.name, "prefix": prefix, "returncode": 0})
     (run_root / "ndn-cache-purge.json").write_text(
         json.dumps({"schema": "ndnsf-minindn-large-data-cache-purge-v1",
-                    "trigger": "all-conversation-turns-complete",
+                    "trigger": trigger,
                     "records": records}, indent=2, sort_keys=True) + "\n")
     print("NDNSF_MININDN_LARGE_DATA_CACHE_PURGED " +
           json.dumps({"nodes": len(nodes), "prefixes": list(prefixes)}, sort_keys=True),
@@ -1240,6 +1241,37 @@ def snapshot_provider_logs(provider_logs: list[Path]) -> dict:
                 partial = stream.read(1) != b"\n"
             result[path] = (stat.st_dev, stat.st_ino, stat.st_size, partial)
     return result
+
+
+def provider_log_delta(offsets: dict) -> dict[Path, str]:
+    """Read complete lines appended after a Provider log snapshot."""
+    result = {}
+    for path, (device, inode, offset, partial) in offsets.items():
+        with path.open("rb") as stream:
+            stat = os.fstat(stream.fileno())
+            if (stat.st_dev, stat.st_ino) != (device, inode) or stat.st_size < offset:
+                raise RuntimeError("Provider log replaced/truncated")
+            stream.seek(offset)
+            raw = stream.read()
+        if partial:
+            raw = raw.partition(b"\n")[2]
+        complete = raw[:raw.rfind(b"\n") + 1] if b"\n" in raw else b""
+        result[path] = complete.decode("utf-8", errors="strict")
+    return result
+
+
+def manifest_resident_session_values(payload) -> list[str]:
+    """Collect resident-session declarations from nested service artifacts."""
+    values = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key == "residentSession":
+                values.append(str(value).lower())
+            values.extend(manifest_resident_session_values(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            values.extend(manifest_resident_session_values(value))
+    return values
 
 
 def _round_fields(line: str, marker: str) -> dict | None:
@@ -1445,6 +1477,9 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--input-token-ids", default="")
     parser.add_argument("--delta-token-ids", default="0")
     parser.add_argument("--negative-parent", action="store_true")
+    parser.add_argument(
+        "--revoke-after-first-round", action="store_true",
+        help="after one successful resident round, revoke the user and require the continuation to fail closed")
     parser.add_argument("--routing-wait-s", "--nlsr-wait-s", dest="routing_wait_s",
                         type=float, default=8.0,
                         help="static-route settle wait; --nlsr-wait-s is a legacy alias")
@@ -1537,6 +1572,12 @@ def main(argv=None, *, _supervised=False) -> int:
         raise SystemExit("--rounds must be between 1 and 8")
     if args.negative_parent and args.rounds < 2:
         raise SystemExit("--negative-parent requires --rounds >= 2")
+    if args.revoke_after_first_round and args.rounds != 2:
+        raise SystemExit("--revoke-after-first-round requires --rounds 2")
+    if args.revoke_after_first_round and args.negative_parent:
+        raise SystemExit("--revoke-after-first-round cannot be combined with --negative-parent")
+    if args.revoke_after_first_round and not args.resident_session:
+        raise SystemExit("--revoke-after-first-round requires --resident-session")
     if args.max_new_tokens < 1 or args.max_new_tokens > MAX_NEW_TOKENS:
         raise SystemExit(
             f"--max-new-tokens must be between 1 and {MAX_NEW_TOKENS}")
@@ -2203,8 +2244,11 @@ def main(argv=None, *, _supervised=False) -> int:
         json.dumps(node_app_plan, indent=2, sort_keys=True) + "\n")
     processes = []
     provider_logs = []
+    ndn_started = False
+    cache_purge_completed = False
     try:
         ndn.start()
+        ndn_started = True
         AppManager(ndn, ndn.net.hosts, Nfd, csSize=MININDN_NFD_CS_SIZE,
                    logLevel="INFO")
         # Mini-NDN's upstream examples use Nlsr and NdnRoutingHelper as
@@ -2239,11 +2283,19 @@ def main(argv=None, *, _supervised=False) -> int:
         # repository-relative path.  MiniNDN launches commands from a host
         # namespace working directory, so make that dependency explicit while
         # keeping all generated run artifacts absolute and portable.
+        revoke_trigger_path = run_root / "controller-revoke.trigger" \
+            if args.revoke_after_first_round else None
+        controller_revoke_args = ""
+        if revoke_trigger_path is not None:
+            controller_revoke_args = (
+                f" --revoke-trigger-file {shlex.quote(str(revoke_trigger_path))}"
+                f" --revoke-kind identity --revoke-identity {shlex.quote(USER)}")
         controller_cmd = (f"cd {shlex.quote(str(ROOT))} && exec "
                           f"{shlex.quote(str(args.controller_binary.expanduser().resolve()))} "
                           f"--controller-prefix {shlex.quote(CONTROLLER)} --policy-file {shlex.quote(str(policy))} "
                           f"--ensure-identities {shlex.quote(AUTHORITY + ',' + ','.join(provider_names) + ',' + USER)} "
-                          f"--no-serve-certificates --run-for-ms {runtime_budgets['authority_run_ms']}")
+                          f"--no-serve-certificates{controller_revoke_args} "
+                          f"--run-for-ms {runtime_budgets['authority_run_ms']}")
         controller_proc, controller_log = start(args.controller_node, "controller", controller_cmd, authority_env)
         # The banner is emitted before Controller::start() enters its real
         # PUBPARAMS readiness probe.  Wait for that process to reach the
@@ -2304,38 +2356,187 @@ def main(argv=None, *, _supervised=False) -> int:
             return (f"{shlex.quote(str(requester_binary))} --config "
                     f"{shlex.quote(str(config_path))}"), launch_env
 
-        requester_cmd, requester_launch_env = requester_launch(requester_dir / "config.json")
+        revocation_record = None
+        requester_config = requester_dir / "config.json"
+        if args.revoke_after_first_round:
+            # Keep the production requester and continuation contract intact,
+            # but split the two process launches only for this deterministic
+            # revocation gate.  The second config reads the first process's
+            # authenticated checkpoint while Provider-owned resident state
+            # remains in the same Provider processes.
+            full_config = json.loads(requester_config.read_text())
+            first_config = json.loads(json.dumps(full_config))
+            first_config["turns"] = [full_config["turns"][0]]
+            first_config_path = requester_dir / "config-revoke-first.json"
+            first_config_path.write_text(
+                json.dumps(first_config, indent=2, sort_keys=True) + "\n")
+            continuation = json.loads(
+                (requester_dir / "config-1.json").read_text())
+            continuation["turns"] = [full_config["turns"][1]]
+            continuation_path = requester_dir / "config-revoke-continuation.json"
+            continuation_path.write_text(
+                json.dumps(continuation, indent=2, sort_keys=True) + "\n")
+            requester_cmd, requester_launch_env = requester_launch(first_config_path)
+        else:
+            requester_cmd, requester_launch_env = requester_launch(requester_config)
         placement = {log: (provider_names[index], stages[index]["role"])
                      for index, log in enumerate(provider_logs)}
         tail_role = stages[-1]["role"]
         round_deadline = time.monotonic() + runtime_budgets["process_timeout_s"]
         provider_offsets = snapshot_provider_logs(provider_logs)
         first_proc, first_log = start(args.user_node, "requester", requester_cmd, requester_launch_env)
-        first_text = wait_for_native_round(
-            first_proc, first_log, provider_logs,
-            max(0.0, round_deadline - time.monotonic()))
-        if (first_proc.returncode != 0 or
-                first_text.count("NATIVE_REQUEST_SUCCEEDED") != args.rounds or
-                (args.rounds > 1 and
-                 "NATIVE_CONVERSATION_TURNS_SUCCEEDED" not in first_text) or
-                first_text.count("NATIVE_CONVERSATION_TURN_COMPLETE") != args.rounds or
-                "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN" not in first_text):
-            raise RuntimeError(f"native Qwen turns failed: {first_log}")
-        turn_texts = split_native_turn_logs(first_text, args.rounds)
-        for round_index, turn_text in enumerate(turn_texts):
-            (run_root / f"requester-{round_index}.log").write_text(turn_text)
-        process_barrier = wait_for_provider_round_barrier(
-            turn_texts[-1], provider_offsets, placement, tail_role, round_deadline)
-        round_records = []
-        for round_index in range(args.rounds):
-            output_path = requester_dir / f"output-{round_index}.bin"
-            output_summary = validate_native_output(output_path)
-            round_records.append({"round": round_index, "returncode": first_proc.returncode,
-                                  "log": str(run_root / f"requester-{round_index}.log"),
-                                  "output": str(output_path),
-                                  "providerFinalization": process_barrier if round_index == args.rounds - 1 else {
-                                      "observation": "covered-by-final-process-barrier"},
-                                  **output_summary})
+        if args.revoke_after_first_round:
+            first_text = wait_for_native_round(
+                first_proc, first_log, provider_logs,
+                max(0.0, round_deadline - time.monotonic()))
+            if (first_proc.returncode != 0 or
+                    first_text.count("NATIVE_REQUEST_SUCCEEDED") != 1 or
+                    first_text.count("NATIVE_CONVERSATION_TURN_COMPLETE") != 1 or
+                    "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN" not in first_text):
+                raise RuntimeError(f"native Qwen first revocation round failed: {first_log}")
+            turn_texts = split_native_turn_logs(first_text, 1)
+            (run_root / "requester-0.log").write_text(turn_texts[0])
+            process_barrier = wait_for_provider_round_barrier(
+                turn_texts[0], provider_offsets, placement, tail_role, round_deadline)
+            first_provider_delta = provider_log_delta(provider_offsets)
+            resident_manifest_values = []
+            for directory in provider_dirs:
+                manifest = json.loads((directory / "manifest.json").read_text())
+                resident_manifest_values.extend(manifest_resident_session_values(manifest))
+            resident_runner_ready = all(
+                "phase=CACHE_LOOKUP_HIT" in text and
+                "stage=RUNNER_READY" in text
+                for text in first_provider_delta.values())
+            resident_session_bound = (
+                bool(resident_manifest_values) and
+                all(value == "true" for value in resident_manifest_values) and
+                resident_runner_ready)
+            if not resident_session_bound:
+                raise RuntimeError(
+                    "resident-session evidence missing manifest opt-in, cache hit, or RUNNER_READY")
+            if revoke_trigger_path is None:
+                raise RuntimeError("revocation trigger path was not initialized")
+            revoke_trigger_path.write_text("spec190-revoke-after-first-round\n")
+            revoke_trigger_path.chmod(0o600)
+            wait_for_marker(controller_proc, controller_log,
+                            ("NDNSF_REVOCATION_APPLIED success=1",),
+                            args.startup_timeout_s + 60.0)
+            controller_text = controller_log.read_text(errors="replace")
+            if "NDNSF_REVOCATION_TRIGGERED" not in controller_text:
+                raise RuntimeError("controller revocation trigger was not consumed")
+            revoke_matches = re.findall(
+                r"NDNSF_REVOCATION_APPLIED success=1 kind=(\d+) "
+                r"generation=(\d+) epoch=(\d+)", controller_text)
+            if len(revoke_matches) != 1:
+                raise RuntimeError("controller revocation generation/epoch evidence is ambiguous")
+            revoke_kind, revoke_generation, revoke_epoch = revoke_matches[0]
+
+            continuation_provider_offsets = snapshot_provider_logs(provider_logs)
+            continuation_cmd, continuation_env = requester_launch(continuation_path)
+            continuation_proc, continuation_log = start(
+                args.user_node, "requester-revoked", continuation_cmd, continuation_env)
+            continuation_deadline = time.monotonic() + max(
+                60.0, args.startup_timeout_s + 120.0)
+            while continuation_proc.poll() is None and time.monotonic() < continuation_deadline:
+                time.sleep(0.2)
+            if continuation_proc.poll() is None:
+                continuation_proc.send_signal(signal.SIGTERM)
+                try:
+                    continuation_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    continuation_proc.kill()
+                    continuation_proc.wait(timeout=5)
+                raise RuntimeError(
+                    f"revoked Qwen continuation did not terminate: {continuation_log}")
+            continuation_text = continuation_log.read_text(errors="replace")
+            if continuation_proc.returncode == 0 or "NATIVE_REQUEST_SUCCEEDED" in continuation_text:
+                raise RuntimeError(
+                    f"revoked Qwen continuation unexpectedly succeeded: {continuation_log}")
+            required_failure = (
+                "NATIVE_REQUEST_STAGE_FAILED code=PREPARATION_FAILED boundary=preparation" in
+                continuation_text and
+                "PROTECTED_CONTROLLER_VERSION_UNAVAILABLE" in continuation_text)
+            if not required_failure:
+                raise RuntimeError(
+                    f"revoked Qwen continuation missed the exact protected-version failure: {continuation_log}")
+            continuation_provider_delta = provider_log_delta(continuation_provider_offsets)
+            forbidden_provider_markers = (
+                "NDNSF_DI_NATIVE_SELECTION_ACCEPTED",
+                "stage=EXECUTION_ENTERED",
+                "stage=DEPENDENCY_FETCH",
+                "stage=ASSEMBLY_STARTED",
+                "stage=RUNNER_READY",
+                "stage=EXECUTION_COMPLETED",
+                "stage=TERMINAL",
+                "NDNSF_DI_NATIVE_PROVIDER_EXECUTION_COMPLETED",
+            )
+            provider_execution_after_revoke = {
+                str(path): [marker for marker in forbidden_provider_markers if marker in text]
+                for path, text in continuation_provider_delta.items()
+                if any(marker in text for marker in forbidden_provider_markers)
+            }
+            if provider_execution_after_revoke:
+                raise RuntimeError(
+                    "revoked continuation reached a Provider execution stage: " +
+                    json.dumps(provider_execution_after_revoke, sort_keys=True))
+            first_output = requester_dir / "output-0.bin"
+            round_records = [{"round": 0, "returncode": first_proc.returncode,
+                              "log": str(run_root / "requester-0.log"),
+                              "output": str(first_output),
+                              "providerFinalization": process_barrier,
+                              **validate_native_output(first_output)}]
+            round_records.append({"round": "revoked-continuation",
+                                  "returncode": continuation_proc.returncode,
+                                  "log": str(continuation_log),
+                                  "outcome": "FAIL_CLOSED"})
+            revocation_record = {
+                "status": "REVOCATION_FAIL_CLOSED_PASS",
+                "controllerLog": str(controller_log),
+                "trigger": str(revoke_trigger_path),
+                "target": USER,
+                "continuationLog": str(continuation_log),
+                "continuationReturncode": continuation_proc.returncode,
+                "controllerRevocation": {"kind": int(revoke_kind),
+                                          "generation": int(revoke_generation),
+                                          "epoch": int(revoke_epoch)},
+                "continuationFailureCode": "PREPARATION_FAILED",
+                "continuationFailureBoundary": "preparation",
+                "providerExecutionAfterRevoke": provider_execution_after_revoke,
+                "residentSessionRequested": True,
+                "residentSessionEvidence": {
+                    "manifestResidentSession": resident_manifest_values,
+                    "providerCacheLookupHit": True,
+                    "providerRunnerReady": True,
+                    "runtimeLoadCount": "UNOBSERVED",
+                },
+                "residentRunnerWasWarmBeforeRevoke": resident_session_bound,
+            }
+        else:
+            first_text = wait_for_native_round(
+                first_proc, first_log, provider_logs,
+                max(0.0, round_deadline - time.monotonic()))
+            if (first_proc.returncode != 0 or
+                    first_text.count("NATIVE_REQUEST_SUCCEEDED") != args.rounds or
+                    (args.rounds > 1 and
+                     "NATIVE_CONVERSATION_TURNS_SUCCEEDED" not in first_text) or
+                    first_text.count("NATIVE_CONVERSATION_TURN_COMPLETE") != args.rounds or
+                    "NATIVE_CONVERSATION_CHECKPOINT_WRITTEN" not in first_text):
+                raise RuntimeError(f"native Qwen turns failed: {first_log}")
+            turn_texts = split_native_turn_logs(first_text, args.rounds)
+            for round_index, turn_text in enumerate(turn_texts):
+                (run_root / f"requester-{round_index}.log").write_text(turn_text)
+            process_barrier = wait_for_provider_round_barrier(
+                turn_texts[-1], provider_offsets, placement, tail_role, round_deadline)
+            round_records = []
+            for round_index in range(args.rounds):
+                output_path = requester_dir / f"output-{round_index}.bin"
+                output_summary = validate_native_output(output_path)
+                round_records.append({"round": round_index, "returncode": first_proc.returncode,
+                                      "log": str(run_root / f"requester-{round_index}.log"),
+                                      "output": str(output_path),
+                                      "providerFinalization": process_barrier if round_index == args.rounds - 1 else {
+                                          "observation": "covered-by-final-process-barrier"},
+                                      **output_summary})
         if args.negative_parent:
             cfg = json.loads((requester_dir / "config.json").read_text())
             cfg["conversation"]["turn"]["parent_checkpoint_digest"] = "sha256:" + "0" * 64
@@ -2349,14 +2550,19 @@ def main(argv=None, *, _supervised=False) -> int:
             round_records.append({"round": "negative-parent", "returncode": proc.returncode, "log": str(log)})
         # Every round crosses the observation barrier; the C++ oracle checks
         # each request identity, generation result, and chained KV checkpoint.
-        oracle_record = run_cpp_oracle(oracle_binary, run_root,
-                                      args.cache_compatibility_mode,
-                                      max(30.0, args.startup_timeout_s), args.require_multi_token,
-                                      args.rounds)
+        if args.revoke_after_first_round:
+            oracle_record = {"scope": "revocation-expected-failure",
+                             "status": "NOT_RUN"}
+        else:
+            oracle_record = run_cpp_oracle(oracle_binary, run_root,
+                                          args.cache_compatibility_mode,
+                                          max(30.0, args.startup_timeout_s), args.require_multi_token,
+                                          args.rounds)
         # Keep authenticated material available for every continuation turn.
         # The large-data CS is purged only after the final Provider barrier and
         # the native oracle, never when the first runner becomes ready.
         purge_minindn_large_data_cache(ndn.net.hosts, run_root)
+        cache_purge_completed = True
         record = {"schema": f"ndnsf-di-{MODEL_FAMILY}-native-minindn-run-v1", "model": model_name,
                   "revision": revision, "stageManifest": str(stage_manifest_path),
                   "stageManifestDigest": manifest_digest, "tokenizerDigest": tokenizer_digest,
@@ -2365,13 +2571,27 @@ def main(argv=None, *, _supervised=False) -> int:
                   "runtimeBudgets": runtime_budgets,
                   "rounds": round_records,
                   "cppOracle": oracle_record,
-                  "status": oracle_record["status"]}
+                  "status": ("PARTIAL" if revocation_record is not None
+                             else oracle_record["status"])}
+        if revocation_record is not None:
+            record["revocation"] = revocation_record
         if args.cache_compatibility_mode:
             record["fullPathQualification"] = "NOT_RUN"
         (run_root / "run-record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
         print(f"NDNSF_DI_{MODEL_FAMILY.upper()}_NATIVE_MININDN_{record['status']} " + json.dumps(record, sort_keys=True))
         return 0
     finally:
+        if ndn_started and not cache_purge_completed:
+            try:
+                purge_minindn_large_data_cache(
+                    ndn.net.hosts, run_root, trigger="failure-cleanup")
+                cache_purge_completed = True
+            except Exception as purge_error:
+                (run_root / "ndn-cache-purge-failure.json").write_text(
+                    json.dumps({"schema": "ndnsf-minindn-large-data-cache-purge-failure-v1",
+                                "trigger": "failure-cleanup",
+                                "error": repr(purge_error)},
+                               indent=2, sort_keys=True) + "\n")
         for proc, handle, _ in reversed(processes):
             if proc.poll() is None:
                 proc.send_signal(signal.SIGINT)
