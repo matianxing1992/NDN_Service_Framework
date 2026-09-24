@@ -1,5 +1,30 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-20 policy-transition protected-serving fence
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
+- **First boundary closed:** B190-19 identified the race between ControllerVersion
+  transition and durable protected serving: old `m_largeDataFiles`/IMS owners could
+  outlive status retirement, and a paused publication could finish under a newer epoch.
+- **Repair:** `ServiceUser` now uses a service-scoped ControllerVersion fence for
+  status capture, pending publication, final reference/owner commit, and protected
+  response through `m_face.put`. Version advance retires only the affected service's
+  old owners; Repo ciphertext is retained. Durable V2 reference I/O is fail-closed and
+  stale/missing metadata rebinds to a version-bound identity instead of serving the old
+  publication.
+- **Validation:** read-only review `SAFE`/P1=0; ordinary root `build/` target
+  `spec189-encrypted-repo` `120/120`; the stale-publication C++ negative selector and
+  complete 10-case suite passed, with the complete suite repeated three times. Existing
+  Spec190 protected-material and Repo-lookup C++ targets remained runnable.
+- **Unobserved:** OS process restart/decrypt serving, online Controller confirmation,
+  grant/Selection/placement rebinding, revoke invalidation, Provider/assembled hit,
+  precise missing-object fetch, real Qwen/MiniNDN and ASan/UBSan remain open. The
+  protected assembler miss is intentionally unchanged.
+- **Changed gate:** B190-20 is closed at static/compile-link/runtime-test scope only;
+  T006 cannot be marked complete and T007 cannot start. Next gate is the remaining Core
+  durable restart/authorization binding, followed by Provider/assembled hit review.
+- **Evidence:** [B190-20](../specs/190-multiturn-latency/evidence/b190-20.md).
+
 ## 2026-09-23 — Spec190 B190-19 protected-reuse global static audit
 
 - **Status:** `ROOT_CAUSE` / T006 remains `PARTIAL`; T007 remains locked.

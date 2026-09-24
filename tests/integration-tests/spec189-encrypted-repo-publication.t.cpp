@@ -63,6 +63,16 @@ struct SlowStore final : EncryptedLargeDataRangeStore
   std::atomic<bool> entered{false}, release{false};
   explicit SlowStore(std::shared_ptr<RepoCore> repo)
     : delegate(std::make_shared<RepoEncryptedLargeDataStore>(std::move(repo))) {}
+  bool supportsDurableRetention() const noexcept override
+  {
+    return true;
+  }
+  std::optional<EncryptedLargeDataLookupResult> lookupDurable(
+    const std::string& publicationIdentity,
+    const std::function<void()>& active) const override
+  {
+    return delegate->lookupDurable(publicationIdentity, active);
+  }
   std::shared_ptr<const EncryptedLargeDataRangeSource> commitFile(
     const std::string& name, const std::filesystem::path& path, std::uint64_t size,
     const std::function<void()>& active) override
@@ -73,6 +83,20 @@ struct SlowStore final : EncryptedLargeDataRangeStore
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return delegate->commitFile(name, path, size, active);
+  }
+
+  std::shared_ptr<const EncryptedLargeDataRangeSource> commitFile(
+    const std::string& name, const std::filesystem::path& path, std::uint64_t size,
+    const EncryptedLargeDataCommitOptions& options,
+    const std::function<void()>& active) override
+  {
+    auto source = delegate->commitFile(name, path, size, options, active);
+    entered = true;
+    while (!release.load()) {
+      if (active) active();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return source;
   }
 };
 
@@ -111,7 +135,23 @@ std::shared_ptr<ndn::svs::SVSPubSub> pubsub(ndn::Face& face, ndn::KeyChain& keys
   options.useTimestamp = false;
   return std::make_shared<ndn::svs::SVSPubSub>(
     ndn::Name("/spec189/repo/sync"), ndn::Name("/spec189/repo/user"), face,
-    [] (const std::vector<ndn::svs::MissingDataInfo>&) {}, options, security);
+      [] (const std::vector<ndn::svs::MissingDataInfo>&) {}, options, security);
+}
+
+PolicyStatusData policyStatus(const ndn::Name& service,
+                              std::uint64_t generation,
+                              std::uint64_t epoch)
+{
+  const auto now = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  PolicyStatusData status;
+  status.setServiceName(service);
+  status.setControllerVersion(ControllerVersion{generation, epoch});
+  status.setValidity(now - 1000, now + 60000);
+  status.setPolicyDigest("sha256:" + std::string(64, '0'));
+  status.setControllerCertificate(ndn::Name("/controller/spec190"));
+  return status;
 }
 } // namespace
 
@@ -355,6 +395,7 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesAfterServiceUserRestart)
     restarted.attachLocalMockPubSubForTest(pubsub(face, keys));
     restarted.setEncryptedLargeDataRangeStore(store);
     restarted.init();
+    restarted.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
     const auto second = restarted.publishEncryptedLargeData(
       restarted.prepareServiceRequest(service.toUri()), plaintext, "model-material",
       ndn::time::milliseconds(1), true, options);
@@ -367,13 +408,134 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesAfterServiceUserRestart)
     std::error_code referenceError;
     std::filesystem::remove_all(keyReferenceDir, referenceError);
     BOOST_REQUIRE(!referenceError);
-    const auto missingReference = restarted.publishEncryptedLargeData(
+    const auto rebound = restarted.publishEncryptedLargeData(
       restarted.prepareServiceRequest(service.toUri()), plaintext, "model-material",
       ndn::time::milliseconds(1), true, options);
-    BOOST_CHECK(!missingReference.success);
-    BOOST_CHECK_EQUAL(missingReference.errorMessage, "DURABLE_LOOKUP_METADATA_MISMATCH");
+    BOOST_REQUIRE_MESSAGE(rebound.success, rebound.errorMessage);
+    BOOST_CHECK_NE(rebound.encryptedDataName.toUri(), first.encryptedDataName.toUri());
+    BOOST_CHECK_NE(rebound.publicationIdentity, first.publicationIdentity);
+    BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
   }
+  BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRetiresOnlyOlderServiceOwner)
+{
+  RepoFixture fixture;
+  auto store = std::make_shared<RepoEncryptedLargeDataStore>(fixture.repo);
+  const auto spool = (fixture.root / "spool").string();
+  const auto keyReferenceDir = (fixture.root / "key-references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue referenceDir("NDNSF_DURABLE_KEY_REFERENCE_DIR",
+                                      keyReferenceDir.c_str());
+  ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec190/status-user"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec190/status-aa"));
+  InspectingUser user(face, ndn::Name("/spec190/status"), certificate,
+                      authority, "examples/trust-any.conf");
+  user.useSigningKeyChainForSigningOnlyForTest(keys);
+  user.attachLocalMockPubSubForTest(pubsub(face, keys));
+  user.setEncryptedLargeDataRangeStore(store);
+  user.init();
+
+  const ndn::Name serviceA("/spec190/service-a");
+  const ndn::Name serviceB("/spec190/service-b");
+  BOOST_REQUIRE(user.installControllerStatus(policyStatus(serviceA, 1900, 1)));
+  BOOST_REQUIRE(user.installControllerStatus(policyStatus(serviceB, 1900, 1)));
+  user.prepareHybridSendKeyForTest(serviceA, "REQUEST-LARGE");
+  user.prepareHybridSendKeyForTest(serviceB, "REQUEST-LARGE");
+
+  const std::vector<std::uint8_t> plaintext(40000, 0x42);
+  LargeDataPublishOptions optionsA;
+  optionsA.retention = EncryptedLargeDataRetention::Durable;
+  optionsA.publicationIdentity = "sha256:" + std::string(64, 'c');
+  LargeDataPublishOptions optionsB = optionsA;
+  optionsB.publicationIdentity = "sha256:" + std::string(64, 'd');
+  const auto publicationA = user.publishEncryptedLargeData(
+    user.prepareServiceRequest(serviceA.toUri()), plaintext, "model-a",
+    ndn::time::milliseconds(1000), true, optionsA);
+  const auto publicationB = user.publishEncryptedLargeData(
+    user.prepareServiceRequest(serviceB.toUri()), plaintext, "model-b",
+    ndn::time::milliseconds(1000), true, optionsB);
+  BOOST_REQUIRE_MESSAGE(publicationA.success, publicationA.errorMessage);
+  BOOST_REQUIRE_MESSAGE(publicationB.success, publicationB.errorMessage);
+  BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 2U);
+  BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
+
+  face.sentData.clear();
+  BOOST_REQUIRE(user.installControllerStatus(policyStatus(serviceA, 1900, 2)));
+  BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 1U);
+  BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
+
+  ndn::Interest stale(publicationA.encryptedDataName);
+  stale.setCanBePrefix(true);
+  face.receive(stale);
+  face.processEvents(ndn::time::milliseconds(1));
+  for (const auto& data : face.sentData)
+    BOOST_CHECK(!publicationA.encryptedDataName.isPrefixOf(data.getName()));
+
+  ndn::Interest unaffected(publicationB.encryptedDataName);
+  unaffected.setCanBePrefix(true);
+  face.receive(unaffected);
+  face.processEvents(ndn::time::milliseconds(1));
+  bool servedB = false;
+  for (const auto& data : face.sentData) {
+    if (publicationB.encryptedDataName.isPrefixOf(data.getName())) {
+      servedB = true;
+      break;
+    }
+  }
+  BOOST_CHECK(servedB);
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRejectsPostCommitStalePublication)
+{
+  RepoFixture fixture;
+  auto store = std::make_shared<SlowStore>(fixture.repo);
+  const auto spool = (fixture.root / "spool").string();
+  const auto keyReferenceDir = (fixture.root / "key-references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue referenceDir("NDNSF_DURABLE_KEY_REFERENCE_DIR",
+                                      keyReferenceDir.c_str());
+  ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+  ndn::DummyClientFace face(keys);
+  const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec190/race-user"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec190/race-aa"));
+  InspectingUser user(face, ndn::Name("/spec190/race"), certificate,
+                      authority, "examples/trust-any.conf");
+  user.useSigningKeyChainForSigningOnlyForTest(keys);
+  user.attachLocalMockPubSubForTest(pubsub(face, keys));
+  user.setEncryptedLargeDataRangeStore(store);
+  user.init();
+  const ndn::Name service("/spec190/race-service");
+  BOOST_REQUIRE(user.installControllerStatus(policyStatus(service, 1910, 1)));
+  const auto key = user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+  LargeDataPublishOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "sha256:" + std::string(64, 'e');
+  const auto request = user.prepareServiceRequest(service.toUri());
+  const std::vector<std::uint8_t> plaintext(40000, 0x53);
+  auto result = std::async(std::launch::async, [&] {
+    return user.publishEncryptedLargeDataFromWorker(
+      request, plaintext, "race-model", ndn::time::milliseconds(1000), options);
+  });
+  std::atomic<bool> cancelled{false};
+  WorkerDrain drain{face, result, cancelled};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!store->entered && std::chrono::steady_clock::now() < deadline)
+    face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE(store->entered);
+  BOOST_REQUIRE_EQUAL(fixture.repo->list().size(), 1U);
+  BOOST_REQUIRE(user.installControllerStatus(policyStatus(service, 1910, 2)));
+  store->release = true;
+  BOOST_REQUIRE(drain.wait(std::chrono::seconds(3)));
+  const auto failed = result.get();
+  BOOST_CHECK(!failed.success);
+  BOOST_CHECK_EQUAL(failed.errorMessage, "DURABLE_STALE_CONTROLLER_VERSION");
+  BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 0U);
   BOOST_CHECK_EQUAL(fixture.repo->list().size(), 1U);
+  BOOST_CHECK(!user.hasWrapped(key.keyId));
 }
 
 BOOST_AUTO_TEST_CASE(OldLeaseCannotReadOrDeleteSameNameReplacement)

@@ -1097,3 +1097,13 @@ finalization仍归原生C++。新增精确恢复观测区别于模型cache hit�
 - 兼容性、迁移或撤回影响：legacy transient overload 与 request-scoped cleanup 不变；lookup miss 继续走原冷发布，metadata/source 不匹配 fail closed。撤回需同步移除 lookup API、Core hit 分支、DI durable transport 和 B190-17 回归，不能只删除文档。
 - 源码与证据：`ndn-service-framework/EncryptedLargeDataRangeStore.hpp`、`ndn-service-framework/ServiceUser.cpp`、`NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp`、`NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp`、`tests/integration-tests/spec189-encrypted-repo-publication.t.cpp`；[B190-17](../specs/190-multiturn-latency/evidence/b190-17.md)。
 - 验证与状态：普通根 `build/` 的 Spec188/189/190 受影响目标构建成功；Spec190 7 cases、Spec189 7 cases、Spec188 5 cases PASS，restart lookup 与 durable serving hit 重复 3 次 PASS；`git diff --check` PASS。ASan/UBSan deferred；此单元为 `ADVANCE/PARTIAL`，T006 与 protected miss gate 仍未闭合。
+
+### D-190-POLICY-TRANSITION-PROTECTED-FENCE：ControllerVersion 与 durable protected serving fence — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T006/B190-20；`CD-09`、`FR-017`、`SC-007`、`SC-008`。
+- 模块 / 当前与目标章节：`ServiceUser::installControllerStatus`、`retireProtectedPublications`、`publishEncryptedLargeDataImpl`、protected IMS/file serving；[CD-09](../specs/190-multiturn-latency/contracts/material-reuse.md#cd-09-protected-material-reuse-boundary)。
+- 原设计 / 新设计 / 修改原因：B190-19 确认仅删除 reference 不能撤销已经注册的 serving owner，且旧 publication 可与 policy transition 并发完成。本轮将 `ControllerVersion` 绑定到 service-scoped publication/IMS owner/reference，使用 pending publication 与最终 reference commit fence，并把 protected response fence 延续到 `m_face.put`；版本推进只撤销受影响 service，保留 Repo ciphertext。
+- 当前已实现部分 / 目标未实现部分：B190-20 的旧 owner retirement、unaffected-service reuse、same-version restore、paused-publication stale negative、V2 fail-closed/rebind 和 C++回归已实现；真实 OS restart/decrypt serving、在线 Controller confirmation、grant/Selection/placement rebinding、Provider/assembled hit、精确 missing-object fetch 和真实 Qwen/MiniNDN 仍未实现或观测，protected assembler miss 保持，T006 `PARTIAL`，T007 锁定。
+- 兼容性、迁移或撤回影响：旧 transient API 与 Repo durable ciphertext 保留语义不变；只影响 protected durable publication 的 owner/reference 生命周期。撤回必须同步移除 `ServiceUser` fence、V2 reference semantics、pending owner bookkeeping 和 B190-20 native oracle，不得只删除测试或文档。
+- 源码与证据：`ndn-service-framework/ServiceUser.hpp`、`ndn-service-framework/ServiceUser.cpp`、`tests/integration-tests/spec189-encrypted-repo-publication.t.cpp`；[B190-20](../specs/190-multiturn-latency/evidence/b190-20.md)。
+- 验证与状态：只读复核 `SAFE`/P1=0；普通根 `build/` 的 `spec189-encrypted-repo` `120/120` compile-link；stale-publication selector、完整 10-case suite 和完整 suite 三次重复均 PASS；ASan/UBSan deferred。当前状态 `ADVANCE/PARTIAL`，T006 未闭合，T007 不解锁。

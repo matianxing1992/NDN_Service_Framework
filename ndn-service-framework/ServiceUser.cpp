@@ -21,6 +21,7 @@
 #include <optional>
 #include <random>
 #include <set>
+#include <shared_mutex>
 #include <sstream>
 #include <system_error>
 #include <thread>
@@ -83,6 +84,11 @@ namespace ndn_service_framework
         std::shared_ptr<const EncryptedLargeDataRangeSource> rangeSource;
         std::weak_ptr<void> servingLease;
         std::shared_ptr<void> keyLease;
+        std::string serviceName;
+        std::string publicationIdentity;
+        bool controllerVersioned = false;
+        ControllerVersion controllerVersion;
+        std::vector<std::string> protectedImsNames;
 
         ~LargeDataFilePublication()
         {
@@ -465,6 +471,7 @@ namespace ndn_service_framework
             std::string contentDigest;
             std::uint64_t plaintextSize = 0;
             std::uint64_t policyEpoch = 0;
+            std::uint64_t controllerGenerationTimestamp = 0;
             std::string protectionEpoch;
             std::string keyReferenceId;
             std::string keyReferenceVersion;
@@ -476,6 +483,8 @@ namespace ndn_service_framework
         // Repo remains ciphertext-only; no content key, private key, grant, or
         // request/KV state is written here.
         constexpr char DURABLE_KEY_REFERENCE_MAGIC[] =
+            "NDNSF-DURABLE-LARGE-KEYREF-V2";
+        constexpr char DURABLE_KEY_REFERENCE_LEGACY_MAGIC[] =
             "NDNSF-DURABLE-LARGE-KEYREF-V1";
         constexpr std::size_t DURABLE_KEY_REFERENCE_MAX_RECORDS = 4096;
         constexpr std::uint64_t DURABLE_KEY_REFERENCE_MAX_FIELD = 1U << 20;
@@ -525,7 +534,15 @@ namespace ndn_service_framework
                             ".local" / "state" / "ndnsf" /
                             "durable-key-references";
             }
-            return directory / ("user-" + durableIdentityPathComponent(identity) + ".dkr");
+            return directory / ("user-" + durableIdentityPathComponent(identity) + ".v2.dkr");
+        }
+
+        std::filesystem::path
+        durableKeyReferenceLegacyStorePath(const ndn::Name& identity)
+        {
+            const auto v2 = durableKeyReferenceStorePath(identity);
+            return v2.parent_path() /
+                ("user-" + durableIdentityPathComponent(identity) + ".dkr");
         }
 
         bool
@@ -569,6 +586,10 @@ namespace ndn_service_framework
                                  sizeof(record.plaintextSize)), static_cast<bool>(stream)) &&
                    (stream.write(reinterpret_cast<const char*>(&record.policyEpoch),
                                  sizeof(record.policyEpoch)), static_cast<bool>(stream)) &&
+                   (stream.write(reinterpret_cast<const char*>(
+                                     &record.controllerGenerationTimestamp),
+                                 sizeof(record.controllerGenerationTimestamp)),
+                    static_cast<bool>(stream)) &&
                    writeDurableKeyReferenceString(stream, record.protectionEpoch) &&
                    writeDurableKeyReferenceString(stream, record.keyReferenceId) &&
                    writeDurableKeyReferenceString(stream, record.keyReferenceVersion) &&
@@ -588,11 +609,41 @@ namespace ndn_service_framework
                                 sizeof(record.plaintextSize)), static_cast<bool>(stream)) &&
                    (stream.read(reinterpret_cast<char*>(&record.policyEpoch),
                                 sizeof(record.policyEpoch)), static_cast<bool>(stream)) &&
+                   (stream.read(reinterpret_cast<char*>(
+                                    &record.controllerGenerationTimestamp),
+                                sizeof(record.controllerGenerationTimestamp)),
+                    static_cast<bool>(stream)) &&
                    readDurableKeyReferenceString(stream, record.protectionEpoch) &&
                    readDurableKeyReferenceString(stream, record.keyReferenceId) &&
                    readDurableKeyReferenceString(stream, record.keyReferenceVersion) &&
                    readDurableKeyReferenceString(stream, record.ciphertextManifestDigest) &&
                    readDurableKeyReferenceString(stream, record.servingLocator);
+        }
+
+        bool
+        readLegacyDurableKeyReference(std::ifstream& stream,
+                                      DurableLargeDataKeyReference& record)
+        {
+            const bool result =
+                readDurableKeyReferenceString(stream, record.publicationIdentity) &&
+                readDurableKeyReferenceString(stream, record.serviceName) &&
+                readDurableKeyReferenceString(stream, record.encryptedDataName) &&
+                readDurableKeyReferenceString(stream, record.contentDigest) &&
+                (stream.read(reinterpret_cast<char*>(&record.plaintextSize),
+                             sizeof(record.plaintextSize)), static_cast<bool>(stream)) &&
+                (stream.read(reinterpret_cast<char*>(&record.policyEpoch),
+                             sizeof(record.policyEpoch)), static_cast<bool>(stream)) &&
+                readDurableKeyReferenceString(stream, record.protectionEpoch) &&
+                readDurableKeyReferenceString(stream, record.keyReferenceId) &&
+                readDurableKeyReferenceString(stream, record.keyReferenceVersion) &&
+                readDurableKeyReferenceString(stream, record.ciphertextManifestDigest) &&
+                readDurableKeyReferenceString(stream, record.servingLocator);
+            // V1 did not bind a full ControllerVersion.  Treat its epoch as
+            // unversioned compatibility metadata; only LocalMock may use it
+            // for a one-time V2 migration.
+            record.controllerGenerationTimestamp = 0;
+            record.policyEpoch = 0;
+            return result;
         }
 
         bool
@@ -617,6 +668,8 @@ namespace ndn_service_framework
                    !record.serviceName.empty() && record.serviceName.front() == '/' &&
                    !record.encryptedDataName.empty() && record.encryptedDataName.front() == '/' &&
                    isSha256Digest(record.contentDigest) && record.plaintextSize != 0 &&
+                   ((record.controllerGenerationTimestamp == 0 && record.policyEpoch == 0) ||
+                    (record.controllerGenerationTimestamp != 0 && record.policyEpoch != 0)) &&
                    record.protectionEpoch.size() == 16 && isLowerHex(record.protectionEpoch) &&
                    isSha256Digest(record.keyReferenceId) &&
                    record.keyReferenceVersion == "v1" &&
@@ -672,96 +725,264 @@ namespace ndn_service_framework
         loadDurableKeyReference(const ndn::Name& identity,
                                 const std::string& publicationIdentity)
         {
-            std::lock_guard<std::mutex> guard(durableKeyReferenceStoreMutex);
-            const auto path = durableKeyReferenceStorePath(identity);
-            if (!std::filesystem::exists(path)) {
-                return std::nullopt;
-            }
-            const auto lockPath = path.string() + ".lock";
-            FileLock lock(lockPath.c_str());
-            bool valid = false;
-            const auto records = readDurableKeyReferenceRecords(path, valid);
-            if (!valid) {
-                return std::nullopt;
-            }
-            for (const auto& record : records) {
-                if (record.publicationIdentity == publicationIdentity) {
-                    return record;
+            try {
+                std::lock_guard<std::mutex> guard(durableKeyReferenceStoreMutex);
+                const auto path = durableKeyReferenceStorePath(identity);
+                if (!std::filesystem::exists(path)) {
+                    return std::nullopt;
                 }
+                const auto lockPath = path.string() + ".lock";
+                FileLock lock(lockPath.c_str());
+                bool valid = false;
+                const auto records = readDurableKeyReferenceRecords(path, valid);
+                if (!valid) {
+                    return std::nullopt;
+                }
+                for (const auto& record : records) {
+                    if (record.publicationIdentity == publicationIdentity) {
+                        return record;
+                    }
+                }
+            }
+            catch (const std::exception&) {
+                // A protected durable lookup must fail closed.  In
+                // particular, a stale lock or unreadable state file must not
+                // escape through the accepted request/status path.
+            }
+            return std::nullopt;
+        }
+
+        std::optional<DurableLargeDataKeyReference>
+        loadLegacyDurableKeyReference(const ndn::Name& identity,
+                                      const std::string& publicationIdentity)
+        {
+            try {
+                std::lock_guard<std::mutex> guard(durableKeyReferenceStoreMutex);
+                const auto path = durableKeyReferenceLegacyStorePath(identity);
+                if (!std::filesystem::exists(path)) {
+                    return std::nullopt;
+                }
+                FileLock lock((path.string() + ".lock").c_str());
+                std::ifstream stream(path, std::ios::binary);
+                if (!stream) {
+                    return std::nullopt;
+                }
+                std::string magic(sizeof(DURABLE_KEY_REFERENCE_LEGACY_MAGIC) - 1, '\0');
+                stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+                if (!stream || magic != DURABLE_KEY_REFERENCE_LEGACY_MAGIC) {
+                    return std::nullopt;
+                }
+                std::uint64_t count = 0;
+                stream.read(reinterpret_cast<char*>(&count), sizeof(count));
+                if (!stream || count > DURABLE_KEY_REFERENCE_MAX_RECORDS) {
+                    return std::nullopt;
+                }
+                std::set<std::string> identities;
+                for (std::uint64_t i = 0; i < count; ++i) {
+                    DurableLargeDataKeyReference record;
+                    if (!readLegacyDurableKeyReference(stream, record) ||
+                        !isValidDurableKeyReference(record) ||
+                        !identities.insert(record.publicationIdentity).second) {
+                        return std::nullopt;
+                    }
+                    if (record.publicationIdentity == publicationIdentity) {
+                        return record;
+                    }
+                }
+            }
+            catch (const std::exception&) {
+                // Legacy state is advisory only.  Invalid or inaccessible
+                // V1 state must never authorize a protected hit.
             }
             return std::nullopt;
         }
 
         bool
         persistDurableKeyReference(const ndn::Name& identity,
-                                   const DurableLargeDataKeyReference& record)
+                                   const DurableLargeDataKeyReference& record,
+                                   bool replaceCorruptStore = false)
         {
-            if (!isValidDurableKeyReference(record)) {
-                return false;
-            }
-            std::lock_guard<std::mutex> guard(durableKeyReferenceStoreMutex);
-            const auto path = durableKeyReferenceStorePath(identity);
-            std::error_code error;
-            std::filesystem::create_directories(path.parent_path(), error);
-            if (error) {
-                return false;
-            }
-            ::chmod(path.parent_path().c_str(), 0700);
-            const auto lockPath = path.string() + ".lock";
-            FileLock lock(lockPath.c_str());
-            bool valid = false;
-            auto records = readDurableKeyReferenceRecords(path, valid);
-            if (!valid || records.size() >= DURABLE_KEY_REFERENCE_MAX_RECORDS) {
+            try {
+                if (!isValidDurableKeyReference(record)) {
+                    return false;
+                }
+                std::lock_guard<std::mutex> guard(durableKeyReferenceStoreMutex);
+                const auto path = durableKeyReferenceStorePath(identity);
+                std::error_code error;
+                std::filesystem::create_directories(path.parent_path(), error);
+                if (error) {
+                    return false;
+                }
+                ::chmod(path.parent_path().c_str(), 0700);
+                const auto lockPath = path.string() + ".lock";
+                FileLock lock(lockPath.c_str());
+                bool valid = false;
+                auto records = readDurableKeyReferenceRecords(path, valid);
+                if (!valid && replaceCorruptStore) {
+                    const auto quarantine = path.string() + ".corrupt." +
+                        std::to_string(::getpid());
+                    std::filesystem::rename(path, quarantine, error);
+                    if (error) {
+                        return false;
+                    }
+                    records.clear();
+                    valid = true;
+                }
+                if (!valid || records.size() >= DURABLE_KEY_REFERENCE_MAX_RECORDS) {
+                    auto existing = std::find_if(records.begin(), records.end(),
+                        [&record] (const auto& candidate) {
+                            return candidate.publicationIdentity == record.publicationIdentity;
+                        });
+                    if (!valid || existing == records.end()) {
+                        return false;
+                    }
+                }
                 auto existing = std::find_if(records.begin(), records.end(),
                     [&record] (const auto& candidate) {
                         return candidate.publicationIdentity == record.publicationIdentity;
-                    });
-                if (!valid || existing == records.end()) {
-                    return false;
-                }
-            }
-            auto existing = std::find_if(records.begin(), records.end(),
-                [&record] (const auto& candidate) {
-                    return candidate.publicationIdentity == record.publicationIdentity;
                 });
-            if (existing == records.end()) {
-                records.push_back(record);
-            }
-            else {
-                *existing = record;
-            }
-
-            const auto temporary = path.string() + ".tmp." + std::to_string(::getpid());
-            {
-                std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
-                if (!stream) {
-                    return false;
+                if (existing != records.end()) {
+                    if (existing->serviceName != record.serviceName) {
+                        return false;
+                    }
+                    const bool existingVersioned =
+                        existing->controllerGenerationTimestamp != 0 ||
+                        existing->policyEpoch != 0;
+                    const bool recordVersioned =
+                        record.controllerGenerationTimestamp != 0 ||
+                        record.policyEpoch != 0;
+                    if (existingVersioned && !recordVersioned) {
+                        return false;
+                    }
+                    if (existingVersioned && recordVersioned) {
+                        const ControllerVersion oldVersion{
+                            existing->controllerGenerationTimestamp,
+                            existing->policyEpoch};
+                        const ControllerVersion newVersion{
+                            record.controllerGenerationTimestamp,
+                            record.policyEpoch};
+                        if (oldVersion.compare(newVersion) > 0) {
+                            return false;
+                        }
+                    }
                 }
-                ::chmod(temporary.c_str(), 0600);
-                stream.write(DURABLE_KEY_REFERENCE_MAGIC,
-                             sizeof(DURABLE_KEY_REFERENCE_MAGIC) - 1);
-                const auto count = static_cast<std::uint64_t>(records.size());
-                stream.write(reinterpret_cast<const char*>(&count), sizeof(count));
-                for (const auto& item : records) {
-                    if (!writeDurableKeyReference(stream, item)) {
+                if (existing == records.end()) {
+                    records.push_back(record);
+                }
+                else {
+                    *existing = record;
+                }
+
+                const auto temporary = path.string() + ".tmp." + std::to_string(::getpid());
+                {
+                    std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+                    if (!stream) {
+                        return false;
+                    }
+                    ::chmod(temporary.c_str(), 0600);
+                    stream.write(DURABLE_KEY_REFERENCE_MAGIC,
+                                 sizeof(DURABLE_KEY_REFERENCE_MAGIC) - 1);
+                    const auto count = static_cast<std::uint64_t>(records.size());
+                    stream.write(reinterpret_cast<const char*>(&count), sizeof(count));
+                    for (const auto& item : records) {
+                        if (!writeDurableKeyReference(stream, item)) {
+                            stream.close();
+                            std::filesystem::remove(temporary, error);
+                            return false;
+                        }
+                    }
+                    stream.flush();
+                    if (!stream) {
                         stream.close();
                         std::filesystem::remove(temporary, error);
                         return false;
                     }
                 }
-                stream.flush();
-                if (!stream) {
-                    stream.close();
+                std::filesystem::rename(temporary, path, error);
+                if (error) {
                     std::filesystem::remove(temporary, error);
                     return false;
                 }
+                return true;
             }
-            std::filesystem::rename(temporary, path, error);
-            if (error) {
-                std::filesystem::remove(temporary, error);
+            catch (const std::exception&) {
                 return false;
             }
-            return true;
+        }
+
+        void
+        pruneDurableKeyReferences(const ndn::Name& identity,
+                                  const ndn::Name& serviceName,
+                                  const ControllerVersion& version) noexcept
+        {
+            try {
+                std::lock_guard<std::mutex> guard(durableKeyReferenceStoreMutex);
+                const auto path = durableKeyReferenceStorePath(identity);
+                if (!std::filesystem::exists(path)) {
+                    return;
+                }
+                const auto lockPath = path.string() + ".lock";
+                FileLock lock(lockPath.c_str());
+                bool valid = false;
+                auto records = readDurableKeyReferenceRecords(path, valid);
+                if (!valid) {
+                    return;
+                }
+                const auto serviceUri = serviceName.toUri();
+                const auto oldSize = records.size();
+                records.erase(std::remove_if(records.begin(), records.end(),
+                    [&] (const auto& record) {
+                        if (record.serviceName != serviceUri) {
+                            return false;
+                        }
+                        if (record.controllerGenerationTimestamp == 0 &&
+                            record.policyEpoch == 0) {
+                            return true;
+                        }
+                        const ControllerVersion candidate{
+                            record.controllerGenerationTimestamp,
+                            record.policyEpoch};
+                        return candidate.compare(version) < 0;
+                    }), records.end());
+                if (records.size() == oldSize) {
+                    return;
+                }
+
+                const auto temporary = path.string() + ".tmp." + std::to_string(::getpid());
+                std::error_code error;
+                {
+                    std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+                    if (!stream) {
+                        return;
+                    }
+                    ::chmod(temporary.c_str(), 0600);
+                    stream.write(DURABLE_KEY_REFERENCE_MAGIC,
+                                 sizeof(DURABLE_KEY_REFERENCE_MAGIC) - 1);
+                    const auto count = static_cast<std::uint64_t>(records.size());
+                    stream.write(reinterpret_cast<const char*>(&count), sizeof(count));
+                    for (const auto& record : records) {
+                        if (!writeDurableKeyReference(stream, record)) {
+                            stream.close();
+                            std::filesystem::remove(temporary, error);
+                            return;
+                        }
+                    }
+                    stream.flush();
+                    if (!stream) {
+                        stream.close();
+                        std::filesystem::remove(temporary, error);
+                        return;
+                    }
+                }
+                std::filesystem::rename(temporary, path, error);
+                if (error) {
+                    std::filesystem::remove(temporary, error);
+                }
+            }
+            catch (const std::exception&) {
+                // Pruning is best effort.  The strict version check remains
+                // the authoritative fail-closed guard for a stale reference.
+            }
         }
 
         std::uintmax_t
@@ -4953,8 +5174,17 @@ namespace ndn_service_framework
         }
         bool accepted = false;
         bool versionChanged = false;
+        bool protectedVersionAdvanced = false;
         bool abeGenerationChanged = true;
         bool grantOnlyDkeyRefresh = false;
+        // Controller status and protected serving share one linearization
+        // interval.  The commit mutex is acquired first by both status and
+        // durable publication finalization; no Face/FileLock work occurs in
+        // this interval.
+        std::unique_lock<std::mutex> protectedCommit(
+            m_protectedReferenceCommitMutex);
+        std::unique_lock<std::shared_mutex> protectedFence(
+            m_protectedReuseMutex);
         {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
             // Validate both state machines against private copies first.  A
@@ -5008,6 +5238,12 @@ namespace ndn_service_framework
             accepted = true;
             versionChanged = !previousVersion ||
                 status.getControllerVersion().compare(*previousVersion) > 0;
+            // First status installation preserves the existing bootstrap
+            // invalidation behavior, but it is not a protected-material
+            // retirement transition.  Only a strictly newer service-scoped
+            // version advances the durable serving fence.
+            protectedVersionAdvanced = previousVersion &&
+                status.getControllerVersion().compare(*previousVersion) > 0;
             // ABE public parameters are controller-global rather than
             // per-service.  A first install of this service's status is a
             // generation change only when the identity has no public
@@ -5056,7 +5292,33 @@ namespace ndn_service_framework
                     m_nacDkeyRefreshPendingServices.erase(pendingDkeyRefresh);
             }
         }
+        if (accepted && protectedVersionAdvanced) {
+            retireProtectedPublications(status.getServiceName(),
+                                        status.getControllerVersion());
+        }
+        protectedFence.unlock();
+        protectedCommit.unlock();
         if (accepted) {
+            if (protectedVersionAdvanced) {
+                // Reference pruning is deliberately outside the in-memory
+                // fence and never makes status installation fail.  A stale
+                // reference remains unusable because durable lookup compares
+                // the full service-scoped ControllerVersion.
+                const auto identitySnapshot = identity;
+                const auto serviceSnapshot = status.getServiceName();
+                const auto versionSnapshot = status.getControllerVersion();
+                try {
+                    postToIo([identitySnapshot, serviceSnapshot, versionSnapshot] {
+                        pruneDurableKeyReferences(identitySnapshot,
+                                                  serviceSnapshot,
+                                                  versionSnapshot);
+                    });
+                }
+                catch (const std::exception&) {
+                    // The status transition is already fail-closed in memory;
+                    // a stopped I/O context must not roll it back.
+                }
+            }
             if (versionChanged) {
                 invalidateControllerScopedCaches(status.getServiceName(),
                                                   status.getControllerVersion(),
@@ -6147,9 +6409,10 @@ namespace ndn_service_framework
             result.errorMessage = "durable large-data publication identity is invalid";
             return result;
         }
+        std::string durablePublicationIdentity = options.publicationIdentity;
         ndn::Name encryptedDataName = durable
             ? makeDurableLargeDataName(identity, ctx.serviceName,
-                                       options.publicationIdentity, result.objectId)
+                                       durablePublicationIdentity, result.objectId)
             : makeLargeDataName(identity, ctx.serviceName, ctx.requestId, result.objectId);
         if (!durable)
             encryptedDataName.appendVersion();
@@ -6191,6 +6454,44 @@ namespace ndn_service_framework
             ndn::span<const uint8_t>(plaintext.data(), plaintext.size()), requireActive);
         result.authorizationScope = attributes.front();
 
+        // Protected durable reuse is versioned by the service-scoped signed
+        // status.  LocalMock fixtures are the sole explicit compatibility
+        // exception: they may use an unversioned (0,0) snapshot, but a
+        // configured runtime with no status must fail closed.
+        std::optional<ControllerVersion> durableControllerVersion;
+        bool durableVersioned = false;
+        if (durable) {
+            std::shared_lock<std::shared_mutex> fence(m_protectedReuseMutex);
+            {
+                std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+                const auto statusIt = m_revocationStates.find(ctx.serviceName.toUri());
+                if (statusIt != m_revocationStates.end() &&
+                    statusIt->second.hasCurrentStatus()) {
+                    durableControllerVersion = statusIt->second.currentVersion();
+                    durableVersioned = true;
+                }
+            }
+            if (!durableVersioned && !m_isLocalMock) {
+                result.errorMessage = "PROTECTED_CONTROLLER_VERSION_UNAVAILABLE";
+                return result;
+            }
+        }
+        const auto currentDurableVersion = [&]() -> std::optional<ControllerVersion> {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            const auto statusIt = m_revocationStates.find(ctx.serviceName.toUri());
+            if (statusIt != m_revocationStates.end() &&
+                statusIt->second.hasCurrentStatus()) {
+                return statusIt->second.currentVersion();
+            }
+            return std::nullopt;
+        };
+        const auto durableVersionMatches = [&]() {
+            const auto current = currentDurableVersion();
+            return durableVersioned == current.has_value() &&
+                (!durableVersioned ||
+                 current->compare(*durableControllerVersion) == 0);
+        };
+
         bool wrappedKeyReferenceHeld = false;
         std::string wrappedKeyId;
         try {
@@ -6199,18 +6500,111 @@ namespace ndn_service_framework
             const auto accessAttribute = std::string("/SERVICE") + ctx.serviceName.toUri();
             std::optional<EncryptedLargeDataLookupResult> durableHit;
             std::optional<DurableLargeDataKeyReference> durableReference;
+            bool migrateLegacyReference = false;
+            bool repairReferenceFromRepo = false;
             if (durable) {
+                const auto referenceVersionMatches = [&]() {
+                    if (!durableReference) {
+                        return false;
+                    }
+                    return durableVersioned
+                        ? durableReference->controllerGenerationTimestamp ==
+                              durableControllerVersion->controllerGenerationTimestamp &&
+                          durableReference->policyEpoch ==
+                              durableControllerVersion->controllerEpoch
+                        : durableReference->controllerGenerationTimestamp == 0 &&
+                          durableReference->policyEpoch == 0;
+                };
+                const auto referenceMetadataMatches = [&]() {
+                    return durableReference &&
+                        durableReference->serviceName == ctx.serviceName.toUri() &&
+                        durableReference->encryptedDataName == encryptedDataName.toUri() &&
+                        durableReference->contentDigest == result.contentDigest &&
+                        durableReference->plaintextSize == result.plaintextSize &&
+                        durableReference->protectionEpoch == durableHit->protectionEpoch &&
+                        durableReference->keyReferenceId == durableHit->keyReferenceId &&
+                        durableReference->keyReferenceVersion ==
+                            durableHit->keyReferenceVersion &&
+                        durableReference->ciphertextManifestDigest ==
+                            durableHit->ciphertextManifestDigest &&
+                        durableReference->servingLocator == encryptedDataName.toUri();
+                };
+                const auto rebindDurableIdentity = [&] {
+                    const auto versionText = durableVersioned
+                        ? durableControllerVersion->toString() : "unversioned";
+                    const auto seed = options.publicationIdentity +
+                        "|ndnsf-protected-rebind-v2|" + versionText;
+                    durablePublicationIdentity = sha256DigestString(ndn::Buffer(
+                        reinterpret_cast<const uint8_t*>(seed.data()), seed.size()));
+                    encryptedDataName = makeDurableLargeDataName(
+                        identity, ctx.serviceName, durablePublicationIdentity,
+                        result.objectId);
+                    durableHit = rangeStore->lookupDurable(
+                        durablePublicationIdentity, requireActive);
+                    durableReference = durableHit ? loadDurableKeyReference(
+                        identity, durablePublicationIdentity) : std::nullopt;
+                    migrateLegacyReference = false;
+                    repairReferenceFromRepo = false;
+                    if (durableHit) {
+                        // The derived identity itself binds the current
+                        // service version.  Repo metadata is sufficient to
+                        // reconstruct the non-secret V2 reference after a
+                        // crash between durable commit and reference rename;
+                        // no key or plaintext is recovered from Repo.
+                        durableReference = DurableLargeDataKeyReference{
+                            durablePublicationIdentity,
+                            ctx.serviceName.toUri(),
+                            durableHit->encryptedName,
+                            result.contentDigest,
+                            result.plaintextSize,
+                            durableVersioned ? durableControllerVersion->controllerEpoch : 0,
+                            durableVersioned ?
+                                durableControllerVersion->controllerGenerationTimestamp : 0,
+                            durableHit->protectionEpoch,
+                            durableHit->keyReferenceId,
+                            durableHit->keyReferenceVersion,
+                            durableHit->ciphertextManifestDigest,
+                            durableHit->servingLocator};
+                        repairReferenceFromRepo = true;
+                    }
+                };
                 durableHit = rangeStore->lookupDurable(
-                    options.publicationIdentity, requireActive);
+                    durablePublicationIdentity, requireActive);
                 if (durableHit) {
                     durableReference = loadDurableKeyReference(
-                        identity, options.publicationIdentity);
+                        identity, durablePublicationIdentity);
+                    if (!durableReference && m_isLocalMock) {
+                        durableReference = loadLegacyDurableKeyReference(
+                            identity, durablePublicationIdentity);
+                        migrateLegacyReference = durableReference.has_value();
+                    }
+                    if (migrateLegacyReference && !referenceMetadataMatches()) {
+                        migrateLegacyReference = false;
+                    }
+                    // A missing/old reference cannot authorize the existing
+                    // ciphertext.  Rebind to a version-derived immutable
+                    // publication identity so a new protected publication
+                    // can be committed without deleting the old Repo object.
+                    if ((!durableReference || !referenceVersionMatches() ||
+                         !referenceMetadataMatches()) &&
+                        !migrateLegacyReference) {
+                        rebindDurableIdentity();
+                    }
+                }
+                if (durableHit) {
                     if (!durableReference ||
                         durableReference->serviceName != ctx.serviceName.toUri() ||
                         durableReference->encryptedDataName != encryptedDataName.toUri() ||
                         durableReference->contentDigest != result.contentDigest ||
                         durableReference->plaintextSize != result.plaintextSize ||
-                        durableReference->policyEpoch != getCurrentPolicyEpoch(ctx.serviceName) ||
+                        (durableVersioned &&
+                         (durableReference->controllerGenerationTimestamp !=
+                              durableControllerVersion->controllerGenerationTimestamp ||
+                          durableReference->policyEpoch !=
+                              durableControllerVersion->controllerEpoch)) ||
+                        (!durableVersioned &&
+                         (durableReference->controllerGenerationTimestamp != 0 ||
+                          durableReference->policyEpoch != 0)) ||
                         durableReference->protectionEpoch != durableHit->protectionEpoch ||
                         durableReference->keyReferenceId != durableHit->keyReferenceId ||
                         durableReference->keyReferenceVersion != durableHit->keyReferenceVersion ||
@@ -6219,7 +6613,7 @@ namespace ndn_service_framework
                         durableReference->servingLocator != encryptedDataName.toUri() ||
                         !durableHit->source || !durableHit->source->isDurable() ||
                         durableHit->encryptedName != encryptedDataName.toUri() ||
-                        durableHit->publicationIdentity != options.publicationIdentity ||
+                        durableHit->publicationIdentity != durablePublicationIdentity ||
                         durableHit->contentDigest != result.contentDigest ||
                         durableHit->plaintextSize != result.plaintextSize ||
                         durableHit->keyReferenceVersion.empty() ||
@@ -6245,9 +6639,46 @@ namespace ndn_service_framework
                     result.fileBacked = true;
 
                     const auto publicationKey = encryptedDataName.toUri();
+                    if (migrateLegacyReference || repairReferenceFromRepo) {
+                        std::lock_guard<std::mutex> commitFence(
+                            m_protectedReferenceCommitMutex);
+                        {
+                            std::unique_lock<std::shared_mutex> fence(
+                                m_protectedReuseMutex);
+                            if (!durableVersionMatches()) {
+                                throw std::runtime_error(
+                                    "DURABLE_STALE_CONTROLLER_VERSION");
+                            }
+                        }
+                        const auto migratedReference = repairReferenceFromRepo
+                            ? *durableReference
+                            : DurableLargeDataKeyReference{
+                                result.publicationIdentity,
+                                ctx.serviceName.toUri(),
+                                encryptedDataName.toUri(),
+                                result.contentDigest,
+                                result.plaintextSize,
+                                0,
+                                0,
+                                result.protectionEpoch,
+                                result.keyReferenceId,
+                                result.keyReferenceVersion,
+                                result.ciphertextManifestDigest,
+                                encryptedDataName.toUri()};
+                        if (!persistDurableKeyReference(identity, migratedReference,
+                                                        repairReferenceFromRepo)) {
+                            throw std::runtime_error(
+                                "DURABLE_KEY_REFERENCE_STORE_UNAVAILABLE");
+                        }
+                    }
                     std::shared_ptr<LargeDataFilePublication> publication;
                     bool scheduleExpiry = false;
                     {
+                        std::unique_lock<std::shared_mutex> fence(m_protectedReuseMutex);
+                        if (!durableVersionMatches()) {
+                            throw std::runtime_error(
+                                "DURABLE_STALE_CONTROLLER_VERSION");
+                        }
                         std::lock_guard<std::mutex> lock(_cache_mutex);
                         const auto existing = m_largeDataFiles.find(publicationKey);
                         if (existing != m_largeDataFiles.end()) {
@@ -6273,6 +6704,12 @@ namespace ndn_service_framework
                             publication->freshness = freshness;
                             publication->windowCapacity = largeDataWindowSegments();
                             publication->rangeSource = durableHit->source;
+                            publication->serviceName = ctx.serviceName.toUri();
+                            publication->publicationIdentity = options.publicationIdentity;
+                            publication->controllerVersioned = durableVersioned;
+                            if (durableVersioned)
+                                publication->controllerVersion = *durableControllerVersion;
+                            m_retiredProtectedPrefixes.erase(publicationKey);
                             if (retainWhileLeased) {
                                 result.servingLease = std::make_shared<unsigned char>(0);
                                 publication->servingLease = result.servingLease;
@@ -6329,7 +6766,7 @@ namespace ndn_service_framework
             // in Python after this point.
             result.authorizationScope = accessAttribute;
             result.protectionEpoch = key.epochId;
-            result.publicationIdentity = durable ? options.publicationIdentity : std::string{};
+            result.publicationIdentity = durable ? durablePublicationIdentity : std::string{};
             result.keyReferenceVersion = durable ? "v1" : std::string{};
             result.keyReferenceId = durable ? currentKeyReferenceId : std::string{};
 
@@ -6357,9 +6794,6 @@ namespace ndn_service_framework
                 m_hybridMessageCrypto.cacheWrappedSendKey(ctx.serviceName, key.keyId, wrappedMessageKey);
                 wrappedKeyReferenceHeld = true;
                 ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
-                std::lock_guard<std::mutex> lock(_cache_mutex);
-                for (const auto& data : wrappedContentData) m_IMS.insert(*data);
-                for (const auto& data : wrappedCkData) m_IMS.insert(*data);
                 }
             }
             else if (!m_hybridMessageCrypto.retainWrappedSendKey(ctx.serviceName, key.keyId)) {
@@ -6373,6 +6807,7 @@ namespace ndn_service_framework
             const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()),
                                  adText.size());
             std::vector<ndn::Name> stagedFullNames;
+            std::vector<std::string> protectedImsNames;
             if (fileBackedRequested) {
                 const auto directory = largeDataFileDirectory();
                 std::error_code directoryError;
@@ -6388,7 +6823,14 @@ namespace ndn_service_framework
                 std::filesystem::path filePath;
                 std::shared_ptr<LargeDataFilePublication> publication;
                 const auto publicationKey = encryptedDataName.toUri();
+                std::string pendingPublicationKey;
                 auto rollback = [&] {
+                    if (!pendingPublicationKey.empty()) {
+                        std::lock_guard<std::mutex> commitFence(
+                            m_protectedReferenceCommitMutex);
+                        std::unique_lock<std::shared_mutex> fence(m_protectedReuseMutex);
+                        m_protectedPendingPublications.erase(pendingPublicationKey);
+                    }
                     std::shared_ptr<LargeDataFilePublication> removedPublication;
                     {
                         std::lock_guard<std::mutex> lock(_cache_mutex);
@@ -6396,6 +6838,17 @@ namespace ndn_service_framework
                             const auto it = m_largeDataFiles.find(publicationKey);
                             if (it != m_largeDataFiles.end() &&
                                 it->second == publication) {
+                                for (const auto& fullName : publication->protectedImsNames) {
+                                    auto owners = m_protectedImsOwners.find(fullName);
+                                    if (owners == m_protectedImsOwners.end()) {
+                                        continue;
+                                    }
+                                    owners->second.erase(publicationKey);
+                                    if (owners->second.empty()) {
+                                        m_protectedImsOwners.erase(owners);
+                                        m_IMS.erase(ndn::Name(fullName), false);
+                                    }
+                                }
                                 m_largeDataReservedBytes =
                                     m_largeDataReservedBytes >= it->second->reservedBytes ?
                                         m_largeDataReservedBytes - it->second->reservedBytes : 0;
@@ -6413,9 +6866,14 @@ namespace ndn_service_framework
                     }
                     onIo([&] {
                         std::lock_guard<std::mutex> lock(_cache_mutex);
-                        for (const auto& fullName : stagedFullNames)
-                            m_IMS.erase(fullName, false);
+                        for (const auto& fullName : stagedFullNames) {
+                            if (m_protectedImsOwners.find(fullName.toUri()) ==
+                                m_protectedImsOwners.end()) {
+                                m_IMS.erase(fullName, false);
+                            }
+                        }
                         stagedFullNames.clear();
+                        protectedImsNames.clear();
                     });
                     if (!filePath.empty()) {
                         std::error_code removeError;
@@ -6515,6 +6973,24 @@ namespace ndn_service_framework
                         result.servingLease = std::make_shared<unsigned char>(0);
                         publication->servingLease = result.servingLease;
                     }
+                    if (durable) {
+                        std::lock_guard<std::mutex> commitFence(
+                            m_protectedReferenceCommitMutex);
+                        std::unique_lock<std::shared_mutex> fence(m_protectedReuseMutex);
+                        if (!durableVersionMatches()) {
+                            throw std::runtime_error(
+                                "DURABLE_STALE_CONTROLLER_VERSION");
+                        }
+                        pendingPublicationKey = publicationKey + "#" +
+                            std::to_string(++m_protectedPendingSequence);
+                        m_protectedPendingPublications.emplace(
+                            pendingPublicationKey,
+                            ProtectedPublicationPending{
+                                ctx.serviceName.toUri(), publicationKey,
+                                durableVersioned ? *durableControllerVersion :
+                                    ControllerVersion{}, durableVersioned,
+                                {}, false});
+                    }
                     if (hasWrappedMessageKey) onIo([&] {
                         // Wrapped-key packets remain small control Data and use
                         // the existing IMS path; only the encrypted object body
@@ -6523,20 +6999,135 @@ namespace ndn_service_framework
                             std::lock_guard<std::mutex> lock(_cache_mutex);
                             for (const auto& data : wrappedContentData) {
                                 const auto fullName = data->getFullName();
-                                if (!m_IMS.find(fullName))
+                                const bool existed = static_cast<bool>(m_IMS.find(fullName));
+                                if (!existed) {
                                     stagedFullNames.push_back(fullName);
+                                    if (durable)
+                                        protectedImsNames.push_back(fullName.toUri());
+                                }
+                                else if (durable &&
+                                         m_protectedImsOwners.find(fullName.toUri()) !=
+                                             m_protectedImsOwners.end()) {
+                                    protectedImsNames.push_back(fullName.toUri());
+                                }
                                 m_IMS.insert(*data);
                             }
                             for (const auto& data : wrappedCkData) {
                                 const auto fullName = data->getFullName();
-                                if (!m_IMS.find(fullName))
+                                const bool existed = static_cast<bool>(m_IMS.find(fullName));
+                                if (!existed) {
                                     stagedFullNames.push_back(fullName);
+                                    if (durable)
+                                        protectedImsNames.push_back(fullName.toUri());
+                                }
+                                else if (durable &&
+                                         m_protectedImsOwners.find(fullName.toUri()) !=
+                                             m_protectedImsOwners.end()) {
+                                    protectedImsNames.push_back(fullName.toUri());
+                                }
                                 m_IMS.insert(*data);
+                            }
+                        }
+                        if (durable) {
+                            std::unique_lock<std::shared_mutex> fence(
+                                m_protectedReuseMutex);
+                            const auto pending = m_protectedPendingPublications.find(
+                                pendingPublicationKey);
+                            if (pending == m_protectedPendingPublications.end() ||
+                                pending->second.cancelled) {
+                                std::lock_guard<std::mutex> cleanupLock(_cache_mutex);
+                                for (const auto& fullName : protectedImsNames) {
+                                    if (m_protectedImsOwners.find(fullName) ==
+                                        m_protectedImsOwners.end()) {
+                                        m_IMS.erase(ndn::Name(fullName), false);
+                                    }
+                                    m_retiredProtectedPrefixes.insert(fullName);
+                                }
+                            }
+                            else {
+                                pending->second.imsNames = protectedImsNames;
                             }
                         }
                     });
                     if (requireActive) requireActive();
-                    {
+                    result.encryptedDataName = encryptedDataName;
+                    result.ciphertextManifestDigest = result.manifestDigest;
+                    result.servingLocator = encryptedDataName.toUri();
+                    if (durable) {
+                        // The pending entry closes the gap between wrapped-key
+                        // insertion and publication-owner registration.  The
+                        // short commit fence serializes this final owner
+                        // registration with status retirement, while the
+                        // actual reference file operation stays outside the
+                        // lifecycle shared mutex.
+                        std::lock_guard<std::mutex> commitFence(
+                            m_protectedReferenceCommitMutex);
+                        {
+                            std::unique_lock<std::shared_mutex> fence(
+                                m_protectedReuseMutex);
+                            const auto pending = m_protectedPendingPublications.find(
+                                pendingPublicationKey);
+                            if (pending == m_protectedPendingPublications.end() ||
+                                pending->second.cancelled ||
+                                !durableVersionMatches()) {
+                                throw std::runtime_error(
+                                    "DURABLE_STALE_CONTROLLER_VERSION");
+                            }
+                            publication->serviceName = ctx.serviceName.toUri();
+                            publication->publicationIdentity =
+                                options.publicationIdentity;
+                            publication->controllerVersioned = durableVersioned;
+                            if (durableVersioned)
+                                publication->controllerVersion =
+                                    *durableControllerVersion;
+                            publication->protectedImsNames = protectedImsNames;
+                            m_retiredProtectedPrefixes.erase(publicationKey);
+                            for (const auto& fullName : protectedImsNames)
+                                m_retiredProtectedPrefixes.erase(fullName);
+                            std::lock_guard<std::mutex> lock(_cache_mutex);
+                            const auto [it, inserted] = m_largeDataFiles.emplace(
+                                publicationKey, publication);
+                            if (!inserted) {
+                                throw std::runtime_error(
+                                    "duplicate large-data publication name");
+                            }
+                            (void)it;
+                            for (const auto& fullName : protectedImsNames) {
+                                m_protectedImsOwners[fullName][publicationKey] =
+                                    ProtectedImsOwner{
+                                        ctx.serviceName.toUri(),
+                                        durableVersioned ? *durableControllerVersion :
+                                            ControllerVersion{}};
+                            }
+                            m_protectedPendingPublications.erase(pending);
+                            publicationRegistered = true;
+                            reservationHeld = false;
+                        }
+                        // The Core-owned reference becomes COMMITTED only
+                        // after Repo commit/read-back and local serving-owner
+                        // registration have succeeded.  The commit fence
+                        // keeps a strictly newer status from linearizing
+                        // between that registration and this write.
+                        const DurableLargeDataKeyReference keyReference{
+                            result.publicationIdentity,
+                            ctx.serviceName.toUri(),
+                            encryptedDataName.toUri(),
+                            result.contentDigest,
+                            result.plaintextSize,
+                            durableVersioned ? durableControllerVersion->controllerEpoch : 0,
+                            durableVersioned ?
+                                durableControllerVersion->controllerGenerationTimestamp : 0,
+                            result.protectionEpoch,
+                            result.keyReferenceId,
+                            result.keyReferenceVersion,
+                            result.manifestDigest,
+                            encryptedDataName.toUri()};
+                        if (!persistDurableKeyReference(identity, keyReference)) {
+                            throw std::runtime_error(
+                                "DURABLE_KEY_REFERENCE_STORE_UNAVAILABLE");
+                        }
+                    }
+                    else {
                         std::lock_guard<std::mutex> lock(_cache_mutex);
                         const auto [it, inserted] = m_largeDataFiles.emplace(
                             publicationKey, publication);
@@ -6553,35 +7144,15 @@ namespace ndn_service_framework
                                                    weakPublication = std::weak_ptr<LargeDataFilePublication>(publication)] {
                         expireLargeDataPublication(publicationKey, weakPublication);
                     }); });
-                    result.encryptedDataName = encryptedDataName;
-                    result.ciphertextManifestDigest = result.manifestDigest;
-                    result.servingLocator = encryptedDataName.toUri();
                     if (durable) {
-                        // The Core-owned reference becomes COMMITTED only
-                        // after Repo commit/read-back and local serving-owner
-                        // registration have succeeded.  A failed write leaves
-                        // an unreferenced durable object, never a false hit.
-                        const DurableLargeDataKeyReference keyReference{
-                            result.publicationIdentity,
-                            ctx.serviceName.toUri(),
-                            encryptedDataName.toUri(),
-                            result.contentDigest,
-                            result.plaintextSize,
-                            getCurrentPolicyEpoch(ctx.serviceName),
-                            result.protectionEpoch,
-                            result.keyReferenceId,
-                            result.keyReferenceVersion,
-                            result.manifestDigest,
-                            encryptedDataName.toUri()};
-                        if (!persistDurableKeyReference(identity, keyReference)) {
-                            throw std::runtime_error(
-                                "DURABLE_KEY_REFERENCE_STORE_UNAVAILABLE");
-                        }
+                        result.rollbackDataNames = protectedImsNames;
                     }
-                    for (const auto& data : wrappedContentData)
-                        result.rollbackDataNames.push_back(data->getFullName().toUri());
-                    for (const auto& data : wrappedCkData)
-                        result.rollbackDataNames.push_back(data->getFullName().toUri());
+                    else {
+                        for (const auto& data : wrappedContentData)
+                            result.rollbackDataNames.push_back(data->getFullName().toUri());
+                        for (const auto& data : wrappedCkData)
+                            result.rollbackDataNames.push_back(data->getFullName().toUri());
+                    }
                     if (publication->keyLease) {
                         result.rollbackKeyId = key.keyId;
                         result.rollbackServiceName = ctx.serviceName.toUri();
@@ -6845,6 +7416,68 @@ namespace ndn_service_framework
         m_largeDataRangeStore = std::move(store);
     }
 
+    void ServiceUser::retireProtectedPublications(
+        const ndn::Name& serviceName,
+        const ControllerVersion& version)
+    {
+        std::vector<std::shared_ptr<LargeDataFilePublication>> removed;
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            for (auto& [pendingKey, pending] : m_protectedPendingPublications) {
+                if (pending.serviceName != serviceName.toUri() ||
+                    (pending.versioned && pending.version.compare(version) >= 0)) {
+                    continue;
+                }
+                pending.cancelled = true;
+                m_retiredProtectedPrefixes.insert(pending.publicationKey);
+                for (const auto& fullName : pending.imsNames) {
+                    m_retiredProtectedPrefixes.insert(fullName);
+                    if (m_protectedImsOwners.find(fullName) ==
+                        m_protectedImsOwners.end()) {
+                        m_IMS.erase(ndn::Name(fullName), false);
+                    }
+                }
+                (void)pendingKey;
+            }
+            for (auto it = m_largeDataFiles.begin(); it != m_largeDataFiles.end();) {
+                const auto& publication = it->second;
+                if (!publication || publication->serviceName != serviceName.toUri() ||
+                    (publication->controllerVersioned &&
+                     publication->controllerVersion.compare(version) >= 0)) {
+                    ++it;
+                    continue;
+                }
+
+                const auto publicationKey = it->first;
+                m_retiredProtectedPrefixes.insert(publication->baseName.toUri());
+                for (const auto& fullName : publication->protectedImsNames) {
+                    auto owners = m_protectedImsOwners.find(fullName);
+                    if (owners != m_protectedImsOwners.end()) {
+                        owners->second.erase(publicationKey);
+                        if (owners->second.empty()) {
+                            m_protectedImsOwners.erase(owners);
+                            m_IMS.erase(ndn::Name(fullName), false);
+                            m_retiredProtectedPrefixes.insert(fullName);
+                        }
+                    }
+                }
+                if (m_largeDataReservedBytes >= publication->reservedBytes) {
+                    m_largeDataReservedBytes -= publication->reservedBytes;
+                }
+                else {
+                    m_largeDataReservedBytes = 0;
+                }
+                removed.push_back(publication);
+                it = m_largeDataFiles.erase(it);
+            }
+        }
+        // `removed` is intentionally destroyed after the cache lock is
+        // released.  Durable range-source destruction never calls Repo
+        // release(), so ciphertext ownership remains outside this local
+        // serving transition.
+        removed.clear();
+    }
+
     bool ServiceUser::supportsDurableEncryptedLargeData() const noexcept
     {
         std::lock_guard<std::mutex> lock(_cache_mutex);
@@ -6868,6 +7501,18 @@ namespace ndn_service_framework
                     });
                 return;
             }
+            const auto publicationKey = it->first;
+            for (const auto& fullName : publication->protectedImsNames) {
+                auto owners = m_protectedImsOwners.find(fullName);
+                if (owners == m_protectedImsOwners.end()) {
+                    continue;
+                }
+                owners->second.erase(publicationKey);
+                if (owners->second.empty()) {
+                    m_protectedImsOwners.erase(owners);
+                    m_IMS.erase(ndn::Name(fullName), false);
+                }
+            }
             m_largeDataReservedBytes -= publication->reservedBytes;
             removed = publication;
             m_largeDataFiles.erase(it);
@@ -6882,13 +7527,29 @@ namespace ndn_service_framework
         for (const auto& publication : publications) {
             try {
                 std::lock_guard<std::mutex> lock(_cache_mutex);
-                for (const auto& value : publication.rollbackDataNames) {
-                    const ndn::Name prefix(value);
-                    if (!prefix.empty())
-                        m_IMS.erase(prefix, true);
+                if (!publication.publicationIdentity.empty()) {
+                    const auto publicationKey = publication.encryptedDataName.toUri();
+                    for (const auto& value : publication.rollbackDataNames) {
+                        auto owners = m_protectedImsOwners.find(value);
+                        if (owners == m_protectedImsOwners.end()) {
+                            continue;
+                        }
+                        owners->second.erase(publicationKey);
+                        if (owners->second.empty()) {
+                            m_protectedImsOwners.erase(owners);
+                            m_IMS.erase(ndn::Name(value), false);
+                        }
+                    }
                 }
-                if (!publication.encryptedDataName.empty())
-                    m_IMS.erase(publication.encryptedDataName, true);
+                else {
+                    for (const auto& value : publication.rollbackDataNames) {
+                        const ndn::Name prefix(value);
+                        if (!prefix.empty())
+                            m_IMS.erase(prefix, true);
+                    }
+                    if (!publication.encryptedDataName.empty())
+                        m_IMS.erase(publication.encryptedDataName, true);
+                }
             }
             catch (...) {
                 // Rollback is deliberately best effort; queued Face packets
@@ -13663,11 +14324,31 @@ void ServiceUser::finishRequestAckOnEventLoop(
     bool ServiceUser::replyFromIMS(const ndn::Interest &interest)
     {
         std::optional<ndn::Data> dataToSend;
+        bool suppressFallback = false;
+        std::shared_lock<std::shared_mutex> fence(m_protectedReuseMutex);
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
-            if (auto data = m_IMS.find(interest)) {
+            const auto isRetiredInterest = [&] {
+                for (const auto& prefixUri : m_retiredProtectedPrefixes) {
+                    const ndn::Name prefix(prefixUri);
+                    if (prefix.isPrefixOf(interest.getName()) ||
+                        interest.getName().isPrefixOf(prefix)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            suppressFallback = isRetiredInterest();
+            if (suppressFallback) {
+                NDN_LOG_TRACE("Suppress stale protected IMS fallback: "
+                              << interest.getName().toUri());
+            }
+            else if (auto data = m_IMS.find(interest)) {
                 dataToSend.emplace(*data);
             }
+        }
+        if (suppressFallback) {
+            return true;
         }
         if (dataToSend)
         {
@@ -13688,6 +14369,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
     {
         std::shared_ptr<LargeDataFilePublication> publication;
         const auto& interestName = interest.getName();
+        std::shared_lock<std::shared_mutex> fence(m_protectedReuseMutex);
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
             for (const auto& item : m_largeDataFiles) {
@@ -13708,7 +14390,36 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 }
             }
         }
+        if (publication && !publication->publicationIdentity.empty()) {
+            bool current = true;
+            // Do not acquire the Controller mutex while holding the cache
+            // mutex.  The protected read-side fence prevents a status
+            // retirement from linearizing between this check and m_face.put.
+            std::lock_guard<std::mutex> versionLock(m_controllerVersionMutex);
+            const auto statusIt = m_revocationStates.find(
+                publication->serviceName);
+            if (publication->controllerVersioned) {
+                current = statusIt != m_revocationStates.end() &&
+                    statusIt->second.hasCurrentStatus() &&
+                    statusIt->second.currentVersion().compare(
+                        publication->controllerVersion) == 0;
+            }
+            else {
+                current = statusIt == m_revocationStates.end() ||
+                    !statusIt->second.hasCurrentStatus();
+            }
+            if (!current) {
+                return true;
+            }
+        }
         if (!publication) {
+            for (const auto& prefixUri : m_retiredProtectedPrefixes) {
+                const ndn::Name prefix(prefixUri);
+                if (prefix.isPrefixOf(interestName) ||
+                    interestName.isPrefixOf(prefix)) {
+                    return true;
+                }
+            }
             return false;
         }
 
