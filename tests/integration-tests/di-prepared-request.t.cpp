@@ -534,6 +534,20 @@ void writeEd25519KeyPair(const std::filesystem::path& privatePath,
     std::filesystem::perm_options::replace);
 }
 
+void writeEd25519PrivateKey(const std::filesystem::path& privatePath,
+                            const std::shared_ptr<EVP_PKEY>& key)
+{
+  std::unique_ptr<BIO, decltype(&BIO_free)> privateBio(
+    BIO_new_file(privatePath.c_str(), "wb"), BIO_free);
+  if (!privateBio || !key ||
+      PEM_write_bio_PrivateKey(privateBio.get(), key.get(), nullptr, nullptr, 0,
+                               nullptr, nullptr) != 1)
+    throw std::runtime_error("cannot write fixture private key");
+  std::filesystem::permissions(privatePath,
+    std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+    std::filesystem::perm_options::replace);
+}
+
 std::string publicKeyDigest(const std::filesystem::path& path)
 {
   std::ifstream input(path);
@@ -2349,55 +2363,65 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto providerConfig = preparedProviderConfig(serviceName, roles);
   auto runs = std::make_shared<std::atomic<unsigned>>(0);
   auto preparation = makePreparedServedProviderPreparation();
-  auto protectedFactory = [issuedGrants, issuedGrantsMutex, authorityName,
-                           authorityKey, recipientKey, providerBootId] (
-    ndn_service_framework::ServiceProvider::CollaborationContext&,
-    const NativeSelectionProjectionV3& projection,
-    const std::shared_ptr<ProviderGroupCoordinator>&) {
+  const auto credentialsRoot = fixture.root / "served-provider-protected-credentials";
+  std::filesystem::create_directories(credentialsRoot / "trust");
+  const auto authorityPem = publicKeyPem(authorityKey);
+  {
+    std::ofstream output(credentialsRoot / "authority.pub");
+    output << authorityPem;
+  }
+  writeEd25519PrivateKey(credentialsRoot / "recipient.pem", recipientKey);
+  boost::property_tree::ptree registry;
+  registry.put("schemaVersion", 1);
+  registry.put("status", "CONFIGURED");
+  auto& protectedPolicy = registry.put_child("artifactPolicyAuthority", {});
+  protectedPolicy.put("publicKeyAlgorithm", "ed25519");
+  protectedPolicy.put("signatureAlgorithm", "ed25519");
+  protectedPolicy.put("grantSchema", "ndnsf-di-key-grant-v1");
+  protectedPolicy.put("publicKeyPath", "authority.pub");
+  protectedPolicy.put("publicKeySha256", nativePlanningDigest(authorityPem));
+  protectedPolicy.put("authorityId", authorityName);
+  protectedPolicy.put("keyId", authorityName + "/KEY/1");
+  boost::property_tree::ptree acceptedFamilies, familyValue;
+  // This fixture intentionally serves without --plan, so Provider::serve
+  // applies its production fallback model family before installing the
+  // default protected-grant factory.
+  familyValue.put_value(nativeProtectedModelFamily("provider-runtime"));
+  acceptedFamilies.push_back({"", familyValue});
+  protectedPolicy.put_child("acceptedModelFamilies", acceptedFamilies);
+  boost::property_tree::ptree epochs, epochValue;
+  epochValue.put_value(protectionEpoch);
+  epochs.push_back({"", epochValue});
+  protectedPolicy.put_child("protectionEpochs", epochs);
+  boost::property_tree::write_json(
+    (credentialsRoot / "trust/trust-root-registry-v1.json").string(), registry);
+  boost::property_tree::ptree recipientMap, recipientPath;
+  recipientPath.put_value((credentialsRoot / "recipient.pem").string());
+  recipientMap.push_back({providerName, recipientPath});
+  boost::property_tree::write_json(
+    (credentialsRoot / "recipients.json").string(), recipientMap);
+  ScopedEnvironmentValue authoritySetting(
+    "SPEC181_GRANT_AUTHORITY_PUBLIC_KEY",
+    (credentialsRoot / "trust/authority.pub").c_str());
+  ScopedEnvironmentValue recipientSetting(
+    "SPEC181_PROVIDER_RECIPIENT_KEY_MAP",
+    (credentialsRoot / "recipients.json").c_str());
+  auto exactGrantFetches = std::make_shared<std::atomic<unsigned>>(0);
+  auto protectedGrantFetcher = [issuedGrants, issuedGrantsMutex, exactGrantFetches] (
+    const std::string& name, int, const std::function<bool()>& cancelled) {
+    if (cancelled && cancelled())
+      throw std::runtime_error("Spec185 served Provider grant fetch cancelled");
     NativeKeyGrant grant;
     {
       std::lock_guard<std::mutex> lock(*issuedGrantsMutex);
-      const auto found = issuedGrants->find(projection.grantDigest);
+      const auto found = std::find_if(issuedGrants->begin(), issuedGrants->end(),
+        [&name] (const auto& item) { return item.second.grantName == name; });
       if (found == issuedGrants->end())
-        throw std::runtime_error("Spec185 served Provider grant publication missing");
+        throw std::runtime_error("Spec185 served Provider exact grant publication missing");
       grant = found->second;
     }
-    ProtectedRuntimeBindingV1 binding;
-    binding.provider = projection.provider;
-    binding.role = projection.executionRole.roleId;
-    binding.requestId = projection.requestId;
-    binding.attempt = projection.attempt;
-    binding.planCoreDigest = projection.planCoreDigest;
-    binding.planDigest = projection.planDigest;
-    binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
-    binding.protectionEpoch = projection.selectedRole.protectionEpoch;
-    binding.grantName = projection.grantName;
-    binding.grantDigest = projection.grantDigest;
-    binding.providerBootId = providerBootId;
-    binding.fencingToken = nativeProtectedFencingToken(projection, providerBootId, {});
-    binding.expiresAtMs = projection.deadlineMs;
-    for (const auto& endpoint : projection.dataflow.mayPublish) {
-      binding.mayPublishEndpointDigests.insert(endpoint.endpointDigest);
-      binding.mayPublishConsumerByEndpoint[endpoint.endpointDigest] = endpoint.consumerRole;
-    }
-    for (const auto& endpoint : projection.dataflow.mustFetch) {
-      if (endpoint.sourceKind == "APPLICATION_INPUT" || endpoint.operation == "APPLICATION_INPUT")
-        continue;
-      binding.mustFetchEndpointDigests.insert(endpoint.endpointDigest);
-      binding.mustFetchProducerByEndpoint[endpoint.endpointDigest] = endpoint.producerRole;
-    }
-    NativeProtectedGrantConfig grantConfig;
-    grantConfig.authorityIdentity = authorityName;
-    grantConfig.authorityPublicKeyRaw = rawPublicKey(authorityKey);
-    grantConfig.recipientKey = {NativeRecipientKey::Kind::Ed25519Seed, std::string(32, 0x61)};
-    grantConfig.modelManifestDigest = projection.selectedRole.modelManifestDigest;
-    grantConfig.fetchGrant = [wire = grant.wireJson] (const std::string&) {
-      return wire;
-    };
-    auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(grantConfig));
-    runtime->verifyGrant(binding, static_cast<std::uint64_t>(std::chrono::duration_cast<
-      std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()));
-    return runtime;
+    exactGrantFetches->fetch_add(1, std::memory_order_relaxed);
+    return grant.wireJson;
   };
   auto ackHandler = [offerConfig] (const ndn_service_framework::RequestMessage& request) {
     const auto payload = request.getPayload();
@@ -2420,7 +2444,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     environment->providerFace(), environment->provider(), environment->keyChain(),
     providerCertificate, authorityCertificate, providerConfig,
     makePreparedServedProviderRunnerFactory(runs), std::move(preparation),
-    std::move(protectedFactory), std::move(ackHandler));
+    {}, std::move(ackHandler), std::move(protectedGrantFetcher));
   environment->enableProductionIngressForTest();
   auto served = facade.serve({serviceName, roles});
   BOOST_REQUIRE(served.valid());
@@ -2452,6 +2476,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK_EQUAL(result.modelDigest, model.intentDigest());
   BOOST_CHECK(!result.planDigest.empty());
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK(exactGrantFetches->load(std::memory_order_relaxed) > 0U);
   const auto counters = facade.counters();
   BOOST_CHECK_EQUAL(counters.assemblies, 1U);
   BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);

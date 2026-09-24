@@ -727,6 +727,7 @@ struct Provider::State
   std::shared_ptr<NativeModelRunnerFactory> testRunnerFactory;
   NativeProviderHandlerConfig::RunnerPreparationFactory testPreparationFactory;
   NativeProviderHandlerConfig::ProtectedRuntimeFactory testProtectedRuntimeFactory;
+  NativeProviderHandlerConfig::ProtectedGrantFetcher testProtectedGrantFetcher;
   ndn_service_framework::ServiceProvider::AckStrategyHandler testAckHandler;
 #endif
   ndn::security::Certificate providerCertificate;
@@ -1170,7 +1171,8 @@ Provider Provider::fromServiceProviderForTest(
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory,
   NativeProviderHandlerConfig::RunnerPreparationFactory preparationFactory,
   NativeProviderHandlerConfig::ProtectedRuntimeFactory protectedRuntimeFactory,
-  ndn_service_framework::ServiceProvider::AckStrategyHandler ackHandler)
+  ndn_service_framework::ServiceProvider::AckStrategyHandler ackHandler,
+  NativeProviderHandlerConfig::ProtectedGrantFetcher protectedGrantFetcher)
 {
   if (!config.m_impl)
     throw std::invalid_argument("Provider requires a validated ProviderConfig");
@@ -1190,6 +1192,7 @@ Provider Provider::fromServiceProviderForTest(
   state->testRunnerFactory = std::move(runnerFactory);
   state->testPreparationFactory = std::move(preparationFactory);
   state->testProtectedRuntimeFactory = std::move(protectedRuntimeFactory);
+  state->testProtectedGrantFetcher = std::move(protectedGrantFetcher);
   state->testAckHandler = std::move(ackHandler);
   state->providerCertificate = providerCertificate;
   state->controllerCertificate = controllerCertificate;
@@ -1637,6 +1640,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       ? std::make_shared<CountingProviderRunnerFactory>(
           m_state->testRunnerFactory, m_state->metrics)
       : makeProviderRunnerFactory(m_state->metrics);
+    nativeConfig.protectedGrantFetcher = m_state->testProtectedGrantFetcher;
 #else
     nativeConfig.runnerFactory = makeProviderRunnerFactory(m_state->metrics);
 #endif

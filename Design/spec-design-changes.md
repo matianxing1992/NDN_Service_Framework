@@ -1,5 +1,23 @@
 # Spec 设计变更记录
 
+## Spec190 default protected grant factory transport seam — 2026-09-23
+
+- **Status**: `PARTIAL` / `NO_DESIGN_CHANGE` for the external NDNSF contract；B190-27
+  只推进 T006 的 C++ production-wiring sub-gate，不解除 protected material reuse
+  安全门，也不解锁 T007。
+- **Delta**: `NativeProviderHandlerConfig` 增加可选的 bounded、cancellation-aware
+  `ProtectedGrantFetcher`。空值保持现有 exact-name NDN transport；Provider 的
+  test-only owner seam 可以注入等价 fetch dependency，从而验证默认
+  `installNativeProtectedGrantFactory`，不再用 `testProtectedRuntimeFactory` 替换它。
+- **Boundary**: 不改变 Core/Provider wire、Selection、grant binding、cache identity、
+  authorization 或应用公开 API；registry、recipient key 和 grant verifier 仍在生产
+  factory 内 fail-closed。该 seam 不是 real NFD route-backed qualification；在线
+  Controller、revoke/rebind、negative exact-fetch、durable key recovery 与完整 T006
+  仍未完成。当前/目标 PDF 无语义变化，不刷新 PDF。
+- **Evidence**: [B190-27](../specs/190-multiturn-latency/evidence/b190-27.md)；affected
+  C++ target compile/link、focused selector 13/13 ×4 和 `spec185-provider-assembly`
+  21/21 通过；full prepared-request regression 的独立 preparation timeout 不计 PASS。
+
 ## Spec190 native protected assembled ciphertext reuse — 2026-09-23
 
 - **Status**: `PARTIAL`；B190-21 只闭合 native assembled cache 的稳定密文路径和

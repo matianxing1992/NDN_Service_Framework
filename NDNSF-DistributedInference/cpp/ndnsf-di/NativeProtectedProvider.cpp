@@ -46,7 +46,8 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
 {
   const auto boot = config.providerBootId;
   const auto modelFamily = nativeProtectedModelFamily(config.plan.modelName);
-  config.protectedRuntimeFactory = [boot, modelFamily] (
+  const auto grantFetcher = config.protectedGrantFetcher;
+  config.protectedRuntimeFactory = [boot, modelFamily, grantFetcher] (
       ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
       const NativeSelectionProjectionV3& projection,
       const std::shared_ptr<ProviderGroupCoordinator>& group) {
@@ -95,7 +96,9 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
     keys.shouldCancel = [&ctx] { return ctx.isStreamed() && ctx.streamCancelled(); };
     keys.fetchGrant = [limit = static_cast<int>(std::min<std::uint64_t>(
                         30000, projection.deadlineMs - now)),
-                       cancelled = keys.shouldCancel] (const std::string& name) {
+                       cancelled = keys.shouldCancel, grantFetcher] (const std::string& name) {
+      if (grantFetcher)
+        return grantFetcher(name, limit, cancelled);
       return fetchNativeProtectedGrant(name, limit, cancelled);
     };
     auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(keys));

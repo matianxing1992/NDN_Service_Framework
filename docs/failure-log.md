@@ -1,5 +1,35 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-27 default protected grant factory production-wiring gate
+
+- **Status:** `ADVANCE` for the default-factory sub-gate; T006 remains
+  `PARTIAL` and T007 remains locked.
+- **First boundary:** the first valid run reached Selection and the production
+  default factory, then failed at the operator registry policy check because
+  the fixture listed the prepared model family while `Provider::serve` had no
+  `--plan` and correctly used its `provider-runtime` fallback. The requester
+  later reported `Core request deadline expired`; that was downstream of the
+  Provider failure. The registry fixture was corrected before the valid rerun.
+- **Changed gate:** `ProtectedGrantFetcher` is now an optional production
+  configuration dependency. Empty means the existing exact-name NDN transport;
+  the test-only Provider seam can supply a bounded exact-name callback without
+  replacing `testProtectedRuntimeFactory` semantics. The C++ served-provider
+  selector leaves the protected runtime factory empty and reaches the default
+  factory, credential loader, exact grant lookup, `GRANT_VERIFIED`, assembly,
+  runner, terminal and cleanup.
+- **Validation:** ordinary root `build/` linked the affected targets; the
+  focused selector passed `13/13` four times; full `spec185-provider-assembly`
+  passed `21/21` cases and `224/224` assertions. The separate full
+  `spec185-prepared-request` run stopped after all threads remained in futex
+  wait; its flushed log recorded `DI_NATIVE_PREPARATION_TIMEOUT` in
+  `PreparedRequestsSharePackageButAllocateIndependentIds`, so it is not a
+  PASS and its raw directory is preserved.
+- **Qualification boundary:** the injected callback is a production-approved
+  transport dependency but not a real NFD route-backed fetch. Online Controller
+  confirmation, revoke/rebind, negative exact-fetch cases, durable key recovery
+  and full T006 remain open. ASan/UBSan remains deferred by user scope.
+- **Evidence:** [B190-27](../specs/190-multiturn-latency/evidence/b190-27.md).
+
 ## 2026-09-23 — Spec190 B190-26 default protected grant factory wiring audit
 
 - **Status:** `ROOT_CAUSE` / T006 remains `PARTIAL`; T007 remains locked.

@@ -38,6 +38,11 @@ struct NativeProviderHandlerConfig
     ndn_service_framework::ServiceProvider::CollaborationContext&,
     const NativeSelectionProjectionV3&,
     const std::shared_ptr<ProviderGroupCoordinator>&)>;
+  // Optional exact-name grant transport.  An empty callback keeps the
+  // production NDN transport; deployment/test adapters may provide the same
+  // bounded, cancellation-aware fetch without replacing the runtime factory.
+  using ProtectedGrantFetcher = std::function<std::string(
+    const std::string&, int, const std::function<bool()>&)>;
   using EpochCoordinatorCompletionObserver = std::function<void(
     const std::string&, const NativeEpochCoordinatorResult&)>;
   using NativeFailureObserver = std::function<void(
@@ -126,6 +131,7 @@ struct NativeProviderHandlerConfig
   // Selection-referenced KeyGrant, unwraps it inside the Provider boundary,
   // installs exact dataflow/capability bindings, and returns GrantVerified.
   ProtectedRuntimeFactory protectedRuntimeFactory;
+  ProtectedGrantFetcher protectedGrantFetcher;
   std::size_t workerCount = 1;
   std::size_t workerQueueCapacity = 1024;
   // Finite per-host KV retention policy; authenticated turn deadlines may
