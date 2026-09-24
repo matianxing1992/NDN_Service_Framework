@@ -4,6 +4,18 @@
 `NDNSF-DistributedRepo` 和 `NDNSF-DistributedInference` 同级，因为它是建立在通用
 NDNSF runtime 之上的应用层，而不是低层 core example。
 
+## Spec191 真实数据多 UAV 协作跟踪 demo
+
+可复用的真实数据 demo 只有一个入口：
+`Experiments/UAV/run_multicamera_tracking_demo.py`；对应的范围、验收和证据在
+`specs/191-uav-realdata-tracking/`。默认 MiniNDN 拓扑严格为五个网络节点：
+`uav1`、`uav2`、`uav3` 分别发布三路相机视图；`compute` 是唯一的跟踪/推理节点，
+并在本机运行 renderer；`gs` 同时承载 Ground Station 和独立的 Controller 进程。
+因此清单是五个网络节点、七个应用进程，而不是七个网络节点。启动 `--run` 前先执行
+`--preflight`；`--headless` 只用于自动化流水线，不能当作真实三窗口桌面验收。demo 使用
+固定的本地视频和 CPU 模型，通过已验证的 NDNSF Named Data 传递帧与结果；不宣称跟踪
+准确率或真实飞行资格。
+
 核心思想是：一个进程可以承载多个 NDNSF service instances 和 client-side workflows。
 `UavDroneApp` 是 drone-side container，承载 MAVLink execution、video control、telemetry、
 camera frame、mission assignment 等服务实例。`UavGroundStationApp` 是 ground-station

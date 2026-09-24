@@ -5,6 +5,20 @@ kept beside `NDNSF-DistributedRepo` and `NDNSF-DistributedInference` because it
 is an application layer above the generic NDNSF runtime, not a low-level core
 example.
 
+## Spec191 real-data cooperative tracking demo
+
+The reusable real-data demo is maintained by the single entrypoint
+`Experiments/UAV/run_multicamera_tracking_demo.py` and its scoped evidence in
+`specs/191-uav-realdata-tracking/`. It uses exactly five MiniNDN network nodes:
+`uav1`, `uav2`, and `uav3` publish the three camera views; `compute` is the sole
+tracking/inference node and hosts the local renderer; `gs` hosts the Ground
+Station and a separate Controller process. Thus the application manifest has
+five network nodes and seven processes, not seven nodes. Run `--preflight`
+before `--run`; `--headless` is for pipeline automation and does not claim the
+real three-window desktop criterion. The demo uses the pinned local videos and
+CPU model, sends frames and results through validated NDNSF Named Data, and
+does not claim tracking accuracy or real-flight readiness.
+
 The key idea is that one process can host multiple NDNSF service instances and
 client-side workflows. `UavDroneApp` is a drone-side container for services such
 as MAVLink execution, video control, telemetry, camera frames, and mission
