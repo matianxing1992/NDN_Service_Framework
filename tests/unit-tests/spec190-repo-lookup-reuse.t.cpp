@@ -13,6 +13,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 
@@ -222,10 +223,35 @@ BOOST_AUTO_TEST_CASE(CommittedReceiptIsFoundBeforeAnotherPublication)
     "qwen", "/service", nativeCanonicalJson(changedLayer), 1U << 20,
     std::chrono::steady_clock::now() + std::chrono::seconds(10)}));
 
-  // Reopen the same fixed root through a fresh RepoCore/provider owner. This
-  // is the close/reopen analogue of the process boundary and must not publish.
+  // Reopen the same fixed root through a real child process. The child owns a
+  // new RepoCore/provider and must not publish or inherit a live receipt.
   provider.reset();
   fixture.repo.reset();
+  const auto child = ::fork();
+  BOOST_REQUIRE(child >= 0);
+  if (child == 0) {
+    try {
+      auto childRepo = fixture.openRepo();
+      RepoSourceProvider childProvider(childRepo);
+      const auto childHit = childProvider.lookupPrepared({
+        "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
+        std::chrono::steady_clock::now() + std::chrono::seconds(10)});
+      if (!childHit || childHit->rootDataName != committed.rootDataName ||
+          childProvider.stats().publicationCalls != 0U)
+        _exit(1);
+      _exit(0);
+    }
+    catch (...) {
+      _exit(2);
+    }
+  }
+  int childStatus = 0;
+  BOOST_REQUIRE_EQUAL(::waitpid(child, &childStatus, 0), child);
+  BOOST_REQUIRE(WIFEXITED(childStatus));
+  BOOST_CHECK_EQUAL(WEXITSTATUS(childStatus), 0);
+
+  // Also retain the in-process close/reopen check for the same fixed root.
+  provider.reset();
   fixture.repo = fixture.openRepo();
   RepoSourceProvider restarted(fixture.repo);
   const auto reopened = restarted.lookupPrepared({
