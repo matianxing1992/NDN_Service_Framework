@@ -3446,6 +3446,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   continue;
                 }
                 if (!processedControlSequences.insert(item.sequence).second) {
+                  logControl("rejected", {}, "duplicate_sequence", item.sequence);
                   continue;
                 }
                 ConversationPromotionControl control;
