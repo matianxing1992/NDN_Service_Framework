@@ -237,6 +237,44 @@ def digest_text(value: str) -> str:
     return digest_bytes(value.encode("utf-8"))
 
 
+def load_or_create_persistent_content_key(cache_root: Path, model_family: str) -> tuple[Path, bytes]:
+    """Load one fixed authority key so protected assembled cache survives runs.
+
+    The key is deliberately kept outside every run/evidence directory. Its
+    non-secret digest is bound into the authority key ID below; otherwise a
+    restarted authority could advertise the same cache identity for different
+    key material and make an old ciphertext fail only after CACHE_HIT.
+    """
+    key_directory = cache_root.expanduser().resolve() / "authority-keys"
+    key_directory.mkdir(parents=True, exist_ok=True)
+    key_directory.chmod(0o700)
+    key_path = key_directory / f"{model_family}-content-key-v1.bin"
+    if key_path.is_symlink() or (key_path.exists() and not key_path.is_file()):
+        raise RuntimeError("CONTENT_KEY_PATH_INVALID")
+    if key_path.exists():
+        content_key = key_path.read_bytes()
+    else:
+        content_key = os.urandom(32)
+        partial = key_path.with_name(key_path.name + ".partial")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(partial, flags, 0o600)
+            with os.fdopen(fd, "wb") as output:
+                output.write(content_key)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(partial, key_path)
+        except FileExistsError as exc:
+            raise RuntimeError("CONTENT_KEY_CREATION_RACE") from exc
+        finally:
+            partial.unlink(missing_ok=True)
+    if len(content_key) != 32:
+        raise RuntimeError("CONTENT_KEY_SIZE_INVALID")
+    key_path.chmod(0o600)
+    return key_path, content_key
+
+
 def preparation_cache_budget(max_source_bytes: int,
                              max_assembled_bytes: int) -> int:
     """Return the requester preparation reservation for the native contract.
@@ -1850,8 +1888,9 @@ def main(argv=None, *, _supervised=False) -> int:
         path = run_root / f"provider-{index}"; path.mkdir(); provider_dirs.append(path)
     req_private, req_public = make_external_key(requester_dir, "requester")
     auth_private, auth_public = make_external_key(authority_dir, "authority")
-    (authority_dir / "content-key.bin").write_bytes(os.urandom(32))
-    (authority_dir / "content-key.bin").chmod(0o600)
+    content_key_path, content_key = load_or_create_persistent_content_key(
+        artifact_cache_root, MODEL_FAMILY)
+    content_key_id = f"{MODEL_FAMILY}-model-key-{digest_bytes(content_key)[len('sha256:'):]}"
     provider_keys = {}
     for index, directory in enumerate(provider_dirs):
         recipient_private, recipient_public = make_external_key(directory, "recipient")
@@ -1945,11 +1984,11 @@ def main(argv=None, *, _supervised=False) -> int:
         "max_grant_ttl_ms": min(3600000, runtime_budgets["retention_ms"]),
         "authority": {"identity": AUTHORITY, "service": "/HELLO", "group": GROUP,
                        "controller_identity": CONTROLLER, "requester_identity": USER,
-                       "protection_epoch": "epoch-1", "content_key_id": "model-key",
+                       "protection_epoch": "epoch-1", "content_key_id": content_key_id,
                        "trust_schema_file": "../trust-schema.conf",
                        "authority_private_key_file": "authority-private.pem",
                        "requester_public_key_file": "../requester/requester-public.pem",
-                       "content_key_file": "content-key.bin",
+                       "content_key_file": str(content_key_path),
                        "allowed_model_manifests": [manifest_digest],
                        "recipient_public_key_files": {provider: str(provider_dirs[index] / "recipient-public.pem") for index, provider in enumerate(provider_names)},
                        "publication_sources": {manifest_digest: {
