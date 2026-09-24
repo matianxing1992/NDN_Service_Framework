@@ -891,13 +891,30 @@ void publishConversationControls(
   for (const auto& receipt : receipts) {
     const auto payload = nativeCanonicalJson(conversationControlJson(
       action, turn, receipt, checkpointDigest, expiresAtMs));
-    if (!operation->user->publishCollaborationData(
-          ndn::Name(receipt.providerIdentity), ndn::Name(operation->coreRequestId),
-          kConversationStateScope, ndn::Name(kConversationControlTopic),
-          ndn::Buffer(payload.begin(), payload.end()))) {
+    const auto queued = operation->user->publishCollaborationData(
+      ndn::Name(receipt.providerIdentity), ndn::Name(operation->coreRequestId),
+      kConversationStateScope, ndn::Name(kConversationControlTopic),
+      ndn::Buffer(payload.begin(), payload.end()));
+    if (!queued) {
+      logRuntimeError(
+        std::string("NDNSF_DI_CONVERSATION_CONTROL event=publish_error action=") + action +
+        " requestId=" + operation->requestId +
+        " attemptEpoch=" + std::to_string(turn.attempt) +
+        " conversationId=" + turn.parent.conversationId +
+        " role=" + receipt.roleName +
+        " provider=" + receipt.providerIdentity +
+        " reason=local_publish_rejected");
       throw NativeDiError("NATIVE_CONVERSATION_CONTROL_FAILED", "conversation", "control",
         "conversation control publication failed", operation->requestId, turn.attempt);
     }
+    logRuntimeEvidence(
+      std::string("NDNSF_DI_CONVERSATION_CONTROL event=publish_queued action=") + action +
+      " requestId=" + operation->requestId +
+      " attemptEpoch=" + std::to_string(turn.attempt) +
+      " conversationId=" + turn.parent.conversationId +
+      " role=" + receipt.roleName +
+      " provider=" + receipt.providerIdentity +
+      " checkpointDigest=" + checkpointDigest);
   }
 }
 
@@ -1075,7 +1092,27 @@ void commitConversationTurn(
         [](const auto& left, const auto& right) { return left.expiresAtMs < right.expiresAtMs; })->expiresAtMs;
       publishConversationControls(operation, turn, receipts, "FINALIZE", *committedCheckpointDigest, expiresAt);
     }
-    catch (...) {}
+    catch (const NativeDiError& error) {
+      logRuntimeError(
+        "NDNSF_DI_CONVERSATION_CONTROL event=finalize_error requestId=" + operation->requestId +
+        " attemptEpoch=" + std::to_string(turn.attempt) +
+        " conversationId=" + turn.parent.conversationId +
+        " code=" + error.code());
+    }
+    catch (const std::exception&) {
+      logRuntimeError(
+        "NDNSF_DI_CONVERSATION_CONTROL event=finalize_error requestId=" + operation->requestId +
+        " attemptEpoch=" + std::to_string(turn.attempt) +
+        " conversationId=" + turn.parent.conversationId +
+        " code=std_exception");
+    }
+    catch (...) {
+      logRuntimeError(
+        "NDNSF_DI_CONVERSATION_CONTROL event=finalize_error requestId=" + operation->requestId +
+        " attemptEpoch=" + std::to_string(turn.attempt) +
+        " conversationId=" + turn.parent.conversationId +
+        " code=unknown_exception");
+    }
   };
   const auto checkpoint = operation->conversations->prepareCheckpoint(turn, completed);
   const auto record = operation->conversations->commitTurn(turn, checkpoint);
@@ -2537,6 +2574,14 @@ bool NativeInferenceClient::drain(std::chrono::milliseconds timeout)
         return !m_ioCleanupState ||
                m_ioCleanupState->pending.load(std::memory_order_acquire) == 0;
       })) {
+        return false;
+      }
+    }
+    {
+      const auto now = std::chrono::steady_clock::now();
+      const auto remaining = now >= deadline ? std::chrono::milliseconds(0) :
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+      if (!m_user->waitForCollaborationPublishIdle(remaining)) {
         return false;
       }
     }

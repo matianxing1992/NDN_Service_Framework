@@ -3409,6 +3409,21 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 ndn::Name(committed ? "/ndnsf-di/conversation/commit" : "/ndnsf-di/conversation/rollback"),
                 ndn::Buffer(wire.begin(), wire.end()));
             };
+            const auto logControl = [&](const char* event,
+                                        const std::string& action,
+                                        const char* reason,
+                                        std::uint64_t sequence) {
+              std::ostringstream record;
+              record << "NDNSF_DI_CONVERSATION_CONTROL"
+                     << " event=" << event
+                     << " requestId=" << ctx.sessionId()
+                     << " conversationId=" << turn.conversationId
+                     << " role=" << finalized.role
+                     << " action=" << (action.empty() ? "unknown" : action)
+                     << " sequence=" << sequence
+                     << " reason=" << (reason ? reason : "none");
+              logRuntimeEvidence(record.str());
+            };
             // waitFor returns the complete matching collaboration history on each
             // poll.  Keep control handling idempotent at the wire-sequence level so
             // a committed turn emits one acknowledgement per requester control,
@@ -3427,6 +3442,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               for (const auto& item : controls) {
                 if (!item.producer.equals(ctx.requesterName()) ||
                     item.producerRole != "user-control-v1") {
+                  logControl("rejected", {}, "producer_binding", item.sequence);
                   continue;
                 }
                 if (!processedControlSequences.insert(item.sequence).second) {
@@ -3437,6 +3453,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   control = parseConversationPromotionControl(item.payload);
                 }
                 catch (const std::exception&) {
+                  logControl("rejected", {}, "malformed", item.sequence);
                   continue;
                 }
                 if (control.conversationId != turn.conversationId ||
@@ -3448,8 +3465,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                     control.receiptDigest != receipt.computedDigest() ||
                     control.expiresAtMs > receipt.expiresAtMs ||
                     control.expiresAtMs <= now) {
+                  logControl("rejected", control.action, "binding_or_expiry", item.sequence);
                   continue;
                 }
+                logControl("received", control.action, "authenticated", item.sequence);
                 ConversationStateReferenceV1 reference;
                 reference.conversationId = control.conversationId;
                 reference.contextEpoch = control.successorContextEpoch;
@@ -3461,10 +3480,17 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 reference.expiresAtMs = control.expiresAtMs;
                 try {
                   if (conversationPromotionCommitted) {
-                    if (control.checkpointDigest != committedCheckpoint) continue;
-                    if (control.action == "FINALIZE") return;
+                    if (control.checkpointDigest != committedCheckpoint) {
+                      logControl("rejected", control.action, "checkpoint_binding", item.sequence);
+                      continue;
+                    }
+                    if (control.action == "FINALIZE") {
+                      logControl("accepted", control.action, "retention_closed", item.sequence);
+                      return;
+                    }
                     if (control.action == "COMMIT") {
                       publishAck(true, committedCheckpoint);
+                      logControl("accepted", control.action, "duplicate_commit", item.sequence);
                       continue;
                     }
                     auto committedBinding = conversationBinding;
@@ -3473,22 +3499,29 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                       throw std::runtime_error("PROVIDER_CONVERSATION_COMMITTED_ROLLBACK_FAILED");
                     conversationPromotionCommitted = false;
                     publishAck(false, committedCheckpoint);
+                    logControl("accepted", control.action, "post_commit_rollback", item.sequence);
                     throw std::runtime_error("PROVIDER_CONVERSATION_PROMOTION_ROLLED_BACK");
                   }
-                  if (control.action == "FINALIZE") continue;
+                  if (control.action == "FINALIZE") {
+                    logControl("rejected", control.action, "before_commit", item.sequence);
+                    continue;
+                  }
                   const auto resolved = state->runtime
                     .resolveStagedConversationState(reference, now);
                   if (!resolved || resolved->receiptDigest != receipt.computedDigest()) {
+                    logControl("rejected", control.action, "staged_state_missing", item.sequence);
                     continue;
                   }
                   if (control.action == "ROLLBACK") {
                     rollbackConversationPromotion();
                     publishAck(false, control.checkpointDigest);
+                    logControl("accepted", control.action, "staged_rollback", item.sequence);
                     throw std::runtime_error(
                       "PROVIDER_CONVERSATION_PROMOTION_ROLLED_BACK");
                   }
                   if (!state->runtime.commitStagedDecodeStatePromotion(
                         *resolved, control.checkpointDigest)) {
+                    logControl("rejected", control.action, "commit_rejected", item.sequence);
                     continue;
                   }
                   conversationPromotionCommitted = true;
@@ -3511,19 +3544,26 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   logRuntimeInfo(record.str());
                   // Keep a bounded authenticated compensation window open
                   // until the requester confirms its durable journal commit.
+                  logControl("accepted", control.action, "staged_commit", item.sequence);
                 }
                 catch (const std::runtime_error&) {
+                  logControl("error", control.action, "state_transition", item.sequence);
                   throw;
                 }
                 catch (const std::exception&) {
+                  logControl("error", control.action, "processing_exception", item.sequence);
                   continue;
                 }
               }
             }
             // A lost FINALIZE cannot prove that the requester failed to commit.
             // Keep a committed successor until its original retention deadline.
-            if (conversationPromotionCommitted) return;
+            if (conversationPromotionCommitted) {
+              logControl("timeout", "FINALIZE", "retention_preserved", 0);
+              return;
+            }
             rollbackConversationPromotion();
+            logControl("timeout", "COMMIT", "uncommitted_rollback", 0);
             throw std::runtime_error(
               "PROVIDER_CONVERSATION_PROMOTION_COMMIT_TIMEOUT");
           };

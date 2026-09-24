@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 #include <chrono>
@@ -423,6 +424,26 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
   auto node = staged.extract(staged.begin());
   const auto promote = pending.promote; const auto rollback = pending.rollback;
   const auto commitGate = pending.commitGate; const auto finalize = pending.finalize;
+  const auto runFinalize = [&] {
+    if (!finalize) return;
+    try {
+      finalize();
+    }
+    catch (const std::exception&) {
+      logRuntimeError(
+        "NDNSF_DI_CONVERSATION_CONTROL event=finalize_error requestId=" + turn.requestId +
+        " conversationId=" + turn.parent.conversationId +
+        " checkpointDigest=" + record.checkpoint.checkpointDigest +
+        " code=std_exception");
+    }
+    catch (...) {
+      logRuntimeError(
+        "NDNSF_DI_CONVERSATION_CONTROL event=finalize_error requestId=" + turn.requestId +
+        " conversationId=" + turn.parent.conversationId +
+        " checkpointDigest=" + record.checkpoint.checkpointDigest +
+        " code=unknown_exception");
+    }
+  };
   bool published = false;
   pending.committing = true;
   guard.unlock();
@@ -455,7 +476,7 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
     guard.lock();
     require(published, "conversation commit gate did not publish");
     guard.unlock();
-    if (finalize) { try { finalize(); } catch (...) { /* Retention bounds lost FINALIZE. */ } }
+    runFinalize();
     return record;
   }
   catch (...) {
@@ -464,7 +485,7 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
     // An exception in terminal notification/cleanup cannot undo a durable
     // parent that may already have been observed by another request.
     if (published) {
-      if (finalize) { try { finalize(); } catch (...) {} }
+      runFinalize();
       return record;
     }
     try { rollback(); }

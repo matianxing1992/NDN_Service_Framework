@@ -7689,15 +7689,66 @@ namespace ndn_service_framework
         const auto messageBlock = message.WireEncode();
         const ndn::Buffer encoded(messageBlock.begin(), messageBlock.end());
 
-        boost::asio::post(m_face.getIoContext(),
-            [this, dataName, encoded] {
-                if (m_svsps == nullptr) {
-                    return;
-                }
-                ndn::Block block(encoded);
-                publishSvs(m_svsps, dataName, block);
-            });
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationPublishMutex);
+            ++m_pendingCollaborationPublishes;
+        }
+        try {
+            boost::asio::post(m_face.getIoContext(),
+                [this, dataName, encoded] {
+                    try {
+                        if (m_svsps != nullptr) {
+                            ndn::Block block(encoded);
+                            publishSvs(m_svsps, dataName, block);
+                        }
+                    }
+                    catch (const std::exception& error) {
+                        NDN_LOG_ERROR("Collaboration data publish failed for "
+                                      << dataName.toUri() << ": " << error.what());
+                    }
+                    catch (...) {
+                        NDN_LOG_ERROR("Collaboration data publish failed for "
+                                      << dataName.toUri() << ": unknown exception");
+                    }
+                    finishCollaborationPublish();
+                });
+        }
+        catch (...) {
+            finishCollaborationPublish();
+            return false;
+        }
         return true;
+    }
+
+    void ServiceUser::finishCollaborationPublish() noexcept
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationPublishMutex);
+            if (m_pendingCollaborationPublishes != 0) {
+                --m_pendingCollaborationPublishes;
+            }
+        }
+        m_collaborationPublishCv.notify_all();
+    }
+
+    bool ServiceUser::waitForCollaborationPublishIdle(
+        std::chrono::milliseconds timeout) const
+    {
+        if (timeout.count() < 0) {
+            throw std::invalid_argument(
+                "collaboration publish idle timeout must not be negative");
+        }
+        std::unique_lock<std::mutex> lock(m_collaborationPublishMutex);
+        const auto idle = [this] {
+            return m_pendingCollaborationPublishes == 0;
+        };
+        if (idle()) {
+            return true;
+        }
+        if (isOnIoThread()) {
+            return false;
+        }
+        return m_collaborationPublishCv.wait_for(lock, timeout, idle);
     }
 
     void ServiceUser::fetchSignedAppData(

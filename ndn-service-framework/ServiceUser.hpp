@@ -798,6 +798,13 @@ namespace ndn_service_framework{
                 const ndn::Name& topic,
                 const ndn::Buffer& payload);
 
+            /** Wait until all collaboration publications queued on this
+             * user's Face have executed their publish callback.  A true
+             * result means the callback boundary was reached, not that a
+             * remote consumer has acknowledged the Data. */
+            bool waitForCollaborationPublishIdle(
+                std::chrono::milliseconds timeout) const;
+
             /** Fetch and validate one exact-name APP record.
              *
              * Validation uses the configured trust schema and additionally
@@ -1407,6 +1414,8 @@ namespace ndn_service_framework{
             
 
         protected:
+            void finishCollaborationPublish() noexcept;
+
             void registerIdentityPrefixWithRetry(size_t attempts = 0);
 
             void
@@ -1987,6 +1996,9 @@ namespace ndn_service_framework{
                 m_userCollaborationScopeKeys;
             std::map<ndn::Name, std::vector<VerifiedCollaborationData>>
                 m_verifiedCollaborationData;
+            mutable std::mutex m_collaborationPublishMutex;
+            mutable std::condition_variable m_collaborationPublishCv;
+            std::size_t m_pendingCollaborationPublishes = 0;
             std::atomic<uint64_t> m_collaborationSequence{0};
             std::map<ndn::Name, std::shared_ptr<StreamEventConsumer>> m_streamConsumers;
             std::map<ndn::Name, std::shared_ptr<StreamedInvocationSharedState>> m_streamStates;
