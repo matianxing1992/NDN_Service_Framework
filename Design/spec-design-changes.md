@@ -1,5 +1,14 @@
 # Spec 设计变更记录
 
+## Spec190 B190-32 partial publication repair — 2026-09-23
+
+- **Status**: `PARTIAL`；增加原生内存态 `missingDataNames` repair hint，并在
+  `ModelPreparationCache` 中要求 partial receipt 经过既有 Repo publisher 完成后才能保留。
+- **Boundary**: hint 不进入 root manifest、持久身份、授权、Selection、Provider 或 wire；既有
+  root-last/owned rollback/取消语义不变。直接 Repo repair 已验证，fresh `user.prepare()` 的
+  root-preserved missing layer/material handoff 尚未验证，因此 T005 重开，T006 不解锁。
+- **Evidence**: [B190-32](../specs/190-multiturn-latency/evidence/b190-32.md)。
+
 ## Spec190 current T006 static audit — 2026-09-23
 
 - **Status**: `PARTIAL` / `NO_DESIGN_CHANGE`；B190-31 只审查当前实现与 CD-09/FR-016

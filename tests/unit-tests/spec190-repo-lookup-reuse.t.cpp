@@ -286,7 +286,9 @@ BOOST_AUTO_TEST_CASE(MissingDependencyFallsBackToRootLastRepair)
   const auto miss = provider.lookupPrepared({
     "qwen", "/service", nativeCanonicalJson(catalog), 1U << 20,
     std::chrono::steady_clock::now() + std::chrono::seconds(10)});
-  BOOST_CHECK(!miss);
+  BOOST_REQUIRE(miss);
+  BOOST_REQUIRE_EQUAL(miss->missingDataNames.size(), 1U);
+  BOOST_CHECK_EQUAL(miss->missingDataNames.front(), committed.sourceDataName);
 
   const auto repaired = provider.publish("qwen", "/service", model, source, options,
                                          NativeRequestControl{

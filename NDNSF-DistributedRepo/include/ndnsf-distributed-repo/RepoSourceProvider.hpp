@@ -132,12 +132,17 @@ public:
         "repository prepared receipt is corrupt or conflicts with the requested catalog" +
           (reason.empty() ? std::string{} : ": " + reason));
     };
+    std::vector<std::string> missingDataNames;
+    std::set<std::string> missingDataSet;
     const auto checkObject = [&] (const std::string& name, const std::string& digest,
                                   std::uint64_t bytes) {
       if (name.empty() || digest.size() != 71 || digest.compare(0, 7, "sha256:") != 0)
         reject("object identity is incomplete");
-      if (!m_repo->has(name))
+      if (!m_repo->has(name)) {
+        if (missingDataSet.insert(name).second)
+          missingDataNames.push_back(name);
         return false;
+      }
       const auto manifest = m_repo->getManifest(name);
       if (manifest.objectName != name || manifest.sha256 != digest.substr(7) ||
           manifest.size != bytes)
@@ -201,12 +206,10 @@ public:
                              source.at("model_manifest_digest").get<std::string>()))
         reject("root package manifest differs from the requested catalog");
 
-      if (!checkObject(root + "/source", source.at("digest").get<std::string>(), expectedSourceBytes))
-        return std::nullopt;
+      (void)checkObject(root + "/source", source.at("digest").get<std::string>(), expectedSourceBytes);
       if (!expectedInitializerName.empty())
-        if (!checkObject(expectedInitializerName, source.at("initializer_digest").get<std::string>(),
-                         expectedInitializerBytes))
-          return std::nullopt;
+        (void)checkObject(expectedInitializerName, source.at("initializer_digest").get<std::string>(),
+                          expectedInitializerBytes);
 
       const auto layerDigests = rootJson.value("layerManifestDigests",
                                                 std::vector<std::string>{});
@@ -222,8 +225,7 @@ public:
         const auto name = item.value("dataName", std::string{});
         if (item.value("digest", std::string{}) != layerDigests[i] || name.empty())
           reject("layer reference differs from the root receipt");
-        if (!checkObject(name, layerDigests[i], item.value("bytes", std::uint64_t{0})))
-          return std::nullopt;
+        (void)checkObject(name, layerDigests[i], item.value("bytes", std::uint64_t{0}));
         layerNames.push_back(name);
       }
 
@@ -242,18 +244,19 @@ public:
       if (!materialName.empty()) {
         const auto materialDigest = metadata.at("materialManifestDigest").get<std::string>();
         const auto materialBytes = metadata.at("materialManifestBytes").get<std::uint64_t>();
-        if (!checkObject(materialName, materialDigest, materialBytes))
-          return std::nullopt;
-        const auto materialWire = m_repo->get(materialName);
-        auto material = ndnsf::di::parseNativeCanonicalMaterialManifest(materialWire);
-        if (material->manifestDigest != metadata.value("materialIdentityDigest", std::string{}) ||
-            material->sourceDigest != source.at("digest").get<std::string>() ||
-            material->graphDigest != source.at("canonical_graph_digest").get<std::string>())
-          reject("material manifest identity differs from the source");
         receipt.materialManifestDataName = materialName;
         receipt.materialManifestDigest = materialDigest;
         receipt.materialManifestBytes = materialBytes;
-        receipt.materialManifest = std::move(material);
+        const bool materialManifestPresent = checkObject(materialName, materialDigest, materialBytes);
+        if (materialManifestPresent) {
+          const auto materialWire = m_repo->get(materialName);
+          auto material = ndnsf::di::parseNativeCanonicalMaterialManifest(materialWire);
+          if (material->manifestDigest != metadata.value("materialIdentityDigest", std::string{}) ||
+              material->sourceDigest != source.at("digest").get<std::string>() ||
+              material->graphDigest != source.at("canonical_graph_digest").get<std::string>())
+            reject("material manifest identity differs from the source");
+          receipt.materialManifest = std::move(material);
+        }
         const auto materialReceiptName = metadata.value("materialReceiptDataName", std::string{});
         const auto materialReceiptDigest = metadata.value("materialReceiptDigest", std::string{});
         const auto materialReceiptBytes = metadata.value("materialReceiptBytes", std::uint64_t{0});
@@ -263,8 +266,7 @@ public:
             (materialReceiptName.empty() || materialReceiptDigest.empty() || materialReceiptBytes == 0))
           reject("material receipt fields are incomplete");
         if (hasMaterialReceipt) {
-          if (!checkObject(materialReceiptName, materialReceiptDigest, materialReceiptBytes))
-            return std::nullopt;
+          (void)checkObject(materialReceiptName, materialReceiptDigest, materialReceiptBytes);
           receipt.materialReceiptDataName = materialReceiptName;
           receipt.materialReceiptDigest = materialReceiptDigest;
           receipt.materialReceiptBytes = materialReceiptBytes;
@@ -273,9 +275,11 @@ public:
         if (!objects.is_array())
           reject("material payload list is not an array");
         std::set<std::string> expectedPayloadIds;
-        for (const auto& reference : receipt.materialManifest->references) {
-          expectedPayloadIds.insert(reference.payloadId);
-          expectedPayloadIds.insert(reference.chunkPayloadIds.begin(), reference.chunkPayloadIds.end());
+        if (receipt.materialManifest) {
+          for (const auto& reference : receipt.materialManifest->references) {
+            expectedPayloadIds.insert(reference.payloadId);
+            expectedPayloadIds.insert(reference.chunkPayloadIds.begin(), reference.chunkPayloadIds.end());
+          }
         }
         std::set<std::string> seenPayloadIds;
         for (const auto& object : objects) {
@@ -284,17 +288,19 @@ public:
           const auto digest = object.value("digest", std::string{});
           const auto bytes = object.value("bytes", std::uint64_t{0});
           if (payloadId.empty() || !seenPayloadIds.insert(payloadId).second ||
-              !expectedPayloadIds.count(payloadId))
+              (receipt.materialManifest && !expectedPayloadIds.count(payloadId)))
             reject("material payload reference is invalid or duplicated");
-          if (!checkObject(name, digest, bytes))
-            return std::nullopt;
+          (void)checkObject(name, digest, bytes);
           receipt.materialPayloadIds.push_back(payloadId);
           receipt.materialDataNames.push_back(name);
           receipt.materialDigests.push_back(digest);
         }
-        if (seenPayloadIds != expectedPayloadIds)
-          reject("material payload references are incomplete");
+        if (receipt.materialManifest) {
+          if (seenPayloadIds != expectedPayloadIds)
+            reject("material payload references are incomplete");
+        }
       }
+      receipt.missingDataNames = std::move(missingDataNames);
       receipt.validate();
       return receipt;
     }

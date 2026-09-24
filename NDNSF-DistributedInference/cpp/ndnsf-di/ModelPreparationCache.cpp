@@ -429,6 +429,8 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     if (preparedPublication)
       preparedPublication->validate();
   }
+  const bool publicationRepairRequired = preparedPublication &&
+    !preparedPublication->missingDataNames.empty();
   NativeCanonicalSource source = spec.loadSource(spec, deadline);
   if (preparedPublication && preparedPublication->materialManifest)
     source.materialManifest = preparedPublication->materialManifest;
@@ -596,13 +598,17 @@ std::shared_ptr<const PreparedModelPackage> ModelPreparationCache::buildPackage(
     bool committed = false;
     ~PublicationRollbackGuard() { if (!committed && rollback) rollback(); }
   } publicationGuard{rollbackPublication};
-  if (!preparedPublication && spec.preparePublication) {
+  if (publicationRepairRequired && !spec.preparePublication)
+    throw std::runtime_error("DI_NATIVE_PREPARATION_PARTIAL_PUBLICATION_OWNER_MISSING");
+  if ((!preparedPublication || publicationRepairRequired) && spec.preparePublication) {
     NativeRequestControl publicationControl{
       "prepare/" + spec.key, 1, deadline, spec.cancelled};
     preparedPublication = spec.preparePublication(*catalog.preparation,
                                                   catalog.model, publicationControl);
     publicationControl.requireActive();
     preparedPublication->validate();
+    if (!preparedPublication->missingDataNames.empty())
+      throw std::runtime_error("DI_NATIVE_PREPARATION_PARTIAL_PUBLICATION_UNRESOLVED");
     memory.encryptedPublicationBytes = preparedPublication->publishedBytes;
     updatePeak();
   }

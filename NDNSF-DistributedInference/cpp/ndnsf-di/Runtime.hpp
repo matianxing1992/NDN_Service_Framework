@@ -148,8 +148,10 @@ public:
   virtual NativeCanonicalSource load(const RepositorySourceRequest& request,
                                      const Fallback& fallback) const = 0;
 
-  /** A null result is a normal miss; an existing but corrupt receipt is an
-   * error and must not be converted into a new publication. */
+  /** A null result is a normal miss.  A non-null receipt may be partial when
+   * missingDataNames identifies absent child objects; the preparation owner
+   * must repair those objects before retaining the receipt.  An existing but
+   * corrupt receipt is an error and must not be converted into a publication. */
   virtual std::optional<NativePreparedCanonicalPublication> lookupPrepared(
     const RepositoryPreparedLookupRequest&) const
   { return std::nullopt; }

@@ -62,6 +62,11 @@ struct NativePreparedCanonicalPublication
   std::vector<std::string> materialPayloadIds;
   std::vector<std::string> materialDataNames;
   std::vector<std::string> materialDigests;
+  // A prepared receipt may be returned by Repo lookup before all referenced
+  // child objects are present.  This is an in-memory repair hint only; it is
+  // never serialized into the authenticated root manifest or retained after
+  // the publication owner returns a complete receipt.
+  std::vector<std::string> missingDataNames;
   std::vector<std::string> rollbackDataNames;
   std::vector<NativePublicationKeyReference> rollbackKeyReferences;
   std::string rollbackKeyId;

@@ -102,6 +102,11 @@ void NativePreparedCanonicalPublication::validate() const
   const bool hasMaterial = !materialManifestDataName.empty() ||
     !materialManifestDigest.empty() || !materialPayloadIds.empty() ||
     !materialDataNames.empty() || !materialDigests.empty();
+  std::set<std::string> missingNames;
+  for (const auto& name : missingDataNames) {
+    if (!validName(name) || !missingNames.insert(name).second)
+      throw std::invalid_argument("native prepared missing object identity is invalid");
+  }
   if ((!sourceDataName.empty() && !validName(sourceDataName)) || !validName(rootDataName) ||
       (!materialManifestDataName.empty() && !validName(materialManifestDataName)) ||
       (!materialReceiptDataName.empty() && !validName(materialReceiptDataName)) ||
