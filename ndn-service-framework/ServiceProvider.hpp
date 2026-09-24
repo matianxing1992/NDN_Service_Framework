@@ -39,6 +39,8 @@
 
 namespace ndn_service_framework{
 
+    struct ServiceProviderTestAccess;
+
     using RequestPayload = ndn::Buffer;
     using ResponsePayload = ndn::Buffer;
     using ServiceName = ndn::Name;
@@ -1275,6 +1277,11 @@ namespace ndn_service_framework{
             onMissingData(const std::vector<ndn::svs::MissingDataInfo> &);
 
         protected:
+            friend struct ServiceProviderTestAccess;
+
+            static ndn::Name extractLargeDataProducerPrefix(
+                const ndn::Name& dataName);
+
             // ---- spec182 scoped registration ----
             // Each addScoped* registration allocates a non-zero generation and
             // a RegistrationState shared by the Core entry, pending-request

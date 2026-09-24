@@ -18,6 +18,16 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+namespace ndn_service_framework {
+struct ServiceProviderTestAccess
+{
+  static ndn::Name extractLargeDataProducerPrefix(const ndn::Name& dataName)
+  {
+    return ServiceProvider::extractLargeDataProducerPrefix(dataName);
+  }
+};
+} // namespace ndn_service_framework
+
 namespace {
 using namespace ndn_service_framework;
 using namespace ndn_service_framework::test;
@@ -631,8 +641,9 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
                                 providerCertificate, authority,
                                 "examples/trust-any.conf");
   provider.useSigningKeyChainForTest(keys);
-  // This is an explicit current-key fixture, not a recovered old grant or KV.
-  // The selector therefore proves the production fetch/decrypt path only.
+  // This fixture intentionally supplies the current key because it does not
+  // model Controller/AA DKEY bootstrap; the production fetch/decrypt path is
+  // still exercised after the encrypted envelope is retrieved.
   provider.cacheHybridReceiveKeyForTest(sendKey.keyId, sendKey.epochId, sendKey.key);
   auto pending = std::async(std::launch::async, [&] {
     return provider.fetchAndDecryptLargeData(publication.encryptedDataName,
@@ -646,6 +657,25 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
   BOOST_CHECK_EQUAL_COLLECTIONS(fetched.plaintext.begin(), fetched.plaintext.end(),
                                 plaintext.begin(), plaintext.end());
   BOOST_CHECK_EQUAL(fixture.repo->list().size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(DurableLargeDataProducerPrefixPreservesIdentity)
+{
+  const auto extract =
+    &ndn_service_framework::ServiceProviderTestAccess::extractLargeDataProducerPrefix;
+  const ndn::Name user("/spec190/prefix-user");
+  const ndn::Name transientName =
+    ndn::Name(user).append("NDNSF").append("LARGE-DATA")
+      .append("AI").append("LLM").append("Pipeline").append("QwenNative")
+      .append("request").append("object");
+  const ndn::Name durableName =
+    ndn::Name(user).append("NDNSF").append("LARGE-DATA-DURABLE")
+      .append("AI").append("LLM").append("Pipeline").append("QwenNative")
+      .append("publication").append("object").append("v1");
+
+  BOOST_CHECK_EQUAL(extract(transientName).toUri(), user.toUri());
+  BOOST_CHECK_EQUAL(extract(durableName).toUri(), user.toUri());
+  BOOST_CHECK(extract(ndn::Name("/spec190/prefix-user/NDNSF/OTHER/object")).empty());
 }
 
 BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRetiresOnlyOlderServiceOwner)

@@ -398,18 +398,6 @@ namespace ndn_service_framework
         }
 
         ndn::Name
-        extractLargeDataProducerPrefix(const ndn::Name& dataName)
-        {
-            for (ssize_t i = 0; i + 1 < static_cast<ssize_t>(dataName.size()); ++i) {
-                if (dataName[i].toUri() == "NDNSF" &&
-                    dataName[i + 1].toUri() == "LARGE-DATA") {
-                    return dataName.getPrefix(i);
-                }
-            }
-            return {};
-        }
-
-        ndn::Name
         makeLargeResponseDataNameWithoutPrefix(const ndn::Name& requesterName,
                                                const ndn::Name& serviceName,
                                                const ndn::Name& requestId,
@@ -1870,6 +1858,19 @@ namespace ndn_service_framework
     {
         registerServiceInfo();
         registerNDNSFMessages();
+    }
+
+    ndn::Name
+    ServiceProvider::extractLargeDataProducerPrefix(const ndn::Name& dataName)
+    {
+        for (ssize_t i = 0; i + 1 < static_cast<ssize_t>(dataName.size()); ++i) {
+            if (dataName[i].toUri() == "NDNSF" &&
+                (dataName[i + 1].toUri() == "LARGE-DATA" ||
+                 dataName[i + 1].toUri() == "LARGE-DATA-DURABLE")) {
+                return dataName.getPrefix(i);
+            }
+        }
+        return {};
     }
 
     ServiceProvider::~ServiceProvider()
