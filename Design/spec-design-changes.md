@@ -7,8 +7,8 @@
 - **Boundary**: hint 不进入 root manifest、持久身份、授权、Selection、Provider 或 wire；既有
   root-last/owned rollback/取消语义不变。完整命中仍可复用 reference-only material index；
   partial repair 不把该不完整 index 交给 publisher，而由 catalog 从 bounded source 重建完整
-  manifest。直接 Repo repair 与 fresh source-child `user.prepare()` 已验证；layer/material
-  专门缺对象和 protected reuse 仍未完成，因此 T005 保持 `PARTIAL`，T006 不解锁。
+  manifest。直接 Repo repair 与 fresh source-child、material-payload `user.prepare()` 均已验证；
+  layer 专门缺对象、完整计数和 protected reuse 仍未完成，因此 T005 保持 `PARTIAL`，T006 不解锁。
 - **Evidence**: [B190-32](../specs/190-multiturn-latency/evidence/b190-32.md)。
 
 ## Spec190 current T006 static audit — 2026-09-23

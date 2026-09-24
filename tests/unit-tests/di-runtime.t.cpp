@@ -635,6 +635,68 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   BOOST_CHECK_EQUAL(finalOwnerStats.publicationHits, 0U);
   asyncRuntime->close();
   BOOST_CHECK(asyncRuntime->drain(std::chrono::seconds(2)));
+
+  // Repeat the same production handoff with one material payload absent.  The
+  // source and root remain available, so this must be a partial material
+  // repair rather than a source miss or a fresh publication.
+  const auto beforeMaterialRepair = repo->list();
+  const auto materialName = [&] {
+    for (const auto& manifest : beforeMaterialRepair) {
+      if (manifest.objectName.find("/materials/") != std::string::npos)
+        return manifest.objectName;
+    }
+    return std::string{};
+  }();
+  BOOST_REQUIRE(!materialName.empty());
+  const auto materialBefore = repo->getManifest(materialName);
+  const auto rootBeforeMaterialRepair = repo->getManifest(rootName);
+  BOOST_REQUIRE(repo->remove(materialName));
+  BOOST_CHECK(!repo->has(materialName));
+
+  auto materialPartial = sourceOwner->lookupPrepared({
+    "default", "/Inference", catalogJson, config.maxPreparedBytes,
+    std::chrono::steady_clock::now() + std::chrono::seconds(5)});
+  BOOST_REQUIRE(materialPartial);
+  BOOST_CHECK_EQUAL(materialPartial->rootDataName, rootName);
+  BOOST_REQUIRE(materialPartial->materialManifest);
+  BOOST_CHECK(!materialPartial->materialManifest->payloadsComplete);
+  BOOST_REQUIRE_EQUAL(materialPartial->missingDataNames.size(), 1U);
+  BOOST_CHECK_EQUAL(materialPartial->missingDataNames.front(), materialName);
+
+  auto materialRuntime = Runtime::open(config);
+  ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+    materialRuntime, fixtureUser, makeGrants(), admission);
+  auto materialHandle = materialRuntime->user().prepareAsync();
+  auto materialPrepared = materialHandle.result(std::chrono::seconds(5));
+  BOOST_CHECK(materialHandle.status() == ndnsf::di::PreparationStatus::Ready);
+  BOOST_CHECK_EQUAL(materialPrepared.manifest().modelName, "yolo26n");
+  const auto afterMaterialRepair = repo->list();
+  BOOST_REQUIRE_EQUAL(afterMaterialRepair.size(), beforeMaterialRepair.size());
+  BOOST_CHECK(repo->has(materialName));
+  const auto materialAfter = repo->getManifest(materialName);
+  BOOST_CHECK_EQUAL(materialAfter.sha256, materialBefore.sha256);
+  BOOST_CHECK_EQUAL(materialAfter.size, materialBefore.size);
+  BOOST_CHECK_EQUAL(repo->getManifest(rootName).sha256, rootBeforeMaterialRepair.sha256);
+  for (const auto& before : beforeMaterialRepair) {
+    const auto found = std::find_if(afterMaterialRepair.begin(), afterMaterialRepair.end(),
+      [&before] (const auto& current) {
+        return current.objectName == before.objectName;
+      });
+    BOOST_REQUIRE(found != afterMaterialRepair.end());
+    BOOST_CHECK_EQUAL(found->objectType, before.objectType);
+    BOOST_CHECK_EQUAL(found->sha256, before.sha256);
+    BOOST_CHECK_EQUAL(found->size, before.size);
+    BOOST_CHECK_EQUAL(found->segmentCount, before.segmentCount);
+    if (before.objectName != materialName)
+      BOOST_CHECK_EQUAL(found->operationId, before.operationId);
+  }
+  const auto materialOwnerStats = sourceOwner->stats();
+  BOOST_CHECK_EQUAL(materialOwnerStats.missIngests, finalOwnerStats.missIngests);
+  BOOST_CHECK_EQUAL(materialOwnerStats.publicationCalls,
+                    finalOwnerStats.publicationCalls + 1U);
+  BOOST_CHECK_EQUAL(materialOwnerStats.publicationHits, finalOwnerStats.publicationHits);
+  materialRuntime->close();
+  BOOST_CHECK(materialRuntime->drain(std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_CASE(InvalidRuntimeLimitsAndProfileFailClosed)
