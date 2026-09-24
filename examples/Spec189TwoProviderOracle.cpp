@@ -6,10 +6,14 @@
 // sequence, and rejects a generic requester timeout as a successful result.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoCore.hpp"
+#include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "Spec189MaterialFetchOracle.hpp"
 #include "Spec189ProviderStageOracle.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -22,11 +26,13 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 
 using namespace spec189::oracle;
 using ndnsf::di::NativeJson;
+using namespace ndnsf_distributed_repo;
 
 [[noreturn]] void chainFailure(const std::string& reason)
 {
@@ -767,6 +773,187 @@ NativeJson validateRounds(const std::filesystem::path& root, unsigned rounds,
   return receipt;
 }
 
+void
+requireRepo(bool condition, const std::string& reason)
+{
+  if (!condition) {
+    throw std::runtime_error("SPEC190_CPP_REPO_ORACLE_FAIL boundary=REPO reason=" + reason);
+  }
+}
+
+std::vector<uint8_t>
+repoPayload(std::size_t size, uint8_t seed)
+{
+  std::vector<uint8_t> payload(size);
+  for (std::size_t index = 0; index < payload.size(); ++index) {
+    payload[index] = static_cast<uint8_t>((index * 29U + seed) & 0xffU);
+  }
+  return payload;
+}
+
+std::shared_ptr<RepoCore>
+openRepoOracle(const std::filesystem::path& root,
+               const std::string& owner,
+               std::shared_ptr<FilesystemRepoStoreBackend>& backend)
+{
+  StorageCapability capability;
+  capability.repoNode = "/spec190/t010/repo-oracle";
+  capability.freeBytes = 16U * 1024U * 1024U;
+  capability.repoMode = "persistent";
+  capability.storageClasses = {"model", "intermediate"};
+  backend = std::make_shared<FilesystemRepoStoreBackend>(
+    root.string(), 4U * 1024U * 1024U, 1U * 1024U * 1024U, owner);
+  return std::make_shared<RepoCore>(std::move(capability), backend);
+}
+
+void
+validateRepoLifecycle(const std::filesystem::path& repoRoot)
+{
+  requireRepo(repoRoot.is_absolute(), "repo-root-must-be-absolute");
+  requireRepo(repoRoot != repoRoot.root_path(), "repo-root-must-not-be-filesystem-root");
+  std::error_code error;
+  std::filesystem::create_directories(repoRoot, error);
+  requireRepo(!error, "repo-root-create-failed");
+  std::filesystem::permissions(repoRoot, std::filesystem::perms::owner_all,
+                                std::filesystem::perm_options::replace, error);
+  requireRepo(!error, "repo-root-permissions-failed");
+
+  // This marker is outside the disposable workload tree. Its survival proves
+  // the fixed Repo root is not treated as run-scoped cleanup staging.
+  const auto fixedRootMarker = repoRoot / ".spec190-fixed-repo-root";
+  if (!std::filesystem::exists(fixedRootMarker)) {
+    std::ofstream marker(fixedRootMarker);
+    marker << "spec190-fixed-repo-root-v1\n";
+    requireRepo(static_cast<bool>(marker), "repo-root-marker-write-failed");
+  }
+
+  const auto uniqueTicks = std::chrono::steady_clock::now().time_since_epoch().count();
+  const auto uniqueSuffix = std::to_string(::getpid()) + "-" +
+    std::to_string(uniqueTicks);
+  const std::string objectName =
+    "/example/ndnsf/spec190/t010/repo-oracle/" + uniqueSuffix;
+  const std::string unrelatedName = objectName + "/unrelated";
+  const auto unrelatedPayload = repoPayload(17, 3);
+  const auto payloadSeed = static_cast<uint8_t>(uniqueTicks & 0xff);
+  const auto firstPayload = repoPayload(4096, payloadSeed);
+  const auto replacementPayload = repoPayload(4224, static_cast<uint8_t>(payloadSeed ^ 0x5a));
+  std::shared_ptr<FilesystemRepoStoreBackend> backend;
+  auto repo = openRepoOracle(repoRoot, "spec190-t010-oracle", backend);
+  const auto baselineBytes = backend->usedBytes();
+
+  const auto unrelated = repo->put(unrelatedName, unrelatedPayload, "stale-fixture");
+  requireRepo(unrelated.objectName == unrelatedName &&
+                repo->get(unrelatedName) == unrelatedPayload,
+              "unrelated-existing-data-round-trip-failed");
+  const auto beforeCandidateBytes = backend->usedBytes();
+
+  RepoObjectManifest first;
+  first.objectName = objectName;
+  first.objectType = "model-stage";
+  first.sha256 = sha256Hex(firstPayload);
+  first.size = firstPayload.size();
+  first.segmentCount = 1;
+  first.policyEpoch = "spec190-t010";
+  const auto storeWire = encodeStoreRequest(first, firstPayload);
+  RepoObjectManifest decodedFirst;
+  std::vector<uint8_t> decodedPayload;
+  decodeStoreRequest(storeWire, decodedFirst, decodedPayload);
+  requireRepo(decodedFirst.objectName == first.objectName &&
+                decodedFirst.sha256 == first.sha256 && decodedPayload == firstPayload,
+              "store-wire-decode-mismatch");
+  const auto firstReply = parseManifestJson(toString(repo->handleStore(storeWire)));
+  requireRepo(firstReply.objectName == objectName &&
+                firstReply.sha256 == first.sha256 && firstReply.size == firstPayload.size(),
+              "store-wire-commit-mismatch");
+  requireRepo(repo->handleFetch(toBytes(objectName)) == firstPayload,
+              "store-wire-fetch-mismatch");
+  const auto firstManifest = parseManifestJson(
+    toString(repo->handleManifest(toBytes(objectName))));
+  requireRepo(firstManifest.toJson() == firstReply.toJson(),
+              "manifest-query-mismatch");
+  const auto catalog = parseCatalogEntryJson(toString(repo->handleCatalogLookup(
+    encodeCatalogLookupRequest(objectName))));
+  requireRepo(catalog.manifest.objectName == objectName &&
+                catalog.manifest.sha256 == firstReply.sha256 && catalog.state == "AVAILABLE",
+              "catalog-query-mismatch");
+  requireRepo(backend->usedBytes() == beforeCandidateBytes + firstPayload.size(),
+              "initial-payload-accounting-mismatch");
+
+  auto replacement = first;
+  replacement.sha256 = sha256Hex(replacementPayload);
+  replacement.size = replacementPayload.size();
+  replacement.generation = 0;
+  const auto replacementReply = parseManifestJson(toString(repo->handleStore(
+    encodeStoreRequest(replacement, replacementPayload))));
+  requireRepo(replacementReply.objectName == objectName &&
+                replacementReply.sha256 == replacement.sha256 &&
+                replacementReply.generation > firstReply.generation,
+              "replacement-manifest-mismatch");
+  requireRepo(repo->handleFetch(toBytes(objectName)) == replacementPayload,
+              "replacement-wire-fetch-mismatch");
+  requireRepo(backend->usedBytes() == beforeCandidateBytes + replacementPayload.size(),
+              "payload-delta-double-counted");
+  const auto inventory = toString(repo->handleInventory());
+  requireRepo(inventory.find(objectName) != std::string::npos &&
+                inventory.find(unrelatedName) != std::string::npos,
+              "inventory-lost-existing-data");
+
+  bool competingWriterRejected = false;
+  try {
+    auto competing = std::make_shared<FilesystemRepoStoreBackend>(
+      repoRoot.string(), 4U * 1024U * 1024U, 1U * 1024U * 1024U, "spec190-t010-competing");
+    competing.reset();
+  }
+  catch (const std::exception& exception) {
+    competingWriterRejected = std::string(exception.what()).find(
+      "repo-persistence-owned") != std::string::npos;
+  }
+  requireRepo(competingWriterRejected, "single-writer-owner-not-enforced");
+
+  repo.reset();
+  backend.reset();
+  requireRepo(std::filesystem::is_regular_file(fixedRootMarker),
+              "fixed-repo-root-marker-removed");
+
+  std::shared_ptr<FilesystemRepoStoreBackend> restartedBackend;
+  auto restarted = openRepoOracle(repoRoot, "spec190-t010-restarted", restartedBackend);
+  const auto restartedManifest = parseManifestJson(
+    toString(restarted->handleManifest(toBytes(objectName))));
+  requireRepo(restartedManifest.sha256 == replacementReply.sha256 &&
+                restarted->handleFetch(toBytes(objectName)) == replacementPayload,
+              "restart-read-mismatch");
+  const auto restartedCatalog = parseCatalogEntryJson(toString(
+    restarted->handleCatalogLookup(encodeCatalogLookupRequest(objectName))));
+  requireRepo(restartedCatalog.manifest.sha256 == replacementReply.sha256 &&
+                restartedCatalog.state == "AVAILABLE",
+              "restart-query-mismatch");
+  const auto restartedInventory = toString(restarted->handleInventory());
+  requireRepo(restartedInventory.find(objectName) != std::string::npos &&
+                restartedInventory.find(unrelatedName) != std::string::npos &&
+                restartedBackend->usedBytes() == beforeCandidateBytes + replacementPayload.size(),
+              "restart-payload-accounting-mismatch");
+  requireRepo(restarted->get(unrelatedName) == unrelatedPayload,
+              "restart-existing-data-mismatch");
+
+  const auto receipt = NativeJson{
+    {"schema", "spec190-cpp-repo-oracle-v1"},
+    {"repoRoot", repoRoot.string()},
+    {"objectName", objectName},
+    {"baselineBytes", baselineBytes},
+    {"beforeCandidateBytes", beforeCandidateBytes},
+    {"firstPayloadBytes", firstPayload.size()},
+    {"replacementPayloadBytes", replacementPayload.size()},
+    {"replacementGeneration", replacementReply.generation},
+    {"restartedBytes", restartedBackend->usedBytes()},
+    {"wireStoreBytes", storeWire.size()},
+    {"singleWriter", "PASS"},
+    {"restartRead", "PASS"},
+    {"payloadDelta", "PASS"},
+  };
+  std::cout << "SPEC190_CPP_REPO_ORACLE_PASS "
+            << ndnsf::di::nativeCanonicalJson(receipt) << '\n';
+}
+
 } // namespace
 
 int
@@ -774,14 +961,16 @@ main(int argc, char** argv)
 {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: " << argv[0]
-              << " [--placement-only | --cache-compatibility | --expect-revocation-failure] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n";
+              << " [--placement-only | --cache-compatibility | --expect-revocation-failure] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n"
+              << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 0;
   }
   bool placementOnly = false, cacheCompatibility = false, expectedRevocationFailure = false,
-       multiToken = false, invalidOptions = false;
+       multiToken = false, repoLifecycle = false, invalidOptions = false;
   unsigned rounds = 1;
   bool roundsSeen = false;
   const char* runRootArg = nullptr;
+  const char* repoRootArg = nullptr;
   for (int i = 1; i < argc; ++i) {
     const std::string option(argv[i]);
     if (option == "--placement-only" && !placementOnly) placementOnly = true;
@@ -789,7 +978,9 @@ main(int argc, char** argv)
     else if (option == "--expect-revocation-failure" && !expectedRevocationFailure)
       expectedRevocationFailure = true;
     else if (option == "--require-multi-token" && !multiToken) multiToken = true;
+    else if (option == "--repo-lifecycle" && !repoLifecycle) repoLifecycle = true;
     else if (option == "--run-root" && !runRootArg && i + 1 < argc) runRootArg = argv[++i];
+    else if (option == "--repo-root" && !repoRootArg && i + 1 < argc) repoRootArg = argv[++i];
     else if (option == "--rounds" && !roundsSeen && i + 1 < argc) {
       roundsSeen = true;
       const std::string count(argv[++i]);
@@ -798,14 +989,23 @@ main(int argc, char** argv)
     }
     else invalidOptions = true;
   }
-  if (runRootArg == nullptr || invalidOptions ||
+  if (invalidOptions ||
+      (repoLifecycle && (repoRootArg == nullptr || runRootArg != nullptr ||
+                         placementOnly || cacheCompatibility || expectedRevocationFailure ||
+                         multiToken || roundsSeen)) ||
+      (!repoLifecycle && (runRootArg == nullptr || repoRootArg != nullptr)) ||
       (placementOnly && (cacheCompatibility || expectedRevocationFailure || multiToken || rounds > 1)) ||
       (expectedRevocationFailure && (placementOnly || cacheCompatibility || multiToken || roundsSeen))) {
     std::cerr << "usage: " << argv[0]
-              << " [--placement-only | --cache-compatibility | --expect-revocation-failure] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n";
+              << " [--placement-only | --cache-compatibility | --expect-revocation-failure] [--require-multi-token] [--rounds 1..8] --run-root DIRECTORY\n"
+              << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
     return 2;
   }
   try {
+    if (repoLifecycle) {
+      validateRepoLifecycle(std::filesystem::absolute(repoRootArg));
+      return 0;
+    }
     const auto root = std::filesystem::absolute(runRootArg);
     if (expectedRevocationFailure) {
       validateRevocationFailure(root);
