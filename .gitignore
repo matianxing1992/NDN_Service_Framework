@@ -107,11 +107,18 @@ tests/container/**/actual/
 **/identity-private/
 **/container-secrets/
 
-# Local Spec Kit documents and Codex working state. These remain available in
-# the workspace for local planning/evidence, but are not repository contents.
+# Local Spec Kit documents, agent instructions, and Codex working state. These
+# remain available in the workspace for local planning/evidence, but are not
+# repository contents. Keep these rules in the shared ignore file rather than
+# relying only on .git/info/exclude, so a clone cannot accidentally stage them.
 /specs/
 /.specify/
 /.codex/
+/.agents/
+/.claude/
+/.deepseek/
+/AGENTS.md
+/CLAUDE.md
 /CODEX*.md
 /**/CODEX*.md
 /**/codex*.md
