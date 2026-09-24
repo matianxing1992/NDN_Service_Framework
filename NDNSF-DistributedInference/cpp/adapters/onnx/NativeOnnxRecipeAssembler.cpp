@@ -130,6 +130,61 @@ std::string digestModelFile(const NativeOnnxModelFileInput& file)
   fail("GRAPH");
 }
 
+bool
+usesOrtLegacyDefaultDomainOp(const onnx::ModelProto& model,
+                              const NativeCertifiedRecipe& recipe)
+{
+  if (recipe.adapterId != "onnx" || recipe.backend != "onnxruntime" ||
+      recipe.backendAbi != "onnxruntime-cpu-v1" || !model.has_graph())
+    return false;
+  for (const auto& node : model.graph().node()) {
+    if (node.domain().empty() && node.op_type() == "SimplifiedLayerNormalization")
+      return true;
+  }
+  return false;
+}
+
+class ScopedOrtCompatibilityCheckerDomains
+{
+public:
+  ScopedOrtCompatibilityCheckerDomains(onnx::ModelProto& model,
+                                       const NativeCertifiedRecipe& recipe)
+  {
+    if (!usesOrtLegacyDefaultDomainOp(model, recipe)) return;
+    for (auto& node : *model.mutable_graph()->mutable_node()) {
+      if (node.domain().empty() && node.op_type() == "SimplifiedLayerNormalization") {
+        node.set_domain("com.microsoft");
+        m_normalized.push_back(&node);
+      }
+    }
+  }
+
+  ~ScopedOrtCompatibilityCheckerDomains() noexcept
+  {
+    for (auto* node : m_normalized) node->clear_domain();
+  }
+
+  bool active() const noexcept { return !m_normalized.empty(); }
+
+private:
+  std::vector<onnx::NodeProto*> m_normalized;
+};
+
+void
+checkNativeOnnxModel(onnx::ModelProto& model, const NativeCertifiedRecipe& recipe)
+{
+  ScopedOrtCompatibilityCheckerDomains compatibility(model, recipe);
+  if (compatibility.active()) {
+    // The fixed ORT profile contains a legacy default-domain ORT operator that
+    // the generic checker cannot resolve. Keep structural checker coverage;
+    // the native shape and ORT checks remain mandatory below.
+    onnx::checker::check_model(model, false, false, false);
+  }
+  else {
+    onnx::checker::check_model(model, true);
+  }
+}
+
 void checkActive(const NativeAssemblyControl& control)
 {
   if (!control.requireActive ||
@@ -776,7 +831,7 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   // extraction, assembled checking and ORT loading below remain mandatory.
   if (!recipe.materializedRole) {
     try {
-      onnx::checker::check_model(original, true);
+      checkNativeOnnxModel(original, recipe);
     }
     catch (const std::exception& error) {
       failGraph("canonical-check", error);
@@ -924,7 +979,7 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
   // equals the certified indices with byte-identical nodes, and its io
   // matches the recipe contracts semantically (executor.py S6 block).
   try {
-    onnx::checker::check_model(assembled, true);
+    checkNativeOnnxModel(assembled, recipe);
   }
   catch (const std::exception& error) {
     failGraph("assembled-check", error);
@@ -1783,14 +1838,17 @@ void materializeShapeInferenceInitializers(
                          "Conv", "ConvTranspose", "DequantizeLinear", "Div", "Dropout",
                          "Einsum", "Equal", "Exp", "Flatten", "Gelu", "GemmaRotaryEmbedding",
                          "Gemm", "Greater", "GreaterOrEqual", "Identity", "LayerNormalization",
-                         "Less", "LessOrEqual", "Log", "LogSoftmax", "MatMul", "Mul",
+                         "Less", "LessOrEqual", "Log", "LogSoftmax", "MatMul", "MatMulInteger",
+                         "Mul",
                          "Neg", "Pow", "QLinearConv", "QLinearMatMul", "QuantizeLinear",
                          "Relu", "RotaryEmbedding", "ScatterElements", "ScatterND", "Sigmoid",
-                         "Size", "Softmax", "Sqrt", "Sub", "Tanh", "Transpose", "Where"})
+                         "SimplifiedLayerNormalization", "Size", "Softmax", "Sqrt", "Sub",
+                         "Tanh", "Transpose", "Where"})
     shapeIndependent("", op);
   for (const char* domain : {"com.microsoft", "ai.onnx.contrib"})
-    for (const char* op : {"Attention", "FusedMatMul", "Gelu", "LayerNormalization",
-                           "RotaryEmbedding", "SkipLayerNormalization"})
+    for (const char* op : {"Attention", "FusedMatMul", "Gelu", "GroupQueryAttention",
+                           "LayerNormalization", "RotaryEmbedding", "SkipLayerNormalization",
+                           "SkipSimplifiedLayerNormalization"})
       shapeIndependent(domain, op);
   std::unordered_set<std::string> externalInitializers;
   for (const auto& initializer : sourceModel.graph().initializer())
