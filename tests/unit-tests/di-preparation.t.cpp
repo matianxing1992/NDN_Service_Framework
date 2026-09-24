@@ -333,6 +333,28 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   BOOST_CHECK_EQUAL(snapshots.size(), 2U);
   BOOST_CHECK_EQUAL(snapshots.back().sourceBytes, 0U);
   BOOST_CHECK_EQUAL(snapshots.back().initializerBytes, 0U);
+
+  const auto restoreControl = NativeAssemblyControl{
+    std::chrono::steady_clock::now() + std::chrono::seconds(5), [] {}, 1U << 20, 1U << 20};
+  auto yoloCatalog = catalog;
+  yoloCatalog["splitter"] = NativeJson{
+    {"kind", "YOLO"}, {"components", NativeJson::array()}};
+  NativeCanonicalSource yoloReference;
+  yoloReference.preparedMetadataJson = preparedMetadata;
+  BOOST_CHECK_EXCEPTION(
+    NativeRequestCatalog::load(nativeCanonicalJson(yoloCatalog), yoloReference, restoreControl),
+    std::invalid_argument, [] (const std::invalid_argument& error) {
+      return std::string(error.what()).find("REFERENCE_RESTORE_UNSUPPORTED") != std::string::npos;
+    });
+
+  yoloReference.preparedMetadataJson = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-prepared-metadata-v0"}});
+  BOOST_CHECK_EXCEPTION(
+    NativeRequestCatalog::load(nativeCanonicalJson(yoloCatalog), yoloReference, restoreControl),
+    std::invalid_argument, [] (const std::invalid_argument& error) {
+      return std::string(error.what()).find("unsupported native prepared metadata schema") !=
+        std::string::npos;
+    });
 }
 
 BOOST_AUTO_TEST_CASE(Spec189PreparationMemorySnapshotCoversOwnersAndCancellation)
