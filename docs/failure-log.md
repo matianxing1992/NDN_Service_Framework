@@ -1,5 +1,25 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-22 cross-process protected serving static re-review
+
+- **Status:** `ROOT_CAUSE` / T006 remains `PARTIAL`; T007 remains locked.
+- **First boundary:** existing durable restart evidence reconstructs Core metadata and
+  a serving source only inside one test process. A new OS process has not yet been
+  shown to re-register the fixed Repo source and serve the stored envelope through the
+  production callback path, nor has Provider decrypt after that restart been observed.
+- **Static finding:** Repo remains ciphertext-only and the durable reference remains
+  non-secret; `HybridMessageCrypto` send/wrapped-key caches are process-local. The
+  cold stored envelope can carry an inline wrapped key, so the correct next step is a
+  real exec-restart C++ oracle, not persisting old request/session keys or removing the
+  protected cache miss gate.
+- **Changed gate:** add and review one `fork`+`exec` C++ Core restart selector covering
+  fixed Repo reopen, durable lookup, new serving owner, segment response, digest/object
+  count stability, and cleanup. Provider decrypt, current grant/Selection/placement
+  rebinding and precise missing-object fetch remain later gates.
+- **Validation:** no production edit or rebuild in B190-22; CodeGraph and exact source
+  review passed. Existing B190-21 native regression remains the last runtime evidence.
+- **Evidence:** [B190-22](../specs/190-multiturn-latency/evidence/b190-22.md).
+
 ## 2026-09-23 — Spec190 B190-21 protected assembled ciphertext reuse
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
