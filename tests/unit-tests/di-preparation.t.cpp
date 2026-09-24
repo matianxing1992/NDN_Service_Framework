@@ -203,7 +203,7 @@ BOOST_AUTO_TEST_CASE(ColdPreparationPublishesOnlyVerifiedImmutablePackage)
   BOOST_CHECK_EQUAL(fixture.fetches, 1U);
 }
 
-BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogWithoutSourceLoader)
+BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner)
 {
   const auto digest = [] (const std::string& value) { return nativePlanningDigest(value); };
   const std::string role = "/Qwen/Stage/0";
@@ -317,6 +317,20 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogWithoutSourceLoader)
   BOOST_CHECK_EQUAL(cache.parseCount(), 1U);
   BOOST_CHECK_EQUAL(prepared.manifest().modelName, "QwenReferenceFixture");
   BOOST_REQUIRE_EQUAL(snapshots.size(), 1U);
+  BOOST_CHECK_EQUAL(snapshots.back().sourceBytes, 0U);
+  BOOST_CHECK_EQUAL(snapshots.back().initializerBytes, 0U);
+
+  // A new cache owner represents the durable lookup boundary.  The closure
+  // intentionally still rejects canonical source reads, so this proves that
+  // the prepared metadata receipt is sufficient for a fresh owner without
+  // claiming an OS fork/exec process qualification.
+  ModelPreparationCache restarted(8 << 20, 1, std::chrono::seconds(5));
+  const auto restartedPrepared = restarted.prepare(spec);
+  BOOST_CHECK(restartedPrepared.receipt().origin == PreparationReceipt::Origin::Fetched);
+  BOOST_CHECK_EQUAL(sourceLoads.load(), 0U);
+  BOOST_CHECK_EQUAL(restarted.parseCount(), 1U);
+  BOOST_CHECK_EQUAL(restartedPrepared.manifest().modelName, "QwenReferenceFixture");
+  BOOST_CHECK_EQUAL(snapshots.size(), 2U);
   BOOST_CHECK_EQUAL(snapshots.back().sourceBytes, 0U);
   BOOST_CHECK_EQUAL(snapshots.back().initializerBytes, 0U);
 }
