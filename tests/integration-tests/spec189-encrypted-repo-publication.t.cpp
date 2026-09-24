@@ -7,13 +7,16 @@
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 #include <boost/test/unit_test.hpp>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <atomic>
+#include <cstdlib>
 #include <future>
 #include <thread>
 #include <unistd.h>
+#include <sys/wait.h>
 
 namespace {
 using namespace ndn_service_framework;
@@ -417,6 +420,162 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesAfterServiceUserRestart)
     BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
   }
   BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(DurablePublicationServesAfterExecRestart)
+{
+  if (const char* child = std::getenv("NDNSF_SPEC189_EXEC_CHILD");
+      child != nullptr && std::string(child) == "1") {
+    const char* rawRoot = std::getenv("NDNSF_SPEC189_EXEC_ROOT");
+    BOOST_REQUIRE(rawRoot != nullptr);
+    const std::filesystem::path root(rawRoot);
+
+    StorageCapability capability;
+    capability.repoNode = "/spec189/exec-restart";
+    capability.freeBytes = 16U << 20;
+    auto repo = std::make_shared<RepoCore>(capability,
+      makeFilesystemRepoStore((root / "objects").string(), 1U << 20, 1U << 20));
+    auto store = std::make_shared<RepoEncryptedLargeDataStore>(repo);
+    ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+    ndn::DummyClientFace face(keys);
+    const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/exec-user"));
+    const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/exec-authority"));
+    InspectingUser restarted(face, ndn::Name("/spec189/exec-restart"), certificate,
+                             authority, "examples/trust-any.conf");
+    restarted.useSigningKeyChainForSigningOnlyForTest(keys);
+    restarted.attachLocalMockPubSubForTest(pubsub(face, keys));
+    restarted.setEncryptedLargeDataRangeStore(store);
+    restarted.init();
+    face.processEvents(ndn::time::milliseconds(1));
+
+    const ndn::Name service("/spec189/exec-model");
+    const std::vector<std::uint8_t> plaintext(40000, 0x4c);
+    restarted.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+    LargeDataPublishOptions options;
+    options.retention = EncryptedLargeDataRetention::Durable;
+    options.publicationIdentity = "sha256:" + std::string(64, 'c');
+    const auto recovered = restarted.publishEncryptedLargeData(
+      restarted.prepareServiceRequest(service.toUri()), plaintext, "model-material",
+      ndn::time::milliseconds(1), true, options);
+    BOOST_REQUIRE_MESSAGE(recovered.success, recovered.errorMessage);
+    BOOST_REQUIRE(recovered.fileBacked);
+    BOOST_REQUIRE_EQUAL(repo->list().size(), 1U);
+
+    // Exercise the production Core Interest callback after a real exec.  The
+    // returned bytes must be the original immutable envelope, not a fresh
+    // publication or a request-scoped copy.
+    ndn::Interest discovery(recovered.encryptedDataName);
+    discovery.setCanBePrefix(true);
+    face.receive(discovery);
+    face.processEvents(ndn::time::milliseconds(1));
+    std::uint64_t lastSegment = 0;
+    for (const auto& data : face.sentData) {
+      if (recovered.encryptedDataName.isPrefixOf(data.getName()) &&
+          data.getFinalBlock()) {
+        lastSegment = std::max(lastSegment, data.getFinalBlock()->toSegment());
+      }
+    }
+    BOOST_REQUIRE_GT(lastSegment, 0U);
+    for (std::uint64_t segment = 1; segment <= lastSegment; ++segment) {
+      face.receive(ndn::Interest(
+        ndn::Name(recovered.encryptedDataName).appendSegment(segment)));
+    }
+    face.processEvents(ndn::time::milliseconds(1));
+
+    std::map<std::uint64_t, ndn::Buffer> segments;
+    for (const auto& data : face.sentData) {
+      if (!recovered.encryptedDataName.isPrefixOf(data.getName())) {
+        continue;
+      }
+      const auto segment = data.getName().get(-1).toSegment();
+      const auto content = data.getContent();
+      segments[segment] = ndn::Buffer(content.value(),
+                                      content.value() + content.value_size());
+    }
+    BOOST_REQUIRE_EQUAL(segments.size(), lastSegment + 1);
+    ndn::Buffer encoded;
+    for (const auto& item : segments) {
+      encoded.insert(encoded.end(), item.second.begin(), item.second.end());
+    }
+    HybridMessageEnvelope envelope;
+    BOOST_REQUIRE(envelope.WireDecode(ndn::Block(encoded)));
+    BOOST_CHECK_EQUAL(envelope.getMessageType(), "REQUEST-LARGE");
+    BOOST_CHECK_EQUAL(restarted.getLargeDataServingMetricsForTest().publicationCount, 1U);
+    BOOST_CHECK_EQUAL(repo->list().size(), 1U);
+    return;
+  }
+
+  RepoFixture fixture;
+  const auto spool = (fixture.root / "spool").string();
+  const auto keyReferenceDir = (fixture.root / "key-references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue referenceDir("NDNSF_DURABLE_KEY_REFERENCE_DIR",
+                                      keyReferenceDir.c_str());
+  ScopedEnvironmentValue retention("NDNSF_REQUEST_LARGE_DATA_RETENTION_MS", "1000");
+  std::string committedName;
+  RepoObjectManifest committedManifest;
+  {
+    auto store = std::make_shared<RepoEncryptedLargeDataStore>(fixture.repo);
+    ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
+    ndn::DummyClientFace face(keys);
+    const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/exec-user"));
+    const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/exec-authority"));
+    InspectingUser user(face, ndn::Name("/spec189/exec-restart"), certificate,
+                        authority, "examples/trust-any.conf");
+    user.useSigningKeyChainForSigningOnlyForTest(keys);
+    user.attachLocalMockPubSubForTest(pubsub(face, keys));
+    user.setEncryptedLargeDataRangeStore(store);
+    user.init();
+    face.processEvents(ndn::time::milliseconds(1));
+
+    const ndn::Name service("/spec189/exec-model");
+    const std::vector<std::uint8_t> plaintext(40000, 0x4c);
+    user.prepareHybridSendKeyForTest(service, "REQUEST-LARGE");
+    LargeDataPublishOptions options;
+    options.retention = EncryptedLargeDataRetention::Durable;
+    options.publicationIdentity = "sha256:" + std::string(64, 'c');
+    const auto first = user.publishEncryptedLargeData(
+      user.prepareServiceRequest(service.toUri()), plaintext, "model-material",
+      ndn::time::milliseconds(1), true, options);
+    BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+    BOOST_REQUIRE(first.fileBacked);
+    BOOST_REQUIRE_EQUAL(fixture.repo->list().size(), 1U);
+    committedName = first.encryptedDataName.toUri();
+    committedManifest = fixture.repo->getManifest(committedName);
+  }
+  // The child must acquire the backend's authoritative owner after the
+  // original process has released it; inheriting a live Repo object would
+  // only test fork/COW state rather than an OS restart.
+  fixture.repo.reset();
+  const auto executable = boost::unit_test::framework::master_test_suite().argv[0];
+  BOOST_REQUIRE(executable != nullptr);
+
+  ScopedEnvironmentValue childMode("NDNSF_SPEC189_EXEC_CHILD", "0");
+  ScopedEnvironmentValue childRoot("NDNSF_SPEC189_EXEC_ROOT",
+                                  fixture.root.c_str());
+  setenv("NDNSF_SPEC189_EXEC_CHILD", "1", 1);
+  const auto child = ::fork();
+  BOOST_REQUIRE(child >= 0);
+  if (child == 0) {
+    ::execl(executable, executable,
+            "--run_test=Spec189EncryptedRepo/DurablePublicationServesAfterExecRestart",
+            "--log_level=error", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  int status = 0;
+  BOOST_REQUIRE_EQUAL(::waitpid(child, &status, 0), child);
+  BOOST_REQUIRE(WIFEXITED(status));
+  BOOST_CHECK_EQUAL(WEXITSTATUS(status), 0);
+  StorageCapability capability;
+  capability.repoNode = "/spec189/exec-restart";
+  capability.freeBytes = 16U << 20;
+  fixture.repo = std::make_shared<RepoCore>(capability,
+    makeFilesystemRepoStore((fixture.root / "objects").string(), 1U << 20, 1U << 20));
+  BOOST_CHECK_EQUAL(fixture.repo->list().size(), 1U);
+  BOOST_CHECK(fixture.repo->has(committedName));
+  BOOST_CHECK_EQUAL(fixture.repo->getManifest(committedName).sha256,
+                    committedManifest.sha256);
 }
 
 BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRetiresOnlyOlderServiceOwner)
