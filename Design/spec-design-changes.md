@@ -1,5 +1,17 @@
 # Spec 设计变更记录
 
+## Spec190 current T006 static audit — 2026-09-23
+
+- **Status**: `PARTIAL` / `NO_DESIGN_CHANGE`；B190-31 只审查当前实现与 CD-09/FR-016
+  的一致性，没有修改公共 API、wire、加密算法或当前/目标 PDF。
+- **Finding**: 当前 `lookupPrepared → ModelPreparationCache::buildPackage` 合同把单个缺失
+  子对象折叠成完整 source miss，不能证明“缺一对象只补必要范围”。该缺口必须由原生
+  Repo/DI owner 通过 B190-32 先闭合；不以已有 B190-30 hit 证据覆盖。
+- **Boundary**: T006 仍需真实 current grant/Selection/placement、保护材料缺对象、Provider
+  重启 serving、revoke/rebind 与 real route 证据；T007 不解锁。
+- **Evidence**: [B190-31](../specs/190-multiturn-latency/evidence/b190-31.md)；当前审查快照
+  及五 lane coverage matrix 已记录。
+
 ## Spec190 async prepare Repo lookup parity — 2026-09-23
 
 - **Status**: `NO_DESIGN_CHANGE`；B190-30 修正 T005 公开异步入口与既有 CD-08
