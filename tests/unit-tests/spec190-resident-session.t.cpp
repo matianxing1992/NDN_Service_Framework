@@ -166,12 +166,20 @@ BOOST_AUTO_TEST_CASE(CancelledCreatorLeavesResultToValidWaiter)
     });
   });
   started.wait();
+  auto waiterJoined = std::make_shared<std::promise<void>>();
+  auto waiterJoinedFuture = waiterJoined->get_future();
+  auto waiterCallbackEntered = std::make_shared<std::atomic<bool>>(false);
   auto waiter = std::async(std::launch::async, [&] {
     return cache->acquire("creator-cancel", [] {
       return std::shared_ptr<void>(std::make_shared<int>(31));
+    }, std::chrono::steady_clock::time_point::max(),
+    [waiterJoined, waiterCallbackEntered] {
+      if (!waiterCallbackEntered->exchange(true))
+        waiterJoined->set_value();
+      return false;
     });
   });
-  std::this_thread::sleep_for(2ms);
+  waiterJoinedFuture.wait();
   creatorCancelled.store(true);
   releaseLoader.set_value();
 
