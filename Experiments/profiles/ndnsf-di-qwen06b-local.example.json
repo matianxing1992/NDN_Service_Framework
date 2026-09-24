@@ -5,12 +5,12 @@
   "stageNodes": ["ucla", "arizona"],
   "controllerNode": "memphis",
   "userNode": "neu",
-  "buildDir": "build-spec189-oracle",
+  "buildDir": "build",
   "controllerBinary": "/usr/local/bin/App_ServiceController",
   "authorityBinary": "/usr/local/bin/DI_NativeArtifactAuthority",
   "requesterBinary": "/usr/local/bin/DI_NativeRequester",
   "providerBinary": "/usr/local/bin/di-native-provider",
   "assemblyWorkerBinary": "/usr/local/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker",
-  "oracleBinary": "/usr/local/bin/spec189-two-provider-oracle",
+  "oracleBinary": "/usr/local/bin/spec190-multiturn-oracle",
   "outputRoot": "results/spec184-qwen06b-local"
 }

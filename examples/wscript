@@ -291,6 +291,17 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 
+    # Spec190 reuses the same production C++ oracle rules with a distinct
+    # installed identity. Keep the Spec189 target for compatibility while
+    # making the candidate/experiment boundary explicit for Spec190.
+    bld.program(name='spec190-multiturn-oracle',
+                target='spec190-multiturn-oracle',
+                source=['Spec189TwoProviderOracle.cpp'],
+                includes=['..'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path='${BINDIR}')
+
     # Parser counterexamples share the exact checker used by the experiment CLI.
     # This target proves log validation only, never model/network qualification.
     bld.program(name='spec189-material-oracle-tests',

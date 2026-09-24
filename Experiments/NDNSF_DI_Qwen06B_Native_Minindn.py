@@ -1471,7 +1471,7 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--provider-binary-sha256", default=None)
     parser.add_argument("--assembly-worker-binary-sha256", default=None)
     parser.add_argument("--oracle-binary", type=Path, default=None,
-                        help="Spec189 C++ full-path oracle executable")
+                        help="Spec190 C++ full-path oracle executable")
     parser.add_argument("--oracle-binary-sha256", default=None)
     parser.add_argument(
         "--fixed-work-root", type=Path, default=FIXED_WORK_ROOT,
@@ -1658,7 +1658,7 @@ def main(argv=None, *, _supervised=False) -> int:
                               else (build / "DI_NativeOnnxAssemblyWorker").resolve())
     oracle_binary = (args.oracle_binary.expanduser().resolve()
                      if args.oracle_binary is not None
-                     else (build / "examples/spec189-two-provider-oracle").resolve())
+                     else (build / "examples/spec190-multiturn-oracle").resolve())
     receipt = build / "spec180-native-build.json"
     # Verify the complete runtime identity before copying the canonical graph
     # or external initializer into the run directory.  The same checks are
@@ -1671,7 +1671,7 @@ def main(argv=None, *, _supervised=False) -> int:
         (requester_binary, args.requester_binary_sha256, "REQUESTER_BINARY"),
         (provider_binary, args.provider_binary_sha256, "PROVIDER_BINARY"),
         (assembly_worker_binary, args.assembly_worker_binary_sha256, "ASSEMBLY_WORKER_BINARY"),
-        (oracle_binary, args.oracle_binary_sha256, "SPEC189_ORACLE_BINARY"),
+        (oracle_binary, args.oracle_binary_sha256, "SPEC190_ORACLE_BINARY"),
     ]
     if requester_driver_binary is not None:
         binary_checks.append((requester_driver_binary, args.requester_driver_binary_sha256,

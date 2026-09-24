@@ -147,7 +147,7 @@ def load_profile(path: Path) -> tuple[dict[str, Any], str]:
     if "assemblyWorkerBinary" not in profile:
         profile["assemblyWorkerBinary"] = str(Path(profile["buildDir"]) / "DI_NativeOnnxAssemblyWorker")
     if "oracleBinary" not in profile:
-        profile["oracleBinary"] = str(Path(profile["buildDir"]) / "examples/spec189-two-provider-oracle")
+        profile["oracleBinary"] = str(Path(profile["buildDir"]) / "examples/spec190-multiturn-oracle")
     if "outputRoot" not in profile:
         profile["outputRoot"] = str(ROOT / "results/spec184-qwen06b-local")
     return profile, sha256_file(path)

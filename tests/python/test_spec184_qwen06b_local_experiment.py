@@ -99,14 +99,14 @@ def test_example_profile_resolves_two_nodes_and_installed_native_boundary():
     profile, profile_sha = module.load_profile(
         ROOT / "Experiments/profiles/ndnsf-di-qwen06b-local.example.json"
     )
-    assert profile["buildDir"].endswith("build-spec189-oracle")
+    assert profile["buildDir"].endswith("build")
     assert profile["stageNodes"] == ["ucla", "arizona"]
     for key, binary in (
         ("controllerBinary", "App_ServiceController"),
         ("authorityBinary", "DI_NativeArtifactAuthority"),
         ("requesterBinary", "DI_NativeRequester"),
         ("providerBinary", "di-native-provider"),
-        ("oracleBinary", "spec189-two-provider-oracle"),
+        ("oracleBinary", "spec190-multiturn-oracle"),
     ):
         assert profile[key] == "/usr/local/bin/" + binary
     assert profile["assemblyWorkerBinary"] == (
