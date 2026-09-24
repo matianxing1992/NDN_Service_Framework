@@ -6705,7 +6705,7 @@ namespace ndn_service_framework
                             publication->windowCapacity = largeDataWindowSegments();
                             publication->rangeSource = durableHit->source;
                             publication->serviceName = ctx.serviceName.toUri();
-                            publication->publicationIdentity = options.publicationIdentity;
+                            publication->publicationIdentity = result.publicationIdentity;
                             publication->controllerVersioned = durableVersioned;
                             if (durableVersioned)
                                 publication->controllerVersion = *durableControllerVersion;
@@ -7075,7 +7075,7 @@ namespace ndn_service_framework
                             }
                             publication->serviceName = ctx.serviceName.toUri();
                             publication->publicationIdentity =
-                                options.publicationIdentity;
+                                result.publicationIdentity;
                             publication->controllerVersioned = durableVersioned;
                             if (durableVersioned)
                                 publication->controllerVersion =

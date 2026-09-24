@@ -418,6 +418,16 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesAfterServiceUserRestart)
     BOOST_CHECK_NE(rebound.encryptedDataName.toUri(), first.encryptedDataName.toUri());
     BOOST_CHECK_NE(rebound.publicationIdentity, first.publicationIdentity);
     BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
+
+    // The version-derived identity must be a real durable hit on the next
+    // call, not another commit under the caller's original identity.
+    const auto reboundHit = restarted.publishEncryptedLargeData(
+      restarted.prepareServiceRequest(service.toUri()), plaintext, "model-material",
+      ndn::time::milliseconds(1), true, options);
+    BOOST_REQUIRE_MESSAGE(reboundHit.success, reboundHit.errorMessage);
+    BOOST_CHECK_EQUAL(reboundHit.encryptedDataName.toUri(), rebound.encryptedDataName.toUri());
+    BOOST_CHECK_EQUAL(reboundHit.publicationIdentity, rebound.publicationIdentity);
+    BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
   }
   BOOST_CHECK_EQUAL(fixture.repo->list().size(), 2U);
 }

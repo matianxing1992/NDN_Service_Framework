@@ -1080,6 +1080,24 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerFetchesCanonicalSourceAfterSelection)
                     "canonical-root-post-selection");
   BOOST_CHECK_EQUAL(prepared.metadata.at("modelManifestDigest"), rootDigest);
   BOOST_CHECK(!prepared.metadata.at("assembledModelDigest").empty());
+
+  const auto missingCacheDir = options.cacheDir + "-missing-source";
+  std::filesystem::remove_all(missingCacheDir, cleanupError);
+  auto missingSource = fetchers;
+  missingSource.fetchEncryptedLargeData = [] (
+      const ndn::Name&, const ndn::Name&) -> std::optional<ndn::Buffer> {
+    return std::nullopt;
+  };
+  auto missingOptions = options;
+  missingOptions.cacheDir = missingCacheDir;
+  BOOST_CHECK_EXCEPTION(
+    prepareNativeCanonicalOnnxRole(missingSource, projection, missingOptions),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("DI_CANONICAL_SOURCE_UNAVAILABLE") !=
+             std::string::npos;
+    });
+  std::filesystem::remove_all(missingCacheDir, cleanupError);
   std::filesystem::remove_all(options.cacheDir, cleanupError);
 }
 
