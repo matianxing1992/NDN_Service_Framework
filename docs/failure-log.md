@@ -1,5 +1,30 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-28 Face-backed exact protected grant transport
+
+- **Status:** `ADVANCE` for the T006 exact-fetch sub-gate; T006 remains
+  `PARTIAL` and T007 remains locked.
+- **First boundary:** the first route-fixture run reached the default factory
+  and recorded `publications=1, dispatches=1, exactInterests=1, data=1`, then
+  failed because the test Data was unsigned and DummyFace did not deliver it
+  to the pending Interest. This is a fixture wire failure; it does not prove
+  a production timeout or route failure. The raw run is preserved under
+  `.codex-tmp/spec190-b190-28-route-grant-selector-r1/`.
+- **Changed gate:** the fixture now stores the published grant wire, signs a
+  matching exact Data with the Provider certificate, sends it through the
+  Provider-owned Face I/O context, and fetches it with an exact non-prefix
+  Interest. Cancellation, deadline and payload bounds remain enforced.
+- **Validation:** affected `spec185-prepared-request` compile-link passed;
+  focused `PreparedRequestCompletesThroughServedProvider` passed `14/14` and
+  repeated runs `r5/r6/r7` all passed. Evidence includes
+  `GRANT_VERIFIED`, `RUNNER_READY`, `EXECUTION_COMPLETED` and `TERMINAL`.
+- **Qualification boundary:** this is an in-process Face-backed exact Data
+  gate, not real NFD/MiniNDN route qualification. Online Controller
+  confirmation, durable key recovery, NAC-ABE inline unwrap, grant/
+  Selection/placement rebinding, revoke invalidation, precise missing-object
+  negative fetch, full protected restart and complete T006 remain open.
+- **Evidence:** [B190-28](../specs/190-multiturn-latency/evidence/b190-28.md).
+
 ## 2026-09-23 — Spec190 B190-27 default protected grant factory production-wiring gate
 
 - **Status:** `ADVANCE` for the default-factory sub-gate; T006 remains

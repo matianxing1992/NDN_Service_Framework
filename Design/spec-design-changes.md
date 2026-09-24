@@ -1,5 +1,20 @@
 # Spec 设计变更记录
 
+## Spec190 Face-backed exact protected grant fixture — 2026-09-23
+
+- **Status**: `PARTIAL` / `NO_DESIGN_CHANGE`；B190-28 只修正 T006 C++ fixture
+  的 Data wire 证据，不改变 NDNSF 外部契约或生产 NFD transport。
+- **Delta**: grant publication now creates a signed exact-name Data on the
+  Provider-owned Face, and the injected bounded fetch dependency obtains it
+  through an exact non-prefix Interest. This validates the existing
+  `ProtectedGrantFetcher` transport boundary rather than adding another
+  provider path.
+- **Boundary**: Core/Provider wire、Selection、grant binding、cache identity、
+  authorization 和应用 API unchanged；real NFD/MiniNDN route、online
+  Controller/revoke/restart qualification remain open. Current/target PDF no
+  semantic change, so no PDF refresh.
+- **Evidence**: [B190-28](../specs/190-multiturn-latency/evidence/b190-28.md)。
+
 ## Spec190 default protected grant factory transport seam — 2026-09-23
 
 - **Status**: `PARTIAL` / `NO_DESIGN_CHANGE` for the external NDNSF contract；B190-27
