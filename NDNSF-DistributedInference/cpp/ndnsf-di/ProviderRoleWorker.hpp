@@ -34,6 +34,7 @@ struct InputFetchTiming
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::size_t bytes = 0;
+  std::shared_ptr<StageTransferObservation> transferObservation;
   std::chrono::steady_clock::time_point prefetchStartedAt;
   std::chrono::steady_clock::time_point fetchCompletedAt;
 };
@@ -47,6 +48,8 @@ struct OutputPublishTiming
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::size_t bytes = 0;
+  std::shared_ptr<StageTransferObservation> transferObservation;
+  bool publishDeferred = false;
   std::chrono::steady_clock::time_point outputReadyAt;
   std::chrono::steady_clock::time_point publishDoneAt;
 };
@@ -70,6 +73,7 @@ struct ProviderRoleResult
   RoleTiming timing;
   std::vector<InputFetchTiming> inputTimings;
   std::vector<OutputPublishTiming> outputTimings;
+  StageTransferBudget transferBudget;
   bool exactForwardCacheHit = false;
   std::string exactForwardCacheKey;
 };

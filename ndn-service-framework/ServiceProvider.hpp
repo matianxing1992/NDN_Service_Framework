@@ -73,6 +73,18 @@ namespace ndn_service_framework{
         std::string errorMessage;
     };
 
+    /** Native-only measurements for one collaboration object transfer. */
+    struct CollaborationTransferMetrics
+    {
+        std::string actualDataName;
+        std::optional<std::size_t> transportPayloadBytes;
+        std::optional<std::size_t> metadataBytes;
+        std::optional<std::size_t> wireBytes;
+        std::optional<std::size_t> interestCount;
+        std::optional<std::size_t> retryCount;
+        std::optional<std::size_t> localCopyBytes;
+    };
+
     struct LargeDataResponsePublishResult
     {
         bool success = false;
@@ -421,6 +433,12 @@ namespace ndn_service_framework{
                                        const ndn::Buffer& payload,
                                        size_t maxSegmentSize = 7000,
                                        int freshnessMs = 60000);
+                ndn::Name publishLarge(KeyScope keyScope,
+                                       Topic topic,
+                                       const ndn::Buffer& payload,
+                                       size_t maxSegmentSize,
+                                       int freshnessMs,
+                                       CollaborationTransferMetrics* metrics);
                 /**
                  * Publish one segmented object under a caller-chosen exact name.
                  *
@@ -433,6 +451,12 @@ namespace ndn_service_framework{
                                             const ndn::Buffer& payload,
                                             size_t maxSegmentSize = 7000,
                                             int freshnessMs = 60000);
+                ndn::Name publishLargeNamed(KeyScope keyScope,
+                                            const ndn::Name& dataName,
+                                            const ndn::Buffer& payload,
+                                            size_t maxSegmentSize,
+                                            int freshnessMs,
+                                            CollaborationTransferMetrics* metrics);
                 /**
                  * Fetch one exact-name segmented collaboration object.
                  *
@@ -447,6 +471,11 @@ namespace ndn_service_framework{
                                                       KeyScope keyScope,
                                                       int timeoutMs,
                                                       std::size_t expectedSegments);
+                std::optional<ndn::Buffer> fetchLarge(const ndn::Name& dataName,
+                                                      KeyScope keyScope,
+                                                      int timeoutMs,
+                                                      std::size_t expectedSegments,
+                                                      CollaborationTransferMetrics* metrics);
                 /**
                  * Publish request-scoped NDNSF_DATA_V1 segments through the
                  * SVSPubSub data path.  Each pair contains the complete
@@ -486,6 +515,11 @@ namespace ndn_service_framework{
                     KeyScope keyScope,
                     const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
                     int freshnessMs = 60000);
+                bool publishSignedExactData(
+                    KeyScope keyScope,
+                    const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+                    int freshnessMs,
+                    CollaborationTransferMetrics* metrics);
                 /** Express and, on timeout/Nack, re-express the same exact
                  * Interest name until the bounded deadline. The returned
                  * content is released only after trust-schema and expected
@@ -496,6 +530,13 @@ namespace ndn_service_framework{
                     const ndn::Name& expectedProducer,
                     int timeoutMs,
                     std::function<bool()> shouldCancel = {});
+                std::optional<ndn::Buffer> fetchSignedExactData(
+                    KeyScope keyScope,
+                    const ndn::Name& dataName,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    CollaborationTransferMetrics* metrics);
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);
@@ -1650,6 +1691,16 @@ namespace ndn_service_framework{
                 const ndn::Buffer& payload,
                 size_t maxSegmentSize,
                 int freshnessMs);
+            ndn::Name publishCollaborationLargeData(
+                const ndn::Name& requesterName,
+                const ndn::Name& requestId,
+                const std::string& producerRole,
+                const std::string& keyScope,
+                const ndn::Name& topic,
+                const ndn::Buffer& payload,
+                size_t maxSegmentSize,
+                int freshnessMs,
+                CollaborationTransferMetrics* metrics);
             ndn::Name publishCollaborationLargeDataNamed(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -1657,12 +1708,27 @@ namespace ndn_service_framework{
                 const ndn::Buffer& payload,
                 size_t maxSegmentSize,
                 int freshnessMs);
+            ndn::Name publishCollaborationLargeDataNamed(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                const ndn::Buffer& payload,
+                size_t maxSegmentSize,
+                int freshnessMs,
+                CollaborationTransferMetrics* metrics);
             std::optional<ndn::Buffer> fetchCollaborationLargeData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
                 const ndn::Name& dataName,
                 int timeoutMs,
                 std::size_t expectedSegments = 0);
+            std::optional<ndn::Buffer> fetchCollaborationLargeData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                int timeoutMs,
+                std::size_t expectedSegments,
+                CollaborationTransferMetrics* metrics);
             bool publishCollaborationDataV1Segments(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -1686,6 +1752,12 @@ namespace ndn_service_framework{
                 const std::string& keyScope,
                 const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
                 int freshnessMs);
+            bool publishCollaborationSignedExactData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+                int freshnessMs,
+                CollaborationTransferMetrics* metrics);
             std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -1693,6 +1765,14 @@ namespace ndn_service_framework{
                 const ndn::Name& expectedProducer,
                 int timeoutMs,
                 std::function<bool()> shouldCancel = {});
+            std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                const ndn::Name& expectedProducer,
+                int timeoutMs,
+                std::function<bool()> shouldCancel,
+                CollaborationTransferMetrics* metrics);
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
                 const ndn::Name& serviceName,

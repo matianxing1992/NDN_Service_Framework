@@ -63,6 +63,106 @@ timelineRequestId(const std::string& requestId, const std::string& sessionId)
   return requestId.empty() ? "/ndnsf-di/session/" + sessionId : requestId;
 }
 
+std::string
+stagePhaseForEdge(const DependencyEdge& edge)
+{
+  return canonicalStagePhase(edge.operationKind);
+}
+
+void
+populateLineageObservation(StageTransferObservation& observation,
+                           const TensorBundle& bundle)
+{
+  observation.lineagePresent = false;
+  observation.lineageIdentity.clear();
+  observation.positionDigest.clear();
+  if (const auto lineage = extractGenerationEpochLineage(bundle)) {
+    observation.lineagePresent = true;
+    observation.positionDigest = lineage->positionDigest;
+    observation.lineageIdentity = lineage->requestId + "|" +
+      lineage->generationId + "|" + std::to_string(lineage->streamEpoch) +
+      "|" + std::to_string(lineage->inferenceEpoch) + "|" +
+      lineage->transitionKind + "|" + lineage->positionDigest + "|" +
+      lineage->producerRole + "|" + lineage->consumerRole + "|" +
+      std::to_string(lineage->operationIndex);
+  }
+}
+
+std::shared_ptr<StageTransferObservation>
+makeStageTransferObservation(const DependencyEdge& edge,
+                             const TensorBundle& bundle,
+                             const std::string& direction)
+{
+  auto observation = std::make_shared<StageTransferObservation>();
+  observation->edgeScope = edge.scope;
+  observation->plannedDataName = edge.plannedDataName;
+  observation->direction = direction;
+  observation->phase = stagePhaseForEdge(edge);
+  observation->identity = edge.requestId + "|" +
+    std::to_string(edge.attemptEpoch) + "|" + edge.scope + "|" +
+    edge.plannedDataName + "|" + direction + "|" + edge.operationKind +
+    "|" + std::to_string(edge.round) + "|" +
+    std::to_string(edge.microbatch);
+  populateLineageObservation(*observation, bundle);
+  if (!observation->lineageIdentity.empty()) {
+    observation->identity += "|" + observation->lineageIdentity;
+  }
+  observation->tensorBytes = tensorPayloadBytes(bundle);
+  observation->tensorNames.clear();
+  if (isEncodedTensorBundle(bundle.payload)) {
+    for (const auto& tensor : decodeTensorBundle(bundle.payload)) {
+      if (tensor.name != generationEpochLineageTensorName()) {
+        observation->tensorNames.push_back(tensor.name);
+      }
+    }
+  }
+  observation->encodedPayloadBytes = bundle.payload.size();
+  // This is the observable bundle handoff copy, not a claim about allocator
+  // internals. Unknown transport fields remain unset until Core reports them.
+  observation->localCopyBytes = bundle.payload.size();
+  return observation;
+}
+
+void
+completeStageTransferObservation(const DependencyEdge& edge,
+                                 TensorBundle& bundle,
+                                 const std::string& direction)
+{
+  if (!bundle.transferObservation) {
+    bundle.transferObservation = makeStageTransferObservation(edge, bundle, direction);
+  }
+  else {
+    auto& observation = *bundle.transferObservation;
+    observation.edgeScope = edge.scope;
+    observation.plannedDataName = edge.plannedDataName;
+    observation.direction = direction;
+    observation.phase = stagePhaseForEdge(edge);
+    observation.identity = edge.requestId + "|" +
+      std::to_string(edge.attemptEpoch) + "|" + edge.scope + "|" +
+      edge.plannedDataName + "|" + direction + "|" + edge.operationKind +
+      "|" + std::to_string(edge.round) + "|" +
+      std::to_string(edge.microbatch);
+    populateLineageObservation(observation, bundle);
+    if (!observation.lineageIdentity.empty()) {
+      observation.identity += "|" + observation.lineageIdentity;
+    }
+    observation.tensorNames.clear();
+    if (isEncodedTensorBundle(bundle.payload)) {
+      for (const auto& tensor : decodeTensorBundle(bundle.payload)) {
+        if (tensor.name != generationEpochLineageTensorName()) {
+          observation.tensorNames.push_back(tensor.name);
+        }
+      }
+    }
+    observation.tensorBytes = tensorPayloadBytes(bundle);
+    observation.encodedPayloadBytes = bundle.payload.size();
+    if (!observation.localCopyBytes) {
+      observation.localCopyBytes = bundle.payload.size();
+    }
+  }
+  validateStageTransferObservation(*bundle.transferObservation);
+}
+
 TensorBundle
 withoutProviderLocalState(const TensorBundle& bundle,
                           const std::vector<std::string>& stateOutputNames)
@@ -355,6 +455,8 @@ ProviderRoleWorker::executeAsyncImpl(
         validateTensorBundleForEdge(edge, existing->second);
         timing.fetchCompletedAt = std::chrono::steady_clock::now();
         timing.bytes = existing->second.payload.size();
+        completeStageTransferObservation(edge, existing->second, "receive");
+        timing.transferObservation = existing->second.transferObservation;
         item.inputTimings.push_back(std::move(timing));
         logDiTimelineTrace(
           "di-provider", "dependency_fetch_pre_satisfied",
@@ -398,6 +500,8 @@ ProviderRoleWorker::executeAsyncImpl(
 #endif
         pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
         pending.timing.bytes = bundle.payload.size();
+        completeStageTransferObservation(pending.edge, bundle, "receive");
+        pending.timing.transferObservation = bundle.transferObservation;
         item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
         item.inputTimings.push_back(std::move(pending.timing));
         logDiTimelineTrace(
@@ -462,6 +566,8 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
 #endif
           pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
           pending.timing.bytes = bundle.payload.size();
+          completeStageTransferObservation(pending.edge, bundle, "receive");
+          pending.timing.transferObservation = bundle.transferObservation;
           state->item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
           state->item.inputTimings.push_back(std::move(pending.timing));
           logDiTimelineTrace(
@@ -877,6 +983,9 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
 
   if (item.executionGuard) item.executionGuard();
   ProviderRoleResult result;
+  result.transferBudget.snapshotIdentity = item.sessionId + "|" +
+    item.role.requestId + "|" + std::to_string(item.role.inferenceEpoch) +
+    "|" + std::to_string(item.role.attemptEpoch);
   result.runnerSupportsOpaqueStateHandles = runner->supportsOpaqueStateHandles();
   result.timing.role = item.role.role;
   result.timing.queuedAt = item.queuedAt;
@@ -1090,12 +1199,27 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
 #endif
     auto& bundle = staged.second;
     result.outputsByScope[edge.scope] = bundle;
+    completeStageTransferObservation(edge, bundle, "send");
+    result.outputsByScope[edge.scope].transferObservation = bundle.transferObservation;
     // A final-token state-only pass must carry the real activation to the
     // next role, but only after the coordinator commits this role's state.
     // The already validated, lineage-bound bundle is returned for that step.
     if (item.role.generationLineage &&
         item.role.generationLineage->transitionKind ==
           GenerationEpochLineageV1::CHECKPOINT_FINALIZE) {
+      OutputPublishTiming timing;
+      timing.producerRole = edge.producerRole;
+      timing.scope = edge.scope;
+      timing.plannedDataName = edge.plannedDataName;
+      timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
+      timing.expectedSegments = edge.expectedSegments;
+      timing.expectedBytes = edge.expectedBytes;
+      timing.bytes = bundle.payload.size();
+      timing.transferObservation = bundle.transferObservation;
+      timing.outputReadyAt = outputReadyAt;
+      timing.publishDoneAt = outputReadyAt;
+      timing.publishDeferred = true;
+      result.outputTimings.push_back(std::move(timing));
       continue;
     }
     logDiTimelineTrace(
@@ -1127,6 +1251,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     timing.expectedSegments = edge.expectedSegments;
     timing.expectedBytes = edge.expectedBytes;
     timing.bytes = bundle.payload.size();
+    timing.transferObservation = bundle.transferObservation;
     timing.outputReadyAt = outputReadyAt;
     timing.publishDoneAt = std::chrono::steady_clock::now();
     result.outputTimings.push_back(std::move(timing));
@@ -1153,6 +1278,16 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
   }
   if (item.executionGuard) item.executionGuard();
+  for (const auto& timing : result.inputTimings) {
+    if (timing.transferObservation) {
+      result.transferBudget.add(*timing.transferObservation);
+    }
+  }
+  for (const auto& timing : result.outputTimings) {
+    if (timing.transferObservation && !timing.publishDeferred) {
+      result.transferBudget.add(*timing.transferObservation);
+    }
+  }
   return result;
 }
 

@@ -1085,7 +1085,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     traceEpoch("role_done", config.role, epoch);
     try {
       throwIfStopped(config);
-      if (config.resultObserver) {
+      if (config.resultObserver && !checkpointFinalization) {
         config.resultObserver(executable, roleResult);
       }
       throwIfStopped(config);
@@ -1115,6 +1115,26 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           result.finalizedRole = executable;
           stateRelease.retain();
         }
+        for (const auto& edge : executable.outputs) {
+          throwIfStopped(config);
+          const auto output = roleResult.outputsByScope.find(edge.scope);
+          if (output == roleResult.outputsByScope.end()) {
+            throw std::runtime_error("CHECKPOINT_FINALIZE activation output is missing");
+          }
+          config.io->publishOutput(config.sessionId, edge, output->second);
+          for (auto& timing : roleResult.outputTimings) {
+            if (timing.scope == edge.scope && timing.publishDeferred) {
+              timing.publishDoneAt = std::chrono::steady_clock::now();
+              timing.publishDeferred = false;
+              if (timing.transferObservation) {
+                roleResult.transferBudget.add(*timing.transferObservation);
+              }
+            }
+          }
+        }
+        if (config.resultObserver) {
+          config.resultObserver(executable, roleResult);
+        }
         return result;
       }
 
@@ -1136,6 +1156,18 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
             if (output == roleResult.outputsByScope.end())
               throw std::runtime_error("CHECKPOINT_FINALIZE activation output is missing");
             config.io->publishOutput(config.sessionId, edge, output->second);
+            for (auto& timing : roleResult.outputTimings) {
+              if (timing.scope == edge.scope && timing.publishDeferred) {
+                timing.publishDoneAt = std::chrono::steady_clock::now();
+                timing.publishDeferred = false;
+                if (timing.transferObservation) {
+                  roleResult.transferBudget.add(*timing.transferObservation);
+                }
+              }
+            }
+          }
+          if (config.resultObserver) {
+            config.resultObserver(executable, roleResult);
           }
           if (executable.candidateDecodeStateIdentity) stateRelease.retain();
           // A committed state-only finalization is successful completion,

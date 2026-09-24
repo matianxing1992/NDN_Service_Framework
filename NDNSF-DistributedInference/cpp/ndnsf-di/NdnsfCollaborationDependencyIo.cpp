@@ -15,6 +15,9 @@
 namespace ndnsf::di {
 namespace {
 
+using CollaborationTransferMetrics =
+  ndn_service_framework::CollaborationTransferMetrics;
+
 bool
 isCanonicalYoloMergeInput(const DependencyEdge& edge)
 {
@@ -77,6 +80,86 @@ localDataV1Key(const std::string& sessionId,
 {
   return sessionId + "|" + std::to_string(operationIndex) + "|" +
          producerRank + "|" + tensorDigest;
+}
+
+void
+addTransferMetric(std::optional<std::size_t>& target,
+                  const std::optional<std::size_t>& value)
+{
+  if (!value) {
+    return;
+  }
+  target = target.value_or(0) + *value;
+}
+
+void
+mergeTransferMetrics(CollaborationTransferMetrics& target,
+                     const CollaborationTransferMetrics& source)
+{
+  addTransferMetric(target.transportPayloadBytes, source.transportPayloadBytes);
+  addTransferMetric(target.metadataBytes, source.metadataBytes);
+  addTransferMetric(target.wireBytes, source.wireBytes);
+  addTransferMetric(target.interestCount, source.interestCount);
+  addTransferMetric(target.retryCount, source.retryCount);
+  if (source.localCopyBytes) {
+    target.localCopyBytes = target.localCopyBytes.value_or(0) +
+      *source.localCopyBytes;
+  }
+}
+
+void
+populateLineageObservation(StageTransferObservation& observation,
+                           const TensorBundle& bundle)
+{
+  observation.lineagePresent = false;
+  observation.lineageIdentity.clear();
+  observation.positionDigest.clear();
+  if (const auto lineage = extractGenerationEpochLineage(bundle)) {
+    observation.lineagePresent = true;
+    observation.positionDigest = lineage->positionDigest;
+    observation.lineageIdentity = lineage->requestId + "|" +
+      lineage->generationId + "|" + std::to_string(lineage->streamEpoch) +
+      "|" + std::to_string(lineage->inferenceEpoch) + "|" +
+      lineage->transitionKind + "|" + lineage->positionDigest + "|" +
+      lineage->producerRole + "|" + lineage->consumerRole + "|" +
+      std::to_string(lineage->operationIndex);
+  }
+}
+
+void
+attachTransferObservation(const DependencyEdge& edge,
+                          const TensorBundle& bundle,
+                          const std::string& direction,
+                          const CollaborationTransferMetrics& metrics)
+{
+  if (!bundle.transferObservation) {
+    bundle.transferObservation = std::make_shared<StageTransferObservation>();
+  }
+  auto& observation = *bundle.transferObservation;
+  observation.edgeScope = edge.scope;
+  observation.plannedDataName = edge.plannedDataName;
+  observation.actualDataName = metrics.actualDataName;
+  observation.direction = direction;
+  observation.phase = canonicalStagePhase(edge.operationKind);
+  observation.identity = edge.requestId + "|" +
+    std::to_string(edge.attemptEpoch) + "|" + edge.scope + "|" +
+    edge.plannedDataName + "|" + direction + "|" + edge.operationKind +
+    "|" + std::to_string(edge.round) + "|" +
+    std::to_string(edge.microbatch);
+  populateLineageObservation(observation, bundle);
+  if (!observation.lineageIdentity.empty()) {
+    observation.identity += "|" + observation.lineageIdentity;
+  }
+  observation.tensorBytes = tensorPayloadBytes(bundle);
+  observation.encodedPayloadBytes = bundle.payload.size();
+  observation.transportPayloadBytes = metrics.transportPayloadBytes;
+  observation.metadataBytes = metrics.metadataBytes;
+  observation.wireBytes = metrics.wireBytes;
+  observation.interestCount = metrics.interestCount;
+  observation.retryCount = metrics.retryCount;
+  if (metrics.localCopyBytes) {
+    observation.transportLocalCopyBytes = metrics.localCopyBytes;
+  }
 }
 
 std::string
@@ -241,6 +324,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         ProtectedDataflowDirection::Fetch, edge.endpointDigest,
         edge.producerRole, edge.consumerRole, nowEpochMs());
     }
+    CollaborationTransferMetrics transportMetrics;
     if (edge.useNdnsfDataV1) {
       if (!m_groupCoordinator || !m_groupCoordinator->hasCapability()) {
         throw std::runtime_error(
@@ -280,7 +364,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         const auto started = std::chrono::steady_clock::now();
         const auto hardDeadline = started + std::chrono::milliseconds(
           edge.hardDeadlineMs);
-        auto fetchExact = [this, &edge, &hardDeadline, producerMember](
+        auto fetchExact = [this, &edge, &hardDeadline, producerMember,
+                           &transportMetrics](
                             const ndn::Name& name,
                             bool initialProducerReadiness) {
           if (m_groupCoordinator->terminal()) {
@@ -304,6 +389,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
                 static_cast<std::uint64_t>(m_fetchTimeoutMs));
           const auto bounded = static_cast<int>(std::min<std::uint64_t>(
             remaining, fetchBudget));
+          CollaborationTransferMetrics segmentMetrics;
           auto content = m_ctx.fetchSignedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,
             name,
@@ -311,11 +397,13 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
             std::max(1, bounded),
             [coordinator = m_groupCoordinator] {
               return coordinator->terminal();
-            });
+            },
+            &segmentMetrics);
           if (!content) {
             throw std::runtime_error(
               "failed to fetch signed exact Data: " + name.toUri());
           }
+          mergeTransferMetrics(transportMetrics, segmentMetrics);
           if (initialProducerReadiness) {
             // The first manifest fetch is a producer-readiness wait.  It is
             // explicitly allowed to outlive noProgressMs while the producer
@@ -577,6 +665,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         }
         bundle.expectedSegments = manifest.segmentCount;
         bundle.expectedBytes = manifest.totalBytes;
+        attachTransferObservation(edge, bundle, "receive", transportMetrics);
         validateCanonicalYoloMergeInput(edge, bundle);
         logDependencyObject(sessionId, edge, "fetch-exact-ndn",
                             bundle.payload.size(), "ok");
@@ -614,7 +703,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         const auto deadline = std::chrono::steady_clock::now() +
           std::chrono::milliseconds(m_fetchTimeoutMs);
         auto fetchExactSegment = [this, &edge, &capability, &nameBinding,
-                                  &deadline, producerMember](std::size_t index) {
+                                  &deadline, producerMember,
+                                  &transportMetrics](std::size_t index) {
           if (m_groupCoordinator->terminal()) {
             throw std::runtime_error(
               "NDNSF_DATA_V1 group is terminal before exact segment fetch");
@@ -626,6 +716,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
           }
           const auto name = ndn::Name(ProviderGroupCoordinator::makeDataName(
             capability, nameBinding, index));
+          CollaborationTransferMetrics segmentMetrics;
           auto content = m_ctx.fetchSignedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,
             name,
@@ -634,12 +725,14 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
               remaining, static_cast<std::uint64_t>(m_fetchTimeoutMs))),
             [coordinator = m_groupCoordinator] {
               return coordinator->terminal();
-            });
+            },
+            &segmentMetrics);
           if (!content) {
             throw std::runtime_error(
               "failed to fetch signed exact NDNSF_DATA_V1 segment: " +
               name.toUri());
           }
+          mergeTransferMetrics(transportMetrics, segmentMetrics);
           return *content;
         };
 
@@ -707,6 +800,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
       }
       bundle.expectedSegments = static_cast<std::size_t>(manifestSegmentCount);
       bundle.expectedBytes = static_cast<std::size_t>(manifestTotalBytes);
+      attachTransferObservation(edge, bundle, "receive", transportMetrics);
       if (edge.expectedBytes != 0 && bundle.payload.size() != edge.expectedBytes) {
         throw std::runtime_error("NDNSF_DATA_V1 dependency byte count mismatch");
       }
@@ -734,7 +828,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
       ndn::Name(edge.plannedDataName),
       edge.transportScope.empty() ? edge.scope : edge.transportScope,
       m_fetchTimeoutMs,
-      edge.expectedSegments);
+      edge.expectedSegments,
+      &transportMetrics);
     if (!payload) {
       throw std::runtime_error(
         "failed to fetch planned dependency object: " +
@@ -745,6 +840,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
     bundle.payload.assign(payload->data(), payload->data() + payload->size());
     bundle.expectedSegments = edge.expectedSegments;
     bundle.expectedBytes = edge.expectedBytes;
+    attachTransferObservation(edge, bundle, "receive", transportMetrics);
     validateCanonicalYoloMergeInput(edge, bundle);
     logDependencyObject(sessionId, edge, "fetch", bundle.payload.size(), "ok");
     logDependencyStageMarker("complete", sessionId, edge,
@@ -888,12 +984,14 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           ndn::Buffer(encodedSegments[index].begin(),
                       encodedSegments[index].end()));
       }
+      CollaborationTransferMetrics transportMetrics;
       if (!m_ctx.publishSignedExactData(
             edge.transportScope.empty() ? edge.scope : edge.transportScope,
-            publications, m_freshnessMs)) {
+            publications, m_freshnessMs, &transportMetrics)) {
         throw std::runtime_error(
           "failed to publish exact signed NDNSF_DATA_V1 tensor object");
       }
+      attachTransferObservation(edge, bundle, "send", transportMetrics);
       if (!m_groupCoordinator->recordProgress(nowEpochMs())) {
         throw std::runtime_error(
           "NDNSF_DATA_V1 group deadline or cancellation after publication");
@@ -919,12 +1017,14 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         ndn::Name(segment.dataName),
         ndn::Buffer(wire.begin(), wire.end()));
     }
+    CollaborationTransferMetrics transportMetrics;
     if (!m_ctx.publishSignedExactData(
           edge.transportScope.empty() ? edge.scope : edge.transportScope,
-          publications, m_freshnessMs)) {
+          publications, m_freshnessMs, &transportMetrics)) {
       throw std::runtime_error(
         "failed to publish signed exact NDNSF_DATA_V1 segments");
     }
+    attachTransferObservation(edge, bundle, "send", transportMetrics);
     const auto tensorDigest = edge.collectiveTensorDigest.empty() ?
       edge.scope : edge.collectiveTensorDigest;
     {
@@ -949,20 +1049,34 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
   const ndn::Buffer payload(bundle.payload.data(), bundle.payload.size());
   logDependencyObject(sessionId, edge, "publish", bundle.payload.size(), "ok");
   if (edge.plannedDataName.empty()) {
-    m_ctx.publishLarge(
+    CollaborationTransferMetrics transportMetrics;
+    const auto publishedName = m_ctx.publishLarge(
       edge.transportScope.empty() ? edge.scope : edge.transportScope,
       edge.topicPrefix.empty() ? ndn::Name("/output") : ndn::Name(edge.topicPrefix),
       payload,
       m_maxSegmentSize,
-      m_freshnessMs);
+      m_freshnessMs,
+      &transportMetrics);
+    if (publishedName.empty()) {
+      throw std::runtime_error("failed to publish collaboration large output");
+    }
+    transportMetrics.actualDataName = publishedName.toUri();
+    attachTransferObservation(edge, bundle, "send", transportMetrics);
     return;
   }
-  m_ctx.publishLargeNamed(
+  CollaborationTransferMetrics transportMetrics;
+  const auto publishedName = m_ctx.publishLargeNamed(
     edge.transportScope.empty() ? edge.scope : edge.transportScope,
     ndn::Name(edge.plannedDataName),
     payload,
     m_maxSegmentSize,
-    m_freshnessMs);
+    m_freshnessMs,
+    &transportMetrics);
+  if (publishedName.empty()) {
+    throw std::runtime_error("failed to publish named collaboration large output");
+  }
+  transportMetrics.actualDataName = publishedName.toUri();
+  attachTransferObservation(edge, bundle, "send", transportMetrics);
 }
 
 } // namespace ndnsf::di

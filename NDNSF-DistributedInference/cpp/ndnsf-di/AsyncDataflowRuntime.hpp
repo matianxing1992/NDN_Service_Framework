@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/GenerationEpochLineage.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -30,6 +31,9 @@ struct TensorBundle
   std::vector<uint8_t> payload;
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
+  // Runtime-only observation shared between the worker result and the
+  // dependency transport. It is never serialized into the tensor bundle.
+  mutable std::shared_ptr<StageTransferObservation> transferObservation;
 };
 
 /** Adapter-certified tensor-layout transition at one pipeline boundary. */

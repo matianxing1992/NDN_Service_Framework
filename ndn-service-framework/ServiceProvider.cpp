@@ -569,6 +569,8 @@ namespace ndn_service_framework
             size_t receivedSegments = 0;
             size_t validatedSegments = 0;
             size_t receivedWireBytes = 0;
+            size_t interestCount = 0;
+            size_t retryCount = 0;
             size_t nacks = 0;
             size_t timeouts = 0;
         };
@@ -3484,6 +3486,18 @@ namespace ndn_service_framework
         size_t maxSegmentSize,
         int freshnessMs)
     {
+        return publishLarge(std::move(keyScope), std::move(topic), payload,
+                            maxSegmentSize, freshnessMs, nullptr);
+    }
+
+    ndn::Name ServiceProvider::CollaborationContext::publishLarge(
+        KeyScope keyScope,
+        Topic topic,
+        const ndn::Buffer& payload,
+        size_t maxSegmentSize,
+        int freshnessMs,
+        CollaborationTransferMetrics* metrics)
+    {
         return m_provider.publishCollaborationLargeData(m_requesterName,
                                                         m_requestId,
                                                         m_assignment.role,
@@ -3491,7 +3505,8 @@ namespace ndn_service_framework
                                                         std::move(topic),
                                                         payload,
                                                         maxSegmentSize,
-                                                        freshnessMs);
+                                                        freshnessMs,
+                                                        metrics);
     }
 
     ndn::Name ServiceProvider::CollaborationContext::publishLargeNamed(
@@ -3501,12 +3516,25 @@ namespace ndn_service_framework
         size_t maxSegmentSize,
         int freshnessMs)
     {
+        return publishLargeNamed(std::move(keyScope), dataName, payload,
+                                 maxSegmentSize, freshnessMs, nullptr);
+    }
+
+    ndn::Name ServiceProvider::CollaborationContext::publishLargeNamed(
+        KeyScope keyScope,
+        const ndn::Name& dataName,
+        const ndn::Buffer& payload,
+        size_t maxSegmentSize,
+        int freshnessMs,
+        CollaborationTransferMetrics* metrics)
+    {
         return m_provider.publishCollaborationLargeDataNamed(m_requestId,
                                                              std::move(keyScope),
                                                              dataName,
                                                              payload,
                                                              maxSegmentSize,
-                                                             freshnessMs);
+                                                             freshnessMs,
+                                                             metrics);
     }
 
     std::optional<ndn::Buffer>
@@ -3514,7 +3542,7 @@ namespace ndn_service_framework
                                                       KeyScope keyScope,
                                                       int timeoutMs)
     {
-        return fetchLarge(dataName, std::move(keyScope), timeoutMs, 0);
+        return fetchLarge(dataName, std::move(keyScope), timeoutMs, 0, nullptr);
     }
 
     std::optional<ndn::Buffer>
@@ -3523,11 +3551,23 @@ namespace ndn_service_framework
                                                       int timeoutMs,
                                                       std::size_t expectedSegments)
     {
+        return fetchLarge(dataName, std::move(keyScope), timeoutMs,
+                          expectedSegments, nullptr);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchLarge(const ndn::Name& dataName,
+                                                      KeyScope keyScope,
+                                                      int timeoutMs,
+                                                      std::size_t expectedSegments,
+                                                      CollaborationTransferMetrics* metrics)
+    {
         return m_provider.fetchCollaborationLargeData(m_requestId,
                                                       std::move(keyScope),
                                                       dataName,
                                                       timeoutMs,
-                                                      expectedSegments);
+                                                      expectedSegments,
+                                                      metrics);
     }
 
     bool
@@ -3573,8 +3613,19 @@ namespace ndn_service_framework
         const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
         int freshnessMs)
     {
+        return publishSignedExactData(std::move(keyScope), objects,
+                                      freshnessMs, nullptr);
+    }
+
+    bool
+    ServiceProvider::CollaborationContext::publishSignedExactData(
+        KeyScope keyScope,
+        const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+        int freshnessMs,
+        CollaborationTransferMetrics* metrics)
+    {
         return m_provider.publishCollaborationSignedExactData(
-            m_requestId, std::move(keyScope), objects, freshnessMs);
+            m_requestId, std::move(keyScope), objects, freshnessMs, metrics);
     }
 
     std::optional<ndn::Buffer>
@@ -3585,9 +3636,23 @@ namespace ndn_service_framework
         int timeoutMs,
         std::function<bool()> shouldCancel)
     {
+        return fetchSignedExactData(std::move(keyScope), dataName,
+                                    expectedProducer, timeoutMs,
+                                    std::move(shouldCancel), nullptr);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchSignedExactData(
+        KeyScope keyScope,
+        const ndn::Name& dataName,
+        const ndn::Name& expectedProducer,
+        int timeoutMs,
+        std::function<bool()> shouldCancel,
+        CollaborationTransferMetrics* metrics)
+    {
         return m_provider.fetchCollaborationSignedExactData(
             m_requestId, std::move(keyScope), dataName,
-            expectedProducer, timeoutMs, std::move(shouldCancel));
+            expectedProducer, timeoutMs, std::move(shouldCancel), metrics);
     }
 
     void ServiceProvider::CollaborationContext::subscribe(
@@ -6747,6 +6812,22 @@ namespace ndn_service_framework
         size_t maxSegmentSize,
         int freshnessMs)
     {
+        return publishCollaborationLargeData(
+            requesterName, requestId, producerRole, keyScope, topic, payload,
+            maxSegmentSize, freshnessMs, nullptr);
+    }
+
+    ndn::Name ServiceProvider::publishCollaborationLargeData(
+        const ndn::Name& requesterName,
+        const ndn::Name& requestId,
+        const std::string& producerRole,
+        const std::string& keyScope,
+        const ndn::Name& topic,
+        const ndn::Buffer& payload,
+        size_t maxSegmentSize,
+        int freshnessMs,
+        CollaborationTransferMetrics* metrics)
+    {
         const uint64_t sequence =
             m_collaborationSequence.fetch_add(1, std::memory_order_relaxed);
         ndn::Name name = makeCollaborationDataName(identity,
@@ -6821,6 +6902,20 @@ namespace ndn_service_framework
                 }
             }
         }
+        if (metrics != nullptr) {
+            metrics->actualDataName = name.toUri();
+            std::size_t wireBytes = 0;
+            for (const auto& data : segments) {
+                wireBytes += data->wireEncode().size();
+            }
+            metrics->transportPayloadBytes = encoded.size();
+            metrics->wireBytes = wireBytes;
+            metrics->metadataBytes = wireBytes >= encoded.size() ?
+                wireBytes - encoded.size() : 0;
+            metrics->interestCount = 0;
+            metrics->retryCount = 0;
+            metrics->localCopyBytes = encoded.size();
+        }
         NDN_LOG_DEBUG("COLLAB_LARGE_PUBLISHED name=" << name.toUri()
                       << " plaintextBytes=" << payload.size()
                       << " segments=" << segments.size()
@@ -6835,6 +6930,20 @@ namespace ndn_service_framework
         const ndn::Buffer& payload,
         size_t maxSegmentSize,
         int freshnessMs)
+    {
+        return publishCollaborationLargeDataNamed(
+            requestId, keyScope, dataName, payload, maxSegmentSize,
+            freshnessMs, nullptr);
+    }
+
+    ndn::Name ServiceProvider::publishCollaborationLargeDataNamed(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& dataName,
+        const ndn::Buffer& payload,
+        size_t maxSegmentSize,
+        int freshnessMs,
+        CollaborationTransferMetrics* metrics)
     {
         if (dataName.empty()) {
             NDN_LOG_ERROR("Cannot publish collaboration large Data with empty name");
@@ -6909,6 +7018,20 @@ namespace ndn_service_framework
                                  << " wire_bytes=" << data->wireEncode().size());
                 }
             }
+        }
+        if (metrics != nullptr) {
+            metrics->actualDataName = dataName.toUri();
+            std::size_t wireBytes = 0;
+            for (const auto& data : segments) {
+                wireBytes += data->wireEncode().size();
+            }
+            metrics->transportPayloadBytes = encoded.size();
+            metrics->wireBytes = wireBytes;
+            metrics->metadataBytes = wireBytes >= encoded.size() ?
+                wireBytes - encoded.size() : 0;
+            metrics->interestCount = 0;
+            metrics->retryCount = 0;
+            metrics->localCopyBytes = encoded.size();
         }
         NDN_LOG_DEBUG("COLLAB_LARGE_NAMED_PUBLISHED name=" << dataName.toUri()
                       << " plaintextBytes=" << payload.size()
@@ -7233,6 +7356,18 @@ namespace ndn_service_framework
         const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
         int freshnessMs)
     {
+        return publishCollaborationSignedExactData(
+            requestId, keyScope, objects, freshnessMs, nullptr);
+    }
+
+    bool
+    ServiceProvider::publishCollaborationSignedExactData(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const std::vector<std::pair<ndn::Name, ndn::Buffer>>& objects,
+        int freshnessMs,
+        CollaborationTransferMetrics* metrics)
+    {
         if (objects.empty()) {
             NDN_LOG_ERROR("Exact collaboration publication is empty"
                           << " requestId=" << requestId.toUri()
@@ -7290,6 +7425,24 @@ namespace ndn_service_framework
                           << " bytes=" << item.data->getContent().value_size()
                           << " wireBytes=" << item.wireSize);
         }
+        if (metrics != nullptr) {
+            if (!prepared.empty()) {
+                metrics->actualDataName = prepared.front().data->getName().toUri();
+            }
+            std::size_t encodedBytes = 0;
+            std::size_t wireBytes = 0;
+            for (const auto& item : prepared) {
+                encodedBytes += item.data->getContent().value_size();
+                wireBytes += item.wireSize;
+            }
+            metrics->transportPayloadBytes = encodedBytes;
+            metrics->wireBytes = wireBytes;
+            metrics->metadataBytes = wireBytes >= encodedBytes ?
+                wireBytes - encodedBytes : 0;
+            metrics->interestCount = 0;
+            metrics->retryCount = 0;
+            metrics->localCopyBytes = encodedBytes;
+        }
         return true;
     }
 
@@ -7301,6 +7454,21 @@ namespace ndn_service_framework
         const ndn::Name& expectedProducer,
         int timeoutMs,
         std::function<bool()> shouldCancel)
+    {
+        return fetchCollaborationSignedExactData(
+            requestId, keyScope, dataName, expectedProducer, timeoutMs,
+            std::move(shouldCancel), nullptr);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::fetchCollaborationSignedExactData(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& dataName,
+        const ndn::Name& expectedProducer,
+        int timeoutMs,
+        std::function<bool()> shouldCancel,
+        CollaborationTransferMetrics* metrics)
     {
         if (dataName.empty() || expectedProducer.empty() || timeoutMs <= 0) {
             NDN_LOG_ERROR("Exact collaboration fetch arguments are invalid"
@@ -7319,6 +7487,7 @@ namespace ndn_service_framework
             ndn::Buffer content;
             std::string error;
             std::size_t attempts = 0;
+            std::size_t wireBytes = 0;
             std::chrono::steady_clock::time_point deadline;
         };
         auto state = std::make_shared<ExactFetchState>();
@@ -7423,6 +7592,7 @@ namespace ndn_service_framework
                                    dataName.toUri());
                         return;
                     }
+                    state->wireBytes += data.wireEncode().size();
                     validator->validate(
                         data,
                         [finish, dataName, expectedProducer, requestId, keyScope]
@@ -7499,6 +7669,16 @@ namespace ndn_service_framework
                                              "deadline" : state->error));
             return std::nullopt;
         }
+        if (metrics != nullptr) {
+            metrics->actualDataName = dataName.toUri();
+            metrics->transportPayloadBytes = state->content.size();
+            metrics->wireBytes = state->wireBytes;
+            metrics->metadataBytes = state->wireBytes >= state->content.size() ?
+                state->wireBytes - state->content.size() : 0;
+            metrics->interestCount = state->attempts;
+            metrics->retryCount = state->attempts > 0 ? state->attempts - 1 : 0;
+            metrics->localCopyBytes = state->content.size();
+        }
         return state->content;
     }
 
@@ -7509,6 +7689,19 @@ namespace ndn_service_framework
         const ndn::Name& dataName,
         int timeoutMs,
         std::size_t expectedSegments)
+    {
+        return fetchCollaborationLargeData(
+            requestId, keyScope, dataName, timeoutMs, expectedSegments, nullptr);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::fetchCollaborationLargeData(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& dataName,
+        int timeoutMs,
+        std::size_t expectedSegments,
+        CollaborationTransferMetrics* metrics)
     {
         // A /SERVICE scope is a request-input authorization scope, not a
         // collaboration tensor scope.  Such objects carry their own
@@ -7527,6 +7720,11 @@ namespace ndn_service_framework
                                   << " dataName=" << dataName.toUri()
                                   << " error=" << result.errorMessage);
                     return std::nullopt;
+                }
+                if (metrics != nullptr) {
+                    metrics->actualDataName = dataName.toUri();
+                    metrics->transportPayloadBytes = result.plaintext.size();
+                    metrics->localCopyBytes = result.plaintext.size();
                 }
                 return std::optional<ndn::Buffer>(std::move(result.plaintext));
             }
@@ -7766,6 +7964,10 @@ namespace ndn_service_framework
                     state->inFlight[i] = true;
                     ++state->inFlightCount;
                     const auto attempt = ++state->attempts[i];
+                    ++fetchStats->interestCount;
+                    if (attempt > 1) {
+                        ++fetchStats->retryCount;
+                    }
                     if (fetchTimingEnabled) {
                         state->interestIssued[i] = std::chrono::steady_clock::now();
                         NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=segment_interest"
@@ -8041,6 +8243,23 @@ namespace ndn_service_framework
             auto fetcher = ndn::SegmentFetcher::start(
                 m_face, interest,
                 transportValidator->getConfiguredValidatorForSegmentFetcher(), options);
+            // Transport counters are correctness observations, not optional
+            // logging. Keep them active even when timing logs are disabled.
+            fetcher->afterSegmentReceived.connect(
+                [fetchStats](const ndn::Data& data) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (fetchStats->receivedSegments == 0) {
+                        fetchStats->firstSegmentReceived = now;
+                        fetchStats->firstSegmentWall = std::chrono::system_clock::now();
+                    }
+                    fetchStats->lastSegmentReceived = now;
+                    ++fetchStats->receivedSegments;
+                    fetchStats->receivedWireBytes += data.wireEncode().size();
+                });
+            fetcher->afterSegmentNacked.connect(
+                [fetchStats] { ++fetchStats->nacks; });
+            fetcher->afterSegmentTimedOut.connect(
+                [fetchStats] { ++fetchStats->timeouts; });
             if (fetchTimingEnabled) {
                 auto segmentReceivedAt = std::make_shared<
                     std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
@@ -8048,13 +8267,6 @@ namespace ndn_service_framework
                     [fetchStats, transportValidator, fetchStart, requestId, keyScope, dataName,
                      segmentReceivedAt](const ndn::Data& data) {
                         const auto now = std::chrono::steady_clock::now();
-                        if (fetchStats->receivedSegments == 0) {
-                            fetchStats->firstSegmentReceived = now;
-                            fetchStats->firstSegmentWall = std::chrono::system_clock::now();
-                        }
-                        fetchStats->lastSegmentReceived = now;
-                        ++fetchStats->receivedSegments;
-                        fetchStats->receivedWireBytes += data.wireEncode().size();
                         const auto segmentName = data.getName().toUri();
                         (*segmentReceivedAt)[segmentName] = now;
                         uint64_t segmentNo = 0;
@@ -8122,13 +8334,9 @@ namespace ndn_service_framework
                                      << " data_to_validated_ms=" << dataToValidatedMs);
                     });
                 fetcher->afterSegmentNacked.connect(
-                    [fetchStats, transportValidator] {
-                        ++fetchStats->nacks;
-                    });
+                    [fetchStats, transportValidator] {});
                 fetcher->afterSegmentTimedOut.connect(
-                    [fetchStats, transportValidator] {
-                        ++fetchStats->timeouts;
-                    });
+                    [fetchStats, transportValidator] {});
             }
             fetcher->onComplete.connect(
                 [completed, mutex, cv, encoded, requestId, keyScope, dataName, fetchTimeoutMs,
@@ -8245,6 +8453,18 @@ namespace ndn_service_framework
             fetchStats->receivedSegments,
             fetchStats->timeouts,
             fetchStats->nacks);
+        if (metrics != nullptr) {
+            metrics->actualDataName = dataName.toUri();
+            metrics->transportPayloadBytes = encoded->size();
+            metrics->wireBytes = fetchStats->receivedWireBytes;
+            // SegmentFetcher does not expose a separate metadata accounting
+            // boundary here; leave it unknown instead of reporting zero.
+            metrics->localCopyBytes = encoded->size();
+            if (exactSegmentFetch) {
+                metrics->interestCount = fetchStats->interestCount;
+                metrics->retryCount = fetchStats->retryCount;
+            }
+        }
         if (telemetryExportEnabled) {
             const auto snapshot =
                 m_networkTelemetry.getDependencyEdge(identity, producerProvider, keyScope);

@@ -477,6 +477,61 @@ plannedSegmentOrFalse(const std::vector<std::string>& plannedSegmentNames,
   return last ? plannedSegmentNames.back() : plannedSegmentNames.front();
 }
 
+void
+appendStageTransferObservation(std::ostringstream& record,
+                               const std::shared_ptr<StageTransferObservation>& observation)
+{
+  if (!observation) {
+    record << " stage_edge=unknown"
+           << " stage_phase=unknown"
+           << " stage_direction=unknown"
+           << " stage_identity=unknown"
+           << " actual_data_name=unknown"
+           << " lineage_present=unknown"
+           << " tensor_bytes=unknown"
+           << " tensor_names=unknown"
+           << " encoded_payload_bytes=unknown"
+           << " transport_payload_bytes=unknown"
+           << " metadata_bytes=unknown"
+           << " wire_bytes=unknown"
+           << " interest_count=unknown"
+           << " retry_count=unknown"
+           << " local_copy_bytes=unknown"
+           << " transport_local_copy_bytes=unknown";
+    return;
+  }
+  const auto optionalSize = [] (const auto& value) {
+    return value ? std::to_string(*value) : std::string("unknown");
+  };
+  std::string tensorNames;
+  for (const auto& name : observation->tensorNames) {
+    if (!tensorNames.empty()) {
+      tensorNames += ",";
+    }
+    tensorNames += name;
+  }
+  record << " stage_edge=" << observation->edgeScope
+         << " stage_phase=" << observation->phase
+         << " stage_direction=" << observation->direction
+         << " stage_identity=" << observation->identity
+         << " actual_data_name="
+         << (observation->actualDataName.empty() ? "unknown" : observation->actualDataName)
+         << " lineage_present=" << (observation->lineagePresent ? "true" : "false")
+         << " tensor_bytes=" << observation->tensorBytes
+         << " tensor_count=" << observation->tensorNames.size()
+         << " tensor_names=" << (tensorNames.empty() ? "none" : tensorNames)
+         << " encoded_payload_bytes=" << observation->encodedPayloadBytes
+         << " transport_payload_bytes="
+         << optionalSize(observation->transportPayloadBytes)
+         << " metadata_bytes=" << optionalSize(observation->metadataBytes)
+         << " wire_bytes=" << optionalSize(observation->wireBytes)
+         << " interest_count=" << optionalSize(observation->interestCount)
+         << " retry_count=" << optionalSize(observation->retryCount)
+         << " local_copy_bytes=" << optionalSize(observation->localCopyBytes)
+         << " transport_local_copy_bytes="
+         << optionalSize(observation->transportLocalCopyBytes);
+}
+
 bool
 runtimeTimingEnabled()
 {
@@ -869,6 +924,7 @@ logProviderTiming(const std::string& sessionId,
            << plannedSegmentOrFalse(timing.plannedSegmentNames, true)
            << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
            << " planned_name=" << plannedNameOrFalse(timing.plannedDataName);
+    appendStageTransferObservation(record, timing.transferObservation);
     logRuntimeEvidence(record.str());
   }
 
@@ -897,8 +953,60 @@ logProviderTiming(const std::string& sessionId,
            << " publish_done_epoch_ms="
            << approxEpochMs(baseSteady, baseEpochMs, timing.publishDoneAt)
            << " planned_name=" << plannedNameOrFalse(timing.plannedDataName);
+    appendStageTransferObservation(record, timing.transferObservation);
     logRuntimeEvidence(record.str());
   }
+
+  record.str({});
+  record.clear();
+  const auto budgetSize = [] (std::size_t value, bool observed) {
+    return observed ? std::to_string(value) : std::string("unknown");
+  };
+  record << "NDNSF_DI_STAGE_TRANSFER_BUDGET"
+         << " session=" << sessionId
+         << " role=" << role
+         << " tensor_bytes=" << result.transferBudget.tensorBytes
+         << " encoded_payload_bytes=" << result.transferBudget.encodedPayloadBytes
+         << " transport_payload_bytes="
+         << budgetSize(result.transferBudget.transportPayloadBytes,
+                       result.transferBudget.transportPayloadObserved)
+         << " metadata_bytes="
+         << budgetSize(result.transferBudget.metadataBytes,
+                       result.transferBudget.metadataObserved)
+         << " wire_bytes="
+         << budgetSize(result.transferBudget.wireBytes,
+                       result.transferBudget.wireObserved)
+         << " interest_count="
+         << budgetSize(result.transferBudget.interestCount,
+                       result.transferBudget.interestObserved)
+         << " retry_count="
+         << budgetSize(result.transferBudget.retryCount,
+                       result.transferBudget.retryObserved)
+         << " local_copy_bytes="
+         << budgetSize(result.transferBudget.localCopyBytes,
+                       result.transferBudget.localCopyObserved)
+         << " transport_local_copy_bytes="
+         << budgetSize(result.transferBudget.transportLocalCopyBytes,
+                       result.transferBudget.transportLocalCopyObserved)
+         << " transport_payload_observed="
+         << (result.transferBudget.transportPayloadObserved ? "true" : "false")
+         << " metadata_observed="
+         << (result.transferBudget.metadataObserved ? "true" : "false")
+         << " wire_observed="
+         << (result.transferBudget.wireObserved ? "true" : "false")
+         << " interest_observed="
+         << (result.transferBudget.interestObserved ? "true" : "false")
+         << " retry_observed="
+         << (result.transferBudget.retryObserved ? "true" : "false")
+         << " local_copy_observed="
+         << (result.transferBudget.localCopyObserved ? "true" : "false")
+         << " transport_local_copy_observed="
+         << (result.transferBudget.transportLocalCopyObserved ? "true" : "false")
+         << " observation_count=" << result.transferBudget.seenIdentities.size()
+         << " snapshot_identity="
+         << (result.transferBudget.snapshotIdentity.empty() ?
+             "unknown" : result.transferBudget.snapshotIdentity);
+  logRuntimeEvidence(record.str());
 }
 
 void

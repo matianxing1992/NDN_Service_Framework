@@ -1,14 +1,196 @@
 #pragma once
 
+#include <algorithm>
 #include <mutex>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <stdexcept>
+#include <set>
 #include <utility>
 #include <vector>
+#include <cstddef>
 
 namespace ndnsf::di {
+
+/**
+ * Native observation for one direction of one planned stage edge. Optional
+ * transport fields are deliberately distinct from zero: a missing owner
+ * observation is unknown, not a zero-cost transfer.
+ */
+struct StageTransferObservation
+{
+  std::string edgeScope;
+  std::string plannedDataName;
+  std::string direction;
+  std::string phase;
+  std::string identity;
+  std::string actualDataName;
+  std::string lineageIdentity;
+  std::string positionDigest;
+  bool lineagePresent = false;
+  std::vector<std::string> tensorNames;
+  std::size_t tensorBytes = 0;
+  std::size_t encodedPayloadBytes = 0;
+  // Core's encrypted/encoded transport payload. This is distinct from the
+  // DI-side TensorBundle payload and from serialized Data wire bytes.
+  std::optional<std::size_t> transportPayloadBytes;
+  std::optional<std::size_t> metadataBytes;
+  std::optional<std::size_t> wireBytes;
+  std::optional<std::size_t> interestCount;
+  std::optional<std::size_t> retryCount;
+  std::optional<std::size_t> localCopyBytes;
+  std::optional<std::size_t> transportLocalCopyBytes;
+};
+
+inline std::string
+canonicalStagePhase(std::string_view operationKind)
+{
+  if (operationKind == "APPLICATION_INPUT" || operationKind == "PROMPT") {
+    return "prompt";
+  }
+  if (operationKind == "TOKEN_FEEDBACK" || operationKind == "DECODE") {
+    return "decode";
+  }
+  if (operationKind == "FINALIZE" || operationKind == "CHECKPOINT_FINALIZE") {
+    return "finalize";
+  }
+  if (operationKind == "ACTIVATION" || operationKind == "DELTA") {
+    return "delta";
+  }
+  return operationKind.empty() ? "unknown" : std::string(operationKind);
+}
+
+inline void
+validateStageTransferObservation(const StageTransferObservation& observation)
+{
+  if (observation.edgeScope.empty() || observation.direction.empty() ||
+      observation.phase.empty() || observation.identity.empty()) {
+    throw std::invalid_argument("incomplete stage transfer observation");
+  }
+  if ((observation.phase == "decode" || observation.phase == "finalize") &&
+      (!observation.lineagePresent || observation.positionDigest.empty())) {
+    throw std::invalid_argument(
+      "generation stage transfer is missing position/lineage");
+  }
+}
+
+/**
+ * Monotonic native budget accumulator. `deltaFrom` is the only supported way
+ * to compare cumulative snapshots, preventing the same epoch snapshot from
+ * being summed repeatedly.
+ */
+struct StageTransferBudget
+{
+  std::size_t tensorBytes = 0;
+  std::size_t encodedPayloadBytes = 0;
+  std::size_t transportPayloadBytes = 0;
+  std::size_t metadataBytes = 0;
+  std::size_t wireBytes = 0;
+  std::size_t interestCount = 0;
+  std::size_t retryCount = 0;
+  std::size_t localCopyBytes = 0;
+  std::size_t transportLocalCopyBytes = 0;
+  bool metadataObserved = false;
+  bool transportPayloadObserved = false;
+  bool wireObserved = false;
+  bool interestObserved = false;
+  bool retryObserved = false;
+  bool localCopyObserved = false;
+  bool transportLocalCopyObserved = false;
+  std::set<std::string> seenIdentities;
+  std::string snapshotIdentity;
+
+  void add(const StageTransferObservation& observation)
+  {
+    validateStageTransferObservation(observation);
+    if (!seenIdentities.insert(observation.identity).second) {
+      throw std::invalid_argument("duplicate stage transfer observation");
+    }
+    if (observation.transportLocalCopyBytes) {
+      transportLocalCopyBytes += *observation.transportLocalCopyBytes;
+      transportLocalCopyObserved = true;
+    }
+    tensorBytes += observation.tensorBytes;
+    encodedPayloadBytes += observation.encodedPayloadBytes;
+    if (observation.transportPayloadBytes) {
+      transportPayloadBytes += *observation.transportPayloadBytes;
+      transportPayloadObserved = true;
+    }
+    if (observation.localCopyBytes) {
+      localCopyBytes += *observation.localCopyBytes;
+      localCopyObserved = true;
+    }
+    if (observation.metadataBytes) {
+      metadataBytes += *observation.metadataBytes;
+      metadataObserved = true;
+    }
+    if (observation.wireBytes) {
+      wireBytes += *observation.wireBytes;
+      wireObserved = true;
+    }
+    if (observation.interestCount) {
+      interestCount += *observation.interestCount;
+      interestObserved = true;
+    }
+    if (observation.retryCount) {
+      retryCount += *observation.retryCount;
+      retryObserved = true;
+    }
+  }
+
+  StageTransferBudget deltaFrom(const StageTransferBudget& previous) const
+  {
+    if (snapshotIdentity.empty() || previous.snapshotIdentity.empty()) {
+      throw std::invalid_argument("stage transfer snapshot identity is missing");
+    }
+    if (snapshotIdentity == previous.snapshotIdentity ||
+        seenIdentities == previous.seenIdentities ||
+        !std::includes(seenIdentities.begin(), seenIdentities.end(),
+                       previous.seenIdentities.begin(), previous.seenIdentities.end())) {
+      throw std::invalid_argument("duplicate stage transfer snapshot");
+    }
+    if (tensorBytes < previous.tensorBytes ||
+        encodedPayloadBytes < previous.encodedPayloadBytes ||
+        transportPayloadBytes < previous.transportPayloadBytes ||
+        metadataBytes < previous.metadataBytes ||
+        wireBytes < previous.wireBytes ||
+        interestCount < previous.interestCount ||
+        retryCount < previous.retryCount ||
+        localCopyBytes < previous.localCopyBytes ||
+        transportLocalCopyBytes < previous.transportLocalCopyBytes) {
+      throw std::invalid_argument("stage transfer snapshots are out of order");
+    }
+    StageTransferBudget delta;
+    delta.tensorBytes = tensorBytes - previous.tensorBytes;
+    delta.encodedPayloadBytes = encodedPayloadBytes - previous.encodedPayloadBytes;
+    delta.transportPayloadBytes =
+      transportPayloadBytes - previous.transportPayloadBytes;
+    delta.metadataBytes = metadataBytes - previous.metadataBytes;
+    delta.wireBytes = wireBytes - previous.wireBytes;
+    delta.interestCount = interestCount - previous.interestCount;
+    delta.retryCount = retryCount - previous.retryCount;
+    if (transportLocalCopyObserved) {
+      delta.transportLocalCopyBytes =
+        transportLocalCopyBytes - (previous.transportLocalCopyObserved ?
+          previous.transportLocalCopyBytes : 0);
+      delta.transportLocalCopyObserved = true;
+    }
+    if (localCopyObserved) {
+      delta.localCopyBytes = localCopyBytes - (previous.localCopyObserved ?
+        previous.localCopyBytes : 0);
+      delta.localCopyObserved = true;
+    }
+    delta.metadataObserved = metadataObserved;
+    delta.transportPayloadObserved = transportPayloadObserved;
+    delta.wireObserved = wireObserved;
+    delta.interestObserved = interestObserved;
+    delta.retryObserved = retryObserved;
+    delta.snapshotIdentity = snapshotIdentity;
+    return delta;
+  }
+};
 
 // Runtime timing records are parsed as line-oriented evidence.  All native
 // producers of those records must use the same process-wide mutex so that a

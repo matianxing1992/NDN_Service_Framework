@@ -612,6 +612,29 @@ tensorElementByteSize(TensorElementType elementType)
   throw std::invalid_argument("unsupported tensor element type");
 }
 
+std::size_t
+tensorPayloadBytes(const std::vector<NamedTensor>& tensors)
+{
+  std::size_t total = 0;
+  for (const auto& tensor : tensors) {
+    validateNamedTensor(tensor);
+    if (tensor.name == generationEpochLineageTensorName()) {
+      continue;
+    }
+    total += tensor.payload.size();
+  }
+  return total;
+}
+
+std::size_t
+tensorPayloadBytes(const TensorBundle& bundle)
+{
+  if (!isEncodedTensorBundle(bundle.payload)) {
+    return bundle.payload.size();
+  }
+  return tensorPayloadBytes(decodeTensorBundle(bundle.payload));
+}
+
 void
 validateNamedTensor(const NamedTensor& tensor)
 {

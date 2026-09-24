@@ -95,6 +95,14 @@ sha256TensorBytes(const std::vector<std::uint8_t>& bytes);
 std::size_t
 tensorElementByteSize(TensorElementType elementType);
 
+/** Sum the decoded tensor payload bytes without counting bundle framing. */
+std::size_t
+tensorPayloadBytes(const std::vector<NamedTensor>& tensors);
+
+/** Decode one bundle and sum its tensor payload bytes. */
+std::size_t
+tensorPayloadBytes(const TensorBundle& bundle);
+
 void
 validateNamedTensor(const NamedTensor& tensor);
 

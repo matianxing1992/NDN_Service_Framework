@@ -434,6 +434,22 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec190 T008 stage-transfer budget.  The fixture invokes the production
+    # ProviderRoleWorker/tensor selection path and keeps transport observations
+    # separate from decoded tensor bytes; it is not a Python-only accounting
+    # test.
+    bld.program(target='../spec190-stage-transfer', name='spec190-stage-transfer',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec190-stage-transfer.t.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndn-service-framework ' +
+                    framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec190 ACK-window selector.  It exercises the production ServiceUser
     # deferred-collaboration path with real ACK authentication/admission,
     # deadline scheduling, duplicate/unauthorized/negative ACK handling, and
