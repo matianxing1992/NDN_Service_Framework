@@ -1158,3 +1158,13 @@ finalization仍归原生C++。新增精确恢复观测区别于模型cache hit�
 - 兼容性、迁移或撤回影响：旧 transient API 与 Repo durable ciphertext 保留语义不变；只影响 protected durable publication 的 owner/reference 生命周期。撤回必须同步移除 `ServiceUser` fence、V2 reference semantics、pending owner bookkeeping 和 B190-20 native oracle，不得只删除测试或文档。
 - 源码与证据：`ndn-service-framework/ServiceUser.hpp`、`ndn-service-framework/ServiceUser.cpp`、`tests/integration-tests/spec189-encrypted-repo-publication.t.cpp`；[B190-20](../specs/190-multiturn-latency/evidence/b190-20.md)。
 - 验证与状态：只读复核 `SAFE`/P1=0；普通根 `build/` 的 `spec189-encrypted-repo` `120/120` compile-link；stale-publication selector、完整 10-case suite 和完整 suite 三次重复均 PASS；ASan/UBSan deferred。当前状态 `ADVANCE/PARTIAL`，T006 未闭合，T007 不解锁。
+
+### D-190-TEST-EXACT-GRANT-MISSING-NEGATIVE：Face-backed wrong-name regression — 2026-09-23
+
+- 日期 / Spec / 任务与契约 ID：2026-09-23；[Spec190](../specs/190-multiturn-latency/spec.md)；T006/B190-29。
+- 模块 / 当前与目标章节：served-Provider C++ integration fixture；不改变 Core、NDNSF-DI、Repo 或公开 API 契约。
+- 原设计 / 新设计 / 修改原因：B190-28 已覆盖 exact signed grant 的成功往返，本轮在同一默认 factory/Face-backed callback 上加入错误 grant name 的 fail-closed 负例，避免测试只证明 happy path。首次负例运行暴露的是测试 callback moved-from 使用，已用同一 callback 的 probe 副本修复。
+- 当前已实现部分 / 目标未实现部分：C++ selector 已验证错误名称没有 Data hit 且 fetch counters 不增加；real NFD/MiniNDN route、missing layer object、授权重绑定/revoke、protected restart 和完整 T006 仍未实现或观测。
+- 兼容性、迁移或撤回影响：仅增加测试 coverage 和 evidence，不改变 wire、生产 transport、取消/deadline、cache identity 或 public API；撤回只需移除测试负例及 B190-29 evidence/log entry。
+- 源码与证据：`tests/integration-tests/di-prepared-request.t.cpp`；[B190-29](../specs/190-multiturn-latency/evidence/b190-29.md)。
+- 验证与状态：普通根 `spec185-prepared-request` build PASS；selector `r3/r4/r5/r6` 全部 `rc=0`；状态 `ADVANCE/PARTIAL`，T006 未完成，T007 继续锁定。

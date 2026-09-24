@@ -1,5 +1,30 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-29 exact missing-grant negative
+
+- **Status:** `ADVANCE` for the T006 exact-grant negative sub-gate; T006 remains
+  `PARTIAL` and T007 remains locked.
+- **First boundary:** the first negative-selector run stopped at the new missing
+  grant probe with `memory access violation` after `10/11` assertions. GDB
+  showed the test invoked a moved-from `protectedGrantFetcher` after the original
+  lambda had been moved into `Provider::fromServiceProviderForTest`; the empty
+  `environment` capture was the first boundary. This is a test ownership error,
+  not a Provider/Face or `PendingInterestHandle` failure. Raw runs are preserved
+  under `.codex-tmp/spec190-b190-29-missing-grant-selector-r1/` and
+  `.codex-tmp/spec190-b190-29-missing-grant-gdb-r2/`.
+- **Changed gate:** retain a copy of the same Face-backed fetcher for the explicit
+  wrong-name probe. The missing exact grant must fail closed without a Data hit or
+  counter increase; production APIs, grant wire and transport semantics are
+  unchanged.
+- **Validation:** ordinary root compile-link passed; selector `r3`, `r4`, `r5`,
+  and `r6` all returned `0`. The valid path still records the prior
+  `GRANT_VERIFIED`, `RUNNER_READY`, `EXECUTION_COMPLETED`, and `TERMINAL` stages.
+- **Qualification boundary:** this closes only the exact grant-name negative in
+  the in-process Face-backed fixture. Real NFD/MiniNDN, missing layer-object
+  fetch, authorization rebinding/revoke, protected restart and complete T006
+  remain open.
+- **Evidence:** [B190-29](../specs/190-multiturn-latency/evidence/b190-29.md).
+
 ## 2026-09-23 — Spec190 B190-28 Face-backed exact protected grant transport
 
 - **Status:** `ADVANCE` for the T006 exact-fetch sub-gate; T006 remains

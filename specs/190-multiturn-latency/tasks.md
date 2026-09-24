@@ -5,6 +5,16 @@
 
 ## Current Checkpoint
 
+2026-09-23 21:36 -05:00：B190-29 在 B190-28 已通过的 served-Provider 默认
+protected-grant selector 上补齐 exact missing-grant negative。首次运行因测试
+代码在把 fetcher `std::move` 进 Provider 后再次调用 moved-from lambda 而发生
+`memory access violation`；GDB 已确认是空 `environment` capture，不是生产
+Face/Provider 或 pending-handle 边界。保留同一 callback 的 probe 副本后，普通
+根 build 通过，selector 修复后 `r3` 及独立 `r4/r5/r6` 全部 `rc=0`，并观察到
+不存在 grant name 无 Data hit、fetch counter 不增加。该 gate 只关闭 exact grant
+transport 错误名称负例，不等同于缺失 layer object 的精确补取或完整 T006。
+T006 继续 `PARTIAL`，T007 继续锁定。详见 [B190-29](evidence/b190-29.md)。
+
 2026-09-23 21:09 -05:00：B190-28 将默认 protected grant factory 的测试 transport
 从内存 map 返回改为 Provider-owned Face 上的 exact signed Data 往返。首次运行因
 测试 Data 未签名在 `exact grant Data fetch failed` 停止；计数证明 publication、exact
@@ -1005,7 +1015,7 @@ Provider-0 到达 `RUNNER_READY`；Provider-1 在 `MODEL_MATERIALIZED`/`WORKER_S
 | [T003 Live turns](#t003-live-turns) | DONE | T002 | [B190-03](evidence/b190-03.md) r34：真实三轮 requester/两 Provider ORT、C++ parent/pipe live events、terminal/checkpoint/KV restore、C++ oracle、最终 purge/cleanup 全链路 PASS；full-token latency qualification 仍归 T011 | 2026-09-23 16:08 -05:00 |
 | [T004 Persistent Repo owner](#t004-persistent-repo-owner) | DONE | T003 | [B190-09](evidence/b190-09.md)；4/4、重复3次、文件故障3/3、ASan 4/4；网络/真实模型重启 deferred | 2026-09-23 |
 | [T005 Query and reuse](#t005-query-and-reuse) | DONE | T004 | [B190-10](evidence/b190-10.md)：完整 identity lookup、Runtime/OS restart、竞争/取消/fsync、缺依赖修复、stale cleanup、initializer/layer identity 及普通根 `build/` C++ 4-case ×3 PASS；ASan/UBSan deferred by user scope | 2026-09-23 16:08 -05:00 |
-| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)、[B190-17](evidence/b190-17.md)、[B190-18](evidence/b190-18.md)、[B190-19](evidence/b190-19.md)、[B190-20](evidence/b190-20.md)、[B190-21](evidence/b190-21.md)、[B190-22](evidence/b190-22.md)、[B190-23](evidence/b190-23.md)、[B190-24](evidence/b190-24.md)、[B190-25](evidence/b190-25.md)、[B190-26](evidence/b190-26.md)、[B190-27](evidence/b190-27.md)、[B190-28](evidence/b190-28.md)：默认 factory 已通过 Provider/Selection/credential/Face-backed exact signed Data fetch/assembly/terminal C++ sub-gate，focused 14/14 + r5/r6/r7 全部通过；完整 prepared-request 全量回归此前在独立 preparation timeout 后停止，仍不计 PASS。真实 NFD/MiniNDN route、online Controller confirmation、durable key recovery、NAC-ABE inline unwrap、current grant-Selection-placement rebinding、revoke invalidation、精确 missing-object fetch 和完整 protected restart 未完成，protected miss 门不解除 | 2026-09-23 21:09 -05:00 |
+| [T006 Protected material reuse](#t006-protected-material-reuse) | IN_PROGRESS | T005 | [B190-12](evidence/b190-12.md)、[B190-14](evidence/b190-14.md)、[B190-16](evidence/b190-16.md)、[B190-17](evidence/b190-17.md)、[B190-18](evidence/b190-18.md)、[B190-19](evidence/b190-19.md)、[B190-20](evidence/b190-20.md)、[B190-21](evidence/b190-21.md)、[B190-22](evidence/b190-22.md)、[B190-23](evidence/b190-23.md)、[B190-24](evidence/b190-24.md)、[B190-25](evidence/b190-25.md)、[B190-26](evidence/b190-26.md)、[B190-27](evidence/b190-27.md)、[B190-28](evidence/b190-28.md)、[B190-29](evidence/b190-29.md)：默认 factory 已通过 Provider/Selection/credential/Face-backed exact signed Data fetch/assembly/terminal C++ sub-gate，focused selector 14/14、独立 exact missing-grant negative 及稳定重复均通过；本轮修复的是测试 callback moved-from 边界，不是生产接口变更。完整 prepared-request 全量回归此前在独立 preparation timeout 后停止，仍不计 PASS。真实 NFD/MiniNDN route、online Controller confirmation、durable key recovery、NAC-ABE inline unwrap、current grant-Selection-placement rebinding、revoke invalidation、缺失 layer object 精确补取和完整 protected restart 未完成，protected miss 门不解除 | 2026-09-23 21:36 -05:00 |
 | [T007 Resident session](#t007-resident-session) | NOT_STARTED | T006 | 从Spec189 R261承接，真实ORT与owner验证待做 | 2026-09-22 15:08 -05:00 |
 | [T008 Stage transfer](#t008-stage-transfer) | NOT_STARTED | T007 | actual bundle/wire字节与多发修复待做 | 2026-09-22 15:08 -05:00 |
 | [T009 Finalize and drain](#t009-finalize-and-drain) | NOT_STARTED | T008 | 先定位控制闭环首边界，再限定修复 | 2026-09-22 15:08 -05:00 |

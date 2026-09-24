@@ -2512,6 +2512,11 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     exactGrantFetches->fetch_add(1, std::memory_order_relaxed);
     return state->payload;
   };
+  // Provider::fromServiceProviderForTest takes ownership of the production
+  // callback below. Keep a copy for the explicit missing-object probe so the
+  // probe exercises the same Face-backed fetcher rather than a moved-from
+  // lambda with empty captures.
+  auto protectedGrantFetcherProbe = protectedGrantFetcher;
   auto ackHandler = [offerConfig] (const ndn_service_framework::RequestMessage& request) {
     const auto payload = request.getPayload();
     const auto issued = issueNativeProviderOfferV3(
@@ -2567,6 +2572,19 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
   BOOST_CHECK(exactGrantFetches->load(std::memory_order_relaxed) > 0U);
   BOOST_CHECK(grantDataFetches->load(std::memory_order_relaxed) > 0U);
+  const auto dataFetchesBeforeMissing = grantDataFetches->load(std::memory_order_relaxed);
+  const auto exactFetchesBeforeMissing = exactGrantFetches->load(std::memory_order_relaxed);
+  BOOST_CHECK_EXCEPTION(
+    protectedGrantFetcherProbe("/spec185/missing-grant", 100, [] { return false; }),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("exact grant Data fetch failed") !=
+        std::string::npos;
+    });
+  BOOST_CHECK_EQUAL(grantDataFetches->load(std::memory_order_relaxed),
+                    dataFetchesBeforeMissing);
+  BOOST_CHECK_EQUAL(exactGrantFetches->load(std::memory_order_relaxed),
+                    exactFetchesBeforeMissing);
   const auto counters = facade.counters();
   BOOST_CHECK_EQUAL(counters.assemblies, 1U);
   BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
