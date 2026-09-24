@@ -683,6 +683,23 @@ safeRole(std::string role)
   return role.empty() ? "role" : role;
 }
 
+std::string
+protectedAssembledCacheKey(const NativeSelectionProjectionV3& projection,
+                           const std::string& roleAssemblySpecDigest,
+                           const std::string& keyReferenceDigest)
+{
+  if (!isSha256Digest(projection.assembly.recipeDigest) ||
+      !isSha256Digest(roleAssemblySpecDigest) ||
+      !isSha256Digest(keyReferenceDigest)) {
+    throw std::runtime_error("DI_PROTECTED_ASSEMBLED_CACHE_IDENTITY_INVALID");
+  }
+  const auto canonical = std::string("ndnsf-di-protected-assembled-cache-v1|") +
+    projection.assembly.recipeDigest + "|" + roleAssemblySpecDigest + "|" +
+    keyReferenceDigest;
+  const auto bytes = std::vector<std::uint8_t>(canonical.begin(), canonical.end());
+  return sha256Hex(bytes).substr(7);
+}
+
 /**
  * Bind the runner's output metadata to the same runtime scope that the
  * production V3 role selector installs in ProviderRoleWorker.  The
@@ -766,16 +783,11 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const std::string& canonicalSourceName,
   const std::string& canonicalSourceDigest)
 {
-  // Normal protected Repo assembly keeps its grant-bound encrypted artifact
-  // semantics and must not become a cross-grant plaintext cache by accident.
-  // Plaintext fixtures and the explicit cache-compatibility diagnostic both
-  // use the recipe-addressed assembled cache after authenticated Selection.
-  if (projection.assembly.protectionEpoch != "plaintext-v1" &&
-      options.cacheCompatibilitySourceDir.empty())
-    return std::nullopt;
   if (options.cacheDir.empty() || options.providerIdentity.empty())
     return std::nullopt;
-  if (projection.assembly.protectionEpoch != "plaintext-v1") {
+  const bool protectedRole = projection.assembly.protectionEpoch != "plaintext-v1";
+  std::string keyReferenceDigest;
+  if (protectedRole) {
     if (!options.protectedRuntime ||
         (options.protectedRuntime->state() != ProtectedRuntimeState::GrantVerified &&
          options.protectedRuntime->state() != ProtectedRuntimeState::HostPlaintextLeased &&
@@ -783,6 +795,12 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       throw std::runtime_error(
         "DI_PROTECTED_GRANT_UNAVAILABLE: assembled cache requires an authorized runtime");
     }
+    if (options.roleAssemblySpecDigest.empty())
+      throw std::runtime_error("DI_PROTECTED_ROLE_ASSEMBLY_SPEC_MISSING");
+    const auto keyReference = options.protectedRuntime->keyReference();
+    if (!keyReference)
+      throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
+    keyReferenceDigest = keyReference->digest();
   }
   requireActiveAssembly(options, projection.deadlineMs);
   // Selection remains the authorization boundary. The recipe digest is known
@@ -796,9 +814,13 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     return std::nullopt;
 
   const auto cacheRoot = std::filesystem::path(options.cacheDir);
-  const auto roleRoot = cacheRoot / "assembled" / safeRole(
+  const auto roleRoot = cacheRoot / (protectedRole ? "protected" : "assembled") / safeRole(
     projection.assembly.selectedRole);
-  const auto directory = roleRoot / projection.assembly.recipeDigest.substr(7);
+  const auto directory = roleRoot /
+    (protectedRole
+       ? protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
+                                    keyReferenceDigest)
+       : projection.assembly.recipeDigest.substr(7));
   std::error_code error;
   if (!std::filesystem::is_directory(directory, error) || error)
     return std::nullopt;
@@ -810,10 +832,13 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   };
 
   try {
-    const auto modelPath = directory / "model.onnx";
+    const auto modelPath = directory /
+      (protectedRole ? "model.onnx.cipher" : "model.onnx");
     const auto manifestPath = directory / "manifest.json";
     if (!std::filesystem::is_regular_file(modelPath) ||
         !std::filesystem::is_regular_file(manifestPath))
+      return std::nullopt;
+    if (protectedRole && !std::filesystem::is_regular_file(directory / "manifest.signature"))
       return std::nullopt;
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, modelPath);
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, manifestPath);
@@ -836,8 +861,11 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
         firstString(manifest, {"quantization"}) != projection.assembly.quantization ||
         firstString(manifest, {"layout"}) != projection.assembly.layout ||
         firstString(manifest, {"padding"}) != projection.assembly.padding ||
+        (protectedRole && firstString(manifest, {"keyReferenceDigest"}) !=
+           keyReferenceDigest) ||
         !isSha256Digest(assembledDigest) ||
-        sha256File(modelPath, projection.assembly.maxAssembledBytes) != assembledDigest) {
+        (!protectedRole &&
+          sha256File(modelPath, projection.assembly.maxAssembledBytes) != assembledDigest)) {
       discardCorruptEntry(directory);
       return std::nullopt;
     }
@@ -847,7 +875,10 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     spec.role = projection.assembly.selectedRole;
     spec.kind = "onnx";
     spec.backend = projection.assembly.backend;
-    spec.path = modelPath.string();
+    // Protected hits expose only the durable ciphertext descriptor.  Provider
+    // performs the current-runtime/AAD authentication and writes a fresh
+    // request-scoped plaintext staging file after this lookup succeeds.
+    spec.path = protectedRole ? std::string{} : modelPath.string();
     spec.metadata = {
         {"artifactDigest", projection.assembly.artifactDigest},
         {"fragmentDigest", projection.assembly.artifactDigest},
@@ -864,11 +895,20 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
         {"layout", projection.assembly.layout},
         {"padding", projection.assembly.padding},
         {"maxSourceBytes", std::to_string(projection.assembly.maxSourceBytes)},
-        {"maxAssembledBytes", std::to_string(projection.assembly.maxAssembledBytes)},
-        {"maxNodes", std::to_string(projection.assembly.maxNodes)},
+      {"maxAssembledBytes", std::to_string(projection.assembly.maxAssembledBytes)},
+      {"maxNodes", std::to_string(projection.assembly.maxNodes)},
       {"assembledModelDigest", assembledDigest},
-      {"assembledFrom", "canonical-root-post-selection-cache"},
+      {"assembledFrom", protectedRole
+        ? "protected-assembled-cache" : "canonical-root-post-selection-cache"},
     };
+    if (protectedRole) {
+      spec.metadata["protectedCacheHit"] = "true";
+      spec.metadata["protectedArtifactPersistent"] = "true";
+      spec.metadata["protectedKeyReferenceDigest"] = keyReferenceDigest;
+      spec.metadata["encryptedArtifactPath"] = modelPath.string();
+      spec.metadata["encryptedArtifactDigest"] = sha256File(
+        modelPath, projection.assembly.maxAssembledBytes + 65536);
+    }
     if (projection.generationContract.enabled) {
         const auto& generation = projection.generationContract;
         if (!generation.stateSuccessorMap.empty())
@@ -1869,6 +1909,13 @@ prepareNativeCanonicalOnnxRole(
     if (modelBytes.empty() || sha256Hex(modelBytes) != assembled.modelDigest) {
       throw std::runtime_error("DI_NATIVE_ASSEMBLY_MODEL_DIGEST_MISMATCH");
     }
+    std::string protectedKeyReferenceDigest;
+    if (protectedRole) {
+      const auto keyReference = options.protectedRuntime->keyReference();
+      if (!keyReference)
+        throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
+      protectedKeyReferenceDigest = keyReference->digest();
+    }
     std::ostringstream manifest;
     manifest << "{\"schema\":\"ndnsf-di-assembled-onnx-v1\",\"modelName\":"
              << jsonEscape(modelName) << ",\"modelDigest\":"
@@ -1885,6 +1932,8 @@ prepareNativeCanonicalOnnxRole(
              << ",\"canonicalSourceDigest\":" << jsonEscape(sourceDigest)
              << ",\"canonicalInitializerDigest\":"
              << jsonEscape(projection.assembly.canonicalInitializerDigest)
+             << ",\"keyReferenceDigest\":"
+             << (protectedRole ? jsonEscape(protectedKeyReferenceDigest) : "\"\"")
              << ",\"rank\":" << projection.assembly.rank
              << ",\"layerBegin\":" << projection.assembly.layerBegin
              << ",\"layerEnd\":" << projection.assembly.layerEnd
@@ -1939,7 +1988,9 @@ prepareNativeCanonicalOnnxRole(
       (persistentPlaintextArtifact || !protectedRole ? "assembled" : "protected") /
       safeRole(projection.assembly.selectedRole) /
       (persistentPlaintextArtifact || !protectedRole
-         ? persistentCacheKey.substr(7) : rootPath.filename().string());
+         ? persistentCacheKey.substr(7)
+         : protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
+                                      protectedKeyReferenceDigest));
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, finalDir);
     const bool finalDirWasAbsent = !std::filesystem::exists(finalDir);
     std::filesystem::create_directories(finalDir);
@@ -1989,14 +2040,10 @@ prepareNativeCanonicalOnnxRole(
       // Ciphertext alone is retained in the final cache; the authenticated
       // plaintext handoff is streamed into the private staging directory.
       const std::string profile = "\"ndnsf-di-provider-workdir-scratch-v1\"";
-      const auto keyReference = options.protectedRuntime->keyReference();
-      if (!keyReference) {
-        throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
-      }
       const NativeAssembledEntryContext context{
         projection.assembly.modelManifestDigest, options.roleAssemblySpecDigest,
         sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())),
-        "MODEL_PROTO", keyReference->digest()};
+        "MODEL_PROTO", protectedKeyReferenceDigest};
       const auto cipherPath = finalDir / "model.onnx.cipher";
       options.protectedRuntime->withContentKey(nowMs(), [&] (const auto& key) {
         encryptedArtifactDigest = sealNativeAssembledEntryToFile(
@@ -2095,10 +2142,12 @@ prepareNativeCanonicalOnnxRole(
     if (protectedRole && !persistentPlaintextArtifact)
       spec.metadata["encryptedArtifactDigest"] = encryptedArtifactDigest;
     if (protectedRole && !persistentPlaintextArtifact) {
-      auto directoryOwner = std::make_shared<NativeAssemblyArtifactDirectoryOwner>();
-      directoryOwner->directory = finalDir;
-      markNativeArtifactStagingLease(finalDir);
-      spec.lifetime = std::move(directoryOwner);
+      // The ciphertext directory is a durable, content-addressed cache entry.
+      // Only rootPath/model.onnx remains request-scoped and is erased by the
+      // ProtectedRuntime plaintext lease.
+      spec.metadata["protectedArtifactPersistent"] = "true";
+      spec.metadata["protectedCacheHit"] = "false";
+      spec.metadata["protectedKeyReferenceDigest"] = protectedKeyReferenceDigest;
     }
     bindNativeRunnerOutputScopes(projection, spec);
     requireActiveAssembly(options, projection.deadlineMs);

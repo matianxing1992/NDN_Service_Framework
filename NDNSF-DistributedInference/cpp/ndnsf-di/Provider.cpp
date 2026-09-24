@@ -1762,10 +1762,15 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 metrics->sourceFetches.fetch_add(1, std::memory_order_relaxed);
                 metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
               }
-              const bool reusedPlaintextCache =
-                diskCacheHit->load(std::memory_order_relaxed);
+              const auto encryptedPathMetadata = built.metadata.find("encryptedArtifactPath");
+              const bool protectedCiphertext = protectedRuntime &&
+                encryptedPathMetadata != built.metadata.end() &&
+                !encryptedPathMetadata->second.empty();
+              const bool protectedArtifactPersistent = protectedCiphertext &&
+                built.metadata.find("protectedArtifactPersistent") != built.metadata.end() &&
+                built.metadata.at("protectedArtifactPersistent") == "true";
               ProviderArtifactCleanupGuard cleanupGuard;
-              if (protectedRuntime && !reusedPlaintextCache) {
+              if (protectedRuntime && protectedCiphertext && !protectedArtifactPersistent) {
                 auto directoryOwner = built.lifetime;
                 if (!directoryOwner)
                   throw std::runtime_error("DI_PROVIDER_ARTIFACT_DIRECTORY_OWNER_MISSING");
@@ -1778,11 +1783,11 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                   options.cacheDir, path->second);
               }
               auto artifact = std::make_shared<PreparedProviderArtifact>();
-              artifact->encryptedObjectName = protectedRuntime && !reusedPlaintextCache
+              artifact->encryptedObjectName = protectedCiphertext
                 ? "local-protected-assembled-ciphertext"
                 : "local-immutable-assembled-artifact";
               artifact->ciphertextDigest =
-                (protectedRuntime && !reusedPlaintextCache)
+                protectedCiphertext
                   ? built.metadata.at("encryptedArtifactDigest")
                   : built.metadata.at("assembledModelDigest");
               artifact->formatVersion = "ndnsf-di-native-assembled-artifact-v1";
@@ -1796,7 +1801,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 "\",\"role\":\"" + projection.assembly.selectedRole +
                 "\",\"recipeDigest\":\"" + projection.assembly.recipeDigest +
                 "\",\"backendAbi\":\"" + projection.assembly.backendAbi + "\"}";
-              if (protectedRuntime && !reusedPlaintextCache) {
+              if (protectedCiphertext) {
                 const auto encryptedPath = built.metadata.find("encryptedArtifactPath");
                 if (encryptedPath == built.metadata.end() || encryptedPath->second.empty())
                   throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
@@ -1838,16 +1843,14 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
           // construction has completed (and for the lifetime of any runner
           // that continues to use the file).  ProviderArtifactCache strips
           // this field from its own metadata-only template.
-          const bool diskPlaintextCacheHit =
-            diskCacheHit->load(std::memory_order_relaxed);
-          if (protectedRuntime && !diskPlaintextCacheHit) {
+          const auto encryptedPath = spec.metadata.find("encryptedArtifactPath");
+          const bool protectedCiphertext = protectedRuntime &&
+            encryptedPath != spec.metadata.end() && !encryptedPath->second.empty();
+          if (protectedCiphertext) {
             const auto staging = providerProtectedStaging(cacheDir);
             try {
-              const auto path = lease.runnerSpec()->metadata.find("encryptedArtifactPath");
-              if (path == lease.runnerSpec()->metadata.end() || path->second.empty())
-                throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_UNAVAILABLE");
               const auto ciphertextPath = requireProviderArtifactPathUnderCacheRoot(
-                options.cacheDir, path->second);
+                options.cacheDir, encryptedPath->second);
               spec.metadata["encryptedArtifactPath"] = ciphertextPath.string();
               registerNativePlaintextDirectory(
                 *protectedRuntime, staging,

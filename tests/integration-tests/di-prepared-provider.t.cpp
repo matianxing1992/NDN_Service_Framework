@@ -9,6 +9,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
@@ -1527,6 +1528,200 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheRequiresAuthorizedRuntime)
     std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthorization)
+{
+  const auto fixture = providerAssemblyFixture();
+  BOOST_REQUIRE(!fixture.empty());
+  const auto source = providerAssemblyRead(fixture);
+  BOOST_REQUIRE(!source.empty());
+  const auto sourceDigest = providerAssemblyDigest(source);
+  const auto profileDigest = zeroDigest('b');
+  const auto sourceIdentity = providerAssemblySourceIdentity(source);
+  const auto sourceName = ndn::Name("/spec190/provider/protected/source");
+  const auto rootName = ndn::Name("/spec190/provider/protected/root");
+  const auto rootText = std::string(
+    "{\"artifactProfileDigest\":\"") + profileDigest +
+    "\",\"metadata\":{\"canonicalSourceBytes\":" +
+    std::to_string(source.size()) +
+    ",\"canonicalSourceDataName\":\"" + sourceName.toUri() +
+    "\",\"canonicalSourceDigest\":\"" + sourceDigest +
+    "\"},\"modelIdentityDigest\":\"" + zeroDigest('a') +
+    "\",\"modelName\":\"spec190-protected-fixture\","
+    "\"schema\":\"ndnsf-di-canonical-model-manifest-v1\","
+    "\"state\":\"ACTIVE\"}";
+  const std::vector<std::uint8_t> rootPayload(rootText.begin(), rootText.end());
+  const auto rootDigest = providerAssemblyDigest(rootPayload);
+  auto projection = makeProviderAssemblyProjection(
+    rootDigest, profileDigest, sourceIdentity.graphDigest,
+    sourceIdentity.initializerDigest);
+  projection.canonicalArtifactName = rootName.toUri();
+  projection.attempt = 1;
+  projection.dataflow.attempt = projection.attempt;
+  const auto protectionEpoch = std::string("spec190-protected-v1");
+  projection.assembly.protectionEpoch = protectionEpoch;
+  projection.selectedRole = projection.assembly;
+  const auto recipe = canonicalNativeOnnxRecipeJson(projection.assembly);
+  projection.assembly.recipeDigest = providerAssemblyDigest(
+    std::vector<std::uint8_t>(recipe.begin(), recipe.end()));
+  projection.selectedRole.recipeDigest = projection.assembly.recipeDigest;
+  projection.planCoreDigest = projection.planDigest;
+  projection.ackClosedDigest = projection.planDigest;
+  projection.offerDigest = projection.planDigest;
+  projection.securityPolicySnapshotDigest = projection.planDigest;
+
+  const auto requesterIdentity = std::string("/spec190/requester");
+  const auto authorityPrivate = makeEd25519Key('a');
+  const auto requesterPrivate = makeEd25519Key('b');
+  const auto recipientPrivate = makeEd25519Key('c');
+  const auto recipientSeed = std::string(32, 'c');
+  NativeGrantIssuerConfig issuerConfig;
+  issuerConfig.authorityIdentity = "/spec190/authority";
+  issuerConfig.requesterIdentity = requesterIdentity;
+  issuerConfig.protectionEpoch = protectionEpoch;
+  issuerConfig.keyId = "spec190-protected-key";
+  issuerConfig.authorityPrivateKey = authorityPrivate;
+  issuerConfig.requesterPublicKey = publicKey(requesterPrivate);
+  issuerConfig.allowedModelManifests = {rootDigest};
+  issuerConfig.recipientPublicKeys.emplace(projection.provider, publicKey(recipientPrivate));
+  issuerConfig.contentKey = [] (const std::string&, const std::string&) {
+    return std::vector<std::uint8_t>(32, 0x42);
+  };
+  NativeSignedGrantRequest grantRequest;
+  grantRequest.providerIdentity = projection.provider;
+  grantRequest.requesterIdentity = requesterIdentity;
+  grantRequest.requestId = projection.requestId;
+  grantRequest.attempt = projection.attempt;
+  grantRequest.planCoreDigest = projection.planCoreDigest;
+  grantRequest.grantViewDigest = projection.planDigest;
+  grantRequest.modelManifestDigest = rootDigest;
+  grantRequest.protectionEpoch = protectionEpoch;
+  grantRequest.issuedAtMs = 1;
+  const auto now = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto issuedGrant = NativeArtifactGrantIssuer(issuerConfig).issue(
+    grantRequest.sign(*requesterPrivate), now, now + 60'000);
+  projection.hasGrantBinding = true;
+  projection.grantName = issuedGrant.grantName;
+  projection.grantDigest = issuedGrant.grantDigest;
+
+  const auto roleAssemblySpecDigest = zeroDigest('e');
+  const auto providerBootId = std::string("spec190-protected-boot");
+  const auto makeRuntime = [&] {
+    ProtectedRuntimeBindingV1 binding;
+    binding.provider = projection.provider;
+    binding.role = projection.executionRole.roleId;
+    binding.requestId = projection.requestId;
+    binding.attempt = projection.attempt;
+    binding.planCoreDigest = projection.planCoreDigest;
+    binding.planDigest = projection.planDigest;
+    binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+    binding.protectionEpoch = protectionEpoch;
+    binding.grantName = projection.grantName;
+    binding.grantDigest = projection.grantDigest;
+    binding.providerBootId = providerBootId;
+    binding.fencingToken = nativeProtectedFencingToken(projection, providerBootId, {});
+    binding.expiresAtMs = projection.deadlineMs;
+    NativeProtectedGrantConfig grantConfig;
+    grantConfig.authorityIdentity = issuerConfig.authorityIdentity;
+    grantConfig.authorityPublicKeyRaw = publicKeyBytes(authorityPrivate);
+    grantConfig.recipientKey = {NativeRecipientKey::Kind::Ed25519Seed, recipientSeed};
+    grantConfig.modelManifestDigest = rootDigest;
+    grantConfig.fetchGrant = [wire = issuedGrant.wireJson] (const std::string&) {
+      return wire;
+    };
+    auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(grantConfig));
+    runtime->verifyGrant(binding, now);
+    return runtime;
+  };
+
+  const auto cacheDir = (std::filesystem::temp_directory_path() /
+                         "spec190-protected-assembled-cache").string();
+  std::error_code cleanupError;
+  std::filesystem::remove_all(cacheDir, cleanupError);
+  std::atomic<unsigned> rootFetches{0};
+  std::atomic<unsigned> sourceFetches{0};
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [rootName, rootPayload, &rootFetches] (const ndn::Name& name)
+    -> std::optional<ndn::Buffer> {
+    if (name != rootName)
+      return std::nullopt;
+    rootFetches.fetch_add(1, std::memory_order_relaxed);
+    return ndn::Buffer(rootPayload.data(), rootPayload.size());
+  };
+  fetchers.fetchEncryptedLargeData = [sourceName, source, &sourceFetches] (
+      const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    if (name != sourceName || service != ndn::Name("/LLM/Qwen"))
+      return std::nullopt;
+    sourceFetches.fetch_add(1, std::memory_order_relaxed);
+    return ndn::Buffer(source.data(), source.size());
+  };
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = cacheDir;
+  options.providerIdentity = projection.provider;
+  options.roleAssemblySpecDigest = roleAssemblySpecDigest;
+  options.workerLocation = providerAssemblyWorker();
+  options.signManifest = [] (const std::string&) {
+    return std::string("spec190-protected-signature-v1");
+  };
+  options.protectedRuntime = makeRuntime();
+  const auto cold = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_REQUIRE(std::filesystem::is_regular_file(cold.path));
+  BOOST_CHECK_EQUAL(rootFetches.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(cold.metadata.at("protectedArtifactPersistent"), "true");
+  BOOST_CHECK_EQUAL(cold.metadata.at("protectedCacheHit"), "false");
+  const auto ciphertextPath = std::filesystem::path(
+    cold.metadata.at("encryptedArtifactPath"));
+  BOOST_CHECK(std::filesystem::is_regular_file(ciphertextPath));
+  BOOST_CHECK(ciphertextPath.string().find("/.staging/") == std::string::npos);
+  options.protectedRuntime->complete();
+
+  options.protectedRuntime = makeRuntime();
+  const auto hot = tryLoadNativeCanonicalOnnxRoleFromCache(
+    projection, options, sourceName.toUri(), sourceDigest);
+  BOOST_REQUIRE(hot);
+  BOOST_CHECK(hot->path.empty());
+  BOOST_CHECK_EQUAL(hot->metadata.at("protectedCacheHit"), "true");
+  BOOST_CHECK_EQUAL(hot->metadata.at("protectedArtifactPersistent"), "true");
+  BOOST_CHECK_EQUAL(hot->metadata.at("encryptedArtifactPath"), ciphertextPath.string());
+  BOOST_CHECK_EQUAL(rootFetches.load(std::memory_order_relaxed), 1U);
+  BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
+
+  const auto plaintextDir = std::filesystem::path(cacheDir) / ".staging" / "hot-test";
+  std::filesystem::create_directories(plaintextDir);
+  std::filesystem::permissions(
+    plaintextDir, std::filesystem::perms::owner_all,
+    std::filesystem::perm_options::replace);
+  registerNativePlaintextDirectory(*options.protectedRuntime, plaintextDir, "spec190-hot");
+  const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
+  const NativeAssembledEntryContext context{
+    rootDigest, roleAssemblySpecDigest,
+    providerAssemblyDigest(std::vector<std::uint8_t>(profile.begin(), profile.end())),
+    "MODEL_PROTO", options.protectedRuntime->keyReference()->digest()};
+  options.protectedRuntime->withContentKey(now, [&] (const auto& key) {
+    const auto digest = openNativeAssembledEntryToFile(
+      key, ciphertextPath, plaintextDir / "model.onnx", context,
+      projection.assembly.maxAssembledBytes, hot->metadata.at("encryptedArtifactDigest"));
+    BOOST_CHECK_EQUAL(digest, hot->metadata.at("encryptedArtifactDigest"));
+  });
+  const auto plaintext = providerAssemblyRead(plaintextDir / "model.onnx");
+  BOOST_CHECK_EQUAL(providerAssemblyDigest(plaintext), hot->metadata.at("assembledModelDigest"));
+
+  auto wrongContext = context;
+  wrongContext.keyReferenceDigest = zeroDigest('f');
+  BOOST_CHECK_THROW(
+    options.protectedRuntime->withContentKey(now, [&] (const auto& key) {
+      (void)openNativeAssembledEntryToFile(
+        key, ciphertextPath, plaintextDir / "wrong.onnx", wrongContext,
+        projection.assembly.maxAssembledBytes, hot->metadata.at("encryptedArtifactDigest"));
+    }),
+    std::exception);
+  options.protectedRuntime->complete();
+  std::filesystem::remove_all(cacheDir, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubstitution)
 {
   const auto planDigest = std::string("sha256:") + std::string(64, 'a');
@@ -1572,7 +1767,7 @@ BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubsti
   expectMismatch(wrongGrant);
 }
 
-BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheSeparatesIndependentGrants)
+BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcrossIndependentGrants)
 {
   // This fixture deliberately leaves RunnerPreparationFactory empty so the
   // Provider facade executes its production canonical-root/source assembler
@@ -1702,6 +1897,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheSeparatesIndependentGrants)
   const auto requestTwo = ndn::Name("/spec185-provider-cache-two");
   const auto firstGrant = issueGrant(requestOne);
   const auto independentGrant = issueGrant(requestTwo);
+  BOOST_REQUIRE_NE(firstGrant.grant.grantDigest, independentGrant.grant.grantDigest);
   auto grantWires = std::make_shared<std::map<std::string, std::string>>();
   (*grantWires)[firstGrant.grant.grantDigest] = firstGrant.grant.wireJson;
   (*grantWires)[independentGrant.grant.grantDigest] = independentGrant.grant.wireJson;
@@ -1969,17 +2165,37 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheSeparatesIndependentGrants)
     }
   };
 
-  // A protected grant is request-bound, so two independent requests must not
-  // share the grant-bound cache entry even when their canonical source and
-  // assembly recipe are identical.  The direct cache selector above covers
-  // same-grant hit accounting; this test covers the production request path.
+  {
+    const auto firstProjection = makeProjection(requestOne, firstGrant.grant);
+    const auto secondProjection = makeProjection(requestTwo, independentGrant.grant);
+    BOOST_REQUIRE(firstProjection.hasGrantBinding);
+    BOOST_REQUIRE(secondProjection.hasGrantBinding);
+    BOOST_REQUIRE_NE(firstProjection.grantDigest, secondProjection.grantDigest);
+    BOOST_REQUIRE_NE(firstProjection.grantName, secondProjection.grantName);
+    const auto firstWire = nativeSelectionProjectionV3ToJson(firstProjection);
+    const auto secondWire = nativeSelectionProjectionV3ToJson(secondProjection);
+    std::istringstream firstInput(firstWire);
+    std::istringstream secondInput(secondWire);
+    const auto parsedFirst = nativeSelectionProjectionV3FromJson(firstInput, "/Backbone");
+    const auto parsedSecond = nativeSelectionProjectionV3FromJson(secondInput, "/Backbone");
+    BOOST_REQUIRE(parsedFirst.hasGrantBinding);
+    BOOST_REQUIRE(parsedSecond.hasGrantBinding);
+    BOOST_REQUIRE_NE(parsedFirst.grantDigest, parsedSecond.grantDigest);
+  }
+
+  // A protected grant remains request-bound for the in-memory runner cache, so
+  // two independent requests must create separate runners.  Their immutable
+  // assembled ciphertext may nevertheless reuse the stable disk entry when
+  // the canonical recipe, assembly contract and key reference are identical.
+  // The production request path must therefore fetch and assemble once, then
+  // reopen/decrypt the durable ciphertext for the second grant.
   runRequest(requestOne, firstGrant, 1, 1, 0, 1);
-  runRequest(requestTwo, independentGrant, 2, 2, 0, 2);
+  runRequest(requestTwo, independentGrant, 1, 1, 1, 2);
   BOOST_CHECK_EQUAL(runnerRuns->load(std::memory_order_relaxed), 2U);
   const auto counters = facade.counters();
-  BOOST_CHECK_EQUAL(counters.sourceFetches, 2U);
-  BOOST_CHECK_EQUAL(counters.assemblies, 2U);
-  BOOST_CHECK_EQUAL(counters.templateHits, 0U);
+  BOOST_CHECK_EQUAL(counters.sourceFetches, 1U);
+  BOOST_CHECK_EQUAL(counters.assemblies, 1U);
+  BOOST_CHECK_EQUAL(counters.templateHits, 1U);
   BOOST_CHECK_EQUAL(counters.runnersCreated, 2U);
   registration.close();
   facade.stop();
