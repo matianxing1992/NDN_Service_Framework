@@ -21,6 +21,7 @@
 #include <openssl/evp.h>
 #include <future>
 #include "ndnsf-integration-fixture.hpp"
+#include "ndn-service-framework/PolicyStatus.hpp"
 
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/pib/pib.hpp>
@@ -329,6 +330,106 @@ BOOST_AUTO_TEST_CASE(Spec184AuthorityIoOwnership)
   {
     std::lock_guard<std::mutex> lock(sendMutex);
     BOOST_CHECK_NE(sendThread, workerThread);
+  }
+  BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(Spec190AuthorityIoOwnershipWithTargetedTokens)
+{
+  NdnsfIntegrationEnvironment environment;
+  environment.bootstrap();
+
+  // The production Runtime installs a ControllerVersion before issuing the
+  // authority request. Keep that boundary in this regression: it is what
+  // makes the ordinary V2 request-scoped default visible to Targeted
+  // bootstrap transport.
+  const auto now = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const ndn::Name controllerName("/controller/spec190/grant");
+  environment.user().fetchPermissionsFromController(controllerName);
+  environment.provider().fetchPermissionsFromController(controllerName);
+  ndn_service_framework::PolicyStatusData status;
+  status.setServiceName(environment.profile().serviceName);
+  status.setControllerVersion(ndn_service_framework::ControllerVersion{now, 1});
+  status.setValidity(now - 1000, now + 120000);
+  status.setPolicyDigest("sha256:" + std::string(64, '0'));
+  status.setAbePublicParametersName(
+    environment.attributeAuthorityPublicParametersName());
+  status.setAbePublicParametersDigest(
+    environment.attributeAuthorityPublicParametersDigest());
+  status.setControllerCertificate(controllerName);
+  BOOST_REQUIRE(environment.user().installControllerStatus(status));
+  BOOST_REQUIRE(environment.provider().installControllerStatus(status));
+  environment.pumpUntilWithAttributeAuthority([] { return false; });
+
+  const auto authorityIdentity = environment.provider().getName();
+  const auto authorityService = environment.profile().serviceName;
+  const NativeKeyGrant expectedGrant{
+    "/grant/spec190/token-enabled", "sha256:spec190-token-enabled-grant",
+    "/provider/spec190", "{\"grant\":190}", nowMs() + 60'000};
+  std::mutex captureMutex;
+  std::optional<NativeGrantAuthorityRequest> receivedRequest;
+  auto registration = environment.provider().addScopedService(
+    authorityService,
+    [] (const ndn_service_framework::RequestMessage&) {
+      ndn_service_framework::ServiceProvider::AckDecision decision;
+      decision.status = true;
+      return decision;
+    },
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const ndn_service_framework::RequestMessage& request) {
+      const auto payload = request.getPayload();
+      const std::string wire(reinterpret_cast<const char*>(payload.data()), payload.size());
+      {
+        std::lock_guard<std::mutex> lock(captureMutex);
+        receivedRequest = nativeGrantAuthorityRequestFromJson(wire);
+      }
+      ndn_service_framework::ResponseMessage response;
+      response.setStatus(true);
+      const auto responseWire = nativeKeyGrantJson(expectedGrant);
+      ndn::Buffer responsePayload(
+        reinterpret_cast<const uint8_t*>(responseWire.data()), responseWire.size());
+      response.setPayload(responsePayload, responsePayload.size());
+      return response;
+    },
+    ndn_service_framework::ServiceProvider::ServiceInvocationMode::TargetedOnly);
+  environment.user().setUseTokens(true);
+  environment.provider().setUseTokens(true);
+  environment.enableProductionIngressForTest();
+
+  auto user = std::shared_ptr<ndn_service_framework::ServiceUser>(
+    &environment.user(), [] (ndn_service_framework::ServiceUser*) {});
+  auto issue = NativeAuthenticatedGrantClient::issueThroughCore(
+    user, authorityIdentity.toUri(), authorityService.toUri());
+  NativeSignedGrantRequest request;
+  request.requesterIdentity = environment.profile().userIdentity.toUri();
+  request.providerIdentity = "/provider/spec190";
+  request.requestId = "/request/spec190/token-enabled";
+  request.attempt = 1;
+  request.planCoreDigest = digest("spec190-token-enabled-plan");
+  request.grantViewDigest = digest("spec190-token-enabled-view");
+  request.modelManifestDigest = digest("spec190-token-enabled-model");
+  request.protectionEpoch = "spec190-token-enabled-epoch";
+  request.issuedAtMs = nowMs();
+  NativeGrantControl control{std::chrono::system_clock::now() + std::chrono::seconds(5), {}};
+  auto result = std::async(std::launch::async, [&] {
+    return issue(request, "{\"manifest\":190}", nowMs() + 60'000, control);
+  });
+
+  environment.pumpUntil([&] {
+    std::lock_guard<std::mutex> lock(captureMutex);
+    return receivedRequest.has_value() &&
+           result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  const auto granted = result.get();
+  BOOST_CHECK_EQUAL(granted.grantName, expectedGrant.grantName);
+  BOOST_CHECK_EQUAL(granted.grantDigest, expectedGrant.grantDigest);
+  {
+    std::lock_guard<std::mutex> lock(captureMutex);
+    BOOST_REQUIRE(receivedRequest.has_value());
+    BOOST_CHECK_EQUAL(receivedRequest->publishedManifestJson, "{\"manifest\":190}");
+    BOOST_CHECK_EQUAL(receivedRequest->request.requestId, request.requestId);
   }
   BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0);
 }
