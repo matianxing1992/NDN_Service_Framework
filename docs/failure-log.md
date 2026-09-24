@@ -1,5 +1,30 @@
 # Failure Log and Evidence Index
 
+## 2026-09-23 — Spec190 B190-25 protected assembled cache across Provider exec
+
+- **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
+- **Changed gate:** the existing `spec185-provider-assembly` C++ target now
+  performs a real `fork`+`exec` child for the protected assembled-cache case.
+  After the parent cold assembly completes, the child uses a newly issued grant
+  and a different Provider boot identity to reconstruct `ProtectedRuntime`, hit
+  the stable ciphertext, decrypt it through the production file-backed artifact
+  path, compare the assembled digest, and release the plaintext lease.
+- **First failed boundary:** the first three attempts used an incomplete Boost
+  filter and stopped with `no test cases matching filter`; they never entered the
+  protected selector. Raw logs remain as `selector-1.log` through
+  `selector-3.log` under the B190-25 run directory. The exact nested suite path
+  was corrected before the valid rerun.
+- **Validation:** ordinary root `build/` rebuilt `spec185-provider-assembly`
+  successfully; the corrected selector passed three consecutive times and the
+  complete target passed `21/21`. Child plaintext and cache/exec fixture roots
+  were removed after the run.
+- **Qualification boundary:** this proves a new boot/new grant can reopen and
+  decrypt the durable assembled ciphertext in the native production assembler
+  path. It does not prove online Controller confirmation, real network
+  grant/Selection/placement rebinding, revoke invalidation, precise missing-object
+  fetch, or full T006/real Qwen qualification.
+- **Evidence:** [B190-25](../specs/190-multiturn-latency/evidence/b190-25.md).
+
 ## 2026-09-23 — Spec190 B190-24 Provider production fetch/decrypt gate
 
 - **Status:** `ADVANCE` / T006 remains `PARTIAL`; T007 remains locked.
