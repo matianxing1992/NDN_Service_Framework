@@ -1271,7 +1271,7 @@ NativeProviderRuntime::registerRunner(NativeModelRunnerSpec spec,
     spec, {"evidence.providerName", "providerName", "provider_name"});
   const auto cacheEpoch = metadataUint64(
     spec, {"state.cacheEpoch", "cacheEpoch", "state.securityEpoch",
-           "securityEpoch"});
+           "securityEpoch"}, 1);
   bool conversationBindingChanged = false;
   if (!providerIdentity.empty() && !providerBootId.empty()) {
     conversationBindingChanged = m_conversationStateStore.setProviderBinding(
@@ -1682,8 +1682,10 @@ NativeProviderRuntime::stageDecodeStatePromotion(
       // request-local candidate without making it visible to a later turn.
       state = m_decodeStateStore.lookupCandidate(sourceBinding);
     }
-    if (!state.has_value() ||
-        !m_conversationStateStore.stagePromotion(
+    if (!state.has_value()) {
+      return false;
+    }
+    if (!m_conversationStateStore.stagePromotion(
           sourceBinding.requestId, role.role, std::move(binding), *state, nowMs)) {
       return false;
     }
@@ -1761,8 +1763,10 @@ NativeProviderRuntime::commitStagedDecodeStatePromotion(
     staged = found->second;
   }
   if (!staged.role.candidateDecodeStateIdentity ||
-      *staged.role.candidateDecodeStateIdentity != binding.identity ||
-      !m_conversationStateStore.commitStagedPromotion(binding,
+      *staged.role.candidateDecodeStateIdentity != binding.identity) {
+    return false;
+  }
+  if (!m_conversationStateStore.commitStagedPromotion(binding,
                                                        checkpointDigest)) {
     return false;
   }

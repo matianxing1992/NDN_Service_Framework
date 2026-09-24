@@ -907,6 +907,9 @@ stripGenerationEpochLineage(const TensorBundle& bundle)
   }
   auto result = makeEncodedTensorBundle(bundle.name, tensors);
   result.expectedSegments = bundle.expectedSegments;
+  // Remove lineage from the model-facing payload without discarding the
+  // runtime-only transport observation used by Provider accounting.
+  result.transferObservation = bundle.transferObservation;
   return result;
 }
 

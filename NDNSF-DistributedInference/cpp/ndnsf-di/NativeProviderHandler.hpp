@@ -46,18 +46,19 @@ public:
     if (m_processed.count(sequence) != 0) {
       return Decision::Duplicate;
     }
-    if (sequence == 0 ||
-        (m_highest != 0 && sequence <= m_highest)) {
+    if (m_hasHighest && sequence <= m_highest) {
       return Decision::Reordered;
     }
     m_processed.insert(sequence);
     m_highest = sequence;
+    m_hasHighest = true;
     return Decision::Accepted;
   }
 
 private:
   std::set<std::uint64_t> m_processed;
   std::uint64_t m_highest = 0;
+  bool m_hasHighest = false;
 };
 
 struct NativeProviderHandlerConfig

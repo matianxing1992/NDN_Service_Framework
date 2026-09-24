@@ -3795,6 +3795,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         logRuntimeEvidence(record.str());
       }
       if (finalPayload) {
+        // The conversation receipt is published before this point, so the
+        // requester can authorize the promotion without seeing a terminal
+        // response first.  Keep the terminal response behind the authenticated
+        // commit/finalize gate; an invalid control must fail the request rather
+        // than expose a successful terminal result.
+        if (waitConversationPromotion) {
+          waitConversationPromotion();
+        }
         if (ctx.isStreamed() &&
             streamedEventsPublished.load(std::memory_order_relaxed) == 0) {
           const ndn::Buffer eventPayload(finalPayload->data(), finalPayload->size());
@@ -3805,13 +3813,6 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
         }
         ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
-        // The response is visible on the wire before the Provider waits for
-        // the User's aggregate checkpoint decision.  This ordering avoids a
-        // circular wait: the User needs the actual result before it can seal
-        // and publish COMMIT controls for every role.
-        if (waitConversationPromotion) {
-          waitConversationPromotion();
-        }
         if (selectionProjection) {
           logProviderStageMarker("EXECUTION_COMPLETED", stageRequestId,
                                  ctx.localProvider().toUri(), role,

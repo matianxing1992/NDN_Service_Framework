@@ -289,6 +289,65 @@ BOOST_AUTO_TEST_CASE(StageTransferBudgetRejectsDuplicateAndOutOfOrderSnapshots)
   BOOST_CHECK_THROW(cumulative.deltaFrom(previous), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(StrippingGenerationLineageRetainsTransferObservation)
+{
+  auto bundle = runnerBundle("decode");
+  auto observation = std::make_shared<StageTransferObservation>();
+  observation->edgeScope = "decode";
+  observation->direction = "receive";
+  observation->phase = "decode";
+  observation->identity = "decode-observation";
+  observation->lineagePresent = true;
+  observation->positionDigest = "sha256:" + std::string(64, 'a');
+
+  const auto withLineage = attachGenerationEpochLineage(
+    bundle, fixtureLineage("/request/strip-observation"));
+  auto observed = withLineage;
+  observed.transferObservation = observation;
+  const auto stripped = stripGenerationEpochLineage(observed);
+
+  BOOST_CHECK(!extractGenerationEpochLineage(stripped).has_value());
+  BOOST_REQUIRE(stripped.transferObservation != nullptr);
+  BOOST_CHECK_EQUAL(stripped.transferObservation.get(), observation.get());
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPreservesStrippedDecodeObservation)
+{
+  const auto requestId = "/request/worker-stripped-decode";
+  auto bundle = attachGenerationEpochLineage(
+    runnerBundle("feedback"), fixtureLineage(requestId));
+  auto observation = std::make_shared<StageTransferObservation>();
+  observation->lineagePresent = true;
+  observation->positionDigest = fixtureLineage(requestId).positionDigest;
+  observation->lineageIdentity = "preserved-lineage";
+  bundle.transferObservation = observation;
+  bundle = stripGenerationEpochLineage(bundle);
+
+  DependencyEdge edge("feedback", "/Stage/0", "/Stage/1",
+                      "/stage-transfer/feedback", 1, 0,
+                      {"hidden"});
+  edge.requestId = requestId;
+  edge.attemptEpoch = 4;
+  edge.operationKind = "TOKEN_FEEDBACK";
+  RoleSpec role("/Stage/1", {edge}, {}, requestId, 4);
+  auto io = std::make_shared<CapturingDependencyIo>();
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+
+  auto future = worker.executeAsync(
+    "stripped-decode-session", role, io,
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{};
+    },
+    {{"feedback", std::move(bundle)}});
+  const auto result = future.get();
+
+  BOOST_REQUIRE_EQUAL(result.inputTimings.size(), 1U);
+  BOOST_REQUIRE(result.inputTimings.front().transferObservation != nullptr);
+  BOOST_CHECK(result.inputTimings.front().transferObservation->lineagePresent);
+  BOOST_CHECK_EQUAL(result.inputTimings.front().transferObservation->positionDigest,
+                    fixtureLineage(requestId).positionDigest);
+}
+
 BOOST_AUTO_TEST_CASE(StageTransferBudgetRejectsMissingGenerationPosition)
 {
   StageTransferObservation observation;

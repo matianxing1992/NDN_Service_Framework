@@ -19,6 +19,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
@@ -1905,7 +1906,10 @@ makeV3SelectionProjectionJson(const std::string& roleJson,
                               const std::string& generationContractJson = {},
                               std::uint64_t layerBegin = 0,
                               std::uint64_t layerEnd = 1,
-                              std::uint64_t attempt = 1)
+                              std::uint64_t attempt = 1,
+                              const std::string& requestContractDigest = {},
+                              const std::string& conversationTurnBindingJson = {},
+                              const std::string& conversationStateReferenceJson = {})
 {
   return std::string("{\"ack_closed_digest\":\"") + planDigest +
     "\",\"assembly\":" + roleJson +
@@ -1928,9 +1932,21 @@ makeV3SelectionProjectionJson(const std::string& roleJson,
     "\",\"plan_digest\":\"" + planDigest +
     "\",\"provider\":\"" + provider +
     "\",\"request_id\":\"" + requestId +
-    "\"" + (generationContractJson.empty()
+    "\"" + (requestContractDigest.empty()
+      ? std::string()
+      : std::string(",\"request_contract_digest\":\"") +
+        requestContractDigest + "\"") +
+    (generationContractJson.empty()
       ? std::string()
       : std::string(",\"generation_contract\":") + generationContractJson) +
+    (conversationStateReferenceJson.empty()
+      ? std::string()
+      : std::string(",\"conversation_state_reference\":") +
+        conversationStateReferenceJson) +
+    (conversationTurnBindingJson.empty()
+      ? std::string()
+      : std::string(",\"conversation_turn_binding\":") +
+        conversationTurnBindingJson) +
     ",\"roles\":[" + roleJson +
     "],\"schema\":\"ndnsf-di-selection-v3\",\"schema_version\":3," +
     "\"security_policy_snapshot_digest\":\"" + planDigest + "\"}";
@@ -5037,6 +5053,10 @@ struct Spec175NativeTinyStreamResult
   std::vector<NativeEpochCoordinatorResult::CacheObservation> cacheObservations;
   std::vector<std::int64_t> fullPrefixControlTokens;
   std::vector<std::size_t> fullPrefixControlInputExtents;
+  std::size_t conversationReceipts = 0;
+  std::size_t conversationCommitAcks = 0;
+  std::size_t conversationControlsPublished = 0;
+  std::string conversationControlError;
 };
 
 enum class Spec175NativeTinyFault
@@ -5057,6 +5077,16 @@ enum class Spec175NativeTinyFault
   ProviderUnavailableAfterEvent3WithReplacement,
 };
 
+enum class Spec190NativeConversationFault
+{
+  None,
+  CommitAndFinalize,
+  LostFinalize,
+  WrongRole,
+  Malformed,
+  NoControl,
+};
+
 struct Spec175NativeTinyCaseOptions
 {
   std::string caseId;
@@ -5074,6 +5104,8 @@ struct Spec175NativeTinyCaseOptions
   std::vector<std::string> stopStrings;
   std::filesystem::path tokenizerPath;
   std::string tokenizerDigest;
+  Spec190NativeConversationFault conversationFault =
+    Spec190NativeConversationFault::None;
 };
 
 std::filesystem::path
@@ -5895,11 +5927,10 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
   members.reserve(providerCount);
   for (std::size_t roleIndex = 0; roleIndex < providerCount; ++roleIndex) {
     const auto providerIndex = roleProviderIndex[roleIndex];
-    auto providerPrefix = environment.profile().providerNode;
-    if (providerIndex != 0) {
-      providerPrefix.append("p" + std::to_string(providerIndex));
-    }
-    providerPrefix.append("0");
+    // NativeGroupKeyAdmission binds this prefix to the authenticated Provider
+    // identity from the ACK.  The SVS node is a transport producer name, not
+    // the NDNSF_DATA_V1 endpoint namespace.
+    const auto providerPrefix = environment.provider(providerIndex).getName();
     members.push_back(GroupMemberV1{
       environment.provider(providerIndex).getName().toUri(),
       roleIndex,
@@ -5915,9 +5946,8 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     ProviderGroupCoordinator replacementCapabilitySealer(makeD2bCoordinatorOptions());
     auto replacementMembers = members;
     const auto finalRoleIndex = providerCount - 1;
-    auto replacementPrefix = environment.profile().providerNode;
-    replacementPrefix.append("p" + std::to_string(providerCount));
-    replacementPrefix.append("0");
+    const auto replacementPrefix =
+      environment.provider(providerCount).getName();
     replacementMembers[finalRoleIndex] = GroupMemberV1{
       environment.provider(providerCount).getName().toUri(),
       finalRoleIndex,
@@ -6008,6 +6038,32 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       roles[roleIndex], certifiedModel,
       environment.provider(providerIndex).getName().toUri()));
   }
+  const auto requestPayload = makeSpec175TinyRequestPayload();
+  const auto requestContractDigest = nativePlanningDigest(
+    requestPayload.data(), requestPayload.size());
+  NativeJson roleMapJson = NativeJson::array();
+  for (const auto& [role, provider] : assignment.providerByRole) {
+    roleMapJson.push_back(NativeJson::array({role, provider}));
+  }
+  const auto conversationRoleMapDigest = nativePlanningDigest(
+    nativeCanonicalJson(roleMapJson));
+  const auto conversationRetentionDeadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
+  const bool conversationRequest =
+    caseOptions.conversationFault != Spec190NativeConversationFault::None;
+  const auto conversationId = std::string("spec190-production-conversation");
+  const auto conversationBindingJson = conversationRequest
+    ? nativeCanonicalJson(NativeJson{
+        {"schema", "ndnsf-di-conversation-turn-binding-v1"},
+        {"version", 1}, {"conversation_id", conversationId},
+        {"parent_context_epoch", 0}, {"successor_context_epoch", 1},
+        {"service_name", serviceName.toUri()},
+        {"plan_role_map_digest", conversationRoleMapDigest},
+        {"request_contract_digest", requestContractDigest},
+        {"retention_deadline_ms", conversationRetentionDeadlineMs},
+        {"parent_checkpoint_digest", ""}})
+    : std::string{};
   const auto makeProjectionPayload = [&] (
       std::size_t roleIndex,
       std::size_t providerIndex,
@@ -6043,23 +6099,85 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         dependency.collectiveTensorDigest + "\"}";
       const auto producerRoleIndex = dependency.operationKind == "TOKEN_FEEDBACK"
         ? providerCount - 1 : edgeIndex;
-      const auto endpoint = makeV3TensorEndpointJson(
-        members[producerRoleIndex].endpointPrefix,
-        requesterName.toUri(), projectionRequestId.toUri(), planDigest,
-        dependency.keyScope, dependency.collectiveOperationIndex,
-        dependency.producers.front(), producerRoleIndex,
-        dependency.consumers.front(),
-        "\"" + dependency.consumers.front() + "\"",
-        dependency.tensors.front(), dependency.collectiveTensorDigest,
-        dependency.collectiveSourceLayoutDigest,
-        dependency.collectiveTargetLayoutDigest, dependency.operationKind,
-        spec175Digest(static_cast<char>('1' + edgeIndex)),
-        dependency.collectiveTensorDigest, attempt);
-      if (dependency.producers.front() == roles[roleIndex]) {
-        mayPublish.push_back(endpoint);
+      // TOKEN_FEEDBACK is a sealed generation-control dependency, not a V3
+      // tensor endpoint.  The production NativeProviderHandler appends its
+      // exact plan-owned edge after parsing the cross-Provider projection.
+      // Emitting it here would create a duplicate edge with a different
+      // transport scope and make both sides wait for the wrong exact object.
+      if (dependency.operationKind == "TOKEN_FEEDBACK") {
+        continue;
       }
-      if (dependency.consumers.front() == roles[roleIndex]) {
-        mustFetch.push_back(endpoint);
+      // A generation projection must carry one endpoint for every epoch.  The
+      // production V3 parser validates this before the native coordinator can
+      // enter sequence zero; a single epoch-0 endpoint is not a complete
+      // sealed generation contract.
+      for (std::size_t epoch = 0; epoch <= maxGenerationEpochs; ++epoch) {
+      const auto round = epoch * providerCount +
+        dependency.collectiveOperationIndex;
+        const auto groupId = std::string("group-spec175-") + caseOptions.caseId;
+        NativeTensorEndpointV3 certifiedEndpoint;
+        certifiedEndpoint.producerNamespace =
+          members[producerRoleIndex].endpointPrefix;
+        certifiedEndpoint.requester = requesterName.toUri();
+        certifiedEndpoint.requestId = projectionRequestId.toUri();
+        certifiedEndpoint.attempt = attempt;
+        certifiedEndpoint.planDigest = planDigest;
+        certifiedEndpoint.groupId = groupId;
+        certifiedEndpoint.groupEpoch = std::to_string(attempt);
+        certifiedEndpoint.operation = dependency.operationKind;
+        certifiedEndpoint.round = round;
+        certifiedEndpoint.sourceKind = "ROLE";
+        certifiedEndpoint.producerRole = dependency.producers.front();
+        certifiedEndpoint.producerRank = producerRoleIndex;
+        certifiedEndpoint.consumerRole = dependency.consumers.front();
+        certifiedEndpoint.consumerRoles = {dependency.consumers.front()};
+        certifiedEndpoint.tensorId = dependency.tensors.front();
+        certifiedEndpoint.tensorDigest = dependency.collectiveTensorDigest;
+        certifiedEndpoint.layoutDigest =
+          dependency.collectiveSourceLayoutDigest;
+        certifiedEndpoint.targetLayoutDigest =
+          dependency.collectiveTargetLayoutDigest;
+        certifiedEndpoint.segmentCount = 1;
+        certifiedEndpoint.securityProfile = "NDNSF_DATA_V1";
+        certifiedEndpoint.noProgressDeadlineMs = 2000;
+        certifiedEndpoint.hardDeadlineMs = 8000;
+        certifiedEndpoint.manifestDigest = nativePlanningDigest(
+          nativeCanonicalJson(NativeJson{
+            {"requestId", certifiedEndpoint.requestId},
+            {"attempt", certifiedEndpoint.attempt},
+            {"planDigest", certifiedEndpoint.planDigest},
+            {"group", certifiedEndpoint.groupId},
+            {"epoch", certifiedEndpoint.groupEpoch},
+            {"operation", certifiedEndpoint.operation},
+            {"round", certifiedEndpoint.round},
+            {"producer", certifiedEndpoint.producerRole},
+            {"consumers", certifiedEndpoint.consumerRoles},
+            {"tensor", certifiedEndpoint.tensorId},
+            {"bundleTensorNames", certifiedEndpoint.bundleTensorNames},
+            {"tensorDigest", certifiedEndpoint.tensorDigest}}));
+        auto endpointIdentity = nativeEndpointJson(certifiedEndpoint);
+        endpointIdentity.erase("endpoint_digest");
+        endpointIdentity.erase("consumer_role");
+        certifiedEndpoint.endpointDigest = nativePlanningDigest(
+          nativeCanonicalJson(endpointIdentity));
+        const auto endpoint = makeV3TensorEndpointJson(
+          members[producerRoleIndex].endpointPrefix,
+          requesterName.toUri(), projectionRequestId.toUri(), planDigest,
+          groupId, round,
+          dependency.producers.front(), producerRoleIndex,
+          dependency.consumers.front(),
+          "\"" + dependency.consumers.front() + "\"",
+          dependency.tensors.front(), dependency.collectiveTensorDigest,
+          dependency.collectiveSourceLayoutDigest,
+          dependency.collectiveTargetLayoutDigest, dependency.operationKind,
+          certifiedEndpoint.endpointDigest, certifiedEndpoint.manifestDigest,
+          attempt);
+        if (dependency.producers.front() == roles[roleIndex]) {
+          mayPublish.push_back(endpoint);
+        }
+        if (dependency.consumers.front() == roles[roleIndex]) {
+          mustFetch.push_back(endpoint);
+        }
       }
     }
     dependenciesJson += ']';
@@ -6099,7 +6217,9 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
         caseOptions.samplingTemperature, caseOptions.samplingTopK,
         caseOptions.samplingTopP, caseOptions.samplingRepetitionPenalty,
         caseOptions.samplingSeed, caseOptions.stopStrings),
-      roleIndex * stateRows, (roleIndex + 1) * stateRows, attempt);
+      roleIndex * stateRows, (roleIndex + 1) * stateRows, attempt,
+      conversationRequest ? requestContractDigest : std::string{},
+      conversationBindingJson);
     return ndn::Buffer(
       reinterpret_cast<const std::uint8_t*>(projection.data()),
       projection.size());
@@ -6127,8 +6247,12 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     handlerConfig.providerBootId = environment.provider(index).getName().toUri() + "-boot";
     handlerConfig.planDigest = planDigest;
     handlerConfig.fetchTimeoutMs = 6000;
+    handlerConfig.dependencyFetchTimeoutMs = conversationRequest ? 2000 : 6000;
     handlerConfig.maxSegmentSize = 4096;
     handlerConfig.freshnessMs = 60000;
+    if (conversationRequest) {
+      handlerConfig.fetchTimeoutMs = 2000;
+    }
     handlerConfig.enableNativeEpochCoordinator = true;
     handlerConfig.maxGenerationEpochs = maxGenerationEpochs;
     handlerConfig.generationStateInputNames = {
@@ -6599,7 +6723,6 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       std::chrono::system_clock::now().time_since_epoch()).count();
     streamOptions.deadlineEpochMs = static_cast<std::uint64_t>(now - 1);
   }
-  const auto requestPayload = makeSpec175TinyRequestPayload();
   if (caseOptions.fault != Spec175NativeTinyFault::None) {
     requestScope = environment.beginRequest(requestId.toUri(), transportFaults);
   }
@@ -6641,6 +6764,10 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       "token-feedback", roles});
     collaborationPlan.dependencies.push_back(CollaborationDependency{
       {finalRole}, {role0}, "token-feedback", ndn::Name("/Spec175/feedback"), true});
+    if (conversationRequest) {
+      collaborationPlan.keyScopes.push_back(CollaborationKeyScope{
+        "ndnsf-di-conversation-state-v1", roles});
+    }
     std::map<std::string, ndn::Name> preferredProviderByRole;
     if (caseOptions.allowReplacement) {
       preferredProviderByRole.emplace(
@@ -6680,6 +6807,111 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       result.error = error.what();
     }
   };
+  std::thread conversationController;
+  const auto conversationControllerFinished =
+    std::make_shared<std::atomic<bool>>(!conversationRequest);
+  if (conversationRequest) {
+    conversationController = std::thread([&, conversationControllerFinished] {
+      try {
+        const auto receipts = environment.user().waitForVerifiedCollaborationData(
+          requestId, "ndnsf-di-conversation-state-v1",
+          ndn::Name("/ndnsf-di/conversation/receipt"), providerCount,
+          8000, true);
+        result.conversationReceipts = receipts.size();
+        if (receipts.size() != providerCount) {
+          result.conversationControlError = "conversation receipt set incomplete";
+          conversationControllerFinished->store(true, std::memory_order_release);
+          return;
+        }
+        if (caseOptions.conversationFault ==
+              Spec190NativeConversationFault::NoControl) {
+          conversationControllerFinished->store(true, std::memory_order_release);
+          return;
+        }
+        const auto checkpointDigest = spec175Digest('7');
+        const auto publishControl = [&] (const NativeJson& receipt,
+                                         const std::string& action,
+                                         const std::string& role,
+                                         bool malformed) {
+          const auto provider = receipt.value("providerIdentity", std::string{});
+          NativeJson control = malformed ? NativeJson::object() : NativeJson{
+            {"schema", "ndnsf-di-conversation-promotion-control-v1"},
+            {"action", action}, {"conversationId", conversationId},
+            {"parentContextEpoch", 0}, {"successorContextEpoch", 1},
+            {"serviceName", serviceName.toUri()},
+            {"planRoleMapDigest", conversationRoleMapDigest},
+            {"roleName", role},
+            {"receiptDigest", receipt.value("receiptDigest", std::string{})},
+            {"checkpointDigest", checkpointDigest},
+            {"expiresAtMs", receipt.value("expiresAtMs", std::uint64_t{0})}};
+          const auto wire = nativeCanonicalJson(control);
+          if (!environment.user().publishCollaborationData(
+                ndn::Name(provider), requestId,
+                "ndnsf-di-conversation-state-v1",
+                ndn::Name("/ndnsf-di/conversation/control"),
+                ndn::Buffer(wire.begin(), wire.end()))) {
+            throw std::runtime_error("conversation control publication rejected");
+          }
+          ++result.conversationControlsPublished;
+        };
+        for (const auto& record : receipts) {
+          const auto receipt = nativeParseJson(std::string(
+            record.payload.begin(), record.payload.end()));
+          const auto role = receipt.value("roleName", std::string{});
+          switch (caseOptions.conversationFault) {
+            case Spec190NativeConversationFault::WrongRole:
+              publishControl(receipt, "COMMIT", role + "-wrong", false);
+              break;
+            case Spec190NativeConversationFault::Malformed:
+              publishControl(receipt, "COMMIT", role, true);
+              break;
+            case Spec190NativeConversationFault::LostFinalize:
+            case Spec190NativeConversationFault::None:
+            case Spec190NativeConversationFault::CommitAndFinalize:
+              publishControl(receipt, "COMMIT", role, false);
+              break;
+            case Spec190NativeConversationFault::NoControl:
+              break;
+          }
+        }
+        if (caseOptions.conversationFault ==
+              Spec190NativeConversationFault::WrongRole ||
+            caseOptions.conversationFault ==
+              Spec190NativeConversationFault::Malformed) {
+          conversationControllerFinished->store(true, std::memory_order_release);
+          return;
+        }
+        const auto commitAcks = environment.user().waitForVerifiedCollaborationData(
+          requestId, "ndnsf-di-conversation-state-v1",
+          ndn::Name("/ndnsf-di/conversation/commit"), providerCount,
+          5000, true);
+        result.conversationCommitAcks = commitAcks.size();
+        if (commitAcks.size() != providerCount) {
+          result.conversationControlError = "conversation commit ack set incomplete";
+          conversationControllerFinished->store(true, std::memory_order_release);
+          return;
+        }
+        if (caseOptions.conversationFault ==
+              Spec190NativeConversationFault::LostFinalize) {
+          conversationControllerFinished->store(true, std::memory_order_release);
+          return;
+        }
+        for (const auto& record : receipts) {
+          const auto receipt = nativeParseJson(std::string(
+            record.payload.begin(), record.payload.end()));
+          publishControl(receipt, "FINALIZE",
+                         receipt.value("roleName", std::string{}), false);
+        }
+      }
+      catch (const std::exception& error) {
+        result.conversationControlError = error.what();
+      }
+      catch (...) {
+        result.conversationControlError = "unknown conversation controller error";
+      }
+      conversationControllerFinished->store(true, std::memory_order_release);
+    });
+  }
   const auto returnedRequestId = environment.user().BeginCollaboration(
     serviceName, requestPayload, 1000, 8000,
     [&] (const CollaborationAckClosure& closure) { commitPlan(closure); },
@@ -6826,6 +7058,10 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
       providerFailures->load(std::memory_order_relaxed) +
       providerCoordinatorCompletions->load(std::memory_order_relaxed) +
       result.coreDeadlineFailures.size() >= providerCount;
+    if (conversationRequest &&
+        !conversationControllerFinished->load(std::memory_order_acquire)) {
+      return false;
+    }
     if (caseOptions.fault == Spec175NativeTinyFault::ExpiredDeadline) {
       return providerDone &&
         (result.timedOut || result.failed || result.cancelled || result.completed);
@@ -6842,6 +7078,9 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
           " failed=" + std::to_string(result.failed) +
           " providerCompletions=" + std::to_string(
             providerCoordinatorCompletions->load(std::memory_order_relaxed)));
+  }
+  if (conversationController.joinable()) {
+    conversationController.join();
   }
   result.providerCoordinatorCompletions =
     providerCoordinatorCompletions->load(std::memory_order_relaxed);
@@ -6928,6 +7167,71 @@ runSpec175NativeTinyReplacementCase()
   options.allowReplacement = true;
   options.fault = Spec175NativeTinyFault::ProviderUnavailableAfterEvent3WithReplacement;
   return runSpec175NativeTinyMultiProviderCase(2, std::move(options));
+}
+
+BOOST_AUTO_TEST_CASE(Spec190ProductionConversationControlsCommitAndFinalize)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "spec190-production-commit-finalize";
+  options.conversationFault =
+    Spec190NativeConversationFault::CommitAndFinalize;
+  const auto result = runSpec175NativeTinyMultiProviderCase(2, std::move(options));
+  BOOST_TEST_MESSAGE("Spec190 production conversation completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " receipts=" << result.conversationReceipts
+                    << " commitAcks=" << result.conversationCommitAcks
+                    << " controls=" << result.conversationControlsPublished
+                    << " error=" << result.error
+                    << " controllerError=" << result.conversationControlError);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE(!result.timedOut);
+  BOOST_REQUIRE_EQUAL(result.conversationReceipts, 2U);
+  BOOST_REQUIRE_EQUAL(result.conversationCommitAcks, 2U);
+  BOOST_REQUIRE_EQUAL(result.conversationControlsPublished, 4U);
+  BOOST_REQUIRE(result.conversationControlError.empty());
+}
+
+BOOST_AUTO_TEST_CASE(Spec190ProductionConversationLostFinalizeRetainsCommittedState)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "spec190-production-lost-finalize";
+  options.conversationFault = Spec190NativeConversationFault::LostFinalize;
+  const auto result = runSpec175NativeTinyMultiProviderCase(2, std::move(options));
+  BOOST_TEST_MESSAGE("Spec190 production lost-finalize completed=" << result.completed
+                    << " failed=" << result.failed
+                    << " receipts=" << result.conversationReceipts
+                    << " commitAcks=" << result.conversationCommitAcks
+                    << " controls=" << result.conversationControlsPublished
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(result.completed);
+  BOOST_REQUIRE(!result.failed);
+  BOOST_REQUIRE_EQUAL(result.conversationReceipts, 2U);
+  BOOST_REQUIRE_EQUAL(result.conversationCommitAcks, 2U);
+  BOOST_REQUIRE_EQUAL(result.conversationControlsPublished, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(Spec190ProductionConversationRejectsWrongRoleControl)
+{
+  Spec175NativeTinyCaseOptions options;
+  options.caseId = "spec190-production-wrong-role";
+  options.conversationFault = Spec190NativeConversationFault::WrongRole;
+  const auto result = runSpec175NativeTinyMultiProviderCase(2, std::move(options));
+  BOOST_TEST_MESSAGE("Spec190 production wrong-role failed=" << result.failed
+                    << " receipts=" << result.conversationReceipts
+                    << " controls=" << result.conversationControlsPublished
+                    << " error=" << result.error);
+  BOOST_REQUIRE(result.ackClosed);
+  BOOST_REQUIRE(result.planCommitted);
+  BOOST_REQUIRE(!result.completed);
+  BOOST_REQUIRE(result.failed);
+  BOOST_REQUIRE_EQUAL(result.conversationReceipts, 2U);
+  BOOST_REQUIRE_EQUAL(result.conversationCommitAcks, 0U);
+  BOOST_REQUIRE_EQUAL(result.conversationControlsPublished, 2U);
 }
 
 // R4-B6 keeps the first real requester/provider conversation deliberately

@@ -150,6 +150,14 @@ BOOST_AUTO_TEST_CASE(ControlSequenceGuardRejectsDuplicateAndReorderedHistory)
   BOOST_CHECK(guard.observe(6) == NativeProviderControlSequenceGuard::Decision::Reordered);
 }
 
+BOOST_AUTO_TEST_CASE(ControlSequenceGuardAcceptsInitialZero)
+{
+  NativeProviderControlSequenceGuard guard;
+  BOOST_CHECK(guard.observe(0) == NativeProviderControlSequenceGuard::Decision::Accepted);
+  BOOST_CHECK(guard.observe(0) == NativeProviderControlSequenceGuard::Decision::Duplicate);
+  BOOST_CHECK(guard.observe(1) == NativeProviderControlSequenceGuard::Decision::Accepted);
+}
+
 BOOST_AUTO_TEST_CASE(HealthyFinalizeFollowsDurableJournalAndClosesEarly)
 {
   for (unsigned repeat = 0; repeat != 20; ++repeat) {

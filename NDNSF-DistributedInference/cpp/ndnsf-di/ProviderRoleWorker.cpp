@@ -142,7 +142,13 @@ completeStageTransferObservation(const DependencyEdge& edge,
       edge.plannedDataName + "|" + direction + "|" + edge.operationKind +
       "|" + std::to_string(edge.round) + "|" +
       std::to_string(edge.microbatch);
-    populateLineageObservation(observation, bundle);
+    // The epoch coordinator removes generation lineage from the model-facing
+    // payload after validating it.  In that path the runtime-only observation
+    // is the remaining source of the authenticated position; do not erase it
+    // merely because the payload has been normalized for the runner.
+    if (extractGenerationEpochLineage(bundle)) {
+      populateLineageObservation(observation, bundle);
+    }
     if (!observation.lineageIdentity.empty()) {
       observation.identity += "|" + observation.lineageIdentity;
     }
