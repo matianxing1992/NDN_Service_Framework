@@ -12804,6 +12804,22 @@ removed only r24/r25 transient encrypted staging and kept logs/config/raw eviden
 launcher had not converted SIGTERM into its existing `finally`, leaving children/staging
 until explicit cleanup; the minimal signal bridge is now implemented and covered by a
 focused regression. See [`b190-06.md`](../specs/190-multiturn-latency/evidence/b190-06.md).
+# 2026-09-23 — Spec191 native configure and CodeGraph indexing boundary
+
+- Scope: Spec191 T003/T005 native verification.
+- Symptom: `./waf configure` stopped before generating the build configuration because
+  `/usr/local/include/onnx/checker.h`, `/usr/local/include/onnx/shape_inference/implementation.h`,
+  `/usr/local/lib/libonnx.a`, `/usr/local/lib/libonnx_proto.a`, and the tokenizer bridge SDK
+  were absent. A post-edit CodeGraph sync also hit `Maximum call stack size exceeded`; the
+  repository source remains unchanged and direct syntax checks were used for the new session
+  implementation.
+- Root cause: this host does not have the full native ONNX/tokenizer development SDK installed;
+  the failure is build-environment related, not evidence of a Spec191 protocol failure.
+- Fix/next action: keep the five-node topology and session changes; install or point Waf at the
+  pinned SDK before claiming native unit/integration PASS. Until then T005 is PARTIAL and T003
+  has no native publish/fetch qualification. Retry CodeGraph with the repository's supported
+  bounded CLI path after the SDK/build gate is restored.
+
 # 2026-09-23 — Spec190 T005 ASan resource stop and lookup fixture boundary
 
 - Scope: `spec190-repo-lookup-reuse` prepare-before-STORE receipt lookup gate.
@@ -12816,3 +12832,431 @@ focused regression. See [`b190-06.md`](../specs/190-multiturn-latency/evidence/b
 - Durable evidence: [B190-10](../specs/190-multiturn-latency/evidence/b190-10.md).
 - Next action: run the C++ Runtime second-prepare/new-process and lookup/publish transaction matrix
   under bounded resource conditions; keep T005 `PARTIAL` until those gates pass.
+
+# 2026-09-23 — Spec191 focused C++ test-source compile boundary
+
+- Scope: Spec191 T005/T006/T010 source-level regression gates.
+- Symptom: the session test initially failed because Boost.Test attempted to stream
+  `TrackingSessionState`; the tracking-flow integration source also lacked the explicit
+  SHA-256 header needed by its digest assertion.
+- Root cause: enum assertions relied on a printable overload that does not exist, and the
+  test source relied on a transitive include for `ndn::crypto::sha256`.
+- Fix: compare enum values through `static_cast<int>` and include
+  `<ndn-cxx/util/sha256.hpp>` directly. The focused source-syntax gates then passed.
+- Lesson: every new Spec191 test must include the headers for the symbols it uses and must
+  not depend on Boost.Test stream operators for framework enums. This does not replace the
+  blocked Waf/native and MiniNDN gates.
+
+# 2026-09-23 — Spec191 duplicate-provider test fixture type error
+
+- Scope: focused syntax gate for the new coordinator validation test.
+- Symptom: the test used `ndn::Buffer("assignment")`, which is not a valid ndn-cxx
+  constructor and stopped the coordinator source check.
+- Root cause: the fixture treated `ndn::Buffer` like a string-owning convenience type.
+- Fix: use the existing byte-buffer form (`ndn::Buffer{1, 2, 3}`); the test then exercises
+  duplicate-source and compute-as-source rejection without relying on implicit conversions.
+- Lesson: keep ndn-cxx fixture payloads explicitly byte-oriented; this is a test-fixture
+  boundary and does not change the runtime protocol.
+
+# 2026-09-23 — Spec191 target-link installed-framework ABI boundary
+
+- Scope: bounded target-level native link probe for `UavTrackingNode` and
+  `UavTrackingGroundStation`.
+- Symptom: the first probe used the host pkg-config entry `-lndnsf`, although the
+  installed file is named `libndn-service-framework.so`; after correcting the
+  linker name and forcing `/usr/bin` binutils, the current Spec191 objects still
+  failed to link against the installed framework with missing symbols such as
+  `publishSignedExactData`, `completeRole`, and current stream helpers.
+- Root cause: the installed `/usr/local/lib/libndn-service-framework.so` is an
+  older ABI than the checked-out source; its presence is not a valid substitute
+  for a clean build of the current source. The Linuxbrew linker selection was a
+  separate host-toolchain defect and was removed from the probe.
+- Fix/next action: do not promote the manually linked candidate. Restore the
+  pinned native SDK/build closure, build the framework and Spec191 binaries from
+  the same source/toolchain, then run the exact five-node MiniNDN gate. This keeps
+  T005/T006/T010/T011 PARTIAL rather than converting an ABI-mismatched link into
+  runtime evidence.
+
+# 2026-09-23 — Spec191 five-node ControllerVersion readiness race
+
+- Scope: first real five-node MiniNDN run after the native framework and UAV
+  binaries were rebuilt from one source/toolchain closure.
+- Symptom: MiniNDN/NFD started correctly with exactly five nodes (`uav1`,
+  `uav2`, `uav3`, `compute`, and `gs`) and all seven processes reached READY,
+  but the ground station immediately logged `deferred collaboration
+  ControllerVersion is not ready` and exited before publishing the request.
+- Root cause: the launcher used the textual Controller READY marker as a
+  process barrier, although the user's asynchronous permission/status fetch had
+  not yet installed the service-scoped ControllerVersion.
+- Fix: the ground-station application now waits for the service-scoped
+  ControllerVersion with a bounded 30 s deadline and 250 ms retry interval;
+  each retry rebuilds the collaboration plan and callback bundle, so a failed
+  pre-publication attempt cannot reuse moved state. The topology remains exactly
+  five nodes; Controller is colocated with `gs` rather than represented as a
+  sixth MiniNDN node.
+- Lesson: process READY is not equivalent to authorization/status READY. The
+  MiniNDN launcher must retain both barriers, and a nominal run is not valid
+  until the collaboration request reaches terminal response.
+
+# 2026-09-23 — Spec191 cross-process certificate identity boundary
+
+- Scope: second real five-node MiniNDN run after adding the Controller READY
+  barrier.
+- Symptom: the Controller emitted `NDNSF_CONTROLLER_READY`, but the GS still
+  waited for ControllerVersion until its bounded timeout. No request was
+  published and the terminal collaboration marker was absent.
+- Root cause: each process had an isolated PIB/TPM. The Controller's
+  `--ensure-identities` therefore created a different `/example/uav/gs`
+  certificate from the one created by the GS, so encrypted permission data
+  could not be recovered by the GS and its service status fetch never started.
+- Fix: the Spec191 launcher now keeps process-private application scratch but
+  uses one campaign-scoped `private/keychain/{pib,tpm}` for all five-node
+  processes. Providers and GS still have distinct identities and NFD faces;
+  the shared keychain only supplies the certificate/key material required for
+  controller-issued permission responses.
+- Lesson: MiniNDN node isolation does not imply independent identity stores.
+  Cross-process NAC-ABE tests require a scoped shared keychain or an explicit
+  certificate-provisioning phase; an isolated PIB/TPM is not a valid default
+  for this authorization flow.
+
+# 2026-09-23 — Spec191 Controller generation lease contamination
+
+- Scope: trace-enabled five-node run after the shared campaign keychain fix.
+- Symptom: Controller reached its READY marker, but its log repeatedly showed
+  `Controller generation writer unavailable` for the default
+  `/tmp/ndnsf-controller-generation-...state.lock`. It consequently refused
+  every provider and user PermissionResponse, leaving ControllerVersion unset.
+- Root cause: an earlier root MiniNDN run had been interrupted after creating
+  the process-global generation lock. The next campaign reused that path even
+  though it was a separate output directory.
+- Fix: the launcher now exports a unique
+  `NDNSF_CONTROLLER_GENERATION_STATE` under the current campaign's private
+  controller directory. Campaigns no longer share the default `/tmp` lease;
+  the state and lock are retained with the run evidence for inspection.
+- Lesson: Controller readiness must include a valid, campaign-scoped generation
+  lease, not just prefix registration. Never let a reusable MiniNDN script
+  inherit a process-global mutable authorization state path.
+
+# 2026-09-23 — Spec191 role-scoped collaboration authorization
+
+- Scope: first run with a valid campaign generation lease and shared keychain.
+- Symptom: ControllerVersion, ACK closure, and the four selected participants
+  all succeeded, but the compute Provider rejected the assignment with
+  `role Tracking-Compute is not authorized by provider permission`.
+- Root cause: collaboration role authorization is intentionally stricter than
+  base service authorization. The policy granted `/UAV/Tracking/Window` but
+  not the role-specific permission name
+  `/UAV/Tracking/Window/ROLE/Tracking-Compute` (and likewise for the three
+  camera roles).
+- Fix: add the four role-scoped Provider policy entries. The base service grant
+  remains for the request namespace; role entries authorize only the exact
+  assignment role registered by each Provider.
+- Lesson: a collaboration plan's role set is part of the authorization
+  contract. A Provider permission for the service alone must not be treated as
+  permission to execute every role.
+
+# 2026-09-23 — Spec191 worker environment closure
+
+- Scope: run after role-scoped permissions were installed.
+- Symptom: all four roles were selected, but the compute Provider reported
+  `CPU tracking worker failed`; the worker log showed an Ultralytics import
+  failure involving `matplotlib.axes.rcParams`.
+- Root cause: the MiniNDN child process changed `HOME`/XDG paths without
+  providing a writable Matplotlib configuration directory (and did not make
+  the launcher Python path explicit), so the real CPU worker did not run under
+  the same environment as the prior host smoke.
+- Fix: each process now gets a private writable `MPLCONFIGDIR`, and the
+  launcher's validated `PYTHONPATH` is exported explicitly to child processes.
+  This keeps model/tracker state process-local while preserving the tested
+  Ultralytics dependency closure.
+- Lesson: a real algorithm subprocess needs the same Python import and cache
+  environment as its standalone smoke; changing HOME alone is an incomplete
+  runtime closure.
+
+# 2026-09-23 — Spec191 mixed Matplotlib toolkit import
+
+- Scope: root MiniNDN worker rerun after adding the private cache paths.
+- Symptom: the worker still failed before model inference with
+  `cannot import name 'rcParams' from matplotlib.axes`.
+- Root cause: Python preloaded Ubuntu's system `mpl_toolkits` package while
+  Matplotlib itself came from the user-site 3.7.5 install used by Ultralytics.
+  A writable cache directory cannot fix that mixed-version import.
+- Fix: `tracking_worker.py` now prepends matching user-site `mpl_toolkits`
+  paths before the first Ultralytics import; the launcher also scopes
+  `YOLO_CONFIG_DIR` per process.
+- Lesson: dependency closure includes preloaded namespace packages, not only
+  top-level module paths and model files.
+
+# 2026-09-23 — Spec191 result wire-size boundary
+
+- Scope: final five-node run after the real CPU worker completed.
+- Symptom: the compute Provider produced the three annotated frames and a
+  10,683-byte result JSON, but exact single-Data publication failed because
+  the 11,133-byte wire exceeded the 8,800-byte NDNSF limit.
+- Root cause: the result path used `publishSignedExactData`, which is intended
+  for bounded control objects, for a multi-view result containing three
+  annotated-image records and metadata.
+- Fix: publish the result with the existing request-scoped
+  `publishLargeNamed` segmented-object primitive (7,000-byte segments) while
+  preserving the assigned exact result name in the terminal response.
+- Lesson: use bounded exact Data only for control-plane records; application
+  results must use the framework's segmented large-object API when their wire
+  size is not statically bounded below the packet limit.
+
+# 2026-09-23 — Spec191 output scope-key omission
+
+- Scope: first rerun after moving the multi-view result to the segmented
+  collaboration primitive.
+- Symptom: the compute Provider produced the real worker result but logged
+  `Missing collaboration scope key ... scope=uav-tracking-result`; the GS
+  timed out even though all four roles had been selected.
+- Root cause: the collaboration plan declared only the input scope.  The
+  compute role therefore received no request-scoped key for its producer-owned
+  result publication.
+- Fix: declare a separate `uav-tracking-result` key scope for
+  `Tracking-Compute`, and carry the same result JSON through the terminal
+  request-scoped large-response path.  The GS now verifies the fetched result
+  bytes against the advertised SHA-256 before reporting success.
+- Lesson: every collaboration publication scope must be explicit in the plan;
+  a successful Selection does not imply that later output publication has a
+  usable key.
+
+# 2026-09-23 — Spec191 native tracking integration assertions
+
+- Scope: `UavTrackingFlowIntegrationTests` after the first full native
+  integration build.
+- Symptom: the three-source test rejected every verified input as not being an
+  exact job reference, and the abort test returned `session is not active`
+  instead of the required terminal reason.
+- Root cause: the test fixture omitted the job's viewpoint field, although
+  exact-reference matching intentionally includes it; the session state check
+  collapsed Aborted and Closed into one diagnostic.
+- Fix: bind the fixture's front/side/rear viewpoints to the corresponding job
+  references, and report `session is aborted` versus `session is closed`
+  separately. The focused native integration suite then passes.
+- Lesson: exact application references must include all semantic fields, and
+  terminal state diagnostics are part of the negative-path contract.
+
+# 2026-09-23 — Spec191 focused unit target blocked by unrelated native planning fixture
+
+- **Scope:** T010 follow-up while attempting to run the focused `UavTrackingEvidenceTests` and `UavTrackingSessionTests` from the maintained `unit-tests` binary.
+- **Symptom:** `PATH=/usr/bin:/bin:/usr/local/bin ./waf build --targets=unit-tests -j4` reached the native test compilation stage but stopped in `tests/unit-tests/di-native-planning.t.cpp`; existing assignments to `NativeArtifactBinding` use an initializer-list shape that no longer matches the current struct. The UAV tracking sources were not the failing task.
+- **Impact:** No `build/unit-tests` executable was produced, so the focused UAV unit selectors cannot yet be run from the full target. This does not invalidate the already passing `build/integration-tests` `UavTrackingFlowIntegrationTests` 2/2 or the Python suite.
+- **Next action:** isolate or repair the unrelated native planning fixture under its owning work, then rebuild the complete unit target before marking T010 complete. Do not treat the partial compile as a unit-suite pass.
+
+# 2026-09-23 — Spec191 full unit-suite resource boundary
+
+- **Scope:** T010 broad regression attempt after the complete `unit-tests` binary was built.
+- **Symptom:** `./build/unit-tests --log_level=test_suite` ran for about three minutes without a new progress marker, reached roughly 8.1 GiB RSS on a 9.7 GiB host, and drove about 5.9 GiB of swap with less than 0.5 GiB available memory.
+- **Action:** sent SIGINT and retained exit 130; no individual test failure was inferred. The focused Spec191 unit selectors and the existing integration selector remain the authoritative green evidence.
+- **Lesson:** do not use an unbounded all-suite invocation as the Spec191 gate on this host; run the affected selector cohort under an explicit time/resource bound and record any unrelated suites separately.
+
+# 2026-09-23 — Spec191 broad integration target contains unrelated baseline failures
+
+- **Scope:** T010 affected-regression check using `./build/integration-tests --report_level=short`.
+- **Result:** 155/181 test cases passed; 26 failed and 25 aborted (10010/10042 assertions passed). The failures were in existing Spec170/175/182 paths, including missing Qwen source fixtures, native tiny ONNX timeout/epoch cases, and absent `DI_NativeOnnxAssemblyWorker`; the Spec191 focused `UavTrackingFlowIntegrationTests` selector remains 2/2 green.
+- **Impact:** The broad target cannot be reported as green for this branch, but the failures are outside the Spec191 implementation boundary. They remain visible rather than being filtered from the overall result.
+- **Next action:** preserve the 101-case Spec191 native selector plus the 2-case integration selector as the feature gate, and track the unrelated baseline failures under their owning Specs.
+
+# 2026-09-24 — Spec191 offline tracking equivalence exposes per-window ByteTrack state loss
+
+- **Scope:** current-build 60-window replay `/tmp/spec191-final60.1790232182`
+  and `Experiments/UAV/verify_tracking_equivalence.py`.
+- **Symptom:** the real MiniNDN campaign completed 60/60 windows, but the
+  offline replay matched only window 0. From window 1 onward, frame/result
+  digests and, in some windows, associations diverged.
+- **Root cause:** `UavTrackingNode` starts a fresh Python worker for each
+  window. The run-private snapshot restores the application local/global IDs
+  and cross-camera state, but Ultralytics' in-memory ByteTrack state is not
+  serialized. A same-input offline session therefore has a different tracker
+  history from the network path.
+- **Impact:** the run proves network delivery, lifecycle, display, and result
+  verification, but it does not prove algorithm/session equivalence. The
+  equivalence verifier intentionally returns nonzero; no scientific tracking
+  accuracy claim is made.
+- **Next action:** either keep one real worker process for the complete
+  session, or replace the process-local tracker boundary with a serializable
+  ByteTrack state contract. Re-run the full 60-window nominal campaign and
+  the offline oracle after that change.
+- **Lesson:** persisting application IDs alone is insufficient when the model
+  tracker owns hidden temporal state; every stateful algorithm boundary must
+  be included in the replay oracle or kept in one process.
+
+# 2026-09-23 — Spec191 consecutive replay mapping propagation boundary
+
+- **Scope:** first real three-window MiniNDN replay after replacing the single
+  preview with three source-owned windows.
+- **Symptom:** windows 0 and 1 completed, but window 2 timed out while the
+  compute Provider fetched the UAV1 segmented input. The source processes had
+  published all three names, but the 3-second fetch budget expired before the
+  final mapping/data became observable.
+- **Root cause:** the publication path is asynchronous across the SVS mapping
+  update and segmented Data fetch; three sequential windows can exceed the old
+  3-second per-input fetch budget even though the source handler completed.
+- **Fix:** keep the timeout bounded but raise the collaboration input fetch
+  budget to 10 seconds, and add per-window source/compute publication markers.
+  The second real replay completed all three windows and displayed 9 headless
+  frames with zero presentation drops.
+- **Lesson:** a successful source callback is not an immediate cross-node
+  mapping-visibility guarantee. Consecutive-window experiments must record
+  publication and fetch boundaries and use a bounded propagation budget.
+
+# 2026-09-23 — Spec191 display-failure false success in negative matrix
+
+- **Scope:** real MiniNDN `display-failure` campaign for T012.
+- **Symptom:** the renderer emitted `DISPLAY_FAILED` and exited with status 2,
+  but the Ground Station still completed a successful collaboration; the
+  launcher reported false overall success.
+- **Root cause:** the runner waited for the renderer's READY marker but did not
+  monitor that process while waiting for the Ground Station terminal marker.
+- **Fix:** `wait_for` now fails the campaign if the compute-local renderer
+  exits before campaign completion. The rerun records `launcher-failed`, no
+  success marker, and zero leftover sockets.
+- **Lesson:** renderer readiness is not renderer liveness; a GUI/IPC process
+  must remain part of the terminal lifecycle and cannot be treated as a
+  fire-and-forget helper.
+
+# 2026-09-24 — Spec191 replay display compatibility failure
+
+- **Scope:** first three-window MiniNDN replay after adding window/PTS fields to
+  the renderer evidence.
+- **Symptom:** the campaign failed before the first result was displayed with
+  `DISPLAY_FAILED: 'str' object has no attribute 'removeprefix'`.
+- **Root cause:** the experiment host's pinned Python runtime is 3.8, while
+  the new evidence parser used the Python 3.9 `str.removeprefix` API.
+- **Fix:** use a compatible length-based prefix slice and retain explicit
+  window-id validation. The failed run is `/tmp/spec191-sampling-replay3b.*`;
+  it is not counted as a nominal pass.
+- **Lesson:** every launcher/renderer change must run under the pinned host
+  Python version before a MiniNDN result is accepted.
+
+# 2026-09-24 — Spec191 60-window response preparation exhaustion
+
+- **Scope:** first real 60-window one-second MiniNDN replay
+  `/tmp/spec191-full-replay60.1790227114`.
+- **Symptom:** windows 0–13 completed end to end; on window 14 the three
+  source frames, compute fetch, CPU YOLO worker, and producer-owned segmented
+  result all succeeded, but `publishFinalResponse` failed with
+  `request-scoped large response requires valid names, binding, and keys`.
+  The Ground Station emitted `SPEC191_TRACKING_TIMEOUT` and the launcher
+  recorded `terminal=false`; no false success was accepted.
+- **Impact:** the current implementation passes bounded three-window replay
+  but does not yet qualify a continuous 60-window campaign. The failure is in
+  repeated response/key binding state, not the five-node topology or source
+  publication.
+- **Next action:** trace request-scoped large-response binding/key lifetime
+  across consecutive collaboration requests, add a focused repeated-response
+  regression, and rerun the bounded long sequence before another 60-window
+  campaign.
+- **Configuration decision:** the 30-second value was the frozen pre-runtime
+  estimate, but the observed CPU/NDN path consumed slightly over 30 seconds at
+  one window. Spec191 now makes a 60-second deadline explicit in the manifest
+  and Ground Station command; this is a documented experiment configuration,
+  not an unrecorded retry or fallback.
+
+# 2026-09-24 — Spec191 oracle modeled the wrong worker lifetime
+
+- **Scope:** the first offline replay of the 60-window archive after adding
+  serialized ByteTrack state, `/tmp/spec191-byte-track60.1790234418`.
+- **Symptom:** the oracle reported `matched=false` from window 4 onward even
+  though the real MiniNDN archive completed 60/60 windows. The mismatch first
+  appeared as a reused local ID and then cascaded through UAV3 results.
+- **Root cause:** the production node starts a fresh Python worker for every
+  window. The verifier incorrectly kept one long-lived `TrackingEngine`, so
+  Ultralytics' process-level `BaseTrack` counter and predictor lifetime did
+  not match the production boundary.
+- **Fix:** recreate the engine for every window, reset the process-level
+  `BaseTrack` counter, restore the run-private session/ByteTrack snapshot, and
+  save the next snapshot only after processing that window. The corrected
+  oracle returned `matched=true` for all 60 windows with zero image-digest
+  differences.
+- **Lesson:** an offline oracle must reproduce worker/process lifetime, not
+  only application-visible JSON state; otherwise it can manufacture both
+  false failures and false passes.
+
+# 2026-09-24 — Spec191 MiniNDN child lost verified Python packages
+
+- **Scope:** second post-fix 60-window nominal launch
+  `/tmp/spec191-postfix60-1790237401`.
+- **Symptom:** the launcher passed Python dependency preflight, but the
+  compute child failed immediately with `ModuleNotFoundError: No module named
+  'cv2'`; Ground Station timed out at window 0 and no success marker was
+  accepted.
+- **Root cause:** the launcher deliberately changed each child `HOME` to a
+  private run directory. Python's user-site search is derived from `HOME`, so
+  the child no longer saw the parent launcher's verified
+  `/home/tianxing/.local/.../site-packages` even though the parent could
+  import `cv2`, `ultralytics`, and `lap`.
+- **Fix:** export the launcher's resolved Python import roots explicitly as
+  child `PYTHONPATH` while retaining private HOME/XDG/keychain isolation; add
+  a runner regression test for the propagated site-packages path.
+- **Lesson:** dependency preflight and runtime environment must be checked in
+  the exact MiniNDN child environment, not only in the launcher process.
+
+# 2026-09-24 — Spec191 long response-loss negative closed
+
+- **Scope:** real five-node MiniNDN `late-response-loss` campaign
+  `/tmp/spec191-late-response60-1790239600`.
+- **Symptom:** the final request's Response was intentionally dropped after
+  the compute worker had produced its result.
+- **Observed boundary:** all 60 compute windows and worker results were
+  produced; only `window-59` emitted
+  `SPEC191_TRACKING_RESPONSE_DROPPED fault=late-response-loss`. Ground
+  Station emitted `SPEC191_TRACKING_TIMEOUT`, the launcher returned 1 and
+  wrote `terminal=false`, and no success marker or process/socket remained.
+- **Lesson:** execution completion and Response delivery are separate
+  lifecycle states; the harness must retain the failure rather than infer
+  success from compute-side output.
+
+# 2026-09-24 — Spec191 false cross-camera association
+
+- **Scope:** review of the one association emitted by the first real 60-window
+  replay and the CPU association smoke.
+- **Symptom:** the event linked a UAV2 road vehicle (`[3206,1599,3304,1653]`)
+  to a UAV3 vehicle parked in the lower parking area
+  (`[636,2067,698,2160]`). The crops do not show the same physical vehicle,
+  so the event could not satisfy SC-003.
+- **Root cause:** `CrossCameraAssociator` declared destination entry gates but
+  never checked them. It also compared both cameras with one normalized lane
+  split, although the upstream route uses camera-specific offsets.
+- **Fix:** persist and enforce route-specific source/destination rectangles and
+  lane thresholds; add focused tests for valid handoff, stale candidates, and
+  destination-gate rejection. The corrected worker reproduces a real dark-red
+  sedan handoff from UAV2 frame 846 (28.200 s) to UAV3 frame 945 (31.500 s),
+  with a real model-generated association and human-reviewed crops.
+- **Lesson:** a same-class/time match is not cross-camera identity evidence;
+  every association must pass both calibrated gates and a retained manual
+  frame review. One-second network sampling can miss a short boundary crossing,
+  so the frame-level audit is recorded separately from the network replay.
+
+# 2026-09-24 — Spec191 root-run Python dependency visibility
+
+- **Scope:** current five-node MiniNDN launcher under `sudo`.
+- **Symptom:** a short route-fix smoke was rejected in preflight with
+  `python:cv2:ModuleNotFoundError`, `python:ultralytics:ModuleNotFoundError`,
+  and `python:lap:ModuleNotFoundError`, although the unprivileged launcher
+  imported all three modules successfully.
+- **Root cause:** `sudo` reset `HOME`/Python user-site discovery; the root
+  process therefore did not see the already-installed CPU runtime.
+- **Fix:** run the same interpreter with the explicit fixed site-packages path
+  (`PYTHONPATH=/home/tianxing/.local/lib/python3.8/site-packages`) and retain
+  that environment in the reproducibility handoff. The corrected full replay
+  then passed; no application or native binary change was required.
+- **Lesson:** a root MiniNDN preflight must validate the exact child Python
+  import environment, not only the unprivileged developer shell.
+
+# 2026-09-24 — Spec191 repeated-fault wall-clock truncation
+
+- **Scope:** first repeated N2–N6 fault set.
+- **Symptom:** 60-second repeated runs ended as `launcher-failed` without a
+  Ground Station `TRACKING_TIMEOUT` marker, despite no success marker and clean
+  sockets.
+- **Root cause:** the launcher wall clock equaled the request timeout; the
+  protocol callback had no time to emit its terminal failure before supervisor
+  cleanup.
+- **Fix:** rerun each case with a 120-second wall clock. The authoritative
+  repeats emitted the expected `SPEC191_TRACKING_TIMEOUT` or
+  `SPEC191_TRACKING_CANCELLED`, all with `terminal=false`, zero success
+  markers, and zero residual sockets.
+- **Lesson:** negative campaigns must budget wall-clock time strictly beyond
+  the request deadline when the expected evidence is an application callback.
