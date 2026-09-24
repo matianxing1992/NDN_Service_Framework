@@ -1517,6 +1517,22 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             --operation->queuedStreamEvents;
           }
           if (operation->options.generation && !operation->acceptGenerationEvent(sourceAttempt, payload)) return;
+          if (operation->options.generation) {
+            bool terminalGeneration = false;
+            {
+              std::lock_guard<std::mutex> lock(operation->mutex);
+              terminalGeneration = operation->conversationTurn.has_value() &&
+                !operation->conversationCommitted &&
+                operation->acceptedTerminalHint != "NONE";
+            }
+            if (terminalGeneration) {
+              // Provider conversation promotion is intentionally gated before
+              // the terminal response.  The accepted terminal token event is
+              // therefore the first requester boundary with a complete
+              // generation prefix from which the checkpoint can be built.
+              commitConversationTurn(operation);
+            }
+          }
           if (operation->cancelled->load()) return;
           NativeInferenceEvent observed;
           observed.requestId = operation->requestId;
@@ -1567,12 +1583,13 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           if (std::chrono::steady_clock::now() >= operation->deadline)
             throw NativeDiError("NATIVE_REQUEST_TIMEOUT", "local", "stream-final",
               "request expired during stream result decoding", operation->requestId, sourceAttempt);
-          bool hasConversationTurn = false;
+          bool needsConversationCommit = false;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            hasConversationTurn = operation->conversationTurn.has_value();
+            needsConversationCommit = operation->conversationTurn.has_value() &&
+              !operation->conversationCommitted;
           }
-          if (hasConversationTurn) {
+          if (needsConversationCommit) {
             commitConversationTurn(operation);
           }
           markTerminal(operation, NativeRequestStatus::Succeeded, nullptr, &result);

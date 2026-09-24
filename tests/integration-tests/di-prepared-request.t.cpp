@@ -2926,6 +2926,7 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
         };
         const bool append = binding.parentContextEpoch != 0;
         const auto nextToken = static_cast<std::int64_t>(binding.parentContextEpoch + 2);
+        std::vector<std::uint8_t> finalPayload;
         if (terminal) {
           if (append) {
             const auto token = std::to_string(nextToken);
@@ -2941,9 +2942,7 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
             {"text", append ? "c" : "ab"}, {"finishHint", "EOS"},
             {"finishReason", "eos"},
             {"generationId", projection.generationContract.generationId}});
-          if (!context.finishStream(ndn::Buffer(final.begin(), final.end()),
-                                    ndn_service_framework::StreamFinishReason::ApplicationComplete))
-            throw std::runtime_error("Spec185 T007 final publication failed");
+          finalPayload.assign(final.begin(), final.end());
         }
         ProviderConversationStateReceiptV1 receipt;
         receipt.conversationId = binding.conversationId;
@@ -3016,7 +3015,13 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
               {"committed", true}});
             context.publish("ndnsf-di-conversation-state-v1", commitTopic,
                             ndn::Buffer(ack.begin(), ack.end()));
-            if (terminal) completedTurns->fetch_add(1, std::memory_order_relaxed);
+            if (terminal) {
+              if (!context.finishStream(
+                    ndn::Buffer(finalPayload.begin(), finalPayload.end()),
+                    ndn_service_framework::StreamFinishReason::ApplicationComplete))
+                throw std::runtime_error("Spec185 T007 final publication failed");
+              completedTurns->fetch_add(1, std::memory_order_relaxed);
+            }
             else if (!context.completeRole())
               throw std::runtime_error("Spec185 T007 non-terminal role completion failed");
             return;
