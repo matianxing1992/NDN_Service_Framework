@@ -13,6 +13,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
@@ -567,10 +568,11 @@ struct ProviderFaceServeCall
 };
 
 std::shared_ptr<NativeModelRunnerFactory>
-makeProviderRunnerFactory(const std::shared_ptr<ProviderMetrics>& metrics)
+makeProviderRunnerFactory(const std::shared_ptr<ProviderMetrics>& metrics,
+                          std::shared_ptr<OnnxRuntimeSessionCache> sessionCache)
 {
   auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
-  registerOnnxRuntimeBackend(*factory);
+  registerOnnxRuntimeBackend(*factory, std::move(sessionCache));
   factory->registerBackend("native-yolo-postprocess",
                            [] (const NativeModelRunnerSpec& spec) {
                              return makeNativeYoloMergeRunner(spec);
@@ -717,6 +719,7 @@ struct Provider::State
 {
   std::shared_ptr<ProviderMetrics> metrics = std::make_shared<ProviderMetrics>();
   std::shared_ptr<ProviderArtifactCache> artifactCache;
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache;
   std::shared_ptr<const ProviderConfig::Impl> config;
   std::shared_ptr<ndn::Face> face;
   bool ownsFace = false;
@@ -1097,6 +1100,7 @@ Provider Provider::fromConfig(const ProviderConfig& config)
     ProviderArtifactCacheConfig{config.m_impl->maxArtifactBytes,
                                 config.m_impl->maxArtifactEntries,
                                 config.m_impl->assemblyJobTimeout});
+  state->sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
   state->asyncRuntime = ndn_service_framework::OperationRuntime::create();
   state->face = std::make_shared<ndn::Face>();
   state->ownsFace = true;
@@ -1184,6 +1188,7 @@ Provider Provider::fromServiceProviderForTest(
     ProviderArtifactCacheConfig{config.m_impl->maxArtifactBytes,
                                 config.m_impl->maxArtifactEntries,
                                 config.m_impl->assemblyJobTimeout});
+  state->sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
   state->asyncRuntime = ndn_service_framework::OperationRuntime::create();
   state->face = std::shared_ptr<ndn::Face>(&face, [] (ndn::Face*) {});
   state->ownsFace = false;
@@ -1639,10 +1644,11 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
     nativeConfig.runnerFactory = m_state->testRunnerFactory
       ? std::make_shared<CountingProviderRunnerFactory>(
           m_state->testRunnerFactory, m_state->metrics)
-      : makeProviderRunnerFactory(m_state->metrics);
+      : makeProviderRunnerFactory(m_state->metrics, m_state->sessionCache);
     nativeConfig.protectedGrantFetcher = m_state->testProtectedGrantFetcher;
 #else
-    nativeConfig.runnerFactory = makeProviderRunnerFactory(m_state->metrics);
+    nativeConfig.runnerFactory = makeProviderRunnerFactory(m_state->metrics,
+                                                            m_state->sessionCache);
 #endif
     installNativeProtectedGrantFactory(nativeConfig);
   }
@@ -2127,6 +2133,8 @@ void Provider::stop() const noexcept
     nativeHost->stop();
   if (m_state->artifactCache)
     m_state->artifactCache->stop();
+  if (m_state->sessionCache)
+    m_state->sessionCache->close();
   requestStopIo();
 }
 
@@ -2148,8 +2156,12 @@ bool Provider::drain(Milliseconds timeout) const
     nativeHost->stop();
   if (m_state->artifactCache)
     m_state->artifactCache->stop();
+  if (m_state->sessionCache)
+    m_state->sessionCache->close();
   const auto drained = waitForIoBarrier(timeout);
   if (!drained)
+    return false;
+  if (m_state->sessionCache && !m_state->sessionCache->drain(timeout))
     return false;
   const auto stopped = stopIo();
   if (stopped)

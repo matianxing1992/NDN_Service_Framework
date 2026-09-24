@@ -15,6 +15,8 @@
 
 namespace ndnsf::di {
 
+class OnnxRuntimeSessionCache;
+
 struct OnnxRuntimeProviderSelection
 {
   std::string requestedProvider;
@@ -160,6 +162,9 @@ class OnnxRuntimeModelRunner final : public NativeModelRunner
 {
 public:
   explicit OnnxRuntimeModelRunner(NativeModelRunnerSpec spec);
+  explicit OnnxRuntimeModelRunner(
+    NativeModelRunnerSpec spec,
+    std::shared_ptr<OnnxRuntimeSessionCache> sessionCache);
   ~OnnxRuntimeModelRunner() final;
 
   std::map<std::string, TensorBundle>
@@ -210,9 +215,17 @@ public:
   releaseConversationState(const NativeConversationStateHandleV1& state) final;
 
 private:
+  class SharedSession;
   class Impl;
   std::optional<std::map<std::string, TensorBundle>>
   runStreamedImpl(const RoleExecutionContext& ctx);
+  void initializeEvidence();
+  void warmup();
+  static std::shared_ptr<void>
+  loadSharedSession(const NativeModelRunnerSpec& spec);
+  OnnxRuntimeModelRunner(NativeModelRunnerSpec spec,
+                         std::shared_ptr<SharedSession> sharedSession,
+                         bool runWarmup);
   NativeModelRunnerSpec m_spec;
   std::optional<ExecutionEvidence> m_evidence;
   std::unique_ptr<Impl> m_impl;
@@ -220,6 +233,11 @@ private:
 
 void
 registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory);
+
+void
+registerOnnxRuntimeBackend(
+  RegistryNativeModelRunnerFactory& factory,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache);
 
 } // namespace ndnsf::di
 

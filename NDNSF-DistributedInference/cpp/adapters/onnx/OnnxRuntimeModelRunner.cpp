@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -210,6 +211,61 @@ materializeCausalPositionInputsV1(
 #include <thread>
 
 namespace ndnsf::di {
+namespace {
+
+std::string
+residentSessionIdentity(const NativeModelRunnerSpec& spec,
+                        const OnnxRuntimeProviderSelection& selection)
+{
+  const auto metadata = [&spec] (std::initializer_list<const char*> keys) {
+    return runnerMetadataValue(spec, keys);
+  };
+  const auto modelDigest = metadata({"assembledModelDigest", "artifactDigest",
+                                     "evidence.artifactDigest", "digest", "sha256"});
+  const auto graphDigest = metadata({"graphDigest", "graph_digest"});
+  const auto initializerDigest = metadata({
+    "canonicalInitializerDigest", "initializerDigest", "initializer_digest"});
+  const auto recipeDigest = metadata({"recipeDigest", "recipe_digest"});
+  const auto backendAbi = metadata({"backendAbi", "backend_abi"});
+  if (spec.role.empty() || modelDigest.empty() || graphDigest.empty() ||
+      initializerDigest.empty() || recipeDigest.empty() || backendAbi.empty()) {
+    return {};
+  }
+  std::ostringstream canonical;
+  const auto frame = [&canonical] (const std::string& value) {
+    canonical << value.size() << ':' << value;
+  };
+  frame("ndnsf-di-onnx-resident-session-v1");
+  for (const auto* value : {&modelDigest, &graphDigest, &initializerDigest,
+                            &recipeDigest, &backendAbi}) {
+    frame(*value);
+  }
+  frame(spec.role);
+  frame(spec.kind);
+  frame(spec.backend);
+  frame(selection.selectedProvider);
+  frame(selection.deviceId);
+  frame(Ort::GetVersionString());
+  for (const auto* key : {"artifactProfileDigest", "adapterDescriptorDigest",
+                          "assemblerDescriptorDigest", "precision", "quantization",
+                          "layout", "statefulModel", "inputNames", "outputNames",
+                          "passthroughTensors", "outputAlias", "outputScope",
+                          "outputBundleScope", "forceOutputBundle", "final",
+                          "stateInputNames", "stateOutputNames",
+                          "stateSuccessorMap", "positionInputPolicy",
+                          "attentionMaskInputName", "positionIdsInputName",
+                          "cachePositionInputName", "securityDomain",
+                          "protectionEpoch"}) {
+    frame(key);
+    frame(metadata({key}));
+  }
+  const auto bytes = canonical.str();
+  return sha256TensorBytes(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+}
+
+} // namespace
+
+
 namespace {
 
 /**
@@ -801,13 +857,36 @@ outputScopeFor(const NativeModelRunnerSpec& spec,
 
 } // namespace
 
+class OnnxRuntimeModelRunner::SharedSession
+{
+public:
+  explicit SharedSession(const NativeModelRunnerSpec& spec)
+    : selection(resolveRuntimeProviderSelection(spec))
+    , sessionOptions(makeSessionOptions(selection, spec))
+    , session(ortEnv(), spec.path.c_str(), sessionOptions)
+  {
+  }
+
+  OnnxRuntimeProviderSelection selection;
+  Ort::SessionOptions sessionOptions;
+  Ort::Session session;
+};
+
 class OnnxRuntimeModelRunner::Impl
 {
 public:
   explicit Impl(const NativeModelRunnerSpec& spec)
-    : selection(resolveRuntimeProviderSelection(spec))
-    , sessionOptions(makeSessionOptions(selection, spec))
-    , session(ortEnv(), spec.path.c_str(), sessionOptions)
+    : Impl(spec, std::make_shared<SharedSession>(spec), {})
+  {
+  }
+
+  Impl(const NativeModelRunnerSpec& spec,
+       std::shared_ptr<SharedSession> shared,
+       OnnxRuntimeSessionCache::Lease sessionLease)
+    : sharedSession(std::move(shared))
+    , selection(sharedSession->selection)
+    , session(sharedSession->session)
+    , sessionLease(std::move(sessionLease))
     , profilingEnabled(!runnerMetadataValue(
         spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty())
   {
@@ -941,9 +1020,10 @@ public:
     }
   }
 
+  std::shared_ptr<SharedSession> sharedSession;
   OnnxRuntimeProviderSelection selection;
-  Ort::SessionOptions sessionOptions;
-  Ort::Session session;
+  Ort::Session& session;
+  OnnxRuntimeSessionCache::Lease sessionLease;
   std::optional<StatefulOnnxIoContractV1> statefulIo;
   std::optional<CausalPositionInputContractV1> causalPositionInputs;
   bool profilingEnabled = false;
@@ -1022,13 +1102,77 @@ public:
   }
 };
 
-OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
+OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
+  NativeModelRunnerSpec spec,
+  std::shared_ptr<SharedSession> sharedSession,
+  bool runWarmup)
   : m_spec(std::move(spec))
 {
   if (m_spec.path.empty()) {
     throw std::invalid_argument("ONNX Runtime runner requires model path");
   }
-  m_impl = std::make_unique<Impl>(m_spec);
+  m_impl = sharedSession
+    ? std::make_unique<Impl>(m_spec, std::move(sharedSession),
+                             OnnxRuntimeSessionCache::Lease{})
+    : std::make_unique<Impl>(m_spec);
+  initializeEvidence();
+  if (runWarmup) {
+    warmup();
+  }
+}
+
+OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
+  : OnnxRuntimeModelRunner(std::move(spec), nullptr, true)
+{
+}
+
+OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
+  NativeModelRunnerSpec spec,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache)
+  : m_spec(std::move(spec))
+{
+  if (m_spec.path.empty()) {
+    throw std::invalid_argument("ONNX Runtime runner requires model path");
+  }
+  const auto selection = resolveRuntimeProviderSelection(m_spec);
+  const bool residentRequested = runnerMetadataBool(
+    m_spec, {"residentSession", "resident_session"});
+  const bool protectedBacking =
+    m_spec.metadata.count("encryptedArtifactPath") != 0 ||
+    runnerMetadataBool(m_spec, {"protectedRuntime", "protected_runtime"});
+  const bool profilingRequested = !runnerMetadataValue(
+    m_spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty();
+  const auto identity = residentRequested && !protectedBacking &&
+    !profilingRequested && selection.selectedProvider == "cpu"
+      ? residentSessionIdentity(m_spec, selection) : std::string{};
+  if (!sessionCache || identity.empty()) {
+    m_impl = std::make_unique<Impl>(m_spec);
+    initializeEvidence();
+    warmup();
+    return;
+  }
+  auto lease = sessionCache->acquire(identity, [spec = m_spec] {
+    return loadSharedSession(spec);
+  });
+  const auto sharedValue = lease.value();
+  auto sharedSession = std::static_pointer_cast<SharedSession>(sharedValue);
+  if (!sharedSession) {
+    throw std::runtime_error("DI_ONNX_SESSION_CACHE_VALUE_INVALID");
+  }
+  m_impl = std::make_unique<Impl>(m_spec, std::move(sharedSession),
+                                  std::move(lease));
+  initializeEvidence();
+  if (m_evidence) {
+    // The load owner's warmup is complete before acquire publishes the value;
+    // this wrapper has its own evidence object but does not repeat warmup.
+    m_evidence->warmupCompleted = true;
+    m_evidence->validate();
+  }
+}
+
+void
+OnnxRuntimeModelRunner::initializeEvidence()
+{
   if (m_spec.metadata.count("evidence.providerBootId") != 0) {
     const bool isCuda = m_impl->selection.selectedProvider == "cuda";
     m_evidence = executionEvidenceFromRunnerSpec(
@@ -1044,7 +1188,11 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
       m_evidence->gpuIdentitySource = "cuda-runtime-pci+driver-uuid";
     }
   }
+}
 
+void
+OnnxRuntimeModelRunner::warmup()
+{
   // Session construction proves model load, but not executable readiness.
   // Execute one shape-valid zero input through the real selected provider so
   // DATA_DRIVEN_V2 cannot publish READY for an unavailable CUDA graph.
@@ -1121,6 +1269,15 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
     m_evidence->warmupCompleted = true;
     m_evidence->validate();
   }
+}
+
+std::shared_ptr<void>
+OnnxRuntimeModelRunner::loadSharedSession(const NativeModelRunnerSpec& spec)
+{
+  auto sharedSession = std::make_shared<SharedSession>(spec);
+  OnnxRuntimeModelRunner warmupRunner(spec, sharedSession, false);
+  warmupRunner.warmup();
+  return sharedSession;
 }
 
 OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
@@ -1940,8 +2097,22 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
 void
 registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory)
 {
-  const auto creator = [] (const NativeModelRunnerSpec& spec) {
-    return std::make_shared<OnnxRuntimeModelRunner>(spec);
+  registerOnnxRuntimeBackend(factory, nullptr);
+}
+
+void
+registerOnnxRuntimeBackend(
+  RegistryNativeModelRunnerFactory& factory,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache)
+{
+  const auto creator = [sessionCache = std::move(sessionCache)] (
+                         const NativeModelRunnerSpec& spec) {
+    if (sessionCache) {
+      // Keep eviction owner-local and wakeable at the next runner admission;
+      // no background thread is needed for the bounded one-slot cache.
+      sessionCache->evictIdle();
+    }
+    return std::make_shared<OnnxRuntimeModelRunner>(spec, sessionCache);
   };
   // Keep the public adapter backend names distinct from the internal
   // execution-provider selection stored in runner metadata.
@@ -2306,6 +2477,13 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
     "C++ development package and build with NDNSF_DI_ENABLE_ONNXRUNTIME_CPP");
 }
 
+OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
+  NativeModelRunnerSpec spec,
+  std::shared_ptr<OnnxRuntimeSessionCache>)
+  : OnnxRuntimeModelRunner(std::move(spec))
+{
+}
+
 OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
 
 void
@@ -2415,8 +2593,17 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext&)
 void
 registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory)
 {
-  const auto creator = [] (const NativeModelRunnerSpec& spec) {
-    return std::make_shared<OnnxRuntimeModelRunner>(spec);
+  registerOnnxRuntimeBackend(factory, nullptr);
+}
+
+void
+registerOnnxRuntimeBackend(
+  RegistryNativeModelRunnerFactory& factory,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache)
+{
+  const auto creator = [sessionCache = std::move(sessionCache)] (
+                         const NativeModelRunnerSpec& spec) {
+    return std::make_shared<OnnxRuntimeModelRunner>(spec, sessionCache);
   };
   // Keep the public adapter backend names distinct from the internal
   // execution-provider selection stored in runner metadata.

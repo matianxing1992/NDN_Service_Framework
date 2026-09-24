@@ -1,5 +1,24 @@
 # Spec 设计变更记录
 
+## Spec190 T007 Provider-owned resident CPU session owner — 2026-09-24
+
+- **Status**: `PARTIAL`；实现了 DI Provider 内部的 bounded
+  `OnnxRuntimeSessionCache`，并将不可变 ORT loaded session 与 fresh request
+  wrapper 分离。只有显式 `residentSession=true`、CPU、完整 digest/contract
+  identity 且非 protected/profiling backing 才可命中；原单参数 runner 入口和
+  其他 profile 行为保持不变。
+- **Owner / principles**: DI Provider/ONNX adapter 拥有 session lease、drain 和
+  request-local evidence/KV 状态；Core/Selection/Repo/授权 wire 不变，遵守
+  G1–G6、D1–D4。关闭时禁止 cold fallback，active lease 保证 shared session
+  生命周期直到释放。
+- **Delta**: 新增内部 `OnnxRuntimeSessionCache`、cache-enabled runner factory
+  overload、Provider stop/drain 接线和 admission-time lazy idle sweep；修复无限 deadline waiter 不应使用
+  `wait_until(time_point::max())` 的宿主相关自旋边界。未新增 public network API、
+  模型字节传输或授权旁路。
+- **Evidence / boundary**: [B190-49](../specs/190-multiturn-latency/evidence/b190-49.md)。
+  native tiny-ORT 5/5、protected reuse 7/7、Provider assembly 21/21 通过；真实
+  Qwen 两节点、TSan、授权失效和最终性能资格仍未验证，当前/目标 PDF 不刷新。
+
 ## Spec190 B190-32 partial publication repair — 2026-09-23
 
 - **Status**: `PARTIAL`；增加原生内存态 `missingDataNames` repair hint，并在
