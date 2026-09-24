@@ -993,6 +993,7 @@ def env_for(home: Path, node: str) -> dict[str, str]:
                 "NDNSF_COLLAB_LARGE_FETCH_TIMING",
                 "NDNSF_SELECTION_STATUS_TRACE",
                 "SPEC175_TRACE",
+                "NDNSF_PHASE_TIMING",
                 "NDNSF_TIMELINE_TRACE",
                 "NDNSF_TIMELINE_TRACE_SAMPLE_RATE",
                 "NDNSF_STREAM_PACKET_TIMELINE_TRACE"):
@@ -1279,6 +1280,73 @@ def provider_log_delta(offsets: dict) -> dict[Path, str]:
         complete = raw[:raw.rfind(b"\n") + 1] if b"\n" in raw else b""
         result[path] = complete.decode("utf-8", errors="strict")
     return result
+
+
+def _structured_marker_fields(line: str, marker: str) -> dict[str, str] | None:
+    """Parse one whitespace-delimited native evidence marker."""
+    _, found, payload = line.partition(marker)
+    if not found:
+        return None
+    fields = {}
+    for token in payload.split():
+        key, equal, value = token.partition("=")
+        if not equal or not key or not value or key in fields:
+            return None
+        fields[key] = value
+    return fields
+
+
+def phase_timing_summary(text: str) -> dict:
+    """Summarize C++ monotonic phase records without replacing raw logs."""
+    observations = []
+    for line in text.splitlines():
+        fields = _structured_marker_fields(line, "NDNSF_PHASE_TIMING")
+        if not fields:
+            continue
+        required = ("requestId", "phase", "steady_us", "timestamp_us")
+        if any(name not in fields for name in required):
+            continue
+        try:
+            steady = int(fields["steady_us"])
+            wall = int(fields["timestamp_us"])
+        except ValueError:
+            continue
+        observations.append({"requestId": fields["requestId"],
+                             "phase": fields["phase"],
+                             "steadyUs": steady, "wallUs": wall,
+                             "tokenIndex": int(fields["tokenIndex"])
+                             if fields.get("tokenIndex", "").isdigit() else None})
+    by_request = {}
+    for observation in observations:
+        entry = by_request.setdefault(observation["requestId"], {
+            "phaseTimesUs": {}, "phaseWallUs": {}, "tokenReceiveIntervalsUs": []})
+        entry["phaseTimesUs"].setdefault(observation["phase"], []).append(
+            observation["steadyUs"])
+        entry["phaseWallUs"].setdefault(observation["phase"], []).append(
+            observation["wallUs"])
+    for entry in by_request.values():
+        received = entry["phaseTimesUs"].get("tokenReceived", [])
+        entry["tokenReceiveIntervalsUs"] = [right - left for left, right in zip(received, received[1:])]
+        submit = entry["phaseTimesUs"].get("submit", [])
+        terminal = entry["phaseTimesUs"].get("terminal", [])
+        checkpoint = entry["phaseTimesUs"].get("checkpointCommitted", [])
+        if submit and received:
+            entry["ttftUs"] = received[0] - submit[0]
+        if submit and terminal:
+            entry["submitToTerminalUs"] = terminal[0] - submit[0]
+        if checkpoint and terminal:
+            entry["checkpointToTerminalUs"] = terminal[0] - checkpoint[0]
+    return {"recordCount": len(observations), "requests": by_request}
+
+
+def onnx_session_load_markers(text: str) -> list[dict[str, str]]:
+    """Return Provider-owned runner load evidence; raw provider logs remain authoritative."""
+    markers = []
+    for line in text.splitlines():
+        fields = _structured_marker_fields(line, "NDNSF_DI_ONNX_SESSION_LOAD")
+        if fields:
+            markers.append(fields)
+    return markers
 
 
 def manifest_resident_session_values(payload) -> list[str]:
@@ -2378,6 +2446,8 @@ def main(argv=None, *, _supervised=False) -> int:
                     f"{shlex.quote(str(config_path))}"), launch_env
 
         revocation_record = None
+        provider_measurement = {}
+        requester_measurement = {}
         requester_config = requester_dir / "config.json"
         if args.revoke_after_first_round:
             # Keep the production requester and continuation contract intact,
@@ -2420,6 +2490,11 @@ def main(argv=None, *, _supervised=False) -> int:
             process_barrier = wait_for_provider_round_barrier(
                 turn_texts[0], provider_offsets, placement, tail_role, round_deadline)
             first_provider_delta = provider_log_delta(provider_offsets)
+            requester_measurement = phase_timing_summary(first_text)
+            provider_measurement = {
+                str(path): {"phaseTiming": phase_timing_summary(text),
+                            "onnxSessionLoads": onnx_session_load_markers(text)}
+                for path, text in first_provider_delta.items()}
             resident_manifest_values = []
             for directory in provider_dirs:
                 manifest = json.loads((directory / "manifest.json").read_text())
@@ -2507,6 +2582,7 @@ def main(argv=None, *, _supervised=False) -> int:
                               "log": str(run_root / "requester-0.log"),
                               "output": str(first_output),
                               "providerFinalization": process_barrier,
+                              "phaseTiming": phase_timing_summary(turn_texts[0]),
                               **validate_native_output(first_output)}]
             round_records.append({"round": "revoked-continuation",
                                   "returncode": continuation_proc.returncode,
@@ -2550,6 +2626,12 @@ def main(argv=None, *, _supervised=False) -> int:
                 (run_root / f"requester-{round_index}.log").write_text(turn_text)
             process_barrier = wait_for_provider_round_barrier(
                 turn_texts[-1], provider_offsets, placement, tail_role, round_deadline)
+            provider_delta = provider_log_delta(provider_offsets)
+            requester_measurement = phase_timing_summary(first_text)
+            provider_measurement = {
+                str(path): {"phaseTiming": phase_timing_summary(text),
+                            "onnxSessionLoads": onnx_session_load_markers(text)}
+                for path, text in provider_delta.items()}
             round_records = []
             for round_index in range(args.rounds):
                 output_path = requester_dir / f"output-{round_index}.bin"
@@ -2559,6 +2641,7 @@ def main(argv=None, *, _supervised=False) -> int:
                                       "output": str(output_path),
                                       "providerFinalization": process_barrier if round_index == args.rounds - 1 else {
                                           "observation": "covered-by-final-process-barrier"},
+                                      "phaseTiming": phase_timing_summary(turn_text),
                                       **output_summary})
         if args.negative_parent:
             cfg = json.loads((requester_dir / "config.json").read_text())
@@ -2590,6 +2673,8 @@ def main(argv=None, *, _supervised=False) -> int:
                   "largeDataImsLimit": large_data_ims,
                   "runtimeBudgets": runtime_budgets,
                   "rounds": round_records,
+                  "requesterPhaseTiming": requester_measurement,
+                  "providerMeasurement": provider_measurement,
                   "cppOracle": oracle_record,
                   "status": ("PASS" if revocation_record is not None and
                              oracle_record["status"] == "PASS"

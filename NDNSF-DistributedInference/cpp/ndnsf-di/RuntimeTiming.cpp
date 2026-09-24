@@ -206,7 +206,7 @@ validateRuntimePhaseSequence(const std::vector<RuntimePhaseObservation>& observa
     {"ortRunEnd", 170}, {"roleExecutionEnd", 180},
     {"stageOutputPublishBegin", 190}, {"stageOutputPublishEnd", 200},
     {"tokenReceived", 210}, {"tokenDelivered", 215}, {"tokenEmitted", 220},
-    {"checkpointCommitted", 230}, {"turnReady", 240},
+    {"checkpointCommitted", 230}, {"turnReady", 240}, {"terminal", 245},
     {"closeBegin", 250}, {"drainEnd", 260},
   };
   std::map<std::string, std::size_t> open;
@@ -252,6 +252,7 @@ validateRuntimePhaseSequence(const std::vector<RuntimePhaseObservation>& observa
       successorContextEpoch = observation.contextEpoch;
     }
     else if (observation.phase == "turnReady" ||
+             observation.phase == "terminal" ||
              observation.phase == "closeBegin" ||
              observation.phase == "drainEnd") {
       if (checkpointSeen && observation.contextEpoch != successorContextEpoch)

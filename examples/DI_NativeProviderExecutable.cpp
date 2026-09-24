@@ -15,6 +15,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
@@ -1428,7 +1429,11 @@ main(int argc, char** argv)
     }
 
     auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
-    registerOnnxRuntimeBackend(*factory);
+    // The standalone Provider creates one runner per authenticated Selection.
+    // Keep the ORT session cache owner-local but shared by every runner made
+    // by this Provider, so resident sessions can be reused across turns.
+    auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+    registerOnnxRuntimeBackend(*factory, sessionCache);
     factory->registerBackend(
       "native-yolo-postprocess",
       [] (const NativeModelRunnerSpec& spec) {
@@ -1854,9 +1859,14 @@ main(int argc, char** argv)
             std::map<std::string, bool> residentSessionByRole;
             for (const auto& item : metadataSpecs) {
               const auto found = item.second.metadata.find("residentSession");
-              residentSessionByRole[item.first] =
+              const bool resident =
                 found != item.second.metadata.end() &&
                 (found->second == "true" || found->second == "1");
+              residentSessionByRole[item.first] = resident;
+              std::ostringstream record;
+              record << "NDNSF_DI_RESIDENT_POLICY role=" << item.first
+                     << " manifestResident=" << (resident ? "true" : "false");
+              logRuntimeEvidence(record.str());
             }
             auto materializedSpecs = metadataSpecs;
             auto runners = orderedSpecs(plan, materializedSpecs, allowedRoles);
@@ -1980,12 +1990,34 @@ main(int argc, char** argv)
                   }
                 }
                 const auto resident = residentSessionByRole.find(spec.role);
-                if (resident != residentSessionByRole.end() && resident->second)
+                const bool residentRequested =
+                  resident != residentSessionByRole.end() && resident->second;
+                if (residentRequested)
                   spec.metadata["residentSession"] = "true";
+                {
+                  std::ostringstream record;
+                  record << "NDNSF_DI_RESIDENT_BIND role=" << spec.role
+                         << " manifestResident="
+                         << (residentRequested ? "true" : "false");
+                  logRuntimeEvidence(record.str());
+                }
                 logProviderPreparationProgress(projection, "FACTORY_BIND_BEGIN",
                                                "runner-context");
                 bindNativeRunnerPreparationContext(spec, projection,
                   {assemblyProviderIdentity, providerBootId, providerStartedAtMs, assemblyCacheDir});
+                {
+                  const auto boundResident = spec.metadata.find("residentSession");
+                  const auto boundProfile = spec.metadata.find("providerProfilePrefix");
+                  std::ostringstream record;
+                  record << "NDNSF_DI_RESIDENT_AFTER_BIND role=" << spec.role
+                         << " resident="
+                         << (boundResident != spec.metadata.end() &&
+                             (boundResident->second == "true" || boundResident->second == "1")
+                               ? "true" : "false")
+                         << " profile="
+                         << (boundProfile != spec.metadata.end() ? "true" : "false");
+                  logRuntimeEvidence(record.str());
+                }
                 logProviderPreparationProgress(projection, "FACTORY_DONE", "runner-spec");
                 return spec;
               };

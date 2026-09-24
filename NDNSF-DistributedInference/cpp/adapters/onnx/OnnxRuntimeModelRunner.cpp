@@ -58,6 +58,27 @@ hasProvider(const std::vector<std::string>& providers, const std::string& name)
   return std::find(providers.begin(), providers.end(), name) != providers.end();
 }
 
+void
+logOnnxSessionLoad(const NativeModelRunnerSpec& spec,
+                   const OnnxRuntimeProviderSelection& selection,
+                   bool resident,
+                   bool cacheHit,
+                   std::uint64_t loads,
+                   std::uint64_t hits,
+                   std::uint64_t residentEntries)
+{
+  std::ostringstream record;
+  record << "NDNSF_DI_ONNX_SESSION_LOAD"
+         << " role=" << spec.role
+         << " provider=" << selection.selectedProvider
+         << " resident=" << (resident ? "true" : "false")
+         << " cacheHit=" << (cacheHit ? "true" : "false")
+         << " loads=" << loads
+         << " hits=" << hits
+         << " residentEntries=" << residentEntries;
+  logRuntimeEvidence(record.str());
+}
+
 } // namespace
 
 OnnxRuntimeProviderSelection
@@ -1149,6 +1170,7 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
     m_impl = std::make_unique<Impl>(m_spec);
     initializeEvidence();
     warmup();
+    logOnnxSessionLoad(m_spec, selection, false, false, 1, 0, 0);
     return;
   }
   auto lease = sessionCache->acquire(identity, [spec = m_spec] {
@@ -1159,6 +1181,7 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   if (!sharedSession) {
     throw std::runtime_error("DI_ONNX_SESSION_CACHE_VALUE_INVALID");
   }
+  const bool cacheHit = lease.cacheHit();
   m_impl = std::make_unique<Impl>(m_spec, std::move(sharedSession),
                                   std::move(lease));
   initializeEvidence();
@@ -1168,6 +1191,9 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
     m_evidence->warmupCompleted = true;
     m_evidence->validate();
   }
+  const auto counters = sessionCache->counters();
+  logOnnxSessionLoad(m_spec, selection, true, cacheHit,
+                     counters.loads, counters.hits, counters.residentEntries);
 }
 
 void

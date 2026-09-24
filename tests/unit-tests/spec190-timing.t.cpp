@@ -220,6 +220,31 @@ BOOST_AUTO_TEST_CASE(ValidatesContextEpochTransitionAtCheckpoint)
   BOOST_CHECK(!validateRuntimePhaseSequence({*submit, *checkpoint, badReady}));
 }
 
+BOOST_AUTO_TEST_CASE(ValidatesTerminalObservationAfterConversationReady)
+{
+  const auto checkpoint = parseRuntimePhaseObservation(
+    "NDNSF_PHASE_TIMING component=di-cli executionRole=requester phase=checkpointCommitted "
+    "steady_us=20 timestamp_us=20 requestId=req attempt=1 providerBootId=none "
+    "sessionId=none conversationId=conv inferenceEpoch=1 contextEpoch=1");
+  const auto ready = parseRuntimePhaseObservation(
+    "NDNSF_PHASE_TIMING component=di-cli executionRole=requester phase=turnReady "
+    "steady_us=30 timestamp_us=30 requestId=req attempt=1 providerBootId=none "
+    "sessionId=none conversationId=conv inferenceEpoch=1 contextEpoch=1");
+  const auto terminal = parseRuntimePhaseObservation(
+    "NDNSF_PHASE_TIMING component=di-cli executionRole=requester phase=terminal "
+    "steady_us=31 timestamp_us=31 requestId=req attempt=1 providerBootId=none "
+    "sessionId=none conversationId=conv inferenceEpoch=1 contextEpoch=1");
+  BOOST_REQUIRE(checkpoint);
+  BOOST_REQUIRE(ready);
+  BOOST_REQUIRE(terminal);
+  BOOST_CHECK(validateRuntimePhaseSequence({*checkpoint, *ready, *terminal}));
+
+  auto duplicate = *terminal;
+  duplicate.steadyUs = 32;
+  duplicate.wallUs = 32;
+  BOOST_CHECK(!validateRuntimePhaseSequence({*checkpoint, *ready, *terminal, duplicate}));
+}
+
 BOOST_AUTO_TEST_CASE(ValidatesInterleavedProviderAckIdentity)
 {
   const auto receivedA = parseRuntimePhaseObservation(

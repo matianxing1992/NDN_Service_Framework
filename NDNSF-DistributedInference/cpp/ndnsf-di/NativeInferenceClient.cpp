@@ -465,6 +465,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
   bool conversationCommitted = false;
   bool deferConversationCleanup = false;
   std::function<void()> conversationTerminal;
+  std::uint64_t terminalAttempt = 0;
   bool won = false;
   {
     std::lock_guard<std::mutex> lock(operation->mutex);
@@ -502,6 +503,7 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
     cancelCore = operation->coreActive;
     conversations = operation->conversations;
     conversationTurn = operation->conversationTurn;
+    terminalAttempt = operation->attempt;
     conversationCommitted = operation->conversationCommitted;
     if (operation->options.conversation && operation->options.conversation->onTerminal)
       conversationTerminal = operation->options.conversation->onTerminal;
@@ -557,6 +559,21 @@ markTerminal(const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
          {"inferenceEpoch", std::to_string(conversationTurn->attempt)},
          {"contextEpoch", std::to_string(conversationTurn->successorContextEpoch)}});
     }
+  }
+  {
+    const auto contextEpoch = conversationTurn
+      ? (terminal == NativeRequestStatus::Succeeded
+          ? std::to_string(conversationTurn->successorContextEpoch)
+          : std::to_string(conversationTurn->parent.parentContextEpoch))
+      : std::string("none");
+    logRuntimePhase(
+      "di-cli", "terminal", operation->requestId,
+      std::to_string(terminalAttempt),
+      {{"executionRole", "requester"},
+       {"conversationId", conversationTurn
+          ? conversationTurn->parent.conversationId : std::string("none")},
+       {"inferenceEpoch", std::to_string(terminalAttempt)},
+       {"contextEpoch", contextEpoch}});
   }
   // Publish the terminal frame before completing the Core state. Core wakes a
   // pending reader during complete/fail; publishing first prevents an EOF
