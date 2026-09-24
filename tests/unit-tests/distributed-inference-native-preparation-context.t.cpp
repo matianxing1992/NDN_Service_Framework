@@ -50,6 +50,21 @@ BOOST_AUTO_TEST_CASE(NativePreparationContextPreservesPlanFallbackForPathlessRol
   BOOST_CHECK(spec.path.empty());
 }
 
+BOOST_AUTO_TEST_CASE(NativePreparationContextLeavesResidentSessionsUnprofiled)
+{
+  NativeSelectionProjectionV3 projection;
+  projection.planDigest = "sha256:" + std::string(64, 'a');
+  NativeModelRunnerSpec spec;
+  spec.metadata["residentSession"] = "true";
+  spec.metadata["providerProfilePrefix"] = "stale-profile";
+  spec.metadata["profileAfterRequest"] = "true";
+  bindNativeRunnerPreparationContext(spec, projection,
+    {"/provider/resident", "boot-1", 1234, "/private/cache"});
+  BOOST_CHECK(spec.metadata.find("providerProfilePrefix") == spec.metadata.end());
+  BOOST_CHECK(spec.metadata.find("profileAfterRequest") == spec.metadata.end());
+  BOOST_CHECK_EQUAL(spec.metadata.at("residentSession"), "true");
+}
+
 BOOST_AUTO_TEST_CASE(NativePreparationContextClearsAndBindsGenerationMetadata)
 {
   NativeSelectionProjectionV3 projection;

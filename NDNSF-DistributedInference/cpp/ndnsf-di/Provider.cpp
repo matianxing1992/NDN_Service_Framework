@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
@@ -602,6 +603,28 @@ loadProviderPlan(const std::filesystem::path& planPath, const std::string& servi
   if (plan.serviceName != serviceName)
     invalid("plan service does not match Provider service");
   return plan;
+}
+
+std::map<std::string, bool>
+loadResidentSessionRoles(const std::filesystem::path& manifestPath,
+                         const std::string& serviceName)
+{
+  std::map<std::string, bool> result;
+  if (manifestPath.empty())
+    return result;
+  std::ifstream input(manifestPath);
+  if (!input)
+    invalid("manifest file cannot be opened");
+  const auto specs = nativeModelRunnerSpecsByRoleForServiceManifestFromJson(
+    input, serviceName);
+  for (const auto& item : specs) {
+    const auto found = item.second.metadata.find("residentSession");
+    if (found != item.second.metadata.end() &&
+        (found->second == "true" || found->second == "1")) {
+      result.emplace(item.first, true);
+    }
+  }
+  return result;
 }
 
 } // namespace
@@ -1615,6 +1638,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
     throw DiError("INVALID_ARGUMENT", "local", "provider",
                   "Provider service does not match its validated configuration");
   NativeProviderHandlerConfig nativeConfig;
+  std::map<std::string, bool> residentSessionByRole;
   try {
     nativeConfig.plan = loadProviderPlan(m_state->config->planPath, canonicalServiceName);
     if (nativeConfig.plan.modelName.empty())
@@ -1622,6 +1646,8 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
     nativeConfig.executionPolicy = nativeConfig.plan.executionPolicy;
     if (!m_state->config->planPath.empty())
       nativeConfig.planDigest = fileDigest(m_state->config->planPath);
+    residentSessionByRole = loadResidentSessionRoles(
+      m_state->config->manifestPath, canonicalServiceName);
     nativeConfig.localProviderName = ndn::Name(m_state->config->providerName).toUri();
     std::shared_ptr<ndn_service_framework::ServiceProvider> serviceProvider;
     {
@@ -1672,7 +1698,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
     [cacheDir = config->artifactCacheDir.string(), providerIdentity,
      workerLocation, providerBootId, assemblyTimeout = config->assemblyJobTimeout,
      providerCert, keyChain, expectedManifestDigest, providerStartedAtMs,
-     artifactCache,
+     artifactCache, residentSessionByRole,
      metrics = m_state->metrics] (
       ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
       const NativeSelectionProjectionV3& projection,
@@ -1910,6 +1936,9 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
       }
       if (projection.assembly.mergeKind == "NATIVE_POSTPROCESS")
         metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
+      const auto resident = residentSessionByRole.find(spec.role);
+      if (resident != residentSessionByRole.end() && resident->second)
+        spec.metadata["residentSession"] = "true";
       logProviderPreparationProgress(projection, "FACTORY_DONE", "runner-spec");
       bindNativeRunnerPreparationContext(spec, projection,
         {providerIdentity, providerBootId, providerStartedAtMs, cacheDir});

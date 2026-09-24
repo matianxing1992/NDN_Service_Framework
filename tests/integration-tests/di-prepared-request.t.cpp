@@ -17,6 +17,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
@@ -1075,47 +1076,109 @@ preparedProviderConfig(const std::string& serviceName,
   return ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
 }
 
-std::shared_ptr<NativeModelRunnerFactory>
-makePreparedServedProviderRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs)
+ExecutionEvidence
+makeResidentServedProviderEvidence(const NativeModelRunnerSpec& spec)
 {
-  auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
-  const auto creator = [runs] (const NativeModelRunnerSpec& spec) {
-    const bool nativeMerge = spec.backend == "native-yolo-postprocess";
-    ExecutionEvidence evidence;
-    evidence.providerName = spec.metadata.at("provider");
-    evidence.providerBootId = spec.metadata.at("boot");
-    evidence.evidenceEpoch = 1;
-    evidence.runnerKind = nativeMerge ? RunnerKind::NativeYoloPostprocess
-                                      : RunnerKind::OnnxRuntimeCpu;
-    evidence.realCompute = !nativeMerge;
-    evidence.deviceKind = "cpu";
-    evidence.deviceId = "0";
-    evidence.deviceIds = {"0"};
-    evidence.runtimeVersion = "spec185-prepared-served-provider";
-    evidence.modelDigest = spec.metadata.at("artifact");
-    evidence.planDigest = spec.metadata.at("plan");
-    evidence.artifactDigests[spec.role] = spec.metadata.at("artifact");
-    evidence.roles = {spec.role};
-    evidence.loadCompleted = !nativeMerge;
-    evidence.warmupCompleted = !nativeMerge;
-    evidence.createdAtMs = 1;
-    evidence.validate();
-    return makeNativeModelRunner(
-      [runs] (const RoleExecutionContext&) {
-        runs->fetch_add(1, std::memory_order_relaxed);
-        const std::string response = "spec185-provider-response";
-        return std::map<std::string, TensorBundle>{
-          {"final-response", TensorBundle{
-            "final-response",
-            std::vector<std::uint8_t>(response.begin(), response.end()),
-            1, response.size()}}};
-      },
-      std::move(evidence));
+  const bool nativeMerge = spec.backend == "native-yolo-postprocess";
+  ExecutionEvidence evidence;
+  evidence.providerName = spec.metadata.at("provider");
+  evidence.providerBootId = spec.metadata.at("boot");
+  evidence.evidenceEpoch = 1;
+  evidence.runnerKind = nativeMerge ? RunnerKind::NativeYoloPostprocess
+                                    : RunnerKind::OnnxRuntimeCpu;
+  evidence.realCompute = !nativeMerge;
+  evidence.deviceKind = "cpu";
+  evidence.deviceId = "0";
+  evidence.deviceIds = {"0"};
+  evidence.runtimeVersion = "spec190-served-provider-resident-gate";
+  evidence.modelDigest = spec.metadata.at("artifact");
+  evidence.planDigest = spec.metadata.at("plan");
+  evidence.artifactDigests[spec.role] = spec.metadata.at("artifact");
+  evidence.roles = {spec.role};
+  evidence.loadCompleted = !nativeMerge;
+  evidence.warmupCompleted = !nativeMerge;
+  evidence.createdAtMs = 1;
+  evidence.validate();
+  return evidence;
+}
+
+class ResidentServedProviderRunner final : public NativeModelRunner
+{
+public:
+  ResidentServedProviderRunner(
+    OnnxRuntimeSessionCache::Lease lease,
+    ExecutionEvidence evidence,
+    std::shared_ptr<std::atomic<unsigned>> runs)
+    : m_lease(std::move(lease))
+    , m_evidence(std::move(evidence))
+    , m_runs(std::move(runs))
+  {
+    if (!m_lease)
+      throw std::invalid_argument("resident served-provider test lease is empty");
+  }
+
+  std::map<std::string, TensorBundle>
+  run(const RoleExecutionContext&) final
+  {
+    m_runs->fetch_add(1, std::memory_order_relaxed);
+    const std::string response = "spec185-provider-response";
+    return {{"final-response", TensorBundle{
+      "final-response",
+      std::vector<std::uint8_t>(response.begin(), response.end()),
+      1, response.size()}}};
+  }
+
+  const std::optional<ExecutionEvidence>&
+  executionEvidence() const final
+  {
+    return m_evidence;
+  }
+
+  std::optional<ExecutionEvidence>
+  executionEvidenceSnapshot() const final
+  {
+    return m_evidence;
+  }
+
+private:
+  OnnxRuntimeSessionCache::Lease m_lease;
+  std::optional<ExecutionEvidence> m_evidence;
+  std::shared_ptr<std::atomic<unsigned>> m_runs;
+};
+
+std::shared_ptr<NativeModelRunnerFactory>
+makeResidentServedProviderRunnerFactory(
+  std::shared_ptr<OnnxRuntimeSessionCache> cache,
+  std::shared_ptr<std::atomic<unsigned>> runs)
+{
+  class Factory final : public NativeModelRunnerFactory
+  {
+  public:
+    Factory(std::shared_ptr<OnnxRuntimeSessionCache> cache,
+            std::shared_ptr<std::atomic<unsigned>> runs)
+      : m_cache(std::move(cache)), m_runs(std::move(runs))
+    {
+    }
+
+    std::shared_ptr<NativeModelRunner>
+    create(const NativeModelRunnerSpec& spec) const final
+    {
+      const auto identity = std::string("spec190-resident:") + spec.role + ":" +
+        spec.backend + ":" + spec.metadata.at("artifact") + ":" +
+        spec.metadata.at("recipeDigest");
+      auto lease = m_cache->acquire(identity, [] {
+        return std::make_shared<std::uint8_t>(0);
+      });
+      return std::make_shared<ResidentServedProviderRunner>(
+        std::move(lease), makeResidentServedProviderEvidence(spec), m_runs);
+    }
+
+  private:
+    std::shared_ptr<OnnxRuntimeSessionCache> m_cache;
+    std::shared_ptr<std::atomic<unsigned>> m_runs;
   };
-  factory->registerBackend("onnxruntime-cpu", creator);
-  factory->registerBackend("native-yolo-postprocess", creator);
-  factory->freeze();
-  return factory;
+
+  return std::make_shared<Factory>(std::move(cache), std::move(runs));
 }
 
 NativeProviderHandlerConfig::RunnerPreparationFactory
@@ -2391,6 +2454,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto authorityCertificate = authorityIdentity.getDefaultKey().getDefaultCertificate();
   const auto providerConfig = preparedProviderConfig(serviceName, roles);
   auto runs = std::make_shared<std::atomic<unsigned>>(0);
+  auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
   auto preparation = makePreparedServedProviderPreparation();
   const auto credentialsRoot = fixture.root / "served-provider-protected-credentials";
   std::filesystem::create_directories(credentialsRoot / "trust");
@@ -2561,7 +2625,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   auto facade = Provider::fromServiceProviderForTest(
     environment->providerFace(), environment->provider(), environment->keyChain(),
     providerCertificate, authorityCertificate, providerConfig,
-    makePreparedServedProviderRunnerFactory(runs), std::move(preparation),
+    makeResidentServedProviderRunnerFactory(sessionCache, runs), std::move(preparation),
     {}, std::move(ackHandler), std::move(protectedGrantFetcher));
   environment->enableProductionIngressForTest();
   auto served = facade.serve({serviceName, roles});
@@ -2596,6 +2660,19 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
   BOOST_CHECK(exactGrantFetches->load(std::memory_order_relaxed) > 0U);
   BOOST_CHECK(grantDataFetches->load(std::memory_order_relaxed) > 0U);
+  auto secondHandle = prepared.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
+  auto secondObservation = startConversationResultObservation(
+    secondHandle, std::chrono::seconds(10));
+  pumpUntilConversationResultReady(*environment, secondObservation, std::chrono::seconds(10));
+  const auto secondResult = secondObservation->get();
+  BOOST_CHECK_EQUAL(std::string(secondResult.payload.begin(), secondResult.payload.end()),
+                    "spec185-provider-response");
+  BOOST_CHECK_EQUAL(secondResult.modelDigest, model.intentDigest());
+  BOOST_CHECK(!secondResult.planDigest.empty());
+  BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 2U);
+  const auto residentCounters = sessionCache->counters();
+  BOOST_CHECK_EQUAL(residentCounters.loads, 1U);
+  BOOST_CHECK_EQUAL(residentCounters.hits, 1U);
   const auto dataFetchesBeforeMissing = grantDataFetches->load(std::memory_order_relaxed);
   const auto exactFetchesBeforeMissing = exactGrantFetches->load(std::memory_order_relaxed);
   BOOST_CHECK_EXCEPTION(
@@ -2609,9 +2686,55 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
                     dataFetchesBeforeMissing);
   BOOST_CHECK_EQUAL(exactGrantFetches->load(std::memory_order_relaxed),
                     exactFetchesBeforeMissing);
+
+  // The resident runner is deliberately hot before the controller status
+  // advances.  Reusing its session must not bypass the dynamic identity
+  // revocation gate on a later request.
+  const auto now = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto currentVersion = environment->user().getControllerVersion();
+  const auto nextEpoch = currentVersion ? currentVersion->controllerEpoch + 1 : 2;
+  ndn_service_framework::PolicyStatusData revokedStatus;
+  revokedStatus.setServiceName(ndn::Name(serviceName));
+  revokedStatus.setControllerVersion(ndn_service_framework::ControllerVersion{now, nextEpoch});
+  revokedStatus.setValidity(now - 1000, now + 120000);
+  revokedStatus.setPolicyDigest("sha256:" + std::string(64, '0'));
+  revokedStatus.setControllerCertificate(ndn::Name("/spec190/t007/controller"));
+  ndn_service_framework::RevocationTarget revokedUser;
+  revokedUser.kind = ndn_service_framework::RevocationKind::IDENTITY;
+  revokedUser.targetIdentity = ndn::Name(requesterName);
+  revokedStatus.addRevocation(revokedUser);
+  BOOST_REQUIRE(environment->user().installControllerStatus(revokedStatus));
+
+  auto revokedHandle = prepared.request(Input::inlineBytes({0x07, 0x08, 0x09}), options);
+  auto revokedObservation = startConversationResultObservation(
+    revokedHandle, std::chrono::seconds(5));
+  pumpUntilConversationResultReady(*environment, revokedObservation,
+                                   std::chrono::seconds(5));
+  bool revokedFailed = false;
+  try {
+    (void)revokedObservation->get();
+  }
+  catch (const std::exception&) {
+    revokedFailed = true;
+  }
+  BOOST_CHECK(revokedFailed);
+  BOOST_CHECK(revokedHandle.status() == RequestStatus::Failed ||
+              revokedHandle.status() == RequestStatus::Cancelled);
+  const auto afterRevokeCounters = sessionCache->counters();
+  BOOST_CHECK_EQUAL(afterRevokeCounters.loads, 1U);
+  BOOST_CHECK_EQUAL(afterRevokeCounters.hits, 1U);
+
+  bool userReadyAfterRevocation = false;
+  environment->pumpUntilWithAttributeAuthority([&] {
+    userReadyAfterRevocation = environment->user().isNacConsumerReadyForTest();
+    return userReadyAfterRevocation;
+  });
+  BOOST_CHECK(userReadyAfterRevocation);
   const auto counters = facade.counters();
-  BOOST_CHECK_EQUAL(counters.assemblies, 1U);
-  BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
+  BOOST_CHECK_GE(counters.assemblies, 2U);
+  BOOST_CHECK_EQUAL(counters.runnersCreated, 2U);
 
   runtime->close();
   BOOST_REQUIRE(drainWithInProcessPump(binding, runtime, testDrainTimeout()));

@@ -74,13 +74,24 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
     ? projection.planDigest : projection.assembly.modelManifestDigest;
   spec.metadata["evidence.artifactDigest"] = projection.assembly.artifactDigest;
 
-  // Observing adapters consume this unique request profile context. Other
-  // adapters may ignore it; no model name or generation mode is required.
-  static std::atomic<std::uint64_t> profileSequence{0};
-  spec.metadata["providerProfilePrefix"] = context.cacheDirectory +
-    "/ort-profile-" + std::to_string(getpid()) + "-" +
-    std::to_string(profileSequence.fetch_add(1));
-  spec.metadata["profileAfterRequest"] = "true";
+  // A resident session owns one immutable load-time profile. A per-request
+  // profile path would contaminate the load identity and disable the session
+  // cache in the ORT adapter. Non-resident profiles keep the historical
+  // request-observation behavior.
+  const auto resident = spec.metadata.find("residentSession");
+  const bool residentSession = resident != spec.metadata.end() &&
+    (resident->second == "true" || resident->second == "1");
+  if (residentSession) {
+    spec.metadata.erase("providerProfilePrefix");
+    spec.metadata.erase("profileAfterRequest");
+  }
+  else {
+    static std::atomic<std::uint64_t> profileSequence{0};
+    spec.metadata["providerProfilePrefix"] = context.cacheDirectory +
+      "/ort-profile-" + std::to_string(getpid()) + "-" +
+      std::to_string(profileSequence.fetch_add(1));
+    spec.metadata["profileAfterRequest"] = "true";
+  }
 
   // Generation state is part of the authenticated Selection projection, not
   // an adapter-local default.  Preserve it on the prepared runner spec so the
