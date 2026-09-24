@@ -3256,7 +3256,7 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncIncludesNativeClientWork)
   InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
   binding = bindInProcessRuntime(fixture, runtime);
-  auto prepared = runtime->user().prepare();
+  auto prepared = prepareWithInProcessPump(runtime, *binding.environment);
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
@@ -3328,8 +3328,8 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncTracksMultiplePreparedClients)
   config.models.push_back({"secondary", fixture.configPath.string()});
   auto runtime = Runtime::open(config);
   binding = bindInProcessRuntime(fixture, runtime);
-  auto primary = runtime->user().prepare("default");
-  auto secondary = runtime->user().prepare("secondary");
+  auto primary = prepareWithInProcessPump(runtime, *binding.environment);
+  auto secondary = prepareWithInProcessPump(runtime, *binding.environment);
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
@@ -3378,7 +3378,7 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncWakesAfterLastClientTimerRetires)
   InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
   binding = bindInProcessRuntime(fixture, runtime);
-  auto prepared = runtime->user().prepare();
+  auto prepared = prepareWithInProcessPump(runtime, *binding.environment);
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(300);
   options.ackTimeout = std::chrono::milliseconds(50);

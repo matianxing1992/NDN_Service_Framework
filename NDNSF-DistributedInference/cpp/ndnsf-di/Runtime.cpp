@@ -224,15 +224,14 @@ std::shared_ptr<EVP_PKEY> loadEd25519PublicKey(const std::filesystem::path& path
 }
 
 std::shared_ptr<ndn_service_framework::MessageValidator>
-loadTrustSchema(const std::filesystem::path& path, const std::string& group,
-                ndn::Face* callbackFace)
+loadTrustSchema(const std::filesystem::path& path, const std::string& group)
 {
   try {
     // Constructing the existing native validator is the single trust-schema
-    // parser. Local loading is synchronous while later certificate fetches
-    // remain bound to Runtime's Face and IO context.
+    // parser. FrozenConfig only needs synchronous schema loading; live
+    // certificate fetches are owned by the ServiceUser validator.
     return std::make_shared<ndn_service_framework::MessageValidator>(
-      path.string(), ndn::Name(group), callbackFace);
+      path.string(), ndn::Name(group), nullptr);
   }
   catch (const std::exception& error) {
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "trust",
@@ -348,7 +347,7 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
   return spec;
 }
 
-FrozenConfig freezeConfig(const std::filesystem::path& path, ndn::Face* callbackFace,
+FrozenConfig freezeConfig(const std::filesystem::path& path,
                           bool repositorySourceLoaderConfigured)
 {
   const auto canonicalPath = std::filesystem::absolute(path).lexically_normal();
@@ -449,7 +448,7 @@ FrozenConfig freezeConfig(const std::filesystem::path& path, ndn::Face* callback
   auto requesterPrivate = loadEd25519PrivateKey(requesterKeyPath);
   auto authorityPublic = loadEd25519PublicKey(authorityPublicKeyPath);
   requireBootstrapBudget();
-  auto trustValidator = loadTrustSchema(trustSchema, group, callbackFace);
+  auto trustValidator = loadTrustSchema(trustSchema, group);
   requireBootstrapBudget();
 
   const auto& offerPolicy = requiredObject(offerAdmission, "policy");
@@ -2069,11 +2068,12 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
                   "Runtime preparation limits must be positive");
 
   const auto primaryPath = std::filesystem::absolute(config.nativeConfigPath).lexically_normal();
-  // Establish the actual Runtime Face before loading trust schemas so every
-  // frozen validator is bound to this one IO context.
+  // Establish the actual Runtime Face before any live Core transport is
+  // materialized. FrozenConfig validates trust schemas synchronously; the
+  // callback-bound validator is created by the live ServiceUser owner.
   auto coreOwner = std::make_shared<detail::CoreRuntimeOwner>();
   coreOwner->face = std::make_shared<ndn::Face>(coreOwner->io);
-  const auto primary = freezeConfig(primaryPath, coreOwner->face.get(),
+  const auto primary = freezeConfig(primaryPath,
                                     static_cast<bool>(config.repositorySourceLoader) ||
                                       static_cast<bool>(config.repositorySourceProvider));
   try {
@@ -2169,7 +2169,7 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
                     "model registrations require unique non-default keys and paths");
     }
     const auto modelPath = (state->baseDirectory / registration.nativeConfigPath).lexically_normal();
-    const auto frozen = freezeConfig(modelPath, coreOwner->face.get(),
+    const auto frozen = freezeConfig(modelPath,
                                      static_cast<bool>(config.repositorySourceLoader) ||
                                        static_cast<bool>(config.repositorySourceProvider));
     if (!sameTrustDomain(primary, frozen))
