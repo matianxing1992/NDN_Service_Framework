@@ -1,5 +1,23 @@
 # Spec 设计变更记录
 
+## Spec190 B190-184 prepare-time planning contract cache — 2026-09-25
+
+- **Status**: `PARTIAL`；将 immutable ONNX semantic/candidate/role planning facts 前移到
+  `User::prepare()` 所拥有的 prepared catalog，但 ACK→Selection 的新鲜 phase timing 尚未测量。
+- **Owner / principles**: DI preparation catalog owns the immutable candidate and role contracts;
+  requester planner continues to own current ACK admission, Provider placement, grants,
+  projections, artifact binding and request cancellation. No request, Provider, grant, Selection,
+  wire or public API state is retained in the planning cache.
+- **Delta**: `NativeRequestCatalog` creates `NativePreparedPlanningCache` after catalog/source
+  validation; `NativeRequestRuntime` carries it and the planner uses it only for a matching
+  splitter identity, followed by candidate/role validation. The fallback path remains available
+  for a non-matching strategy identity.
+- **Evidence / boundary**: [B190-184](../specs/190-multiturn-latency/evidence/b190-184.md).
+  DI core `69/69`, focused C++ suites and one Qwen native production request passed; the full
+  unit target is blocked by an existing `NativeArtifactBinding` aggregate fixture mismatch.
+  No current/target PDF refresh is needed because this is an internal preparation/planning
+  ownership change with no public API or wire contract change.
+
 ## Spec190 B190-183 production live-runner reuse contract — 2026-09-25
 
 - **Status**: `PARTIAL`；真实 standalone Provider 已接入 process-local bounded runner reuse，
