@@ -2,15 +2,43 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <tuple>
 
 namespace ndnsf::di {
 namespace {
+bool preparationTimingEnabled()
+{
+  const char* value = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+  if (value == nullptr) return false;
+  const std::string text(value);
+  return !(text.empty() || text == "0" || text == "false" ||
+           text == "FALSE" || text == "no" || text == "NO");
+}
+
+void logPreparationPhase(const std::string& requestId, const char* phase,
+                         const std::chrono::steady_clock::time_point started)
+{
+  if (!preparationTimingEnabled()) return;
+  try {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - started).count();
+    std::ostringstream record;
+    record << "NDNSF_DI_NATIVE_PREPARATION_PHASE requestId=" << requestId
+           << " phase=" << phase << " duration_us=" << elapsed;
+    logRuntimeEvidence(record.str());
+  }
+  catch (...) { /* Diagnostics must never change preparation behavior. */ }
+}
+
 bool digest(const std::string& value)
 {
   return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
@@ -306,6 +334,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   const NativeRolePlacementProposalV3& proposal,
   const NativeRequestControl& control) const
 {
+  const auto validationStarted = std::chrono::steady_clock::now();
   model.validate();
   control.requireActive();
   // Publication must be driven by the placement of this very request/attempt
@@ -330,6 +359,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   }
   proposal.strategy.validate();
   validateRoles(model, candidate, roles);
+  logPreparationPhase(control.requestId, "ensure_binding_validation", validationStarted);
   for (const auto& role : roles) {
     validateNativeAssembly(role);
     const auto explicitDegree = candidate.tensorDegreesByRole.find(role.role);
@@ -353,8 +383,11 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   // publishing canonical objects never authorizes a Provider to execute.
   if (!m_artifacts) throw std::runtime_error("DI_NATIVE_ARTIFACT_PORT_NOT_CONFIGURED");
   control.requireActive();
+  const auto portStarted = std::chrono::steady_clock::now();
   auto result = m_artifacts(model, candidate, roles, control);
+  logPreparationPhase(control.requestId, "ensure_artifact_port", portStarted);
   control.requireActive();
+  const auto certificateStarted = std::chrono::steady_clock::now();
   result.validate();
   // The binding must cover exactly the roles the placed plan requires: a
   // missing role leaves a provider unassemblable, an extra role would smuggle
@@ -375,6 +408,7 @@ NativeArtifactBinding NativeRequestPreparation::ensureArtifacts(
   result.graphDigest = model.graph.graphDigest;
   result.canonicalGraphDigest = model.canonicalGraphDigest;
   bindPublishedRoles(model, candidate, roles, result);
+  logPreparationPhase(control.requestId, "ensure_binding_certificate", certificateStarted);
   return result;
 }
 

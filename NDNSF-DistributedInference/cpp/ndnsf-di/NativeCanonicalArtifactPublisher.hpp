@@ -151,6 +151,21 @@ public:
   Stats stats() const noexcept;
 
 private:
+  // The catalog calls this only after validating and const-capturing the
+  // immutable prepare-time receipt. The public bindPrepared() path keeps its
+  // full receipt validation for direct callers.
+  friend class NativeCanonicalPreparationCatalog;
+  NativeArtifactBinding bindPreparedAfterValidation(
+    const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const NativePreparedCanonicalPublication& publication,
+    const NativeRequestControl& control) const;
+  NativeArtifactBinding bindPreparedImpl(
+    const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const NativePreparedCanonicalPublication& publication,
+    const NativeRequestControl& control, bool validatePublication) const;
+
   // Test-only scheduling/transport seam. Production construction always binds
   // ServiceUser::postToIo/prepareServiceRequest/publishEncryptedLargeData.
   friend class NativeCanonicalPublisherTestAccess;

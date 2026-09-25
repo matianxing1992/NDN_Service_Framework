@@ -312,7 +312,10 @@ NativeCanonicalPreparationCatalog::makePreparation(
       control.requireActive();
       state->find(model);
       if (preparedPublication)
-        return publishers->at(model.descriptor.canonicalJson()).bindPrepared(
+        // makePreparation() validated the receipt before this const capture;
+        // keep request-time binding limited to request/model/role checks and
+        // root consistency rather than rescanning material receipts.
+        return publishers->at(model.descriptor.canonicalJson()).bindPreparedAfterValidation(
           model, candidate, roles, *preparedPublication, control);
       return publishers->at(model.descriptor.canonicalJson())(model, candidate, roles, control);
     },

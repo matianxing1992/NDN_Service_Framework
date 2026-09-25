@@ -1,19 +1,46 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstdlib>
 #include <future>
 #include <ndn-cxx/name.hpp>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 
 namespace ndnsf::di {
 namespace {
+bool publicationTimingEnabled()
+{
+  const char* value = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+  if (value == nullptr) return false;
+  const std::string text(value);
+  return !(text.empty() || text == "0" || text == "false" ||
+           text == "FALSE" || text == "no" || text == "NO");
+}
+
+void logPublicationPhase(const std::string& requestId, const char* phase,
+                         const std::chrono::steady_clock::time_point started)
+{
+  if (!publicationTimingEnabled()) return;
+  try {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - started).count();
+    std::ostringstream record;
+    record << "NDNSF_DI_NATIVE_PUBLICATION_PHASE requestId=" << requestId
+           << " phase=" << phase << " duration_us=" << elapsed;
+    logRuntimeEvidence(record.str());
+  }
+  catch (...) { /* Diagnostics must never change publication behavior. */ }
+}
+
 template<typename Work>
 auto onCoreIo(const std::shared_ptr<ndn_service_framework::ServiceUser>& user, Work work)
   -> decltype(work())
@@ -562,12 +589,34 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPrepared(
   const NativePreparedCanonicalPublication& publication,
   const NativeRequestControl& control) const
 {
+  return bindPreparedImpl(model, candidate, roles, publication, control, true);
+}
+
+NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPreparedAfterValidation(
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const std::vector<NativeSelectionRoleV3>& roles,
+  const NativePreparedCanonicalPublication& publication,
+  const NativeRequestControl& control) const
+{
+  return bindPreparedImpl(model, candidate, roles, publication, control, false);
+}
+
+NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPreparedImpl(
+  const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
+  const std::vector<NativeSelectionRoleV3>& roles,
+  const NativePreparedCanonicalPublication& publication,
+  const NativeRequestControl& control, const bool validatePublication) const
+{
   control.requireActive();
+  const auto validationStarted = std::chrono::steady_clock::now();
   model.validate();
   NativeRequestPreparation::validateRoles(model, candidate, roles);
   if (roles.empty())
     throw std::invalid_argument("native prepared publication requires selected roles");
-  publication.validate();
+  logPublicationPhase(control.requestId, "bind_prepared_validation", validationStarted);
+  const auto manifestStarted = std::chrono::steady_clock::now();
+  if (validatePublication)
+    publication.validate();
   const auto root = NativeJson::parse(publication.canonicalManifestJson);
   const auto& metadata = root.at("metadata");
   const auto cacheNamespace = metadata.value("cacheCompatibilityNamespace", NativeJson{});
@@ -587,7 +636,8 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPrepared(
       root.value("artifactProfileDigest", NativeJson{}) != publication.artifactProfileDigest ||
       (!m_options.packageManifestDigest.empty() &&
       metadata.value("packageManifestDigest", NativeJson{}) != m_options.packageManifestDigest))
-    throw std::invalid_argument("native prepared publication differs from inspected source");
+      throw std::invalid_argument("native prepared publication differs from inspected source");
+  logPublicationPhase(control.requestId, "bind_prepared_manifest", manifestStarted);
   auto binding = NativeArtifactBinding{};
   binding.artifactPrefetchRequired = publication.artifactPrefetchRequired;
   binding.canonicalManifestJson = publication.canonicalManifestJson;
@@ -606,7 +656,9 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPrepared(
     binding.sourceByRole.emplace(role.selectedRole, publication.rootDataName);
     binding.artifactDigestByRole.emplace(role.selectedRole, role.artifactDigest);
   }
+  const auto certificateStarted = std::chrono::steady_clock::now();
   NativeRequestPreparation::bindPublishedRoles(model, candidate, roles, binding);
+  logPublicationPhase(control.requestId, "bind_prepared_certificate", certificateStarted);
   return binding;
 }
 
