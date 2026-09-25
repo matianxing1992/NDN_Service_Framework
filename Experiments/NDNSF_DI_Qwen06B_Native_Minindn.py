@@ -2276,6 +2276,13 @@ def main(argv=None, *, _supervised=False) -> int:
                      "timeout_ms": runtime_budgets["timeout_ms"],
                      "ack_timeout_ms": runtime_budgets["ack_timeout_ms"],
                      "options_file": "options.json"},
+        # Keep the two-node Qwen experiment deterministic: each published
+        # pipeline stage is bound to its corresponding Provider.  The native
+        # requester still resolves this through Runtime's registered custom
+        # strategy, so the generic strategy remains available to other users.
+        "fixed_placement": {"role_providers": {
+            stage["role"]: provider_names[index]
+            for index, stage in enumerate(stages)}},
         "conversation": {"schema": "ndnsf-di-native-conversation-v1",
                           "journal": {"state_root": "conversation-state", "identity": f"{MODEL_FAMILY}-user",
                                       "keys": [{"id": "active", "file": "conversation.key"}],

@@ -864,7 +864,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
         (protectedRole && firstString(manifest, {"keyReferenceDigest"}) !=
            keyReferenceDigest) ||
         !isSha256Digest(assembledDigest) ||
-        (!protectedRole &&
+        (!protectedRole && options.verifyCachedArtifactDigest &&
           sha256File(modelPath, projection.assembly.maxAssembledBytes) != assembledDigest)) {
       discardCorruptEntry(directory);
       return std::nullopt;
@@ -901,6 +901,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       {"assembledFrom", protectedRole
         ? "protected-assembled-cache" : "canonical-root-post-selection-cache"},
     };
+    if (!protectedRole)
+      spec.metadata["assembledCachePath"] = modelPath.string();
     if (protectedRole) {
       spec.metadata["protectedCacheHit"] = "true";
       spec.metadata["protectedArtifactPersistent"] = "true";

@@ -67,6 +67,9 @@ struct RuntimeConfig
   /** Optional prepare-time durable artifact owner. A request never calls this
    * boundary; it receives only the committed reference. */
   std::shared_ptr<const RepositoryArtifactPublisher> repositoryArtifactPublisher;
+  /** Optional operator-owned placement strategy registered under its stable
+   * identity. The generic native-pre-split-first strategy remains available. */
+  std::shared_ptr<const CooperativePlacementStrategy> fixedPlacementStrategy;
   /** Ciphertext storage only; Core remains the protected Data producer. */
   std::shared_ptr<ndn_service_framework::EncryptedLargeDataRangeStore> encryptedRangeStore;
 };

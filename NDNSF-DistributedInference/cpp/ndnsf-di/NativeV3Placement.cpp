@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <sstream>
 #include <tuple>
 
 namespace ndnsf::di {
@@ -144,6 +145,90 @@ std::map<std::string, std::set<std::uint64_t>> validateSnapshot(
   }
   return ranks;
 }
+}
+
+NativeFixedProviderPlacement::NativeFixedProviderPlacement(
+  std::map<std::string, std::string> providerByRole,
+  NativeStrategyIdentity identity)
+  : m_providerByRole(std::move(providerByRole))
+  , m_identity(std::move(identity))
+{
+  if (m_providerByRole.empty() ||
+      std::any_of(m_providerByRole.begin(), m_providerByRole.end(), [] (const auto& item) {
+        return item.first.empty() || item.second.empty();
+      })) {
+    throw std::invalid_argument("fixed placement provider map is incomplete");
+  }
+  std::ostringstream canonical;
+  canonical << m_identity.name << '|' << m_identity.version << '|';
+  for (const auto& item : m_providerByRole)
+    canonical << item.first.size() << ':' << item.first << item.second.size() << ':' << item.second;
+  m_identity.configurationDigest = nativePlanningDigest(canonical.str());
+  m_identity.validate();
+}
+
+NativeStrategyIdentity
+NativeFixedProviderPlacement::identity() const
+{
+  return m_identity;
+}
+
+NativeRolePlacementProposalV3
+NativeFixedProviderPlacement::proposeRolesImpl(
+  const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+  const std::vector<NativeSelectionRoleV3>& roles,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+  const ExtensionControl* control) const
+{
+  if (control) control->requireActive();
+  const auto ranks = validateSnapshot(context, ackClosedDigest, roles, offers, nowMs, control);
+  NativeRolePlacementProposalV3 result{context, ackClosedDigest, identity(), {}, {}, {}};
+  auto ordered = roles;
+  std::sort(ordered.begin(), ordered.end(), [] (const auto& left, const auto& right) {
+    return std::tie(left.role, left.rank) < std::tie(right.role, right.rank);
+  });
+  for (auto role : ordered) {
+    if (control) control->requireActive();
+    const auto key = ranks.at(role.role).size() == 1
+      ? role.role : role.role + "#" + std::to_string(role.rank);
+    const auto fixed = m_providerByRole.find(key);
+    if (fixed == m_providerByRole.end())
+      throw NativeNoFeasiblePlacement("fixed placement has no Provider for role " + key);
+    const auto admitted = std::find_if(offers.begin(), offers.end(), [&fixed] (const auto& item) {
+      return item.observation().provider == fixed->second;
+    });
+    if (admitted == offers.end())
+      throw NativeNoFeasiblePlacement("fixed placement Provider was not admitted: " + fixed->second);
+    const auto choices = feasibleChoices(role, admitted->observation(), nowMs, control);
+    if (choices.empty())
+      throw NativeNoFeasiblePlacement("fixed placement Provider is not feasible for role " + key);
+    const auto selected = *std::min_element(choices.begin(), choices.end());
+    const auto device = std::get<9>(selected);
+    role.selectedRole = key;
+    role.backend = std::get<10>(selected);
+    role.deviceSet = device == "cpu" ? std::vector<std::string>{}
+                                      : std::vector<std::string>{device};
+    validateNativeAssembly(role);
+    if (!result.providerByRole.emplace(key, fixed->second).second)
+      throw std::invalid_argument("fixed placement has duplicate role key " + key);
+    result.offerDigestByProvider.emplace(fixed->second,
+                                         admitted->observation().offerDigest);
+    result.roles.push_back(std::move(role));
+  }
+  validateNativeRolePlacement(result, roles, offers, nowMs);
+  if (control) control->requireActive();
+  return result;
+}
+
+NativeRolePlacementProposalV3
+NativeFixedProviderPlacement::proposeRoles(
+  const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+  const std::vector<NativeSelectionRoleV3>& roles,
+  const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+  const ExtensionControl& control) const
+{
+  control.requireActive();
+  return proposeRolesImpl(context, ackClosedDigest, roles, offers, nowMs, &control);
 }
 
 NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRolesImpl(

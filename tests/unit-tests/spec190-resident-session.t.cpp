@@ -507,6 +507,38 @@ BOOST_AUTO_TEST_CASE(ResidentOnnxSessionReusesLoadAndIsolatesRequests)
   BOOST_CHECK(cache->drain(100ms));
 }
 
+BOOST_AUTO_TEST_CASE(NonResidentOnnxSessionAlsoReusesImmutableModel)
+{
+  const auto path = writeTinyOnnxFixture();
+  struct Cleanup
+  {
+    std::filesystem::path path;
+    ~Cleanup() { std::error_code error; std::filesystem::remove(path, error); }
+  } cleanup{path};
+  std::ifstream input(path, std::ios::binary);
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
+  const auto modelDigest = sha256TensorBytes(bytes);
+  auto spec = makeResidentSpec(path, modelDigest);
+  spec.metadata.erase("residentSession");
+  auto cache = std::make_shared<OnnxRuntimeSessionCache>();
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory, cache);
+  factory.freeze();
+
+  auto first = factory.create(spec);
+  auto second = factory.create(spec);
+  BOOST_REQUIRE(first);
+  BOOST_REQUIRE(second);
+  const auto counters = cache->counters();
+  BOOST_CHECK_EQUAL(counters.loads, 1);
+  BOOST_CHECK_EQUAL(counters.hits, 1);
+  BOOST_CHECK_EQUAL(counters.activeLeases, 2);
+  first.reset();
+  second.reset();
+  cache->close();
+  BOOST_CHECK(cache->drain(100ms));
+}
+
 BOOST_AUTO_TEST_CASE(ResidentOnnxSessionBypassesProtectedAndProfiling)
 {
   const auto path = writeTinyOnnxFixture();

@@ -79,6 +79,7 @@ struct ProviderCounters
   std::uint64_t sourceFetches = 0;
   std::uint64_t assemblies = 0;
   std::uint64_t templateHits = 0;
+  std::uint64_t assembledDiskHits = 0;
   std::uint64_t runnersCreated = 0;
   std::uint64_t activeLeases = 0;
 };

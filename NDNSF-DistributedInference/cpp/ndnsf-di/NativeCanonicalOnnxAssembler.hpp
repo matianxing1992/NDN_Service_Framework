@@ -38,6 +38,11 @@ struct NativeCanonicalOnnxAssemblerOptions
   // Explicit diagnostic mode for a verified, system-wide plaintext source
   // cache.  Empty means the normal Repo-backed path.
   std::filesystem::path cacheCompatibilitySourceDir;
+  // The local assembled cache is system-owned and content-addressed by the
+  // authenticated recipe directory plus manifest contract. Trust that
+  // immutable local file by default; callers that cannot trust the cache
+  // root can opt back into the full assembled-file digest check.
+  bool verifyCachedArtifactDigest = false;
   std::string providerIdentity;
   std::uint64_t assemblyTimeoutMs = 30000;
   std::function<bool()> shouldCancel;

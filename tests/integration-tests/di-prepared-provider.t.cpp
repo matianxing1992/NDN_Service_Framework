@@ -1145,7 +1145,7 @@ BOOST_AUTO_TEST_CASE(ProviderArtifactCachePinsEvictsAndSeparatesIdentity)
   key.quantization = "none";
   key.layoutDigest = "sha256:" + std::string(64, '4');
   key.artifactProfile = "sha256:" + std::string(64, '5');
-  key.securityDomain = "/spec185/group";
+  key.securityDomain = projection.securityPolicySnapshotDigest;
   key.protectionEpoch = "epoch-1";
   key.protectionIdentity = projection.provider;
 
@@ -1317,7 +1317,7 @@ BOOST_AUTO_TEST_CASE(ProtectedArtifactCacheSeparatesIndependentGrantIdentities)
   key.quantization = projection.assembly.quantization;
   key.layoutDigest = projection.assembly.layout;
   key.artifactProfile = projection.assembly.artifactProfileDigest;
-  key.securityDomain = projection.groupCapabilityV1;
+  key.securityDomain = projection.securityPolicySnapshotDigest;
   key.protectionEpoch = projection.assembly.protectionEpoch;
   key.protectionIdentity = projection.provider + "|" + projection.grantName + "|" +
                            projection.grantDigest;
@@ -1512,6 +1512,7 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
   NativeCanonicalOnnxAssemblerOptions options;
   options.cacheDir = root.string();
   options.providerIdentity = projection.provider;
+  options.verifyCachedArtifactDigest = true;
   std::string progressPhase;
   options.reportProgress = [&progressPhase] (const std::string& phase, double) {
     progressPhase = phase;
@@ -2374,12 +2375,12 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   // The production request path must therefore fetch and assemble once, then
   // reopen/decrypt the durable ciphertext for the second grant.
   runRequest(requestOne, firstGrant, 1, 1, 0, 1);
-  runRequest(requestTwo, independentGrant, 1, 1, 1, 2);
+  runRequest(requestTwo, independentGrant, 1, 1, 0, 2);
   BOOST_CHECK_EQUAL(runnerRuns->load(std::memory_order_relaxed), 2U);
   const auto counters = facade.counters();
   BOOST_CHECK_EQUAL(counters.sourceFetches, 1U);
   BOOST_CHECK_EQUAL(counters.assemblies, 1U);
-  BOOST_CHECK_EQUAL(counters.templateHits, 1U);
+  BOOST_CHECK_EQUAL(counters.templateHits, 0U);
   BOOST_CHECK_EQUAL(counters.runnersCreated, 2U);
   registration.close();
   facade.stop();

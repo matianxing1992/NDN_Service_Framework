@@ -235,8 +235,8 @@ namespace ndnsf::di {
 namespace {
 
 std::string
-residentSessionIdentity(const NativeModelRunnerSpec& spec,
-                        const OnnxRuntimeProviderSelection& selection)
+sessionIdentity(const NativeModelRunnerSpec& spec,
+                const OnnxRuntimeProviderSelection& selection)
 {
   const auto metadata = [&spec] (std::initializer_list<const char*> keys) {
     return runnerMetadataValue(spec, keys);
@@ -1160,8 +1160,6 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
     throw std::invalid_argument("ONNX Runtime runner requires model path");
   }
   const auto selection = resolveRuntimeProviderSelection(m_spec);
-  const bool residentRequested = runnerMetadataBool(
-    m_spec, {"residentSession", "resident_session"});
   const bool protectedBacking =
     m_spec.metadata.count("encryptedArtifactPath") != 0 ||
     runnerMetadataBool(m_spec, {"protectedRuntime", "protected_runtime"});
@@ -1170,11 +1168,14 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
     !runnerMetadataValue(m_spec, {"protectedResidentIdentity"}).empty();
   const bool profilingRequested = !runnerMetadataValue(
     m_spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty();
-  const bool residentEligible = !profilingRequested &&
+  const bool sessionEligible = !profilingRequested &&
     selection.selectedProvider == "cpu" &&
     (!protectedBacking || protectedResidentAdmitted);
-  const auto identity = residentRequested && residentEligible
-      ? residentSessionIdentity(m_spec, selection) : std::string{};
+  // Session reuse is an immutable ONNX admission property, not a residency
+  // hint. The identity includes the model, graph, backend, ORT, IO/KV and
+  // protection contract; residentSession remains reserved for the separate
+  // protected-residency authority path in Provider.
+  const auto identity = sessionEligible ? sessionIdentity(m_spec, selection) : std::string{};
   if (!sessionCache || identity.empty()) {
     m_impl = std::make_unique<Impl>(m_spec);
     initializeEvidence();

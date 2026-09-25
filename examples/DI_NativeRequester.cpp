@@ -1,5 +1,6 @@
 #include "ndnsf-di/api.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <cmath>
 #include <optional>
 #include <sstream>
@@ -434,6 +436,21 @@ run(int argc, char** argv)
 
   RuntimeConfig runtimeConfig;
   runtimeConfig.nativeConfigPath = configPath.string();
+  std::string fixedPlacementStrategyId;
+  if (const auto fixedPlacement = config.get_child_optional("fixed_placement")) {
+    const auto roleProviders = fixedPlacement->get_child_optional("role_providers");
+    if (!roleProviders || roleProviders->empty())
+      throw std::invalid_argument("fixed_placement.role_providers is required");
+    std::map<std::string, std::string> providerByRole;
+    for (const auto& item : *roleProviders) {
+      if (item.first.empty() || item.second.data().empty() ||
+          !providerByRole.emplace(item.first, item.second.data()).second)
+        throw std::invalid_argument("fixed_placement.role_providers contains an invalid or duplicate role");
+    }
+    auto strategy = std::make_shared<NativeFixedProviderPlacement>(std::move(providerByRole));
+    fixedPlacementStrategyId = strategy->identity().name;
+    runtimeConfig.fixedPlacementStrategy = std::move(strategy);
+  }
   if (const auto repository = config.get_child_optional("repository")) {
     auto path = std::filesystem::path(repository->get<std::string>("path"));
     if (path.is_relative())
@@ -510,6 +527,10 @@ run(int argc, char** argv)
     request.get<std::uint64_t>("ack_timeout_ms", options.ackTimeout.count()));
   options.applicationRequestId = request.get<std::string>("application_request_id", {});
   options.providerNames = providerNames(request);
+  if (!fixedPlacementStrategyId.empty()) {
+    options.placement = runtime->placementStrategy(fixedPlacementStrategyId);
+    std::cout << "NATIVE_FIXED_PLACEMENT strategy=" << fixedPlacementStrategyId << std::endl;
+  }
   if (options.timeout.count() <= 0 || options.ackTimeout.count() <= 0 ||
       options.ackTimeout >= options.timeout) {
     throw std::invalid_argument(

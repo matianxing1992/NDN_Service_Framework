@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
@@ -2129,6 +2130,12 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   state->placementRegistry = std::make_shared<NativePlacementStrategyRegistry>();
   state->placementRegistry->registerStrategy(
     "native-pre-split-first", std::make_shared<NativePreSplitFirstPlacement>());
+  if (config.fixedPlacementStrategy) {
+    const auto strategyIdentity = config.fixedPlacementStrategy->identity();
+    strategyIdentity.validate();
+    state->placementRegistry->registerStrategy(
+      strategyIdentity.name, config.fixedPlacementStrategy);
+  }
   state->placementRegistry->freeze();
   state->config = config;
   state->config.models.clear();

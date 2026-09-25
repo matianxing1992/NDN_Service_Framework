@@ -187,6 +187,26 @@ private:
 };
 }
 BOOST_AUTO_TEST_SUITE(Spec182V3Placement)
+
+BOOST_AUTO_TEST_CASE(FixedProviderPlacementBindsEachPipelineRankToConfiguredProvider)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  NativeFixedProviderPlacement strategy(std::map<std::string, std::string>{
+    {"/LLM/Pipeline/Stage/0#0", "/provider/a"},
+    {"/LLM/Pipeline/Stage/0#1", "/provider/b"}});
+  ExtensionControl control{std::chrono::steady_clock::now() + std::chrono::seconds(5),
+                           [] { return false; }};
+
+  const auto proposal = strategy.proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200, control);
+  BOOST_REQUIRE_NO_THROW(validateNativeRolePlacement(
+    proposal, input.roles, input.offers, 200));
+  BOOST_CHECK_EQUAL(proposal.strategy.name, strategy.identity().name);
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at("/LLM/Pipeline/Stage/0#0"), "/provider/a");
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at("/LLM/Pipeline/Stage/0#1"), "/provider/b");
+}
+
 BOOST_AUTO_TEST_CASE(AdmittedGroupKeysReachCoreRsaCapabilityUnwrap)
 {
   const auto f = oracle();

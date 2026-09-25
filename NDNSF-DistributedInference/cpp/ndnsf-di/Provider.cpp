@@ -424,6 +424,7 @@ struct ProviderMetrics
   std::atomic<std::uint64_t> sourceFetches{0};
   std::atomic<std::uint64_t> assemblies{0};
   std::atomic<std::uint64_t> templateHits{0};
+  std::atomic<std::uint64_t> assembledDiskHits{0};
   std::atomic<std::uint64_t> runnersCreated{0};
 };
 
@@ -442,7 +443,10 @@ providerArtifactKey(const NativeSelectionProjectionV3& projection,
     role.canonicalInitializerDigest,
     role.graphDigest,
     role.selectedRole,
-    projection.offerDigest,
+    // offerDigest authenticates this request/attempt's admission and is not
+    // an immutable artifact identity.  The role artifact digest is stable
+    // across turns while the remaining fields bind the exact assembly.
+    role.artifactDigest,
     role.recipeDigest,
     role.backendAbi,
     role.deviceSet.empty() ? std::string{} : role.deviceSet.front(),
@@ -450,7 +454,12 @@ providerArtifactKey(const NativeSelectionProjectionV3& projection,
     role.quantization,
     role.layout,
     role.artifactProfileDigest,
-    projection.groupCapabilityV1,
+    // GroupCapabilityV1 is request/attempt scoped (it binds requestId and
+    // attemptId). It authenticates the current selection but cannot address
+    // an immutable Provider artifact template. The policy snapshot is the
+    // stable security-domain identity; protectionIdentity below keeps
+    // independently issued protected grants separated.
+    projection.securityPolicySnapshotDigest,
     role.protectionEpoch,
     projection.hasGrantBinding
       ? projection.provider + "|" + projection.grantName + "|" + projection.grantDigest
@@ -1805,7 +1814,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 built = *cached;
                 diskCacheHit->store(true, std::memory_order_relaxed);
                 logProviderPreparationProgress(projection, "CACHE_LOOKUP_HIT",
-                                               "recipe-addressed");
+                                               "recipe-addressed-trusted");
               }
               else {
                 logProviderPreparationProgress(projection, "CACHE_LOOKUP_MISS",
@@ -1822,6 +1831,10 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
               const bool protectedCiphertext = protectedRuntime &&
                 encryptedPathMetadata != built.metadata.end() &&
                 !encryptedPathMetadata->second.empty();
+              if (!protectedCiphertext && built.path.empty())
+                throw std::runtime_error("DI_PROVIDER_ARTIFACT_ASSEMBLED_PATH_MISSING");
+              if (!protectedCiphertext)
+                built.metadata["assembledCachePath"] = built.path;
               const bool protectedArtifactPersistent = protectedCiphertext &&
                 built.metadata.find("protectedArtifactPersistent") != built.metadata.end() &&
                 built.metadata.at("protectedArtifactPersistent") == "true";
@@ -1890,9 +1903,12 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             });
           if (!lease.runnerSpec())
             throw std::runtime_error("DI_PROVIDER_ARTIFACT_RUNNER_TEMPLATE_MISSING");
+          const bool templateHit = lease.cacheHit();
+          const bool assembledDiskHit = diskCacheHit->load(std::memory_order_relaxed);
           logProviderPreparationProgress(projection, "CACHE_ACQUIRE_DONE",
-                                         diskCacheHit->load(std::memory_order_relaxed)
-                                           ? "cache-hit" : "cache-built");
+                                         templateHit ? "template-hit" :
+                                         (assembledDiskHit ? "assembled-disk-hit" :
+                                          "assembled-built"));
           spec = *lease.runnerSpec();
           // The runner opens the assembled path after this factory returns.
           // Keep the cache lease in the runner's copied spec until that
@@ -1937,20 +1953,24 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             }
           }
           else {
-            // A hash-verified assembled/model.onnx entry is reusable after
-            // authenticated Selection even when this role uses protected
-            // runtime keys.  Keep the protected runtime as the authorization
-            // boundary, but do not decrypt/recreate a second model-sized
-            // staging copy for a cache hit.
+            // The local assembled/model.onnx entry is reusable after
+            // authenticated Selection. Keep the protected runtime as the
+            // authorization boundary, but do not recreate a model-sized
+            // staging copy or repeat a full-file hash for a trusted local hit.
+            const auto assembledPath = spec.metadata.find("assembledCachePath");
             const auto cachedModelPath = requireProviderArtifactPathUnderCacheRoot(
               options.cacheDir,
-              providerCachedModelPath(cacheDir, projection, lease->ciphertextDigest));
+              assembledPath != spec.metadata.end() && !assembledPath->second.empty()
+                ? std::filesystem::path(assembledPath->second)
+                : providerCachedModelPath(cacheDir, projection, lease->ciphertextDigest));
             spec.path = cachedModelPath.string();
             if (!std::filesystem::is_regular_file(cachedModelPath))
               throw std::runtime_error("DI_PROVIDER_ARTIFACT_MATERIALIZATION_MISSING");
           }
-          if (lease.cacheHit() || diskCacheHit->load(std::memory_order_relaxed))
+          if (templateHit)
             metrics->templateHits.fetch_add(1, std::memory_order_relaxed);
+          if (assembledDiskHit)
+            metrics->assembledDiskHits.fetch_add(1, std::memory_order_relaxed);
           spec.lifetime = std::make_shared<ProviderArtifactLease>(std::move(lease));
         }
       }
@@ -2323,6 +2343,7 @@ ProviderCounters Provider::counters() const noexcept
   result.sourceFetches = m_state->metrics->sourceFetches.load(std::memory_order_relaxed);
   result.assemblies = m_state->metrics->assemblies.load(std::memory_order_relaxed);
   result.templateHits = m_state->metrics->templateHits.load(std::memory_order_relaxed);
+  result.assembledDiskHits = m_state->metrics->assembledDiskHits.load(std::memory_order_relaxed);
   result.runnersCreated = m_state->metrics->runnersCreated.load(std::memory_order_relaxed);
   if (m_state->artifactCache)
     result.activeLeases = m_state->artifactCache->counters().activeLeases;

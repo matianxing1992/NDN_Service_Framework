@@ -101,8 +101,9 @@ public:
   std::shared_ptr<const PreparedProviderArtifact> get() const noexcept { return m_artifact; }
 
   // Internal Provider factory path: metadata only; the cached copy never
-  // carries a plaintext path.  The Provider derives a per-request path from
-  // the content-addressed artifact digest and verifies it before use.
+  // carries a live lease or plaintext path field.  The Provider revalidates
+  // the immutable assembledCachePath under its configured cache root before
+  // opening the local model.
   std::shared_ptr<const NativeModelRunnerSpec> runnerSpec() const noexcept
   {
     return m_runnerSpec;

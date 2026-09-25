@@ -128,7 +128,7 @@ keyFor(const NativeSelectionProjectionV3& projection,
   key.quantization = "none";
   key.layoutDigest = nativePlanningDigest("spec189-layout");
   key.artifactProfile = nativePlanningDigest("spec189-profile");
-  key.securityDomain = "spec189";
+  key.securityDomain = projection.securityPolicySnapshotDigest;
   key.protectionEpoch = projection.assembly.protectionEpoch;
   if (projection.hasGrantBinding) {
     key.protectionIdentity = projection.provider + "|" + projection.grantName + "|" +

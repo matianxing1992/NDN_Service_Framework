@@ -399,6 +399,7 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
       key.backendAbi != projection.assembly.backendAbi ||
       key.precision != projection.assembly.precision ||
       key.quantization != projection.assembly.quantization ||
+      key.securityDomain != projection.securityPolicySnapshotDigest ||
       key.protectionEpoch != projection.assembly.protectionEpoch)
     throw cacheError("DI_PROVIDER_ARTIFACT_KEY_MISMATCH",
                      "cache identity is not bound to the authenticated Selection projection");
