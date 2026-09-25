@@ -172,7 +172,7 @@ def build(bld):
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm sqlite3 GSTREAMER',
                 cxxflags=uav_cxxflags,
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+                install_path='${BINDIR}')
 
     bld.program(name='UavGroundStationApp',
                 target='UavGroundStationApp',
@@ -193,7 +193,7 @@ def build(bld):
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm GSTREAMER',
                 cxxflags=uav_cxxflags,
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+                install_path='${BINDIR}')
 
     bld.program(name='UavSensorStreamNode',
                 target='UavSensorStreamNode',
@@ -204,7 +204,7 @@ def build(bld):
                 includes=['..', '../NDNSF-UAV-APP/shared'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+                install_path='${BINDIR}')
 
     # Spec191 native source/compute process.  Video decoding and real CPU
     # tracking remain in the bounded Python worker; this binary owns only the
@@ -219,7 +219,19 @@ def build(bld):
                 includes=['..', '../NDNSF-UAV-APP/shared'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+                install_path='${BINDIR}')
+
+    # Spec191's Python worker and display runner are installed beside the
+    # native tracking applications.  MiniNDN must never import either one
+    # from this checkout or from the build tree.
+    bld.install_files(
+        '${LIBEXECDIR}/ndnsf-uav/tracking',
+        [bld.path.parent.find_node(path) for path in [
+            'NDNSF-UAV-APP/tracking/tracking_worker.py',
+            'NDNSF-UAV-APP/tracking/tracking_display.py',
+            'NDNSF-UAV-APP/tracking/motion_estimator.py',
+            'NDNSF-UAV-APP/tracking/motion_schema.py',
+        ]])
 
     bld.program(name='UavTrackingGroundStation',
                 target='UavTrackingGroundStation',
@@ -232,7 +244,7 @@ def build(bld):
                           '../NDNSF-UAV-APP/tracking'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
+                install_path='${BINDIR}')
 
     bld.program(name='App_WifiMobilityProvider',
                 target='App_WifiMobilityProvider',

@@ -33,11 +33,14 @@ DEFAULT_SOURCE = Path(os.environ.get(
 DEFAULT_MODEL = DEFAULT_SOURCE / "3UAVs.pt"
 DEFAULT_OUTPUT = ROOT / "results/uav-tracking/spec191-local"
 TOPOLOGY = Path(__file__).with_name("topology.conf")
-NATIVE_BINARIES = (
-    ROOT / "build/examples/UavTrackingNode",
-    ROOT / "build/examples/App_ServiceController",
-    ROOT / "build/examples/UavTrackingGroundStation",
+REQUIRED_NATIVE_PROGRAMS = (
+    "UavTrackingNode",
+    "App_ServiceController",
+    "UavTrackingGroundStation",
 )
+DEFAULT_TRACKING_LIBEXEC = Path(
+    os.environ.get("NDNSF_UAV_TRACKING_LIBEXEC",
+                   "/usr/local/libexec/ndnsf-uav/tracking"))
 
 sys.path.insert(0, str(Path(__file__).parent))
 from tracking_artifacts import ArtifactError, validate_real_assets  # noqa: E402
@@ -86,6 +89,15 @@ def _effective_paths(source: Path, model: Path, output: Path) -> tuple[Path, Pat
     return source, model, output
 
 
+def _installed_program(name: str) -> str:
+    """Resolve a program from the installed PATH, never from the checkout."""
+    return shutil.which(name) or name
+
+
+def _installed_tracking_script(name: str) -> Path:
+    return DEFAULT_TRACKING_LIBEXEC / name
+
+
 FAULTS = frozenset({"none", "missing-view", "bad-content", "bad-identity", "stale-epoch",
                     "worker-failure", "response-loss", "late-response-loss", "cancel", "display-failure",
                     "display-loss-after-ready", "window-close", "eos"})
@@ -98,10 +110,10 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
               "--window-count", str(window_count))
     display = "headless" if headless else "windows"
     fault_args = () if fault == "none" else ("--fault", fault)
-    controller = str(root / "build/examples/App_ServiceController")
-    ground_station = str(root / "build/examples/UavTrackingGroundStation")
-    tracking_node = str(root / "build/examples/UavTrackingNode")
-    display_runner = str(root / "NDNSF-UAV-APP/tracking/tracking_display.py")
+    controller = _installed_program("App_ServiceController")
+    ground_station = _installed_program("UavTrackingGroundStation")
+    tracking_node = _installed_program("UavTrackingNode")
+    display_runner = str(_installed_tracking_script("tracking_display.py"))
     worker_root = output / "private/compute/worker"
     return [
         # Controller and GS are separate identities/processes in the same
@@ -151,7 +163,7 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
         ProcessSpec("compute", "compute", "/example/uav/compute", root,
                     (tracking_node, "--role", "compute", "--display", display,
                      "--model", str(model), "--worker-script",
-                     str(root / "NDNSF-UAV-APP/tracking/tracking_worker.py"),
+                     str(_installed_tracking_script("tracking_worker.py")),
                      "--motion-dir", str(motion_dir),
                      *common, *fault_args),
                     output / "private/compute"),
@@ -354,8 +366,17 @@ def preflight(plan: dict[str, Any], *, run: bool, headless: bool) -> dict[str, A
             import minindn  # noqa: F401
         except Exception as error:  # pragma: no cover - host dependent
             errors.append(f"MiniNDN import unavailable: {type(error).__name__}: {error}")
-        errors.extend(f"missing native binary: {path}" for path in NATIVE_BINARIES
-                      if not path.is_file())
+        errors.extend(
+            f"missing installed native binary/program: {name}"
+            for name in REQUIRED_NATIVE_PROGRAMS
+            if shutil.which(name) is None)
+        errors.extend(
+            f"missing installed tracking script: {path}"
+            for path in (_installed_tracking_script("tracking_worker.py"),
+                         _installed_tracking_script("tracking_display.py"),
+                         _installed_tracking_script("motion_estimator.py"),
+                         _installed_tracking_script("motion_schema.py"))
+            if not path.is_file())
         if os.geteuid() != 0:
             errors.append("MiniNDN run requires root privileges")
         if not headless and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
@@ -490,7 +511,10 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             # interrupted MiniNDN run.
             f"export NDNSF_CONTROLLER_GENERATION_STATE={shlex.quote(str(generation_state))}",
             f"export NDN_CLIENT_TRANSPORT={shlex.quote('unix://' + str(socket))}",
-            f"export LD_LIBRARY_PATH={shlex.quote(str(ROOT / 'build') + ':/usr/local/lib')}",
+            # Installed binaries carry the $ORIGIN/.. RPATH.  Keep only the
+            # system installation closure here; a checkout/build path would
+            # violate the MiniNDN runtime boundary.
+            f"export LD_LIBRARY_PATH={shlex.quote(os.environ.get('NDNSF_UAV_LIBRARY_PATH', '/usr/local/lib'))}",
             # Keep application logging separate from MiniNDN/NFD startup. A
             # global NDN_LOG would be inherited by NFD and can make NFD reject
             # an application logger selector as malformed configuration.
