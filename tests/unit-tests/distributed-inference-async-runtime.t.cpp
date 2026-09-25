@@ -4049,6 +4049,77 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
   BOOST_CHECK_EQUAL(runtime.decodeStateSnapshot().entries, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorOverlapsRunnerPreparationWithInputWait)
+{
+  NativeProviderRuntime runtime(1, 8);
+  const auto identity = exactStateIdentity("overlap-request", 1,
+                                           "overlap-generation");
+  auto io = std::make_shared<BlockingDependencyIo>();
+  const DependencyEdge activation(
+    "activation-input", "/upstream", identity.roleName,
+    "activation-input");
+  auto runnerCalls = std::make_shared<std::atomic<std::size_t>>(0);
+  auto runner = makeNativeModelRunner(
+    [runnerCalls] (const RoleExecutionContext&) {
+      runnerCalls->fetch_add(1);
+      return std::map<std::string, TensorBundle>{};
+    });
+  std::promise<void> preparationStarted;
+  auto preparationStartedFuture = preparationStarted.get_future();
+
+  NativeExecutionPlan plan;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole[identity.roleName] = identity.providerIdentity;
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "overlap-session";
+  config.requestId = identity.requestId;
+  config.lineagePlanDigest = stateDigest('0');
+  config.localProvider = identity.providerIdentity;
+  config.role = identity.roleName;
+  config.initialInputs = {
+    {"input_ids", makeEncodedTensorBundle(
+      "prompt", {NamedTensor{"input_ids", TensorElementType::Int64, {1, 1},
+                               rawTensorPayload<std::int64_t>({11})}})}};
+  config.maxEpochs = 2;
+  config.stateIdentityTemplate = identity;
+  config.positionPolicyDigest = identity.positionDigest;
+  config.samplingDigest = stateDigest('1');
+  config.roleSpecFactory = [activation, role = identity.roleName]
+    (std::size_t) {
+      return RoleSpec(role, {activation}, {});
+    };
+  config.prepareRunner = [runner, &preparationStarted] {
+    preparationStarted.set_value();
+    return runner;
+  };
+  config.stopCheck = [runnerCalls] {
+    return runnerCalls->load() > 0
+      ? std::optional<NativeEpochStopReason>{NativeEpochStopReason::Cancelled}
+      : std::nullopt;
+  };
+
+  auto coordination = std::async(
+    std::launch::async,
+    [config = std::move(config)] () mutable {
+      return runNativeEpochCoordinator(std::move(config));
+    });
+  BOOST_REQUIRE(preparationStartedFuture.wait_for(std::chrono::seconds(2)) ==
+                std::future_status::ready);
+
+  io->publishOutput(
+    "overlap-session", activation,
+    makeEncodedTensorBundle(
+      "activation-input",
+      {NamedTensor{"activation", TensorElementType::Float32, {1, 1},
+                   rawTensorPayload<float>({1.0f})}}));
+  BOOST_CHECK_EXCEPTION(
+    coordination.get(), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "ATTEMPT_CANCELLED";
+    });
+  BOOST_CHECK_EQUAL(runnerCalls->load(), 1U);
+}
+
 BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRejectsEveryPredecessorIdentityMutation)
 {
   NativeProviderRuntime runtime(1);

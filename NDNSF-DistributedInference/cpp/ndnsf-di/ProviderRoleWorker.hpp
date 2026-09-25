@@ -183,6 +183,16 @@ public:
     RoleExecutionContext::StreamEventSink eventSink = {},
     std::function<void()> executionGuard = {});
 
+  /**
+   * Queue post-Selection runner preparation on the bounded Provider worker.
+   * The returned future carries the one prepared runner; it does not execute
+   * the role.  This lets a coordinator overlap preparation with dependency
+   * waiting without creating an unbounded per-request thread.
+   */
+  std::future<std::shared_ptr<NativeModelRunner>>
+  prepareRunnerAsync(NativeRunnerPreparation prepareRunner,
+                     std::function<void()> executionGuard = {});
+
   std::future<ProviderRoleResult>
   executeCollectiveAsync(std::string sessionId,
                          RoleSpec role,
@@ -228,6 +238,13 @@ private:
     InputFetchTiming timing;
   };
 
+  struct PreparationItem
+  {
+    NativeRunnerPreparation prepareRunner;
+    std::shared_ptr<std::promise<std::shared_ptr<NativeModelRunner>>> promise;
+    std::function<void()> executionGuard;
+  };
+
   std::future<ProviderRoleResult>
   executeAsyncImpl(std::string sessionId,
                    RoleSpec role,
@@ -244,6 +261,9 @@ private:
 
   void
   execute(const WorkItem& item);
+
+  void
+  executePreparation(const PreparationItem& item);
 
   void
   scheduleWhenInputsReady(WorkItem item, std::vector<PendingInput> pendingInputs);
@@ -283,6 +303,7 @@ private:
   mutable std::mutex m_mutex;
   std::condition_variable m_cv;
   std::deque<WorkItem> m_queue;
+  std::deque<PreparationItem> m_preparationQueue;
   std::vector<std::thread> m_workers;
   std::unique_ptr<DependencyWaitScheduler> m_dependencyWaitScheduler;
   std::mutex m_exactForwardCacheMutex;

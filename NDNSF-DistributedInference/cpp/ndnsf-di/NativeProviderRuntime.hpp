@@ -378,6 +378,11 @@ public:
     RoleExecutionContext::StreamEventSink eventSink = {},
     std::function<void()> executionGuard = {});
 
+  std::future<std::shared_ptr<NativeModelRunner>>
+  prepareRunnerAsync(
+    ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
+    std::function<void()> executionGuard = {});
+
   ProviderRoleWorkerSnapshot
   snapshot() const;
 

@@ -859,18 +859,19 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
   }
 
   if (config.prepareRunner) {
-    // Keep preparation lazy and on the selected role's worker. Callback
-    // copies must share ownership: copying a mutable lambda with a runner
-    // value would otherwise recreate the ONNX session on every token.
-    // This slot belongs only to this coordinator invocation (role/attempt).
-    // roleFuture.get() below serializes all accesses, while shared ownership
-    // keeps the slot alive until the last queued worker callback is released.
-    auto slot = std::make_shared<std::shared_ptr<NativeModelRunner>>();
-    config.prepareRunner = [prepare = std::move(config.prepareRunner), slot] {
-      if (!*slot) {
-        *slot = prepare();
-      }
-      return *slot;
+    // Selection/grant/runtime validation is complete before this point. Queue
+    // exactly one preparation on the bounded Provider worker while epoch-zero
+    // dependency fetches wait. Every epoch consumes the same shared future;
+    // no second assembly or session is created by callback copies.
+    throwIfStopped(config);
+    const auto preparationGuard =
+      [stopCheck = config.stopCheck, executionGuard = config.executionGuard] {
+        throwIfStopped(stopCheck, executionGuard);
+      };
+    auto preparedRunner = config.runtime.prepareRunnerAsync(
+      std::move(config.prepareRunner), preparationGuard).share();
+    config.prepareRunner = [preparedRunner] {
+      return preparedRunner.get();
     };
   }
 

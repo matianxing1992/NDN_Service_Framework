@@ -1338,6 +1338,15 @@ NativeProviderRuntime::executePreparedRoleAsync(
                               std::move(eventSink), std::move(executionGuard));
 }
 
+std::future<std::shared_ptr<NativeModelRunner>>
+NativeProviderRuntime::prepareRunnerAsync(
+  ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
+  std::function<void()> executionGuard)
+{
+  return m_worker.prepareRunnerAsync(std::move(prepareRunner),
+                                     std::move(executionGuard));
+}
+
 std::future<ProviderRoleResult>
 NativeProviderRuntime::executeRoleAsyncImpl(
   std::string sessionId,

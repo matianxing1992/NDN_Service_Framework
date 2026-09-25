@@ -330,6 +330,37 @@ ProviderRoleWorker::executePreparedAsync(
                           std::move(executionGuard));
 }
 
+std::future<std::shared_ptr<NativeModelRunner>>
+ProviderRoleWorker::prepareRunnerAsync(
+  NativeRunnerPreparation prepareRunner,
+  std::function<void()> executionGuard)
+{
+  if (!prepareRunner) {
+    throw std::invalid_argument(
+      "ProviderRoleWorker requires a runner preparation callback");
+  }
+  auto promise = std::make_shared<
+    std::promise<std::shared_ptr<NativeModelRunner>>>();
+  auto future = promise->get_future();
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_stopping) {
+      promise->set_exception(std::make_exception_ptr(std::logic_error(
+        "ProviderRoleWorker is stopping")));
+      return future;
+    }
+    if (m_queue.size() + m_preparationQueue.size() >= m_readyQueueCapacity) {
+      promise->set_exception(std::make_exception_ptr(std::runtime_error(
+        "ProviderRoleWorker preparation queue is full")));
+      return future;
+    }
+    m_preparationQueue.push_back(PreparationItem{
+      std::move(prepareRunner), std::move(promise), std::move(executionGuard)});
+  }
+  m_cv.notify_one();
+  return future;
+}
+
 std::future<ProviderRoleResult>
 ProviderRoleWorker::executeCollectiveAsync(
   std::string sessionId,
@@ -753,6 +784,8 @@ ProviderRoleWorker::snapshot() const
   std::lock_guard<std::mutex> lock(m_mutex);
   ProviderRoleWorkerSnapshot snapshot;
   snapshot.workerCount = m_workers.size();
+  // Preserve the public meaning of readyQueueDepth: preparation work is
+  // bounded by the same capacity but is not a role admitted to execution.
   snapshot.readyQueueDepth = m_queue.size();
   snapshot.readyQueueCapacity = m_readyQueueCapacity;
   const auto waitSnapshot = m_dependencyWaitScheduler->snapshot();
@@ -872,23 +905,62 @@ void
 ProviderRoleWorker::workerLoop()
 {
   while (true) {
-    WorkItem item;
+    std::optional<WorkItem> item;
+    std::optional<PreparationItem> preparation;
     {
       std::unique_lock<std::mutex> lock(m_mutex);
-      m_cv.wait(lock, [&] { return m_stopping || !m_queue.empty(); });
-      if (m_stopping && m_queue.empty()) {
+      m_cv.wait(lock, [&] {
+        return m_stopping || !m_queue.empty() || !m_preparationQueue.empty();
+      });
+      if (m_stopping && m_queue.empty() && m_preparationQueue.empty()) {
         return;
       }
-      item = std::move(m_queue.front());
-      m_queue.pop_front();
-      ++m_activeWorkers;
+      if (!m_preparationQueue.empty()) {
+        preparation.emplace(std::move(m_preparationQueue.front()));
+        m_preparationQueue.pop_front();
+      }
+      else {
+        item.emplace(std::move(m_queue.front()));
+        m_queue.pop_front();
+        ++m_activeWorkers;
+      }
     }
-    execute(item);
+    if (preparation) {
+      executePreparation(*preparation);
+      continue;
+    }
+    execute(*item);
     {
       std::lock_guard<std::mutex> lock(m_mutex);
       if (m_activeWorkers > 0) {
         --m_activeWorkers;
       }
+    }
+  }
+}
+
+void
+ProviderRoleWorker::executePreparation(const PreparationItem& item)
+{
+  try {
+    if (item.executionGuard) {
+      item.executionGuard();
+    }
+    auto runner = item.prepareRunner();
+    if (!runner) {
+      throw std::runtime_error(
+        "Provider runner preparation returned no NativeModelRunner");
+    }
+    if (item.executionGuard) {
+      item.executionGuard();
+    }
+    item.promise->set_value(std::move(runner));
+  }
+  catch (...) {
+    try {
+      item.promise->set_exception(std::current_exception());
+    }
+    catch (const std::future_error&) {
     }
   }
 }
