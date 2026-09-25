@@ -613,9 +613,14 @@ BOOST_AUTO_TEST_CASE(PreSplitPlacementFiltersAndDeterministicallyBindsOneProvide
   BOOST_CHECK_NO_THROW(proposal.validate(snapshot, candidate));
 
   NativePlanSealingInputs inputs;
-  inputs.artifacts = {{{role, "/canonical/model"}}, {{role, digest("artifact")}},
-                       digest("manifest"), digest("recipe"), snapshot.requestId,
-                       snapshot.attempt, modelDescriptor.contentDigest, graphDigest};
+  inputs.artifacts.sourceByRole = {{role, "/canonical/model"}};
+  inputs.artifacts.artifactDigestByRole = {{role, digest("artifact")}};
+  inputs.artifacts.manifestDigest = digest("manifest");
+  inputs.artifacts.recipeDigest = digest("recipe");
+  inputs.artifacts.requestId = snapshot.requestId;
+  inputs.artifacts.attempt = snapshot.attempt;
+  inputs.artifacts.modelDigest = modelDescriptor.contentDigest;
+  inputs.artifacts.graphDigest = graphDigest;
   inputs.requesterIdentity = "/requester";
   inputs.protectionEpoch = "protected-v1";
   inputs.expiresAtMs = 2000000000000ULL;
@@ -763,10 +768,16 @@ BOOST_AUTO_TEST_CASE(PlacementAssignsDistinctRoleSpecificProvidersAndSeals)
   BOOST_CHECK_EQUAL(proposal.assignment.providerByRole.at(fixture.first), "provider-a");
   BOOST_CHECK_EQUAL(proposal.assignment.providerByRole.at(fixture.second), "provider-b");
   NativePlanSealingInputs inputs;
-  inputs.artifacts = {{{fixture.first, "/canonical/first"}, {fixture.second, "/canonical/second"}},
-    {{fixture.first, digest("first-artifact")}, {fixture.second, digest("second-artifact")}},
-    digest("manifest"), digest("recipe"), fixture.snapshot.requestId, fixture.snapshot.attempt,
-    fixture.snapshot.model.contentDigest, fixture.snapshot.graph.graphDigest};
+  inputs.artifacts.sourceByRole = {{fixture.first, "/canonical/first"},
+                                   {fixture.second, "/canonical/second"}};
+  inputs.artifacts.artifactDigestByRole = {{fixture.first, digest("first-artifact")},
+                                           {fixture.second, digest("second-artifact")}};
+  inputs.artifacts.manifestDigest = digest("manifest");
+  inputs.artifacts.recipeDigest = digest("recipe");
+  inputs.artifacts.requestId = fixture.snapshot.requestId;
+  inputs.artifacts.attempt = fixture.snapshot.attempt;
+  inputs.artifacts.modelDigest = fixture.snapshot.model.contentDigest;
+  inputs.artifacts.graphDigest = fixture.snapshot.graph.graphDigest;
   inputs.requesterIdentity = "/requester";
   inputs.protectionEpoch = "protected-v1";
   inputs.expiresAtMs = 2000000000000ULL;

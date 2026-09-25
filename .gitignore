@@ -20,35 +20,11 @@ pythonWrapper/build/
 pythonWrapper/*.egg-info/
 .ndn/
 
-# Generated/local outputs
-docs/
-!docs/
-docs/*
-!docs/native-build-parallelism.md
-!docs/native-dependency-closure.md
-!docs/build-and-test.md
-!docs/README.md
-!docs/architecture.md
-!docs/failure-log.md
-!docs/ndnsf-core-app-boundary.md
-!docs/NDNSF-DI-runtime-workflow.md
-!docs/NDNSF-REPO/
-!docs/NDNSF-UAV/
-docs/NDNSF-REPO/**/*.aux
-docs/NDNSF-REPO/**/*.log
-docs/NDNSF-REPO/**/*.nav
-docs/NDNSF-REPO/**/*.out
-docs/NDNSF-REPO/**/*.snm
-docs/NDNSF-REPO/**/*.toc
-docs/NDNSF-UAV/**/*.aux
-docs/NDNSF-UAV/**/*.log
-docs/NDNSF-UAV/**/*.nav
-docs/NDNSF-UAV/**/*.out
-docs/NDNSF-UAV/**/*.snm
-docs/NDNSF-UAV/**/*.toc
-!docs/reports/
-docs/reports/*
-!docs/reports/negative_ack_early_stop_minindn_20260702.md
+# Documentation and Spec Kit material are local working files.  Nothing under
+# these roots should be newly added to Git; durable source changes belong in
+# the code/tests or in a separately agreed release artifact.
+/docs/
+/specs/
 results/
 examples/interop/ndn-svs-v3/build/
 .spec110-build/

@@ -27,6 +27,9 @@ inline const ndn::Name SERVICE_MAVLINK_ANALYZE_SNAPSHOT_SUFFIX("/UAV/MAVLink/Ana
 inline const ndn::Name SERVICE_PREFLIGHT_CHECKLIST_SUFFIX("/UAV/Preflight/Checklist");
 inline const ndn::Name SERVICE_GS_OBJECT_DETECTION("/UAV/GS/ObjectDetection");
 inline const ndn::Name SERVICE_INCIDENT_ANALYZE("/UAV/Incident/Analyze");
+inline const ndn::Name SERVICE_TRACKING_SOURCE("/UAV/Tracking/SourceWindow");
+inline const ndn::Name SERVICE_TRACKING_COMPUTE("/UAV/Tracking/ComputeWindow");
+inline const ndn::Name SERVICE_TRACKING_WINDOW("/UAV/Tracking/Window");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_LEASE("/UAV/GS/OperatorAuthority/Lease");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION("/UAV/GS/OperatorAuthority/Revocation");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_AUDIT("/UAV/GS/OperatorAuthority/Audit");

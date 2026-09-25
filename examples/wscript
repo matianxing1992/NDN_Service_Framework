@@ -206,6 +206,34 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    # Spec191 native source/compute process.  Video decoding and real CPU
+    # tracking remain in the bounded Python worker; this binary owns only the
+    # NDNSF Provider boundary and never opens the compute node's source files.
+    bld.program(name='UavTrackingNode',
+                target='UavTrackingNode',
+                source=[
+                    '../NDNSF-UAV-APP/tracking/UavTrackingNode.cpp',
+                    '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                    '../NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.cpp',
+                ],
+                includes=['..', '../NDNSF-UAV-APP/shared'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='UavTrackingGroundStation',
+                target='UavTrackingGroundStation',
+                source=[
+                    '../NDNSF-UAV-APP/tracking/UavTrackingGroundStation.cpp',
+                    '../NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
+                    '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                ],
+                includes=['..', '../NDNSF-UAV-APP/shared',
+                          '../NDNSF-UAV-APP/tracking'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     bld.program(name='App_WifiMobilityProvider',
                 target='App_WifiMobilityProvider',
                 source=['App_IntermittentProvider.cpp'],

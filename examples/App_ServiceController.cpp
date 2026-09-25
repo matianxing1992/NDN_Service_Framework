@@ -290,11 +290,15 @@ main(int argc, char** argv)
     }
 
     std::cout << "ServiceController started..." << std::endl;
-    if (runForMs == 0) {
-      controller.run();
-    }
-    else {
-      controller.start();
+    // The textual started marker means only that the process constructed its
+    // controller.  Protected clients must wait until start() has completed
+    // the prefix-registration and PUBPARAMS readiness barrier.  Keep the
+    // marker separate so launchers cannot confuse process liveness with
+    // network/authorization readiness.
+    controller.start();
+    std::cout << "NDNSF_CONTROLLER_READY identity="
+              << controllerPrefix.toUri() << std::endl;
+    if (runForMs != 0) {
       const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(runForMs);
       while (std::chrono::steady_clock::now() < deadline) {
@@ -303,6 +307,12 @@ main(int argc, char** argv)
       }
       face.getIoContext().stop();
       std::cout << "NDNSF_CONTROLLER_STOPPED reason=run-for-ms" << std::endl;
+    }
+    else {
+      while (true) {
+        face.getIoContext().restart();
+        face.processEvents(ndn::time::milliseconds(1000));
+      }
     }
     return 0;
   }

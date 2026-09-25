@@ -1,0 +1,53 @@
+name /example/uav/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /example/uav/drone/UAV1
+        allow
+        {
+            /UAV/Tracking/Window
+            /UAV/Tracking/Window/ROLE/Camera-UAV1
+        }
+    }
+    provider-policy
+    {
+        for /example/uav/drone/UAV2
+        allow
+        {
+            /UAV/Tracking/Window
+            /UAV/Tracking/Window/ROLE/Camera-UAV2
+        }
+    }
+    provider-policy
+    {
+        for /example/uav/drone/UAV3
+        allow
+        {
+            /UAV/Tracking/Window
+            /UAV/Tracking/Window/ROLE/Camera-UAV3
+        }
+    }
+    provider-policy
+    {
+        for /example/uav/compute
+        allow
+        {
+            /UAV/Tracking/Window
+            /UAV/Tracking/Window/ROLE/Tracking-Compute
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /example/uav/gs
+        allow
+        {
+            /UAV/Tracking/Window
+        }
+    }
+}

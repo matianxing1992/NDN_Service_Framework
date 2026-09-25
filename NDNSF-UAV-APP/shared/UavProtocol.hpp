@@ -103,6 +103,8 @@ struct UavEvidenceReference
   std::string contentDigest;
   std::string contentType;
   uint64_t retentionDeadlineMs = 0;
+  /** Digest of request-scoped telemetry/calibration metadata, when supplied. */
+  std::string motionMetadataDigest;
 
   bool isValid(std::string* reason = nullptr) const;
   Fields toFields(const std::string& prefix = {}) const;
