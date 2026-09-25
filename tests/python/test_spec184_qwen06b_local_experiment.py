@@ -375,6 +375,20 @@ def test_native_qwen_tensor_bundle_declares_one_int64_tensor():
     assert payload[size_offset + 8:] == struct.pack("<qq", 7, 8)
 
 
+def test_native_qwen_default_inputs_use_the_pinned_chat_template_fixture():
+    module = load_native_module()
+    assert module.DEFAULT_QWEN_INPUT_TOKEN_IDS == (
+        151644, 872, 198, 9707, 151645, 198, 151644, 77091, 198,
+        151667, 271, 151668, 271,
+    )
+    assert module.DEFAULT_QWEN_DELTA_TOKEN_IDS == (
+        198, 151644, 872, 198, 45764, 23811, 1549, 13, 151645, 198,
+        151644, 77091, 198, 151667, 271, 151668, 271,
+    )
+    assert module.DEFAULT_QWEN_INPUT_TOKEN_IDS != (1,)
+    assert module.DEFAULT_QWEN_DELTA_TOKEN_IDS != (0,)
+
+
 def test_native_materialize_input_uses_hardlink_for_readonly_source(tmp_path: Path):
     module = load_native_module()
     source = tmp_path / "source.bin"

@@ -83,6 +83,20 @@ MAX_ROUTING_WAIT_S = 120.0
 MAX_QWEN_ROUNDS = 8
 MAX_STAGE_COUNT = 32
 
+# Qwen3-0.6B's pinned tokenizer fixture for a minimal non-thinking user turn
+# followed by the assistant generation prompt.  The previous fallbacks [1]
+# and [0] are valid tensor integers but are not a Qwen chat-template input;
+# using them made a real model run measure an invalid prompt rather than
+# model generation.  Operators can still override both sequences explicitly.
+DEFAULT_QWEN_INPUT_TOKEN_IDS = (
+    151644, 872, 198, 9707, 151645, 198, 151644, 77091, 198,
+    151667, 271, 151668, 271,
+)
+DEFAULT_QWEN_DELTA_TOKEN_IDS = (
+    198, 151644, 872, 198, 45764, 23811, 1549, 13, 151645, 198,
+    151644, 77091, 198, 151667, 271, 151668, 271,
+)
+
 
 def _raise_keyboard_interrupt(signum, _frame) -> None:
     """Route TERM through main's finally block so transient staging is cleaned."""
@@ -1580,8 +1594,12 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--max-new-tokens", type=int, default=2)
     parser.add_argument("--require-multi-token", action="store_true",
                         help="require native multi-token output ending at EOS or the token budget")
-    parser.add_argument("--input-token-ids", default="")
-    parser.add_argument("--delta-token-ids", default="0")
+    parser.add_argument(
+        "--input-token-ids", default="",
+        help="comma-separated Qwen token IDs; defaults to the pinned chat-template fixture")
+    parser.add_argument(
+        "--delta-token-ids", default="",
+        help="comma-separated continuation token IDs; defaults to the pinned chat-template fixture")
     parser.add_argument("--negative-parent", action="store_true")
     parser.add_argument(
         "--revoke-after-first-round", action="store_true",
@@ -2022,9 +2040,11 @@ def main(argv=None, *, _supervised=False) -> int:
     requester_dir = run_root / "requester"
     catalog_path = requester_dir / "catalog.json"
     catalog_path.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
-    input_ids = parse_csv_ints(args.input_token_ids) if args.input_token_ids else [1]
+    input_ids = (parse_csv_ints(args.input_token_ids)
+                 if args.input_token_ids else list(DEFAULT_QWEN_INPUT_TOKEN_IDS))
     (requester_dir / "input.bin").write_bytes(tensor_bundle(input_ids))
-    delta_ids = parse_csv_ints(args.delta_token_ids)
+    delta_ids = (parse_csv_ints(args.delta_token_ids)
+                 if args.delta_token_ids else list(DEFAULT_QWEN_DELTA_TOKEN_IDS))
     (requester_dir / "delta.bin").write_bytes(tensor_bundle(delta_ids))
     policy = run_root / "policy.conf"
     policy.write_text(policy_text(provider_names))

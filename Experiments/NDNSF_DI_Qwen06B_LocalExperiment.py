@@ -663,7 +663,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-multi-token", action="store_true",
                         help="require each native round to produce multiple tokens or EOS")
     parser.add_argument("--input-token-ids", default="")
-    parser.add_argument("--delta-token-ids", default="0")
+    parser.add_argument("--delta-token-ids", default="")
     parser.add_argument("--negative-parent", action="store_true")
     parser.add_argument("--nlsr-wait-s", type=float, default=8.0)
     parser.add_argument("--startup-timeout-s", type=float, default=60.0)
