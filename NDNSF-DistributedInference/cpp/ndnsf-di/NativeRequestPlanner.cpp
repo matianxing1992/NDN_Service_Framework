@@ -3,10 +3,15 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <future>
 #include <initializer_list>
 #include <limits>
 #include <set>
+#include <sstream>
 
 namespace ndnsf::di {
 namespace {
@@ -110,6 +115,27 @@ std::uint64_t epochMs()
   if (value <= 0) throw std::runtime_error("invalid request wall clock");
   return static_cast<std::uint64_t>(value);
 }
+
+void
+logPlanPhase(const std::string& requestId, const char* phase,
+             std::chrono::steady_clock::time_point started) noexcept
+{
+  const auto* enabled = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+  if (enabled == nullptr || *enabled == '\0' || *enabled == '0')
+    return;
+  try {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - started).count();
+    std::ostringstream record;
+    record << "NDNSF_DI_NATIVE_PLAN_PHASE requestId=" << requestId
+           << " phase=" << phase << " duration_us=" << elapsed;
+    logRuntimeEvidence(record.str());
+  }
+  catch (...) {
+    // Timing is diagnostic only and must never change planning behavior.
+  }
+}
+
 class FrozenSelection final : public ndn_service_framework::ParticipantSelectionPolicy
 {
 public:
@@ -372,10 +398,12 @@ NativePlannedRequest planNativeRequestImpl(
       conversationTurn->parent.parentContextEpoch > 0)
     context.preferredProvidersByRole = conversationTurn->providersByRole;
   std::vector<NativeAdmittedOfferV3> offers;
+  auto phaseStarted = std::chrono::steady_clock::now();
   for (const auto& ack : closure.candidates) {
     if (encoded.recovery && ack.providerName.toUri() == encoded.recovery->failedProvider) continue;
     offers.push_back(admission.verify(ack, context, epochMs()));
   }
+  logPlanPhase(control.requestId, "admission_verify", phaseStarted);
   if (offers.empty()) throw std::runtime_error("DI_NATIVE_NO_ADMITTED_PROVIDER");
   const auto policyStart = std::chrono::steady_clock::now();
   const auto budgetDeadline = policyStart +
@@ -386,6 +414,7 @@ NativePlannedRequest planNativeRequestImpl(
   extensionControl.requireActive();
   bool usingPreparedPlanningCache = false;
   std::vector<NativeSplitCandidate> candidates;
+  phaseStarted = std::chrono::steady_clock::now();
   if (runtime.planningCache &&
       sameStrategyIdentity(runtime.planningCache->splitter, ports.splitterIdentity)) {
     usingPreparedPlanningCache = true;
@@ -399,6 +428,7 @@ NativePlannedRequest planNativeRequestImpl(
     candidates = ports.enumerate(model.descriptor, model.graph, runtime.budget,
                                  extensionControl);
   }
+  logPlanPhase(control.requestId, "candidate_enumeration", phaseStarted);
   control.requireActive();
   auto policyUsed = std::chrono::steady_clock::now() - policyStart;
   const auto policyLimit = std::chrono::milliseconds(runtime.budget.maxPolicyMs);
@@ -449,6 +479,7 @@ NativePlannedRequest planNativeRequestImpl(
       throw std::invalid_argument("native placement returned a foreign strategy identity");
     extensionControl.requireActive();
     validateNativeRolePlacement(proposal, roles, offers, epochMs());
+    logPlanPhase(control.requestId, "placement_and_role_validation", placementStart);
     NativeExecutionPlan execution = candidate.executionPlan;
     execution.serviceName = runtime.contract.serviceName;
     execution.modelName = model.descriptor.modelName;
@@ -558,7 +589,9 @@ NativePlannedRequest planNativeRequestImpl(
     }
     extensionControl.requireActive();
     NativePlanSealingInputs sealing;
+    phaseStarted = std::chrono::steady_clock::now();
     sealing.artifacts = preparation.ensureArtifacts(model, candidate, proposal, control);
+    logPlanPhase(control.requestId, "artifact_binding", phaseStarted);
     sealing.requesterIdentity = runtime.requesterIdentity;
     sealing.protectionEpoch = runtime.protectionEpoch;
     sealing.expiresAtMs = wireDeadlineMs;
@@ -574,9 +607,19 @@ NativePlannedRequest planNativeRequestImpl(
     for (const auto& role : roles)
       sealing.assemblyByRole.emplace(role.selectedRole, role);
     extensionControl.requireActive();
+    phaseStarted = std::chrono::steady_clock::now();
     auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
+    logPlanPhase(control.requestId, "plan_seal_core", phaseStarted);
     std::vector<NativeGrantBinding> grants;
     NativeGrantControl grantControl{std::chrono::system_clock::time_point(std::chrono::milliseconds(wireDeadlineMs)), cancelled};
+    phaseStarted = std::chrono::steady_clock::now();
+    // Grant acquisition is independently bound to each selected role. Start
+    // all role-local authority/publication operations together, but collect
+    // them in execution order so the sealed plan and every downstream digest
+    // remain deterministic. Each acquire retains its own current request,
+    // attempt, epoch, expiry and cancellation checks; no grant is cached.
+    std::vector<std::future<NativeGrantBinding>> grantFutures;
+    grantFutures.reserve(execution.roles.size());
     for (const auto& role : execution.roles) {
       control.requireActive();
       const auto offer = std::find_if(offers.begin(), offers.end(), [&](const auto& value) {
@@ -585,14 +628,36 @@ NativePlannedRequest planNativeRequestImpl(
       if (offer == offers.end()) {
         throw std::invalid_argument("selected role Provider is outside the admitted offers");
       }
-      grants.push_back(runtime.grants->acquire(core, *offer, runtime.security, grantControl, role));
+      const auto grantsClient = runtime.grants;
+      const auto selectedOffer = *offer;
+      const auto security = runtime.security;
+      const auto selectedRole = role;
+      grantFutures.emplace_back(std::async(std::launch::async,
+        [grantsClient, &core, selectedOffer, security, grantControl, selectedRole] {
+          return grantsClient->acquire(core, selectedOffer, security, grantControl, selectedRole);
+        }));
     }
+    grants.resize(grantFutures.size());
+    std::exception_ptr firstGrantError;
+    for (std::size_t index = 0; index < grantFutures.size(); ++index) {
+      try {
+        grants[index] = grantFutures[index].get();
+      }
+      catch (...) {
+        if (!firstGrantError)
+          firstGrantError = std::current_exception();
+      }
+    }
+    if (firstGrantError) std::rethrow_exception(firstGrantError);
+    control.requireActive();
+    logPlanPhase(control.requestId, "grant_acquire", phaseStarted);
     NativePlannedRequest result;
     result.sealed = NativePlanSealer::finalizeSecurity(core, grants, runtime.security);
     NativeProjectionContext projection{epochMs(), runtime.noProgressMs, runtime.maxSegments};
     projection.logicalInputDigest = encoded.logicalInputDigest;
     projection.inputLayoutDigest = runtime.inputLayoutDigest;
     std::map<std::string, NativeRoleProjectionInputs> projections;
+    phaseStarted = std::chrono::steady_clock::now();
     if (execution.dependencies.empty())
       projections = NativePlanProjectionBuilder::build(result.sealed, candidate, offers, projection);
     else {
@@ -602,6 +667,7 @@ NativePlannedRequest planNativeRequestImpl(
       NativeGroupKeyAdmission keys(admission, selectedAcks, context, epochMs());
       projections = NativeGroupProjectionBuilder::build(result.sealed, candidate, keys, projection);
     }
+    logPlanPhase(control.requestId, "projection_build", phaseStarted);
     if (conversationTurn) {
       bindConversationProjections(projections, result.sealed, *conversationTurn,
         encoded.requestContractDigest, runtime.contract.serviceName,

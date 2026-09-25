@@ -799,6 +799,146 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   BOOST_CHECK_EQUAL(grantPublications, 1U);
 }
 
+BOOST_AUTO_TEST_CASE(RequestPlannerAcquiresIndependentRoleGrantsConcurrently)
+{
+  const auto f = oracle();
+  const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
+    [](const auto& value) { return value.at("name") == "rank_cover"; });
+  BOOST_REQUIRE(sample != f.at("seal_cases").end());
+  Input input(f, *sample);
+  BOOST_REQUIRE_EQUAL(input.roles.size(), 2U);
+  auto preparedRoles = input.roles;
+  for (auto& role : preparedRoles)
+    role.selectedRole = role.role + "#" + std::to_string(role.rank);
+
+  class Splitter final : public NativeModelSplitStrategy {
+  public:
+    explicit Splitter(NativeSplitCandidate candidate) : value(std::move(candidate)) {}
+    NativeStrategyIdentity identity() const override { return value.splitter; }
+    std::vector<NativeSplitCandidate> enumerate(const NativeModelDescriptor&, const NativeGraphSnapshot&,
+        const NativeCandidateBudget&) const override { return {value}; }
+    NativeSplitCandidate value;
+  } splitter(input.split);
+
+  NativeArtifactBinding binding;
+  binding.manifestDigest = input.inspected.modelManifestDigest;
+  binding.recipeDigest = preparedRoles.front().recipeDigest;
+  for (const auto& role : preparedRoles) {
+    binding.sourceByRole[role.selectedRole] = "/catalog/root";
+    binding.artifactNameByRole[role.selectedRole] = "/catalog/artifact";
+    binding.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
+  }
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->freeze();
+  NativeRequestPreparation preparation(registry, {},
+    [&](const auto&, const auto&, const auto& roles, const auto&) {
+      auto result = binding;
+      result.sourceByRole.clear();
+      result.artifactNameByRole.clear();
+      result.artifactDigestByRole.clear();
+      for (const auto& role : roles) {
+        result.sourceByRole[role.selectedRole] = "/catalog/root";
+        result.artifactNameByRole[role.selectedRole] = "/catalog/artifact";
+        result.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
+      }
+      return result;
+    },
+    [&](const auto&, const auto&, const auto&) { return preparedRoles; });
+  NativeOfferAdmission admission(f.at("policy").dump(), {{f.at("key_id"), f.at("public_pem")}},
+                                 f.at("candidate"));
+  const auto key = [](char c) {
+    const std::string bytes(32, c);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+      reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free);
+  };
+  NativeGrantIssuerConfig issuerConfig;
+  issuerConfig.authorityIdentity = "/authority";
+  issuerConfig.requesterIdentity = "/requester";
+  issuerConfig.protectionEpoch = input.roles.front().protectionEpoch;
+  issuerConfig.keyId = "fixture-key";
+  issuerConfig.authorityPrivateKey = key('a');
+  issuerConfig.requesterPublicKey = key('b');
+  issuerConfig.allowedModelManifests = {binding.manifestDigest};
+  for (const auto& offer : input.offers)
+    issuerConfig.recipientPublicKeys[offer.observation().provider] = key('c');
+  issuerConfig.contentKey = [](const auto&, const auto&) {
+    return std::vector<std::uint8_t>(32, 42);
+  };
+  std::string authorityPublic(32, '\0');
+  std::size_t publicSize = authorityPublic.size();
+  BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuerConfig.authorityPrivateKey.get(),
+    reinterpret_cast<unsigned char*>(authorityPublic.data()), &publicSize), 1);
+  auto issuer = std::make_shared<NativeArtifactGrantIssuer>(issuerConfig);
+  std::atomic<unsigned> activeIssues{0};
+  std::atomic<unsigned> peakIssues{0};
+  std::atomic<unsigned> issueCalls{0};
+  const auto updatePeak = [&peakIssues](unsigned value) {
+    auto observed = peakIssues.load(std::memory_order_relaxed);
+    while (observed < value &&
+           !peakIssues.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {}
+  };
+  NativeAuthenticatedGrantClient::Issue issue =
+    [issuer, &activeIssues, &issueCalls, updatePeak]
+    (const auto& request, const auto& manifest, std::uint64_t expiresAtMs,
+     const auto&) {
+      ++issueCalls;
+      const auto active = activeIssues.fetch_add(1) + 1;
+      updatePeak(active);
+      struct Guard {
+        std::atomic<unsigned>& active;
+        ~Guard() { active.fetch_sub(1); }
+      } guard{activeIssues};
+      std::this_thread::sleep_for(std::chrono::milliseconds(80));
+      return issuer->issue(request, request.issuedAtMs, expiresAtMs, manifest);
+    };
+  std::atomic<unsigned> grantPublications{0};
+  auto grants = std::make_shared<NativeAuthenticatedGrantClient>(
+    "/requester", key('b'), "/authority", authorityPublic,
+    issuerConfig.protectionEpoch, std::move(issue),
+    [&grantPublications](const auto& name, const auto&, const auto&) {
+      ++grantPublications;
+      return name;
+    });
+  NativeRequestRuntime runtime;
+  runtime.contract = {input.context.serviceName, "task", input.inspected.descriptor.adapterId,
+    input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"),
+    nativePlanningDigest("task")};
+  runtime.requesterIdentity = "/requester";
+  runtime.protectionEpoch = issuerConfig.protectionEpoch;
+  runtime.security = {nativePlanningDigest("runtime-policy"), true};
+  runtime.budget.maxPolicyMs = 1000;
+  runtime.grants = std::move(grants);
+  NativeApplicationInput application;
+  application.taskName = "task";
+  application.payload = {1};
+  application.inputSchemaDigest = input.inspected.descriptor.adapter.inputSchemaDigest;
+  application.optionsSchemaDigest = input.inspected.descriptor.adapter.optionsSchemaDigest;
+  const auto encoded = encodeNativeRequestEnvelope(input.inspected.descriptor, application,
+    runtime.contract, input.context.requestId, 1, input.context.deadlineMs);
+  ndn_service_framework::CollaborationAckClosure closure;
+  closure.requestId = ndn::Name(input.context.requestId);
+  closure.candidates = input.acks;
+  closure.digest = input.ackDigest;
+  auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  NativeRequestControl control{input.context.requestId, 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [cancelled] { return cancelled->load(); }};
+
+  std::string rejection;
+  try {
+    (void)planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+      NativePreSplitFirstPlacement(), preparation, admission, closure, control,
+      input.context.deadlineMs, cancelled);
+  }
+  catch (const std::exception& error) {
+    rejection = error.what();
+  }
+  BOOST_CHECK_EQUAL(rejection, "projection has no unique terminal response owner");
+  BOOST_CHECK_EQUAL(issueCalls.load(), input.roles.size());
+  BOOST_CHECK_EQUAL(grantPublications.load(), input.roles.size());
+  BOOST_CHECK_GE(peakIssues.load(), 2U);
+}
+
 void runPublicClientScenario(int scenario)
 {
   using namespace ndn_service_framework;
