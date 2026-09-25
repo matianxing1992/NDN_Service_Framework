@@ -760,6 +760,30 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   BOOST_CHECK_EQUAL(selected.front().provider.toUri(), planned.terminalProvider);
   BOOST_CHECK_EQUAL(selected.front().artifactDataName.toUri(), "/catalog/root");
   BOOST_CHECK(!selected.front().assignmentPayload.empty());
+
+  NativeConversationTurn leaseTurn;
+  leaseTurn.parent.conversationId = "conversation-grant-lease-1";
+  leaseTurn.parent.parentContextEpoch = 0;
+  leaseTurn.parent.serviceName = input.context.serviceName;
+  leaseTurn.parent.requestContractDigest = encoded.requestContractDigest;
+  leaseTurn.parent.retentionDeadlineMs = 2'000'000'060'000ULL;
+  leaseTurn.successorContextEpoch = 1;
+  leaseTurn.requestId = input.context.requestId;
+  leaseTurn.executionRequestId = input.context.requestId;
+  leaseTurn.attempt = 1;
+  const auto leaseFirst = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    NativePreSplitFirstPlacement(), preparation, admission, closure, control,
+    input.context.deadlineMs, cancelled, &leaseTurn);
+  BOOST_REQUIRE(leaseFirst.grantLease.has_value());
+  const auto grantPublicationsAfterFirstLease = grantPublications;
+  leaseTurn.grantLease = leaseFirst.grantLease;
+  const auto leaseSecond = planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
+    NativePreSplitFirstPlacement(), preparation, admission, closure, control,
+    input.context.deadlineMs, cancelled, &leaseTurn);
+  BOOST_REQUIRE(leaseSecond.grantLease.has_value());
+  BOOST_CHECK_EQUAL(grantPublications, grantPublicationsAfterFirstLease);
+  BOOST_CHECK_EQUAL(leaseSecond.sealed.grants.size(), leaseFirst.sealed.grants.size());
+
   // Exercise real planner forwarding before publication. The probe deliberately
   // stops at the strategy boundary; it is not a successful inference fixture.
   struct PreferenceObserved {};
@@ -795,8 +819,8 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   cancelled->store(true);
   BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
     NativePreSplitFirstPlacement(), preparation, admission, closure, control, input.context.deadlineMs, cancelled), std::runtime_error);
-  BOOST_CHECK_EQUAL(publications, 1U);
-  BOOST_CHECK_EQUAL(grantPublications, 1U);
+  BOOST_CHECK_EQUAL(publications, 3U);
+  BOOST_CHECK_EQUAL(grantPublications, 2U);
 }
 
 BOOST_AUTO_TEST_CASE(RequestPlannerAcquiresIndependentRoleGrantsConcurrently)
@@ -1042,6 +1066,17 @@ void runPublicClientScenario(int scenario)
   auto user = std::make_shared<User>(face, ndn::Name("/client"),
     requesterCert, authorityCert, "examples/trust-any.conf");
   user->faceOwner = std::move(faceOwner);
+  if (scenario == 13) {
+    // The LocalMock fixture must explicitly provision Core's existing
+    // REQUEST-LARGE wrapped-key state before collaboration externalization.
+    // Without this test-only bootstrap the production path correctly tries
+    // NAC-ABE wrapping, but the fixture has no Controller/AA to answer it.
+    user->useSigningKeyChainForTest(keyChain);
+    user->prepareHybridSendKeyForTest(ndn::Name("/service"), "REQUEST-LARGE");
+    user->applyPermissionResponse(test::makePermissionResponse(
+      ndn::Name("/requester"), tlv::UserPermission,
+      ndn::Name("/provider/a"), ndn::Name("/service")));
+  }
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationContinuation> conversation;
   if (scenario == 13) {
