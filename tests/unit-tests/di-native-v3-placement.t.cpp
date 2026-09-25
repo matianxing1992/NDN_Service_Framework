@@ -1066,17 +1066,19 @@ void runPublicClientScenario(int scenario)
   auto user = std::make_shared<User>(face, ndn::Name("/client"),
     requesterCert, authorityCert, "examples/trust-any.conf");
   user->faceOwner = std::move(faceOwner);
-  if (scenario == 13) {
-    // The LocalMock fixture must explicitly provision Core's existing
-    // REQUEST-LARGE wrapped-key state before collaboration externalization.
-    // Without this test-only bootstrap the production path correctly tries
-    // NAC-ABE wrapping, but the fixture has no Controller/AA to answer it.
-    user->useSigningKeyChainForTest(keyChain);
-    user->prepareHybridSendKeyForTest(ndn::Name("/service"), "REQUEST-LARGE");
-    user->applyPermissionResponse(test::makePermissionResponse(
-      ndn::Name("/requester"), tlv::UserPermission,
-      ndn::Name("/provider/a"), ndn::Name("/service")));
-  }
+  // Every public-client scenario reaches Core plan commit and therefore needs
+  // the same existing REQUEST-LARGE wrapped-key and policy state. Without
+  // this test-only bootstrap the production path correctly tries NAC-ABE
+  // wrapping, but the LocalMock fixture has no Controller/AA to answer it.
+  user->prepareHybridSendKeyForTest(ndn::Name("/service"), "REQUEST-LARGE");
+  user->applyPermissionResponse(test::makePermissionResponse(
+    ndn::Name("/requester"), tlv::UserPermission,
+    ndn::Name("/provider/a"), ndn::Name("/service")));
+  // This fixture needs the requester key for protected signing, but it does
+  // not need the asynchronous NAC consumer/producer bootstrap.  The latter
+  // belongs to full integration fixtures and leaves cross-scenario work on
+  // the LocalMock Face.
+  user->useSigningKeyChainForSigningOnlyForTest(keyChain);
   std::shared_ptr<NativeConversationCoordinator> conversations;
   std::optional<NativeConversationContinuation> conversation;
   if (scenario == 13) {
