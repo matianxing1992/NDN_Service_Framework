@@ -45,9 +45,11 @@ public:
   observe(std::uint64_t sequence)
   {
     if (m_processed.count(sequence) != 0) {
+      ++m_duplicateCount;
       return Decision::Duplicate;
     }
     if (m_hasHighest && sequence <= m_highest) {
+      ++m_reorderedCount;
       return Decision::Reordered;
     }
     m_processed.insert(sequence);
@@ -56,10 +58,24 @@ public:
     return Decision::Accepted;
   }
 
+  std::size_t
+  duplicateCount() const noexcept
+  {
+    return m_duplicateCount;
+  }
+
+  std::size_t
+  reorderedCount() const noexcept
+  {
+    return m_reorderedCount;
+  }
+
 private:
   std::set<std::uint64_t> m_processed;
   std::uint64_t m_highest = 0;
   bool m_hasHighest = false;
+  std::size_t m_duplicateCount = 0;
+  std::size_t m_reorderedCount = 0;
 };
 
 struct NativeProviderHandlerConfig

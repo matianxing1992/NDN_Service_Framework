@@ -3480,10 +3480,27 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               logRuntimeEvidence(record.str());
             };
             // waitFor returns the complete matching collaboration history on each
-            // poll.  Keep control handling idempotent at the wire-sequence level so
-            // a committed turn emits one acknowledgement per requester control,
-            // rather than replaying the same historical COMMIT until the deadline.
+            // poll.  Ask for one more record than the last complete history so a
+            // retained history does not make waitFor return immediately and cause
+            // a tight replay scan until the deadline. Keep control handling
+            // idempotent at the wire-sequence level as a second safety fence.
             NativeProviderControlSequenceGuard controlSequenceGuard;
+            const auto logControlReplaySummary = [&] {
+              if (controlSequenceGuard.duplicateCount() == 0 &&
+                  controlSequenceGuard.reorderedCount() == 0) {
+                return;
+              }
+              std::ostringstream record;
+              record << "NDNSF_DI_CONVERSATION_CONTROL"
+                     << " event=replay-summary"
+                     << " requestId=" << ctx.sessionId()
+                     << " conversationId=" << turn.conversationId
+                     << " role=" << finalized.role
+                     << " duplicateCount=" << controlSequenceGuard.duplicateCount()
+                     << " reorderedCount=" << controlSequenceGuard.reorderedCount();
+              logRuntimeEvidence(record.str());
+            };
+            std::size_t nextControlCount = 1;
             while (true) {
               const auto now = static_cast<std::uint64_t>(
                 std::max<long long>(0, epochMs()));
@@ -3493,7 +3510,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               const auto remaining = static_cast<int>(std::max<std::uint64_t>(
                 1, std::min<std::uint64_t>(100, controlDeadline - now)));
               const auto controls = ctx.waitFor(
-                config.conversationStateKeyScope, controlTopic, 1, remaining);
+                config.conversationStateKeyScope, controlTopic,
+                nextControlCount, remaining);
+              if (!controls.empty()) {
+                if (controls.size() == std::numeric_limits<std::size_t>::max()) {
+                  throw std::runtime_error("PROVIDER_CONVERSATION_CONTROL_HISTORY_OVERFLOW");
+                }
+                nextControlCount = controls.size() + 1;
+              }
               for (const auto& item : controls) {
                 if (!item.producer.equals(ctx.requesterName()) ||
                     item.producerRole != "user-control-v1") {
@@ -3502,11 +3526,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 }
                 const auto sequenceDecision = controlSequenceGuard.observe(item.sequence);
                 if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Duplicate) {
-                  logControl("rejected", {}, "duplicate_sequence", item.sequence);
                   continue;
                 }
                 if (sequenceDecision == NativeProviderControlSequenceGuard::Decision::Reordered) {
-                  logControl("rejected", {}, "reordered_sequence", item.sequence);
                   continue;
                 }
                 ConversationPromotionControl control;
@@ -3547,6 +3569,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                     }
                     if (control.action == "FINALIZE") {
                       logControl("accepted", control.action, "retention_closed", item.sequence);
+                      logControlReplaySummary();
                       return;
                     }
                     if (control.action == "COMMIT") {
@@ -3620,9 +3643,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             // A lost FINALIZE cannot prove that the requester failed to commit.
             // Keep a committed successor until its original retention deadline.
             if (conversationPromotionCommitted) {
+              logControlReplaySummary();
               logControl("timeout", "FINALIZE", "retention_preserved", 0);
               return;
             }
+            logControlReplaySummary();
             rollbackConversationPromotion();
             logControl("timeout", "COMMIT", "uncommitted_rollback", 0);
             throw std::runtime_error(
