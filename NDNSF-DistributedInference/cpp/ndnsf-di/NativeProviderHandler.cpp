@@ -2187,7 +2187,29 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       stageAttemptEpoch = selectionProjection
         ? std::to_string(selectionProjection->attempt) : "";
       auto groupCoordinator = config.groupCoordinator;
-      if (config.groupCoordinatorFactory) {
+      std::future<std::shared_ptr<ProviderGroupCoordinator>> groupCoordinatorFuture;
+      const bool canOverlapGroupPreparation =
+        selectionProjection &&
+        selectionProjection->selectedRole.protectionEpoch != "plaintext-v1" &&
+        config.overlapGroupCoordinatorFactory &&
+        config.groupCoordinatorFactory &&
+        config.protectedRuntimeFactory;
+      if (canOverlapGroupPreparation) {
+        // The production group factory only reads immutable context identity and
+        // assignment fields.  Copy the fields into the worker so the expensive
+        // TPM unwrap cannot hold up the grant fetch.  No execution path consumes
+        // the result until the explicit get() below.
+        const auto groupFactory = config.groupCoordinatorFactory;
+        const auto groupFields = assignmentFields;
+        logProviderBoundaryStdout("GROUP_COORDINATOR_FACTORY_BEGIN", stageRequestId,
+                                  ctx.localProvider().toUri(), role);
+        groupCoordinatorFuture = std::async(
+          std::launch::async,
+          [groupFactory, &ctx, groupFields] () mutable {
+            return groupFactory(ctx, groupFields);
+          });
+      }
+      else if (config.groupCoordinatorFactory) {
         groupCoordinator = config.groupCoordinatorFactory(ctx, assignmentFields);
       }
       if (selectionProjection &&
@@ -2202,6 +2224,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           ctx, *selectionProjection, groupCoordinator);
         logProviderBoundaryStdout("PROTECTED_RUNTIME_FACTORY_DONE", stageRequestId,
                                   ctx.localProvider().toUri(), role);
+        if (groupCoordinatorFuture.valid()) {
+          // This is the authorization join: no binding validation, assembly,
+          // runner creation, or execution can proceed with a missing or failed
+          // request-scoped coordinator.
+          groupCoordinator = groupCoordinatorFuture.get();
+          logProviderBoundaryStdout("GROUP_COORDINATOR_FACTORY_DONE", stageRequestId,
+                                    ctx.localProvider().toUri(), role);
+        }
         if (!protectedRuntime ||
             protectedRuntime->state() != ProtectedRuntimeState::GrantVerified) {
           // Preparation requires a newly verified grant, not a drained runtime

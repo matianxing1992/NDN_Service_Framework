@@ -33,10 +33,6 @@ namespace ndnsf::di {
 struct NativeCanonicalOnnxAssemblerOptions
 {
   std::string cacheDir = "/tmp/ndnsf-di-native-artifacts";
-  // Cross-process admission lock for the model-sized cold assembly working
-  // set. Empty derives a lock beside the cache root; Provider supplies the
-  // shared production path explicitly. Cache hits never acquire this lock.
-  std::filesystem::path coldAssemblyLockPath;
   // Explicit diagnostic mode for a verified, system-wide plaintext source
   // cache.  Empty means the normal Repo-backed path.
   std::filesystem::path cacheCompatibilitySourceDir;

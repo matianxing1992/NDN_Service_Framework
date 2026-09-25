@@ -1,5 +1,24 @@
 # Spec 设计变更记录
 
+## Spec190 B190-189 protected factory critical-path repair — 2026-09-25
+
+- **Status**: `PARTIAL`；修复并观测了 Selection 到 protected runtime factory 的请求前置
+  空窗，完整 T011 性能资格仍未完成。
+- **Owner / principles**: standalone Provider owns the immutable tokenizer decoder cache;
+  `NativeProviderHandler` owns request-scoped protected grant/binding validation and the
+  request-local group coordinator join. Current grant, Selection, placement, lease, and
+  execution checks remain request-scoped. No model bytes, KV, grant key, or request content enters
+  the process-local decoder cache.
+- **Delta**: the production-only `overlapGroupCoordinatorFactory` configuration permits
+  immutable group preparation to overlap protected grant acquisition; the handler joins it before
+  binding validation. `NativeProtectedProvider` may bind immutable capability commitments while
+  the coordinator is pending, but final coordinator equality/authentication remains mandatory.
+  The executable prewarms a SHA-256-bound tokenizer decoder before serving and reuses it only for
+  the same digest; a changed digest is revalidated and rebuilt.
+- **Contract impact**: no NDN wire, Repo, Selection, grant, ONNX IO/KV, public service API, or
+  current/target PDF contract changed. This is an internal Provider configuration/lifecycle
+  optimization. Evidence: [B190-189](../specs/190-multiturn-latency/evidence/b190-189.md).
+
 ## Spec190 B190-184 prepare-time planning contract cache — 2026-09-25
 
 - **Status**: `PARTIAL`；将 immutable ONNX semantic/candidate/role planning facts 前移到

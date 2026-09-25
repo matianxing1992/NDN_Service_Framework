@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include <openssl/sha.h>
 #include <chrono>
 #include <memory>
@@ -25,6 +26,42 @@ std::string digest(const std::string& bytes)
     out += "0123456789abcdef"[c >> 4]; out += "0123456789abcdef"[c & 15];
   }
   return out;
+}
+
+void bindGroupMetadataFromSelection(
+  ProtectedRuntimeBindingV1& binding,
+  const NativeSelectionProjectionV3& projection,
+  const std::map<std::string, std::string>& fields,
+  const std::shared_ptr<ProviderGroupCoordinator>& group)
+{
+  if (group && group->hasCapability()) {
+    const auto& capability = group->capability();
+    binding.capabilityDigest = capability.capabilityDigest;
+    binding.groupId = capability.groupId;
+    binding.groupEpoch = capability.epoch;
+    binding.epochKeyId = capability.epochKeyId;
+    return;
+  }
+
+  // During the production overlap path the request-scoped coordinator is
+  // still doing its local TPM unwrap.  The protected grant binding needs only
+  // the immutable capability commitments at this point; the authenticated
+  // coordinator is joined and compared before execution below.
+  const auto field = fields.find("groupCapabilityV1");
+  if (field == fields.end()) {
+    return;
+  }
+  const auto decodedWire = ndn_service_framework::selectionGatedUnhex(field->second);
+  auto capability = ProviderGroupCoordinator::decodeCapability(
+    ProviderGroupBytes(decodedWire.begin(), decodedWire.end()));
+  if (capability.requestId != projection.requestId ||
+      capability.planDigest != projection.planDigest) {
+    throw reject("group capability request/plan binding mismatch");
+  }
+  binding.capabilityDigest = capability.capabilityDigest;
+  binding.groupId = capability.groupId;
+  binding.groupEpoch = capability.epoch;
+  binding.epochKeyId = capability.epochKeyId;
 }
 } // namespace
 
@@ -84,13 +121,7 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
       binding.mustFetchEndpointDigests.insert(endpoint.endpointDigest);
       binding.mustFetchProducerByEndpoint[endpoint.endpointDigest] = endpoint.producerRole;
     }
-    if (group && group->hasCapability()) {
-      const auto& capability = group->capability();
-      binding.capabilityDigest = capability.capabilityDigest;
-      binding.groupId = capability.groupId;
-      binding.groupEpoch = capability.epoch;
-      binding.epochKeyId = capability.epochKeyId;
-    }
+    bindGroupMetadataFromSelection(binding, projection, fields, group);
     const auto now = nowMs();
     if (now >= projection.deadlineMs) throw reject("request expired before grant acquisition");
     keys.shouldCancel = [&ctx] { return ctx.isStreamed() && ctx.streamCancelled(); };

@@ -78,6 +78,17 @@ using namespace ndnsf::di;
 
 volatile std::sig_atomic_t g_shutdownRequested = 0;
 
+// Tokenizer decoding is provider-process immutable preparation.  Keep one
+// digest-bound Rust tokenizer owner for all requests handled by this process;
+// recreating it after every Selection needlessly occupies the critical path
+// before protected-runtime preparation begins.
+struct NativeGenerationDecoderCache
+{
+  std::mutex mutex;
+  std::string digest;
+  std::optional<NativeGenerationTextDecoders> decoders;
+};
+
 void
 logProviderPreparationProgress(const NativeSelectionProjectionV3& projection,
                                const char* phase,
@@ -2028,12 +2039,28 @@ main(int argc, char** argv)
             config.requireGenerationTextOutput = true;
             if (!options.tokenizerJson.empty()) {
               const auto tokenizerPath = options.tokenizerJson;
+              const auto tokenizerCache =
+                std::make_shared<NativeGenerationDecoderCache>();
+              const auto localTokenizerDigest = sha256File(tokenizerPath);
+              NativeStandaloneTokenizerOptions tokenizerOptions;
+              tokenizerOptions.tokenizerPath = tokenizerPath;
+              tokenizerCache->digest = localTokenizerDigest;
+              tokenizerCache->decoders = makeNativeStandaloneTokenizerDecoders(
+                std::move(tokenizerOptions), localTokenizerDigest);
               config.generationDecodersFactory =
-                [tokenizerPath](const std::string& tokenizerDigest) {
+                [tokenizerPath, tokenizerCache](const std::string& tokenizerDigest) {
+                  std::lock_guard<std::mutex> lock(tokenizerCache->mutex);
+                  if (tokenizerCache->decoders &&
+                      tokenizerCache->digest == tokenizerDigest) {
+                    return *tokenizerCache->decoders;
+                  }
                   NativeStandaloneTokenizerOptions tokenizerOptions;
                   tokenizerOptions.tokenizerPath = tokenizerPath;
-                  return makeNativeStandaloneTokenizerDecoders(
+                  auto decoders = makeNativeStandaloneTokenizerDecoders(
                     std::move(tokenizerOptions), tokenizerDigest);
+                  tokenizerCache->digest = tokenizerDigest;
+                  tokenizerCache->decoders = std::move(decoders);
+                  return *tokenizerCache->decoders;
                 };
             }
             const auto assemblyCacheDir = options.artifactCacheDir;
@@ -2381,6 +2408,11 @@ main(int argc, char** argv)
                 coordinator->installCapability(std::move(capability), {}, true);
                 return coordinator;
               };
+            // The callback only reads immutable CollaborationContext identity
+            // and assignment data.  Let its TPM unwrap overlap protected-grant
+            // acquisition; NativeProviderHandler joins it before binding
+            // validation and any assembly/runner execution.
+            config.overlapGroupCoordinatorFactory = true;
             // spec182 CD-014: the host injects its shared lease table; the
             // executable only declares that the service wants one.
             if (options.requireExecutionLease) {

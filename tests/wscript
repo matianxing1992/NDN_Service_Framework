@@ -499,22 +499,6 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()],
                 install_path=None)
 
-    # Spec190 cold-assembly admission regression.  The fixture holds the
-    # production lock in one process and invokes the production assembler from
-    # a second process; material fetch must not begin before admission.
-    bld.program(target='../spec190-cold-assembly-gate',
-                name='spec190-cold-assembly-gate',
-                source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-cold-assembly-gate.t.cpp')],
-                includes=framework_includes,
-                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' +
-                    framework_use + ' ONNXRUNTIME',
-                defines=['HAVE_TESTS'],
-                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
-                linkflags=['-Wl,--no-relax'],
-                rpath=[bld.bldnode.abspath()],
-                install_path=None)
-
     # Exercise the real native coordinator/sampler with typed logits fixtures.
     bld.program(target='../spec189-logits-dtype', name='spec189-logits-dtype',
                 source=[bld.path.parent.find_node('tests/main.cpp'),

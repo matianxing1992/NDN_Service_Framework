@@ -16,7 +16,6 @@
 #include <array>
 #include <atomic>
 #include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -24,7 +23,6 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <fcntl.h>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -36,7 +34,6 @@
 #include <stdexcept>
 #include <string>
 #include <sys/types.h>
-#include <sys/file.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -462,96 +459,6 @@ void requireActiveAssembly(const NativeCanonicalOnnxAssemblerOptions& options,
   if (options.protectedRuntime)
     options.protectedRuntime->withContentKey(nowMs(), [] (const auto&) {});
 }
-
-class NativeColdAssemblyGate
-{
-public:
-  NativeColdAssemblyGate(const NativeCanonicalOnnxAssemblerOptions& options,
-                         const NativeSelectionProjectionV3& projection)
-  {
-    auto lockPath = options.coldAssemblyLockPath;
-    if (lockPath.empty()) {
-      const auto cachePath = options.cacheDir.empty()
-        ? std::filesystem::temp_directory_path() / "ndnsf-di-native-artifacts"
-        : std::filesystem::path(options.cacheDir);
-      const auto absoluteCachePath = cachePath.is_absolute()
-        ? cachePath : std::filesystem::absolute(cachePath);
-      lockPath = absoluteCachePath.parent_path() / "cold-assembly.lock";
-    }
-    std::error_code error;
-    if (!lockPath.parent_path().empty())
-      std::filesystem::create_directories(lockPath.parent_path(), error);
-    if (error) {
-      throw std::runtime_error(
-        "DI_NATIVE_COLD_ASSEMBLY_LOCK_DIRECTORY_FAILED: " + error.message());
-    }
-    m_fd = ::open(lockPath.c_str(),
-                  O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (m_fd < 0) {
-      throw std::runtime_error(
-        "DI_NATIVE_COLD_ASSEMBLY_LOCK_OPEN_FAILED: " +
-        std::string(std::strerror(errno)));
-    }
-    const auto deadline = std::chrono::steady_clock::now() +
-      std::chrono::milliseconds(options.assemblyTimeoutMs);
-    auto nextWaitReport = std::chrono::steady_clock::now();
-    bool reportedWait = false;
-    try {
-      while (::flock(m_fd, LOCK_EX | LOCK_NB) != 0) {
-        if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR) {
-          throw std::runtime_error(
-            "DI_NATIVE_COLD_ASSEMBLY_LOCK_FAILED: " +
-            std::string(std::strerror(errno)));
-        }
-        requireActiveAssembly(options, projection.deadlineMs);
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) {
-          throw std::runtime_error("DI_NATIVE_COLD_ASSEMBLY_ADMISSION_TIMEOUT");
-        }
-        if (!reportedWait || now >= nextWaitReport) {
-          logRuntimeEvidence("NDNSF_DI_COLD_ASSEMBLY_GATE state=WAIT path=" + lockPath.string());
-          if (options.reportProgress)
-            options.reportProgress("COLD_ASSEMBLY_WAIT", 0.0);
-          reportedWait = true;
-          nextWaitReport = now + std::chrono::seconds(2);
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
-      m_locked = true;
-      logRuntimeEvidence("NDNSF_DI_COLD_ASSEMBLY_GATE state=ENTERED path=" + lockPath.string());
-      if (options.reportProgress)
-        options.reportProgress("COLD_ASSEMBLY_ENTERED", 0.0);
-    }
-    catch (...) {
-      close();
-      throw;
-    }
-  }
-
-  NativeColdAssemblyGate(const NativeColdAssemblyGate&) = delete;
-  NativeColdAssemblyGate& operator=(const NativeColdAssemblyGate&) = delete;
-
-  ~NativeColdAssemblyGate() noexcept
-  {
-    close();
-  }
-
-private:
-  void close() noexcept
-  {
-    if (m_fd < 0)
-      return;
-    if (m_locked)
-      (void)::flock(m_fd, LOCK_UN);
-    (void)::close(m_fd);
-    m_fd = -1;
-    m_locked = false;
-  }
-
-private:
-  int m_fd = -1;
-  bool m_locked = false;
-};
 
 /**
  * Keep the authenticated Selection-status view alive while the native OA02
@@ -1525,11 +1432,9 @@ prepareNativeCanonicalOnnxRole(
   if (options.workerLocation.path.empty()) {
     throw std::runtime_error("DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING");
   }
-  // The caller reaches this function only after the recipe-addressed cache
-  // lookup missed (or when the cache is intentionally disabled). Serialize
-  // the model-sized cold working set across Provider processes, while leaving
-  // cache hits entirely outside the gate.
-  NativeColdAssemblyGate coldAssemblyGate(options, projection);
+  // The recipe-addressed cache is immutable and each miss writes through the
+  // existing atomic staging path.  Do not serialize independent Provider
+  // assemblies with a machine-wide process lock.
   const bool protectedRole = projection.assembly.protectionEpoch != "plaintext-v1";
   if (protectedRole) {
     if (!options.protectedRuntime || options.roleAssemblySpecDigest.empty()) {

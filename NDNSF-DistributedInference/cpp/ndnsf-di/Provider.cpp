@@ -2153,10 +2153,6 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
         logProviderPreparationProgress(projection, "FACTORY_ENTER", "onnx");
         NativeCanonicalOnnxAssemblerOptions options;
         options.cacheDir = cacheDir;
-        const auto cachePath = std::filesystem::path(cacheDir);
-        options.coldAssemblyLockPath =
-          (cachePath.is_absolute() ? cachePath : std::filesystem::absolute(cachePath))
-            .parent_path() / "cold-assembly.lock";
         options.providerIdentity = providerIdentity;
         options.assemblyTimeoutMs = static_cast<std::uint64_t>(
           std::max<std::int64_t>(1, assemblyTimeout.count()));

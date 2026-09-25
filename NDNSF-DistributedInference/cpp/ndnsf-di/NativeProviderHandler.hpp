@@ -182,6 +182,12 @@ struct NativeProviderHandlerConfig
   // and return a coordinator owned by this request.  A process-wide
   // groupCoordinator remains only for focused fixtures/backward compatibility.
   ProviderGroupCoordinatorFactory groupCoordinatorFactory;
+  // The production factory may be overlapped with protected-grant acquisition.
+  // The handler joins the request-local coordinator before binding validation;
+  // this only removes independent preparation latency from the critical path.
+  // Keep disabled for factories whose callback uses mutable CollaborationContext
+  // state beyond its immutable identity/assignment getters.
+  bool overlapGroupCoordinatorFactory = false;
   // Required for protected V3 roles. The factory fetches and verifies the
   // Selection-referenced KeyGrant, unwraps it inside the Provider boundary,
   // installs exact dataflow/capability bindings, and returns GrantVerified.
