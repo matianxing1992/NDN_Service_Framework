@@ -1050,11 +1050,25 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const auto cacheRoot = std::filesystem::path(options.cacheDir);
   const auto roleRoot = cacheRoot / (protectedRole ? "protected" : "assembled") / safeRole(
     projection.assembly.selectedRole);
-  const auto directory = roleRoot /
-    (protectedRole
-       ? protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
-                                    keyReferenceDigest)
-       : projection.assembly.recipeDigest.substr(7));
+  const auto stablePlaintextDirectory = cacheRoot / "assembled" / safeRole(
+    projection.assembly.selectedRole) / projection.assembly.recipeDigest.substr(7);
+  bool persistentPlaintextArtifact = false;
+  std::filesystem::path directory;
+  if (protectedRole && std::filesystem::is_directory(stablePlaintextDirectory)) {
+    // The stable local assembled cache is deliberately plaintext: the current
+    // Selection/grant remains the authorization boundary, while the immutable
+    // model identity is addressed by the recipe digest.  Do not bind this
+    // disk identity to a request-scoped ProtectedRuntime key reference.
+    directory = stablePlaintextDirectory;
+    persistentPlaintextArtifact = true;
+  }
+  else {
+    directory = roleRoot /
+      (protectedRole
+         ? protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
+                                      keyReferenceDigest)
+         : projection.assembly.recipeDigest.substr(7));
+  }
   std::error_code error;
   if (!std::filesystem::is_directory(directory, error) || error)
     return std::nullopt;
@@ -1067,7 +1081,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
 
   try {
     const auto modelPath = directory /
-      (protectedRole ? "model.onnx.cipher" : "model.onnx");
+      (protectedRole && !persistentPlaintextArtifact ? "model.onnx.cipher" : "model.onnx");
+    const auto ciphertextDigestPath = directory / "model.onnx.cipher.digest";
     const auto manifestPath = directory / "manifest.json";
     if (!std::filesystem::is_regular_file(modelPath) ||
         !std::filesystem::is_regular_file(manifestPath))
@@ -1076,6 +1091,9 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       return std::nullopt;
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, modelPath);
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, manifestPath);
+    if (protectedRole && !persistentPlaintextArtifact &&
+        std::filesystem::exists(ciphertextDigestPath))
+      requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, ciphertextDigestPath);
     const auto manifest = readJson(manifestPath);
     const auto assembledDigest = firstString(manifest, {"assembledModelDigest"});
     if (firstString(manifest, {"recipeDigest"}) != projection.assembly.recipeDigest ||
@@ -1095,10 +1113,11 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
         firstString(manifest, {"quantization"}) != projection.assembly.quantization ||
         firstString(manifest, {"layout"}) != projection.assembly.layout ||
         firstString(manifest, {"padding"}) != projection.assembly.padding ||
-        (protectedRole && firstString(manifest, {"keyReferenceDigest"}) !=
+        (protectedRole && !persistentPlaintextArtifact &&
+         firstString(manifest, {"keyReferenceDigest"}) !=
            keyReferenceDigest) ||
         !isSha256Digest(assembledDigest) ||
-        (!protectedRole && options.verifyCachedArtifactDigest &&
+        ((!protectedRole || persistentPlaintextArtifact) && options.verifyCachedArtifactDigest &&
           sha256File(modelPath, projection.assembly.maxAssembledBytes) != assembledDigest)) {
       discardCorruptEntry(directory);
       return std::nullopt;
@@ -1109,10 +1128,12 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     spec.role = projection.assembly.selectedRole;
     spec.kind = "onnx";
     spec.backend = projection.assembly.backend;
-    // Protected hits expose only the durable ciphertext descriptor.  Provider
-    // performs the current-runtime/AAD authentication and writes a fresh
-    // request-scoped plaintext staging file after this lookup succeeds.
-    spec.path = protectedRole ? std::string{} : modelPath.string();
+    // Encrypted protected hits expose only a durable ciphertext descriptor;
+    // the provider authenticates it against the current runtime and stages a
+    // request-scoped plaintext file. Stable plaintext hits are already
+    // digest-verified local model paths.
+    spec.path = protectedRole && !persistentPlaintextArtifact
+      ? std::string{} : modelPath.string();
     spec.metadata = {
         {"artifactDigest", projection.assembly.artifactDigest},
         {"fragmentDigest", projection.assembly.artifactDigest},
@@ -1133,17 +1154,60 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       {"maxNodes", std::to_string(projection.assembly.maxNodes)},
       {"assembledModelDigest", assembledDigest},
       {"assembledFrom", protectedRole
-        ? "protected-assembled-cache" : "canonical-root-post-selection-cache"},
+        ? (persistentPlaintextArtifact
+          ? "protected-assembled-plaintext-cache" : "protected-assembled-cache")
+        : "canonical-root-post-selection-cache"},
     };
-    if (!protectedRole)
+    if (!protectedRole || persistentPlaintextArtifact)
       spec.metadata["assembledCachePath"] = modelPath.string();
     if (protectedRole) {
-      spec.metadata["protectedCacheHit"] = "true";
-      spec.metadata["protectedArtifactPersistent"] = "true";
-      spec.metadata["protectedKeyReferenceDigest"] = keyReferenceDigest;
-      spec.metadata["encryptedArtifactPath"] = modelPath.string();
-      spec.metadata["encryptedArtifactDigest"] = sha256File(
-        modelPath, projection.assembly.maxAssembledBytes + 65536);
+      if (persistentPlaintextArtifact) {
+        spec.metadata["protectedCacheHit"] = "true";
+        spec.metadata["protectedArtifactPersistent"] = "true";
+        spec.metadata["protectedPlaintextPersistent"] = "true";
+      }
+      else {
+        std::string encryptedArtifactDigest;
+        bool persistLegacyDigest = false;
+        std::error_code digestError;
+        if (std::filesystem::is_regular_file(ciphertextDigestPath, digestError) &&
+            !digestError) {
+          const auto digestBytes = readFile(ciphertextDigestPath, 128);
+          encryptedArtifactDigest.assign(digestBytes.begin(), digestBytes.end());
+          if (!isSha256Digest(encryptedArtifactDigest)) {
+            discardCorruptEntry(directory);
+            return std::nullopt;
+          }
+        }
+        else if (digestError) {
+          throw std::runtime_error("DI_NATIVE_ASSEMBLY_CIPHERTEXT_DIGEST_UNREADABLE");
+        }
+        else {
+          // Entries written before the sidecar was introduced remain valid. The
+          // authenticated decrypt path still checks this digest; compute it once
+          // here so legacy entries retain the old fail-closed behavior.
+          encryptedArtifactDigest = sha256File(
+            modelPath, projection.assembly.maxAssembledBytes + 65536);
+          persistLegacyDigest = true;
+        }
+        if (persistLegacyDigest) {
+          const std::vector<std::uint8_t> digestBytes(
+            encryptedArtifactDigest.begin(), encryptedArtifactDigest.end());
+          std::unique_lock<std::mutex> finalizationLock(nativeAssemblyFinalizationMutex);
+          if (std::filesystem::exists(ciphertextDigestPath) &&
+              readFile(ciphertextDigestPath, 128) != digestBytes) {
+            throw std::runtime_error(
+              "DI_NATIVE_ASSEMBLY_CIPHERTEXT_DIGEST_CACHE_CONFLICT");
+          }
+          if (!std::filesystem::exists(ciphertextDigestPath))
+            writeFileAtomic(ciphertextDigestPath, digestBytes);
+        }
+        spec.metadata["protectedCacheHit"] = "true";
+        spec.metadata["protectedArtifactPersistent"] = "true";
+        spec.metadata["protectedKeyReferenceDigest"] = keyReferenceDigest;
+        spec.metadata["encryptedArtifactPath"] = modelPath.string();
+        spec.metadata["encryptedArtifactDigest"] = std::move(encryptedArtifactDigest);
+      }
     }
     if (projection.generationContract.enabled) {
         const auto& generation = projection.generationContract;
@@ -2319,6 +2383,10 @@ prepareNativeCanonicalOnnxRole(
         throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
       protectedKeyReferenceDigest = keyReference->digest();
     }
+    // The stable local cache is recipe-addressed and plaintext. Current
+    // Selection/grant validation still gates every lookup; a request-scoped
+    // key reference must not become the disk cache identity.
+    const bool persistentPlaintextArtifact = protectedRole;
     std::ostringstream manifest;
     manifest << "{\"schema\":\"ndnsf-di-assembled-onnx-v1\",\"modelName\":"
              << jsonEscape(modelName) << ",\"modelDigest\":"
@@ -2336,7 +2404,8 @@ prepareNativeCanonicalOnnxRole(
              << ",\"canonicalInitializerDigest\":"
              << jsonEscape(projection.assembly.canonicalInitializerDigest)
              << ",\"keyReferenceDigest\":"
-             << (protectedRole ? jsonEscape(protectedKeyReferenceDigest) : "\"\"")
+             << (protectedRole && !persistentPlaintextArtifact
+               ? jsonEscape(protectedKeyReferenceDigest) : "\"\"")
              << ",\"rank\":" << projection.assembly.rank
              << ",\"layerBegin\":" << projection.assembly.layerBegin
              << ",\"layerEnd\":" << projection.assembly.layerEnd
@@ -2377,7 +2446,6 @@ prepareNativeCanonicalOnnxRole(
     std::filesystem::path finalModel;
     std::filesystem::path encryptedArtifactPath;
     std::string encryptedArtifactDigest;
-    const bool persistentPlaintextArtifact = protectedRole && cacheCompatibilityMode;
     {
     logAssemblyProgressLine(projection, "CACHE_FINALIZATION_BEGIN", 0.92,
                             static_cast<std::uint64_t>(modelBytes.size()),
@@ -2463,6 +2531,16 @@ prepareNativeCanonicalOnnxRole(
           key, cipherPath, finalModel, context,
           projection.assembly.maxAssembledBytes, encryptedArtifactDigest);
       });
+      const auto ciphertextDigestPath = finalDir / "model.onnx.cipher.digest";
+      const std::vector<std::uint8_t> ciphertextDigestBytes(
+        encryptedArtifactDigest.begin(), encryptedArtifactDigest.end());
+      if (std::filesystem::exists(ciphertextDigestPath) &&
+          readFile(ciphertextDigestPath, 128) != ciphertextDigestBytes) {
+        throw std::runtime_error(
+          "DI_NATIVE_ASSEMBLY_CIPHERTEXT_DIGEST_CACHE_CONFLICT");
+      }
+      if (!std::filesystem::exists(ciphertextDigestPath))
+        writeFileAtomic(ciphertextDigestPath, ciphertextDigestBytes);
     }
     else if (std::filesystem::exists(finalModel) &&
              readFile(finalModel, projection.assembly.maxAssembledBytes) != modelBytes) {
@@ -2518,9 +2596,11 @@ prepareNativeCanonicalOnnxRole(
       {"assembledModelDigest", digest},
       {"assemblyManifestDigest", sha256Hex(manifestBytes)},
       {"assemblySignature", signature},
-      {"assembledFrom", cacheCompatibilityMode
-        ? "cache-compatibility-local-source"
-        : "canonical-root-post-selection"},
+      {"assembledFrom", protectedRole
+        ? "protected-assembled-plaintext-cache"
+        : (cacheCompatibilityMode
+          ? "cache-compatibility-local-source"
+          : "canonical-root-post-selection")},
     };
     // Carry the authenticated generation contract into the runner spec. The
     // provider-side preparation hook narrows the successor map to this local
@@ -2551,6 +2631,12 @@ prepareNativeCanonicalOnnxRole(
       spec.metadata["protectedArtifactPersistent"] = "true";
       spec.metadata["protectedCacheHit"] = "false";
       spec.metadata["protectedKeyReferenceDigest"] = protectedKeyReferenceDigest;
+    }
+    if (protectedRole && persistentPlaintextArtifact) {
+      spec.metadata["protectedArtifactPersistent"] = "true";
+      spec.metadata["protectedPlaintextPersistent"] = "true";
+      spec.metadata["protectedCacheHit"] = "false";
+      spec.metadata["assembledCachePath"] = finalModel.string();
     }
     bindNativeRunnerOutputScopes(projection, spec);
     requireActiveAssembly(options, projection.deadlineMs);

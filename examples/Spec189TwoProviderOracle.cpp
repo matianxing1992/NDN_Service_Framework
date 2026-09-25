@@ -534,11 +534,19 @@ validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility
       "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_MISS");
     const auto liveRunnerHits = recordsContaining(text,
       "NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_HIT");
+    const auto cacheAcquire = acquireHits.empty() ? std::string{} :
+      field(acquireHits.front(), "detail");
+    // A cold provider has a legitimate two-marker cache sequence: the
+    // recipe lookup misses, then the material fetch/assembly completes and
+    // publishes an assembled-built result. That is not an ambiguous cache
+    // outcome; it is the required cold path before runner publication.
+    const bool coldAssembly = acquireHits.size() == 1 && misses.size() == 1 &&
+      cacheAcquire == "assembled-built";
     if (liveRunnerHits.size() > 1 || acquireHits.size() > 1 ||
         legacyHits.size() > 1 || misses.size() > 1 ||
         (!liveRunnerHits.empty() &&
          (!acquireHits.empty() || !legacyHits.empty() || !misses.empty())) ||
-        (!acquireHits.empty() && !misses.empty()) ||
+        (!acquireHits.empty() && !misses.empty() && !coldAssembly) ||
         (acquireHits.empty() && !legacyHits.empty() && !misses.empty())) {
       throw std::runtime_error(
         "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=ambiguous-cache-result log=" +
@@ -564,6 +572,17 @@ validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility
       // all completed by the prior turn. Only the current authorization and
       // execution path remain observable before inference.
       return MaterialFetchObservation{};
+    }
+    if (coldAssembly) {
+      const auto& built = acquireHits.front();
+      if (field(built, "requestId") != placement.selection.requestId ||
+          field(built, "provider") != expectedProvider ||
+          field(built, "role") != placement.selection.role) {
+        throw std::runtime_error(
+          "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=identity-mismatch log=" +
+          path.string());
+      }
+      return validateMaterialFetches(path, placement, expectedProvider);
     }
     if (acquireHits.empty() && legacyHits.empty()) {
       return validateMaterialFetches(path, placement, expectedProvider);

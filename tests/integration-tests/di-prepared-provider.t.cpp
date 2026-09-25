@@ -1549,7 +1549,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheRequiresAuthorizedRuntime)
     std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthorization)
+BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthorization)
 {
   if (const char* child = std::getenv("NDNSF_SPEC190_PROTECTED_EXEC_CHILD");
       child != nullptr && std::string(child) == "1") {
@@ -1616,38 +1616,19 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
       childProjection, options, readText(root / "source-name"),
       readText(root / "source-digest"));
     BOOST_REQUIRE(hot);
-    BOOST_CHECK(hot->path.empty());
+    BOOST_REQUIRE(!hot->path.empty());
+    BOOST_CHECK(hot->path.find(readText(root / "cache-dir") + "/assembled/") == 0);
     BOOST_CHECK_EQUAL(hot->metadata.at("protectedCacheHit"), "true");
     BOOST_CHECK_EQUAL(hot->metadata.at("protectedArtifactPersistent"), "true");
+    BOOST_CHECK_EQUAL(hot->metadata.at("protectedPlaintextPersistent"), "true");
 
-    const auto plaintextDir = root / "child-plaintext";
-    std::filesystem::create_directories(plaintextDir);
-    std::filesystem::permissions(
-      plaintextDir, std::filesystem::perms::owner_all,
-      std::filesystem::perm_options::replace);
-    registerNativePlaintextDirectory(*runtime, plaintextDir, "spec190-exec-child");
-    const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
-    const NativeAssembledEntryContext context{
-      childProjection.assembly.modelManifestDigest,
-      options.roleAssemblySpecDigest,
-      providerAssemblyDigest(std::vector<std::uint8_t>(profile.begin(), profile.end())),
-      "MODEL_PROTO", runtime->keyReference()->digest()};
-    runtime->withContentKey(now, [&] (const auto& key) {
-      const auto digest = openNativeAssembledEntryToFile(
-        key, std::filesystem::path(hot->metadata.at("encryptedArtifactPath")),
-        plaintextDir / "model.onnx", context,
-        childProjection.assembly.maxAssembledBytes,
-        hot->metadata.at("encryptedArtifactDigest"));
-      BOOST_CHECK_EQUAL(digest, hot->metadata.at("encryptedArtifactDigest"));
-    });
-    const auto plaintext = providerAssemblyRead(plaintextDir / "model.onnx");
+    const auto plaintext = providerAssemblyRead(hot->path);
     BOOST_CHECK_EQUAL(providerAssemblyDigest(plaintext),
                       hot->metadata.at("assembledModelDigest"));
     runtime->complete();
-    BOOST_CHECK(!std::filesystem::exists(plaintextDir));
     std::ofstream(root / "child-success")
       << providerBootId << "\n" << childProjection.grantDigest << "\n"
-      << hot->metadata.at("encryptedArtifactDigest") << "\n";
+      << hot->metadata.at("assembledModelDigest") << "\n";
     return;
   }
 
@@ -1792,69 +1773,33 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
   BOOST_CHECK_EQUAL(rootFetches.load(std::memory_order_relaxed), 1U);
   BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
   BOOST_CHECK_EQUAL(cold.metadata.at("protectedArtifactPersistent"), "true");
+  BOOST_CHECK_EQUAL(cold.metadata.at("protectedPlaintextPersistent"), "true");
   BOOST_CHECK_EQUAL(cold.metadata.at("protectedCacheHit"), "false");
-  const auto ciphertextPath = std::filesystem::path(
-    cold.metadata.at("encryptedArtifactPath"));
-  BOOST_CHECK(std::filesystem::is_regular_file(ciphertextPath));
-  BOOST_CHECK(ciphertextPath.string().find("/.staging/") == std::string::npos);
+  BOOST_CHECK(cold.path.find(cacheDir + "/assembled/") == 0);
+  BOOST_CHECK(std::filesystem::is_regular_file(cold.path));
+  BOOST_CHECK_EQUAL(
+    providerAssemblyDigest(providerAssemblyRead(cold.path)),
+    cold.metadata.at("assembledModelDigest"));
   options.protectedRuntime->complete();
 
   options.protectedRuntime = makeRuntime();
   auto hot = tryLoadNativeCanonicalOnnxRoleFromCache(
     projection, options, sourceName.toUri(), sourceDigest);
   BOOST_REQUIRE(hot);
-  BOOST_CHECK(hot->path.empty());
+  BOOST_REQUIRE(!hot->path.empty());
+  BOOST_CHECK_EQUAL(hot->path, cold.path);
   BOOST_CHECK_EQUAL(hot->metadata.at("protectedCacheHit"), "true");
   BOOST_CHECK_EQUAL(hot->metadata.at("protectedArtifactPersistent"), "true");
-  BOOST_CHECK_EQUAL(hot->metadata.at("encryptedArtifactPath"), ciphertextPath.string());
+  BOOST_CHECK_EQUAL(hot->metadata.at("protectedPlaintextPersistent"), "true");
   BOOST_CHECK_EQUAL(rootFetches.load(std::memory_order_relaxed), 1U);
   BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
 
-  options.protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
-    cacheDir, 2);
-  NativeRequestControl plaintextControl;
-  plaintextControl.requestId = projection.requestId;
-  plaintextControl.attempt = projection.attempt;
-  plaintextControl.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  auto hotPlaintext = *hot;
-  auto firstPlaintextLease = materializeNativeCanonicalOnnxCacheHit(
-    hotPlaintext, projection, options, plaintextControl);
-  BOOST_REQUIRE(firstPlaintextLease);
-  BOOST_CHECK(!firstPlaintextLease.cacheHit());
-  BOOST_REQUIRE(std::filesystem::is_regular_file(hotPlaintext.path));
-  auto hotPlaintextAgain = *hot;
-  auto secondPlaintextLease = materializeNativeCanonicalOnnxCacheHit(
-    hotPlaintextAgain, projection, options, plaintextControl);
-  BOOST_REQUIRE(secondPlaintextLease);
-  BOOST_CHECK(secondPlaintextLease.cacheHit());
-  BOOST_CHECK_EQUAL(hotPlaintextAgain.path, hotPlaintext.path);
-  const auto plaintextDir = std::filesystem::path(hotPlaintext.path).parent_path();
-  const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
-  const NativeAssembledEntryContext context{
-    rootDigest, roleAssemblySpecDigest,
-    providerAssemblyDigest(std::vector<std::uint8_t>(profile.begin(), profile.end())),
-    "MODEL_PROTO", options.protectedRuntime->keyReference()->digest()};
-  const auto hotNow = static_cast<std::uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::system_clock::now().time_since_epoch()).count());
-  const auto plaintext = providerAssemblyRead(hotPlaintext.path);
-  BOOST_CHECK_EQUAL(providerAssemblyDigest(plaintext), hot->metadata.at("assembledModelDigest"));
-
-  auto wrongContext = context;
-  wrongContext.keyReferenceDigest = zeroDigest('f');
-  BOOST_CHECK_THROW(
-    options.protectedRuntime->withContentKey(hotNow, [&] (const auto& key) {
-      (void)openNativeAssembledEntryToFile(
-        key, ciphertextPath, plaintextDir / "wrong.onnx", wrongContext,
-        projection.assembly.maxAssembledBytes, hot->metadata.at("encryptedArtifactDigest"));
-    }),
-    std::exception);
+  const auto plaintext = providerAssemblyRead(hot->path);
+  BOOST_CHECK_EQUAL(providerAssemblyDigest(plaintext),
+                    hot->metadata.at("assembledModelDigest"));
   options.protectedRuntime->complete();
-  firstPlaintextLease = {};
-  secondPlaintextLease = {};
-  options.protectedPlaintextCache->stop();
 
-  // A new Provider boot must be able to use the immutable ciphertext with a
+  // A new Provider boot must be able to use the immutable plaintext with a
   // newly issued grant.  The child receives only the current Selection/grant
   // fixture and non-secret cache identity; it does not inherit the parent
   // ProtectedRuntime, content key, plaintext, or request/session KV.
@@ -1910,7 +1855,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
   BOOST_REQUIRE(child >= 0);
   if (child == 0) {
     ::execl(executable, executable,
-            "--run_test=Spec185ProviderAssembly/Spec188ProviderReferenceAssembly/ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthorization",
+            "--run_test=Spec185ProviderAssembly/Spec188ProviderReferenceAssembly/ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthorization",
             "--log_level=error", static_cast<char*>(nullptr));
     ::_exit(127);
   }
@@ -2387,21 +2332,22 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     BOOST_REQUIRE_NE(parsedFirst.grantDigest, parsedSecond.grantDigest);
   }
 
-  // Grant verification remains request-bound, but the immutable Provider
-  // template is reusable across independent grant leases in the same
-  // Provider/model/security scope. Each request still creates its own runner
-  // and rebinds the protected ciphertext for the current grant.
+  // Grant verification remains request-bound. The current production order
+  // checks the live-runner cache before the immutable Provider artifact
+  // template, so the second independent grant reuses the admitted runner
+  // instead of creating a second runner or reaching templateHits. The direct
+  // ProviderArtifactCache selectors cover the lower template layer separately.
   runRequest(requestOne, firstGrant, 1, 1, 0, 1);
-  runRequest(requestTwo, independentGrant, 1, 1, 1, 2);
+  runRequest(requestTwo, independentGrant, 1, 1, 0, 1);
   BOOST_CHECK_EQUAL(runnerRuns->load(std::memory_order_relaxed), 2U);
   const auto counters = facade.counters();
   BOOST_CHECK_EQUAL(counters.sourceFetches, 1U);
   BOOST_CHECK_EQUAL(counters.assemblies, 1U);
-  // Grant verification remains per request, while the immutable Provider
-  // template is reusable across independent grant leases in the same
-  // security scope.
-  BOOST_CHECK_EQUAL(counters.templateHits, 1U);
-  BOOST_CHECK_EQUAL(counters.runnersCreated, 2U);
+  // Grant verification remains per request, while the live runner is reused
+  // across independent grants after the current Selection and residency
+  // checks. The artifact-template hit remains a separate lower-layer test.
+  BOOST_CHECK_EQUAL(counters.templateHits, 0U);
+  BOOST_CHECK_EQUAL(counters.runnersCreated, 1U);
   registration.close();
   facade.stop();
   BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
