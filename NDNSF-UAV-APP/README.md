@@ -19,6 +19,33 @@ real three-window desktop criterion. The demo uses the pinned local videos and
 CPU model, sends frames and results through validated NDNSF Named Data, and
 does not claim tracking accuracy or real-flight readiness.
 
+The same entrypoint generates deterministic motion input when Spec191 is run:
+the Python fixture supplies per-camera GPS-like telemetry and canonical
+`groundSpeedMmps`, while the compute-side worker estimates vehicle speed from
+tracked box anchors, calibration/homography, source-time deltas, and UAV
+ego-motion compensation. The independent trajectory is labeled
+`simulated-input` and remains an oracle, not an injected detection result;
+invalid telemetry or calibration produces `unknown`.
+
+Motion validation profiles are reproducible from the same entrypoint. The
+nominal profile is used by default; paired negative profiles are
+`missing-calibration`, `stale-telemetry`, `reversed-homography`,
+`pts-disorder`, `camera-mismatch`, and `disabled-ego-motion`:
+
+```bash
+sudo -E env PYTHONPATH=/home/tianxing/.local/lib/python3.8/site-packages \
+  python3 Experiments/UAV/run_multicamera_tracking_demo.py \
+  --source /path/to/spec191-assets --model /path/to/3UAVs.pt \
+  --license local-test-accepted --output-dir /tmp/spec191-motion-negative \
+  --motion-profile stale-telemetry --window-count 2 \
+  --prepare --preflight --run --headless
+```
+
+Malformed calibration/camera/PTS profiles terminate before a numeric result;
+stale telemetry and disabled ego compensation produce explicit `unknown`
+estimates. These profiles test fail-closed semantics and are not accuracy or
+real-flight measurements.
+
 The key idea is that one process can host multiple NDNSF service instances and
 client-side workflows. `UavDroneApp` is a drone-side container for services such
 as MAVLink execution, video control, telemetry, camera frames, and mission

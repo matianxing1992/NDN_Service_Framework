@@ -10,12 +10,14 @@ BOOST_AUTO_TEST_CASE(StageSplitsBytesAndBindsProducerName)
 {
   UavTrackingEvidenceStore store(3, 32);
   FrameEnvelope frame{"UAV1", 1, 1, 12000, 2, 2, "image/jpeg", {1, 2, 3, 4, 5, 6, 7}};
+  frame.motionMetadata = "motion-window";
   std::string reason;
   const auto publication = store.stage(ndn::Name("/uav/1"), "mission", "window-0", frame, &reason);
   BOOST_REQUIRE(publication);
   BOOST_CHECK_EQUAL(publication->segments.size(), 3);
   BOOST_CHECK(publication->reference.exactDataName.isPrefixOf(ndn::Name("/uav/1")) == false);
   BOOST_CHECK_EQUAL(publication->reference.contentDigest.size(), 71);
+  BOOST_CHECK_EQUAL(publication->reference.motionMetadataDigest.size(), 71);
   BOOST_CHECK_EQUAL(store.retainedBytes(), frame.bytes.size());
 }
 

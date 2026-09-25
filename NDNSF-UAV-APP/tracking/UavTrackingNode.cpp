@@ -103,6 +103,7 @@ struct Options
   std::string runId = "spec191";
   std::string groupPrefix = "/example/uav";
   std::string controller = "/example/uav/controller";
+  std::string motionDir;
   size_t windowCount = 1;
   std::string fault = "none";
 };
@@ -122,6 +123,7 @@ parseOptions(int argc, char** argv)
   result.runId = option(argc, argv, "--run-id", result.runId);
   result.groupPrefix = option(argc, argv, "--group-prefix", result.groupPrefix);
   result.controller = option(argc, argv, "--controller-prefix", result.controller);
+  result.motionDir = option(argc, argv, "--motion-dir");
   result.windowCount = static_cast<size_t>(std::stoul(option(argc, argv, "--window-count", "1")));
   result.fault = option(argc, argv, "--fault", "none");
   if ((result.role != "source" && result.role != "compute") ||
@@ -292,6 +294,13 @@ run(const Options& options)
       const auto fields = requestFields(request);
       const auto mission = uav::fieldOr(fields, "mission_id", options.runId);
       const auto window = uav::fieldOr(fields, "window_id", "window-0");
+      const auto motionJson = uav::fieldOr(fields, "motion_window_json", "");
+      const auto motionDigest = uav::fieldOr(fields, "motion_window_digest", "");
+      if (!motionJson.empty() && (motionDigest.empty() ||
+                                  sha256(bufferFrom(motionJson)) != motionDigest)) {
+        context.fail("motion window digest verification failed");
+        return;
+      }
       const auto index = windowIndex(window);
       if (index >= options.windowCount) {
         context.fail("window index exceeds configured replay count");
@@ -334,6 +343,10 @@ run(const Options& options)
         }
         const auto workerOutput = workerRoot / "tracking-result.json";
         const auto workerState = workerRoot / "tracking-state.json";
+        const auto motionPath = workerRoot / "motion-window.json";
+        if (!motionJson.empty()) {
+          writeBytes(motionPath, bufferFrom(motionJson));
+        }
         const std::string workerCommand =
           "python3 " + shellQuote(options.workerScript) +
           " --model " + shellQuote(options.model) +
@@ -345,7 +358,11 @@ run(const Options& options)
           " --mission-id " + shellQuote(mission) +
           " --window-id " + shellQuote(window) +
           " --sequence " + std::to_string(index + 1) +
-          " --pts-us " + std::to_string(index * 1000000);
+          " --pts-us " + std::to_string(index * 1000000) +
+          (motionJson.empty() ? std::string() :
+           " --motion-json " + shellQuote(motionPath.string()) +
+           " --motion-digest " + shellQuote(motionDigest) +
+           (index == 0 ? std::string() : " --fail-on-motion-unknown"));
         const int workerStatus = std::system(workerCommand.c_str());
         if (workerStatus != 0 || !std::filesystem::is_regular_file(workerOutput)) {
           context.fail("CPU tracking worker failed");
@@ -385,6 +402,7 @@ run(const Options& options)
           {"provider", identity.toUri()},
           {"input_uav1_digest", digests[0]}, {"input_uav2_digest", digests[1]},
           {"input_uav3_digest", digests[2]},
+          {"motion_window_digest", motionDigest},
         }));
         return;
       }
@@ -414,6 +432,7 @@ run(const Options& options)
         frame.width = 1;
         frame.height = 1;
         frame.encoding = "image/jpeg";
+        frame.motionMetadata = motionJson;
         frame.bytes.assign(bytes.begin(), bytes.end());
         if (options.fault == "bad-content" && options.camera == "UAV3" && index == 1 &&
             !frame.bytes.empty()) {

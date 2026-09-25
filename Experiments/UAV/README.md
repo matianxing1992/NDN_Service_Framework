@@ -29,3 +29,24 @@ validated NDNSF named Data; a path, process exit, or preflight JSON is not a
 result. Runtime evidence belongs under the ignored run directory and the
 Spec191 evidence files record whether each gate is implemented, executed, or
 measured.
+
+## Injected motion and vehicle-speed estimate
+
+The Python entrypoint creates a run-private `private/motion/` fixture for each
+window. It contains source-time-aligned GPS-like position, heading, altitude,
+and UAV speed (`groundSpeedMmps`; `groundspeed_mps` is accepted only as an
+input alias), plus one calibration/homography per camera and an independent
+vehicle trajectory marked `simulated-input`. The Ground Station includes the
+window record and digest in the authenticated collaboration request. Source
+providers bind it to the frame envelope; compute writes only the verified
+window record beside the verified frame bytes and passes it to the Python
+worker.
+
+The worker projects each tracked box's bottom-center through the calibrated
+homography, uses source-time `deltaUs`, and subtracts the injected UAV ego
+motion. Results report `vehicleSpeedMmps` with `homography-estimated` or
+`unknown` provenance. Missing/stale telemetry, invalid or reversed calibration,
+PTS disorder, and disabled ego compensation fail closed; the fixture's vehicle
+trajectory is an oracle only and is never copied into a track or response as
+an estimate. Use `--motion-fixture PATH` to replay an existing validated
+fixture directory.

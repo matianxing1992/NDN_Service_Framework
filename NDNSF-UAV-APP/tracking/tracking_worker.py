@@ -22,6 +22,9 @@ from typing import Any, Iterable
 import cv2
 import numpy as np
 
+from motion_estimator import estimate_vehicle_speed
+from motion_schema import TelemetrySample, load_motion_window
+
 CAMERAS = ("UAV1", "UAV2", "UAV3")
 
 
@@ -253,6 +256,9 @@ class TrackingEngine:
         # per window, so this state must cross that process boundary too.
         self._byte_track_state: dict[str, dict[str, Any]] = {}
         self._byte_track_restored: set[str] = set()
+        # Motion state is keyed by camera and restored with the run-private
+        # tracker snapshot.  It is never a source of truth for detections.
+        self._last_motion: dict[str, TelemetrySample] = {}
 
     def start(self, profile: dict[str, Any], camera_profiles: list[dict[str, Any]]) -> None:
         """Freeze the CPU worker configuration before the first window."""
@@ -422,6 +428,9 @@ class TrackingEngine:
                 for camera in CAMERAS
                 if camera in self._models and hasattr(self._models[camera].predictor, "trackers")
             },
+            "motionTelemetry": {
+                camera: sample.to_dict() for camera, sample in self._last_motion.items()
+            },
         }
         path = path.resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -459,14 +468,31 @@ class TrackingEngine:
             raise ValueError("tracking session ByteTrack cameras do not match")
         self._byte_track_state = {camera: dict(byte_track[camera]) for camera in byte_track}
         self._byte_track_restored = set()
+        motion = state.get("motionTelemetry", {})
+        if set(motion) - set(CAMERAS):
+            raise ValueError("tracking session motion cameras do not match")
+        self._last_motion = {camera: TelemetrySample.from_dict(value)
+                             for camera, value in motion.items()}
 
     def process_window(self, window: dict[str, Any],
-                       frames: Iterable[tuple[dict[str, Any], bytes]]) -> dict[str, Any]:
+                       frames: Iterable[tuple[dict[str, Any], bytes]],
+                       motion: dict[str, Any] | None = None) -> dict[str, Any]:
         """Process one deterministic three-camera window from verified bytes."""
         frame_list = list(frames)
         if len(frame_list) != len(CAMERAS):
             raise ValueError("one frame from each of UAV1, UAV2, UAV3 is required")
         outputs: list[dict[str, Any]] = []
+        previous_tracks = {camera: [track.as_dict() for track in self._last[camera]]
+                           for camera in CAMERAS}
+        previous_motion = dict(self._last_motion)
+        telemetry: list[TelemetrySample] = []
+        calibrations: dict[str, Any] = {}
+        oracle: dict[str, Any] = {}
+        if motion is not None:
+            telemetry, calibrations, oracle = load_motion_window(motion)
+            expected_timestamp = int(window.get("ptsUs", telemetry[0].source_timestamp_us))
+            if expected_timestamp != telemetry[0].source_timestamp_us:
+                raise ValueError("motion timestamp does not match requested window")
         expected_sequence = int(window.get("sequence", 1))
         for expected_camera, (metadata, payload) in zip(CAMERAS, frame_list):
             camera = str(metadata.get("cameraId", ""))
@@ -483,7 +509,51 @@ class TrackingEngine:
             result["inputDigest"] = "sha256:" + hashlib.sha256(payload).hexdigest()
             result["imageJpegDigest"] = "sha256:" + hashlib.sha256(result["imageJpeg"]).hexdigest()
             outputs.append(result)
-        return {
+            if motion is not None:
+                sample = next(item for item in telemetry if item.camera_id == camera)
+                if sample.sequence != sequence or sample.source_timestamp_us != pts_us:
+                    raise ValueError("motion sample is not aligned with frame metadata")
+                result["telemetry"] = sample.to_dict()
+                result["calibrationDigest"] = calibrations[camera].digest()
+                self._last_motion[camera] = sample
+        estimates: list[dict[str, Any]] = []
+        require_ego_compensation = True
+        if motion is not None:
+            policy = motion.get("motionPolicy", {})
+            if not isinstance(policy, dict):
+                raise ValueError("motion policy must be an object")
+            require_ego_compensation = policy.get("egoMotionCompensation", "required") != "disabled"
+            for camera, result in ((item["cameraId"], item) for item in outputs):
+                current_sample = next(item for item in telemetry if item.camera_id == camera)
+                previous_sample = previous_motion.get(camera)
+                if previous_sample is None:
+                    continue
+                for current in result.get("tracks", []):
+                    previous = next((item for item in previous_tracks[camera]
+                                     if int(item.get("globalId", 0)) ==
+                                     int(current.get("globalId", 0))), None)
+                    if previous is None:
+                        continue
+                    estimate = estimate_vehicle_speed(
+                        previous, current, previous_sample, current_sample,
+                        calibrations[camera],
+                        require_ego_compensation=require_ego_compensation)
+                    estimates.append(estimate.to_dict())
+        motion_result: dict[str, Any] | None = None
+        if motion is not None:
+            motion_result = {
+                "schema": "spec191-motion-result-v1",
+                "inputProvenance": "simulated-input",
+                "telemetry": [item.to_dict() for item in telemetry],
+                "calibrationDigests": {camera: profile.digest()
+                                        for camera, profile in calibrations.items()},
+                "estimates": estimates,
+                "oracle": oracle,
+                "motionProfile": str(motion.get("motionProfile", "nominal")),
+                "egoMotionCompensation":
+                    "required" if require_ego_compensation else "disabled",
+            }
+        result = {
             "schema": "spec191-tracking-result-v1",
             "runId": str(window.get("runId", "")),
             "missionId": str(window.get("missionId", "")),
@@ -494,6 +564,9 @@ class TrackingEngine:
             "associations": list(self._last_associations),
             "terminal": True,
         }
+        if motion_result is not None:
+            result["motion"] = motion_result
+        return result
 
     @staticmethod
     def _centroid(box: tuple[int, int, int, int]) -> tuple[float, float]:
@@ -622,10 +695,19 @@ def _run_cli(arguments: argparse.Namespace) -> int:
         payload = path.read_bytes()
         frames.append(({"cameraId": camera, "sequence": arguments.sequence,
                         "ptsUs": arguments.pts_us}, payload))
+    motion = None
+    if arguments.motion_json:
+        motion = json.loads(Path(arguments.motion_json).read_text(encoding="utf-8"))
     result = engine.process_window({"runId": arguments.run_id,
                                     "missionId": arguments.mission_id,
                                     "windowId": arguments.window_id,
-                                    "sequence": arguments.sequence}, frames)
+                                    "sequence": arguments.sequence,
+                                    "ptsUs": arguments.pts_us}, frames, motion)
+    if motion is not None:
+        result["motion"]["inputDigest"] = str(arguments.motion_digest or "")
+        if arguments.fail_on_motion_unknown and any(
+                item.get("status") == "unknown" for item in result["motion"]["estimates"]):
+            raise ValueError("motion estimator returned unknown under strict validation")
     annotated_dir = Path(arguments.annotated_dir).resolve()
     annotated_dir.mkdir(parents=True, exist_ok=True)
     for frame in result["frames"]:
@@ -655,6 +737,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--window-id", required=True)
     parser.add_argument("--sequence", type=int, default=1)
     parser.add_argument("--pts-us", type=int, default=0)
+    parser.add_argument("--motion-json")
+    parser.add_argument("--motion-digest")
+    parser.add_argument("--fail-on-motion-unknown", action="store_true")
     parser.add_argument("--confidence", type=float, default=0.25)
     args = parser.parse_args(argv)
     if args.sequence < 1 or args.pts_us < 0:

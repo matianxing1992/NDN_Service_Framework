@@ -42,6 +42,7 @@ NATIVE_BINARIES = (
 sys.path.insert(0, str(Path(__file__).parent))
 from tracking_artifacts import ArtifactError, validate_real_assets  # noqa: E402
 from tracking_topology import TopologyError, load_topology  # noqa: E402
+from motion_fixture import MOTION_PROFILES, write_fixture  # noqa: E402
 
 
 class RunnerError(RuntimeError):
@@ -92,7 +93,7 @@ FAULTS = frozenset({"none", "missing-view", "bad-content", "bad-identity", "stal
 
 def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
                    headless: bool, window_count: int, fault: str,
-                   request_timeout_ms: int) -> list[ProcessSpec]:
+                   request_timeout_ms: int, motion_dir: Path) -> list[ProcessSpec]:
     common = ("--run-id", output.name, "--topology", str(TOPOLOGY),
               "--window-count", str(window_count))
     display = "headless" if headless else "windows"
@@ -122,31 +123,36 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
                     (ground_station, "--node", "gs", "--display", display,
                      "--group-prefix", "/example/uav", "--controller-prefix",
                      "/example/uav/controller", "--trust-schema",
-                     "examples/trust-any.conf", "--request-timeout-ms",
+                     "examples/trust-any.conf", "--motion-dir", str(motion_dir),
+                     "--request-timeout-ms",
                      str(request_timeout_ms), *common, *fault_args),
                     output / "private/ground-station"),
         ProcessSpec("uav1-camera", "uav1", "/example/uav/drone/UAV1", root,
                     (tracking_node, "--role", "source", "--camera", "UAV1",
                      "--video-source", str(source / "uav1_1min.mp4"),
                      "--frame-dir", str(output / "private/frames/UAV1"),
+                     "--motion-dir", str(motion_dir),
                      "--model", str(model), *common, *fault_args),
                     output / "private/uav1"),
         ProcessSpec("uav2-camera", "uav2", "/example/uav/drone/UAV2", root,
                     (tracking_node, "--role", "source", "--camera", "UAV2",
                      "--video-source", str(source / "uav2_1min.mp4"),
                      "--frame-dir", str(output / "private/frames/UAV2"),
+                     "--motion-dir", str(motion_dir),
                      "--model", str(model), *common, *fault_args),
                     output / "private/uav2"),
         ProcessSpec("uav3-camera", "uav3", "/example/uav/drone/UAV3", root,
                     (tracking_node, "--role", "source", "--camera", "UAV3",
                      "--video-source", str(source / "uav3_1min.mp4"),
                      "--frame-dir", str(output / "private/frames/UAV3"),
+                     "--motion-dir", str(motion_dir),
                      "--model", str(model), *common, *fault_args),
                     output / "private/uav3"),
         ProcessSpec("compute", "compute", "/example/uav/compute", root,
                     (tracking_node, "--role", "compute", "--display", display,
                      "--model", str(model), "--worker-script",
                      str(root / "NDNSF-UAV-APP/tracking/tracking_worker.py"),
+                     "--motion-dir", str(motion_dir),
                      *common, *fault_args),
                     output / "private/compute"),
         ProcessSpec("compute-display", "compute", "/example/uav/compute/display", root,
@@ -197,7 +203,9 @@ def _child_pythonpath() -> str:
 def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
                headless: bool = False, run_seconds: float = 60.0,
                window_count: int = 3, fault: str = "none",
-               global_deadline_ms: int = 60000) -> dict[str, Any]:
+               global_deadline_ms: int = 60000,
+               motion_fixture: Path | None = None,
+               motion_profile: str = "nominal") -> dict[str, Any]:
     source, model, output = _effective_paths(source, model, output)
     try:
         topology = load_topology(TOPOLOGY)
@@ -213,9 +221,25 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
         raise RunnerError("global_deadline_ms must exceed the 1-second ACK timeout")
     if fault not in FAULTS:
         raise RunnerError(f"unsupported Spec191 fault: {fault}")
+    if motion_profile not in MOTION_PROFILES:
+        raise RunnerError(f"unsupported Spec191 motion profile: {motion_profile}")
+    motion_dir = (motion_fixture.expanduser().resolve() if motion_fixture is not None
+                  else output / "private/motion")
+    if motion_fixture is not None:
+        motion_manifest_path = motion_dir / "manifest.json"
+        if not motion_manifest_path.is_file():
+            raise RunnerError(f"motion fixture manifest is not available: {motion_manifest_path}")
+        motion_manifest = json.loads(motion_manifest_path.read_text(encoding="utf-8"))
+        if motion_manifest.get("schema") != "spec191-motion-fixture-v1":
+            raise RunnerError("motion fixture schema is not Spec191 v1")
+        if int(motion_manifest.get("windowCount", 0)) < window_count:
+            raise RunnerError("motion fixture has fewer windows than requested")
+    else:
+        motion_manifest = write_fixture(motion_dir, window_count, profile=motion_profile)
+    motion_manifest_digest = _sha256_bytes((motion_dir / "manifest.json").read_bytes())
     specs = _process_specs(ROOT, output, source=source, model=model,
                            headless=headless, window_count=window_count, fault=fault,
-                           request_timeout_ms=global_deadline_ms)
+                           request_timeout_ms=global_deadline_ms, motion_dir=motion_dir)
     nodes = sorted(topology.nodes)
     if {item.node for item in specs} != set(nodes):
         raise RunnerError("process plan does not cover the exact topology nodes")
@@ -232,6 +256,14 @@ def build_plan(*, source: Path, model: Path, output: Path, license_text: str,
             "computeHost": topology.compute_host,
         },
         "assets": passport,
+        "motion": {
+            "schema": motion_manifest.get("schema"),
+            "provenance": motion_manifest.get("provenance", "simulated-input"),
+            "profile": motion_manifest.get("profile", "nominal"),
+            "windowCount": int(motion_manifest.get("windowCount", 0)),
+            "manifestDigest": motion_manifest_digest,
+            "directory": str(motion_dir),
+        },
         "processes": [item.public_dict() for item in specs],
         "settings": {
             "sampleFps": 2.0,
@@ -646,6 +678,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--window-count", type=int, default=3)
     parser.add_argument("--global-deadline-ms", type=int, default=60000)
     parser.add_argument("--fault", choices=sorted(FAULTS), default="none")
+    parser.add_argument("--motion-fixture", type=Path,
+                        help="use an existing Spec191 motion-fixture-v1 directory")
+    parser.add_argument("--motion-profile", choices=MOTION_PROFILES, default="nominal",
+                        help="generate a nominal or fail-closed motion validation profile")
     args = parser.parse_args(argv)
     if not (args.prepare or args.preflight or args.run):
         parser.error("one of --prepare, --preflight, or --run is required")
@@ -654,7 +690,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                           license_text=args.license, headless=args.headless,
                           run_seconds=args.run_seconds,
                           window_count=args.window_count, fault=args.fault,
-                          global_deadline_ms=args.global_deadline_ms)
+                          global_deadline_ms=args.global_deadline_ms,
+                          motion_fixture=args.motion_fixture,
+                          motion_profile=args.motion_profile)
         _write_json(args.output_dir / "manifest.json", plan)
         if args.prepare:
             print(json.dumps({"ok": True, "manifest": str(args.output_dir / "manifest.json")},
