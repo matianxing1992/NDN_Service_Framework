@@ -1003,9 +1003,11 @@ def env_for(home: Path, node: str) -> dict[str, str]:
         "NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC", "")
     if protected_dataflow_diagnostic:
         env["NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC"] = protected_dataflow_diagnostic
-    runtime_timing = os.environ.get("NDNSF_DI_RUNTIME_TIMING", "")
-    if runtime_timing:
-        env["NDNSF_DI_RUNTIME_TIMING"] = runtime_timing
+    # Native planner timing includes the grant lease acquire/hit boundary.
+    # Keep it enabled with phase timing so a normal run can prove reuse rather
+    # than relying only on a focused unit test; an explicit host value still
+    # permits a diagnostic caller to disable it.
+    env["NDNSF_DI_RUNTIME_TIMING"] = os.environ.get("NDNSF_DI_RUNTIME_TIMING", "1")
     dependency_trace = os.environ.get("NDNSF_DI_DEPENDENCY_OBJECT_TRACE", "")
     if dependency_trace:
         env["NDNSF_DI_DEPENDENCY_OBJECT_TRACE"] = dependency_trace
