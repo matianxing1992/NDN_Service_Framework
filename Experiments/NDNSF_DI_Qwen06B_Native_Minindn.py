@@ -68,6 +68,11 @@ LARGE_DATA_DEFAULT_IMS_LIMIT = 50000
 LARGE_DATA_IMS_MARGIN_SEGMENTS = 8192
 LARGE_DATA_IMS_MAX_LIMIT = 1000000
 LARGE_MODEL_THRESHOLD_BYTES = 256 * 1024 * 1024
+# The native authority rejects a grant whose requested lifetime exceeds this
+# operator policy.  Conversation-scoped grant reuse must use the same bound;
+# otherwise the first lease request can be longer than the authority envelope
+# even though later turns would otherwise be eligible for a cache hit.
+MAX_NATIVE_GRANT_TTL_MS = 3_600_000
 MAX_NEW_TOKENS = 1025
 ENCRYPTED_REPOSITORY_LEASE = ".ndnsf-di-encrypted-repo-lease.json"
 ENCRYPTED_REPOSITORY_STALE_AFTER_S = 10 * 60
@@ -414,12 +419,17 @@ def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
     # while this large-model candidate uses the same finite envelope as one
     # native request so material fetch and worker assembly can both complete.
     assembly_timeout_ms = timeout_ms
+    # Keep the conversation lease inside the authority's maximum grant TTL.
+    # The process lifetime may be longer because it also covers startup and
+    # cleanup, but a reusable grant must never request a longer cryptographic
+    # lifetime than the authority accepts.
+    retention_ms = min(MAX_NATIVE_GRANT_TTL_MS, service_ms)
     return {"bootstrap_ms": bootstrap_ms, "timeout_ms": timeout_ms,
             "assembly_timeout_ms": assembly_timeout_ms,
             "ack_timeout_ms": ack_timeout_ms, "no_progress_ms": no_progress_ms,
             "policy_ms": policy_ms,
             "process_timeout_s": process_timeout_s, "provider_run_ms": service_ms,
-            "authority_run_ms": service_ms, "retention_ms": service_ms}
+            "authority_run_ms": service_ms, "retention_ms": retention_ms}
 
 
 def state_successor_pairs(stages: list[dict], state_prefix: str = "qwen") -> list[tuple[str, str]]:

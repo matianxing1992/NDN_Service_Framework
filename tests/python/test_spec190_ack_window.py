@@ -37,6 +37,14 @@ def test_qwen_profile_defaults_to_one_second_without_changing_core_default():
     assert module.DEFAULT_QWEN_ACK_TIMEOUT_MS == 1000
 
 
+def test_qwen_profile_bounds_conversation_retention_to_authority_grant_ttl():
+    module = load_module()
+    budget = module.qwen_runtime_budgets(
+        module.LARGE_MODEL_THRESHOLD_BYTES, 1, rounds=3, stage_count=2)
+    assert budget["retention_ms"] == module.MAX_NATIVE_GRANT_TTL_MS
+    assert budget["retention_ms"] <= budget["provider_run_ms"]
+
+
 @pytest.mark.parametrize("ack_timeout_ms", [0, -1, 180_000, 900_000])
 def test_qwen_profile_rejects_non_positive_or_deadline_sized_ack_window(ack_timeout_ms: int):
     module = load_module()
