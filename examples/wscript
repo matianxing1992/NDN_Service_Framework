@@ -383,6 +383,7 @@ def build(bld):
     di_native_collaboration_sources = bld.path.parent.ant_glob([
         'NDNSF-DistributedInference/cpp/ndnsf-di/DistributedExecutionConsistency.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantCredentials.cpp',

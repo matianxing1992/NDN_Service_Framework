@@ -72,6 +72,13 @@ struct NativeProviderHandlerConfig
     ndn_service_framework::ServiceProvider::CollaborationContext&,
     const NativeSelectionProjectionV3&,
     const std::shared_ptr<ProtectedRuntime>&)>;
+  using RunnerReuseLookup = std::function<std::shared_ptr<NativeModelRunner>(
+    const NativeSelectionProjectionV3&,
+    const std::shared_ptr<ProtectedRuntime>&)>;
+  using RunnerReusePublisher = std::function<void(
+    const NativeSelectionProjectionV3&,
+    const std::shared_ptr<ProtectedRuntime>&,
+    const std::shared_ptr<NativeModelRunner>&)>;
   using ProtectedRuntimeFactory = std::function<std::shared_ptr<ProtectedRuntime>(
     ndn_service_framework::ServiceProvider::CollaborationContext&,
     const NativeSelectionProjectionV3&,
@@ -98,6 +105,12 @@ struct NativeProviderHandlerConfig
   // Normal V3 path: invoked on a bounded Provider worker after Selection to
   // fetch/assemble/validate one exact role, then return its local ORT spec.
   RunnerPreparationFactory runnerPreparationFactory;
+  // Optional Provider-process live-runner reuse.  The lookup is performed
+  // only after the current Selection/protected guard is admitted; publication
+  // happens after a successful inference, so a failed request cannot publish
+  // a runner carrying partial request state.
+  RunnerReuseLookup runnerReuseLookup;
+  RunnerReusePublisher runnerReusePublisher;
   // Provider-owned gate for protected resident sessions.  The handler never
   // stores request content keys in this owner; it only receives a per-request
   // Use token through the prepared runner spec.

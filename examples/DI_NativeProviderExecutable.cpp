@@ -15,6 +15,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -98,13 +99,20 @@ logProviderPreparationProgress(const NativeSelectionProjectionV3& projection,
 }
 
 std::shared_ptr<ProtectedResidentAuthority>
-makeProtectedResidentAuthority(const std::shared_ptr<OnnxRuntimeSessionCache>& sessionCache)
+makeProtectedResidentAuthority(
+  const std::shared_ptr<OnnxRuntimeSessionCache>& sessionCache,
+  const std::shared_ptr<NativeProviderRunnerReuseCache>& runnerCache)
 {
   auto authority = std::make_shared<ProtectedResidentAuthority>();
   const std::weak_ptr<OnnxRuntimeSessionCache> weakSessionCache(sessionCache);
-  authority->setRetireCallback([weakSessionCache] (const std::string& identity) {
+  const std::weak_ptr<NativeProviderRunnerReuseCache> weakRunnerCache(runnerCache);
+  authority->setRetireCallback([weakSessionCache, weakRunnerCache] (
+                                  const std::string& identity) {
     if (const auto cache = weakSessionCache.lock()) {
       cache->evict(identity);
+    }
+    if (const auto cache = weakRunnerCache.lock()) {
+      cache->evictProtectedIdentity(identity);
     }
   });
   return authority;
@@ -1503,7 +1511,10 @@ main(int argc, char** argv)
     // Keep the ORT session cache owner-local but shared by every runner made
     // by this Provider, so resident sessions can be reused across turns.
     auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
-    auto protectedResidentAuthority = makeProtectedResidentAuthority(sessionCache);
+    auto runnerReuseCache = std::make_shared<NativeProviderRunnerReuseCache>(8);
+    auto protectedResidentAuthority = makeProtectedResidentAuthority(
+      sessionCache, runnerReuseCache);
+    runnerReuseCache->setAuthority(protectedResidentAuthority);
     auto protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
       options.artifactCacheDir, 8);
     ProviderArtifactCacheConfig artifactCacheConfig;
@@ -1898,6 +1909,7 @@ main(int argc, char** argv)
          factory,
          artifactCache,
          protectedPlaintextCache,
+         runnerReuseCache,
          protectedResidentAuthority,
          providerCert,
          controllerCert,
@@ -1973,6 +1985,21 @@ main(int argc, char** argv)
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
             config.protectedResidentAuthority = protectedResidentAuthority;
+            config.runnerReuseLookup =
+              [runnerReuseCache, providerName = options.providerName, providerBootId](
+                const NativeSelectionProjectionV3& projection,
+                const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
+                return runnerReuseCache->lookup(
+                  projection, providerName, providerBootId, protectedRuntime);
+              };
+            config.runnerReusePublisher =
+              [runnerReuseCache, providerName = options.providerName, providerBootId](
+                const NativeSelectionProjectionV3& projection,
+                const std::shared_ptr<ProtectedRuntime>& protectedRuntime,
+                const std::shared_ptr<NativeModelRunner>& runner) {
+                runnerReuseCache->publish(
+                  projection, providerName, providerBootId, protectedRuntime, runner);
+              };
             installNativeProtectedGrantFactory(config);
             config.planDigest = sha256File(options.planPath);
             if (const auto* mutation = std::getenv("SPEC180_YN_MUTATION")) {
@@ -2462,6 +2489,7 @@ main(int argc, char** argv)
         nativeRegistration = {};
         providerHost.reset();
         protectedResidentAuthority->retireAll();
+        runnerReuseCache->clear();
         sessionCache->close();
         const bool sessionsDrained = sessionCache->drain(
           std::chrono::milliseconds(5000));

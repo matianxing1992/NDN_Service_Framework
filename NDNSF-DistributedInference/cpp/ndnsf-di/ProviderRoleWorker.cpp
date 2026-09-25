@@ -989,6 +989,7 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
 
   if (item.executionGuard) item.executionGuard();
   ProviderRoleResult result;
+  result.runner = runner;
   result.transferBudget.snapshotIdentity = item.sessionId + "|" +
     item.role.requestId + "|" + std::to_string(item.role.inferenceEpoch) +
     "|" + std::to_string(item.role.attemptEpoch);

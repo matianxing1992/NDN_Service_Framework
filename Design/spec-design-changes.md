@@ -1,5 +1,22 @@
 # Spec 设计变更记录
 
+## Spec190 B190-183 production live-runner reuse contract — 2026-09-25
+
+- **Status**: `PARTIAL`；真实 standalone Provider 已接入 process-local bounded runner reuse，
+  但 T011 完整性能资格仍未完成。
+- **Owner / principles**: DI Provider/ONNX runner owner 保存 immutable model/graph/role/
+  backend/IO/KV contract 对应的 live runner；当前 request 的 grant、Selection、placement、
+  lease 和 execution evidence 仍由 handler 校验。Repo、wire、模型输入和 public API 不变。
+- **Delta**: standalone `DI_NativeProviderExecutable` 创建并关闭
+  `NativeProviderRunnerReuseCache`；handler 在 preparation factory/create 之前 lookup，成功
+  inference 后 publish。命中不重复 material fetch、assembly、runner create 或 ORT session
+  load；protected entry 只保留 provider-owned residency lease，不保留 request content key/KV。
+- **Oracle contract**: Spec189 C++ oracle 将 request-scoped `RUNNER_REUSE_HIT` 作为比
+  assembled/template hit 更强的证据，并拒绝同 scope 的 material-fetch 或混合 marker。
+- **Evidence / boundary**: [B190-183](../specs/190-multiturn-latency/evidence/b190-183.md)。
+  focused C++ tests、installed oracle replay 和新的 normal Repo 两轮 runtime 均通过；Repo
+  restart、matched control、完整 phase timing 与 SC-001–009 未观测，当前/目标 PDF 不刷新。
+
 ## Spec190 B190-177 warm-path runtime validation — 2026-09-25
 
 - **Status**: `PARTIAL`；B190-176 的受保护 plaintext/descriptor/session 复用已在真实

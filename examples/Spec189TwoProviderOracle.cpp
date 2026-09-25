@@ -532,12 +532,38 @@ validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility
       "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_ACQUIRE_DONE");
     const auto misses = recordsContaining(text,
       "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_MISS");
-    if (acquireHits.size() > 1 || legacyHits.size() > 1 || misses.size() > 1 ||
+    const auto liveRunnerHits = recordsContaining(text,
+      "NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_HIT");
+    if (liveRunnerHits.size() > 1 || acquireHits.size() > 1 ||
+        legacyHits.size() > 1 || misses.size() > 1 ||
+        (!liveRunnerHits.empty() &&
+         (!acquireHits.empty() || !legacyHits.empty() || !misses.empty())) ||
         (!acquireHits.empty() && !misses.empty()) ||
         (acquireHits.empty() && !legacyHits.empty() && !misses.empty())) {
       throw std::runtime_error(
         "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=ambiguous-cache-result log=" +
         path.string());
+    }
+    if (!liveRunnerHits.empty()) {
+      const auto& hit = liveRunnerHits.front();
+      if (field(hit, "requestId") != placement.selection.requestId ||
+          field(hit, "provider") != expectedProvider ||
+          field(hit, "role") != placement.selection.role ||
+          field(hit, "detail") != "live-runner") {
+        throw std::runtime_error(
+          "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=live-runner-identity-mismatch log=" +
+          path.string());
+      }
+      if (text.find("NDNSF_DI_PROVIDER_MATERIAL_FETCH") != std::string::npos) {
+        throw std::runtime_error(
+          "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=material-events-on-live-runner-hit log=" +
+          path.string());
+      }
+      // A live runner hit is stronger than an assembled/template hit: model
+      // material, plaintext staging, ORT session and runner construction were
+      // all completed by the prior turn. Only the current authorization and
+      // execution path remain observable before inference.
+      return MaterialFetchObservation{};
     }
     if (acquireHits.empty() && legacyHits.empty()) {
       return validateMaterialFetches(path, placement, expectedProvider);

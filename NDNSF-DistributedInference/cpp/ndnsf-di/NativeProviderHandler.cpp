@@ -1309,7 +1309,10 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
                                 long long submittedEpoch,
                                 ProviderRoleWorker::NativeRunnerPreparation prepareRunner = {},
                                 RoleExecutionContext::StreamEventSink eventSink = {},
-                                std::function<void()> executionGuard = {})
+                                std::function<void()> executionGuard = {},
+                                const std::optional<NativeSelectionProjectionV3>& selectionProjection = std::nullopt,
+                                const std::shared_ptr<ProtectedRuntime>& protectedRuntime = {},
+                                NativeProviderHandlerConfig::RunnerReusePublisher runnerReusePublisher = {})
 {
   auto io = std::make_shared<LocalDependencyIo>();
   std::vector<std::pair<std::string, std::future<ProviderRoleResult>>> futures;
@@ -1347,6 +1350,9 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
       ? roleSpecFor(plan, item.first, *executionAttempt, assignment, localProvider)
       : roleSpecFor(plan, item.first, sessionId, assignment, localProvider);
     auto result = item.second.get();
+    if (result.runner && selectionProjection && runnerReusePublisher) {
+      runnerReusePublisher(*selectionProjection, protectedRuntime, result.runner);
+    }
     if (result.executionEvidence && config.executionEvidenceObserver &&
         *config.executionEvidenceObserver) {
       (*config.executionEvidenceObserver)(*result.executionEvidence);
@@ -2625,8 +2631,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           const auto projection = *selectionProjection;
           const auto preparationFactory = config.runnerPreparationFactory;
           const auto runnerFactory = state->runnerFactory;
+          const auto runnerReuseLookup = config.runnerReuseLookup;
           prepareRunner = [&ctx, projection, preparationFactory, runnerFactory,
                            protectedRuntime, executionGuard,
+                           runnerReuseLookup,
                            expectedBackend, expectedDevice, expectedArtifact,
                            role, reportStatus, readinessOperationId,
                            preparationStatusSequence, runnerPreparationSequence,
@@ -2640,6 +2648,35 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                    projection.planDigest, "observed", {},
                                    stageAttemptEpoch, preparationId);
             if (executionGuard) executionGuard();
+            if (runnerReuseLookup) {
+              auto runner = runnerReuseLookup(projection, protectedRuntime);
+              if (runner) {
+                logRuntimeEvidence(
+                  std::string("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_HIT") +
+                  " requestId=" + projection.requestId +
+                  " provider=" + ctx.localProvider().toUri() +
+                  " role=" + role + " detail=live-runner");
+                if (executionGuard) executionGuard();
+                const auto evidence = runner->executionEvidenceSnapshot();
+                if (!evidence) {
+                  throw std::runtime_error("DI_RUNTIME_EVIDENCE_MISSING");
+                }
+                if (const auto error = validateNativeProviderRuntimeReadiness(
+                      *evidence, role, expectedBackend, expectedDevice,
+                      expectedArtifact)) {
+                  throw std::runtime_error(*error);
+                }
+                logProviderStageMarker("RUNNER_READY", projection.requestId,
+                                       ctx.localProvider().toUri(), role,
+                                       projection.planDigest, "observed", {},
+                                       stageAttemptEpoch, preparationId);
+                reportStatus(readinessOperationId, "ensure-deployment", "DONE",
+                             preparationStatusSequence->fetch_add(
+                               1, std::memory_order_relaxed) + 1,
+                             1.0, "READY");
+                return runner;
+              }
+            }
             logProviderBoundaryStdout("RUNNER_PREPARATION_FACTORY_BEGIN",
                                       projection.requestId,
                                       ctx.localProvider().toUri(), role);
@@ -3148,7 +3185,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                                        submittedEpoch,
                                                        prepareRunner,
                                                        std::move(eventSink),
-                                                       executionGuard);
+                                                       executionGuard,
+                                                       selectionProjection,
+                                                       protectedRuntime,
+                                                       config.runnerReusePublisher);
         if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
           const auto elapsed = std::max(
             std::chrono::milliseconds(1),
@@ -3272,6 +3312,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             if (result.executionEvidence && config.executionEvidenceObserver &&
                 *config.executionEvidenceObserver) {
               (*config.executionEvidenceObserver)(*result.executionEvidence);
+            }
+            if (result.runner && selectionProjection &&
+                config.runnerReusePublisher) {
+              config.runnerReusePublisher(
+                *selectionProjection, protectedRuntime, result.runner);
             }
             logProviderTiming(ctx.sessionId(), executedRole.role, result,
                               submittedSteady, submittedEpoch);
@@ -3711,6 +3756,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         for (auto& localRole : localRoles) {
           auto result = localRole.second.get();
           const auto& executedRoleSpec = localRole.first;
+          if (result.runner && selectionProjection &&
+              config.runnerReusePublisher) {
+            config.runnerReusePublisher(
+              *selectionProjection, protectedRuntime, result.runner);
+          }
           if (result.executionEvidence && config.executionEvidenceObserver &&
               *config.executionEvidenceObserver) {
             (*config.executionEvidenceObserver)(*result.executionEvidence);
