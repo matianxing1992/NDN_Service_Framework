@@ -723,6 +723,45 @@ BOOST_AUTO_TEST_CASE(NativeV3GenerationSelectsOnlySealedEpochEndpoints)
   BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(values[0], values[0].provider, 1), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(NativeV3SelectionRoleFactoryReusesValidatedGenerationContract)
+{
+  auto values = validProjectionSet();
+  for (auto& value : values) {
+    value.generationContract.enabled = true;
+    value.generationContract.maxGeneratedTokens = 1;
+    value.generationContract.streamingOperationStride = 4;
+  }
+  values[0].dataflow.mayPublish.front().round = 1;
+  values[1].dataflow.mustFetch.front().round = 1;
+  auto finalEndpoint = values[0].dataflow.mayPublish.front();
+  finalEndpoint.round = 5;
+  finalEndpoint.endpointDigest = digest('1');
+  finalEndpoint.manifestDigest = digest('2');
+  values[0].dataflow.mayPublish.push_back(finalEndpoint);
+  values[1].dataflow.mustFetch.push_back(finalEndpoint);
+
+  NativeSelectionProjectionRoleFactory factory(values[0], values[0].provider);
+  const auto factoryPrefill = factory(0);
+  const auto factoryFinalize = factory(1);
+  const auto directPrefill = roleSpecFromSelectionProjectionV3(
+    values[0], values[0].provider, 0);
+  const auto directFinalize = roleSpecFromSelectionProjectionV3(
+    values[0], values[0].provider, 1);
+
+  BOOST_REQUIRE_EQUAL(factoryPrefill.outputs.size(), 1);
+  BOOST_REQUIRE_EQUAL(factoryFinalize.outputs.size(), 1);
+  BOOST_CHECK_EQUAL(factoryPrefill.outputs[0].plannedDataName,
+                    directPrefill.outputs[0].plannedDataName);
+  BOOST_CHECK_EQUAL(factoryPrefill.outputs[0].endpointDigest,
+                    directPrefill.outputs[0].endpointDigest);
+  BOOST_CHECK_EQUAL(factoryFinalize.outputs[0].plannedDataName,
+                    directFinalize.outputs[0].plannedDataName);
+  BOOST_CHECK_EQUAL(factoryFinalize.outputs[0].endpointDigest,
+                    directFinalize.outputs[0].endpointDigest);
+  BOOST_CHECK_NE(factoryPrefill.outputs[0].plannedDataName,
+                 factoryFinalize.outputs[0].plannedDataName);
+}
+
 BOOST_AUTO_TEST_CASE(NativeV3ProjectionSeparatesMultiplePipelineTensors)
 {
   auto source = projection("/provider/0", "S0R0", false);

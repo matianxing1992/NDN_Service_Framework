@@ -11,6 +11,7 @@
 #include <cmath>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -1388,19 +1389,14 @@ validateNativeSelectionProjectionSetV3(
   }
 }
 
-RoleSpec
-roleSpecFromSelectionProjectionV3(
-  const NativeSelectionProjectionV3& projection,
-  const std::string& localProvider)
-{
-  return roleSpecFromSelectionProjectionV3(projection, localProvider, 0);
-}
+namespace {
 
 RoleSpec
-roleSpecFromSelectionProjectionV3(
+roleSpecFromSelectionProjectionV3Impl(
   const NativeSelectionProjectionV3& projection,
   const std::string& localProvider,
-  std::uint64_t sequence)
+  std::uint64_t sequence,
+  bool validateGenerationContract)
 {
   const auto& dataflow = projection.dataflow;
   const auto& generation = projection.generationContract;
@@ -1429,8 +1425,10 @@ roleSpecFromSelectionProjectionV3(
         if (transfer.second.size() != generation.maxGeneratedTokens + 1)
           throw std::invalid_argument("V3 generation endpoint epochs are incomplete");
     };
-    verifyEpochs(dataflow.mayPublish);
-    verifyEpochs(dataflow.mustFetch);
+    if (validateGenerationContract) {
+      verifyEpochs(dataflow.mayPublish);
+      verifyEpochs(dataflow.mustFetch);
+    }
   }
   const auto atSequence = [&](const NativeTensorEndpointV3& endpoint) {
     if (!generation.enabled) return true;
@@ -1591,6 +1589,59 @@ roleSpecFromSelectionProjectionV3(
     if (atSequence(endpoint)) spec.inputs.push_back(makeEdge(endpoint, false));
   }
   return spec;
+}
+
+} // namespace
+
+RoleSpec
+roleSpecFromSelectionProjectionV3(
+  const NativeSelectionProjectionV3& projection,
+  const std::string& localProvider)
+{
+  return roleSpecFromSelectionProjectionV3(projection, localProvider, 0);
+}
+
+RoleSpec
+roleSpecFromSelectionProjectionV3(
+  const NativeSelectionProjectionV3& projection,
+  const std::string& localProvider,
+  std::uint64_t sequence)
+{
+  return roleSpecFromSelectionProjectionV3Impl(
+    projection, localProvider, sequence, true);
+}
+
+struct NativeSelectionProjectionRoleFactory::State
+{
+  NativeSelectionProjectionV3 projection;
+  std::string localProvider;
+  mutable std::mutex mutex;
+  bool validated = false;
+};
+
+NativeSelectionProjectionRoleFactory::NativeSelectionProjectionRoleFactory(
+  NativeSelectionProjectionV3 projection,
+  std::string localProvider)
+  : m_state(std::make_shared<State>())
+{
+  m_state->projection = std::move(projection);
+  m_state->localProvider = std::move(localProvider);
+}
+
+RoleSpec
+NativeSelectionProjectionRoleFactory::operator()(std::uint64_t sequence) const
+{
+  std::lock_guard<std::mutex> lock(m_state->mutex);
+  if (!m_state->validated) {
+    auto first = roleSpecFromSelectionProjectionV3Impl(
+      m_state->projection, m_state->localProvider, 0, true);
+    m_state->validated = true;
+    if (sequence == 0) {
+      return first;
+    }
+  }
+  return roleSpecFromSelectionProjectionV3Impl(
+    m_state->projection, m_state->localProvider, sequence, false);
 }
 
 } // namespace ndnsf::di

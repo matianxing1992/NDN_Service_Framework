@@ -72,6 +72,10 @@ struct NativeEpochCoordinatorConfig
   // epochs must reuse those edges instead of reconstructing legacy edges from
   // the plan, while retaining the plan-owned TOKEN_FEEDBACK control edge.
   std::function<RoleSpec(std::size_t)> roleSpecFactory;
+  // Production handler already has the accepted role spec. Supplying this
+  // value lets preparation start before the first expensive epoch projection;
+  // absent means derive it from roleSpecFactory for compatibility callers.
+  std::optional<bool> terminalRole;
   std::string finalResponseScope = "final-response";
   std::size_t maxEpochs = 0;
   std::string tokenInputName = "input_ids";

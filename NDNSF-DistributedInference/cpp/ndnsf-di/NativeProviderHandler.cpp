@@ -3202,14 +3202,23 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.role = role;
         coordinatorConfig.initialInputs = std::move(initialInputs);
         coordinatorConfig.prepareRunner = prepareRunner;
+        coordinatorConfig.terminalRole = selectionProjection
+          ? std::optional<bool>{selectionProjection->dataflow.terminalResponseOwner}
+          : std::optional<bool>{std::any_of(
+              roleSpec.outputs.begin(), roleSpec.outputs.end(),
+              [] (const auto& edge) {
+                return edge.operationKind == "TOKEN_FEEDBACK";
+              })};
         if (selectionProjection) {
           const auto projection = *selectionProjection;
           const auto assignmentForCoordinator = assignment;
           const auto providerName = ctx.localProvider().toUri();
+          const auto roleFactory = std::make_shared<
+            NativeSelectionProjectionRoleFactory>(projection, providerName);
           coordinatorConfig.roleSpecFactory =
-            [projection, assignmentForCoordinator, providerName] (std::size_t sequence) {
-              auto projected = roleSpecFromSelectionProjectionV3(
-                projection, providerName, sequence);
+            [projection, assignmentForCoordinator, roleFactory]
+            (std::size_t sequence) {
+              auto projected = (*roleFactory)(sequence);
               // Generation control edges are added by the requester planner
               // after the cross-Provider V3 projection is sealed. Preserve
               // those exact TOKEN_FEEDBACK edges, but never reintroduce the

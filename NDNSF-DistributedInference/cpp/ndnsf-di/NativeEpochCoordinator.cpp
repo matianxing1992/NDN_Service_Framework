@@ -863,9 +863,14 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     throw std::invalid_argument(
       "native checkpoint finalization bound is out of range");
   }
-  const auto feedback = feedbackScopeFor(
-    roleSpecForEpoch(config, 0));
-  const bool terminalRole = feedback.has_value();
+  bool terminalRole = false;
+  if (config.terminalRole) {
+    terminalRole = *config.terminalRole;
+  }
+  else {
+    terminalRole = feedbackScopeFor(
+      roleSpecForEpoch(config, 0)).has_value();
+  }
   if (!terminalRole && config.eventSink) {
     throw std::invalid_argument("only the terminal role may publish token events");
   }

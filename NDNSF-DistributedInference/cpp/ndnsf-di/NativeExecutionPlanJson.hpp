@@ -186,6 +186,28 @@ roleSpecFromSelectionProjectionV3(
   const std::string& localProvider,
   std::uint64_t sequence);
 
+/**
+ * Request-local role factory for an authenticated Selection projection.
+ *
+ * The first call performs the complete generation-endpoint validation. Later
+ * calls retain the exact projection and only materialize the requested epoch;
+ * callers must not mutate the projection after constructing this factory.
+ */
+class NativeSelectionProjectionRoleFactory final
+{
+public:
+  NativeSelectionProjectionRoleFactory(
+    NativeSelectionProjectionV3 projection,
+    std::string localProvider);
+
+  RoleSpec
+  operator()(std::uint64_t sequence) const;
+
+private:
+  struct State;
+  std::shared_ptr<State> m_state;
+};
+
 } // namespace ndnsf::di
 
 #endif // NDNSF_DISTRIBUTED_INFERENCE_NATIVE_EXECUTION_PLAN_JSON_HPP
