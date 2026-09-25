@@ -458,12 +458,11 @@ providerArtifactKey(const NativeSelectionProjectionV3& projection,
     // attemptId). It authenticates the current selection but cannot address
     // an immutable Provider artifact template. The policy snapshot is the
     // stable security-domain identity; protectionIdentity below keeps
-    // independently issued protected grants separated.
+    // request-specific grant identity out of the template key. The current
+    // grant remains verified before cache admission.
     projection.securityPolicySnapshotDigest,
     role.protectionEpoch,
-    projection.hasGrantBinding
-      ? projection.provider + "|" + projection.grantName + "|" + projection.grantDigest
-      : providerIdentity};
+    projection.provider.empty() ? providerIdentity : projection.provider};
 }
 
 std::filesystem::path
@@ -490,22 +489,6 @@ providerNowMs()
   return static_cast<std::uint64_t>(std::max<std::int64_t>(0,
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count()));
-}
-
-std::filesystem::path
-providerProtectedStaging(const std::filesystem::path& cacheDir)
-{
-  const auto base = cacheDir / ".staging";
-  std::filesystem::create_directories(base);
-  std::string pattern = (base / "provider-protected-XXXXXX").string();
-  std::vector<char> mutablePattern(pattern.begin(), pattern.end());
-  mutablePattern.push_back('\0');
-  const auto created = ::mkdtemp(mutablePattern.data());
-  if (created == nullptr)
-    throw std::runtime_error("DI_PROVIDER_PROTECTED_STAGING_UNAVAILABLE");
-  const auto directory = std::filesystem::path(created);
-  markNativeArtifactStagingLease(directory);
-  return directory;
 }
 
 void
@@ -765,6 +748,7 @@ struct Provider::State
   std::shared_ptr<ProviderMetrics> metrics = std::make_shared<ProviderMetrics>();
   std::shared_ptr<ProviderArtifactCache> artifactCache;
   std::shared_ptr<OnnxRuntimeSessionCache> sessionCache;
+  std::shared_ptr<NativeProtectedPlaintextCache> protectedPlaintextCache;
   std::shared_ptr<ProtectedResidentAuthority> protectedResidentAuthority;
   std::shared_ptr<const ProviderConfig::Impl> config;
   std::shared_ptr<ndn::Face> face;
@@ -1147,6 +1131,8 @@ Provider Provider::fromConfig(const ProviderConfig& config)
                                 config.m_impl->maxArtifactEntries,
                                 config.m_impl->assemblyJobTimeout});
   state->sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+  state->protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
+    config.m_impl->artifactCacheDir, config.m_impl->maxArtifactEntries);
   state->protectedResidentAuthority =
     makeProtectedResidentAuthority(state->sessionCache);
   state->asyncRuntime = ndn_service_framework::OperationRuntime::create();
@@ -1237,6 +1223,8 @@ Provider Provider::fromServiceProviderForTest(
                                 config.m_impl->maxArtifactEntries,
                                 config.m_impl->assemblyJobTimeout});
   state->sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+  state->protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
+    config.m_impl->artifactCacheDir, config.m_impl->maxArtifactEntries);
   state->protectedResidentAuthority =
     makeProtectedResidentAuthority(state->sessionCache);
   state->asyncRuntime = ndn_service_framework::OperationRuntime::create();
@@ -1720,6 +1708,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
   const auto expectedManifestDigest = m_state->manifestDigest;
   const auto providerStartedAtMs = m_state->providerStartedAtMs;
   const auto artifactCache = m_state->artifactCache;
+  const auto protectedPlaintextCache = m_state->protectedPlaintextCache;
   const auto protectedResidentAuthority = m_state->protectedResidentAuthority;
   auto* keyChain = m_state->keyChain != nullptr
     ? m_state->keyChain.get() : m_state->borrowedKeyChain;
@@ -1727,7 +1716,8 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
     [cacheDir = config->artifactCacheDir.string(), providerIdentity,
      workerLocation, providerBootId, assemblyTimeout = config->assemblyJobTimeout,
      providerCert, keyChain, expectedManifestDigest, providerStartedAtMs,
-     artifactCache, protectedResidentAuthority, residentSessionByRole,
+     artifactCache, protectedPlaintextCache, protectedResidentAuthority,
+     residentSessionByRole,
      metrics = m_state->metrics] (
       ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
       const NativeSelectionProjectionV3& projection,
@@ -1753,6 +1743,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
           std::max<std::int64_t>(1, assemblyTimeout.count()));
         options.workerLocation = workerLocation;
         options.protectedRuntime = protectedRuntime;
+        options.protectedPlaintextCache = protectedPlaintextCache;
         options.reportProgress = makeNativeAssemblyProgressReporter(
           ctx, projection, projection.assembly.backend.empty()
             ? std::string("native") : projection.assembly.backend,
@@ -1910,6 +1901,29 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                                          (assembledDiskHit ? "assembled-disk-hit" :
                                           "assembled-built"));
           spec = *lease.runnerSpec();
+          // A protected ciphertext is bound to the current key reference,
+          // but the immutable template is bound to the model/role/recipe
+          // identity. Rebind the current grant's descriptor after a
+          // template hit instead of reusing another grant's ciphertext.
+          if (templateHit && protectedRuntime) {
+            if (reuseNativeProtectedCanonicalOnnxCacheDescriptor(
+                  spec, projection, options)) {
+              logProviderPreparationProgress(
+                projection, "CACHE_CIPHERTEXT_DESCRIPTOR_HIT",
+                "current-grant-ciphertext");
+            }
+            else if (const auto rebound = tryLoadNativeCanonicalOnnxRoleFromCache(
+                  projection, options, sourceIdentity.first, sourceIdentity.second)) {
+              spec = *rebound;
+              logProviderPreparationProgress(
+                projection, "CACHE_TEMPLATE_REBIND", "current-grant-ciphertext");
+            }
+            else {
+              artifactCache->invalidate(key);
+              throw std::runtime_error(
+                "DI_PROVIDER_ARTIFACT_TEMPLATE_REBIND_MISSING");
+            }
+          }
           // The runner opens the assembled path after this factory returns.
           // Keep the cache lease in the runner's copied spec until that
           // construction has completed (and for the lifetime of any runner
@@ -1918,37 +1932,31 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
           const auto encryptedPath = spec.metadata.find("encryptedArtifactPath");
           const bool protectedCiphertext = protectedRuntime &&
             encryptedPath != spec.metadata.end() && !encryptedPath->second.empty();
+          NativeProtectedPlaintextCache::Lease plaintextLease;
           if (protectedCiphertext) {
-            const auto staging = providerProtectedStaging(cacheDir);
             try {
-              const auto ciphertextPath = requireProviderArtifactPathUnderCacheRoot(
-                options.cacheDir, encryptedPath->second);
-              spec.metadata["encryptedArtifactPath"] = ciphertextPath.string();
-              registerNativePlaintextDirectory(
-                *protectedRuntime, staging,
-                "provider-artifact-" + std::to_string(::getpid()));
-              const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
-              const auto keyReference = protectedRuntime->keyReference();
-              if (!keyReference)
-                throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
-              const NativeAssembledEntryContext context{
-                projection.assembly.modelManifestDigest,
-                options.roleAssemblySpecDigest,
-                sha256TensorBytes(std::vector<std::uint8_t>(profile.begin(), profile.end())),
-                "MODEL_PROTO", keyReference->digest()};
-              protectedRuntime->withContentKey(providerNowMs(), [&] (const auto& key) {
-                const auto actualDigest = openNativeAssembledEntryToFile(
-                  key, ciphertextPath, staging / "model.onnx", context,
-                  projection.assembly.maxAssembledBytes, lease->ciphertextDigest);
-                if (actualDigest != lease->ciphertextDigest)
-                  throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_DIGEST_MISMATCH");
-              });
-              spec.path = (staging / "model.onnx").string();
+              plaintextLease = materializeNativeCanonicalOnnxCacheHit(
+                spec, projection, options, control);
             }
             catch (...) {
               artifactCache->invalidate(key);
-              std::error_code ignored;
-              std::filesystem::remove_all(staging, ignored);
+              if (protectedPlaintextCache) {
+                const auto digest = spec.metadata.find("encryptedArtifactDigest");
+                if (digest != spec.metadata.end()) {
+                  NativeProtectedPlaintextCacheKey cacheKey;
+                  cacheKey.encryptedArtifactDigest = digest->second;
+                  cacheKey.modelManifestDigest = projection.assembly.modelManifestDigest;
+                  cacheKey.graphDigest = projection.assembly.graphDigest;
+                  cacheKey.initializerDigest = projection.assembly.canonicalInitializerDigest;
+                  cacheKey.role = projection.assembly.selectedRole;
+                  cacheKey.recipeDigest = projection.assembly.recipeDigest;
+                  cacheKey.backendAbi = projection.assembly.backendAbi;
+                  cacheKey.roleAssemblySpecDigest = options.roleAssemblySpecDigest;
+                  if (const auto keyReference = protectedRuntime->keyReference())
+                    cacheKey.keyReferenceDigest = keyReference->digest();
+                  protectedPlaintextCache->invalidate(cacheKey);
+                }
+              }
               throw;
             }
           }
@@ -1971,7 +1979,15 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
             metrics->templateHits.fetch_add(1, std::memory_order_relaxed);
           if (assembledDiskHit)
             metrics->assembledDiskHits.fetch_add(1, std::memory_order_relaxed);
-          spec.lifetime = std::make_shared<ProviderArtifactLease>(std::move(lease));
+          struct RunnerPreparationLifetime
+          {
+            std::shared_ptr<ProviderArtifactLease> artifact;
+            NativeProtectedPlaintextCache::Lease plaintext;
+          };
+          auto lifetime = std::make_shared<RunnerPreparationLifetime>();
+          lifetime->artifact = std::make_shared<ProviderArtifactLease>(std::move(lease));
+          lifetime->plaintext = std::move(plaintextLease);
+          spec.lifetime = std::move(lifetime);
         }
       }
       if (projection.assembly.mergeKind == "NATIVE_POSTPROCESS")
@@ -2245,6 +2261,8 @@ void Provider::stop() const noexcept
     m_state->artifactCache->stop();
   if (m_state->sessionCache)
     m_state->sessionCache->close();
+  if (m_state->protectedPlaintextCache)
+    m_state->protectedPlaintextCache->stop();
   requestStopIo();
 }
 

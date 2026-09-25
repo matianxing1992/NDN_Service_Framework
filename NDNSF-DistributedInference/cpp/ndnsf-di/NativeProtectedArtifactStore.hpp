@@ -55,6 +55,10 @@ void registerNativePlaintextDirectory(
   ProtectedRuntime& runtime, const std::filesystem::path& directory,
   const std::string& leaseId);
 
+// Securely erase a private plaintext cache directory without following
+// symlinks.  Used by process-local cache eviction after all leases release.
+void eraseNativePlaintextDirectory(const std::filesystem::path& directory) noexcept;
+
 // Register the same protected directory lease and return an eraser bound to
 // its pinned fd.  The eraser is for an authenticated direct child that must be
 // removed before the runtime's final directory drain.

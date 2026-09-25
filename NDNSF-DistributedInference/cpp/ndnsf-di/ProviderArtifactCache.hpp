@@ -19,9 +19,10 @@ namespace ndnsf::di {
  * Empty optional identities are encoded as empty fields, while every field is
  * length framed by canonicalKey().  A model name or cache directory is never
  * sufficient to address an entry.  For protected projections,
- * protectionIdentity includes the authenticated provider/grant identity;
- * independently issued grants therefore address separate entries even when
- * all immutable model and runner fields match.
+ * protectionIdentity includes the authenticated Provider security scope. The
+ * request-specific grant name/digest are authorization/lease values, not
+ * immutable model identity; the current grant is still verified before this
+ * cache is called.
  */
 struct ProviderArtifactKey
 {

@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
@@ -15,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace ndnsf::di {
 
@@ -57,6 +59,91 @@ struct NativeCanonicalOnnxAssemblerOptions
   // up front (DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING) before any fetch;
   // a non-empty sha256 is re-probed against the pinned binary on every spawn.
   NativeOnnxWorkerLocation workerLocation;
+  // Process-local, lease-owned plaintext cache.  Protected grant verification
+  // still happens for every request; this cache only avoids repeating the
+  // already-authenticated decrypt/copy after an exact descriptor hit.
+  std::shared_ptr<class NativeProtectedPlaintextCache> protectedPlaintextCache;
+};
+
+/** Exact identity for one decrypted protected assembled model. */
+struct NativeProtectedPlaintextCacheKey
+{
+  std::string encryptedArtifactDigest;
+  std::string modelManifestDigest;
+  std::string graphDigest;
+  std::string initializerDigest;
+  std::string role;
+  std::string recipeDigest;
+  std::string backendAbi;
+  std::string roleAssemblySpecDigest;
+  std::string keyReferenceDigest;
+  std::string entryKind = "MODEL_PROTO";
+
+  std::string canonicalKey() const;
+};
+
+/**
+ * Process-local cache for authenticated protected plaintext files.
+ *
+ * The cache stores no model bytes in the C++ heap.  A lease pins one private
+ * staging directory while a runner uses it; idle entries remain available for
+ * the next turn and are securely erased on eviction/stop.  The encrypted
+ * descriptor and current ProtectedRuntime remain the authorization boundary.
+ */
+class NativeProtectedPlaintextCache
+{
+public:
+  struct Release;
+
+  class Lease
+  {
+  public:
+    Lease() noexcept = default;
+    ~Lease() noexcept;
+    Lease(const Lease&) = delete;
+    Lease& operator=(const Lease&) = delete;
+    Lease(Lease&& other) noexcept;
+    Lease& operator=(Lease&& other) noexcept;
+
+    bool valid() const noexcept { return static_cast<bool>(m_release); }
+    bool cacheHit() const noexcept { return m_cacheHit; }
+    explicit operator bool() const noexcept { return valid(); }
+    const std::filesystem::path& path() const noexcept { return m_path; }
+
+  private:
+    Lease(std::filesystem::path path, bool cacheHit,
+          std::shared_ptr<Release> release) noexcept
+      : m_path(std::move(path))
+      , m_release(std::move(release))
+      , m_cacheHit(cacheHit)
+    {}
+
+    std::filesystem::path m_path;
+    std::shared_ptr<Release> m_release;
+    bool m_cacheHit = false;
+    friend class NativeProtectedPlaintextCache;
+  };
+
+  using Build = std::function<void(const std::filesystem::path& plaintextPath)>;
+
+  explicit NativeProtectedPlaintextCache(std::filesystem::path cacheDir,
+                                         std::size_t maxEntries = 8);
+  ~NativeProtectedPlaintextCache() noexcept;
+  NativeProtectedPlaintextCache(const NativeProtectedPlaintextCache&) = delete;
+  NativeProtectedPlaintextCache& operator=(const NativeProtectedPlaintextCache&) = delete;
+
+  Lease acquire(const NativeProtectedPlaintextCacheKey& key,
+                const NativeRequestControl& control,
+                std::uint64_t maxPlaintextBytes,
+                Build build);
+  void invalidate(const NativeProtectedPlaintextCacheKey& key) noexcept;
+  void stop() noexcept;
+
+private:
+  struct Shared;
+  static void releaseLease(const std::shared_ptr<Shared>& shared,
+                           const std::string& key) noexcept;
+  std::shared_ptr<Shared> m_shared;
 };
 
 /**
@@ -106,7 +193,9 @@ withNativeArtifactDirectoryFinalization(const std::string& directory,
  * nullopt and leave the normal fetch/assembly path available. Protected
  * entries retain only authenticated ciphertext under a key-reference-bound
  * stable directory; the current grant/Selection still authorizes each hit and
- * Provider creates request-scoped plaintext staging.
+ * Provider binds the current grant and obtains a lease from the process-local
+ * plaintext cache; the lease, rather than the immutable template, owns the
+ * plaintext lifetime.
  */
 std::optional<NativeModelRunnerSpec>
 tryLoadNativeCanonicalOnnxRoleFromCache(
@@ -116,13 +205,27 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const std::string& canonicalSourceDigest = {});
 
 /**
- * Materialize the request-scoped plaintext for a protected assembled-cache
- * hit.  Cache lookup deliberately returns only the authenticated ciphertext
- * descriptor; this helper binds the current ProtectedRuntime, decrypts into
- * private staging, and fills the runner path before runner validation.
+ * Legacy request-scoped materialization for a protected assembled-cache hit.
+ * Production callers use the overload below so the decrypted path can be
+ * reused by an exact process-local plaintext-cache lease.
  */
 void
 materializeNativeCanonicalOnnxCacheHit(
+  NativeModelRunnerSpec& spec,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options);
+
+/** Materialize through the process-local protected plaintext cache. */
+NativeProtectedPlaintextCache::Lease
+materializeNativeCanonicalOnnxCacheHit(
+  NativeModelRunnerSpec& spec,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const NativeRequestControl& control);
+
+/** Reuse a cached protected ciphertext descriptor without rehashing it. */
+bool
+reuseNativeProtectedCanonicalOnnxCacheDescriptor(
   NativeModelRunnerSpec& spec,
   const NativeSelectionProjectionV3& projection,
   const NativeCanonicalOnnxAssemblerOptions& options);

@@ -522,25 +522,46 @@ validatePlacementOnly(const std::filesystem::path& root, bool cacheCompatibility
                                            const PlacementObservation& placement,
                                            const std::string& expectedProvider) {
     const auto text = readFile(path);
-    const auto hits = recordsContaining(text,
+    // CACHE_LOOKUP_HIT is the historical material-cache marker. The native
+    // provider now reports the complete cache contract with CACHE_ACQUIRE_DONE
+    // so the oracle must accept both without requiring a redundant material
+    // fetch. A modern acquire record takes precedence when both are present.
+    const auto legacyHits = recordsContaining(text,
       "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_HIT");
+    const auto acquireHits = recordsContaining(text,
+      "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_ACQUIRE_DONE");
     const auto misses = recordsContaining(text,
       "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_MISS");
-    if (hits.size() > 1 || misses.size() > 1 || (!hits.empty() && !misses.empty())) {
+    if (acquireHits.size() > 1 || legacyHits.size() > 1 || misses.size() > 1 ||
+        (!acquireHits.empty() && !misses.empty()) ||
+        (acquireHits.empty() && !legacyHits.empty() && !misses.empty())) {
       throw std::runtime_error(
         "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=ambiguous-cache-result log=" +
         path.string());
     }
-    if (hits.empty()) {
+    if (acquireHits.empty() && legacyHits.empty()) {
       return validateMaterialFetches(path, placement, expectedProvider);
     }
-    const auto cacheHit = hits.front();
+    const auto cacheHit = acquireHits.empty() ? legacyHits.front() : acquireHits.front();
+    const auto detail = field(cacheHit, "detail");
     if (field(cacheHit, "requestId") != placement.selection.requestId ||
         field(cacheHit, "provider") != expectedProvider ||
-        field(cacheHit, "role") != placement.selection.role ||
-        field(cacheHit, "detail").empty()) {
+        field(cacheHit, "role") != placement.selection.role || detail.empty() ||
+        (!acquireHits.empty() && detail != "assembled-disk-hit" && detail != "template-hit")) {
       throw std::runtime_error(
         "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=identity-mismatch log=" +
+        path.string());
+    }
+    const auto rebinds = recordsContaining(text,
+      "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_TEMPLATE_REBIND");
+    if (rebinds.size() > 1 ||
+        (!rebinds.empty() && (detail != "template-hit" ||
+          field(rebinds.front(), "requestId") != placement.selection.requestId ||
+          field(rebinds.front(), "provider") != expectedProvider ||
+          field(rebinds.front(), "role") != placement.selection.role ||
+          field(rebinds.front(), "detail") != "current-grant-ciphertext"))) {
+      throw std::runtime_error(
+        "SPEC189_CPP_ORACLE_FAIL boundary=CACHE_LOOKUP reason=template-rebind-mismatch log=" +
         path.string());
     }
     if (text.find("NDNSF_DI_PROVIDER_MATERIAL_FETCH") != std::string::npos) {

@@ -576,6 +576,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
                             'ndn-service-framework/NDNSFMessages.cpp',

@@ -768,6 +768,333 @@ bindNativeRunnerOutputScopes(const NativeSelectionProjectionV3& projection,
 
 } // namespace
 
+namespace {
+
+constexpr const char* ProtectedPlaintextLeaseSuffix = ".ndnsf-di-provider-lease";
+
+void
+eraseProtectedPlaintextCacheDirectory(const std::filesystem::path& directory) noexcept
+{
+  eraseNativePlaintextDirectory(directory);
+  std::error_code error;
+  std::filesystem::remove(
+    directory.parent_path() /
+      (directory.filename().string() + ProtectedPlaintextLeaseSuffix), error);
+}
+
+} // namespace
+
+struct NativeProtectedPlaintextCache::Shared
+{
+  struct Entry
+  {
+    std::string key;
+    std::filesystem::path directory;
+    std::filesystem::path plaintextPath;
+    std::size_t leases = 0;
+    std::uint64_t lastUse = 0;
+    bool building = false;
+    bool ready = false;
+    bool invalidated = false;
+  };
+
+  std::filesystem::path cacheDir;
+  std::size_t maxEntries = 8;
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::map<std::string, std::shared_ptr<Entry>> entries;
+  std::uint64_t useSequence = 0;
+  bool stopped = false;
+};
+
+struct NativeProtectedPlaintextCache::Release
+{
+  std::shared_ptr<Shared> shared;
+  std::string key;
+
+  Release(std::shared_ptr<Shared> owner, std::string cacheKey)
+    : shared(std::move(owner))
+    , key(std::move(cacheKey))
+  {}
+
+  ~Release() noexcept
+  {
+    NativeProtectedPlaintextCache::releaseLease(shared, key);
+  }
+};
+
+NativeProtectedPlaintextCache::Lease::~Lease() noexcept = default;
+NativeProtectedPlaintextCache::Lease::Lease(Lease&& other) noexcept = default;
+NativeProtectedPlaintextCache::Lease&
+NativeProtectedPlaintextCache::Lease::operator=(Lease&& other) noexcept = default;
+
+std::string
+NativeProtectedPlaintextCacheKey::canonicalKey() const
+{
+  const auto frame = [] (const std::string& value) {
+    return std::to_string(value.size()) + ":" + value;
+  };
+  return "NDNSF-DI/protected-plaintext/v1" +
+    frame(encryptedArtifactDigest) + frame(modelManifestDigest) +
+    frame(graphDigest) + frame(initializerDigest) + frame(role) +
+    frame(recipeDigest) + frame(backendAbi) + frame(roleAssemblySpecDigest) +
+    frame(keyReferenceDigest) + frame(entryKind);
+}
+
+NativeProtectedPlaintextCache::NativeProtectedPlaintextCache(
+  std::filesystem::path cacheDir, const std::size_t maxEntries)
+  : m_shared(std::make_shared<Shared>())
+{
+  if (cacheDir.empty())
+    throw std::invalid_argument("protected plaintext cache directory is empty");
+  m_shared->cacheDir = std::move(cacheDir);
+  m_shared->maxEntries = std::max<std::size_t>(1, maxEntries);
+}
+
+NativeProtectedPlaintextCache::~NativeProtectedPlaintextCache() noexcept
+{
+  stop();
+}
+
+void
+NativeProtectedPlaintextCache::releaseLease(
+  const std::shared_ptr<Shared>& shared, const std::string& key) noexcept
+{
+  if (!shared)
+    return;
+  std::filesystem::path cleanup;
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    const auto it = shared->entries.find(key);
+    if (it == shared->entries.end())
+      return;
+    const auto& entry = it->second;
+    if (entry->leases != 0)
+      --entry->leases;
+    if (entry->leases == 0 && (shared->stopped || entry->invalidated)) {
+      cleanup = entry->directory;
+      shared->entries.erase(it);
+    }
+  }
+  shared->condition.notify_all();
+  if (!cleanup.empty())
+    eraseProtectedPlaintextCacheDirectory(cleanup);
+}
+
+NativeProtectedPlaintextCache::Lease
+NativeProtectedPlaintextCache::acquire(
+  const NativeProtectedPlaintextCacheKey& key,
+  const NativeRequestControl& control,
+  const std::uint64_t maxPlaintextBytes,
+  Build build)
+{
+  if (maxPlaintextBytes == 0 || !build)
+    throw std::invalid_argument("protected plaintext cache build is invalid");
+  control.requireActive();
+  const auto keyText = key.canonicalKey();
+  const auto keyDigest = sha256Hex(
+    std::vector<std::uint8_t>(keyText.begin(), keyText.end()));
+  const auto directory = m_shared->cacheDir / ".staging" /
+    (std::string("protected-plaintext-") + keyDigest.substr(7));
+  const auto plaintextPath = directory / "model.onnx";
+
+  for (;;) {
+    std::shared_ptr<Shared::Entry> entry;
+    bool creator = false;
+    bool hit = false;
+    std::vector<std::filesystem::path> evicted;
+    {
+      std::unique_lock<std::mutex> lock(m_shared->mutex);
+      if (m_shared->stopped)
+        throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_STOPPED");
+      const auto found = m_shared->entries.find(keyText);
+      if (found != m_shared->entries.end()) {
+        entry = found->second;
+        if (entry->building) {
+          while (!m_shared->stopped && entry->building) {
+            if ((control.cancelled && control.cancelled()) ||
+                std::chrono::steady_clock::now() >= control.deadline)
+              throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_WAIT_CANCELLED");
+            if (m_shared->condition.wait_until(lock, control.deadline) ==
+                  std::cv_status::timeout && entry->building)
+              throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_WAIT_TIMEOUT");
+          }
+          if (m_shared->stopped)
+            throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_STOPPED");
+          continue;
+        }
+        std::error_code error;
+        const auto size = std::filesystem::file_size(entry->plaintextPath, error);
+        if (entry->ready && !error && size != 0 && size <= maxPlaintextBytes &&
+            std::filesystem::is_regular_file(entry->plaintextPath, error) && !error) {
+          ++entry->leases;
+          entry->lastUse = ++m_shared->useSequence;
+          hit = true;
+        }
+        else if (entry->leases == 0) {
+          evicted.push_back(entry->directory);
+          m_shared->entries.erase(found);
+          entry.reset();
+        }
+        else {
+          throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_ACTIVE_FILE_INVALID");
+        }
+      }
+      if (!hit && !entry) {
+        for (auto it = m_shared->entries.begin();
+             it != m_shared->entries.end() &&
+             m_shared->entries.size() >= m_shared->maxEntries;) {
+          const auto& candidate = it->second;
+          if (!candidate->building && candidate->leases == 0) {
+            evicted.push_back(candidate->directory);
+            it = m_shared->entries.erase(it);
+          }
+          else {
+            ++it;
+          }
+          if (m_shared->entries.size() < m_shared->maxEntries)
+            break;
+        }
+        entry = std::make_shared<Shared::Entry>();
+        entry->key = keyText;
+        entry->directory = directory;
+        entry->plaintextPath = plaintextPath;
+        entry->leases = 1;
+        entry->lastUse = ++m_shared->useSequence;
+        entry->building = true;
+        m_shared->entries.emplace(keyText, entry);
+        creator = true;
+      }
+    }
+    for (const auto& path : evicted)
+      eraseProtectedPlaintextCacheDirectory(path);
+    if (hit) {
+      Lease result(plaintextPath, true,
+                   std::make_shared<Release>(m_shared, keyText));
+      control.requireActive();
+      return result;
+    }
+    if (!creator)
+      continue;
+
+    bool built = false;
+    bool existing = false;
+    try {
+      control.requireActive();
+      std::filesystem::create_directories(directory);
+      std::error_code directoryPermissionError;
+      std::filesystem::permissions(
+        directory,
+        std::filesystem::perms::owner_read |
+          std::filesystem::perms::owner_write |
+          std::filesystem::perms::owner_exec,
+        std::filesystem::perm_options::replace, directoryPermissionError);
+      if (directoryPermissionError)
+        throw std::runtime_error("DI_PROTECTED_PLAINTEXT_DIRECTORY_PERMISSIONS_FAILED");
+      markNativeArtifactStagingLease(directory);
+      std::error_code error;
+      const auto existingSize = std::filesystem::file_size(plaintextPath, error);
+      existing = !error && existingSize != 0 && existingSize <= maxPlaintextBytes &&
+        std::filesystem::is_regular_file(plaintextPath, error) && !error;
+      if (!existing)
+        build(plaintextPath);
+      std::error_code permissionError;
+      std::filesystem::permissions(
+        plaintextPath,
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::replace, permissionError);
+      if (permissionError)
+        throw std::runtime_error("DI_PROTECTED_PLAINTEXT_PERMISSIONS_FAILED");
+      const auto finalSize = std::filesystem::file_size(plaintextPath, error);
+      if (error || finalSize == 0 || finalSize > maxPlaintextBytes ||
+          !std::filesystem::is_regular_file(plaintextPath, error) || error)
+        throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_FILE_INVALID");
+      control.requireActive();
+      built = true;
+    }
+    catch (...) {
+      {
+        std::lock_guard<std::mutex> lock(m_shared->mutex);
+        const auto found = m_shared->entries.find(keyText);
+        if (found != m_shared->entries.end() && found->second == entry)
+          m_shared->entries.erase(found);
+      }
+      m_shared->condition.notify_all();
+      eraseProtectedPlaintextCacheDirectory(directory);
+      throw;
+    }
+    if (!built)
+      throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_BUILD_FAILED");
+    {
+      std::lock_guard<std::mutex> lock(m_shared->mutex);
+      const auto found = m_shared->entries.find(keyText);
+      if (found == m_shared->entries.end() || found->second != entry ||
+          m_shared->stopped || entry->invalidated) {
+        if (found != m_shared->entries.end() && found->second == entry)
+          m_shared->entries.erase(found);
+        m_shared->condition.notify_all();
+        eraseProtectedPlaintextCacheDirectory(directory);
+        throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_STOPPED");
+      }
+      entry->building = false;
+      entry->ready = true;
+    }
+    m_shared->condition.notify_all();
+    return Lease(plaintextPath, existing,
+                 std::make_shared<Release>(m_shared, keyText));
+  }
+}
+
+void
+NativeProtectedPlaintextCache::invalidate(
+  const NativeProtectedPlaintextCacheKey& key) noexcept
+{
+  const auto keyText = key.canonicalKey();
+  std::filesystem::path cleanup;
+  {
+    std::lock_guard<std::mutex> lock(m_shared->mutex);
+    const auto found = m_shared->entries.find(keyText);
+    if (found == m_shared->entries.end())
+      return;
+    found->second->invalidated = true;
+    if (!found->second->building && found->second->leases == 0) {
+      cleanup = found->second->directory;
+      m_shared->entries.erase(found);
+    }
+  }
+  m_shared->condition.notify_all();
+  if (!cleanup.empty())
+    eraseProtectedPlaintextCacheDirectory(cleanup);
+}
+
+void
+NativeProtectedPlaintextCache::stop() noexcept
+{
+  if (!m_shared)
+    return;
+  std::vector<std::filesystem::path> cleanup;
+  {
+    std::lock_guard<std::mutex> lock(m_shared->mutex);
+    if (m_shared->stopped)
+      return;
+    m_shared->stopped = true;
+    for (auto it = m_shared->entries.begin(); it != m_shared->entries.end();) {
+      const auto& entry = it->second;
+      entry->invalidated = true;
+      if (!entry->building && entry->leases == 0) {
+        cleanup.push_back(entry->directory);
+        it = m_shared->entries.erase(it);
+      }
+      else {
+        ++it;
+      }
+    }
+  }
+  m_shared->condition.notify_all();
+  for (const auto& path : cleanup)
+    eraseProtectedPlaintextCacheDirectory(path);
+}
+
 void
 withNativeArtifactDirectoryFinalization(const std::string& directory,
                                         const std::function<void()>& action)
@@ -938,6 +1265,44 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   return std::nullopt;
 }
 
+bool
+reuseNativeProtectedCanonicalOnnxCacheDescriptor(
+  NativeModelRunnerSpec& spec,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options)
+{
+  if (!options.protectedRuntime || !spec.path.empty())
+    return false;
+  const auto keyReference = options.protectedRuntime->keyReference();
+  if (!keyReference)
+    return false;
+  const auto keyDigest = spec.metadata.find("protectedKeyReferenceDigest");
+  const auto encryptedPath = spec.metadata.find("encryptedArtifactPath");
+  const auto encryptedDigest = spec.metadata.find("encryptedArtifactDigest");
+  const auto manifestDigest = spec.metadata.find("modelManifestDigest");
+  if (keyDigest == spec.metadata.end() || encryptedPath == spec.metadata.end() ||
+      encryptedDigest == spec.metadata.end() || manifestDigest == spec.metadata.end() ||
+      keyDigest->second != keyReference->digest() ||
+      manifestDigest->second != projection.assembly.modelManifestDigest ||
+      !isSha256Digest(encryptedDigest->second) || encryptedPath->second.empty())
+    return false;
+  try {
+    requireActiveAssembly(options, projection.deadlineMs);
+    const auto path = std::filesystem::path(encryptedPath->second);
+    requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, path);
+    std::error_code error;
+    const auto bytes = std::filesystem::file_size(path, error);
+    if (error || bytes == 0 || bytes > projection.assembly.maxAssembledBytes + 65536 ||
+        !std::filesystem::is_regular_file(path, error) || error)
+      return false;
+    spec.metadata["encryptedArtifactPath"] = path.string();
+    return true;
+  }
+  catch (...) {
+    return false;
+  }
+}
+
 void
 materializeNativeCanonicalOnnxCacheHit(
   NativeModelRunnerSpec& spec,
@@ -995,6 +1360,78 @@ materializeNativeCanonicalOnnxCacheHit(
     }
     throw;
   }
+}
+
+NativeProtectedPlaintextCache::Lease
+materializeNativeCanonicalOnnxCacheHit(
+  NativeModelRunnerSpec& spec,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const NativeRequestControl& control)
+{
+  if (!spec.path.empty())
+    return {};
+  if (!options.protectedPlaintextCache)
+    throw std::runtime_error("DI_PROTECTED_PLAINTEXT_CACHE_UNAVAILABLE");
+  const auto encryptedPath = spec.metadata.find("encryptedArtifactPath");
+  const auto expectedDigest = spec.metadata.find("encryptedArtifactDigest");
+  if (encryptedPath == spec.metadata.end() || encryptedPath->second.empty() ||
+      expectedDigest == spec.metadata.end() || !isSha256Digest(expectedDigest->second))
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CACHE_HIT_DESCRIPTOR_MISSING");
+  if (!options.protectedRuntime)
+    throw std::runtime_error("DI_PROTECTED_RUNTIME_UNAVAILABLE_FOR_CACHE_HIT");
+  const auto keyReference = options.protectedRuntime->keyReference();
+  if (!keyReference)
+    throw std::runtime_error("DI_PROTECTED_KEY_REFERENCE_UNAVAILABLE");
+  const auto ciphertextPath = std::filesystem::path(encryptedPath->second);
+  requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, ciphertextPath);
+  std::error_code error;
+  const auto ciphertextBytes = std::filesystem::file_size(ciphertextPath, error);
+  if (error || ciphertextBytes == 0 ||
+      ciphertextBytes > projection.assembly.maxAssembledBytes + 65536 ||
+      !std::filesystem::is_regular_file(ciphertextPath, error) || error)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_CIPHERTEXT_UNAVAILABLE");
+
+  NativeProtectedPlaintextCacheKey cacheKey;
+  cacheKey.encryptedArtifactDigest = expectedDigest->second;
+  cacheKey.modelManifestDigest = projection.assembly.modelManifestDigest;
+  cacheKey.graphDigest = projection.assembly.graphDigest;
+  cacheKey.initializerDigest = projection.assembly.canonicalInitializerDigest;
+  cacheKey.role = projection.assembly.selectedRole;
+  cacheKey.recipeDigest = projection.assembly.recipeDigest;
+  cacheKey.backendAbi = projection.assembly.backendAbi;
+  cacheKey.roleAssemblySpecDigest = options.roleAssemblySpecDigest;
+  cacheKey.keyReferenceDigest = keyReference->digest();
+
+  const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
+  const NativeAssembledEntryContext context{
+    projection.assembly.modelManifestDigest,
+    options.roleAssemblySpecDigest,
+    sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())),
+    "MODEL_PROTO", keyReference->digest()};
+  auto lease = options.protectedPlaintextCache->acquire(
+    cacheKey, control, projection.assembly.maxAssembledBytes,
+    [&options, &control, ciphertextPath, context,
+     maxPlaintextBytes = projection.assembly.maxAssembledBytes,
+     expected = expectedDigest->second]
+    (const std::filesystem::path& plaintextPath) {
+      control.requireActive();
+      options.protectedRuntime->withContentKey(nowMs(), [&] (const auto& key) {
+        const auto actualDigest = openNativeAssembledEntryToFile(
+          key, ciphertextPath, plaintextPath, context,
+          maxPlaintextBytes,
+          expected);
+        if (actualDigest != expected)
+          throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_DIGEST_MISMATCH");
+      });
+      control.requireActive();
+    });
+  spec.path = lease.path().string();
+  spec.metadata["protectedPlaintextCacheKey"] = cacheKey.canonicalKey();
+  if (options.reportProgress)
+    options.reportProgress(lease.cacheHit() ? "CACHE_PLAINTEXT_HIT" : "CACHE_PLAINTEXT_MISS",
+                           0.97);
+  return lease;
 }
 
 namespace {

@@ -407,12 +407,15 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
     if (projection.grantName.empty() || projection.grantDigest.empty())
       throw cacheError("DI_PROVIDER_ARTIFACT_KEY_MISMATCH",
                        "authenticated projection lacks grant identity");
-    const auto suffix = std::string("|") + projection.grantName + "|" + projection.grantDigest;
-    const auto expectedPrefix = projection.provider + suffix;
-    if (key.protectionIdentity != expectedPrefix ||
-        key.protectionIdentity.size() < suffix.size() ||
-        key.protectionIdentity.compare(key.protectionIdentity.size() - suffix.size(),
-                                       suffix.size(), suffix) != 0)
+    const auto stableIdentity = projection.provider;
+    const auto scopedIdentity = projection.provider + "|" + projection.grantName;
+    // Accept the pre-Spec190 form for existing callers/tests, but production
+    // callers must use the stable Provider security scope. grantDigest
+    // changes with each request and must not defeat immutable-template reuse.
+    const auto legacyIdentity = scopedIdentity + "|" + projection.grantDigest;
+    if (key.protectionIdentity != stableIdentity &&
+        key.protectionIdentity != scopedIdentity &&
+        key.protectionIdentity != legacyIdentity)
       throw cacheError("DI_PROVIDER_ARTIFACT_KEY_MISMATCH",
                        "cache identity is not bound to the authenticated grant");
   }

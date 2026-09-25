@@ -1,5 +1,22 @@
 # Spec 设计变更记录
 
+## Spec190 T011 protected plaintext warm-path cache — 2026-09-25
+
+- **Status**: `PARTIAL`；修复 Provider 在 ORT session hit 后仍重复完整密文校验和解密复制的
+  原生准备路径；真实两节点 warm timing 尚未重新验收。
+- **Owner / principles**: DI Provider/ONNX assembler 拥有进程级 plaintext lease cache；每个
+  request 仍先完成当前 grant/Selection 校验，cache key 不含 request-local grant 字段，且包含
+  受保护 key reference 和完整模型/图/role/recipe/backend identity。Repo、Selection、wire 和
+  public API 不变，遵守 G1–G6、D1–D4。
+- **Delta**: 新增私有 `NativeProtectedPlaintextCache`、move-only lease、descriptor reuse gate、
+  `0600` plaintext staging 与 secure erase/stop/invalidate；后续同一 key 只复用 ONNX 路径，
+  ORT session cache 继续由既有 owner 管理。无模型字节进入 cache heap；失效/停止仍等待
+  active lease 后清理。
+- **Evidence / boundary**: [B190-176](../specs/190-multiturn-latency/evidence/b190-176.md)。
+  C++ production build、Provider assembly 22/22、actual protected `miss → hit`、staging
+  cleanup、resident-session 12/12 和 Repo lookup 5/5 通过；新 normal Repo 两节点 warm
+  timing、Repo restart、完整 Spec190 qualification 仍未验证，当前/目标 PDF 不刷新。
+
 ## Spec190 T007 Provider-owned resident CPU session owner — 2026-09-24
 
 - **Status**: `PARTIAL`；实现了 DI Provider 内部的 bounded

@@ -152,7 +152,9 @@ cleanupNativeArtifactStaging(const std::filesystem::path& cacheDir,
               removed += removeCandidate(candidate, staleAfter);
           }
         }
-        else if (hasPrefix(name, "assembly-") || hasPrefix(name, "provider-protected-")) {
+        else if (hasPrefix(name, "assembly-") ||
+                 hasPrefix(name, "provider-protected-") ||
+                 hasPrefix(name, "protected-plaintext-")) {
           removed += removeCandidate(path, staleAfter);
         }
       }

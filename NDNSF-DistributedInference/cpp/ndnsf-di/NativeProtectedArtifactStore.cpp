@@ -705,4 +705,25 @@ void registerNativePlaintextDirectory(
 {
   (void)registerNativePlaintextDirectoryWithFileEraser(runtime, directory, leaseId);
 }
+
+void eraseNativePlaintextDirectory(const std::filesystem::path& directory) noexcept
+{
+  try {
+    const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd >= 0) {
+      try {
+        eraseDirectoryFd(fd);
+      }
+      catch (...) {
+        ::close(fd);
+        return;
+      }
+      ::close(fd);
+    }
+    std::error_code error;
+    std::filesystem::remove(directory, error);
+  }
+  catch (...) {
+  }
+}
 } // namespace ndnsf::di

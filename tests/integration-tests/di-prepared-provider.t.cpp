@@ -1810,9 +1810,25 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
   BOOST_CHECK_EQUAL(rootFetches.load(std::memory_order_relaxed), 1U);
   BOOST_CHECK_EQUAL(sourceFetches.load(std::memory_order_relaxed), 1U);
 
-  materializeNativeCanonicalOnnxCacheHit(*hot, projection, options);
-  BOOST_REQUIRE(std::filesystem::is_regular_file(hot->path));
-  const auto plaintextDir = std::filesystem::path(hot->path).parent_path();
+  options.protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
+    cacheDir, 2);
+  NativeRequestControl plaintextControl;
+  plaintextControl.requestId = projection.requestId;
+  plaintextControl.attempt = projection.attempt;
+  plaintextControl.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  auto hotPlaintext = *hot;
+  auto firstPlaintextLease = materializeNativeCanonicalOnnxCacheHit(
+    hotPlaintext, projection, options, plaintextControl);
+  BOOST_REQUIRE(firstPlaintextLease);
+  BOOST_CHECK(!firstPlaintextLease.cacheHit());
+  BOOST_REQUIRE(std::filesystem::is_regular_file(hotPlaintext.path));
+  auto hotPlaintextAgain = *hot;
+  auto secondPlaintextLease = materializeNativeCanonicalOnnxCacheHit(
+    hotPlaintextAgain, projection, options, plaintextControl);
+  BOOST_REQUIRE(secondPlaintextLease);
+  BOOST_CHECK(secondPlaintextLease.cacheHit());
+  BOOST_CHECK_EQUAL(hotPlaintextAgain.path, hotPlaintext.path);
+  const auto plaintextDir = std::filesystem::path(hotPlaintext.path).parent_path();
   const auto profile = std::string("\"ndnsf-di-provider-workdir-scratch-v1\"");
   const NativeAssembledEntryContext context{
     rootDigest, roleAssemblySpecDigest,
@@ -1821,7 +1837,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
   const auto hotNow = static_cast<std::uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
-  const auto plaintext = providerAssemblyRead(hot->path);
+  const auto plaintext = providerAssemblyRead(hotPlaintext.path);
   BOOST_CHECK_EQUAL(providerAssemblyDigest(plaintext), hot->metadata.at("assembledModelDigest"));
 
   auto wrongContext = context;
@@ -1834,6 +1850,9 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStableCiphertextAfterNewAuthoriz
     }),
     std::exception);
   options.protectedRuntime->complete();
+  firstPlaintextLease = {};
+  secondPlaintextLease = {};
+  options.protectedPlaintextCache->stop();
 
   // A new Provider boot must be able to use the immutable ciphertext with a
   // newly issued grant.  The child receives only the current Selection/grant
@@ -2368,19 +2387,20 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     BOOST_REQUIRE_NE(parsedFirst.grantDigest, parsedSecond.grantDigest);
   }
 
-  // A protected grant remains request-bound for the in-memory runner cache, so
-  // two independent requests must create separate runners.  Their immutable
-  // assembled ciphertext may nevertheless reuse the stable disk entry when
-  // the canonical recipe, assembly contract and key reference are identical.
-  // The production request path must therefore fetch and assemble once, then
-  // reopen/decrypt the durable ciphertext for the second grant.
+  // Grant verification remains request-bound, but the immutable Provider
+  // template is reusable across independent grant leases in the same
+  // Provider/model/security scope. Each request still creates its own runner
+  // and rebinds the protected ciphertext for the current grant.
   runRequest(requestOne, firstGrant, 1, 1, 0, 1);
-  runRequest(requestTwo, independentGrant, 1, 1, 0, 2);
+  runRequest(requestTwo, independentGrant, 1, 1, 1, 2);
   BOOST_CHECK_EQUAL(runnerRuns->load(std::memory_order_relaxed), 2U);
   const auto counters = facade.counters();
   BOOST_CHECK_EQUAL(counters.sourceFetches, 1U);
   BOOST_CHECK_EQUAL(counters.assemblies, 1U);
-  BOOST_CHECK_EQUAL(counters.templateHits, 0U);
+  // Grant verification remains per request, while the immutable Provider
+  // template is reusable across independent grant leases in the same
+  // security scope.
+  BOOST_CHECK_EQUAL(counters.templateHits, 1U);
   BOOST_CHECK_EQUAL(counters.runnersCreated, 2U);
   registration.close();
   facade.stop();
@@ -3001,7 +3021,53 @@ BOOST_AUTO_TEST_CASE(ProviderArtifactCacheDefersCleanupForStoppedActiveLease)
   cache2.stop();
   BOOST_CHECK_EQUAL(cleanups, 3U);
   BOOST_CHECK(!std::filesystem::exists(path));
-  BOOST_CHECK(!std::filesystem::exists(replacementPath));
+BOOST_CHECK(!std::filesystem::exists(replacementPath));
+}
+
+BOOST_AUTO_TEST_CASE(ProtectedPlaintextCacheReusesAndErasesLeasedModel)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec190-protected-plaintext-cache-" + std::to_string(::getpid()));
+  std::error_code ignored;
+  std::filesystem::remove_all(root, ignored);
+  NativeProtectedPlaintextCache cache(root, 2);
+  NativeProtectedPlaintextCacheKey key;
+  key.encryptedArtifactDigest = zeroDigest('a');
+  key.modelManifestDigest = zeroDigest('b');
+  key.graphDigest = zeroDigest('c');
+  key.initializerDigest = zeroDigest('d');
+  key.role = "/role/P0";
+  key.recipeDigest = zeroDigest('e');
+  key.backendAbi = "onnxruntime-cpu";
+  key.roleAssemblySpecDigest = zeroDigest('f');
+  key.keyReferenceDigest = zeroDigest('0');
+  NativeRequestControl control;
+  control.requestId = "/spec190/cache/request";
+  control.attempt = 1;
+  control.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  unsigned builds = 0;
+  const auto build = [&] (const std::filesystem::path& path) {
+    ++builds;
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << "tiny-onnx";
+  };
+  auto first = cache.acquire(key, control, 1024, build);
+  BOOST_REQUIRE(first);
+  BOOST_CHECK(!first.cacheHit());
+  const auto cachedPath = first.path();
+  BOOST_CHECK(std::filesystem::is_regular_file(cachedPath));
+  auto second = cache.acquire(key, control, 1024, build);
+  BOOST_REQUIRE(second);
+  BOOST_CHECK(second.cacheHit());
+  BOOST_CHECK_EQUAL(second.path().string(), cachedPath.string());
+  BOOST_CHECK_EQUAL(builds, 1U);
+  second = {};
+  BOOST_CHECK(std::filesystem::exists(cachedPath));
+  cache.stop();
+  BOOST_CHECK(std::filesystem::exists(cachedPath));
+  first = {};
+  BOOST_CHECK(!std::filesystem::exists(cachedPath));
+  std::filesystem::remove_all(root, ignored);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

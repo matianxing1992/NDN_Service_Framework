@@ -14,6 +14,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -133,6 +134,36 @@ protectedResidentIdentityFor(const NativeSelectionProjectionV3& projection,
   identity.fencingToken = runtime.binding().fencingToken;
   identity.revocationSequence = runtime.binding().revocationSequence;
   return identity;
+}
+
+ProviderArtifactKey
+providerExecutableArtifactKey(const NativeSelectionProjectionV3& projection,
+                              const std::string& providerIdentity)
+{
+  const auto& role = projection.assembly;
+  return ProviderArtifactKey{
+    role.modelManifestDigest,
+    projection.canonicalArtifactName,
+    projection.canonicalArtifactName,
+    role.modelManifestDigest,
+    role.canonicalInitializerDigest,
+    role.graphDigest,
+    role.selectedRole,
+    // Request/attempt offer and grant digests authenticate admission but
+    // cannot address an immutable template.  The role artifact digest and
+    // Provider security scope are stable across turns; the current grant is
+    // still verified before cache admission.
+    role.artifactDigest,
+    role.recipeDigest,
+    role.backendAbi,
+    role.deviceSet.empty() ? std::string{} : role.deviceSet.front(),
+    role.precision,
+    role.quantization,
+    role.layout,
+    role.artifactProfileDigest,
+    projection.securityPolicySnapshotDigest,
+    role.protectionEpoch,
+    projection.provider.empty() ? providerIdentity : projection.provider};
 }
 
 void
@@ -1473,6 +1504,17 @@ main(int argc, char** argv)
     // by this Provider, so resident sessions can be reused across turns.
     auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
     auto protectedResidentAuthority = makeProtectedResidentAuthority(sessionCache);
+    auto protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
+      options.artifactCacheDir, 8);
+    ProviderArtifactCacheConfig artifactCacheConfig;
+    // This is logical admission accounting for the signed assembly limits,
+    // not a request to retain another model-sized buffer in the template
+    // cache.  Qwen's maxSourceBytes + maxAssembledBytes exceeds 1 GiB.
+    artifactCacheConfig.maxArtifactBytes = 8ULL << 30;
+    artifactCacheConfig.maxArtifactEntries = 8;
+    artifactCacheConfig.assemblyJobTimeout =
+      std::chrono::milliseconds(options.assemblyTimeoutMs);
+    auto artifactCache = std::make_shared<ProviderArtifactCache>(artifactCacheConfig);
     registerOnnxRuntimeBackend(*factory, sessionCache);
     factory->registerBackend(
       "native-yolo-postprocess",
@@ -1854,6 +1896,8 @@ main(int argc, char** argv)
          providerBootId,
          providerStartedAtMs,
          factory,
+         artifactCache,
+         protectedPlaintextCache,
          protectedResidentAuthority,
          providerCert,
          controllerCert,
@@ -1981,6 +2025,8 @@ main(int argc, char** argv)
                providerBootId,
                providerStartedAtMs,
                protectedResidentAuthority,
+               protectedPlaintextCache,
+               artifactCache,
                &keyChain] (
                 ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
                 const NativeSelectionProjectionV3& projection,
@@ -1997,6 +2043,7 @@ main(int argc, char** argv)
                   assemblyOptions.assemblyTimeoutMs = static_cast<std::uint64_t>(
                     assemblyTimeoutMs);
                   assemblyOptions.protectedRuntime = protectedRuntime;
+                  assemblyOptions.protectedPlaintextCache = protectedPlaintextCache;
                   assemblyOptions.workerLocation = assemblyWorkerLocation;
                   assemblyOptions.reportProgress = makeNativeAssemblyProgressReporter(
                     ctx, projection, projection.assembly.backend.empty()
@@ -2012,25 +2059,152 @@ main(int argc, char** argv)
                       return signNativeAssemblyManifest(
                         keyChain, providerCert, manifestBytes);
                     };
-                  logProviderPreparationProgress(projection, "CACHE_LOOKUP_BEGIN",
-                                                 "recipe-addressed");
-                  if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
-                        projection, assemblyOptions)) {
-                    spec = *cached;
-                    materializeNativeCanonicalOnnxCacheHit(
-                      spec, projection, assemblyOptions);
-                    logProviderPreparationProgress(projection, "CACHE_LOOKUP_HIT",
-                                                   "recipe-addressed");
+                  logProviderPreparationProgress(projection, "CACHE_ACQUIRE_BEGIN",
+                                                 "provider-artifact-cache");
+                  NativeRequestControl control;
+                  control.requestId = projection.requestId;
+                  control.attempt = projection.attempt;
+                  const auto nowWall = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                  const auto remaining = projection.deadlineMs > static_cast<std::uint64_t>(
+                      std::max<long long>(0, nowWall))
+                    ? projection.deadlineMs - static_cast<std::uint64_t>(
+                        std::max<long long>(0, nowWall))
+                    : 0;
+                  control.deadline = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(remaining);
+                  control.cancelled = [&ctx] {
+                    return ctx.isStreamed() && ctx.streamCancelled();
+                  };
+                  const auto key = providerExecutableArtifactKey(
+                    projection, assemblyProviderIdentity);
+                  const auto diskCacheHit = std::make_shared<std::atomic<bool>>(false);
+                  auto lease = artifactCache->acquireWithRunner(
+                    key, projection, control,
+                    [&ctx, projection, assemblyOptions, diskCacheHit]
+                    (const NativeRequestControl& jobControl) mutable {
+                      auto jobOptions = assemblyOptions;
+                      jobOptions.shouldCancel = jobControl.cancelled;
+                      jobOptions.assemblyTimeoutMs = static_cast<std::uint64_t>(std::max<long long>(
+                        1, std::chrono::duration_cast<std::chrono::milliseconds>(
+                          jobControl.deadline - std::chrono::steady_clock::now()).count()));
+                      logProviderPreparationProgress(projection, "CACHE_BUILD_BEGIN",
+                                                     "cache-flight-creator");
+                      NativeModelRunnerSpec built;
+                      logProviderPreparationProgress(projection, "CACHE_LOOKUP_BEGIN",
+                                                     "recipe-addressed");
+                      if (const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
+                            projection, jobOptions)) {
+                        built = *cached;
+                        diskCacheHit->store(true, std::memory_order_relaxed);
+                        logProviderPreparationProgress(projection, "CACHE_LOOKUP_HIT",
+                                                       "recipe-addressed-trusted");
+                      }
+                      else {
+                        logProviderPreparationProgress(projection, "CACHE_LOOKUP_MISS",
+                                                       "cold-assembly");
+                        logProviderPreparationProgress(projection, "ASSEMBLY_CALL_BEGIN",
+                                                       "canonical-onnx");
+                        built = prepareNativeCanonicalOnnxRole(ctx, projection, jobOptions);
+                        logProviderPreparationProgress(projection, "ASSEMBLY_CALL_DONE",
+                                                       "canonical-onnx");
+                      }
+                      const auto encryptedPath = built.metadata.find("encryptedArtifactPath");
+                      const bool protectedCiphertext = encryptedPath != built.metadata.end() &&
+                        !encryptedPath->second.empty();
+                      if (!protectedCiphertext && built.path.empty())
+                        throw std::runtime_error("DI_PROVIDER_ARTIFACT_ASSEMBLED_PATH_MISSING");
+                      if (!protectedCiphertext)
+                        built.metadata["assembledCachePath"] = built.path;
+                      const auto artifactPath = protectedCiphertext
+                        ? std::filesystem::path(encryptedPath->second)
+                        : std::filesystem::path(built.path);
+                      std::error_code sizeError;
+                      const auto artifactBytes = std::filesystem::file_size(artifactPath, sizeError);
+                      if (sizeError || artifactBytes == 0)
+                        throw std::runtime_error("DI_PROVIDER_ARTIFACT_CACHE_FILE_MISSING");
+                      auto artifact = std::make_shared<PreparedProviderArtifact>();
+                      artifact->encryptedObjectName = protectedCiphertext
+                        ? "local-protected-assembled-ciphertext"
+                        : "local-immutable-assembled-artifact";
+                      const auto digestKey = protectedCiphertext
+                        ? built.metadata.find("encryptedArtifactDigest")
+                        : built.metadata.find("assembledModelDigest");
+                      if (digestKey == built.metadata.end() || digestKey->second.empty())
+                        throw std::runtime_error("DI_PROVIDER_ARTIFACT_CACHE_DIGEST_MISSING");
+                      artifact->ciphertextDigest = digestKey->second;
+                      artifact->formatVersion = "ndnsf-di-native-assembled-artifact-v1";
+                      artifact->canonicalMetadataJson =
+                        std::string("{\"schema\":\"ndnsf-di-provider-artifact-v1\",") +
+                        "\"modelManifestDigest\":\"" + projection.assembly.modelManifestDigest +
+                        "\",\"artifactProfileDigest\":\"" + projection.assembly.artifactProfileDigest +
+                        "\",\"graphDigest\":\"" + projection.assembly.graphDigest +
+                        "\",\"role\":\"" + projection.assembly.selectedRole +
+                        "\",\"recipeDigest\":\"" + projection.assembly.recipeDigest +
+                        "\",\"backendAbi\":\"" + projection.assembly.backendAbi + "\"}";
+                      artifact->ciphertextBytes = static_cast<std::uint64_t>(artifactBytes);
+                      auto runnerSpec = std::make_shared<const NativeModelRunnerSpec>(
+                        std::move(built));
+                      return ProviderArtifactCache::BuildResult{
+                        std::move(artifact), std::move(runnerSpec), {}};
+                    });
+                  if (!lease.runnerSpec())
+                    throw std::runtime_error("DI_PROVIDER_ARTIFACT_RUNNER_TEMPLATE_MISSING");
+                  const bool templateHit = lease.cacheHit();
+                  const bool assembledDiskHit = diskCacheHit->load(std::memory_order_relaxed);
+                  logProviderPreparationProgress(
+                    projection, "CACHE_ACQUIRE_DONE",
+                    templateHit ? "template-hit" :
+                      (assembledDiskHit ? "assembled-disk-hit" : "assembled-built"));
+                  spec = *lease.runnerSpec();
+                  // Protected ciphertext is bound to the current key
+                  // reference, while the immutable template is bound to the
+                  // model/role/recipe identity.  A new grant may therefore
+                  // hit the in-memory template but must rebind its current
+                  // ciphertext descriptor before materialization.
+                  if (templateHit && protectedRuntime) {
+                    if (reuseNativeProtectedCanonicalOnnxCacheDescriptor(
+                          spec, projection, assemblyOptions)) {
+                      logProviderPreparationProgress(
+                        projection, "CACHE_CIPHERTEXT_DESCRIPTOR_HIT",
+                        "current-grant-ciphertext");
+                    }
+                    else if (const auto rebound = tryLoadNativeCanonicalOnnxRoleFromCache(
+                          projection, assemblyOptions)) {
+                      spec = *rebound;
+                      logProviderPreparationProgress(
+                        projection, "CACHE_TEMPLATE_REBIND", "current-grant-ciphertext");
+                    }
+                    else {
+                      artifactCache->invalidate(key);
+                      throw std::runtime_error(
+                        "DI_PROVIDER_ARTIFACT_TEMPLATE_REBIND_MISSING");
+                    }
+                  }
+                  const auto cachedPath = spec.metadata.find("assembledCachePath");
+                  NativeProtectedPlaintextCache::Lease plaintextLease;
+                  if (cachedPath != spec.metadata.end() && !cachedPath->second.empty()) {
+                    spec.path = cachedPath->second;
+                    if (!std::filesystem::is_regular_file(spec.path))
+                      throw std::runtime_error("DI_PROVIDER_ARTIFACT_MATERIALIZATION_MISSING");
+                  }
+                  else if (protectedRuntime) {
+                    plaintextLease = materializeNativeCanonicalOnnxCacheHit(
+                      spec, projection, assemblyOptions, control);
                   }
                   else {
-                    logProviderPreparationProgress(projection, "CACHE_LOOKUP_MISS",
-                                                   "cold-assembly");
-                    logProviderPreparationProgress(projection, "ASSEMBLY_CALL_BEGIN",
-                                                   "canonical-onnx");
-                    spec = prepareNativeCanonicalOnnxRole(ctx, projection, assemblyOptions);
-                    logProviderPreparationProgress(projection, "ASSEMBLY_CALL_DONE",
-                                                   "canonical-onnx");
+                    throw std::runtime_error("DI_PROVIDER_ARTIFACT_RUNNER_PATH_MISSING");
                   }
+                  struct RunnerPreparationLifetime
+                  {
+                    std::shared_ptr<ProviderArtifactLease> artifact;
+                    NativeProtectedPlaintextCache::Lease plaintext;
+                  };
+                  auto lifetime = std::make_shared<RunnerPreparationLifetime>();
+                  lifetime->artifact = std::make_shared<ProviderArtifactLease>(
+                    std::move(lease));
+                  lifetime->plaintext = std::move(plaintextLease);
+                  spec.lifetime = std::move(lifetime);
                 }
                 const auto resident = residentSessionByRole.find(spec.role);
                 const bool residentRequested =
@@ -2293,6 +2467,7 @@ main(int argc, char** argv)
           std::chrono::milliseconds(5000));
         const bool residentsDrained = protectedResidentAuthority->drain(
           std::chrono::milliseconds(5000));
+        protectedPlaintextCache->stop();
         std::ostringstream record;
         record << "NDNSF_DI_PROTECTED_RESIDENT_SHUTDOWN"
                << " sessionsDrained=" << (sessionsDrained ? "true" : "false")

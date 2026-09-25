@@ -16,7 +16,7 @@
 
 namespace {
 std::string provider(unsigned index, bool materials, bool terminal, unsigned begin, unsigned end,
-                     bool cacheHit = false)
+                     bool cacheHit = false, bool legacyCacheMarker = true)
 {
   const auto name = "/example/ndnsf-qwen06b/provider-" + std::to_string(index);
   const auto identity = " requestId=request attemptEpoch=1 provider=" + name +
@@ -41,8 +41,14 @@ std::string provider(unsigned index, bool materials, bool terminal, unsigned beg
     }
   }
   if (cacheHit) {
-    text += "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_HIT" + identity +
-      " detail=recipe-addressed\n";
+    if (legacyCacheMarker) {
+      text += "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_HIT" + identity +
+        " detail=recipe-addressed\n";
+    }
+    text += "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_ACQUIRE_DONE" + identity +
+      " detail=template-hit\n";
+    text += "NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_TEMPLATE_REBIND" + identity +
+      " detail=current-grant-ciphertext\n";
   }
   text += stage("RUNNER_READY");
   if (begin != 0) text += stage("DEPENDENCY_FETCH", "begin") + stage("DEPENDENCY_FETCH", "complete");
@@ -244,7 +250,7 @@ int main(int argc, char** argv)
       return replaceAll(text, "plan=plan", "plan=plan-" + std::to_string(round));
     };
     const auto chain = [&](unsigned rounds = 3, bool materials = false, unsigned budget = 1024,
-                           bool residentCache = false) {
+                           bool residentCache = false, bool legacyCacheMarker = true) {
       std::pair<std::string, std::string> logs{materials ? "" : providerMode, materials ? "" : providerMode};
       unsigned prefix = 0;
       for (unsigned round = 0; round < rounds; ++round) {
@@ -285,7 +291,7 @@ int main(int argc, char** argv)
         for (unsigned p = 0; p < 2; ++p) {
           const bool roundMaterials = materials && (!residentCache || round == 0);
           auto events = roundText(provider(p, roundMaterials, p == 1, p * 14, (p + 1) * 14,
-                                           residentCache && round != 0), round);
+                                           residentCache && round != 0, legacyCacheMarker), round);
           if (round) {
             const auto restore = "1790044168 WARN: [ndnsf.di.RuntimeEvidence] "
               "NDNSF_DI_CONVERSATION_KV_RESTORED requestId=request-" + std::to_string(round) +
@@ -310,8 +316,13 @@ int main(int argc, char** argv)
     check(logs.first, logs.second, "", {"--rounds", "3", "--require-multi-token"});
     logs = chain(3, true, 1024, true);
     check(logs.first, logs.second, "", {"--rounds", "3", "--require-multi-token"});
+    logs = chain(3, true, 1024, true, false);
+    check(logs.first, logs.second, "", {"--rounds", "3", "--require-multi-token"});
     logs = chain(3, true, 1024, true);
-    logs = {replaceAll(logs.first, "phase=CACHE_LOOKUP_HIT", "phase=CACHE_LOOKUP_MISSING"), logs.second};
+    logs = {replaceAll(
+              replaceAll(logs.first, "phase=CACHE_LOOKUP_HIT", "phase=CACHE_LOOKUP_MISSING"),
+              "phase=CACHE_ACQUIRE_DONE", "phase=CACHE_ACQUIRE_MISSING"),
+            logs.second};
     check(logs.first, logs.second, "incomplete-material-sequence", {"--rounds", "3"});
     logs = chain(3, true, 1024, true);
     const auto cachedMaterial = logs.first.find("NDNSF_DI_PROVIDER_PREPARATION phase=CACHE_LOOKUP_HIT");
