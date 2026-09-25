@@ -744,7 +744,9 @@ NativePlannedRequest planNativeRequestImpl(
       if (grantLease) grantLease->grants = grants;
     }
     control.requireActive();
-    logPlanPhase(control.requestId, "grant_acquire", phaseStarted);
+    logPlanPhase(control.requestId,
+                 reusedGrantLease ? "grant_lease_reuse" : "grant_acquire",
+                 phaseStarted);
     NativePlannedRequest result;
     result.sealed = NativePlanSealer::finalizeSecurity(core, grants, runtime.security,
                                                        grantLeaseScope);
