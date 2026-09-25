@@ -222,6 +222,10 @@ public:
   adapterHandle(const ConversationStateBinding& binding,
                 std::uint64_t nowMs) const;
 
+  std::shared_ptr<NativeModelRunner>
+  adapterRunner(const ConversationStateBinding& binding,
+                std::uint64_t nowMs) const;
+
   /** Resolve a Selection's compact commitment to the Provider-owned exact
    * binding. The Selection cannot inject a DecodeStateIdentityV1. */
   std::optional<ConversationStateBinding>
@@ -489,8 +493,16 @@ private:
   static std::string
   conversationPromotionKey(const ConversationStateBinding& binding);
 
+  static std::string
+  sessionRunnerKey(const std::string& sessionId,
+                   const std::string& role);
+
   mutable std::mutex m_mutex;
   std::map<std::string, std::shared_ptr<NativeModelRunner>> m_runners;
+  // A post-Selection runner is request-owned until its state is either
+  // promoted into ConversationStateStore or released.  It must not be
+  // replaced by the process-wide role runner during that handoff.
+  std::map<std::string, std::shared_ptr<NativeModelRunner>> m_sessionRunners;
   std::map<std::string, NativeModelRunnerSpec> m_runnerSpecs;
   KvStateStore m_decodeStateStore;
   ConversationStateStore m_conversationStateStore;

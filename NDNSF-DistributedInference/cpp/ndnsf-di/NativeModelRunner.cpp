@@ -60,7 +60,8 @@ NativeOpaqueStateHandleV1::validate() const
       role.empty() || token.empty()) {
     throw std::invalid_argument("opaque Provider state handle is incomplete");
   }
-  if (token.rfind("ndnsf-device-state-v1:", 0) != 0) {
+  if (token.rfind("ndnsf-device-state-v1:", 0) != 0 &&
+      token.rfind("ndnsf-resident-state-v1:", 0) != 0) {
     throw std::invalid_argument("opaque Provider state handle has invalid schema");
   }
 }

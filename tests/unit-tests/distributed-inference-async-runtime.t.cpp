@@ -3814,6 +3814,79 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeUsesAdapterOwnedConversationTransfers)
   BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().entries, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimePromotesThePreparedSelectionRunner)
+{
+  NativeProviderRuntime runtime(1, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
+  auto transferRunner = std::make_shared<ConversationTransferRunner>();
+  const auto origin = exactStateIdentity();
+  RoleSpec first;
+  first.role = origin.roleName;
+  first.requestId = origin.requestId;
+  first.attemptEpoch = origin.attemptEpoch;
+  first.stateInputNames = {"attention_kv_in"};
+  first.stateOutputNames = {"attention_kv_out"};
+  first.candidateDecodeStateIdentity = origin;
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = origin.requestId;
+  lineage.attemptEpoch = origin.attemptEpoch;
+  lineage.planDigest = stateDigest('0');
+  lineage.generationId = origin.generationId;
+  lineage.streamEpoch = 1;
+  lineage.inferenceEpoch = 0;
+  lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+  lineage.logicalPrefixDigest = origin.prefixDigest;
+  lineage.logicalPrefixTokenCount = origin.prefixTokenCount;
+  lineage.positionDigest = origin.positionDigest;
+  lineage.producerRole = origin.roleName;
+  lineage.consumerRole = origin.roleName;
+  first.generationLineage = lineage;
+
+  const auto result = runtime.executePreparedRoleAsync(
+    "session-a", first, std::make_shared<FakeDependencyIo>(),
+    [transferRunner] { return transferRunner; },
+    {{"input_ids", bundle("input_ids", "prompt")}}).get();
+  BOOST_REQUIRE(result.runner == transferRunner);
+
+  const auto binding = exactConversationBinding(origin, 1, 10'000);
+  BOOST_REQUIRE(runtime.promoteDecodeStateToConversation(
+    "session-a", first, binding, 100));
+  BOOST_CHECK_EQUAL(transferRunner->counters.promote.load(), 1);
+  BOOST_CHECK_EQUAL(runtime.conversationStateSnapshot().gpuBytes,
+                    sizeof(std::int64_t));
+
+  auto resumed = first;
+  resumed.requestId = "request-b";
+  auto resumedIdentity = exactStateIdentity(
+    "request-b", 1, "generation-b");
+  resumedIdentity.prefixTokenCount = origin.prefixTokenCount + 1;
+  resumedIdentity.prefixDigest = stateDigest('0');
+  resumedIdentity.positionDigest = stateDigest('a');
+  resumedIdentity.validate();
+  resumed.candidateDecodeStateIdentity = resumedIdentity;
+  auto resumedLineage = lineage;
+  resumedLineage.requestId = resumedIdentity.requestId;
+  resumedLineage.generationId = resumedIdentity.generationId;
+  resumedLineage.logicalPrefixDigest = resumedIdentity.prefixDigest;
+  resumedLineage.logicalPrefixTokenCount = resumedIdentity.prefixTokenCount;
+  resumedLineage.positionDigest = resumedIdentity.positionDigest;
+  resumed.generationLineage = resumedLineage;
+  resumed.conversationStateBinding = binding;
+  resumed.conversationStateLookupNowMs = 200;
+  std::atomic<std::size_t> preparationCalls{0};
+  const auto resumedResult = runtime.executePreparedRoleAsync(
+    "session-b", resumed, std::make_shared<FakeDependencyIo>(),
+    [&preparationCalls, transferRunner] {
+      ++preparationCalls;
+      return transferRunner;
+    },
+    {{"input_ids", bundle("input_ids", "continuation")}}).get();
+  BOOST_REQUIRE(resumedResult.runner == transferRunner);
+  BOOST_CHECK_EQUAL(preparationCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(transferRunner->counters.restore.load(), 1);
+  BOOST_REQUIRE(runtime.releaseDecodeState("session-b", resumed.role));
+  BOOST_REQUIRE(runtime.releaseConversationState(binding));
+}
+
 BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRestoresConversationStateForFreshRequest)
 {
   NativeProviderRuntime runtime(1, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);

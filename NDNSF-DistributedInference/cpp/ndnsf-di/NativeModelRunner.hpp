@@ -59,7 +59,8 @@ struct NativeRuntimeMetrics
  * A reference to adapter-owned request state.  The token is deliberately
  * opaque to the coordinator and ProviderRoleWorker: it identifies a
  * Provider-local transaction, but never contains tensor bytes or a device
- * pointer.  CPU adapters may use the existing host-tensor state path instead.
+ * pointer.  An adapter may retain the state in either device or host ORT
+ * memory; the handle remains the same small control-plane reference.
  */
 struct NativeOpaqueStateHandleV1
 {

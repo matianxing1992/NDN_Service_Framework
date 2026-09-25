@@ -536,32 +536,44 @@ decodeStateIdentityForEpoch(
 std::vector<float>
 lastLogits(const std::map<std::string, TensorBundle>& outputs)
 {
-  const auto encoded = std::find_if(
-    outputs.begin(), outputs.end(), [] (const auto& item) {
-      return isEncodedTensorBundle(item.second.payload);
-    });
-  if (encoded == outputs.end()) {
+  // A resident Provider returns a small encoded decode-state bundle alongside
+  // the activation bundle.  Do not select the first encoded scope by map
+  // order: the state scope sorts before ordinary response scopes and does not
+  // contain logits.  The logits tensor is the stable content contract here.
+  std::optional<NamedTensor> logits;
+  for (const auto& item : outputs) {
+    if (!isEncodedTensorBundle(item.second.payload)) {
+      continue;
+    }
+    const auto tensors = decodeTensorBundle(item.second.payload);
+    try {
+      logits = findTensor(tensors, "logits");
+      break;
+    }
+    catch (const std::out_of_range&) {
+      continue;
+    }
+  }
+  if (!logits) {
     throw std::runtime_error("native epoch coordinator received no encoded logits");
   }
-  const auto tensors = decodeTensorBundle(encoded->second.payload);
-  const auto& logits = findTensor(tensors, "logits");
-  if ((logits.elementType != TensorElementType::Float32 &&
-       logits.elementType != TensorElementType::Float16) ||
-      logits.shape.empty() || logits.payload.empty()) {
+  if ((logits->elementType != TensorElementType::Float32 &&
+       logits->elementType != TensorElementType::Float16) ||
+      logits->shape.empty() || logits->payload.empty()) {
     throw std::invalid_argument("native epoch coordinator logits are invalid");
   }
-  const auto elementBytes = tensorElementByteSize(logits.elementType);
-  const auto vocabulary = static_cast<std::size_t>(logits.shape.back());
-  if (vocabulary == 0 || vocabulary > logits.payload.size() / elementBytes ||
-      logits.payload.size() % (vocabulary * elementBytes) != 0) {
+  const auto elementBytes = tensorElementByteSize(logits->elementType);
+  const auto vocabulary = static_cast<std::size_t>(logits->shape.back());
+  if (vocabulary == 0 || vocabulary > logits->payload.size() / elementBytes ||
+      logits->payload.size() % (vocabulary * elementBytes) != 0) {
     throw std::invalid_argument("native epoch coordinator logits vocabulary is invalid");
   }
   // Preserve the model/wire dtype. Sampling consumes only the final row,
   // converting IEEE binary16 numerically rather than reinterpreting its bytes.
-  const auto* row = logits.payload.data() + logits.payload.size() - vocabulary * elementBytes;
+  const auto* row = logits->payload.data() + logits->payload.size() - vocabulary * elementBytes;
   std::vector<float> result(vocabulary);
   for (std::size_t index = 0; index < vocabulary; ++index) {
-    if (logits.elementType == TensorElementType::Float32) {
+    if (logits->elementType == TensorElementType::Float32) {
       std::memcpy(&result[index], row + index * elementBytes, sizeof(float));
     }
     else {

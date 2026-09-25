@@ -335,6 +335,73 @@ BOOST_AUTO_TEST_CASE(StatefulTinyOnnxRunsTwoRolesWithPersistentState)
   BOOST_CHECK_EQUAL(stage1Metrics->stateHostToDeviceBytes, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(StatefulTinyOnnxCpuStreamingRetainsResidentState)
+{
+  const auto fixture = findSpec175Fixture();
+  BOOST_REQUIRE_MESSAGE(!fixture.empty(),
+                        "Spec175 tiny two-role ONNX fixture is unavailable");
+
+  auto spec = makeStatefulSpec(
+    fixture / "role-0.onnx", "/LLM/Pipeline/Stage/0");
+  spec.metadata["providerIdentity"] = "/test/provider/spec190-cpu-resident";
+  spec.metadata["providerBootId"] = "spec190-cpu-resident-boot";
+  OnnxRuntimeModelRunner runner(std::move(spec));
+
+  RoleExecutionContext context;
+  context.sessionId = "spec190-cpu-resident-state";
+  context.role = "/LLM/Pipeline/Stage/0";
+  context.streamingStateExecution = true;
+  for (std::uint64_t epoch = 0; epoch < 3; ++epoch) {
+    context.inferenceEpoch = epoch;
+    context.inputsByScope.clear();
+    context.inputsByScope.emplace(
+      "input_ids", makeInputIds(static_cast<std::int64_t>(3 + epoch)));
+    const auto outputs = runner.run(context);
+    const auto tensors = decodeOutput(outputs);
+    BOOST_REQUIRE_NO_THROW(findTensor(tensors, "hidden_out"));
+    BOOST_CHECK_THROW(findTensor(tensors, "attention_kv_out"), std::out_of_range);
+    // The opaque handle is only a Provider-local epoch reference.  The
+    // conversation promotion path below moves the typed host Ort::Value state
+    // into the adapter-owned conversation cache instead of exporting this
+    // UInt8 token as a model input.
+    BOOST_CHECK_EQUAL(outputs.count("__ndnsf_provider_decode_state"), 1U);
+    const auto handle = runner.stateHandleSnapshot(context.sessionId);
+    BOOST_REQUIRE(handle);
+    BOOST_CHECK(handle->token.rfind("ndnsf-resident-state-v1:", 0) == 0);
+  }
+
+  const auto metrics = runner.runtimeMetricsSnapshot();
+  BOOST_REQUIRE(metrics);
+  BOOST_CHECK_EQUAL(metrics->stateInputHits, 6U);
+  BOOST_CHECK_EQUAL(metrics->stateInputMisses, 0U);
+  BOOST_CHECK_EQUAL(metrics->stateRecomputes, 1U);
+  BOOST_CHECK_EQUAL(metrics->stateDeviceToHostBytes, 0U);
+  BOOST_CHECK_EQUAL(metrics->stateHostToDeviceBytes, 0U);
+  BOOST_CHECK_GT(metrics->activationOutputBytes, 0U);
+
+  const auto conversation = runner.promoteSessionStateToConversation(
+    context.sessionId, "spec190-cpu-conversation");
+  BOOST_REQUIRE(conversation);
+  BOOST_CHECK_GT(conversation->logicalBytes, 0U);
+  BOOST_CHECK(runner.restoreConversationState(
+    *conversation, "spec190-cpu-conversation-next"));
+
+  RoleExecutionContext continuation = context;
+  continuation.sessionId = "spec190-cpu-conversation-next";
+  continuation.inferenceEpoch = 0;
+  continuation.inputsByScope.clear();
+  continuation.inputsByScope.emplace("input_ids", makeInputIds(9));
+  BOOST_REQUIRE_NO_THROW(runner.run(continuation));
+
+  runner.releaseSessionState(context.sessionId);
+  runner.releaseSessionState(continuation.sessionId);
+  BOOST_CHECK(runner.releaseConversationState(*conversation));
+  const auto released = runner.runtimeMetricsSnapshot();
+  BOOST_REQUIRE(released);
+  BOOST_CHECK_EQUAL(released->stateReleases, 2U);
+  BOOST_CHECK(!runner.stateHandleSnapshot(context.sessionId));
+}
+
 BOOST_AUTO_TEST_CASE(StatefulTinyOnnxRunsWithCoordinatorMetadataAndMissingState)
 {
   const auto fixture = findSpec175Fixture();

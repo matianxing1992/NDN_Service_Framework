@@ -1054,14 +1054,16 @@ public:
   bool profilingEnabled = false;
   std::atomic<bool> profilingCaptured{false};
   mutable std::mutex profileMutex;
-  // A stateful CUDA session keeps the state tensors in ORT-managed device
-  // memory between request-scoped epochs.  The map is keyed by the
+  // A stateful session keeps the state tensors in ORT-managed memory between
+  // request-scoped epochs.  CUDA and CPU use separate maps because their
+  // Ort::Value memory domains are different.  The maps are keyed by the
   // request/session identity, so concurrent generations cannot accidentally
   // consume one another's recurrent state.  Host TensorBundle bytes remain a
   // diagnostic/transport representation only; they are not used when a
-  // device-resident predecessor is available.
+  // resident predecessor is available.
   mutable std::mutex executionMutex;
   std::map<std::string, std::map<std::string, Ort::Value>> deviceStateBySession;
+  std::map<std::string, std::map<std::string, Ort::Value>> hostStateBySession;
   struct HostStateTensor
   {
     TensorElementType elementType = TensorElementType::Float32;
@@ -1073,6 +1075,10 @@ public:
   // Host tensors are a bounded pause tier; device tensors stay in ORT/CUDA
   // memory until a terminal release or a host pause.
   std::map<std::string, std::map<std::string, Ort::Value>> deviceStateByConversation;
+  // CPU conversation state remains in host ORT memory and can be rebound
+  // directly on the next turn.  Keep it separate from hostStateByConversation,
+  // whose HostStateTensor values are serialized pause snapshots for CUDA.
+  std::map<std::string, std::map<std::string, Ort::Value>> residentHostStateByConversation;
   std::map<std::string, HostStateMap> hostStateByConversation;
   std::map<std::string, std::map<std::string, void*>> externalDeviceAllocationsByConversation;
   std::map<std::string, std::string> conversationBindingBySession;
@@ -1087,6 +1093,7 @@ public:
   releaseConversationLocked(const std::string& conversationKey)
   {
     deviceStateByConversation.erase(conversationKey);
+    residentHostStateByConversation.erase(conversationKey);
     hostStateByConversation.erase(conversationKey);
     stateHandleByConversation.erase(conversationKey);
     auto allocations = externalDeviceAllocationsByConversation.find(conversationKey);
@@ -1110,13 +1117,18 @@ public:
   eraseSessionStateLocked(const std::string& sessionId)
   {
     const auto found = deviceStateBySession.find(sessionId);
+    const auto hostFound = hostStateBySession.find(sessionId);
     const auto handle = stateHandleBySession.find(sessionId);
     if (found == deviceStateBySession.end() &&
+        hostFound == hostStateBySession.end() &&
         handle == stateHandleBySession.end()) {
       return 0;
     }
     if (found != deviceStateBySession.end()) {
       deviceStateBySession.erase(found);
+    }
+    if (hostFound != hostStateBySession.end()) {
+      hostStateBySession.erase(hostFound);
     }
     if (handle != stateHandleBySession.end()) {
       stateHandleBySession.erase(handle);
@@ -1392,21 +1404,28 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
 
   const bool deviceResidentState = m_impl->statefulIo.has_value() &&
     m_impl->selection.selectedProvider == "cuda";
+  // CPU state is request-resident only for the coordinator-owned streaming
+  // path.  Keep ordinary run() callers on the explicit TensorBundle contract.
+  const bool hostResidentState = m_impl->statefulIo.has_value() &&
+    m_impl->selection.selectedProvider != "cuda" &&
+    effectiveContext.streamingStateExecution;
+  const bool residentState = deviceResidentState || hostResidentState;
   const auto conversationBinding = m_impl->conversationBindingBySession.find(
     effectiveContext.sessionId);
-  const bool restoringConversation = deviceResidentState &&
+  const bool restoringConversation = m_impl->statefulIo.has_value() &&
     conversationBinding != m_impl->conversationBindingBySession.end();
   if (m_impl->statefulIo && effectiveContext.sessionId != "native-runtime-warmup" &&
       effectiveContext.inferenceEpoch == 0) {
     ++m_impl->runtimeMetrics.stateRecomputes;
   }
-  if (deviceResidentState && effectiveContext.inferenceEpoch == 0 &&
+  if (residentState && effectiveContext.inferenceEpoch == 0 &&
       !restoringConversation) {
     // Session reuse is allowed, but state is request-scoped and must not cross
     // a fresh generation boundary.
     m_impl->eraseSessionStateLocked(effectiveContext.sessionId);
   }
   std::map<std::string, const Ort::Value*> boundDeviceInputs;
+  std::map<std::string, const Ort::Value*> boundHostInputs;
   std::map<std::string, std::size_t> cpuInputIndexes;
 
   std::vector<std::vector<std::uint8_t>> inputBuffers;
@@ -1436,28 +1455,51 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       m_spec, inputName, i, tensorInfo.GetShape(),
       isStateInput && effectiveContext.inferenceEpoch == 0,
       symbolicDimensionNames));
-    if (deviceResidentState && isStateInput &&
+    if (residentState && isStateInput &&
         (effectiveContext.inferenceEpoch > 0 || restoringConversation)) {
       const std::map<std::string, Ort::Value>* stateMap = nullptr;
-      const auto sessionState = m_impl->deviceStateBySession.find(
-        effectiveContext.sessionId);
-      if (effectiveContext.inferenceEpoch > 0 &&
-          sessionState != m_impl->deviceStateBySession.end()) {
-        stateMap = &sessionState->second;
+      if (deviceResidentState) {
+        const auto sessionState = m_impl->deviceStateBySession.find(
+          effectiveContext.sessionId);
+        if (effectiveContext.inferenceEpoch > 0 &&
+            sessionState != m_impl->deviceStateBySession.end()) {
+          stateMap = &sessionState->second;
+        }
+        else if (restoringConversation) {
+          const auto retained = m_impl->deviceStateByConversation.find(
+            conversationBinding->second);
+          if (retained != m_impl->deviceStateByConversation.end()) {
+            stateMap = &retained->second;
+          }
+        }
       }
-      else if (restoringConversation) {
-        const auto retained = m_impl->deviceStateByConversation.find(
-          conversationBinding->second);
-        if (retained != m_impl->deviceStateByConversation.end()) {
-          stateMap = &retained->second;
+      else {
+        const auto sessionState = m_impl->hostStateBySession.find(
+          effectiveContext.sessionId);
+        if (effectiveContext.inferenceEpoch > 0 &&
+            sessionState != m_impl->hostStateBySession.end()) {
+          stateMap = &sessionState->second;
+        }
+        else if (restoringConversation) {
+          const auto retained = m_impl->residentHostStateByConversation.find(
+            conversationBinding->second);
+          if (retained != m_impl->residentHostStateByConversation.end()) {
+            stateMap = &retained->second;
+          }
         }
       }
       if (stateMap != nullptr) {
         const auto deviceState = stateMap->find(inputName);
         if (deviceState != stateMap->end()) {
-          // Use the previous output directly on the CUDA device.  The host
-          // state bundle is intentionally not materialized on this path.
-          boundDeviceInputs.emplace(inputName, &deviceState->second);
+          // Use the previous output directly in the same ORT memory domain.
+          // The host state bundle is intentionally not materialized on this
+          // request-resident path.
+          if (deviceResidentState) {
+            boundDeviceInputs.emplace(inputName, &deviceState->second);
+          }
+          else {
+            boundHostInputs.emplace(inputName, &deviceState->second);
+          }
           ++m_impl->runtimeMetrics.stateInputHits;
           continue;
         }
@@ -1470,8 +1512,9 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       // Fail closed before inputBundleFor() can see that bootstrap value.
       ++m_impl->runtimeMetrics.stateInputMisses;
       throw std::runtime_error(
-        "stateful ONNX decode is missing Provider-owned device predecessor state: " +
-        inputName);
+        std::string("stateful ONNX decode is missing Provider-owned ") +
+        (deviceResidentState ? "device" : "host") +
+        " predecessor state: " + inputName);
     }
     TensorBundle zeroState;
     const TensorBundle* inputBundle = nullptr;
@@ -1590,15 +1633,22 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     {"sessionId", effectiveContext.sessionId},
     {"inferenceEpoch", std::to_string(effectiveContext.inferenceEpoch)},
   };
-  if (deviceResidentState) {
+  if (residentState) {
     ioBinding.emplace(m_impl->session);
-    cudaMemoryInfo.emplace(
-      "Cuda", OrtAllocatorType::OrtArenaAllocator,
-      std::stoi(m_impl->selection.deviceId), OrtMemTypeDefault);
+    if (deviceResidentState) {
+      cudaMemoryInfo.emplace(
+        "Cuda", OrtAllocatorType::OrtArenaAllocator,
+        std::stoi(m_impl->selection.deviceId), OrtMemTypeDefault);
+    }
     for (const auto& name : inputNames) {
       const auto deviceInput = boundDeviceInputs.find(name);
       if (deviceInput != boundDeviceInputs.end()) {
         ioBinding->BindInput(name.c_str(), *deviceInput->second);
+        continue;
+      }
+      const auto hostInput = boundHostInputs.find(name);
+      if (hostInput != boundHostInputs.end()) {
+        ioBinding->BindInput(name.c_str(), *hostInput->second);
         continue;
       }
       const auto cpuInput = cpuInputIndexes.find(name);
@@ -1612,7 +1662,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
         m_impl->statefulIo->stateOutputNames.begin(),
         m_impl->statefulIo->stateOutputNames.end(), name) !=
           m_impl->statefulIo->stateOutputNames.end();
-      if (stateOutput) {
+      if (stateOutput && deviceResidentState) {
         // Let ORT allocate state outputs on CUDA.  The resulting Ort::Value is
         // retained in the session map and rebound on the next epoch.
         ioBinding->BindOutput(name.c_str(), cudaMemoryInfo->GetConst());
@@ -1690,7 +1740,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     const auto count = tensorInfo.GetElementCount();
     const auto outputBytes = static_cast<std::uint64_t>(
       count * tensorElementByteSize(elementType));
-    const bool stateOutput = deviceResidentState &&
+    const bool stateOutput = residentState &&
       std::find(m_impl->statefulIo->stateOutputNames.begin(),
                 m_impl->statefulIo->stateOutputNames.end(), outputNames[i]) !=
         m_impl->statefulIo->stateOutputNames.end();
@@ -1701,8 +1751,10 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       // *_out makes every lookup miss and silently reintroduces a host upload.
       const auto successorInput =
         m_impl->statefulIo->stateInputForOutput(outputNames[i]);
-      m_impl->deviceStateBySession[effectiveContext.sessionId].insert_or_assign(
-        successorInput, std::move(value));
+      auto& stateBySession = deviceResidentState
+        ? m_impl->deviceStateBySession[effectiveContext.sessionId]
+        : m_impl->hostStateBySession[effectiveContext.sessionId];
+      stateBySession.insert_or_assign(successorInput, std::move(value));
       if (effectiveContext.streamingStateExecution) {
         // A streamed decode keeps the complete state on the CUDA device
         // between token epochs.  Do not materialize a host copy for every
@@ -1713,10 +1765,11 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       outputHostBuffers.emplace_back(
         count * tensorElementByteSize(elementType), 0);
       copyOrtTensorToHost(
-        m_impl->deviceStateBySession[effectiveContext.sessionId]
-          .at(successorInput), outputHostBuffers.back().data(),
+        stateBySession.at(successorInput), outputHostBuffers.back().data(),
         outputHostBuffers.back().size());
-      m_impl->runtimeMetrics.stateDeviceToHostBytes += outputBytes;
+      if (deviceResidentState) {
+        m_impl->runtimeMetrics.stateDeviceToHostBytes += outputBytes;
+      }
       hostData = outputHostBuffers.back().data();
     }
     else {
@@ -1799,11 +1852,13 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     result.emplace(bundleScope.empty() ? "onnx-output-bundle" : bundleScope,
                    std::move(bundle));
   }
-  if (deviceResidentState && effectiveContext.streamingStateExecution) {
+  if (residentState && effectiveContext.streamingStateExecution) {
     // The Provider decode-state transaction still needs an exact predecessor
-    // record, but the complete CUDA allocation must not cross the host/NDN
-    // boundary. Return only a small opaque handle; the next epoch ignores its
-    // bytes and rebinds the retained Ort::Value from deviceStateBySession.
+    // record, but the complete resident allocation must not cross the
+    // host/NDN boundary. Return only a small opaque handle; the next epoch
+    // ignores its bytes and rebinds the retained Ort::Value from the request
+    // state map. Conversation promotion separately moves the typed state into
+    // the adapter-owned conversation cache.
     NativeOpaqueStateHandleV1 stateHandle;
     stateHandle.providerIdentity = runnerMetadataValue(
       m_spec,
@@ -1814,7 +1869,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       {"providerBootId", "provider_boot_id", "evidence.providerBootId"});
     stateHandle.sessionId = effectiveContext.sessionId;
     stateHandle.role = effectiveContext.role.empty() ? m_spec.role : effectiveContext.role;
-    stateHandle.token = std::string("ndnsf-device-state-v1:") +
+    stateHandle.token = std::string(deviceResidentState
+      ? "ndnsf-device-state-v1:" : "ndnsf-resident-state-v1:") +
       effectiveContext.sessionId + ":" + stateHandle.role + ":" +
       std::to_string(effectiveContext.inferenceEpoch);
     stateHandle.stateInferenceEpoch = effectiveContext.inferenceEpoch;
@@ -1937,12 +1993,13 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
   RoleExecutionContext epochContext = ctx;
   const bool deviceResidentState =
     m_impl->selection.selectedProvider == "cuda";
-  struct DeviceStateCleanup
+  const bool residentState = true;
+  struct ResidentStateCleanup
   {
     Impl* impl = nullptr;
     std::string sessionId;
 
-    ~DeviceStateCleanup()
+    ~ResidentStateCleanup()
     {
       if (impl == nullptr || sessionId.empty()) {
         return;
@@ -1950,11 +2007,11 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
       std::lock_guard<std::mutex> lock(impl->executionMutex);
       impl->eraseSessionStateLocked(sessionId);
     }
-  } deviceStateCleanup{
-    deviceResidentState ? m_impl.get() : nullptr,
-    deviceResidentState ? ctx.sessionId : std::string(),
+  } residentStateCleanup{
+    residentState ? m_impl.get() : nullptr,
+    residentState ? ctx.sessionId : std::string(),
   };
-  epochContext.streamingStateExecution = deviceResidentState;
+  epochContext.streamingStateExecution = residentState;
   const auto makeZeroState = [this] (const std::string& name) {
     Ort::AllocatorWithDefaultOptions allocator;
     std::size_t inputIndex = 0;
@@ -2060,7 +2117,7 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
       break;
     }
 
-    if (!deviceResidentState) {
+    if (!residentState) {
       for (const auto& stateOutput : m_impl->statefulIo->stateOutputNames) {
         const auto& tensor = findTensor(tensors, stateOutput);
         const auto nextInput = m_impl->statefulIo->stateInputForOutput(stateOutput);
@@ -2077,24 +2134,24 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
                    std::move(tokenBytes)}});
   }
 
-  if (deviceResidentState) {
+  if (residentState) {
     std::lock_guard<std::mutex> stateLock(m_impl->executionMutex);
-    const auto found = m_impl->deviceStateBySession.find(ctx.sessionId);
-    if (found == m_impl->deviceStateBySession.end()) {
+    const auto deviceFound = m_impl->deviceStateBySession.find(ctx.sessionId);
+    const auto hostFound = m_impl->hostStateBySession.find(ctx.sessionId);
+    if (deviceFound == m_impl->deviceStateBySession.end() &&
+        hostFound == m_impl->hostStateBySession.end()) {
       throw std::runtime_error(
-        "streaming ONNX generation completed without device state");
+        "streaming ONNX generation completed without resident state");
     }
-    Ort::AllocatorWithDefaultOptions allocator;
-    const auto memoryInfo = Ort::MemoryInfo::CreateCpu(
-      OrtAllocatorType::OrtArenaAllocator, OrtMemTypeDefault);
+    const auto& found = deviceResidentState ? deviceFound->second : hostFound->second;
     std::vector<NamedTensor> stateTensors;
     stateTensors.reserve(m_impl->statefulIo->stateOutputNames.size());
     for (const auto& outputName : m_impl->statefulIo->stateOutputNames) {
       const auto inputName = m_impl->statefulIo->stateInputForOutput(outputName);
-      const auto state = found->second.find(inputName);
-      if (state == found->second.end() || !state->second.IsTensor()) {
+      const auto state = found.find(inputName);
+      if (state == found.end() || !state->second.IsTensor()) {
         throw std::runtime_error(
-          "streaming ONNX generation completed without device state: " +
+          "streaming ONNX generation completed without resident state: " +
           inputName);
       }
       const auto info = state->second.GetTensorTypeAndShapeInfo();
@@ -2103,7 +2160,9 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
       std::vector<std::uint8_t> host(count * tensorElementByteSize(elementType));
       const auto shape = info.GetShape();
       copyOrtTensorToHost(state->second, host.data(), host.size());
-      m_impl->runtimeMetrics.stateDeviceToHostBytes += host.size();
+      if (deviceResidentState) {
+        m_impl->runtimeMetrics.stateDeviceToHostBytes += host.size();
+      }
       stateTensors.push_back(NamedTensor{
         outputName, elementType, shape, std::move(host)});
     }
@@ -2180,8 +2239,11 @@ OnnxRuntimeModelRunner::runtimeMetricsSnapshot() const
 bool
 OnnxRuntimeModelRunner::supportsOpaqueStateHandles() const
 {
-  return m_impl != nullptr && m_impl->statefulIo.has_value() &&
-         m_impl->selection.selectedProvider == "cuda";
+  // Both CUDA and CPU retain the predecessor Ort::Value inside the Provider
+  // for the duration of a streamed request.  The handle is only an internal
+  // epoch/control reference; conversation promotion below moves the actual
+  // typed state into the adapter-owned conversation cache.
+  return m_impl != nullptr && m_impl->statefulIo.has_value();
 }
 
 std::optional<NativeOpaqueStateHandleV1>
@@ -2201,8 +2263,7 @@ OnnxRuntimeModelRunner::stateHandleSnapshot(const std::string& sessionId) const
 bool
 OnnxRuntimeModelRunner::supportsConversationStateTransfer() const
 {
-  return m_impl != nullptr && m_impl->statefulIo.has_value() &&
-         m_impl->selection.selectedProvider == "cuda";
+  return m_impl != nullptr && m_impl->statefulIo.has_value();
 }
 
 std::optional<NativeConversationStateHandleV1>
@@ -2215,15 +2276,23 @@ OnnxRuntimeModelRunner::promoteSessionStateToConversation(
     return std::nullopt;
   }
   std::lock_guard<std::mutex> lock(m_impl->executionMutex);
-  const auto found = m_impl->deviceStateBySession.find(sessionId);
-  if (found == m_impl->deviceStateBySession.end() || found->second.empty() ||
+  const bool deviceResident = m_impl->selection.selectedProvider == "cuda";
+  const auto deviceFound = m_impl->deviceStateBySession.find(sessionId);
+  const auto hostFound = m_impl->hostStateBySession.find(sessionId);
+  const bool hasDeviceState = deviceFound != m_impl->deviceStateBySession.end() &&
+    !deviceFound->second.empty();
+  const bool hasHostState = hostFound != m_impl->hostStateBySession.end() &&
+    !hostFound->second.empty();
+  if ((!hasDeviceState && !hasHostState) ||
       m_impl->deviceStateByConversation.count(conversationKey) != 0 ||
+      m_impl->residentHostStateByConversation.count(conversationKey) != 0 ||
       m_impl->hostStateByConversation.count(conversationKey) != 0) {
     return std::nullopt;
   }
 
+  const auto& sessionState = deviceResident ? deviceFound->second : hostFound->second;
   std::size_t logicalBytes = 0;
-  for (const auto& item : found->second) {
+  for (const auto& item : sessionState) {
     if (!item.second.IsTensor()) {
       return std::nullopt;
     }
@@ -2252,7 +2321,8 @@ OnnxRuntimeModelRunner::promoteSessionStateToConversation(
       {"providerBootId", "provider_boot_id", "evidence.providerBootId"});
     opaque.sessionId = sessionId;
     opaque.role = m_spec.role;
-    opaque.token = std::string("ndnsf-device-state-v1:") + sessionId + ":" +
+    opaque.token = std::string(deviceResident
+      ? "ndnsf-device-state-v1:" : "ndnsf-resident-state-v1:") + sessionId + ":" +
       m_spec.role + ":conversation";
     opaque.stateInferenceEpoch = 0;
   }
@@ -2275,9 +2345,16 @@ OnnxRuntimeModelRunner::promoteSessionStateToConversation(
   catch (const std::exception&) {
     return std::nullopt;
   }
-  m_impl->deviceStateByConversation.emplace(
-    conversationKey, std::move(found->second));
-  m_impl->deviceStateBySession.erase(found);
+  if (deviceResident) {
+    m_impl->deviceStateByConversation.emplace(
+      conversationKey, std::move(deviceFound->second));
+    m_impl->deviceStateBySession.erase(deviceFound);
+  }
+  else {
+    m_impl->residentHostStateByConversation.emplace(
+      conversationKey, std::move(hostFound->second));
+    m_impl->hostStateBySession.erase(hostFound);
+  }
   m_impl->stateHandleByConversation[conversationKey] = result;
   m_impl->stateHandleBySession.erase(sessionId);
   return result;
@@ -2298,9 +2375,15 @@ OnnxRuntimeModelRunner::restoreConversationState(
     return false;
   }
   std::lock_guard<std::mutex> lock(m_impl->executionMutex);
-  const auto retained = m_impl->deviceStateByConversation.find(state.conversationKey);
-  if (retained == m_impl->deviceStateByConversation.end() ||
-      retained->second.empty() ||
+  const bool deviceResident = m_impl->selection.selectedProvider == "cuda";
+  const auto deviceRetained = m_impl->deviceStateByConversation.find(
+    state.conversationKey);
+  const bool retained = deviceResident
+    ? deviceRetained != m_impl->deviceStateByConversation.end() &&
+      !deviceRetained->second.empty()
+    : m_impl->residentHostStateByConversation.count(state.conversationKey) != 0 &&
+      !m_impl->residentHostStateByConversation.at(state.conversationKey).empty();
+  if (!retained ||
       state.opaque.providerIdentity != runnerMetadataValue(
         m_spec, {"providerIdentity", "provider_identity", "evidence.providerName",
                  "providerName", "provider_name"}) ||
@@ -2330,6 +2413,9 @@ OnnxRuntimeModelRunner::pauseConversationStateToHost(
     return false;
   }
   std::lock_guard<std::mutex> lock(m_impl->executionMutex);
+  if (m_impl->selection.selectedProvider != "cuda") {
+    return m_impl->residentHostStateByConversation.count(state.conversationKey) != 0;
+  }
   const auto found = m_impl->deviceStateByConversation.find(state.conversationKey);
   if (found == m_impl->deviceStateByConversation.end() || found->second.empty()) {
     return false;
@@ -2378,6 +2464,12 @@ OnnxRuntimeModelRunner::prefetchConversationStateToGpu(
   const NativeConversationStateHandleV1& state)
 {
   state.validate();
+  if (!m_impl || m_impl->selection.selectedProvider != "cuda") {
+    // CPU conversation state is already in the host ORT memory domain used
+    // by the next request.  The store may still call this method after an
+    // accounting-only host pause; no data movement is required.
+    return std::async(std::launch::deferred, [] { return true; });
+  }
   return std::async(
     std::launch::async,
     [this, state] {
@@ -2481,6 +2573,7 @@ OnnxRuntimeModelRunner::releaseConversationState(
   }
   std::lock_guard<std::mutex> lock(m_impl->executionMutex);
   const bool known = m_impl->deviceStateByConversation.count(state.conversationKey) != 0 ||
+    m_impl->residentHostStateByConversation.count(state.conversationKey) != 0 ||
     m_impl->hostStateByConversation.count(state.conversationKey) != 0 ||
     m_impl->externalDeviceAllocationsByConversation.count(state.conversationKey) != 0;
   if (!known) {
