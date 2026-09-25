@@ -225,6 +225,14 @@ NativeSplitCandidate NativeCanonicalPreparationCatalog::bindStateContracts(const
   return m_state->find(model).roles.bindStateContracts(model, candidate, mapping, control);
 }
 
+std::vector<NativeSelectionRoleV3>
+NativeCanonicalPreparationCatalog::prepareRoles(const NativeInspectedModel& model,
+  const NativeSplitCandidate& candidate, const NativeRequestControl& control) const
+{
+  control.requireActive();
+  return m_state->find(model).roles.prepare(model, candidate, control);
+}
+
 std::shared_ptr<NativeRequestPreparation> NativeCanonicalPreparationCatalog::makePreparation(
   std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName) const
 {

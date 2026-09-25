@@ -10,6 +10,31 @@
 namespace ndnsf::di {
 namespace {
 
+void expandStateContractsFromCatalog(NativeSplitCandidate& candidate,
+                                     const NativeStateTensorMapping& mapping,
+                                     const NativeModelDescriptor& model)
+{
+  const auto expand = [&model] (const NativeStateTensorMapping::Roles& mapped,
+                                auto& declared) {
+    if (mapped.empty()) return;
+    for (const auto& item : mapped) {
+      const auto found = declared.find(item.first);
+      if (found == declared.end() || item.second.size() == found->second.size())
+        continue;
+      std::vector<NativeTensorContract> replacement;
+      for (const auto& semantic : item.second) {
+        for (const auto& name : semantic.second)
+          replacement.push_back({name, model.precision,
+            {"batch", "heads", "sequence", "head-dimension"}, std::nullopt});
+      }
+      if (!replacement.empty()) found->second = std::move(replacement);
+    }
+  };
+  expand(mapping.inputs, candidate.roleStateInputsByRole);
+  expand(mapping.outputs, candidate.roleStateOutputsByRole);
+  candidate.candidateDigest = candidate.computedDigest();
+}
+
 NativeJson tensorContractJson(const NativeTensorContract& value)
 {
   NativeJson shape = NativeJson::array();
@@ -277,6 +302,32 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   std::vector<NativeCanonicalCatalogEntry> entries;
   entries.push_back(std::move(entry));
   result.preparation = std::make_shared<const NativeCanonicalPreparationCatalog>(std::move(entries), control);
+
+  // Freeze the graph-dependent planning facts at prepare time.  The request
+  // planner still rechecks the candidate/roles and performs all request-bound
+  // admission, placement, grant, and projection work, but it no longer walks
+  // the ONNX semantic graph after ACK closure.
+  NativeRequestControl planningControl{
+    "/NDNSF/DI/PREPARE/" + result.model.canonicalSourceDigest.substr(7), 1,
+    control.deadline, [&control] { control.requireActive(); return false; }};
+  NativeCandidateBudget preparationBudget{1024, 60'000, 16};
+  ExtensionControl extensionControl{
+    control.deadline, [&control] { control.requireActive(); return false; }};
+  std::vector<NativePreparedPlanningCandidate> preparedCandidates;
+  const auto enumerated = result.cooperativeSplitter->enumerate(
+    result.model.descriptor, result.model.graph, preparationBudget, extensionControl);
+  preparedCandidates.reserve(enumerated.size());
+  for (auto candidate : enumerated) {
+    expandStateContractsFromCatalog(candidate, result.stateMapping, result.model.descriptor);
+    auto bound = result.preparation->bindStateContracts(
+      result.model, candidate, result.stateMapping, planningControl);
+    auto roles = result.preparation->prepareRoles(result.model, bound, planningControl);
+    preparedCandidates.push_back({std::move(bound), std::move(roles)});
+  }
+  if (preparedCandidates.empty())
+    throw std::runtime_error("DI_NATIVE_PREPARATION_NO_PLANNING_CANDIDATE");
+  result.planningCache = std::make_shared<const NativePreparedPlanningCache>(
+    NativePreparedPlanningCache{result.cooperativeSplitter->identity(), std::move(preparedCandidates)});
   control.requireActive();
   return result;
 }

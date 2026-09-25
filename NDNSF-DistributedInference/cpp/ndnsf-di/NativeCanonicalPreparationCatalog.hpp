@@ -44,6 +44,8 @@ public:
   NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
     const NativeRequestControl& control) const;
+  std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
+    const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(
     std::shared_ptr<ndn_service_framework::ServiceUser> user, std::string serviceName) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(

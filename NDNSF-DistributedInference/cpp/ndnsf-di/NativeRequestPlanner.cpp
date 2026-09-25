@@ -340,6 +340,7 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   runtime.maxSegments = static_cast<std::size_t>(maxSegments);
   runtime.grants = std::move(grants);
   runtime.catalog = catalog.preparation;
+  runtime.planningCache = catalog.planningCache;
   return runtime;
 }
 
@@ -383,8 +384,21 @@ NativePlannedRequest planNativeRequestImpl(
     budgetDeadline : std::min(control.deadline, budgetDeadline);
   const ExtensionControl extensionControl{strategyDeadline, control.cancelled};
   extensionControl.requireActive();
-  auto candidates = ports.enumerate(model.descriptor, model.graph, runtime.budget,
-                                    extensionControl);
+  bool usingPreparedPlanningCache = false;
+  std::vector<NativeSplitCandidate> candidates;
+  if (runtime.planningCache &&
+      sameStrategyIdentity(runtime.planningCache->splitter, ports.splitterIdentity)) {
+    usingPreparedPlanningCache = true;
+    const auto& prepared = runtime.planningCache->candidates;
+    const auto count = std::min(prepared.size(), runtime.budget.maxCandidates);
+    candidates.reserve(count);
+    for (std::size_t i = 0; i < count; ++i)
+      candidates.push_back(prepared[i].candidate);
+  }
+  else {
+    candidates = ports.enumerate(model.descriptor, model.graph, runtime.budget,
+                                 extensionControl);
+  }
   control.requireActive();
   auto policyUsed = std::chrono::steady_clock::now() - policyStart;
   const auto policyLimit = std::chrono::milliseconds(runtime.budget.maxPolicyMs);
@@ -399,10 +413,24 @@ NativePlannedRequest planNativeRequestImpl(
     control.requireActive();
     if (!sameStrategyIdentity(candidate.splitter, ports.splitterIdentity))
       throw std::invalid_argument("native splitter returned a foreign strategy identity");
-    expandStateContractsFromCatalog(candidate, runtime.stateMapping, model.descriptor);
-    if (runtime.catalog)
-      candidate = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
-    auto roles = preparation.prepareRoles(model, candidate, control);
+    std::vector<NativeSelectionRoleV3> roles;
+    if (usingPreparedPlanningCache) {
+      const auto found = std::find_if(runtime.planningCache->candidates.begin(),
+        runtime.planningCache->candidates.end(), [&](const auto& prepared) {
+          return prepared.candidate.candidateDigest == candidate.candidateDigest;
+        });
+      if (found == runtime.planningCache->candidates.end())
+        throw std::invalid_argument("native prepared planning cache candidate is missing");
+      candidate.validate(model.graph);
+      roles = found->roles;
+      NativeRequestPreparation::validateRoles(model, candidate, roles);
+    }
+    else {
+      expandStateContractsFromCatalog(candidate, runtime.stateMapping, model.descriptor);
+      if (runtime.catalog)
+        candidate = runtime.catalog->bindStateContracts(model, candidate, runtime.stateMapping, control);
+      roles = preparation.prepareRoles(model, candidate, control);
+    }
     NativeRolePlacementProposalV3 proposal;
     const auto placementStart = std::chrono::steady_clock::now();
     try {

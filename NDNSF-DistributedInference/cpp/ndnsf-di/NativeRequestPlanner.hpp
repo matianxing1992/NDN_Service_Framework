@@ -36,6 +36,7 @@ struct NativeRequestRuntime
   NativeCandidateBudget budget;
   std::shared_ptr<const NativeAuthenticatedGrantClient> grants;
   std::shared_ptr<const NativeCanonicalPreparationCatalog> catalog;
+  std::shared_ptr<const NativePreparedPlanningCache> planningCache;
   NativeStateTensorMapping stateMapping;
   std::uint64_t noProgressMs = 5000;
   std::size_t maxSegments = 4096;
