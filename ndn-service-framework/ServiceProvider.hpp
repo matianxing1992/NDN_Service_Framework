@@ -1529,6 +1529,9 @@ namespace ndn_service_framework{
 
             bool expirePendingRequestState(const ndn::Name& pendingKey);
 
+            struct DataV1SubscriptionState;
+            void releaseDataV1Subscriptions(const ndn::Name& requestId);
+
             bool shouldSuppressAdaptiveAck(const ndn::Name& requesterIdentity,
                                            const ndn::Name& serviceName,
                                            const ndn::Name& requestId);
@@ -2021,6 +2024,14 @@ namespace ndn_service_framework{
                 m_collaborationRegistrationStates;
             std::set<std::string> m_collaborationScopeKeyFetchesInFlight;
             std::map<ndn::Name, std::vector<PendingEncryptedCollaborationData>> m_pendingEncryptedCollaborationData;
+            // One live SVS subscription per request/producer pair.  The
+            // subscription is retained only for the collaboration request;
+            // individual token fetches consume from its bounded publication
+            // inbox instead of repeatedly installing catch-up subscriptions.
+            std::map<ndn::Name,
+                     std::map<ndn::Name,
+                              std::shared_ptr<DataV1SubscriptionState>>>
+                m_dataV1SubscriptionsByRequest;
             std::map<std::string, ndn::Buffer> m_collaborationArtifacts;
             std::vector<CollaborationSubscription> m_collaborationSubscriptions;
             std::mutex m_collaborationMutex;

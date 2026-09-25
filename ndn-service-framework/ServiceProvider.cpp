@@ -1153,6 +1153,26 @@ namespace ndn_service_framework
         }
     }
 
+    struct ServiceProvider::DataV1SubscriptionState
+    {
+        struct Publication
+        {
+            std::uint64_t sequence = 0;
+            ndn::Name name;
+            ndn::Buffer wire;
+        };
+
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::deque<Publication> publications;
+        std::uint64_t nextSequence = 0;
+        uint32_t subscriptionHandle = 0;
+        bool installing = false;
+        bool installed = false;
+        bool closing = false;
+        std::string error;
+    };
+
     void ServiceProvider::setDeploymentPrepareHandler(DeploymentPrepareHandler handler)
     {
         m_deploymentPrepareHandler = std::move(handler);
@@ -6122,6 +6142,7 @@ namespace ndn_service_framework
             }
             m_requestScopedNonceRegistry.invalidate(requestScopedState->keys.keyId);
         }
+        releaseDataV1Subscriptions(requestId);
     }
 
     void ServiceProvider::fetchRequestScopedInputAndDispatch(
@@ -6662,6 +6683,7 @@ namespace ndn_service_framework
                    std::memory_order_relaxed,
                    std::memory_order_relaxed)) {
         }
+        releaseDataV1Subscriptions(requestId);
         cleanupPendingRequestState(pendingKey);
     }
 
@@ -7137,6 +7159,47 @@ namespace ndn_service_framework
         return future.get();
     }
 
+    void ServiceProvider::releaseDataV1Subscriptions(const ndn::Name& requestId)
+    {
+        std::vector<std::pair<std::shared_ptr<DataV1SubscriptionState>, uint32_t>>
+            subscriptions;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            const auto requestIt = m_dataV1SubscriptionsByRequest.find(requestId);
+            if (requestIt == m_dataV1SubscriptionsByRequest.end()) {
+                return;
+            }
+            for (const auto& item : requestIt->second) {
+                const auto& state = item.second;
+                if (!state) {
+                    continue;
+                }
+                std::lock_guard<std::mutex> stateLock(state->mutex);
+                state->closing = true;
+                subscriptions.emplace_back(state, state->subscriptionHandle);
+                state->subscriptionHandle = 0;
+                state->cv.notify_all();
+            }
+            m_dataV1SubscriptionsByRequest.erase(requestIt);
+        }
+
+        const auto pubSub = m_svsps;
+        if (!pubSub) {
+            return;
+        }
+        for (const auto& item : subscriptions) {
+            if (item.second == 0) {
+                continue;
+            }
+            boost::asio::post(m_face.getIoContext(),
+                [pubSub, state = item.first, handle = item.second] {
+                    pubSub->unsubscribe(handle);
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    state->cv.notify_all();
+                });
+        }
+    }
+
     std::optional<std::vector<ndn::Buffer>>
     ServiceProvider::fetchCollaborationDataV1Segments(
         const ndn::Name& requestId,
@@ -7170,8 +7233,7 @@ namespace ndn_service_framework
             std::size_t targetSegments = 0;
             std::size_t remaining = 0;
             bool targetKnown = false;
-            uint32_t subscriptionHandle = 0;
-            std::atomic<bool> failed{false};
+            bool failed = false;
         };
 
         const int fetchTimeoutMs = timeoutMs <= 0 ? 5000 : timeoutMs;
@@ -7185,6 +7247,166 @@ namespace ndn_service_framework
         const int catchUpAgeMs = std::clamp(
             intEnvOrDefault("NDNSF_DATA_V1_SVS_CATCH_UP_AGE_MS", 5000),
             1, std::min(fetchTimeoutMs, 30000));
+
+        std::shared_ptr<DataV1SubscriptionState> subscriptionState;
+        bool installSubscription = false;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            auto& subscriptions = m_dataV1SubscriptionsByRequest[requestId];
+            auto& state = subscriptions[producerPrefix];
+            if (!state) {
+                state = std::make_shared<DataV1SubscriptionState>();
+            }
+            subscriptionState = state;
+            std::lock_guard<std::mutex> stateLock(state->mutex);
+            if (state->closing) {
+                return std::nullopt;
+            }
+            if (!state->installed && !state->installing) {
+                state->installing = true;
+                installSubscription = true;
+            }
+        }
+
+        if (installSubscription) {
+            const auto pubSub = m_svsps;
+            std::weak_ptr<DataV1SubscriptionState> weakState(subscriptionState);
+            boost::asio::post(m_face.getIoContext(),
+                [pubSub, weakState, requestId, keyScope, producerPrefix,
+                 catchUpPublications, catchUpAgeMs, nameFilter] {
+                    auto state = weakState.lock();
+                    if (!state || !pubSub) {
+                        return;
+                    }
+                    try {
+                        const auto handle = pubSub->subscribeToProducerWithCatchUp(
+                            producerPrefix,
+                            [weakState](const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+                                if (publication.data.empty()) {
+                                    return;
+                                }
+                                auto state = weakState.lock();
+                                if (!state) {
+                                    return;
+                                }
+                                try {
+                                    DataV1SubscriptionState::Publication item;
+                                    item.name = ndn::Name(publication.name);
+                                    item.wire = ndn::Buffer(
+                                        publication.data.begin(), publication.data.end());
+                                    {
+                                        std::lock_guard<std::mutex> lock(state->mutex);
+                                        if (state->closing) {
+                                            return;
+                                        }
+                                        item.sequence = ++state->nextSequence;
+                                        static constexpr std::size_t MAX_PUBLICATIONS = 4096;
+                                        if (state->publications.size() >= MAX_PUBLICATIONS) {
+                                            state->publications.pop_front();
+                                        }
+                                        state->publications.push_back(std::move(item));
+                                    }
+                                    state->cv.notify_all();
+                                }
+                                catch (const std::exception&) {
+                                    // Malformed or unrelated publications are
+                                    // ignored by the consumer-side name filter.
+                                }
+                            },
+                            catchUpPublications,
+                            ndn::time::milliseconds(catchUpAgeMs),
+                            true,
+                            false);
+
+                        bool unsubscribe = false;
+                        {
+                            std::lock_guard<std::mutex> lock(state->mutex);
+                            if (state->closing) {
+                                unsubscribe = true;
+                            }
+                            else {
+                                state->subscriptionHandle = handle;
+                                state->installed = true;
+                                state->installing = false;
+                            }
+                        }
+                        state->cv.notify_all();
+                        if (unsubscribe) {
+                            pubSub->unsubscribe(handle);
+                            return;
+                        }
+                        if (nameFilter.subscriptionReady) {
+                            try {
+                                nameFilter.subscriptionReady();
+                            }
+                            catch (const std::exception& error) {
+                                NDN_LOG_WARN(
+                                    "NDNSF_DATA_V1 subscription-ready observer failed"
+                                    << " requestId=" << requestId.toUri()
+                                    << " reason=" << error.what());
+                            }
+                            catch (...) {
+                                NDN_LOG_WARN(
+                                    "NDNSF_DATA_V1 subscription-ready observer failed"
+                                    << " requestId=" << requestId.toUri()
+                                    << " reason=unknown");
+                            }
+                        }
+                        NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_FETCH_SUBSCRIBED"
+                                      << " mode=NEW"
+                                      << " requestId=" << requestId.toUri()
+                                      << " keyScope=" << keyScope
+                                      << " producer=" << producerPrefix.toUri()
+                                      << " catchUpPublications=" << catchUpPublications
+                                      << " catchUpAgeMs=" << catchUpAgeMs);
+                    }
+                    catch (const std::exception& error) {
+                        {
+                            std::lock_guard<std::mutex> lock(state->mutex);
+                            state->installing = false;
+                            state->error = error.what();
+                        }
+                        state->cv.notify_all();
+                        NDN_LOG_ERROR("NDNSF_DATA_V1 SVS subscription failed"
+                                      << " requestId=" << requestId.toUri()
+                                      << " producer=" << producerPrefix.toUri()
+                                      << " reason=" << error.what());
+                    }
+                });
+        }
+
+        const auto installDeadline = std::chrono::steady_clock::now() +
+                                     std::chrono::milliseconds(fetchTimeoutMs);
+        {
+            std::unique_lock<std::mutex> lock(subscriptionState->mutex);
+            if (!subscriptionState->installed && subscriptionState->error.empty() &&
+                !subscriptionState->closing) {
+                subscriptionState->cv.wait_until(
+                    lock, installDeadline, [&] {
+                        return subscriptionState->installed ||
+                               !subscriptionState->error.empty() ||
+                               subscriptionState->closing;
+                    });
+            }
+            if (!subscriptionState->installed || subscriptionState->closing ||
+                !subscriptionState->error.empty()) {
+                NDN_LOG_ERROR("NDNSF_DATA_V1 SVS subscription unavailable"
+                              << " requestId=" << requestId.toUri()
+                              << " keyScope=" << keyScope
+                              << " producer=" << producerPrefix.toUri()
+                              << " reason=" << subscriptionState->error);
+                return std::nullopt;
+            }
+        }
+
+        NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_FETCH_SUBSCRIBED"
+                      << " mode=REUSE"
+                      << " requestId=" << requestId.toUri()
+                      << " keyScope=" << keyScope
+                      << " producer=" << producerPrefix.toUri()
+                      << " operation=" << operationIndex
+                      << " maxSegments=" << maxSegments);
+
         auto state = std::make_shared<FetchState>();
         state->targetSegments = manifestProbe ? 0 : expectedSegments;
         state->remaining = state->targetSegments;
@@ -7192,167 +7414,132 @@ namespace ndn_service_framework
         state->wires.resize(manifestProbe ? maxSegments : expectedSegments);
         state->received.resize(state->wires.size(), false);
         auto completed = std::make_shared<std::atomic<bool>>(false);
-        auto mutex = std::make_shared<std::mutex>();
-        auto cv = std::make_shared<std::condition_variable>();
         auto result = std::make_shared<std::vector<ndn::Buffer>>();
 
-        auto finish = [this, state, completed, mutex, cv, result] {
+        auto finish = [state, completed, result] {
             if (state->failed || !state->targetKnown || state->remaining != 0 ||
                 completed->load()) {
                 return;
             }
-            if (state->subscriptionHandle != 0) {
-                m_svsps->unsubscribe(state->subscriptionHandle);
-                state->subscriptionHandle = 0;
-            }
-            {
-                std::lock_guard<std::mutex> lock(*mutex);
-                result->assign(
-                    state->wires.begin(),
-                    state->wires.begin() +
-                      static_cast<std::ptrdiff_t>(state->targetSegments));
-                completed->store(true);
-            }
-            cv->notify_one();
+            result->assign(
+                state->wires.begin(),
+                state->wires.begin() +
+                  static_cast<std::ptrdiff_t>(state->targetSegments));
+            completed->store(true);
         };
 
-        boost::asio::post(m_face.getIoContext(),
-            [this, state, completed, cv, finish, requestId, keyScope,
-             producerPrefix, operationIndex, producerRank, tensorDigest,
-             maxSegments, manifestProbe, catchUpPublications, catchUpAgeMs,
-             segmentCountDecoder = std::move(segmentCountDecoder),
-             nameFilter = std::move(nameFilter)] {
-                // Data-V1 publication is request-scoped and may be published
-                // just before the dependent Provider installs its
-                // subscription.  The Experimental NDN-SVS API provides a
-                // bounded catch-up operation for this race; prefetch alone
-                // only fetches future state-vector updates and cannot recover
-                // an already-observed publication.
-                state->subscriptionHandle = m_svsps->subscribeToProducerWithCatchUp(
-                    producerPrefix,
-                    [state, completed, finish, requestId, keyScope,
-                     producerPrefix, operationIndex, producerRank, tensorDigest,
-                     maxSegments, manifestProbe,
-                     segmentCountDecoder, nameFilter]
-                    (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
-                        if (state->failed || completed->load() || publication.data.empty()) {
+        auto processPublication =
+            [state, finish, requestId, producerPrefix, operationIndex,
+             producerRank, tensorDigest, maxSegments, manifestProbe,
+             segmentCountDecoder, nameFilter]
+            (const DataV1SubscriptionState::Publication& publication) {
+                if (state->failed || publication.wire.empty()) {
+                    return;
+                }
+                try {
+                    const auto& publicationName = publication.name;
+                    if (nameFilter.predicate &&
+                        !nameFilter.predicate(publicationName)) {
+                        return;
+                    }
+                    const auto segmentNumber = parseDataV1SegmentNumber(
+                        publicationName,
+                        producerPrefix,
+                        requestId,
+                        operationIndex,
+                        producerRank,
+                        tensorDigest,
+                        maxSegments);
+                    if (!segmentNumber) {
+                        return;
+                    }
+                    const auto index = *segmentNumber;
+                    if (index >= state->wires.size() ||
+                        (state->targetKnown && index >= state->targetSegments)) {
+                        state->failed = true;
+                        return;
+                    }
+                    if (state->received[index]) {
+                        if (state->wires[index] != publication.wire) {
+                            state->failed = true;
+                        }
+                        return;
+                    }
+                    state->wires[index] = publication.wire;
+                    state->received[index] = true;
+                    if (manifestProbe && index == 0 && !state->targetKnown) {
+                        const auto discovered = segmentCountDecoder(
+                            state->wires[index]);
+                        if (discovered == 0 || discovered > maxSegments) {
+                            state->failed = true;
                             return;
                         }
-                        try {
-                            const ndn::Name publicationName(publication.name);
-                            if (nameFilter.predicate &&
-                                !nameFilter.predicate(publicationName)) {
-                                return;
-                            }
-                            const std::vector<std::uint8_t> wire(
-                                publication.data.begin(), publication.data.end());
-                            const auto segmentNumber = parseDataV1SegmentNumber(
-                                publicationName,
-                                producerPrefix,
-                                requestId,
-                                operationIndex,
-                                producerRank,
-                                tensorDigest,
-                                maxSegments);
-                            if (!segmentNumber) {
-                                return;
-                            }
-                            const auto index = *segmentNumber;
-                            if (index >= state->wires.size()) {
-                                state->failed = true;
-                                return;
-                            }
-                            if (state->targetKnown && index >= state->targetSegments) {
-                                state->failed = true;
-                                return;
-                            }
-                            if (state->received[index]) {
-                                if (state->wires[index] != wire) {
-                                    state->failed = true;
-                                }
-                                return;
-                            }
-                            state->wires[index] = ndn::Buffer(wire.begin(), wire.end());
-                            state->received[index] = true;
-                            if (manifestProbe && index == 0 && !state->targetKnown) {
-                                const auto discovered = segmentCountDecoder(
-                                    state->wires[index]);
-                                if (discovered == 0 || discovered > maxSegments) {
-                                    state->failed = true;
-                                    return;
-                                }
-                                state->targetSegments = discovered;
-                                state->targetKnown = true;
-                                state->remaining = discovered;
-                                for (std::size_t segment = 0;
-                                     segment < discovered; ++segment) {
-                                    if (state->received[segment]) {
-                                        --state->remaining;
-                                    }
-                                }
-                                for (std::size_t segment = discovered;
-                                     segment < state->received.size(); ++segment) {
-                                    if (state->received[segment]) {
-                                        state->failed = true;
-                                        return;
-                                    }
-                                }
-                            }
-                            else if (state->targetKnown && index < state->targetSegments &&
-                                     state->remaining > 0) {
+                        state->targetSegments = discovered;
+                        state->targetKnown = true;
+                        state->remaining = discovered;
+                        for (std::size_t segment = 0;
+                             segment < discovered; ++segment) {
+                            if (state->received[segment]) {
                                 --state->remaining;
                             }
-                            finish();
                         }
-                        catch (const std::exception&) {
-                            // The producer subscription is shared by all
-                            // collaboration traffic.  Non-V1 or unrelated
-                            // publications are ignored; matching packets are
-                            // authenticated by ProviderGroupCoordinator after
-                            // this transport stage completes.
+                        for (std::size_t segment = discovered;
+                             segment < state->received.size(); ++segment) {
+                            if (state->received[segment]) {
+                                state->failed = true;
+                                return;
+                            }
                         }
-                    },
-                    catchUpPublications,
-                    ndn::time::milliseconds(catchUpAgeMs),
-                    true,
-                    false);
-                if (nameFilter.subscriptionReady) {
-                    try {
-                        nameFilter.subscriptionReady();
                     }
-                    catch (const std::exception& error) {
-                        NDN_LOG_WARN("NDNSF_DATA_V1 subscription-ready observer failed"
-                                     << " requestId=" << requestId.toUri()
-                                     << " reason=" << error.what());
+                    else if (state->targetKnown && index < state->targetSegments &&
+                             state->remaining > 0) {
+                        --state->remaining;
                     }
-                    catch (...) {
-                        NDN_LOG_WARN("NDNSF_DATA_V1 subscription-ready observer failed"
-                                     << " requestId=" << requestId.toUri()
-                                     << " reason=unknown");
-                    }
+                    finish();
                 }
-                NDN_LOG_DEBUG("NDNSF_DATA_V1_SVS_FETCH_SUBSCRIBED"
-                              << " requestId=" << requestId.toUri()
-                              << " keyScope=" << keyScope
-                              << " producer=" << producerPrefix.toUri()
-                              << " operation=" << operationIndex
-                              << " maxSegments=" << maxSegments
-                              << " catchUpPublications=" << catchUpPublications
-                              << " catchUpAgeMs=" << catchUpAgeMs);
-            });
+                catch (const std::exception&) {
+                    // Non-V1 or unrelated publications are ignored; matching
+                    // packets are authenticated after this transport stage.
+                }
+            };
 
-        std::unique_lock<std::mutex> lock(*mutex);
-        if (!cv->wait_for(lock, std::chrono::milliseconds(fetchTimeoutMs),
-                          [completed] { return completed->load(); })) {
-            boost::asio::post(m_face.getIoContext(), [this, state, completed] {
-                state->failed = true;
-                if (state->subscriptionHandle != 0) {
-                    m_svsps->unsubscribe(state->subscriptionHandle);
-                    state->subscriptionHandle = 0;
+        std::uint64_t seenSequence = 0;
+        while (!completed->load() && !state->failed) {
+            std::vector<DataV1SubscriptionState::Publication> publications;
+            {
+                std::unique_lock<std::mutex> lock(subscriptionState->mutex);
+                if (!subscriptionState->cv.wait_until(
+                        lock, installDeadline, [&] {
+                            return subscriptionState->closing ||
+                                   !subscriptionState->error.empty() ||
+                                   (!subscriptionState->publications.empty() &&
+                                    subscriptionState->publications.back().sequence >
+                                        seenSequence);
+                        })) {
+                    break;
                 }
-                completed->store(true);
-            });
-            NDN_LOG_ERROR("NDNSF_DATA_V1 SVS fetch timed out"
+                if (subscriptionState->closing || !subscriptionState->error.empty()) {
+                    break;
+                }
+                for (const auto& publication : subscriptionState->publications) {
+                    if (publication.sequence > seenSequence) {
+                        publications.push_back(publication);
+                    }
+                }
+                if (!publications.empty()) {
+                    seenSequence = publications.back().sequence;
+                }
+            }
+            for (const auto& publication : publications) {
+                processPublication(publication);
+                if (completed->load() || state->failed) {
+                    break;
+                }
+            }
+        }
+
+        if (!completed->load()) {
+            NDN_LOG_ERROR("NDNSF_DATA_V1 SVS fetch timed out or failed"
                           << " requestId=" << requestId.toUri()
                           << " keyScope=" << keyScope
                           << " producer=" << producerPrefix.toUri());
@@ -13940,6 +14127,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 m_collaborationScopeKeyDataNamesByRequest.erase(requestId);
                 m_pendingEncryptedCollaborationData.erase(requestId);
             }
+        }
+
+        for (const auto& requestId : collaborationRequests) {
+            releaseDataV1Subscriptions(requestId);
         }
 
         for (auto it = m_preparedDeployments.begin();

@@ -12,6 +12,7 @@
 #include <boost/asio/io_context.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <future>
@@ -453,6 +454,31 @@ BOOST_AUTO_TEST_CASE(ProductionProviderContextUsesSvsSegments)
         decoded.manifest, decoded.segments.front());
     payload.insert(payload.end(), plaintext.begin(), plaintext.end());
   }
+  // A second fetch for the same request/producer must consume the retained
+  // request-scoped inbox.  The readiness observer is intentionally supplied
+  // here: it must not fire again because no second SVS subscription is
+  // installed for the same request/producer pair.
+  std::atomic<bool> reinstalled{false};
+  auto reused = std::async(std::launch::async, [&] {
+    return receiverContext.fetchDataV1Segments(
+        "/scope/provider-context", producerNode, operation.operationIndex,
+        "0", "tensor-provider-context", sealed.segments.size(),
+        operation.maxSegments, 3000, {},
+        ndn_service_framework::DataV1SegmentNameFilter{
+          {}, [&reinstalled] { reinstalled.store(true); }});
+  });
+  pump({&producerFace, &receiverFace}, [&] {
+    return reused.wait_for(std::chrono::milliseconds(0)) ==
+           std::future_status::ready;
+  });
+  const auto reusedWires = reused.get();
+  BOOST_REQUIRE(reusedWires);
+  BOOST_REQUIRE_EQUAL(reusedWires->size(), wires->size());
+  BOOST_CHECK(!reinstalled.load());
+  BOOST_CHECK_EQUAL_COLLECTIONS(
+      reusedWires->front().begin(), reusedWires->front().end(),
+      wires->front().begin(), wires->front().end());
+
   const std::vector<std::uint8_t> expectedPayload{'a', 'b', 'c', 'd'};
   BOOST_CHECK_EQUAL_COLLECTIONS(payload.begin(), payload.end(),
                                 expectedPayload.begin(), expectedPayload.end());
