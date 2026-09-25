@@ -1024,6 +1024,10 @@ def env_for(home: Path, node: str) -> dict[str, str]:
         value = os.environ.get(key, "")
         if value:
             env[key] = value
+    # The launcher consumes NDNSF_PHASE_TIMING records for the per-stage
+    # evidence table.  Keep timing collection enabled for every normal run;
+    # an explicit host value still permits a diagnostic caller to disable it.
+    env["NDNSF_PHASE_TIMING"] = os.environ.get("NDNSF_PHASE_TIMING", "1")
     return env
 
 

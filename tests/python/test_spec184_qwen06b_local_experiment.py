@@ -47,6 +47,18 @@ def test_native_environment_enables_required_evidence(monkeypatch, tmp_path,
     assert module.env_for(tmp_path, "ucla")["NDN_LOG"] == expected
 
 
+def test_native_environment_collects_phase_timing_by_default(monkeypatch, tmp_path):
+    module = load_native_module()
+    monkeypatch.delenv("NDNSF_PHASE_TIMING", raising=False)
+    assert module.env_for(tmp_path, "ucla")["NDNSF_PHASE_TIMING"] == "1"
+
+
+def test_native_environment_honors_explicit_phase_timing_override(monkeypatch, tmp_path):
+    module = load_native_module()
+    monkeypatch.setenv("NDNSF_PHASE_TIMING", "0")
+    assert module.env_for(tmp_path, "ucla")["NDNSF_PHASE_TIMING"] == "0"
+
+
 def test_native_wait_aborts_on_prefixed_provider_terminal_record(tmp_path):
     module = load_native_module()
     provider_log = tmp_path / "provider.log"
