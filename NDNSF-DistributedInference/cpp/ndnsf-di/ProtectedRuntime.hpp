@@ -70,6 +70,12 @@ struct ProtectedRuntimeBindingV1
   std::uint64_t attempt = 0;
   std::string planCoreDigest;
   std::string planDigest;
+  // Grant wire identity may be a conversation lease while the surrounding
+  // execution binding remains turn-scoped.
+  std::string grantRequestId;
+  std::uint64_t grantAttempt = 0;
+  std::string grantPlanCoreDigest;
+  std::uint64_t grantExpiresAtMs = 0;
   std::string securityPolicySnapshotDigest;
   std::string protectionEpoch;
   std::string grantName;

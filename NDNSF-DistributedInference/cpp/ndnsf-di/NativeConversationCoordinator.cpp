@@ -82,6 +82,9 @@ struct NativeConversationCoordinator::Impl
   mutable std::mutex mutex;
   std::map<std::string, NativeConversationRecord> records;
   std::map<std::string, Pending> pending;
+  // Deliberately not part of records or the journal. A process restart must
+  // perform authorization again instead of restoring a cryptographic lease.
+  std::map<std::string, NativeGrantLease> grantLeases;
   Pending& find(const NativeConversationTurn& turn)
   {
     const auto it = pending.find(turn.requestId);
@@ -217,7 +220,12 @@ NativeConversationTurn NativeConversationCoordinator::beginTurn(
     require(!role.empty() && role.front() == '/' && roles.insert(role).second, "conversation role set invalid");
   require((unboundInitialPlan || !roles.empty()) && s.pending.find(requestId) == s.pending.end(),
     "conversation turn already pending");
-  NativeConversationTurn turn{c, std::move(requestId), attempt, c.parentContextEpoch + 1, {}, {}, false, ticket(), {}};
+  NativeConversationTurn turn;
+  turn.parent = c;
+  turn.requestId = std::move(requestId);
+  turn.attempt = attempt;
+  turn.successorContextEpoch = c.parentContextEpoch + 1;
+  turn.ticket = ticket();
   turn.executionRequestId = turn.requestId;
   if (c.mode == "FULL_CONTEXT")
     require(c.parentContextEpoch == 0 && c.parentCheckpointWire.empty() && c.parentCheckpointDigest.empty(),
@@ -233,6 +241,8 @@ NativeConversationTurn NativeConversationCoordinator::beginTurn(
     const auto current = s.records.find(c.conversationId);
     require(current != s.records.end(), "conversation transcript unavailable");
     turn.providersByRole = current->second.checkpoint.providersByRole;
+    const auto lease = s.grantLeases.find(c.conversationId);
+    if (lease != s.grantLeases.end()) turn.grantLease = lease->second;
     const auto previous = current->second.checkpoint.transcript.at("canonicalTokenIds").get<std::vector<std::int64_t>>();
     require(prefix(previous, c.canonicalTokenIds) && previous.size() < c.canonicalTokenIds.size(),
       "conversation append prefix mismatch");
@@ -247,8 +257,13 @@ void NativeConversationCoordinator::abortTurn(const NativeConversationTurn& turn
   auto& s = *m_impl;
   std::lock_guard<std::mutex> guard(s.mutex);
   const auto it = s.pending.find(turn.requestId);
-  if (it != s.pending.end() && it->second.turn.ticket == turn.ticket && it->second.turn.attempt == turn.attempt)
+  if (it != s.pending.end() && it->second.turn.ticket == turn.ticket && it->second.turn.attempt == turn.attempt) {
     s.pending.erase(it);
+    // Cancellation/abort fences every lease associated with the conversation;
+    // a later turn must perform authorization again rather than reusing a
+    // grant that was active when the owner abandoned this turn.
+    s.grantLeases.erase(turn.parent.conversationId);
+  }
 }
 void NativeConversationCoordinator::acceptTokenPrefix(const NativeConversationTurn& turn,
   const std::vector<std::int64_t>& tokens)
@@ -331,6 +346,36 @@ NativeConversationTurn NativeConversationCoordinator::bindAttemptPlanRoleMap(
   pending.turn.parent.planRoleMapDigest = digest;
   pending.turn.providersByRole = providersByRole;
   return pending.turn;
+}
+
+void NativeConversationCoordinator::bindGrantLease(
+  const NativeConversationTurn& turn, const NativeGrantLease& lease) const
+{
+  auto& s = *m_impl;
+  std::lock_guard<std::mutex> guard(s.mutex);
+  auto& pending = s.find(turn);
+  require(!pending.prepared && !pending.committing &&
+    lease.scope.conversationId == pending.turn.parent.conversationId &&
+    !lease.scope.providerByRole.empty() && !lease.grants.empty(),
+    "conversation grant lease binding invalid");
+  if (pending.turn.providersByRole.empty()) {
+    // A FULL_CONTEXT continuation may carry the authenticated role-map digest
+    // without exposing a provider map to the caller. The planner has now
+    // produced the owner-side assignment; bind it only after checking that
+    // its canonical digest is the continuation's existing commitment.
+    NativeJson roleMap = NativeJson::array();
+    for (const auto& [role, provider] : lease.scope.providerByRole)
+      roleMap.push_back(NativeJson::array({role, provider}));
+    const auto roleMapDigest = nativePlanningDigest(nativeCanonicalJson(roleMap));
+    require(pending.turn.parent.planRoleMapDigest.empty() ||
+      pending.turn.parent.planRoleMapDigest == roleMapDigest,
+      "conversation grant lease role-map commitment mismatch");
+    pending.turn.providersByRole = lease.scope.providerByRole;
+  }
+  require(lease.scope.providerByRole == pending.turn.providersByRole,
+    "conversation grant lease assignment changed");
+  s.grantLeases[lease.scope.conversationId] = lease;
+  pending.turn.grantLease = lease;
 }
 
 NativeConversationCheckpoint NativeConversationCoordinator::prepareCheckpoint(
@@ -492,12 +537,18 @@ NativeConversationRecord NativeConversationCoordinator::commitTurn(
     catch (...) {
       guard.lock();
       const auto it = s.pending.find(turn.requestId);
-      if (it != s.pending.end() && it->second.turn.ticket == turn.ticket) s.pending.erase(it);
+      if (it != s.pending.end() && it->second.turn.ticket == turn.ticket) {
+        s.pending.erase(it);
+        s.grantLeases.erase(turn.parent.conversationId);
+      }
       throw std::runtime_error("DI_NATIVE_CONVERSATION_PROVIDER_ROLLBACK_FAILED");
     }
     guard.lock();
     const auto it = s.pending.find(turn.requestId);
-    if (it != s.pending.end() && it->second.turn.ticket == turn.ticket) s.pending.erase(it);
+    if (it != s.pending.end() && it->second.turn.ticket == turn.ticket) {
+      s.pending.erase(it);
+      s.grantLeases.erase(turn.parent.conversationId);
+    }
     std::rethrow_exception(original);
   }
 }
@@ -514,6 +565,7 @@ void NativeConversationCoordinator::restore()
   auto& s = *m_impl;
   std::lock_guard<std::mutex> guard(s.mutex);
   require(s.config.journal && s.pending.empty(), "conversation restore requires idle journal owner");
+  s.grantLeases.clear();
   const auto now = s.config.nowMs();
   std::map<std::string, NativeConversationRecord> restored;
   for (const auto& body : s.config.journal->readConversations(now)) {

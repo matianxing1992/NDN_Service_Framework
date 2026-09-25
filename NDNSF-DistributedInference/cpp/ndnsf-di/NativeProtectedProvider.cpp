@@ -105,6 +105,12 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
     binding.attempt = projection.attempt;
     binding.planCoreDigest = projection.planCoreDigest;
     binding.planDigest = projection.planDigest;
+    if (projection.grantLeaseScope) {
+      binding.grantRequestId = projection.grantLeaseScope->requestId;
+      binding.grantAttempt = projection.grantLeaseScope->attempt;
+      binding.grantPlanCoreDigest = projection.grantLeaseScope->planCoreDigest;
+      binding.grantExpiresAtMs = projection.grantLeaseScope->expiresAtMs;
+    }
     binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
     binding.protectionEpoch = projection.selectedRole.protectionEpoch;
     binding.grantName = projection.grantName;

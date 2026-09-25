@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantTypes.hpp"
 
 #include <boost/property_tree/ptree_fwd.hpp>
 
@@ -132,6 +133,10 @@ struct NativeSelectionProjectionV3
   std::optional<ConversationStateReferenceV1> conversationStateReference;
   std::optional<ConversationTurnBindingV1> conversationTurnBinding;
   NativeExecutionPlan plan;
+
+  // A protected grant may be bound to a process-local conversation lease.
+  // The surrounding projection remains turn-scoped.
+  std::optional<NativeGrantLeaseScope> grantLeaseScope;
 
   // Runtime-only state. Excluded from canonical JSON; all runner rebuilds for
   // this authenticated Selection share the same operation sequence.

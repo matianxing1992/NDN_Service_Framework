@@ -18,6 +18,18 @@ NativeJson jsonValue(const NativeDependencySpec& value);
 NativeJson jsonValue(const ConversationStateReferenceV1& value);
 NativeJson jsonValue(const ConversationTurnBindingV1& value);
 
+NativeJson jsonValue(const NativeGrantLeaseScope& value)
+{
+  return NativeJson{{"schema", "ndnsf-di-grant-lease-scope-v1"}, {"version", 1},
+    {"conversation_id", value.conversationId}, {"requester_identity", value.requesterIdentity},
+    {"service_name", value.serviceName}, {"request_id", value.requestId},
+    {"attempt", value.attempt}, {"plan_core_digest", value.planCoreDigest},
+    {"scope_digest", value.scopeDigest},
+    {"security_policy_snapshot_digest", value.securityPolicySnapshotDigest},
+    {"protection_epoch", value.protectionEpoch}, {"expires_at_ms", value.expiresAtMs},
+    {"provider_by_role", value.providerByRole}};
+}
+
 template<typename T>
 NativeJson jsonArray(const std::vector<T>& values)
 {
@@ -305,6 +317,8 @@ std::string nativeSelectionProjectionV3ToJson(const NativeSelectionProjectionV3&
       {"security_policy_snapshot_digest", value.securityPolicySnapshotDigest},
       {"protection_epoch", value.selectedRole.protectionEpoch},
       {"grant_name", value.grantName}, {"grant_digest", value.grantDigest}};
+    if (value.grantLeaseScope)
+      root["grant_binding"]["lease_scope"] = jsonValue(*value.grantLeaseScope);
   }
   const auto wire = nativeCanonicalJson(root);
   // The existing production parser owns semantic validation, including the

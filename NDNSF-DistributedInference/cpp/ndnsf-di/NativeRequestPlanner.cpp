@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include <algorithm>
 #include <chrono>
@@ -159,6 +160,69 @@ std::string conversationRoleMapDigest(
   for (const auto& [role, provider] : providersByRole)
     roleMap.push_back(NativeJson::array({role, provider}));
   return nativePlanningDigest(nativeCanonicalJson(roleMap));
+}
+
+NativeGrantLeaseScope makeGrantLeaseScope(
+  const NativePlacementPlanCore& core, const NativeConversationTurn& turn,
+  const NativeSecurityPolicySnapshot& security)
+{
+  NativeGrantLeaseScope scope;
+  scope.conversationId = turn.parent.conversationId;
+  scope.requesterIdentity = core.requesterIdentity;
+  scope.serviceName = core.executionPlan.serviceName;
+  scope.requestId = "/NDNSF-DI/CONVERSATION/" + scope.conversationId + "/GRANT-LEASE";
+  scope.attempt = 1;
+  scope.securityPolicySnapshotDigest = security.policyDigest;
+  scope.protectionEpoch = core.protectionEpoch;
+  scope.expiresAtMs = turn.parent.retentionDeadlineMs;
+  scope.providerByRole = core.assignment.providerByRole;
+  NativeJson roles = NativeJson::array();
+  for (const auto& [role, provider] : core.assignment.providerByRole) {
+    const auto& assembly = core.assemblyByRole.at(role);
+    roles.push_back(NativeJson{{"role", role}, {"provider", provider},
+      {"assembly", nativeAssemblyJson(assembly)},
+      {"artifact_digest", core.artifactDigestByRole.at(role)}});
+  }
+  scope.scopeDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"conversation_id", scope.conversationId}, {"requester_identity", scope.requesterIdentity},
+    {"service_name", scope.serviceName}, {"model_digest", core.modelDigest},
+    {"graph_digest", core.graphDigest}, {"manifest_digest", core.artifacts.manifestDigest},
+    {"policy_digest", scope.securityPolicySnapshotDigest},
+    {"protection_epoch", scope.protectionEpoch}, {"provider_by_role", scope.providerByRole},
+    {"roles", roles}}));
+  // The lease request itself is a stable cryptographic context, independent
+  // of the current turn's ACK closure, input digest, attempt or plan digest.
+  scope.planCoreDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"scope", scope.scopeDigest}, {"request_id", scope.requestId},
+    {"attempt", scope.attempt}}));
+  return scope;
+}
+
+bool grantLeaseCovers(const NativeGrantLease& lease,
+                      const NativeGrantLeaseScope& wanted,
+                      std::uint64_t currentDeadlineMs,
+                      const NativePlacementPlanCore& core)
+{
+  if (lease.scope.scopeDigest != wanted.scopeDigest ||
+      lease.scope.providerByRole != wanted.providerByRole ||
+      lease.scope.requestId != wanted.requestId || lease.scope.attempt != wanted.attempt ||
+      lease.scope.planCoreDigest != wanted.planCoreDigest ||
+      lease.scope.requesterIdentity != wanted.requesterIdentity ||
+      lease.scope.serviceName != wanted.serviceName ||
+      lease.scope.securityPolicySnapshotDigest != wanted.securityPolicySnapshotDigest ||
+      lease.scope.protectionEpoch != wanted.protectionEpoch ||
+      lease.scope.expiresAtMs <= currentDeadlineMs ||
+      lease.scope.expiresAtMs < core.expiresAtMs)
+    return false;
+  std::set<std::string> seen;
+  for (const auto& grant : lease.grants) {
+    const auto assigned = core.assignment.providerByRole.find(grant.role);
+    if (assigned == core.assignment.providerByRole.end() || assigned->second != grant.provider ||
+        grant.grantName.empty() || !isDigestValue(grant.grantDigest) ||
+        grant.expiresAtMs < currentDeadlineMs || !seen.insert(grant.role).second)
+      return false;
+  }
+  return seen.size() == core.executionPlan.roles.size();
 }
 
 void bindConversationProjections(
@@ -610,49 +674,81 @@ NativePlannedRequest planNativeRequestImpl(
     phaseStarted = std::chrono::steady_clock::now();
     auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
     logPlanPhase(control.requestId, "plan_seal_core", phaseStarted);
+    std::optional<NativeGrantLeaseScope> grantLeaseScope;
+    std::optional<NativeGrantLease> grantLease;
+    bool reusedGrantLease = false;
+    if (conversationTurn) {
+      auto wanted = makeGrantLeaseScope(core, *conversationTurn, runtime.security);
+      if (wanted.expiresAtMs <= wireDeadlineMs)
+        throw std::runtime_error("DI_NATIVE_CONVERSATION_RETENTION_SHORTER_THAN_REQUEST");
+      if (conversationTurn->grantLease && grantLeaseCovers(
+            *conversationTurn->grantLease, wanted, wireDeadlineMs, core)) {
+        grantLease = *conversationTurn->grantLease;
+        grantLeaseScope = grantLease->scope;
+        reusedGrantLease = true;
+      }
+      else {
+        grantLeaseScope = std::move(wanted);
+        grantLease.emplace();
+        grantLease->scope = *grantLeaseScope;
+      }
+    }
     std::vector<NativeGrantBinding> grants;
     NativeGrantControl grantControl{std::chrono::system_clock::time_point(std::chrono::milliseconds(wireDeadlineMs)), cancelled};
     phaseStarted = std::chrono::steady_clock::now();
-    // Grant acquisition is independently bound to each selected role. Start
-    // all role-local authority/publication operations together, but collect
-    // them in execution order so the sealed plan and every downstream digest
-    // remain deterministic. Each acquire retains its own current request,
-    // attempt, epoch, expiry and cancellation checks; no grant is cached.
-    std::vector<std::future<NativeGrantBinding>> grantFutures;
-    grantFutures.reserve(execution.roles.size());
-    for (const auto& role : execution.roles) {
-      control.requireActive();
-      const auto offer = std::find_if(offers.begin(), offers.end(), [&](const auto& value) {
-        return value.observation().provider == core.assignment.providerByRole.at(role);
-      });
-      if (offer == offers.end()) {
-        throw std::invalid_argument("selected role Provider is outside the admitted offers");
-      }
-      const auto grantsClient = runtime.grants;
-      const auto selectedOffer = *offer;
-      const auto security = runtime.security;
-      const auto selectedRole = role;
-      grantFutures.emplace_back(std::async(std::launch::async,
-        [grantsClient, &core, selectedOffer, security, grantControl, selectedRole] {
-          return grantsClient->acquire(core, selectedOffer, security, grantControl, selectedRole);
-        }));
+    if (reusedGrantLease) {
+      grants = grantLease->grants;
+      logPlanPhase(control.requestId, "grant_lease_hit", phaseStarted);
     }
-    grants.resize(grantFutures.size());
-    std::exception_ptr firstGrantError;
-    for (std::size_t index = 0; index < grantFutures.size(); ++index) {
-      try {
-        grants[index] = grantFutures[index].get();
+    else {
+      // Grant acquisition is independently bound to each selected role. Start
+      // all role-local authority/publication operations together, but collect
+      // them in execution order so the sealed plan and every downstream
+      // digest remain deterministic.
+      std::vector<std::future<NativeGrantBinding>> grantFutures;
+      grantFutures.reserve(execution.roles.size());
+      for (const auto& role : execution.roles) {
+        control.requireActive();
+        const auto offer = std::find_if(offers.begin(), offers.end(), [&](const auto& value) {
+          return value.observation().provider == core.assignment.providerByRole.at(role);
+        });
+        if (offer == offers.end()) {
+          throw std::invalid_argument("selected role Provider is outside the admitted offers");
+        }
+        const auto grantsClient = runtime.grants;
+        const auto selectedOffer = *offer;
+        const auto security = runtime.security;
+        const auto selectedRole = role;
+        const auto leaseScope = grantLeaseScope;
+        grantFutures.emplace_back(std::async(std::launch::async,
+          [grantsClient, &core, selectedOffer, security, grantControl, selectedRole, leaseScope] {
+            if (leaseScope)
+              return grantsClient->acquire(core, selectedOffer, security, grantControl,
+                                           selectedRole, *leaseScope);
+            return grantsClient->acquire(core, selectedOffer, security, grantControl,
+                                         selectedRole);
+          }));
       }
-      catch (...) {
-        if (!firstGrantError)
-          firstGrantError = std::current_exception();
+      grants.resize(grantFutures.size());
+      std::exception_ptr firstGrantError;
+      for (std::size_t index = 0; index < grantFutures.size(); ++index) {
+        try {
+          grants[index] = grantFutures[index].get();
+        }
+        catch (...) {
+          if (!firstGrantError)
+            firstGrantError = std::current_exception();
+        }
       }
+      if (firstGrantError) std::rethrow_exception(firstGrantError);
+      if (grantLease) grantLease->grants = grants;
     }
-    if (firstGrantError) std::rethrow_exception(firstGrantError);
     control.requireActive();
     logPlanPhase(control.requestId, "grant_acquire", phaseStarted);
     NativePlannedRequest result;
-    result.sealed = NativePlanSealer::finalizeSecurity(core, grants, runtime.security);
+    result.sealed = NativePlanSealer::finalizeSecurity(core, grants, runtime.security,
+                                                       grantLeaseScope);
+    result.grantLease = grantLease;
     NativeProjectionContext projection{epochMs(), runtime.noProgressMs, runtime.maxSegments};
     projection.logicalInputDigest = encoded.logicalInputDigest;
     projection.inputLayoutDigest = runtime.inputLayoutDigest;

@@ -50,6 +50,14 @@ public:
     const NativeAdmittedOfferV3& offer, const NativeSecurityPolicySnapshot& security,
     const NativeGrantControl& control, const std::string& role = {}) const;
 
+  /** Acquire a grant whose cryptographic identity is the supplied
+   * conversation lease. The current plan/offer is still checked before the
+   * lease identity is used, so a lease cannot cross a changed assignment. */
+  NativeGrantBinding acquire(const NativePlacementPlanCore& core,
+    const NativeAdmittedOfferV3& offer, const NativeSecurityPolicySnapshot& security,
+    const NativeGrantControl& control, const std::string& role,
+    const NativeGrantLeaseScope& leaseScope) const;
+
   /** Identity bound to the requester key and grant issuer at construction. */
   const std::string& requesterIdentity() const noexcept { return m_requester; }
   /** Protection epoch accepted by the native grant issuer. */
@@ -62,5 +70,10 @@ private:
   Issue m_issue;
   Publish m_publish;
   Clock m_clock;
+
+  NativeGrantBinding acquireWithScope(const NativePlacementPlanCore& core,
+    const NativeAdmittedOfferV3& offer, const NativeSecurityPolicySnapshot& security,
+    const NativeGrantControl& control, const std::string& role,
+    const NativeGrantLeaseScope* leaseScope) const;
 };
 } // namespace ndnsf::di

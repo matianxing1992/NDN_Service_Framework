@@ -122,6 +122,12 @@ ProtectedRuntimeBindingV1::validate() const
       !isDigest(securityPolicySnapshotDigest) || !isDigest(grantDigest)) {
     throw std::invalid_argument("protected runtime binding is incomplete");
   }
+  const bool hasGrantLease = !grantRequestId.empty() || grantAttempt != 0 ||
+                             !grantPlanCoreDigest.empty() || grantExpiresAtMs != 0;
+  if (hasGrantLease && (grantRequestId.empty() || grantAttempt == 0 ||
+                        !isDigest(grantPlanCoreDigest) || grantExpiresAtMs < expiresAtMs)) {
+    throw std::invalid_argument("protected runtime grant lease binding is invalid");
+  }
   if (hasGroupBinding && (groupId.empty() || groupEpoch == 0 ||
                          !isGroupDigest(capabilityDigest) ||
                          !isGroupDigest(epochKeyId))) {
@@ -158,6 +164,10 @@ ProtectedRuntimeBindingV1::exactlyMatches(
          requestId == other.requestId && attempt == other.attempt &&
          planCoreDigest == other.planCoreDigest &&
          planDigest == other.planDigest &&
+         grantRequestId == other.grantRequestId &&
+         grantAttempt == other.grantAttempt &&
+         grantPlanCoreDigest == other.grantPlanCoreDigest &&
+         grantExpiresAtMs == other.grantExpiresAtMs &&
          securityPolicySnapshotDigest == other.securityPolicySnapshotDigest &&
          protectionEpoch == other.protectionEpoch &&
          grantName == other.grantName && grantDigest == other.grantDigest &&
@@ -221,17 +231,25 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
     if (config.shouldCancel && config.shouldCancel()) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: grant acquisition cancelled");
     }
+    const auto grantRequestId = m_binding.grantRequestId.empty()
+      ? m_binding.requestId : m_binding.grantRequestId;
+    const auto grantAttempt = m_binding.grantAttempt == 0
+      ? m_binding.attempt : m_binding.grantAttempt;
+    const auto grantPlanCoreDigest = m_binding.grantPlanCoreDigest.empty()
+      ? m_binding.planCoreDigest : m_binding.grantPlanCoreDigest;
+    const auto grantExpiry = m_binding.grantExpiresAtMs == 0
+      ? m_binding.expiresAtMs : m_binding.grantExpiresAtMs;
     const auto separator = m_binding.grantName.find("/NDNSF-DI/KEY-GRANT/v1/");
     if (separator == std::string::npos || m_binding.grantName != canonicalNativeGrantName(
           m_binding.grantName.substr(0, separator), m_binding.provider,
-          m_binding.requestId, m_binding.attempt, m_binding.planCoreDigest,
+          grantRequestId, grantAttempt, grantPlanCoreDigest,
           config.modelManifestDigest, m_binding.protectionEpoch, m_binding.grantDigest)) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: canonical grant name mismatch");
     }
     auto result = verifyAndUnwrapNativeGrant(
       config.fetchGrant(m_binding.grantName), config.authorityPublicKeyRaw,
-      config.recipientKey, m_binding.provider, m_binding.requestId, m_binding.attempt,
-      m_binding.planCoreDigest, config.modelManifestDigest, m_binding.protectionEpoch,
+      config.recipientKey, m_binding.provider, grantRequestId, grantAttempt,
+      grantPlanCoreDigest, config.modelManifestDigest, m_binding.protectionEpoch,
       nowMs, config.authorityIdentity, m_binding.grantDigest);
     // Transfer the allocation before any later exception can release it unwiped.
     m_contentKey = std::move(result.contentKey);
@@ -252,7 +270,7 @@ ProtectedRuntime::verifyGrant(const ProtectedRuntimeBindingV1& observedBinding,
                   "DISK_CIPHERTEXT_ASSEMBLED") == result.allowedResidencyTiers.end()) {
       throw std::runtime_error("DI_PROTECTED_GRANT_REJECTED: assembled residency is forbidden");
     }
-    m_grantExpiresAtMs = std::min(m_binding.expiresAtMs, result.expiresAtMs);
+    m_grantExpiresAtMs = std::min(grantExpiry, result.expiresAtMs);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - started).count();
     if (nowMs >= m_grantExpiresAtMs ||

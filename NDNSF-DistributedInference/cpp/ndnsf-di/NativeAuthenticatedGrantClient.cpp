@@ -257,33 +257,67 @@ NativeAuthenticatedGrantClient::issueThroughCore(
   return coreIssue(std::move(user), std::move(authorityIdentity), std::move(authorityService));
 }
 
-NativeGrantBinding NativeAuthenticatedGrantClient::acquire(const NativePlacementPlanCore& core,
-  const NativeAdmittedOfferV3& offer, const NativeSecurityPolicySnapshot& security,
-  const NativeGrantControl& control, const std::string& role) const
+NativeGrantBinding NativeAuthenticatedGrantClient::acquire(
+  const NativePlacementPlanCore& core, const NativeAdmittedOfferV3& offer,
+  const NativeSecurityPolicySnapshot& security, const NativeGrantControl& control,
+  const std::string& role) const
+{
+  return acquireWithScope(core, offer, security, control, role, nullptr);
+}
+
+NativeGrantBinding NativeAuthenticatedGrantClient::acquire(
+  const NativePlacementPlanCore& core, const NativeAdmittedOfferV3& offer,
+  const NativeSecurityPolicySnapshot& security, const NativeGrantControl& control,
+  const std::string& role, const NativeGrantLeaseScope& leaseScope) const
+{
+  return acquireWithScope(core, offer, security, control, role, &leaseScope);
+}
+
+NativeGrantBinding NativeAuthenticatedGrantClient::acquireWithScope(
+  const NativePlacementPlanCore& core, const NativeAdmittedOfferV3& offer,
+  const NativeSecurityPolicySnapshot& security, const NativeGrantControl& control,
+  const std::string& role, const NativeGrantLeaseScope* leaseScope) const
 {
   control.check();
   const auto view = NativePlanSealer::grantView(core, offer, security, role);
   if (view.requesterIdentity != m_requester || view.protectionEpoch == "plaintext-v1" ||
       !security.requireProtectedArtifacts || view.modelManifestDigest.empty())
     throw std::invalid_argument("authenticated grant view does not match requester or protection policy");
+  if (leaseScope) {
+    const auto assignedProvider = leaseScope->providerByRole.find(view.role);
+    if (leaseScope->requestId.empty() || leaseScope->attempt == 0 ||
+        leaseScope->planCoreDigest.empty() || leaseScope->expiresAtMs == 0 ||
+        leaseScope->expiresAtMs < view.expiresAtMs ||
+        leaseScope->securityPolicySnapshotDigest != view.policyDigest ||
+        leaseScope->protectionEpoch != view.protectionEpoch ||
+        assignedProvider == leaseScope->providerByRole.end() ||
+        assignedProvider->second != view.provider) {
+      throw std::invalid_argument("authenticated grant lease scope is not bound to the selected role");
+    }
+  }
+  const auto requestId = leaseScope ? leaseScope->requestId : view.requestId;
+  const auto attempt = leaseScope ? leaseScope->attempt : view.attempt;
+  const auto planCoreDigest = leaseScope ? leaseScope->planCoreDigest : view.planCoreDigest;
+  const auto expiresAtMs = leaseScope ? leaseScope->expiresAtMs : view.expiresAtMs;
   NativeSignedGrantRequest request;
   request.requesterIdentity = m_requester; request.providerIdentity = view.provider;
-  request.requestId = view.requestId; request.attempt = view.attempt;
-  request.planCoreDigest = view.planCoreDigest; request.modelManifestDigest = view.modelManifestDigest;
+  request.requestId = requestId; request.attempt = attempt;
+  request.planCoreDigest = planCoreDigest; request.modelManifestDigest = view.modelManifestDigest;
   request.protectionEpoch = view.protectionEpoch; request.issuedAtMs = m_clock();
   const auto roleDigest = nativePlanningDigest(nativeCanonicalJson(nativeAssemblyJson(core.assemblyByRole.at(view.role))));
   request.grantViewDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
-    {"provider", view.provider}, {"request_id", view.requestId}, {"attempt", view.attempt},
-    {"plan_core_digest", view.planCoreDigest}, {"offer_digest", core.offerDigestByProvider.at(view.provider)},
+    {"provider", view.provider}, {"request_id", requestId}, {"attempt", attempt},
+    {"plan_core_digest", planCoreDigest}, {"offer_digest", core.offerDigestByProvider.at(view.provider)},
     {"role_digests", NativeJson::array({roleDigest})}, {"security_policy_snapshot_digest", view.policyDigest},
-    {"model_manifest_digest", view.modelManifestDigest}, {"protection_epoch", view.protectionEpoch}}));
+    {"model_manifest_digest", view.modelManifestDigest}, {"protection_epoch", view.protectionEpoch},
+    {"lease_scope_digest", leaseScope ? leaseScope->scopeDigest : std::string{}}}));
   request = request.sign(*m_requesterKey);
   control.check();
   const auto grant = m_issue(request, core.artifacts.canonicalManifestJson,
-                             view.expiresAtMs, control);
+                             expiresAtMs, control);
   control.check();
   detail::verifyNativeIssuedGrant(grant, request, m_authority, m_authorityPublicKey,
-    m_clock(), view.expiresAtMs);
+    m_clock(), expiresAtMs);
   control.check();
   const auto name = m_publish(grant.grantName, grant.wireJson, control);
   control.check();

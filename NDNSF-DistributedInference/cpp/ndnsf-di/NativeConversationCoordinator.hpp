@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationContinuation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantTypes.hpp"
 #include <functional>
 
 #include <cstdint>
@@ -45,6 +46,8 @@ struct NativeConversationTurn
   std::string executionRequestId;
   // Owner-restored placement; not accepted from an external continuation hint.
   std::map<std::string, std::string> providersByRole;
+  // Process-local authorization only; never journaled or restored.
+  std::optional<NativeGrantLease> grantLease;
 };
 
 struct NativeCompletedAttempt
@@ -127,6 +130,8 @@ public:
   NativeConversationTurn bindAttemptPlanRoleMap(
     const NativeConversationTurn& turn,
     const std::map<std::string, std::string>& providersByRole) const;
+  void bindGrantLease(const NativeConversationTurn& turn,
+                      const NativeGrantLease& lease) const;
   NativeConversationCheckpoint prepareCheckpoint(
     const NativeConversationTurn& turn, const NativeCompletedAttempt& completed) const;
   NativeConversationRecord commitTurn(const NativeConversationTurn& turn,

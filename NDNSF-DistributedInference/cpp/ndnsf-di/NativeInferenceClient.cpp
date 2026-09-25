@@ -1395,6 +1395,13 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
               plannedConversationTurn = conversations->bindInitialPlanRoleMap(
                 *plannedConversationTurn, planned.sealed.core.assignment.providerByRole);
             }
+            if (planned.grantLease) {
+              plannedConversationTurn->grantLease = planned.grantLease;
+              // The coordinator owns the process-local lease. It is bound
+              // before the Core commit so a stale operation cannot publish a
+              // plan that has no matching local authorization state.
+              conversations->bindGrantLease(*plannedConversationTurn, *planned.grantLease);
+            }
           }
           const auto corePlan = planned.corePlan;
           const auto sealedPlanDigest = planned.sealed.planDigest;

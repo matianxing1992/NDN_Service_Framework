@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <thread>
 #include <chrono>
+#include <openssl/evp.h>
 
 namespace ndnsf::di::test {
 namespace {
@@ -22,6 +24,30 @@ std::string unhex(const std::string& text)
     result.push_back(static_cast<char>(std::stoul(text.substr(i, 2), nullptr, 16)));
   }
   return result;
+}
+
+std::shared_ptr<EVP_PKEY> edKey(char seed)
+{
+  const std::string bytes(32, seed);
+  return {EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
+    reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free};
+}
+
+std::string publicBytes(const std::shared_ptr<EVP_PKEY>& key)
+{
+  std::string bytes(32, '\0');
+  std::size_t size = bytes.size();
+  if (!key || EVP_PKEY_get_raw_public_key(key.get(),
+        reinterpret_cast<unsigned char*>(bytes.data()), &size) != 1 || size != bytes.size())
+    throw std::runtime_error("protected runtime test key extraction failed");
+  return bytes;
+}
+
+std::shared_ptr<EVP_PKEY> publicKey(const std::shared_ptr<EVP_PKEY>& key)
+{
+  const auto bytes = publicBytes(key);
+  return {EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr,
+    reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()), EVP_PKEY_free};
 }
 
 struct BoundGrantFixture
@@ -156,6 +182,62 @@ std::vector<std::uint8_t> readBinaryFile(const std::filesystem::path& path)
 
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsExpiryAfterPreparation, BoundGrantFixture)
 { checkWorkerFence(*this, false, false); }
+
+BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeAcceptsConversationGrantLease, BoundGrantFixture)
+{
+  const auto authorityKey = edKey('a');
+  const auto requesterKey = edKey('b');
+  const auto providerKey = edKey('c');
+  const auto manifest = config.modelManifestDigest;
+  NativeGrantIssuerConfig policy;
+  policy.authorityIdentity = "/authority";
+  policy.requesterIdentity = "/requester";
+  policy.protectionEpoch = binding.protectionEpoch;
+  policy.keyId = "lease-key";
+  policy.authorityPrivateKey = authorityKey;
+  policy.requesterPublicKey = publicKey(requesterKey);
+  policy.allowedModelManifests = {manifest};
+  policy.recipientPublicKeys = {{binding.provider, publicKey(providerKey)}};
+  policy.contentKey = [] (const auto&, const auto&) {
+    return std::vector<std::uint8_t>(32, 7);
+  };
+  NativeArtifactGrantIssuer issuer(policy);
+
+  NativeSignedGrantRequest request;
+  request.providerIdentity = binding.provider;
+  request.requesterIdentity = policy.requesterIdentity;
+  request.requestId = "/NDNSF-DI/CONVERSATION/lease-test/GRANT-LEASE";
+  request.attempt = 1;
+  request.planCoreDigest = "sha256:" + std::string(64, 'c');
+  request.grantViewDigest = "sha256:" + std::string(64, 'd');
+  request.modelManifestDigest = manifest;
+  request.protectionEpoch = binding.protectionEpoch;
+  request.issuedAtMs = 1000;
+  const auto signedRequest = request.sign(*requesterKey);
+  const auto grant = issuer.issue(signedRequest, 1000, 5000);
+
+  binding.requestId = "/NDNSF-DI/REQUEST/turn-1";
+  binding.attempt = 1;
+  binding.planCoreDigest = "sha256:" + std::string(64, 'e');
+  binding.planDigest = "sha256:" + std::string(64, 'f');
+  binding.securityPolicySnapshotDigest = "sha256:" + std::string(64, '1');
+  binding.grantRequestId = request.requestId;
+  binding.grantAttempt = request.attempt;
+  binding.grantPlanCoreDigest = request.planCoreDigest;
+  binding.grantExpiresAtMs = 5000;
+  binding.grantName = grant.grantName;
+  binding.grantDigest = grant.grantDigest;
+  binding.expiresAtMs = 4000;
+  config.authorityIdentity = policy.authorityIdentity;
+  config.authorityPublicKeyRaw = publicBytes(authorityKey);
+  config.recipientKey.material = std::string(32, 'c');
+  wire = grant.wireJson;
+  now = 1001;
+
+  ProtectedRuntime runtime(binding, config);
+  BOOST_CHECK_NO_THROW(runtime.verifyGrant(binding, now));
+  BOOST_CHECK(runtime.state() == ProtectedRuntimeState::GrantVerified);
+}
 
 BOOST_FIXTURE_TEST_CASE(ProtectedRuntimeWorkerRejectsCancellationAfterPreparation, BoundGrantFixture)
 { checkWorkerFence(*this, false, true); }

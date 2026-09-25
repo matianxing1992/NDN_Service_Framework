@@ -2,6 +2,7 @@
 #define NDNSF_DI_NATIVE_PLAN_SEALER_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantTypes.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 
@@ -16,17 +17,6 @@ struct NativeSecurityPolicySnapshot
 {
   std::string policyDigest;
   bool requireProtectedArtifacts = true;
-};
-
-struct NativeGrantBinding
-{
-  std::string provider;
-  std::string role;
-  std::string grantName;
-  std::string grantDigest;
-  std::string recipient;
-  std::string wireJson;
-  std::uint64_t expiresAtMs = 0;
 };
 
 struct NativePlacementPlanCore
@@ -106,6 +96,7 @@ struct NativeSealedPlan
   std::vector<NativeGrantBinding> grants;
   NativeSecurityPolicySnapshot security;
   std::string planDigest;
+  std::optional<NativeGrantLeaseScope> grantLeaseScope;
 
   void validate() const;
 };
@@ -138,7 +129,8 @@ public:
   static NativeSealedPlan finalizeSecurity(
     const NativePlacementPlanCore& core,
     const std::vector<NativeGrantBinding>& grants,
-    const NativeSecurityPolicySnapshot& security);
+    const NativeSecurityPolicySnapshot& security,
+    std::optional<NativeGrantLeaseScope> grantLeaseScope = {});
 
   static NativeSelectionProjectionV3 project(
     const NativeSealedPlan& sealed, const std::string& provider,

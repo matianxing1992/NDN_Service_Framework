@@ -1220,6 +1220,40 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
       "security_policy_snapshot_digest", "");
     const auto grantProtectionEpoch =
       grantBinding->get<std::string>("protection_epoch", "");
+    if (const auto lease = grantBinding->get_child_optional("lease_scope")) {
+      NativeGrantLeaseScope scope;
+      scope.conversationId = lease->get<std::string>("conversation_id", "");
+      scope.requesterIdentity = lease->get<std::string>("requester_identity", "");
+      scope.serviceName = lease->get<std::string>("service_name", "");
+      scope.requestId = lease->get<std::string>("request_id", "");
+      scope.attempt = lease->get<std::uint64_t>("attempt", 0);
+      scope.planCoreDigest = lease->get<std::string>("plan_core_digest", "");
+      scope.scopeDigest = lease->get<std::string>("scope_digest", "");
+      scope.securityPolicySnapshotDigest = lease->get<std::string>(
+        "security_policy_snapshot_digest", "");
+      scope.protectionEpoch = lease->get<std::string>("protection_epoch", "");
+      scope.expiresAtMs = lease->get<std::uint64_t>("expires_at_ms", 0);
+      if (lease->get<std::string>("schema", "") !=
+            "ndnsf-di-grant-lease-scope-v1" || lease->get<int>("version", 0) != 1) {
+        throw std::invalid_argument("V3 Selection grant lease scope schema mismatch");
+      }
+      if (const auto providers = lease->get_child_optional("provider_by_role")) {
+        for (const auto& item : *providers)
+          scope.providerByRole.emplace(item.first, item.second.get_value<std::string>());
+      }
+      const auto assigned = projection.selectedRole.selectedRole.empty()
+        ? projection.selectedRole.role : projection.selectedRole.selectedRole;
+      if (scope.conversationId.empty() || scope.requesterIdentity.empty() ||
+          scope.serviceName.empty() || scope.requestId.empty() || scope.attempt == 0 ||
+          !isSha256Digest(scope.planCoreDigest) || !isSha256Digest(scope.scopeDigest) ||
+          !isSha256Digest(scope.securityPolicySnapshotDigest) || scope.protectionEpoch.empty() ||
+          scope.expiresAtMs < projection.deadlineMs ||
+          scope.providerByRole.find(assigned) == scope.providerByRole.end() ||
+          scope.providerByRole.at(assigned) != projection.provider) {
+        throw std::invalid_argument("V3 Selection grant lease scope is incomplete or misbound");
+      }
+      projection.grantLeaseScope = std::move(scope);
+    }
     if (projection.grantName.empty() || projection.grantName.front() != '/' ||
         !isSha256Digest(projection.grantDigest) ||
         grantProvider != projection.provider ||

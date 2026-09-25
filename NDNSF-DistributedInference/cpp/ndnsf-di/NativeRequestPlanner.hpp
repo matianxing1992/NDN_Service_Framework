@@ -55,6 +55,7 @@ struct NativePlannedRequest
   NativeSealedPlan sealed;
   ndn_service_framework::CollaborationPlan corePlan;
   std::string terminalProvider;
+  std::optional<NativeGrantLease> grantLease;
 };
 
 /** Worker-only ACK-closed planning. No plan is committed here; the operation

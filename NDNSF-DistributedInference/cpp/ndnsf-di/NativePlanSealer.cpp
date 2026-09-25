@@ -51,8 +51,20 @@ std::string canonicalSealed(const NativeSealedPlan& sealed)
   std::vector<std::tuple<std::string, std::string, std::string>> grants;
   for (const auto& grant : sealed.grants) grants.emplace_back(grant.provider, grant.grantName, grant.grantDigest);
   std::sort(grants.begin(), grants.end());
+  if (!sealed.grantLeaseScope) {
+    return nativeCanonicalJson(NativeJson{{"core", sealed.core.coreDigest}, {"grants", grants},
+      {"securityPolicySnapshotDigest", sealed.security.policyDigest}});
+  }
+  const auto& scope = *sealed.grantLeaseScope;
+  const auto lease = NativeJson{{"conversation_id", scope.conversationId},
+      {"requester_identity", scope.requesterIdentity}, {"service_name", scope.serviceName},
+      {"request_id", scope.requestId}, {"attempt", scope.attempt},
+      {"plan_core_digest", scope.planCoreDigest}, {"scope_digest", scope.scopeDigest},
+      {"security_policy_snapshot_digest", scope.securityPolicySnapshotDigest},
+      {"protection_epoch", scope.protectionEpoch}, {"expires_at_ms", scope.expiresAtMs},
+      {"provider_by_role", scope.providerByRole}};
   return nativeCanonicalJson(NativeJson{{"core", sealed.core.coreDigest}, {"grants", grants},
-    {"securityPolicySnapshotDigest", sealed.security.policyDigest}});
+    {"securityPolicySnapshotDigest", sealed.security.policyDigest}, {"grant_lease", lease}});
 }
 
 } // namespace
@@ -139,6 +151,18 @@ void NativeSealedPlan::validate() const
       security.requireProtectedArtifacts == (core.protectionEpoch == "plaintext-v1") ||
       nativePlanningDigest(canonicalSealed(*this)) != planDigest) {
     throw std::invalid_argument("native sealed plan security binding was modified");
+  }
+  if (grantLeaseScope) {
+    const auto& scope = *grantLeaseScope;
+    if (scope.conversationId.empty() || scope.requesterIdentity != core.requesterIdentity ||
+        scope.serviceName != core.executionPlan.serviceName || scope.requestId.empty() ||
+        scope.attempt == 0 || !isDigest(scope.planCoreDigest) ||
+        !isDigest(scope.scopeDigest) ||
+        scope.securityPolicySnapshotDigest != security.policyDigest ||
+        scope.protectionEpoch != core.protectionEpoch ||
+        scope.expiresAtMs < core.expiresAtMs || scope.providerByRole != core.assignment.providerByRole) {
+      throw std::invalid_argument("native sealed grant lease scope is not bound to the plan");
+    }
   }
 }
 
@@ -327,13 +351,14 @@ NativeProviderGrantView NativePlanSealer::grantView(const NativePlacementPlanCor
 NativeSealedPlan NativePlanSealer::finalizeSecurity(
   const NativePlacementPlanCore& core,
   const std::vector<NativeGrantBinding>& grants,
-  const NativeSecurityPolicySnapshot& security)
+  const NativeSecurityPolicySnapshot& security,
+  std::optional<NativeGrantLeaseScope> grantLeaseScope)
 {
   core.validate();
   if (!isDigest(security.policyDigest)) {
     throw std::invalid_argument("security policy digest is invalid");
   }
-  NativeSealedPlan sealed{core, grants, security, {}};
+  NativeSealedPlan sealed{core, grants, security, {}, std::move(grantLeaseScope)};
   sealed.planDigest = nativePlanningDigest(canonicalSealed(sealed));
   sealed.validate();
   return sealed;
@@ -385,6 +410,7 @@ NativeSelectionProjectionV3 NativePlanSealer::project(
     projection.grantDigest = grant->grantDigest;
   }
   projection.plan = sealed.core.executionPlan;
+  projection.grantLeaseScope = sealed.grantLeaseScope;
   nativeSelectionProjectionV3ToJson(projection);
   return projection;
 }
