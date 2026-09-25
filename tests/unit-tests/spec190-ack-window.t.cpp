@@ -244,6 +244,103 @@ BOOST_FIXTURE_TEST_CASE(OneSecondWindowFreezesAuthenticatedSnapshot,
   BOOST_CHECK(user.CancelCollaboration(requestId));
 }
 
+BOOST_FIXTURE_TEST_CASE(ExplicitProviderCoverageClosesBeforeDeadline,
+                        AckWindowFixture)
+{
+  const ndn::Buffer payload(reinterpret_cast<const uint8_t*>("payload"), 7);
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) {
+      published = request;
+    });
+
+  const std::vector<ndn::Name> expectedProviders{providerA, providerB};
+  std::optional<CollaborationAckClosure> closure;
+  size_t coverageChecks = 0;
+  const auto requestId = user.BeginCollaborationWithProviders(
+    service, payload, 1000, 5000,
+    [&] (const CollaborationAckClosure& value) { closure = value; },
+    [] (const ResponseMessage&) {},
+    [] (const ndn::Name&) {},
+    ndn::Name(),
+    [&] (const std::vector<AckCandidate>& candidates) {
+      ++coverageChecks;
+      return std::all_of(expectedProviders.begin(), expectedProviders.end(),
+        [&candidates] (const ndn::Name& expectedProvider) {
+          return std::any_of(candidates.begin(), candidates.end(),
+            [&expectedProvider] (const auto& candidate) {
+              return candidate.providerName == expectedProvider &&
+                     candidate.ack.getStatus();
+            });
+        });
+    },
+    RequestCapabilities(), std::nullopt, {}, {}, {}, expectedProviders);
+  BOOST_REQUIRE(!requestId.empty());
+  BOOST_REQUIRE(!published.getPayload().empty());
+
+  const auto firstAck = makeSuccessAckForRequest(published, "token-a");
+  BOOST_REQUIRE(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerA, requester, service, requestId), firstAck,
+    makeValidatedAckEvidence(providerA)));
+  BOOST_CHECK(!closure.has_value());
+
+  const auto secondAck = makeSuccessAckForRequest(published, "token-b");
+  BOOST_REQUIRE(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerB, requester, service, requestId), secondAck,
+    makeValidatedAckEvidence(providerB)));
+  BOOST_REQUIRE(closure.has_value());
+  BOOST_CHECK_EQUAL(closure->candidates.size(), 2U);
+  BOOST_CHECK_GE(coverageChecks, 2U);
+  BOOST_CHECK(user.isAckWindowExpired(requestId));
+  BOOST_CHECK(user.CancelCollaboration(requestId));
+}
+
+BOOST_FIXTURE_TEST_CASE(ExplicitProviderCoverageWaitsForMissingProvider,
+                        AckWindowFixture)
+{
+  const ndn::Buffer payload(reinterpret_cast<const uint8_t*>("payload"), 7);
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) {
+      published = request;
+    });
+
+  const std::vector<ndn::Name> expectedProviders{providerA, providerB};
+  std::optional<CollaborationAckClosure> closure;
+  const auto requestId = user.BeginCollaborationWithProviders(
+    service, payload, 20, 1000,
+    [&] (const CollaborationAckClosure& value) { closure = value; },
+    [] (const ResponseMessage&) {},
+    [] (const ndn::Name&) {},
+    ndn::Name(),
+    [&] (const std::vector<AckCandidate>& candidates) {
+      return std::all_of(expectedProviders.begin(), expectedProviders.end(),
+        [&candidates] (const ndn::Name& expectedProvider) {
+          return std::any_of(candidates.begin(), candidates.end(),
+            [&expectedProvider] (const auto& candidate) {
+              return candidate.providerName == expectedProvider &&
+                     candidate.ack.getStatus();
+            });
+        });
+    },
+    RequestCapabilities(), std::nullopt, {}, {}, {}, expectedProviders);
+  BOOST_REQUIRE(!requestId.empty());
+  BOOST_REQUIRE(!published.getPayload().empty());
+
+  const auto firstAck = makeSuccessAckForRequest(published, "token-a");
+  BOOST_REQUIRE(user.handleRequestAckByName(
+    makeRequestAckNameV2(providerA, requester, service, requestId), firstAck,
+    makeValidatedAckEvidence(providerA)));
+  BOOST_CHECK(!closure.has_value());
+
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_REQUIRE(closure.has_value());
+  BOOST_REQUIRE_EQUAL(closure->candidates.size(), 1U);
+  BOOST_CHECK(user.CancelCollaboration(requestId));
+}
+
 BOOST_FIXTURE_TEST_CASE(DelayedAuthenticationDrainsBeforeAckClosed,
                         AckWindowFixture)
 {

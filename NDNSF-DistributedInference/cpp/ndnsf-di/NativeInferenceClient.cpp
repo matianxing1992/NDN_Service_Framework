@@ -1301,6 +1301,26 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         operation->phase = DiRequestPhase::Requesting;
         operation->coreActive = true;
       }
+      ndn_service_framework::CollaborationAckCoverageHandler ackCoverage;
+      if (!operation->options.providerNames.empty()) {
+        const auto expectedProviders = operation->options.providerNames;
+        ackCoverage = [expectedProviders] (
+            const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+          // An explicit Provider list is the native request's fixed candidate
+          // set.  Close only after every candidate has produced an already
+          // authenticated successful ACK.  This is an early-close hint only;
+          // Core still freezes the immutable ACK_CLOSED snapshot and the DI
+          // planner still performs Selection and role validation afterwards.
+          return std::all_of(expectedProviders.begin(), expectedProviders.end(),
+            [&candidates] (const ndn::Name& expectedProvider) {
+              return std::any_of(candidates.begin(), candidates.end(),
+                [&expectedProvider] (const auto& candidate) {
+                  return candidate.providerName == expectedProvider &&
+                         candidate.ack.getStatus();
+                });
+            });
+        };
+      }
       const auto ackClosed = [operation, sourceAttempt, coreRequestId](const ndn_service_framework::CollaborationAckClosure& closure) {
         enqueueOperation(operation, [operation, sourceAttempt, coreRequestId, closure] {
           std::shared_ptr<const NativeRequestRuntime> runtime;
@@ -1638,7 +1658,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         ndn::Buffer(operation->encodedRequest->wire.begin(), operation->encodedRequest->wire.end()),
         static_cast<int>(operation->coreOptions.ackTimeoutMs),
         static_cast<int>(operation->coreOptions.timeoutMs), ackClosed, response, timeout,
-        ndn::Name(coreRequestId), {}, capabilities, operation->options.stream,
+        ndn::Name(coreRequestId), std::move(ackCoverage), capabilities, operation->options.stream,
         streamEvent, streamComplete, streamError, operation->options.providerNames);
     }
     catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
