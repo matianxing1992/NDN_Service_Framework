@@ -759,7 +759,7 @@ BOOST_AUTO_TEST_CASE(SelectionSnapshotRejectsStaleMemberAndKeepsLatest)
   BOOST_CHECK_EQUAL(snapshot->memberStatuses.front().sequence, 2);
 }
 
-BOOST_AUTO_TEST_CASE(SelectionAssemblyAdmissionContinuesIntoRootProgress)
+BOOST_AUTO_TEST_CASE(SelectionAssemblyProgressContinuesIntoRootProgress)
 {
   ndn::security::KeyChain keyChain("pib-memory:collab-status-admission",
                                    "tpm-memory:collab-status-admission");
@@ -789,11 +789,11 @@ BOOST_AUTO_TEST_CASE(SelectionAssemblyAdmissionContinuesIntoRootProgress)
   projection.assembly.selectedRole = "terminal";
   projection.assembly.backend = "onnxruntime-cpu";
   auto sequence = std::make_shared<std::atomic<std::uint64_t>>(0);
-  auto reportAdmission = ndnsf::di::makeNativeAssemblyProgressReporter(
+  auto reportStart = ndnsf::di::makeNativeAssemblyProgressReporter(
     context, projection, projection.assembly.backend, 1, 0, sequence);
   auto reportRoot = ndnsf::di::makeNativeAssemblyProgressReporter(
     context, projection, projection.assembly.backend, 1, 0, sequence);
-  reportAdmission("ASSEMBLY_ADMISSION", 0.0);
+  reportStart("ASSEMBLY_STARTED", 0.0);
   BOOST_CHECK_NO_THROW(reportRoot("ROOT_VERIFIED", 0.25));
 
   const auto snapshot = provider.getSelectionExecutionStatus(selectionDigest);

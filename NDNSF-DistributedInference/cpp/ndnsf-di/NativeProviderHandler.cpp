@@ -2273,59 +2273,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                stageAttemptEpoch);
         logProviderBoundaryStdout("POST_GRANT_CONTINUING", stageRequestId,
                                   ctx.localProvider().toUri(), role);
-        if (selectionProjection && config.runnerPreparationFactory) {
-          const auto adapterIdentity = selectionProjection->assembly.backend.empty()
-            ? std::string("native") : selectionProjection->assembly.backend;
-          auto reportAdmission = makeNativeAssemblyProgressReporter(
-            ctx, *selectionProjection, adapterIdentity, 1, 0,
-            selectionProjection->assemblyProgressSequence);
-          const auto& boundRole = selectionProjection->assembly.selectedRole;
-          const auto operationId = ctx.assignment().selectionDigest + ":" +
-            boundRole + ":assembly-progress";
-          try {
-            logRuntimeEvidence(
-              std::string("NDNSF_DI_ASSEMBLY_ADMISSION_BEGIN provider=") +
-              ctx.localProvider().toUri() + " requestId=" +
-              selectionProjection->requestId + " role=" + boundRole +
-              " selectionDigest=" + ctx.assignment().selectionDigest +
-              " operationId=" + operationId);
-            logProviderBoundaryStdout("ASSEMBLY_ADMISSION_BEGIN", stageRequestId,
-                                      ctx.localProvider().toUri(), role);
-            reportAdmission("ASSEMBLY_ADMISSION", 0.0);
-            logProviderBoundaryStdout("ASSEMBLY_ADMISSION_DONE", stageRequestId,
-                                      ctx.localProvider().toUri(), role);
-            std::ostringstream record;
-            record << "NDNSF_DI_ASSEMBLY_ADMISSION_REPORTED"
-                   << " provider=" << ctx.localProvider().toUri()
-                   << " requestId=" << selectionProjection->requestId
-                   << " role=" << boundRole
-                   << " selectionDigest=" << ctx.assignment().selectionDigest
-                   << " operationId=" << operationId;
-            logRuntimeEvidence(record.str());
-          }
-          catch (const std::exception& error) {
-            auto errorText = std::string(error.what());
-            if (errorText.size() > 512) {
-              errorText.resize(512);
-            }
-            std::replace_if(errorText.begin(), errorText.end(),
-                            [] (unsigned char value) {
-                              return value < 0x20 || value == 0x7f;
-                            }, ' ');
-            std::ostringstream record;
-            record << "NDNSF_DI_ASSEMBLY_ADMISSION_FAILED"
-                   << " provider=" << ctx.localProvider().toUri()
-                   << " requestId=" << selectionProjection->requestId
-                   << " role=" << boundRole
-                   << " selectionDigest=" << ctx.assignment().selectionDigest
-                   << " operationId=" << operationId
-                   << " error=\"" << errorText << "\"";
-            logRuntimeError(record.str());
-            throw;
-          }
-        }
       }
-      logProviderBoundaryStdout("POST_PROTECTED_ADMISSION_DONE", stageRequestId,
+      logProviderBoundaryStdout("POST_PROTECTED_GRANT_DONE", stageRequestId,
                                 ctx.localProvider().toUri(), role);
       std::shared_ptr<DependencyIo> io =
         std::make_shared<NdnsfCollaborationDependencyIo>(
