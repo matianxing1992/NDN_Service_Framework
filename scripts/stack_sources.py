@@ -36,12 +36,13 @@ def load_lock(path):
         if not isinstance(deps, list) or any(d not in LIBRARIES or d == name for d in deps):
             raise ValueError(f'{name}: invalid prerequisite list')
     order(data)  # Reject cycles before acquisition or installation.
-    # These native dependencies cannot be removed by editing a lock file.
-    required = {'ndn-svs': {'ndn-cxx'}, 'NDNSD': {'ndn-cxx', 'ndn-svs'},
+    # Build recipes implement this graph; a fork changing it needs recipe review.
+    required = {'ndn-cxx': set(), 'openabe': set(),
+                'ndn-svs': {'ndn-cxx'}, 'NDNSD': {'ndn-cxx', 'ndn-svs'},
                 'NAC-ABE': {'ndn-cxx', 'openabe'}}
     for name, deps in required.items():
-        if not deps.issubset(data['sources'][name]['requires']):
-            raise ValueError(f'{name}: required native prerequisites missing')
+        if deps != set(data['sources'][name]['requires']):
+            raise ValueError(f'{name}: unsupported native prerequisite graph')
     return data
 
 

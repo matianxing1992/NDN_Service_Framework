@@ -37,6 +37,18 @@ class ConfigureDependenciesTest(unittest.TestCase):
              patch.object(inventory.Path, 'is_file', return_value=True):
             self.assertEqual(inventory.check_dependencies(), ([], []))
 
+    def test_sdk_only_reports_sdk_not_ndn_or_gui(self):
+        with patch.object(inventory.shutil, 'which', return_value='/usr/bin/tool'), \
+             patch.object(inventory.subprocess, 'run', return_value=Mock(returncode=1)), \
+             patch.object(inventory.Path, 'is_file', return_value=False):
+            errors, warnings = inventory.check_dependencies(sdk_only=True)
+        text = '\n'.join(errors)
+        self.assertIn('onnxruntime', text)
+        self.assertIn('tokenizer_bridge', text)
+        self.assertNotIn('nac-abe', text)
+        self.assertNotIn('gtkmm', text)
+        self.assertEqual(warnings, [])
+
     def test_script_dry_run_is_non_mutating(self):
         result = subprocess.run(['bash', str(ROOT / 'configure.sh'), '--dry-run',
                                  '--', '--with-tests'], capture_output=True, text=True)

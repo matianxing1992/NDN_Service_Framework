@@ -7,7 +7,7 @@ JOBS="${NDNSF_BUILD_JOBS:-4}"
 WAF_CONFIGURE_ARGS=()
 RUN_WAF_CONFIGURE=auto
 RUN_SYSTEM_INSTALL=1
-USE_USER_FLAG=auto
+USE_USER_FLAG=0
 INSTALL_EDITABLE=0
 INSTALL_DEPENDENCIES=auto
 FORCE_DEPENDENCIES=0
@@ -55,7 +55,7 @@ NDNCXX_REPO_URL="${NDNCXX_REPO_URL:-https://github.com/matianxing1992/ndn-cxx.gi
 NDNSD_REPO_URL="${NDNSD_REPO_URL:-https://github.com/matianxing1992/NDNSD.git}"
 NDNSVS_REPO_URL="${NDNSVS_REPO_URL:-https://github.com/matianxing1992/ndn-svs.git}"
 NACABE_REPO_URL="${NACABE_REPO_URL:-https://github.com/matianxing1992/NAC-ABE.git}"
-OPENABE_REPO_URL="${OPENABE_REPO_URL:-https://github.com/zeutro/openabe.git}"
+OPENABE_REPO_URL="${OPENABE_REPO_URL:-https://github.com/matianxing1992/openabe.git}"
 
 usage() {
   cat <<'EOF'
@@ -94,8 +94,8 @@ Options:
   --with-tests             Pass --with-tests to ./waf configure.
   --no-system-install      Skip ./waf install; useful for source-tree testing.
   --system-install         Run ./waf install after build (default).
-  --user                   Pass --user to pip install.
-  --no-user                Do not pass --user to pip install.
+  --user                   Unsupported: this installer requires system Python installation.
+  --no-user                System Python installation (default).
   --no-editable            Normal pip installs (default; no source-tree runtime).
   --python PATH            Python executable to use (default: python3 or $PYTHON).
   -h, --help               Show this help.
@@ -264,6 +264,7 @@ if (( CHECK_DEPENDENCIES && (SOURCE_MODE || DEPS_ONLY || FORCE_DEPENDENCIES) ));
   exit 2
 fi
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo '--jobs must be a positive integer' >&2; exit 2; }
+[[ "$USE_USER_FLAG" == "0" ]] || { echo '--user is incompatible with system-installed MiniNDN software' >&2; exit 2; }
 if [[ "$RUN_WAF_CONFIGURE" == "0" ]]; then
   echo '--no-configure is not allowed for the global-closure installer' >&2
   exit 2
@@ -287,21 +288,40 @@ sudo_run() {
   fi
 }
 
-pip_install() {
-  local path="$1"
-  local install_args=()
-  if [[ "$INSTALL_EDITABLE" == "1" ]]; then
-    install_args+=("-e")
-  fi
-  if [[ "$USE_USER_FLAG" == "1" ]]; then
-    install_args+=("--user")
-  fi
-  install_args+=("$path")
+pip_install() (
+  local wheel_dir
+  wheel_dir="$(mktemp -d -t ndnsf-wheels.XXXXXXXX)"
+  trap 'rm -rf -- "$wheel_dir"' EXIT
+  # Compile bindings as the caller, then install wheels into system Python.
   run env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
     -u CPLUS_INCLUDE_PATH -u LDSHARED -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR \
-    PATH="$SYSTEM_PATH" CC=/usr/bin/gcc CXX=/usr/bin/g++ \
-    "$PYTHON_BIN" -m pip install "${install_args[@]}"
+    -u PYTHONPATH -u PYTHONHOME \
+    PATH="$SYSTEM_PATH" CC=/usr/bin/gcc CXX=/usr/bin/g++ PYTHONNOUSERSITE=1 \
+    "$PYTHON_BIN" -m pip --isolated wheel --wheel-dir "$wheel_dir" "$@"
+  sudo_run env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 \
+    "$PYTHON_BIN" -m pip --isolated install --no-index --no-deps \
+    --force-reinstall "$wheel_dir"/*.whl
+)
+
+require_host_profile() {
+  local ID VERSION_ID
+  . /etc/os-release
+  if [[ "$ID" != ubuntu || "$VERSION_ID" != 20.04 || "$(uname -m)" != x86_64 ]]; then
+    echo 'Supported host profile: Ubuntu 20.04 x86_64, system Boost 1.71; no system changes made.' >&2
+    exit 2
+  fi
+  if [[ "$(readlink -f "$PYTHON_BIN")" != "$(readlink -f /usr/bin/python3)" ]]; then
+    echo 'Use /usr/bin/python3; venv/custom Python is not the system installation target.' >&2
+    exit 2
+  fi
+  # Resolve symlink-based venvs to the actual system invocation path as well.
+  PYTHON_BIN=/usr/bin/python3
+}
+
+check_waf_inventory() {
+  env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR -u NDNSF_TOKENIZER_BRIDGE_ARCHIVE \
+    PATH="$SYSTEM_PATH" "$PYTHON_BIN" "$ROOT/scripts/configure_dependencies.py" "$@"
 }
 
 run_waf_clean() {
@@ -993,7 +1013,8 @@ build_cmake_dependency() {
 install_external_dependencies() {
   echo "==> Checking external NDN dependencies"
   echo "==> Dependency source directory: $DEPS_DIR"
-  # These SDKs are not built here. Fail before changing other installed libraries.
+  # These SDKs are not built here. Report all missing SDK material together.
+  check_waf_inventory --sdk-only
   require_global_sdk_pkg "onnxruntime" "1.26.0" "libonnxruntime.so"
   require_global_file "$GLOBAL_LIBRARY_DIR/libonnx.a"
   require_global_file "$GLOBAL_LIBRARY_DIR/libonnx_proto.a"
@@ -1007,16 +1028,7 @@ install_external_dependencies() {
     fi
     echo "==> Global identity is stale; source receipts determine affected dependencies"
   fi
-  if [[ "$INSTALL_SYSTEM_PACKAGES" == "1" ]] || [[ "$FORCE_DEPENDENCIES" == "1" ]] || ! has_global_boost || \
-     ! is_pkg_installed "libndn-cxx" "$MIN_NDNCXX_VERSION" || \
-     ! is_pkg_installed "ndnsd" "$MIN_NDNSD_VERSION" || \
-     ! is_pkg_installed "libndn-svs" "$MIN_NDNSVS_VERSION" || \
-     ! is_pkg_installed "libnac-abe" "$MIN_NACABE_VERSION" || \
-     ! has_openabe; then
-    install_common_system_packages
-  else
-    echo "==> External dependencies already present; skipping OS package installation"
-  fi
+  require_global_boost
   build_waf_dependency "ndn-cxx" "libndn-cxx" "$NDNCXX_REPO_URL" "$MIN_NDNCXX_VERSION"
   build_waf_dependency "ndn-svs" "libndn-svs" "$NDNSVS_REPO_URL" "$MIN_NDNSVS_VERSION"
   build_waf_dependency "NDNSD" "ndnsd" "$NDNSD_REPO_URL" "$MIN_NDNSD_VERSION"
@@ -1024,6 +1036,7 @@ install_external_dependencies() {
   build_cmake_dependency "NAC-ABE" "libnac-abe" "$NACABE_REPO_URL" "$MIN_NACABE_VERSION"
   write_global_dependency_identity
   require_global_external_closure
+  check_waf_inventory
 }
 
 cd "$ROOT"
@@ -1046,9 +1059,12 @@ if (( PLAN_ONLY )); then
 fi
 
 if (( CONFIGURE_ONLY )); then
+  require_host_profile
   export PATH="$SYSTEM_PATH:/usr/local/bin:$PATH"
   install_common_system_packages
-  exec "$PYTHON_BIN" "$ROOT/waf" configure "${WAF_CONFIGURE_ARGS[@]}"
+  require_system_toolchain
+  run_waf_clean configure "${WAF_CONFIGURE_ARGS[@]}"
+  exit 0
 fi
 
 # Resolve every source before any installation. URL-only overrides cannot
@@ -1065,9 +1081,14 @@ done
 
 echo "==> NDNSF stack install root: $ROOT"
 echo "==> Python: $PYTHON_BIN"
+require_host_profile
+if [[ "$CHECK_DEPENDENCIES" != "1" ]]; then
+  install_common_system_packages
+fi
 require_system_toolchain
 
 if [[ "$CHECK_DEPENDENCIES" == "1" ]]; then
+  check_waf_inventory
   require_global_external_closure
   require_source_receipts
   echo "==> Installed NDNSF global dependency closure is valid"
@@ -1086,6 +1107,7 @@ else
   # a missing or stale global dependency to enter the NDNSF build.
   require_global_external_closure
   require_source_receipts
+  check_waf_inventory
 fi
 
 if (( DEPS_ONLY )); then
@@ -1128,6 +1150,7 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
+    NDNSF_SKIP_DEV_PIP_INSTALL=1 \
     NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR" ./waf install -j"$JOBS"
   sudo_run /sbin/ldconfig
   require_global_file "$GLOBAL_LIBRARY_DIR/libndn-service-framework.so"
@@ -1143,19 +1166,25 @@ export NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR"
 NDNSF_GLOBAL_NATIVE_DIGESTS="$(native_digest_receipt)"
 export NDNSF_GLOBAL_NATIVE_DIGESTS
 unset NDNSF_RUNTIME_RPATH NDNSF_NDN_SVS_SOURCE_TREE NDNSF_NDN_SVS_BUILD_TREE
-pip_install "$ROOT/pythonWrapper"
-
-echo "==> Installing py_repoclient Python binding"
-pip_install "$ROOT/NDNSF-DistributedRepo/pythonWrapper"
-
-echo "==> Installing NDNSF-DistributedInference Python package"
-pip_install "$ROOT/NDNSF-DistributedInference"
+# Resolve repository-owned packages together so pip cannot substitute an
+# index copy of ndnsf or of a split DI owner package.
+pip_install "$ROOT/pythonWrapper" "$ROOT/NDNSF-DistributedRepo/pythonWrapper" \
+  "$ROOT/NDNSF-DistributedInference/packaging/python/core" \
+  "$ROOT/NDNSF-DistributedInference/packaging/python/sdk" \
+  "$ROOT/NDNSF-DistributedInference/packaging/python/planner" \
+  "$ROOT/NDNSF-DistributedInference/packaging/python/app" \
+  "$ROOT/NDNSF-DistributedInference/packaging/python/ops" \
+  "$ROOT/NDNSF-DistributedInference/packaging/python/compat"
 
 echo "==> Running Python import smoke checks"
-run "$PYTHON_BIN" - <<'PY'
+run env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 "$PYTHON_BIN" -I - <<'PY'
 import ndnsf
 import py_repoclient
 import ndnsf_distributed_inference
+from pathlib import Path
+for module in (ndnsf, py_repoclient, ndnsf_distributed_inference):
+    path = Path(module.__file__).resolve()
+    assert str(path).startswith('/usr/local/'), (module.__name__, path)
 
 manifest = py_repoclient.make_manifest(
     "/NDNSF/InstallSmoke/Object",

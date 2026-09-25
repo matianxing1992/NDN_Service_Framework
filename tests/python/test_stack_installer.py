@@ -53,6 +53,7 @@ def test_legacy_unpinned_worktree_is_not_reused(tmp_path):
 def test_missing_sdk_stops_before_system_changes():
     result = shell(DEFINITIONS + '''
 require_global_sdk_pkg() { echo missing-sdk >&2; exit 31; }
+check_waf_inventory() { :; }
 install_common_system_packages() { echo UNEXPECTED_APT; }
 build_waf_dependency() { echo UNEXPECTED_BUILD; }
 install_external_dependencies
@@ -83,6 +84,9 @@ build_waf_dependency ndn-svs libndn-svs invalid-url 0.1
 def test_install_refreshes_loader_before_python_and_limits_jobs():
     stubs = '''
 require_system_toolchain() { :; }
+require_host_profile() { :; }
+install_common_system_packages() { :; }
+check_waf_inventory() { :; }
 require_global_external_closure() { :; }
 require_source_receipts() { :; }
 source_field() { printf '%s\n' 'https://example.invalid/test.git'; }
@@ -97,12 +101,19 @@ run() { :; }
     assert result.returncode == 0, result.stderr
     assert "WAF:-j2" in result.stdout
     assert "./waf install -j2" in result.stdout
+    assert "NDNSF_SKIP_DEV_PIP_INSTALL=1" in result.stdout
+    assert 'packaging/python/core' in result.stdout
+    assert 'packaging/python/compat' in result.stdout
+    assert result.stdout.count('PIP:') == 1
     assert result.stdout.index("SUDO:/sbin/ldconfig") < result.stdout.index("PIP:")
 
 
 def test_build_only_does_not_install_python():
     stubs = '''
 require_system_toolchain() { :; }
+require_host_profile() { :; }
+install_common_system_packages() { :; }
+check_waf_inventory() { :; }
 require_global_external_closure() { :; }
 require_source_receipts() { :; }
 source_field() { printf '%s\n' 'https://example.invalid/test.git'; }
@@ -138,6 +149,9 @@ def test_configure_modes_conflict_before_side_effects():
 def test_deps_only_stops_before_waf_and_python():
     stubs = '''
 require_system_toolchain() { :; }
+require_host_profile() { :; }
+install_common_system_packages() { :; }
+check_waf_inventory() { :; }
 source_field() { echo https://example.invalid/repo.git; }
 install_external_dependencies() { echo DEPS_ONLY_OK; }
 run_waf_clean() { echo UNEXPECTED_WAF; }
@@ -170,3 +184,64 @@ build_waf_dependency ndn-svs libndn-svs unused 0.1
     assert result.returncode == 0
     assert 'skipping' in result.stdout
     assert 'UNEXPECTED' not in result.stdout
+
+
+def test_user_install_rejected_before_mutations():
+    result = shell(SCRIPT.read_text(), '--user')
+    assert result.returncode == 2
+    assert 'incompatible' in result.stderr
+
+
+def test_bootstrap_installs_os_before_toolchain_check():
+    stubs = '''
+require_host_profile() { echo PROFILE; }
+install_common_system_packages() { echo PACKAGES; }
+require_system_toolchain() { echo TOOLS; }
+source_field() { echo https://example.invalid/repo.git; }
+install_external_dependencies() { echo SOURCES; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, '--deps-only')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.index('PROFILE') < result.stdout.index('PACKAGES')
+    assert result.stdout.index('PACKAGES') < result.stdout.index('TOOLS')
+    assert result.stdout.index('TOOLS') < result.stdout.index('SOURCES')
+
+
+def test_check_only_inventory_failure_never_installs():
+    stubs = '''
+require_host_profile() { :; }
+require_system_toolchain() { :; }
+source_field() { echo https://example.invalid/repo.git; }
+install_common_system_packages() { echo UNEXPECTED; }
+check_waf_inventory() { echo MISSING_GTK >&2; return 37; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, '--check-dependencies')
+    assert result.returncode == 37
+    assert 'MISSING_GTK' in result.stderr
+    assert 'UNEXPECTED' not in result.stdout
+
+
+def test_pip_builds_wheels_then_privileged_noneditable_install():
+    result = shell(DEFINITIONS + '''
+run() { printf 'BUILD:%s\\n' "$*"; touch "$wheel_dir/test.whl"; }
+sudo_run() { printf 'INSTALL:%s\\n' "$*"; }
+pip_install /example/package
+''')
+    assert result.returncode == 0, result.stderr
+    assert '--isolated wheel --wheel-dir' in result.stdout
+    assert '--isolated install --no-index --no-deps --force-reinstall' in result.stdout
+    assert result.stdout.index('BUILD:') < result.stdout.index('INSTALL:')
+
+
+def test_host_profile_normalizes_symlink_venv_interpreter(tmp_path):
+    directory = tmp_path / 'venv/bin'
+    directory.mkdir(parents=True)
+    interpreter = directory / 'python3'
+    interpreter.symlink_to('/usr/bin/python3')
+    result = shell(DEFINITIONS + '''
+uname() { echo x86_64; }
+require_host_profile
+printf 'PYTHON:%s\\n' "$PYTHON_BIN"
+''', '--python', str(interpreter))
+    assert result.returncode == 0, result.stderr
+    assert 'PYTHON:/usr/bin/python3' in result.stdout

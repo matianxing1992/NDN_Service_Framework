@@ -89,3 +89,12 @@ def test_different_pin_invalidates_receipt(tmp_path):
     changed = copy.deepcopy(data)
     changed['sources']['openabe']['commit'] = 'a' * 40
     assert not sources.receipt(changed, 'openabe', tmp_path)
+
+
+def test_unsupported_prerequisite_graph_rejected(tmp_path):
+    data = sources.load_lock(LOCK)
+    data['sources']['ndn-cxx']['requires'] = ['openabe']
+    path = tmp_path / 'lock.json'
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match='unsupported native prerequisite graph'):
+        sources.load_lock(path)

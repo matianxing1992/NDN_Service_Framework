@@ -5,7 +5,7 @@
     "ndn-cxx": {"url": "https://github.com/matianxing1992/ndn-cxx.git", "ref": "master", "commit": "8296fc9462c7ef9635b7c45468c067fd39514e31", "requires": []},
     "NDNSD": {"url": "https://github.com/matianxing1992/NDNSD.git", "ref": "Experimental", "commit": "375a35c5706d5a6b6f176cd98b72d63dcb7f5b10", "requires": ["ndn-cxx", "ndn-svs"]},
     "ndn-svs": {"url": "https://github.com/matianxing1992/ndn-svs.git", "ref": "Experimental", "commit": "9f2d8a47cd2a25a5f9ade661c9dbe8acd6416a20", "requires": ["ndn-cxx"]},
-    "openabe": {"url": "https://github.com/zeutro/openabe.git", "ref": "master", "commit": "b8f9d3c8a2620c1185ca972248f7af39c1eae68c", "requires": []},
+    "openabe": {"url": "https://github.com/matianxing1992/openabe.git", "ref": "master", "commit": "cb2a18c2d2845a03ed502df4b77f596b55e48ebd", "requires": []},
     "NAC-ABE": {"url": "https://github.com/matianxing1992/NAC-ABE.git", "ref": "Experimental", "commit": "5ed23e68520fb9c4ef747c51d6d18c915ff88fc4", "requires": ["ndn-cxx", "openabe"]}
   }
 }
