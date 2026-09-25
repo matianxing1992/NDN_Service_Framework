@@ -39,15 +39,15 @@ def test_jobs_environment_and_override():
     assert shell(DEFINITIONS + '\nprintf "%s" "$JOBS"', "--jobs", "3", env=env).stdout == "3"
 
 
-def test_worktree_source_is_reused(tmp_path):
+def test_legacy_unpinned_worktree_is_not_reused(tmp_path):
     source = tmp_path / "with space and ' quote" / "ndn-svs"
     source.mkdir(parents=True)
     (source / ".git").write_text("gitdir: /not-needed-for-this-check\n")
     result = shell(DEFINITIONS + '\nensure_source_tree ndn-svs invalid-url',
                    "--deps-dir", str(source.parent))
-    assert result.returncode == 0, result.stderr
-    assert "Reusing dependency source" in result.stdout
-    assert result.stdout.splitlines()[-1] == str(source)
+    assert result.returncode != 0
+    assert "URL differs from lock" in result.stderr
+    assert (source / '.git').read_text().startswith('gitdir:')
 
 
 def test_missing_sdk_stops_before_system_changes():
@@ -71,6 +71,8 @@ def test_waf_dependency_handles_quoted_source_path(tmp_path):
     result = shell(DEFINITIONS + '''
 FORCE_DEPENDENCIES=1
 sudo_run() { :; }
+ensure_source_tree() { printf '%s\n' "$DEPS_DIR/ndn-svs"; }
+record_source_receipt() { :; }
 build_waf_dependency ndn-svs libndn-svs invalid-url 0.1
 ''', "--deps-dir", str(source.parent), "--jobs", "2")
     assert result.returncode == 0, result.stderr
@@ -82,6 +84,8 @@ def test_install_refreshes_loader_before_python_and_limits_jobs():
     stubs = '''
 require_system_toolchain() { :; }
 require_global_external_closure() { :; }
+require_source_receipts() { :; }
+source_field() { printf '%s\n' 'https://example.invalid/test.git'; }
 require_global_file() { :; }
 run_waf_clean() { echo "WAF:$*"; }
 sudo_run() { echo "SUDO:$*"; }
@@ -100,6 +104,8 @@ def test_build_only_does_not_install_python():
     stubs = '''
 require_system_toolchain() { :; }
 require_global_external_closure() { :; }
+require_source_receipts() { :; }
+source_field() { printf '%s\n' 'https://example.invalid/test.git'; }
 run_waf_clean() { :; }
 pip_install() { echo UNEXPECTED_PIP; }
 sudo_run() { echo UNEXPECTED_SUDO; }
@@ -107,3 +113,60 @@ sudo_run() { echo UNEXPECTED_SUDO; }
     result = shell(DEFINITIONS + stubs + MAIN, "--no-dependencies", "--no-system-install")
     assert result.returncode == 2
     assert "UNEXPECTED" not in result.stdout
+
+
+def test_plan_is_offline_and_uses_experimental_pins(tmp_path):
+    result = subprocess.run(['bash', str(SCRIPT), '--source', '--plan',
+                             '--deps-dir', str(tmp_path / 'absent'),
+                             '--', '--with-tests'], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'ref=Experimental' in result.stdout
+    assert '9f2d8a47cd2a25a5f9ade661c9dbe8acd6416a20' in result.stdout
+    assert '--with-tests' in result.stdout
+    assert 'Preinstalled SDKs:' in result.stdout
+    assert not (tmp_path / 'absent').exists()
+
+
+def test_configure_modes_conflict_before_side_effects():
+    for args in [('--configure-only', '--source'), ('--no-install', '--deps-only'),
+                 ('--check-dependencies', '--source')]:
+        result = shell(SCRIPT.read_text(), *args)
+        assert result.returncode == 2
+        assert 'cannot be combined' in result.stderr
+
+
+def test_deps_only_stops_before_waf_and_python():
+    stubs = '''
+require_system_toolchain() { :; }
+source_field() { echo https://example.invalid/repo.git; }
+install_external_dependencies() { echo DEPS_ONLY_OK; }
+run_waf_clean() { echo UNEXPECTED_WAF; }
+pip_install() { echo UNEXPECTED_PIP; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, '--source', '--deps-only')
+    assert result.returncode == 0, result.stderr
+    assert 'DEPS_ONLY_OK' in result.stdout
+    assert 'UNEXPECTED' not in result.stdout
+
+
+def test_version_match_without_receipt_does_not_skip():
+    result = shell(DEFINITIONS + '''
+is_pkg_installed() { return 0; }
+has_source_receipt() { return 1; }
+ensure_source_tree() { echo SOURCE_REQUIRED >&2; return 23; }
+build_waf_dependency ndn-svs libndn-svs unused 0.1
+''')
+    assert result.returncode == 23
+    assert 'SOURCE_REQUIRED' in result.stderr
+
+
+def test_version_and_receipt_match_skips_build():
+    result = shell(DEFINITIONS + '''
+is_pkg_installed() { return 0; }
+has_source_receipt() { return 0; }
+ensure_source_tree() { echo UNEXPECTED; return 23; }
+build_waf_dependency ndn-svs libndn-svs unused 0.1
+''')
+    assert result.returncode == 0
+    assert 'skipping' in result.stdout
+    assert 'UNEXPECTED' not in result.stdout

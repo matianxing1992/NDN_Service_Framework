@@ -8,7 +8,7 @@ WAF_CONFIGURE_ARGS=()
 RUN_WAF_CONFIGURE=auto
 RUN_SYSTEM_INSTALL=1
 USE_USER_FLAG=auto
-INSTALL_EDITABLE=1
+INSTALL_EDITABLE=0
 INSTALL_DEPENDENCIES=auto
 FORCE_DEPENDENCIES=0
 DEPS_DIR="$ROOT/dependencies"
@@ -17,6 +17,12 @@ INSTALL_TEST_PACKAGES=0
 INSTALL_MININDN_PACKAGES=0
 INSTALL_NFD_NLSR_PACKAGES=0
 CHECK_DEPENDENCIES=0
+PLAN_ONLY=0
+CONFIGURE_ONLY=0
+DEPS_ONLY=0
+SOURCE_MODE=0
+LOCK_FILE="$ROOT/packaging/host-dependencies.lock.json"
+SOURCE_HELPER="$ROOT/scripts/stack_sources.py"
 # Every host-side NDNSF dependency is installed into one canonical prefix.
 # The source checkout below is only a build input; it must never become a
 # runtime or pkg-config dependency path.
@@ -65,8 +71,14 @@ Build and install the NDNSF stack in dependency order:
   5. ndnsf-distributed-inference Python package
 
 Options:
+  --source                Install pinned external sources (also the default).
+  --lock-file PATH        Dependency URLs, descriptive refs and exact commits.
+  --plan, --dry-run       Offline plan; no fetch, installation or configure.
+  --deps-only             Install/check external dependencies, then stop.
+  --configure-only        OS prerequisites + Waf configure only; no source builds.
+  --no-install            Configure-only without OS package installation.
   --install-dependencies   Build/install missing external dependencies (default).
-  --no-dependencies        Do not check or install external dependencies.
+  --no-dependencies        Check installed dependencies without rebuilding them.
   --force-dependencies     Rebuild/install external dependencies even if found.
   --deps-dir PATH          Clone dependency sources under PATH (default: ./dependencies).
   --install-system-packages Install common apt build packages when available (default).
@@ -84,7 +96,7 @@ Options:
   --system-install         Run ./waf install after build (default).
   --user                   Pass --user to pip install.
   --no-user                Do not pass --user to pip install.
-  --no-editable            Use normal pip installs instead of editable installs.
+  --no-editable            Normal pip installs (default; no source-tree runtime).
   --python PATH            Python executable to use (default: python3 or $PYTHON).
   -h, --help               Show this help.
 
@@ -108,10 +120,11 @@ Notes:
     installed globally under /usr/local before NAC-ABE. The resulting
     libopenabe/relic/OpenSSL closure is checked through the system loader; a
     private checkout prefix is not a runtime dependency.
-  - Existing dependency source trees under --deps-dir are reused. Missing trees
-    are cloned from the matianxing1992 GitHub repositories.
-  - Repository URLs can be overridden with NDNCXX_REPO_URL, NDNSD_REPO_URL,
-    NDNSVS_REPO_URL, NACABE_REPO_URL, and OPENABE_REPO_URL.
+  - Sources use NAME-COMMIT directories. Existing trees must be clean and
+    match the locked URL/commit; developer checkouts are never reset.
+  - Use --lock-file to override forks/revisions together. Legacy *_REPO_URL
+    overrides must match the lock; a package version alone is insufficient.
+  - Options after -- are forwarded to Waf configure.
   - Python extension builds are fail-closed on the installed global
     /usr/local/lib NDNSF Core/DI closure. A checkout or per-run build
     directory is never accepted as a substitute.
@@ -126,6 +139,21 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --source)
+      SOURCE_MODE=1; INSTALL_DEPENDENCIES=1; shift ;;
+    --lock-file)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--lock-file requires a path' >&2; exit 2; }
+      LOCK_FILE="$2"; shift 2 ;;
+    --plan|--dry-run)
+      PLAN_ONLY=1; shift ;;
+    --deps-only)
+      DEPS_ONLY=1; shift ;;
+    --configure-only)
+      CONFIGURE_ONLY=1; shift ;;
+    --no-install)
+      CONFIGURE_ONLY=1; INSTALL_SYSTEM_PACKAGES=0; shift ;;
+    --)
+      shift; WAF_CONFIGURE_ARGS+=("$@"); break ;;
     --install-dependencies)
       INSTALL_DEPENDENCIES=1
       shift
@@ -227,6 +255,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Reject unsupported options before apt, dependency installation, or configure.
+if (( CONFIGURE_ONLY && (SOURCE_MODE || DEPS_ONLY || CHECK_DEPENDENCIES || FORCE_DEPENDENCIES) )); then
+  echo '--configure-only/--no-install cannot be combined with source/deps/check modes' >&2
+  exit 2
+fi
+if (( CHECK_DEPENDENCIES && (SOURCE_MODE || DEPS_ONLY || FORCE_DEPENDENCIES) )); then
+  echo '--check-dependencies cannot be combined with source/deps install modes' >&2
+  exit 2
+fi
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo '--jobs must be a positive integer' >&2; exit 2; }
 if [[ "$RUN_WAF_CONFIGURE" == "0" ]]; then
   echo '--no-configure is not allowed for the global-closure installer' >&2
@@ -234,6 +270,7 @@ if [[ "$RUN_WAF_CONFIGURE" == "0" ]]; then
 fi
 # Resolve user-relative paths before changing to the repository root.
 DEPS_DIR="$(realpath -m -- "$DEPS_DIR")"
+LOCK_FILE="$(realpath -m -- "$LOCK_FILE")"
 PYTHON_BIN="$(command -v -- "$PYTHON_BIN")" || { echo 'Python executable not found' >&2; exit 2; }
 PYTHON_BIN="$(realpath -s -- "$PYTHON_BIN")"
 
@@ -722,14 +759,14 @@ install_common_system_packages() {
 
   if command -v apt-get >/dev/null 2>&1; then
     echo "==> Installing common Debian/Ubuntu build packages"
-    sudo_run apt-get update
     local packages=(
-      build-essential git pkg-config cmake python3 python3-pip wget curl \
+      build-essential binutils git pkg-config cmake python3 python3-pip wget curl \
       python3-dev python3-setuptools python3-wheel python3-venv \
       autoconf automake libtool m4 bison flex ninja-build \
       libgmp-dev libssl-dev \
       libboost-all-dev libsqlite3-dev libpcap-dev libsodium-dev libz-dev \
-      liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler libgtkmm-3.0-dev
+      liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler libgtkmm-3.0-dev \
+      libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev libpcre3-dev
     )
     if [[ "$INSTALL_TEST_PACKAGES" == "1" ]]; then
       packages+=(libgtest-dev doxygen graphviz)
@@ -746,7 +783,15 @@ install_common_system_packages() {
         libboost-all-dev libsqlite3-dev libpcap-dev libsodium-dev
       )
     fi
-    sudo_run env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+    local missing=() package state
+    for package in "${packages[@]}"; do
+      state="$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)"
+      [[ "$state" == 'install ok installed' ]] || missing+=("$package")
+    done
+    if ((${#missing[@]})); then
+      sudo_run apt-get update
+      sudo_run env DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y "${missing[@]}"
+    fi
   else
     echo "==> No supported OS package manager detected; assuming build tools are installed"
   fi
@@ -755,26 +800,38 @@ install_common_system_packages() {
 ensure_source_tree() {
   local name="$1"
   local url="$2"
-  local dir="$DEPS_DIR/$name"
+  local locked_url
+  locked_url="$(source_field "$name" url)"
+  [[ "$url" == "$locked_url" ]] || { echo "URL differs from lock for $name; use --lock-file" >&2; return 1; }
+  "$PYTHON_BIN" "$SOURCE_HELPER" prepare --lock "$LOCK_FILE" --name "$name" --deps-dir "$DEPS_DIR"
+}
 
-  mkdir -p "$DEPS_DIR"
-  if [[ -e "$dir/.git" ]]; then
-    echo "==> Reusing dependency source: $dir"
-  elif [[ -e "$dir" ]]; then
-    echo "Dependency path exists but is not a git repository: $dir" >&2
-    exit 1
-  else
-    echo "==> Cloning $name from $url into $dir"
-    run git clone "$url" "$dir"
-  fi
+source_field() {
+  "$PYTHON_BIN" "$SOURCE_HELPER" field --lock "$LOCK_FILE" --name "$1" --field "$2"
+}
 
-  printf '%s\n' "$dir"
+has_source_receipt() {
+  "$PYTHON_BIN" "$SOURCE_HELPER" check --lock "$LOCK_FILE" --name "$1" --prefix "$GLOBAL_DEPENDENCY_PREFIX" 2>/dev/null
+}
+
+record_source_receipt() {
+  sudo_run "$PYTHON_BIN" "$SOURCE_HELPER" record --lock "$LOCK_FILE" --name "$1" --prefix "$GLOBAL_DEPENDENCY_PREFIX"
+}
+
+require_source_receipts() {
+  local name
+  for name in ndn-cxx ndn-svs NDNSD openabe NAC-ABE; do
+    has_source_receipt "$name" || {
+      echo "Missing/stale source receipt: $name; run --source after reviewing --plan" >&2
+      return 1
+    }
+  done
 }
 
 build_openabe_dependency() {
   local dir
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe; then
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe && has_source_receipt openabe; then
     echo "==> OpenABE already installed; skipping"
     return
   fi
@@ -806,6 +863,7 @@ build_openabe_dependency() {
       CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
       NM=/usr/bin/nm STRIP=/usr/bin/strip && make INSTALL_PREFIX='$OPENABE_PREFIX' install" _ "$dir"
   sudo_run ldconfig
+  record_source_receipt openabe
 }
 
 build_waf_dependency() {
@@ -815,7 +873,7 @@ build_waf_dependency() {
   local minimum="$4"
   local dir build_dir
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum" && has_source_receipt "$name"; then
     echo "==> $name already installed ($pkg); skipping"
     return
   fi
@@ -851,6 +909,7 @@ build_waf_dependency() {
     AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
     bash -e -c 'cd "$1" && ./waf install' _ "$dir"
   sudo_run ldconfig
+  record_source_receipt "$name"
 }
 
 build_cmake_dependency() {
@@ -860,7 +919,7 @@ build_cmake_dependency() {
   local minimum="$4"
   local dir build_dir
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum" && has_source_receipt "$name"; then
     echo "==> $name already installed ($pkg); skipping"
     return
   fi
@@ -928,6 +987,7 @@ build_cmake_dependency() {
     cmake --install \"\$2\"" _ "$dir" "$build_dir"
   rm -rf "$build_dir"
   sudo_run ldconfig
+  record_source_receipt "$name"
 }
 
 install_external_dependencies() {
@@ -945,8 +1005,7 @@ install_external_dependencies() {
       echo "Global ONNX Runtime identity changed; this installer cannot rebuild ONNX Runtime. Reinstall the canonical global SDK and refresh the identity receipt before continuing." >&2
       exit 1
     fi
-    echo "==> Global dependency identity is stale; rebuilding the installed closure"
-    FORCE_DEPENDENCIES=1
+    echo "==> Global identity is stale; source receipts determine affected dependencies"
   fi
   if [[ "$INSTALL_SYSTEM_PACKAGES" == "1" ]] || [[ "$FORCE_DEPENDENCIES" == "1" ]] || ! has_global_boost || \
      ! is_pkg_installed "libndn-cxx" "$MIN_NDNCXX_VERSION" || \
@@ -959,8 +1018,8 @@ install_external_dependencies() {
     echo "==> External dependencies already present; skipping OS package installation"
   fi
   build_waf_dependency "ndn-cxx" "libndn-cxx" "$NDNCXX_REPO_URL" "$MIN_NDNCXX_VERSION"
-  build_waf_dependency "NDNSD" "ndnsd" "$NDNSD_REPO_URL" "$MIN_NDNSD_VERSION"
   build_waf_dependency "ndn-svs" "libndn-svs" "$NDNSVS_REPO_URL" "$MIN_NDNSVS_VERSION"
+  build_waf_dependency "NDNSD" "ndnsd" "$NDNSD_REPO_URL" "$MIN_NDNSD_VERSION"
   build_openabe_dependency
   build_cmake_dependency "NAC-ABE" "libnac-abe" "$NACABE_REPO_URL" "$MIN_NACABE_VERSION"
   write_global_dependency_identity
@@ -969,12 +1028,48 @@ install_external_dependencies() {
 
 cd "$ROOT"
 
+# One public entry point; configure.sh only translates legacy arguments.
+if (( PLAN_ONLY )); then
+  if (( CONFIGURE_ONLY )); then
+    echo "Mode: configure-only; OS package installation=$INSTALL_SYSTEM_PACKAGES"
+  else
+    echo "Mode: stack; source installation=$INSTALL_DEPENDENCIES; deps-only=$DEPS_ONLY; check-only=$CHECK_DEPENDENCIES"
+    "$PYTHON_BIN" "$SOURCE_HELPER" plan --lock "$LOCK_FILE"
+    echo "Install prefix: $GLOBAL_DEPENDENCY_PREFIX; source directory: $DEPS_DIR"
+  fi
+  echo 'NDN libraries and versioned SDKs must already be installed for configure-only.'
+  echo 'Preinstalled SDKs: ONNX Runtime 1.26+, ONNX full-protobuf, tokenizer bridge.'
+  echo 'MiniNDN/NFD/NLSR flags install OS packages only, not those projects.'
+  printf 'Waf configure options:'; printf ' %q' "${WAF_CONFIGURE_ARGS[@]}"; printf '\n'
+  echo 'Offline plan only: no apt, git fetch, builds, installation or Waf execution.'
+  exit 0
+fi
+
+if (( CONFIGURE_ONLY )); then
+  export PATH="$SYSTEM_PATH:/usr/local/bin:$PATH"
+  install_common_system_packages
+  exec "$PYTHON_BIN" "$ROOT/waf" configure "${WAF_CONFIGURE_ARGS[@]}"
+fi
+
+# Resolve every source before any installation. URL-only overrides cannot
+# silently change the pinned build identity.
+for pair in 'ndn-cxx:NDNCXX_REPO_URL' 'ndn-svs:NDNSVS_REPO_URL' 'NDNSD:NDNSD_REPO_URL' 'openabe:OPENABE_REPO_URL' 'NAC-ABE:NACABE_REPO_URL'; do
+  name="${pair%%:*}"; variable="${pair#*:}"
+  locked_url="$(source_field "$name" url)"
+  if env | /usr/bin/grep -q "^${variable}=" && [[ "${!variable}" != "$locked_url" ]]; then
+    echo "$variable differs from --lock-file; update the lock instead" >&2
+    exit 2
+  fi
+  printf -v "$variable" '%s' "$locked_url"
+done
+
 echo "==> NDNSF stack install root: $ROOT"
 echo "==> Python: $PYTHON_BIN"
 require_system_toolchain
 
 if [[ "$CHECK_DEPENDENCIES" == "1" ]]; then
   require_global_external_closure
+  require_source_receipts
   echo "==> Installed NDNSF global dependency closure is valid"
   exit 0
 fi
@@ -990,6 +1085,12 @@ else
   # --no-dependencies only skips cloning/building sources. It never permits
   # a missing or stale global dependency to enter the NDNSF build.
   require_global_external_closure
+  require_source_receipts
+fi
+
+if (( DEPS_ONLY )); then
+  echo '==> External dependency stage complete; NDNSF build/install not run'
+  exit 0
 fi
 
 if [[ "$RUN_WAF_CONFIGURE" == "auto" ]]; then
