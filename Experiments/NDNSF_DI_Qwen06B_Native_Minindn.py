@@ -1328,14 +1328,16 @@ def provider_log_delta(offsets: dict) -> dict[Path, str]:
 
 
 def _structured_marker_fields(line: str, marker: str) -> dict[str, str] | None:
-    """Parse one whitespace-delimited native evidence marker."""
+    """Parse a marker's structured prefix, ignoring adjacent plain-text output."""
     _, found, payload = line.partition(marker)
     if not found:
         return None
     fields = {}
     for token in payload.split():
         key, equal, value = token.partition("=")
-        if not equal or not key or not value or key in fields:
+        if not equal:
+            break
+        if not key or not value or key in fields:
             return None
         fields[key] = value
     return fields
