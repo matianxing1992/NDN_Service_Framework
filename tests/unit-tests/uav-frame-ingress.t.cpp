@@ -35,4 +35,14 @@ BOOST_AUTO_TEST_CASE(BoundsAndCloseAreEnforced)
   BOOST_CHECK_EQUAL(reason, "ingress is closed");
 }
 
+BOOST_AUTO_TEST_CASE(MotionMetadataIsBounded)
+{
+  UavFrameIngress ingress;
+  FrameEnvelope frame{"UAV1", 1, 1, 0, 4, 4, "image/jpeg", {1}};
+  frame.motionMetadata.assign(256 * 1024 + 1, 'x');
+  std::string reason;
+  BOOST_CHECK(!ingress.submit(std::move(frame), &reason));
+  BOOST_CHECK_EQUAL(reason, "motion metadata exceeds 256 KiB");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

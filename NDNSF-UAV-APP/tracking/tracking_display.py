@@ -47,6 +47,8 @@ class DisplayFrame:
     image_jpeg: bytes
     tracks: tuple[dict[str, Any], ...] = ()
     result_state: str = "computed"
+    motion_status: str = "unknown"
+    speed_mmps: tuple[int, ...] = ()
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "DisplayFrame":
@@ -54,7 +56,9 @@ class DisplayFrame:
         frame = cls(str(value["runId"]), str(value["sessionId"]), int(value["epoch"]),
                     int(value["window"]), str(value["cameraId"]), int(value["sequence"]),
                     int(value["ptsUs"]), image,
-                    tuple(value.get("tracks", ())), str(value.get("resultState", "computed")))
+                    tuple(value.get("tracks", ())), str(value.get("resultState", "computed")),
+                    str(value.get("motionStatus", "unknown")),
+                    tuple(int(item) for item in value.get("speedMmps", ())))
         frame.validate()
         return frame
 
@@ -73,7 +77,8 @@ class DisplayFrame:
         return {"runId": self.run_id, "sessionId": self.session_id, "epoch": self.epoch,
                 "window": self.window, "cameraId": self.camera_id, "sequence": self.sequence,
                 "ptsUs": self.pts_us, "imageJpeg": base64.b64encode(self.image_jpeg).decode("ascii"),
-                "tracks": list(self.tracks), "resultState": self.result_state}
+                "tracks": list(self.tracks), "resultState": self.result_state,
+                "motionStatus": self.motion_status, "speedMmps": list(self.speed_mmps)}
 
 
 class DisplayMailbox:
@@ -128,6 +133,8 @@ class ComputeRenderer:
             "sequence": frame.sequence,
             "ptsUs": frame.pts_us,
             "resultState": frame.result_state,
+            "motionStatus": frame.motion_status,
+            "speedMmps": list(frame.speed_mmps),
         }, sort_keys=True), flush=True)
 
     def start(self) -> None:
@@ -189,13 +196,15 @@ class ComputeRenderer:
                             f"{camera}  PTS={frame.pts_us / 1e6:.3f}s  tracks={len(frame.tracks)}",
                             (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1,
                             cv2.LINE_AA)
+                speed_summary = (" speed=" + ",".join(str(value) for value in frame.speed_mmps) + "mm/s"
+                                 if frame.speed_mmps else " speed=unknown")
                 summary = " ".join(
                     f"{track.get('class', 'object')} L{track.get('localId', '?')}"
                     f"/G{track.get('globalId', '?')}"
                     for track in frame.tracks[:3])
                 if len(frame.tracks) > 3:
                     summary += " ..."
-                cv2.putText(canvas, summary[:100], (8, 43), cv2.FONT_HERSHEY_SIMPLEX,
+                cv2.putText(canvas, (summary + speed_summary)[:100], (8, 43), cv2.FONT_HERSHEY_SIMPLEX,
                             0.42, (230, 230, 230), 1, cv2.LINE_AA)
                 for track in frame.tracks:
                     box = track.get("box")
@@ -297,6 +306,16 @@ def serve(socket_path: Path, mode: str, hold_seconds: float,
             raise ValueError("tracking result has an invalid window id") from error
         if window < 0:
             raise ValueError("tracking result has a negative window id")
+        motion = value.get("motion", {})
+        if not isinstance(motion, dict):
+            raise ValueError("tracking result motion metadata is not an object")
+        estimates = motion.get("estimates", [])
+        speeds_by_global = {
+            int(item["globalId"]): int(item["vehicleSpeedMmps"])
+            for item in estimates
+            if isinstance(item, dict) and item.get("status") == "ok" and
+            item.get("vehicleSpeedMmps") is not None
+        }
         pending: list[DisplayFrame] = []
         for item in frames:
             if not isinstance(item, dict) or item.get("cameraId") not in CAMERAS:
@@ -306,6 +325,11 @@ def serve(socket_path: Path, mode: str, hold_seconds: float,
                 image_path = replay_dir / image_path
             if not image_path.is_file():
                 return
+            frame_speeds = tuple(
+                speeds_by_global[int(track["globalId"])]
+                for track in item.get("tracks", ())
+                if isinstance(track, dict) and str(track.get("globalId", "")).isdigit()
+                and int(track["globalId"]) in speeds_by_global)
             pending.append(DisplayFrame(
                 run_id=str(value.get("runId", "")),
                 session_id=str(value.get("missionId", "")),
@@ -316,7 +340,9 @@ def serve(socket_path: Path, mode: str, hold_seconds: float,
                 pts_us=int(item.get("ptsUs", 0)),
                 image_jpeg=image_path.read_bytes(),
                 tracks=tuple(item.get("tracks", ())),
-                result_state="computed"))
+                result_state="computed",
+                motion_status="estimated" if frame_speeds else "unknown",
+                speed_mmps=frame_speeds))
         for frame in pending:
             renderer.submit(frame)
         replay_stamp = stamp

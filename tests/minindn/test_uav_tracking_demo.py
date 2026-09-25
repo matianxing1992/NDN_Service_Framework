@@ -47,6 +47,24 @@ def test_process_plan_uses_real_tracking_ground_station_and_scoped_policy():
     assert by_name["controller"]["node"] == by_name["ground-station"]["node"] == "gs"
 
 
+@pytest.mark.skipif(not (ASSETS / "uav1_1min.mp4").is_file(), reason="Spec191 assets unavailable")
+def test_motion_fixture_is_bound_to_source_compute_and_ground_station():
+    with tempfile.TemporaryDirectory() as directory:
+        plan = build_plan(source=ASSETS, model=ASSETS / "3UAVs.pt",
+                          output=Path(directory), license_text="local-test-accepted",
+                          headless=True, window_count=3)
+        motion = plan["motion"]
+        fixture = Path(motion["directory"])
+        assert motion["schema"] == "spec191-motion-fixture-v1"
+        assert motion["provenance"] == "simulated-input"
+        assert (fixture / "window-0.json").is_file()
+        assert (fixture / "window-2.json").is_file()
+    for name in ("ground-station", "uav1-camera", "uav2-camera", "uav3-camera", "compute"):
+        command = by_name = next(item["command"] for item in plan["processes"]
+                                if item["name"] == name)
+        assert "--motion-dir" in command
+
+
 def test_extra_network_controller_is_rejected():
     with pytest.raises(TopologyError):
         Topology(frozenset((*EXPECTED_NODES, "controller")), frozenset()).validate()

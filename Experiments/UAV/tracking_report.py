@@ -94,3 +94,45 @@ def load_and_collect(path: Path, **kwargs: object) -> dict[str, bytes]:
     if not isinstance(value, Mapping):
         raise ResultError("result manifest must be a JSON object")
     return collect_result(value, **kwargs)  # type: ignore[arg-type]
+
+
+def summarize_motion_result(result: Mapping[str, object]) -> dict[str, object]:
+    """Extract motion evidence without conflating input, estimate, and oracle."""
+    motion = result.get("motion")
+    if not isinstance(motion, Mapping) or motion.get("schema") != "spec191-motion-result-v1":
+        return {"status": "unknown", "estimates": [], "inputProvenance": "unknown"}
+    estimates = motion.get("estimates", [])
+    if not isinstance(estimates, list):
+        raise ResultError("motion estimates must be a list")
+    normalized: list[dict[str, object]] = []
+    for item in estimates:
+        if not isinstance(item, Mapping):
+            raise ResultError("invalid motion estimate")
+        status = str(item.get("status", "unknown"))
+        speed = item.get("vehicleSpeedMmps")
+        if status == "ok" and (not isinstance(speed, int) or speed < 0):
+            raise ResultError("numeric motion estimate must contain non-negative mm/s")
+        normalized.append({
+            "vehicleId": str(item.get("vehicleId", "")),
+            "globalId": int(item.get("globalId", 0)),
+            "fromPtsUs": int(item.get("fromPtsUs", 0)),
+            "toPtsUs": int(item.get("toPtsUs", 0)),
+            "distanceMm": item.get("distanceMm"),
+            "vehicleSpeedMmps": speed,
+            "unit": "mm/s",
+            "status": status,
+            "provenance": str(item.get("provenance", "unknown")),
+            "calibrationDigest": str(item.get("calibrationDigest", "")),
+            "egoMotionCompensation": str(item.get("egoMotionCompensation", "unknown")),
+            "uncertainty": str(item.get("uncertainty", "unknown")),
+        })
+    oracle = motion.get("oracle")
+    return {
+        "status": "estimated" if any(item["status"] == "ok" for item in normalized) else "unknown",
+        "inputProvenance": str(motion.get("inputProvenance", "unknown")),
+        "inputDigest": str(motion.get("inputDigest", "")),
+        "telemetry": motion.get("telemetry", []),
+        "calibrationDigests": motion.get("calibrationDigests", {}),
+        "estimates": normalized,
+        "oracle": oracle if isinstance(oracle, Mapping) else {"provenance": "simulated-input"},
+    }

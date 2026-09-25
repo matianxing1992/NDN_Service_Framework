@@ -20,6 +20,8 @@ struct FrameEnvelope
   uint32_t height = 0;
   std::string encoding = "image/jpeg";
   std::vector<uint8_t> bytes;
+  /** Canonical request-scoped motion metadata; empty for legacy frame inputs. */
+  std::string motionMetadata;
 };
 
 class IFrameSink

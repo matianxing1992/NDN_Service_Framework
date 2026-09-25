@@ -561,6 +561,9 @@ UavEvidenceReference::isValid(std::string* reason) const
   if (!isSha256Digest(contentDigest)) {
     return validationError(reason, "missing sha256 content digest"), false;
   }
+  if (!motionMetadataDigest.empty() && !isSha256Digest(motionMetadataDigest)) {
+    return validationError(reason, "invalid motion metadata digest"), false;
+  }
   if (retentionDeadlineMs < windowEndMs) {
     return validationError(reason, "retention expires before evidence window"), false;
   }
@@ -584,6 +587,7 @@ UavEvidenceReference::toFields(const std::string& prefix) const
     {p + "content_digest", contentDigest},
     {p + "content_type", contentType},
     {p + "retention_deadline_ms", std::to_string(retentionDeadlineMs)},
+    {p + "motion_metadata_digest", motionMetadataDigest},
   };
 }
 
@@ -612,6 +616,7 @@ makeUavIncidentEvidenceContent(const std::string& missionId,
     {"window_end_ms", std::to_string(evidence.windowEndMs)},
     {"window_start_ms", std::to_string(evidence.windowStartMs)},
     {"schema", "uav-incident-evidence-manifest-v1"},
+    {"motion_metadata_digest", evidence.motionMetadataDigest},
   });
   return ndn::Buffer(reinterpret_cast<const uint8_t*>(encoded.data()), encoded.size());
 }

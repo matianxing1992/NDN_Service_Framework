@@ -13,6 +13,8 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -76,6 +78,28 @@ sha256Text(const std::string& value)
   return "sha256:" + digest.toString();
 }
 
+std::string
+readMotionWindow(const std::string& directory, const std::string& window)
+{
+  if (directory.empty()) return {};
+  const auto path = std::filesystem::path(directory) / (window + ".json");
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("motion window is not available: " + path.string());
+  input.seekg(0, std::ios::end);
+  const auto size = input.tellg();
+  if (size <= 0 || size > 256 * 1024) {
+    throw std::runtime_error("motion window is empty or exceeds 256 KiB");
+  }
+  input.seekg(0, std::ios::beg);
+  std::string payload(static_cast<size_t>(size), '\0');
+  input.read(payload.data(), static_cast<std::streamsize>(payload.size()));
+  if (input.gcount() != static_cast<std::streamsize>(payload.size())) {
+    throw std::runtime_error("short read from motion window: " + path.string());
+  }
+  if (!payload.empty() && payload.back() == '\n') payload.pop_back();
+  return payload;
+}
+
 int
 run(int argc, char** argv)
 {
@@ -85,6 +109,7 @@ run(int argc, char** argv)
   const size_t windowCount = static_cast<size_t>(std::stoul(
     option(argc, argv, "--window-count", "1")));
   const std::string fault = option(argc, argv, "--fault", "none");
+  const std::string motionDir = option(argc, argv, "--motion-dir");
   const ndn::Name groupPrefix(option(argc, argv, "--group-prefix", "/example/uav"));
   const ndn::Name controllerPrefix(
     option(argc, argv, "--controller-prefix", "/example/uav/controller"));
@@ -153,19 +178,27 @@ run(int argc, char** argv)
       return;
     }
     const std::string windowId = windowPrefix + "-" + std::to_string(windowIndex);
+    const auto motionJson = readMotionWindow(motionDir, windowId);
+    const auto motionDigest = motionJson.empty() ? std::string() : sha256Text(motionJson);
     const auto assignment = fieldsBuffer({
       {"schema", "spec191-assignment-v1"},
       {"run_id", runId},
       {"mission_id", missionId},
       {"window_id", windowId},
     });
-    const auto request = fieldsBuffer({
+    uav::Fields requestFields{
       {"schema", "spec191-window-request-v1"},
       {"run_id", runId},
       {"mission_id", missionId},
       {"window_id", windowId},
-    });
-    auto makeCallbacks = [&, windowIndex] {
+    };
+    if (!motionJson.empty()) {
+      requestFields.emplace("motion_schema", "spec191-motion-window-v1");
+      requestFields.emplace("motion_window_digest", motionDigest);
+      requestFields.emplace("motion_window_json", motionJson);
+    }
+    const auto request = fieldsBuffer(requestFields);
+    auto makeCallbacks = [&, windowIndex, motionDigest] {
       uav::UavTrackingCoordinatorCallbacks callbacks;
       callbacks.onPlanCommitted = [&, windowIndex] (
         const nsf::CollaborationAckClosure& closure,
@@ -183,19 +216,27 @@ run(int argc, char** argv)
           face.getIoContext().stop();
         }
       };
-      callbacks.onResponse = [&, windowIndex] (const nsf::ResponseMessage& response) {
+      callbacks.onResponse = [&, windowIndex, motionDigest] (const nsf::ResponseMessage& response) {
         const auto fields = parseFields(response.getPayload());
         const auto resultJson = uav::fieldOr(fields, "result_json", "");
         const auto resultDigest = uav::fieldOr(fields, "result_digest", "");
         const bool resultVerified = response.getStatus() &&
           !resultJson.empty() && !resultDigest.empty() &&
           sha256Text(resultJson) == resultDigest;
+        const bool motionVerified = motionDigest.empty() ||
+          uav::fieldOr(fields, "motion_window_digest", "") == motionDigest;
+        if (response.getStatus() && !motionVerified) {
+          std::cerr << "SPEC191_TRACKING_MOTION_VERIFY_FAILED window=" << windowIndex
+                    << " expected_digest=" << motionDigest
+                    << " received_digest="
+                    << uav::fieldOr(fields, "motion_window_digest", "") << std::endl;
+        }
         if (response.getStatus() && !resultVerified) {
           std::cerr << "SPEC191_TRACKING_RESULT_VERIFY_FAILED"
                     << " expected_digest=" << resultDigest
                     << " result_bytes=" << resultJson.size() << std::endl;
         }
-        const bool success = response.getStatus() && resultVerified;
+        const bool success = response.getStatus() && resultVerified && motionVerified;
         std::cout << "SPEC191_TRACKING_WINDOW_RESULT window=" << windowIndex
                   << " status=" << (success ? "success" : "failure")
                   << " result_name=" << uav::fieldOr(fields, "result_name", "")

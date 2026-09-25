@@ -62,6 +62,10 @@ UavTrackingEvidenceStore::stage(const ndn::Name& producer, const std::string& mi
   result.reference.contentDigest = digest(frame.bytes);
   result.reference.contentType = frame.encoding;
   result.reference.retentionDeadlineMs = frame.ptsUs / 1000 + 120000;
+  if (!frame.motionMetadata.empty()) {
+    result.reference.motionMetadataDigest = digest(
+      std::vector<uint8_t>(frame.motionMetadata.begin(), frame.motionMetadata.end()));
+  }
   result.payload = ndn::Buffer(frame.bytes.begin(), frame.bytes.end());
   for (size_t offset = 0; offset < frame.bytes.size(); offset += m_maxSegmentBytes) {
     const auto end = std::min(frame.bytes.size(), offset + m_maxSegmentBytes);

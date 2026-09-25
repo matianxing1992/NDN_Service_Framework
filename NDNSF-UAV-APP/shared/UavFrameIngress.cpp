@@ -37,6 +37,9 @@ UavFrameIngress::submit(FrameEnvelope frame, std::string* reason)
       frame.bytes.size() > m_config.maxFrameBytes || frame.width == 0 || frame.height == 0) {
     return reject("invalid frame bounds", reason);
   }
+  if (frame.motionMetadata.size() > 256 * 1024) {
+    return reject("motion metadata exceeds 256 KiB", reason);
+  }
   const auto epoch = m_epochs.find(frame.cameraId);
   if (epoch != m_epochs.end() && epoch->second != frame.sourceEpoch) {
     return reject("source epoch changed without closing ingress", reason);
