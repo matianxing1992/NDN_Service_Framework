@@ -1,5 +1,16 @@
 # Spec 设计变更记录
 
+## Spec190 B190-177 warm-path runtime validation — 2026-09-25
+
+- **Status**: `PARTIAL`；B190-176 的受保护 plaintext/descriptor/session 复用已在真实
+  normal Repo 两 Provider 三轮运行中验证，但 T011 完整性能资格仍未完成。
+- **Evidence**: [B190-177](../specs/190-multiturn-latency/evidence/b190-177.md)。首轮为
+  `CACHE_PLAINTEXT_MISS`，后两轮为 descriptor/template/plaintext/session hit；每个
+  Provider `loads=1`、`hits=1,2`，后两轮 plaintext hit 到 session hit 约 `1.8–2.1ms`。
+  C++ oracle、EOS、清理通过；phase timing 未启用，Repo restart 和完整 SC-001–009 仍未观测。
+- **Design impact**: 无新的 API、wire、Repo、Selection 或授权变化；当前设计继续以源码事实
+  描述 process-local plaintext lease、当前 grant 校验和 ORT session cache。当前/目标 PDF 不刷新。
+
 ## Spec190 T011 protected plaintext warm-path cache — 2026-09-25
 
 - **Status**: `PARTIAL`；修复 Provider 在 ORT session hit 后仍重复完整密文校验和解密复制的
