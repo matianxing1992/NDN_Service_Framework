@@ -6,6 +6,7 @@
 // sequence, and rejects a generic requester timeout as a successful result.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
@@ -595,7 +596,9 @@ validateMultiTokenOutput(const std::filesystem::path& root, unsigned round = 0,
       !options.contains("eosTokenIds") || !options.at("eosTokenIds").is_array() ||
       options.at("eosTokenIds").empty()) fail("invalid-generation-options");
   const auto maximum = options.at("maxNewTokens").get<std::uint64_t>();
-  if (maximum < (requireMultiToken ? 2U : 1U) || maximum > 1024) fail("invalid-generation-options");
+  if (maximum < (requireMultiToken ? 2U : 1U) ||
+      maximum > ndnsf::di::MAX_NATIVE_GENERATED_TOKENS)
+    fail("invalid-generation-options");
   if (request.contains("max_new_tokens") &&
       (!validToken(request.at("max_new_tokens")) ||
        request.at("max_new_tokens").get<std::uint64_t>() != maximum))

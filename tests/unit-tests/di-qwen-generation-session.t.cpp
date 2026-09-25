@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/QwenGenerationSession.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -130,9 +131,10 @@ BOOST_AUTO_TEST_CASE(SpecCodecRoundTripPreservesIdentityBindings)
   BOOST_CHECK_EQUAL(decoded.roles[2].providerBootId, "boot-2");
 }
 
-BOOST_AUTO_TEST_CASE(SpecAcceptsNativeGenerationBudget1024)
+BOOST_AUTO_TEST_CASE(SpecAcceptsNativeGenerationBudget1025)
 {
-  for (const auto budget : {64U, 1024U}) {
+  for (const auto budget : {std::size_t{64}, std::size_t{1024},
+                            ndnsf::di::MAX_NATIVE_GENERATED_TOKENS}) {
     auto spec = validSpec();
     spec.maxGeneratedTokens = budget;
     spec.tokenEpoch = budget - 1;
@@ -178,7 +180,7 @@ BOOST_AUTO_TEST_CASE(SpecValidationRejectsUnboundOrUnboundedValues)
   spec.maxGeneratedTokens = 0;
   checkInvalid(spec);
   spec = validSpec();
-  spec.maxGeneratedTokens = 1025;
+  spec.maxGeneratedTokens = ndnsf::di::MAX_NATIVE_GENERATED_TOKENS + 1;
   checkInvalid(spec);
   spec = validSpec();
   spec.attemptEpoch = 3;

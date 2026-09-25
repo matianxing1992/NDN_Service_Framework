@@ -286,8 +286,8 @@ def build(bld):
     bld.program(name='spec189-two-provider-oracle',
                 target='spec189-two-provider-oracle',
                 source=['Spec189TwoProviderOracle.cpp'],
-                includes=['..'],
-                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                includes=['..', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 

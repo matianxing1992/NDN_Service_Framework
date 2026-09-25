@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -205,7 +206,11 @@ int main(int argc, char** argv)
     check(cacheFirst, cacheSecond, "checkpoint-missing-or-duplicate", multi);
     generation("[1,-2,0]", "eos", "EOS", 1024, 3);
     check(cacheFirst, cacheSecond, "invalid-final-token", multi);
-    generation("[1,2,0]", "eos", "EOS", 1025, 3);
+    generation("[1,2,0]", "eos", "EOS",
+               static_cast<unsigned>(ndnsf::di::MAX_NATIVE_GENERATED_TOKENS), 3);
+    check(cacheFirst, cacheSecond, "", multi);
+    generation("[1,2,0]", "eos", "EOS",
+               static_cast<unsigned>(ndnsf::di::MAX_NATIVE_GENERATED_TOKENS + 1), 3);
     check(cacheFirst, cacheSecond, "invalid-generation-options", multi);
     check(cacheFirst, cacheSecond, "options", {"--placement-only", "--require-multi-token"}, 2);
     generation("[1,2,0]", "eos", "EOS", 1024, 3);
@@ -361,7 +366,9 @@ int main(int argc, char** argv)
     for (const auto* key : {"conversationId", "modelContractDigest", "securityDomainDigest", "planRoleMapDigest"})
       badJson("conversation-state-2.json", "checkpoint-binding-mismatch", [=](NativeJson& j) { j[key] = "wrong"; });
     badJson("conversation-state-2.json", "checkpoint-roles-mismatch", [](NativeJson& j) { j["roleReceiptDigests"].erase("role1"); });
-    badJson("options-2.json", "invalid-generation-options", [](NativeJson& j) { j["maxNewTokens"] = 1025; });
+    badJson("options-2.json", "invalid-generation-options", [](NativeJson& j) {
+      j["maxNewTokens"] = ndnsf::di::MAX_NATIVE_GENERATED_TOKENS + 1;
+    });
     badJson("output-2.bin", "invalid-stop-reason", [](NativeJson& j) { j["finishHint"] = "MAX_TOKENS"; });
     logs = chain();
     write(root / "requester-2.log", requesterMode + roundText(requester, 1) +
