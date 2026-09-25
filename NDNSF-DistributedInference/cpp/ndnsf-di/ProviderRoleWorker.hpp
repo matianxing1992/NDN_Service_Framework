@@ -137,6 +137,13 @@ public:
                 const TensorBundle& bundle) = 0;
 };
 
+// Preserve the authenticated transfer lineage before the coordinator removes
+// its runtime-only tensor from the model-facing bundle.
+void
+completeStageTransferObservation(const DependencyEdge& edge,
+                                 TensorBundle& bundle,
+                                 const std::string& direction);
+
 class ProviderRoleWorker
 {
 public:

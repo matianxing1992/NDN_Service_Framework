@@ -926,6 +926,41 @@ namespace ndn_service_framework
                 std::chrono::system_clock::now().time_since_epoch()).count();
         }
 
+        void
+        putDataOnFaceEventLoop(
+            ndn::Face& face,
+            std::vector<std::shared_ptr<const ndn::Data>> packets)
+        {
+            // Collaboration handlers may run on Provider workers.  Queue the
+            // entire batch on the Face owner and return without waiting: a
+            // synchronous fence deadlocks callers whose test/application
+            // thread is responsible for pumping this io_context.
+            if (packets.empty()) {
+                return;
+            }
+            try {
+                face.getIoContext().dispatch(
+                    [&face, packets = std::move(packets)] {
+                        try {
+                            for (const auto& packet : packets) {
+                                face.put(*packet);
+                            }
+                        }
+                        catch (const std::exception& error) {
+                            NDN_LOG_ERROR("Data publication on Provider Face event loop failed: "
+                                          << error.what());
+                        }
+                        catch (...) {
+                            NDN_LOG_ERROR("Data publication on Provider Face event loop failed: unknown error");
+                        }
+                    });
+            }
+            catch (const std::exception& error) {
+                NDN_LOG_ERROR("Data publication could not be queued on Provider Face event loop: "
+                              << error.what());
+            }
+        }
+
         bool
         envFlagEnabled(const char* name)
         {
@@ -6928,9 +6963,16 @@ namespace ndn_service_framework
         const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
         for (const auto& data : segments) {
             insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
-            if (activePut) {
-                m_face.put(*data);
-                if (fetchTimingEnabled) {
+        }
+        if (activePut) {
+            std::vector<std::shared_ptr<const ndn::Data>> packets;
+            packets.reserve(segments.size());
+            for (const auto& data : segments) {
+                packets.push_back(data);
+            }
+            putDataOnFaceEventLoop(m_face, std::move(packets));
+            if (fetchTimingEnabled) {
+                for (const auto& data : segments) {
                     NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
                                  << " event=segment_active_put"
                                  << " mode=producer-active-put"
@@ -7045,9 +7087,16 @@ namespace ndn_service_framework
         const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
         for (const auto& data : segments) {
             insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
-            if (activePut) {
-                m_face.put(*data);
-                if (fetchTimingEnabled) {
+        }
+        if (activePut) {
+            std::vector<std::shared_ptr<const ndn::Data>> packets;
+            packets.reserve(segments.size());
+            for (const auto& data : segments) {
+                packets.push_back(data);
+            }
+            putDataOnFaceEventLoop(m_face, std::move(packets));
+            if (fetchTimingEnabled) {
+                for (const auto& data : segments) {
                     NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
                                  << " event=segment_active_put"
                                  << " mode=producer-active-put"
@@ -12186,7 +12235,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     void ServiceProvider::satisfyPendingImsInterestsLocked(const ndn::Data& insertedData)
     {
-        std::vector<ndn::Data> toSend;
+        std::vector<std::shared_ptr<const ndn::Data>> toSend;
         const auto now = ndn::time::steady_clock::now();
         const bool timingEnabled = isTruthyEnv("NDNSF_PENDING_IMS_TIMING");
 
@@ -12215,7 +12264,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                              << " pending_age_ms=" << (ageUs / 1000.0)
                              << " remaining_before=" << m_pendingImsInterestCount);
             }
-            toSend.emplace_back(insertedData);
+            toSend.emplace_back(std::make_shared<const ndn::Data>(insertedData));
             return true;
         };
 
@@ -12257,15 +12306,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         m_pendingPrefixImsInterests = std::move(pendingPrefix);
 
-        for (const auto& data : toSend) {
-            m_face.put(data);
-        }
+        putDataOnFaceEventLoop(m_face, std::move(toSend));
     }
 
     void ServiceProvider::satisfyPendingImsInterestsLocked()
     {
         pruneExpiredPendingImsInterestsLocked();
-        std::vector<ndn::Data> toSend;
+        std::vector<std::shared_ptr<const ndn::Data>> toSend;
         const auto now = ndn::time::steady_clock::now();
         const bool timingEnabled = isTruthyEnv("NDNSF_PENDING_IMS_TIMING");
         for (auto it = m_pendingImsInterestsByName.begin();
@@ -12283,7 +12330,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                      << " pending_age_ms=" << (ageUs / 1000.0)
                                      << " remaining_before=" << m_pendingImsInterestCount);
                     }
-                    toSend.emplace_back(*data);
+                    toSend.emplace_back(std::move(data));
                     --m_pendingImsInterestCount;
                 }
                 else {
@@ -12311,7 +12358,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                  << " pending_age_ms=" << (ageUs / 1000.0)
                                  << " remaining_before=" << m_pendingImsInterestCount);
                 }
-                toSend.emplace_back(*data);
+                toSend.emplace_back(std::move(data));
                 --m_pendingImsInterestCount;
             }
             else {
@@ -12319,9 +12366,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
         }
         m_pendingPrefixImsInterests = std::move(pendingPrefix);
-        for (const auto& data : toSend) {
-            m_face.put(data);
-        }
+        putDataOnFaceEventLoop(m_face, std::move(toSend));
     }
 
     void ServiceProvider::insertDataIntoIMS(const ndn::Data& data)

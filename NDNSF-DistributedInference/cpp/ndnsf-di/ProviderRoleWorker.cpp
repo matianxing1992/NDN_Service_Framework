@@ -124,9 +124,9 @@ makeStageTransferObservation(const DependencyEdge& edge,
 }
 
 void
-completeStageTransferObservation(const DependencyEdge& edge,
-                                 TensorBundle& bundle,
-                                 const std::string& direction)
+completeStageTransferObservationImpl(const DependencyEdge& edge,
+                                     TensorBundle& bundle,
+                                     const std::string& direction)
 {
   if (!bundle.transferObservation) {
     bundle.transferObservation = makeStageTransferObservation(edge, bundle, direction);
@@ -230,6 +230,14 @@ providerDecodeStateFromOutputs(
 }
 
 } // namespace
+
+void
+completeStageTransferObservation(const DependencyEdge& edge,
+                                 TensorBundle& bundle,
+                                 const std::string& direction)
+{
+  completeStageTransferObservationImpl(edge, bundle, direction);
+}
 
 ProviderRoleWorker::ProviderRoleWorker(std::size_t workerCount,
                                        std::size_t dependencyWaitWorkers,

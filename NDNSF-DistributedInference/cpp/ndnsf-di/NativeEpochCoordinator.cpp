@@ -11,6 +11,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <cstdlib>
+#include <future>
 namespace ndnsf::di {
 namespace {
 
@@ -126,6 +127,59 @@ roleSpecForEpoch(const NativeEpochCoordinatorConfig& config, std::size_t sequenc
   return role;
 }
 
+RoleSpec
+executableRoleForEpoch(const NativeEpochCoordinatorConfig& config,
+                       std::size_t epoch)
+{
+  auto role = roleSpecForEpoch(config, epoch);
+  role.requestId = config.requestId.empty() ? config.sessionId : config.requestId;
+  role.attemptEpoch = config.attemptEpoch;
+  for (auto& edge : role.inputs) {
+    edge.requestId = role.requestId;
+    edge.attemptEpoch = role.attemptEpoch;
+  }
+  for (auto& edge : role.outputs) {
+    edge.requestId = role.requestId;
+    edge.attemptEpoch = role.attemptEpoch;
+  }
+
+  RoleSpec executable = role;
+  executable.inferenceEpoch = epoch;
+  executable.stateInputNames = config.stateInputNames;
+  executable.stateOutputNames = config.stateOutputNames;
+  executable.deferStateCommit = !config.stateInputNames.empty();
+  executable.streamingStateExecution = !config.stateInputNames.empty();
+  if (epoch == 0 && config.conversationStateBinding) {
+    executable.conversationStateBinding = config.conversationStateBinding;
+    executable.conversationStateLookupNowMs =
+      config.conversationStateLookupNowMs;
+  }
+  if (epoch == 0) {
+    executable.inputs.erase(
+      std::remove_if(executable.inputs.begin(), executable.inputs.end(),
+                     [] (const auto& edge) {
+                       return edge.operationKind == "TOKEN_FEEDBACK";
+                     }),
+      executable.inputs.end());
+  }
+  else {
+    // APPLICATION_INPUT is the authenticated request-backed prefill.  The
+    // historical Qwen wrapper consumes it once, then switches to the
+    // requester-owned TOKEN_FEEDBACK input while KV state carries the
+    // prefix.  Re-fetching it on a decode epoch incorrectly presents a
+    // request ingress edge as Provider dataflow (producerRole is empty),
+    // which ProtectedRuntime must reject because it is intentionally absent
+    // from the inter-Provider endpoint binding.
+    executable.inputs.erase(
+      std::remove_if(executable.inputs.begin(), executable.inputs.end(),
+                     [] (const auto& edge) {
+                       return edge.operationKind == "APPLICATION_INPUT";
+                     }),
+      executable.inputs.end());
+  }
+  return executable;
+}
+
 GenerationEpochLineageV1
 lineageForEdge(GenerationEpochLineageV1 lineage, const DependencyEdge& edge);
 
@@ -225,6 +279,45 @@ fetchInputs(const NativeEpochCoordinatorConfig& config,
     inputs.emplace(edge.scope, std::move(bundle));
   }
   return inputs;
+}
+
+struct PendingInputPrefetch
+{
+  RoleSpec role;
+  std::map<std::string, TensorBundle> inputs;
+  std::vector<std::pair<DependencyEdge, std::future<TensorBundle>>> pending;
+};
+
+PendingInputPrefetch
+beginInputPrefetch(const NativeEpochCoordinatorConfig& config,
+                   RoleSpec role,
+                   std::map<std::string, TensorBundle> inputs = {})
+{
+  // Interest registration is deliberately initiated after the current role
+  // future is ready, but before feedback publication and state bookkeeping.
+  // The returned futures are consumed exactly once by the next epoch.
+  PendingInputPrefetch result;
+  result.role = std::move(role);
+  result.inputs = std::move(inputs);
+  for (const auto& edge : result.role.inputs) {
+    if (result.inputs.find(edge.scope) != result.inputs.end()) {
+      continue;
+    }
+    result.pending.emplace_back(
+      edge, config.io->prefetchInput(config.sessionId, edge));
+  }
+  return result;
+}
+
+std::map<std::string, TensorBundle>
+completeInputPrefetch(PendingInputPrefetch pending)
+{
+  for (auto& item : pending.pending) {
+    auto bundle = item.second.get();
+    validateTensorBundleForEdge(item.first, bundle);
+    pending.inputs.emplace(item.first.scope, std::move(bundle));
+  }
+  return std::move(pending.inputs);
 }
 
 std::string
@@ -493,6 +586,7 @@ extractAndVerifyInputLineage(const RoleSpec& role,
     accepted->producerRole.clear();
     accepted->consumerRole.clear();
     accepted->operationIndex = 0;
+    completeStageTransferObservation(edge, found->second, "receive");
     found->second = stripGenerationEpochLineage(found->second);
   }
   return accepted;
@@ -900,6 +994,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
   generated.reserve(config.maxEpochs);
   std::string generatedText;
   std::optional<DecodeStateIdentityV1> committedStateIdentity;
+  std::optional<PendingInputPrefetch> nextInputPrefetch;
   std::string finishHint = "MAX_TOKENS";
   // A non-terminal upstream role needs one bounded drain epoch after the
   // terminal role emits its final feedback.  That epoch only observes the
@@ -909,60 +1004,23 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
   for (std::size_t epoch = 0; epoch <= config.maxEpochs; ++epoch) {
     throwIfStopped(config);
     traceEpoch("epoch_start", config.role, epoch);
-    auto role = roleSpecForEpoch(config, epoch);
-    role.requestId = config.requestId.empty() ? config.sessionId : config.requestId;
-    role.attemptEpoch = config.attemptEpoch;
-    for (auto& edge : role.inputs) {
-      edge.requestId = role.requestId;
-      edge.attemptEpoch = role.attemptEpoch;
-    }
-    for (auto& edge : role.outputs) {
-      edge.requestId = role.requestId;
-      edge.attemptEpoch = role.attemptEpoch;
-    }
-
-    // The first prefill has no predecessor token.  The signed plan still
-    // declares the feedback edge for decode epochs, but epoch zero removes it
-    // from this role projection before the worker validates its inputs.
-    RoleSpec executable = role;
-    executable.inferenceEpoch = epoch;
-    executable.stateInputNames = config.stateInputNames;
-    executable.stateOutputNames = config.stateOutputNames;
-    executable.deferStateCommit = !config.stateInputNames.empty();
-    executable.streamingStateExecution = !config.stateInputNames.empty();
-    if (epoch == 0 && config.conversationStateBinding) {
-      executable.conversationStateBinding = config.conversationStateBinding;
-      executable.conversationStateLookupNowMs =
-        config.conversationStateLookupNowMs;
-    }
-    if (epoch == 0) {
-      executable.inputs.erase(
-        std::remove_if(executable.inputs.begin(), executable.inputs.end(),
-                       [] (const auto& edge) {
-                         return edge.operationKind == "TOKEN_FEEDBACK";
-                       }),
-        executable.inputs.end());
+    RoleSpec executable;
+    std::map<std::string, TensorBundle> inputs;
+    if (nextInputPrefetch) {
+      executable = std::move(nextInputPrefetch->role);
+      inputs = completeInputPrefetch(std::move(*nextInputPrefetch));
+      nextInputPrefetch.reset();
     }
     else {
-      // APPLICATION_INPUT is the authenticated request-backed prefill.  The
-      // historical Qwen wrapper consumes it once, then switches to the
-      // requester-owned TOKEN_FEEDBACK input while KV state carries the
-      // prefix.  Re-fetching it on a decode epoch incorrectly presents a
-      // request ingress edge as Provider dataflow (producerRole is empty),
-      // which ProtectedRuntime must reject because it is intentionally absent
-      // from the inter-Provider endpoint binding.
-      executable.inputs.erase(
-        std::remove_if(executable.inputs.begin(), executable.inputs.end(),
-                       [] (const auto& edge) {
-                         return edge.operationKind == "APPLICATION_INPUT";
-                       }),
-        executable.inputs.end());
+      // The first prefill has no predecessor token.  The signed plan still
+      // declares the feedback edge for decode epochs, but epoch zero removes it
+      // from this role projection before the worker validates its inputs.
+      executable = executableRoleForEpoch(config, epoch);
+      if (epoch == 0) {
+        inputs.insert(config.initialInputs.begin(), config.initialInputs.end());
+      }
+      inputs = fetchInputs(config, executable, std::move(inputs));
     }
-    std::map<std::string, TensorBundle> inputs;
-    if (epoch == 0) {
-      inputs.insert(config.initialInputs.begin(), config.initialInputs.end());
-    }
-    inputs = fetchInputs(config, executable, std::move(inputs));
     throwIfStopped(config);
     // Terminal control markers normally describe only the bounded in-band
     // drain. Conversation-enabled turns carry the final token lineage as well;
@@ -983,7 +1041,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         terminalLineage = lineage;
         checkpointFinalization = finalize;
         if (!config.checkpointFinalize || !checkpointFinalization) {
-          publishTerminalActivation(config, role);
+          publishTerminalActivation(config, executable);
           result.stoppedByUpstream = true;
           return result;
         }
@@ -1002,7 +1060,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
               terminalLineage->transitionKind ==
                 GenerationEpochLineageV1::CHECKPOINT_FINALIZE;
             if (!config.checkpointFinalize || !checkpointFinalization) {
-              publishTerminalActivation(config, role);
+              publishTerminalActivation(config, executable);
               result.stoppedByUpstream = true;
               return result;
             }
@@ -1158,6 +1216,15 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
 
       if (!terminalRole) {
         throwIfStopped(config);
+        if (epoch < config.maxEpochs) {
+          // The output publication above has completed before roleFuture is
+          // made ready.  Start the next epoch's exact Interest now, while the
+          // current epoch still performs state bookkeeping and any later
+          // stages consume the result.  The next loop consumes this future as
+          // pre-satisfied input, so the dependency is never fetched twice.
+          nextInputPrefetch.emplace(beginInputPrefetch(
+            config, executableRoleForEpoch(config, epoch + 1)));
+        }
         if (executable.deferStateCommit &&
             !config.runtime.commitDecodeStateTransition(
               config.sessionId, executable)) {
@@ -1265,7 +1332,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       // identical to the input edge that the upstream role will fetch on its
       // next epoch.  Publishing the current projection would create a
       // one-epoch operation/name mismatch under a streaming stride.
-      const auto nextRole = roleSpecForEpoch(config, epoch + 1);
+      const auto nextRole = executableRoleForEpoch(config, epoch + 1);
       const auto feedbackEdge = std::find_if(
         nextRole.outputs.begin(), nextRole.outputs.end(), [] (const auto& edge) {
           return edge.operationKind == "TOKEN_FEEDBACK";
@@ -1296,6 +1363,14 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
             std::move(finalizationLineage),
             *feedbackEdge));
       }
+      if ((!terminal || config.checkpointFinalize) &&
+          epoch < config.maxEpochs) {
+        // The next role projection fixes the Data name, segment bounds, and
+        // operation identity before the current feedback is published.  This
+        // is the intended Interest-before-Data overlap for the next token.
+        nextInputPrefetch.emplace(beginInputPrefetch(
+          config, nextRole));
+      }
       throwIfStopped(config);
       config.io->publishOutput(config.sessionId, *feedbackEdge, feedbackBundle);
       throwIfStopped(config);
@@ -1308,7 +1383,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         committedStateIdentity = executable.candidateDecodeStateIdentity;
         result.finalizedRole = executable;
       }
-      if (eos || stopSequence || atMax) {
+      if (terminal) {
         result.finalPayload = makeFinalPayload(generated, finishHint,
                                                config.textDecoder ? candidateText : generatedText);
         if (config.checkpointFinalize) {

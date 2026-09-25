@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <functional>
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 #include <sstream>
@@ -268,6 +269,9 @@ public:
     {
       std::lock_guard<std::mutex> lock(mutex);
       prefetchedNames.push_back(edge.plannedDataName);
+      if (prefetchObserver) {
+        prefetchObserver(edge.plannedDataName);
+      }
       const auto found = available.find(itemKey);
       if (found != available.end()) {
         promise->set_value(found->second);
@@ -287,6 +291,9 @@ public:
     {
       std::lock_guard<std::mutex> lock(mutex);
       publishedNames.push_back(edge.plannedDataName);
+      if (publishObserver) {
+        publishObserver(edge.plannedDataName);
+      }
       const auto itemKey = key(sessionId, edge);
       available[itemKey] = value;
       const auto found = waiters.find(itemKey);
@@ -313,6 +320,8 @@ public:
   std::map<std::string, std::vector<std::shared_ptr<std::promise<TensorBundle>>>> waiters;
   std::vector<std::string> prefetchedNames;
   std::vector<std::string> publishedNames;
+  std::function<void(const std::string&)> prefetchObserver;
+  std::function<void(const std::string&)> publishObserver;
 };
 
 class FailingPublishDependencyIo : public DependencyIo
@@ -7234,6 +7243,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
   {
     NativeEpochCoordinatorResult result;
     std::vector<std::string> events;
+    std::vector<std::string> ioEvents;
     std::shared_ptr<BlockingDependencyIo> io;
   };
 
@@ -7306,6 +7316,13 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     assignment.providerByRole[runnerSpec.role] = identity.providerIdentity;
     auto io = std::make_shared<BlockingDependencyIo>();
     std::vector<std::string> events;
+    std::vector<std::string> ioEvents;
+    io->prefetchObserver = [&ioEvents] (const std::string& name) {
+      ioEvents.push_back("prefetch:" + name);
+    };
+    io->publishObserver = [&ioEvents] (const std::string& name) {
+      ioEvents.push_back("publish:" + name);
+    };
 
     NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
     config.sessionId = "native-terminal-session";
@@ -7362,7 +7379,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     };
 
     auto result = runNativeEpochCoordinator(std::move(config));
-    return GenerationRun{std::move(result), std::move(events), std::move(io)};
+    return GenerationRun{std::move(result), std::move(events),
+                         std::move(ioEvents), std::move(io)};
   };
 
   const auto maxTokens = run({
@@ -7375,6 +7393,13 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
   BOOST_CHECK(maxPayload.find("\"finishReason\":\"max_tokens\"") !=
               std::string::npos);
   BOOST_CHECK(maxPayload.find("\"text\":\"你好\"") != std::string::npos);
+  BOOST_REQUIRE_EQUAL(maxTokens.ioEvents.size(), 3U);
+  BOOST_CHECK(maxTokens.ioEvents[0].find("prefetch:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+  BOOST_CHECK(maxTokens.ioEvents[0].find("/bundle/1") != std::string::npos);
+  BOOST_CHECK_EQUAL(maxTokens.ioEvents[1],
+                    "publish:" + maxTokens.ioEvents[0].substr(9));
+  BOOST_CHECK(maxTokens.ioEvents[2].find("publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+  BOOST_CHECK(maxTokens.ioEvents[2].find("/bundle/2") != std::string::npos);
   BOOST_REQUIRE_EQUAL(maxTokens.events.size(), 2U);
   BOOST_CHECK(maxTokens.events[0].find("\"textDelta\":\"你\"") !=
               std::string::npos);
