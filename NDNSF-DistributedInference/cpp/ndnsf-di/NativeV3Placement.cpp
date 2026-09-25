@@ -215,7 +215,11 @@ NativeFixedProviderPlacement::proposeRolesImpl(
                                          admitted->observation().offerDigest);
     result.roles.push_back(std::move(role));
   }
-  validateNativeRolePlacement(result, roles, offers, nowMs);
+  // NativeRequestPlanner validates every strategy result at the injection
+  // boundary.  Do not repeat that full canonical/feasibility walk here: the
+  // fixed strategy has already validated each selected assembly while
+  // constructing the result, and the planner's boundary check remains the
+  // single fail-closed check for both built-in and custom strategies.
   if (control) control->requireActive();
   return result;
 }
