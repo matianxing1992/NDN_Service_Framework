@@ -39,6 +39,105 @@ def test_jobs_environment_and_override():
     assert shell(DEFINITIONS + '\nprintf "%s" "$JOBS"', "--jobs", "3", env=env).stdout == "3"
 
 
+def test_qwen_profile_plan_is_offline_and_enables_installed_examples():
+    result = shell(SCRIPT.read_text(), "--with-qwen-minindn", "--plan")
+    assert result.returncode == 0, result.stderr
+    for flag in ("--with-examples", "--with-tests", "--install-experiment-fixtures"):
+        assert flag in result.stdout
+    assert "no download, export, quantization, or inference" in result.stdout
+    assert "NDNSF stack install root" not in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["--deps-only", "--configure-only", "--check-dependencies", "--no-system-install"])
+def test_qwen_profile_rejects_partial_install(mode):
+    result = shell(SCRIPT.read_text(), "--with-qwen-minindn", mode)
+    assert result.returncode == 2
+    assert "requires a complete system installation" in result.stderr
+
+
+def test_qwen_prerequisite_failure_stops_before_system_packages():
+    stubs = '''
+require_host_profile() { :; }
+check_qwen_minindn_prerequisites() { echo PREREQUISITE_FAILURE >&2; return 1; }
+install_common_system_packages() { echo UNEXPECTED_APT; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, "--with-qwen-minindn")
+    assert result.returncode != 0
+    assert "PREREQUISITE_FAILURE" in result.stderr
+    assert "UNEXPECTED_APT" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "mode, expected, forbidden",
+    [
+        ("--with-qwen-minindn", ("libgtest-dev", "mininet"), ("doxygen", "graphviz")),
+        ("--with-system-tests-deps", ("libgtest-dev", "doxygen", "graphviz"), ()),
+    ],
+)
+def test_profiles_install_only_selected_test_and_doc_packages(
+    tmp_path, mode, expected, forbidden
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("apt-get", "dpkg-query"):
+        tool = fake_bin / name
+        tool.write_text("#!/bin/sh\nexit 1\n")
+        tool.chmod(0o755)
+    env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+    stubs = '''
+sudo_run() { printf 'SUDO:%s\\n' "$*"; }
+install_common_system_packages
+'''
+    result = shell(DEFINITIONS + stubs, mode, env=env)
+    assert result.returncode == 0, result.stderr
+    install = next(line for line in result.stdout.splitlines() if "apt-get install" in line)
+    for package in expected:
+        assert package in install
+    for package in forbidden:
+        assert package not in install
+
+
+def test_qwen_program_check_rejects_missing_binary(tmp_path):
+    result = shell(DEFINITIONS + '\nGLOBAL_DEPENDENCY_PREFIX=' + repr(str(tmp_path)) + '\ncheck_qwen_installed_programs')
+    assert result.returncode != 0
+    assert "Missing installed Qwen executable" in result.stderr
+
+
+def test_qwen_program_check_does_not_claim_inference(tmp_path):
+    for name in ("bin/App_ServiceController", "bin/DI_NativeArtifactAuthority", "bin/DI_NativeRequester",
+                 "bin/di-native-provider", "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker", "bin/spec190-multiturn-oracle"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o755)
+    result = shell(DEFINITIONS + '\nGLOBAL_DEPENDENCY_PREFIX=' + repr(str(tmp_path)) + '\ncheck_qwen_installed_programs')
+    assert result.returncode == 0, result.stderr
+    assert "NOT an inference PASS" in result.stdout
+
+
+def test_qwen_program_check_rejects_executable_directory(tmp_path):
+    names = (
+        "bin/App_ServiceController", "bin/DI_NativeArtifactAuthority", "bin/DI_NativeRequester",
+        "bin/di-native-provider", "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker",
+        "bin/spec190-multiturn-oracle",
+    )
+    directory = tmp_path / names[0]
+    directory.mkdir(parents=True)
+    directory.chmod(0o755)
+    for name in names[1:]:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o755)
+    result = shell(
+        DEFINITIONS + '\nGLOBAL_DEPENDENCY_PREFIX=' + repr(str(tmp_path))
+        + '\ncheck_qwen_installed_programs'
+    )
+    assert result.returncode != 0
+    assert "Missing installed Qwen executable" in result.stderr
+    assert names[0] in result.stderr
+
+
 def test_legacy_unpinned_worktree_is_not_reused(tmp_path):
     source = tmp_path / "with space and ' quote" / "ndn-svs"
     source.mkdir(parents=True)

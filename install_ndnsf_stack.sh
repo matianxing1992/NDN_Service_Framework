@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON:-python3}"
 JOBS="${NDNSF_BUILD_JOBS:-4}"
 WAF_CONFIGURE_ARGS=()
+QWEN_MININDN=0
 RUN_WAF_CONFIGURE=auto
 RUN_SYSTEM_INSTALL=1
 USE_USER_FLAG=0
@@ -14,6 +15,7 @@ FORCE_DEPENDENCIES=0
 DEPS_DIR="$ROOT/dependencies"
 INSTALL_SYSTEM_PACKAGES=1
 INSTALL_TEST_PACKAGES=0
+INSTALL_DOC_PACKAGES=0
 INSTALL_MININDN_PACKAGES=0
 INSTALL_NFD_NLSR_PACKAGES=0
 CHECK_DEPENDENCIES=0
@@ -85,6 +87,8 @@ Options:
   --no-system-packages     Do not install OS packages.
   --with-system-tests-deps Install extra OS packages used by tests/docs.
   --with-minindn-deps      Install OS packages commonly needed by MiniNDN experiments.
+  --with-qwen-minindn      Install examples/tests/experiment fixtures and check
+                          existing MiniNDN/NFD prerequisites; no model download.
   --with-nfd-nlsr-deps     Install OS packages commonly needed to build NFD/NLSR.
   --check-dependencies     Verify the installed global closure and exit.
   --configure              Always run ./waf configure before building.
@@ -182,6 +186,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --with-system-tests-deps)
       INSTALL_TEST_PACKAGES=1
+      INSTALL_DOC_PACKAGES=1
+      shift
+      ;;
+    --with-qwen-minindn)
+      QWEN_MININDN=1
+      INSTALL_MININDN_PACKAGES=1
+      INSTALL_TEST_PACKAGES=1
       shift
       ;;
     --with-minindn-deps)
@@ -255,6 +266,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Reject unsupported options before apt, dependency installation, or configure.
+if (( QWEN_MININDN )); then
+  if (( CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || ! RUN_SYSTEM_INSTALL )); then
+    echo '--with-qwen-minindn requires a complete system installation' >&2
+    exit 2
+  fi
+  WAF_CONFIGURE_ARGS+=(--with-examples --with-tests --install-experiment-fixtures)
+fi
 if (( CONFIGURE_ONLY && (SOURCE_MODE || DEPS_ONLY || CHECK_DEPENDENCIES || FORCE_DEPENDENCIES) )); then
   echo '--configure-only/--no-install cannot be combined with source/deps/check modes' >&2
   exit 2
@@ -789,7 +807,10 @@ install_common_system_packages() {
       libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev libpcre3-dev
     )
     if [[ "$INSTALL_TEST_PACKAGES" == "1" ]]; then
-      packages+=(libgtest-dev doxygen graphviz)
+      packages+=(libgtest-dev)
+    fi
+    if [[ "$INSTALL_DOC_PACKAGES" == "1" ]]; then
+      packages+=(doxygen graphviz)
     fi
     if [[ "$INSTALL_MININDN_PACKAGES" == "1" ]]; then
       packages+=(
@@ -1039,6 +1060,36 @@ install_external_dependencies() {
   check_waf_inventory
 }
 
+check_qwen_minindn_prerequisites() {
+  local tool missing=0
+  for tool in nfd nfdc ndnsec mn; do
+    if ! PATH="$SYSTEM_PATH:/usr/local/bin" command -v "$tool" >/dev/null; then
+      echo "Qwen MiniNDN prerequisite missing: $tool (install the owning project first)" >&2
+      missing=1
+    fi
+  done
+  if ! (cd / && env -u PYTHONPATH -u PYTHONHOME "$PYTHON_BIN" -I -c \
+    'from minindn.minindn import Minindn; from minindn.helpers.ndn_routing_helper import NdnRoutingHelper; import mininet; import cryptography; import ndn.encoding'); then
+    echo 'Qwen MiniNDN requires MiniNDN and its Python dependencies installed for the system Python.' >&2
+    missing=1
+  fi
+  (( missing == 0 ))
+}
+
+check_qwen_installed_programs() {
+  local program
+  for program in bin/App_ServiceController bin/DI_NativeArtifactAuthority bin/DI_NativeRequester \
+      bin/di-native-provider libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker bin/spec190-multiturn-oracle; do
+    [[ -f "$GLOBAL_DEPENDENCY_PREFIX/$program" && -x "$GLOBAL_DEPENDENCY_PREFIX/$program" ]] || {
+      echo "Missing installed Qwen executable: $GLOBAL_DEPENDENCY_PREFIX/$program" >&2
+      return 1
+    }
+  done
+  echo 'Qwen executables installed; this is NOT an inference PASS.'
+  echo 'Next: prepare canonical ONNX/KV model artifacts and run LocalExperiment check with an installed-binary profile.'
+  echo 'See docs/unified-stack-install.md#qwen-minindn-readiness for model and qualification boundaries.'
+}
+
 cd "$ROOT"
 
 # One public entry point; configure.sh only translates legacy arguments.
@@ -1053,6 +1104,10 @@ if (( PLAN_ONLY )); then
   echo 'NDN libraries and versioned SDKs must already be installed for configure-only.'
   echo 'Preinstalled SDKs: ONNX Runtime 1.26+, ONNX full-protobuf, tokenizer bridge.'
   echo 'MiniNDN/NFD/NLSR flags install OS packages only, not those projects.'
+  if (( QWEN_MININDN )); then
+    echo 'Qwen MiniNDN: precheck network tools/Python; install examples and fixtures; check installed programs.'
+    echo 'Models are separate inputs: no download, export, quantization, or inference is performed.'
+  fi
   printf 'Waf configure options:'; printf ' %q' "${WAF_CONFIGURE_ARGS[@]}"; printf '\n'
   echo 'Offline plan only: no apt, git fetch, builds, installation or Waf execution.'
   exit 0
@@ -1082,6 +1137,9 @@ done
 echo "==> NDNSF stack install root: $ROOT"
 echo "==> Python: $PYTHON_BIN"
 require_host_profile
+if (( QWEN_MININDN )); then
+  check_qwen_minindn_prerequisites
+fi
 if [[ "$CHECK_DEPENDENCIES" != "1" ]]; then
   install_common_system_packages
 fi
@@ -1199,4 +1257,7 @@ assert ndnsf_distributed_inference.GenericRepoClient is py_repoclient.RepoClient
 print("NDNSF_STACK_INSTALL_SMOKE_OK")
 PY
 
+if (( QWEN_MININDN )); then
+  check_qwen_installed_programs
+fi
 echo "==> NDNSF stack installation complete"
