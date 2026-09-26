@@ -13,7 +13,6 @@ import re
 import subprocess
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
 LIBRARIES = {
     'ndn-cxx': 'libndn-cxx.so', 'ndn-svs': 'libndn-svs.so',
     'NDNSD': 'libndnsd.so', 'openabe': 'libopenabe.so', 'NAC-ABE': 'libnac-abe.so',
@@ -32,6 +31,9 @@ def load_lock(path):
             raise ValueError(f'{name}: a full 40-character commit is required, not a moving branch')
         if not isinstance(source.get('ref'), str) or not source['ref'] or any(c.isspace() for c in source['ref']):
             raise ValueError(f'{name}: missing/invalid descriptive branch or tag')
+        revision = source.setdefault('build_recipe_revision', 1)
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            raise ValueError(f'{name}: build_recipe_revision must be a positive integer')
         deps = source.get('requires')
         if not isinstance(deps, list) or any(d not in LIBRARIES or d == name for d in deps):
             raise ValueError(f'{name}: invalid prerequisite list')
@@ -104,13 +106,19 @@ def fingerprint(data, name, prefix):
     compiler = subprocess.check_output(['/usr/bin/g++', '--version'], text=True)
     upstream = {}
     for dependency in source['requires']:
+        upstream_receipt = (Path(prefix) / 'share/ndnsf/source-receipts' /
+                            (dependency + '.json'))
         upstream[dependency] = {
             'library': digest(Path(prefix) / 'lib' / LIBRARIES[dependency]),
-            'receipt': digest(Path(prefix) / 'share/ndnsf/source-receipts' / (dependency + '.json')),
+            # A compatible system-installed upstream may have no receipt from
+            # this installer. Its library digest still binds the downstream
+            # build to the exact upstream bytes without forcing provenance
+            # fabrication or a redundant upstream rebuild.
+            'receipt': digest(upstream_receipt) if upstream_receipt.is_file() else None,
         }
     return {'schema': 1, 'source': source, 'prefix': str(prefix),
             'compiler': compiler, 'compiler_sha256': digest('/usr/bin/g++'),
-            'installer': digest(ROOT / 'install_ndnsf_stack.sh'),
+            'build_recipe_revision': source['build_recipe_revision'],
             'source_helper': digest(__file__), 'upstream': upstream,
             'library_realpath': str(library.resolve()), 'library_sha256': digest(library)}
 
@@ -148,7 +156,8 @@ def main():
         if args.action == 'plan':
             for name in order(data):
                 s = data['sources'][name]
-                print(f"{name}: {s['url']} ref={s['ref']} commit={s['commit']}")
+                print(f"{name}: {s['url']} ref={s['ref']} commit={s['commit']} "
+                      f"build_recipe_revision={s['build_recipe_revision']}")
             return 0
         if not args.name:
             parser.error('--name is required')

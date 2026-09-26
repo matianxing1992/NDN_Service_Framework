@@ -12,6 +12,7 @@ USE_USER_FLAG=0
 INSTALL_EDITABLE=0
 INSTALL_DEPENDENCIES=auto
 FORCE_DEPENDENCIES=0
+NO_DEPENDENCIES_REQUESTED=0
 DEPS_DIR="$ROOT/dependencies"
 INSTALL_SYSTEM_PACKAGES=1
 INSTALL_TEST_PACKAGES=0
@@ -73,13 +74,14 @@ Build and install the NDNSF stack in dependency order:
   5. ndnsf-distributed-inference Python package
 
 Options:
-  --source                Install pinned external sources (also the default).
+  --source                Use pinned sources only for missing/incompatible dependencies
+                          (the default dependency-resolution behavior).
   --lock-file PATH        Dependency URLs, descriptive refs and exact commits.
   --plan, --dry-run       Offline plan; no fetch, installation or configure.
   --deps-only             Install/check external dependencies, then stop.
   --configure-only        OS prerequisites + Waf configure only; no source builds.
   --no-install            Configure-only without OS package installation.
-  --install-dependencies   Build/install missing external dependencies (default).
+  --install-dependencies   Resolve missing/incompatible external dependencies from pinned sources.
   --no-dependencies        Check installed dependencies without rebuilding them.
   --force-dependencies     Rebuild/install external dependencies even if found.
   --deps-dir PATH          Clone dependency sources under PATH (default: ./dependencies).
@@ -90,7 +92,7 @@ Options:
   --with-qwen-minindn      Install examples/tests/experiment fixtures and check
                           existing MiniNDN/NFD prerequisites; no model download.
   --with-nfd-nlsr-deps     Install OS packages commonly needed to build NFD/NLSR.
-  --check-dependencies     Verify the installed global closure and exit.
+  --check-dependencies     Verify the installed global closure identity and exit.
   --configure              Always run ./waf configure before building.
   --no-configure           Unsupported: every install must revalidate configure.
   --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or 4).
@@ -109,8 +111,14 @@ Notes:
   - If dependency installation is enabled, the script first installs default
     build/runtime OS packages for ndn-cxx, NDNSD, ndn-svs, OpenABE, NAC-ABE,
     and NDNSF. apt skips packages that are already installed.
+  - Dependencies are probed individually. A compatible global installation is
+    reused without requiring a source receipt; missing/incompatible packages
+    are built from the pinned sources. --force-dependencies rebuilds them.
+    Hash/SONAME identity remains part of final closure recording and the
+    explicit --check-dependencies / --no-dependencies gates.
   - Optional OS package groups are available for tests/docs, MiniNDN, and
-    NFD/NLSR builds.
+    NFD/NLSR builds. The Qwen profile checks an existing MiniNDN installation;
+    use --with-minindn-deps separately if its OS packages are needed.
   - The script checks pkg-config names: libndn-cxx, ndnsd, libndn-svs, and
     libnac-abe.
   - The host Boost 1.71 headers and libraries must be the matching system pair
@@ -144,7 +152,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --source)
-      SOURCE_MODE=1; INSTALL_DEPENDENCIES=1; shift ;;
+      SOURCE_MODE=1; INSTALL_DEPENDENCIES=auto; shift ;;
     --lock-file)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--lock-file requires a path' >&2; exit 2; }
       LOCK_FILE="$2"; shift 2 ;;
@@ -164,6 +172,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-dependencies)
       INSTALL_DEPENDENCIES=0
+      NO_DEPENDENCIES_REQUESTED=1
       shift
       ;;
     --force-dependencies)
@@ -191,7 +200,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --with-qwen-minindn)
       QWEN_MININDN=1
-      INSTALL_MININDN_PACKAGES=1
       INSTALL_TEST_PACKAGES=1
       shift
       ;;
@@ -279,6 +287,10 @@ if (( CONFIGURE_ONLY && (SOURCE_MODE || DEPS_ONLY || CHECK_DEPENDENCIES || FORCE
 fi
 if (( CHECK_DEPENDENCIES && (SOURCE_MODE || DEPS_ONLY || FORCE_DEPENDENCIES) )); then
   echo '--check-dependencies cannot be combined with source/deps install modes' >&2
+  exit 2
+fi
+if (( FORCE_DEPENDENCIES && NO_DEPENDENCIES_REQUESTED )); then
+  echo '--force-dependencies cannot be combined with --no-dependencies' >&2
   exit 2
 fi
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo '--jobs must be a positive integer' >&2; exit 2; }
@@ -643,7 +655,8 @@ is_pkg_installed() {
   libdir="$(env -u PKG_CONFIG_PATH -u PKG_CONFIG_LIBDIR "$PKG_CONFIG_BIN" --variable=libdir "$package" 2>/dev/null)" || return 1
   library_path="$libdir/$library"
   resolved_library="$(/usr/bin/readlink -f "$library_path" 2>/dev/null || true)"
-  [[ -f "$library_path" && "$resolved_library" == "$GLOBAL_LIBRARY_DIR"/* ]]
+  [[ -f "$library_path" && "$resolved_library" == "$GLOBAL_LIBRARY_DIR"/* ]] || return 1
+  require_global_pkg_flags "$package" >/dev/null 2>&1
 }
 
 require_global_pkg_flags() {
@@ -851,28 +864,14 @@ source_field() {
   "$PYTHON_BIN" "$SOURCE_HELPER" field --lock "$LOCK_FILE" --name "$1" --field "$2"
 }
 
-has_source_receipt() {
-  "$PYTHON_BIN" "$SOURCE_HELPER" check --lock "$LOCK_FILE" --name "$1" --prefix "$GLOBAL_DEPENDENCY_PREFIX" 2>/dev/null
-}
-
 record_source_receipt() {
   sudo_run "$PYTHON_BIN" "$SOURCE_HELPER" record --lock "$LOCK_FILE" --name "$1" --prefix "$GLOBAL_DEPENDENCY_PREFIX"
-}
-
-require_source_receipts() {
-  local name
-  for name in ndn-cxx ndn-svs NDNSD openabe NAC-ABE; do
-    has_source_receipt "$name" || {
-      echo "Missing/stale source receipt: $name; run --source after reviewing --plan" >&2
-      return 1
-    }
-  done
 }
 
 build_openabe_dependency() {
   local dir
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe && has_source_receipt openabe; then
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe; then
     echo "==> OpenABE already installed; skipping"
     return
   fi
@@ -914,7 +913,7 @@ build_waf_dependency() {
   local minimum="$4"
   local dir build_dir
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum" && has_source_receipt "$name"; then
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
     echo "==> $name already installed ($pkg); skipping"
     return
   fi
@@ -960,7 +959,7 @@ build_cmake_dependency() {
   local minimum="$4"
   local dir build_dir
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum" && has_source_receipt "$name"; then
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && is_pkg_installed "$pkg" "$minimum"; then
     echo "==> $name already installed ($pkg); skipping"
     return
   fi
@@ -1047,7 +1046,7 @@ install_external_dependencies() {
       echo "Global ONNX Runtime identity changed; this installer cannot rebuild ONNX Runtime. Reinstall the canonical global SDK and refresh the identity receipt before continuing." >&2
       exit 1
     fi
-    echo "==> Global identity is stale; source receipts determine affected dependencies"
+    echo "==> Global identity is stale; individual package probes determine what must be rebuilt"
   fi
   require_global_boost
   build_waf_dependency "ndn-cxx" "libndn-cxx" "$NDNCXX_REPO_URL" "$MIN_NDNCXX_VERSION"
@@ -1148,12 +1147,15 @@ require_system_toolchain
 if [[ "$CHECK_DEPENDENCIES" == "1" ]]; then
   check_waf_inventory
   require_global_external_closure
-  require_source_receipts
   echo "==> Installed NDNSF global dependency closure is valid"
   exit 0
 fi
 
 if [[ "$INSTALL_DEPENDENCIES" == "auto" ]]; then
+  # Match Mini-NDN's default resolver shape: each dependency's installed
+  # package/version/path/ABI detector decides whether its pinned build is
+  # needed. Whole-closure hashes must not turn a compatible installed package
+  # into a source rebuild.
   INSTALL_DEPENDENCIES=1
 fi
 
@@ -1161,10 +1163,10 @@ if [[ "$INSTALL_DEPENDENCIES" == "1" ]]; then
   install_external_dependencies
 else
   echo "==> Skipping external dependency installation"
-  # --no-dependencies only skips cloning/building sources. It never permits
-  # a missing or stale global dependency to enter the NDNSF build.
+  # --no-dependencies skips external source builds and requires a complete
+  # preinstalled closure. The common OS build-package bootstrap above remains
+  # independently controlled by --no-system-packages.
   require_global_external_closure
-  require_source_receipts
   check_waf_inventory
 fi
 

@@ -27,7 +27,7 @@ def shell(code, *args, env=None):
     (["--jobs", "2; touch /tmp/not-executed"], "positive integer"),
 ])
 def test_invalid_options_stop_before_installation(args, message):
-    result = shell(SCRIPT.read_text(), *args)
+    result = shell(SCRIPT.read_text(), '--plan', *args)
     assert result.returncode == 2
     assert message in result.stderr
     assert "NDNSF stack install root" not in result.stdout
@@ -50,7 +50,7 @@ def test_qwen_profile_plan_is_offline_and_enables_installed_examples():
 
 @pytest.mark.parametrize("mode", ["--deps-only", "--configure-only", "--check-dependencies", "--no-system-install"])
 def test_qwen_profile_rejects_partial_install(mode):
-    result = shell(SCRIPT.read_text(), "--with-qwen-minindn", mode)
+    result = shell(SCRIPT.read_text(), "--with-qwen-minindn", mode, '--plan')
     assert result.returncode == 2
     assert "requires a complete system installation" in result.stderr
 
@@ -70,7 +70,10 @@ install_common_system_packages() { echo UNEXPECTED_APT; }
 @pytest.mark.parametrize(
     "mode, expected, forbidden",
     [
-        ("--with-qwen-minindn", ("libgtest-dev", "mininet"), ("doxygen", "graphviz")),
+        ("--with-qwen-minindn", ("libgtest-dev",),
+         ("doxygen", "graphviz", "mininet", "openvswitch-switch", "tcpdump")),
+        ("--with-minindn-deps", ("mininet", "openvswitch-switch", "tcpdump"),
+         ("libgtest-dev", "doxygen", "graphviz")),
         ("--with-system-tests-deps", ("libgtest-dev", "doxygen", "graphviz"), ()),
     ],
 )
@@ -187,7 +190,6 @@ require_host_profile() { :; }
 install_common_system_packages() { :; }
 check_waf_inventory() { :; }
 require_global_external_closure() { :; }
-require_source_receipts() { :; }
 source_field() { printf '%s\n' 'https://example.invalid/test.git'; }
 require_global_file() { :; }
 run_waf_clean() { echo "WAF:$*"; }
@@ -214,7 +216,6 @@ require_host_profile() { :; }
 install_common_system_packages() { :; }
 check_waf_inventory() { :; }
 require_global_external_closure() { :; }
-require_source_receipts() { :; }
 source_field() { printf '%s\n' 'https://example.invalid/test.git'; }
 run_waf_clean() { :; }
 pip_install() { echo UNEXPECTED_PIP; }
@@ -240,7 +241,15 @@ def test_plan_is_offline_and_uses_experimental_pins(tmp_path):
 def test_configure_modes_conflict_before_side_effects():
     for args in [('--configure-only', '--source'), ('--no-install', '--deps-only'),
                  ('--check-dependencies', '--source')]:
-        result = shell(SCRIPT.read_text(), *args)
+        result = shell(SCRIPT.read_text(), *args, '--plan')
+        assert result.returncode == 2
+        assert 'cannot be combined' in result.stderr
+
+
+def test_force_and_no_dependencies_conflict_before_side_effects():
+    for args in [('--force-dependencies', '--no-dependencies'),
+                 ('--no-dependencies', '--force-dependencies')]:
+        result = shell(SCRIPT.read_text(), *args, '--plan')
         assert result.returncode == 2
         assert 'cannot be combined' in result.stderr
 
@@ -251,6 +260,7 @@ require_system_toolchain() { :; }
 require_host_profile() { :; }
 install_common_system_packages() { :; }
 check_waf_inventory() { :; }
+require_global_external_closure() { return 1; }
 source_field() { echo https://example.invalid/repo.git; }
 install_external_dependencies() { echo DEPS_ONLY_OK; }
 run_waf_clean() { echo UNEXPECTED_WAF; }
@@ -262,10 +272,93 @@ pip_install() { echo UNEXPECTED_PIP; }
     assert 'UNEXPECTED' not in result.stdout
 
 
-def test_version_match_without_receipt_does_not_skip():
+@pytest.mark.parametrize('source_args', [(), ('--source',)])
+def test_default_uses_per_dependency_resolver_without_closure_identity_gate(source_args):
+    stubs = '''
+require_host_profile() { :; }
+install_common_system_packages() { :; }
+require_system_toolchain() { :; }
+source_field() { echo https://example.invalid/repo.git; }
+require_global_external_closure() { echo UNEXPECTED_WHOLE_CLOSURE_GATE; return 1; }
+check_waf_inventory() { echo UNEXPECTED_WAF_INVENTORY_GATE; return 1; }
+install_external_dependencies() { echo PER_DEPENDENCY_RESOLVER; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, *source_args, '--deps-only')
+    assert result.returncode == 0, result.stderr
+    assert 'PER_DEPENDENCY_RESOLVER' in result.stdout
+    assert 'UNEXPECTED_WHOLE_CLOSURE_GATE' not in result.stdout
+    assert 'UNEXPECTED_WAF_INVENTORY_GATE' not in result.stdout
+
+
+def test_force_dependencies_routes_to_dependency_resolver():
+    stubs = '''
+require_host_profile() { :; }
+install_common_system_packages() { :; }
+require_system_toolchain() { :; }
+source_field() { echo https://example.invalid/repo.git; }
+require_global_external_closure() { echo UNEXPECTED_REUSE; }
+check_waf_inventory() { :; }
+install_external_dependencies() { echo SOURCE_INSTALL; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, '--force-dependencies', '--deps-only')
+    assert result.returncode == 0, result.stderr
+    assert 'SOURCE_INSTALL' in result.stdout
+    assert 'UNEXPECTED_REUSE' not in result.stdout
+
+
+def test_no_dependencies_reuses_global_closure_without_source_receipts():
+    stubs = '''
+require_host_profile() { :; }
+install_common_system_packages() { :; }
+require_system_toolchain() { :; }
+source_field() { echo https://example.invalid/repo.git; }
+require_global_external_closure() { echo GLOBAL_CLOSURE_OK; }
+check_waf_inventory() { echo WAF_INVENTORY_OK; }
+require_source_receipts() { echo UNEXPECTED_SOURCE_RECEIPT_CHECK; return 99; }
+install_external_dependencies() { echo UNEXPECTED_SOURCE_INSTALL; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, '--no-dependencies', '--deps-only')
+    assert result.returncode == 0, result.stderr
+    assert 'GLOBAL_CLOSURE_OK' in result.stdout
+    assert 'WAF_INVENTORY_OK' in result.stdout
+    assert 'UNEXPECTED' not in result.stdout
+
+
+def test_check_dependencies_only_requires_verified_installed_closure():
+    stubs = '''
+require_host_profile() { :; }
+require_system_toolchain() { :; }
+source_field() { echo https://example.invalid/repo.git; }
+check_waf_inventory() { echo WAF_INVENTORY_OK; }
+require_global_external_closure() { echo GLOBAL_CLOSURE_OK; }
+require_source_receipts() { echo UNEXPECTED_SOURCE_RECEIPT_CHECK; return 99; }
+install_common_system_packages() { echo UNEXPECTED_APT; }
+install_external_dependencies() { echo UNEXPECTED_SOURCE_INSTALL; }
+'''
+    result = shell(DEFINITIONS + stubs + MAIN, '--check-dependencies')
+    assert result.returncode == 0, result.stderr
+    assert 'GLOBAL_CLOSURE_OK' in result.stdout
+    assert 'WAF_INVENTORY_OK' in result.stdout
+    assert 'Installed NDNSF global dependency closure is valid' in result.stdout
+    assert 'UNEXPECTED' not in result.stdout
+
+
+def test_compatible_package_skips_without_source_receipt():
     result = shell(DEFINITIONS + '''
 is_pkg_installed() { return 0; }
-has_source_receipt() { return 1; }
+has_source_receipt() { echo RECEIPT_CHECK_SHOULD_NOT_RUN; return 1; }
+ensure_source_tree() { echo SOURCE_REQUIRED >&2; return 23; }
+build_waf_dependency ndn-svs libndn-svs unused 0.1
+''')
+    assert result.returncode == 0
+    assert 'already installed' in result.stdout
+    assert 'RECEIPT_CHECK_SHOULD_NOT_RUN' not in result.stdout
+    assert 'SOURCE_REQUIRED' not in result.stderr
+
+
+def test_incompatible_package_builds_without_source_receipt():
+    result = shell(DEFINITIONS + '''
+is_pkg_installed() { return 1; }
 ensure_source_tree() { echo SOURCE_REQUIRED >&2; return 23; }
 build_waf_dependency ndn-svs libndn-svs unused 0.1
 ''')
@@ -273,30 +366,48 @@ build_waf_dependency ndn-svs libndn-svs unused 0.1
     assert 'SOURCE_REQUIRED' in result.stderr
 
 
-def test_version_and_receipt_match_skips_build():
+@pytest.mark.parametrize('builder,detector', [
+    ('build_waf_dependency ndn-svs libndn-svs unused 0.1', 'is_pkg_installed'),
+    ('build_cmake_dependency NAC-ABE libnac-abe unused 0.1', 'is_pkg_installed'),
+    ('build_openabe_dependency', 'has_openabe'),
+])
+def test_all_dependency_builders_reuse_compatible_install_without_receipt(builder, detector):
+    detector_stub = f'{detector}() {{ return 0; }}'
     result = shell(DEFINITIONS + '''
+''' + detector_stub + '''
+has_source_receipt() { echo RECEIPT_CHECK_SHOULD_NOT_RUN; return 1; }
+ensure_source_tree() { echo SOURCE_REQUIRED >&2; return 23; }
+''' + builder + '\n')
+    assert result.returncode == 0
+    assert 'already installed' in result.stdout
+    assert 'RECEIPT_CHECK_SHOULD_NOT_RUN' not in result.stdout
+    assert 'SOURCE_REQUIRED' not in result.stderr
+
+
+def test_force_dependencies_rebuilds_even_when_detector_accepts_package():
+    result = shell(DEFINITIONS + '''
+FORCE_DEPENDENCIES=1
 is_pkg_installed() { return 0; }
-has_source_receipt() { return 0; }
-ensure_source_tree() { echo UNEXPECTED; return 23; }
+ensure_source_tree() { echo SOURCE_REQUIRED >&2; return 23; }
 build_waf_dependency ndn-svs libndn-svs unused 0.1
 ''')
-    assert result.returncode == 0
-    assert 'skipping' in result.stdout
-    assert 'UNEXPECTED' not in result.stdout
+    assert result.returncode == 23
+    assert 'SOURCE_REQUIRED' in result.stderr
 
 
 def test_user_install_rejected_before_mutations():
-    result = shell(SCRIPT.read_text(), '--user')
+    result = shell(SCRIPT.read_text(), '--user', '--plan')
     assert result.returncode == 2
     assert 'incompatible' in result.stderr
 
 
 def test_bootstrap_installs_os_before_toolchain_check():
     stubs = '''
-require_host_profile() { echo PROFILE; }
-install_common_system_packages() { echo PACKAGES; }
-require_system_toolchain() { echo TOOLS; }
-source_field() { echo https://example.invalid/repo.git; }
+    require_host_profile() { echo PROFILE; }
+    install_common_system_packages() { echo PACKAGES; }
+    require_system_toolchain() { echo TOOLS; }
+    require_global_external_closure() { return 1; }
+    source_field() { echo https://example.invalid/repo.git; }
 install_external_dependencies() { echo SOURCES; }
 '''
     result = shell(DEFINITIONS + stubs + MAIN, '--deps-only')

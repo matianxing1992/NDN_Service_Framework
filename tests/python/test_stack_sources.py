@@ -81,6 +81,24 @@ def test_receipts_invalidate_changed_upstream_and_library(tmp_path):
     assert sources.receipt(data, 'openabe', tmp_path)
 
 
+def test_downstream_receipt_accepts_compatible_upstream_without_source_receipt(tmp_path):
+    data = sources.load_lock(LOCK)
+    name = 'NAC-ABE'
+    library_dir = tmp_path / 'lib'
+    library_dir.mkdir()
+    dependencies = data['sources'][name]['requires']
+    assert dependencies
+    for dependency in dependencies:
+        (library_dir / sources.LIBRARIES[dependency]).write_bytes(
+            ('reused-' + dependency).encode())
+    (library_dir / sources.LIBRARIES[name]).write_bytes(b'built-downstream')
+
+    receipt_dir = tmp_path / 'share/ndnsf/source-receipts'
+    assert not any(receipt_dir.glob('*.json'))
+    assert sources.receipt(data, name, tmp_path, record=True)
+    assert sources.receipt(data, name, tmp_path)
+
+
 def test_different_pin_invalidates_receipt(tmp_path):
     data = sources.load_lock(LOCK)
     (tmp_path / 'lib').mkdir()
@@ -89,6 +107,60 @@ def test_different_pin_invalidates_receipt(tmp_path):
     changed = copy.deepcopy(data)
     changed['sources']['openabe']['commit'] = 'a' * 40
     assert not sources.receipt(changed, 'openabe', tmp_path)
+
+
+def test_build_recipe_revision_invalidates_receipt(tmp_path):
+    data = sources.load_lock(LOCK)
+    (tmp_path / 'lib').mkdir()
+    (tmp_path / 'lib/libopenabe.so').write_bytes(b'library')
+    assert sources.receipt(data, 'openabe', tmp_path, record=True)
+
+    changed = copy.deepcopy(data)
+    changed['sources']['openabe']['build_recipe_revision'] += 1
+    assert not sources.receipt(changed, 'openabe', tmp_path)
+
+
+def test_unrelated_installer_edit_does_not_invalidate_receipt(tmp_path, monkeypatch):
+    data = sources.load_lock(LOCK)
+    (tmp_path / 'lib').mkdir()
+    (tmp_path / 'lib/libopenabe.so').write_bytes(b'library')
+    project = tmp_path / 'project'
+    project.mkdir()
+    helper = project / 'stack_sources.py'
+    helper.write_text('# original helper implementation\n')
+    installer = project / 'install_ndnsf_stack.sh'
+    installer.write_text('# original profile flags\n')
+    monkeypatch.setattr(sources, '__file__', str(helper))
+
+    assert sources.receipt(data, 'openabe', tmp_path, record=True)
+    installer.write_text('# unrelated Qwen profile change\n')
+
+    assert sources.receipt(data, 'openabe', tmp_path)
+    helper.write_text('# changed helper implementation\n')
+    assert not sources.receipt(data, 'openabe', tmp_path)
+
+
+def test_legacy_lock_defaults_build_recipe_revision_to_one(tmp_path):
+    data = sources.load_lock(LOCK)
+    for source in data['sources'].values():
+        source.pop('build_recipe_revision')
+    path = tmp_path / 'legacy-lock.json'
+    path.write_text(json.dumps(data))
+
+    loaded = sources.load_lock(path)
+
+    assert all(source['build_recipe_revision'] == 1 for source in loaded['sources'].values())
+
+
+@pytest.mark.parametrize('revision', [0, -1, True, '1'])
+def test_invalid_build_recipe_revision_is_rejected(tmp_path, revision):
+    data = sources.load_lock(LOCK)
+    data['sources']['openabe']['build_recipe_revision'] = revision
+    path = tmp_path / 'invalid-recipe-revision.json'
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(ValueError, match='build_recipe_revision'):
+        sources.load_lock(path)
 
 
 def test_unsupported_prerequisite_graph_rejected(tmp_path):
