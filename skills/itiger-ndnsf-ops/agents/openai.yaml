@@ -1,0 +1,4 @@
+interface:
+  display_name: "iTiger NDNSF Operations"
+  short_description: "Build, close, and validate NDNSF SIFs on iTiger"
+  default_prompt: "Use $itiger-ndnsf-ops to build or run an evidence-bound NDNSF-DI workload safely on iTiger."

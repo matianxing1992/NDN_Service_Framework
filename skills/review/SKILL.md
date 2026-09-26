@@ -1,46 +1,78 @@
 ---
 name: review
-description: Review changes from an explicit Git baseline along separate repository-standards and specification axes, including uncommitted work when requested.
+description: Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes — Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/PRD asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X".
 ---
 
-# Two-Axis Review
+# Review
 
-## Repository And Change Boundary
+Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 
-在目标 checkout 用 `git rev-parse --show-toplevel` 确定 repo root。
-以下仓库路径从该 root 解析；安装本 skill 后仍以目标仓库为准。
-读 `AGENTS.md`、`git status` 和当前用户范围，保留已有改动。
-用户给定 commit/branch/tag 即为基线；缺少且无法从当前明确任务得出时才问。
+- **Standards** — does the code conform to this repo's documented coding standards?
+- **Spec** — does the code faithfully implement the originating issue / PRD / spec?
 
-先固定实际差异，不把未提交实现遗漏在提交比较之外：
+Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
 
-- 已提交分支差异：`git diff <base>...HEAD`，另记 `git log <base>..HEAD --oneline`。
-- 用户要求包括当前工作区：`git diff <base> -- <explicit paths>`；它涵盖 tracked staged/unstaged，仍需从 status读取相关 untracked 文件。
-- 进行中的 merge：记录 HEAD/MERGE_HEAD，按实际工作树对各方基线比较；three-dot HEAD 不包含尚未提交的 merge结果。
+The issue tracker should have been provided to you — run `/setup-matt-pocock-skills` if `docs/agents/issue-tracker.md` is missing.
 
-## Sources
+## Process
 
-Spec 来自用户给定路径、issue/PRD或当前 `.specify/feature.json` 的维护文档。
-核对 spec、plan、tasks、契约与最新 evidence；不把历史进度或 planned API 当 existing。
-没有规范来源则明确 Spec轴缺少依据，不能自行编造需求。
-标准来源优先 `AGENTS.md`、constitution、架构文档、ADR 和贡献约定。
-已有 CodeGraph 索引时先用它定位源码；没有索引直接精确读源，不新建索引。
+### 1. Pin the fixed point
 
-## Separate Review Axes
+Whatever the user said is the fixed point — a commit SHA, branch name, tag, `main`, `HEAD~5`, etc. Don't be opinionated; pass it through. If they didn't specify one, ask: "Review against what — a branch, a commit, or `main`?" Don't proceed until you have it.
 
-需要独立审查且当前任务允许 agent协作时，将两个有界只读任务并行分配：
-每个任务提供固定基线、实际 diff 命令、精确范围和规范路径。
-若当前指令不允许委派，则在本次审查中分别完成并明确这一限制；不以工具缺失阻止可完成的审查。
+Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base). Also note the list of commits via `git log <fixed-point>..HEAD --oneline`.
 
-| Axis | Required judgment |
-| --- | --- |
-| Standards | 实际改动是否违背仓库规则；引用规则和源码位置，区分硬性违反与判断建议。跳过工具已覆盖的纯格式问题。 |
-| Spec | 需求是否缺失/部分实现、实现是否错误、有无越界；逐项引用要求和实际源码。检查调用链、生命周期、权限/版本/deadline，以及测试与collector的独立判据。 |
+### 2. Identify the spec source
 
-报告具体可行动发现，区分确认缺陷和待验证疑点；不要为追求数量添加风格项。
-优先核对重要成功/失败路径，不把 mock、测试数、任意退出或超时当成真实验收。
-每轴报告保持简短（通常400词以内），分别输出 `Standards` / `Spec`，保留严重度、路径和依据。
-说明审查范围、未覆盖部分及下一步；审查 PASS 不等于运行 PASS。
+Look for the originating spec, in this order:
 
-默认只读。用户授权修复时才编辑，按文件划分所有权并保留他人改动；完成后只复审受影响范围。
-依仓库要求把真实结论同步任务/evidence，是否构建、测试或提交继续受当前用户范围控制。
+1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.) — fetch via the workflow in `docs/agents/issue-tracker.md`.
+2. A path the user passed as an argument.
+3. A PRD/spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
+4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
+
+### 3. Identify the standards sources
+
+Anything in the repo that documents how code should be written. Common locations:
+
+- `CLAUDE.md`, `AGENTS.md`
+- `CONTRIBUTING.md`
+- `CONTEXT.md`, `CONTEXT-MAP.md`, per-context `CONTEXT.md` files
+- `docs/adr/` (architectural decisions are standards)
+- `.editorconfig`, `eslint.config.*`, `biome.json`, `prettier.config.*`, `tsconfig.json` (machine-enforced standards — note them but don't re-check what tooling already checks)
+- Any `STYLE.md`, `STANDARDS.md`, `STYLEGUIDE.md`, or similar at the repo root or under `docs/`
+
+Collect the list of files. The **Standards** sub-agent will read them.
+
+### 4. Spawn both sub-agents in parallel
+
+Send a single message with two `Agent` tool calls. Use the `general-purpose` subagent for both.
+
+**Standards sub-agent prompt** — include:
+
+- The full diff command and commit list.
+- The list of standards-source files you found in step 3.
+- The brief: "Read the standards docs. Then read the diff. Report — per file/hunk where relevant — every place the diff violates a documented standard. Cite the standard (file + the rule). Distinguish hard violations from judgement calls. Skip anything tooling enforces. Under 400 words."
+
+**Spec sub-agent prompt** — include:
+
+- The diff command and commit list.
+- The path or fetched contents of the spec.
+- The brief: "Read the spec. Then read the diff. Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
+
+If the spec is missing, skip the Spec sub-agent and note this in the final report.
+
+### 5. Aggregate
+
+Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings — the two axes are deliberately separate so the user can see them independently.
+
+End with a one-line summary: total findings per axis, and the worst single issue (if any) flagged.
+
+## Why two axes
+
+A change can pass one axis and fail the other:
+
+- Code that follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
+- Code that does exactly what the issue asked but breaks the project's conventions → **Spec pass, Standards fail.**
+
+Reporting them separately stops one axis from masking the other.

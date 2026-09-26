@@ -1,31 +1,86 @@
 ---
 name: codegraph-first
-description: Use an existing CodeGraph index to locate code owners and call paths, then verify source; fall back to exact repository searches when no usable index exists.
+description: Prefer CodeGraph for semantic codebase exploration before falling back to text search. Use when searching code, tracing symbols, inspecting call graphs, reviewing impact, auditing implementations, or answering code-structure questions in a repository with CodeGraph installed.
 ---
 
 # CodeGraph-First Code Search
 
-## Repository Context
+## Purpose
 
-从目标 checkout 执行 `git rev-parse --show-toplevel` 确定 repo root。
-所有仓库路径从该 root 解析，不从个人安装的 skill 目录解析。
-先读 repo `AGENTS.md`；检查 root 是否有 `.codegraph/`。
-没有索引目录时直接用 `rg` / `rg --files` 和精确源码，**不创建索引**：索引由用户决定。
+Use CodeGraph as the first pass for semantic code exploration. It is best for
+finding symbols, owners, callers, callees, impact surfaces, and architecture
+entry points without repeatedly scanning the whole repository.
 
-## Indexed Repositories
+Use `rg` after CodeGraph when the task needs exact text matches, log strings,
+config keys, generated names, non-code files, or verification of a precise
+snippet.
 
-先使用已有 CodeGraph 工具回答符号、调用链、所有权和影响范围问题。
-MCP 工具可延迟发现；可用时优先 `codegraph_explore`、`codegraph_node`。
-CLI 的等价入口为 `codegraph explore "<symbol or question>"` 和
-`codegraph node <symbol-or-file>`；在目标 repo root 执行。
-参数因安装版本而异，不确定时读本机 help，避免重复猜测命令。
+## Quick Start
 
-精确限定当前 checkout 和真实源码路径，排除旧 worktree、临时比较副本及生成物。
-索引过时、不可用或报错时说明限制，转为源码检索；不要在未经授权时以修复为由新建/重建索引。
+Before broad code exploration:
 
-## Evidence Rules
+```bash
+codegraph status .
+```
 
-- CodeGraph 用来找入口、caller/callee 和影响范围；最终 bug 或行为结论必须由当前源码证实。
-- `rg` 用于精确错误日志、字段/config键、脚本、文档和已定位源码片段，不需先为纯文本问题查询图。
-- 不把二进制、构建输出、实验日志或秘密加入图；`.codegraph/` 保持本地，不进入提交。
-- 图与文件不一致时以实际文件为准，记录索引限制。无需因此重新审查整库。
+If the index is stale or missing:
+
+```bash
+codegraph sync .
+```
+
+Search a symbol:
+
+```bash
+codegraph query RequestServiceTargeted --path . --limit 10
+```
+
+Explore a concept:
+
+```bash
+codegraph explore "How does targeted request authentication work?" --path .
+```
+
+Trace relationships:
+
+```bash
+codegraph callers <symbol-or-node-id> --path .
+codegraph callees <symbol-or-node-id> --path .
+codegraph impact <symbol-or-node-id> --path .
+```
+
+## Workflow
+
+1. Start with `codegraph status .` for repository-level tasks.
+2. Use `codegraph query` for known symbol, class, method, or function names.
+3. Use `codegraph explore` for architecture questions or unfamiliar features.
+4. Use callers/callees/impact/affected when reviewing behavior changes.
+5. Use `rg` to confirm exact text, configs, docs, logs, tests, and edge cases.
+6. When CodeGraph and text search disagree, inspect the actual source files.
+
+## Rules
+
+- Do not rely only on CodeGraph for final bug claims; verify with source.
+- Do not use CodeGraph for secrets, generated binary artifacts, or build output.
+- Keep `.codegraph/` local; do not commit the index.
+- If CodeGraph is unavailable, stale, or errors repeatedly, say so briefly and
+  fall back to `rg`.
+- For performance-sensitive investigation, prefer CodeGraph to find the path,
+  then instrument or inspect only the relevant files.
+
+## Good Fits
+
+- "Where is this API implemented?"
+- "Who calls this handler?"
+- "What breaks if I change this class?"
+- "Review this feature path."
+- "Trace request/ACK/selection/response flow."
+- "Find all providers of this service abstraction."
+
+## Poor Fits
+
+- Searching for a literal error line.
+- Checking README wording.
+- Finding shell flags in scripts.
+- Looking for serialized field names in YAML/JSON.
+- Inspecting unindexed temporary output.

@@ -89,6 +89,7 @@ tests/container/**/actual/
 # relying only on .git/info/exclude, so a clone cannot accidentally stage them.
 /specs/
 /**/specs/
+/**/docs/
 /.specify/
 /**/.specify/
 /.codex/
