@@ -21,6 +21,7 @@
 #include "RuntimeStatusStore.hpp"
 
 #include <functional>
+#include <exception>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -537,6 +538,18 @@ namespace ndn_service_framework{
                     int timeoutMs,
                     std::function<bool()> shouldCancel,
                     CollaborationTransferMetrics* metrics);
+                /** As above, and report whether the first exact read was
+                 * issued. The callback receives an empty exception_ptr only
+                 * after Face::expressInterest() returns; failures before that
+                 * boundary receive the originating exception. */
+                std::optional<ndn::Buffer> fetchSignedExactData(
+                    KeyScope keyScope,
+                    const ndn::Name& dataName,
+                    const ndn::Name& expectedProducer,
+                    int timeoutMs,
+                    std::function<bool()> shouldCancel,
+                    CollaborationTransferMetrics* metrics,
+                    std::function<void(std::exception_ptr)> onFirstReadStarted);
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);
@@ -1785,6 +1798,15 @@ namespace ndn_service_framework{
                 int timeoutMs,
                 std::function<bool()> shouldCancel,
                 CollaborationTransferMetrics* metrics);
+            std::optional<ndn::Buffer> fetchCollaborationSignedExactData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                const ndn::Name& expectedProducer,
+                int timeoutMs,
+                std::function<bool()> shouldCancel,
+                CollaborationTransferMetrics* metrics,
+                std::function<void(std::exception_ptr)> onFirstReadStarted);
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
                 const ndn::Name& serviceName,

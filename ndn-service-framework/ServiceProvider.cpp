@@ -3713,9 +3713,25 @@ namespace ndn_service_framework
         std::function<bool()> shouldCancel,
         CollaborationTransferMetrics* metrics)
     {
+        return fetchSignedExactData(std::move(keyScope), dataName,
+                                    expectedProducer, timeoutMs,
+                                    std::move(shouldCancel), metrics, {});
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchSignedExactData(
+        KeyScope keyScope,
+        const ndn::Name& dataName,
+        const ndn::Name& expectedProducer,
+        int timeoutMs,
+        std::function<bool()> shouldCancel,
+        CollaborationTransferMetrics* metrics,
+        std::function<void(std::exception_ptr)> onFirstReadStarted)
+    {
         return m_provider.fetchCollaborationSignedExactData(
             m_requestId, std::move(keyScope), dataName,
-            expectedProducer, timeoutMs, std::move(shouldCancel), metrics);
+            expectedProducer, timeoutMs, std::move(shouldCancel), metrics,
+            std::move(onFirstReadStarted));
     }
 
     void ServiceProvider::CollaborationContext::subscribe(
@@ -7725,6 +7741,22 @@ namespace ndn_service_framework
         std::function<bool()> shouldCancel,
         CollaborationTransferMetrics* metrics)
     {
+        return fetchCollaborationSignedExactData(
+            requestId, keyScope, dataName, expectedProducer, timeoutMs,
+            std::move(shouldCancel), metrics, {});
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::fetchCollaborationSignedExactData(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& dataName,
+        const ndn::Name& expectedProducer,
+        int timeoutMs,
+        std::function<bool()> shouldCancel,
+        CollaborationTransferMetrics* metrics,
+        std::function<void(std::exception_ptr)> onFirstReadStarted)
+    {
         if (dataName.empty() || expectedProducer.empty() || timeoutMs <= 0) {
             NDN_LOG_ERROR("Exact collaboration fetch arguments are invalid"
                           << " requestId=" << requestId.toUri()
@@ -7737,12 +7769,13 @@ namespace ndn_service_framework
         struct ExactFetchState
         {
             std::atomic<bool> completed{false};
+            std::atomic<std::size_t> attempts{0};
+            std::atomic<std::size_t> wireBytes{0};
             std::mutex mutex;
             std::condition_variable cv;
             ndn::Buffer content;
             std::string error;
-            std::size_t attempts = 0;
-            std::size_t wireBytes = 0;
+            ndn::ScopedPendingInterestHandle pendingInterest;
             std::chrono::steady_clock::time_point deadline;
         };
         auto state = std::make_shared<ExactFetchState>();
@@ -7753,15 +7786,53 @@ namespace ndn_service_framework
                          intEnvOrDefault(
                            "NDNSF_DI_EXACT_INTEREST_LIFETIME_MS", 500)));
 
-        auto finish = [state](ndn::Buffer content, std::string error) {
+        auto firstReadReported = std::make_shared<std::atomic<bool>>(false);
+        auto reportFirstRead = [firstReadReported, onFirstReadStarted]
+                               (std::exception_ptr error) noexcept {
+            bool expected = false;
+            if (!firstReadReported->compare_exchange_strong(
+                    expected, true, std::memory_order_acq_rel)) {
+                return;
+            }
+            if (onFirstReadStarted) {
+                try {
+                    onFirstReadStarted(std::move(error));
+                }
+                catch (...) {
+                    // The callback is a one-shot promise handoff. Its owner
+                    // reports its own failures through that promise.
+                }
+            }
+        };
+        auto cancelPending = [this](ndn::ScopedPendingInterestHandle pending) {
+            // Face's pending-interest table is owned by its io_context. Keep
+            // cancellation there even when the hard-waiting caller wins the
+            // race from a worker thread. A default-constructed scoped handle
+            // safely represents no pending operation.
+            boost::asio::post(m_face.getIoContext(),
+                              [pending = std::move(pending)]() mutable {
+                pending.cancel();
+            });
+        };
+        auto finish = [state, reportFirstRead, cancelPending]
+                      (ndn::Buffer content, std::string error) {
             if (state->completed.exchange(true)) {
                 return;
             }
+            std::exception_ptr firstReadError;
+            if (!error.empty()) {
+                firstReadError = std::make_exception_ptr(
+                    std::runtime_error(error));
+            }
+            ndn::ScopedPendingInterestHandle pending;
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->content = std::move(content);
                 state->error = std::move(error);
+                pending = std::move(state->pendingInterest);
             }
+            reportFirstRead(std::move(firstReadError));
+            cancelPending(std::move(pending));
             state->cv.notify_one();
         };
         auto express = std::make_shared<std::function<void()>>();
@@ -7789,14 +7860,16 @@ namespace ndn_service_framework
                           << " keyScope=" << keyScope
                           << " dataName=" << dataName.toUri()
                           << " reason=" << reason
-                          << " nextAttempt=" << (state->attempts + 1));
+                          << " nextAttempt="
+                          << (state->attempts.load(std::memory_order_relaxed) + 1));
             if (const auto next = weakExpress.lock()) {
                 m_scheduler.schedule(ndn::time::milliseconds(5),
                                      [next] { (*next)(); });
             }
         };
         *express = [this, state, finish, retry, dataName, expectedProducer,
-                    requestId, keyScope, interestLifetimeMs, shouldCancel] {
+                    requestId, keyScope, interestLifetimeMs, shouldCancel,
+                    reportFirstRead, cancelPending] {
             if (state->completed.load()) {
                 return;
             }
@@ -7808,23 +7881,16 @@ namespace ndn_service_framework
                 finish({}, "hard deadline for " + dataName.toUri());
                 return;
             }
-            ++state->attempts;
+            const auto attempt = state->attempts.fetch_add(
+                1, std::memory_order_relaxed) + 1;
             ndn::Interest interest(dataName);
             interest.setCanBePrefix(false);
             interest.setMustBeFresh(true);
             interest.setInterestLifetime(
                 ndn::time::milliseconds(interestLifetimeMs));
-            const auto issuedUs = std::chrono::duration_cast<
-                std::chrono::microseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COLLAB_DATA_INTEREST_ISSUED"
-                          << " timestamp_us=" << issuedUs
-                          << " requestId=" << requestId.toUri()
-                          << " keyScope=" << keyScope
-                          << " dataName=" << dataName.toUri()
-                          << " attempt=" << state->attempts
-                          << " lifetimeMs=" << interestLifetimeMs);
-            m_face.expressInterest(
+            ndn::ScopedPendingInterestHandle pending;
+            try {
+                pending = m_face.expressInterest(
                 interest,
                 [this, state, finish, dataName, expectedProducer, requestId,
                  keyScope]
@@ -7841,13 +7907,15 @@ namespace ndn_service_framework
                                   << " keyScope=" << keyScope
                                   << " requestedName=" << dataName.toUri()
                                   << " returnedName=" << data.getName().toUri()
-                                  << " attempt=" << state->attempts);
+                                  << " attempt="
+                                  << state->attempts.load(std::memory_order_relaxed));
                     if (data.getName() != dataName) {
                         finish({}, "exact Data name mismatch for " +
                                    dataName.toUri());
                         return;
                     }
-                    state->wireBytes += data.wireEncode().size();
+                    state->wireBytes.fetch_add(data.wireEncode().size(),
+                                               std::memory_order_relaxed);
                     validator->validate(
                         data,
                         [finish, dataName, expectedProducer, requestId, keyScope]
@@ -7886,6 +7954,61 @@ namespace ndn_service_framework
                 [retry](const ndn::Interest&) {
                     (*retry)("timeout");
                 });
+            }
+            catch (const std::exception&) {
+                const auto error = std::current_exception();
+                reportFirstRead(error);
+                finish({}, "Face::expressInterest failed for " +
+                           dataName.toUri());
+                return;
+            }
+            catch (...) {
+                const auto error = std::current_exception();
+                reportFirstRead(error);
+                finish({}, "Face::expressInterest failed for " +
+                           dataName.toUri());
+                return;
+            }
+            ndn::ScopedPendingInterestHandle previous;
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (state->completed.load()) {
+                    previous = std::move(pending);
+                }
+                else {
+                    previous = std::move(state->pendingInterest);
+                    state->pendingInterest = std::move(pending);
+                }
+            }
+            cancelPending(std::move(previous));
+
+            try {
+                // In the production DI executable the Face is pumped by one
+                // thread. Face::expressInterest() queues its send handler;
+                // this later handler is therefore the dispatch barrier, not
+                // merely evidence that queueing returned successfully.
+                boost::asio::post(m_face.getIoContext(),
+                    [state, dataName, requestId, keyScope, attempt,
+                     interestLifetimeMs, reportFirstRead] {
+                        const auto issuedUs = std::chrono::duration_cast<
+                            std::chrono::microseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count();
+                        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COLLAB_DATA_INTEREST_ISSUED"
+                                      << " timestamp_us=" << issuedUs
+                                      << " requestId=" << requestId.toUri()
+                                      << " keyScope=" << keyScope
+                                      << " dataName=" << dataName.toUri()
+                                      << " attempt=" << attempt
+                                      << " lifetimeMs=" << interestLifetimeMs);
+                        reportFirstRead(nullptr);
+                    });
+            }
+            catch (...) {
+                const auto error = std::current_exception();
+                reportFirstRead(error);
+                finish({}, "Face dispatch barrier failed for " +
+                           dataName.toUri());
+            }
         };
 
         auto cancelPoll = std::make_shared<std::function<void()>>();
@@ -7911,15 +8034,22 @@ namespace ndn_service_framework
             (*cancelPoll)();
         });
         std::unique_lock<std::mutex> lock(state->mutex);
-        state->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs + 50),
-                           [state] { return state->completed.load(); });
+        const bool completed = state->cv.wait_for(
+            lock, std::chrono::milliseconds(timeoutMs + 50),
+            [state] { return state->completed.load(); });
+        if (!completed) {
+            lock.unlock();
+            finish({}, "hard wait deadline for " + dataName.toUri());
+            lock.lock();
+        }
         if (!state->completed.load() || !state->error.empty() ||
             state->content.empty()) {
             NDN_LOG_ERROR("Exact collaboration fetch failed"
                           << " requestId=" << requestId.toUri()
                           << " keyScope=" << keyScope
                           << " dataName=" << dataName.toUri()
-                          << " attempts=" << state->attempts
+                          << " attempts="
+                          << state->attempts.load(std::memory_order_relaxed)
                           << " error=" << (state->error.empty() ?
                                              "deadline" : state->error));
             return std::nullopt;
@@ -7927,11 +8057,13 @@ namespace ndn_service_framework
         if (metrics != nullptr) {
             metrics->actualDataName = dataName.toUri();
             metrics->transportPayloadBytes = state->content.size();
-            metrics->wireBytes = state->wireBytes;
-            metrics->metadataBytes = state->wireBytes >= state->content.size() ?
-                state->wireBytes - state->content.size() : 0;
-            metrics->interestCount = state->attempts;
-            metrics->retryCount = state->attempts > 0 ? state->attempts - 1 : 0;
+            const auto wireBytes = state->wireBytes.load(std::memory_order_relaxed);
+            const auto attempts = state->attempts.load(std::memory_order_relaxed);
+            metrics->wireBytes = wireBytes;
+            metrics->metadataBytes = wireBytes >= state->content.size() ?
+                wireBytes - state->content.size() : 0;
+            metrics->interestCount = attempts;
+            metrics->retryCount = attempts > 0 ? attempts - 1 : 0;
             metrics->localCopyBytes = state->content.size();
         }
         return state->content;

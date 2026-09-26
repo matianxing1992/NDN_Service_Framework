@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <chrono>
+#include <exception>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -304,12 +305,49 @@ std::future<TensorBundle>
 NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
                                               const DependencyEdge& edge)
 {
+  auto operation = prefetchInputWithFirstReadBarrier(sessionId, edge);
+  return std::move(operation.result);
+}
+
+PromptCancellableDependencyIo::PrefetchOperation
+NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
+  const std::string& sessionId,
+  const DependencyEdge& edge)
+{
   if (edge.plannedDataName.empty() && !edge.useNdnsfDataV1) {
     throw std::invalid_argument(
       "NdnsfCollaborationDependencyIo requires plannedDataName for input " +
       edge.scope);
   }
-  return std::async(std::launch::async, [this, sessionId, edge] {
+  const auto cancelled = m_pendingPrefetchCancelled;
+  auto firstReadPromise = std::make_shared<std::promise<void>>();
+  auto firstReadStarted = firstReadPromise->get_future().share();
+  auto firstReadReported = std::make_shared<std::atomic<bool>>(false);
+  auto reportFirstRead = [firstReadPromise, firstReadReported]
+                         (std::exception_ptr error) noexcept {
+    bool expected = false;
+    if (!firstReadReported->compare_exchange_strong(
+          expected, true, std::memory_order_acq_rel)) {
+      return;
+    }
+    try {
+      if (error) {
+        firstReadPromise->set_exception(std::move(error));
+      }
+      else {
+        firstReadPromise->set_value();
+      }
+    }
+    catch (...) {
+    }
+  };
+  auto result = std::async(std::launch::async,
+                           [this, sessionId, edge, cancelled,
+                            reportFirstRead] {
+   try {
+    if (cancelled->load(std::memory_order_acquire)) {
+      throw std::runtime_error("dependency prefetch was cancelled");
+    }
     logDependencyStageMarker("begin", sessionId, edge,
                              m_ctx.localProvider().toUri());
     // TOKEN_FEEDBACK is not a V3 tensor endpoint.  The request-scoped
@@ -365,9 +403,13 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         const auto hardDeadline = started + std::chrono::milliseconds(
           edge.hardDeadlineMs);
         auto fetchExact = [this, &edge, &hardDeadline, producerMember,
-                           &transportMetrics](
+                           &transportMetrics, cancelled, reportFirstRead](
                             const ndn::Name& name,
                             bool initialProducerReadiness) {
+          if (cancelled->load(std::memory_order_acquire)) {
+            throw std::runtime_error(
+              "NDNSF_DATA_V1 dependency fetch was cancelled");
+          }
           if (m_groupCoordinator->terminal()) {
             throw std::runtime_error(
               "NDNSF_DATA_V1 group is terminal before exact fetch");
@@ -395,11 +437,17 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
             name,
             ndn::Name(producerMember->provider),
             std::max(1, bounded),
-            [coordinator = m_groupCoordinator] {
-              return coordinator->terminal();
+            [coordinator = m_groupCoordinator, cancelled] {
+              return cancelled->load(std::memory_order_acquire) ||
+                     coordinator->terminal();
             },
-            &segmentMetrics);
+            &segmentMetrics,
+            reportFirstRead);
           if (!content) {
+            if (cancelled->load(std::memory_order_acquire)) {
+              throw std::runtime_error(
+                "NDNSF_DATA_V1 dependency fetch was cancelled");
+            }
             throw std::runtime_error(
               "failed to fetch signed exact Data: " + name.toUri());
           }
@@ -679,10 +727,27 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         const auto key = localDataV1Key(
           sessionId, edge.collectiveOperationIndex, producerRank, tensorDigest);
         std::unique_lock<std::mutex> lock(m_localDataV1Mutex);
-        if (m_localDataV1Cv.wait_for(
-              lock,
-              std::chrono::milliseconds(m_fetchTimeoutMs),
-              [&] { return m_localDataV1Segments.count(key) != 0; })) {
+        const auto deadline = std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(m_fetchTimeoutMs);
+        // Holding the same mutex used by publishOutput makes the key check and
+        // condition-variable waiter registration atomic with respect to a
+        // local publication.
+        reportFirstRead(nullptr);
+        while (m_localDataV1Segments.count(key) == 0 &&
+               !cancelled->load(std::memory_order_acquire)) {
+          const auto nextCheck = std::min(
+            deadline, std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(10));
+          m_localDataV1Cv.wait_until(lock, nextCheck);
+          if (std::chrono::steady_clock::now() >= deadline &&
+              m_localDataV1Segments.count(key) == 0) {
+            break;
+          }
+        }
+        if (cancelled->load(std::memory_order_acquire)) {
+          throw std::runtime_error("local dependency prefetch was cancelled");
+        }
+        if (m_localDataV1Segments.count(key) != 0) {
           encodedSegments = m_localDataV1Segments.at(key);
         }
       }
@@ -704,7 +769,12 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
           std::chrono::milliseconds(m_fetchTimeoutMs);
         auto fetchExactSegment = [this, &edge, &capability, &nameBinding,
                                   &deadline, producerMember,
-                                  &transportMetrics](std::size_t index) {
+                                  &transportMetrics, cancelled,
+                                  reportFirstRead](std::size_t index) {
+          if (cancelled->load(std::memory_order_acquire)) {
+            throw std::runtime_error(
+              "NDNSF_DATA_V1 dependency segment fetch was cancelled");
+          }
           if (m_groupCoordinator->terminal()) {
             throw std::runtime_error(
               "NDNSF_DATA_V1 group is terminal before exact segment fetch");
@@ -723,11 +793,17 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
             ndn::Name(producerMember->provider),
             static_cast<int>(std::min<std::uint64_t>(
               remaining, static_cast<std::uint64_t>(m_fetchTimeoutMs))),
-            [coordinator = m_groupCoordinator] {
-              return coordinator->terminal();
+            [coordinator = m_groupCoordinator, cancelled] {
+              return cancelled->load(std::memory_order_acquire) ||
+                     coordinator->terminal();
             },
-            &segmentMetrics);
+            &segmentMetrics,
+            reportFirstRead);
           if (!content) {
+            if (cancelled->load(std::memory_order_acquire)) {
+              throw std::runtime_error(
+                "NDNSF_DATA_V1 dependency segment fetch was cancelled");
+            }
             throw std::runtime_error(
               "failed to fetch signed exact NDNSF_DATA_V1 segment: " +
               name.toUri());
@@ -846,7 +922,31 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
     logDependencyStageMarker("complete", sessionId, edge,
                              m_ctx.localProvider().toUri());
     return bundle;
+   }
+   catch (...) {
+     reportFirstRead(std::current_exception());
+     throw;
+   }
   });
+  return {std::move(result), std::move(firstReadStarted)};
+}
+
+bool
+NdnsfCollaborationDependencyIo::supportsPromptPrefetchCancellation(
+  const DependencyEdge& edge) const noexcept
+{
+  // DataV1 exact fetches accept cancellation polling and local segment waits
+  // are condition-variable-backed. Legacy fetchLarge has no cancel contract.
+  return edge.useNdnsfDataV1;
+}
+
+void
+NdnsfCollaborationDependencyIo::cancelPendingPrefetches() noexcept
+{
+  m_pendingPrefetchCancelled->store(true, std::memory_order_release);
+  // Local-segment waits recheck the atomic at 10ms intervals, so this wakeup
+  // does not need to contend for their data mutex.
+  m_localDataV1Cv.notify_all();
 }
 
 void

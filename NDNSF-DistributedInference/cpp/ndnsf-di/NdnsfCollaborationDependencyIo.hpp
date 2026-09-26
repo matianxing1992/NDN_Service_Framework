@@ -6,6 +6,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 
+#include <atomic>
 #include <condition_variable>
 #include <future>
 #include <map>
@@ -16,7 +17,8 @@
 
 namespace ndnsf::di {
 
-class NdnsfCollaborationDependencyIo : public DependencyIo
+class NdnsfCollaborationDependencyIo : public DependencyIo,
+                                     public PromptCancellableDependencyIo
 {
 public:
   explicit NdnsfCollaborationDependencyIo(
@@ -29,6 +31,17 @@ public:
 
   std::future<TensorBundle>
   prefetchInput(const std::string& sessionId, const DependencyEdge& edge) override;
+
+  PromptCancellableDependencyIo::PrefetchOperation
+  prefetchInputWithFirstReadBarrier(
+    const std::string& sessionId, const DependencyEdge& edge) override;
+
+  bool
+  supportsPromptPrefetchCancellation(
+    const DependencyEdge& edge) const noexcept override;
+
+  void
+  cancelPendingPrefetches() noexcept override;
 
   /**
    * Publish a role output under the deterministic Data name assigned by the
@@ -51,6 +64,8 @@ private:
   std::mutex m_localDataV1Mutex;
   std::condition_variable m_localDataV1Cv;
   std::map<std::string, std::vector<ndn::Buffer>> m_localDataV1Segments;
+  std::shared_ptr<std::atomic<bool>> m_pendingPrefetchCancelled =
+    std::make_shared<std::atomic<bool>>(false);
 };
 
 } // namespace ndnsf::di

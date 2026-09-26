@@ -283,40 +283,165 @@ fetchInputs(const NativeEpochCoordinatorConfig& config,
 
 struct PendingInputPrefetch
 {
+  // Both owners outlive `pending` futures during destruction.
+  std::shared_ptr<DependencyIo> io;
+  std::shared_ptr<PromptCancellableDependencyIo> cancellation;
+  bool cancelOnAbandon = false;
+  std::exception_ptr deferredStartFailure;
   RoleSpec role;
   std::map<std::string, TensorBundle> inputs;
   std::vector<std::pair<DependencyEdge, std::future<TensorBundle>>> pending;
+  std::vector<std::shared_future<void>> firstReadStarted;
+
+  PendingInputPrefetch(std::shared_ptr<DependencyIo> owner,
+                       RoleSpec nextRole,
+                       std::map<std::string, TensorBundle> readyInputs)
+    : io(std::move(owner))
+    , cancellation(std::dynamic_pointer_cast<PromptCancellableDependencyIo>(io))
+    , role(std::move(nextRole))
+    , inputs(std::move(readyInputs))
+  {
+  }
+
+  PendingInputPrefetch(const PendingInputPrefetch&) = delete;
+  PendingInputPrefetch& operator=(const PendingInputPrefetch&) = delete;
+
+  ~PendingInputPrefetch()
+  {
+    if (cancelOnAbandon && cancellation) {
+      // Cancel first; pending async futures are destroyed next, while `io`
+      // and the optional capability remain alive until the final member is destroyed.
+      cancellation->cancelPendingPrefetches();
+    }
+  }
 };
 
-PendingInputPrefetch
+void
 beginInputPrefetch(const NativeEpochCoordinatorConfig& config,
-                   RoleSpec role,
-                   std::map<std::string, TensorBundle> inputs = {})
+                   PendingInputPrefetch& result)
 {
-  // Interest registration is deliberately initiated after the current role
-  // future is ready, but before feedback publication and state bookkeeping.
-  // The returned futures are consumed exactly once by the next epoch.
-  PendingInputPrefetch result;
-  result.role = std::move(role);
-  result.inputs = std::move(inputs);
+  // Start promptly-cancellable exact fetches before synchronous token-event
+  // publication. If the request then fails, cancellation runs before future
+  // destruction. Successful futures are consumed once.
+  result.pending.reserve(result.role.inputs.size());
+  result.firstReadStarted.reserve(result.role.inputs.size());
   for (const auto& edge : result.role.inputs) {
     if (result.inputs.find(edge.scope) != result.inputs.end()) {
       continue;
     }
-    result.pending.emplace_back(
-      edge, config.io->prefetchInput(config.sessionId, edge));
+    if (!result.cancellation ||
+        !result.cancellation->supportsPromptPrefetchCancellation(edge)) {
+      continue;
+    }
+    // Allocate/copy the edge slot before starting async work. If setup throws,
+    // no unowned future can block its destructor ahead of the cancel hook.
+    result.pending.emplace_back(edge, std::future<TensorBundle>{});
+    result.cancelOnAbandon = true;
+    auto operation = result.cancellation->prefetchInputWithFirstReadBarrier(
+      config.sessionId, edge);
+    result.pending.back().second = std::move(operation.result);
+    if (!result.pending.back().second.valid()) {
+      throw std::runtime_error(
+        "prompt prefetch returned an invalid result future");
+    }
+    if (!operation.firstReadStarted.valid()) {
+      throw std::runtime_error(
+        "prompt prefetch did not provide a first-read-start barrier");
+    }
+    result.firstReadStarted.push_back(
+      std::move(operation.firstReadStarted));
   }
-  return result;
+}
+
+void
+waitForFirstReadStart(const NativeEpochCoordinatorConfig& config,
+                      const PendingInputPrefetch& pending)
+{
+  for (const auto& started : pending.firstReadStarted) {
+    while (started.wait_for(std::chrono::milliseconds(10)) !=
+           std::future_status::ready) {
+      throwIfStopped(config);
+    }
+    started.get();
+  }
+}
+
+std::future<TensorBundle>
+failedPrefetchFuture(std::exception_ptr error)
+{
+  std::promise<TensorBundle> promise;
+  auto future = promise.get_future();
+  promise.set_exception(std::move(error));
+  return future;
+}
+
+void
+startRemainingInputPrefetch(const NativeEpochCoordinatorConfig& config,
+                            PendingInputPrefetch& pending,
+                            bool deferStartFailure)
+{
+  for (const auto& edge : pending.role.inputs) {
+    if (pending.inputs.find(edge.scope) != pending.inputs.end() ||
+        std::any_of(pending.pending.begin(), pending.pending.end(),
+                    [&edge] (const auto& item) {
+                      return item.first.scope == edge.scope;
+                    })) {
+      continue;
+    }
+    try {
+      pending.pending.emplace_back(edge, std::future<TensorBundle>{});
+    }
+    catch (...) {
+      if (!deferStartFailure) {
+        throw;
+      }
+      // Edge-slot allocation is part of starting this compatibility read.
+      // Preserve an already-admitted event's feedback/state commit.
+      pending.deferredStartFailure = std::current_exception();
+      return;
+    }
+    pending.cancelOnAbandon = pending.cancelOnAbandon ||
+      (pending.cancellation &&
+       pending.cancellation->supportsPromptPrefetchCancellation(edge));
+    try {
+      auto future = config.io->prefetchInput(config.sessionId, edge);
+      if (!future.valid()) {
+        throw std::runtime_error(
+          "dependency prefetch returned an invalid future");
+      }
+      pending.pending.back().second = std::move(future);
+    }
+    catch (...) {
+      if (!deferStartFailure) {
+        throw;
+      }
+      const auto error = std::current_exception();
+      // Event admission is already committed at this point. Preserve that
+      // event's feedback/state commit and surface the startup failure only
+      // when the next role consumes this edge.
+      try {
+        pending.pending.back().second = failedPrefetchFuture(error);
+      }
+      catch (...) {
+        pending.deferredStartFailure = error;
+        return;
+      }
+    }
+  }
 }
 
 std::map<std::string, TensorBundle>
-completeInputPrefetch(PendingInputPrefetch pending)
+completeInputPrefetch(PendingInputPrefetch& pending)
 {
+  if (pending.deferredStartFailure) {
+    std::rethrow_exception(pending.deferredStartFailure);
+  }
   for (auto& item : pending.pending) {
     auto bundle = item.second.get();
     validateTensorBundleForEdge(item.first, bundle);
     pending.inputs.emplace(item.first.scope, std::move(bundle));
   }
+  pending.cancelOnAbandon = false;
   return std::move(pending.inputs);
 }
 
@@ -1008,7 +1133,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     std::map<std::string, TensorBundle> inputs;
     if (nextInputPrefetch) {
       executable = std::move(nextInputPrefetch->role);
-      inputs = completeInputPrefetch(std::move(*nextInputPrefetch));
+      inputs = completeInputPrefetch(*nextInputPrefetch);
       nextInputPrefetch.reset();
     }
     else {
@@ -1222,8 +1347,11 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           // current epoch still performs state bookkeeping and any later
           // stages consume the result.  The next loop consumes this future as
           // pre-satisfied input, so the dependency is never fetched twice.
-          nextInputPrefetch.emplace(beginInputPrefetch(
-            config, executableRoleForEpoch(config, epoch + 1)));
+          nextInputPrefetch.emplace(
+            config.io, executableRoleForEpoch(config, epoch + 1),
+            std::map<std::string, TensorBundle>{});
+          beginInputPrefetch(config, *nextInputPrefetch);
+          startRemainingInputPrefetch(config, *nextInputPrefetch, false);
         }
         if (executable.deferStateCommit &&
             !config.runtime.commitDecodeStateTransition(
@@ -1289,6 +1417,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       const bool atMax = epoch + 1 >= config.maxEpochs;
       const bool stopSequence = !eos && hasStopSuffix(
         candidateText, config.stopStrings);
+      const bool terminal = eos || stopSequence || atMax;
       finishHint = eos ? "EOS" : stopSequence ? "STOP_SEQUENCE" :
                    atMax ? "MAX_TOKENS" : "NONE";
       if (config.textDecoder) {
@@ -1308,25 +1437,6 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       if (replayingCommittedPrefix) {
         ++result.prefixTokensRecomputed;
       }
-      else {
-        const auto event = makeTokenEvent(token, epoch + 1, candidateTokenIds,
-                                          finishHint, config.samplingDigest,
-                                          textDelta);
-        throwIfStopped(config);
-        if (config.eventSink &&
-            !config.eventSink(std::vector<std::uint8_t>(event.begin(), event.end()))) {
-          throw std::runtime_error("native epoch token event admission was rejected");
-        }
-        if (config.eventSink) {
-          ++result.eventsPublished;
-        }
-        throwIfStopped(config);
-      }
-      generated.push_back(token);
-      if (config.textDecoder) {
-        generatedText = std::move(stableCandidateText);
-      }
-
       // Feedback is produced for the next decode epoch.  Use the next
       // sequence projection so its DATA_V1 operation index and exact name are
       // identical to the input edge that the upstream role will fetch on its
@@ -1340,7 +1450,6 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       if (feedbackEdge == nextRole.outputs.end()) {
         throw std::runtime_error("terminal role is missing TOKEN_FEEDBACK output");
       }
-      const bool terminal = eos || stopSequence || atMax;
       auto feedbackBundle = makeTokenFeedback(token, terminal);
       if (!terminal) {
         feedbackBundle = attachGenerationEpochLineage(
@@ -1363,14 +1472,45 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
             std::move(finalizationLineage),
             *feedbackEdge));
       }
+
+      std::vector<std::uint8_t> event;
+      if (!replayingCommittedPrefix) {
+        const auto eventWire = makeTokenEvent(
+          token, epoch + 1, candidateTokenIds, finishHint,
+          config.samplingDigest, textDelta);
+        event.assign(eventWire.begin(), eventWire.end());
+      }
       if ((!terminal || config.checkpointFinalize) &&
           epoch < config.maxEpochs) {
-        // The next role projection fixes the Data name, segment bounds, and
-        // operation identity before the current feedback is published.  This
-        // is the intended Interest-before-Data overlap for the next token.
-        nextInputPrefetch.emplace(beginInputPrefetch(
-          config, nextRole));
+        // Start cancellable exact fetches only after all token, stop, feedback,
+        // and event construction succeeded, but before synchronous event
+        // publication. The next role projection fixes the exact Data names.
+        throwIfStopped(config);
+        nextInputPrefetch.emplace(
+          config.io, nextRole, std::map<std::string, TensorBundle>{});
+        beginInputPrefetch(config, *nextInputPrefetch);
+        waitForFirstReadStart(config, *nextInputPrefetch);
       }
+      if (!replayingCommittedPrefix) {
+        throwIfStopped(config);
+        if (config.eventSink && !config.eventSink(std::move(event))) {
+          throw std::runtime_error("native epoch token event admission was rejected");
+        }
+        if (config.eventSink) {
+          ++result.eventsPublished;
+        }
+        throwIfStopped(config);
+      }
+      if (nextInputPrefetch) {
+        // Non-cancellable compatibility fetches retain their old position:
+        // after the event commit, but before feedback publication.
+        startRemainingInputPrefetch(config, *nextInputPrefetch, true);
+      }
+      generated.push_back(token);
+      if (config.textDecoder) {
+        generatedText = std::move(stableCandidateText);
+      }
+
       throwIfStopped(config);
       config.io->publishOutput(config.sessionId, *feedbackEdge, feedbackBundle);
       throwIfStopped(config);

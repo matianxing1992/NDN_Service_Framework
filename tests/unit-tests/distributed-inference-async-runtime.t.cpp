@@ -257,9 +257,16 @@ public:
   std::map<std::string, TensorBundle> publishedByScope;
 };
 
-class BlockingDependencyIo : public DependencyIo
+class BlockingDependencyIo : public DependencyIo,
+                             public PromptCancellableDependencyIo
 {
 public:
+  bool
+  supportsPromptPrefetchCancellation(const DependencyEdge&) const noexcept override
+  {
+    return promptCancellationSupported;
+  }
+
   std::future<TensorBundle>
   prefetchInput(const std::string& sessionId, const DependencyEdge& edge) override
   {
@@ -280,6 +287,43 @@ public:
       waiters[itemKey].push_back(std::move(promise));
     }
     return future;
+  }
+
+  PromptCancellableDependencyIo::PrefetchOperation
+  prefetchInputWithFirstReadBarrier(
+    const std::string& sessionId, const DependencyEdge& edge) override
+  {
+    auto result = prefetchInput(sessionId, edge);
+    if (promptStartBarrierFactory) {
+      return {std::move(result), promptStartBarrierFactory(edge)};
+    }
+    std::promise<void> ready;
+    ready.set_value();
+    return {std::move(result), ready.get_future().share()};
+  }
+
+  void
+  cancelPendingPrefetches() noexcept override
+  {
+    std::vector<std::shared_ptr<std::promise<TensorBundle>>> cancelled;
+    try {
+      std::lock_guard<std::mutex> lock(mutex);
+      for (auto& item : waiters) {
+        cancelled.insert(cancelled.end(), item.second.begin(), item.second.end());
+      }
+      waiters.clear();
+    }
+    catch (...) {
+      return;
+    }
+    for (auto& promise : cancelled) {
+      try {
+        promise->set_exception(std::make_exception_ptr(
+          std::runtime_error("dependency prefetch cancelled")));
+      }
+      catch (...) {
+      }
+    }
   }
 
   void
@@ -315,6 +359,7 @@ private:
   }
 
 public:
+  bool promptCancellationSupported = true;
   std::mutex mutex;
   std::map<std::string, TensorBundle> available;
   std::map<std::string, std::vector<std::shared_ptr<std::promise<TensorBundle>>>> waiters;
@@ -322,6 +367,8 @@ public:
   std::vector<std::string> publishedNames;
   std::function<void(const std::string&)> prefetchObserver;
   std::function<void(const std::string&)> publishObserver;
+  std::function<std::shared_future<void>(const DependencyEdge&)>
+    promptStartBarrierFactory;
 };
 
 class FailingPublishDependencyIo : public DependencyIo
@@ -357,9 +404,70 @@ public:
   std::atomic<std::size_t> publicationCalls{0};
 };
 
+class CancellationBlockingDependencyIo final : public DependencyIo,
+                                               public PromptCancellableDependencyIo
+{
+public:
+  bool
+  supportsPromptPrefetchCancellation(const DependencyEdge&) const noexcept override
+  {
+    return true;
+  }
+
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge&) override
+  {
+    ++prefetchCalls;
+    return std::async(std::launch::async, [this] () -> TensorBundle {
+      std::unique_lock<std::mutex> lock(mutex);
+      cv.wait(lock, [this] { return cancelled; });
+      throw std::runtime_error("dependency prefetch cancelled");
+    });
+  }
+
+  PromptCancellableDependencyIo::PrefetchOperation
+  prefetchInputWithFirstReadBarrier(
+    const std::string& sessionId, const DependencyEdge& edge) override
+  {
+    auto result = prefetchInput(sessionId, edge);
+    std::promise<void> ready;
+    ready.set_value();
+    return {std::move(result), ready.get_future().share()};
+  }
+
+  void
+  cancelPendingPrefetches() noexcept override
+  {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      ++cancelCalls;
+      cancelled = true;
+    }
+    cv.notify_all();
+  }
+
+  void
+  publishOutput(const std::string&,
+                const DependencyEdge&,
+                const TensorBundle&) override
+  {
+    ++publicationCalls;
+  }
+
+  std::atomic<std::size_t> prefetchCalls{0};
+  std::atomic<std::size_t> cancelCalls{0};
+  std::atomic<std::size_t> publicationCalls{0};
+
+private:
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool cancelled = false;
+};
+
 enum class NativeEpochPublicationFault
 {
   EventAdmission,
+  PrefetchCancellation,
   FeedbackPublication,
   ActivationPublication,
 };
@@ -370,6 +478,8 @@ struct NativeEpochPublicationFailureResult
   std::size_t runnerCalls = 0;
   std::size_t eventCalls = 0;
   std::size_t publicationCalls = 0;
+  std::size_t prefetchCalls = 0;
+  std::size_t cancelCalls = 0;
   ProviderDecodeStateSnapshot state;
 };
 
@@ -443,8 +553,14 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
   if (fault == NativeEpochPublicationFault::ActivationPublication) {
     assignment.providerByRole["/Consumer"] = "/provider/B";
   }
-  auto io = std::make_shared<FailingPublishDependencyIo>(
-    fault != NativeEpochPublicationFault::EventAdmission);
+  const auto cancellationIo = fault ==
+      NativeEpochPublicationFault::PrefetchCancellation
+    ? std::make_shared<CancellationBlockingDependencyIo>() : nullptr;
+  std::shared_ptr<DependencyIo> io = cancellationIo
+    ? std::static_pointer_cast<DependencyIo>(cancellationIo)
+    : std::static_pointer_cast<DependencyIo>(
+        std::make_shared<FailingPublishDependencyIo>(
+          fault != NativeEpochPublicationFault::EventAdmission));
 
   std::atomic<std::size_t> eventCalls{0};
   NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
@@ -461,7 +577,8 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
        {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
                     rawTensorPayload<std::int64_t>({11, 12, 13})}})},
   };
-  config.maxEpochs = 1;
+  config.maxEpochs = fault == NativeEpochPublicationFault::PrefetchCancellation
+    ? 2 : 1;
   config.tokenInputName = "input_ids";
   config.stateInputNames = {"attention_kv_in"};
   config.stateOutputNames = {"attention_kv_out"};
@@ -472,7 +589,8 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
   if (fault != NativeEpochPublicationFault::ActivationPublication) {
     config.eventSink = [&eventCalls, fault] (const std::vector<std::uint8_t>&) {
       ++eventCalls;
-      return fault != NativeEpochPublicationFault::EventAdmission;
+      return fault != NativeEpochPublicationFault::EventAdmission &&
+             fault != NativeEpochPublicationFault::PrefetchCancellation;
     };
   }
 
@@ -485,7 +603,16 @@ runNativeEpochPublicationFailure(NativeEpochPublicationFault fault)
   }
   result.runnerCalls = runnerCalls.load();
   result.eventCalls = eventCalls.load();
-  result.publicationCalls = io->publicationCalls.load();
+  if (cancellationIo) {
+    result.publicationCalls = cancellationIo->publicationCalls.load();
+    result.prefetchCalls = cancellationIo->prefetchCalls.load();
+    result.cancelCalls = cancellationIo->cancelCalls.load();
+  }
+  else {
+    result.publicationCalls =
+      std::static_pointer_cast<FailingPublishDependencyIo>(io)
+        ->publicationCalls.load();
+  }
   result.state = runtime.decodeStateSnapshot();
   return result;
 }
@@ -5354,6 +5481,24 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackRejectedEventAdmission)
   BOOST_CHECK_EQUAL(result.state.candidates, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorCancelsAbandonedPrefetchBeforeFutureDestruction)
+{
+  const auto result = runNativeEpochPublicationFailure(
+    NativeEpochPublicationFault::PrefetchCancellation);
+  BOOST_CHECK_EQUAL(result.error,
+                    "native epoch token event admission was rejected");
+  BOOST_CHECK_EQUAL(result.runnerCalls, 1U);
+  BOOST_CHECK_EQUAL(result.eventCalls, 1U);
+  BOOST_CHECK_EQUAL(result.prefetchCalls, 1U);
+  BOOST_CHECK_EQUAL(result.cancelCalls, 1U);
+  BOOST_CHECK_EQUAL(result.publicationCalls, 0U);
+  BOOST_CHECK_EQUAL(result.state.commits, 0U);
+  BOOST_CHECK_EQUAL(result.state.rollbacks, 1U);
+  BOOST_CHECK_EQUAL(result.state.entries, 0U);
+  BOOST_CHECK_EQUAL(result.state.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(result.state.candidates, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRollsBackFailedFeedbackPublication)
 {
   const auto result = runNativeEpochPublicationFailure(
@@ -7244,14 +7389,37 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     NativeEpochCoordinatorResult result;
     std::vector<std::string> events;
     std::vector<std::string> ioEvents;
+    std::vector<std::string> timeline;
     std::shared_ptr<BlockingDependencyIo> io;
+    std::string error;
+    ProviderDecodeStateSnapshot decodeState;
   };
 
-  const auto run = [] (std::vector<std::vector<float>> logitsByEpoch,
+  struct FirstReadGate
+  {
+    FirstReadGate()
+      : requestedFuture(requested.get_future().share())
+      , startedFuture(started.get_future().share())
+    {
+    }
+
+    std::promise<void> requested;
+    std::shared_future<void> requestedFuture;
+    std::promise<void> started;
+    std::shared_future<void> startedFuture;
+    std::atomic<bool> requestReported{false};
+    std::atomic<bool> eventAdmitted{false};
+  };
+  std::shared_ptr<FirstReadGate> firstReadGate;
+  bool captureRunError = false;
+  bool failNextCompatibilityPrefetch = false;
+
+  const auto run = [&] (std::vector<std::vector<float>> logitsByEpoch,
                        std::vector<std::string> stopStrings,
                        std::string samplingMode = "Greedy",
                        std::uint64_t samplingSeed = 1'750'001,
-                       bool stateful = false) {
+                       bool stateful = false,
+                       bool promptCancellationSupported = true) {
     NativeProviderRuntime runtime(1);
     const auto maxEpochs = logitsByEpoch.size();
     const auto identity = exactStateIdentity();
@@ -7315,13 +7483,32 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     NativeProviderAssignment assignment;
     assignment.providerByRole[runnerSpec.role] = identity.providerIdentity;
     auto io = std::make_shared<BlockingDependencyIo>();
+    io->promptCancellationSupported = promptCancellationSupported;
+    if (firstReadGate) {
+      const auto gate = firstReadGate;
+      io->promptStartBarrierFactory = [gate] (const DependencyEdge&) {
+        if (!gate->requestReported.exchange(true)) {
+          gate->requested.set_value();
+        }
+        return gate->startedFuture;
+      };
+    }
     std::vector<std::string> events;
     std::vector<std::string> ioEvents;
-    io->prefetchObserver = [&ioEvents] (const std::string& name) {
+    std::vector<std::string> timeline;
+    io->prefetchObserver = [&ioEvents, &timeline,
+                            &failNextCompatibilityPrefetch] (
+                             const std::string& name) {
       ioEvents.push_back("prefetch:" + name);
+      timeline.push_back("prefetch:" + name);
+      if (failNextCompatibilityPrefetch) {
+        failNextCompatibilityPrefetch = false;
+        throw std::runtime_error("injected compatibility prefetch start failure");
+      }
     };
-    io->publishObserver = [&ioEvents] (const std::string& name) {
+    io->publishObserver = [&ioEvents, &timeline] (const std::string& name) {
       ioEvents.push_back("publish:" + name);
+      timeline.push_back("publish:" + name);
     };
 
     NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
@@ -7373,14 +7560,30 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
       const std::vector<std::int64_t>& tokens, bool) {
       return decodeText(tokens);
     };
-    config.eventSink = [&events] (const std::vector<std::uint8_t>& wire) {
+    config.eventSink = [&events, &timeline, &firstReadGate] (
+                         const std::vector<std::uint8_t>& wire) {
+      if (firstReadGate) {
+        firstReadGate->eventAdmitted.store(true);
+      }
       events.emplace_back(wire.begin(), wire.end());
+      timeline.push_back("event:" + std::to_string(events.size()));
       return true;
     };
 
-    auto result = runNativeEpochCoordinator(std::move(config));
+    NativeEpochCoordinatorResult result;
+    std::string error;
+    try {
+      result = runNativeEpochCoordinator(std::move(config));
+    }
+    catch (const std::exception& caught) {
+      if (!captureRunError) {
+        throw;
+      }
+      error = caught.what();
+    }
     return GenerationRun{std::move(result), std::move(events),
-                         std::move(ioEvents), std::move(io)};
+                         std::move(ioEvents), std::move(timeline), std::move(io),
+                         std::move(error), runtime.decodeStateSnapshot()};
   };
 
   const auto maxTokens = run({
@@ -7400,11 +7603,77 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
                     "publish:" + maxTokens.ioEvents[0].substr(9));
   BOOST_CHECK(maxTokens.ioEvents[2].find("publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
   BOOST_CHECK(maxTokens.ioEvents[2].find("/bundle/2") != std::string::npos);
+  BOOST_REQUIRE_EQUAL(maxTokens.timeline.size(), 5U);
+  BOOST_CHECK(maxTokens.timeline[0].find("prefetch:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+  BOOST_CHECK_EQUAL(maxTokens.timeline[1], "event:1");
+  BOOST_CHECK(maxTokens.timeline[2].find("publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+  BOOST_CHECK_EQUAL(maxTokens.timeline[3], "event:2");
+  BOOST_CHECK(maxTokens.timeline[4].find("publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
   BOOST_REQUIRE_EQUAL(maxTokens.events.size(), 2U);
   BOOST_CHECK(maxTokens.events[0].find("\"textDelta\":\"你\"") !=
               std::string::npos);
   BOOST_CHECK(maxTokens.events[1].find("\"textDelta\":\"好\"") !=
               std::string::npos);
+
+  firstReadGate = std::make_shared<FirstReadGate>();
+  const auto gate = firstReadGate;
+  auto gatedRun = std::async(std::launch::async, [&] {
+    return run({
+      {0.0F, 5.0F, 0.0F, 0.0F},
+      {0.0F, 0.0F, 5.0F, 0.0F},
+    }, {}, "Greedy", 1'750'001, true);
+  });
+  const bool firstReadRequested = gate->requestedFuture.wait_for(
+    std::chrono::seconds(2)) ==
+    std::future_status::ready;
+  if (firstReadRequested) {
+    BOOST_CHECK(gatedRun.wait_for(std::chrono::milliseconds(50)) ==
+                std::future_status::timeout);
+    BOOST_CHECK(!gate->eventAdmitted.load());
+  }
+  // Always release the test barrier before any assertion can return from this
+  // case; otherwise an async future destructor could wait forever on a failed
+  // first-read ordering regression.
+  gate->started.set_value();
+  const auto barrierRun = gatedRun.get();
+  firstReadGate.reset();
+  BOOST_REQUIRE(firstReadRequested);
+  BOOST_REQUIRE(barrierRun.error.empty());
+  BOOST_REQUIRE(gate->eventAdmitted.load());
+  BOOST_REQUIRE_GE(barrierRun.timeline.size(), 2U);
+  BOOST_CHECK(barrierRun.timeline.front().find("prefetch:") == 0);
+  BOOST_CHECK_EQUAL(barrierRun.timeline[1], "event:1");
+
+  const auto compatibilityFallback = run({
+    {0.0F, 5.0F, 0.0F, 0.0F},
+    {0.0F, 0.0F, 5.0F, 0.0F},
+  }, {}, "Greedy", 1'750'001, false, false);
+  BOOST_REQUIRE_EQUAL(compatibilityFallback.timeline.size(), 5U);
+  BOOST_CHECK_EQUAL(compatibilityFallback.timeline[0], "event:1");
+  BOOST_CHECK(compatibilityFallback.timeline[1].find(
+    "prefetch:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+  BOOST_CHECK(compatibilityFallback.timeline[2].find(
+    "publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+  BOOST_CHECK_EQUAL(compatibilityFallback.timeline[3], "event:2");
+  BOOST_CHECK(compatibilityFallback.timeline[4].find(
+    "publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+
+  captureRunError = true;
+  failNextCompatibilityPrefetch = true;
+  const auto deferredCompatibilityFailure = run({
+    {0.0F, 5.0F, 0.0F, 0.0F},
+    {0.0F, 0.0F, 5.0F, 0.0F},
+  }, {}, "Greedy", 1'750'001, true, false);
+  captureRunError = false;
+  BOOST_CHECK_EQUAL(
+    deferredCompatibilityFailure.error,
+    "injected compatibility prefetch start failure");
+  BOOST_REQUIRE_EQUAL(deferredCompatibilityFailure.events.size(), 1U);
+  BOOST_REQUIRE_EQUAL(deferredCompatibilityFailure.timeline.size(), 3U);
+  BOOST_CHECK_EQUAL(deferredCompatibilityFailure.timeline[0], "event:1");
+  BOOST_CHECK(deferredCompatibilityFailure.timeline[1].find("prefetch:") == 0);
+  BOOST_CHECK(deferredCompatibilityFailure.timeline[2].find("publish:") == 0);
+  BOOST_CHECK_EQUAL(deferredCompatibilityFailure.decodeState.commits, 1U);
 
   bool terminalFeedbackSeen = false;
   for (const auto& item : maxTokens.io->available) {
@@ -7436,6 +7705,10 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
   BOOST_CHECK(stopPayload.find("\"text\":\"你好🙂\"") != std::string::npos);
   BOOST_CHECK_EQUAL(stopped.result.epochsExecuted, 3U);
   BOOST_CHECK_EQUAL(stopped.result.eventsPublished, 3U);
+  BOOST_CHECK_EQUAL(std::count_if(
+    stopped.ioEvents.begin(), stopped.ioEvents.end(), [] (const auto& event) {
+      return event.rfind("prefetch:", 0) == 0;
+    }), 2);
 
   const auto seededA = run({
     {1.0F, 2.0F, 3.0F, 0.0F},

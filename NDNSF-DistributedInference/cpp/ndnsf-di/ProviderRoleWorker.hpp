@@ -137,6 +137,37 @@ public:
                 const TensorBundle& bundle) = 0;
 };
 
+/**
+ * Optional additive capability for request-scoped DependencyIo implementations
+ * that can promptly cancel outstanding prefetches. DependencyIo's vtable stays
+ * unchanged for existing implementations. Cancellation must be idempotent,
+ * nonblocking, and safe from the coordinator thread; futures must be drained
+ * before the implementation is destroyed.
+ */
+class PromptCancellableDependencyIo
+{
+public:
+  virtual ~PromptCancellableDependencyIo() = default;
+
+  virtual bool
+  supportsPromptPrefetchCancellation(const DependencyEdge& edge) const noexcept = 0;
+
+  struct PrefetchOperation
+  {
+    std::future<TensorBundle> result;
+    // Ready only once the first real read is issued or a local waiter/cache
+    // path is registered. Task creation or queueing is not sufficient.
+    std::shared_future<void> firstReadStarted;
+  };
+
+  virtual PrefetchOperation
+  prefetchInputWithFirstReadBarrier(const std::string& sessionId,
+                                    const DependencyEdge& edge) = 0;
+
+  virtual void
+  cancelPendingPrefetches() noexcept = 0;
+};
+
 // Preserve the authenticated transfer lineage before the coordinator removes
 // its runtime-only tensor from the model-facing bundle.
 void

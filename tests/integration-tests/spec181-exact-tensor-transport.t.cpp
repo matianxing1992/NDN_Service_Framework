@@ -1,14 +1,19 @@
 #include "tests/boost-test.hpp"
 #include "ndnsf-integration-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include <ndn-cxx/security/signing-helpers.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstring>
+#include <future>
 #include <map>
+#include <mutex>
 
 namespace ndnsf::di::tests {
 using namespace ndn_service_framework;
@@ -33,8 +38,20 @@ runTransfer(const std::string& mode)
   auto& consumer = environment.provider(1);
   std::size_t mutations = 0;
   std::size_t segmentInterests = 0;
+  std::atomic<std::size_t> manifestInterests{0};
+  std::mutex manifestNameMutex;
+  std::string expectedManifestUri;
   auto forwardInterest = consumerFace.onSendInterest.connect(
       [&] (const ndn::Interest& interest) {
+        bool isExpectedManifest = false;
+        {
+          std::lock_guard<std::mutex> lock(manifestNameMutex);
+          isExpectedManifest = !expectedManifestUri.empty() &&
+            interest.getName().toUri() == expectedManifestUri;
+        }
+        if (isExpectedManifest) {
+          ++manifestInterests;
+        }
         if (interest.getName().toUri().find("/SEG/") != std::string::npos) {
           ++segmentInterests;
         }
@@ -196,6 +213,10 @@ runTransfer(const std::string& mode)
   edge.microbatch = 0;
   edge.noProgressDeadlineMs = capability.noProgressMs;
   edge.hardDeadlineMs = capability.hardDeadlineMs;
+  {
+    std::lock_guard<std::mutex> lock(manifestNameMutex);
+    expectedManifestUri = edge.manifestDataName;
+  }
 
   ServiceProvider::CollaborationAssignment producerAssignment;
   producerAssignment.role = endpoint.producerRole;
@@ -224,7 +245,11 @@ runTransfer(const std::string& mode)
   NdnsfCollaborationDependencyIo consumerIo(
       consumerContext, 5000, chunkSize, 60000, consumerCoordinator);
   const auto expectedSegments = 1 + (original.payload.size() - 1) / chunkSize;
-  if (manual) {
+  if (mode == "cancel") {
+    // Leave the authorized exact manifest absent so cancellation must stop a
+    // real production adapter fetch rather than a completed/local fast path.
+  }
+  else if (manual) {
     // Produce the old representation with the maintained legacy encoders.
     // Consumer verification and restoration still use the real DependencyIo.
     std::vector<ProviderGroupBytes> chunks;
@@ -301,6 +326,126 @@ runTransfer(const std::string& mode)
   }
   if (mode == "context") edge.endpointDigest = sha('9');
 
+  if (mode == "cancel") {
+    const auto roleName = endpoint.consumerRole;
+    NativeProviderRuntime runtime(1);
+    auto runner = makeNativeModelRunner(
+      [] (const RoleExecutionContext&) {
+        NamedTensor logits;
+        logits.name = "logits";
+        logits.elementType = TensorElementType::Float32;
+        logits.shape = {1, 2};
+        const float values[] = {0.0F, 5.0F};
+        logits.payload.resize(sizeof(values));
+        std::memcpy(logits.payload.data(), values, sizeof(values));
+        return std::map<std::string, TensorBundle>{
+          {"onnx-output-bundle",
+           makeEncodedTensorBundle("onnx-output-bundle", {std::move(logits)})}};
+      });
+    runtime.registerRunner(roleName, runner);
+
+    NativeExecutionPlan plan;
+    plan.roles = {roleName};
+    NativeProviderAssignment assignment;
+    assignment.providerByRole[roleName] = consumerContext.localProvider().toUri();
+    auto coordinatorIo = std::make_shared<NdnsfCollaborationDependencyIo>(
+      consumerContext, 5000, chunkSize, 60000, consumerCoordinator);
+    NativeEpochCoordinatorConfig config{
+      runtime, plan, assignment, coordinatorIo};
+    config.sessionId = "session-v3-coordinator";
+    config.requestId = requestId.toUri();
+    config.lineagePlanDigest = planDigest;
+    config.localProvider = consumerContext.localProvider().toUri();
+    config.role = roleName;
+    DecodeStateIdentityV1 stateIdentity;
+    stateIdentity.modelDigest = sha('1');
+    stateIdentity.graphSemanticDigest = sha('2');
+    stateIdentity.artifactDigest = sha('3');
+    stateIdentity.adapterDigest = sha('4');
+    stateIdentity.tokenizerDigest = sha('5');
+    stateIdentity.runnerDigest = sha('6');
+    stateIdentity.roleName = roleName;
+    stateIdentity.roleSplitDigest = sha('7');
+    stateIdentity.layerBegin = 0;
+    stateIdentity.layerEnd = 1;
+    stateIdentity.prefixDigest = sha('8');
+    stateIdentity.prefixTokenCount = 1;
+    stateIdentity.positionDigest = sha('9');
+    stateIdentity.precision = "fp32";
+    stateIdentity.layoutDigest = sha('a');
+    stateIdentity.stateSchemaDigest = sha('b');
+    stateIdentity.stateComponentDigests = {sha('c')};
+    stateIdentity.runtimeAbiDigest = sha('d');
+    stateIdentity.securityDomainDigest = sha('e');
+    stateIdentity.providerIdentity = consumerContext.localProvider().toUri();
+    stateIdentity.providerBootId = "fixture-boot";
+    stateIdentity.requestId = requestId.toUri();
+    stateIdentity.generationId = "fixture-generation";
+    stateIdentity.validate();
+    config.positionPolicyDigest = stateIdentity.positionDigest;
+    config.stateIdentityTemplate = std::move(stateIdentity);
+    config.roleSpecFactory = [edge, roleName] (std::size_t epoch) {
+      RoleSpec role;
+      role.role = roleName;
+      if (epoch > 0) {
+        role.inputs = {edge};
+      }
+      DependencyEdge feedback;
+      feedback.scope = "token-feedback";
+      feedback.producerRole = roleName;
+      feedback.consumerRole = roleName;
+      feedback.operationKind = "TOKEN_FEEDBACK";
+      feedback.tensors = {"token-feedback"};
+      role.outputs = {feedback};
+      return role;
+    };
+    config.terminalRole = true;
+    config.maxEpochs = 2;
+    NamedTensor tokenIds;
+    tokenIds.name = "input_ids";
+    tokenIds.elementType = TensorElementType::Int64;
+    tokenIds.shape = {1, 1};
+    const std::int64_t initialToken = 1;
+    tokenIds.payload.resize(sizeof(initialToken));
+    std::memcpy(tokenIds.payload.data(), &initialToken, sizeof(initialToken));
+    config.initialInputs.emplace(
+      "input_ids", makeEncodedTensorBundle("prompt", {std::move(tokenIds)}));
+    std::atomic<std::size_t> interestCountAtEvent{0};
+    config.eventSink = [&] (const std::vector<std::uint8_t>&) {
+      interestCountAtEvent.store(
+        manifestInterests.load(std::memory_order_acquire),
+        std::memory_order_release);
+      return false;
+    };
+    const auto pendingInterestsBefore = consumerFace.getNPendingInterests();
+    auto pending = std::async(std::launch::async, [&config] {
+      return runNativeEpochCoordinator(std::move(config));
+    });
+    environment.pumpUntil([&] {
+      return pending.wait_for(0ms) == std::future_status::ready;
+    });
+    std::string error;
+    try {
+      (void)pending.get();
+    }
+    catch (const std::exception& caught) {
+      error = caught.what();
+    }
+    BOOST_CHECK_EQUAL(error,
+                      "native epoch token event admission was rejected");
+    BOOST_CHECK_GE(manifestInterests.load(std::memory_order_acquire), 1U);
+    BOOST_CHECK_GE(interestCountAtEvent.load(std::memory_order_acquire), 1U);
+    const auto cancelDeadline = std::chrono::steady_clock::now() +
+                                std::chrono::milliseconds(100);
+    while (consumerFace.getNPendingInterests() != pendingInterestsBefore &&
+           std::chrono::steady_clock::now() < cancelDeadline) {
+      consumerFace.processEvents(ndn::time::milliseconds(1));
+      consumerFace.getIoContext().restart();
+    }
+    BOOST_CHECK_EQUAL(consumerFace.getNPendingInterests(), pendingInterestsBefore);
+    return;
+  }
+
   auto fetched = consumerIo.prefetchInput("session-v3", edge);
   environment.pumpUntil([&] {
     return fetched.wait_for(0ms) == std::future_status::ready;
@@ -345,6 +490,7 @@ BOOST_AUTO_TEST_CASE(RejectsBoundsBeforeFetchingSegments) { runTransfer("bounds"
 BOOST_AUTO_TEST_CASE(RejectsInnerHmacWithValidOuterManifest) { runTransfer("hmac"); }
 BOOST_AUTO_TEST_CASE(RejectsSegmentIndexWithValidOuterManifest) { runTransfer("index"); }
 BOOST_AUTO_TEST_CASE(LegacyFieldsAreCheckedBeforeRestoration) { runTransfer("legacy-binding"); }
+BOOST_AUTO_TEST_CASE(PromptCancellationStopsExactManifestFetch) { runTransfer("cancel"); }
 
 BOOST_AUTO_TEST_SUITE_END()
 } // namespace ndnsf::di::tests
