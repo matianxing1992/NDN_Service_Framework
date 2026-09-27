@@ -751,6 +751,7 @@ require_global_file() {
 }
 
 require_global_external_closure() {
+  probe_configured_openssl_api
   require_global_boost
   require_global_pkg "libndn-cxx" "$MIN_NDNCXX_VERSION" "libndn-cxx.so"
   require_global_pkg "ndnsd" "$MIN_NDNSD_VERSION" "libndnsd.so"
@@ -763,6 +764,7 @@ require_global_external_closure() {
   require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
   require_global_file "$GLOBAL_DEPENDENCY_PREFIX/include/onnx/checker.h"
   require_global_file "$GLOBAL_DEPENDENCY_PREFIX/include/onnx/shape_inference/implementation.h"
+  verify_openabe_runtime_closure
   require_global_dependency_identity
 }
 
@@ -795,11 +797,119 @@ has_openabe() {
   # older or unrelated ABI must not silently satisfy the install preflight.
   for symbol in OpenABEalloc OpenABEfree openSslInitialize; do
     if ! nm -D --defined-only -C "$library" 2>/dev/null |
-        grep -Eq " ${symbol}\\("; then
+        grep -E " ${symbol}\\(" >/dev/null; then
       return 1
     fi
   done
+  verify_openabe_runtime_closure || return 1
   return 0
+}
+
+probe_configured_openssl_api() {
+  "$PYTHON_BIN" - <<'PY'
+import os
+import pathlib
+import re
+import shlex
+import subprocess
+import tempfile
+
+env = os.environ.copy()
+for key in ("PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "CFLAGS", "CXXFLAGS",
+            "CPPFLAGS", "LDFLAGS", "CPATH", "C_INCLUDE_PATH",
+            "CPLUS_INCLUDE_PATH", "LIBRARY_PATH", "LD_LIBRARY_PATH",
+            "LD_PRELOAD", "PKG_CONFIG_SYSROOT_DIR", "PKG_CONFIG_TOP_BUILD_DIR"):
+    env.pop(key, None)
+env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+def output(args):
+    try:
+        return subprocess.check_output(args, env=env, text=True).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"system OpenSSL preflight command failed: {error}")
+
+multiarch = output(["/usr/bin/gcc", "-print-multiarch"])
+system_pc_dirs = []
+if multiarch:
+    native_pc_dir = pathlib.Path("/usr/lib") / multiarch / "pkgconfig"
+    if native_pc_dir.is_dir():
+        system_pc_dirs.append(native_pc_dir)
+system_pc_dirs.extend(p for p in (pathlib.Path("/usr/lib/pkgconfig"),
+                                  pathlib.Path("/usr/lib64/pkgconfig"),
+                                  pathlib.Path("/usr/share/pkgconfig"))
+                      if p.is_dir())
+if not system_pc_dirs:
+    raise SystemExit("system pkg-config metadata directories were not found")
+env["PKG_CONFIG_LIBDIR"] = os.pathsep.join(str(p) for p in system_pc_dirs)
+pkg = "/usr/bin/pkg-config"
+version = output([pkg, "--modversion", "openssl"])
+pc_dir = output([pkg, "--variable=pcfiledir", "openssl"])
+if subprocess.run([pkg, "--atleast-version=1.1.1", "openssl"],
+                  env=env, check=False).returncode != 0:
+    raise SystemExit(f"selected OpenSSL {version} is older than 1.1.1")
+cflags = shlex.split(output([pkg, "--cflags", "openssl"]))
+libs = shlex.split(output([pkg, "--libs", "openssl"]))
+source = """#include <openssl/evp.h>
+int main() { return EVP_PKEY_get_raw_public_key(nullptr, nullptr, nullptr); }
+"""
+with tempfile.TemporaryDirectory(prefix="ndnsf-openssl-probe-") as temp:
+    executable = pathlib.Path(temp) / "openssl-api-probe"
+    result = subprocess.run(
+        ["/usr/bin/g++", "-I/usr/local/include", *cflags, "-L/usr/local/lib",
+         "-H", "-x", "c++", "-o", str(executable), "-", *libs],
+        input=source, text=True, env=env, capture_output=True)
+    if result.returncode != 0:
+        raise SystemExit(
+            "selected OpenSSL headers/libraries do not provide the required "
+            "EVP_PKEY_get_raw_public_key API:\n" + result.stderr)
+    headers = []
+    for line in result.stderr.splitlines():
+        match = re.match(r"^\.\s+(.*/openssl/evp\.h)$", line)
+        if match:
+            headers.append(match.group(1))
+    if not headers or any(not path.startswith("/usr/include/") for path in headers):
+        raise SystemExit("OpenSSL API probe did not use system headers:\n" + result.stderr)
+    closure = subprocess.run(["/usr/bin/ldd", "-r", str(executable)],
+                             env=env, text=True, capture_output=True)
+    report = closure.stdout + closure.stderr
+    if closure.returncode != 0 or "not found" in report or "undefined symbol:" in report:
+        raise SystemExit("selected OpenSSL runtime closure is incomplete:\n" + report)
+    resolved_crypto = [line for line in report.splitlines()
+                       if re.match(r"\s*lib(?:ssl|crypto)\.so", line)]
+    non_system_crypto = [line for line in resolved_crypto
+                         if not re.search(r"=> /(usr/)?lib(64)?/", line)]
+    if not resolved_crypto or non_system_crypto:
+        raise SystemExit("OpenSSL API probe did not resolve system libraries:\n" + report)
+print(f"OpenSSL {version} ({pc_dir}): system header, compile, link, and loader checks passed")
+PY
+}
+
+verify_openabe_runtime_closure() {
+  local library report
+  library="$OPENABE_PREFIX/lib/libopenabe.so"
+  [[ -f "$library" ]] || { echo "OpenABE library is missing: $library" >&2; return 1; }
+  report="$(env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/bin/ldd -r "$library" 2>&1)" || {
+    echo "OpenABE dynamic closure check failed:" >&2
+    echo "$report" >&2
+    return 1
+  }
+  if grep -E 'not found|undefined symbol:' <<<"$report" >/dev/null; then
+    echo "OpenABE has an unresolved runtime dependency:" >&2
+    echo "$report" >&2
+    return 1
+  fi
+  local openssl_report
+  openssl_report="$(grep -E 'lib(ssl|crypto)\.so[^ ]* => ' <<<"$report" || true)"
+  if ! grep -E 'libssl\.so[^ ]* => ' <<<"$report" >/dev/null ||
+     ! grep -E 'libcrypto\.so[^ ]* => ' <<<"$report" >/dev/null; then
+    echo "OpenABE runtime closure does not include both system OpenSSL libraries:" >&2
+    echo "$report" >&2
+    return 1
+  fi
+  if grep -Ev '=> /(usr/)?lib(64)?/' <<<"$openssl_report" >/dev/null; then
+    echo "OpenABE resolves OpenSSL outside system library directories:" >&2
+    echo "$openssl_report" >&2
+    return 1
+  fi
 }
 
 install_common_system_packages() {
@@ -878,16 +988,30 @@ build_openabe_dependency() {
 
   dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" | tail -n 1)"
   echo "==> Building OpenABE from the dependency source tree"
-  run bash -e -c "cd \"\$1\" && . ./env && \
+  run bash -e -s -- "$dir" "$SYSTEM_PATH" "$JOBS" <<'OPENABE_BUILD'
+    cd "$1"
+    . ./env
     unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS CXXFLAGS CPPFLAGS LDFLAGS \
       LD_LIBRARY_PATH LIBRARY_PATH CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
-      BOOST_ROOT BOOST_INCLUDEDIR BOOST_LIBRARYDIR && \
-    export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+      BOOST_ROOT BOOST_INCLUDEDIR BOOST_LIBRARYDIR
+    export PATH="$2" CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
       AR=/usr/bin/ar RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
-      BOOST_ROOT= BOOST_INCLUDEDIR= BOOST_LIBRARYDIR= && \
-    { make clean >/dev/null 2>&1 || true; } && \
-    make -j'$JOBS' -C deps/openssl && make -j'$JOBS' -C deps/relic && make -j'$JOBS' -C deps/gtest && \
-    BISON=\$(command -v bison) FLEX=\$(command -v flex) make -j'$JOBS'" _ "$dir"
+      BOOST_ROOT= BOOST_INCLUDEDIR= BOOST_LIBRARYDIR= USE_DEPS="relic gtest"
+    make clean
+    make -j"$3" deps
+    BISON="$(command -v bison)" FLEX="$(command -v flex)" make -j"$3" src
+    BISON="$(command -v bison)" FLEX="$(command -v flex)" make -j"$3" examples
+    if [[ -e deps/root/include/openssl ]]; then
+      echo "OpenABE selected bundled OpenSSL headers unexpectedly" >&2
+      exit 1
+    fi
+    for artifact in deps/root/lib/libssl.* deps/root/lib/libcrypto.*; do
+      if [[ -e "$artifact" ]]; then
+        echo "OpenABE selected bundled OpenSSL library unexpectedly: $artifact" >&2
+        exit 1
+      fi
+    done
+OPENABE_BUILD
   echo "==> Installing OpenABE into the global prefix $OPENABE_PREFIX"
   sudo_run env \
     -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
@@ -901,8 +1025,10 @@ build_openabe_dependency() {
       C_INCLUDE_PATH CPLUS_INCLUDE_PATH BOOST_ROOT BOOST_INCLUDEDIR \
       BOOST_LIBRARYDIR && export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc \
       CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
-      NM=/usr/bin/nm STRIP=/usr/bin/strip && make INSTALL_PREFIX='$OPENABE_PREFIX' install" _ "$dir"
+      NM=/usr/bin/nm STRIP=/usr/bin/strip && \
+      make USE_DEPS='relic gtest' INSTALL_PREFIX='$OPENABE_PREFIX' install" _ "$dir"
   sudo_run ldconfig
+  verify_openabe_runtime_closure
   record_source_receipt openabe
 }
 
@@ -1041,6 +1167,7 @@ install_external_dependencies() {
   require_global_file "$GLOBAL_LIBRARY_DIR/libndnsf_tokenizer_bridge.a"
   require_global_file "$GLOBAL_DEPENDENCY_PREFIX/include/onnx/checker.h"
   require_global_file "$GLOBAL_DEPENDENCY_PREFIX/include/onnx/shape_inference/implementation.h"
+  probe_configured_openssl_api
   if [[ -f "$GLOBAL_IDENTITY_FILE" ]] && ! has_global_dependency_identity; then
     if ! has_global_onnx_identity; then
       echo "Global ONNX Runtime identity changed; this installer cannot rebuild ONNX Runtime. Reinstall the canonical global SDK and refresh the identity receipt before continuing." >&2
