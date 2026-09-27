@@ -52,6 +52,9 @@ active health checks；这些检查只证明指针/工作流一致性，不能�
 
 1. 核对当前源码、调用方、构建入口和旧实现。区分 existing、planned 与未知事实。
 2. 明确成果、架构所有权、兼容/退出路径；优先复用共享 API。
+   修改 `NDNSF-DistributedRepo` 的存储、发布、复用、回执或获取行为时，先读
+   [distributed-repo-design.md](references/distributed-repo-design.md)，并在契约和验收中
+   覆盖其中适用的模式差异与生命周期场景；该参考定义审查维度，不预定具体 API 形状。
 3. 用 [symbol-contract.md](references/symbol-contract.md) 描述受影响类、方法、重要字段：
    责任、输入来源、返回/失败、所有权/寿命、并发、使用示例和必要英文注释。
    已有契约通过 ID 引用；纯局部编码细节由实现者决定。
