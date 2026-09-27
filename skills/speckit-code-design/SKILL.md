@@ -79,10 +79,15 @@ tasks.md 顶部必须用逐执行单元的 `Execution Progress` 表完整登记�
 
 创建或更新 Spec Kit feature 前，先从仓库根运行
 `python3 skills/speckit-code-design/scripts/verify-spec-kit-sync.py --require-entrypoints`
-检查版本化模板和本机入口副本；若要验证个人安装副本，再加
+检查版本化模板、本机入口的 canonical shared-contract block 和必需标记；若要验证个人安装副本，再加
 `--require-personal`。检查失败时必须先修复同步或在证据中登记明确的 workflow
 `gap`，不能继续生成 `STATIC_PASS` 或 `DONE`。该检查只验证技能/模板同步，不构成
 产品实现、编译、运行或资格证据。
+
+命令入口是不同的 Spec Kit 工作流，不要求全文相同。它们必须逐字包含
+[entrypoint shared contract](references/entrypoint-shared-contract.md)；验证器只证明
+共享块、约定标记和模板检查通过，不证明整个入口全文相同，也不证明个人 Codex
+skill 已安装。
 
 用户要求 Spark 或有限范围执行时，应用 [bounded executor](references/bounded-executor.md)：
 设计者冻结决策，按行为提供定向阅读/精确写入范围/检查命令，执行者一次完成一张就绪卡。
