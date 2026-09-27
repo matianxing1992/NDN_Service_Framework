@@ -10448,11 +10448,13 @@ namespace ndn_service_framework
                                                       const ndn::Buffer& buffer,
                                                       const std::string& dataName,
                                                       const std::string& signerCertificate,
-                                                      const std::string& wireDigest)
+                                                      const std::string& wireDigest,
+                                                      const std::string& providerIdentity)
     {
         auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
         auto decodeAndFinish = [this, responseName, requestId, raw, dataName,
-                                signerCertificate, wireDigest]() mutable {
+                                signerCertificate, wireDigest,
+                                providerIdentity]() mutable {
             ndn_service_framework::ResponseMessage responseMessage;
             try {
                 ndn::Block block(ndn::span<const uint8_t>(raw->data(), raw->size()));
@@ -10469,7 +10471,7 @@ namespace ndn_service_framework
                 return;
             }
             responseMessage.setAuthenticatedTransportEvidence(
-                dataName, signerCertificate, wireDigest);
+                dataName, signerCertificate, wireDigest, providerIdentity);
 
             boost::asio::post(m_face.getIoContext(),
                 [this, responseName, requestId,
@@ -10504,7 +10506,7 @@ namespace ndn_service_framework
                 return;
             }
             responseMessage.setAuthenticatedTransportEvidence(
-                dataName, signerCertificate, wireDigest);
+                dataName, signerCertificate, wireDigest, providerIdentity);
             finishDecryptedResponseByName(responseName, requestId,
                                           std::move(responseMessage));
         }
@@ -13161,6 +13163,32 @@ namespace ndn_service_framework
         ServiceName = resultsV2->serviceName;
         RequestId = resultsV2->requestId;
 
+        if (!subscription.packet) {
+            NDN_LOG_WARN("Reject RESPONSE without its validated Data packet: "
+                         << subscription.name);
+            return;
+        }
+        const auto& responseSignatureInfo = subscription.packet->getSignatureInfo();
+        if (!responseSignatureInfo.hasKeyLocator() ||
+            responseSignatureInfo.getKeyLocator().getType() != ndn::tlv::Name) {
+            NDN_LOG_WARN("Reject RESPONSE without a named KeyLocator: "
+                         << subscription.name);
+            return;
+        }
+        const auto& responseSignerName = responseSignatureInfo.getKeyLocator().getName();
+        const auto responseProviderIdentity =
+            ndn_service_framework::detail::matchResponseProviderIdentity(
+                providerName, responseSignerName);
+        if (!responseProviderIdentity) {
+            ++m_runtimeDiagnostics.responseRejectedProviderIdentity;
+            NDN_LOG_WARN("Reject RESPONSE whose KeyLocator identity does not match "
+                         "the Provider in its name: " << subscription.name);
+            return;
+        }
+        const std::string responseSignerCertificate = responseSignerName.toUri();
+        const std::string authenticatedProviderIdentity =
+            responseProviderIdentity->toUri();
+
         logValidatedPublicationAudit(
             "user", "RESPONSE", subscription,
             RequestId, ServiceName, requesterName, providerName);
@@ -13238,25 +13266,14 @@ namespace ndn_service_framework
                   << decryptStartUs
                   << " requestId=" << RequestId.toUri()
                   << " responseName=" << responseName.toUri());
-        std::string responseDataName = wireResponseName.toUri();
-        std::string responseSignerCertificate;
-        std::string responseWireDigest = sha256DigestString(
-            ndn::Buffer(subscription.data.begin(), subscription.data.end()));
-        if (subscription.packet) {
-            responseDataName = subscription.packet->getName().toUri();
-            const auto& signatureInfo = subscription.packet->getSignatureInfo();
-            if (signatureInfo.hasKeyLocator() &&
-                signatureInfo.getKeyLocator().getType() == ndn::tlv::Name) {
-                responseSignerCertificate =
-                    signatureInfo.getKeyLocator().getName().toUri();
-            }
-            const auto wire = subscription.packet->wireEncode();
-            responseWireDigest = sha256DigestString(ndn::Buffer(
-                wire.data(), wire.data() + wire.size()));
-        }
+        const std::string responseDataName = subscription.packet->getName().toUri();
+        const auto responseWire = subscription.packet->wireEncode();
+        const std::string responseWireDigest = sha256DigestString(ndn::Buffer(
+            responseWire.data(), responseWire.data() + responseWire.size()));
         auto onSuccess = [this, responseName, RequestId, decryptStartUs,
                           responseDataName, responseSignerCertificate,
-                          responseWireDigest](const ndn::Buffer& buffer) {
+                          responseWireDigest, authenticatedProviderIdentity](
+                              const ndn::Buffer& buffer) {
             const auto decryptEndUs = nowMicroseconds();
             auto pendingIt = m_pendingCalls.find(RequestId);
             if (pendingIt != m_pendingCalls.end()) {
@@ -13286,7 +13303,8 @@ namespace ndn_service_framework
                       << " responseName=" << responseName.toUri());
             dispatchDecryptedResponseByName(
                 responseName, RequestId, buffer, responseDataName,
-                responseSignerCertificate, responseWireDigest);
+                responseSignerCertificate, responseWireDigest,
+                authenticatedProviderIdentity);
         };
         auto onError = [this, providerName, ServiceName, RequestId,
                         responseName, decryptStartUs](const std::string& error) {
@@ -13343,7 +13361,8 @@ namespace ndn_service_framework
                           << " responseName=" << responseName.toUri());
                 dispatchDecryptedResponseByName(
                     responseName, RequestId, plaintext, responseDataName,
-                    responseSignerCertificate, responseWireDigest);
+                    responseSignerCertificate, responseWireDigest,
+                    authenticatedProviderIdentity);
                 return;
             }
             if (decryptHybridMessage(responseName,
@@ -15502,7 +15521,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         NDN_LOG_INFO(regex_str2);
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                     std::bind(&ServiceUser::OnResponse, this, _1),
-                                    true, false);
+                                    true, true);
         const std::string eventRegex = "^(<>*)<NDNSF><EVENT>(<>*)$";
         m_svsps->subscribeWithRegex(ndn::Regex(eventRegex),
                                     std::bind(&ServiceUser::onStreamEvent, this, _1),

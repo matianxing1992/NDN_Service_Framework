@@ -936,6 +936,7 @@ def build(bld):
                         bld.path.find_node('integration-tests/controller-version-refresh.t.cpp'),
                         bld.path.find_node('integration-tests/request-scoped-selection.t.cpp'),
                         bld.path.find_node('integration-tests/request-scoped-response-confidentiality.t.cpp'),
+                        bld.path.find_node('integration-tests/spec192-response-provider-identity.t.cpp'),
                         bld.path.find_node('integration-tests/di-native-requester-grant.t.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavProtocol.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavMissionSession.cpp'),

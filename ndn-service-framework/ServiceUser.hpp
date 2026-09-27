@@ -629,6 +629,7 @@ namespace ndn_service_framework{
                 uint64_t callbackSkippedNoPending = 0;
                 uint64_t callbackSkippedTimeout = 0;
                 uint64_t responseAfterPendingTimeout = 0;
+                uint64_t responseRejectedProviderIdentity = 0;
                 std::vector<double> ackLatenciesMs;
             };
             RuntimeDiagnostics consumeRuntimeDiagnostics();
@@ -1245,7 +1246,8 @@ namespace ndn_service_framework{
                                                  const ndn::Buffer& buffer,
                                                  const std::string& dataName = {},
                                                  const std::string& signerCertificate = {},
-                                                 const std::string& wireDigest = {});
+                                                 const std::string& wireDigest = {},
+                                                 const std::string& providerIdentity = {});
             void finishDecryptedResponseByName(const ndn::Name& responseName,
                                                const ndn::Name& requestId,
                                                ndn_service_framework::ResponseMessage responseMessage);
