@@ -2,7 +2,7 @@
 
 NDNSF-DistributedRepo 是一个实验性 C++ 子项目，目标是为 NDNSF 应用提供 distributed、NDN-native、policy-controlled 的 artifact 和 intermediate-data storage layer。
 
-当前实现有意保持较小，但已经同时组织为可复用 C++ API 和 NDNSF service layer：
+当前实现提供可复用 C++ 存储 API、可信进程内 C++ adapter，以及独立运行的 Python Persistent 网络服务：
 
 - `RepoObjectManifest`：可准备签名的一个 stored object metadata。
 - `StorageCapability`：repo node 广播的容量、负载和 mode 信息。
@@ -12,7 +12,8 @@ NDNSF-DistributedRepo 是一个实验性 C++ 子项目，目标是为 NDNSF 应�
 - `selectReplicas`：在候选 storage nodes 上进行 deterministic placement。
 - `InMemoryRepoStore`：示例使用的本地 smoke-test store。
 - `RepoCore`：不依赖 NDNSF networking 的可复用进程内存储逻辑。
-- `RepoNode`：可以在 `ServiceProvider` 上注册 NDNSF services 的 repo node，并把 storage operations 委托给 `RepoCore`。
+- `RepoNode`：基于 `RepoCore` 的 C++ adapter，只通过 `LocalServiceRegistry` 暴露可信本地 services；它不会在 `ServiceProvider` 上注册网络 services。
+- `RepoNodeApp`：独立运行、提供 Persistent 网络 Repo 服务的 Python provider。
 - `RepoClient`：高层 `put/get/list/remove` helper，以及需要直接控制 `ServiceUser` 的应用可用的 lower-level request helper。
 - `py_repoclient`：可复用 repo client/protocol API 的 Python binding。
 
@@ -22,7 +23,8 @@ Service name 可以由应用配置。默认情况下，所有 repo nodes 共享�
 /NDNSF/DistributedRepo
 ```
 
-C++ repo node 会在这个 prefix 下面暴露 operation-specific services。repo
+C++ `RepoNode` 只向可信进程内的 `LocalServiceRegistry` 暴露 handlers；网络 Persistent
+服务由 Python `RepoNodeApp` 在这个 prefix 下提供。repo
 层面的语义操作是 `INSERT`：APP 在自己的 namespace 下发布已签名、可选已加密的 NDN
 Data segments，repo 按名字保存这些 opaque Data packets。`STORE` 和
 `STORE_MANIFEST` 是当前 payload-accepting adapter，供已有 helper 和测试使用。它们
@@ -85,20 +87,18 @@ metadata，以及快速 same-process helper access。它不是长期备份数据
 **Persistent Repo** 作为独立 repo node 或 server 运行，负责 backup、durable
 storage、global catalog maintenance，以及节点迟到加入或错过目录更新后的恢复。
 
-代码为了兼容旧配置仍然接受 `embedded` mode 字符串，但设计术语是 In-App Repo。当前
-接受的 mode 字符串是：
+In-App 与 Persistent 是不同的存储路径，不是 `RepoNodeApp` 可切换的网络部署模式。
+独立网络服务 `RepoNodeApp` 只支持 Persistent；省略配置或传入空字符串、大小写不敏感的
+`remote`/`persistent` 都会规范化为 `persistent`。`embedded`、`in-app`、`both` 和未知值
+会在创建 Provider 或存储目录之前被拒绝。C++ 的 `RepoDeploymentMode` parser/helper
+仍能解析 legacy 值，但其 flags 不会执行服务注册或创建双路径运行时。
 
-```text
-remote          独立 Persistent Repo service path
-embedded        In-App Repo 的兼容旧拼写
-in-app          In-App Repo 的推荐拼写
-both            同时暴露 remote 和 in-process 路径
-```
+In-App 数据通过注入本地 backend 的 `ArtifactRepositoryApi` 或可信 C++
+`LocalServiceRegistry` 使用；它不会因此自动广播到网络 catalog，也不计作网络副本。
+需要远端持久副本时，应用必须显式调用归档/发布 API。
 
-`StorageCapability` 现在携带 `repoMode` 和 `acceptsBackupReplica`。创建 backup
-replica 时，placement logic 会过滤 `acceptsBackupReplica=false` 的候选节点。
-In-App Repos 也可以广播 cached objects，但除非应用明确标记为 durable，它们在
-catalog 中应被看作 local/ephemeral 角色。
+`StorageCapability` 携带 `repoMode` 和 `acceptsBackupReplica`。创建 backup replica
+时，placement logic 会过滤 `acceptsBackupReplica=false` 的候选网络节点。
 
 ## Catalog 与副本发现
 
@@ -260,9 +260,13 @@ payload = repo.fetch_object(manifest)
 推荐的 C++ object API 也是 object-oriented：
 
 ```cpp
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+
 using namespace ndnsf_distributed_repo;
 
-RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), capability);
+auto store = makeFilesystemRepoStore("./repo-data");
+RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), capability, store);
 StoreOptions options;
 options.objectType = "binary-blob";
 options.replicationFactor = 2;
@@ -296,50 +300,30 @@ auto verifiedPayload = RepoClient::getObject(node, manifest);
 `RepoClient::getSegmented(...)` 仍保留给测试和明确需要验证 segmented-object
 路径的低层代码使用。
 
-## C++ 独立 Repo Node
+## Persistent Repo Node 运行入口
 
-`DistributedRepoNodeApp` 使用同一个 `RepoNode` adapter，把 repo 作为独立
-NDNSF provider 运行。它通过一个简单 key/value 配置文件启动：
-
-```bash
-./build/NDNSF-DistributedRepo/DistributedRepoNodeApp \
-  --config NDNSF-DistributedRepo/configs/repo-node.conf
-```
-
-默认示例配置包含：
-
-```text
-service-prefix /NDNSF/DistributedRepo
-identity /example/repo/repo/A
-controller-prefix /example/repo/controller
-repo-node /example/repo/repo/A
-deployment-mode remote
-repo-mode persistent
-accepts-backup-replica true
-storage-backend tiered
-storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
-memory-cache-bytes 67108864
-```
-
-`deployment-mode remote` 是独立 Persistent Repo 的正常模式。APP 也接受
-`embedded`/`in-app` 和 `both`，这样独立进程和 service container 可以共用同一套
-配置语义；但 local invocation 只对同一个 trusted process 内部的代码有意义。
-
-如果只想验证构建和配置，不启动 NFD 或 controller，可以运行：
+实际部署的网络服务是 Python `RepoNodeApp`，由 generic object-store 示例
+启动；当前没有已构建的 `DistributedRepoNodeApp` 可执行文件。例如：
 
 ```bash
-./build/NDNSF-DistributedRepo/DistributedRepoNodeApp \
-  --config NDNSF-DistributedRepo/configs/repo-node.conf \
-  --deployment-mode embedded \
-  --dry-run \
-  --local-smoke
+python3 examples/python/NDNSF-DistributedRepo/generic_object_store/repo_node.py \
+  --config examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml \
+  --provider-id A \
+  --repo-node /example/repo/A \
+  --repo-mode persistent \
+  --storage-dir /var/lib/ndnsf-repo/A
 ```
 
-## In-App Repo Plan
+该入口只运行 Persistent Repo。省略 `repo_mode` 时默认值为 `persistent`；
+空字符串和大小写不敏感的 `remote` 是兼容别名，都会规范化为 `persistent`。
+In-App 存储应通过注入 `FilesystemArtifactApiBackend` 的
+`ArtifactRepositoryApi` 使用，不应把网络 Repo 配成 `embedded` 或 `both`。
 
-NDNSF-DistributedRepo 正在被组织成同一套 repo implementation 既可以作为独立
-repo application 运行，也可以嵌入到另一个 trusted NDNSF service container
-内部作为进程内服务使用。
+## In-App C++ 集成
+
+In-App 与 Persistent 是两条独立生命周期路径。Python 应用通过构造
+`ArtifactRepositoryApi` 时注入 backend 来选择本地或网络存储；同时需要两条
+路径时，应分别创建 API 实例。模式字符串不会触发隐式复制。
 
 目标分层是：
 
@@ -348,17 +332,15 @@ RepoCore
   纯存储逻辑：put/get/manifest/list/delete/capability/catalog
 
 RepoNode
-  NDNSF service adapter：在 ServiceProvider 上注册
-  STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE/STATUS/CATALOG_*，
-  并把所有操作委托给 RepoCore
+  基于 RepoCore 的 C++ adapter；提供 trusted local service registration
 
-Repo app 或 embedding container
-  决定远程暴露 RepoNode、注册 local services，或两者同时启用
+Python RepoNodeApp
+  独立 Persistent NDNSF provider 和 versioned network-service 入口
 ```
 
-当前第一步：`RepoCore` 拥有 object store、manifest validation 和 capacity/catalog
-accounting。`RepoNode` 保留现有 public API 和 standalone service registration
-行为，但把实际存储和 catalog 工作委托给 `RepoCore`。
+`RepoCore` 拥有 object storage、manifest validation 和 capacity/catalog
+accounting。当前公开的 C++ `RepoNode` API 提供 trusted local service registration；
+Persistent 网络服务由 Python `RepoNodeApp` 提供。
 `RepoNode::registerLocalServices(LocalServiceRegistry&)` 会把同一套
 STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE/STATUS/CATALOG_* handlers 暴露给 trusted
 in-process invocation。
@@ -367,16 +349,20 @@ Request/Response message path；关键实现细节是 NDNSF message payload 内�
 payload TLV `ndn::Block` 承载，而不是通过额外的 local API 直接传 raw byte
 vector。应用仍应调用 typed `RepoClient::local*` helper，而不是自己拼 repo
 service name 或手写 message wrapper。
-`RepoDeploymentMode` 用来选择启用哪一种 exposure path：
+可信的同进程 C++ 调用应直接注册本地 handlers。`RepoDeploymentMode` 的 parser
+和 helper flags 不会执行 service registration；当前公开的进程内入口是
+`RepoNode::registerLocalServices(...)`，不能把 `Both` 的 helper 结果当作双重注册：
 
 ```cpp
-RepoNode node(servicePrefix, capability);
-LocalServiceRegistry localRegistry;
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "ndn-service-framework/LocalServiceRegistry.hpp"
 
-node.registerDeploymentServices(
-  nullptr,
-  &localRegistry,
-  RepoDeploymentMode::Embedded);
+// servicePrefix 和 capability 由宿主应用配置。
+auto store = ndnsf_distributed_repo::makeFilesystemRepoStore("./repo-data");
+ndnsf_distributed_repo::RepoNode node(servicePrefix, capability, store);
+ndn_service_framework::LocalServiceRegistry localRegistry;
+node.registerLocalServices(localRegistry);
 ```
 
 嵌入式 caller 应该使用 `RepoClient` 的 local helper，而不是自己拼 repo
@@ -400,14 +386,17 @@ auto payloadAgain = RepoClient::localGet(
   manifest.objectName);
 ```
 
-支持的 mode 字符串是 `remote`、`embedded`、`in-app` 和 `both`。空配置保持默认
-`remote` 行为，因此现有 standalone repo deployment 不受影响。
+独立网络 `RepoNodeApp` 仅支持 Persistent：默认/空值、`remote` 和 `persistent` 会被
+规范化为 `persistent`；`embedded`、`in-app`、`both` 和未知值会在生成 deployment policy
+或启动 Provider 前被拒绝。C++ `RepoDeploymentMode` 的解析/helper flags 只用于兼容解析，
+不会创建 In-App/网络双注册。进程内调用使用 `ArtifactRepositoryApi` 的本地 backend 或
+`RepoNode::registerLocalServices(...)`，不会自动复制到 Persistent Repo。
 
 后续步骤：
 
 1. 让 NDNSF-UAV-APP、NDNSF-DistributedInference 等高层应用在需要快速本地
-   artifact/frame/intermediate-data access 时，从自己的 service container
-   config 读取 deployment mode，并把 embedded registry 接到自己的组件中。
+   artifact/frame/intermediate-data access 时，注入本地 backend 或可信 registry；
+   本地数据只有在应用显式归档时才复制到 Persistent Repo。
 2. 远程 caller 继续走正常 NDNSF service path，保留 permissions、signatures、
    NAC-ABE 和 token/replay protection。
 
@@ -444,7 +433,7 @@ Repo 共享职责有意保持更窄：
 - 发布并合并 object-level catalog entries 和 tombstones；
 - 报告 liveness、stale replicas、object class、retention 和 repair eligibility；
 - 生成保守的 repair plan，并且只在 deployment policy 允许时可选执行 repair action；
-- 暴露 In-App 和 Persistent deployment modes，但不改变 NDNSF remote invocation semantics。
+- 提供彼此独立的 In-App 本地路径和 Persistent 网络路径，但不改变 NDNSF remote invocation semantics。
 
 这个边界让 repo 能同时服务两个应用，而不会变成 UAV log browser 或 AI artifact planner。
 
@@ -478,23 +467,23 @@ RepoCore core(capability, makeTieredRepoStore(
   64 * 1024 * 1024));
 ```
 
-C++ in-memory backend 只保留为 direct unit test 的内部 test double，不是受支持的
-Repo-node 部署模式。独立 APP 会明确拒绝 `storage-backend memory`，不会静默失去
-持久性。
+C++ in-memory backend 只保留为 direct unit test 的内部 test double，不是部署后端。
+Python `RepoNodeApp` 使用 SQLite 作为权威存储，并通过有界 LRU memory tier 加速读取。
 
-`DistributedRepoNodeApp` 从配置中读取：
+generic Python `RepoNodeApp` launcher 通过 `--storage-dir` 和
+`--memory-cache-bytes` 配置存储；SQLite 仍是权威存储，LRU memory tier 可选：
 
-```text
-storage-backend tiered
-storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
-memory-cache-bytes 67108864
+```bash
+--storage-dir /var/lib/ndnsf-repo/repo-node-A \
+--memory-cache-bytes 67108864
 ```
 
-设置 `memory-cache-bytes 0` 可以关闭热点 cache admission，但 SQLite 权威存储和
+设置 `--memory-cache-bytes 0` 可以关闭热点 cache admission，但 SQLite 权威存储和
 object API 保持不变。这是“SQLite-only”运行，不是 memory-only 兼容模式。
 
-direct、embedded、remote NDNSF 和 Python client 都可以调用 `CACHE_STATUS`。返回值
-包括 backend/authority/policy、当前 `budgetBytes`/`usedBytes`/`entryCount`，以及累计
+可信 C++ 本地服务路径以及 Python Persistent 网络服务（含 Python client）都可以调用
+`CACHE_STATUS`。返回值包括 backend/authority/policy、当前
+`budgetBytes`/`usedBytes`/`entryCount`，以及累计
 `hits`、`misses`、`admissions`、`evictions`、`invalidations`、
 `oversizedBypasses`、`backingReads` 和 `backingWrites`。Cache 内容和计数器属于当前
 进程，重启后会清零；SQLite object 不会丢失。

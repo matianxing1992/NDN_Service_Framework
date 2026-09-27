@@ -4,8 +4,8 @@ NDNSF-DistributedRepo is an experimental C++ subproject for a distributed,
 NDN-native, policy-controlled artifact and intermediate-data storage layer for
 NDNSF applications.
 
-The current implementation is intentionally small, but it is already organized
-as both a reusable C++ API and an NDNSF service layer:
+The current implementation provides a reusable C++ storage API, a trusted
+in-process C++ adapter, and a standalone Python Persistent network service:
 
 - `RepoObjectManifest`: signed-manifest-ready metadata for one stored object.
 - `StorageCapability`: advertised capacity/load/mode information for a repo
@@ -16,8 +16,11 @@ as both a reusable C++ API and an NDNSF service layer:
 - `selectReplicas`: deterministic placement over candidate storage nodes.
 - `RepoCore`: reusable in-process storage logic with no dependency on NDNSF
   networking.
-- `RepoNode`: a repo node that can register NDNSF services on a
-  `ServiceProvider` and delegates storage operations to `RepoCore`.
+- `RepoNode`: a C++ adapter over `RepoCore` that exposes trusted local services
+  through `LocalServiceRegistry`; it does not register network services on a
+  `ServiceProvider`.
+- `RepoNodeApp`: the standalone Python Persistent provider for network Repo
+  operations.
 - `RepoClient`: high-level `put/get/list/remove` helpers, plus lower-level
   request helpers for applications that need direct `ServiceUser` control.
 - `py_repoclient`: a Python binding for the reusable repo client/protocol API.
@@ -28,8 +31,9 @@ The service name is application-configurable. By default, all repo nodes share:
 /NDNSF/DistributedRepo
 ```
 
-The C++ repo node exposes operation-specific services under this prefix. The
-repo-level operation is `INSERT`: an application publishes signed and optionally
+The Persistent Python `RepoNodeApp` exposes network operations under this
+prefix. The C++ `RepoNode` exposes its handlers only to a trusted local
+`LocalServiceRegistry`. The repo-level operation is `INSERT`: an application publishes signed and optionally
 encrypted NDN Data segments, and the repo stores those opaque Data packets by
 name. `STORE` and `STORE_MANIFEST` are current payload-accepting adapters used
 by existing helpers and tests. They are input conveniences: the caller may hand
@@ -109,21 +113,24 @@ long-term data. A **Persistent Repo** runs as an independent repo node or
 server. It is the normal target for backup, durable storage, global catalog
 maintenance, and recovery after a node joins late or misses catalog updates.
 
-The code keeps the old `embedded` mode string for compatibility, but the design
-term is In-App Repo. The accepted mode strings are:
+The public Python `ArtifactRepositoryApi` selects local versus network behavior
+by the injected backend, not by a mode string. Construct separate API instances
+when one application needs both paths: a `FilesystemArtifactApiBackend` owns an
+app-local durable root, while an installed network adapter communicates with
+Persistent Repo services. Neither path silently replicates to the other.
 
-```text
-remote          standalone Persistent Repo service path
-embedded        compatibility spelling for In-App Repo
-in-app          preferred spelling for In-App Repo
-both            expose both remote and in-process paths
-```
+`RepoNodeApp` is the standalone Persistent service and rejects In-App/Embedded,
+`Both`, and unknown `repo_mode` values before constructing its Provider or
+storage. Omit `repo_mode` (default `persistent`), or use `persistent`; the
+legacy empty string and case-insensitive `remote` alias are normalized to
+`persistent`. A local filesystem API is not a remote Repo endpoint.
 
-`StorageCapability` now carries `repoMode` and `acceptsBackupReplica`. Placement
-logic filters out candidates with `acceptsBackupReplica=false` when creating
-backup replicas. In-App Repos may still advertise cached objects, but their
-catalog role should be treated as local/ephemeral unless the application
-explicitly marks them as durable.
+The C++ `RepoDeploymentMode` parser retains Remote/Embedded/Both aliases and
+helper flags for compatibility, but those flags do not register services. The
+current public in-process entry is `RepoNode::registerLocalServices(...)`; do
+not infer dual registration from `RepoDeploymentMode::Both`. The separate
+`StorageCapability.acceptsBackupReplica` field controls whether a candidate may
+be selected for backup placement.
 
 ## Catalog and Replica Discovery
 
@@ -324,9 +331,13 @@ segmented-object layout.
 The recommended C++ object API is similarly object-oriented:
 
 ```cpp
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+
 using namespace ndnsf_distributed_repo;
 
-RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), capability);
+auto store = makeFilesystemRepoStore("./repo-data");
+RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), capability, store);
 StoreOptions options;
 options.objectType = "binary-blob";
 options.replicationFactor = 2;
@@ -363,51 +374,33 @@ auto verifiedPayload = RepoClient::getObject(node, manifest);
 `RepoClient::getSegmented(...)` remains available for tests and low-level code
 that explicitly needs to exercise the segmented-object path.
 
-## C++ Standalone Repo Node
+## Persistent Repo Node Runtime
 
-`DistributedRepoNodeApp` runs the same `RepoNode` adapter as a standalone NDNSF
-provider. It is configured with a small key/value file:
-
-```bash
-./build/NDNSF-DistributedRepo/DistributedRepoNodeApp \
-  --config NDNSF-DistributedRepo/configs/repo-node.conf
-```
-
-The default example config sets:
-
-```text
-service-prefix /NDNSF/DistributedRepo
-identity /example/repo/repo/A
-controller-prefix /example/repo/controller
-repo-node /example/repo/repo/A
-deployment-mode remote
-repo-mode persistent
-accepts-backup-replica true
-storage-backend tiered
-storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
-memory-cache-bytes 67108864
-```
-
-`deployment-mode remote` is the normal standalone Persistent Repo mode. The app
-also accepts `embedded`/`in-app` and `both` so the same config vocabulary can be
-shared with service containers, but local invocation is only useful to code
-running in the same trusted process.
-
-For build and config validation without starting NFD or a controller:
+The deployed network service is the Python `RepoNodeApp`, launched by the
+generic object-store example. There is no built `DistributedRepoNodeApp`
+executable. For example:
 
 ```bash
-./build/NDNSF-DistributedRepo/DistributedRepoNodeApp \
-  --config NDNSF-DistributedRepo/configs/repo-node.conf \
-  --deployment-mode embedded \
-  --dry-run \
-  --local-smoke
+python3 examples/python/NDNSF-DistributedRepo/generic_object_store/repo_node.py \
+  --config examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml \
+  --provider-id A \
+  --repo-node /example/repo/A \
+  --repo-mode persistent \
+  --storage-dir /var/lib/ndnsf-repo/A
 ```
 
-## In-App Repo Plan
+This entry point is Persistent-only. Its omitted/default `repo_mode` is
+`persistent`; empty and case-insensitive `remote` are compatibility aliases for
+that same mode. In-App storage is selected by constructing an
+`ArtifactRepositoryApi` with `FilesystemArtifactApiBackend`, not by starting a
+network Repo node with an `embedded` or `both` mode.
 
-NDNSF-DistributedRepo is being organized so the same repo implementation can run
-either as a standalone repo application or as an embedded service inside another
-trusted NDNSF service container.
+## In-App C++ Integration
+
+In-App and Persistent are separate lifecycle paths. Python applications select
+the artifact backend when constructing `ArtifactRepositoryApi`; create separate
+API instances when both local and network storage are needed. No mode string
+implicitly copies data between them.
 
 The intended layering is:
 
@@ -416,18 +409,15 @@ RepoCore
   pure storage logic: put/get/manifest/list/delete/capability/catalog
 
 RepoNode
-  NDNSF service adapter: registers STORE/FETCH/MANIFEST/INVENTORY/
-  CAPABILITY/DELETE/STATUS/CATALOG_* on a ServiceProvider and delegates every
-  operation to RepoCore
+  C++ adapter over RepoCore; exposes trusted local service registration
 
-Repo app or embedding container
-  chooses whether to expose RepoNode remotely, register local services, or both
+Python RepoNodeApp
+  standalone Persistent NDNSF provider and versioned network-service entry
 ```
 
-Current first step: `RepoCore` owns the object store, manifest validation, and
-capacity/catalog accounting. `RepoNode` keeps the existing public API and
-standalone service registration behavior, but now delegates storage and catalog
-work to `RepoCore`.
+`RepoCore` owns object storage, manifest validation, and capacity/catalog
+accounting. The current public C++ `RepoNode` API exposes trusted local service
+registration; the Persistent network service is provided by Python `RepoNodeApp`.
 `RepoNode::registerLocalServices(LocalServiceRegistry&)` exposes the same
 STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE/STATUS/CATALOG_* handlers for
 trusted in-process invocation. The in-process repo path still uses the normal
@@ -436,16 +426,19 @@ important implementation detail is that NDNSF message payloads are carried as
 payload TLV `ndn::Block`s internally instead of being passed through a separate
 raw byte local API. Applications should still call the typed `RepoClient::local*`
 helpers rather than building repo service names or message wrappers by hand.
-`RepoDeploymentMode` selects which exposure path to enable:
+For a trusted same-process C++ call, register the local service handlers
+directly. `RepoDeploymentMode` parser/helper values do not perform registration:
 
 ```cpp
-RepoNode node(servicePrefix, capability);
-LocalServiceRegistry localRegistry;
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "ndn-service-framework/LocalServiceRegistry.hpp"
 
-node.registerDeploymentServices(
-  nullptr,
-  &localRegistry,
-  RepoDeploymentMode::Embedded);
+// servicePrefix and capability are configured by the embedding application.
+auto store = ndnsf_distributed_repo::makeFilesystemRepoStore("./repo-data");
+ndnsf_distributed_repo::RepoNode node(servicePrefix, capability, store);
+ndn_service_framework::LocalServiceRegistry localRegistry;
+node.registerLocalServices(localRegistry);
 ```
 
 Embedded callers should use the local `RepoClient` helpers instead of hand
@@ -469,17 +462,10 @@ auto payloadAgain = RepoClient::localGet(
   manifest.objectName);
 ```
 
-Supported mode strings are `remote`, `embedded`, `in-app`, and `both`. Empty
-config keeps the default `remote` behavior for existing standalone repo
-deployments.
-
-Next steps:
-
-1. Let higher-level applications such as NDNSF-UAV-APP and
-   NDNSF-DistributedInference load this deployment mode from their service
-   container config and wire the embedded registry into their own components.
-2. Keep remote callers on the normal NDNSF service path with permissions,
-   signatures, NAC-ABE, and token/replay protection.
+The C++ `RepoDeploymentMode` parser/helper aliases do not register services and
+are not a `RepoNodeApp` configuration interface. Remote callers continue through
+the normal NDNSF service path with permissions, signatures, NAC-ABE, and
+token/replay protection.
 
 Repo services do not define a separate certificate-selection policy. Remote
 repo providers and clients inherit NDNSF runtime behavior: certificate roles are
@@ -523,8 +509,8 @@ The shared repo responsibilities are deliberately narrower:
   eligibility;
 - produce conservative repair plans and optionally execute repair actions when
   deployment policy allows it;
-- expose In-App and Persistent deployment modes without changing NDNSF remote
-  invocation semantics.
+- provide distinct In-App local and Persistent network storage paths without
+  changing NDNSF remote invocation semantics.
 
 This boundary keeps the repo useful to both applications without turning it
 into a UAV log browser or an AI artifact planner.
@@ -566,20 +552,22 @@ RepoCore core(capability, makeTieredRepoStore(
 There is no memory-authoritative backend or default memory-only constructor.
 Tests use temporary SQLite databases or test-local fault-injection backends.
 
-`DistributedRepoNodeApp` reads this from config:
+The generic Python `RepoNodeApp` launcher exposes storage through
+`--storage-dir` and `--memory-cache-bytes`; SQLite remains authoritative and
+the LRU memory tier is optional:
 
-```text
-storage-backend tiered
-storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
-memory-cache-bytes 67108864
+```bash
+--storage-dir /var/lib/ndnsf-repo/repo-node-A \
+--memory-cache-bytes 67108864
 ```
 
-Set `memory-cache-bytes 0` to disable hot-cache admission while retaining the
+Set `--memory-cache-bytes 0` to disable hot-cache admission while retaining the
 same SQLite authority and object API. This is SQLite-only operation, not a
 memory-only compatibility mode.
 
-`CACHE_STATUS` is available through direct, embedded, remote NDNSF, and Python
-client paths. It returns the backend/authority/policy, current
+`CACHE_STATUS` is available through the trusted C++ local-service path and the
+Python Persistent network service (including its Python client). It returns
+the backend/authority/policy, current
 `budgetBytes`/`usedBytes`/`entryCount`, and cumulative `hits`, `misses`,
 `admissions`, `evictions`, `invalidations`, `oversizedBypasses`, `backingReads`,
 and `backingWrites`. Cache contents and counters are process-local and reset on

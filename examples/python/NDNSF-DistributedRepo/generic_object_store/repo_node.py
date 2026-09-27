@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 
 from ndnsf_distributed_inference import APPDeployment
-from py_repoclient.orchestration import RepoNodeApp
+from py_repoclient.orchestration import RepoNodeApp, normalize_repo_mode
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
@@ -16,7 +16,7 @@ CONFIG_OBJECT = (
 )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=CONFIG_FILE)
     parser.add_argument("--generated-policy-dir",
@@ -28,7 +28,14 @@ def main() -> int:
     parser.add_argument("--preallocate-bytes", type=int, default=0)
     parser.add_argument("--failure-domain", default="")
     parser.add_argument("--storage-dir", default="")
-    parser.add_argument("--repo-mode", default="persistent")
+    parser.add_argument(
+        "--repo-mode",
+        default="persistent",
+        help=(
+            "Persistent Repo service mode only; 'remote' is a legacy alias. "
+            "In-App storage uses an injected local ArtifactApiBackend."
+        ),
+    )
     parser.add_argument("--accepts-backup-replica", default="true")
     parser.add_argument("--peer-repo-node", action="append", default=[])
     parser.add_argument("--catalog-sync-interval-s", type=float, default=10.0)
@@ -58,7 +65,12 @@ def main() -> int:
         default=None,
         help="Fail closed for v2 writes when the DB schema is newer",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    try:
+        args.repo_mode = normalize_repo_mode(args.repo_mode)
+    except ValueError as error:
+        parser.error(str(error))
 
     deployment = APPDeployment.from_config(
         args.config,

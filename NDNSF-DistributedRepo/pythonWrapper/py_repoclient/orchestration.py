@@ -1538,6 +1538,17 @@ class _BoundedRepoHotCache:
             }
 
 
+def normalize_repo_mode(repo_mode: object) -> str:
+    """Validate the standalone network Repo mode and return its canonical value."""
+    if not isinstance(repo_mode, str) or repo_mode.strip().lower() not in {
+            "", "remote", "persistent"}:
+        raise ValueError(
+            "RepoNodeApp supports only Persistent mode; "
+            "use an injected local ArtifactApiBackend for In-App storage"
+        )
+    return "persistent"
+
+
 class RepoNodeApp:
     """Real NDNSF repo node using versioned public and peer-only services."""
 
@@ -1576,6 +1587,9 @@ class RepoNodeApp:
         artifact_writes_enabled: bool = True,
         artifact_max_write_schema_generation: int | None = None,
     ) -> None:
+        # Canonicalize before capability construction and Provider/storage work.
+        repo_mode = normalize_repo_mode(repo_mode)
+
         self.repo_node = repo_node
         self.service_name = service_name
         self.group = group
