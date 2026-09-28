@@ -2438,11 +2438,74 @@ activate_existing_stack_python_runtime() {
   PYTHON_BIN="$python"
 }
 
+reuse_minindn_experiment_profile() {
+  local yolo_state="$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/yolo-minindn"
+  local qwen_state="$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/qwen-minindn"
+  local stage_root profile_present=0 path
+  local -a recorded_sites
+
+  # Existing profiles may come from a newer installer/source revision. Their
+  # presence is authoritative; do not compare against pins and overwrite them.
+  for path in \
+      "$yolo_state" "$qwen_state" \
+      "$GLOBAL_DEPENDENCY_PREFIX/lib/ndnsf/mini-ndn" \
+      "$GLOBAL_DEPENDENCY_PREFIX/lib/ndnsf/minindn-experiments" \
+      "$GLOBAL_DEPENDENCY_PREFIX/bin/ndnsf-yolo-minindn" \
+      "$GLOBAL_DEPENDENCY_PREFIX/bin/ndnsf-qwen06b-minindn"; do
+    [[ -e "$path" ]] && profile_present=1
+  done
+  (( profile_present )) || return 1
+
+  if (( INSTALL_YOLO_MININDN )); then
+    mapfile -t recorded_sites < "$yolo_state/python-site-paths" 2>/dev/null || recorded_sites=()
+    if (( ${#recorded_sites[@]} != 2 )) ||
+        [[ ! -x "$GLOBAL_DEPENDENCY_PREFIX/bin/ndnsf-yolo-minindn" ||
+           ! -f "$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/models/yolo26n.pt" ||
+           ! -d "${recorded_sites[0]:-}" || ! -d "${recorded_sites[1]:-}" ||
+           ! -d "$(cat -- "$yolo_state/numpy-site-path" 2>/dev/null || true)" ||
+           ! -x "$(cat -- "$yolo_state/python-executable" 2>/dev/null || true)" ]]; then
+      echo 'An existing Mini-NDN/YOLO profile was found but is incomplete; preserving it without reinstalling.' >&2
+      return 2
+    fi
+  fi
+  if (( QWEN_MININDN )); then
+    mapfile -t recorded_sites < "$qwen_state/python-site-paths" 2>/dev/null || recorded_sites=()
+    if (( ${#recorded_sites[@]} != 2 )) ||
+        [[ ! -x "$GLOBAL_DEPENDENCY_PREFIX/bin/ndnsf-qwen06b-minindn" ||
+           ! -d "${recorded_sites[0]:-}" || ! -d "${recorded_sites[1]:-}" ||
+           ! -d "$(cat -- "$qwen_state/numpy-site-path" 2>/dev/null || true)" ||
+           ! -x "$(cat -- "$qwen_state/python-executable" 2>/dev/null || true)" ||
+           ! -s "$(cat -- "$qwen_state/model-snapshot" 2>/dev/null || true)/model.safetensors" ||
+           ! -s "$(cat -- "$qwen_state/model-snapshot" 2>/dev/null || true)/config.json" ]]; then
+      echo 'An existing Mini-NDN/Qwen profile was found but is incomplete; preserving it without reinstalling.' >&2
+      return 2
+    fi
+  fi
+
+  mkdir -p -- "$BUILD_DIR/install-staging"
+  stage_root="$(mktemp -d "$BUILD_DIR/install-staging/minindn-profile-reuse.XXXXXXXX")"
+  if (( INSTALL_YOLO_MININDN )); then
+    mkdir -p -- "$stage_root/usr/local/share/ndnsf/yolo-minindn"
+    printf '%s\n' "$ROOT" > "$stage_root/usr/local/share/ndnsf/yolo-minindn/source-root"
+  fi
+  if (( QWEN_MININDN )); then
+    mkdir -p -- "$stage_root/usr/local/share/ndnsf/qwen-minindn"
+    printf '%s\n' "$ROOT" > "$stage_root/usr/local/share/ndnsf/qwen-minindn/source-root"
+    printf '%s\n' "$BUILD_DIR" > "$stage_root/usr/local/share/ndnsf/qwen-minindn/waf-build-directory"
+  fi
+  echo '==> Reusing the existing Mini-NDN experiment profile without version checks or package/model downloads'
+  install_manifest_tree "$stage_root/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" \
+    minindn-experiment-runtime
+  rm -rf -- "$stage_root"
+  return 0
+}
+
 install_minindn_experiment_profile() {
   local python_tag torch_version torchvision_version python_ndn_version onnxruntime_python_version
   local numpy_version
   local transformers_version huggingface_hub_version tokenizers_version safetensors_version accelerate_version
   local mini_prefix yolo_prefix experiment_python
+  local reuse_status
   local model_python model_python_stage
   local mini_source mininet_source source_copy stage_root mini_site yolo_site numpy_site mini_stage yolo_stage numpy_stage
   local model_stage qwen_model_stage qwen_model_dir topology
@@ -2469,6 +2532,25 @@ install_minindn_experiment_profile() {
   esac
 
   experiment_python="$PYTHON_BIN"
+
+  mini_prefix="$GLOBAL_LIBRARY_DIR/ndnsf/mini-ndn/v0.7.0/$python_tag"
+  mini_site="$mini_prefix/site-packages"
+  yolo_prefix="torch-${torch_version//+/-}"
+  if (( INSTALL_YOLO_MININDN )); then
+    yolo_prefix+="-ultralytics-$YOLO_ULTRALYTICS_VERSION"
+  fi
+  if (( QWEN_MININDN )); then
+    yolo_prefix+="-transformers-$transformers_version"
+  fi
+  yolo_site="$GLOBAL_LIBRARY_DIR/ndnsf/minindn-experiments/$python_tag/$yolo_prefix/site-packages"
+  numpy_site="$GLOBAL_LIBRARY_DIR/ndnsf/minindn-experiments/$python_tag/numpy-$numpy_version/site-packages"
+
+  if reuse_minindn_experiment_profile; then
+    return 0
+  else
+    reuse_status=$?
+    (( reuse_status == 1 )) || return "$reuse_status"
+  fi
 
   check_minindn_ndn_cxx
   if ! PATH="$SYSTEM_PATH:/usr/local/bin" command -v nfd >/dev/null && \
@@ -2505,17 +2587,6 @@ install_minindn_experiment_profile() {
   source_copy="$(mktemp -d "$BUILD_DIR/minindn-python-source.XXXXXXXX")"
   mkdir -p -- "$BUILD_DIR/install-staging"
   stage_root="$(mktemp -d "$BUILD_DIR/install-staging/yolo-minindn.XXXXXXXX")"
-  mini_prefix="$GLOBAL_LIBRARY_DIR/ndnsf/mini-ndn/v0.7.0/$python_tag"
-  mini_site="$mini_prefix/site-packages"
-  yolo_prefix="torch-${torch_version//+/-}"
-  if (( INSTALL_YOLO_MININDN )); then
-    yolo_prefix+="-ultralytics-$YOLO_ULTRALYTICS_VERSION"
-  fi
-  if (( QWEN_MININDN )); then
-    yolo_prefix+="-transformers-$transformers_version"
-  fi
-  yolo_site="$GLOBAL_LIBRARY_DIR/ndnsf/minindn-experiments/$python_tag/$yolo_prefix/site-packages"
-  numpy_site="$GLOBAL_LIBRARY_DIR/ndnsf/minindn-experiments/$python_tag/numpy-$numpy_version/site-packages"
   mini_stage="$stage_root/usr/local/${mini_site#/usr/local/}"
   yolo_stage="$stage_root/usr/local/${yolo_site#/usr/local/}"
   numpy_stage="$stage_root/usr/local/${numpy_site#/usr/local/}"
@@ -3603,10 +3674,9 @@ check_qwen_minindn_prerequisites() {
     fi
   done
   if [[ ! -r "$state_dir/python-site-paths" || ! -r "$state_dir/numpy-site-path" || \
-        ! -r "$state_dir/model-snapshot" || \
-        ! -r "$state_dir/python-executable" || \
-        "$(cat -- "$state_dir/model-revision" 2>/dev/null || true)" != "$QWEN3_MODEL_REVISION" ]]; then
-    echo "Qwen MiniNDN install state is missing or has the wrong model revision: $state_dir" >&2
+        ! -r "$state_dir/model-snapshot" || ! -s "$state_dir/model-revision" || \
+        ! -r "$state_dir/python-executable" ]]; then
+    echo "Qwen MiniNDN install state is incomplete: $state_dir" >&2
     missing=1
   else
     mapfile -t python_sites < "$state_dir/python-site-paths"
