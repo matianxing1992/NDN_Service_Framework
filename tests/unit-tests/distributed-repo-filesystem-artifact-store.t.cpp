@@ -5,8 +5,13 @@
 #include <sqlite3.h>
 
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
+#include <iterator>
+#include <map>
+#include <optional>
 #include <sstream>
+#include <string>
 #include <unistd.h>
 
 namespace ndnsf_distributed_repo::test {
@@ -92,6 +97,25 @@ executeSql(const std::string& databasePath, const char* sql)
   sqlite3_free(error);
   sqlite3_close(database);
   BOOST_REQUIRE_MESSAGE(status == SQLITE_OK, detail);
+}
+
+std::map<std::string, std::optional<std::string>>
+snapshotDatabaseAndSidecars(const std::string& databasePath)
+{
+  std::map<std::string, std::optional<std::string>> snapshot;
+  for (const auto* suffix : {"", "-wal", "-shm"}) {
+    const std::string key(suffix);
+    const std::string path = databasePath + key;
+    if (!fs::exists(path)) {
+      snapshot.emplace(key, std::nullopt);
+      continue;
+    }
+    std::ifstream input(path, std::ios::binary);
+    BOOST_REQUIRE(input.good());
+    snapshot.emplace(key, std::string(std::istreambuf_iterator<char>(input),
+                                      std::istreambuf_iterator<char>()));
+  }
+  return snapshot;
 }
 
 } // namespace
@@ -204,7 +228,7 @@ BOOST_AUTO_TEST_CASE(UsesTransactionalLifecycleMetadataNotPacketRows)
   const auto database = (fs::path(root) / "metadata.sqlite3").string();
   {
     SqliteArtifactMetadataStore metadata(database);
-    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), 12);
+    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), 14);
     BOOST_CHECK(metadata.artifactWritesEnabled());
     ArtifactLifecycleEvent event{
       "event-1", "operation-1", std::string(64, 'a'), 1,
@@ -231,44 +255,106 @@ BOOST_AUTO_TEST_CASE(MigrationIsAdditiveAndRollbackIsReadOnly)
   fs::remove_all(root);
   fs::create_directories(root);
   const auto database = (fs::path(root) / "metadata.sqlite3").string();
+  const std::vector<uint8_t> payload{0x53, 0x70, 0x65, 0x63, 0x31, 0x39, 0x32};
+  const auto reference = makeReference(payload);
   const ArtifactLifecycleEvent event{
-    "event-1", "operation-1", std::string(64, 'a'), 1,
+    "event-1", "operation-1", reference.contentDigest, 1,
     ArtifactLifecycleState::Absent, ArtifactLifecycleState::Reserved,
-    1000, true, "retained across schema changes",
+    1000, true, "retained across schema migrations",
   };
   {
     SqliteArtifactMetadataStore metadata(database);
     metadata.appendLifecycleEvent(event);
+    BOOST_CHECK_EQUAL(metadata.schemaGeneration(), 14);
   }
 
   executeSql(
     database,
-    "UPDATE repo_meta SET value='9' WHERE key='schema_generation'");
+    "DROP TABLE artifact_locations;"
+    "DROP TABLE artifact_persistent_receipts;"
+    "DROP TABLE artifact_local_commits;"
+    "UPDATE repo_meta SET value='12' WHERE key='schema_generation'");
   {
     SqliteArtifactMetadataStore migrated(database);
     const auto diagnostics = migrated.migrationDiagnostics();
-    BOOST_CHECK_EQUAL(diagnostics.previousSchemaGeneration, 9);
-    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 12);
+    BOOST_CHECK_EQUAL(diagnostics.previousSchemaGeneration, 12);
+    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 14);
     BOOST_CHECK_EQUAL(diagnostics.action, "roll-forward");
     BOOST_CHECK(diagnostics.writesEnabled);
     BOOST_CHECK(!diagnostics.destructiveChanges);
-    BOOST_REQUIRE_EQUAL(migrated.lifecycleEvents("operation-1").size(), 1);
+    const auto events = migrated.lifecycleEvents("operation-1");
+    BOOST_REQUIRE_EQUAL(events.size(), 1);
+    BOOST_CHECK_EQUAL(events[0].eventId, event.eventId);
+    BOOST_CHECK_EQUAL(events[0].detail, event.detail);
+    BOOST_CHECK(!migrated.lookupLocalCommit(reference));
+    const auto localCommit = migrated.recordLocalCommit(reference, 2345);
+    BOOST_CHECK_EQUAL(localCommit.committedAtMs, 2345);
+    BOOST_CHECK_EQUAL(migrated.schemaGeneration(), 14);
+  }
+
+  const auto schema13Database =
+    (fs::path(root) / "metadata-schema13.sqlite3").string();
+  {
+    SqliteArtifactMetadataStore schema14(schema13Database);
+    schema14.appendLifecycleEvent(event);
+    schema14.recordLocalCommit(reference, 3456);
+  }
+  executeSql(
+    schema13Database,
+    "DROP TABLE artifact_locations;"
+    "DROP TABLE artifact_persistent_receipts;"
+    "UPDATE repo_meta SET value='13' WHERE key='schema_generation'");
+  {
+    SqliteArtifactMetadataStore migrated(schema13Database);
+    const auto diagnostics = migrated.migrationDiagnostics();
+    BOOST_CHECK_EQUAL(diagnostics.previousSchemaGeneration, 13);
+    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 14);
+    BOOST_CHECK_EQUAL(diagnostics.action, "roll-forward");
+    BOOST_CHECK(migrated.artifactWritesEnabled());
+    const auto events = migrated.lifecycleEvents("operation-1");
+    BOOST_REQUIRE_EQUAL(events.size(), 1);
+    BOOST_CHECK_EQUAL(events[0].eventId, event.eventId);
+    BOOST_CHECK_EQUAL(events[0].detail, event.detail);
+    const auto localCommit = migrated.lookupLocalCommit(reference);
+    BOOST_REQUIRE(localCommit);
+    BOOST_CHECK_EQUAL(localCommit->committedAtMs, 3456);
+  }
+
+  executeSql(
+    schema13Database,
+    "UPDATE repo_meta SET value='9' WHERE key='schema_generation'");
+  {
+    SqliteArtifactMetadataStore repaired(schema13Database);
+    const auto diagnostics = repaired.migrationDiagnostics();
+    BOOST_CHECK_EQUAL(diagnostics.previousSchemaGeneration, 9);
+    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 14);
+    BOOST_CHECK_EQUAL(diagnostics.action, "marker-repaired+roll-forward");
+    BOOST_CHECK(repaired.artifactWritesEnabled());
+    const auto events = repaired.lifecycleEvents("operation-1");
+    BOOST_REQUIRE_EQUAL(events.size(), 1);
+    BOOST_CHECK_EQUAL(events[0].eventId, event.eventId);
+    BOOST_CHECK_EQUAL(events[0].detail, event.detail);
+    const auto localCommit = repaired.lookupLocalCommit(reference);
+    BOOST_REQUIRE(localCommit);
+    BOOST_CHECK_EQUAL(localCommit->committedAtMs, 3456);
   }
 
   executeSql(
     database,
-    "UPDATE repo_meta SET value='13' WHERE key='schema_generation'");
+    "UPDATE repo_meta SET value='15' WHERE key='schema_generation'");
+  const auto before = snapshotDatabaseAndSidecars(database);
   {
-    SqliteArtifactMetadataStore rollback(database);
-    const auto diagnostics = rollback.migrationDiagnostics();
-    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 13);
+    SqliteArtifactMetadataStore future(database, true, 14, true);
+    const auto diagnostics = future.migrationDiagnostics();
+    BOOST_CHECK_EQUAL(diagnostics.databaseSchemaGeneration, 15);
     BOOST_CHECK_EQUAL(diagnostics.action, "read-only-rollback");
-    BOOST_CHECK_EQUAL(
-      diagnostics.reason, "database-schema-newer-than-write-runtime");
-    BOOST_CHECK(!rollback.artifactWritesEnabled());
-    BOOST_REQUIRE_EQUAL(rollback.lifecycleEvents("operation-1").size(), 1);
+    BOOST_CHECK_EQUAL(diagnostics.reason,
+                      "database-schema-newer-than-write-runtime");
+    BOOST_CHECK(!future.artifactWritesEnabled());
+    BOOST_REQUIRE_EQUAL(future.lifecycleEvents("operation-1").size(), 1);
+    BOOST_REQUIRE(future.lookupLocalCommit(reference));
     BOOST_CHECK_EXCEPTION(
-      rollback.appendLifecycleEvent(ArtifactLifecycleEvent{
+      future.appendLifecycleEvent(ArtifactLifecycleEvent{
         "event-2", "operation-2", std::string(64, 'b'), 1,
         ArtifactLifecycleState::Absent, ArtifactLifecycleState::Reserved,
         2000, true, "must fail",
@@ -278,8 +364,180 @@ BOOST_AUTO_TEST_CASE(MigrationIsAdditiveAndRollbackIsReadOnly)
         return std::string(error.what()).find(
           "repo-artifact-writes-disabled:") == 0;
       });
+    BOOST_CHECK_EXCEPTION(
+      future.recordLocalCommit(reference, 5678),
+      std::runtime_error,
+      [] (const std::runtime_error& error) {
+        return std::string(error.what()).find(
+          "repo-artifact-writes-disabled:") == 0;
+      });
   }
+  BOOST_CHECK(snapshotDatabaseAndSidecars(database) == before);
   BOOST_CHECK_EQUAL(queryCount(database, "artifact_lifecycle_journal"), 1);
+  BOOST_CHECK_EQUAL(queryCount(database, "artifact_local_commits"), 1);
+  BOOST_CHECK_EQUAL(queryCount(database, "artifact_persistent_receipts"), 0);
+  fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(UnknownLowerSchemaShapeFailsReadOnlyWithoutMutation)
+{
+  const auto root = temporaryRoot("unknown-schema");
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const auto database = (fs::path(root) / "metadata.sqlite3").string();
+  executeSql(
+    database,
+    "CREATE TABLE repo_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
+    "INSERT INTO repo_meta(key,value) VALUES('schema_generation','11');"
+    "CREATE TABLE unrelated(value TEXT)");
+  const auto before = snapshotDatabaseAndSidecars(database);
+  const auto openUnsupported = [&database] {
+    SqliteArtifactMetadataStore unsupported(database, true, 14, true);
+  };
+  BOOST_CHECK_THROW(openUnsupported(), std::runtime_error);
+  BOOST_CHECK(snapshotDatabaseAndSidecars(database) == before);
+  fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsPersistentCatalogWithoutConstraintsBeforePromotion)
+{
+  const auto root = temporaryRoot("persistent-catalog-missing-constraints");
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const auto database = (fs::path(root) / "metadata.sqlite3").string();
+  {
+    SqliteArtifactMetadataStore initialized(database);
+    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), 14);
+  }
+  executeSql(
+    database,
+    "ALTER TABLE artifact_locations RENAME TO valid_artifact_locations;"
+    "ALTER TABLE artifact_persistent_receipts "
+      "RENAME TO valid_artifact_persistent_receipts;"
+    "CREATE TABLE artifact_persistent_receipts AS SELECT * "
+      "FROM valid_artifact_persistent_receipts WHERE 0;"
+    "CREATE TABLE artifact_locations AS SELECT * FROM valid_artifact_locations WHERE 0;"
+    "DROP TABLE valid_artifact_locations;"
+    "DROP TABLE valid_artifact_persistent_receipts;"
+    "UPDATE repo_meta SET value='13' WHERE key='schema_generation'");
+
+  const auto before = snapshotDatabaseAndSidecars(database);
+  const auto openUnsupported = [&database] {
+    SqliteArtifactMetadataStore unsupported(database, true, 14, true);
+  };
+  BOOST_CHECK_EXCEPTION(
+    openUnsupported(), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find(
+        "repo-schema-unsupported-profile: Persistent catalog constraints") == 0;
+    });
+  BOOST_CHECK(snapshotDatabaseAndSidecars(database) == before);
+  fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsPersistentCatalogWithWrongIndexCollationBeforePromotion)
+{
+  const auto root = temporaryRoot("persistent-catalog-wrong-collation");
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const auto database = (fs::path(root) / "metadata.sqlite3").string();
+  {
+    SqliteArtifactMetadataStore initialized(database);
+    BOOST_CHECK_EQUAL(initialized.schemaGeneration(), 14);
+  }
+  executeSql(
+    database,
+    "ALTER TABLE artifact_locations RENAME TO valid_artifact_locations;"
+    "CREATE TABLE artifact_locations("
+    "repo_node TEXT NOT NULL,provider_identity TEXT NOT NULL,"
+    "logical_name TEXT COLLATE NOCASE NOT NULL,digest_algorithm TEXT NOT NULL,"
+    "content_digest TEXT NOT NULL,size_bytes INTEGER NOT NULL,"
+    "format_version TEXT NOT NULL,root_manifest_name TEXT NOT NULL,"
+    "publisher_identity TEXT NOT NULL,policy_epoch TEXT NOT NULL,"
+    "receipt_id TEXT NOT NULL,operation_id TEXT NOT NULL,generation INTEGER NOT NULL,"
+    "location_version INTEGER NOT NULL,committed_at_ms INTEGER NOT NULL,"
+    "expires_at_ms INTEGER NOT NULL,route_state TEXT NOT NULL,forwarding_hint TEXT NOT NULL,"
+    "PRIMARY KEY(repo_node,provider_identity,logical_name,digest_algorithm,content_digest,"
+    "size_bytes,format_version,root_manifest_name,publisher_identity,policy_epoch),"
+    "FOREIGN KEY(receipt_id) REFERENCES artifact_persistent_receipts(receipt_id));"
+    "DROP TABLE valid_artifact_locations;"
+    "UPDATE repo_meta SET value='13' WHERE key='schema_generation'");
+
+  const auto before = snapshotDatabaseAndSidecars(database);
+  const auto openUnsupported = [&database] {
+    SqliteArtifactMetadataStore unsupported(database, true, 14, true);
+  };
+  BOOST_CHECK_EXCEPTION(
+    openUnsupported(), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find(
+        "repo-schema-unsupported-profile: Persistent catalog constraints") == 0;
+    });
+  BOOST_CHECK(snapshotDatabaseAndSidecars(database) == before);
+  fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsPartialLocalCommitUniqueIndexWithoutMutation)
+{
+  const auto root = temporaryRoot("partial-local-commit-index");
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const auto database = (fs::path(root) / "metadata.sqlite3").string();
+  {
+    SqliteArtifactMetadataStore initialized(database);
+    BOOST_CHECK(initialized.artifactWritesEnabled());
+  }
+  executeSql(
+    database,
+    "DROP TABLE artifact_local_commits;"
+    "CREATE TABLE artifact_local_commits("
+    "local_commit_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "logical_name TEXT NOT NULL,digest_algorithm TEXT NOT NULL,"
+    "content_digest TEXT NOT NULL,size_bytes INTEGER NOT NULL CHECK(size_bytes>=0),"
+    "format_version TEXT NOT NULL,root_manifest_name TEXT NOT NULL,"
+    "publisher_identity TEXT NOT NULL,policy_epoch TEXT NOT NULL,"
+    "committed_at_ms INTEGER NOT NULL CHECK(committed_at_ms>0));"
+    "CREATE UNIQUE INDEX partial_artifact_reference ON artifact_local_commits("
+    "logical_name,digest_algorithm,content_digest,size_bytes,format_version,"
+    "root_manifest_name,publisher_identity,policy_epoch) WHERE size_bytes>=0");
+  const auto before = snapshotDatabaseAndSidecars(database);
+  const auto openUnsupported = [&database] {
+    SqliteArtifactMetadataStore unsupported(database, true, 13, true);
+  };
+  BOOST_CHECK_EXCEPTION(
+    openUnsupported(), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find(
+        "repo-schema-unsupported-profile:") == 0;
+    });
+  BOOST_CHECK(snapshotDatabaseAndSidecars(database) == before);
+  fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(RejectsNegativeSchemaGenerationWithoutMutation)
+{
+  const auto root = temporaryRoot("negative-schema-generation");
+  fs::remove_all(root);
+  fs::create_directories(root);
+  const auto database = (fs::path(root) / "metadata.sqlite3").string();
+  {
+    SqliteArtifactMetadataStore initialized(database);
+    BOOST_CHECK(initialized.artifactWritesEnabled());
+  }
+  executeSql(
+    database,
+    "UPDATE repo_meta SET value='-1' WHERE key='schema_generation'");
+  const auto before = snapshotDatabaseAndSidecars(database);
+  const auto openMalformed = [&database] {
+    SqliteArtifactMetadataStore malformed(database, true, 13, true);
+  };
+  BOOST_CHECK_EXCEPTION(
+    openMalformed(), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()).find(
+        "repo-schema-invalid-generation:") == 0;
+    });
+  BOOST_CHECK(snapshotDatabaseAndSidecars(database) == before);
   fs::remove_all(root);
 }
 

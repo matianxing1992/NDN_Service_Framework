@@ -1,6 +1,7 @@
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
+#include "ndnsf-distributed-repo/detail/StrictJson.hpp"
 
 #include <openssl/sha.h>
 #include <sqlite3.h>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -87,6 +89,60 @@ normalizeModeText(const std::string& value)
       std::tolower(static_cast<unsigned char>(ch))));
   }
   return normalized;
+}
+
+uint64_t
+jsonUnsigned(const detail::JsonValue::Object& object, const char* key)
+{
+  return detail::member(object, key, detail::JsonValue::Kind::Unsigned).number;
+}
+
+std::string
+jsonString(const detail::JsonValue::Object& object, const char* key)
+{
+  return detail::member(object, key, detail::JsonValue::Kind::String).string;
+}
+
+std::vector<uint8_t>
+frameArtifactRequest(const char* magic, const std::string& header,
+                     const std::vector<uint8_t>& payload = {})
+{
+  if (header.size() > 64 * 1024 || payload.size() > 16 * 1024 * 1024 ||
+      header.size() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("repo-artifact-request-too-large: request exceeds wire bounds");
+  }
+  std::vector<uint8_t> result;
+  result.reserve(12 + header.size() + payload.size());
+  for (size_t i = 0; i < 8; ++i) result.push_back(static_cast<uint8_t>(magic[i]));
+  const auto length = static_cast<uint32_t>(header.size());
+  result.push_back(static_cast<uint8_t>((length >> 24) & 0xff));
+  result.push_back(static_cast<uint8_t>((length >> 16) & 0xff));
+  result.push_back(static_cast<uint8_t>((length >> 8) & 0xff));
+  result.push_back(static_cast<uint8_t>(length & 0xff));
+  result.insert(result.end(), header.begin(), header.end());
+  result.insert(result.end(), payload.begin(), payload.end());
+  return result;
+}
+
+std::string
+unframeArtifactRequest(const std::vector<uint8_t>& wire, const char* magic,
+                       size_t& payloadOffset)
+{
+  if (wire.size() < 12 || wire.size() > 16 * 1024 * 1024 + 64 * 1024 + 12 ||
+      !std::equal(wire.begin(), wire.begin() + 8,
+                  reinterpret_cast<const uint8_t*>(magic))) {
+    throw std::invalid_argument("repo-artifact-request-invalid: bad frame signature or length");
+  }
+  const uint32_t headerLength =
+    (static_cast<uint32_t>(wire[8]) << 24) |
+    (static_cast<uint32_t>(wire[9]) << 16) |
+    (static_cast<uint32_t>(wire[10]) << 8) | static_cast<uint32_t>(wire[11]);
+  if (headerLength == 0 || headerLength > 64 * 1024 ||
+      wire.size() - 12 < headerLength) {
+    throw std::invalid_argument("repo-artifact-request-invalid: bad header length");
+  }
+  payloadOffset = 12 + headerLength;
+  return std::string(wire.begin() + 12, wire.begin() + payloadOffset);
 }
 
 } // namespace
@@ -1020,8 +1076,183 @@ RepoWriteReceipt::toJson() const
   os << "\"persistedBytes\":" << persistedBytes << ",";
   os << "\"state\":" << jsonQuote(state) << ",";
   os << "\"completedAtMs\":" << completedAtMs;
+  if (!providerIdentity.empty()) {
+    os << ",\"providerIdentity\":" << jsonQuote(providerIdentity);
+  }
+  if (artifactReference) {
+    os << ",\"artifactReference\":" << artifactReference->toJson();
+  }
   os << "}";
   return os.str();
+}
+
+std::vector<uint8_t>
+ArtifactStoreRequest::toWire(const ArtifactLimits& limits) const
+{
+  if (schemaVersion != 1 || generation == 0 ||
+      bytes.size() != reference.sizeBytes ||
+      bytes.size() > std::min<uint64_t>(limits.maxChunkBytes, 16 * 1024 * 1024)) {
+    throw std::invalid_argument("repo-artifact-store-request-invalid: version, size, or generation is invalid");
+  }
+  validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
+  reference.validate(limits);
+  const std::string header = "{\"schemaVersion\":1,\"operationId\":" +
+    detail::quoteJson(operationId) + ",\"generation\":" +
+    std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
+    ",\"payloadBytes\":" + std::to_string(bytes.size()) + "}";
+  return frameArtifactRequest("ARV2PUT1", header, bytes);
+}
+
+ArtifactStoreRequest
+ArtifactStoreRequest::fromWire(const std::vector<uint8_t>& wire,
+                               const ArtifactLimits& limits)
+{
+  size_t payloadOffset = 0;
+  const auto header = unframeArtifactRequest(wire, "ARV2PUT1", payloadOffset);
+  const auto root = detail::parseJson(header, 64 * 1024);
+  const auto& object = detail::requireObject(root);
+  detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
+    "artifact", "payloadBytes"});
+  if (jsonUnsigned(object, "schemaVersion") != 1) {
+    throw std::invalid_argument("repo-artifact-store-request-invalid: unknown schema version");
+  }
+  ArtifactStoreRequest result;
+  result.operationId = jsonString(object, "operationId");
+  result.generation = jsonUnsigned(object, "generation");
+  result.reference = ArtifactReference::fromJson(
+    detail::renderJson(object.at("artifact")), limits);
+  const auto payloadBytes = jsonUnsigned(object, "payloadBytes");
+  if (payloadBytes != wire.size() - payloadOffset) {
+    throw std::invalid_argument("repo-artifact-store-request-invalid: payload length mismatch");
+  }
+  result.bytes.assign(wire.begin() + payloadOffset, wire.end());
+  (void)result.toWire(limits);
+  return result;
+}
+
+std::vector<uint8_t>
+ArtifactRangeWriteRequest::toWire(const ArtifactLimits& limits) const
+{
+  if (schemaVersion != 1 || generation == 0 || lengthBytes == 0 ||
+      lengthBytes != bytes.size() || offsetBytes > reference.sizeBytes ||
+      lengthBytes > reference.sizeBytes - offsetBytes ||
+      lengthBytes > std::min<uint64_t>(limits.maxChunkBytes, 16 * 1024 * 1024)) {
+    throw std::invalid_argument("repo-artifact-range-request-invalid: range fields are inconsistent");
+  }
+  validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
+  reference.validate(limits);
+  const std::string header = "{\"schemaVersion\":1,\"operationId\":" +
+    detail::quoteJson(operationId) + ",\"generation\":" +
+    std::to_string(generation) + ",\"artifact\":" + reference.toJson() +
+    ",\"offsetBytes\":" + std::to_string(offsetBytes) +
+    ",\"lengthBytes\":" + std::to_string(lengthBytes) +
+    ",\"payloadBytes\":" + std::to_string(bytes.size()) + "}";
+  return frameArtifactRequest("ARV2RNG1", header, bytes);
+}
+
+ArtifactRangeWriteRequest
+ArtifactRangeWriteRequest::fromWire(const std::vector<uint8_t>& wire,
+                                    const ArtifactLimits& limits)
+{
+  size_t payloadOffset = 0;
+  const auto header = unframeArtifactRequest(wire, "ARV2RNG1", payloadOffset);
+  const auto root = detail::parseJson(header, 64 * 1024);
+  const auto& object = detail::requireObject(root);
+  detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation",
+    "artifact", "offsetBytes", "lengthBytes", "payloadBytes"});
+  if (jsonUnsigned(object, "schemaVersion") != 1) {
+    throw std::invalid_argument("repo-artifact-range-request-invalid: unknown schema version");
+  }
+  ArtifactRangeWriteRequest result;
+  result.operationId = jsonString(object, "operationId");
+  result.generation = jsonUnsigned(object, "generation");
+  result.reference = ArtifactReference::fromJson(
+    detail::renderJson(object.at("artifact")), limits);
+  result.offsetBytes = jsonUnsigned(object, "offsetBytes");
+  result.lengthBytes = jsonUnsigned(object, "lengthBytes");
+  const auto payloadBytes = jsonUnsigned(object, "payloadBytes");
+  if (payloadBytes != wire.size() - payloadOffset) {
+    throw std::invalid_argument("repo-artifact-range-request-invalid: payload length mismatch");
+  }
+  result.bytes.assign(wire.begin() + payloadOffset, wire.end());
+  (void)result.toWire(limits);
+  return result;
+}
+
+std::vector<uint8_t>
+ArtifactRangeCommitRequest::toWire(const ArtifactLimits& limits) const
+{
+  if (schemaVersion != 1 || generation == 0) {
+    throw std::invalid_argument("repo-artifact-commit-request-invalid: generation or version invalid");
+  }
+  validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
+  reference.validate(limits);
+  const std::string header = "{\"schemaVersion\":1,\"operationId\":" +
+    detail::quoteJson(operationId) + ",\"generation\":" +
+    std::to_string(generation) + ",\"artifact\":" + reference.toJson() + "}";
+  return frameArtifactRequest("ARV2COM1", header);
+}
+
+ArtifactRangeCommitRequest
+ArtifactRangeCommitRequest::fromWire(const std::vector<uint8_t>& wire,
+                                     const ArtifactLimits& limits)
+{
+  size_t payloadOffset = 0;
+  const auto header = unframeArtifactRequest(wire, "ARV2COM1", payloadOffset);
+  if (payloadOffset != wire.size()) {
+    throw std::invalid_argument("repo-artifact-commit-request-invalid: unexpected payload bytes");
+  }
+  const auto root = detail::parseJson(header, 64 * 1024);
+  const auto& object = detail::requireObject(root);
+  detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation", "artifact"});
+  if (jsonUnsigned(object, "schemaVersion") != 1) {
+    throw std::invalid_argument("repo-artifact-commit-request-invalid: unknown schema version");
+  }
+  ArtifactRangeCommitRequest result;
+  result.operationId = jsonString(object, "operationId");
+  result.generation = jsonUnsigned(object, "generation");
+  result.reference = ArtifactReference::fromJson(
+    detail::renderJson(object.at("artifact")), limits);
+  (void)result.toWire(limits);
+  return result;
+}
+
+std::vector<uint8_t>
+ArtifactRangeAbortRequest::toWire(const ArtifactLimits& limits) const
+{
+  if (schemaVersion != 1 || generation == 0) {
+    throw std::invalid_argument("repo-artifact-abort-request-invalid: generation or version invalid");
+  }
+  validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
+  reference.validate(limits);
+  const std::string header = "{\"schemaVersion\":1,\"operationId\":" +
+    detail::quoteJson(operationId) + ",\"generation\":" +
+    std::to_string(generation) + ",\"artifact\":" + reference.toJson() + "}";
+  return frameArtifactRequest("ARV2ABT1", header);
+}
+
+ArtifactRangeAbortRequest
+ArtifactRangeAbortRequest::fromWire(const std::vector<uint8_t>& wire,
+                                    const ArtifactLimits& limits)
+{
+  size_t payloadOffset = 0;
+  const auto header = unframeArtifactRequest(wire, "ARV2ABT1", payloadOffset);
+  if (payloadOffset != wire.size()) {
+    throw std::invalid_argument("repo-artifact-abort-request-invalid: unexpected payload bytes");
+  }
+  const auto root = detail::parseJson(header, 64 * 1024);
+  const auto& object = detail::requireObject(root);
+  detail::requireExactKeys(object, {"schemaVersion", "operationId", "generation", "artifact"});
+  if (jsonUnsigned(object, "schemaVersion") != 1) {
+    throw std::invalid_argument("repo-artifact-abort-request-invalid: unknown schema version");
+  }
+  ArtifactRangeAbortRequest result;
+  result.operationId = jsonString(object, "operationId");
+  result.generation = jsonUnsigned(object, "generation");
+  result.reference = ArtifactReference::fromJson(
+    detail::renderJson(object.at("artifact")), limits);
+  (void)result.toWire(limits);
+  return result;
 }
 
 std::string

@@ -8,6 +8,9 @@
 #include <ndn-cxx/util/segmenter.hpp>
 
 #include <algorithm>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -15,6 +18,67 @@
 namespace ndnsf_distributed_repo {
 
 namespace {
+
+struct SelectedRequestResult
+{
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool done = false;
+  std::string error;
+  std::vector<uint8_t> payload;
+};
+
+void
+completeSelectedRequest(const std::shared_ptr<SelectedRequestResult>& result,
+                        const std::string& error)
+{
+  {
+    std::lock_guard<std::mutex> guard(result->mutex);
+    if (result->done) return;
+    result->error = error;
+    result->done = true;
+  }
+  result->condition.notify_all();
+}
+
+class ExactRepoParticipantSelection final :
+  public ndn_service_framework::ParticipantSelectionPolicy
+{
+public:
+  ExactRepoParticipantSelection(ndn::Name provider, ndn::Name service)
+    : m_provider(std::move(provider))
+    , m_service(std::move(service))
+  {
+  }
+
+  std::vector<ndn_service_framework::SelectedParticipant>
+  select(const std::vector<ndn_service_framework::AckCandidate>& candidates,
+         const std::vector<ndn_service_framework::CollaborationRoleSpec>& roles) const override
+  {
+    if (roles.size() != 1) return {};
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [&] (const auto& candidate) {
+      return candidate.providerName == m_provider && candidate.serviceName == m_service &&
+             candidate.ack.getStatus() &&
+             candidate.authenticationEvidence.trustSchemaValidated &&
+             candidate.authenticationEvidence.signerIdentity == m_provider.toUri();
+    });
+    if (found == candidates.end()) return {};
+    ndn_service_framework::SelectedParticipant selected;
+    selected.role = roles.front().role;
+    selected.service = roles.front().service;
+    selected.provider = found->providerName;
+    selected.assignedArtifact = roles.front().requiredArtifact;
+    selected.requiresProvisioning = roles.front().allowDynamicProvisioning;
+    selected.provisioningTimeoutMs = roles.front().provisioningTimeoutMs;
+    selected.assignmentPayload = roles.front().assignmentPayload;
+    selected.ack = *found;
+    return {std::move(selected)};
+  }
+
+private:
+  ndn::Name m_provider;
+  ndn::Name m_service;
+};
 
 std::vector<uint8_t>
 localRequest(ndn_service_framework::LocalServiceRegistry& registry,
@@ -310,7 +374,7 @@ RepoClient::putSegmented(RepoNode& node,
   }
 
   auto manifest = makeParentManifest(objectName, payload, options, segmentCount);
-  return node.core().putManifest(manifest);
+  return node.putManifest(manifest);
 }
 
 std::vector<uint8_t>
@@ -660,6 +724,36 @@ RepoClient::requestStoreRange(
 }
 
 ndn::Name
+RepoClient::requestArtifactStoreRange(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const ArtifactRangeWriteRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "STORE_RANGE"),
+    makeRequest(request.toWire()), timeoutMs,
+    std::move(onTimeout), std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestArtifactStore(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const ArtifactStoreRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "STORE"),
+    makeRequest(request.toWire()), timeoutMs,
+    std::move(onTimeout), std::move(onResponse));
+}
+
+ndn::Name
 RepoClient::requestCommitRanges(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
@@ -674,6 +768,106 @@ RepoClient::requestCommitRanges(
     timeoutMs,
     std::move(onTimeout),
     std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestArtifactCommitRanges(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const ArtifactRangeCommitRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "COMMIT_RANGES"),
+    makeRequest(request.toWire()), timeoutMs,
+    std::move(onTimeout), std::move(onResponse));
+}
+
+std::vector<uint8_t>
+RepoClient::requestSelectedService(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& providerIdentity,
+  const ndn::Name& serviceName,
+  const std::vector<uint8_t>& payload,
+  int ackCollectionTimeMs,
+  int timeoutMs)
+{
+  if (providerIdentity.empty() || serviceName.empty() || ackCollectionTimeMs <= 0 ||
+      timeoutMs <= ackCollectionTimeMs) {
+    throw std::invalid_argument("repo-selected-request-invalid: Provider, service, or deadline is invalid");
+  }
+  auto result = std::make_shared<SelectedRequestResult>();
+  ndn::Buffer requestPayload;
+  if (!payload.empty()) requestPayload = ndn::Buffer(payload.data(), payload.size());
+  const std::vector<ndn::Name> providers{providerIdentity};
+  const auto requestId = user.BeginCollaborationWithProviders(
+    serviceName, requestPayload, ackCollectionTimeMs, timeoutMs,
+    [&user, result, providerIdentity, serviceName, ackCollectionTimeMs, timeoutMs]
+    (const ndn_service_framework::CollaborationAckClosure& closure) {
+      try {
+        size_t matching = 0;
+        for (const auto& candidate : closure.candidates) {
+          if (candidate.providerName == providerIdentity &&
+              candidate.serviceName == serviceName && candidate.ack.getStatus() &&
+              candidate.authenticationEvidence.trustSchemaValidated &&
+              candidate.authenticationEvidence.signerIdentity == providerIdentity.toUri()) {
+            ++matching;
+          }
+        }
+        if (matching != 1) {
+          throw std::runtime_error(
+            "repo-ack-authentication-failed: selected Provider ACK was absent, duplicated, or untrusted");
+        }
+        ndn_service_framework::CollaborationRoleSpec role;
+        role.role = "artifact-repo-target";
+        role.service = serviceName;
+        role.minProviders = 1;
+        role.maxProviders = 1;
+        role.terminalResponseOwner = true;
+        role.assignmentPayload = ndn::Buffer(1);
+        role.assignmentPayload[0] = 1;
+        ndn_service_framework::CollaborationPlan plan;
+        plan.ackCollectionTimeMs = ackCollectionTimeMs;
+        plan.timeoutMs = timeoutMs;
+        plan.roles.push_back(std::move(role));
+        plan.participantSelector = std::make_shared<ExactRepoParticipantSelection>(
+          providerIdentity, serviceName);
+        if (!user.CommitCollaborationPlan(closure.requestId, closure.digest,
+                                          std::move(plan))) {
+          throw std::runtime_error(
+            "repo-selection-commit-failed: Core did not commit selected Provider");
+        }
+      }
+      catch (const std::exception& error) {
+        user.CancelCollaboration(closure.requestId);
+        completeSelectedRequest(result, error.what());
+      }
+    },
+    [result] (const ndn_service_framework::ResponseMessage& response) {
+      const auto responsePayload = response.getPayload();
+      {
+        std::lock_guard<std::mutex> guard(result->mutex);
+        if (result->done) return;
+        if (!response.getStatus()) result->error = response.getErrorInfo();
+        else result->payload.assign(responsePayload.begin(), responsePayload.end());
+        result->done = true;
+      }
+      result->condition.notify_all();
+    },
+    [result] (const ndn::Name&) {
+      completeSelectedRequest(result, "repo-request-timeout: Provider request timed out");
+    },
+    ndn::Name(), {}, ndn_service_framework::RequestCapabilities(),
+    std::nullopt, {}, {}, {}, providers);
+  if (requestId.empty()) {
+    throw std::runtime_error("repo-request-start-failed: Core rejected selected Provider request");
+  }
+  std::unique_lock<std::mutex> lock(result->mutex);
+  result->condition.wait(lock, [&] { return result->done; });
+  if (!result->error.empty()) throw std::runtime_error(result->error);
+  return std::move(result->payload);
 }
 
 ndn::Name
@@ -805,6 +999,44 @@ RepoClient::requestStatus(
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestLocation(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& provider,
+  const ndn::Name& repoServicePrefix,
+  const ArtifactLocationRequest& request,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  const auto wire = request.toJson();
+  const auto payload = toBytes(wire);
+  return user.RequestService(
+    std::vector<ndn::Name>{provider},
+    makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+    timeoutMs, std::move(onTimeout), std::move(onResponse),
+    ndn_service_framework::tlv::FirstResponding);
+}
+
+ndn::Name
+RepoClient::requestFetchRange(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& provider,
+  const ndn::Name& repoServicePrefix,
+  const std::string& objectName,
+  RepoByteRange range,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    std::vector<ndn::Name>{provider},
+    makeRepoServiceName(repoServicePrefix, "FETCH_RANGE"),
+    makeRequest(encodeRangeReadRequest(objectName, range)), timeoutMs,
+    std::move(onTimeout), std::move(onResponse),
+    ndn_service_framework::tlv::FirstResponding);
 }
 
 } // namespace ndnsf_distributed_repo

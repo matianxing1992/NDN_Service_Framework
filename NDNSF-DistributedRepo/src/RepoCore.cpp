@@ -161,7 +161,8 @@ RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range
     found = m_rangeReservations.emplace(
       manifest.objectName,
       RangeReservation{rangeManifest.toJson(), manifest.sha256, manifest.size,
-                       generation, additionalBytes}).first;
+                       generation, additionalBytes,
+                       std::chrono::steady_clock::now()}).first;
     m_reservedRangeBytes += additionalBytes;
   }
   else if (found->second.digest != manifest.sha256 ||
@@ -172,6 +173,7 @@ RepoCore::putRangeLocked(const RepoObjectManifest& manifest, RepoByteRange range
   }
   try {
     m_store->putRange(rangeManifest, range, bytes);
+    found->second.lastActivity = std::chrono::steady_clock::now();
   }
   catch (...) {
     try {
@@ -346,6 +348,36 @@ RepoCore::abortRangesIfOwned(const RepoObjectManifest& expected)
   m_store->abortRanges(expected.objectName);
   clearRangeReservation(expected.objectName);
   return true;
+}
+
+uint64_t
+RepoCore::reapExpiredRangeReservations(std::chrono::steady_clock::duration idleTimeout)
+{
+  if (idleTimeout < std::chrono::steady_clock::duration::zero()) {
+    throw std::invalid_argument("repo-range-idle-timeout-invalid");
+  }
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto expiredBefore = std::chrono::steady_clock::now() - idleTimeout;
+  uint64_t reaped = 0;
+  for (auto reservation = m_rangeReservations.begin();
+       reservation != m_rangeReservations.end();) {
+    if (reservation->second.lastActivity > expiredBefore) {
+      ++reservation;
+      continue;
+    }
+    try {
+      m_store->abortRanges(reservation->first);
+    }
+    catch (...) {
+      ++reservation;
+      continue;
+    }
+    m_reservedRangeBytes -= std::min(m_reservedRangeBytes,
+                                     reservation->second.additionalBytes);
+    reservation = m_rangeReservations.erase(reservation);
+    ++reaped;
+  }
+  return reaped;
 }
 
 RepoObjectManifest

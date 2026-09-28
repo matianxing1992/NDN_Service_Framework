@@ -46,6 +46,9 @@ struct BootstrapProfile
   ndn::Name providerIdentity{ "/test/provider/spec170" };
   ndn::Name attributeAuthority{ "/test/aa/spec170" };
   ndn::Name serviceName{ "/ObjectDetection/YOLOv8" };
+  // Additional explicitly authorized service names for integration cases that
+  // register one production component across several Core service entries.
+  std::vector<ndn::Name> additionalServices;
   std::string trustSchemaPath{ "examples/trust-any.conf" };
   size_t providerCount = 1;
   // Queue bridge delivery for fixtures whose sanitizer path cannot tolerate

@@ -1,9 +1,12 @@
 #ifndef NDNSF_DISTRIBUTED_REPO_REPO_TYPES_HPP
 #define NDNSF_DISTRIBUTED_REPO_REPO_TYPES_HPP
 
+#include "ndnsf-distributed-repo/ArtifactTypes.hpp"
+
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -103,14 +106,68 @@ struct RepoWriteReceipt
 {
   std::string operationId;
   std::string repoNode;
+  std::string providerIdentity;
   std::string objectName;
   uint64_t generation = 0;
   std::string digest;
   uint64_t persistedBytes = 0;
   std::string state = "COMMITTED";
   uint64_t completedAtMs = 0;
+  std::optional<ArtifactReference> artifactReference;
 
   std::string toJson() const;
+};
+
+struct ArtifactStoreRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  uint64_t generation = 0;
+  ArtifactReference reference;
+  std::vector<uint8_t> bytes;
+
+  std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
+  static ArtifactStoreRequest
+  fromWire(const std::vector<uint8_t>& wire, const ArtifactLimits& limits = {});
+};
+
+struct ArtifactRangeWriteRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  uint64_t generation = 0;
+  ArtifactReference reference;
+  uint64_t offsetBytes = 0;
+  uint64_t lengthBytes = 0;
+  std::vector<uint8_t> bytes;
+
+  std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
+  static ArtifactRangeWriteRequest
+  fromWire(const std::vector<uint8_t>& wire, const ArtifactLimits& limits = {});
+};
+
+struct ArtifactRangeCommitRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  uint64_t generation = 0;
+  ArtifactReference reference;
+
+  std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
+  static ArtifactRangeCommitRequest
+  fromWire(const std::vector<uint8_t>& wire, const ArtifactLimits& limits = {});
+};
+
+struct ArtifactRangeAbortRequest
+{
+  uint32_t schemaVersion = 1;
+  std::string operationId;
+  uint64_t generation = 0;
+  ArtifactReference reference;
+
+  std::vector<uint8_t> toWire(const ArtifactLimits& limits = {}) const;
+  static ArtifactRangeAbortRequest
+  fromWire(const std::vector<uint8_t>& wire, const ArtifactLimits& limits = {});
 };
 
 struct RepoCapacityReservation

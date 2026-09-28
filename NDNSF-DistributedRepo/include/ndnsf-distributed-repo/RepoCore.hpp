@@ -4,6 +4,7 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -53,6 +54,8 @@ public:
                                        RepoByteRange range) const;
   bool removeIfCurrent(const RepoObjectManifest& expected);
   bool abortRangesIfOwned(const RepoObjectManifest& expected);
+  /** Drop idle range staging and its capacity reservation. */
+  uint64_t reapExpiredRangeReservations(std::chrono::steady_clock::duration idleTimeout);
   void putRangeIfAbsent(const RepoObjectManifest& manifest, RepoByteRange range,
                         const std::vector<uint8_t>& bytes);
   RepoObjectManifest commitRangesIfOwned(const RepoObjectManifest& manifest);
@@ -155,6 +158,7 @@ private:
     uint64_t size = 0;
     uint64_t generation = 0;
     uint64_t additionalBytes = 0;
+    std::chrono::steady_clock::time_point lastActivity;
   };
   std::unordered_map<std::string, RangeReservation> m_rangeReservations;
   uint64_t m_reservedRangeBytes = 0;

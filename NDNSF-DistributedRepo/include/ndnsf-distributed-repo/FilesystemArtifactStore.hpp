@@ -5,16 +5,17 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace ndnsf_distributed_repo {
 
 struct ArtifactBackendMigrationDiagnostics
 {
-  uint64_t runtimeSchemaGeneration = 12;
+  uint64_t runtimeSchemaGeneration = 14;
   uint64_t databaseSchemaGeneration = 0;
   uint64_t previousSchemaGeneration = 0;
-  uint64_t maxWriteSchemaGeneration = 12;
+  uint64_t maxWriteSchemaGeneration = 14;
   bool writesEnabled = false;
   bool destructiveChanges = false;
   std::string action;
@@ -33,7 +34,8 @@ class FilesystemArtifactPayloadStore final : public PayloadStore
 {
 public:
   explicit FilesystemArtifactPayloadStore(
-    std::string rootPath, uint64_t maxRangeBytes = 16 * 1024 * 1024);
+    std::string rootPath, uint64_t maxRangeBytes = 16 * 1024 * 1024,
+    bool createDirectories = true);
 
   void begin(const ArtifactReference& artifact, uint64_t generation) override;
   void writeRange(const ArtifactReference& artifact, uint64_t generation,
@@ -60,6 +62,7 @@ public:
 private:
   std::string m_rootPath;
   uint64_t m_maxRangeBytes;
+  bool m_createDirectories;
   mutable std::mutex m_mutex;
 };
 
@@ -68,9 +71,13 @@ private:
 class SqliteArtifactMetadataStore final : public MetadataStore
 {
 public:
+  // Set immutableReadOnlyProfile only when the caller serializes ownership of
+  // this database for the store lifetime; SQLite then skips WAL shared-memory
+  // locks while inspecting or reading a compatible future schema.
   explicit SqliteArtifactMetadataStore(
     std::string databasePath, bool artifactWritesEnabled = true,
-    uint64_t maxWriteSchemaGeneration = 12);
+    uint64_t maxWriteSchemaGeneration = 14,
+    bool immutableReadOnlyProfile = false);
   ~SqliteArtifactMetadataStore() override;
 
   SqliteArtifactMetadataStore(const SqliteArtifactMetadataStore&) = delete;
@@ -85,6 +92,19 @@ public:
   lifecycleEvents(const std::string& operationId) const override;
   ArtifactLifecycleState
   currentLifecycleState(const std::string& operationId) const override;
+
+  ArtifactLocalCommitRecord
+  recordLocalCommit(const ArtifactReference& reference,
+                    uint64_t committedAtMs);
+  std::optional<ArtifactLocalCommitRecord>
+  lookupLocalCommit(const ArtifactReference& reference) const;
+
+  void recordPersistentCommit(const ArtifactLocationRecord& location);
+  std::optional<ArtifactLocationRecord>
+  lookupPersistentLocation(const ArtifactReference& reference,
+                           const std::string& repoNode,
+                           const std::string& providerIdentity,
+                           uint64_t nowMs) const;
 
   const std::string& databasePath() const noexcept;
 

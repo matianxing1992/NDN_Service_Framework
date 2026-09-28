@@ -318,6 +318,47 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec192 T001 native In-App API and durable local catalog selector.  It
+    # links the production Repo library and keeps broad regression suites out
+    # of this focused lifecycle gate.
+    bld.program(target='../spec192-repo-inapp-api',
+                name='spec192-repo-inapp-api',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/distributed-repo-inapp-artifact-api.t.cpp'),
+                        bld.path.find_node('unit-tests/distributed-repo-filesystem-artifact-store.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec192 T002/T003 C++ Persistent Repo service, receipt, and location
+    # selectors. They inspect the production RepoNode handlers without starting
+    # an NFD/network runtime.
+    bld.program(target='../spec192-repo-persistent-service',
+                name='spec192-repo-persistent-service',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/distributed-repo-persistent-service.t.cpp'),
+                        bld.path.find_node('unit-tests/distributed-repo-artifact-receipt.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec192 T003 drives the public Persistent API through authenticated
+    # in-process ServiceUser/Provider transport and independent disk/SQLite oracles.
+    bld.program(target='../spec192-repo-persistent-api',
+                name='spec192-repo-persistent-api',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec192-persistent-artifact-api.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec190 T006 first atomic gate: explicit transient/durable encrypted
     # Repo retention and generation-fenced source release.  This selector does
     # not exercise protected key recovery or remove the assembler miss gate.
@@ -878,8 +919,10 @@ def build(bld):
                             'NDNSF-UAV-APP/tracking/UavTrackingSession.cpp',
                             'NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactManifest.cpp',
+                            'NDNSF-DistributedRepo/src/ArtifactRepositoryApi.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactTransfer.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactTypes.cpp',
+                            'NDNSF-DistributedRepo/src/PersistentRepoServerConfig.cpp',
                             'NDNSF-DistributedRepo/src/backends/FilesystemArtifactStore.cpp',
                             'NDNSF-DistributedRepo/src/backends/FilesystemRepoStoreBackend.cpp',
                             'NDNSF-DistributedRepo/src/RepoClient.cpp',
@@ -898,7 +941,7 @@ def build(bld):
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE',
+                use='NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE sqlite3',
                 # NAC-ABE exposes its test-only authority state under
                 # HAVE_TESTS.  The framework's generated config header does
                 # not propagate that macro into NAC-ABE's CMake-style public

@@ -38,8 +38,10 @@ def _install_py_repoclient(bld):
 def build(bld):
     repo_sources = [
         'src/ArtifactManifest.cpp',
+        'src/ArtifactRepositoryApi.cpp',
         'src/ArtifactTransfer.cpp',
         'src/ArtifactTypes.cpp',
+        'src/PersistentRepoServerConfig.cpp',
         'src/backends/FilesystemArtifactStore.cpp',
         'src/backends/FilesystemRepoStoreBackend.cpp',
         'src/RepoClient.cpp',
@@ -56,6 +58,13 @@ def build(bld):
               includes=['include', '..'],
               use='ndn-service-framework NDN_SVS NDN_CXX BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
               install_path=None)
+
+    bld.program(name='DistributedRepoServer',
+                target='DistributedRepoServer',
+                source=['apps/DistributedRepoServer.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                install_path=None)
 
     bld.program(name='DistributedRepoSmoke',
                 target='DistributedRepoSmoke',

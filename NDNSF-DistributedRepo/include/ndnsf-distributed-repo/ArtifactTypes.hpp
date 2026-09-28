@@ -126,6 +126,40 @@ struct ArtifactReference
            contentDigest == other.contentDigest &&
            sizeBytes == other.sizeBytes;
   }
+
+  bool
+  operator==(const ArtifactReference& other) const noexcept
+  {
+    return logicalName == other.logicalName &&
+           digestAlgorithm == other.digestAlgorithm &&
+           contentDigest == other.contentDigest &&
+           sizeBytes == other.sizeBytes &&
+           formatVersion == other.formatVersion &&
+           rootManifestName == other.rootManifestName &&
+           publisherIdentity == other.publisherIdentity &&
+           policyEpoch == other.policyEpoch;
+  }
+
+  bool
+  operator!=(const ArtifactReference& other) const noexcept
+  {
+    return !(*this == other);
+  }
+
+  std::string toJson() const;
+  static ArtifactReference
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
+};
+
+std::string
+artifactStorageObjectName(const ArtifactReference& reference);
+
+/** Durable record of one successful app-local artifact commit. */
+struct ArtifactLocalCommitRecord
+{
+  uint64_t localCommitId = 0;
+  ArtifactReference reference;
+  uint64_t committedAtMs = 0;
 };
 
 /**
@@ -234,6 +268,48 @@ struct ArtifactCapability
   void
   requireSupport(const ArtifactCapabilityRequirements& requirements,
                  const ArtifactLimits& hardLimits = {}) const;
+};
+
+struct ArtifactCapabilityAck
+{
+  uint32_t schemaVersion = 1;
+  ArtifactCapability capability;
+
+  std::string toJson() const;
+  static ArtifactCapabilityAck
+  fromJson(const std::string& wire, const ArtifactLimits& hardLimits = {});
+};
+
+/** A signed, Repo-local snapshot of one currently available artifact. */
+struct ArtifactLocationRecord
+{
+  uint32_t schemaVersion = 1;
+  std::string repoNode;
+  std::string providerIdentity;
+  std::string operationId;
+  std::string receiptId;
+  ArtifactReference reference;
+  uint64_t generation = 0;
+  uint64_t locationVersion = 0;
+  uint64_t committedAtMs = 0;
+  uint64_t expiresAtMs = 0;
+  std::string routeState = "ROUTABLE";
+  std::string forwardingHint;
+
+  void validate(uint64_t nowMs = 0, const ArtifactLimits& limits = {}) const;
+  std::string toJson() const;
+  static ArtifactLocationRecord
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
+};
+
+struct ArtifactLocationRequest
+{
+  uint32_t schemaVersion = 1;
+  ArtifactReference reference;
+
+  std::string toJson() const;
+  static ArtifactLocationRequest
+  fromJson(const std::string& wire, const ArtifactLimits& limits = {});
 };
 
 struct ArtifactManifestChild

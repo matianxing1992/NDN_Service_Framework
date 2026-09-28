@@ -28,7 +28,7 @@ struct StoreOptions
 class RepoClient
 {
 public:
-  static constexpr const char* DEFAULT_SERVICE_NAME = "/NDNSF/DistributedRepo";
+  static constexpr const char* DEFAULT_SERVICE_NAME = "/NDNSF/DistributedRepo/Object/v1";
 
   static RepoObjectManifest put(RepoNode& node,
                                 const std::string& objectName,
@@ -295,10 +295,47 @@ public:
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
 
+  static ndn::Name requestArtifactStoreRange(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const ArtifactRangeWriteRequest& request,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestArtifactStore(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const ArtifactStoreRequest& request,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  /**
+   * Run one request through the normal ACK/selection/Response path while
+   * restricting both ACK collection and final selection to one application-
+   * selected Provider identity.
+   */
+  static std::vector<uint8_t> requestSelectedService(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& providerIdentity,
+    const ndn::Name& serviceName,
+    const std::vector<uint8_t>& payload,
+    int ackCollectionTimeMs,
+    int timeoutMs);
+
   static ndn::Name requestCommitRanges(
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& repoServicePrefix,
     const RepoObjectManifest& manifest,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestArtifactCommitRanges(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const ArtifactRangeCommitRequest& request,
     int timeoutMs,
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
@@ -363,6 +400,25 @@ public:
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& repoServicePrefix,
     const std::string& operationId,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestLocation(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& provider,
+    const ndn::Name& repoServicePrefix,
+    const ArtifactLocationRequest& request,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestFetchRange(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& provider,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    RepoByteRange range,
     int timeoutMs,
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);

@@ -141,6 +141,21 @@ indexedName(const ndn::Name& base, size_t index)
   return ndn::Name(base).append("p" + std::to_string(index));
 }
 
+std::vector<ndn::Name>
+configuredServices(const BootstrapProfile& profile)
+{
+  std::vector<ndn::Name> services{profile.serviceName};
+  for (const auto& service : profile.additionalServices) {
+    if (service.empty()) {
+      throw std::invalid_argument("integration fixture service names must not be empty");
+    }
+    if (std::find(services.begin(), services.end(), service) == services.end()) {
+      services.push_back(service);
+    }
+  }
+  return services;
+}
+
 } // namespace
 
 NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profile)
@@ -190,11 +205,19 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   // ACK/RESPONSE under /PERMISSION/<service>.  Public-parameter traffic alone
   // is not sufficient: without these policies the Authority receives DKEY
   // Interests but has no private key to issue for either identity.
-  const auto serviceUri = m_profile.serviceName.toUri();
-  m_attributeAuthority->addNewPolicy(
-      userCert, "/PERMISSION" + serviceUri);
-  m_attributeAuthority->addNewPolicy(
-      providerCert, "/SERVICE" + serviceUri);
+  const auto serviceNames = configuredServices(m_profile);
+  const auto makeAttributePolicy = [&serviceNames] (const std::string& scope) {
+    std::string policy;
+    for (const auto& service : serviceNames) {
+      if (!policy.empty()) policy += " OR ";
+      policy += scope + service.toUri();
+    }
+    return policy;
+  };
+  const auto userAttributePolicy = makeAttributePolicy("/PERMISSION");
+  const auto providerAttributePolicy = makeAttributePolicy("/SERVICE");
+  m_attributeAuthority->addNewPolicy(userCert, userAttributePolicy);
+  m_attributeAuthority->addNewPolicy(providerCert, providerAttributePolicy);
   // AttributeAuthority installs the PUBLIC-PARAMS Interest filter from the
   // asynchronous registerPrefix success callback. Complete that registration
   // before constructing any User/Provider NAC-ABE Producer; otherwise their
@@ -276,8 +299,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
                 deliverInterest(*m_attributeAuthorityFace, interest);
               }
             }));
-    m_attributeAuthority->addNewPolicy(
-        certificate, "/SERVICE" + serviceUri);
+    m_attributeAuthority->addNewPolicy(certificate, providerAttributePolicy);
     m_extraProviders.push_back(std::make_unique<ServiceProvider>(
         ServiceProvider::LocalMockTag{}, *face, m_profile.groupPrefix,
         certificate, aaCert, m_profile.trustSchemaPath));
@@ -425,6 +447,7 @@ NdnsfIntegrationEnvironment::enableProductionIngressForTest()
 void
 NdnsfIntegrationEnvironment::installPermissions()
 {
+  const auto serviceNames = configuredServices(m_profile);
   PermissionResponse userPermissions;
   userPermissions.setTargetIdentity(m_profile.userIdentity.toUri());
   userPermissions.setPermissionKind(tlv::UserPermission);
@@ -432,16 +455,26 @@ NdnsfIntegrationEnvironment::installPermissions()
   for (size_t index = 0; index < providerCount(); ++index) {
     auto& providerRuntime = provider(index);
     const auto providerName = providerRuntime.getName();
-    PermissionEntry userEntry;
-    userEntry.setProviderName(providerName.toUri());
-    userEntry.setServiceName(m_profile.serviceName.toUri());
-    userEntry.setToken("");
-    userEntry.setTtl(0);
-    userEntry.setVersion(1);
-    userPermissions.addEntry(userEntry);
+    for (const auto& service : serviceNames) {
+      PermissionEntry userEntry;
+      userEntry.setProviderName(providerName.toUri());
+      userEntry.setServiceName(service.toUri());
+      userEntry.setToken("");
+      userEntry.setTtl(0);
+      userEntry.setVersion(1);
+      userPermissions.addEntry(userEntry);
+    }
     auto providerPermissions = makePermissionResponse(
-        providerName, tlv::ProviderPermission, providerName,
-        m_profile.serviceName);
+        providerName, tlv::ProviderPermission, providerName, serviceNames.front());
+    for (size_t serviceIndex = 1; serviceIndex < serviceNames.size(); ++serviceIndex) {
+      PermissionEntry serviceEntry;
+      serviceEntry.setProviderName(providerName.toUri());
+      serviceEntry.setServiceName(serviceNames[serviceIndex].toUri());
+      serviceEntry.setToken("");
+      serviceEntry.setTtl(0);
+      serviceEntry.setVersion(1);
+      providerPermissions.addEntry(serviceEntry);
+    }
     for (const auto& role : m_profile.providerRoles) {
       PermissionEntry roleEntry;
       roleEntry.setProviderName(providerName.toUri());
@@ -478,6 +511,11 @@ NdnsfIntegrationEnvironment::computeSnapshot()
          << m_profile.serviceName.toUri()
          << m_profile.trustSchemaPath
          << providerCount();
+  for (const auto& service : configuredServices(m_profile)) {
+    if (service != m_profile.serviceName) {
+      digest << service.toUri();
+    }
+  }
   for (size_t index = 0; index < providerCount(); ++index) {
     digest << provider(index).getName().toUri()
            << provider(index).getCurrentPolicyEpoch();

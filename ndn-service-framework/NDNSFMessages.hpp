@@ -151,6 +151,19 @@ public:
     virtual void Clear() = 0;
 };
 
+namespace detail {
+
+/**
+ * Bind a Response-name Provider to the identity encoded by a Data
+ * KeyLocator certificate name. The caller must only pass a certificate name
+ * from a Data packet already accepted by the configured trust validator.
+ */
+std::optional<ndn::Name>
+matchResponseProviderIdentity(const ndn::Name& responseProvider,
+                             const ndn::Name& keyLocatorCertificateName);
+
+} // namespace detail
+
 /** Canonical bounded container shared by Spec 129 deployment-control messages.
  *
  * Values are opaque UTF-8/byte strings at Core level. DI interprets model and
@@ -343,7 +356,8 @@ public:
     void setAeadEnvelope(const ndn::Block& envelope);
     void setAuthenticatedTransportEvidence(const std::string& dataName,
                                            const std::string& signerCertificate,
-                                           const std::string& wireDigest);
+                                           const std::string& wireDigest,
+                                           std::string providerIdentity = {});
     void setStreamCompletion(const StreamCompletion& completion);
     void clearStreamCompletion();
     bool getStatus() const;
@@ -362,6 +376,7 @@ public:
     const std::string& getDataName() const;
     const std::string& getSignerCertificate() const;
     const std::string& getWireDigest() const;
+    const std::string& getProviderIdentity() const;
     bool hasStreamCompletion() const;
     const StreamCompletion& getStreamCompletion() const;
     void Clear() override;
@@ -383,6 +398,7 @@ private:
     std::string dataName_;
     std::string signerCertificate_;
     std::string wireDigest_;
+    std::string providerIdentity_;
     std::optional<StreamCompletion> streamCompletion_;
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };

@@ -1,16 +1,24 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
+#include "ndnsf-distributed-repo/RepoCore.hpp"
+#include "ndnsf-distributed-repo/RepoProtocol.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
+#include <openssl/evp.h>
+#include <openssl/sha.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <chrono>
 #include <exception>
+#include <iomanip>
 #include <iterator>
-#include <stdexcept>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace ndnsf_distributed_repo {
@@ -24,14 +32,189 @@ payloadOf(const ndn_service_framework::RequestMessage& request)
   return std::vector<uint8_t>(payload.begin(), payload.end());
 }
 
+std::string
+digestHex(const std::vector<uint8_t>& bytes)
+{
+  unsigned char digest[SHA256_DIGEST_LENGTH]{};
+  SHA256(bytes.data(), bytes.size(), digest);
+  static constexpr char HEX[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(SHA256_DIGEST_LENGTH * 2);
+  for (const auto value : digest) {
+    result.push_back(HEX[value >> 4]);
+    result.push_back(HEX[value & 0x0f]);
+  }
+  return result;
+}
+
+uint64_t
+nowMilliseconds()
+{
+  const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  return value <= 0 ? 1 : static_cast<uint64_t>(value);
+}
+
+RepoObjectManifest
+artifactManifest(const ArtifactReference& reference,
+                 const std::string& operationId, uint64_t generation)
+{
+  RepoObjectManifest manifest;
+  manifest.objectName = artifactStorageObjectName(reference);
+  manifest.objectType = "artifact-v2-bytes";
+  manifest.sha256 = reference.contentDigest;
+  std::transform(manifest.sha256.begin(), manifest.sha256.end(),
+                 manifest.sha256.begin(), [] (unsigned char value) {
+                   return static_cast<char>(std::tolower(value));
+                 });
+  manifest.size = reference.sizeBytes;
+  manifest.segmentCount = 1;
+  manifest.replicationFactor = 1;
+  manifest.policyEpoch = reference.policyEpoch;
+  manifest.generation = generation;
+  manifest.writeConsistency = "ONE";
+  manifest.requiredWriteAcks = 1;
+  manifest.operationId = operationId;
+  manifest.lifecycleState = "COMMITTED";
+  return manifest;
+}
+
+std::string
+resolveRepoNode(const std::string& coreRepoNode, std::string configuredRepoNode)
+{
+  if (configuredRepoNode.empty()) {
+    return coreRepoNode;
+  }
+  if (coreRepoNode.empty() || configuredRepoNode != coreRepoNode) {
+    throw std::invalid_argument(
+      "repo-artifact-identity-mismatch: artifact and RepoCore logical Repo IDs must match");
+  }
+  return configuredRepoNode;
+}
+
+void
+verifyArtifactBytes(const RepoCore& core, const RepoObjectManifest& manifest,
+                    const ArtifactReference& reference)
+{
+  std::string expectedDigest = reference.contentDigest;
+  std::transform(expectedDigest.begin(), expectedDigest.end(), expectedDigest.begin(),
+                 [] (unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  if (!core.has(manifest.objectName) || manifest.size != reference.sizeBytes ||
+      manifest.sha256 != expectedDigest) {
+    throw std::runtime_error(
+      "repo-artifact-byte-verification-failed: stored manifest does not match full reference");
+  }
+
+  EVP_MD_CTX* rawContext = EVP_MD_CTX_new();
+  if (rawContext == nullptr || EVP_DigestInit_ex(rawContext, EVP_sha256(), nullptr) != 1) {
+    EVP_MD_CTX_free(rawContext);
+    throw std::runtime_error("repo-artifact-digest-failed: cannot initialize SHA-256");
+  }
+  std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(rawContext, EVP_MD_CTX_free);
+  constexpr uint64_t VERIFY_RANGE_BYTES = 8 * 1024 * 1024;
+  uint64_t offset = 0;
+  while (offset < reference.sizeBytes) {
+    const auto length = std::min<uint64_t>(VERIFY_RANGE_BYTES, reference.sizeBytes - offset);
+    const auto bytes = core.getRange(manifest.objectName, RepoByteRange{offset, length});
+    if (bytes.size() != length || EVP_DigestUpdate(context.get(), bytes.data(), bytes.size()) != 1) {
+      throw std::runtime_error(
+        "repo-artifact-byte-verification-failed: stored range length or digest update is invalid");
+    }
+    offset += length;
+  }
+  unsigned char digest[EVP_MAX_MD_SIZE]{};
+  unsigned int digestSize = 0;
+  if (EVP_DigestFinal_ex(context.get(), digest, &digestSize) != 1 || digestSize != 32) {
+    throw std::runtime_error("repo-artifact-digest-failed: SHA-256 finalization failed");
+  }
+  static constexpr char HEX[] = "0123456789abcdef";
+  std::string actualDigest;
+  actualDigest.reserve(digestSize * 2);
+  for (unsigned int i = 0; i < digestSize; ++i) {
+    actualDigest.push_back(HEX[digest[i] >> 4]);
+    actualDigest.push_back(HEX[digest[i] & 0x0f]);
+  }
+  if (actualDigest != expectedDigest) {
+    throw std::runtime_error(
+      "repo-artifact-byte-verification-failed: stored bytes do not match full reference digest");
+  }
+}
+
 } // namespace
 
 RepoNode::RepoNode(ndn::Name servicePrefix,
                    StorageCapability capability,
-                   std::shared_ptr<RepoStoreBackend> store)
+                   std::shared_ptr<RepoStoreBackend> store,
+                   std::string repoNode,
+                   std::string providerIdentity,
+                   std::string artifactMetadataPath,
+                   ArtifactLimits artifactLimits)
   : m_servicePrefix(std::move(servicePrefix))
+  , m_repoNode(resolveRepoNode(capability.repoNode, std::move(repoNode)))
+  , m_providerIdentity(std::move(providerIdentity))
+  , m_artifactLimits(std::move(artifactLimits))
   , m_core(std::move(capability), std::move(store))
 {
+  if (m_servicePrefix.empty()) {
+    throw std::invalid_argument("repo-service-prefix-invalid: service prefix is required");
+  }
+  if (!artifactMetadataPath.empty()) {
+    validateName(m_repoNode, m_artifactLimits, "repoNode");
+    validateName(m_providerIdentity, m_artifactLimits, "providerIdentity");
+    m_artifactMetadataStore = std::make_unique<SqliteArtifactMetadataStore>(
+      std::move(artifactMetadataPath), true, 14, true);
+    if (m_artifactMetadataStore->schemaGeneration() != 14 ||
+        !m_artifactMetadataStore->artifactWritesEnabled()) {
+      throw std::runtime_error("repo-artifact-catalog-unavailable: Persistent catalog must be writable at generation 14");
+    }
+  }
+}
+
+RepoNode::~RepoNode()
+{
+  stopRangeReservationReaper();
+}
+
+void
+RepoNode::startRangeReservationReaper()
+{
+  if (!m_artifactMetadataStore) {
+    return;
+  }
+  std::lock_guard<std::mutex> guard(m_rangeReaperMutex);
+  if (m_rangeReaperThread.joinable()) {
+    return;
+  }
+  m_stopRangeReaper = false;
+  m_rangeReaperThread = std::thread([this] {
+    constexpr auto ReapInterval = std::chrono::seconds(30);
+    constexpr auto IdleTimeout = std::chrono::minutes(10);
+    std::unique_lock<std::mutex> lock(m_rangeReaperMutex);
+    while (!m_rangeReaperWake.wait_for(lock, ReapInterval,
+                                       [this] { return m_stopRangeReaper; })) {
+      lock.unlock();
+      try {
+        (void)m_core.reapExpiredRangeReservations(IdleTimeout);
+      }
+      catch (...) {
+        // A failed cleanup pass leaves the reservation owned and retryable.
+      }
+      lock.lock();
+    }
+  });
+}
+
+void
+RepoNode::stopRangeReservationReaper() noexcept
+{
+  {
+    std::lock_guard<std::mutex> guard(m_rangeReaperMutex);
+    m_stopRangeReaper = true;
+  }
+  m_rangeReaperWake.notify_all();
+  if (m_rangeReaperThread.joinable()) {
+    m_rangeReaperThread.join();
+  }
 }
 
 const ndn::Name&
@@ -60,8 +243,16 @@ RepoNode::put(const std::string& objectName,
               const std::string& policyEpoch,
               std::vector<std::string> replicaNodes)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.put(objectName, payload, objectType, replicationFactor,
                     policyEpoch, std::move(replicaNodes));
+}
+
+RepoObjectManifest
+RepoNode::putManifest(const RepoObjectManifest& manifest)
+{
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+  return m_core.putManifest(manifest);
 }
 
 std::vector<uint8_t>
@@ -75,18 +266,21 @@ RepoNode::putRange(const RepoObjectManifest& manifest,
                    RepoByteRange range,
                    const std::vector<uint8_t>& bytes)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   m_core.putRange(manifest, range, bytes);
 }
 
 RepoObjectManifest
 RepoNode::commitRanges(const RepoObjectManifest& manifest)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.commitRanges(manifest);
 }
 
 void
 RepoNode::abortRanges(const std::string& objectName)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   m_core.abortRanges(objectName);
 }
 
@@ -117,6 +311,7 @@ RepoNode::cacheStatus() const
 bool
 RepoNode::remove(const std::string& objectName)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.remove(objectName);
 }
 
@@ -124,6 +319,7 @@ RepoObjectManifest
 RepoNode::putDataPacket(const std::string& dataName,
                         const std::vector<uint8_t>& wire)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.putDataPacket(dataName, wire);
 }
 
@@ -142,6 +338,11 @@ RepoNode::hasDataPacket(const std::string& dataName) const
 void
 RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
 {
+  const auto self = weak_from_this().lock();
+  if (!self) {
+    throw std::logic_error(
+      "RepoNode network service registration requires shared ownership");
+  }
   auto ack = [] (const ndn_service_framework::RequestMessage&) {
     ndn_service_framework::ServiceProvider::AckDecision decision;
     decision.status = true;
@@ -149,9 +350,30 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
     return decision;
   };
 
-  provider.addService(
+  const auto registerRepoService =
+    [&provider, &ack, self](
+      const ndn::Name& serviceName,
+      ndn_service_framework::ServiceProvider::RequestHandler handler,
+      ndn_service_framework::ServiceProvider::AckStrategyHandler serviceAck = {}) {
+      if (!serviceAck) {
+        serviceAck = ack;
+      }
+      ndn_service_framework::ServiceProvider::RequestHandler retainedHandler =
+        [self, handler = std::move(handler)](
+          const ndn::Name& requesterIdentity,
+          const ndn::Name& providerName,
+          const ndn::Name& resolvedServiceName,
+          const ndn::Name& requestId,
+          const ndn_service_framework::RequestMessage& request) {
+          (void)self;
+          return handler(requesterIdentity, providerName, resolvedServiceName,
+                         requestId, request);
+        };
+      provider.addService(serviceName, std::move(serviceAck), std::move(retainedHandler));
+    };
+
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "STORE"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -162,9 +384,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "STORE_RANGE"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -175,9 +396,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "COMMIT_RANGES"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -188,9 +408,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "ABORT_RANGES"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -201,9 +420,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "INSERT"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -214,9 +432,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "STORE_MANIFEST"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -227,9 +444,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "FETCH"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -240,9 +456,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "FETCH_RANGE"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -253,9 +468,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "MANIFEST"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -266,9 +480,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "INVENTORY"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage&) {
       try {
@@ -279,9 +492,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "CAPABILITY"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage&) {
       try {
@@ -290,11 +502,24 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       catch (const std::exception& e) {
         return makeError(e.what());
       }
+    },
+    [this] (const ndn_service_framework::RequestMessage&) {
+      ndn_service_framework::ServiceProvider::AckDecision decision;
+      decision.status = true;
+      decision.message = "repo-artifact-capability-v1";
+      // A fresh capability inquiry is the maintenance boundary before a new
+      // placement operation. The periodic owner sweep bounds abandoned client
+      // staging; backend startup also removes orphaned staging after a Repo
+      // process restart.
+      (void)m_core.reapExpiredRangeReservations(std::chrono::minutes(10));
+      const auto wire = ArtifactCapabilityAck{1, artifactCapability()}.toJson();
+      decision.payload = ndn::Buffer(
+        reinterpret_cast<const uint8_t*>(wire.data()), wire.size());
+      return decision;
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "CACHE_STATUS"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage&) {
       try {
@@ -305,9 +530,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "STATUS"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -318,9 +542,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "CATALOG_STATUS"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage&) {
       try {
@@ -331,9 +554,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "CATALOG_SNAPSHOT"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage&) {
       try {
@@ -344,9 +566,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "CATALOG_DELTA"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -357,9 +578,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "CATALOG_LOOKUP"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -370,9 +590,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
       }
     });
 
-  provider.addService(
+  registerRepoService(
     makeRepoServiceName(m_servicePrefix, "DELETE"),
-    ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
             const ndn_service_framework::RequestMessage& request) {
       try {
@@ -382,6 +601,8 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
         return makeError(e.what());
       }
     });
+
+  startRangeReservationReaper();
 }
 
 void
@@ -471,6 +692,7 @@ RepoOperationStatus
 RepoNode::insertWirePackets(const RepoDataReference& reference,
                             const std::vector<std::vector<uint8_t>>& wirePackets)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   if (reference.objectName.empty()) {
     throw std::invalid_argument("repo data reference objectName must not be empty");
   }
@@ -559,27 +781,195 @@ RepoNode::insertWirePackets(const RepoDataReference& reference,
   }
 }
 
+void
+RepoNode::validatePersistentWriteIdentity(const ArtifactReference& reference,
+                                          const std::string& operationId,
+                                          uint64_t generation) const
+{
+  if (!m_artifactMetadataStore || m_repoNode.empty() || m_providerIdentity.empty()) {
+    throw std::runtime_error(
+      "repo-artifact-identity-unconfigured: Persistent receipt owner is unavailable");
+  }
+  if (const auto existing = m_artifactMetadataStore->lookupPersistentLocation(
+        reference, m_repoNode, m_providerIdentity, 0)) {
+    if (existing->operationId != operationId || existing->generation != generation) {
+      throw std::runtime_error(
+        "repo-artifact-receipt-conflict: immutable reference already has another commit");
+    }
+  }
+
+  const auto expected = artifactManifest(reference, operationId, generation);
+  if (m_core.has(expected.objectName)) {
+    const auto stored = m_core.getManifest(expected.objectName);
+    if (stored.objectType != expected.objectType || stored.sha256 != expected.sha256 ||
+        stored.size != expected.size || stored.policyEpoch != expected.policyEpoch ||
+        (!stored.operationId.empty() && stored.operationId != operationId) ||
+        (stored.generation != 0 && stored.generation != generation)) {
+      throw std::runtime_error(
+        "repo-artifact-byte-commit-conflict: stored manifest is bound to another identity");
+    }
+  }
+}
+
 std::vector<uint8_t>
 RepoNode::handleStore(const std::vector<uint8_t>& request)
 {
+  static constexpr uint8_t MAGIC[] = {'A', 'R', 'V', '2', 'P', 'U', 'T', '1'};
+  if (request.size() >= sizeof(MAGIC) &&
+      std::equal(std::begin(MAGIC), std::end(MAGIC), request.begin())) {
+    const auto write = ArtifactStoreRequest::fromWire(request, m_artifactLimits);
+    std::string expectedDigest = write.reference.contentDigest;
+    std::transform(expectedDigest.begin(), expectedDigest.end(), expectedDigest.begin(),
+                   [] (unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (digestHex(write.bytes) != expectedDigest) {
+      throw std::runtime_error(
+        "repo-artifact-byte-verification-failed: STORE payload does not match full reference digest");
+    }
+    std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+    validatePersistentWriteIdentity(write.reference, write.operationId,
+                                    write.generation);
+    const auto manifest = artifactManifest(write.reference, write.operationId,
+                                           write.generation);
+    (void)m_core.handleStore(encodeStoreRequest(manifest, write.bytes));
+    ArtifactRangeCommitRequest commit;
+    commit.operationId = write.operationId;
+    commit.generation = write.generation;
+    commit.reference = write.reference;
+    return handlePersistentCommitRanges(commit, true);
+  }
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.handleStore(request);
 }
 
 std::vector<uint8_t>
 RepoNode::handleStoreRange(const std::vector<uint8_t>& request)
 {
+  static constexpr uint8_t MAGIC[] = {'A', 'R', 'V', '2', 'R', 'N', 'G', '1'};
+  if (request.size() >= sizeof(MAGIC) &&
+      std::equal(std::begin(MAGIC), std::end(MAGIC), request.begin())) {
+    const auto write = ArtifactRangeWriteRequest::fromWire(request, m_artifactLimits);
+    std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+    validatePersistentWriteIdentity(write.reference, write.operationId,
+                                    write.generation);
+    auto manifest = artifactManifest(write.reference, write.operationId, write.generation);
+    m_core.putRange(manifest,
+                    RepoByteRange{write.offsetBytes, write.lengthBytes},
+                    write.bytes);
+    return toBytes("staged");
+  }
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.handleStoreRange(request);
 }
 
 std::vector<uint8_t>
 RepoNode::handleCommitRanges(const std::vector<uint8_t>& request)
 {
+  static constexpr uint8_t MAGIC[] = {'A', 'R', 'V', '2', 'C', 'O', 'M', '1'};
+  if (request.size() >= sizeof(MAGIC) &&
+      std::equal(std::begin(MAGIC), std::end(MAGIC), request.begin())) {
+    const auto commit = ArtifactRangeCommitRequest::fromWire(request, m_artifactLimits);
+    std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+    return handlePersistentCommitRanges(commit, false);
+  }
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.handleCommitRanges(request);
+}
+
+std::vector<uint8_t>
+RepoNode::handlePersistentCommitRanges(const ArtifactRangeCommitRequest& commit,
+                                       bool payloadAlreadyCommitted)
+{
+  validatePersistentWriteIdentity(commit.reference, commit.operationId,
+                                   commit.generation);
+  auto manifest = artifactManifest(commit.reference, commit.operationId, commit.generation);
+  if (!m_core.has(manifest.objectName)) {
+    if (commit.reference.sizeBytes == 0) {
+      manifest = m_core.put(manifest.objectName, {}, manifest.objectType, 1,
+                            manifest.policyEpoch);
+      manifest.generation = commit.generation;
+      manifest.operationId = commit.operationId;
+    }
+    else {
+      m_core.commitRanges(manifest);
+    }
+  }
+  else if (commit.reference.sizeBytes != 0 && !payloadAlreadyCommitted) {
+    // A range retry against an already committed payload still creates a
+    // Core reservation, even though the backend can satisfy the bytes from
+    // its immutable generation. Run the idempotent commit path to clear it.
+    m_core.commitRanges(manifest);
+  }
+  const auto stored = m_core.getManifest(manifest.objectName);
+  if (stored.sha256 != manifest.sha256 || stored.size != commit.reference.sizeBytes ||
+      (!stored.operationId.empty() && stored.operationId != commit.operationId) ||
+      (stored.generation != 0 && stored.generation != commit.generation)) {
+    throw std::runtime_error(
+      "repo-artifact-byte-commit-conflict: durable object manifest differs from request");
+  }
+
+  verifyArtifactBytes(m_core, stored, commit.reference);
+  if (stored.operationId.empty() || stored.generation == 0) {
+    m_core.putManifest(manifest);
+  }
+  const auto boundManifest = m_core.getManifest(manifest.objectName);
+  if (boundManifest.operationId != commit.operationId ||
+      boundManifest.generation != commit.generation ||
+      boundManifest.size != commit.reference.sizeBytes ||
+      boundManifest.sha256 != manifest.sha256) {
+    throw std::runtime_error(
+      "repo-artifact-manifest-binding-failed: durable manifest lacks commit operation or generation");
+  }
+
+  if (const auto existing = m_artifactMetadataStore->lookupPersistentLocation(
+        commit.reference, m_repoNode, m_providerIdentity, 0)) {
+    if (existing->operationId != commit.operationId ||
+        existing->generation != commit.generation) {
+      throw std::runtime_error(
+        "repo-artifact-receipt-conflict: immutable reference already has another commit");
+    }
+    return toBytes(existing->toJson());
+  }
+
+  ArtifactLocationRecord location;
+  location.repoNode = m_repoNode;
+  location.providerIdentity = m_providerIdentity;
+  location.operationId = commit.operationId;
+  const auto referenceWire = commit.reference.toJson();
+  const auto receiptMaterial = m_repoNode + "\n" + m_providerIdentity + "\n" +
+                               commit.operationId + "\n" + referenceWire;
+  const std::vector<uint8_t> receiptBytes(receiptMaterial.begin(), receiptMaterial.end());
+  location.receiptId = "repo-artifact-" + digestHex(receiptBytes);
+  location.reference = commit.reference;
+  location.generation = commit.generation;
+  location.locationVersion = 1;
+  location.committedAtMs = nowMilliseconds();
+  location.expiresAtMs = location.committedAtMs + 60 * 60 * 1000;
+  location.routeState = "ROUTABLE";
+  location.forwardingHint = m_servicePrefix.toUri();
+  m_artifactMetadataStore->recordPersistentCommit(location);
+  return toBytes(location.toJson());
 }
 
 std::vector<uint8_t>
 RepoNode::handleAbortRanges(const std::vector<uint8_t>& request)
 {
+  static constexpr uint8_t MAGIC[] = {'A', 'R', 'V', '2', 'A', 'B', 'T', '1'};
+  if (request.size() >= sizeof(MAGIC) &&
+      std::equal(std::begin(MAGIC), std::end(MAGIC), request.begin())) {
+    if (!m_artifactMetadataStore || m_repoNode.empty() || m_providerIdentity.empty()) {
+      throw std::runtime_error(
+        "repo-artifact-identity-unconfigured: Persistent range owner is unavailable");
+    }
+    const auto abort = ArtifactRangeAbortRequest::fromWire(request, m_artifactLimits);
+    std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+    validatePersistentWriteIdentity(abort.reference, abort.operationId,
+                                    abort.generation);
+    const auto manifest = artifactManifest(abort.reference, abort.operationId,
+                                           abort.generation);
+    (void)m_core.abortRangesIfOwned(manifest);
+    return toBytes("aborted");
+  }
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   m_core.abortRanges(decodeRangeAbortRequest(request));
   return toBytes("aborted");
 }
@@ -631,6 +1021,7 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request)
 std::vector<uint8_t>
 RepoNode::handleStoreManifest(const std::vector<uint8_t>& request)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.handleStoreManifest(request);
 }
 
@@ -662,6 +1053,26 @@ std::vector<uint8_t>
 RepoNode::handleCapability() const
 {
   return m_core.handleCapability();
+}
+
+ArtifactCapability
+RepoNode::artifactCapability() const
+{
+  ArtifactCapability capability;
+  capability.repoNode = m_repoNode;
+  capability.formatVersions = {"artifact-manifest-v2", "exact-packet-v1"};
+  capability.digestAlgorithms = {"sha256"};
+  capability.signatureAlgorithms = {"rsa-sha256", "ecdsa-sha256", "ed25519"};
+  capability.maxArtifactBytes = m_artifactLimits.maxArtifactBytes;
+  capability.maxChunkBytes = m_artifactLimits.maxChunkBytes;
+  capability.maxRootEncodedBytes = m_artifactLimits.maxRootEncodedBytes;
+  capability.maxPageEncodedBytes = m_artifactLimits.maxPageEncodedBytes;
+  capability.maxPageEntries = m_artifactLimits.maxPageEntries;
+  capability.maxManifestDepth = m_artifactLimits.maxManifestDepth;
+  capability.supportsResume = true;
+  capability.supportsReplicaReceipts = static_cast<bool>(m_artifactMetadataStore);
+  capability.policyEpoch = "repo-policy-v1";
+  return capability;
 }
 
 std::vector<uint8_t>
@@ -697,6 +1108,7 @@ RepoNode::handleCatalogLookup(const std::vector<uint8_t>& request) const
 std::vector<uint8_t>
 RepoNode::handleDelete(const std::vector<uint8_t>& request)
 {
+  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   return m_core.handleDelete(request);
 }
 
@@ -704,6 +1116,27 @@ std::vector<uint8_t>
 RepoNode::handleStatus(const std::vector<uint8_t>& request) const
 {
   const auto operationId = toString(request);
+  if (!request.empty() && request.front() == '{') {
+    if (!m_artifactMetadataStore || m_repoNode.empty() || m_providerIdentity.empty()) {
+      throw std::runtime_error(
+        "repo-artifact-location-unavailable: Persistent receipt owner is not configured");
+    }
+    const auto query = ArtifactLocationRequest::fromJson(operationId, m_artifactLimits);
+    const auto now = nowMilliseconds();
+    auto location = m_artifactMetadataStore->lookupPersistentLocation(
+      query.reference, m_repoNode, m_providerIdentity, now);
+    if (!location) {
+      throw std::out_of_range("repo-artifact-location-not-found: no current Repo-local location");
+    }
+    const auto manifest = m_core.getManifest(artifactStorageObjectName(query.reference));
+    verifyArtifactBytes(m_core, manifest, query.reference);
+    if (manifest.operationId != location->operationId ||
+        manifest.generation != location->generation) {
+      throw std::runtime_error(
+        "repo-artifact-location-invalid: stored manifest does not match receipt operation and generation");
+    }
+    return toBytes(location->toJson());
+  }
   std::lock_guard<std::mutex> guard(m_statusMutex);
   const auto it = m_statusById.find(operationId);
   if (it == m_statusById.end()) {

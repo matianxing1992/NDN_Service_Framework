@@ -1,6 +1,105 @@
 #include "ndnsf-distributed-repo/ArtifactTypes.hpp"
 
+#include "ndnsf-distributed-repo/detail/StrictJson.hpp"
+
+#include <openssl/sha.h>
+
+#include <limits>
+#include <sstream>
+
 namespace ndnsf_distributed_repo {
+
+namespace {
+
+using detail::JsonValue;
+
+std::string
+getString(const JsonValue::Object& object, const char* key)
+{
+  return detail::member(object, key, JsonValue::Kind::String).string;
+}
+
+uint64_t
+getUnsigned(const JsonValue::Object& object, const char* key)
+{
+  return detail::member(object, key, JsonValue::Kind::Unsigned).number;
+}
+
+uint32_t
+getU32(const JsonValue::Object& object, const char* key)
+{
+  const auto value = getUnsigned(object, key);
+  if (value > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument(std::string("artifact-json-invalid: integer overflow in ") + key);
+  }
+  return static_cast<uint32_t>(value);
+}
+
+bool
+getBoolean(const JsonValue::Object& object, const char* key)
+{
+  return detail::member(object, key, JsonValue::Kind::Boolean).boolean;
+}
+
+std::vector<std::string>
+getStringArray(const JsonValue::Object& object, const char* key)
+{
+  const auto& array = detail::member(object, key, JsonValue::Kind::Array).array;
+  std::vector<std::string> result;
+  result.reserve(array.size());
+  for (const auto& item : array) {
+    if (item.kind != JsonValue::Kind::String) {
+      throw std::invalid_argument(std::string("artifact-json-invalid: non-string member in ") + key);
+    }
+    result.push_back(item.string);
+  }
+  return result;
+}
+
+std::string
+stringArrayJson(const std::vector<std::string>& values)
+{
+  std::string result = "[";
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i != 0) result.push_back(',');
+    result += detail::quoteJson(values[i]);
+  }
+  result.push_back(']');
+  return result;
+}
+
+std::string
+referenceJson(const ArtifactReference& reference)
+{
+  return "{\"logicalName\":" + detail::quoteJson(reference.logicalName) +
+    ",\"digestAlgorithm\":" + detail::quoteJson(reference.digestAlgorithm) +
+    ",\"contentDigest\":" + detail::quoteJson(reference.contentDigest) +
+    ",\"sizeBytes\":" + std::to_string(reference.sizeBytes) +
+    ",\"formatVersion\":" + detail::quoteJson(reference.formatVersion) +
+    ",\"rootManifestName\":" + detail::quoteJson(reference.rootManifestName) +
+    ",\"publisherIdentity\":" + detail::quoteJson(reference.publisherIdentity) +
+    ",\"policyEpoch\":" + detail::quoteJson(reference.policyEpoch) + "}";
+}
+
+ArtifactReference
+parseReference(const JsonValue& value)
+{
+  const auto& object = detail::requireObject(value);
+  detail::requireExactKeys(object, {"logicalName", "digestAlgorithm", "contentDigest",
+    "sizeBytes", "formatVersion", "rootManifestName", "publisherIdentity", "policyEpoch"});
+  ArtifactReference result;
+  result.logicalName = getString(object, "logicalName");
+  result.digestAlgorithm = getString(object, "digestAlgorithm");
+  result.contentDigest = getString(object, "contentDigest");
+  result.sizeBytes = getUnsigned(object, "sizeBytes");
+  result.formatVersion = getString(object, "formatVersion");
+  result.rootManifestName = getString(object, "rootManifestName");
+  result.publisherIdentity = getString(object, "publisherIdentity");
+  result.policyEpoch = getString(object, "policyEpoch");
+  return result;
+}
+
+} // namespace
 
 bool
 isHex(const std::string& value)
@@ -184,6 +283,201 @@ ArtifactCapability::requireSupport(
       artifact_error::UnsupportedCapability,
       "repository " + repoNode + " does not satisfy " + reasons.front());
   }
+}
+
+std::string
+ArtifactReference::toJson() const
+{
+  validate();
+  return referenceJson(*this);
+}
+
+ArtifactReference
+ArtifactReference::fromJson(const std::string& wire,
+                            const ArtifactLimits& limits)
+{
+  const auto result = parseReference(detail::parseJson(wire, 16 * 1024));
+  result.validate(limits);
+  return result;
+}
+
+std::string
+artifactStorageObjectName(const ArtifactReference& reference)
+{
+  const auto wire = reference.toJson();
+  unsigned char digest[SHA256_DIGEST_LENGTH]{};
+  SHA256(reinterpret_cast<const unsigned char*>(wire.data()), wire.size(), digest);
+  static constexpr char HEX[] = "0123456789abcdef";
+  std::string result = "/_ndnsf/artifact-v2/";
+  result.reserve(result.size() + SHA256_DIGEST_LENGTH * 2);
+  for (const auto value : digest) {
+    result.push_back(HEX[value >> 4]);
+    result.push_back(HEX[value & 0x0f]);
+  }
+  return result;
+}
+
+std::string
+ArtifactCapabilityAck::toJson() const
+{
+  if (schemaVersion != 1) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidCapability, "unsupported capability ACK schema version");
+  }
+  capability.validate();
+  const auto& value = capability;
+  std::string result = "{\"schemaVersion\":1,\"capability\":{";
+  result += "\"repoNode\":" + detail::quoteJson(value.repoNode);
+  result += ",\"formatVersions\":" + stringArrayJson(value.formatVersions);
+  result += ",\"digestAlgorithms\":" + stringArrayJson(value.digestAlgorithms);
+  result += ",\"signatureAlgorithms\":" + stringArrayJson(value.signatureAlgorithms);
+  result += ",\"maxArtifactBytes\":" + std::to_string(value.maxArtifactBytes);
+  result += ",\"maxChunkBytes\":" + std::to_string(value.maxChunkBytes);
+  result += ",\"maxRootEncodedBytes\":" + std::to_string(value.maxRootEncodedBytes);
+  result += ",\"maxPageEncodedBytes\":" + std::to_string(value.maxPageEncodedBytes);
+  result += ",\"maxPageEntries\":" + std::to_string(value.maxPageEntries);
+  result += ",\"maxManifestDepth\":" + std::to_string(value.maxManifestDepth);
+  result += std::string(",\"supportsResume\":") + (value.supportsResume ? "true" : "false");
+  result += std::string(",\"supportsReplicaReceipts\":") +
+            (value.supportsReplicaReceipts ? "true" : "false");
+  result += ",\"policyEpoch\":" + detail::quoteJson(value.policyEpoch) + "}}";
+  if (result.size() > 16 * 1024) {
+    throw ArtifactValidationError(
+      artifact_error::LimitExceeded, "capability ACK exceeds its 16 KiB wire limit");
+  }
+  return result;
+}
+
+ArtifactCapabilityAck
+ArtifactCapabilityAck::fromJson(const std::string& wire,
+                                const ArtifactLimits& hardLimits)
+{
+  const auto root = detail::parseJson(wire, 16 * 1024);
+  const auto& envelope = detail::requireObject(root);
+  detail::requireExactKeys(envelope, {"schemaVersion", "capability"});
+  if (getUnsigned(envelope, "schemaVersion") != 1) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidCapability, "unsupported capability ACK schema version");
+  }
+  const auto& object = detail::requireObject(envelope.at("capability"));
+  detail::requireExactKeys(object, {"repoNode", "formatVersions", "digestAlgorithms",
+    "signatureAlgorithms", "maxArtifactBytes", "maxChunkBytes", "maxRootEncodedBytes",
+    "maxPageEncodedBytes", "maxPageEntries", "maxManifestDepth", "supportsResume",
+    "supportsReplicaReceipts", "policyEpoch"});
+  ArtifactCapabilityAck result;
+  result.capability.repoNode = getString(object, "repoNode");
+  result.capability.formatVersions = getStringArray(object, "formatVersions");
+  result.capability.digestAlgorithms = getStringArray(object, "digestAlgorithms");
+  result.capability.signatureAlgorithms = getStringArray(object, "signatureAlgorithms");
+  result.capability.maxArtifactBytes = getUnsigned(object, "maxArtifactBytes");
+  result.capability.maxChunkBytes = getUnsigned(object, "maxChunkBytes");
+  result.capability.maxRootEncodedBytes = getUnsigned(object, "maxRootEncodedBytes");
+  result.capability.maxPageEncodedBytes = getUnsigned(object, "maxPageEncodedBytes");
+  result.capability.maxPageEntries = getU32(object, "maxPageEntries");
+  result.capability.maxManifestDepth = getU32(object, "maxManifestDepth");
+  result.capability.supportsResume = getBoolean(object, "supportsResume");
+  result.capability.supportsReplicaReceipts = getBoolean(object, "supportsReplicaReceipts");
+  result.capability.policyEpoch = getString(object, "policyEpoch");
+  result.capability.validate(hardLimits);
+  return result;
+}
+
+void
+ArtifactLocationRecord::validate(uint64_t nowMs,
+                                 const ArtifactLimits& limits) const
+{
+  if (schemaVersion != 1 || locationVersion == 0 || generation == 0 ||
+      committedAtMs == 0 || expiresAtMs <= committedAtMs ||
+      (nowMs != 0 && nowMs >= expiresAtMs)) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt, "location version or validity interval is invalid");
+  }
+  validateName(repoNode, limits, "repoNode");
+  validateName(providerIdentity, limits, "providerIdentity");
+  validateIdentifier(operationId, 256, "operationId", artifact_error::InvalidReceipt);
+  validateIdentifier(receiptId, 256, "receiptId", artifact_error::InvalidReceipt);
+  reference.validate(limits);
+  if (routeState == "ROUTABLE") {
+    validateName(forwardingHint, limits, "forwardingHint");
+  }
+  else if (routeState != "UNROUTABLE" || !forwardingHint.empty()) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt, "location route state is invalid");
+  }
+}
+
+std::string
+ArtifactLocationRecord::toJson() const
+{
+  validate();
+  return "{\"schemaVersion\":1,\"repoNode\":" + detail::quoteJson(repoNode) +
+    ",\"providerIdentity\":" + detail::quoteJson(providerIdentity) +
+    ",\"operationId\":" + detail::quoteJson(operationId) +
+    ",\"receiptId\":" + detail::quoteJson(receiptId) +
+    ",\"artifact\":" + referenceJson(reference) +
+    ",\"generation\":" + std::to_string(generation) +
+    ",\"locationVersion\":" + std::to_string(locationVersion) +
+    ",\"committedAtMs\":" + std::to_string(committedAtMs) +
+    ",\"expiresAtMs\":" + std::to_string(expiresAtMs) +
+    ",\"routeState\":" + detail::quoteJson(routeState) +
+    ",\"forwardingHint\":" + detail::quoteJson(forwardingHint) + "}";
+}
+
+ArtifactLocationRecord
+ArtifactLocationRecord::fromJson(const std::string& wire,
+                                 const ArtifactLimits& limits)
+{
+  const auto root = detail::parseJson(wire, 64 * 1024);
+  const auto& object = detail::requireObject(root);
+  detail::requireExactKeys(object, {"schemaVersion", "repoNode", "providerIdentity",
+    "operationId", "receiptId", "artifact", "generation", "locationVersion",
+    "committedAtMs", "expiresAtMs", "routeState", "forwardingHint"});
+  if (getUnsigned(object, "schemaVersion") != 1) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt, "unsupported location schema version");
+  }
+  ArtifactLocationRecord result;
+  result.repoNode = getString(object, "repoNode");
+  result.providerIdentity = getString(object, "providerIdentity");
+  result.operationId = getString(object, "operationId");
+  result.receiptId = getString(object, "receiptId");
+  result.reference = parseReference(object.at("artifact"));
+  result.generation = getUnsigned(object, "generation");
+  result.locationVersion = getUnsigned(object, "locationVersion");
+  result.committedAtMs = getUnsigned(object, "committedAtMs");
+  result.expiresAtMs = getUnsigned(object, "expiresAtMs");
+  result.routeState = getString(object, "routeState");
+  result.forwardingHint = getString(object, "forwardingHint");
+  result.validate(0, limits);
+  return result;
+}
+
+std::string
+ArtifactLocationRequest::toJson() const
+{
+  if (schemaVersion != 1) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt, "unsupported location request version");
+  }
+  reference.validate();
+  return "{\"schemaVersion\":1,\"artifact\":" + referenceJson(reference) + "}";
+}
+
+ArtifactLocationRequest
+ArtifactLocationRequest::fromJson(const std::string& wire,
+                                  const ArtifactLimits& limits)
+{
+  const auto root = detail::parseJson(wire, 32 * 1024);
+  const auto& object = detail::requireObject(root);
+  detail::requireExactKeys(object, {"schemaVersion", "artifact"});
+  if (getUnsigned(object, "schemaVersion") != 1) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt, "unsupported location request version");
+  }
+  ArtifactLocationRequest result;
+  result.reference = parseReference(object.at("artifact"));
+  result.reference.validate(limits);
+  return result;
 }
 
 } // namespace ndnsf_distributed_repo

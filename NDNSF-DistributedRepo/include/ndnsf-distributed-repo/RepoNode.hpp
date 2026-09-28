@@ -4,10 +4,14 @@
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 
 #include <functional>
+#include <condition_variable>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <thread>
 
 namespace ndn_service_framework {
 class LocalServiceRegistry;
@@ -17,7 +21,7 @@ class ServiceProvider;
 
 namespace ndnsf_distributed_repo {
 
-class RepoNode
+class RepoNode : public std::enable_shared_from_this<RepoNode>
 {
 public:
   using DataReferenceFetcher =
@@ -25,15 +29,30 @@ public:
 
   RepoNode(ndn::Name servicePrefix,
            StorageCapability capability,
-           std::shared_ptr<RepoStoreBackend> store);
+           std::shared_ptr<RepoStoreBackend> store,
+           std::string repoNode = {},
+           std::string providerIdentity = {},
+           std::string artifactMetadataPath = {},
+           ArtifactLimits artifactLimits = {});
+
+  ~RepoNode();
 
   const ndn::Name& servicePrefix() const;
 
+  // Low-level mutable access bypasses RepoNode's storage transaction mutex.
+  // Callers must serialize Core mutations against Persistent Repo operations.
   RepoCore& core();
 
   const RepoCore& core() const;
 
   void registerLocalServices(ndn_service_framework::LocalServiceRegistry& registry);
+
+  /** Register the Persistent network operations on a Core Provider.
+   *
+   * The node must be owned by std::shared_ptr before registration. Provider
+   * callbacks retain that owner until the Provider releases its handlers.
+   */
+  void registerServices(ndn_service_framework::ServiceProvider& provider);
 
   RepoObjectManifest put(const std::string& objectName,
                          const std::vector<uint8_t>& payload,
@@ -41,6 +60,8 @@ public:
                          uint32_t replicationFactor = 1,
                          const std::string& policyEpoch = "",
                          std::vector<std::string> replicaNodes = {});
+
+  RepoObjectManifest putManifest(const RepoObjectManifest& manifest);
 
   std::vector<uint8_t> get(const std::string& objectName) const;
 
@@ -113,9 +134,15 @@ public:
   std::vector<uint8_t> handleStatus(const std::vector<uint8_t>& request) const;
 
 private:
-  // Kept private only while older object files remain source-compatible. The
-  // deployed Repo network runtime is py_repoclient's versioned adapter.
-  void registerServices(ndn_service_framework::ServiceProvider& provider);
+  ArtifactCapability artifactCapability() const;
+
+  void validatePersistentWriteIdentity(const ArtifactReference& reference,
+                                       const std::string& operationId,
+                                       uint64_t generation) const;
+
+  // Caller holds m_storeWriteMutex across byte validation and receipt publish.
+  std::vector<uint8_t> handlePersistentCommitRanges(
+    const ArtifactRangeCommitRequest& commit, bool payloadAlreadyCommitted);
 
   ndn_service_framework::ResponseMessage makeResponse(const std::vector<uint8_t>& payload) const;
 
@@ -125,13 +152,27 @@ private:
 
   void rememberStatus(const RepoOperationStatus& status);
 
+  void startRangeReservationReaper();
+  void stopRangeReservationReaper() noexcept;
+
 private:
   ndn::Name m_servicePrefix;
+  std::string m_repoNode;
+  std::string m_providerIdentity;
+  ArtifactLimits m_artifactLimits;
+  std::unique_ptr<SqliteArtifactMetadataStore> m_artifactMetadataStore;
   RepoCore m_core;
+  // Keeps legacy Repo mutations from interleaving a persistent artifact byte
+  // commit and its immutable receipt publication.
+  std::mutex m_storeWriteMutex;
   DataReferenceFetcher m_dataReferenceFetcher;
   mutable std::mutex m_statusMutex;
   std::map<std::string, RepoOperationStatus> m_statusById;
   uint64_t m_nextOperationId = 0;
+  std::mutex m_rangeReaperMutex;
+  std::condition_variable m_rangeReaperWake;
+  bool m_stopRangeReaper = false;
+  std::thread m_rangeReaperThread;
 };
 
 } // namespace ndnsf_distributed_repo
