@@ -15018,11 +15018,45 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         // not make external participants parse a Core wire wrapper.
         ndn::Buffer opaqueParticipantPayload = effectiveAssignmentPayload;
         if (hasOpaqueParticipant && !effectiveAssignmentPayload.empty()) {
-            CollaborationAssignmentEnvelope envelope;
             try {
-                if (decodeCollaborationAssignmentEnvelope(
-                        effectiveAssignmentPayload, envelope)) {
-                    opaqueParticipantPayload = std::move(envelope.opaquePayload);
+                auto assignmentItems =
+                    decodeOpaqueAssignmentSet(effectiveAssignmentPayload);
+                if (!assignmentItems.empty()) {
+                    CollaborationAssignmentEnvelope firstEnvelope;
+                    bool haveEnvelope = false;
+                    bool allEnvelopes = true;
+                    for (const auto& item : assignmentItems) {
+                        CollaborationAssignmentEnvelope envelope;
+                        if (!decodeCollaborationAssignmentEnvelope(
+                                item, envelope)) {
+                            allEnvelopes = false;
+                            break;
+                        }
+                        if (!haveEnvelope) {
+                            firstEnvelope = std::move(envelope);
+                            haveEnvelope = true;
+                            continue;
+                        }
+                        const bool sameOpaquePayload =
+                            firstEnvelope.opaquePayload.size() ==
+                                envelope.opaquePayload.size() &&
+                            std::equal(
+                                firstEnvelope.opaquePayload.begin(),
+                                firstEnvelope.opaquePayload.end(),
+                                envelope.opaquePayload.begin());
+                        if (!sameOpaquePayload) {
+                            throw std::runtime_error(
+                                "local role envelopes disagree on opaque participant payload");
+                        }
+                    }
+                    if (allEnvelopes && haveEnvelope) {
+                        // A provider can own several collaboration roles.
+                        // Their framework envelopes each carry the same
+                        // provider-level opaque assignment; unwrap one copy
+                        // for the participant after checking they agree.
+                        opaqueParticipantPayload =
+                            std::move(firstEnvelope.opaquePayload);
+                    }
                 }
             }
             catch (const std::exception& error) {

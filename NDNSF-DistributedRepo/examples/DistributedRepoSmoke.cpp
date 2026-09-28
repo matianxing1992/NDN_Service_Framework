@@ -322,7 +322,9 @@ main()
     RepoCore restartedCore(
       {"/repo/persistent", 1024 * 1024, 0, 0.0, 1.0, "local", {"persistent"}},
       makeTieredRepoStore(sqlitePath.string(), 4096));
-    if (restartedCore.get(persistentObjectName) != payload ||
+    const auto coldFetch = restartedCore.get(persistentObjectName);
+    const auto cachedFetch = restartedCore.get(persistentObjectName);
+    if (coldFetch != payload || cachedFetch != payload ||
         restartedCore.getManifest(persistentObjectName).objectType !=
           "persistent-object" ||
         restartedCore.cacheStatus().misses != 1 ||

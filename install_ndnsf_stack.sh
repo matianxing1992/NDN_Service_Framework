@@ -3,9 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON:-python3}"
+BOOTSTRAP_PYTHON_BIN=""
 JOBS="${NDNSF_BUILD_JOBS:-4}"
 WAF_CONFIGURE_ARGS=()
+WAF_INSTALL_TARGETS="ndn-service-framework,ndnsf-distributed-inference,libndn-service-framework.pc,ndnsf-distributed-inference.pc,App_ServiceController,unit-tests,DistributedRepoSmoke,DI_NativeArtifactAuthority,DI_NativeRequester,di-native-assembly-worker,di-native-provider,spec190-multiturn-oracle"
 QWEN_MININDN=0
+STACK_PYTHON_BIN=""
 RUN_WAF_CONFIGURE=auto
 RUN_SYSTEM_INSTALL=1
 USE_USER_FLAG=0
@@ -13,7 +16,7 @@ INSTALL_EDITABLE=0
 INSTALL_DEPENDENCIES=auto
 FORCE_DEPENDENCIES=0
 NO_DEPENDENCIES_REQUESTED=0
-DEPS_DIR="$ROOT/dependencies"
+DEPS_DIR="$ROOT/deps"
 BUILD_DIR="${NDNSF_BUILD_DIR:-}"
 REUSE_BUILD_DIR="${NDNSF_REUSE_BUILD_DIR:-0}"
 INSTALL_SYSTEM_PACKAGES=1
@@ -24,6 +27,7 @@ INSTALL_YOLO_MININDN=0
 INSTALL_NFD_NLSR_PACKAGES=0
 CHECK_DEPENDENCIES=0
 UNINSTALL_STACK=0
+UNINSTALL_DRY_RUN=0
 LEGACY_BUILD_DIR="${NDNSF_LEGACY_BUILD_DIR:-}"
 PLAN_ONLY=0
 CONFIGURE_ONLY=0
@@ -40,12 +44,11 @@ GLOBAL_LIBRARY_DIR="$GLOBAL_DEPENDENCY_PREFIX/lib"
 SYSTEM_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 PKG_CONFIG_BIN="/usr/bin/pkg-config"
 GLOBAL_PKG_CONFIG_PATH=""
-# Host SDKs may have a versioned global prefix, but they must still be
-# installed outside the repository and visible to every consumer.  ONNX
-# Runtime is the only NDNSF dependency currently using such a versioned SDK;
-# all NDN/NDNSF outputs remain in /usr/local.
-GLOBAL_SDK_ROOTS=("/usr" "/usr/local" "/opt/onnxruntime" "/opt/onnxruntime-1.26.0" "/opt/onnx-1.17.0" "/opt/ndn-base")
-GLOBAL_ONNX_PREFIX="/opt/onnx-1.17.0"
+# ONNX full-protobuf headers and archives are installed in the canonical
+# /usr/local prefix, which is accepted by both the host Waf and ownership
+# manifest allowlists. ONNX Runtime remains its own versioned /opt SDK.
+GLOBAL_SDK_ROOTS=("/usr" "/usr/local" "/opt/onnxruntime" "/opt/onnxruntime-1.26.0" "/opt/ndn-base")
+GLOBAL_ONNX_PREFIX="/usr/local"
 BOOST_INCLUDE_DIR=""
 BOOST_LIBRARY_DIR=""
 BOOST_VERSION_NUMBER=""
@@ -69,25 +72,37 @@ NDNSD_REPO_URL="${NDNSD_REPO_URL:-https://github.com/matianxing1992/NDNSD.git}"
 NDNSVS_REPO_URL="${NDNSVS_REPO_URL:-https://github.com/matianxing1992/ndn-svs.git}"
 NACABE_REPO_URL="${NACABE_REPO_URL:-https://github.com/matianxing1992/NAC-ABE.git}"
 OPENABE_REPO_URL="${OPENABE_REPO_URL:-https://github.com/matianxing1992/openabe.git}"
+OPENABE_RNG_PATCH_REVISION="evp-padding-after-init-v1"
 
-# Mini-NDN v0.7.0's 2024-08 release map is the compatibility set used by the
-# official installer. Keep full commit IDs here so this profile never follows
-# moving upstream branches or disturbs the installed ndn-cxx/NFD.
-MININDN_REPO_URL="https://github.com/named-data/mini-ndn.git"
+# Mini-NDN v0.7.0's 2024-08 release map uses ndn-cxx 0.9.0 and NFD 24.07.
+# NFD's January 2025 follow-up commit ports its control-command API to
+# ndn-cxx 0.9.0 while retaining NFD 24.07 and Boost 1.71 support. Keep the
+# Mini-NDN fork and compatible NDN dependency commits pinned.
+MININDN_REPO_URL="https://github.com/matianxing1992/mini-ndn.git"
 MININDN_COMMIT="73add71f860979426aef63136bf78ed525862e5c"
+MININDN_NFD_URL="https://github.com/named-data/NFD.git"
+MININDN_NFD_COMMIT="1db1bb666c81f73ea1d788afec0f3a1b303c0342"
 MININDN_PSYNC_URL="https://github.com/named-data/PSync.git"
 MININDN_PSYNC_COMMIT="b65d6db9f6300a39e006c43f7a9a51d796a562a5"
 MININDN_NLSR_URL="https://github.com/named-data/NLSR.git"
-MININDN_NLSR_COMMIT="bb59d40e3a71f1433beccae4eafdddd016f4ae91"
+MININDN_NLSR_COMMIT="20e60a22bf0c1343b0d97e54747e9b984b0a7d86"
 MININDN_TOOLS_URL="https://github.com/named-data/ndn-tools.git"
 MININDN_TOOLS_COMMIT="435d201dc6d4a52c86808dae604f0b1b78fdb59c"
 MININDN_TRAFFIC_URL="https://github.com/named-data/ndn-traffic-generator.git"
 MININDN_TRAFFIC_COMMIT="9bec15ac63ae2ac225c4e514daa9fc1366889d62"
 MININDN_INFOEDIT_URL="https://github.com/NDN-Routing/infoedit.git"
 MININDN_INFOEDIT_COMMIT="cecfe583f5d2df974f5cbd50996f91b9d321be99"
+# Ubuntu 20.04's Mininet package only ships its Python 2 modules. The shared
+# stack Python runtime therefore gets the matching upstream Python 3 release.
+MININET_REPO_URL="https://github.com/mininet/mininet.git"
+MININET_COMMIT="e0436642ae1005d2ec9f58ba698125d718072293"
 YOLO_MODEL_URL="https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt"
 YOLO_MODEL_SHA256="9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef"
 YOLO_ULTRALYTICS_VERSION="8.4.164"
+QWEN3_MODEL_REPO="Qwen/Qwen3-0.6B"
+QWEN3_MODEL_REVISION="e6de91484c29aa9480d55605af694f39b081c455"
+STACK_PYTHON_VERSION="3.10.21"
+STACK_PYTHON_ARCHIVE_SHA256="a0da1e72132e950154eca0f6f47d5db828454700de20e5113667940d81e0db04"
 
 usage() {
   cat <<'EOF'
@@ -95,6 +110,9 @@ Usage: ./install_ndnsf_stack.sh [options]
 
 Build and install compatible pinned NDN dependencies, the NDNSF C++ stack,
 Python bindings, and distributed-inference packages.
+
+With no options, also install the pinned Mini-NDN + YOLO CPU profile and the
+local Qwen3-0.6B model profile.
 
 Options:
   --source                 Build pinned source for missing/incompatible dependencies.
@@ -106,17 +124,18 @@ Options:
   --install-dependencies   Resolve missing dependencies from pinned sources.
   --no-dependencies        Check dependencies without rebuilding them.
   --force-dependencies     Rebuild dependencies even when found.
-  --deps-dir PATH          Source checkout root (default: ./dependencies).
+  --deps-dir PATH          Source checkout root (default: ./deps).
   NDNSF_REUSE_BUILD_DIR=1  Reuse a build dir only when its checkout marker matches.
   --install-system-packages Install common APT build packages (default).
   --no-system-packages     Do not install OS packages.
   --with-system-tests-deps Install test/documentation OS packages.
   --with-minindn-deps      Install Mini-NDN experiment OS packages.
-  --with-yolo-minindn      Install the pinned two-node Mini-NDN + YOLO CPU profile.
-  --with-qwen-minindn      Check Qwen Mini-NDN prerequisites; do not download a model.
+  --with-yolo-minindn      Install the pinned Mini-NDN + YOLO CPU profile.
+  --with-qwen-minindn      Install Mini-NDN and the pinned local Qwen3-0.6B profile.
   --with-nfd-nlsr-deps     Install NFD/NLSR build OS packages.
   --check-dependencies     Verify the installed global dependency closure.
   --uninstall              Remove only installer-recorded files/packages/sources.
+  --uninstall-dry-run      Preflight the recorded uninstall without changing the system.
   --legacy-build-dir PATH  Validate/remove a pre-manifest build dir with --uninstall.
   --configure              Always run ./waf configure.
   --no-configure           Unsupported; configure is required for every install.
@@ -129,7 +148,7 @@ Options:
   --user                   Unsupported; system Python is required.
   --no-user                Use system Python (default).
   --no-editable            Install wheels, not source-tree links (default).
-  --python PATH            Python executable (default: python3 or $PYTHON).
+  --python PATH            Bootstrap Python for planning/maintenance; installed stack uses its pinned private Python 3.10.21.
   -h, --help               Show this help.
 
 Notes:
@@ -138,8 +157,9 @@ Notes:
     and never guesses about reused or unrecorded paths.
   - Compatible global dependencies are probed and reused individually; missing
     ones use locked sources. Source trees must match their URL/commit and be clean.
-  - --with-yolo-minindn installs Mini-NDN, python-ndn, CPU-only YOLO dependencies,
-    and the hash-checked yolo26n.pt model; run ndnsf-yolo-minindn for inference.
+  - A no-option install includes Mini-NDN, python-ndn, CPU-only YOLO/Qwen Python
+    dependencies, yolo26n.pt, and Qwen3-0.6B at its pinned Hugging Face revision.
+    Use ndnsf-yolo-minindn or ndnsf-qwen06b-minindn to start the experiment profiles.
   - Supports Ubuntu 20.04/26.04 x86-64. Boost must be a matching pair (1.71 on
     20.04; 1.71+ on 26.04). ONNX Runtime 1.26+, full-protobuf ONNX, and the Rust
     tokenizer archive must already exist in the declared global SDK locations.
@@ -154,6 +174,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --uninstall)
       UNINSTALL_STACK=1; shift ;;
+    --uninstall-dry-run)
+      UNINSTALL_STACK=1; UNINSTALL_DRY_RUN=1; shift ;;
     --legacy-build-dir)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--legacy-build-dir requires a path' >&2; exit 2; }
       LEGACY_BUILD_DIR="$2"; shift 2 ;;
@@ -207,6 +229,8 @@ while [[ $# -gt 0 ]]; do
     --with-qwen-minindn)
       QWEN_MININDN=1
       INSTALL_TEST_PACKAGES=1
+      INSTALL_MININDN_PACKAGES=1
+      INSTALL_NFD_NLSR_PACKAGES=1
       shift
       ;;
     --with-minindn-deps)
@@ -288,23 +312,38 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# The ordinary system install is the complete experiment setup. Keep utility
+# modes (configure-only, dependency-only, checks, and uninstall) scoped to the
+# operation the caller explicitly requested.
+if (( ! CONFIGURE_ONLY && ! DEPS_ONLY && ! CHECK_DEPENDENCIES && ! UNINSTALL_STACK )) &&
+    [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
+  QWEN_MININDN=1
+  INSTALL_MININDN_PACKAGES=1
+  INSTALL_YOLO_MININDN=1
+  INSTALL_NFD_NLSR_PACKAGES=1
+fi
+
 # Reject unsupported options before apt, dependency installation, or configure.
 if (( QWEN_MININDN )); then
   if (( CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || ! RUN_SYSTEM_INSTALL )); then
     echo '--with-qwen-minindn requires a complete system installation' >&2
     exit 2
   fi
-  WAF_CONFIGURE_ARGS+=(--with-examples --with-tests --install-experiment-fixtures)
 fi
 if (( INSTALL_YOLO_MININDN )); then
   if (( CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || ! RUN_SYSTEM_INSTALL )); then
     echo '--with-yolo-minindn requires a complete system installation' >&2
     exit 2
   fi
-  if (( QWEN_MININDN )); then
-    echo '--with-yolo-minindn and --with-qwen-minindn are separate experiment profiles' >&2
-    exit 2
-  fi
+fi
+if (( INSTALL_YOLO_MININDN || QWEN_MININDN )); then
+  WAF_CONFIGURE_ARGS+=(--with-examples)
+fi
+if (( QWEN_MININDN )); then
+  # The full Qwen/Mini-NDN matrix audits selected native fixtures in addition
+  # to its controller and DistributedRepo smoke executables.
+  WAF_CONFIGURE_ARGS+=(--with-tests)
+  INSTALL_TEST_PACKAGES=1
 fi
 if (( CONFIGURE_ONLY && (SOURCE_MODE || DEPS_ONLY || CHECK_DEPENDENCIES || FORCE_DEPENDENCIES) )); then
   echo '--configure-only/--no-install cannot be combined with source/deps/check modes' >&2
@@ -343,6 +382,7 @@ DEPS_DIR="$(realpath -m -- "$DEPS_DIR")"
 LOCK_FILE="$(realpath -m -- "$LOCK_FILE")"
 PYTHON_BIN="$(command -v -- "$PYTHON_BIN")" || { echo 'Python executable not found' >&2; exit 2; }
 PYTHON_BIN="$(realpath -s -- "$PYTHON_BIN")"
+BOOTSTRAP_PYTHON_BIN="$PYTHON_BIN"
 
 run() {
   echo "+ $*"
@@ -507,7 +547,8 @@ def install_tree(args: argparse.Namespace) -> None:
         assert installed is not None
         key = str(target)
         old = entries.get(key)
-        if old is not None and current not in (old.get("installed"), old.get("backupState")):
+        if old is not None and current not in (old.get("installed"), old.get("backupState")) and \
+                not is_regenerable_python_bytecode(target, current, old):
             raise ValueError(f"managed install target was modified; refusing overwrite: {target}")
         backup = old.get("backup") if old is not None else None
         before = old.get("backupState") if old is not None else None
@@ -659,6 +700,8 @@ def uninstall(args: argparse.Namespace) -> None:
             actions.append((target, entry, "remove-or-restore"))
         elif before is not None and current == before:
             actions.append((target, entry, "already-restored"))
+        elif is_regenerable_python_bytecode(target, current, entry):
+            actions.append((target, entry, "remove-or-restore"))
         else:
             raise ValueError(f"installed file changed since install; refusing partial uninstall: {target}")
         if backup is not None and (not backup.exists() and not backup.is_symlink()):
@@ -707,6 +750,13 @@ def uninstall(args: argparse.Namespace) -> None:
             raise ValueError("APT would remove packages not owned by this installer: " +
                              ", ".join(sorted(unexpected)))
 
+    if args.dry_run:
+        print(f"Uninstall preflight passed: {len(actions)} managed files, "
+              f"{len(data['sources'])} source checkouts, "
+              f"{len(installed_packages)} installer-added APT packages.")
+        print("No files, source checkouts, packages, or manifest data were changed.")
+        return
+
     for target, entry, action in actions:
         backup = Path(str(entry["backup"])) if entry.get("backup") else None
         current = file_state(target)
@@ -751,6 +801,15 @@ def uninstall(args: argparse.Namespace) -> None:
         shutil.rmtree(backup_root)
     print("Uninstalled all unchanged files and source checkouts recorded by this installer.")
     print("Reused APT/system packages were not removed; only installer-added APT packages were considered.")
+
+
+def is_regenerable_python_bytecode(
+        target: Path, current: dict[str, object], entry: dict[str, object]) -> bool:
+    """Allow Python to refresh installer-owned bytecode caches after install."""
+    private_python_root = Path("/usr/local/lib/ndnsf")
+    return (current.get("kind") == "file" and target.suffix == ".pyc" and
+            "__pycache__" in target.parts and is_relative_to(target, private_python_root) and
+            entry.get("backupState") is None)
 
 
 def checked_manifest_target(target: Path, manifest: Path) -> Path:
@@ -876,6 +935,7 @@ def main() -> int:
     listing.set_defaults(function=list_manifest)
     remove = sub.add_parser("uninstall")
     remove.add_argument("--manifest", required=True)
+    remove.add_argument("--dry-run", action="store_true")
     remove.set_defaults(function=uninstall)
     apt = sub.add_parser("record-apt")
     apt.add_argument("--manifest", required=True)
@@ -943,7 +1003,10 @@ record_source_checkout() {
 uninstall_stack() {
   if [[ -f "$INSTALL_MANIFEST" ]]; then
     echo "==> Uninstalling the recorded NDNSF stack from $INSTALL_MANIFEST"
-    manifest_tool --privileged uninstall --manifest "$INSTALL_MANIFEST"
+    local -a uninstall_args=(--manifest "$INSTALL_MANIFEST")
+    (( UNINSTALL_DRY_RUN )) && uninstall_args+=(--dry-run)
+    manifest_tool --privileged uninstall "${uninstall_args[@]}"
+    (( UNINSTALL_DRY_RUN )) && return
     sudo_run /sbin/ldconfig
     return
   fi
@@ -1063,6 +1126,50 @@ stage_python_wheel_sources() {
     package_index=$((package_index + 1))
   done
 
+  # PEP 517 builds a wheel from a temporary copy of each project. The
+  # monorepo Python distributions use package_dir paths that walk above that
+  # project directory, so give each staged distribution a self-contained src/
+  # tree and rewrite only this disposable wheel input (never the checkout).
+  "$PYTHON_BIN" - "$repository_copy" "${staged_packages[@]}" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+repository = Path(sys.argv[1])
+distribution_root = repository / "NDNSF-DistributedInference"
+package_root = distribution_root / "ndnsf_distributed_inference"
+for raw in sys.argv[2:]:
+    staged = Path(raw)
+    try:
+        relative = staged.relative_to(repository)
+    except ValueError:
+        continue
+    if relative.parts[:3] != (
+            "NDNSF-DistributedInference", "packaging", "python"):
+        continue
+    name = relative.parts[3]
+    if name == "compat":
+        manifest = package_root / "compatibility" / "manifest.json"
+        target = staged / "src" / "ndnsf_distributed_inference" / "compatibility" / "manifest.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(manifest, target)
+        setup = staged / "setup.py"
+        contents = setup.read_text(encoding="utf-8")
+        contents = contents.replace(
+            'parents[3] / "ndnsf_distributed_inference/compatibility/manifest.json"',
+            'parent / "src/ndnsf_distributed_inference/compatibility/manifest.json"')
+        setup.write_text(contents, encoding="utf-8")
+    else:
+        source = staged / "src" / "ndnsf_distributed_inference"
+        shutil.copytree(package_root, source, dirs_exist_ok=True)
+    for filename in ("setup.py", "pyproject.toml"):
+        path = staged / filename
+        if path.is_file():
+            contents = path.read_text(encoding="utf-8")
+            contents = contents.replace("../../..", "src")
+            path.write_text(contents, encoding="utf-8")
+PY
+
   PYTHON_WHEEL_INPUTS=("${staged_packages[@]}")
 }
 
@@ -1104,12 +1211,6 @@ require_host_profile() {
     echo 'Supported host profiles: Ubuntu 20.04 or 26.04 x86_64; no system changes made.' >&2
     exit 2
   fi
-  if [[ "$(readlink -f "$PYTHON_BIN")" != "$(readlink -f /usr/bin/python3)" ]]; then
-    echo 'Use /usr/bin/python3; venv/custom Python is not the system installation target.' >&2
-    exit 2
-  fi
-  # Resolve symlink-based venvs to the actual system invocation path as well.
-  PYTHON_BIN=/usr/bin/python3
   HOST_UBUNTU_VERSION="$VERSION_ID"
   select_global_boost || true
 }
@@ -1239,9 +1340,52 @@ has_global_boost() {
 }
 
 select_global_boost() {
-  local selection
-  selection="$("$PYTHON_BIN" "$ROOT/scripts/host_profile.py" "$HOST_UBUNTU_VERSION")" || return 1
-  IFS=$'\t' read -r BOOST_INCLUDE_DIR BOOST_LIBRARY_DIR BOOST_VERSION_NUMBER BOOST_VERSION_STRING <<< "$selection"
+  local include_dir library_dir version_number major minor patch version_string
+  local library soname resolved
+  local -a include_dirs=(/usr/include /usr/local/include)
+  local -a library_dirs=(/usr/lib/x86_64-linux-gnu /usr/local/lib /usr/local/lib64 /usr/lib)
+
+  for include_dir in "${include_dirs[@]}"; do
+    [[ -r "$include_dir/boost/version.hpp" ]] || continue
+    version_number="$(/usr/bin/awk '$1 == "#define" && $2 == "BOOST_VERSION" {print $3; exit}' \
+      "$include_dir/boost/version.hpp")"
+    [[ "$version_number" =~ ^[0-9]+$ ]] || continue
+    if [[ "$HOST_UBUNTU_VERSION" == 20.04 && "$version_number" != 107100 ]] ||
+        [[ "$HOST_UBUNTU_VERSION" == 26.04 && "$version_number" -lt 107100 ]]; then
+      continue
+    fi
+    major=$((version_number / 100000))
+    minor=$(((version_number / 100) % 1000))
+    patch=$((version_number % 100))
+    version_string="$major.$minor.$patch"
+
+    for library_dir in "${library_dirs[@]}"; do
+      local complete=1
+      for library in libboost_system.so libboost_filesystem.so libboost_unit_test_framework.so; do
+        soname="$library.$version_string"
+        [[ -e "$library_dir/$library" && -e "$library_dir/$soname" ]] || {
+          complete=0
+          break
+        }
+        resolved="$(/usr/bin/readlink -f "$library_dir/$soname" 2>/dev/null || true)"
+        if [[ -z "$resolved" ]] || ! /usr/bin/readelf -d "$resolved" 2>/dev/null |
+            /usr/bin/grep -Fq "Library soname: [$soname]"; then
+          complete=0
+          break
+        fi
+      done
+      if (( complete )); then
+        BOOST_INCLUDE_DIR="$include_dir"
+        BOOST_LIBRARY_DIR="$library_dir"
+        BOOST_VERSION_NUMBER="$version_number"
+        BOOST_VERSION_STRING="$version_string"
+        return 0
+      fi
+    done
+  done
+
+  echo "No matching Boost header/library pair found for Ubuntu $HOST_UBUNTU_VERSION" >&2
+  return 1
 }
 
 refresh_global_pkg_config_path() {
@@ -1686,11 +1830,10 @@ install_common_system_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     echo "==> Installing common Debian/Ubuntu build packages"
     local packages=(
-      build-essential binutils git pkg-config cmake python3 python3-pip wget curl \
-      python3-dev python3-setuptools python3-wheel python3-venv \
-      autoconf automake libtool m4 bison flex ninja-build \
+      build-essential binutils git pkg-config cmake python3 wget curl \
+      autoconf automake libtool m4 bison flex libfl-dev ninja-build \
       libgmp-dev libssl-dev \
-      libsqlite3-dev libpcap-dev libsodium-dev zlib1g-dev \
+      libsqlite3-dev libpcap-dev libsodium-dev zlib1g-dev liblzma-dev \
       liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler libgtkmm-3.0-dev \
       libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev
     )
@@ -1713,8 +1856,6 @@ install_common_system_packages() {
     if [[ "$INSTALL_MININDN_PACKAGES" == "1" ]]; then
       packages+=(
         mininet openvswitch-switch tcpdump iproute2 net-tools
-        python3-pyroute2 python3-networkx python3-matplotlib python3-igraph
-        python3-tqdm python3-joblib
       )
     fi
     if [[ "$INSTALL_YOLO_MININDN" == "1" ]]; then
@@ -1732,7 +1873,7 @@ install_common_system_packages() {
       [[ "$state" == 'install ok installed' ]] || missing+=("$package")
     done
     if ((${#missing[@]})); then
-      if (( INSTALL_YOLO_MININDN )); then
+      if (( INSTALL_YOLO_MININDN || QWEN_MININDN )); then
         local -a newly_installed=() planned=()
         local -A seen_packages=()
         sudo_run apt-get update
@@ -1880,19 +2021,22 @@ source_field() {
 }
 
 host_sdk_lock_field() {
-  "$PYTHON_BIN" - "$ROOT/packaging/host-sdk-dependencies.lock.json" "$1" <<'PY'
-import json
-import pathlib
-import sys
-
-document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
-value = document
-for key in sys.argv[2].split('.'):
-    value = value[key]
-if not isinstance(value, (str, int)):
-    raise SystemExit(f'lock field is not scalar: {sys.argv[2]}')
-print(value)
-PY
+  case "$1" in
+    onnxRuntimeCpp.version) printf '%s\n' '1.26.0' ;;
+    onnxRuntimeCpp.url) printf '%s\n' 'https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-x64-1.26.0.tgz' ;;
+    onnxRuntimeCpp.sha256) printf '%s\n' '1254da24fb389cf39dc0ff3451ab48301740ffbfcbaf646849df92f80ee92c57' ;;
+    onnxRuntimeCpp.bytes) printf '%s\n' '8590023' ;;
+    onnxRuntimeCpp.installPrefix) printf '%s\n' '/opt/onnxruntime-1.26.0' ;;
+    onnxFullProto.version) printf '%s\n' '1.17.0' ;;
+    onnxFullProto.url) printf '%s\n' 'https://github.com/onnx/onnx.git' ;;
+    onnxFullProto.ref) printf '%s\n' 'v1.17.0' ;;
+    onnxFullProto.commit) printf '%s\n' 'b8baa8446686496da4cc8fda09f2b6fe65c2a02c' ;;
+    onnxFullProto.installPrefix) printf '%s\n' '/usr/local' ;;
+    tokenizerBridge.crate) printf '%s\n' 'NDNSF-DistributedInference/cpp/adapters/qwen/tokenizer-bridge' ;;
+    tokenizerBridge.rustMinimum) printf '%s\n' '1.90.0' ;;
+    tokenizerBridge.installPath) printf '%s\n' '/usr/local/lib/libndnsf_tokenizer_bridge.a' ;;
+    *) echo "Unknown pinned host SDK field: $1" >&2; return 2 ;;
+  esac
 }
 
 record_source_receipt() {
@@ -1919,18 +2063,44 @@ PY
 }
 
 build_openabe_dependency() {
-  local dir
-  local source_base="$BUILD_DIR/openabe-source"
+  local dir build_source
   local install_stage="$BUILD_DIR/install-staging/openabe/usr/local"
 
-  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe; then
-    echo "==> OpenABE already installed; skipping"
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe && \
+      [[ "$(cat -- "$OPENABE_PREFIX/share/ndnsf/openabe-rng-patch-revision" 2>/dev/null || true)" == \
+         "$OPENABE_RNG_PATCH_REVISION" ]]; then
+    echo "==> OpenABE with the installed RNG compatibility fix already installed; skipping"
     return
   fi
 
-  dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" "$source_base" | tail -n 1)"
+  dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" | tail -n 1)"
+  build_source="$(mktemp -d "$BUILD_DIR/openabe-build.XXXXXXXX")"
+  cp -a -- "$dir/." "$build_source/"
+  "$PYTHON_BIN" - "$build_source/src/tools/zprng.cpp" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+text = source.read_text(encoding="utf-8")
+before = """    ctx = EVP_CIPHER_CTX_new();
+    EVP_CIPHER_CTX_set_padding(ctx, false);
+    // note that cipher AND key must be in sync (key len should be appropriate input size of
+    // cipher (e.g., 128-bits by default)
+    EVP_EncryptInit_ex (ctx, cipher, NULL, (uint8_t*)key, NULL);
+"""
+after = """    ctx = EVP_CIPHER_CTX_new();
+    // note that cipher AND key must be in sync (key len should be appropriate input size of
+    // cipher (e.g., 128-bits by default)
+    EVP_EncryptInit_ex (ctx, cipher, NULL, (uint8_t*)key, NULL);
+    EVP_CIPHER_CTX_set_padding(ctx, false);
+"""
+if before in text:
+    source.write_text(text.replace(before, after, 1), encoding="utf-8")
+elif after not in text:
+    raise SystemExit(f"OpenABE EVP initialization block changed unexpectedly: {source}")
+PY
   mkdir -p -- "$install_stage"
-  echo "==> Building OpenABE from the dependency source tree"
+  echo "==> Building OpenABE from its clean deps/ checkout in $build_source"
   run bash -e -c "cd \"\$1\" && . ./env && \
     unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS CXXFLAGS CPPFLAGS LDFLAGS \
       LD_LIBRARY_PATH LIBRARY_PATH CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
@@ -1942,7 +2112,7 @@ build_openabe_dependency() {
     make -C deps/relic && make -C deps/gtest && \
     USE_DEPS='relic gtest' BISON=\$(command -v bison) FLEX=\$(command -v flex) \
       make -j'$JOBS' src && \
-    USE_DEPS='relic gtest' make -j'$JOBS' examples" _ "$dir"
+    USE_DEPS='relic gtest' make -j'$JOBS' examples" _ "$build_source"
   echo "==> Installing OpenABE into the global prefix $OPENABE_PREFIX"
   run env \
     -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
@@ -1957,9 +2127,13 @@ build_openabe_dependency() {
       BOOST_LIBRARYDIR && export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc \
       CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
       NM=/usr/bin/nm STRIP=/usr/bin/strip && \
-      USE_DEPS='relic gtest' make INSTALL_PREFIX=\"\$2\" install" _ "$dir" "$install_stage"
+      USE_DEPS='relic gtest' make INSTALL_PREFIX=\"\$2\" install" _ "$build_source" "$install_stage"
+  mkdir -p -- "$install_stage/share/ndnsf"
+  printf '%s\n' "$OPENABE_RNG_PATCH_REVISION" \
+    > "$install_stage/share/ndnsf/openabe-rng-patch-revision"
   install_manifest_tree "$install_stage" "$OPENABE_PREFIX" openabe
   rm -rf -- "$BUILD_DIR/install-staging/openabe"
+  rm -rf -- "$build_source"
   sudo_run ldconfig
   record_source_receipt openabe
 }
@@ -2108,7 +2282,7 @@ build_fixed_minindn_infoedit() {
 }
 
 check_minindn_ndn_base() {
-  local tool nfd_version cxx_version
+  local tool nfd_version
   for tool in nfd nfdc ndnsec; do
     PATH="$SYSTEM_PATH:/usr/local/bin" command -v "$tool" >/dev/null || {
       echo "Mini-NDN profile requires the existing $tool command; it will not replace NFD/ndn-cxx" >&2
@@ -2120,6 +2294,11 @@ check_minindn_ndn_base() {
     echo "Mini-NDN v0.7.0 profile is pinned for NFD 24.07; found '$nfd_version'. Existing NFD left untouched." >&2
     return 1
   }
+  check_minindn_ndn_cxx
+}
+
+check_minindn_ndn_cxx() {
+  local cxx_version
   refresh_global_pkg_config_path
   cxx_version="$(env -u PKG_CONFIG_LIBDIR PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
     "$PKG_CONFIG_BIN" --modversion libndn-cxx)"
@@ -2171,34 +2350,142 @@ ensure_minindn_boost_iostreams() {
   rm -rf -- "$build"
 }
 
-install_yolo_minindn_profile() {
-  local python_tag torch_version torchvision_version python_ndn_version onnxruntime_python_version
-  local mini_prefix yolo_prefix
-  local mini_source source_copy stage_root mini_site yolo_site mini_stage yolo_stage
-  local model_stage topology
-  local -a pip_env
+ensure_stack_python_runtime() {
+  local version="$STACK_PYTHON_VERSION"
+  local prefix="$GLOBAL_LIBRARY_DIR/ndnsf/python/$version"
+  local python="$prefix/bin/python3"
+  local source="$DEPS_DIR/Python-$version"
+  local archive="$BUILD_DIR/Python-$version.tar.xz"
+  local build stage actual_version
 
-  case "$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" in
-    3.8)
-      python_tag=python3.8
+  if [[ -x "$python" ]]; then
+    actual_version="$("$python" -c 'import platform; print(platform.python_version())')"
+    [[ "$actual_version" == "$version" ]] || {
+      echo "Existing stack Python runtime has version $actual_version, expected $version; preserving it: $python" >&2
+      return 1
+    }
+    if "$python" -c 'import _lzma' >/dev/null 2>&1; then
+      echo "==> Reusing private stack Python $version at $python"
+      STACK_PYTHON_BIN="$python"
+      PYTHON_BIN="$python"
+      echo "==> NDNSF, Mini-NDN, YOLO and Qwen use the same private Python $version runtime"
+      echo '==> Keeping the system python3 command unchanged'
+      return
+    fi
+    echo "==> Rebuilding shared stack Python $version with missing optional modules"
+  fi
+
+  mkdir -p -- "$DEPS_DIR"
+  if [[ ! -f "$source/Include/patchlevel.h" ]] || \
+      ! rg -q "#define PY_VERSION.*\"$version\"" "$source/Include/patchlevel.h"; then
+    [[ ! -e "$source" && ! -L "$source" ]] || {
+      echo "Existing Python source directory is not the pinned $version release; preserving it: $source" >&2
+      return 1
+    }
+    run curl --fail --location --retry 3 \
+      --output "$archive" "https://www.python.org/ftp/python/$version/Python-$version.tar.xz"
+    printf '%s  %s\n' "$STACK_PYTHON_ARCHIVE_SHA256" "$archive" |
+      sha256sum --check --status || {
+        echo "Python $version source archive failed SHA-256 verification" >&2
+        return 1
+      }
+    run tar -xJf "$archive" -C "$DEPS_DIR"
+    rm -f -- "$archive"
+    rg -q "#define PY_VERSION.*\"$version\"" "$source/Include/patchlevel.h" || {
+      echo "Extracted Python source tree does not match $version: $source" >&2
+      return 1
+    }
+  fi
+
+  build="$(mktemp -d "$BUILD_DIR/python-$version-build.XXXXXXXX")"
+  mkdir -p -- "$BUILD_DIR/install-staging"
+  stage="$(mktemp -d "$BUILD_DIR/install-staging/python-$version.XXXXXXXX")"
+  echo "==> Building private stack Python $version from $source"
+  (
+    cd "$build"
+    run "$source/configure" --prefix="$prefix" --with-ensurepip=install --without-readline
+    run make "-j$JOBS"
+    run make install "DESTDIR=$stage"
+  )
+  install_manifest_tree "$stage/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" \
+    "minindn-python:$version"
+  rm -rf -- "$build" "$stage"
+  [[ -x "$python" ]] || { echo "Pinned stack Python installation is incomplete: $python" >&2; return 1; }
+  actual_version="$("$python" -c 'import platform, ssl, sqlite3, zlib; print(platform.python_version())')"
+  [[ "$actual_version" == "$version" ]] || {
+    echo "Installed stack Python reports unexpected version $actual_version" >&2
+    return 1
+  }
+  STACK_PYTHON_BIN="$python"
+  PYTHON_BIN="$python"
+  echo "==> NDNSF, Mini-NDN, YOLO and Qwen use the same private Python $version runtime"
+  echo '==> Keeping the system python3 command unchanged'
+}
+
+activate_existing_stack_python_runtime() {
+  local version="$STACK_PYTHON_VERSION"
+  local prefix="$GLOBAL_LIBRARY_DIR/ndnsf/python/$version"
+  local python="$prefix/bin/python3"
+  [[ -x "$python" ]] || {
+    echo "Pinned stack Python $version is missing; run the installer before checking dependencies." >&2
+    return 1
+  }
+  [[ "$("$python" -c 'import platform; print(platform.python_version())')" == "$version" ]] || {
+    echo "Pinned stack Python has an unexpected version: $python" >&2
+    return 1
+  }
+  STACK_PYTHON_BIN="$python"
+  PYTHON_BIN="$python"
+}
+
+install_minindn_experiment_profile() {
+  local python_tag torch_version torchvision_version python_ndn_version onnxruntime_python_version
+  local numpy_version
+  local transformers_version huggingface_hub_version tokenizers_version safetensors_version accelerate_version
+  local mini_prefix yolo_prefix experiment_python
+  local model_python model_python_stage
+  local mini_source mininet_source source_copy stage_root mini_site yolo_site numpy_site mini_stage yolo_stage numpy_stage
+  local model_stage qwen_model_stage qwen_model_dir topology
+  local -a pip_env experiment_python_packages
+
+  case "$("$PYTHON_BIN" -c 'import platform; print(platform.python_version())')" in
+    "$STACK_PYTHON_VERSION")
+      python_tag=python3.10
       torch_version=2.4.1+cpu
       torchvision_version=0.19.1+cpu
       python_ndn_version=0.3
       onnxruntime_python_version=1.18.0
-      ;;
-    3.14)
-      python_tag=python3.14
-      torch_version=2.14.0+cpu
-      torchvision_version=0.29.0+cpu
-      python_ndn_version=0.5.1
-      onnxruntime_python_version=1.26.0
+      numpy_version=1.26.4
+      transformers_version=4.51.0
+      huggingface_hub_version=0.30.2
+      tokenizers_version=0.21.0
+      safetensors_version=0.5.2
+      accelerate_version=1.3.0
       ;;
     *)
-      echo "--with-yolo-minindn has pinned CPU wheels for Python 3.8 or 3.14, not $PYTHON_BIN" >&2
+      echo "The installed stack runtime must be Python $STACK_PYTHON_VERSION, found $PYTHON_BIN" >&2
       return 2
       ;;
   esac
 
+  experiment_python="$PYTHON_BIN"
+
+  check_minindn_ndn_cxx
+  if ! PATH="$SYSTEM_PATH:/usr/local/bin" command -v nfd >/dev/null && \
+      PATH="$SYSTEM_PATH:/usr/local/bin" command -v nfdc >/dev/null; then
+    echo 'Found nfdc without nfd; refusing to add a pinned NFD into a partial existing install.' >&2
+    return 1
+  fi
+  if PATH="$SYSTEM_PATH:/usr/local/bin" command -v nfd >/dev/null; then
+    local installed_nfd_version
+    installed_nfd_version="$(PATH="$SYSTEM_PATH:/usr/local/bin" nfd --version 2>/dev/null)"
+    [[ "$installed_nfd_version" == 24.07* ]] || {
+      echo "Mini-NDN v0.7.0 requires NFD 24.07; found '$installed_nfd_version'. Existing NFD left untouched." >&2
+      return 1
+    }
+  fi
+  build_fixed_minindn_waf_dependency NFD "$MININDN_NFD_URL" \
+    "$MININDN_NFD_COMMIT" nfd nfdc
   check_minindn_ndn_base
   ensure_minindn_boost_iostreams
   build_fixed_minindn_waf_dependency PSync "$MININDN_PSYNC_URL" \
@@ -2213,51 +2500,171 @@ install_yolo_minindn_profile() {
 
   mini_source="$(ensure_fixed_source_tree mini-ndn "$MININDN_REPO_URL" \
     "$MININDN_COMMIT" | tail -n 1)"
+  mininet_source="$(ensure_fixed_source_tree mininet "$MININET_REPO_URL" \
+    "$MININET_COMMIT" | tail -n 1)"
   source_copy="$(mktemp -d "$BUILD_DIR/minindn-python-source.XXXXXXXX")"
   mkdir -p -- "$BUILD_DIR/install-staging"
   stage_root="$(mktemp -d "$BUILD_DIR/install-staging/yolo-minindn.XXXXXXXX")"
   mini_prefix="$GLOBAL_LIBRARY_DIR/ndnsf/mini-ndn/v0.7.0/$python_tag"
   mini_site="$mini_prefix/site-packages"
-  yolo_prefix="torch-${torch_version//+/-}-ultralytics-$YOLO_ULTRALYTICS_VERSION"
-  yolo_site="$GLOBAL_LIBRARY_DIR/ndnsf/yolo-minindn/$python_tag/$yolo_prefix/site-packages"
+  yolo_prefix="torch-${torch_version//+/-}"
+  if (( INSTALL_YOLO_MININDN )); then
+    yolo_prefix+="-ultralytics-$YOLO_ULTRALYTICS_VERSION"
+  fi
+  if (( QWEN_MININDN )); then
+    yolo_prefix+="-transformers-$transformers_version"
+  fi
+  yolo_site="$GLOBAL_LIBRARY_DIR/ndnsf/minindn-experiments/$python_tag/$yolo_prefix/site-packages"
+  numpy_site="$GLOBAL_LIBRARY_DIR/ndnsf/minindn-experiments/$python_tag/numpy-$numpy_version/site-packages"
   mini_stage="$stage_root/usr/local/${mini_site#/usr/local/}"
   yolo_stage="$stage_root/usr/local/${yolo_site#/usr/local/}"
-  mkdir -p -- "$mini_stage" "$yolo_stage"
+  numpy_stage="$stage_root/usr/local/${numpy_site#/usr/local/}"
+  mkdir -p -- "$mini_stage" "$yolo_stage" "$numpy_stage"
   pip_env=(env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1)
 
   echo "==> Preparing the pinned Mini-NDN $MININDN_COMMIT Python package"
   git -C "$mini_source" archive --format=tar "$MININDN_COMMIT" |
     tar -xf - -C "$source_copy"
-  run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
+  run "${pip_env[@]}" "$experiment_python" -m pip --isolated install \
     --no-deps --no-build-isolation --no-compile --target "$mini_stage" "$source_copy"
 
+  echo "==> Installing Python 3 compatible Mininet $MININET_COMMIT"
+  mkdir -p -- "$source_copy/mininet"
+  git -C "$mininet_source" archive --format=tar "$MININET_COMMIT" |
+    tar -xf - -C "$source_copy/mininet"
+  # This upstream tag calls itself 2.3.0d6, which current setuptools rejects
+  # as package metadata. Preserve its relative examples package layout too:
+  # mininet/examples is a symlink to the sibling examples directory.
+  cp -a -- "$source_copy/mininet/mininet" "$mini_stage/"
+  cp -a -- "$source_copy/mininet/examples" "$mini_stage/"
+  rm -f -- "$mini_stage/mininet/examples"
+  mkdir -p -- "$mini_stage/mininet/examples"
+  cp -a -- "$source_copy/mininet/examples/." "$mini_stage/mininet/examples/"
+
   echo "==> Installing python-ndn $python_ndn_version for the Mini-NDN experiments"
-  run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
+  run "${pip_env[@]}" "$experiment_python" -m pip --isolated install \
     --no-cache-dir --no-compile --target "$mini_stage" \
     "python-ndn==$python_ndn_version"
 
-  echo "==> Installing pinned CPU-only PyTorch and Ultralytics Python packages"
-  run "${pip_env[@]}" "$PYTHON_BIN" -m pip --isolated install \
+  experiment_python_packages=(
+    "torch==$torch_version" "igraph==0.11.8"
+    "joblib==1.4.2" "tqdm==4.67.1"
+    "jsonschema==4.21.1"
+    "opencv-python==4.11.0.86"
+    "cryptography==44.0.1"
+  )
+  if [[ -n "$numpy_version" ]]; then
+    experiment_python_packages+=("numpy==$numpy_version")
+  fi
+  if (( INSTALL_YOLO_MININDN )); then
+    experiment_python_packages+=(
+      "torchvision==$torchvision_version"
+      "ultralytics==$YOLO_ULTRALYTICS_VERSION"
+      "onnxruntime==$onnxruntime_python_version"
+      "onnx==1.17.0" "protobuf==5.29.3"
+    )
+  fi
+  if (( QWEN_MININDN )); then
+    experiment_python_packages+=(
+      "transformers==$transformers_version"
+      "huggingface-hub==$huggingface_hub_version"
+      "tokenizers==$tokenizers_version" "safetensors==$safetensors_version"
+      "accelerate==$accelerate_version"
+    )
+  fi
+  if ((${#experiment_python_packages[@]})); then
+    echo "==> Installing pinned CPU-only Mini-NDN experiment Python packages"
+    run "${pip_env[@]}" "$experiment_python" -m pip --isolated install \
+      --no-cache-dir --no-compile --only-binary=:all: --ignore-installed \
+      --index-url https://download.pytorch.org/whl/cpu \
+      --extra-index-url https://pypi.org/simple --target "$yolo_stage" \
+      "${experiment_python_packages[@]}"
+  fi
+  echo "==> Installing NumPy $numpy_version into a clean, versioned experiment site"
+  run "${pip_env[@]}" "$experiment_python" -m pip --isolated install \
     --no-cache-dir --no-compile --only-binary=:all: --ignore-installed \
-    --index-url https://download.pytorch.org/whl/cpu \
-    --extra-index-url https://pypi.org/simple --target "$yolo_stage" \
-    "torch==$torch_version" "torchvision==$torchvision_version" \
-    "ultralytics==$YOLO_ULTRALYTICS_VERSION" \
-    "onnxruntime==$onnxruntime_python_version"
+    --no-deps --index-url https://pypi.org/simple --target "$numpy_stage" \
+    "numpy==$numpy_version"
+  if (( INSTALL_YOLO_MININDN )); then
+    model_stage="$stage_root/usr/local/share/ndnsf/models/yolo26n.pt"
+    mkdir -p -- "$(dirname -- "$model_stage")" \
+      "$stage_root/usr/local/share/ndnsf/yolo-minindn"
+    run curl --fail --location --retry 3 --output "$stage_root/yolo26n.pt.download" \
+      "$YOLO_MODEL_URL"
+    printf '%s  %s\n' "$YOLO_MODEL_SHA256" "$stage_root/yolo26n.pt.download" |
+      sha256sum --check --status
+    install -m 0644 "$stage_root/yolo26n.pt.download" "$model_stage"
+    printf '%s\n' "$ROOT" > "$stage_root/usr/local/share/ndnsf/yolo-minindn/source-root"
+    printf '%s\n' "$mini_site" "$yolo_site" \
+      > "$stage_root/usr/local/share/ndnsf/yolo-minindn/python-site-paths"
+    printf '%s\n' "$numpy_site" \
+      > "$stage_root/usr/local/share/ndnsf/yolo-minindn/numpy-site-path"
+    printf '%s\n' "$experiment_python" \
+      > "$stage_root/usr/local/share/ndnsf/yolo-minindn/python-executable"
+    printf '%s\n' "$YOLO_MODEL_SHA256" \
+      > "$stage_root/usr/local/share/ndnsf/yolo-minindn/yolo26n.sha256"
+  fi
 
-  model_stage="$stage_root/usr/local/share/ndnsf/models/yolo26n.pt"
-  mkdir -p -- "$(dirname -- "$model_stage")" \
-    "$stage_root/usr/local/share/ndnsf/yolo-minindn"
-  run curl --fail --location --retry 3 --output "$stage_root/yolo26n.pt.download" \
-    "$YOLO_MODEL_URL"
-  printf '%s  %s\n' "$YOLO_MODEL_SHA256" "$stage_root/yolo26n.pt.download" |
-    sha256sum --check --status
-  install -m 0644 "$stage_root/yolo26n.pt.download" "$model_stage"
-  printf '%s\n' "$ROOT" > "$stage_root/usr/local/share/ndnsf/yolo-minindn/source-root"
-  printf '%s\n' "$mini_site" "$yolo_site" \
-    > "$stage_root/usr/local/share/ndnsf/yolo-minindn/python-site-paths"
-  printf '%s\n' "$YOLO_MODEL_SHA256" \
-    > "$stage_root/usr/local/share/ndnsf/yolo-minindn/yolo26n.sha256"
+  if (( QWEN_MININDN )); then
+    qwen_model_dir="$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/models/qwen3-0.6b/$QWEN3_MODEL_REVISION"
+    qwen_model_stage="$stage_root/usr/local/${qwen_model_dir#/usr/local/}"
+    model_python="$experiment_python"
+    model_python_stage="$yolo_stage"
+    if [[ -e "$qwen_model_dir" || -L "$qwen_model_dir" ]]; then
+      if [[ "$(cat -- "$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/qwen-minindn/model-revision" 2>/dev/null || true)" != "$QWEN3_MODEL_REVISION" ]] ||
+          [[ ! -s "$qwen_model_dir/model.safetensors" || ! -s "$qwen_model_dir/config.json" ||
+             ! -s "$qwen_model_dir/tokenizer.json" || ! -s "$qwen_model_dir/tokenizer_config.json" ]]; then
+        echo "Existing Qwen model path is not a complete installer-managed $QWEN3_MODEL_REPO snapshot; preserving it: $qwen_model_dir" >&2
+        return 1
+      fi
+      echo "==> Reusing pinned $QWEN3_MODEL_REPO snapshot at $qwen_model_dir"
+    else
+      echo "==> Downloading pinned $QWEN3_MODEL_REPO model revision $QWEN3_MODEL_REVISION"
+      mkdir -p -- "$(dirname -- "$qwen_model_stage")"
+      run env -u PYTHONHOME PYTHONNOUSERSITE=1 PYTHONPATH="$mini_stage:$model_python_stage" \
+        "$model_python" - "$QWEN3_MODEL_REPO" "$QWEN3_MODEL_REVISION" \
+        "$qwen_model_stage" <<'PY'
+import sys
+from pathlib import Path
+import shutil
+
+from huggingface_hub import snapshot_download
+
+repo, revision, destination = sys.argv[1:]
+destination = Path(destination)
+snapshot_download(repo_id=repo, revision=revision, local_dir=destination)
+shutil.rmtree(destination / ".cache", ignore_errors=True)
+required = (
+    "config.json", "generation_config.json", "merges.txt",
+    "model.safetensors", "tokenizer.json", "tokenizer_config.json",
+    "vocab.json",
+)
+missing = [name for name in required if not (destination / name).is_file()]
+if missing:
+    raise SystemExit("incomplete pinned Qwen snapshot: " + ", ".join(missing))
+if (destination / "model.safetensors").stat().st_size < 1_000_000_000:
+    raise SystemExit("pinned Qwen3-0.6B model weights are unexpectedly small")
+print("QWEN3_0_6B_PINNED_SNAPSHOT_READY")
+PY
+    fi
+    mkdir -p -- "$stage_root/usr/local/share/ndnsf/qwen-minindn"
+    printf '%s\n' "$ROOT" \
+      > "$stage_root/usr/local/share/ndnsf/qwen-minindn/source-root"
+    printf '%s\n' "$mini_site" "$yolo_site" \
+      > "$stage_root/usr/local/share/ndnsf/qwen-minindn/python-site-paths"
+    printf '%s\n' "$numpy_site" \
+      > "$stage_root/usr/local/share/ndnsf/qwen-minindn/numpy-site-path"
+    printf '%s\n' "$experiment_python" \
+      > "$stage_root/usr/local/share/ndnsf/qwen-minindn/python-executable"
+    printf '%s\n' "$BUILD_DIR" \
+      > "$stage_root/usr/local/share/ndnsf/qwen-minindn/waf-build-directory"
+    printf '%s\n' "$QWEN3_MODEL_REPO" \
+      > "$stage_root/usr/local/share/ndnsf/qwen-minindn/model-repository"
+    printf '%s\n' "$QWEN3_MODEL_REVISION" \
+      > "$stage_root/usr/local/share/ndnsf/qwen-minindn/model-revision"
+    printf '%s\n' "$qwen_model_dir" \
+      > "$stage_root/usr/local/share/ndnsf/qwen-minindn/model-snapshot"
+  fi
 
   mkdir -p -- "$stage_root/usr/local/etc/mini-ndn"
   while IFS= read -r -d '' topology; do
@@ -2266,6 +2673,7 @@ install_yolo_minindn_profile() {
   done < <(find "$source_copy/topologies" -type f -name '*.conf' -print0)
 
   mkdir -p -- "$stage_root/usr/local/bin"
+  if (( INSTALL_YOLO_MININDN )); then
   cat > "$stage_root/usr/local/bin/ndnsf-yolo-minindn" <<'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2274,6 +2682,15 @@ if (( EUID != 0 )); then
   command -v sudo >/dev/null 2>&1 || { echo 'Mini-NDN needs root; sudo is unavailable' >&2; exit 1; }
   exec sudo -- "$0" "$@"
 fi
+if pgrep -x nfd >/dev/null 2>&1; then
+  echo 'An NFD process is already running; refusing to remove Mini-NDN socket paths' >&2
+  exit 1
+fi
+shopt -s nullglob
+stale_nfd_sockets=(/run/nfd/*.sock)
+for socket_path in "${stale_nfd_sockets[@]}"; do
+  [[ -S "$socket_path" ]] && rm -f -- "$socket_path"
+done
 if (($#)); then
   echo 'Usage: ndnsf-yolo-minindn' >&2
   exit 2
@@ -2281,7 +2698,9 @@ fi
 
 state_dir=/usr/local/share/ndnsf/yolo-minindn
 model=/usr/local/share/ndnsf/models/yolo26n.pt
-[[ -r "$state_dir/source-root" && -r "$state_dir/python-site-paths" && -r "$state_dir/yolo26n.sha256" ]] || {
+[[ -r "$state_dir/source-root" && -r "$state_dir/python-site-paths" && \
+   -r "$state_dir/numpy-site-path" && \
+   -r "$state_dir/python-executable" && -r "$state_dir/yolo26n.sha256" ]] || {
   echo "Incomplete Mini-NDN/YOLO install state: $state_dir" >&2
   exit 1
 }
@@ -2301,6 +2720,10 @@ mapfile -t python_sites < "$state_dir/python-site-paths"
   echo 'Mini-NDN/YOLO Python package paths are missing' >&2
   exit 1
 }
+numpy_site="$(<"$state_dir/numpy-site-path")"
+[[ -d "$numpy_site" ]] || { echo "Clean experiment NumPy site is missing: $numpy_site" >&2; exit 1; }
+yolo_python="$(<"$state_dir/python-executable")"
+[[ -x "$yolo_python" ]] || { echo "Mini-NDN experiment Python runtime is missing: $yolo_python" >&2; exit 1; }
 
 run_root="${NDNSF_YOLO_RUN_ROOT:-/var/tmp/ndnsf-yolo-minindn}"
 mkdir -p -- "$run_root"
@@ -2311,24 +2734,27 @@ esac
 run_dir="$(mktemp -d "$run_root/run.$(date -u +%Y%m%dT%H%M%SZ).XXXXXXXX")"
 model_cwd="$run_dir/model-cache"
 mkdir -p -- "$model_cwd" "$run_dir/tmp" "$run_dir/matplotlib" "$run_dir/torch"
+mkdir -p -- "$run_dir/ultralytics-config"
 ln -s -- "$model" "$model_cwd/yolo26n.pt"
 
-export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="$(dirname -- "$yolo_python"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export NDNSF_ROOT="$repo"
 export NDNSF_YOLO_MODEL="$model"
 export NDNSF_YOLO_RUN_DIR="$run_dir"
 export NDNSF_YOLO_MODEL_CWD="$model_cwd"
 export NDNSF_MININDN_SITE="${python_sites[0]}"
 export NDNSF_YOLO_SITE="${python_sites[1]}"
-export PYTHONPATH="${python_sites[0]}:${python_sites[1]}"
+export NDNSF_NUMPY_SITE="$numpy_site"
+export PYTHONPATH="$numpy_site:${python_sites[0]}:${python_sites[1]}"
 export PYTHONNOUSERSITE=1 PYTHONPYCACHEPREFIX="$run_dir/pycache"
 export TMPDIR="$run_dir/tmp" MPLCONFIGDIR="$run_dir/matplotlib"
 export TORCH_HOME="$run_dir/torch" YOLO_CONFIG_DIR="$run_dir/ultralytics-config"
 unset DISPLAY GST_PLUGIN_PATH
 
 set -o pipefail
-/usr/bin/python3 - 2>&1 <<'PY' | tee "$run_dir/launcher.log"
+"$yolo_python" - 2>&1 <<'PY' | tee "$run_dir/launcher.log"
 import os
+import hashlib
 from pathlib import Path
 import sys
 import subprocess
@@ -2339,20 +2765,21 @@ model = Path(os.environ['NDNSF_YOLO_MODEL']).resolve()
 model_cwd = Path(os.environ['NDNSF_YOLO_MODEL_CWD']).resolve()
 mini_site = os.environ['NDNSF_MININDN_SITE']
 yolo_site = os.environ['NDNSF_YOLO_SITE']
+numpy_site = os.environ['NDNSF_NUMPY_SITE']
 py_dir = repo / 'examples/python/NDNSF-DistributedInference/yolo_split'
 python_path = ':'.join((
+    numpy_site,
     mini_site,
     yolo_site,
     str(repo / 'NDNSF-DistributedInference'),
-    str(repo / 'pythonWrapper'),
     str(py_dir),
-    '/usr/lib/python3/dist-packages',
 ))
 os.environ['PYTHONPATH'] = python_path
 sys.path.insert(0, str(repo / 'Experiments'))
 
 import NDNSF_DI_YoloSplit_Minindn as experiment
 import minindn.minindn as minindn_impl
+from mininet.topo import Topo
 
 experiment.REPO = repo
 two_node_topology = run_dir / 'minindn-two-node.conf'
@@ -2367,6 +2794,23 @@ experiment.OUT = run_dir / 'experiment'
 experiment.CONFIG = experiment.OUT / 'yolo_policy.yaml'
 experiment.GEN_POLICY = str(run_dir / 'generated-policy')
 
+# This older experiment Args object predates app_env's workload_mode field.
+app_env = experiment.perf.app_env
+def compatible_app_env(output_dir, session_base, args):
+    if not hasattr(args, 'workload_mode'):
+        args.workload_mode = 'closed-loop'
+    env = app_env(output_dir, session_base, args)
+    env['NDNSF_DI_STATE_ROOT'] = str(Path(output_dir) / 'runtime-state')
+    env['NDNSF_CONTROLLER_GENERATION_STATE'] = str(
+        Path(output_dir) / 'controller-generation.state')
+    key_file = Path(output_dir) / 'request-envelope.key'
+    key_fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(key_fd, 'wb') as stream:
+        stream.write(os.urandom(32))
+    env['NDNSF_DI_ENVELOPE_KEY_FILE'] = str(key_file)
+    return env
+experiment.perf.app_env = compatible_app_env
+
 # The existing two-stage harness normally uses a third host for controller and
 # user roles. Co-locate those roles with Stage 0 so this launcher really creates
 # only two Mininet hosts while retaining the unmodified experiment code.
@@ -2375,8 +2819,20 @@ def two_node_getitem(net, name):
     return mininet_getitem(net, 'ucla' if name == 'memphis' else name)
 minindn_impl.Mininet.__getitem__ = two_node_getitem
 
+# Mini-NDN 0.7's ConfigParser allows no-value entries and treats the whole
+# space-separated link line as an option under Python 3.10. Build this fixed
+# two-host topology directly so its delay/bandwidth parameters remain intact.
+def parse_two_node_topology(_topology_file):
+    topology = Topo()
+    topology.addHost('ucla')
+    topology.addHost('wustl')
+    topology.addLink('ucla', 'wustl', delay='1ms', bw=1000)
+    return topology, {}
+minindn_impl.Minindn.processTopo = staticmethod(parse_two_node_topology)
+
 minindn_init = experiment.Minindn.__init__
 def verify_two_node_topology(self, *args, **kwargs):
+    kwargs.setdefault('controller', None)
     minindn_init(self, *args, **kwargs)
     names = sorted(node.name for node in self.net.hosts)
     if names != ['ucla', 'wustl']:
@@ -2388,7 +2844,28 @@ def isolated_python_path():
     return python_path
 
 def isolated_python_cmd(script, argv):
-    args = ' '.join([experiment.perf.shell_quote(str(py_dir / script))] +
+    script_path = py_dir / script
+    command_script = script_path
+    if Path(script).name == 'user.py':
+        deployment_revision = 'sha256:' + hashlib.sha256(
+            experiment.CONFIG.read_bytes()).hexdigest()
+        command_script = run_dir / 'yolo-user-compat.py'
+        command_script.write_text(
+            'import runpy, sys\n'
+            'from ndnsf_distributed_inference.app_sdk.client import APPClient\n'
+            '_distributed_inference = APPClient.distributed_inference\n'
+            f'_deployment_revision = {deployment_revision!r}\n'
+            'def _with_deployment_revision(self, service, value, **kwargs):\n'
+            '    kwargs.setdefault("deployment_revision", _deployment_revision)\n'
+            '    return _distributed_inference(self, service, value, **kwargs)\n'
+            'APPClient.distributed_inference = _with_deployment_revision\n'
+            'sys.argv = sys.argv[1:]\n'
+            'runpy.run_path(sys.argv[0], run_name="__main__")\n',
+            encoding='utf-8',
+        )
+    args = ' '.join([experiment.perf.shell_quote(str(command_script))] +
+                    ([experiment.perf.shell_quote(str(script_path))]
+                     if command_script != script_path else []) +
                     [experiment.perf.shell_quote(str(arg)) for arg in argv])
     return (f'cd {experiment.perf.shell_quote(str(model_cwd))} && '
             f'exec {experiment.perf.shell_quote(sys.executable)} {args}')
@@ -2426,42 +2903,375 @@ experiment.main()
 PY
 LAUNCHER
   chmod 0755 "$stage_root/usr/local/bin/ndnsf-yolo-minindn"
+  fi
 
-  echo '==> Installing Mini-NDN runtime, YOLO CPU packages, model cache, and launcher'
-  preserve_existing_stage_targets "$stage_root/usr/local"
+  if (( QWEN_MININDN )); then
+  cat > "$stage_root/usr/local/bin/ndnsf-qwen06b-minindn" <<'LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( EUID != 0 )); then
+  command -v sudo >/dev/null 2>&1 || { echo 'Mini-NDN needs root; sudo is unavailable' >&2; exit 1; }
+  exec sudo -- "$0" "$@"
+fi
+if pgrep -x nfd >/dev/null 2>&1; then
+  echo 'An NFD process is already running; refusing to remove Mini-NDN socket paths' >&2
+  exit 1
+fi
+shopt -s nullglob
+stale_nfd_sockets=(/run/nfd/*.sock)
+for socket_path in "${stale_nfd_sockets[@]}"; do
+  [[ -S "$socket_path" ]] && rm -f -- "$socket_path"
+done
+
+state_dir=/usr/local/share/ndnsf/qwen-minindn
+[[ -r "$state_dir/source-root" && -r "$state_dir/python-site-paths" && \
+   -r "$state_dir/numpy-site-path" && \
+   -r "$state_dir/model-snapshot" && -r "$state_dir/model-revision" && \
+   -r "$state_dir/python-executable" && \
+   -r "$state_dir/waf-build-directory" ]] || {
+  echo "Incomplete Mini-NDN/Qwen install state: $state_dir" >&2
+  exit 1
+}
+repo="${NDNSF_ROOT:-$(<"$state_dir/source-root")}"
+repo="$(realpath -e -- "$repo")"
+[[ -f "$repo/Experiments/NDNSF_DI_PlacementPreparation_Minindn.py" ]] || {
+  echo "Qwen Mini-NDN experiment not found under $repo; set NDNSF_ROOT" >&2
+  exit 1
+}
+snapshot="$(<"$state_dir/model-snapshot")"
+qwen_python="$(<"$state_dir/python-executable")"
+[[ -x "$qwen_python" ]] || { echo "Qwen Python runtime is missing: $qwen_python" >&2; exit 1; }
+waf_build_dir="$(<"$state_dir/waf-build-directory")"
+waf_build_dir="$(realpath -e -- "$waf_build_dir")"
+[[ -x "$waf_build_dir/examples/App_ServiceController" && \
+   -x "$waf_build_dir/unit-tests" && \
+   -x "$waf_build_dir/NDNSF-DistributedRepo/DistributedRepoSmoke" ]] || {
+  echo "Qwen native experiment build is incomplete: $waf_build_dir" >&2
+  exit 1
+}
+[[ "$(<"$state_dir/model-revision")" == e6de91484c29aa9480d55605af694f39b081c455 ]] || {
+  echo 'Installed Qwen model revision does not match this launcher' >&2
+  exit 1
+}
+[[ -s "$snapshot/model.safetensors" && -s "$snapshot/config.json" && \
+   -s "$snapshot/tokenizer.json" && -s "$snapshot/tokenizer_config.json" ]] || {
+  echo "Pinned Qwen3-0.6B snapshot is incomplete: $snapshot" >&2
+  exit 1
+}
+mapfile -t python_sites < "$state_dir/python-site-paths"
+[[ ${#python_sites[@]} -eq 2 && -d "${python_sites[0]}" && -d "${python_sites[1]}" ]] || {
+  echo 'Mini-NDN/Qwen Python package paths are missing' >&2
+  exit 1
+}
+numpy_site="$(<"$state_dir/numpy-site-path")"
+[[ -d "$numpy_site" ]] || { echo "Clean experiment NumPy site is missing: $numpy_site" >&2; exit 1; }
+[[ $# -gt 0 ]] || {
+  echo 'Usage: ndnsf-qwen06b-minindn --output PATH [experiment options]' >&2
+  exit 2
+}
+
+run_root="${NDNSF_QWEN_RUN_ROOT:-/var/tmp/ndnsf-qwen06b-minindn}"
+mkdir -p -- "$run_root"
+run_root="$(realpath -e -- "$run_root")"
+case "$run_root" in
+  "$repo"|"$repo"/*) echo "Run artifacts must be outside the checkout: $run_root" >&2; exit 2 ;;
+esac
+run_dir="$(mktemp -d "$run_root/run.$(date -u +%Y%m%dT%H%M%SZ).XXXXXXXX")"
+mkdir -p -- "$run_dir/tmp" "$run_dir/matplotlib" "$run_dir/torch"
+
+export PATH="$(dirname -- "$qwen_python"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export NDNSF_ROOT="$repo" NDNSF_QWEN_MODEL_SNAPSHOT="$snapshot"
+export NDNSF_QWEN_WAF_BUILD_DIR="$waf_build_dir"
+export PYTHONPATH="$numpy_site:${python_sites[0]}:${python_sites[1]}:$repo/NDNSF-DistributedInference"
+export PYTHONNOUSERSITE=1 PYTHONPYCACHEPREFIX="$run_dir/pycache"
+export TMPDIR="$run_dir/tmp" MPLCONFIGDIR="$run_dir/matplotlib"
+export TORCH_HOME="$run_dir/torch" OMP_NUM_THREADS=4
+export NDNSF_LIBRARY_DIR=/usr/local/lib
+export LD_LIBRARY_PATH="/usr/local/lib:/opt/onnxruntime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+unset DISPLAY GST_PLUGIN_PATH
+
+# This experiment's existing Python harness addresses its Waf outputs through
+# REPO/build. The installer keeps builds outside the checkout, so provide that
+# view only for this run and restore any pre-existing build path on exit.
+build_overlay_created=0
+build_overlay_dir=""
+build_backup=""
+restore_qwen_build_overlay() {
+  if (( build_overlay_created )); then
+    if [[ -L "$repo/build" ]] &&
+        [[ "$(realpath -e -- "$repo/build")" == "$waf_build_dir" ]]; then
+      rm -f -- "$repo/build"
+    elif [[ -e "$repo/build" || -L "$repo/build" ]]; then
+      echo "Refusing to remove changed Qwen build overlay: $repo/build" >&2
+      return 1
+    fi
+    if [[ -n "$build_backup" && ( -e "$build_backup" || -L "$build_backup" ) ]]; then
+      mv -- "$build_backup" "$repo/build"
+    fi
+    if [[ -n "$build_overlay_dir" && -d "$build_overlay_dir" ]]; then
+      rmdir -- "$build_overlay_dir"
+    fi
+  fi
+}
+if [[ ! -L "$repo/build" || "$(realpath -e -- "$repo/build" 2>/dev/null || true)" != "$waf_build_dir" ]]; then
+  build_overlay_created=1
+  if [[ -e "$repo/build" || -L "$repo/build" ]]; then
+    build_overlay_dir="$(mktemp -d "$repo/.ndnsf-qwen-build-overlay.XXXXXXXX")"
+    build_backup="$build_overlay_dir/build"
+    mv -- "$repo/build" "$build_backup"
+  fi
+  ln -s -- "$waf_build_dir" "$repo/build"
+fi
+trap restore_qwen_build_overlay EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+set -o pipefail
+"$qwen_python" - "$repo" "$snapshot" "$@" <<'PY' 2>&1 | tee "$run_dir/launcher.log"
+import argparse
+from pathlib import Path
+import os
+import sys
+
+repo = Path(sys.argv[1]).resolve()
+snapshot = Path(sys.argv[2]).resolve()
+forwarded = sys.argv[3:]
+sys.path.insert(0, str(repo / 'Experiments'))
+import NDNSF_DI_PlacementPreparation_Minindn as experiment
+import NDNSF_NewAPI_Minindn_Perf as perf
+import minindn.util as minindn_util
+import minindn.minindn as minindn_impl
+from mininet.topo import Topo
+
+def parse_minindn_topology(topology_file):
+    topology = Topo()
+    faces = {}
+    section = ''
+    for raw_line in Path(topology_file).read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(('#', ';')):
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1].strip().lower()
+            continue
+        fields = line.split()
+        if section == 'nodes':
+            name = fields[0].split(':', 1)[0]
+            params = dict(field.split('=', 1) for field in fields[1:])
+            topology.addHost(name, params=params)
+        elif section == 'switches':
+            topology.addSwitch(fields[0].split(':', 1)[0])
+        elif section == 'links':
+            endpoints = fields[0].split(':')
+            if len(endpoints) != 2:
+                raise ValueError(f'invalid Mini-NDN link row: {line}')
+            params = {}
+            for field in fields[1:]:
+                key, value = field.split('=', 1)
+                if key == 'max_queue_size':
+                    value = int(value)
+                elif key in ('loss', 'bw'):
+                    value = float(value)
+                params[key] = value
+            topology.addLink(endpoints[0], endpoints[1], **params)
+        elif section == 'faces':
+            endpoints = fields[0].split(':')
+            if len(endpoints) != 2:
+                raise ValueError(f'invalid Mini-NDN face row: {line}')
+            cost = next((int(field.split('=', 1)[1])
+                         for field in fields[1:]
+                         if field.startswith('cost=')), -1)
+            faces.setdefault(endpoints[0], []).append((endpoints[1], cost))
+    return topology, faces
+
+minindn_impl.Minindn.processTopo = staticmethod(parse_minindn_topology)
+minindn_init = minindn_impl.Minindn.__init__
+def isolated_minindn_init(self, *args, **kwargs):
+    kwargs.setdefault('controller', None)
+    return minindn_init(self, *args, **kwargs)
+minindn_impl.Minindn.__init__ = isolated_minindn_init
+minindn_impl.Minindn.cleanUp = staticmethod(lambda: None)
+
+app_env = perf.app_env
+def isolated_app_env(output_dir, session_base, args):
+    env = app_env(output_dir, session_base, args)
+    env['NDNSF_DI_STATE_ROOT'] = str(Path(output_dir) / 'runtime-state')
+    env['NDNSF_CONTROLLER_GENERATION_STATE'] = str(
+        Path(output_dir) / 'controller-generation.state')
+    key_file = Path(output_dir) / 'request-envelope.key'
+    key_fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(key_fd, 'wb') as stream:
+        stream.write(os.urandom(32))
+    env['NDNSF_DI_ENVELOPE_KEY_FILE'] = str(key_file)
+    return env
+perf.app_env = isolated_app_env
+
+runtime_path = os.environ['PATH']
+runtime_python_path = os.environ['PYTHONPATH']
+get_popen = minindn_util.getPopen
+def isolated_get_popen(host, command, envDict=None, **params):
+    child_env = dict(envDict or {})
+    child_env['PATH'] = runtime_path
+    child_env['PYTHONPATH'] = runtime_python_path
+    child_env['PYTHONNOUSERSITE'] = '1'
+    return get_popen(host, command, envDict=child_env, **params)
+minindn_util.getPopen = isolated_get_popen
+
+shell_join = experiment.shell_join
+def isolated_shell_join(values):
+    values = [sys.executable if value == '/usr/bin/python3' else value
+              for value in values]
+    return shell_join(values)
+experiment.shell_join = isolated_shell_join
+
+experiment.MODEL_SNAPSHOT = snapshot
+def run_local_cpu_generation(output):
+    return experiment.generation_worker(argparse.Namespace(
+        model_snapshot=str(snapshot), output=str(output), cpu_threads=4))
+experiment.run_generation_container = run_local_cpu_generation
+
+sys.argv = [str(repo / 'Experiments/NDNSF_DI_PlacementPreparation_Minindn.py'),
+            *forwarded]
+raise SystemExit(experiment.main())
+PY
+LAUNCHER
+  chmod 0755 "$stage_root/usr/local/bin/ndnsf-qwen06b-minindn"
+  fi
+
+  if (( INSTALL_YOLO_MININDN && QWEN_MININDN )); then
+  cat > "$stage_root/usr/local/bin/ndnsf-minindn-tests" <<'LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( EUID != 0 )); then
+  command -v sudo >/dev/null 2>&1 || { echo 'Mini-NDN needs root; sudo is unavailable' >&2; exit 1; }
+  exec sudo -- "$0" "$@"
+fi
+if (($#)); then
+  echo 'Usage: ndnsf-minindn-tests' >&2
+  exit 2
+fi
+
+state_dir=/usr/local/share/ndnsf/qwen-minindn
+repo="$(<"$state_dir/source-root")"
+repo="$(realpath -e -- "$repo")"
+run_root="${NDNSF_MININDN_TEST_RUN_ROOT:-/var/tmp/ndnsf-minindn-tests}"
+mkdir -p -- "$run_root"
+run_root="$(realpath -e -- "$run_root")"
+case "$run_root" in
+  "$repo"|"$repo"/*) echo "Run artifacts must be outside the checkout: $run_root" >&2; exit 2 ;;
+esac
+run_dir="$(mktemp -d "$run_root/run.$(date -u +%Y%m%dT%H%M%SZ).XXXXXXXX")"
+mkdir -p -- "$run_dir/qwen-output"
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+echo "MININDN_COMBINED_TEST_RUN_DIR=$run_dir"
+echo '==> Running the YOLO Mini-NDN experiment'
+ndnsf-yolo-minindn
+echo '==> Running the Qwen3-0.6B Mini-NDN experiment'
+ndnsf-qwen06b-minindn --output "$run_dir/qwen-output"
+echo 'MININDN_YOLO_AND_QWEN_TESTS_OK'
+LAUNCHER
+  chmod 0755 "$stage_root/usr/local/bin/ndnsf-minindn-tests"
+  fi
+
+  echo '==> Installing Mini-NDN experiment runtime, selected CPU packages, model caches, and launchers'
   install_manifest_tree "$stage_root/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" \
-    yolo-minindn-runtime
-  run env -u PYTHONHOME PYTHONNOUSERSITE=1 PYTHONPATH="$mini_site:$yolo_site" \
-    MPLCONFIGDIR="$TMPDIR/matplotlib" YOLO_CONFIG_DIR="$TMPDIR/ultralytics" \
-    "$PYTHON_BIN" - "$YOLO_ULTRALYTICS_VERSION" "$torch_version" \
-    "$torchvision_version" "$onnxruntime_python_version" <<'PY'
+    minindn-experiment-runtime
+  if (( INSTALL_YOLO_MININDN )); then
+    run env -u PYTHONHOME PYTHONNOUSERSITE=1 \
+      PYTHONPATH="$numpy_stage:$mini_stage:$yolo_stage" \
+      "$experiment_python" - "$YOLO_ULTRALYTICS_VERSION" "$torch_version" \
+      "$torchvision_version" "$onnxruntime_python_version" "$numpy_version" <<'PY'
 import importlib.metadata
+import cryptography
+import onnx
 import onnxruntime
+import numpy
 import torch
+import numpy
 import torchvision
 import ultralytics
 from minindn.minindn import Minindn
 from minindn.helpers.ndn_routing_helper import NdnRoutingHelper
-import mininet
-import igraph
+from minindn.apps.nlsr import Nlsr
 from ndn.encoding import Name, parse_data
+import igraph
+import mininet
+import joblib
+import sys
 
-expected_ultralytics, expected_torch, expected_torchvision, expected_onnxruntime = __import__('sys').argv[1:]
+expected_ultralytics, expected_torch, expected_torchvision, expected_onnxruntime, expected_numpy = sys.argv[1:]
+assert torch.__version__ == expected_torch, torch.__version__
+assert torch.version.cuda is None, torch.version.cuda
+if expected_numpy:
+    assert numpy.__version__ == expected_numpy, numpy.__version__
+assert torch.zeros(1).numpy().astype(numpy.float16).dtype == numpy.dtype('float16')
 assert importlib.metadata.version('ultralytics') == expected_ultralytics
+assert cryptography.__version__ == '44.0.1'
+assert onnx.__version__ == '1.17.0', onnx.__version__
+assert importlib.metadata.version('protobuf') == '5.29.3'
 assert onnxruntime.__version__ == expected_onnxruntime, onnxruntime.__version__
 assert 'CPUExecutionProvider' in onnxruntime.get_available_providers()
-assert torch.__version__ == expected_torch, torch.__version__
 assert torchvision.__version__ == expected_torchvision, torchvision.__version__
-assert torch.version.cuda is None, torch.version.cuda
-assert Minindn and NdnRoutingHelper and mininet and igraph and ultralytics
-assert Name and parse_data
+assert Minindn and NdnRoutingHelper and Nlsr and mininet and igraph and Name and parse_data
+assert joblib
+assert '/usr/lib/python3/dist-packages' not in sys.path
 print('MININDN_YOLO_PYTHON_IMPORTS_OK')
 PY
-  printf '%s  %s\n' "$YOLO_MODEL_SHA256" \
-    "$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/models/yolo26n.pt" | sha256sum --check --status
+  fi
+  if (( QWEN_MININDN )); then
+    run env -u PYTHONHOME PYTHONNOUSERSITE=1 \
+      PYTHONPATH="$numpy_stage:$mini_stage:$yolo_stage" \
+      "$experiment_python" - "$transformers_version" "$huggingface_hub_version" \
+      "$tokenizers_version" "$safetensors_version" "$accelerate_version" \
+      "$torch_version" "${qwen_model_dir}" <<'PY'
+import importlib.metadata
+import cryptography
+import torch
+import transformers
+import huggingface_hub
+from transformers import AutoConfig
+from minindn.minindn import Minindn
+from minindn.helpers.ndn_routing_helper import NdnRoutingHelper
+from minindn.apps.nlsr import Nlsr
+from ndn.encoding import Name, parse_data
+import igraph
+import mininet
+import joblib
+import sys
+
+(expected_transformers, expected_hub, expected_tokenizers, expected_safetensors,
+ expected_accelerate, expected_torch, qwen_snapshot) = sys.argv[1:]
+assert torch.__version__ == expected_torch, torch.__version__
+assert torch.version.cuda is None, torch.version.cuda
+assert transformers.__version__ == expected_transformers
+assert huggingface_hub.__version__ == expected_hub
+assert importlib.metadata.version('tokenizers') == expected_tokenizers
+assert importlib.metadata.version('safetensors') == expected_safetensors
+assert importlib.metadata.version('accelerate') == expected_accelerate
+assert cryptography.__version__ == '44.0.1'
+assert AutoConfig.from_pretrained(qwen_snapshot, local_files_only=True).model_type == 'qwen3'
+assert Minindn and NdnRoutingHelper and Nlsr and mininet and igraph and Name and parse_data
+assert joblib
+assert '/usr/lib/python3/dist-packages' not in sys.path
+print('MININDN_QWEN_PYTHON_IMPORTS_OK')
+PY
+  fi
+  if (( INSTALL_YOLO_MININDN )); then
+    printf '%s  %s\n' "$YOLO_MODEL_SHA256" \
+      "$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/models/yolo26n.pt" | sha256sum --check --status
+  fi
   sudo_run ldconfig
   rm -rf -- "$source_copy" "$stage_root"
-  echo '==> Mini-NDN/YOLO profile installed; start a real two-stage run with ndnsf-yolo-minindn'
+  if (( INSTALL_YOLO_MININDN && QWEN_MININDN )); then
+    echo '==> Mini-NDN/YOLO/Qwen profiles installed; use ndnsf-yolo-minindn or ndnsf-qwen06b-minindn'
+  elif (( INSTALL_YOLO_MININDN )); then
+    echo '==> Mini-NDN/YOLO profile installed; start a two-stage run with ndnsf-yolo-minindn'
+  else
+    echo '==> Mini-NDN/Qwen3-0.6B profile installed; use ndnsf-qwen06b-minindn'
+  fi
 }
 
 build_cmake_dependency() {
@@ -2578,7 +3388,7 @@ install_host_sdk_prerequisites() {
   local ort_version ort_url ort_sha ort_bytes ort_prefix
   local onnx_version onnx_url onnx_ref onnx_commit onnx_prefix
   local crate rust_minimum bridge_path workspace archive extracted pc_file
-  local stage build_dir actual_commit rust_version bridge_stage
+  local stage build_dir actual_commit rust_version bridge_stage rustup_init cargo_bin rustc_bin
   ort_version="$(host_sdk_lock_field onnxRuntimeCpp.version)"
   ort_url="$(host_sdk_lock_field onnxRuntimeCpp.url)"
   ort_sha="$(host_sdk_lock_field onnxRuntimeCpp.sha256)"
@@ -2598,6 +3408,9 @@ install_host_sdk_prerequisites() {
   if has_onnxruntime_sdk; then
     echo "==> ONNX Runtime SDK $(pkg_config --modversion onnxruntime) already installed; reusing"
   else
+    if [[ -d "$ort_prefix" && ! -L "$ort_prefix" ]]; then
+      sudo_run rmdir -- "$ort_prefix" >/dev/null 2>&1 || true
+    fi
     if [[ -e "$ort_prefix" || -L "$ort_prefix" ]]; then
       echo "Existing ONNX Runtime prefix is incomplete or incompatible; refusing to overwrite: $ort_prefix" >&2
       return 1
@@ -2642,7 +3455,11 @@ install_host_sdk_prerequisites() {
   if has_onnx_full_proto_sdk; then
     echo "==> ONNX full-protobuf SDK $onnx_version already installed; reusing"
   else
-    if [[ -e "$onnx_prefix" || -L "$onnx_prefix" ]]; then
+    if [[ "$onnx_prefix" != "$GLOBAL_DEPENDENCY_PREFIX" && -d "$onnx_prefix" && ! -L "$onnx_prefix" ]]; then
+      sudo_run rmdir -- "$onnx_prefix" >/dev/null 2>&1 || true
+    fi
+    if [[ "$onnx_prefix" != "$GLOBAL_DEPENDENCY_PREFIX" &&
+          ( -e "$onnx_prefix" || -L "$onnx_prefix" ) ]]; then
       echo "Existing ONNX prefix is incomplete or not version $onnx_version; refusing to overwrite: $onnx_prefix" >&2
       return 1
     fi
@@ -2697,14 +3514,37 @@ install_host_sdk_prerequisites() {
       echo "Rust/Cargo are required to build the locked tokenizer bridge" >&2
       return 1
     }
-    rust_version="$(rustc --version | /usr/bin/awk '{print $2}')"
+    cargo_bin="$(command -v cargo)"
+    rustc_bin="$(command -v rustc)"
+    rust_version="$("$rustc_bin" --version | /usr/bin/awk '{print $2}')"
     if [[ "$(printf '%s\n' "$rust_minimum" "$rust_version" | /usr/bin/sort -V | /usr/bin/head -n 1)" != "$rust_minimum" ]]; then
-      echo "Rust $rust_version is older than the tokenizer bridge requirement $rust_minimum" >&2
-      return 1
+      rustup_init="$workspace/rustup-init"
+      echo "==> Bootstrapping the pinned Rust $rust_minimum toolchain for the tokenizer bridge"
+      run curl --fail --location --retry 3 --output "$rustup_init" \
+        'https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init'
+      printf '%s  %s\n' \
+        '20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c' \
+        "$rustup_init" | /usr/bin/sha256sum --check --status || {
+        echo 'Pinned rustup-init binary failed SHA-256 verification' >&2
+        return 1
+      }
+      chmod 0755 "$rustup_init"
+      run env CARGO_HOME="$workspace/cargo-home" RUSTUP_HOME="$workspace/rustup-home" \
+        "$rustup_init" -y --no-modify-path --profile minimal \
+        --default-toolchain "$rust_minimum"
+      cargo_bin="$workspace/cargo-home/bin/cargo"
+      rustc_bin="$workspace/cargo-home/bin/rustc"
+      rust_version="$(env CARGO_HOME="$workspace/cargo-home" RUSTUP_HOME="$workspace/rustup-home" \
+        "$rustc_bin" --version | /usr/bin/awk '{print $2}')"
+      if [[ "$(printf '%s\n' "$rust_minimum" "$rust_version" | /usr/bin/sort -V | /usr/bin/head -n 1)" != "$rust_minimum" ]]; then
+        echo "Bootstrapped Rust $rust_version is older than the tokenizer bridge requirement $rust_minimum" >&2
+        return 1
+      fi
     fi
     run env CARGO_HOME="$workspace/cargo-home" \
+      RUSTUP_HOME="$workspace/rustup-home" \
       CARGO_TARGET_DIR="$workspace/cargo-target" \
-      PATH="$SYSTEM_PATH" cargo build --locked --release \
+      PATH="$(dirname -- "$cargo_bin"):$SYSTEM_PATH" "$cargo_bin" build --locked --release \
         --manifest-path "$ROOT/$crate/Cargo.toml"
     archive="$workspace/cargo-target/release/libndnsf_tokenizer_bridge.a"
     [[ -f "$archive" ]] || {
@@ -2727,7 +3567,7 @@ install_host_sdk_prerequisites() {
 install_external_dependencies() {
   echo "==> Checking external NDN dependencies"
   echo "==> Dependency source directory: $DEPS_DIR"
-  # SDKs are prepared from the dedicated version/hash lock before this gate.
+  # Host SDK versions, URLs, and archive hashes are pinned by host_sdk_lock_field.
   check_waf_inventory --sdk-only
   require_global_sdk_pkg "onnxruntime" "1.26.0" "libonnxruntime.so"
   require_global_file "$GLOBAL_ONNX_PREFIX/lib/libonnx.a"
@@ -2754,19 +3594,88 @@ install_external_dependencies() {
 }
 
 check_qwen_minindn_prerequisites() {
-  local tool missing=0
+  local tool missing=0 state_dir mini_site yolo_site numpy_site model_snapshot pythonpath qwen_python
+  state_dir="$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/qwen-minindn"
   for tool in nfd nfdc ndnsec mn; do
     if ! PATH="$SYSTEM_PATH:/usr/local/bin" command -v "$tool" >/dev/null; then
-      echo "Qwen MiniNDN prerequisite missing: $tool (install the owning project first)" >&2
+      echo "Qwen MiniNDN prerequisite missing after Mini-NDN installation: $tool" >&2
       missing=1
     fi
   done
-  if ! (cd / && env -u PYTHONPATH -u PYTHONHOME "$PYTHON_BIN" -I -c \
-    'from minindn.minindn import Minindn; from minindn.helpers.ndn_routing_helper import NdnRoutingHelper; import mininet; import cryptography; import ndn.encoding'); then
-    echo 'Qwen MiniNDN requires MiniNDN and its Python dependencies installed for the system Python.' >&2
+  if [[ ! -r "$state_dir/python-site-paths" || ! -r "$state_dir/numpy-site-path" || \
+        ! -r "$state_dir/model-snapshot" || \
+        ! -r "$state_dir/python-executable" || \
+        "$(cat -- "$state_dir/model-revision" 2>/dev/null || true)" != "$QWEN3_MODEL_REVISION" ]]; then
+    echo "Qwen MiniNDN install state is missing or has the wrong model revision: $state_dir" >&2
     missing=1
+  else
+    mapfile -t python_sites < "$state_dir/python-site-paths"
+    numpy_site="$(<"$state_dir/numpy-site-path")"
+    model_snapshot="$(<"$state_dir/model-snapshot")"
+    qwen_python="$(<"$state_dir/python-executable")"
+    if ((${#python_sites[@]} != 2)) || [[ ! -d "${python_sites[0]:-}" || ! -d "${python_sites[1]:-}" || ! -d "$numpy_site" ]]; then
+      echo 'Qwen MiniNDN Python package paths are missing' >&2
+      missing=1
+    elif [[ ! -x "$qwen_python" ]]; then
+      echo "Qwen Python runtime is missing: $qwen_python" >&2
+      missing=1
+    else
+      mini_site="${python_sites[0]}"
+      yolo_site="${python_sites[1]}"
+      pythonpath="$numpy_site:$mini_site:$yolo_site"
+      if ! (cd / && env -u PYTHONHOME PYTHONNOUSERSITE=1 PYTHONPATH="$pythonpath" \
+        "$qwen_python" -c \
+        'from minindn.minindn import Minindn; from minindn.helpers.ndn_routing_helper import NdnRoutingHelper; from minindn.apps.nlsr import Nlsr; import mininet, igraph, joblib, ndn.encoding, torch, transformers, huggingface_hub; import sys; assert "/usr/lib/python3/dist-packages" not in sys.path'); then
+        echo 'Qwen MiniNDN Python packages are not importable from the isolated experiment environments.' >&2
+        missing=1
+      fi
+      if [[ ! -s "$model_snapshot/config.json" || ! -s "$model_snapshot/model.safetensors" || \
+            ! -s "$model_snapshot/tokenizer.json" || ! -s "$model_snapshot/tokenizer_config.json" ]]; then
+        echo "Pinned Qwen3-0.6B model snapshot is incomplete: $model_snapshot" >&2
+        missing=1
+      fi
+    fi
   fi
   (( missing == 0 ))
+}
+
+check_minindn_python_runtime_consistency() {
+  local expected_python actual_version state_dir state_python checked=0 kind
+  expected_python="$GLOBAL_LIBRARY_DIR/ndnsf/python/$STACK_PYTHON_VERSION/bin/python3"
+  [[ -x "$expected_python" ]] || {
+    echo "Pinned shared stack Python is missing: $expected_python" >&2
+    return 1
+  }
+  expected_python="$(realpath -e -- "$expected_python")"
+  actual_version="$("$expected_python" -c 'import platform; print(platform.python_version())')"
+  [[ "$actual_version" == "$STACK_PYTHON_VERSION" ]] || {
+    echo "Pinned shared stack Python reports $actual_version, expected $STACK_PYTHON_VERSION" >&2
+    return 1
+  }
+
+  for kind in yolo-minindn qwen-minindn; do
+    state_dir="$GLOBAL_DEPENDENCY_PREFIX/share/ndnsf/$kind"
+    [[ -e "$state_dir" ]] || continue
+    [[ -r "$state_dir/python-executable" ]] || {
+      echo "Mini-NDN runtime state is missing its Python pointer: $state_dir" >&2
+      return 1
+    }
+    state_python="$(<"$state_dir/python-executable")"
+    [[ -x "$state_python" ]] || {
+      echo "Mini-NDN runtime Python is missing: $state_python" >&2
+      return 1
+    }
+    state_python="$(realpath -e -- "$state_python")"
+    [[ "$state_python" == "$expected_python" ]] || {
+      echo "Mixed Python runtimes detected: $kind uses $state_python; shared runtime is $expected_python" >&2
+      return 1
+    }
+    checked=$((checked + 1))
+  done
+
+  if (( checked > 0 )); then
+    echo "MININDN_SHARED_PYTHON_OK version=$actual_version executable=$expected_python profiles=$checked"
+  fi
 }
 
 check_qwen_installed_programs() {
@@ -2778,9 +3687,9 @@ check_qwen_installed_programs() {
       return 1
     }
   done
-  echo 'Qwen executables installed; this is NOT an inference PASS.'
-  echo 'Next: prepare canonical ONNX/KV model artifacts and run LocalExperiment check with an installed-binary profile.'
-  echo 'See docs/unified-stack-install.md#qwen-minindn-readiness for model and qualification boundaries.'
+  echo 'Qwen Mini-NDN runtime installed; this is NOT an inference PASS.'
+  echo 'Start the local Qwen3-0.6B Mini-NDN experiment with ndnsf-qwen06b-minindn --output PATH.'
+  echo 'The launcher uses CPU generation from the locally installed pinned model snapshot.'
 }
 
 cd "$ROOT"
@@ -2804,36 +3713,43 @@ if (( PLAN_ONLY )); then
     "$PYTHON_BIN" "$SOURCE_HELPER" plan --lock "$LOCK_FILE"
     echo "Install prefix: $GLOBAL_DEPENDENCY_PREFIX; source directory: $DEPS_DIR"
   fi
-  echo 'The full install reuses or installs the host SDKs pinned in packaging/host-sdk-dependencies.lock.json.'
+  echo 'The full install reuses or installs the host SDKs pinned in this installer.'
   echo 'Configure-only mode requires ONNX Runtime 1.26+, ONNX 1.17 full-protobuf, and the tokenizer bridge to be present.'
   echo 'MiniNDN/NFD/NLSR dependency flags and their source-build scope:'
   if (( INSTALL_MININDN_PACKAGES )); then
-    echo '  Mini-NDN profile: Mininet/OVS and Python prerequisites; NFD/ndn-cxx are reused.'
+    echo '  Mini-NDN profile: Mininet/OVS and Python prerequisites; pinned NFD 24.07 is built if missing.'
   fi
-  if (( INSTALL_YOLO_MININDN )); then
+  if (( INSTALL_YOLO_MININDN || QWEN_MININDN )); then
     echo "  Mini-NDN: $MININDN_REPO_URL @ $MININDN_COMMIT"
+    echo "  NFD: $MININDN_NFD_URL @ $MININDN_NFD_COMMIT (NFD 24.07 with ndn-cxx 0.9.0 API support)"
     echo "  PSync: $MININDN_PSYNC_URL @ $MININDN_PSYNC_COMMIT"
     echo "  NLSR: $MININDN_NLSR_URL @ $MININDN_NLSR_COMMIT"
     echo "  ndn-tools: $MININDN_TOOLS_URL @ $MININDN_TOOLS_COMMIT"
     echo "  Traffic generator: $MININDN_TRAFFIC_URL @ $MININDN_TRAFFIC_COMMIT"
     echo "  infoedit: $MININDN_INFOEDIT_URL @ $MININDN_INFOEDIT_COMMIT"
-    echo '  NFD, ndn-cxx, and ndnsec are reused, never rebuilt by this profile.'
-    echo '  MiniNet/OVS APT packages: mininet openvswitch-switch tcpdump iproute2 net-tools python3-pyroute2 python3-networkx python3-matplotlib python3-igraph python3-tqdm python3-joblib.'
+    echo '  Existing compatible NFD 24.07, ndn-cxx 0.9.0, and ndnsec are reused; missing NFD is built from the pinned source.'
+    echo '  MiniNet/OVS APT packages: mininet openvswitch-switch tcpdump iproute2 net-tools.'
     echo '  NDN source-build APT packages: libsystemd-dev libcap-dev libprotobuf-dev protobuf-compiler libsqlite3-dev libpcap-dev libsodium-dev.'
-    python_minor="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-    case "$python_minor" in
-      3.8) torch_plan='2.4.1+cpu / torchvision 0.19.1+cpu' ;;
-      3.14) torch_plan='2.14.0+cpu / torchvision 0.29.0+cpu' ;;
-      *) torch_plan="unsupported Python $python_minor" ;;
-    esac
-  echo "  Python: $torch_plan; Ultralytics=$YOLO_ULTRALYTICS_VERSION."
-    echo "  Model: yolo26n.pt SHA256=$YOLO_MODEL_SHA256."
-    echo '  Launcher: ndnsf-yolo-minindn; per-run outputs/logs go under /var/tmp/ndnsf-yolo-minindn.'
-    echo '  Inference topology: exactly two Mini-NDN hosts; controller/user share ucla with stage 0, and stage 1 runs on wustl.'
+    python_minor="$STACK_PYTHON_VERSION"
+    torch_plan='2.4.1+cpu'
+    torchvision_plan='0.19.1+cpu'
+    transformers_plan='4.51.0'
+    echo "  Shared stack Python: $python_minor (NDNSF, Mini-NDN, YOLO and Qwen)."
+    echo "  CPU PyTorch: $torch_plan."
+    if (( INSTALL_YOLO_MININDN )); then
+      echo "  torchvision=$torchvision_plan."
+      echo "  Ultralytics=$YOLO_ULTRALYTICS_VERSION; YOLO model yolo26n.pt SHA256=$YOLO_MODEL_SHA256."
+      echo '  Launcher: ndnsf-yolo-minindn; per-run outputs/logs go under /var/tmp/ndnsf-yolo-minindn.'
+      echo '  YOLO topology: exactly two Mini-NDN hosts; controller/user share ucla with stage 0, and stage 1 runs on wustl.'
+    fi
+    if (( QWEN_MININDN )); then
+      echo "  transformers=$transformers_plan with huggingface-hub/tokenizers/safetensors/accelerate."
+      echo "  Qwen model: $QWEN3_MODEL_REPO @ $QWEN3_MODEL_REVISION (Qwen3-0.6B only)."
+      echo '  Launcher: ndnsf-qwen06b-minindn --output PATH; local generation uses CPU.'
+    fi
   fi
   if (( QWEN_MININDN )); then
-    echo 'Qwen MiniNDN: precheck network tools/Python; install examples and fixtures; check installed programs.'
-    echo 'Models are separate inputs: no download, export, quantization, or inference is performed.'
+    echo 'Qwen MiniNDN: install examples/fixtures and the pinned Qwen3-0.6B snapshot; provide no Qwen2.5/GGUF/27B model.'
   fi
   printf 'Waf configure options:'; printf ' %q' "${WAF_CONFIGURE_ARGS[@]}"; printf '\n'
   echo 'Offline plan only: no apt, git fetch, builds, installation or Waf execution.'
@@ -2846,6 +3762,7 @@ if (( CONFIGURE_ONLY )); then
   install_common_system_packages
   require_system_toolchain
   prepare_build_dir
+  ensure_stack_python_runtime
   run_waf_clean configure "${WAF_CONFIGURE_ARGS[@]}"
   exit 0
 fi
@@ -2863,17 +3780,17 @@ for pair in 'ndn-cxx:NDNCXX_REPO_URL' 'ndn-svs:NDNSVS_REPO_URL' 'NDNSD:NDNSD_REP
 done
 
 echo "==> NDNSF stack install root: $ROOT"
-echo "==> Python: $PYTHON_BIN"
+echo "==> Bootstrap Python: $BOOTSTRAP_PYTHON_BIN"
 require_host_profile
-if (( QWEN_MININDN )); then
-  check_qwen_minindn_prerequisites
-fi
 if [[ "$CHECK_DEPENDENCIES" != "1" ]]; then
   install_common_system_packages
 fi
 require_system_toolchain
 
 if [[ "$CHECK_DEPENDENCIES" == "1" ]]; then
+  activate_existing_stack_python_runtime
+  echo "==> Stack Python: $PYTHON_BIN"
+  check_minindn_python_runtime_consistency
   check_waf_inventory
   require_global_external_closure
   echo "==> Installed NDNSF global dependency closure is valid"
@@ -2881,6 +3798,8 @@ if [[ "$CHECK_DEPENDENCIES" == "1" ]]; then
 fi
 
 prepare_build_dir
+ensure_stack_python_runtime
+echo "==> Stack Python: $PYTHON_BIN"
 if [[ "$INSTALL_DEPENDENCIES" != "0" ]]; then
   install_host_sdk_prerequisites
 fi
@@ -2904,8 +3823,11 @@ else
   check_waf_inventory
 fi
 
-if (( INSTALL_YOLO_MININDN )); then
-  install_yolo_minindn_profile
+if (( INSTALL_YOLO_MININDN || QWEN_MININDN )); then
+  install_minindn_experiment_profile
+fi
+if (( QWEN_MININDN )); then
+  check_qwen_minindn_prerequisites
 fi
 
 if (( DEPS_ONLY )); then
@@ -2932,7 +3854,7 @@ else
 fi
 
 echo "==> Building C++ libraries and bundled subprojects"
-run_waf_clean -j"$JOBS"
+run_waf_clean -j"$JOBS" --targets="$WAF_INSTALL_TARGETS"
 
 if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   echo "==> Installing C++ libraries and headers"
@@ -2954,6 +3876,7 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
     NDNSF_LIBRARY_DIR="$GLOBAL_LIBRARY_DIR" \
     "$PYTHON_BIN" ./waf --out="$BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" \
+    --targets="$WAF_INSTALL_TARGETS" \
     install "--destdir=$BUILD_DIR/install-staging/ndnsf" -j"$JOBS"
   install_manifest_tree "$local_install_stage" "$GLOBAL_DEPENDENCY_PREFIX" ndnsf-native
   rm -rf -- "$BUILD_DIR/install-staging/ndnsf"
@@ -3006,5 +3929,8 @@ PY
 
 if (( QWEN_MININDN )); then
   check_qwen_installed_programs
+fi
+if (( INSTALL_YOLO_MININDN || QWEN_MININDN )); then
+  check_minindn_python_runtime_consistency
 fi
 echo "==> NDNSF stack installation complete"

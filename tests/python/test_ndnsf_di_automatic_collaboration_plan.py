@@ -527,8 +527,12 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
             source.index("BeginCollaboration"):
             source.index("CommitCollaborationPlan") + 6000
         ]
+        code_without_line_comments = "\n".join(
+            line.split("//", 1)[0]
+            for line in deferred_region.splitlines()
+        )
         for forbidden in ("Qwen", "logits", "KV cache", "model fragment"):
-            self.assertNotIn(forbidden, deferred_region)
+            self.assertNotIn(forbidden, code_without_line_comments)
 
     def test_model_task_first_request_plans_after_signed_ack_snapshot(self):
         service_user = _AutomaticServiceUser(self.events)

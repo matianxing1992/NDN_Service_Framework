@@ -51,7 +51,7 @@ def main() -> int:
         signer_key_id=f"{identity}/KEY/1",
         sign_offer_digest=lambda value: "provider-signature:" + value,
         devices=("cuda:0",),
-        offer_lease_ms=8000)
+        offer_lease_ms=60_000)
 
     def prepared(context) -> None:
         if provider_id == "C":

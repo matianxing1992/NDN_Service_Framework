@@ -2211,7 +2211,8 @@ class ServiceProvider:
             return 0
         if service in self._handlers:
             self._register_service(service)
-        elif service not in self._streaming_services:
+        elif (service not in self._streaming_services and
+              service not in self._collaboration_services):
             raise ValueError("service handler is not registered")
         self._native.run()
         return 0
@@ -2233,7 +2234,8 @@ class ServiceProvider:
                 self._register_service(registered_service)
         elif service in self._handlers:
             self._register_service(service)
-        elif service not in self._streaming_services:
+        elif (service not in self._streaming_services and
+              service not in self._collaboration_services):
             raise ValueError("service handler is not registered")
         self._native.start()
         # spec181 FR-011/T004: the readiness wait (15000 ms) deliberately

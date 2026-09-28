@@ -9220,9 +9220,22 @@ namespace ndn_service_framework
         // have returned ACKs.
         requestMessage.setStrategy(ndn_service_framework::tlv::AllSelected);
 
+        // The legacy collaboration API also enters the configured Controller
+        // runtime. Bind its Request to the exact authenticated PolicyStatus and
+        // use request-scoped confidentiality just like the deferred API below;
+        // otherwise Providers correctly reject its versionless Request.
+        if (!prepareRequestControllerVersion(requestMessage, service, requestId)) {
+            return ndn::Name();
+        }
+        ndn::Buffer requestScopedPlaintext;
+        const bool requestScopedConfidentiality = prepareRequestScopedRequest(
+            requestMessage, service, requestId, requestScopedPlaintext);
+
         PendingCall pendingCall;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
+        pendingCall.requestScopedPlaintext = std::move(requestScopedPlaintext);
+        pendingCall.requestScopedConfidentiality = requestScopedConfidentiality;
         pendingCall.strategy = ndn_service_framework::tlv::AllSelected;
         pendingCall.timeoutMs = plan.timeoutMs;
         pendingCall.ackTimeoutMs = plan.ackCollectionTimeMs;

@@ -118,6 +118,8 @@ public:
     , m_droneIds(std::move(droneIds))
   {
     set_title("NDNSF UAV Ground Station");
+    get_style_context()->add_class("uav-ground-station");
+    installControlCss();
     set_default_size(1600, 800);
     set_border_width(12);
     set_can_focus(true);
@@ -1987,16 +1989,26 @@ private:
   {
     auto provider = Gtk::CssProvider::create();
     provider->load_from_data(
+      ".uav-ground-station, .uav-ground-station * {"
+      "  color: #111111;"
+      "  background-color: #ffffff;"
+      "}"
+      ".uav-ground-station button:hover {"
+      "  background-color: #f0f0f0;"
+      "}"
+      ".uav-ground-station entry {"
+      "  border: 1px solid #888888;"
+      "}"
       ".uav-keycap {"
-      "  color: #202124;"
-      "  background: #f3f4f6;"
-      "  border: 1px solid #9aa0a6;"
+      "  color: #111111;"
+      "  background-color: #ffffff;"
+      "  border: 1px solid #777777;"
       "  border-radius: 4px;"
       "  padding: 6px 10px;"
       "}"
       ".uav-keycap-active {"
-      "  color: white;"
-      "  background: #111111;"
+      "  color: #111111;"
+      "  background-color: #e8e8e8;"
       "  border: 1px solid #111111;"
       "}"
     );

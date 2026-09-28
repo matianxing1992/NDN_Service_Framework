@@ -72,6 +72,9 @@ NDNSF-UAV-APP/ROADMAP_ch.md
 .planning/
 .codegraph/
 
+# Pinned source checkouts populated by install_ndnsf_stack.sh.
+/deps/
+
 # Spec 108 local container artifacts and credentials
 dist/ndnsf-di-container/
 *.sif

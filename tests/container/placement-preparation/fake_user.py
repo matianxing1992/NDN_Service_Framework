@@ -155,6 +155,7 @@ def build_dynamic_plan(
             bandwidth_mbps=offer.bandwidth_mbps,
             cached_shards=offer.cached_shards,
             reusable_state=offer.reusable_state,
+            devices=offer.devices,
         )
         for offer in sorted(offers.values(), key=lambda item: item.provider)
     )
@@ -196,7 +197,10 @@ def main() -> int:
         plan_deadline_ms=deadline_ms, security_domain="spec163-local")
     invocation = user.begin_collaboration(
         "/HELLO", request.to_bytes(), mode="DEFERRED",
-        ack_timeout_ms=1200, timeout_ms=15_000, request_id=request_id)
+        ack_timeout_ms=1200, timeout_ms=15_000, request_id=request_id,
+        # This fixture sends opaque provider assignments; request-scoped V1
+        # intentionally rejects that legacy selection representation.
+        request_capabilities={"OpaqueSelectionCompatibilityV1": "required"})
     closed = invocation.acks_closed()
     assignment_deadline_ms = closed.request_deadline_us // 1000
     offers = {
@@ -269,7 +273,8 @@ def main() -> int:
                 adapter_id="opaque-container", adapter_version="1",
                 dependencies=(),
                 required_gpu_mib=512,
-                input_grant_digests=(digest(f"grant-{role}"),))
+                input_grant_digests=(digest(f"grant-{role}"),),
+                backend="fake-byte-runner", device="cuda:0")
             for role in roles)
         assignment = DISelectionAssignmentV2(
             invocation_id=request.invocation_id, request_id=request.request_id,

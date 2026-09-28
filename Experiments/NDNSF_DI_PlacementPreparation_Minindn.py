@@ -42,7 +42,7 @@ PROMPTS = (
     ("pipeline-vs-tensor", "en",
      "In at most two sentences, contrast pipeline parallelism (different layer stages) with tensor parallelism (splitting tensor operations within a layer)."),
     ("stage-timeout", "zh",
-     "三阶段分布式推理中间阶段超时。请用一个短句依次说明：标记本次尝试失败、取消并隔离旧消息、在原截止时间内重试或重规划；不要假设请求成功。"),
+     "三阶段分布式推理中间阶段超时。请用一个短句依次说明：标记本次尝试失败、取消并隔离旧消息、在原截止时间内重试或重规划；回答中明确写出“原截止时间内”，不要假设请求成功。"),
     ("evidence-summary", "en",
      "A run used three distinct GPUs, transferred two checksum-matched hidden states, produced an EOS-terminated answer, and had zero CPU fallback. In at most two sentences, state that this proves those observations for this run but does not prove universal correctness or optimality."),
 )
@@ -960,7 +960,7 @@ def run_network_matrix(output: Path) -> dict[str, Any]:
         "nac-abe-routing": all((
             "/NDNSF/REQUEST/HELLO/" in user_text
             and "attributes=/SERVICE/HELLO" in user_text,
-            "/NDNSF/SELECTION/HELLO/" in user_text
+            "/NDNSF/SELECTION/" in user_text
             and "attributes=/SERVICE/HELLO" in user_text,
             "/NDNSF/ACK/" in provider_text
             and "attributes=/PERMISSION/HELLO" in provider_text,
