@@ -1039,7 +1039,7 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
     def test_app_yaml_is_digest_pinned_and_rejects_deployment_or_secrets(self):
         root = Path(__file__).resolve().parents[2]
         contracts = (
-            root / "specs" / "163-di-collaboration-planning" / "contracts"
+            root / "tests" / "fixtures" / "di-collaboration-planning"
         )
         schema = json.loads(
             (contracts / "app-config.schema.json").read_text())
