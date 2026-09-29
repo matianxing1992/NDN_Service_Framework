@@ -48,6 +48,13 @@ active health checks；这些检查只证明指针/工作流一致性，不能�
 
 同一规则定义一次，其余文档引用。不要把契约、审查表和验收清单逐任务复制。
 
+实现任务默认必须落到产品代码变更，或对具名生产 C++ target 的行为验证；NDNSF 原生行为断言
+必须由 C++ fixture/oracle 执行。仅改说明、API 清单、PDF、任务追踪或 evidence 不算实现任务。
+只有接口、可观察行为或安全契约发生变化时，才同步对应契约/设计文档，并把同步放进同一实现任务；
+不要把同一行为拆成代码任务和文档任务。真正阻塞实现的未决契约，应作为所属实现任务中的有界源码核查，
+而不是先堆一轮通用文档交付。详见 [work-unit-contract](references/work-unit-contract.md#code-first-tasks-and-contract-docs)
+和 [review-gate](references/review-gate.md)。
+
 ## Design Before Coding
 
 1. 核对当前源码、调用方、构建入口和旧实现。区分 existing、planned 与未知事实。

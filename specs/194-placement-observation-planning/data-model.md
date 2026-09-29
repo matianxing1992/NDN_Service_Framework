@@ -4,7 +4,7 @@ This file is the detailed target data contract for Spec194. All records are immu
 
 ## PlacementProfileCapability
 
-Owned by the Provider's authenticated discovery/advertisement path; its exact current carrier is a T001 closure item. For each candidate Provider, retain the advertised supported placement profiles, provider identity, boot epoch, capture/expiry and authentication/source digest. The User fixes the eligible candidate roster, validates one current capability record for every member, then chooses a single request profile. A missing, stale or unauthenticated capability makes V4 coverage incomplete and selects the existing V3/default path for the whole request. Do not infer support from an observed offer or mix profiles within one request/attempt.
+Owned by the Provider's authenticated discovery/advertisement path; T002 locates and implements its exact current carrier. For each candidate Provider, retain the advertised supported placement profiles, provider identity, boot epoch, capture/expiry and authentication/source digest. The User fixes the eligible candidate roster, validates one current capability record for every member, then chooses a single request profile. A missing, stale or unauthenticated capability makes V4 coverage incomplete and selects the existing V3/default path for the whole request. Do not infer support from an observed offer or mix profiles within one request/attempt.
 
 ## SelectedPlacementProfile
 
@@ -37,7 +37,7 @@ Required identity: `provider`, `boot_epoch`, `process_epoch` where needed, `mode
 
 ## ProviderResourceView
 
-Owned by the Provider readiness/resource collector and carried only for the current candidate roles. Rows report the real collector's resource dimensions, units, totals and available amounts; the exact field map is frozen at T001 against the current native readiness structs. Resource and worker-capacity state is `OBSERVED`, `KNOWN_EMPTY`, or `UNKNOWN`: unknown uses `null`, a known empty set uses `[]`, and zero is reserved for a measured numerical zero. Every row binds to provider boot/process epoch, sample time, expiry and request candidate-set digest. Do not send unrelated host inventory.
+Owned by the Provider readiness/resource collector and carried only for the current candidate roles. Rows report the real collector's resource dimensions, units, totals and available amounts; T002 freezes the exact field map against current native readiness structs while implementing the V4 offer. Resource and worker-capacity state is `OBSERVED`, `KNOWN_EMPTY`, or `UNKNOWN`: unknown uses `null`, a known empty set uses `[]`, and zero is reserved for a measured numerical zero. Every row binds to provider boot/process epoch, sample time, expiry and request candidate-set digest. Do not send unrelated host inventory.
 
 ## PlacementObservationSnapshot
 

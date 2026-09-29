@@ -6,11 +6,11 @@
 
 ## Request Version Selection
 
-The User sends `placementProfile=DI_PLACEMENT_V4` only when every Provider in the frozen eligible candidate set advertises V4 support. One request/attempt has one offer schema; V3 and V4 offers are never mixed. If capability coverage is incomplete before the request, use the existing V3/default request path and record `OBSERVATION_UNAVAILABLE`. If V4 offers authenticate but their observations fail freshness/coverage checks, run the current baseline ranking semantics over the authenticated V4 non-network offer fields and record the fallback reason; do not translate or relabel their bytes as V3. Exact capability source and request-builder signature are frozen at T001.
+The User sends `placementProfile=DI_PLACEMENT_V4` only when every Provider in the frozen eligible candidate set advertises V4 support. One request/attempt has one offer schema; V3 and V4 offers are never mixed. If capability coverage is incomplete before the request, use the existing V3/default request path and record `OBSERVATION_UNAVAILABLE`. If V4 offers authenticate but their observations fail freshness/coverage checks, run the current baseline ranking semantics over the authenticated V4 non-network offer fields and record the fallback reason; do not translate or relabel their bytes as V3. T002 locates and implements the authenticated capability source and request-builder signature.
 
 ## V4 Offer Envelope
 
-The V4 offer retains request/provider/status/device/resource identity and signing requirements from the V3 offer, adds the explicit observation version and request-scoped resource/capacity/residency/network fields, and represents unavailable scalars or unknown collections with `null`. This sketch is normative for semantics; T001 freezes exact canonical ordering and signature bytes before implementation.
+The V4 offer retains request/provider/status/device/resource identity and signing requirements from the V3 offer, adds the explicit observation version and request-scoped resource/capacity/residency/network fields, and represents unavailable scalars or unknown collections with `null`. This sketch is normative for semantics; T002 closes exact canonical ordering and signature bytes in the same task that implements the offer.
 
 ```json
 {
@@ -42,7 +42,7 @@ The V4 offer retains request/provider/status/device/resource identity and signin
 
 Each `link_observations[]` row follows `NetworkObservation`, including required `direction_semantics`. A row reported by Provider P MUST have `observer_peer == offer.provider`. For a real dependency `DATA_FETCH`, Core stores the lookup as consumer Provider / producer Provider, but V4 exports `src_peer=producer` and `dst_peer=consumer` because those are the Data payload's source and receiver; `observer_peer` remains the consumer. For `ACK_RTT`, `src_peer` and `dst_peer` identify requester and responder and `direction_semantics=REQUESTER_RESPONDER_ROUND_TRIP`. It is unusable if endpoint identity, boot/topology binding, timestamps, sample count, scope or canonical source digest fails validation. Missing edges are omitted, not emitted with fabricated numbers.
 
-`resources` contains only request-relevant measured resource rows; `capacity` contains only the measured worker/capacity summary needed for the current candidate roles. Each has `OBSERVED`, `KNOWN_EMPTY`, or `UNKNOWN` state; `UNKNOWN` uses `null`, `KNOWN_EMPTY` uses an empty array, and `OBSERVED` uses bounded rows. Rows bind to provider boot/process and offer expiry. T001 freezes exact row fields from the real `NativeProviderTelemetryCollector` and readiness types; no arbitrary host inventory is allowed. Queue and wait are separately nullable observations.
+`resources` contains only request-relevant measured resource rows; `capacity` contains only the measured worker/capacity summary needed for the current candidate roles. Each has `OBSERVED`, `KNOWN_EMPTY`, or `UNKNOWN` state; `UNKNOWN` uses `null`, `KNOWN_EMPTY` uses an empty array, and `OBSERVED` uses bounded rows. Rows bind to provider boot/process and offer expiry. T002 freezes exact row fields from the real `NativeProviderTelemetryCollector` and readiness types while implementing the offer; no arbitrary host inventory is allowed. Queue and wait are separately nullable observations.
 
 ## User-Local Observations
 

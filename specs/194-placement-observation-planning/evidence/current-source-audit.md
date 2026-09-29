@@ -93,3 +93,35 @@ The first local commit attempt was blocked by the pre-commit hook's repository-w
 | Timestamp | Action | First lifecycle stage | Durable evidence | Class | Next gate |
 |---|---|---|---|---|---|
 | 2026-09-28 23:15 -05:00 | Consolidated duplicate batch/convergence duties, made C++ selector execution a single shared gate, and completed explicit FR/SC traceability. | Spec design and task mapping; no production request executed. | `../plan.md`, `../tasks.md`; serial task check PASS, traceability PASS, `git diff --check` PASS. | `CHECKPOINT` | T001 source/contract/target-design closure; all feature behavior tasks remain unstarted. |
+
+## Code-First Task Restructure
+
+**Timestamp**: 2026-09-28 23:48 -05:00<br>
+**First lifecycle stage**: Spec task mapping; no production request executed.<br>
+**Durable artifacts**: shared `speckit-code-design` skill and references, task template (local ignored configuration), Spec194 `plan.md`, `tasks.md`, `spec.md`, `research.md`, `data-model.md`, and `contracts/placement-observation-v1.md`.<br>
+**Next gate**: T001 source binding, Core telemetry implementation, C++ assertions, and its read-only static review.
+
+### Findings and changes
+
+- 旧 T001 是独立的源码/契约/API/PDF 预备任务，既没有产品代码也没有 C++ 行为验收；其范围还重复覆盖 Core、V4 wire、策略、构建闭包和后续 batch convergence。
+- 现将任务从 7 项收为 6 项：Core telemetry 源码核查与实现合并为新 T001；V4 capability/signature/key/epoch 决策并入 T002 offer 实现；snapshot 与 placement 决策分别归 T003/T004；T005 负责唯一共享 native 批次闭包；T006 仍完整保留真实 MiniNDN qualification。任务 ID 连续重排，旧审计段中的编号仍指重排前的历史任务。
+- 共享 `speckit-code-design` 新增 code-first 与 contract-doc 规则，并同步 repo skill、两个 references 与个人安装副本；实现 task 要有产品代码变更或具名生产 C++ 行为验证。接口、可观察行为或安全契约变化时才更新相应文档，并与实现放在同一任务。新的 `.specify/templates/tasks-template.md` 修改处于仓库忽略规则内，不纳入 Git。
+- Spec194 仍保持 strict-serial，T001–T004 都有具体 production boundary 与 C++ assertions；native selectors 仍只在 T005 批量执行，T006 qualification 未删减。没有产品源码或 task acceptance 状态被改成完成。
+
+### Checks and limits
+
+| Check | Result | Evidence |
+|---|---|---|
+| Strict-serial order | `PASS` | `verify-serial-tasks.py` reports valid order/dependencies. |
+| Requirement coverage | `PASS` | Read-only mapping check: all 18 FR/SC IDs in `spec.md` have rows in the `plan.md` traceability table. |
+| Whitespace | `PASS` | `git diff --check` exits 0. |
+| Shared skill install | `PASS` | Repo `SKILL.md`, `work-unit-contract.md`, `review-gate.md` byte-match the personal installed copies. |
+| Spec Kit sync | `BLOCK` | `verify-spec-kit-sync.py --require-entrypoints` still reports 0/11 local entrypoints and its known missing shared text in three repository templates; this is a workflow gap, not a Spec semantic result. |
+| Context Mode | `project PASS / active BLOCK` | Authority index refreshed; active health still reports no root instruction pointer to the Spec194 plan. No active-Spec search was made. |
+| Source/build/runtime qualification | `NOT_RUN / UNOBSERVED` | Documentation and task-structure change only; no production source, C++ selectors, build, tests, benchmark, or MiniNDN experiment was run. `docs/failure-log.md`, architecture-reading guide, and raw run logs remain unavailable in this checkout as recorded above. |
+
+### Progress Ledger
+
+| Timestamp | Action | First lifecycle stage | Durable artifact/evidence | Class | Next gate |
+|---|---|---|---|---|---|
+| 2026-09-28 23:48 -05:00 | Tightened shared code-first task rules; removed the standalone documentation phase and reassigned its source decisions to the owning code tasks; reduced Spec194 from seven tasks to six. | Spec task mapping; no production request executed. | Shared skill/reference diff, Spec194 plan/tasks and this audit; strict-serial PASS, 18/18 traceability PASS, `git diff --check` PASS, project health PASS, active health BLOCK. | `CHECKPOINT` | New T001 Core telemetry source binding, implementation and focused static review. |

@@ -92,7 +92,7 @@
 - `Experimental` 已按用户要求精确重置到 `origin/AutoInstall` 的提交 `ad53a4031e4d3f052c3c154fece656dbecdca2df`；分支上此前的本地活动 Spec 工作（包括 Spec193）记为 `STOPPED / NOT COMPLETE`，不继承、不补勾、不再恢复。此记录不把 AutoInstall 中原本已归档的历史任务重新解释为完成。
 - Spec194 first uses production event telemetry already owned by Core. Missing edges remain missing; event-driven observations do not guarantee a cold-start matrix.
 - V4 is a new, opt-in placement contract until its production qualification passes. V3 remains the compatibility path.
-- Current source findings are recorded in [research.md](research.md) and [evidence/current-source-audit.md](evidence/current-source-audit.md). Exact target interface is still `DRAFT` pending the source/ownership gate in T001.
+- Current source findings are recorded in [research.md](research.md) and [evidence/current-source-audit.md](evidence/current-source-audit.md). Each owning implementation task closes its source and Design binding before changing code; target interfaces remain `DRAFT` until then.
 
 ## Out of Scope
 
