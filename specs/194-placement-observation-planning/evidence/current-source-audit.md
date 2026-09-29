@@ -59,3 +59,37 @@ The first local commit attempt was blocked by the pre-commit hook's repository-w
 | 2026-09-28 22:57 -05:00 | Added explicit Provider resource/capacity fields, candidate-set digest binding and profile-preserving V4 fallback semantics across the spec, model, contract, plan and task. | Design/source mapping; no production request executed. | `../spec.md`, `../data-model.md`, `../contracts/placement-observation-v1.md`, `../plan.md`, `../tasks.md`, `../research.md`. | `CHECKPOINT` | Rerun doc structure/whitespace gates and refresh authority index before staging/commit. |
 | 2026-09-28 22:58 -05:00 | Clarified that telemetry source digests exclude raw names/scopes, cleaned the final design-document line breaks, and reran serial-task, staged-diff, authority-index and health checks. | Design/source mapping; no production request executed. | `../data-model.md`, `../plan.md`, this audit; serial verifier PASS, staged diff PASS, index/project health PASS, active health BLOCK due absent plan pointer. | `CHECKPOINT` | T001 source/ownership/canonical-contract closure and independent semantic review. |
 | 2026-09-28 23:00 -05:00 | Diagnosed initial local commit rejection: repository-wide text scan matched historical content; verified no prohibited path is staged and removed local agent-tool references from the new Spec. | Design/source mapping; no production request executed. | Staged path allowlist and this audit; the documented local-checkpoint exception leaves the path guard active. | `ROOT_CAUSE` | Recheck staged diff and commit the documented local checkpoint. |
+
+## Task Sequence Audit and Revision
+
+**Timestamp**: 2026-09-28 23:15 -05:00<br>
+**Classification**: `CHECKPOINT`<br>
+**First lifecycle stage**: Spec design and task mapping; no production request executed<br>
+**Durable artifacts**: [plan.md](../plan.md), [tasks.md](../tasks.md)<br>
+**Next gate**: T001 must close the exact source, V4 contract, batch closure and accepted target/API design before implementation.
+
+### Findings and changes
+
+- 原 T006 和 T007 都承担全路径收敛审查；T006 与 T002–T005 的描述也没有区分“编写 C++ assertions”和“执行 native selectors”，会导致重复审查或重复运行同一批测试。
+- 原需求追踪没有清楚映射 FR-010/FR-011；FR-007 只落在 FR-006–FR-008 范围行中，无法从表格单独核对。
+- 已将 T006 合并为一个 verification-only gate：先完成 T002–T005 各自的静态审查，再做一次组合及全生产路径静态收敛审查；无阻塞发现时只构建/运行一次共享 native target 和 selectors。发现问题时必须先登记有依赖关系的修复单元，不能在验证任务中顺手改产品代码。
+- T007 现在只负责已安装系统上的真实 MiniNDN 双 Provider A/B 资格验收。T006 的五 lane、review-agent trace、稳定出口及四类漏检回顾合并进唯一的 `evidence/native-batch-closure.md`；全路径运行到终态和清理仍只由 T007 验收。
+- 计划追踪表现逐项列出 FR-001–FR-012 和 SC-001–SC-006；User Story 1–3 也分别映射到任务。FR-007 显式要求 User ingress/egress 只有在真实传输和字节数已知时才计入，未知字节数不按零处理。
+
+### Checks and limits
+
+| Check | Result | Evidence |
+|---|---|---|
+| Strict-serial order | `PASS` | `verify-serial-tasks.py` reports a valid task order and dependency chain. |
+| Requirement coverage | `PASS` | Plan traceability script maps FR-001–FR-012 and SC-001–SC-006; no missing IDs. |
+| Whitespace | `PASS` | `git diff --check` exits 0. |
+| Spec Kit synchronization | `BLOCK` | `verify-spec-kit-sync.py --require-entrypoints` reports `0/11` local entrypoints and required text missing from the three repository templates. Manual shared-skill review was used; this is not a formal `speckit-analyze` result. |
+| Context Mode | `project PASS / active BLOCK` | Project health passes. Active health reports the root instruction pointer does not target Spec194; filesystem check finds no root instruction file, so there was no local pointer file to edit. Repository documents remain the active authority fallback. |
+| Failure-log/raw-log preflight | `UNAVAILABLE` | `docs/failure-log.md`, `docs/architecture-reading-guide.md`, and raw run files are absent in this checkout; prior source audit records that no product run occurred. No failure boundary was retried. |
+| Compile/link, runtime/test, performance | `NOT_RUN / UNOBSERVED` | This was a documentation-only audit; no source, build, test, benchmark or MiniNDN run was changed or started. |
+
+### Progress Ledger
+
+| Timestamp | Action | First lifecycle stage | Durable evidence | Class | Next gate |
+|---|---|---|---|---|---|
+| 2026-09-28 23:15 -05:00 | Consolidated duplicate batch/convergence duties, made C++ selector execution a single shared gate, and completed explicit FR/SC traceability. | Spec design and task mapping; no production request executed. | `../plan.md`, `../tasks.md`; serial task check PASS, traceability PASS, `git diff --check` PASS. | `CHECKPOINT` | T001 source/contract/target-design closure; all feature behavior tasks remain unstarted. |

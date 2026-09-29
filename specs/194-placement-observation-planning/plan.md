@@ -78,49 +78,62 @@ Profile negotiation is one request-level decision made after the eligible candid
 
 ## Work Units and Gates
 
-Implementation is strict-serial. Each task contains its production change, focused C++ regression, API/behavior documentation and evidence. Each small task receives the repository read-only `review-agent` static gate before the shared batch build. The batch records five coverage lanes, stable exit, exact target/source closure, review-agent baseline/path/digest, and `static` / `compile-link` / `runtime-test` / `unobserved` misses. Shared build/test runs only after all member reviews and batch composition review pass.
+Implementation is strict-serial. T002–T005 each change one production boundary, add its named C++ assertions, update the owning API/behavior docs and pass a read-only task review before the next task. Their native target and selectors are not built or run separately; the shared native build/test runs once in T006 after every member review and the combined composition/convergence review pass. This avoids repeating the same target run for each slice.
 
-**Provisional Batch ID**: `B194-NATIVE-OBSERVATION-PLACEMENT`, members T002–T005. They form one source-to-proposal behavior path under one observation contract and planned C++ oracle suite. **Batch growth decision**: retain these members together only if T001 verifies the actual Core/DI target and source closure supports the shared oracle; if Core and DI require separate build/source closures, split the batch and update this plan before implementation. T008 remains a separate system-qualification gate and is not absorbed into this native batch. T001 is a hard design gate; T002–T005 are not `READY_FOR_IMPLEMENTATION` until this composition is frozen.
+**Provisional Batch ID**: `B194-NATIVE-OBSERVATION-PLACEMENT`, members T002–T005. They form one source-to-proposal behavior path under one observation contract and planned C++ oracle suite. **Batch growth decision**: retain these members together only if T001 verifies the actual Core/DI target and source closure supports the shared oracle; if Core and DI require separate build/source closures, split the batch and update this plan before implementation. T007 is the separate installed-system qualification gate. T001 is a hard design gate; T002–T005 are not `READY_FOR_IMPLEMENTATION` until this composition is frozen.
 
-**Batch observable exit**: for the same frozen request/candidate identity, the named C++ production path emits either (a) a fully verified selected profile, fresh snapshot digest, deterministic cost breakdown and complete valid proposal, or (b) the explicit V3/default or V4-baseline fallback with a stable reason. All member static reviews and the batch composition review pass; named target/source closure compiles/links; independent C++ selectors pass. This exit does not imply execution, terminal response, cleanup or latency improvement.
+**Batch observable exit**: for the same frozen request/candidate identity, the named C++ production path emits either (a) a fully verified selected profile, fresh snapshot digest, deterministic cost breakdown and complete valid proposal, or (b) the explicit V3/default or V4-baseline fallback with a stable reason. All member reviews and the combined batch review pass; the named target/source closure compiles/links; independent C++ selectors pass. This exit does not imply a real multi-Provider request, terminal response, cleanup or latency improvement.
 
-| Lane | Coverage obligation |
-|---|---|
-| Source / identity / catalog | Core producer samples, signer identity, request/candidate/attempt digest, endpoint boot/topology epoch. |
-| Prepare / material / Repo | No model prefetch or assembly before Selection; exact residency claims and missing-material behavior. |
-| ACK / Selection | Core ACK proof plus V4 signature, freshness, duplicate/direction rejection, snapshot digest and fallback reason. |
-| Placement fetch / assembly | role graph edge mapping, byte estimates, cost decomposition, selection-bound fetch and no cross-attempt reuse. |
-| Runner / execute / terminal / cleanup | actual multi-Provider native request, terminal outputs, process/cache cleanup and paired latency comparison. |
+| Lane | T006 native batch coverage | T007 qualification coverage |
+|---|---|---|
+| Source / identity / catalog | Core producer samples, signer identity, request/candidate/attempt digest, endpoint boot/topology epoch. | Verify the same identities in the installed run. |
+| Prepare / material / Repo | Static trace and C++ contract checks for no pre-Selection model prefetch/assembly, exact residency claims and missing-material behavior. | Observe Prepare/Repo publication and prove no unselected Provider fetches or assembles material. |
+| ACK / Selection | Core ACK proof plus V4 signature, freshness, duplicate/direction rejection, snapshot digest and fallback reason. | Observe production ACK closure and selected profile/Providers. |
+| Placement fetch / assembly | Role graph edge mapping, byte estimates, cost decomposition, selection-bound fetch and no cross-attempt reuse. | Observe placement-bound fetch and Provider assembly for assigned layers. |
+| Runner / execute / terminal / cleanup | Trace actual production owners; runtime behavior not reached by the proposal oracle is recorded as `unobserved`. | Observe execution, terminal response and cleanup for the full production request. |
 
-**Feature qualification exit**: both baseline and V4 produce verified placement proposals from the same request/candidate identity; all edge/rank/resource decisions are visible in the native trace; real execution reaches terminal response and cleanup; latency report binds code, installed binaries, model, workload, topology, observation snapshot and strategy identity. This complete exit belongs to T008, beyond native batch closure.
+**Feature qualification exit**: both baseline and V4 produce verified placement proposals from the same request/candidate identity; all edge/rank/resource decisions are visible in the native trace; real execution reaches terminal response and cleanup; latency report binds code, installed binaries, model, workload, topology, observation snapshot and strategy identity. This complete exit belongs to T007, beyond native batch closure.
 
 **Requirement traceability**:
 
 | Requirement / outcome | Owning task(s) |
 |---|---|
-| FR-001–FR-002, SC-001 | T002, T003, T004 |
-| FR-003–FR-004 | T003 |
-| FR-009 whole-roster profile decision | T003, T004 |
-| FR-010–FR-011 | T003 |
-| FR-005, SC-003 | T004 |
-| FR-006–FR-008, SC-002, SC-005 | T005, T006 |
-| FR-012 | T006–T008 |
-| SC-004 | T008 |
-| SC-006 | T005, T006, T008 |
+| User Story 1 - Trustworthy directed observations | T002–T004 |
+| User Story 2 - Request-scoped cache and capacity view | T003–T004 |
+| User Story 3 - Global role placement uses observed transfer cost | T005–T007 |
+| FR-001 | T002–T004 |
+| FR-002 | T002–T004 |
+| FR-003 | T003 |
+| FR-004 | T003 |
+| FR-005 | T004 |
+| FR-006 | T005–T006 |
+| FR-007 | T005–T006 |
+| FR-008 | T005–T006 |
+| FR-009 | T003–T004 |
+| FR-010 | T002–T004 |
+| FR-011 | T002–T004 |
+| FR-012 | T006–T007 |
+| SC-001 | T002–T004 |
+| SC-002 | T005–T006 |
+| SC-003 | T004, T006 |
+| SC-004 | T007 |
+| SC-005 | T005–T006 |
+| SC-006 | T005–T007 |
 
-**Batch closure**: source audit has no unresolved identity/wire/owner gaps; static gate passes; named C++ target compiles/links and focused selectors pass; batch composition review passes; complete `static`, `compile-link`, `runtime-test`, and `unobserved` retrospective is recorded. MiniNDN/SC-004 remains a later qualification gate and is not implied by batch closure.
+**T006 closure**: the combined read-only composition/convergence review has no unresolved controlling identity, wire, owner or lifecycle gaps; the named C++ target compiles/links and its independent selectors pass; the stable exit and complete five-lane `static` / `compile-link` / `runtime-test` / `unobserved` retrospective are recorded in one `evidence/native-batch-closure.md`. A blocking finding prevents the build and keeps T006 open; repair is a separately registered dependency-ordered work unit, never an untracked fix inside the verification gate. MiniNDN/SC-004 remains T007 and is not implied by batch closure.
 
 **Risk class / Dynamic profile**: production code will touch signed parsing, native caches and async NDN collection. T001 must select a justified C++ dynamic profile and record ownership/lifetime invariants for the actual batch; no sanitizer/fuzz run is requested in this documentation turn.
 
-## Pre-Qualification Design-Code Convergence
+## T006 Full-Path Convergence and Batch Closure
 
 **Design authority**: `spec.md`, `data-model.md`, `contracts/placement-observation-v1.md`, and the source/ownership decisions frozen by T001.<br>
 **Production paths to inspect**: `ServiceUser` ACK/data transfer; `ServiceProvider` dependency fetch and generic ACK; V4 offer issuer/admission; native request planner; placement proposal/sealer; Selection-bound fetch; Provider assembly/execute/terminal/cleanup.<br>
-**Required audit artifact**: `specs/194-placement-observation-planning/evidence/design-code-convergence.md` with five-lane traceability, severity/owner, focused regression and first observable boundary.<br>
-**Closure rule**: `PASS` only after every controlling discrepancy is repaired, focused C++ regression passes and code review confirms actual production wiring. Any semantic, auth, ownership, source-closure or evidence gap is `BLOCK`.<br>
-**Formal validation boundary**: T008 real installed MiniNDN and comparative latency.<br>
+**Single closure artifact**: `evidence/native-batch-closure.md` holds the five-lane trace, severity/owner findings, first observable boundary, review-agent baseline/path/SHA, exact target/source closure, stable batch exit, and four-category retrospective. Do not create a second convergence report.<br>
+**Order**: member static reviews → combined full-path/composition review → if clear, one shared native build and selector run → closure record. T006 itself is read-only with respect to production code. If review finds a controlling gap, stop before build; register a scoped repair work unit, update dependencies, complete its static gate, then resume the affected shared validation.<br>
+**Closure rule**: `PASS` only when the review finds no controlling discrepancy and the named C++ target, independent oracles and retrospective all pass. Any semantic, authorization, ownership, source-closure or evidence gap is `BLOCK`.<br>
+**Formal validation boundary**: T007 real installed MiniNDN and comparative latency.<br>
 **Re-audit triggers**: changes to signed offer bytes, telemetry source/TTL, endpoint identity, role graph/byte estimate, candidate ordering, strategy budget, caller, tests, build target, installed binary or evidence contract.
 
 ## Complexity Tracking
 
-No constitution principle is weakened. Versioned V4 adds a new signed wire and deterministic fallback to protect existing V3. The potential added Core API and V4 plumbing are justified only if T001 confirms actual production sample reachability and T008 proves end-to-end value; otherwise Spec194 remains `BLOCKED / NOT COMPLETE` instead of keeping unused protocol machinery.
+No constitution principle is weakened. Versioned V4 adds a new signed wire and deterministic fallback to protect existing V3. The potential added Core API and V4 plumbing are justified only if T001 confirms actual production sample reachability and T007 proves end-to-end value; otherwise Spec194 remains `BLOCKED / NOT COMPLETE` instead of keeping unused protocol machinery.
