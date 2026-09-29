@@ -55,6 +55,8 @@ active health checks；这些检查只证明指针/工作流一致性，不能�
 而不是先堆一轮通用文档交付。详见 [work-unit-contract](references/work-unit-contract.md#code-first-tasks-and-contract-docs)
 和 [review-gate](references/review-gate.md)。
 
+在已有实现任务中（理解真实调用链后、结束该任务审查前）加入一次 `ponytail` 最小化检查：按需存在、复用仓库能力、标准库、原生能力、已安装依赖、最小可维护实现的顺序审视代码。它是同一任务的检查项，不另建 task、报告或 gate；不能以少写代码为由缩小已授权行为或削减 C++ 验证、安全和生命周期要求。细则见[work-unit-contract](references/work-unit-contract.md#minimality-pass)。
+
 ## Design Before Coding
 
 1. 核对当前源码、调用方、构建入口和旧实现。区分 existing、planned 与未知事实。
