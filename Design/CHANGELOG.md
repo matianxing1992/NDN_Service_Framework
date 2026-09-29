@@ -1,5 +1,9 @@
 # 修订记录
 
+## Spec194 placement observation planning draft · 2026-09-28
+
+新增 Spec194，基于当前 Core ACK/真实依赖 fetch telemetry、Provider readiness measured resource telemetry 与 Native V3 offer/placement 接线缺口，起草签名 V4 observation snapshot、缓存/资源 freshness 与 directed role-edge placement contract；补充完整候选集能力协商，避免同一请求混用 V3/V4。旧 pre-reset 活动 Spec（含 Spec193）记为 `STOPPED / NOT COMPLETE`。精确 V4 API 和目标 PDF 留待 T001 源码/语义门冻结；本轮不改产品源码、当前行为或资格结论。
+
 ## Object handles and replica locators · 2026-09-19
 
 按用户确认增加 R6：返回 handle 分离不可变对象身份和可更新副本位置，绑定签名位置记录、receipt 和生命周期。区分插入来源 hint 与读取副本 hint；客户端负责有界位置更新/切换，部署负责网络与本地转发。DI PreparedModel 保持材料摘要和选择授权边界。仅高层目标，不改变现有 API 或资格状态。

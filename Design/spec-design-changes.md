@@ -1,5 +1,14 @@
 # Spec 设计变更记录
 
+## Spec194 placement observation collection and planning — 2026-09-28
+
+- **Status**: `DRAFT / NOT_IMPLEMENTED`；旧 pre-reset `Experimental` 本地活动 Spec 工作（包括 Spec193）为 `STOPPED / NOT COMPLETE`，不承接旧任务。
+- **Owner / principles**: Core `NetworkTelemetryStore` owns typed transport observations; DI Provider owns request-scoped resources/residency; DI User owns validated snapshot and role-graph placement. Applies G1–G6 and D1–D4; MiniNDN qualification later follows M1–M3. No principle is changed.
+- **Current source facts**: Core records User ACK RTT and actual Provider dependency Data fetches. Provider readiness can include sampled resource `measuredTelemetry`, but when native V3 is issued the ACK handler replaces that generic payload with a signed offer that emits zero/empty network/resource/residency fields. Native V3 placement ranks roles independently and does not price the directed role dependency graph. See [Spec194 source audit](../specs/194-placement-observation-planning/evidence/current-source-audit.md) and [research](../specs/194-placement-observation-planning/research.md).
+- **Proposed target**: Add a separately signed/versioned `DI_PLACEMENT_V4` observation offer and immutable per-request placement snapshot; negotiate one profile for the complete eligible Provider roster; retain V3 canonical bytes and baseline fallback; use only fresh directed production samples and candidate-scoped residency. The detailed proposal is `DRAFT` in [Spec194 contract](../specs/194-placement-observation-planning/contracts/placement-observation-v1.md).
+- **Design artifacts**: Spec, plan, task registry and data contract are drafted. `Design/api/di-reference.md`, current/target source/API snapshots and PDFs were not changed because the exact V4 canonical fields, endpoint epoch provenance and strategy score/budget must first pass T001 source/semantic closure; no draft target is represented as accepted/current API.
+- **Evidence boundary**: No product source, build, test, MiniNDN run, performance or qualification status changed. Spec Kit local synchronization check remains a workflow `BLOCK` (0/11 local command entrypoints and incomplete restored templates), recorded in the source audit.
+
 ## Spec190 B190-189 protected factory critical-path repair — 2026-09-25
 
 - **Status**: `PARTIAL`；修复并观测了 Selection 到 protected runtime factory 的请求前置
