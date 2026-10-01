@@ -18036,3 +18036,22 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** A completed provider ACK publication is not enough for
   authenticated capability discovery; the requester must match each selected
   Repo's ACK before accepting its target set.
+
+### 2026-10-01 — Spec192 VM-21 Python STATUS ACK closure recurred in run41
+
+- **Symptom:** `vm21-run41-di-input-svs-trace` passed the initial archive,
+  Python binding fetch, and native receipt query, then failed during Python
+  binding publish with `repo-ack-authentication-failed`
+  (`matching=0, observed=0`). The targeted C++ DI input trace never ran.
+  MiniNDN cleanup passed and all five captures were nonempty.
+- **Root cause:** Not established. This repeats the Python STATUS closure from
+  runs35 and 39. Run41 did not enable ServiceUser/SVSPubSub tracing on the
+  Python publisher, so it supplies no request-ID or ACK-fetch correlation.
+- **Fix:** No source or protocol change.
+- **Next:** Keep the C++ DI input trace and also enable selected-request,
+  ServiceUser, and SVSPubSub tracing only on
+  `python-binding-publish-status-fetch`; correlate its STATUS request with both
+  Repo provider ACK publications before evaluating later stages.
+- **Lesson:** The failing Python STATUS boundary recurs without the broad
+  selected-request flag; it needs its own targeted trace before behavior is
+  changed.
