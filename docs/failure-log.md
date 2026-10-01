@@ -13670,3 +13670,4165 @@ focused regression. See [`b190-06.md`](../specs/190-multiturn-latency/evidence/b
   profiles before migration; the complete 19-case selector then passed.
 - **Lesson:** snapshot no-mutation tests for WAL databases must use immutable
   read-only opens when sidecar state is part of the oracle.
+
+# 2026-09-28 — Spec192 T004 emitted-request reconciliation review blocker
+
+- **Scope:** independent static review of T004 post-seed placement recovery.
+- **Symptom:** a target could durably commit a STORE receipt and then return a
+  failed Response; the owner treated the helper's thrown error as a definitive
+  rejection, finalized the publish, and lost the target receipt from its
+  operation result.
+- **Root cause:** request-emission evidence was set only after the selected
+  request helper returned successfully, so the failure response erased the
+  distinction between a non-emitted request and a post-emission outcome.
+- **Fix:** track conservative may-have-been-emitted evidence at Selection
+  commit in a caller-owned latch that stays set across a target's range and
+  commit requests. Preserve the pending IN_FLIGHT operation and replay the
+  same operation ID once before reporting UNKNOWN. Add a production-handler
+  regression that commits on the first call, returns an error, then returns
+  the idempotent receipt on replay.
+- **Evidence:** independent static review pass 2 identified the issue; the
+  regression and fix are in the untested candidate. Fresh independent static
+  reviews and the T004 build/integration gates remain pending.
+- **Lesson:** selected-request completion is not proof that no side effect
+  occurred; emitted operations need bounded same-ID reconciliation before a
+  terminal outcome is reported.
+
+# 2026-09-28 — Spec192 T004 focused build compile failures
+
+- **Scope:** first normal focused build of the reviewed T004 candidate.
+- **Symptom:** `spec192-repo-persistent-service`,
+  `spec192-repo-persistent-api`, and `spec192-repo-inapp-api` did not compile.
+  The first invocation from the repository root selected the root Waf lock,
+  which points at the Clang 10 TSan tree; it was interrupted before linking or
+  running selectors. The normal build then exposed missing
+  `ArtifactCommitReceipt` visibility, C++17 `RepoArtifactTarget !=` errors,
+  and ambiguous `toBytes` calls.
+- **Root cause:** the metadata-store translation unit validates the aggregate
+  receipt without including its declaring API header; C++17 does not synthesize
+  `operator!=` from `operator==`; and `ArtifactRepositoryApi.cpp` retained a
+  local `toBytes` overload alongside the shared protocol helper.
+- **Fix:** include the receipt declaration, define `RepoArtifactTarget::operator!=`
+  in terms of equality, remove the unused local byte-conversion overload, and
+  invoke Waf from the intended configured build tree.
+- **Evidence:** CodeGraph located the public receipt type and target equality
+  definition. The fixes are applied, but the normal build and all selectors
+  must be rerun; no behavior selector ran during the failed build attempt.
+- **Lesson:** invoke Waf from the configured output tree when multiple local
+  Waf lock files exist, and keep shared value types and byte helpers owned by
+  their declaring headers/modules.
+
+# 2026-09-28 — Spec192 T004 accepted status could exceed its parser limit
+
+- **Scope:** second independent static review of the corrected T004 candidate.
+- **Symptom:** a valid `PUBLISH_INTENT` with many selected Repos and large but
+  individually valid reference names could be accepted, then produce a
+  terminal status JSON larger than the 1 MiB parser limit. Status reads and
+  owner recovery would then fail to parse the accepted operation.
+- **Root cause:** the intent validator bounded its own 256 KiB input but did
+  not account for a committed receipt repeating the full artifact reference
+  for every selected target.
+- **Fix:** before accepting an intent, serialize a worst-case valid terminal
+  status envelope using the selected targets, repeated reference, maximum
+  JSON-escaped receipt identifiers, timestamps and attempt counts; reject sets
+  above the existing status JSON cap. The status serializer and parser now
+  share that same cap. Added an under-256-KiB intent regression with 90 targets
+  and maximum-length reference names.
+- **Evidence:** independent static review pass 2 identified the issue. The
+  guard and regression are applied but untested. A follow-up bounds audit also
+  accounted for control characters that expand during JSON quoting. Fresh
+  independent static review and all focused T004 build/selector gates remain
+  pending.
+- **Lesson:** validate both request size and the largest durable/query result
+  induced by a request before committing an operation-acceptance barrier.
+
+# 2026-09-28 — Spec192 T004 sync publish depended on a bounded status cache
+
+- **Scope:** third independent static review of the T004 persistent API flow.
+- **Symptom:** when the operation-status cache exceeded 256 entries, map-order
+  eviction could remove the just-accepted operation. Synchronous `publishFile`
+  then threw before returning its accepted status or handle, although the seed
+  had durably accepted the operation.
+- **Root cause:** the sync API recovered its initial status from an evictable,
+  lexicographically ordered in-memory map even though the accepted handle was
+  already available and the durable seed is the status authority.
+- **Fix:** route both public asynchronous begin and synchronous publish through
+  one private begin implementation that can return the accepted status directly
+  to the synchronous caller. Remove the write-only bounded status map; later
+  status reads continue to query the selected seed using the handle.
+- **Evidence:** independent static review pass 2 identified the issue. The
+  refactor is applied but untested; fresh review and all T004 focused gates
+  remain pending.
+- **Lesson:** a caller's accepted operation snapshot must travel with its
+  handle-owning call path, not depend on an evictable cache.
+
+# 2026-09-28 — Spec192 T004 reconciliation replay was not crash-bounded
+
+> Historical review conclusion only. Superseded by the 2026-09-28 20:48 CDT
+> T004 paired-review correction below: attempt count 2 is not a global restart
+> ceiling. Recovery replays the same operation ID once in each bounded worker
+> pass, with target-side receipt idempotency preventing duplicate commits.
+
+- **Scope:** fresh independent static review of the Persistent owner recovery
+  path and synchronous publish timeout result.
+- **Symptom:** a target persisted at `IN_FLIGHT` with `attemptCount == 2` could
+  be replayed again after every owner restart, allowing repeated STORE effects
+  until the counter limit. The synchronous timeout integration exercised only
+  `beginPublishFile()` and never verified the returned handle/status fields.
+- **Root cause:** the recovery path treated every nonzero count as permission to
+  reconcile, including a replay whose count was already durable; the tests did
+  not place the owner at that crash boundary or call the synchronous wrapper.
+- **Fix:** recovery terminalizes count-2 pending targets as `UNKNOWN` before
+  bootstrap/admission and emits no further STORE. When that is the final
+  pending target, it uses the existing aggregate finalizer so target status
+  and immutable aggregate receipt commit together; otherwise it updates the
+  target while the operation remains nonterminal. The restart regression seeds
+  a durable count-2 target and directly counts STORE calls. The delayed timeout
+  integration calls synchronous `publishFile()`, requires a reconnectable
+  operation handle and nonterminal status with no object handle/receipt, then
+  queries that handle and verifies eventual terminal status.
+- **Evidence:** paired static review found both gaps and a follow-up pass found
+  the atomic terminalization requirement. Source/test edits were made while
+  that follow-up review was in flight, so the stale-hash pass was discarded.
+  The latest changes are unbuilt and untested; fresh paired review, focused
+  normal selectors, and the service TSan selectors remain pending.
+- **Lesson:** persist retry budget before emission and make recovery honor it;
+  test the public synchronous return boundary as well as the asynchronous API.
+
+# 2026-09-28 — Spec192 T004 post-accept source recheck hid the operation handle
+
+- **Scope:** second independent static review of the fixed count-2 recovery
+  candidate and synchronous API acceptance path.
+- **Symptom:** after the selected seed durably committed the artifact and
+  enqueued replication, a local source re-hash could still throw before
+  `beginPublishFileImpl()` returned its handle. The synchronous wrapper uses
+  an internally generated idempotency key, leaving the caller unable to find
+  the accepted operation.
+- **Root cause:** local file state was re-validated after the seed acceptance
+  barrier even though the seed validates the full payload digest before
+  issuing its bound durable receipt.
+- **Fix:** remove the post-accept local source re-hash. Add a registered
+  Provider-handler regression that mutates the source only after the seed
+  committed the original bytes and verifies synchronous publish still returns
+  its operation handle/status and commit receipt for those bytes.
+- **Evidence:** independent static review identified the unreachable-handle
+  path. The source/test changes are applied but unbuilt and untested; fresh
+  paired review plus focused normal and service TSan gates remain pending.
+- **Lesson:** once a durable acceptance barrier commits, later local cleanup or
+  source checks must not prevent returning the caller's operation locator.
+
+# 2026-09-28 — Spec192 T004 persistent-service test missed public receipt type
+
+- **Scope:** first T004 normal focused build after the hash-bound static passes.
+- **Symptom:** compilation of `distributed-repo-persistent-service.t.cpp`
+  failed because the owner-restart test names `ArtifactCommitReceipt` without
+  a declaration.
+- **Root cause:** the test included the lower-level `ArtifactTypes.hpp` but not
+  the public `ArtifactRepositoryApi.hpp` that declares the aggregate receipt.
+- **Fix:** include the declaring public API header in the Persistent service
+  test translation unit.
+- **Evidence:** normal Waf build reached the modified Repo/API sources, then
+  failed at test line 575. No selector ran. The header fix is applied; fresh
+  paired static review and a complete focused rebuild are required.
+- **Lesson:** test fixtures should include the owning public header for types
+  they exercise instead of relying on transitive declarations.
+
+# 2026-09-28 — Spec192 T004 integration fixture used invalid identity/test seam
+
+- **Scope:** second complete T004 normal build retry after the missing receipt
+  type include was fixed.
+- **Symptom:** the Persistent API integration fixture failed compilation where
+  it called `toUri()` on `RepoArtifactTarget::providerIdentity` (already a
+  string), and where a source-mutation handler called RepoNode's private
+  requester-bound STORE overload.
+- **Root cause:** the timeout oracle copied a `Name` comparison from another
+  test shape; the post-accept mutation experiment tried to wrap production
+  behavior without a public authenticated-handler decorator.
+- **Fix:** compare the target identity string directly. Remove the unsupported
+  mutation-handler test seam; keep the post-accept re-hash removed because the
+  seed validates the complete payload digest before issuing the bound receipt.
+  The two independent static reviewers already verified that path on the
+  preceding source candidate.
+- **Evidence:** the normal focused build compiled and linked In-App and
+  Persistent service targets, then failed compiling the Persistent API
+  integration. No selector ran. CodeGraph sync and paired review of the
+  corrected candidate are required before a complete rebuild.
+- **Lesson:** production integration tests should use real authenticated
+  service boundaries; do not expose private identity-bearing handlers just to
+  construct a timing hook.
+
+# 2026-09-28 — Spec192 T004 independent review found recovery boundary gaps
+
+- **Scope:** fresh independent static review of the corrected 19-file T004
+  candidate `4841682604546c9b147283affec288c8c345c747607494fae96747addac0bcca`.
+- **Symptoms:** review pass 2 blocked on three paths not covered by the current
+  candidate: (1) a commit racing the worker's recoverable-operation snapshot
+  can have its enqueue discarded while the publisher user is unset; (2) an
+  explicit same-key retry requires fresh discovery of every selected target
+  before it can retrieve the already accepted operation; (3) after a seed
+  commit is durable, losing its response can make `beginPublishFile` throw
+  before returning a handle/status, including synchronous publish where the
+  key is internally generated.
+- **Root cause:** worker readiness was used as a drop condition instead of
+  synchronizing acceptance enqueue with the startup snapshot; the public API
+  performs target freshness checks before seed idempotency lookup; and the
+  foreground path trusts only the seed STORE reply instead of reconciling an
+  ambiguous result through authenticated seed status.
+- **Required repair:** atomically order recovery snapshot and enqueue with
+  worker readiness; resolve an existing operation by the deterministic
+  operation ID before new-submission freshness checks while still checking
+  full request identity; after an uncertain seed write, query the same seed's
+  authenticated status and return the handle/status only if acceptance is
+  confirmed.
+- **Oracle:** race acceptance against worker startup and prove no extra restart
+  is needed; replay an accepted operation after one selected replica becomes
+  stale and require identical operation/status with no extra receipt; commit
+  the seed then suppress the STORE response and require a recoverable handle,
+  status and receipt.
+- **Evidence:** review pass 1 passed; independent pass 2 blocked. No test
+  selector ran. The normal build failure immediately before this review is
+  separately recorded above. Fresh paired static review and the complete T004
+  build/selector/TSan gates remain required.
+- **Lesson:** durable owner state must be discoverable by idempotency identity
+  even when responses or selected replicas disappear; worker queue readiness
+  cannot discard the only wakeup for accepted work.
+- **Resolution:** candidate `5b8b0f2b6df3b3261c68354f448156305c17a32800262bb4fc656a7a5f8e24e0`
+  (19 C++ files) holds `m_publishWorkerMutex` across recovery scan and worker
+  readiness, resolves accepted same-key status before target freshness checks,
+  and queries authenticated seed status after an uncertain seed write before
+  returning a handle. The integration fixture discards the seed response,
+  disconnects a selected replica, and verifies replay identity/status and
+  unchanged receipt counts. CodeGraph sync and `git diff --check` pass; fresh
+  paired static review is pending, and no selector has run.
+
+## 2026-09-28 — Spec192 T004 unjournaled Persistent STORE review blocker
+
+- **Scope:** two independent fresh static reviews of candidate
+  `5b8b0f2b6df3b3261c68354f448156305c17a32800262bb4fc656a7a5f8e24e0`.
+- **Symptom:** a STORE-authorized principal could send a typed Persistent STORE
+  without first reserving `PUBLISH_INTENT`; the server inserted a durable
+  per-Repo receipt and current LOCATION. The same missing-journal fallthrough
+  applied to range stage/commit and abort dispatch.
+- **Root cause:** `validatePersistentWriteIdentity` checked identity and intent
+  binding only when a journal lookup found a row, then treated absence as a
+  permitted legacy write. Replica targets also have no owner journal, but the
+  wire request did not distinguish a seed write from a seed-Provider replica
+  write.
+- **Required repair:** require every local seed STORE/range/commit/abort to
+  match its authenticated PREPARING journal; version the replica write wire
+  with an operation-owner seed tuple and accept that path at another target
+  only when the authenticated requester is the named seed Provider. Keep the
+  worker constrained to the accepted target list. Reject unjournaled writes
+  before changing RepoCore bytes, receipt rows, or LOCATION.
+- **Oracle:** registered production-handler negative cases verify both absent
+  intent and a forged remote owner fail before object, receipt, or location
+  mutation; existing multi-Repo worker integration must still prove a valid
+  seed-Provider replica write succeeds. Range selectors reserve their seed
+  intent and reject wrong-operation aborts.
+- **Evidence:** both fresh independent reviews blocked on the same path. The
+  candidate now has a schema-2 owner tuple on STORE/range/commit, fail-closed
+  local seed validation, no-intent and forged-owner no-mutation checks, and
+  journaled range fixtures; the contract/task details are updated. Core
+  19-file hash is `7e8fa7e2b5e0866a515189288eb8891e73f92bbf2dc57071d92b9e2192641e6e`;
+  all 21 changed C++ source/header files, including the shared fixture, hash
+  `7c1779a8336fc3355343e738a0d9acdb146d3ba20363898f9ea9cd9b3a9b2ae9`.
+  CodeGraph sync and `git diff --check` pass; fresh paired static review and
+  the complete T004 normal/TSan selector gates remain pending; no selector
+  has run for this repair.
+- **Lesson:** the absence of a local journal cannot mean both “legacy write”
+  and “remote replica.” The request must carry an explicit owner context whose
+  Provider identity matches the authenticated transport principal.
+
+## 2026-09-28 — Spec192 T004 replica fixture owner/authentication context
+
+- **Scope:** fresh follow-up static review of the schema-2 Persistent STORE
+  candidate.
+- **Symptom:** the owner-restart integration path sent a valid seed STORE to a
+  replica without the new `operationOwner` tuple. A separate commit-then-error
+  fake target called the replica's direct handler without an authenticated
+  requester identity. Both fixtures would reject before exercising the
+  intended successful replica commit/reconciliation behavior.
+- **Root cause:** the tests were written against the previous implicit remote
+  replica path. The schema-2 security boundary now requires a remote write to
+  identify its durable seed owner and requires the transport-authenticated
+  requester to match that owner's Provider identity.
+- **Required repair:** attach the exact selected seed tuple to the owner-restart
+  replica STORE; make the fake target dispatch with the seed Provider identity
+  as its authenticated requester. Do not weaken production validation or use
+  an unauthenticated overload.
+- **Oracle:** owner restart still recovers the already committed replica with
+  one receipt/location version; commit-then-error still records a durable
+  target commit before the first injected error and reconciles it on replay.
+- **Evidence:** both in-progress independent reviews identified the fixtures;
+  their results were discarded after the candidate changed. The fixtures are
+  repaired. CodeGraph sync and `git diff --check` pass. Core 19-file candidate
+  hash: `60ef20574b93359314ebe82a249928c187f6ef754033dff55aa45ba0d8eefd07`;
+  21 reviewed C++ files hash:
+  `e06af6c32e4d128679a4cf999be2e31e75b500a3ff4ba4e23419b35d793f0b64`.
+  Fresh paired independent static review is pending; no T004 selector has run.
+- **Lesson:** update remote-worker test dispatch at the same time as its wire
+  principal contract, including test doubles that call RepoNode directly.
+
+## 2026-09-28 — Spec192 T004 remote-owner proof and recovery fixture blocker
+
+- **Scope:** two fresh independent static reviews of the same candidate,
+  core19 `60ef20574b93359314ebe82a249928c187f6ef754033dff55aa45ba0d8eefd07`,
+  review21 `e06af6c32e4d128679a4cf999be2e31e75b500a3ff4ba4e23419b35d793f0b64`.
+- **Symptom:** a replica accepted STORE/RANGE/COMMIT when the authenticated
+  requester matched the self-supplied remote `operationOwner`, even when that
+  seed had no accepted journal row and had not selected this target. The
+  forged-owner test covered identity mismatch only. The owner-restart
+  integration fixture also attempted to serialize a 7-byte STORE with
+  `maxChunkBytes=4`, rejecting before dispatch.
+- **Root cause:** requester-to-owner equality authenticates who sent a request
+  but does not prove the named seed persisted this operation or selected the
+  receiving Repo. The fixture reused a short-transfer profile with an invalid
+  payload size.
+- **Required repair:** before a remote mutation, query the named seed's
+  existing authenticated `/STATUS` for the durable operation and exact local
+  target membership. The seed must authorize that query only to the exact
+  selected target Provider. Cache the verified immutable operation binding
+  under synchronization so range chunks do not cause an unbounded status-query
+  storm; after target restart, re-verify before accepting new bytes. Fail closed
+  when the service user, status response, seed journal, or selected target
+  proof is missing. Make the owner-restart fixture payload conform to its
+  declared chunk limit.
+- **Oracle:** matching-owner/no-journal and matching-owner/unselected-target
+  requests fail before object, receipt, or LOCATION mutation; a valid worker
+  replica verifies through `/STATUS` then commits exactly once; range staging
+  validates once per operation and survives owner replay; recovery STORE
+  reaches dispatch and reconciliation under its configured limits.
+- **Evidence:** both fresh reviews BLOCKed; no T004 build or selector ran.
+  The Spec Kit structure audit passes (24 FR, 14 SC, 10 tasks, 24/24
+  traceability), while code-aware security readiness is BLOCK until the proof
+  path and no-mutation oracles exist. GSD health is degraded only by an
+  unrelated unrecognized `.planning/spec183-handoff.md`; Context Mode health
+  remains unusable because the current-project user-prompt capture and active
+  feature source hashes fail. Repository state and CodeGraph were used as
+  authority.
+- **Lesson:** an authenticated owner claim is not evidence of an accepted
+  operation or target selection; each receiver needs an authority it can
+  independently verify before durable mutation.
+
+## 2026-09-28 — Spec192 T004 legacy mutation bypass found in review
+
+- **Symptom:** two fresh static reviews found that generic legacy STORE,
+  STORE_RANGE, COMMIT_RANGES, ABORT_RANGES, STORE_MANIFEST, INSERT, and DELETE
+  handlers could mutate a Repo configured with the schema-15 artifact journal
+  without a selected operation or receipt. The previous unaccepted-owner
+  fixture also rejected at requester/owner mismatch before reaching the seed
+  journal lookup.
+- **Root cause:** artifact-v2 handlers checked operation ownership, but their
+  legacy fallbacks and adjacent generic mutation services still reached
+  RepoCore directly. The no-journal fixture supplied a replica identity while
+  claiming the seed as operation owner.
+- **Repair:** network requests to persistent artifact repositories now require
+  versioned, journal-bound forms for STORE, STORE_RANGE, COMMIT_RANGES, and
+  ABORT_RANGES. Generic STORE_MANIFEST, INSERT, and DELETE are rejected on
+  that network surface. Volatile/non-artifact Repo behavior and trusted local
+  service calls retain their existing paths. Extend the production-handler
+  fixture to exercise each legacy mutation and preserve/read staged ranges or
+  existing objects as no-mutation oracles; use the submitting principal for
+  the no-journal seed requests.
+- **Evidence:** both pre-repair reviews BLOCKed; no T004 build or selector ran.
+  The repaired candidate requires two new independent static PASS reviews
+  before focused normal or TSan gates.
+- **Lesson:** every write service sharing a persistent artifact byte store
+  must either prove the artifact operation journal or be unavailable on that
+  network surface.
+
+## 2026-09-28 — Spec192 T004 mutation test oracles found incomplete
+
+- **Symptom:** two fresh independent static reviews BLOCKed the repaired T004
+  candidate before tests. The no-journal STORE, STORE_RANGE, and COMMIT_RANGES
+  requests were sent to the seed, but their no-mutation checks inspected the
+  replica. The legacy STORE_MANIFEST negative used an ordinary nonzero-size
+  manifest that the filesystem backend rejects before it can write, even if
+  the network authorization guard is absent.
+- **Root cause:** the test assertions followed the wrong Repo for the first
+  case and did not satisfy the backend's persistable metadata-only manifest
+  contract for the second.
+- **Repair:** assert seed object, payload, manifest count, staging, receipt,
+  and LOCATION state after each unaccepted request. Exercise STORE_MANIFEST
+  with a valid metadata-only manifest and compare manifest count before and
+  after the rejected service request. A pre-review fixture audit also stages
+  a partial range before unaccepted STORE_RANGE and a complete range before
+  unaccepted COMMIT_RANGES, then requires the partial/full staged bytes to
+  remain unchanged after each rejection.
+- **Evidence:** the two fresh reviews matched the pinned candidate and agreed
+  on both oracle gaps. The test and ledger corrections are in the current
+  candidate; no build or test has run. Obtain two fresh independent PASS
+  reviews before opening the T004 focused normal or TSan gates.
+- **Lesson:** a negative response does not prove an authorization guard ran;
+  each negative oracle must inspect the actual mutation owner and use input
+  that the underlying store would accept if the guard were bypassed.
+
+## 2026-09-28 — Spec192 T004 response-fault fixture used a private overload
+
+- **Symptom:** a fresh static review found that the commit-then-error
+  integration fixture called a two-argument `RepoNode::handleStore()` that is
+  private and does not exist as a public overload, so the integration target
+  cannot compile.
+- **Root cause:** the fixture bypassed registered service dispatch to inject a
+  response loss, then attempted to pass the authenticated requester directly
+  to an internal handler.
+- **Repair:** after the earlier unselected-target cases finish, register the
+  selected replica's normal RepoNode handlers on Provider 2's in-process
+  dispatch table. Provider 1's injected STORE wrapper now invokes that
+  registered production handler with the authenticated requester and only
+  changes the returned response on the first successful commit.
+- **Evidence:** the static finding is confirmed by the public/private method
+  declarations and current fixture call. The corrected candidate is not built
+  or tested; obtain two fresh independent PASS reviews before T004 validation.
+- **Lesson:** test fault injection should wrap a public production dispatch
+  path and must not expose or call an internal identity-bound overload.
+
+## 2026-09-28 — Spec192 T004 build exposed declaration ordering and output-tree selection
+
+- **Symptom:** the intended normal focused build entered
+  `build/spec192-tsan-clang` despite an `--out=build/spec192-resync` override.
+  Clang compiled part of the service target, then failed in
+  `ArtifactRepositoryApi.cpp`: `queryPublishOperationStatus()` called
+  `fromArtifactTarget()` before any declaration. No test selector ran; the
+  compile process was interrupted after the error.
+- **Root cause:** the new status-query helper precedes the existing converter
+  definition, so C++ name lookup had no declaration at the call site. The Waf
+  build command reused the last configured TSan output tree; a build-time
+  output override did not select the separately configured normal tree.
+- **Repair:** add a forward declaration for the existing converter without
+  changing its behavior. Reconfigure/select the normal output tree explicitly
+  and verify Waf's `Entering directory` banner before treating any result as
+  normal or TSan evidence. The source repair invalidates the earlier exact
+  candidate review pins; obtain two fresh independent static PASS reviews
+  before rerunning the normal focused build or selectors.
+- **Evidence:** the failed compile used Clang 10 with `-fsanitize=thread` and
+  reported an undeclared identifier at the status-query call. CodeGraph was
+  synced after the declaration repair and `git diff --check` passes. Current
+  review21/core19 candidate fingerprints are
+  `501f2236d62914e8662de517287049d9878520737d79cf18a9a94cf139956ecb` and
+  `333ebff0a9f01dcf2e83224fdd00476e9ff257b8a3596970a9fe1f863a542adb`;
+  paired re-review and all T004 runtime gates remain pending.
+- **Follow-up (2026-09-28 16:28 CDT):** the first build in the explicitly
+  configured normal tree reached the API integration translation unit and
+  failed because the added legacy RANGE oracle redeclared `firstHalf` and
+  `secondHalf` in the same test scope. The Repo library and T004 unit sources
+  compiled; no selectors ran. Renamed the legacy fixture locals to
+  `rangeFirstHalf`/`rangeSecondHalf`, synced CodeGraph, and confirmed
+  `git diff --check`. This test-source edit reopens exact-candidate review;
+  current review21/core19 fingerprints are
+  `aa070eae230ee05449f543ad10b063e563e485f0de4c449dc19c9ef65aef1fd7` and
+  `cd72c5a508068329a4fdc28be51fba84793d1b4018f0d7f2435cef0dfe16fb8f`.
+  Fresh paired PASS is required before retrying the full normal service/API
+  build.
+- **Review closure (2026-09-28 16:36 CDT):** two fresh static reviews PASSed
+  those exact fingerprints. They confirmed the local rename preserves the
+  oracle and the dispatch/authentication path remains bound to the selected
+  Repo handler. One reviewer notes the legacy INSERT rejection does not have
+  an independent post-call data oracle; the production guard precedes
+  `handleInsert`, so this is non-blocking for T004. The normal focused build is
+  being retried; no selector has run.
+- **Lesson:** verify the active source fingerprint after every source edit,
+  even a declaration-only compile repair, and verify the build tree from Waf's
+  own banner before attributing compiler or runtime evidence to a gate.
+- **Follow-up (2026-09-28 16:24 CDT):** after explicit configuration of
+  `build/spec192-resync` (`./waf configure --out=build/spec192-resync
+  --with-tests`), two independent fresh static reviews PASSed the repaired
+  candidate. Review21 fingerprint:
+  `501f2236d62914e8662de517287049d9878520737d79cf18a9a94cf139956ecb`;
+  core19 fingerprint:
+  `333ebff0a9f01dcf2e83224fdd00476e9ff257b8a3596970a9fe1f863a542adb`.
+  The normal focused build/selectors are now the next gate; the interrupted
+  partial TSan compile is not accepted evidence.
+- **Follow-up (2026-09-28 16:42 CDT):** the focused normal build passed, but the
+  Persistent service selector ran 31 cases and failed three migration tests.
+  The schema-12 and schema-13 test fixtures lowered `schema_generation` while
+  retaining schema-15 publish-operation tables, so migration attempted to
+  create existing tables. The action assertions expected `roll-forward`, but
+  schema-15 migration correctly reports `roll-forward+schema-15` (and the
+  repaired generation-9 path reports `marker-repaired+schema-15`). The
+  malformed schema-14 rollback test queried `artifact_publish_operations`
+  even though schema-14 correctly has no such table. Updated fixtures now
+  remove all three schema-15 tables before lowering generation markers, expect
+  the exact migration action, and check absent-table state through
+  `sqlite_master`. CodeGraph was synced and `git diff --check` passed. Current
+  review21/core19 fingerprints are
+  `87565d41ab3510de76062e7aca46d1be108066cc0ab3674ca666b1be7dd2f632` and
+  `7aa3a4dd7ce7b411808bfc48608f4ffe5515d068fe5c07a6c088120dc4e3d1b8`;
+  fresh paired reviews and all selector reruns remain pending.
+- **Lesson:** migration fixtures must model the complete schema shape for the
+  generation marker they declare; assert diagnostic action strings at the
+  current migration boundary; test absent-table state through the schema
+  catalog rather than querying a table that the expected failure leaves absent.
+- **Review follow-up (2026-09-28 16:44 CDT):** fresh static review blocked the
+  candidate because the marker-repair regression first migrated a schema-13
+  fixture to schema 15, then changed only its generation marker to 9. That
+  profile still had Persistent and schema-15 operation tables, so schema-15
+  migration would collide with existing tables and the fixture did not model
+  the marker-only legacy shape. It now drops the Persistent catalog and all
+  three operation tables while retaining `artifact_local_commits`, then lowers
+  the marker to 9. CodeGraph sync and `git diff --check` pass. The repaired
+  review21/core19 fingerprints are
+  `abdc8f6d8c20f97b1dcc887ce8d207d67f8aab5a3a27a40cbbc46db5379fea12` and
+  `4e0d40725ed9c84176323c7b17cacba6eecc403af32727acf1b3851a58c9ce3c`;
+  the blocked review is discarded, and two new independent PASS reviews are
+  required before selectors can run.
+- **Lesson:** when repairing a schema marker fixture, reconstruct the expected
+  table profile too; marker values alone do not create a compatible legacy DB.
+
+## 2026-09-28 — Spec192 T004 API selector exposed an invalid staging oracle and stale OpenABE runtime
+
+- **Symptom:** the production API selector failed in
+  `RecoveredPendingPublishTargetGetsOneDurableReceipt` because the test called
+  `RepoCore::getRange` before the partial object had a committed manifest. A
+  separate API selection case aborted with stack smashing in the loaded
+  `/usr/local/lib/libopenabe.so`.
+- **Root cause:** `RepoCore::getRange` resolves only committed objects, while
+  the no-mutation case intentionally leaves bytes in staging. The host OpenABE
+  library was built from a source revision that calls
+  `EVP_CIPHER_CTX_set_padding(false)` before `EVP_EncryptInit_ex`; cipher
+  initialization resets the context padding setting, and the helper then
+  writes a padded block past fixed-size buffers.
+- **Repair:** replace the invalid core read with direct
+  `FilesystemArtifactPayloadStore` checks of the staged bytes and verified
+  ranges before and after the rejected request. A corrected OpenABE build and
+  a matching temporary NAC-ABE build are available under `/tmp` and the
+  canonical OpenABE prefix; rerun NDNSF using both matching headers and runtime
+  libraries. Do not use the first OpenABE-only overlay, which mixed NAC-ABE
+  headers/library and then faulted in shared-pointer teardown.
+- **Evidence:** the pre-repair selector independently reproduced both errors.
+  CodeGraph confirms staging exists without a committed manifest and that the
+  backend's `putRange` marks the exact range verified. GDB located the stack
+  failure in `oabe::block_cipher_df` in the `/usr/local` library. No matched
+  runtime API rerun has passed yet.
+- **Lesson:** staging assertions must observe the staging store directly;
+  crypto dependency overlays must rebuild downstream ABI consumers and select
+  matching headers, pkg-config metadata, and runtime libraries as one set.
+- **T004 visibility review finding and repair (2026-09-28 18:01 CDT):** two
+  independent static reviews found that valid uppercase SHA-256 references
+  could commit a durable receipt that the lowercase Core manifest could not
+  find through the case-sensitive SQL digest predicate. They also found that
+  operation-owned `artifact-v2-bytes` manifests were considered visible when
+  a `RepoNode` had no metadata store, even though no local receipt could be
+  checked. The candidate now uses ASCII case-insensitive digest matching and
+  fails closed for operation-owned artifacts without a receipt store; focused
+  regressions cover uppercase-reference acceptance, the metadata-less read
+  barrier, and retained legacy visibility. These fixes have not yet passed
+  fresh static review or any build/selector. A fresh reviewer then caught
+  that the first uppercase regression used only a denied no-journal write and
+  could not prove a committed receipt became readable; the uppercase
+  reference now runs through successful seed and replica acceptance, with an
+  assertion that the fixture changed digest case. Another fresh static review
+  found that the production-handler fixture lacked user permissions for its
+  read/catalog probes, so permission rejection could masquerade as a visibility
+  result. The fixture now grants those services and verifies CATALOG_STATUS
+  objectCount equals the filtered local listing. Lesson: hex digests compare
+  by value independent of letter case, an absent proof store cannot imply
+  proof for operation-owned data, and security probes need authorized callers
+  to distinguish handler behavior from access denial.
+- **Review correction:** an independent static review caught that the first
+  direct-store version sampled staging only after the rejected RANGE request,
+  so it established the expected post-state but did not compare against a
+  pre-request baseline. The test now records bytes and verified ranges before
+  dispatch, then compares both after denial. The corrected source candidate
+  has not yet been re-reviewed or tested.
+- **Review closure (2026-09-28 16:54 CDT):** fresh independent static reviews
+  PASSed the repaired exact candidate. Review21 fingerprint:
+  `abdc8f6d8c20f97b1dcc887ce8d207d67f8aab5a3a27a40cbbc46db5379fea12` across
+  21 tracked C++ paths. Core19 fingerprint:
+  `4e0d40725ed9c84176323c7b17cacba6eecc403af32727acf1b3851a58c9ce3c` across
+  19. Both reviewers verified the schema-12/13 and marker-9 legacy table
+  profiles, migration action assertions, schema-14 absent-table rollback
+  oracle, and broader T004 proof/recovery path. No validation selectors ran in
+  review. Normal focused build and selectors are now authorized by the review
+gate; T004 remains open until unit, API integration, and service TSan pass.
+
+- **API selector stall diagnosis and repair (2026-09-28 20:13 CDT):**
+  `RecoveredPendingPublishTargetGetsOneDurableReceipt` stopped after the
+  unselected-target checks, with every test thread asleep on a futex. GDB
+  located the test thread in `RepoClient::requestSelectedService` waiting for a
+  remote operation-owner response, called by
+  `RepoNode::validatePersistentWriteIdentity` from the replica's STORE handler.
+  The replica STORE was dispatched directly, outside `runWithFacePump`, so the
+  same test thread that needed to pump the seed provider's Faces blocked before
+  the response could arrive. The dispatch now runs through the fixture's
+  existing face-pump helper. The matched-runtime API selector and TSan reruns
+  remain pending. Lesson: any production-handler probe that can verify a remote
+  operation owner must use the fixture's face pump, even when the handler is
+  entered by direct `dispatchRequest`.
+
+# 2026-09-28 20:48 CDT — Spec192 T004 paired review found two recovery gaps
+
+- **Scope:** fresh independent static review of the 24-path T004 candidate.
+- **Symptom:** an older artifact handle failed fetch after a same-reference
+  repair advanced the signed current LOCATION. Separately, an owner restart
+  with a durable target `IN_FLIGHT` row at attempt count 2 finalized that target
+  as UNKNOWN without replaying it.
+- **Root cause:** fetch compared mutable current-location receipt fields to the
+  immutable historical aggregate receipt. Recovery also treated its
+  per-worker-pass attempt bound as a global retry ceiling; this contradicted
+  the T004 contract to replay each durable in-flight target once per worker
+  pass with the same operation ID.
+- **Fix:** fetch now accepts either the exact historical location snapshot or
+  a strictly newer signed current-location version, while retaining Repo,
+  Provider, reference, and generation binding and requiring a currently
+  routable record. Recovery no longer terminalizes at attempt count 2; a
+  restarted worker performs one same-ID STORE for that pass. The regression
+  starts from a durable count-2 row and requires one authenticated target
+  request, one local receipt, and a COMMITTED owner result. Provider-backed
+  test ServiceUsers also wait for NAC readiness before owner verification, and
+  unselected-target assertions require the exact membership-denial reason.
+- **Evidence:** two independent static reviews BLOCKed the prior candidate on
+  the historical/current LOCATION mismatch; one also found the count-2
+  restart gap. The updated candidate has not yet been re-reviewed, built, or
+  run. The matched-ABI API selector and service TSan gate remain pending.
+- **Lesson:** preserve historical receipt snapshots, resolve routing from a
+  monotonic signed current record, and scope retry limits to a worker pass so
+  an interrupted replay is resumed idempotently after restart.
+
+## 2026-09-28 — Spec192 T004 matched-ABI build exposed stale handler invocation
+
+- **Scope:** first matched-ABI normal focused build after paired static review
+  PASS on candidate `1ea3f386eefeb01a8fad1134b9a4a3f87136dae0f4703b2e57217adc303a36c7`.
+- **Symptom:** `spec192-repo-persistent-service` linked, but compilation of
+  `spec192-repo-persistent-api` failed because an integration fixture called
+  `RepoNode::handleStore(request, requesterIdentity)` with two arguments while
+  the authenticated overload now requires the `networkRequest` flag.
+- **Root cause:** the restart replay fixture directly invokes the Repo handler
+  inside its registered ServiceProvider callback but had not followed the
+  production dispatch shape, which passes `networkRequest=true`.
+- **Initial repair and review result:** passing `true` matched the production
+  network mode but called a private RepoNode overload from a free test lambda;
+  the second independent static review correctly blocked that inaccessible
+  call.
+- **Fix:** the fixture now installs the replica's registered production
+  handlers on Provider 2 and routes the selected Provider 1's counted STORE
+  callback through `ServiceProvider::dispatchRequest`, preserving the selected
+  Provider identity without exposing a private method. The new candidate needs
+  fresh paired static reviews and a successful full focused build before any
+  T004 selector runs.
+- **Evidence:** Waf entered `build/spec192-matched-abe`; 50/51 build steps
+  completed, including linking the Persistent service selector. The API target
+  failed at compile time, so no selector ran and no behavior result is claimed.
+- **Lesson:** test instrumentation should wrap or forward through a registered
+  production dispatch path; matching private method arguments does not make a
+  private method a valid test seam.
+
+## 2026-09-29 — Spec192 T004 recovery selector missed the seed STATUS request
+
+- **Scope:** focused matched-ABI integration selector
+  `RecoveredPendingPublishTargetGetsOneDurableReceipt`.
+- **Symptom:** replica owner verification returned
+  `repo-ack-authentication-failed`; the selected seed Provider never handled
+  the STATUS request, while ACKs from other Providers were rejected as outside
+  the explicit provider set.
+- **Root cause:** the recovery fixture registered the seed RepoNode after
+  `enableProductionIngressForTest()` initialized Provider 0. Provider init
+  installs per-service REQUEST subscriptions from the service names registered
+  at that point. `addService()` updates the service map and name list but does
+  not install a late REQUEST subscription, so Provider 0 never received STATUS.
+- **Fix:** register the seed RepoNode before enabling production ingress, so
+  all Provider services are present before `ServiceProvider::init()` installs
+  REQUEST subscriptions.
+- **Evidence:** under GDB, the target ServiceUser received and decrypted the
+  ACKs, but only Provider 1 and Provider 2 entered `ServiceProvider::OnRequest`;
+  the seed RepoNode STATUS handler was never invoked. CodeGraph confirms that
+  `registerNDNSFMessages()` subscribes each current `m_serviceNames` entry and
+  `registerRequestSubscription()` is not called by `addService()`.
+- **Lesson:** finish network service registration before calling
+  `ServiceProvider::init()` unless late registration also refreshes REQUEST
+  subscriptions.
+
+- **Late replica receipt review finding:** an independent static review found
+  that the replica's cached 30-second owner proof could remain valid after the
+  seed changed the selected target from IN_FLIGHT to UNKNOWN. A delayed
+  COMMIT_RANGES could then persist a local receipt that the seed's terminal
+  aggregate omitted. The current candidate forces a fresh seed STATUS query
+  after Core byte verification and immediately before receipt persistence; a
+  new production-handler regression stages bytes under IN_FLIGHT, changes the
+  durable owner target to UNKNOWN, and requires the commit to be denied with
+  zero durable receipts and no public visibility. This candidate still needs
+  paired static review and the authorized build/selectors; no validation result
+  is claimed yet. Lesson: a time-bounded cached admission proof cannot govern
+  a later durable commit boundary when the owner state can become terminal in
+  between.
+
+- **Follow-up static review findings:** the terminal UNKNOWN owner-status row
+  was denied by the status authorization helper before the replica could read
+  it and return the intended selected-target rejection; the status lookup now
+  exposes UNKNOWN only to that exact already-attempted selected Provider, so
+  the replica's own validation rejects it before mutation. LOCATION lookup
+  also checked operation/reference/generation but omitted the exact
+  `receiptId`; the durable receipt query now binds that ID and has matching
+  positive/negative unit and production-handler corruption oracles. A second
+  review identified the remaining
+  status-query-to-local-receipt TOCTOU window: the owner can terminalize after
+  a successful live status response but before the target transaction commits.
+  Under the existing bounded UNKNOWN contract, that interval is an uncertain
+  physical outcome: the owner records only verified receipts, and a late
+  Repo-local receipt is not retroactively counted or added to its immutable
+  aggregate. The contract now states this boundary explicitly; the target
+  still rechecks and rejects a request when it observes UNKNOWN before its
+  receipt transaction. This semantic clarification and the exact receipt-ID
+  binding have not yet passed paired review, build, or selectors.
+
+## 2026-09-29 — Spec192 T004 Provider 1 STATUS request was filtered as stale
+
+- **Scope:** matched-ABI recovery integration selector
+  `RecoveredPendingPublishTargetGetsOneDurableReceipt`, after the seed service
+  registration-order repair.
+- **Symptom:** Provider 2 owner-verification requests reached the seed and were
+  denied for an unselected target, but the later selected Provider 1 request
+  produced no trusted seed ACK. The focused selector therefore failed before
+  the replica could record its durable receipt. Its unselected-target assertion
+  also required only the replica-side denial string even when the owner had
+  already returned its explicit unauthorized-target response.
+- **Root cause:** the test helper gave each publisher an SVS producer node of
+  `<providerNode>/repo-publisher-user/<provider-index>`. The final producer-node
+  component is the numeric session ID consumed by `ServiceProvider::isFresh()`;
+  removing it gives all three users the same producer base. Provider 2's prior
+  requests advance that base to session 2, so later Provider 1 publications
+  using session 1 are correctly rejected as stale before the seed STATUS
+  handler runs.
+- **Fix:** give each simulated publisher a provider-specific producer base and
+  use session `0` as its final component. Accept either explicit fail-closed
+  unselected-target error (owner-side unauthorized or replica-side
+  owner-unverified); retain the no-mutation checks for object bytes, manifest,
+  receipt, and current location.
+- **Evidence:** CodeGraph source confirms the helper's old producer shape and
+  `ServiceProvider::isFresh()`'s final-component session parsing and shared
+  base frontier. The previous selector showed the seed handler was absent for
+  Provider 1 after Provider 2 had already exercised STATUS. The corrected
+  helper and denial oracle are frozen for fresh static review; build and
+  selectors have not yet verified the repair.
+- **Lesson:** an SVS producer node's final numeric component is a monotonic
+  process session, not a peer index. Simulated peers need distinct producer
+  bases even when they share one in-process face group.
+
+# 2026-09-28 23:32 CDT — Spec192 T004 service selector used stale runtime closure
+
+- **Scope:** matched-ABI `spec192-repo-persistent-service` validation after the
+  paired static reviews and focused build passed on candidate
+  `ed995e95f28a1509ae27fee6bd1c8a8a41ff1300e9e17fd29be1e03855849582`.
+- **Symptom:** running from `build/spec192-matched-abe` made eight cases fail
+  to find `examples/trust-any.conf`. Running from the repository root resolved
+  the config but `NetworkRegistrationCoversOperationsAndRetainsRepoLifetime`
+  crashed while destroying a `ResponseMessage`; GDB showed nested
+  `ndn::Block`/`ndn::Name` vector destruction. The first `ldd` showed the test
+  loading `/usr/local/lib/libndn-service-framework.so.0.1.0`.
+- **Root cause:** the direct test invocation omitted the current matched Waf
+  tree from `LD_LIBRARY_PATH`, so the current test/header layout was paired at
+  runtime with the installed framework library. The build-directory CWD also
+  made the test's repository-relative trust-schema path invalid.
+- **Fix:** run the focused executable from the repository root and prepend
+  `build/spec192-matched-abe` to the matched temporary NAC-ABE/OpenABE runtime
+  paths. `ldd` then resolves `libndn-service-framework.so.0.1.0` from that build
+  tree, and the focused registration test passes 1/1 with 22 assertions.
+- **Evidence:** the failing GDB stack and initial `ldd` identified the stale
+  framework path; after changing only the working directory/runtime search
+  path, the isolated case passed. The full service selector, full API selector
+  and Clang 10 service TSan remain pending. No source code changed.
+- **Lesson:** validate the full runtime closure, including the framework's own
+  SONAME, and run tests from the repository root when fixtures use repository-
+  relative configuration paths.
+
+# 2026-09-28 23:43 CDT — Spec192 T004 restart fixture retained the old owner
+
+- **Scope:** focused matched-ABI integration selector
+  `RecoveredPendingPublishTargetGetsOneDurableReceipt` after the service
+  selector passed on candidate `3a2fbbe01a4a38e4d0b76d93c4ca46035f89c6184de086b0c1df943df93b1413`.
+- **Symptom:** the API selector stopped after 207/208 assertions with
+  `repo-persistence-owned: backend already has an authoritative owner` while
+  reconstructing a seed Repo against the same durable root.
+- **Root cause:** resetting the test's `shared_ptr<RepoNode>` did not destroy
+  the old owner. `RepoNode::registerServices()` captures a strong `self` in each
+  Provider request handler, and the in-process `ServiceProvider` retained those
+  handlers across the simulated restart. The new backend correctly rejected a
+  second owner lease.
+- **Fix:** the integration fixture now replaces all 18 registered Repo
+  handlers with inert callbacks before each simulated owner shutdown, then
+  resets the node before constructing the replacement. The late timeout owner
+  is likewise reset before reopening the root. This source/test repair is not
+  yet built or rerun.
+- **Evidence:** GDB stopped in `BackendOwnershipLease` at the nonblocking
+  `flock` failure; the caller was `FilesystemRepoStoreBackend`. CodeGraph
+  confirms `registerServices()` wraps request handlers with a captured strong
+  `self` and `ServiceProvider::addService()` replaces the existing handler.
+  The latest repair passed CodeGraph sync and `git diff --check`; fresh paired
+  static review and all selectors remain pending.
+- **Lesson:** a local pointer reset is not an owner restart when a Provider
+  still retains callbacks. Release the service registrations before reopening
+  a single-owner durable backend.
+
+# 2026-09-29 00:07 CDT — Spec192 T004 recovery failed before target STORE
+
+- **Scope:** matched-ABI `RecoveredPendingPublishTargetGetsOneDurableReceipt`
+  recovery API selector after the owner-handler release repair.
+- **Symptom:** the reconciliation operation finalized `PARTIAL`; its replica
+  target was `FAILED` after one attempt, with no receipt, and the injected
+  STORE wrapper had not been called (`STORE calls=0`).
+- **Root cause:** the owner-side selected request rejected its Provider ACK as
+  absent, duplicated, or untrusted before emitting STORE. GDB captured
+  `repo-ack-authentication-failed: selected Provider ACK was absent, duplicated,
+  or untrusted` from `RepoClient::requestSelectedService()`'s selection path.
+  The fixture configured this owner with a 100 ms ACK collection window; that
+  short window is the leading cause under investigation, not yet validated as
+  the complete cause.
+- **Fix under verification:** use the established 1000 ms ACK collection and
+  8000 ms request window for the reconciliation owner while retaining the
+  caller's separate 500 ms publish wait and the delayed-response case. Fresh
+  paired review and selector evidence are still required.
+- **Evidence:** the red repeated on the same reviewed candidate. Its diagnostic
+  assertion reported `failureCode=repo-target-store-rejected`, `attempts=1`,
+  and `STORE calls=0`; a GDB trace at `completeSelectedRequest()` exposed the
+  exact ACK-authentication rejection. The 31-case service selector passed.
+- **Lesson:** keep the provider ACK collection interval long enough for the
+  authenticated selection exchange, and distinguish that request interval
+  from the caller's operation-wait timeout.
+
+# 2026-09-29 00:26 CDT — Spec192 T004 delayed-outcome fixture bypassed STORE
+
+- **Scope:** focused API selector for the paired-review candidate with a
+  1000 ms ACK collection window and 8000 ms owner request deadline.
+- **Symptom:** the commit-then-error replay assertions passed, but seven later
+  delayed-outcome assertions failed. The selected target was `COMMITTED`, a
+  replica receipt and payload existed, and total elapsed time exceeded the
+  fixture's 12-second bound.
+- **Root cause:** `maxChunkBytes` is 4 while the timeout payload was 7 bytes.
+  `RepoNode::runPublishOperationPass()` therefore used `STORE_RANGE` and
+  `COMMIT_RANGES`, while the injected delayed-error handler replaced only
+  `STORE`. The test did not fault the operation the worker actually emitted,
+  so the live range/commit handlers persisted the replica.
+- **Fix under verification:** use a 3-byte payload so the selected operation
+  is `STORE`; count and assert the injected handler's two bounded attempts;
+  check the caller's 500 ms wait separately from the 20-second total
+  reconciliation bound. The handler's 2-second error response remains shorter
+  than the 8000 ms owner request deadline, so this covers caller expiry and
+  uncertain-response replay rather than the owner request-timeout callback.
+- **Evidence:** the GDB-controlled focused run completed with 251/258
+  assertions passing; its seven reported failures were all the delayed-outcome
+  state, duration, receipt, and payload checks. CodeGraph source confirms the
+  size threshold routes payloads over `maxChunkBytes` through range staging.
+  The fixture repair is unreviewed and unbuilt.
+- **Lesson:** fault-injection tests must match the worker's selected wire
+  operation, and should assert that the injected handler actually ran.
+
+# 2026-09-29 00:39 CDT — Spec192 T004 timeout oracle included pre-acceptance work
+
+- **Scope:** paired static review of the repaired delayed-outcome API fixture.
+- **Symptom:** both independent reviewers blocked the candidate because its
+  `<1500 ms` wall-clock assertion began before `publishFile()` returned.
+- **Root cause:** `ArtifactRepositoryApi::publishFile()` performs durable seed
+  acceptance before it starts the caller's post-acceptance wait budget. Seed
+  authorization, operation discovery, intent creation, and the initial STORE
+  may consume ordinary request time, so timing the complete API call does not
+  isolate the caller wait.
+- **Fix under verification:** remove the whole-call timer. Keep the 500 ms
+  wait argument and assert an accepted nonterminal status with no final handle
+  or receipt, then verify bounded eventual UNKNOWN with no replica receipt or
+  bytes. No build or selector has run on this revised candidate.
+- **Evidence:** both reviewers independently returned BLOCK for candidate
+  `fedd0aa56a3be4e0ee1b58ff8cfcad52bae97e3315cb883b2942925446c13fcc`.
+  CodeGraph tracing confirmed that the API begins its caller wait only after
+  durable seed acceptance. The timer was removed before the next candidate
+  review; fresh paired review is required.
+- **Lesson:** timeout assertions must start at the contract's timeout boundary,
+  not around setup or pre-acceptance work.
+
+# 2026-09-29 00:52 CDT — Spec192 T004 stale-replay fixture exceeded STORE chunk cap
+
+- **Scope:** matched-ABI full `spec192-repo-persistent-api` selector and its
+  isolated `PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts` case.
+- **Symptom:** the full selector passed two of three cases, then aborted with
+  `repo-artifact-store-request-invalid: version, size, or generation is
+  invalid` after the checkpoint at test line 2112. The isolated case reproduced
+  the same failure with 190/191 assertions passing.
+- **Root cause:** this test configures `artifactLimits.maxChunkBytes=4`, but the
+  lost-seed-response fixture used a 6-byte payload and sent it directly through
+  `ArtifactStoreRequest::toWire()`. `makeReference()` sets `sizeBytes` from the
+  payload length, and the request has schema version 2 and generation 1, so the
+  failing validation term was the single-STORE chunk limit.
+- **Fix under verification:** reduce the replay fixture to 3 bytes, assert its
+  reference size matches and the payload remains within the configured
+  single-STORE cap. No selectors have run on this repaired candidate; its
+  fingerprint must receive two fresh static PASS reviews before rebuilding.
+- **Evidence:** CodeGraph verified the test's four-byte cap, six-byte fixture,
+  reference-size derivation, and `ArtifactStoreRequest::toWire()` validation.
+  The full selector and isolated third case both reproduced the exact exception.
+- **Lesson:** direct wire-operation fixtures must obey the test's configured
+  transfer/chunk limits; make the intended STORE versus range path explicit.
+
+# 2026-09-29 01:03 CDT — Spec192 T004 unavailable-seed oracle retained alternate routes
+
+- **Scope:** matched-ABI full `spec192-repo-persistent-api` selector after the
+  direct STORE chunk-size fixture repair.
+- **Symptom:** the stale-replay fixture passed, but the final unavailable-seed
+  assertions failed: `beginPublishFile()` did not throw one of the accepted
+  stale/timeout/start errors, and two Repos already had the checked payload
+  path.
+- **Root cause:** `disconnectProviderTransportForTest()` detaches only that
+  Provider's direct user-facing bridges; the Provider-to-Provider peer mesh
+  remained connected and could relay traffic to the selected seed. Separately,
+  the unavailable fixture reused `selectedBytes`, whose content digest had
+  already been stored at the seed and a disjoint Repo. `committedPayloadPath()`
+  is digest-keyed, so those old files made the no-mutation oracle ambiguous.
+- **Fix under verification:** disconnect the Provider peer mesh after the
+  selected seed's direct transport, use unique three-byte content plus a
+  matching source file, and bound the request to 8000 ms. The new candidate is
+  unreviewed and has not been rebuilt or rerun.
+- **Evidence:** CodeGraph shows the direct transport helper disconnects only
+  user-facing bridges, the separate peer-mesh helper disconnects all peer
+  Interest/Data bridges, and `committedPayloadPath()` uses only content digest.
+  The full API selector reached this deterministic final failure after the
+  prior chunk-size correction.
+- **Lesson:** a provider outage test must remove alternate provider routes, and
+  filesystem no-mutation checks need a digest not already present in the fixture.
+
+# 2026-09-29 01:07 CDT — Spec192 T004 unavailable-seed predicate omitted missing-ACK error
+
+- **Scope:** independent static review of the isolated-route unavailable-seed
+  fixture.
+- **Symptom:** reviewer F blocked candidate
+  `bf46c7cb31f491a7323b39e12849060d9364a0288a9b8581d80b6afd0921d63d` because
+  the expected-error predicate omitted the result produced by an unreachable
+  selected seed.
+- **Root cause:** with the seed's direct bridge and Provider peer mesh
+  disconnected, the initial selected STATUS exchange receives no authenticated
+  ACK. `RepoClient::requestSelectedService()` reports
+  `repo-ack-authentication-failed`, which `beginPublishFileImpl()` propagates
+  before discovery or intent submission. The fixture accepted only stale,
+  request-timeout, and request-start errors.
+- **Fix under verification:** accept the exact `repo-ack-authentication-failed`
+  family as another fail-closed pre-acceptance outcome. The three-byte unique
+  source, complete route isolation, and no-receipt/no-payload assertions remain.
+  No build or selector has run on this revised candidate.
+- **Evidence:** reviewer F independently recomputed the candidate digest and
+  traced the missing-ACK throw from `RepoClient.cpp` into the API status-query
+  propagation; reviewer E confirmed the route isolation and unique payload.
+- **Lesson:** unavailable-service oracles must include the framework's specific
+  missing-authenticated-ACK error when that is the selected request's failure.
+
+# 2026-09-29 01:30 CDT — Spec192 T005 location probe conflated routing with integrity
+
+- **Scope:** T005 read-only pre-implementation source and contract audit.
+- **Symptom:** the contract required a bounded `metadata` availability probe that reports `integrity=NOT_CHECKED`, plus a reachable integrity-failure result, while the production `STATUS/LOCATION` handler called `verifyArtifactBytes()` before returning any location. That helper reads the full object in 8 MiB ranges and hashes it. Also, `FilesystemRepoStoreBackend::has()` treats `FilesystemArtifactPayloadStore::isCommitted()` as sufficient, but `isCommitted()` checks path existence only; neither path can report a committed file truncated to the wrong size. Persistent receipt lookup was specified by ID without identifying the owning Repo.
+- **Root cause:** LOCATION combined route/receipt metadata with live object integrity; the current existence-only query cannot distinguish complete from partial payload storage; and the receipt query omitted the handle-derived owner needed for a bounded, authenticated lookup.
+- **Fix under verification:** at the initial audit, the T005 contract made LOCATION metadata-only, defined a direct version-bound `STATUS/AVAILABILITY` request and response, required metadata-only completeness checks, scoped Persistent aggregate receipt lookup to the selected seed in the handle, and defined byte-digest integrity without inventing a publisher-signature trust root. The data model and task binding were updated; source work began only after the readiness audit passed.
+- **Evidence:** CodeGraph shows `RepoNode::handleStatus()` calls `verifyArtifactBytes()` at `RepoNode.cpp:2036-2037`; the helper reads ranges through the complete `reference.sizeBytes` at `RepoNode.cpp:182-213`. `FilesystemRepoStoreBackend::has()` delegates to `isCommitted()` (`FilesystemRepoStoreBackend.cpp:418-429`), which uses symlink status and existence only (`FilesystemArtifactStore.cpp:840-858`). `RepoClient::requestLocation()` uses the existing `STATUS` service. No C++ AvailabilityReport or receipt-by-ID API/store lookup exists yet.
+- **Lesson:** routing evidence, current object availability and byte integrity need independent results; metadata completeness needs an actual stat oracle, and an opaque receipt ID must be bound to a specific authorized owner before querying.
+
+# 2026-09-29 02:04 CDT — Spec192 T005 production metadata authority differs by backend
+
+- **Scope:** T005 implementation path check against the standalone production Repo server.
+- **Symptom:** the pre-implementation source map named `FilesystemRepoStoreBackend` as the availability authority, but `DistributedRepoServer` constructs `TieredRepoStore` over `SqliteRepoStore`; a filesystem-only probe would return UNKNOWN for the actual server path.
+- **Root cause:** the source map followed the available file-backed artifact-store regression instead of following `DistributedRepoServer` construction into its authoritative store.
+- **Fix under verification:** the bounded `RepoStoreBackend` probe now has explicit authoritative implementations for SQLite and filesystem stores. SQLite inspects manifest JSON, BLOB type, and recorded versus actual payload lengths without selecting payload bytes; Tiered delegates to the authority and ignores memory-cache state. The contract and T005 source/acceptance binding now describe both backends. No selector/build has run on this candidate.
+- **Evidence:** `NDNSF-DistributedRepo/apps/DistributedRepoServer.cpp` calls `makeTieredRepoStore(databasePath, ...)`; `makeTieredRepoStore` wraps `makeSqliteRepoStore`, and `SqliteRepoStore::get()` selects the payload BLOB while `getManifest()` is metadata-only. CodeGraph and source review identified the authoritative store chain before tests.
+- **Lesson:** trace the production constructor through every wrapper to the final backing store before assigning a metadata, authorization, or persistence oracle.
+
+# 2026-09-29 02:15 CDT — Spec192 T005 request budget must exceed the ACK window
+
+- **Scope:** T005 Persistent availability probe deadline handling.
+- **Symptom:** a shared deadline could leave a positive remainder that was shorter than `ackCollectionTimeMs`; passing it into `RepoClient` would fail request startup and classify reachability based on an exception instead of the operation state.
+- **Root cause:** the loop checked only whether the overall deadline had elapsed and recalculated the remainder inside the callback, while each native request independently requires a timeout greater than the ACK collection window.
+- **Fix under verification:** snapshot each LOCATION/AVAILABILITY timeout once, require it to exceed the configured ACK window before starting the request, return `UNKNOWN+UNKNOWN` before LOCATION, and retain `REACHABLE+UNKNOWN` when authenticated LOCATION already succeeded but no valid AVAILABILITY window remains.
+- **Evidence:** `ArtifactRepositoryApi::checkAvailability()` accepts a single deadline for all locations; `RepoClient::requestLocation()` and `requestAvailability()` both receive the remaining timeout. No selector or build has run on this candidate.
+- **Lesson:** preflight operation-specific minimum request budgets at each network boundary under a shared deadline; do not let a lower layer's start error decide the user-visible reachability state.
+
+# 2026-09-29 02:20 CDT — Spec192 T005 current receipt must not rewrite content-manifest identity
+
+- **Scope:** T005 availability after a later operation commits the same immutable artifact.
+- **Symptom:** the availability handler compared the current location operation ID with the content manifest operation ID and reported UNKNOWN for valid content after repair; the contract also still said a positive `max_age_ms` could return a cached report while T005 requires every call to probe live.
+- **Root cause:** availability reused the stricter first-commit manifest check from lifecycle visibility and an older cache sentence in the API contract survived the T005 no-cache decision.
+- **Fix under verification:** validate the manifest's full reference-derived object name, type, digest, size, policy epoch, generation and committed state without requiring its immutable first-commit operation ID to match the newer receipt; add a repaired-handle availability assertion and align metadata/cache wording with SQLite/Tiered and filesystem authorities.
+- **Evidence:** T004 contract says the content manifest retains the operation ID that first committed immutable bytes while later same-reference operations append receipt and location snapshots; the pre-fix helper compared that field to the current operation. No selector or build has run on the revised candidate.
+- **Lesson:** use current receipt/location state to fence the active operation and use the object manifest to identify immutable content; do not require per-operation fields on immutable content metadata to advance with receipt history.
+
+# 2026-09-29 02:30 CDT — Spec192 T005 SQLite size mismatch must remain observable
+
+- **Scope:** T005 production SQLite/Tiered metadata-only availability classification.
+- **Symptom:** a recorded SQLite `payload_size` that differed from `length(payload)`, a non-BLOB payload value, or a missing payload returned `payloadMetadataAvailable=false`, which mapped a known incomplete committed representation to UNKNOWN instead of PARTIAL.
+- **Root cause:** the probe treated representation corruption as an inability to obtain metadata, collapsing an observed payload defect into the UNKNOWN state.
+- **Fix under verification:** preserve metadata availability when the authoritative row and manifest can be read; expose payload presence, actual length and representation validity separately so `RepoNode` reports PARTIAL for absent, wrong-type, inconsistent-length, or wrong-sized storage. Add Tiered/SQLite unit oracles for each representation case.
+- **Evidence:** `RepoTypes.cpp` reads `manifest_json`, `payload_size`, `length(payload)` and `typeof(payload)` from the production object table; the status handler distinguishes unavailable metadata from invalid payload representation. No selector or build has run on the revised candidate.
+- **Lesson:** state classification should reflect whether the authority returned enough facts to identify a storage defect; reserve UNKNOWN for failures that prevent a reliable observation.
+
+# 2026-09-29 02:31 CDT — Spec192 T005 availability reasons require valid UTF-8
+
+- **Scope:** T005 strict availability report wire validation.
+- **Symptom:** availability reason validation enforced a 256-byte limit but accepted invalid UTF-8 even though the version-1 response contract requires UTF-8.
+- **Root cause:** the new report type reused the size-only identifier bound instead of the existing UTF-8 validator.
+- **Fix under verification:** validate both UTF-8 encoding and the 256-byte bound; add malformed and oversized reason codec assertions.
+- **Evidence:** `ArtifactTypes.cpp` already contains `isUtf8()` for bounded wire fields; availability report serialization and parsing both call `validate()`.
+- **Lesson:** wire limits include encoding validity as well as byte length; apply both before serialization and after parsing.
+
+# 2026-09-29 02:38 CDT — Spec192 T005 TSan writer invalidated its own receipt oracle
+
+- **Scope:** T005 persistent availability integration stress fixture.
+- **Symptom:** independent static review blocked the frozen candidate because
+  its concurrent writer replaced the same stored object being checked by the
+  availability assertions. Generic `RepoNode::put()` advances that object's
+  manifest generation without advancing the artifact location tuple, so the
+  subsequent probe correctly reports UNKNOWN and later integrity assertions
+  no longer describe the original fixture.
+- **Root cause:** the lock-contention stress intended to race metadata probing
+  against a RepoNode write, but its mutation also changed the fixture's
+  lifecycle state and invalidated the independent receipt/location oracle.
+- **Fix under verification:** write a separate stress object through the same
+  RepoNode so the same store-write mutex is exercised while the published
+  artifact and its receipt/location tuple stay unchanged. No build or selector
+  has run on this candidate.
+- **Evidence:** CodeGraph confirms `RepoNode::put()` takes `m_storeWriteMutex`
+  and `RepoCore::handleStore()` advances an existing object's generation.
+  Reviewer F independently traced the conflict to the later PRESENT and
+  integrity assertions.
+- **Lesson:** concurrency stress must contend on the shared synchronization
+  boundary without mutating the object whose lifecycle state is the test
+  oracle.
+
+# 2026-09-29 02:39 CDT — Spec192 T005 clarify invalid metadata classification
+
+- **Scope:** independent static review of availability state semantics.
+- **Symptom:** reviewer E found the docs' `UNKNOWN` rule for storage metadata
+  errors could include SQLite rows whose recorded length or payload type is
+  observably invalid, even though the implementation classified those known
+  invalid committed representations as `PARTIAL`.
+- **Root cause:** the contract did not distinguish a readable but invalid
+  payload representation from an I/O, query, or parse failure that prevents a
+  reliable observation.
+- **Fix under verification:** clarify both the data model and API contract:
+  known missing/wrong-sized/non-BLOB/inconsistently recorded payload state is
+  `PARTIAL`; `UNKNOWN` is for failures that block reliable metadata
+  observation. No build or selector has run on this candidate.
+- **Evidence:** SQLite metadata probing reads row/type/length facts and sets
+  `payloadRepresentationValid`; the STATUS handler maps known invalid
+  representation to `PARTIAL` and unavailable metadata to `UNKNOWN`.
+- **Lesson:** state vocabularies must separate an observed invalid value from
+  failure to observe the value at all.
+
+# 2026-09-29 02:50 CDT — Spec192 T005 brace, timeout identity, and stage oracle
+
+- **Scope:** independent static review of the frozen T005 availability
+  candidate.
+- **Symptom:** reviewers found a compile-blocking missing brace in the
+  availability codec; substring matching treated any Provider error containing
+  `timeout` as a transport timeout; and the explicit AVAILABILITY-after-LOCATION
+  timeout acceptance case had no production API oracle.
+- **Root cause:** the In-App identity `else` was attached to the inner tuple
+  test, timeout provenance was discarded when callbacks became exceptions, and
+  the integration case covered a fully offline LOCATION rather than dropping
+  only the second STATUS response.
+- **Fix under verification:** close the Persistent codec branch; preserve
+  timeout and request-start provenance with typed exceptions while leaving
+  authenticated error strings unchanged; and disconnect the selected Provider
+  only after its second STATUS request reaches the fixture, then assert
+  `REACHABLE+UNKNOWN` with the validated LOCATION tuple. No build or selector
+  has run on this candidate.
+- **Evidence:** the brace layout is confirmed by CodeGraph and exact source;
+  both `waitForSignedResponse` callbacks previously stored failures in the same
+  string channel; T005 acceptance explicitly requires a post-LOCATION
+  AVAILABILITY timeout.
+- **Lesson:** keep transport-failure provenance separate from remote error
+  text, and inject network faults at the specific protocol stage named by the
+  acceptance oracle.
+
+# 2026-09-29 03:14 CDT — Spec192 T005 request start and local observation oracles
+
+- **Scope:** independent static review of the frozen T005 availability
+  candidate.
+- **Symptom:** reviewers found synchronous Provider request-start exceptions
+  could be reported as `REACHABLE`; the registered production-service test did
+  not inject a valid response signed by the wrong Provider; In-App metadata or
+  payload inspection exceptions escaped the report API; and the local test
+  removed the whole root without checking a missing object under an accessible
+  root.
+- **Root cause:** start exceptions were not given typed provenance, invalid
+  signer identity had only utility-level coverage, local observation failures
+  were not converted to `UNKNOWN`, and the missing-root case obscured the
+  distinct missing-object state.
+- **Fix under verification:** wrap synchronous request-start failures as
+  `RepoRequestStartError`; add a one-packet Provider-to-User test transform to
+  re-sign real STATUS Data with another authorized Provider identity; preserve
+  `REACHABLE+UNKNOWN+NOT_CHECKED` when In-App observation throws; and remove
+  only the committed payload in the accessible-root unit case to assert
+  `REACHABLE+PARTIAL+NOT_CHECKED`. No build or selector has run on this
+  candidate.
+- **Evidence:** ServiceUser checks the response KeyLocator identity against the
+  Provider encoded in the response name and drops mismatches before invoking
+  the response callback; the In-App report currently calls its durable
+  metadata and payload probes inside the reachable-root branch; T005 specifies
+  both wrong-signer and missing-object production oracles.
+- **Lesson:** distinguish a Provider that failed to answer from a request that
+  never started, and test each observation boundary at the layer that owns it.
+
+# 2026-09-29 03:34 CDT — Spec192 T005 authenticated target binding review
+
+- **Scope:** two independent static reviews of the frozen T005 availability
+  candidate.
+- **Symptom:** both reviewers found an undeclared `ndnsf_service_framework`
+  namespace in receipt/availability dispatch and that LOCATION,
+  AVAILABILITY, and RECEIPT accepted payload claims without comparing the
+  authenticated response Provider to the requested Provider.
+- **Root cause:** the dispatch qualifier was misspelled, and the callback
+  helper discarded `ResponseMessage` transport identity after authentication;
+  the framework's single-provider request path does not itself bind that
+  response identity to the requested target.
+- **Fix under review:** correct the namespace; bind each signed-response wait
+  to its expected Provider; classify mismatched LOCATION as
+  `UNKNOWN+UNKNOWN`, preserve `REACHABLE+UNKNOWN` for a mismatched
+  AVAILABILITY probe, and reject mismatched seed RECEIPT responses. Add
+  production integration injections with a self-consistent different Provider
+  name and signature for all three operations. No build or selector has run.
+- **Evidence:** both reviewers independently reproduced the 30-path frozen
+  candidate hash and traced Provider identity propagation into
+  `ResponseMessage::getProviderIdentity()`; the mismatch remained possible
+  because only the Provider name/signature pair, not its correspondence to
+  the requested target, was checked.
+- **Lesson:** authenticate both who signed a response and whether that signer
+  is the Provider this operation selected.
+
+# 2026-09-29 03:44 CDT — Spec192 T005 In-App tuple codec rejection
+
+- **Scope:** independent static review of the revised T005 availability
+  candidate.
+- **Symptom:** a strict `IN_APP` availability report could include a complete
+  `operationId`/`receiptId`/`locationVersion` tuple and pass validation.
+- **Root cause:** cross-field validation prohibited Repo and Provider names on
+  In-App reports but did not prohibit the Persistent-only current LOCATION
+  tuple that is accepted by the JSON parser.
+- **Fix under review:** reject any current LOCATION tuple fields for `IN_APP`
+  and add a negative parser case that injects all three fields into an
+  otherwise valid In-App report. No build or selector has run.
+- **Evidence:** the T005 data model reserves the current tuple for a freshly
+  validated Persistent LOCATION; local In-App reports have no network
+  LOCATION assertion.
+- **Lesson:** codecs must validate report-kind invariants after parsing, not
+  only whether optional tuple fields are syntactically complete.
+
+# 2026-09-29 03:49 CDT — Spec192 T005 public availability report round-trip
+
+- **Scope:** independent static review of the revised T005 availability
+  candidate.
+- **Symptom:** valid In-App and Persistent UNKNOWN reports omit current
+  LOCATION fields on serialization but the public report parser required
+  those fields for every row, so the public codec could not round-trip them.
+- **Root cause:** `AvailabilityReport::fromJson` duplicated row parsing and
+  treated the optional current LOCATION tuple as mandatory, unlike the
+  per-location serializer and parser.
+- **Fix under review:** accept the tuple only when all three fields are
+  present and nonempty/nonzero, preserve omission for reports without a fresh
+  LOCATION, and add public report round-trip cases for In-App and Persistent
+  UNKNOWN rows. No build or selector has run.
+- **Evidence:** `AvailabilityLocationReport::toJson` omits the tuple when no
+  current version is validated; the T005 model says those fields exist only
+  after a fresh authenticated LOCATION response.
+- **Lesson:** aggregate codecs must preserve each row's optional protocol
+  evidence shape instead of imposing stronger fields during deserialization.
+
+# 2026-09-29 03:53 CDT — Spec192 T005 signed probe response tuple parsing
+
+- **Scope:** independent static review of the revised T005 availability
+  candidate.
+- **Symptom:** a signed AVAILABILITY response could explicitly carry all
+  current tuple keys with empty identifiers and version zero, then parse as a
+  response with no tuple.
+- **Root cause:** the probe-response parser checked that tuple keys appeared
+  together but did not reject a present tuple whose values represented the
+  omitted state.
+- **Fix under review:** reject empty identifiers or a zero current version in
+  a present probe-response tuple, with a negative response-codec case built
+  from a valid reachable response that has no validated current LOCATION.
+  No build or selector has run.
+- **Evidence:** the signed response contract permits an omitted tuple when
+  there is no validated current LOCATION; if tuple keys are present they must
+  carry a complete current binding.
+- **Lesson:** validate both tuple key presence and tuple value completeness in
+  every nested wire decoder.
+
+# 2026-09-29 03:59 CDT — Spec192 T005 tuple parser branch coverage
+
+- **Scope:** independent static review of the revised T005 availability
+  candidate.
+- **Symptom:** the single-location and signed probe-response codecs had
+  omitted-tuple parsing branches but lacked positive round-trip oracles; no
+  test explicitly rejected partial tuple key presence in those parser paths.
+- **Root cause:** earlier codec tests exercised full tuple round-trips and
+  public-report omission, but did not independently exercise every duplicated
+  parser branch for tuple-free and partial wire shapes.
+- **Fix under review:** add omitted-tuple round-trips for
+  `AvailabilityLocationReport` and `RepoAvailabilityProbeResponse`, and
+  partial-key rejection cases across the row, public report, and signed
+  response decoders. No build or selector has run.
+- **Evidence:** both independent reviewers confirmed the parser logic but
+  blocked the candidate on missing positive omitted-tuple and partial-key
+  test oracles.
+- **Lesson:** exercise every strict codec branch through the public parser,
+  including absent, partial, empty, and complete optional fields.
+
+# 2026-09-29 04:04 CDT — Spec192 T005 Persistent generation and codec matrix
+
+- **Scope:** independent static review of the revised T005 availability
+  candidate.
+- **Symptom:** a Persistent report without current LOCATION evidence could
+  omit the handle's expected generation and still validate; direct complete
+  tuple parsing and full-tuple In-App rejection also lacked explicit codec
+  cases.
+- **Root cause:** validation used nonzero generation only as part of the
+  current tuple predicate, although generation is required independently for
+  every Persistent location row. Codec coverage concentrated on aggregate and
+  omitted-tuple paths.
+- **Fix under review:** require nonzero generation for every Persistent row;
+  add a zero-generation UNKNOWN regression, a complete Persistent
+  `AvailabilityLocationReport` parser round-trip, and a fully populated In-App
+  tuple rejection through the public aggregate parser. No build or selector
+  has run.
+- **Evidence:** the data model retains expected Repo/provider/generation from
+  the handle even when no fresh LOCATION tuple is available; both reviewers
+  independently found the zero-generation acceptance and direct codec gaps.
+- **Lesson:** validated expected identity/generation and current route evidence
+  are distinct fields with distinct presence rules.
+
+# 2026-09-29 04:09 CDT — Spec192 T005 Waf selected a different output tree
+
+- **Scope:** first reviewed-candidate focused build setup.
+- **Symptom:** `./waf build --out=build/spec192-resync -j4
+  --targets=spec192-repo-persistent-service` entered
+  `build/spec192-matched-abe`, then was interrupted at compile task 31/47
+  before linking or running tests.
+- **Root cause:** this Waf invocation used the repository's active configured
+  output tree; the `--out` argument on the build command did not select the
+  intended `build/spec192-resync` tree.
+- **Fix under verification:** explicitly configure
+  `./waf configure --out=build/spec192-resync --with-tests`, then build from
+  the repository root and verify Waf's banner names that exact tree before
+  accepting any build evidence. No target or selector completed.
+- **Evidence:** Waf printed
+  `Entering directory .../build/spec192-matched-abe`; the interrupted
+  invocation exited 68 after Ctrl-C, before the target link step. No tests
+  ran.
+- **Lesson:** configure the intended output tree explicitly and verify the
+  build system's selected ABI path before compiling a reviewed candidate.
+
+# 2026-09-29 04:14 CDT — Spec192 T005 request callback return type mismatch
+
+- **Scope:** reviewed-candidate focused C++ build in `build/spec192-resync`.
+- **Symptom:** `ArtifactRepositoryApi.cpp` failed to compile because
+  `waitForSignedResponse` assigned a request-start result of type `ndn::Name`
+  to `std::string`.
+- **Root cause:** the templated helper hard-coded `std::string` for the
+  request identifier while each current RepoClient request callback returns
+  `ndn::Name`.
+- **Fix under verification:** derive the local request identifier type from
+  the supplied callback and retain the existing empty-identifier rejection.
+  Re-review the exact candidate before rebuilding. No target or selector
+  completed.
+- **Evidence:** compilation reached `ArtifactRepositoryApi.cpp` in
+  `build/spec192-resync`; the compiler reported no assignment from `ndn::Name`
+  to `std::string`. Waf exited 1 before linking. No tests ran.
+- **Lesson:** preserve callback return types in generic request waiters and
+  validate the complete affected source through the focused build.
+
+# 2026-09-29 04:27 CDT — Spec192 T005 DummyClientFace test-hook mismatch
+
+- **Scope:** registered persistent Repo API integration target in
+  `build/spec192-resync`.
+- **Symptom:** `spec192-persistent-artifact-api.t.cpp` failed to compile because
+  the test connected to `afterReceiveInterest` on `ndn::DummyClientFace`.
+- **Root cause:** the pinned ndn-cxx DummyClientFace exposes packet receive and
+  sent-packet logs but has no `afterReceiveInterest` signal.
+- **Fix under verification:** use the fixture's Provider Data transform hook
+  to pass the LOCATION STATUS response unchanged and change the AVAILABILITY
+  response name so it cannot satisfy its pending Interest; the ordinary
+  ServiceUser request timeout then supplies the availability evidence.
+  Re-review the exact candidate before rebuilding.
+- **Evidence:** Waf entered `build/spec192-resync` and the compiler rejected
+  `providerFace(...).afterReceiveInterest` at line 2569. The focused build
+  exited 1 before linking. The focused persistent-service target had already
+  built successfully; the integration selector did not run.
+- **Lesson:** bind integration fault injection to the packet hooks exposed by
+  the pinned DummyClientFace and repository fixture.
+
+# 2026-09-29 04:32 CDT — Spec192 T005 integration counter redeclaration
+
+- **Scope:** focused persistent Repo API integration target in
+  `build/spec192-resync`.
+- **Symptom:** the integration source failed to compile because
+  `statusResponseCount` was declared twice in the same test case.
+- **Root cause:** the new AVAILABILITY-timeout fault reused a local identifier
+  already used by the preceding wrong-Provider STATUS-response fault.
+- **Fix under verification:** give the timeout scenario its own
+  `availabilityTimeoutStatusResponseCount` counter and re-review the exact
+  candidate before rebuilding. No selector was run.
+- **Evidence:** Waf entered `build/spec192-resync`; the compiler reported the
+  redeclaration at line 2564 and pointed to the original declaration at line
+  2245. The integration target exited 1 before linking. The focused
+  persistent-service target remains green.
+- **Lesson:** review identifiers at the enclosing test-case scope, especially
+  when several independent fault-injection scenarios share one long case.
+
+# 2026-09-29 04:37 CDT — Spec192 T005 stale LOCATION error-text assertion
+
+- **Scope:** complete affected Persistent Repo unit selector.
+- **Symptom:** 33 of 34 unit cases passed; one assertion did not find its
+  expected `repo-artifact-location-invalid` detail in the signed LOCATION
+  handler error.
+- **Root cause:** the test expected the older phrase “current receipt does not
+  bind”, while the current handler reports “current catalog receipt does not
+  bind the requested artifact generation”. The handler rejected the mismatched
+  receipt as intended.
+- **Fix under verification:** update the unit oracle to the current invalid
+  receipt classification and re-review the exact candidate before rerunning
+  the selector.
+- **Evidence:** `spec192-repo-persistent-service` reported 33/34 cases and
+  678/679 assertions passed, with the only failure at
+  `distributed-repo-artifact-receipt.t.cpp:862`; the response status was
+  negative and only the expected detail substring differed. The integration
+  selector had not run.
+- **Lesson:** keep error-text assertions aligned with the current fail-closed
+  handler message while preserving a stable classification prefix.
+
+## 2026-09-29 — Spec192 T005 matched-runtime API selector exposed invalid oracles
+
+- **Scope:** full `spec192-repo-persistent-api` selector after selecting the
+  corrected OpenABE and matching temporary NAC-ABE runtime closure.
+- **Symptom:** the selector completed without stack smashing but failed 16 of
+  552 assertions in the main Persistent API case. The same-reference repair
+  availability check compared its Repo-local LOCATION receipt ID to the
+  aggregate publish-status receipt ID. Five response-transform scenarios did
+  not inject a fault, so their fail-closed assertions were never exercised.
+- **Root cause:** the test compared two intentionally distinct receipt
+  namespaces: aggregate status has an `artifact-commit-` ID while LOCATION
+  echoes the Repo-local `repo-artifact-` receipt. The fault filters matched
+  textual URI substrings such as `/NDNSF/RESPONSE/`; the pinned ndn-cxx URI
+  formatter emits typed generic components such as `/8=NDNSF/8=RESPONSE/`, so
+  those filters silently missed valid response names.
+- **Repair under verification:** compare LOCATION to the selected target's
+  durable Repo commit receipt from publish status, and match the provider,
+  RESPONSE marker, and STATUS service as `ndn::Name` components. A fresh pair
+  of exact-candidate static reviews and rerun of the complete unit/API
+  selectors are pending.
+- **Evidence:** with
+  `LD_LIBRARY_PATH=build/spec192-resync:/tmp/spec192-nacabe-runtime-20260928/lib:/home/tianxing/NDN/openabe/src:/usr/local/lib`,
+  `ldd` selected the focused framework build, matching temporary NAC-ABE, and
+  corrected OpenABE. The full API selector reported 2/3 cases passed and
+  536/552 assertions passed; no stack-smash occurred. The revised candidate
+  has not been reviewed, built, or run.
+- **Lesson:** use type-aware Name comparisons for NDN response routing, and
+  compare receipt IDs only within their owning Repo or aggregate namespace.
+
+## 2026-09-29 — Spec192 T005 review found uncommitted-replica report rejection
+
+- **Scope:** exact-candidate static review of the T005 public availability
+  report and production API behavior.
+- **Symptom:** both independent reviewers BLOCKed the same candidate because
+  `ArtifactHandle` permits failed/skipped Persistent replicas with generation
+  zero, while `checkAvailability()` preserves those rows and the public report
+  validator rejected generation zero.
+- **Root cause:** the T005 report schema required every Persistent row to carry
+  a committed generation even though T004 deliberately represents a
+  non-committed selected replica with no current LOCATION tuple.
+- **Repair under review:** allow generation zero only for a Persistent row
+  with no current tuple and UNKNOWN reachability/object presence plus
+  NOT_CHECKED integrity; add codec and production API coverage, including
+  replica order and no STATUS probe for a skipped target. Restrict the fixture's
+  provider-data transform to provider-to-user delivery so peer copies cannot
+  satisfy those request/response oracles. Update the public Repo API contract.
+- **Evidence:** both reviewers independently confirmed this was the sole
+  blocking finding on candidate
+  `59069dc34cdb736f5b7d72a3e6a1e06d829c982257cc3ea86e6676ca9d48cafa`.
+  The repair candidate has not yet been reviewed, built, or run.
+- **Lesson:** model T004's non-committed replica state explicitly in every
+  downstream projection that retains selected-target order.
+
+## 2026-09-29 — Spec192 T005 API fault hooks did not match live responses
+
+- **Scope:** complete registered `spec192-repo-persistent-api` selector after
+  the exact candidate passed paired static review and rebuilt successfully.
+- **Symptom:** the Persistent service selector passed 34 cases, but the API
+  selector reported 15 failures in wrong-signer, wrong-Provider, and
+  post-LOCATION timeout injection assertions. Each corresponding availability
+  query returned its ordinary status because the test transform did not match
+  the live response.
+- **Root cause:** the test transform is attached to Provider `onSendData`,
+  which observes SVS sync transport Data (`.../sync/t=.../seq=...`). The logical
+  NDNSF Response name is inside the SVS publication and is available to the
+  User as `SubscriptionData.name`, so neither the old matcher nor
+  `parseResponseNameV2` can match these outer packet names.
+- **Repair attempted:** use the canonical response-name parser at the packet
+  bridge. Paired exact-hash review and rebuild passed, but the selector
+  disproved that layer as a valid interception point.
+- **Evidence:** normal service selector passed 34 cases; the full API selector
+  again started three cases and completed with the same 15 failed assertions
+  after paired exact-hash review and a successful API-target rebuild. `ldd`
+  selected the focused framework build, matching temporary NAC-ABE, and
+  corrected OpenABE; no dependency was missing.
+- **Lesson:** a canonical parser cannot match a logical response name against
+  an outer SVS Data packet.
+
+### Follow-up — packet bridge observes SVS sync Data
+
+- **Symptom:** after exact-hash paired static PASS, the filtered API case again
+  failed the same fault assertions. The diagnostic reported 104 Provider Data
+  transform calls; the first eight observed names were all SVS sync packets.
+- **Evidence:** `ldd` selected `build/spec192-resync` for the framework,
+  `/tmp/spec192-nacabe-runtime-20260928` for NAC-ABE, and
+  `/home/tianxing/NDN/openabe/src` for OpenABE; no dependency was missing.
+  CodeGraph confirms the main and extra Provider-to-User bridges pass
+  `applyProviderDataTransform=true`, and `forwardData` invokes a configured
+  transform before other forwarding rules. This proves the bridge is active
+  but receives SVS transport Data rather than the logical publication name.
+- **Repair direction:** remove the packet-level transform seam. Inject logical
+  Response publications through the existing `ServiceUser::RequestPublisher`
+  test boundary and `SVSPubSub::publish`, as in
+  `spec192-response-provider-identity.t.cpp`; observe skipped-target Selection
+  publications for the no-probe oracle.
+- **Lesson:** inject faults at the protocol layer that owns the field under
+  test; the outer SVS Data name is not the logical Response name.
+
+### Follow-up — plaintext synthetic Responses require both diagnostic flags
+
+- **Symptom:** both independent static reviewers BLOCKed the revised
+  RequestPublisher/SVSPubSub candidate before any build or test. The synthetic
+  LOCATION responses were raw `ResponseMessage` TLV bytes, but the test scoped
+  only `NDNSF_DIAG_PLAINTEXT_RESPONSE=1`.
+- **Root cause:** `ServiceUser::plaintextResponseDiagEnabled()` requires both
+  `NDNSF_CRYPTO_DIAG` and `NDNSF_DIAG_PLAINTEXT_RESPONSE`; without the former,
+  the raw synthetic payload follows the normal hybrid-decryption path and
+  cannot establish the LOCATION needed by the subsequent fault oracles.
+- **Repair:** scope both diagnostic environment flags around the synthetic
+  response cases, restoring each prior process value when the scope exits.
+- **Evidence:** reviewers independently confirmed the same finding on frozen
+  candidate `769f6687d7e30f23d979a122010d4f3331e604676626026676fa62306c562e41`.
+  The repair candidate awaits a new paired review; no build or test has run.
+- **Lesson:** mirror all production feature-gate prerequisites in tests that
+  synthesize wire payloads at an internal publication seam.
+
+### Follow-up — synthetic Response helper compile error
+
+- **Symptom:** the API target failed to compile at
+  `spec192-persistent-artifact-api.t.cpp:182`; `ResponseMessage::setPayload`
+  requires a mutable `ndn::Buffer&`, but `makeSyntheticResponse` accepted a
+  const reference.
+- **Root cause:** the test helper's const-qualified input did not match the
+  existing ResponseMessage setter API.
+- **Repair:** take the payload Buffer by value so the helper passes a mutable
+  local Buffer to `setPayload` while leaving caller-owned data unchanged.
+- **Evidence:** the pre-fix candidate passed both exact-hash static reviews at
+  `c6bd26cbc7303b9777284a5944e5c4cffbbe6e5a1e2b5551b8f85660e3ce177b`; its
+  first API-target build exposed this compile error. The repair needs a fresh
+  paired review and build before any selector runs.
+- **Lesson:** test helpers that forward to non-const legacy setters must own a
+  mutable copy when callers may supply const or temporary payloads.
+
+### Follow-up — plaintext response injection bypassed request-scoped AEAD
+
+- **Symptom:** the reviewed API target built, and `ldd` resolved the focused
+  framework, temporary NAC-ABE, OpenABE, and system Boost 1.71 with no missing
+  libraries. The filtered API case then failed nine assertions: the synthetic
+  LOCATION responses did not establish reachability, the follow-up AVAILABILITY
+  was not requested, and the post-LOCATION timeout case remained UNREACHABLE.
+- **Root cause:** the Controller-configured User defaults ordinary requests to
+  request-scoped confidentiality. Enabling plaintext diagnostic decoding only
+  bypasses hybrid decryption; `handleDecryptedResponse()` still rejects a raw
+  Response without the selected Provider's request-scoped state and AEAD
+  envelope. The prior SVSPubSub injection therefore never reached the
+  Repository API callback for valid LOCATION or wrong-Provider responses.
+- **Repair:** keep the wrong-signer case on the real SVS Data ingress to
+  exercise production name/KeyLocator rejection. Inject the other API-only
+  fault responses at `ServiceUser::handleResponse()`, the already-authenticated
+  and decrypted callback boundary consumed by `ArtifactRepositoryApi`, with
+  explicit Provider identity evidence. The separate response-identity
+  integration case remains the production transport-gate oracle.
+- **Evidence:** candidate `7c4ae5550a39ea8ac51ce9737fc3739297837cdfbb0227da334e6dc2910226e2`
+  passed paired static review and built successfully; the filtered selector
+  failed with nine assertions. The revised callback-boundary candidate awaits
+  paired static review; no further build or test has run.
+- **Lesson:** a diagnostic plaintext decoder does not bypass request-scoped
+  AEAD enforcement. Inject API fault cases after the upstream security boundary
+  unless the fixture constructs a complete request-bound envelope.
+
+### In-App future-schema selector used the current generation
+
+- **Symptom:** after the reviewed API candidate passed its focused and complete
+  Persistent API selectors and the 34-case Persistent service selector, the
+  In-App API selector failed one of 25 cases because the future-schema write
+  attempt did not throw `repo-artifact-writes-disabled`.
+- **Root cause:** T004 advanced the runtime schema to generation 15, but the
+  older future-schema fixture still wrote generation 15. That is the current
+  supported schema, not a future profile, so writes correctly remained enabled.
+  The contract defines generation 16 as the future read-only profile.
+- **Repair:** update the test fixture to mark the database as schema generation
+  16, keeping its read-only reuse and byte-unchanged assertions intact.
+- **Evidence:** the initial run built successfully and passed 24/25 cases.
+  Both independent static reviews then passed the same corrected 31-path
+  candidate (`cd6f8ee211936e5f5bc136abfbd63c6007a88df20f4f61050fc70dc0e8c1faf8`).
+  The normal In-App API target rebuilt and passed 25/25 cases. On the same
+  source candidate, the complete Persistent API selector passed 3/3 cases,
+  the Persistent service selector passed 34/34, and the Clang 10 TSan receipt
+  plus Persistent service selectors passed 18/18 with `halt_on_error=1` and
+  no race report.
+- **Lesson:** when a runtime schema generation advances, update the future
+  generation fixture to the next generation; a test labeled “future” must not
+  silently exercise the current writable schema.
+
+## 2026-09-29 — Spec192 T006 static review closed fetch deadline and trace gaps
+
+- **Symptom:** two independent static review rounds blocked the T006 candidate
+  before any build or selector. Findings included stale-handle timeouts
+  overwriting health for a newer validated LOCATION, callback waits that could
+  outlive the overall timeout if the Face event loop did not deliver Core's
+  timeout callback, destination setup errors without `ArtifactFetchError`
+  traces, and missing direct oracles for post-upgrade ranking, ranged-failure
+  destination preservation, and health-table eviction.
+- **Root cause:** the first candidate relied on callback delivery as the only
+  wakeup for a synchronous request waiter, and some filesystem setup happened
+  before an attempt trace existed. Several requested state transitions had
+  indirect rather than observable selector assertions.
+- **Repair:** scope failure/cooldown state to the validated LOCATION version;
+  make the fetch waiter independently settle with `wait_until` bounded by the
+  per-request/global deadline; wrap operational destination-preparation
+  failures with an empty `ArtifactFetchResult`; and add a no-Face-pump timeout,
+  newer-version follow-up ranking, all-corrupt ranged transfer with sentinel
+  preservation, and capacity-one eviction oracle. Invalid LOCATION cases
+  reject before range requests, and the pre-existing lock/final-commit checks
+  remain in place.
+- **Evidence:** both independent reviewers PASSed the same nine-file frozen
+  candidate. `ArtifactRepositoryApi.hpp`:
+  `2999d3af5888dc1b764bf8b7edb06ab85ce6649cfa211cda31bd7d941e100d8c`;
+  `ArtifactRepositoryApi.cpp`:
+  `c33a16152387071bd39d536e557e07bda97fcc58099ef7f3ec4f4f5996dec83d`;
+  selector:
+  `41b2e19de68d36f75d1a75c6b68acf38f52dcbe91c954cdd62c9a59ac0db1823`;
+  contract:
+  `4115875a2979c67f7c5728b46a4ca6099a44d6f5069d4affdd3ba538797e2488`;
+  plan `112c83ef907a34a91cacef6cdcebbb466c6459d113273ca7a5910a1724f7e9b5`;
+  data model `c045e6e053ff6b8c522ee48cda150fe1f4ef097b0cdf001353c564d28fd1acc8`;
+  tasks `4661c8f2507ff937a5b0ad099a1e83f4a4b8a695067daf4d9a2fb97d1988b82b`;
+  audit `0a1578c3edf20dc1b65542ff74252abe4b2a9af5eb25310d9c75e7d1a8acc794`;
+  traceability `44a1a8e0eb399504ac53421b13c7763a9d6a1df3f0f5f043cc481c02854d4d0b`.
+  No build or selector has run yet; the focused build is the next gate.
+- **Lesson:** a timed callback is not a deadline guarantee unless the blocking
+  waiter has its own monotonic wakeup; trace contracts must cover operational
+  failures that occur before the first remote attempt.
+
+### 2026-09-29 — Spec192 T006 focused build caught duplicate health binding
+
+- **Symptom:** the focused T006 target failed compiling
+  `ArtifactRepositoryApi.cpp`: `fetchFile` declared `auto& health` twice in
+  the same candidate-loop scope, once after validating LOCATION and again
+  after a successful transfer. No selector ran.
+- **Root cause:** the completion path reacquires the version-scoped fetch
+  health entry, but retained the earlier local variable name during the
+  failover repair.
+- **Repair:** name the completion-path reference `completionHealth` and use it
+  for success EWMA, cooldown, failure-count, and last-updated bookkeeping.
+- **Evidence:** configure passed in `build/spec192-resync`; the registered
+  build target entered that exact tree and exposed this compile error. The
+  corrected candidate requires two independent static reviews before another
+  build or selector.
+- **Lesson:** compile the frozen candidate after static review; same-scope
+  state re-acquisition can produce a simple but blocking C++ declaration
+  collision.
+
+### 2026-09-29 — Spec192 T006 selector used stale OpenABE runtime
+
+- **Symptom:** the first complete T006 API selector aborted two cases with
+  `*** stack smashing detected ***`; each case reproduced independently. GDB
+  placed `__stack_chk_fail` in `oabe::block_cipher_df` during NAC-ABE KEM
+  encryption on the OpenABE executor thread.
+- **Root cause:** this invocation omitted the known matched-library overlay,
+  so `ldd` selected `/usr/local/lib/libopenabe.so`. The earlier Spec192 T003
+  reproduction established that this copy sets EVP padding before cipher
+  initialization and copies a padded 32-byte result into a 16-byte DRBG block.
+- **Repair:** rerun from the repository root with
+  `LD_LIBRARY_PATH=build/spec192-resync:/tmp/spec192-nacabe-runtime-20260928/lib:/home/tianxing/NDN/openabe/src:/usr/local/lib`.
+  This selects the focused framework, matching NAC-ABE, and corrected OpenABE
+  without changing `/usr/local` or the reviewed source candidate.
+- **Evidence:** both independent failing cases reproduced under the default
+  closure. With the specified overlay, `ldd -r` resolves the framework from
+  `build/spec192-resync`, NAC-ABE from the matching `/tmp` runtime (byte-identical
+  to `/usr/local`), and OpenABE from `/home/tianxing/NDN/openabe/src`, with no
+  missing libraries. The complete selector has not yet been rerun under this
+  corrected closure.
+- **Lesson:** an executable-only `ldd` check is insufficient if it approves a
+  known stale SONAME; apply the repository's matched crypto runtime before
+  interpreting integration-selector results.
+
+### 2026-09-29 — Spec192 T006 probe oracle omitted an uncommitted quorum target
+
+- **Symptom:** with the matched runtime overlay, the isolated provider-selection
+  case reached the fresh-availability probe and failed
+  `probed.locations.size() == 2` because the report contained three entries.
+  It passed 195 of 196 assertions before stopping; no stack smash occurred.
+- **Root cause:** the quorum handle retains all three selected target entries,
+  while only two targets have committed receipts. `checkAvailability` preserves
+  one ordered report row per handle replica and includes an uncommitted target
+  as `UNKNOWN+UNKNOWN`; the test counted successful quorum placements instead
+  of handle entries.
+- **Repair:** match probe rows positionally to the handle's replica entries,
+  assert committed replicas are `REACHABLE+PRESENT`, and retain/check the
+  uncommitted replica's `UNKNOWN+UNKNOWN` sentinel. The paired review caught
+  that identity lookup across all rows did not enforce the contract's handle
+  order; the fixture now checks each indexed `(repoNode, providerIdentity)`
+  pair directly. Keep the following seed readmission assertion.
+- **Evidence:** the isolated selector with the matched crypto closure reported
+  exactly three probe rows and failed at the two-row count. `repo-api.md` and
+  `data-model.md` require preserving handle order and unknown uncommitted rows.
+  The corrected fixture has not yet passed paired static review, build, or
+  selector.
+- **Lesson:** a quorum receipt's successful-placement count does not determine
+  `AvailabilityReport.locations[]` cardinality; use the immutable handle as the
+  report's row inventory.
+
+### 2026-09-29 — Spec192 T006 selector exposed stale fixture assumptions
+
+- **Symptom:** after the positional availability oracle passed paired review
+  and the normal API target rebuilt successfully, the isolated provider-
+  selection selector first passed 248 of 251 assertions, then failed two
+  duplicate-Provider assertions and aborted at a later two-row availability
+  count. After those repairs passed, a rerun passed 282/283 assertions before
+  aborting at a third two-row availability count in the LOCATION-history
+  setup.
+- **Root cause:** the duplicate-Provider fixture overwrote `selectedTargets[1]`
+  with the seed identity, but the seed was already at index 1, so the mutation
+  was a no-op and the fetch correctly sent requests. A later version-scope
+  probe still expected only two committed placements although the handle and
+  report contain three selected replica rows, including the uncommitted
+  UNKNOWN sentinel. The tuple-history probe repeats the same complete-handle
+  report contract and also has a third stale two-row expectation.
+- **Repair:** select a target index different from the seed before injecting
+  the duplicate identity; assert both version-scope and tuple-history report
+  cardinality against `fetchHandle.replicaCommits`; bind the version-scope
+  seed row to its immutable replica and require the newer reported version.
+- **Evidence:** matched-overlay `ldd -r` had no unresolved symbols; the first
+  isolated selector reported 248/251 assertions and the rerun reported 282/283
+  before the remaining oracle was corrected. The current test candidate has
+  not yet passed paired static review, rebuild, or selector.
+- **Lesson:** fault fixtures must guarantee the intended mutation changes the
+  chosen item, and every availability oracle must derive cardinality from the
+  full handle inventory rather than the committed-replica count.
+
+### 2026-09-29 — Spec192 T006 Clang 10 TSan API setup missed Provider ACKs
+
+- **Symptom:** the Clang 10 TSan API target built, but the full API selector
+  aborted in the existing recovery case on Provider request/ACK timeouts. A
+  separate run of only the T006 provider-selection case bootstrapped the
+  environment, then discovered zero of three capability candidates; it stopped
+  before the T006 fetch/failover assertions and emitted no race report. Static
+  review also caught that widening the shared client config would make later
+  availability calls reject their shorter timeout arguments before sending.
+- **Root cause (inferred):** signed production-service capability discovery
+  used a 1000 ms ACK window and 8000 ms request timeout; the instrumented run
+  did not deliver candidate ACKs within that collection window. This is
+  separate from later availability probes, which require their timeout to be
+  greater than the shared ACK window. Normal API runs with the prior settings
+  pass.
+- **Repair:** give capability discovery a separate API instance with a 5000 ms
+  ACK window and 20000 ms request budget; retain the ordinary 1000/8000 ms
+  client config for later service and availability calls. T006's fetch clone
+  continues to use 10 ms ACK / 120 ms request budgets and frozen overall-
+  deadline/tolerance assertions. Rebuild and rerun the exact isolated and full
+  TSan selectors; only a run that reaches and passes the fetch assertions can
+  close T006's race gate.
+- **Evidence:** Clang 10 c4che records `-fsanitize=thread` and the binary
+  contains `__tsan_init` and read/write instrumentation. `ldd -r` resolves the
+  TSan framework tree, matching temporary NAC-ABE runtime, corrected OpenABE,
+  and system Boost 1.71 without unresolved symbols. The first full API TSan run
+  passed 1/3 cases and the isolated provider-selection TSan run stopped at
+  1/2 assertions (`discovered.candidates.size() == 3`, actual 0). Exact-hash
+  static reviews caught that the first budget edit targeted a separate
+  fixture and that the next shared-config edit conflicted with later probes;
+  no selector was run on either incomplete candidate.
+- **Lesson:** sanitizer instrumentation can invalidate production-service
+  fixture collection windows even when fetch-specific deadlines are correct;
+  distinguish setup starvation from a race result and retain bounded test
+  budgets that let the selector reach its intended concurrent path.
+
+### 2026-09-29 — Spec192 T006 rollback fixture returned a valid LOCATION
+
+- **Symptom:** paired review found the rollback fault tag decremented the
+  historical LOCATION from version 1 to version 0, so parsing rejected it
+  before the monotonic health-version guard ran.
+- **Root cause:** the fixture tried to make a rollback by lowering the wire
+  version, despite already priming API health to the current version 2 with a
+  successful authenticated availability probe.
+- **Repair:** preserve the structurally valid signed historical version 1;
+  after the probe has installed version 2 health for each Provider, that
+  response reaches and violates the monotonic rollback guard. The test checks
+  every committed availability row reports a newer version before attempting
+  the rollback. The shared failure helper asserts both providers fail before
+  any range request and preserves a pre-existing destination.
+- **Evidence:** the fixture helper and `expectLocationFailure` cover the
+  version rollback path, zero range requests, and destination sentinel. The
+  changed candidate awaits paired static review, rebuild, and selector.
+- **Lesson:** for each negative-case label, verify the serialized response
+  actually mutates the field that should trigger production rejection.
+
+### 2026-09-29 — Spec192 normal API selector rejected recovery request budget
+
+- **Symptom:** the rebuilt full normal API selector passed the T006 provider-
+  selection/fetch case (433 assertions), but the T004 recovery case aborted
+  after 243/244 assertions with
+  `repo-request-timeout-invalid: selected request timeout must exceed ACK window`.
+- **Root cause:** the recovery test widened its shared client ACK window to
+  5000 ms to address TSan setup latency. Later bounded selected operations can
+  have less than 5000 ms remaining, so the API correctly rejects those request
+  windows before sending.
+- **Repair:** keep the recovery client request budget at 20000 ms but restore
+  its ACK window to 1000 ms; the recovery test's bounded selections then keep
+  their prior valid relationship. The 5000/20000 ms values remain isolated to
+  the T006 discovery-only API, whose setup needs the longer signed ACK window.
+- **Evidence:** final-candidate normal build and matched-runtime closure passed;
+  the full selector reported 2/3 cases and 680/681 assertions, with T006
+  passing 433/433. The repaired candidate awaits paired review and rerun.
+- **Lesson:** do not widen a shared ACK window in a fixture that also exercises
+  requests with intentionally short remaining budgets; isolate it to setup.
+
+### 2026-09-29 — Spec192 normal API selector interrupted before completion
+
+- **Symptom:** the rebuilt full normal API selector emitted no stdout before
+  it was interrupted with SIGINT (exit 130) after 6m35s, so it produced no
+  final test report. The main process and worker threads were sleeping in
+  futex waits at the time of observation.
+- **Root cause:** unknown. Isolating the recovery case completed successfully
+  in about 80s, so the full-run duration alone does not establish a deadlock;
+  case waits may accumulate. A read-only debugger attach was denied by the
+  host's `ptrace_scope`; no stack trace was available.
+- **Repair:** none yet. Isolate the in-app and persistent provider-selection
+  cases, then rerun the full selector with a bound that allows cumulative
+  case waits.
+- **Evidence:** candidate passed three fresh exact-hash static reviews;
+  normal rebuild succeeded and matched `ldd -r` resolved all symbols with the
+  expected build-tree RUNPATH. The full selector did not complete and must not
+  be counted as a pass.
+- **Lesson:** request timeouts do not bound total selector duration when many
+  operations and cases run sequentially; capture a completed selector result
+  before closing T006.
+
+### 2026-09-29 — Spec192 complete normal API selector made no observable progress
+
+- **Symptom:** the complete `spec192-repo-persistent-api` selector produced no
+  output or final report for 17m40s. The test process accrued about six seconds
+  of CPU and remained asleep in `futex_wait_queue_me`; it was then sent SIGINT
+  (exit 130). The run is incomplete and is not a pass or assertion failure.
+- **Root cause:** unknown. The isolated T006 provider-selection case passed
+  433/433 assertions in about nine minutes on the same binary and runtime.
+  The available process snapshot does not identify which other case or
+  cross-case interaction prevented the full selector from returning.
+- **Repair:** none yet. Run the neighboring normal cases individually, then
+  use Boost case-level logging or other bounded diagnostics to locate the
+  stalled combined path before claiming the complete selector gate.
+- **Evidence:** the complete selector was terminated after the 17m40s idle
+  observation; it printed no assertion summary. The isolated T006 selector
+  passed 1/1 case and 433/433 assertions. T006 remains open pending the
+  complete normal selector and Clang 10 TSan selector evidence.
+- **Lesson:** a long timeout cannot distinguish an unusually slow combined
+  fixture from a stalled case; preserve the interrupted run as incomplete and
+  collect per-case progress evidence before retrying the whole target.
+
+### 2026-09-29 — Spec192 isolated recovery selector exceeded five-minute bound
+
+- **Symptom:** the isolated
+  `RecoveredPendingPublishTargetGetsOneDurableReceipt` case emitted no final
+  report before its 300-second timeout. The process accrued about nine seconds
+  of CPU and was waiting in `futex_wait_queue_me`; the wrapper returned 124.
+- **Root cause:** unknown. The same selector previously passed 260 assertions
+  in about 80 seconds, while the adjacent artifact-visibility case passed 4/4
+  in 3.5 seconds during this run. The current T006 selection case independently
+  passed 433/433.
+- **Repair:** none yet. Repeat the recovery case with Boost case/test logging
+  to capture its last completed fixture step; inspect the matched-runtime
+  process/Face-pump path at that boundary before changing production behavior.
+- **Evidence:** exact normal target and library overlay are the ones used by
+  the isolated T006 PASS. This run produced no assertion summary and cannot be
+  counted as a pass. The complete normal API selector remains open.
+- **Lesson:** a prior selector PASS does not make a later no-report timeout
+  conclusive evidence of code regression; isolate the exact case and retain
+  progress logs before attributing the failure.
+
+### 2026-09-29 — Spec192 recovery fixture rejected its unselected-owner oracle
+
+- **Symptom:** the isolated recovery case reported an unexpected response at
+  `spec192-persistent-artifact-api.t.cpp:1241`: the unselected matching-owner
+  STORE returned
+  `repo-ack-authentication-failed: ... (matching=0, observed=0)` instead of
+  either expected replica-owner authorization error. The default case-level
+  run then emitted no final report before the 300-second bound (exit 124).
+  With `--log_level=all`, the case completed its 186 logged checks in about
+  13 seconds but exited 201; the filtered output did not retain the complete
+  failure summary.
+- **Root cause:** unresolved. The response proves no authenticated ACK was
+  accepted during the selected-owner verification performed by the fixture.
+  The recovery RepoNodes register a 1000 ms ACK window; a fixture timing issue
+  is plausible, but the exact request and lifetime path need confirmation.
+- **Trace:** the selected write handler calls
+  `RepoNode::validatePersistentWriteIdentity`, which queries the owner
+  Provider's signed STATUS through `RepoClient::requestSelectedService`. The
+  total selected-query timeout is capped at 2000 ms; this recovery fixture had
+  configured a 1000 ms ACK collection window for its RepoNode workers.
+- **Repair candidate:** widen the five worker registrations in this recovery
+  fixture from 1000 to 1500 ms ACK collection while retaining their 8000 ms
+  request timeout. The selected-owner query remains capped at 2000 ms, and
+  both replica-owner denial predicates remain unchanged. This candidate needs
+  paired static review and a fresh selector run before the timing hypothesis
+  is considered confirmed.
+- **Evidence:** the separate artifact-visibility case passed 4/4 and T006
+  provider-selection passed 433/433 on the normal binary. The prior recorded
+  recovery pass was 260/260; neither the current 300-second timeout nor the
+  filtered exit 201 is a pass.
+- **Lesson:** preserve the security expectation and trace which Provider ACK
+  is being verified before changing timing or accepting another failure code.
+
+### 2026-09-29 — Spec192 selected operation missed Provider ACK
+
+- **Symptom:** the isolated T006 provider-selection/fetch case aborted after
+  152/153 assertions in 138.49s with
+  `repo-ack-authentication-failed: selected Provider ACK was absent, duplicated,
+  or untrusted`. The last Boost checkpoint was test line 2121, immediately
+  before the two quorum publishes beginning at line 2140. The test reached
+  discovery and earlier selected writes; an earlier run of the full selector
+  had reported T006 passing 433/433.
+- **Root cause:** the latest direct run reported `matching=0, observed=0` at
+  the first selected publish after discovery. No candidate reached the closure
+  during the 1000 ms selected-write ACK window; signer mismatch and duplicate
+  ACKs are ruled out for this occurrence. This is consistent with the signed
+  Provider ACK collection window being too short in this fixture.
+- **Repair:** add a separate selected-write API configured at 5000 ms ACK /
+  20000 ms request and route every selected `publishFile` in this combined
+  selector case through it, including the availability-state seed publish.
+  Keep availability probes on their 1000/8000 ms API because their explicit
+  timeout arguments are shorter than 5000 ms. The first review round caught
+  one selected seed publish still using the shorter API; that call is now
+  routed through the selected-write API. The revised candidate awaits review,
+  rebuild, and rerun.
+- **Evidence:** before the diagnostic change, the isolated case aborted at
+  152/153 after 138.49s. With `matching/observed` detail and the matched normal
+  runtime, it aborted at 23/24 after 9.10s with `0/0`, immediately after
+  discovery and before the first selected publish completed. Three exact-hash
+  reviews and a normal rebuild passed for the diagnostic-only candidate; the
+  first selected-write API fixture change was missing one selected seed call;
+  it now routes through the longer API. The revised candidate is not yet
+  reviewed or built.
+- **Later rerun and repair:** after routing selected publishes through the
+  5000/20000 ms API, the case passed 303/304 assertions in 354.22s, then
+  failed with `matching=0, observed=0` during the selected `archive` operation
+  after the in-app commit (last Boost checkpoint test line 2948). That archive
+  call still used the 1000/8000 ms API; it now uses the selected-write API.
+  The current candidate awaits paired review, rebuild, and rerun.
+- **Latest rerun and repair:** with archive on the long-window API, the case
+  reached 118/119 assertions in 213.88s, then failed while checking the
+  changed-selection idempotency conflict. The exception was again
+  `repo-ack-authentication-failed` with `matching=0, observed=0`; the replay,
+  conflict, and repair calls still used the 1000/8000 ms API. Route the selected
+  idempotency replay/repair sequence and the stale selected-replay status checks
+  through the 5000/20000 ms API, while retaining the short API for availability
+  probes and its intentional unavailable-seed negative case. The revised
+  candidate awaits paired review, rebuild, and rerun.
+- **Verification:** two independent exact-hash static reviews passed the
+  revised candidate. The normal integration target rebuilt with `-j4`, and
+  `ldd -r` resolved all symbols with the expected build-tree RUNPATH and the
+  matched NAC-ABE runtime overlay. The isolated T006 selector then passed 1/1
+  case and 433/433 assertions in about nine minutes. The complete normal API
+  selector and Clang 10 TSan selectors remain open.
+- **Diagnostic attempts:** the first GDB launch omitted the matched
+  `LD_LIBRARY_PATH`, so the inferior loaded `/usr/local/lib/libnac-abe.so`
+  instead of `/tmp/spec192-nacabe-runtime-20260928/lib/libnac-abe.so` and
+  aborted with stack-smashing detection. Discard that run as invalid; rerun
+  diagnostics with the tested runtime closure. A second matched-overlay GDB
+  run could not inspect optimized-out locals at the source breakpoint, so the
+  aggregate counts were added to the existing exception instead.
+- **Lesson:** one earlier passing selector run is insufficient for a
+  timing-sensitive ACK gate; capture the exact authenticated candidate count
+  when a selected ACK is rejected, and preserve the tested library overlay
+  under a debugger.
+
+### 2026-09-29 — Spec192 recovery restart selector stalls after denial checks
+
+- **Symptom:** after two exact-hash static reviews passed and the normal API
+  target rebuilt, the isolated
+  `RecoveredPendingPublishTargetGetsOneDurableReceipt` selector remained in
+  `futex_wait_queue_me` for the full 600-second bound and returned 124 without
+  a report. A `--log_level=all` retry returned 124 at its 180-second bound;
+  its last assertions show the unselected-owner denial and stale-owner
+  visibility checks through test line 1414 passed. The next test action
+  releases the service handlers and resets the old seed RepoNode before
+  re-registering its replacement and querying recovered status.
+- **Root cause:** not yet confirmed. CodeGraph shows `RepoNode::~RepoNode()`
+  joins its placement worker, and the worker can block in
+  `RepoClient::requestSelectedService` until a ServiceUser callback runs.
+  The test Face loop is normally driven by the main test thread, which is not
+  pumping while the direct `seedNode.reset()` joins. This is a plausible
+  teardown deadlock consistent with the last logged checkpoint, but the run
+  does not identify which statement after line 1414 blocked.
+- **Repair candidate:** reset the seed node through the existing
+  `runWithFacePump` helper so provider Faces continue processing while its
+  background worker joins. The change is test-only and preserves the denial
+  predicates. Two independent exact-hash static reviews passed this source
+  candidate; after the evidence update is hash-checked, rebuild and rerun the
+  recovery selector before treating the teardown hypothesis as confirmed.
+- **Evidence:** the 1500/8000 ms recovery worker-registration candidate passed
+  two independent static reviews; the normal target built with `-j4`, and
+  `ldd -r` resolved the matched framework/NAC-ABE/OpenABE runtime closure with
+  the expected RUNPATH. Neither recovery retry produced a final test report.
+  GDB could not attach because host ptrace policy returned `Operation not
+  permitted`; no stack trace was obtained. The prior isolated T006 case
+  remains 433/433, but T006's full normal and TSan selectors are still open.
+  The Face-pumped teardown candidate passed two independent static reviews;
+  the reviewer PASS does not count as runtime evidence.
+- **Lesson:** pump the provider Face while joining a worker whose outstanding
+  request completion depends on that Face; do not infer the exact blocked
+  statement from the final assertion alone.
+
+### 2026-09-29 — Spec192 Face-pumped recovery reset passes, later status stalls
+
+- **Symptom:** after rebuilding the paired-reviewed Face-pumped reset
+  candidate, the isolated recovery selector passed the expected unselected-
+  owner denial and stale-owner visibility checks, then passed the new
+  `seedStopped` assertion at test line 1423. It emitted no replacement-node
+  registration or recovered-status assertions. The process remained idle in
+  `futex_wait_queue_me` with about nine seconds of CPU; it was manually sent
+  SIGINT after 5m05s (exit 130), so the selector is incomplete.
+- **Root cause:** unknown for the post-reset stall. The reset wrapper now
+  completes while pumping Provider Faces, so this run progressed beyond the
+  previous last-checkpoint boundary. The subsequent statements are replacement
+  RepoNode construction/registration and `waitForTerminalPublish`; without
+  progress markers the blocked call cannot yet be distinguished. The existing
+  `runWithFacePump` helper runs blocking work via `std::async`; if its deadline
+  throws while the future is unfinished, destruction of that future may itself
+  wait. Treat this as a possible hang amplifier, not a confirmed cause.
+- **Repair candidate:** add test-only `BOOST_TEST_MESSAGE` checkpoints around
+  recovered-node construction, service registration, and terminal-status
+  polling. The denial, visibility, and reset behavior are unchanged. This
+  candidate has not yet been reviewed, rebuilt, or executed.
+- **Evidence:** exact normal target built with `-j4`; `ldd -r` resolved the
+  matched framework/NAC-ABE/OpenABE closure, system Boost 1.71 and expected
+  RUNPATH. The recovery selector passed the line-1423 reset assertion and
+  earlier denial checks, but the manual interruption produced no test report
+  and is not a pass. The separate T006 selector remains 433/433.
+- **Lesson:** add explicit progress checkpoints across long recovery boundaries
+  before interpreting another idle process; account for the async future's
+  wait-on-destruction behavior during timeout unwinding.
+
+### 2026-09-29 — Spec192 replacement registration returns, recovered STATUS does not
+
+- **Symptom:** a normal rebuild and `ldd -r` closure passed for the candidate
+  with replacement-node progress messages. The recovery selector passed the
+  unselected-owner and stale-owner checks and `seedStopped` at line 1423. It
+  logged replacement construction, registration start/completion, and
+  `querying terminal publish status`, but no returned status message. The
+  process remained in `futex_wait_queue_me` with about ten seconds of CPU and
+  was manually interrupted at 6m11s (SIGINT, exit 130); there is no final
+  report, so this is incomplete.
+- **Root cause:** unknown. CodeGraph traces this point through
+  `waitForTerminalPublish` → `ArtifactRepositoryApi::getPublishStatus` →
+  `RepoClient::requestSelectedService`, which waits on a condition variable
+  until the response or timeout callback completes the request. The selected
+  request timeout is 8 seconds, and ServiceUser stores a request deadline, but
+  this run does not show whether the first callback or a later status response
+  is missing. The test Face pump should dispatch timeout events; do not infer a
+  production timeout bug without a more precise checkpoint.
+- **Repair candidate:** add messages immediately before and after each status
+  query, including the returned status state. This only changes test logging;
+  it preserves API behavior and authorization oracles. The candidate is
+  unreviewed, unbuilt and untested.
+- **Evidence:** the previous test binary included outer messages but not the
+  per-query messages. It reached the status helper and produced no return-state
+  output by manual interruption. The earlier 433/433 isolated T006 result is
+  unchanged; T006's complete normal selector and Clang 10 TSan selector remain
+  open.
+- **Lesson:** distinguish a blocked first status request from a nonterminal
+  status loop before changing timeout or recovery behavior.
+
+### 2026-09-29 — Add worker-side entry markers for recovered STATUS
+
+- **Symptom:** the reviewed candidate emitted the test-thread
+  `issuing first request` marker but no completion marker for 4m43s before
+  SIGINT. Process threads waited in futex queues; no final Boost.Test report
+  was produced.
+- **Root cause:** unknown. The existing marker is immediately before the
+  `runWithFacePump` async wrapper and does not prove the worker entered
+  `getPublishStatus`.
+- **Repair candidate:** the current test-only candidate prints and flushes
+  stderr immediately before and after each worker-side `getPublishStatus`
+  call. It changes no request inputs, production paths, timeout, or oracle.
+  This candidate has not yet been reviewed, rebuilt, or tested.
+- **Evidence:** CodeGraph was synced after the source edit and `git diff
+  --check` passed. The prior candidate's paired static review, normal build,
+  runtime closure, and incomplete recovery run remain as recorded above.
+- **Lesson:** observe execution from inside the async task before changing
+  production timeout behavior.
+
+### 2026-09-29 — Worker enters recovered STATUS API but does not return
+
+- **Symptom:** two independent exact-hash reviews passed for the worker-marker
+  test candidate. The focused normal target rebuilt with `-j4`; `ldd -r` found
+  no unresolved symbols. From the repository root, the recovery test passed
+  denial/visibility checks, seed teardown, and replacement registration. It
+  printed `entering getPublishStatus #1` but no return marker after 1m19s; the
+  process was manually interrupted (SIGINT, exit 130) before its 8s request
+  deadline could produce a result. No test report exists.
+- **Root cause:** unknown. The worker is inside or below
+  `ArtifactRepositoryApi::getPublishStatus`; this evidence does not separate
+  `BeginCollaborationWithProviders`, selected-request setup, or the response
+  condition wait.
+- **Repair candidate:** temporarily add environment-gated stage markers around
+  `RepoClient::requestSelectedService` request startup, returned request ID,
+  response/timeout callbacks, and condition wait. Keep request deadlines,
+  wire behavior, security checks, and production decisions unchanged. This
+  instrumentation has not yet been edited, reviewed, built, or tested.
+- **Evidence:** the test-only worker-marker candidate passed paired static
+  review and matched-runtime closure, but its recovery selector was manually
+  interrupted and is incomplete. The isolated T006 selection/fetch selector
+  remains 433/433; no Clang 10 TSan result covers this candidate.
+- **Lesson:** the next checkpoint must distinguish synchronous selected-request
+  startup from waiting for its callbacks before changing protocol behavior.
+
+### 2026-09-29 — Spec192 first recovered STATUS request has no completion marker
+
+- **Symptom:** both independent static reviews passed for the per-query
+  diagnostic candidate; the normal target rebuilt with `-j4`, and `ldd -r`
+  plus RUNPATH verification found no unresolved symbols. From the repository
+  root, the isolated recovery case again passed the unselected-owner and
+  stale-owner denial checks, visibility checks, Face-pumped seed teardown, and
+  replacement registration. It logged `issuing first request`, but no response
+  state appeared during 4m43s. The test was manually interrupted with SIGINT
+  (exit 130), so it has no final report and is not a pass. The first invocation
+  from the build directory failed before test execution because the relative
+  `examples/trust-any.conf` path did not resolve; rerunning from the repository
+  root reached the test.
+- **Root cause:** still unknown. The per-poll marker is emitted immediately
+  before `runWithFacePump`; it does not prove whether the async worker entered
+  `getPublishStatus`, blocked while starting the selected request, or waited
+  without receiving either a response or timeout callback. The earlier
+  `runWithFacePump` deadline may unwind into a future destructor that waits on
+  the blocked async operation, but that remains a hang amplifier hypothesis.
+- **Repair candidate:** none. Keep T006 open. Do not change production timeout,
+  authorization, or recovery behavior until the first request's blocking point
+  is observable.
+- **Evidence:** current source candidate hash set was checked before/after by
+  two independent read-only reviewers. Candidate build and native runtime
+  closure passed; the recovered STATUS selector remains incomplete. The
+  separate T006 selector remains 433/433. No Clang 10 TSan result is available
+  for this candidate.
+- **Lesson:** report the exact marker boundary and interruption duration; a
+  request-start marker alone does not localize a block inside a nested async
+  helper.
+
+### 2026-09-29 — Add opt-in selected-request stage trace
+
+- **Symptom:** worker-side stderr proved the recovery task entered
+  `getPublishStatus`, but emitted no return marker after 1m19s. The exact test
+  was interrupted with SIGINT (exit 130), before its 8s request deadline
+  produced a result; the run is incomplete.
+- **Root cause:** unknown. The call is blocked inside or below
+  `ArtifactRepositoryApi::getPublishStatus`; no response/timeout state is
+  observable yet.
+- **Repair candidate:** `RepoClient::requestSelectedService` now emits
+  temporary stderr phase markers only when
+  `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1`: before/after deferred request
+  startup, ACK close/selection commit, response/timeout callbacks, and before/
+  after the result condition wait. Request arguments, wire behavior, security
+  checks, and timeout decisions are unchanged. This candidate is unreviewed,
+  unbuilt, and untested.
+- **Evidence:** CodeGraph synced the edited source and `git diff --check`
+  passed. Paired review and matched-runtime rebuild are still required before
+  another selector run.
+- **Lesson:** keep deadlock localization opt-in and separate from protocol
+  behavior until the blocking stage is known.
+
+### 2026-09-29 — Selected-replica STORE owner STATUS query times out
+
+- **Symptom:** the exact recovery selector rebuilt with the opt-in
+  `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1` instrumentation. It passed the
+  unselected-target denials and visibility checks, then the selected replica
+  STORE failed its response requirement at test line 1308: `repo-request-timeout:
+  Provider request timed out`. The run lasted 12.5 seconds, reported 154/155
+  assertions, and exited 201. Trace markers show three earlier owner STATUS
+  requests reached final-response callbacks. The selected-target STATUS query
+  reached ACK closure and selection commit, but only its timeout callback ran.
+- **Root cause:** unknown. CodeGraph shows this is the nested owner-proof query
+  from `RepoNode::validatePersistentWriteIdentity()` while the replica handles
+  STORE. Current evidence does not show whether the seed `PUBLISH_STATUS`
+  handler was entered, whether its lookup returned, or whether the response was
+  lost after the handler.
+- **Repair candidate:** the latest source now has temporary value-free stderr
+  stages in the `PUBLISH_STATUS` branch of `RepoNode::handleStatus()`, gated by
+  the same exact environment setting. The candidate reports handler entry,
+  request parsing, lookup outcome, and response construction only. It does not
+  change status authorization, request, timeout, or recovery behavior. This
+  owner-handler trace has now passed two independent exact-hash read-only
+  reviews. Its rebuild and rerun are pending.
+- **Evidence:** both independent reviews passed the 11-file request-trace
+  candidate; its focused target rebuilt with `-j4`; `ldd -r` and RUNPATH
+  resolved the build-tree NDNSF library, temporary NAC-ABE/OpenABE, and system
+  Boost 1.71 without unresolved symbols. The subsequent 12-file candidate with
+  the owner-handler trace passed paired static reviews but has not been
+  rebuilt or tested. The targeted runtime log is
+  `/tmp/spec192-t006-recovery-20260929-trace-run7.log`. This recovery case is a
+  failure, not a pass; the separate T006 selector remains 433/433. The later
+  owner-handler trace candidate is pending fresh paired review before another
+  build or selector run.
+- **Lesson:** the blocked call is an owner STATUS proof inside selected replica
+  STORE; a direct get-status recovery marker alone misidentified the failing
+  path. Trace both sides of this authenticated query before changing behavior.
+
+### 2026-09-29 — Spec192 owner STATUS response prepared but client times out
+
+- **Symptom:** the exact recovery selector rebuilt from the paired-reviewed
+  request and owner-handler trace candidate. Run8 exited 201 after 8.17 seconds
+  with 153/155 assertions. Two earlier unselected STATUS checks also failed;
+  the fatal assertion remained the selected replica STORE response.
+- **Root cause:** not yet known. The selected query reached the seed
+  `PUBLISH_STATUS` handler, parsed its request, found the durable operation,
+  and prepared response JSON. The selected client nevertheless ran its
+  timeout callback. This places the missing completion after handler response
+  preparation but does not distinguish return, Provider publication, wire
+  delivery, client validation, or callback dispatch.
+- **Repair candidate:** none. Keep protocol, authorization, and timeout
+  behavior unchanged. A new exact-environment-gated trace candidate adds only
+  constant stage names for Provider response execution/enqueue, hybrid key and
+  AEAD preparation, SVS publish return, and ServiceUser response intake,
+  authentication, decryption, and application callback. Paired review and the
+  focused rebuild/rerun are pending.
+- **Evidence:** both independent reviewers passed the exact 12-file candidate;
+  its API target rebuilt with `-j4`, and `ldd -r` plus RUNPATH checks resolved
+  the build-tree NDNSF library, temporary NAC-ABE/OpenABE, and system Boost
+  1.71. CodeGraph synced the two framework source edits and `git diff --check`
+  passed. Run8 log: `/tmp/spec192-t006-recovery-20260929-trace-run8.log`. This
+  run is a failure, not a pass. The separate T006 selector remains 433/433;
+  full API and Clang 10 TSan selectors remain open.
+- **Lesson:** reaching handler lookup and response construction is insufficient
+  evidence of a completed request; keep tracing the authenticated response
+  path and preserve the failure as open until a final callback is observed.
+
+### 2026-09-29 — Spec192 recovery advances, replacement status poll stalls
+
+- **Symptom:** after rebuilding the exact paired-reviewed trace candidate,
+  run9 passed the earlier selected owner STATUS path end to end: the seed
+  prepared and SVS-published the response, and ServiceUser authenticated and
+  decrypted it before firing the application callback. The test passed the
+  seed worker-stop check and replacement seed construction/registration, then
+  stopped during terminal `getPublishStatus` poll #1. The capped 180-second
+  run ended without a Boost.Test report.
+- **Root cause:** unresolved. The replacement poll entered `requestSelectedService`
+  for STATUS, then logged ACK-close error; the replacement seed's owner STATUS
+  handler did not log entry. The available trace shows no final response path
+  for that query. The earlier apparent response-loss boundary is not
+  reproducible in run9; the remaining boundary is replacement-seed selection,
+  authorization, ACK delivery, or polling orchestration.
+- **Repair candidate:** none. Preserve authorization and the one-deadline
+  behavior. Inspect replacement Provider registration, selector ACK result,
+  and the status-poll worker/Face-pump handoff before changing runtime code.
+- **Evidence:** paired exact-hash review passed; focused target build and
+  `ldd -r`/RUNPATH closure passed. Run9 log:
+  `/tmp/spec192-t006-recovery-20260929-trace-run9.log`. The earlier selected
+  response reached Provider SVS publication, authenticated user intake,
+  decryption, and callback. The capped run produced no terminal test report;
+  it is incomplete and not a pass. The separate T006 selector remains 433/433.
+- **Lesson:** diagnostic evidence moved the boundary after the first recovered
+  operation; restart qualification still requires proving a newly registered
+  seed is selectable and returns its persisted operation status.
+
+### 2026-09-29 — Spec192 replacement status ACK failure repeats
+
+- **Symptom:** run10 enabled `NDNSF_CONTROL_TIMING=1` and sample rate 1 on the
+  replacement-seed recovery selector. The terminal status poll again reached
+  `ack-closed-error` before selection commit. The worker did not return, and
+  the external 75-second cap exited 124 without a Boost.Test report.
+- **Root cause:** still unresolved. No owner STATUS handler or provider/user
+  control-timing events appeared for the replacement poll. Existing control
+  timing did not expose whether the Provider omitted the ACK, the validated
+  User callback rejected it, or the selection closure had no matching candidate.
+- **Repair candidate:** none. Add exact-environment-gated fixed-stage markers
+  for replacement STATUS handler registration and Provider ACK decision/
+  publication, plus RepoClient candidate classification. Add bounded
+  Face-pumped cleanup for the recovered seed worker when the status poll
+  throws, so the selector can report its actual assertion instead of hanging
+  during destruction.
+- **Evidence:** trace-only provider/user candidate passed paired exact-hash
+  review, built successfully with `-j4`, and passed runtime closure. Run10 log:
+  `/tmp/spec192-t006-recovery-20260929-control-run10.log`; exit 124, no final
+  test report. Run9 confirms the earlier selected response path itself can
+  complete, so do not attribute replacement poll failure to the same response
+  delivery boundary.
+- **Lesson:** a selector failure must preserve both the first causal assertion
+  and bounded asynchronous-worker cleanup; otherwise test teardown hides the
+  failure site.
+
+### 2026-09-29 — Spec192 T006 ACK trace review catches misleading branch label
+
+- **Symptom:** the first exact-hash review of the replacement STATUS ACK
+  diagnostics returned BLOCK. The no-registration branch was labeled as a
+  registered-service fallback, and the test cleanup caught only standard
+  exceptions.
+- **Root cause:** the fixed-stage name described the desired diagnostic
+  boundary rather than the actual `hasService`/collaboration lookup predicate;
+  a non-standard cleanup exception could also replace the original poll error.
+- **Repair:** rename the stage to `unregistered-service-default-ack` and catch
+  all cleanup exceptions before rethrowing the original status-poll failure.
+  These are trace/test-cleanup changes only; no protocol behavior changed.
+- **Evidence:** the reviewer confirmed all candidate hashes before and after,
+  then stopped at the finding. No build or runtime test ran on either the
+  blocked or repaired candidate. A fresh paired review is required before the
+  focused recovery selector.
+- **Lesson:** diagnostics must name the branch actually taken, and cleanup
+  must preserve the first failure regardless of exception type.
+
+### 2026-09-29 — Spec192 T006 review scopes an existing selected-request wait
+
+- **Symptom:** an independent static reviewer flagged the unbounded condition
+  wait in `RepoClient::requestSelectedService` as a possible deadline gap.
+- **Root cause:** this older selected publish/status wrapper relies on the
+  ServiceUser timeout callback to wake its caller. CodeGraph callers are
+  `queryPublishOperationStatus` and `beginPublishFileImpl`; T006 handle-fetch
+  LOCATION and RANGE calls instead use `waitForSignedResponse`, which has an
+  independent steady-clock deadline.
+- **Repair/scope decision:** no T006 code changed. After call-path review, the
+  reviewer reclassified the finding as pre-existing and out of scope for the
+  T006 fetch deadline guarantee. Keep it visible for separate publish/status
+  deadline evaluation; do not claim those paths have an independent waiter.
+- **Evidence:** both exact-hash T006 reviewers returned PASS after confirming
+  the candidate hashes were unchanged. No build or runtime selector has run
+  against the corrected trace/cleanup candidate yet.
+- **Lesson:** deadline findings must be traced to the operation path before
+  they are assigned to a task gate; record adjacent gaps without attributing
+  them to a different API path.
+
+### 2026-09-29 — Spec192 T006 ACK trace review catches disabled-path overhead and stale status
+
+- **Symptom:** paired static review of the user STATUS ACK instrumentation
+  returned P2 BLOCKs: the helper serialized each ACK service name before the
+  trace environment check, the stale-packet path parsed ACK names with tracing
+  disabled, and the task checkpoint still described existing markers as
+  future work.
+- **Root cause:** the diagnostics gated only the final output, not the
+  classification work on the ordinary ACK hot path; the progress note was not
+  advanced after adding the markers.
+- **Repair:** move the exact `=1` environment check before STATUS-name
+  classification and gate stale-name parsing before doing it. Update the T006
+  checkpoint to describe the current instrumentation and pending review/build.
+  These are diagnostic/documentation changes; protocol decisions are unchanged.
+- **Evidence:** the initial review hashes matched all 13 paths. No build or
+  runtime selector ran on the blocked candidate; a fresh paired review is
+  required before rebuilding.
+- **Lesson:** disabled tracing must avoid diagnostic serialization/parsing on
+  hot paths, and durable task status must be updated in the same checkpoint as
+  the implementation state it describes.
+
+### 2026-09-29 — Spec192 T006 review finds response trace classification still hot
+
+- **Symptom:** a follow-up exact-hash review found that ServiceUser response
+  trace call sites invoked the STATUS classifier before checking the trace
+  environment, so disabled diagnostics still serialized response service names.
+- **Root cause:** the first repair gated ACK classification and stale-ACK
+  parsing but left the shared classifier's response call sites unchanged.
+- **Repair:** gate the shared STATUS trace classifier itself with the exact
+  `=1` environment predicate before URI conversion, and use that predicate in
+  the response trace writer. ACK and response decisions remain unchanged.
+- **Evidence:** the follow-up review hashes matched all 13 paths. The updated
+  classifier candidate has not yet been paired-reviewed, rebuilt, or run.
+- **Lesson:** gate the classifier itself when instrumentation call sites run
+  in a hot path, not only the final log writer.
+
+### 2026-09-29 — Spec192 T006 provider trace classifier remains active when disabled
+
+- **Symptom:** paired static review passed the ServiceUser trace gate but
+  found ServiceProvider's STATUS classifier still converted service names
+  when tracing was disabled; `publishHybridMessage` also parsed response and
+  ACK names before checking the trace flag.
+- **Root cause:** the exact environment gate had been added to the user-side
+  diagnostics only; provider instrumentation retained unconditional
+  classification and message-name parsing.
+- **Repair:** share one exact `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1`
+  predicate across provider trace writers and return before provider STATUS
+  URI conversion or hybrid response/ACK name parsing when it is disabled.
+  Protocol, authorization, and timeout behavior are unchanged.
+- **Evidence:** reviewer B2 passed the ServiceUser-only candidate; reviewer
+  A2 blocked the same candidate on this provider-side P2. The provider fix is
+  awaiting fresh paired review; no build or selector ran on it.
+- **Lesson:** audit each instrumentation layer independently, including
+  diagnostic classification and parsing before the final logging gate.
+
+### 2026-09-29 — Spec192 recovered STATUS ACK is absent from the user candidate set
+
+- **Symptom:** recovery run12 failed at the replacement seed's STATUS poll with
+  `repo-ack-authentication-failed` and `matching=0, observed=0`. The test
+  returned a Boost.Test failure in 23 seconds rather than hanging.
+- **Root cause:** still unknown. Provider traces show its STATUS handler
+  accepted the ACK, queued hybrid encoding, and returned from SVS publication;
+  RepoClient's ACK closure nevertheless observed an empty candidate set. The
+  remaining boundary is user-side ACK receive, pending-request/name matching,
+  hybrid decryption, or authentication/collection.
+- **Repair candidate:** add exact-environment-gated, constant-stage traces at
+  the user STATUS ACK receive and decrypt/verification boundaries. Preserve
+  authorization, Provider selection, and timeout behavior.
+- **Evidence:** the corrected candidate passed two exact-hash static reviews,
+  rebuilt `spec192-repo-persistent-api` with `-j4` in 8m34s, and passed
+  `ldd -r` with no unresolved symbols. Run12 log:
+  `/tmp/spec192-t006-recovery-20260929-reviewpass-run12.log`; the replacement
+  STATUS closure reports `ack-candidate-set-empty`. No task acceptance has
+  passed on this trace candidate.
+- **Lesson:** SVS enqueue/publication return does not prove the peer observed,
+  decrypted, authenticated, and stored an ACK candidate; instrument each
+  boundary before assigning a root cause.
+
+### 2026-09-29 — Spec192 T006 user ACK trace reaches decode but recovery still fails
+
+- **Symptom:** recovery run13 returned `repo-ack-authentication-failed` in
+  17 seconds. The focused target had just rebuilt successfully and `ldd -r`
+  reported no unresolved symbols.
+- **Root cause:** not established. Provider traces include accepted STATUS
+  ACK decisions and completed publish calls. User traces show 286 ACK Data
+  arrivals, 29 pending-request matches, 24 decrypt/wire-decode completions,
+  8 candidates stored, and 16 decoded candidates rejected. RepoClient closures
+  include an empty candidate set and a set with no authenticated match, but
+  current stage-only traces do not safely associate those observations with
+  one request.
+- **Evidence:** `/tmp/spec192-t006-recovery-20260929-reviewpass-run13.log`;
+  selector exit 201. This is diagnostic evidence only, not a T006 pass.
+- **Next:** the candidate now adds exact-environment-gated fixed rejection
+  reasons at user ACK admission checks and fixed predicate labels for each
+  collected RepoClient ACK. Paired review and rebuild are pending; rerun the
+  recovery selector before considering any protocol change.
+- **Lesson:** aggregate ACK receive/decode counts cannot prove the exact
+  selected request's authenticated ACK reached its collection window.
+
+### 2026-09-29 — Spec192 T006 ACK rejection trace candidate blocked in review
+
+- **Symptom:** paired static review found a compile blocker because the
+  RepoClient ACK callback used `traceEnabled` without capturing it. It also
+  found missing fixed labels on non-V2-name and ACK wire-decode rejection
+  returns.
+- **Root cause:** the diagnostic candidate added closure predicate labels but
+  did not carry the opt-in flag into the callback or cover the two early
+  rejection exits.
+- **Repair:** capture the immutable trace flag by value and add fixed-stage
+  ACK rejection labels guarded by the exact trace environment predicate.
+  These labels do not include names, IDs, tokens, payloads, or predicate data.
+- **Evidence:** reviewer B2 blocked the exact-hash candidate; no build or
+  selector ran on it. The corrected candidate awaits a fresh paired review.
+- **Lesson:** compile-check callback capture lists and cover each early return
+  before spending a long build on diagnostic instrumentation.
+
+### 2026-09-29 — Spec192 T006 rejection trace helper declared in nested type
+
+- **Symptom:** the follow-up review found the fixed ACK trace helper was a
+  non-static member of `ServiceUser::LargeDataFilePublication`, while its new
+  calls were in `ServiceUser::handleRequestAckByName`.
+- **Root cause:** the helper was inserted at a matching method location inside
+  the nested struct instead of beside the other file-local trace helpers.
+- **Repair:** move the helper to the anonymous namespace shared by the
+  ServiceUser implementation.
+- **Evidence:** reviewer A2 blocked the exact-hash candidate; no build or
+  selector ran on it. The moved-helper candidate awaits paired review.
+- **Lesson:** verify scope and call-site resolution for file-local diagnostic
+  helpers before freezing hashes.
+
+### 2026-09-29 — Spec192 T006 classified STATUS ACK closure still empty
+
+- **Symptom:** recovery run14 exited 201 with
+  `repo-ack-authentication-failed`. The reviewed trace candidate built in
+  4m55s and its exact binary passed `ldd -r`.
+- **Root cause:** not established. RepoClient saw one empty STATUS candidate
+  closure and another closure with a denied-status candidate. The second
+  follows the first in the test log and may result from its cleanup, but the
+  trace has no per-request correlation to confirm that. User-side rejection
+  labels report 16 provider-not-requested cases, while candidate counts do not
+  identify the failing poll.
+- **Evidence:** `/tmp/spec192-t006-recovery-20260929-reviewpass-run14.log`;
+  selector exit 201. This remains diagnostic evidence, not a T006 pass.
+- **Next:** Run15 varies only the recovery fixture's ACK collection window
+  from 1 s to 3 s to test whether the shorter value expires before the
+  replacement Repo answers. The existing selected-call deadline stays at 8 s.
+- **Lesson:** fixed rejection labels classified a predicate, but overlapping
+  calls still prevent attributing the failed closure without correlation.
+
+### 2026-09-29 — Spec192 T006 recovery ACK-window diagnostic targeted the wrong test
+
+- **Symptom:** The first proposed 3 s ACK-window fixture candidate was blocked
+  by both reviewers before build or execution.
+- **Root cause:** The patch matched the later provider-selection test's
+  `requestTimeoutMs = 8000` setup instead of the earlier recovery test. That
+  later test calls `checkAvailability(..., 1500)`, which is invalid when its
+  API ACK window is 3000 ms.
+- **Fix:** Restore the provider-selection test to its original 1000 ms ACK
+  window and move the 3000 ms window to
+  `RecoveredPendingPublishTargetGetsOneDurableReceipt`; preserve its 8 s
+  selected-call deadline.
+- **Evidence:** Paired read-only reviews identified the mismatch at test lines
+  1457 and 1881 and confirmed `checkAvailability` rejects timeout values less
+  than or equal to the configured ACK window. No build or selector ran on the
+  blocked candidate.
+- **Lesson:** Anchor timing edits to the test case name, not a shared client
+  configuration shape.
+
+### 2026-09-29 — Spec192 T006 recovery ACK window must be scoped to the recovery query
+
+- **Symptom:** Run15 reached the recovery path but failed two later assertions:
+  the timeout scenario exceeded its 20 s bound, then service re-registration
+  threw `repo-publish-worker-already-started`.
+- **Root cause:** The 3 s ACK window was configured on the API reused by the
+  rest of the large recovery fixture, stretching later status polling. The
+  fixture also re-registered the same replica worker with 1000 ms after its
+  initial 1500 ms configuration; CodeGraph confirms a started worker rejects
+  changed settings.
+- **Fix:** Restrict the 3 s ACK window to a separate API used only for the
+  recovered operation's status query. Keep the shared fixture API at 1 s and
+  re-register the replica worker with its original 1500/8000 ms settings.
+- **Evidence:** `/tmp/spec192-t006-recovery-20260929-reviewpass-run15.log`;
+  selector exit 201. The recovered publish returned `COMMITTED`; the later
+  timeout assertion failed after three status polls. No T006 pass is claimed.
+- **Lesson:** Scope timing experiments to the single operation under test, and
+  repeat worker registration only with its original immutable configuration.
+
+### 2026-09-29 — Spec192 T006 later replay STATUS request remained unanswered
+
+- **Symptom:** Run16 exited at the external 180 s timeout after the recovered
+  operation returned `COMMITTED`; the next exhausted-replay status request
+  never returned from `getPublishStatus`.
+- **Root cause:** Not established. Its fixed-label trace ended with an empty
+  STATUS candidate closure and three candidates rejected after the collection
+  window; the trace has no request ID, so it cannot prove which response was
+  absent or why.
+- **Fix under evaluation:** Use the isolated 3 s ACK-window API for recovered,
+  exhausted-replay, and reconciliation status checks. Keep the shared 1 s API
+  for the synthetic timeout scenario and preserve the 8 s per-call bound.
+- **Evidence:** `/tmp/spec192-t006-recovery-20260929-reviewpass-run16.log`;
+  timeout exit 124 at 180 s. The recovered operation's status was `COMMITTED`;
+  the following status poll entered but did not return before termination.
+- **Lesson:** Recovery and timeout subcases need separate client ACK windows;
+  aggregate provider activity does not identify an individual status response.
+
+### 2026-09-29 — Spec192 T006 provider-selection selector exceeded the initial guard
+
+- **Symptom:** The focused `PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts`
+  selector did not finish within 300 s and was terminated with exit 124.
+- **Root cause:** Not established. Its log contained only two status-poll
+  completions and no assertion report; passing Boost messages are not emitted
+  before the test finishes.
+- **Next:** Rerun the same selector with a 900 s external bound, then classify
+  its final assertions and T006 fetch-stage results. Do not infer a pass from
+  its active process or sparse progress output.
+- **Evidence:** `/tmp/spec192-t006-fetch-selector-20260929-run1.log`; 2
+  `getPublishStatus` calls returned `COMMITTED`, no test error text, and no
+  `*** No errors detected` line before timeout.
+- **Lesson:** This multi-scenario API selector needs a guard long enough to
+  finish its bounded fault-injection scenarios before its test report appears.
+
+### 2026-09-29 — Spec192 provider-selection API selector exposed quorum accounting failures
+
+- **Symptom:** The 900 s rerun of
+  `PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts` completed with
+  exit 201 and seven failed assertions.
+- **Root cause:** Not established. Failures include differing committed Repo
+  sets for two permuted quorum writes, receipt/payload row counts inconsistent
+  with the first result, and a later manifest-count mismatch. No assertion
+  inside the T006 fetch fault-fixture block failed in this run.
+- **Next:** Trace why sequential quorum publishes with canonicalized target
+  sets produce different committed Repo sets; separately explain the later
+  manifest counter before using this full selector as a pass gate. Keep T006's
+  direct fetch behavior and the broader publish/archive assertions distinct.
+- **Evidence:** `/tmp/spec192-t006-fetch-selector-20260929-run2.log`; seven
+  assertion failures at test lines 2224, 2236–2244, and 3040. The selector
+  reached its final report in about eight minutes.
+- **Lesson:** A passing fetch sub-block does not make its containing API
+  selector green when adjacent publish/archive oracles fail.
+
+**Follow-up diagnosis (2026-09-29):** The receipt contract requires each QUORUM
+operation to reach its durable selected-receipt threshold; it does not require
+two independent writes to commit the same replica subset. The worker finalizes
+as soon as the threshold is reached. The fixture incorrectly compared those
+independent subsets and based both writes' row/version accounting on the first
+result. The Core stores one content-addressed manifest per Repo/object, while
+each durable operation adds a receipt row and advances LOCATION version. The
+oracle now counts receipt rows and versions per operation, and a manifest once
+when either operation committed on that Repo. This explains the affected
+assertions while leaving the original failed-run evidence intact; the corrected
+containing selector has not yet run. See the next review/build/run record in
+`tasks.md`.
+
+### 2026-09-29 — Spec192 API selector launched from the build directory
+
+- **Symptom:** Run3 exited 201 during Boost test module initialization with
+  `Failed to read configuration file: examples/trust-any.conf`.
+- **Root cause:** The executable was launched with `build/spec192-resync` as
+  its current directory, but the integration harness loads this configuration
+  through a repository-root-relative path. The file exists at
+  `examples/trust-any.conf`.
+- **Fix:** Launch the same selector from the repository root and keep the
+  binary path absolute or rooted under `build/spec192-resync`.
+- **Lesson:** Preserve the repository-root working directory for this Boost
+  integration target; a loader failure before test entry is not selector
+  evidence.
+- **Evidence:** `/tmp/spec192-t006-fetch-selector-20260929-run3.log`; the
+  failure was at module load before the requested test case began.
+
+### 2026-09-29 — Spec192 provider selector returned a partial quorum
+
+- **Symptom:** Root-launched run4 entered
+  `PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts` and exited 201
+  with seven assertions: one 3-target QUORUM publish returned `PARTIAL` with
+  one of two required receipts; two replica entries were `FAILED` instead of
+  `SKIPPED`.
+- **Root cause:** Not established. The test output omitted each failed replica's
+  stable failure class. The quorum-accounting and later T006 fetch assertions
+  did not fail in this run.
+- **Next:** Add a failure message containing logical Repo ID, replica state,
+  and `failureReason`; use that exact class to trace provider bootstrap/store
+  behavior before any product change.
+- **Evidence:** `/tmp/spec192-t006-fetch-selector-20260929-run4.log`; 7 failures
+  at test lines 1970–2006 after roughly eight minutes.
+- **Lesson:** A quorum failure in a neighboring fixture is still part of the
+  containing selector gate; preserve its stable target failure code before
+  deciding whether the defect is in the fixture or product path.
+- **Follow-up:** Run5, with the diagnostic assertion and existing request trace
+  enabled, exited 0 with no errors. It did not reproduce run4, so the run4
+  partial-quorum cause remains unconfirmed. A trace-disabled repeat is planned
+  to test for instrumentation timing sensitivity.
+- **Passing evidence:** `/tmp/spec192-t006-fetch-selector-20260929-run5.log`;
+  0 assertion errors, final `*** No errors detected`.
+- **Follow-up:** Trace-disabled run6 also exited 0 with no assertion errors.
+  The diagnostic failure class was not triggered in either green run, so the
+  run4 partial quorum remains unreproduced and its cause is unconfirmed; retain
+  this as historical failure evidence rather than asserting an inferred cause.
+- **Passing evidence:** `/tmp/spec192-t006-fetch-selector-20260929-run6.log`;
+  0 assertion errors, final `*** No errors detected`.
+
+### 2026-09-29 — Spec192 T006 TSan selector exited without a report
+
+- **Symptom:** The Clang 10 TSan API selector returned 66 on three full runs
+  (approximately 5–42 seconds) with empty captured output. The explicit TSan
+  `log_path` produced no report file. `--help` returned 0. A 20-second
+  `verbosity=2` PTY diagnostic printed `Running 1 test case...` and reached
+  `NDNSF_INTEGRATION_BOOTSTRAP_READY` before the intentional timeout.
+- **Root cause:** Not established. Exit 66 alone is insufficient to claim a
+  TSan race when no report or test summary was captured.
+- **Next:** Run the instrumented selector through a PTY with sanitizer
+  verbosity and preserve its full output; if it exits again, inspect the exact
+  first failing test/worker and sanitizer report before adjusting code.
+- **Evidence:** `/tmp/spec192-t006-fetch-tsan-20260929-run1.log`,
+  `/tmp/spec192-t006-fetch-tsan-20260929-run2.log`,
+  `/tmp/spec192-t006-fetch-tsan-20260929-run3.log`; all are empty despite the
+  child return code 66.
+- **Lesson:** An instrumented binary containing TSan symbols and a successful
+  sanitizer initialization do not establish the TSan test gate; retain the
+  run exit and require the actual test report or race details.
+
+### 2026-09-29 — Spec192 T006 ACK-empty requests were misclassified
+
+- **Symptom:** A traced provider selector returned an empty authenticated ACK
+  set for repo-1 `STORE_RANGE`; RepoNode persisted the target as `FAILED` with
+  `repo-target-store-rejected`. That violated the provider-selection receipt
+  oracle. The same bounded run later exited 124 before its final report. A
+  post-fix recovery run also hit an empty ACK during status poll 5 and exited
+  201.
+- **Root cause:** `requestMayHaveBeenEmitted` was set only before Selection
+  commit. An empty ACK set throws before Selection, even though
+  `BeginCollaborationWithProviders` had already returned a live request ID, so
+  RepoNode treated a possibly emitted request as a definitive rejection.
+- **Fix:** Record possible emission after Begin returns by consulting the
+  Face-thread request lifecycle. Complete `ADMISSION_REJECTED` immediately
+  with a definite local-admission error; admitted, queued, or unobserved states
+  remain conservatively uncertain.
+- **Evidence:** `/tmp/spec192-t006-provider-trace-resume.log` and the read-only
+  database snapshot under `/tmp/spec192-persistent-api-644120-0`; the first
+  post-fix recovery attempt is `/tmp/spec192-t006-recovery-postfix.log`.
+- **Passing evidence:** The reviewed candidate rebuilt successfully and passed
+  runtime closure. Recovery passed with tracing enabled
+  (`/tmp/spec192-t006-recovery-postfix-trace.log`) and disabled
+  (`/tmp/spec192-t006-recovery-postfix-repeat.log`). The untraced provider
+  selector passed in 511.4 seconds
+  (`/tmp/spec192-t006-provider-postfix-600.log`).
+- **Lesson:** Treat a live initial Request with no authenticated ACK as an
+  uncertain provider outcome before Selection; distinguish local admission
+  rejection from a request that may have crossed the Face boundary.
+
+### 2026-09-29 — Spec192 T006 sanitizer scope and selector boundaries
+
+- **Symptom:** After the post-fix normal recovery selectors and full provider
+  selection/failover selector passed, the broad provider selector under Clang
+  10 TSan exited 66 after roughly 7m20. It reported neighboring quorum
+  assertions (18 Boost errors) and then a TSan `signal-unsafe call inside of a
+  signal` report during the exception/termination path. No data-race report
+  appeared. A separate recovery selector under TSan exited 201 quickly while
+  its authorization fixture waited for a remote owner query.
+- **Root cause:** The broad TSan selector's business assertions and
+  signal-unsafe exception path are not explained by a reported race; cause is
+  unestablished. The TSan recovery fixture exercises RepoNode's existing
+  remote-owner query, capped at 2000 ms, and did not produce the ACK needed by
+  that fixture. That timeout is outside T006's shared fetch-health state.
+- **Fix / bounded validation:** Added
+  `PersistentApiFetchHealthStateSerializesConcurrentCalls`, which runs two
+  concurrent `fetchFile` calls against one API instance with a synthetic
+  no-response publisher and checks the expected four STATUS attempts. The
+  candidate passed paired exact-hash static reviews, normal execution, and a
+  Clang 10 TSan run with no race or signal-unsafe report. The TSan target built
+  with `-j4`; `ldd -r` showed no missing or unresolved symbols. The 2000 ms
+  authorization bound was left unchanged.
+- **Evidence:** `/tmp/spec192-t006-provider-postfix-tsan-900.log`,
+  `/tmp/spec192-t006-recovery-postfix-tsan.log`, and
+  `/tmp/spec192-t006-fetch-health-tsan-focused.log`. Normal focused selector
+  output ended `*** No errors detected`; the post-fix recovery selector passed
+  with trace enabled and disabled, and the full provider selector passed in
+  511.4 seconds (`/tmp/spec192-t006-provider-postfix-600.log`).
+- **Lesson:** Keep sanitizer claims scoped to the instrumented state under
+  test. A focused concurrent-call TSan pass validates the API-instance health
+  state while the broader selector's unrelated assertion/exception failures
+  remain explicitly unqualified; do not weaken the RepoNode authorization
+  timeout to make a sanitizer fixture pass. When changing Waf output trees,
+  re-run `configure` with the selected `--out` first; passing `--out` only to
+  `waf build` does not switch the configured tree.
+
+### 2026-09-29 — Spec192 T007 initial offline-import target build failed
+
+- **Symptom:** `./waf build -j4 --targets=spec192-repo-legacy-import-unit,spec192-repo-legacy-import-integration,ndnsf-repo-import` exited 1 in `build/spec192-tsan-clang`. No test selector ran. The integration fixture used nonexistent `ndn::Block::wire()`, and `LegacyRepoImporter.cpp` called `fsyncDirectory` before declaration and ended without closing the outer namespace.
+- **Root cause:** The fixture assumed an older `ndn-cxx` Block API; the importer source had a helper declaration-order error and an incomplete namespace closure.
+- **Fix:** Copy the encoded Data block through `getBuffer()` iterators, forward-declare the directory sync helper before publication, and close the `ndnsf_distributed_repo` namespace.
+- **Next:** Re-run both static review passes, rebuild the registered T007 targets, verify runtime linkage, then run the serial unit and offline integration selectors plus CLI help.
+- **Lesson:** Confirm exact APIs against the pinned dependency source and compile each newly registered target before treating static review as the only gate.
+
+### 2026-09-29 — Spec192 T007 unit selector failed on duplicate schema marker
+
+- **Symptom:** `spec192-repo-legacy-import-unit` exited 201 with three fixture setup errors; each reported `UNIQUE constraint failed: artifact_schema_state.singleton` before reaching importer assertions.
+- **Root cause:** The checked-in generation-12 SQL fixture already seeds its singleton marker, while the unit helper and both destination-conflict profiles attempted to insert another row.
+- **Fix:** Use the fixture's existing generation-12 marker; change only the unknown-schema case with an `UPDATE` to generation 11.
+- **Next:** Re-run both static review passes, rebuild all registered T007 targets, then rerun the complete unit and offline integration gates serially.
+- **Lesson:** Keep fixture setup aligned with the rows embedded in the exact-schema SQL fixtures; do not duplicate their singleton markers.
+
+### 2026-09-29 — Spec192 T007 integration selector failed on duplicate profile markers
+
+- **Symptom:** `spec192-repo-legacy-import-integration` exited 201 with four setup errors; all reported a duplicate `artifact_schema_state.singleton` before importer assertions.
+- **Root cause:** The Repo generation-12 SQL fixture seeds both its artifact schema marker and `repo_meta.schema_version`; the integration helper and two malformed-wire fixtures redundantly inserted both markers.
+- **Fix:** Use the SQL fixture's pinned marker rows and remove the duplicate insertions from the Repo fixture helper and malformed-wire cases.
+- **Next:** Re-run both static review passes, rebuild all registered T007 targets, then rerun unit followed by offline integration.
+- **Lesson:** Keep each synthetic fixture's marker ownership in one place so profile tests begin from the exact pinned DDL-and-seed contract.
+
+### 2026-09-30 — Spec192 T007 integration selector failed while decoding fixture Data
+
+- **Symptom:** `spec192-repo-legacy-import-integration` reported
+  `legacy-import-data-wire-malformed` during the interrupted-import scenario,
+  before creating its durable staging manifest.
+- **Root cause:** The fixture copied `Block::getBuffer()` from the signed Data
+  packet. That returns the backing allocation, including unused zero-filled
+  headroom, rather than the encoded Block's exact TLV range. SQLite and the
+  importer preserved those bytes correctly; NDN decoding rejected the leading
+  zeros.
+- **Fix:** Copy the packet wire from `wireBlock.begin()` through
+  `wireBlock.end()`, which preserves exactly the signed Data TLV.
+- **Next:** Re-run both T007 static review passes, rebuild the registered unit,
+  integration, and CLI targets, then run the full unit and offline integration
+  selectors serially and complete VM-24 source/target verification.
+- **Lesson:** `Block::getBuffer()` exposes storage ownership, not necessarily
+  the logical wire slice; use the Block iterators when retaining encoded TLV
+  bytes.
+
+### 2026-09-29 — Spec192 T008 pre-implementation audit blocked on binding ownership
+
+- **Symptom:** The read-only T008 audit returned `BLOCK` before code changes,
+  builds, or tests. The Repo pybind package could not reach the C++
+  `ServiceUser` hidden behind the framework's `NativeServiceUser` wrapper, and
+  the contract did not define how legacy Python backends and methods leave the
+  production path.
+- **Root cause:** The binding plan described a thin facade but omitted the
+  cross-extension owner bridge, its lifetime/GIL rules, and the compatibility
+  boundary for Python-only state machines.
+- **Fix:** Added the T008 binding projection contract: complete public
+  `ArtifactRepositoryApi` value/config/result surface, a fixed-name borrowed
+  capsule whose owner is retained until after native API destruction,
+  GIL release for synchronous waits, native-only service entrypoint, and
+  `SPEC192_COMPATIBILITY_V1` errors for retired behavior.
+- **Next:** Re-audit the refined plan, implement the real pybind path and
+  compatibility adapters, then run the required static-review passes before
+  any T008 build or test selector.
+- **Lesson:** A thin wrapper needs an explicit owner crossing when its native
+  dependency is held inside another extension; a Python-level reference alone
+  is insufficient unless the native API's borrowing lifetime is coupled to it.
+
+### 2026-09-30 — Spec192 T008 host binding closure used a stale installed framework library
+
+- **Symptom:** `ldd -r` on the freshly built `ndnsf._ndnsf` extension reported
+  unresolved `ResponseMessage::getProviderIdentity` when it loaded
+  `/usr/local/lib/libndn-service-framework.so.0.1.0`.
+- **Root cause:** The branch-local framework library exports the getter, while
+  the installed `/usr/local/lib` copy predates that ABI change. The compiler
+  accepted the extension because shared-library links permit unresolved
+  symbols until load time.
+- **Fix:** For source-conformance validation, use the matching branch build
+  directory through `LD_LIBRARY_PATH`; both extension imports and native
+  symbol closure then pass. No installed system library was overwritten.
+- **Next:** Keep this installed-prefix mismatch explicit in T008 evidence and
+  qualify the frozen candidate with its matching native runtime in T010.
+- **Lesson:** A host extension link is not runtime closure evidence; resolve
+  every native symbol against the exact matching framework library before
+  Python import or test execution.
+
+### 2026-09-30 — Spec192 T008 first Python conformance batch exposed API projection gaps
+
+- **Symptom:** The initial 15-module wrapper batch ran 25 tests and ended with
+  one documentation assertion failure and eight errors: Persistent API
+  creation rejected the capsule keep-alive policy, examples default-constructed
+  and mutated an immutable native `ArtifactReference`, a test omitted the
+  required In-App owner ID, and legacy discovery imports still expected active
+  Python selection behavior.
+- **Root cause:** Static review had not exercised pybind's weak-reference
+  behavior for capsules or compared all example constructors with the actual
+  bound signatures. The retirement boundary also lacked import-compatible
+  errors for prior ACK discovery helpers.
+- **Fix:** Retained `NativeServiceUser` through the bound API's owned Python
+  reference, removed capsule `keep_alive`, switched examples/tests to the
+  validating native reference constructor, required a non-empty In-App owner
+  ID, retained retired helper names as versioned errors, and updated tests and
+  README type coverage.
+- **Next:** Re-review the frozen T008 correction, rebuild the base extension,
+  and rerun the complete affected Python conformance selector batch.
+- **Lesson:** Before claiming a thin pybind projection, verify lifetime policy,
+  immutable-value constructors, required config fields, and retired imports
+  against the exact callable signatures in a real interpreter.
+
+### 2026-09-30 — Spec192 T008 second Python batch exposed stale test assumptions
+
+- **Symptom:** The first run after rebuilding both extensions passed runtime
+  closure and imports but reported two errors in a 31-case Python batch. One
+  fetch-error fixture had no commit receipt IDs; the RepoClient capture hook
+  still required timeout keyword arguments.
+- **Root cause:** Persistent `ArtifactHandle` validation requires a non-empty
+  receipt ID list, and the current RepoClient passes timeouts through the
+  native config object rather than separate factory keywords.
+- **Fix:** Replaced the invalid all-failed handle with a valid committed
+  receipt and asserted that a failed native fetch attempt preserves structured
+  result fields. Updated the capture hook to the actual two-argument factory
+  signature and checked timeout values on the config.
+- **Next:** Continue with T009; run the full C++ and MiniNDN qualification only
+  after the fresh T010 convergence review.
+- **Lesson:** Test fixtures must satisfy native value invariants, and mocks
+  should match the public call signature rather than a previous wrapper shape.
+
+### 2026-09-30 — Spec192 T009 Python preflight resolved stale framework library
+
+- **Symptom:** Importing the T008 `py_repoclient` extension before the T009
+  selector failed with an undefined `ResponseMessage::getProviderIdentity`
+  symbol.
+- **Root cause:** The extension's RUNPATH selected the older
+  `/usr/local/lib/libndn-service-framework.so.0.1.0`, which lacks that symbol;
+  the current workspace `build/libndn-service-framework.so` exports it.
+- **Fix:** Set `LD_LIBRARY_PATH` to the workspace `build/` directory before
+  importing the extension. The interpreter import then passed; no rebuild was
+  required.
+- **Next:** Run the T009 adapter selector with the same workspace library path.
+- **Lesson:** For native Python failures, verify the resolved SONAME and symbol
+  table before diagnosing source code or rebuilding.
+
+### 2026-09-30 — Spec192 T009 VM-25 selector exposed In-App dispatch and fixture serialization gaps
+
+- **Symptom:** Reviewed candidate 上首次运行 selector 时 12 例中 9 例通过、3 例失败。DI resolver 把 native In-App `ArtifactHandle` 传入仅支持 Persistent 的 handle fetch overload；generic DI reference fixture 还调用了不存在的 `ArtifactReference.to_dict()`。
+- **Root cause:** Thin facade 仅按参数类型选择 native fetch overload，没有继续检查 handle 的 lifecycle mode。测试 fixture 假设 generic DI dataclass 提供实际并不存在的 serializer 方法。
+- **Fix:** In-App handle 改走 native `fetch_file(handle.reference, destination)`，Persistent handle 仍走带 timeout 的 native overload；generic dataclass 使用 `dataclasses.asdict`。更新后的 28 文件候选通过完整 VM-25 selector（12/12）。
+- **Next:** 完成 T010 新鲜 design-code convergence audit，再按顺序运行受影响 unit、integration、MiniNDN 及其余迁移/网络 gates。
+- **Lesson:** native overload 应由解析后的 lifecycle contract 决定；fixture 应使用实际声明的值表示，不假设便利 serializer。
+
+### 2026-09-30 — Spec192 T010 full unit target missed the legacy importer translation unit
+
+- **Symptom:** `./waf build -j4 --targets=unit-tests` compiled 244/245
+  translation units, then failed to link with five undefined references to
+  `LegacyRepoImporter::import(const LegacyRepoImportConfig&)` from
+  `distributed-repo-legacy-import.t.cpp`.
+- **Root cause:** The monolithic `unit-tests` target compiles Repo sources from
+  its own direct-source list. The T007 focused target links the
+  `ndnsf-distributed-repo` library, which already contains
+  `LegacyRepoImporter.cpp`, but the monolithic source list omitted that file.
+- **Fix:** Added `NDNSF-DistributedRepo/src/LegacyRepoImporter.cpp` to the root
+  `unit-tests` direct-source list. The candidate must pass a fresh build/source
+  closure review before the complete unit target is rebuilt.
+- **Next:** Reopen T010 static review, rebuild and run the full `unit-tests`
+  target, then proceed to integration only if both unit build and selectors
+  pass.
+- **Lesson:** A focused selector that links the production library does not
+  establish the direct-source closure of a separate monolithic test target.
+
+### 2026-09-30 — Spec192 T010 monolithic unit run hit host OOM
+
+- **Symptom:** After the GCC `unit-tests` target built successfully (246/246
+  translation units), the repository-root run started 1,318 cases and was
+  terminated by the kernel OOM killer at 6.7 GiB resident memory (exit 137).
+  Before termination, `Spec182ClientState` reported failures in
+  `SlowObserverDoesNotBlockCancelAndLateReplaySurvivesClientClose`,
+  `SubmissionFailureReturnsFailedHandle`, and
+  `RealDeadlineDoesNotWaitForWorkOrSlowObserver`.
+- **Root cause:** The kernel log confirms the single monolithic test process
+  exceeded available host memory. The preceding async/deadline assertions
+  failed under that run, but their relationship to memory pressure is not
+  established; they remain separately unverified. This run does not qualify
+  the affected Repo suites.
+- **Fix/next:** Keep the successful GCC build. Run the complete affected
+  DistributedRepo and Spec192 unit suites as isolated Boost.Test processes so
+  each process releases its working memory; retain the failed monolithic run
+  as a BLOCK, not a PASS. Do not open the integration gate until those affected
+  selectors pass.
+- **Lesson:** A complete monolithic target build is not runtime evidence, and
+  an OOM-terminated run cannot establish full suite completion. Split large
+  affected-suite execution at process boundaries when the host cannot sustain
+  the monolithic test process.
+
+### 2026-09-30 — Spec192 T010 Repo-reference integration used stale OpenABE
+
+- **Symptom:** The newly built `integration-tests` binary reproducibly aborted
+  `Spec170NativePostSelection/ProductionIngressRunsNativeRepositoryReferenceIntoProvider`
+  three times with `*** stack smashing detected ***`. GDB placed
+  `__stack_chk_fail` in `oabe::block_cipher_df` during NAC-ABE KEM encryption.
+- **Root cause:** The default environment had only the GStreamer path in
+  `LD_LIBRARY_PATH`; `ldd` therefore selected the known stale
+  `/usr/local/lib/libopenabe.so`. The existing Spec192 T006 record identifies
+  this copy's padding/output-length bug in the CTR-DRBG AES path.
+- **Repair:** Re-run with the already qualified matched runtime overlay:
+  `build/spec192-resync:/tmp/spec192-nacabe-runtime-20260928/lib:/home/tianxing/NDN/openabe/src:/usr/local/lib`.
+  No source or `/usr/local` library was changed.
+- **Evidence:** The failing case failed three times with the default closure,
+  then passed 1/1 with 8/8 assertions under the overlay. `ldd` selected
+  `/tmp/spec192-nacabe-runtime-20260928/lib/libnac-abe.so` (hash-identical to
+  `/usr/local/lib/libnac-abe.so`) and `/home/tianxing/NDN/openabe/src/libopenabe.so`.
+- **Next:** Run remaining affected integration selectors with this exact
+  runtime closure. Verify the T010 MiniNDN runner's child environment and
+  recorded runtime hashes use the same compatible OpenABE/NAC-ABE pair.
+- **Lesson:** Verify transitive crypto-library resolution with the exact
+  runtime environment used for a test; plain `ldd` under the default host
+  environment can approve a known stale same-SONAME OpenABE library.
+
+### 2026-09-30 — Spec192 T010 focused API run loaded the previous framework
+
+- **Symptom:** The first `spec192-repo-persistent-api` execution reported
+  `repo-selected-target-stale` during recovery and was interrupted after that
+  case. It was not a completed run of the current candidate.
+- **Root cause:** Reusing the older `build/spec192-resync` overlay put its
+  `libndn-service-framework.so.0.1.0` ahead of the current GCC `build/` library.
+  `LD_LIBRARY_PATH` precedence over the binary's RUNPATH caused the old
+  framework library to load.
+- **Repair:** Put the current `build/` directory first, followed by the
+  matching `/tmp/spec192-nacabe-runtime-20260928/lib` and
+  `/home/tianxing/NDN/openabe/src` paths. `ldd -r` then selected the current
+  framework, matched NAC-ABE and corrected OpenABE.
+- **Evidence:** Under the corrected closure the full focused target passed
+  4/4 test cases and 703/703 assertions. The stale-target error did not recur.
+- **Lesson:** Matched runtime overlays are binary-specific. Preserve the
+  candidate framework's own directory before adding only the required crypto
+  libraries.
+
+### 2026-09-30 — Shared Spec192 response-identity selector failed before publish
+
+- **Symptom:** The extra
+  `Spec192ResponseProviderIdentity/ProductionOnResponseRejectsValidDataSignedByWrongProvider`
+  integration selector failed five assertions; its pending call remained
+  active and Boost reported `request reset requires REQUEST_PUBLISHED boundary`.
+- **Root cause:** The selector did not reach `REQUEST_PUBLISHED`, so its
+  `onResponse` provider-identity assertions were never exercised. The failure
+  boundary is before the Repo lifecycle path; its request-publication cause was
+  not investigated as part of this scoped integration gate.
+- **Fix/next:** No source was changed for this shared selector. Keep its result
+  separate from the affected Repo/DI selectors; investigate in the owning
+  response-identity workstream if that broader suite is required.
+- **Lesson:** A response-authentication assertion is not evidence when the
+  setup request never crossed its publication boundary.
+
+### 2026-09-30 — Spec192 T010 MiniNDN runner forwarded its CLI to MiniNDN
+
+- **Symptom:** `tests/minindn/run_spec192_real_cpp_repo.py --output-dir ...`
+  exited 2 before launching a host process. MiniNDN reported
+  `unrecognized arguments: --output-dir`; the run manifest records
+  `SystemExit(2)`, zero child processes, and successful cleanup.
+- **Root cause:** The harness parsed its own options, then `Minindn` parsed the
+  process-wide `sys.argv` again in its constructor and rejected the harness
+  option.
+- **Fix:** Use `parse_known_args()` and replace `sys.argv` with the program
+  name plus only arguments intended for MiniNDN.
+- **Next:** Complete fresh static review passes, verify runner syntax/CLI, then
+  rerun bounded MiniNDN and inspect the exact candidate manifest and child
+  cleanup evidence.
+- **Lesson:** When a library reparses process arguments, give its parser only
+  its own options or pass an explicit argument list.
+
+### 2026-09-30 — Spec192 T010 MiniNDN trust-root import lacked a PIB identity
+
+- **Symptom:** After the CLI fix, all five NFD hosts started, but identity
+  bootstrap stopped at `ndnsec cert-install -f root.cert` with
+  `Identity `/example/repo` does not exist`; the runner cleaned up all hosts.
+- **Root cause:** Leaf key generation creates each leaf identity, not the
+  parent trust-root identity required by `ndnsec cert-install` on that host.
+- **Fix:** Before installing the public root certificate on each non-controller
+  host, create a local non-default root identity/key. The signing private key
+  remains on the controller; only the public root certificate is copied.
+- **Next:** Freshly review this harness change, then rerun the exact MiniNDN
+  candidate and inspect all child exits, traces, independent storage oracles,
+  and cleanup evidence.
+- **Lesson:** A trust certificate import still requires its identity row in the
+  node-local PIB; create that local identity before certificate installation.
+
+### 2026-09-30 — Spec192 T010 local dummy identity could not import trust root
+
+- **Symptom:** `ndnsec key-gen -n -t r /example/repo` created a peer-local
+  identity, but importing `root.cert` still failed because its exact key name
+  was absent from that PIB. The runner cleaned up all five nodes.
+- **Root cause:** `ndnsec cert-install` requires the certificate's matching
+  key record, not only an identity row. A peer cannot fabricate the controller
+  root key, and copying its private key would violate the ownership boundary.
+- **Fix:** Do not import the public root certificate into peer PIBs. Keep the
+  root certificate as the explicit trust-schema `anchor_file`; peers import
+  only their own issued leaf certificates. The controller retains the root
+  signing key and certificate.
+- **Next:** Review the trust-anchor/leaf-certificate flow and rerun the bounded
+  MiniNDN candidate with the unchanged private-key boundary.
+- **Lesson:** Load public trust anchors through validator configuration; PIB
+  certificate import is tied to the exact local key record.
+
+### 2026-09-30 — Spec192 T010 empty child PATH hid Mininet's launcher
+
+- **Symptom:** Identity setup passed, but MiniNDN raised
+  `FileNotFoundError: [Errno 2] No such file or directory: 'mnexec'` before
+  starting the C++ Repo server.
+- **Root cause:** The standalone C++ child environment's intentionally empty
+  `PATH` was also passed to Mininet's `Popen`, which must resolve `mnexec`.
+- **Fix:** Give Mininet the supervisor's launcher `PATH`, then prefix the
+  standalone command with absolute `/usr/bin/env PATH=<empty-directory>` so
+  the executed C++ process still receives the required empty `PATH`.
+- **Next:** Re-review the spawn environment boundary, rerun syntax/CLI checks,
+  then repeat MiniNDN and inspect child `/proc` mapping and cleanup evidence.
+- **Lesson:** Keep the namespace launcher environment separate from the
+  application process environment when enforcing a restricted child PATH.
+
+### 2026-09-30 — Spec192 T010 Repo server could not resolve controller certificate
+
+- **Symptom:** MiniNDN launched the C++ Repo server, which exited before
+  readiness with `Identity `/example/repo/controller` does not exist` on the
+  peer PIB; all hosts were cleaned up.
+- **Root cause:** `DistributedRepoServer` resolves the authority's default
+  certificate from its local PIB. A trust-schema anchor file alone does not
+  satisfy this identity lookup, while `ndnsec cert-install` requires the
+  authority key record.
+- **Fix:** Add a standalone native test-client mode that imports a certificate
+  through `PibSqlite3::addCertificate`, which stores only the certificate's
+  public key and certificate. Run it on non-controller peers before service
+  startup; the controller private key remains local.
+- **Next:** Review the importer and runner wiring, rebuild the standalone
+  client, and rerun MiniNDN through service startup and all lifecycle oracles.
+- **Lesson:** A trust anchor and an authority identity lookup are distinct
+  stores; provision the public authority certificate into the PIB without
+  sharing its private key.
+
+### 2026-09-30 — Spec192 T010 public-certificate importer parsed base64 as TLV
+
+- **Symptom:** Run `T010-minindn-final-20260930-1053` started MiniNDN and
+  completed NFD and leaf-identity setup, then the first no-Python certificate
+  import child exited 2 with `Expecting Data element, but TLV has type 66`.
+  The run manifest is
+  `specs/192-distributedrepo-lifecycle/evidence/T010-minindn-final-20260930-1053/run-manifest.json`;
+  `minindn_cleanup` is `PASS`. Its child log is
+  `specs/192-distributedrepo-lifecycle/evidence/T010-minindn-final-20260930-1053/logs/import-controller-public-certificate-neu.log`.
+- **Root cause:** `ndnsec cert-gen` writes the NDN certificate Data packet in
+  base64 text form. The importer passed the leading ASCII `B` directly to
+  `ndn::Block::fromStream`, which interpreted it as TLV type 66 rather than
+  decoded Data type 6.
+- **Fix/next:** Decode the certificate file's base64 payload before parsing
+  the Data TLV, matching the established `certificate_name_from_file` format
+  handling. Keep `PibSqlite3::addCertificate` and the private-key ownership
+  boundary unchanged. Re-review the new candidate, rebuild the standalone
+  target, and rerun MiniNDN into a new evidence directory.
+- **Lesson:** `ndnsec` certificate files are armored text, while ndn-cxx
+  `Certificate` construction consumes the decoded wire packet; validate file
+  encoding at the importer boundary.
+
+### 2026-09-30 — Spec192 T010 archive started before requester bootstrap was ready
+
+- **Symptom:** Candidate
+  `c23fb8ac00a9da576ddb33813e669cf5d98050fb7e39521863b06aa19088f06a` passed
+  standalone public-certificate import, but MiniNDN child
+  `explicit-archive-process` aborted with
+  `Fetched public parameters cannot be authenticated: Validator/policy did not
+  invoke success or failure callback`. Run evidence is
+  `specs/192-distributedrepo-lifecycle/evidence/T010-minindn-final-20260930-1102/`;
+  the manifest records cleanup PASS and no archive completion.
+- **Root cause:** The standalone client called
+  `ServiceUser::fetchPermissionsFromController`, which starts asynchronous
+  policy/permission fetches, then immediately entered the Persistent Repo
+  API. It did not wait for the configured production requester bootstrap
+  predicate, which requires NAC decryption readiness, provider permission,
+  and the current service status. Shutdown could therefore overlap the pending
+  NAC public-parameter validation and surface ndn-cxx's indeterminate-state
+  diagnostic as the process failure. The captured PUBPARAMS packet is RSA
+  signed; replaying that exact Data and the fetched controller certificate
+  through the same generated trust schema and root chain succeeds offline.
+- **Fix:** Add a bounded test-client barrier that probes
+  `ServiceUser::isRequestBootstrapReady` on the Face I/O thread for the Repo
+  service/provider pairs before starting persistent lifecycle operations.
+- **Next:** Review both static-review passes for the barrier, rebuild the
+  standalone target, verify runtime closure, then run a fresh bounded MiniNDN
+  attempt in a new evidence directory. Keep T010 IN_PROGRESS until the full
+  scenario and all T010 acceptance evidence pass.
+- **Lesson:** `fetchPermissionsFromController` is an asynchronous start
+  operation; production requester work must wait for the explicit readiness
+  contract before teardown or protected Repo requests.
+
+### 2026-09-30 — Spec192 T010 readiness barrier did not require every Provider
+
+- **Symptom:** Fresh static review blocked candidate
+  `80598bea3a85cd4e9b20265086a3d31f56c0e8fc72d035987ce632fe9ba54a77` before
+  build or test execution. The barrier passed `provider-a`, `provider-b`, and
+  optional `provider-c` together to each readiness query.
+- **Root cause:** `ServiceUser::hasUserPermissionForRequest` accepts any
+  authorized Provider in its input vector. The barrier could therefore
+  observe one ready Provider and start explicit archive while another
+  selected destination was still bootstrapping.
+- **Fix:** Fail immediately if no Provider was supplied, then query the
+  existing readiness predicate with a singleton Provider vector for every
+  operation/Provider pair. This keeps the check on the Face I/O thread and
+  preserves the existing 30-second fail-closed deadline.
+- **Next:** Sync CodeGraph, freeze the corrected candidate, obtain two fresh
+  static PASS reviews, then rebuild and rerun the bounded MiniNDN scenario in
+  a new evidence directory.
+- **Lesson:** A readiness API with any-of collection semantics must be called
+  once per required principal when a workflow requires all destinations.
+
+### 2026-09-30 — Spec192 T010 standalone rebuild selected the TSan output tree
+
+- **Symptom:** `./waf build -j4 --targets=spec192-repo-client` succeeded in
+  `build/spec192-tsan-clang`, producing a Clang TSan variant. Its default
+  `ldd` also selected the stale `/usr/local` NAC-ABE/OpenABE pair. This binary
+  is not accepted as the normal MiniNDN candidate; no test or experiment ran.
+- **Root cause:** The repository's active Waf output tree was the previous
+  TSan configuration, while the command did not pin an output directory.
+- **Fix:** Rebuild with `./waf -o build build -j4
+  --targets=spec192-repo-client`, then inspect the exact binary under the
+  matched `build/` + NAC-ABE + OpenABE runtime overlay. Keep the TSan artifact
+  untouched and outside qualification evidence.
+- **Next:** Verify the normal binary's unresolved-symbol and no-Python closure,
+  then run the MiniNDN candidate from `build/` with the same matched overlay.
+- **Lesson:** A successful Waf command is not the intended build unless its
+  output tree and toolchain variant are pinned and recorded.
+
+### 2026-09-30 — Spec192 T010 MiniNDN attempt 3 stalled during permission bootstrap
+
+- **Symptom:** Candidate `1123060de2bae762380406f87dcc18b680c7f20b1587170dfb9b0c5a87ccfb61`
+  started both native Persistent Repos and passed In-App publish plus
+  cross-process reopen with the same digest. The explicit archive child then
+  timed out after 120 seconds; MiniNDN cleanup passed. Per-node captures show
+  repeated USER and Repo Provider permission Interests with no decoded
+  permission-response Data. The capture includes fragmented UDP packets, so
+  absence is asserted only for complete decoded frames.
+- **Root cause:** The harness created and signed peer leaf certificates on the
+  Controller, then installed each leaf only on its owner node. The Controller
+  permission handlers resolve the target RSA certificate from their local PIB
+  (or from the bootstrap-issued cache); this fixture does not configure
+  bootstrap-issued identities. Consequently the Controller could not encrypt
+  permission responses for peer identities and returned without publishing
+  Data. This is incomplete public-certificate provisioning in the test
+  topology, not an authorization bypass or Repo product behavior change.
+- **Fix:** The runner now collects the signed public leaf certificate paths
+  for each non-Controller identity and imports them into the Controller PIB
+  with the existing native public-certificate importer before starting the
+  Controller. Private keys remain on their owner nodes, and each import is
+  recorded in the run manifest. This is pending fresh review and runtime
+  verification.
+- **Next:** Obtain two independent PASS reviews for the exact candidate,
+  complete preflight, then rerun bounded five-node MiniNDN into a fresh
+  evidence directory and verify permission Data, archive receipts, independent
+  storage, child exits, and cleanup.
+- **Lesson:** A valid trust chain alone does not provision a target encryption
+  certificate to the Controller's local keychain; test fixtures must verify
+  both certificate validation and target-certificate lookup at the issuer.
+
+### 2026-09-30 — Spec192 T010 MiniNDN attempt 4 still emitted no permission Data
+
+- **Symptom:** Candidate `040ed589f61cd96e7032004b988cfda94669274f555f8ac177c69e85027d633b`
+  imported all seven non-Controller target public certificates and four
+  Controller authority certificates successfully before service startup.
+  The generated target leaves are 2048-bit RSA certificates and imports are
+  recorded in the run manifest. In-App publish/reopen passed, but the explicit
+  archive child timed out at 120 seconds; MiniNDN cleanup passed. The five-host
+  capture decoded 211 complete Controller-host UDP/6363 frames, including 19
+  Repo A permission Interests, 19 Repo B permission Interests, and 7 user
+  permission Interests, with no complete PermissionResponse Data frame.
+- **Root cause:** The Controller refused every USER and PROVIDER permission
+  Interest because `m_generationReady` was false. The generation store tried
+  `/tmp/ndnsf-controller-generation-1469598103934665603.state.lock`; that
+  exclusive lock was stale, dated 2026-09-23, and named `/example/uav/controller`.
+  CodeGraph confirmed the default path calls `fnv1aPolicyHash` with a
+  concatenated config-path/identity string, while that helper opens its input
+  as a file and returns the FNV offset basis when the path does not exist.
+  Therefore unrelated Controllers share the same lock path. The seven RSA
+  certificate imports succeeded but were not the failing branch. The
+  `ServiceController` TRACE log under
+  `specs/192-distributedrepo-lifecycle/evidence/T010-minindn-20260930-diagnose-2/logs/controller.log`
+  records both writer acquisition failure and the subsequent fail-closed
+  permission refusals.
+- **Fix:** The MiniNDN fixture now supplies a fresh per-run
+  `NDNSF_CONTROLLER_GENERATION_STATE` under that run's evidence directory. This
+  isolates fixture state without deleting or migrating the legacy lock and
+  leaves production Controller state policy unchanged.
+- **Next:** Review the exact updated runner, run preflight, then rerun the
+  bounded five-host MiniNDN gate and verify Controller generation is ready,
+  PermissionResponse Data is present, and all lifecycle assertions pass.
+- **Lesson:** MiniNDN fixtures that reuse the default `/tmp` Controller state
+  namespace can collide with stale state from another identity; each isolated
+  experiment run must supply its own durable generation-store path.
+
+### 2026-09-30 — Spec192 T010 diagnostic log override prevented MiniNDN startup
+
+- **Symptom:** The TRACE diagnostic rerun exited before creating NFD sockets;
+  all five NFD logs ended with `malformed logging config: '=' is missing`.
+  No Repo or Controller process started and no workload gate ran.
+- **Root cause:** `NDN_LOG` was set on the top-level MiniNDN launcher, so the
+  diagnostic override entered NFD startup as well as the NDNSF application
+  environment. The NFD processes rejected their inherited logging setting.
+- **Fix:** Keep the MiniNDN/NFD launcher environment unchanged and inject the
+  same `NDN_LOG=ndn_service_framework.ServiceController=TRACE` value only into
+  NDNSF child environments after NFD startup.
+- **Next:** Repeat the diagnostic run with application-only logger injection;
+  retain this startup failure separately from the explicit-archive timeout.
+- **Lesson:** Apply component logging filters at the process boundary they
+  target; a valid NDNSF logger setting can still break the network daemon when
+  propagated globally by an experiment harness.
+
+### 2026-09-30 — Spec192 T010 relative evidence path split Controller state from manifest
+
+- **Symptom:** The final contract review found that a relative `--output-dir`
+  was passed to Controller relative to its MiniNDN node home, while the
+  manifest resolved the same value relative to the launcher working directory.
+  The generation state could therefore land outside the recorded evidence
+  directory.
+- **Root cause:** The runner normalized the path only while writing the
+  manifest, after the original relative path had already been assigned to the
+  Controller environment.
+- **Fix:** Resolve `args.output_dir` once after argument parsing and before the
+  fresh-directory check. The Controller environment and manifest now receive
+  the same absolute run path; the exact candidate passed two independent static
+  reviews.
+- **Next:** Rebuild and rerun T010's ordered gates against the later candidate
+  that also fixes the client teardown deadlock below.
+- **Lesson:** Resolve paths before passing them across a process boundary with
+  a different working directory.
+
+### 2026-09-30 — Spec192 T010 MiniNDN archive timeout was masked by Face-thread teardown
+
+- **Symptom:** Candidate
+  `e937d71ed1b39a980a5d9599394581f23356a0cf7392345e564754d7811dd5bd` returned
+  DKEY, user/provider permissions and CAPABILITY policy Data, and passed
+  In-App publish/reopen, but the explicit archive child timed out at 120
+  seconds. A correctly instrumented rerun showed the initial STATUS request
+  completed; both Repo servers saw that request, then the client stopped
+  publishing requests. GDB captured the main thread joining in
+  `PersistentContext::~PersistentContext()` while its Face thread remained in
+  `Face::processEvents()` / `io_context.run()` at `epoll_wait(timeout=-1)`.
+- **Root cause:** Setting the stop flag did not wake the event loop. `Face::shutdown()`
+  posts asynchronous cleanup but does not stop `io_context`; destruction then
+  waited forever in `std::thread::join()`, masking the original operation
+  result. The first diagnostic wrapper also patched the `runpy` result mapping
+  rather than the function globals, so that run did not inject logger settings;
+  the corrected wrapper patched `main.__globals__` and produced the trace.
+- **Fix:** The standalone client now shares a `stopFaceThread()` path for
+  constructor failure and normal destruction: set the stop flag, post Face
+  shutdown, stop the I/O context to wake `processEvents`, join the thread, then
+  restart and poll the context to drain the queued shutdown callback.
+- **Next:** Obtain fresh exact-candidate static reviews, rebuild the normal
+  C++ targets, rerun all affected unit and integration selectors, then rerun
+  bounded MiniNDN. The underlying archive outcome is not yet verified; the
+  current candidate is `2ccb49fd05ce91a72fbf1f7393800a69baf8342b4f8ca8a3570f0d04ca95fd63`.
+- **Lesson:** A bounded process timeout can hide an earlier application result
+  when teardown deadlocks; inspect the main-thread and event-loop stacks before
+  attributing the timeout to the network operation.
+
+### 2026-09-30 — Spec192 T010 selected Repo discovery used a mismatched policy epoch
+
+- **Symptom:** The fresh `556d0e023ed299a6c5a820e2f348d409605b1d9418d2af0c760922a6474f8180`
+  MiniNDN run passed In-App publish/reopen but the first explicit archive failed
+  with `repo-selected-target-stale` before sending STORE to either Repo.
+- **Root cause:** The standalone test reference advertised policy epoch
+  `spec192-t010-candidate`. Both authenticated C++ Repo CAPABILITY ACKs advertise
+  `repo-policy-v1`; `ArtifactCapability::supports()` requires an exact epoch
+  match, so discovery correctly excluded both selected targets.
+- **Fix:** Align the Spec192 standalone fixture reference with the configured
+  Repo policy epoch (`repo-policy-v1`). The runtime capability check and
+  production selection contract remain unchanged.
+- **Next:** Freeze the resulting exact source candidate, obtain fresh static
+  review, rerun unit and integration gates, then repeat MiniNDN and the
+  remaining T010 offline import, cleanup, and final audit gates.
+- **Lesson:** Capability discovery validates the complete immutable reference,
+  including `policyEpoch`; e2e fixture epochs must match the policy advertised
+  by each selected Repo.
+
+### 2026-09-30 — Spec192 T010 persistent server selected a non-range backend
+
+- **Symptom:** Candidate
+  `b997a9c60878ba5ec8b78aaccb9ec919285dd25ca24fcde18551ee6eecef30fd` passed
+  authenticated Repo discovery, then explicit archive failed at STORE_RANGE
+  with `repo-range-write-not-supported`.
+- **Root cause:** `DistributedRepoServer` wrapped `SqliteRepoStore` in
+  `TieredRepoStore`. The tiered layer delegates range writes to its
+  authoritative store; `SqliteRepoStore` does not implement range writes and
+  inherits the base method that throws this error. The standalone server
+  therefore instantiated a backend that could not satisfy its artifact-v2
+  Persistent API contract even though the filesystem range backend and API
+  tests already supported it.
+- **Fix:** Construct the production Persistent server's tiered store over the
+  durable filesystem Repo backend, retaining the configured cache and
+  threshold. Extend the MiniNDN independent oracle to inventory filesystem
+  manifests/payloads alongside SQLite receipt/location tables.
+- **Next:** Review the exact source candidate, rebuild, rerun complete C++ unit
+  and integration gates in order, then repeat MiniNDN and offline VM-24.
+- **Lesson:** Verify the backend instantiated by the production executable,
+  not only the generic range implementation and its direct integration tests.
+
+### 2026-09-30 — Spec192 T010 public storage contract lagged server configuration
+
+- **Symptom:** The README described `--cache-bytes 0` as a supported way to
+  disable the memory tier, but `PersistentRepoServerConfig::validate()` rejects
+  a zero cache budget. The English guide also retained the retired Python
+  Persistent Repo/SQLite data-plane description after the service moved to the
+  C++ filesystem-backed implementation.
+- **Root cause:** The public guides were not reconciled when the standalone
+  server's Repo object store and artifact lifecycle database were separated.
+- **Fix:** Document the derived `.store` and `.artifact-v2.sqlite` paths, require
+  a positive cache budget, and describe the pybind client as a projection over
+  the C++ artifact API. Exclude mutable audit/traceability/validation evidence
+  from the frozen source fingerprint so final gate results can be recorded
+  without changing the tested implementation candidate.
+- **Next:** Freeze the corrected candidate, obtain fresh static PASS reviews,
+  then rerun build, complete unit/integration suites, bounded MiniNDN, and VM-24.
+- **Lesson:** Public configuration examples must be checked against runtime
+  validation, and deployment ownership claims must follow the actual service
+  process rather than a retired compatibility path.
+
+### 2026-09-30 — Spec192 T010 quickstart named a retired MiniNDN entrypoint
+
+- **Symptom:** The full convergence review found that `quickstart.md` still
+  directed VM-21 to a planned mixed-lifecycle script and topology file that do
+  not exist in the current candidate.
+- **Root cause:** The quickstart was not updated when the implemented bounded
+  five-host C++ qualification runner replaced the planned entrypoint.
+- **Fix:** Point VM-21 and the bounded T010 network gate at
+  `tests/minindn/run_spec192_real_cpp_repo.py`, use its actual supported
+  `--topology-file` and required `--output-dir` arguments, and require a fresh
+  output path.
+- **Next:** Finish the full source/build/oracle coverage review, then freeze a
+  new exact candidate before the ordered build, unit, integration, MiniNDN,
+  and offline VM-24 gates.
+- **Lesson:** Runbook entrypoints and topology claims must be checked against
+  the registered executable harness, not only the planned design.
+
+### 2026-09-30 — Spec192 T010 availability deadline omitted API-lock wait
+
+- **Symptom:** The final static standards review of candidate
+  `8a778dadeac3d01874fdf7e076125ae6f762ea5e22e5cdc1fa5d7d317e7796ea`
+  found that Persistent `checkAvailability()` could exceed `timeoutMs` while
+  waiting for the shared API operation mutex, then start a fresh LOCATION /
+  AVAILABILITY window.
+- **Root cause:** The mutex used blocking `lock_guard` acquisition before the
+  steady-clock deadline was created. The deadline therefore bounded provider
+  probes but not caller-side serialization delay.
+- **Fix:** Start the Persistent deadline before operation-lock acquisition,
+  poll the mutex only until that deadline, and return an UNKNOWN/UNKNOWN/
+  NOT_CHECKED row per handle replica without starting a probe if the lock wait
+  expires. Add an integration regression that holds the same API instance's
+  lock with a delayed fetch and asserts bounded return and zero availability
+  requests.
+- **Next:** Obtain fresh static review on the changed candidate, then rebuild
+  and run affected C++ unit/integration gates, MiniNDN, and the separate VM-24
+  gate in their required order.
+- **Lesson:** A single timeout budget must include local serialization and
+  mutex acquisition, not only network requests and retry attempts.
+
+### 2026-09-30 — Spec192 T010 lock-deadline regression allowed excessive overrun
+
+- **Symptom:** Static review of candidate
+  `dc0a9729b2d4ff1f5100beadf6fa1b0b11ef437fa3fa177cb7ccc33613ccdac0`
+  found that a 500 ms availability timeout was tested with a 1300 ms return
+  bound, allowing a material deadline regression to pass.
+- **Root cause:** The contention regression used a broad wall-clock ceiling
+  and started its elapsed-time measurement before the asynchronous worker
+  entered `checkAvailability()`.
+- **Fix:** Start measurement in the worker immediately before the API call
+  and assert both readiness and elapsed time against the 500 ms deadline plus
+  an explicit 250 ms scheduler tolerance. The pass-2 review found no further
+  issue on candidate
+  `122bd1e656570b87bf40535fa1e3006ac9c4c1d3fb020b56a090e54407d9bac5`.
+- **Next:** Run the exact-candidate build, affected unit and integration
+  suites, bounded MiniNDN qualification, and separate offline VM-24 importer
+  validation in T010 order.
+- **Lesson:** Deadline tests should measure at the operation boundary and
+  make their scheduling allowance explicit and small.
+
+### 2026-09-30 — Spec192 T010 unit run used a nonexistent Boost filter
+
+- **Symptom:** The ordered unit run stopped after nine passing selectors with
+  Boost.Test setup error `no test cases matching filter` for
+  `NativeArtifactMaterializer`; no test body ran for that filter.
+- **Root cause:** The expected four native-materializer checks are registered
+  as individual test cases, and the filesystem-descriptor suite has the name
+  `Spec189FilesystemRepoFdOwner`; the guessed filters did not match the
+  registered Boost.Test names.
+- **Fix:** Preserve the failed invocation log, inspect the binary's registered
+  names with `build/unit-tests --list_content`, and resume using exact test
+  case/suite filters.
+- **Next:** Complete the full Repo/Spec192 unit gate before proceeding to
+  affected integration selectors.
+- **Lesson:** Confirm Boost.Test filters against the built binary's test tree
+  before starting a selector batch.
+
+### 2026-09-30 — Spec192 MiniNDN archive oracle ignored range writes
+
+- **Symptom:** Candidate
+  `122bd1e656570b87bf40535fa1e3006ac9c4c1d3fb020b56a090e54407d9bac5`
+  archived and committed the object to both Repo nodes, but VM-21 stopped
+  before the Python binding and DI consumer stages because its trace oracle
+  reported that the user seed and Repo A replication were absent.
+- **Root cause:** `repo_store_events()` retained only the legacy `STORE`
+  operation. The 9,001-byte archive used `STORE` plus `STORE_RANGE` and
+  `COMMIT_RANGES` at Repo A, followed by `STORE_RANGE` and `COMMIT_RANGES`
+  from Repo A's Provider identity at Repo B. The range transfers and durable
+  commits were therefore omitted from the trace oracle.
+- **Fix:** Include range writes and commits in the persistent write trace;
+  assert the user identity and one committed range transaction at Repo A,
+  then Repo A's Provider identity and one committed range transaction at Repo
+  B. Preserve the exact request events in the success manifest.
+- **Next:** Re-sync CodeGraph, obtain fresh static review of the harness
+  change, and rerun the exact-candidate MiniNDN/VM-21 scenario before VM-24.
+- **Lesson:** Qualification oracles must follow the current data-transfer
+  protocol through its commit boundary, not only its legacy operation name.
+
+### 2026-09-30 — Spec192 VM-21 request-scoped response signature
+
+- **Symptom:** The exact-candidate MiniNDN VM-21 run reached the Python
+  SegmentFetcher stage, but retrieval of the first segmented request-scoped
+  response failed NDN Data signature verification.
+- **Root cause:** The producer signed response segments without `FinalBlockId`.
+  On a CanBePrefix discovery Interest, `ServiceProvider::replyFromIMS()` copied
+  the signed first segment and added `FinalBlockId`; that MetaInfo mutation is
+  part of the signed portion and invalidated the signature.
+- **Fix:** Compute the final segment index from the payload and chunk size, set
+  it on every segment before signing, and then retain the signed packet in IMS.
+  Exact-source review passed on candidate
+  `a8fd67c051e54c48713c03a20f6d2f33b647e9e790c09ca09bd952fac79798be`.
+- **Next:** Rebuild the affected targets, rerun runtime closure, complete the
+  C++ unit and integration gates, then rerun VM-21 and separate VM-24.
+- **Lesson:** Signed NDN MetaInfo must be complete before signing; a serving
+  path cannot repair missing signed metadata by modifying a packet copy.
+
+### 2026-09-30 — Spec192 T010 Waf target-list invocation
+
+- **Symptom:** The Waf invocation compiled and linked `unit-tests`, then exited
+  1 with `No function 'integration-tests' defined`.
+- **Root cause:** Multiple target names were supplied as space-separated
+  values to one `--targets=` option; Waf treated the following name as a
+  command after completing the first target.
+- **Fix:** Build each affected Waf target with a separate
+  `./waf build -j4 --targets=<target>` invocation, serially in the same build
+  tree. The `unit-tests` build action itself completed successfully.
+- **Next:** Finish the remaining affected target builds and run the ordered
+  exact-candidate C++ unit and integration selectors.
+- **Lesson:** Use the repository's single-target Waf invocation form for each
+  serial gate and distinguish a successful target action from the wrapper
+  command's exit status.
+
+### 2026-09-30 — Spec192 T010 loader-path closure preflight
+
+- **Symptom:** Initial `ldd -r` on `DistributedRepoServer` resolved the stale
+  `/usr/local/lib/libndn-service-framework.so.0.1.0` and reported an undefined
+  `ResponseMessage::getProviderIdentity()` symbol.
+- **Root cause:** The closure command omitted the candidate `build/` directory
+  from `LD_LIBRARY_PATH`; the server's RUNPATH allowed the old installed
+  Framework library to win.
+- **Fix:** Re-run the complete closure with `LD_LIBRARY_PATH` explicitly
+  pointing to the current `build/` Framework and the recorded NAC-ABE/OpenABE
+  runtime overlay. All six affected binaries then resolved 38 libraries with
+  no missing library, undefined symbol, or `libpython` dependency.
+- **Next:** Run the C++ unit suite, followed by the complete integration suite
+  and bounded MiniNDN gates.
+- **Lesson:** Resolve and hash the exact candidate library, not a same-SONAME
+  installed copy; loader environment is part of the runtime evidence.
+
+### 2026-09-30 — Spec192 VM-21 root launch lost the matched crypto overlay
+
+- **Symptom:** On candidate
+  `a8fd67c051e54c48713c03a20f6d2f33b647e9e790c09ca09bd952fac79798be`, the
+  first explicit-archive client exited with signal 6 and
+  `*** stack smashing detected ***`.
+- **Root cause:** `sudo -E` did not preserve the caller's `LD_LIBRARY_PATH`.
+  The run manifest therefore records `/usr/local/lib/libnac-abe.so` and
+  `/usr/local/lib/libopenabe.so` instead of the matched T010 overlay
+  `/tmp/spec192-nacabe-runtime-20260928/lib/libnac-abe.so` and
+  `/home/tianxing/NDN/openabe/src/libopenabe.so`.
+- **Fix:** Pass the complete matched `LD_LIBRARY_PATH` explicitly through
+  `sudo -E env`; verify the child runtime library hashes in the new manifest.
+- **Next:** Rerun VM-21 on the same frozen candidate and matched runtime; then
+  complete VM-24 and final evidence/document synchronization.
+- **Lesson:** `sudo -E` does not prove that loader variables survived the
+  privilege boundary; attest the loaded library paths and hashes per run.
+
+### 2026-09-30 — Spec192 VM-21 mixed-principal receipt oracle
+
+- **Symptom:** With the matched runtime overlay, VM-21 completed explicit
+  archive and the Python consumer fetched and digest-checked the C++ artifact,
+  then failed querying the archive receipt with
+  `repo-publish-operation-unauthorized: requester is not the submitting principal`.
+- **Root cause:** The C++ archive was submitted by `/example/repo/user`, while
+  the independent consumer was `/example/repo/consumer`. The service correctly
+  restricts receipt lookup to the authenticated submitting principal; the
+  Python helper incorrectly combined consumer fetch and submitter receipt lookup.
+- **Fix:** Keep the independent consumer's Python fetch and digest check, then
+  use a separate Python binding process authenticated as the original
+  submitter to query and compare the exact C++ receipt. Product authorization
+  behavior is unchanged.
+- **Next:** Pass fresh exact-source review, rebuild and rerun the complete
+  ordered C++ gates on the new candidate, then rerun VM-21 and VM-24.
+- **Lesson:** A fresh process may share an authorized identity for submitter-
+  scoped metadata; process independence does not imply permission to read
+  another principal's receipt.
+
+### 2026-09-30 — Spec192 VM-21 receipt helper selected replica IDs
+
+- **Symptom:** With the consumer/submitter identity split fixed, the Python
+  submitter process reached native `get_receipt` but failed with
+  `artifact-invalid-receipt: Persistent receipt ID or seed does not match the supplied handle`.
+- **Root cause:** The MiniNDN helper attempted every ID in
+  `ArtifactHandle.commitReceiptIds`. The public Persistent `getReceipt`
+  contract requires the handle's first (seed) receipt ID; other replica IDs
+  route to different Repo nodes and are not valid through the seed lookup.
+- **Fix:** Query only `commitReceiptIds.front()` and compare the returned full
+  receipt with the exact C++ archive receipt file. Repo production behavior is
+  unchanged.
+- **Next:** Freshly review the helper delta, refreeze the source candidate, and
+  rerun the complete ordered C++ gates before VM-21 and VM-24.
+- **Lesson:** Treat the handle's seed receipt as the lookup key; per-replica
+  receipt IDs are evidence within that returned receipt, not interchangeable
+  seed query IDs.
+
+### 2026-09-30 — Spec192 T010 unit gate invoked without its selector set
+
+- **Symptom:** The unfiltered `build/unit-tests --report_level=short` command
+  started 1,318 registered cases, reported time-sensitive Spec182 DI deadline
+  failures, and was killed with exit 137. The kernel log records an OOM kill
+  of the `unit-tests` process at 8.8 GiB resident memory.
+- **Root cause:** T010's complete affected-unit gate is the recorded set of 20
+  selectors (99 cases, 1,511 assertions), but the invocation omitted
+  `--run_test` and attempted the unrelated monolithic suite.
+- **Fix:** Preserve the broad-run log as a rejected gate attempt and rerun the
+  exact 20-selector set serially. All 20 selectors passed on candidate
+  `dbcba19cc79b8b83b47087e17df7189516a6d77e318f5d5cb14b7174aaac88e2` with
+  99 cases and 1,511 assertions.
+- **Next:** Run the ordered T010 integration suite, then MiniNDN VM-21 and
+  offline VM-24.
+- **Lesson:** Use the task's scoped selector manifest; an unfiltered monolithic
+  binary is a different, memory-heavy gate and cannot substitute for it.
+
+### 2026-09-30 — Spec192 VM-21 Python binding capability epoch mismatch
+
+- **Symptom:** The Python persistent publish probe received and validated both
+  C++ Repo capability ACKs, then failed with `repo-selected-target-stale`.
+- **Root cause:** The helper built its `ArtifactReference` with policy epoch
+  `spec192-t010-candidate`, while both production Repo services advertise
+  `repo-policy-v1`. `ArtifactCapability::supports()` requires an exact policy
+  epoch match, so discovery excluded every otherwise valid target.
+- **Fix:** Use the production `repo-policy-v1` value in the helper. The
+  diagnostic also showed that a 15-second ACK collection window receives both
+  providers' capability ACKs; the final VM-21 gate must confirm the full path.
+- **Next:** Re-audit and freeze the updated candidate, then rerun build, scoped
+  C++ unit and integration gates, VM-21, and separate offline VM-24.
+- **Lesson:** A run identifier cannot replace the policy epoch carried by an
+  artifact reference; candidate identity and Repo policy are separate values.
+
+### 2026-09-30 — Spec192 T010 Repo binding rebuild omitted the native digest receipt
+
+- **Symptom:** `python3 setup.py build_ext --inplace --parallel 4` stopped before
+  compilation with `NDNSF_GLOBAL_NATIVE_DIGESTS is required for host binding
+  builds`.
+- **Root cause:** The binding build validates the canonical installed
+  `/usr/local/lib` NDNSF library pair and requires their SHA-256 receipt in the
+  environment. The initial command omitted that documented build input.
+- **Fix:** Derive the JSON receipt from the exact installed
+  `libndn-service-framework.so` and `libndnsf-distributed-inference.so` bytes,
+  then rerun the binding build with the documented global library directory.
+- **Next:** Verify the compiled extension's resolved library closure and ABI,
+  then continue the exact-candidate gates.
+- **Lesson:** Preserve the binding builder's native-library receipt check; do
+  not bypass it or silently substitute a checkout library directory.
+
+### 2026-09-30 — Spec192 T010 response-identity integration fixture omitted ControllerVersion
+
+- **Symptom:** The wrong-signer RESPONSE was rejected as expected, but the
+  correctly signed follow-up reached decryption and was rejected as stale
+  ControllerVersion; the pending call remained. The same integration batch
+  also invoked two standalone binaries with an empty Boost test filter, so
+  those invocations ran zero cases.
+- **Root cause:** The synthetic valid `ResponseMessage` omitted the active
+  policy epoch and ControllerVersion, which production delivery checks require.
+  The standalone test helper passed `--run_test=` instead of running each
+  target without a filter.
+- **Fix:** Populate the synthetic response's epoch and version from the same
+  Controller status installed in the fixture, and rerun both standalone
+  binaries without an empty filter.
+- **Next:** Rebuild and rerun the complete affected integration selectors on
+  the new candidate before MiniNDN qualification.
+- **Lesson:** After a negative identity case, the valid control packet must
+  satisfy the full current response contract; a rejected/aborted test batch
+  cannot be reported as integration evidence.
+
+### 2026-09-30 — Spec192 T010 identity test did not close the harness publish boundary
+
+- **Symptom:** After the current ControllerVersion fix, all response identity,
+  decrypt, callback, and pending-call assertions passed; teardown alone threw
+  `request reset requires REQUEST_PUBLISHED boundary`.
+- **Root cause:** This test intentionally replaces the network request
+  publisher with a no-op. `RequestService` still publishes its lifecycle state,
+  but the fixture's independent `RequestScope` boundary must also be advanced
+  explicitly before `resetRequest()`.
+- **Fix:** Mark the fixture scope published after the request ID and pending
+  call have been verified, before injecting either synthetic response.
+- **Next:** Rebuild and rerun all affected integration selectors on the
+  resulting frozen candidate, then proceed to MiniNDN.
+- **Lesson:** A test-controlled request scope and the production request
+  lifecycle journal are separate oracles; close both explicitly.
+
+### 2026-09-30 — Spec192 VM-21 Python publish exhausted its operation deadline
+
+- **Symptom:** The Python binding completed C++ artifact fetch and native
+  receipt query, then its publish/status/fetch operation failed with
+  `repo-request-timeout-invalid: selected request timeout must exceed ACK window`.
+  The exact-candidate run manifest records `status=FAIL` and
+  `minindn_cleanup=PASS`.
+- **Root cause:** The helper supplied a 60-second total operation deadline for
+  a multi-stage selected Repo publish. As earlier stages consumed that budget,
+  a later selected request received a remaining timeout no greater than the
+  configured 15-second ACK window; the C++ API correctly rejected that call.
+- **Fix:** Increase only the bounded MiniNDN Python helper operation timeout
+  to 300 seconds while retaining the measured 15-second ACK collection window.
+  Production timeout and ACK validation are unchanged.
+- **Next:** Freeze the changed candidate and rerun the ordered build/unit/
+  integration gates, the complete five-host VM-21 flow, and isolated VM-24.
+- **Lesson:** The operation deadline must cover every selected Repo stage plus
+  its ACK collection windows, not only one request attempt.
+
+### 2026-09-30 — Spec192 VM-21 child guard shorter than Python operation deadline
+
+- **Symptom:** On candidate `e984abd8ce8503ee143357dde79decb89fa49824fabcfc49d370c2d18a4765a`,
+  C++ archive/fetch and Python native-receipt query succeeded, but the following
+  Python binding publish/status/fetch child was killed after 120 seconds. The
+  run manifest records `status=FAIL` and `minindn_cleanup=PASS`; the child log
+  was empty because buffered output was lost when the process was killed.
+- **Root cause:** The MiniNDN runner's outer child timeout was 120 seconds while
+  the Python binding operation now has a 300-second deadline. The runner could
+  terminate the child before its own bounded operation returned.
+- **Fix:** Raise only this Python binding child's outer process guard to 360
+  seconds, preserving the operation's 300-second deadline and a cleanup margin.
+  No Repo production timeout or ACK window changed.
+- **Next:** Freeze the runner change, repeat the ordered candidate build/unit/
+  integration gates, then rerun official VM-21 and isolated VM-24.
+- **Lesson:** The harness child guard must outlast the operation's internal
+  deadline so the API can report its bounded result before cleanup begins.
+
+### 2026-09-30 — Spec192 VM-21 C++ fetch expired at the Selection boundary
+
+- **Symptom:** Candidate `9485de1753e31d081a68e47e7b7c1cf306fafc7779b8b6b13ddf2095e512003a`
+  completed Python publication with a committed two-replica receipt, but the
+  independent C++ fetch returned `repo-request-timeout: Provider response
+  callback was not delivered before the request deadline`. MiniNDN cleanup
+  passed. Both Repo SQLite inventories contain the Python artifact's committed
+  receipt and routable location; the trace contains the request/ACK but no
+  completed C++ fetch-range.
+- **Root cause:** The C++ probe capped each request at 15 seconds. Its pcap shows
+  an ACK within 5 ms, then the Selection-stage packet about 15 seconds later,
+  leaving no response window inside the configured request deadline. The
+  C++ client also ran as `/example/repo/user` while the Python publisher was
+  `/example/repo/consumer`, so it could not validly verify the publisher-bound
+  receipt even if the payload fetch completed.
+- **Fix:** Raise the C++ probe request limit to 30 seconds and its fetch
+  operation limit to 60 seconds. Run this separate no-Python C++ client under
+  the publishing consumer identity so receipt ownership is preserved. Extend
+  the post-restart C++ fetch child guard to 120 seconds for the larger bound.
+  Repo production timeouts and ACK policy remain unchanged.
+- **Next:** Freeze this candidate, rerun the ordered build/unit/integration
+  gates, then repeat official VM-21 and isolated VM-24.
+- **Lesson:** A request deadline must include the protocol's ACK/Selection
+  stage and final response; cross-language receipt checks must use the receipt
+  owner's authenticated identity.
+
+### 2026-10-01 — Spec192 VM-21 publish discovery omitted a selected target
+
+- **Symptom:** Candidate `81da2a1cd7191c1351c1c22f17deae78fb8f47c7ad95ecaaa72268e97fafbc68`
+  passed the native C++ archive/fetch and C++/Python receipt interoperability,
+  then failed at `cpp-publish-di-model` with
+  `repo-selected-target-stale: a selected Repo/Provider tuple is absent from
+  fresh authenticated discovery`. Five-host MiniNDN cleanup passed.
+- **Root cause:** The C++ probe's `publish` mode closed CAPABILITY discovery
+  after a 1.5-second ACK window, then correctly rejected its explicit A/B set
+  because a selected tuple was absent from that authenticated closure. The
+  retained run does not identify which tuple or prove whether it was delayed
+  or not advertised, so that sub-cause remains unresolved. The generated policy
+  grants `/example/repo/user` access to CAPABILITY; this was not an ACL denial.
+- **Fix:** Increase only the standalone C++ probe's `publish`-mode ACK window
+  to 5 seconds. Other C++ modes, injected 2-second fetch timeouts, and
+  production Repo/API timing remain unchanged.
+- **Next:** Freeze the updated candidate and rerun the ordered build, closure,
+  unit, integration, VM-21, and VM-24 gates.
+- **Lesson:** An explicit selected set must be compared only after enough time
+  for the complete authenticated capability ACK closure to arrive.
+
+### 2026-10-01 — Spec192 VM-21 Python fetch child guard shorter than API deadline
+
+- **Symptom:** Candidate `f83bf526ce0c6b2a809fbc7afa99f10ceebc1a69940aed83c0189de4e3cd8f7e`
+  completed C++ local reopen/archive, then the consumer Python binding fetch of
+  that C++ handle was killed after 90 seconds. The official run manifest records
+  `status=FAIL` and `minindn_cleanup=PASS`.
+- **Root cause:** `spec192_binding_client.py` defaults `--timeout-ms` to 300000
+  and passes that bound to Persistent `fetch_file`, while the MiniNDN supervisor
+  allowed this child only 90 seconds. The supervisor killed it before the API's
+  own operation deadline could report success or a bounded failure.
+- **Fix:** Raise the Python binding fetch and receipt-query child guards to 360
+  seconds, matching the 300-second API bound plus cleanup margin. No Repo
+  production timeout or request/ACK policy changed.
+- **Next:** Freeze this runner candidate and repeat the ordered build, unit,
+  integration, VM-21, and VM-24 gates.
+- **Lesson:** Every supervisor guard around the Python binding must exceed the
+  binding's configured operation deadline so failure and cleanup stay observable.
+
+### 2026-10-01 — Spec192 VM-21 C++ DI-input publish omitted a selected Repo
+
+- **Symptom:** Candidate
+  `ea1808a60cac6100b44d2eec41ef9fd7566ee8586a46ba2a374ffaff8e93d029`
+  passed the native C++ DI-model publication and the Python binding
+  publish/status/fetch child, then failed at `cpp-publish-di-input` with
+  `repo-selected-target-stale`. The traced five-host MiniNDN run completed
+  cleanup.
+- **Root cause:** The persistent client completed its initial authenticated
+  STATUS request, but fresh CAPABILITY discovery did not return every explicit
+  Repo/Provider tuple for the next input artifact. The configured publish-mode
+  ACK window was already 5 seconds. The retained trace does not distinguish a
+  missing or late CAPABILITY ACK from an ACK rejected while decoding or
+  filtering the advertised capability. The repo policy grants the requester
+  CAPABILITY access; this evidence does not support an ACL diagnosis.
+- **Fix:** None selected yet. Preserve the 5-second window while capturing
+  per-provider discovery outcomes before changing a timeout or acceptance
+  rule.
+- **Next:** Add scoped discovery diagnostics, reproduce the failing input
+  publication, then choose the smallest evidence-backed repair and rerun the
+  ordered candidate gates plus official VM-21 and isolated VM-24.
+- **Lesson:** A successful STATUS or earlier artifact publish does not prove
+  that the next operation's fresh authenticated capability closure contains
+  the full explicit target set.
+
+### 2026-10-01 — Spec192 VM-21 Python handle fetch timed out before range transfer
+
+- **Symptom:** A third diagnostic run of candidate
+  `ea1808a60cac6100b44d2eec41ef9fd7566ee8586a46ba2a374ffaff8e93d029`
+  reached `python-binding-fetch-cpp-artifact`, then the binding raised
+  `repo-request-timeout: Provider response callback was not delivered before
+  the request deadline`. The official five-host runner recorded cleanup PASS.
+  The handle contains committed RepoA and RepoB replicas. RepoA logged one
+  consumer STATUS request; neither Repo logged a consumer FETCH_RANGE, and
+  RepoB did not log a consumer STATUS request.
+- **Root cause:** The MiniNDN binding peer passed its 300-second whole-operation
+  `args.timeout_ms` to `ArtifactRepositoryApi.make_persistent(timeout_ms=...)`.
+  That convenience argument also sets `request_timeout_ms`, so the first
+  replica's LOCATION/STATUS request could wait for the full 300-second fetch
+  budget. The recorded handle has two committed replicas, while RepoA logged
+  the single consumer STATUS and no Repo logged a consumer FETCH_RANGE. The
+  operation budget was exhausted before replica fallback could transfer data.
+- **Fix:** The next candidate configures `request_timeout_ms=30000` and keeps
+  `operation_wait_timeout_ms=args.timeout_ms`; one-off receipt queries use the
+  30-second request bound. The code change is pending the complete candidate
+  gates and a fresh VM-21 run.
+- **Next:** Freeze the separated request/operation bounds, rerun the ordered
+  candidate gates, then repeat official VM-21 and isolated VM-24.
+- **Lesson:** A committed two-Repo receipt proves the locations were accepted;
+  it does not prove that the subsequent authenticated LOCATION response was
+  delivered to a fresh Python binding client.
+
+### 2026-10-01 — Spec192 VM-21 cold publish discovery exceeded its helper deadline
+
+- **Symptom:** Candidate `e91f00fc4c963bf856ed137fca821d7f63de2a158d11fa4e7a1d3f28800bd6f3`
+  failed the clean five-host run when authenticated ACKs arrived after the
+  15-second Python publish collection window. Candidate
+  `2940ab42c52afff05e1220adae3c0bb8db6514ec8c276d2531e0de7a29eb1f0c` then
+  passed Python-binding publication with the 30-second window, but its C++
+  `cpp-publish-di-model` child exited with
+  `repo-request-timeout-invalid: discovery timeout must exceed ACK window`.
+- **Root cause:** The cold topology's authenticated STATUS/CAPABILITY
+  discovery can exceed short ACK windows. The C++ publish helper then gave the
+  overall operation only 60 seconds; repeated discovery consumed enough of
+  that budget that a later 30-second ACK collection could not start.
+- **Fix:** Candidate
+  `fbe3d35e3ebeffd92556c8e29bbdf7e8003356d27345305eb43ae0ca56947ad6` keeps a
+  30-second publish ACK window, raises its request deadline to 90 seconds and
+  its whole-operation wait and `publishFile` deadline to 180 seconds. Other
+  client modes and Repo production timeout policy remain unchanged. Its nine
+  Waf targets, 11-object/39-library runtime closure, 20 unit selectors, and
+  nine ordered integration targets pass; fresh VM-21 and VM-24 evidence is
+  still pending.
+- **Evidence procedure correction:** `ldd -r` reports expected unresolved
+  CPython API symbols when run on a Python extension outside an interpreter.
+  The extension lane therefore uses plain `ldd` plus an import started with
+  the pinned `LD_LIBRARY_PATH`. The Boost integration filters for the four
+  production-ingress cases require the parent
+  `Spec170NativePostSelection/` suite prefix. Corrected checks passed; neither
+  diagnostic attempt changed source behavior or candidate identity.
+- **Next:** Run fresh, uninstrumented VM-21 and the ordered isolated VM-24
+  targets on the frozen `fbe3d35e…47ad6` candidate, then close T010 only if
+  both manifests and independent evidence pass.
+- **Lesson:** The full publish operation must budget for repeated authenticated
+  discovery as well as each ACK collection; the request deadline and operation
+  wait are separate bounds and must both exceed the ACK phase.
+
+## 2026-10-01 — Spec192 VM-21 DI publication exceeded the child supervisor deadline
+
+- **Symptom:** Candidate
+  `c3d97bef5ced58719c80936382cf62a0efc5a652ad97d4f6da1dd0871a538fd5` reached
+  `cpp-publish-di-model` in VM-21 run16, where STATUS and CAPABILITY closure
+  completed and STORE received a RepoA ACK. The 90-second child supervisor
+  expired just before the final 30-second ACK collection closed. Cleanup passed.
+- **Root cause:** The standalone publisher is allowed a 90-second request
+  deadline and a 180-second operation wait, but the MiniNDN harness imposed a
+  90-second outer deadline. The harness could terminate a valid in-progress
+  operation before its configured bounds elapsed.
+- **Fix:** The first harness-only proposal used 300 seconds, but exact-source
+  review found that `publishFile(timeoutMs)` can spend one full timeout in
+  `beginPublishFileImpl` and another in operation-status polling. Before retry,
+  add a harness preflight that derives both sequential native bounds from the
+  standalone client and API implementation, checks their structure, and requires
+  a 60-second margin. The child limit is 420 seconds; Repo request, ACK, and
+  operation semantics are unchanged.
+- **Next:** Freeze the resulting candidate and rerun the required source gates
+  before a fresh VM-21 attempt; keep run16 classified as a failed diagnostic
+  with cleanup PASS. The timeout-budget check is the Changed gate covering this
+  boundary, and must pass before MiniNDN launches.
+- **Lesson:** A harness deadline must exceed the combined bounds of the client
+  operation it supervises, including follow-up ACK collection.
+
+## 2026-10-01 — Spec192 timeout preflight selected the wrong overload
+
+- **Symptom:** The timeout preflight stopped before MiniNDN with
+  `cannot derive the native Spec192 publish timeout bounds` after the Python
+  syntax check and CLI help check passed.
+- **Root cause:** The source matcher selected the first
+  `ArtifactRepositoryApi::publishFile` definition, the In-App overload. The
+  sequential `beginTimeout` and `waitBudget` expressions belong to the later
+  Persistent overload.
+- **Fix:** Scope the source match to the Persistent overload's parameter types
+  and names so the guard derives the bounds from the implementation used by
+  the standalone client.
+- **Next:** Run syntax, CLI, and direct timeout-preflight checks; sync
+  CodeGraph, freeze the changed candidate, and obtain a fresh static review
+  before build or MiniNDN execution.
+- **Lesson:** Source-derived guards for overloaded APIs must identify the
+  relevant overload by its signature, not by method name alone.
+
+## 2026-10-01 — Spec192 exact-candidate evidence directory was not writable
+
+- **Symptom:** Creating `specs/192-distributedrepo-lifecycle/evidence/T010-6738bc1b-20261001`
+  failed with `Permission denied`; the build command did not start.
+- **Root cause:** The existing `evidence/` directory is owned by `root:root`
+  with mode `0755`, while the feature directory itself is writable by the
+  project user.
+- **Fix:** Keep the existing evidence tree untouched and write this candidate's
+  evidence to a separate feature-scoped sibling directory named
+  `evidence-T010-6738bc1b-20261001`.
+- **Next:** Run the exact-candidate gates from the writable directory and record
+  this path in the T010 audit/task summary.
+- **Lesson:** Check the ownership of evidence output paths before starting a
+  qualification gate.
+
+## 2026-10-01 — Spec192 unit summary parser selected per-case assertions
+
+- **Symptom:** The exact-candidate unit selectors all exited successfully, but
+  the first generated summary reported 162 assertions instead of the suite's
+  total.
+- **Root cause:** The result parser selected the last per-test-case assertion
+  line in each Boost.Test log rather than the module-level aggregate; its first
+  correction also needed to accept singular `test case` and `assertion` forms.
+- **Fix:** Rebuild `results.tsv` and `summary.txt` from each log's module-level
+  aggregate. The corrected record is 20 selectors, 99 cases, and 1,511
+  assertions, with no failures.
+- **Next:** Proceed to the complete integration gate; preserve the original
+  per-selector logs alongside the corrected aggregate.
+- **Lesson:** Qualification summaries must parse the framework-level aggregate
+  and handle singular grammar explicitly.
+
+## 2026-10-01 — Spec192 runtime closure checker flagged Python C-API references
+
+- **Symptom:** The first exact-candidate `ldd -r` report marked 322 symbols in
+  the two CPython extension modules unresolved and stopped the closure check.
+- **Root cause:** The collector treated the `Py*` and `_Py*` symbols supplied
+  by the embedding interpreter as native shared-library failures.
+- **Fix:** Classify those symbols separately for extension modules, require all
+  other native references and shared-library paths to resolve, and import both
+  modules in their intended Python package roots. The corrected closure passed
+  for 11 objects and 39 libraries; both imports passed and no object depends on
+  `libpython`.
+- **Next:** Preserve this exact-candidate closure report and continue with the
+  ordered integration gate.
+- **Lesson:** An extension's interpreter-provided symbols require an import
+  check; `ldd -r` output alone does not prove a CPython extension is broken.
+
+## 2026-10-01 — Spec192 integration selector omitted its Boost.Test suite
+
+- **Symptom:** The exact-candidate integration gate stopped at its first
+  selector with `no test cases matching filter`; no integration case ran.
+- **Root cause:** Four production-ingress cases are nested under
+  `Spec170NativePostSelection`, but the retry command supplied only each leaf
+  name. The saved passing output records the full suite/case selector.
+- **Fix:** Use `Spec170NativePostSelection/<case>` for those four selectors and
+  keep suite names for the grouped request-selection, confidentiality, and
+  provider-identity coverage.
+- **Next:** Preserve the rejected invocation output, rerun all nine integration
+  targets on the same candidate, and continue to MiniNDN only after they pass.
+- **Lesson:** Boost.Test filters must retain the registered suite path when a
+  case is nested.
+
+## 2026-10-01 — Spec192 VM-21 DI peer expected a camel-case size field
+
+- **Symptom:** Candidate `6738bc1b95fb27bc04b9087e3a3afeab3b40b61c24a164989496a2323ce87222`
+  completed the In-App reopen, explicit archive, Python-binding publish/fetch,
+  and all three DI model/input/output publishes with committed receipts, then
+  failed before the fresh-Provider request with `KeyError: 'sizeBytes'`.
+  MiniNDN cleanup passed and the run manifest records the candidate SHA.
+- **Root cause:** The input `artifact-references.json` follows the app SDK's
+  canonical `ArtifactReference.to_wire()` shape, which spells the field
+  `size_bytes`; `spec192_di_peer.py` indexed it as `sizeBytes`.
+- **Fix:** Read the serialized `size_bytes` field when constructing the
+  provider-response oracle. No DI request or authorization result is claimed
+  from this failed diagnostic.
+- **Next:** Review and freeze the corrected source candidate, rerun its ordered
+  qualification gates, and repeat the complete VM-21 scenario with a new output
+  directory.
+- **Lesson:** Test peers that parse app SDK wire data must use the exact
+  serialized field spelling rather than a framework-internal camel-case name.
+
+### 2026-10-01 — Spec192 VM-21 C++ consumer fetch missed the response deadline
+
+- **Symptom:** Candidate
+  `fbe3d35e3ebeffd92556c8e29bbdf7e8003356d27345305eb43ae0ca56947ad6` completed
+  Python publication and produced its native committed receipt, then the
+  no-Python C++ client failed to fetch that receipt's artifact with
+  `repo-request-timeout: Provider response callback was not delivered before
+  the request deadline`. Five-host cleanup passed. The two Repo logs record
+  consumer `FETCH_RANGE` requests and provider ACK publication, but the client
+  log has no matching response callback.
+- **Root cause:** The standalone C++ `fetch` mode retained a 1.5-second ACK
+  collection window and a 30-second request deadline, while the Python peer's
+  successful fetch path uses a 30-second ACK window and a 60-second request
+  deadline. The trace does not distinguish a late ACK/selection from a response
+  arriving after the short request deadline. The C++ publish-mode 180-second
+  operation wait was also accidentally reset by a later unconditional 60-second
+  default assignment.
+- **Fix:** In the next candidate, apply 30-second ACK collection and 60-second
+  request bounds to the standalone `fetch` mode, allow 120 seconds for the
+  full C++ fetch and operation wait, and give its supervisor 180 seconds.
+  Move the 60-second default before mode overrides so publish keeps its intended
+  180-second wait. Production Repo timeouts remain unchanged.
+- **Next:** Freeze a new candidate and rerun build, closure, unit, integration,
+  VM-21, and ordered VM-24 gates. Candidate `fbe3d35e…47ad6` remains a failed
+  diagnostic with cleanup PASS.
+- **Lesson:** Validate a cross-language flow at both ends: a committed Python
+  receipt does not prove the standalone C++ consumer has enough request and
+  ACK time to receive the same artifact.
+
+### 2026-10-01 — Spec192 VM-21 CAPABILITY closure omitted an explicit Repo
+
+- **Symptom:** Candidate
+  `059d83da9991f4d7f0a09076cbd2ceff8465daa4b42e001d1c95007ad8cb0fee` passed
+  the no-Python C++ fetch of the Python-published artifact, then failed at
+  `cpp-publish-di-model` with
+  `repo-selected-target-stale: a selected Repo/Provider tuple is absent from
+  fresh authenticated discovery`. Cleanup passed. The C++ publish window was
+  30 seconds, and the Repo services were live.
+- **Root cause:** Not yet resolved. The selected set is A/B, while the
+  discovery result lacked one tuple. The retained client trace does not record
+  the per-provider CAPABILITY ACK closure or the exact filter that excluded the
+  tuple, so this run cannot distinguish an absent/late ACK from a rejected
+  capability advertisement.
+- **Fix:** Keep the corrected C++ fetch bounds, which passed this run. Before
+  another timeout or acceptance change, add an environment-gated diagnostic at
+  the CAPABILITY closure that reports observed provider identities and the
+  specific authentication, decoding, or capability filter result. Do not
+  change discovery acceptance semantics without that evidence.
+- **Next:** Freeze a diagnostic candidate, rerun its ordered source gates and
+  VM-21, then use the per-provider closure evidence to select the smallest
+  repair. Candidate `059d83da…8cb0fee` remains a failed diagnostic with cleanup
+  PASS.
+- **Lesson:** A wide ACK window and a live provider do not prove that the
+  authenticated CAPABILITY set contains each explicitly selected Repo.
+
+### 2026-10-01 — Spec192 VM-21 DI input publication missed a selected Repo
+
+- **Symptom:** Exact candidate
+  `4302e71c140f691ed2c55565c7210a1afa9299f83e82f9425089254f1eb14957`
+  passed the C++ archive/reopen, Python binding fetch/receipt checks, Python
+  publish/status/fetch round trip, and C++ DI-model publish, then failed at
+  `cpp-publish-di-input` with `repo-selected-target-stale`. The five-host
+  runner recorded cleanup PASS.
+- **Root cause:** The fresh authenticated CAPABILITY closure did not contain
+  every explicitly selected Repo/Provider tuple. This run did not enable the
+  per-provider closure trace, so it cannot identify the missing tuple or
+  distinguish a missing ACK from a rejected advertisement. No ACL diagnosis
+  is supported by this evidence.
+- **Fix:** None selected. Preserve the 5-second publish ACK window and
+  production selection checks until a scoped trace identifies the missing
+  provider or rejection stage.
+- **Next:** Repeat the exact candidate with the diagnostic trace enabled only
+  on the C++ DI publication children, avoiding trace-induced scheduling changes
+  in the earlier Python binding stages.
+- **Lesson:** A prior artifact's successful placement does not prove that the
+  next fresh capability closure contains the same explicit target set.
+
+### 2026-10-01 — Spec192 VM-21 global discovery trace perturbed ACK closure
+
+- **Symptom:** The exact `4302e71c…1eb14957` candidate was rerun with
+  `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1` across all MiniNDN hosts. It stopped
+  earlier in `python-binding-publish-status-fetch`: the STATUS ACK closure had
+  `matching=0, observed=0`, after several authenticated ACKs arrived without a
+  pending request and a decoded ACK was rejected as from a provider outside
+  the requested set. Cleanup passed.
+- **Root cause:** This global diagnostic run did not reach the DI publication
+  whose CAPABILITY closure needs diagnosis. It demonstrates that enabling the
+  trace across every client changes which bounded ACK failure is observed, but
+  it does not establish why the earlier DI closure omitted a selected tuple.
+- **Fix:** None selected; no timeout or ACK-acceptance semantics changed.
+- **Next:** Scope the same environment-gated trace to the C++ DI publication
+  children, retain this run as diagnostic-only, and inspect the per-provider
+  closure before choosing any source repair.
+- **Lesson:** Diagnostic instrumentation must be scoped to the failing child
+  when its scheduling can affect an earlier independent protocol stage.
+
+### 2026-10-01 — Spec192 VM-21 explicit archive returned an incomplete replica receipt
+
+- **Symptom:** Exact candidate `4302e71c…1eb14957` failed fresh five-host
+  runs `vm21-run20-scoped-trace` and `vm21-run22-python-ack-trace` at the
+  independent two-Repo receipt oracle. The C++ archive child returned
+  `ARCHIVE_COMMITTED`, but its receipt did not contain both selected Repo
+  commits. In run20, Repo A logged its seed STORE/range commit and Repo B logged
+  three staged ranges from Repo A but no range commit; run22 logged six staged
+  ranges and no range commit. Both manifests record cleanup PASS.
+- **Root cause:** Unresolved. The retained runs do not show whether the
+  operation-status wait returned a nonterminal partial receipt or Repo B's
+  replication worker failed before COMMIT_RANGES. The archive child did not
+  have the selected-request trace enabled in either run, so they do not identify
+  the replica request/ACK outcome.
+- **Fix:** None selected; no production timeout, retry, or acceptance behavior
+  changed.
+- **Next:** Capture per-provider ACK/CAPABILITY and operation-status outcomes
+  on C++ client children only, then compare them with Repo B's stage/commit
+  trace before choosing a repair.
+- **Lesson:** An `ARCHIVE_COMMITTED` process line is not sufficient evidence
+  that all selected replicas committed; the independent receipt and handler
+  trace remain the acceptance oracles.
+
+### 2026-10-01 — Spec192 VM-21 Python status ACK closure was empty
+
+- **Symptom:** Exact candidate `4302e71c…1eb14957`, with trace scoped to C++
+  clients, passed explicit archive with two independently verified Repo
+  commits and passed the C++-receipt Python fetch/query stages. It then failed
+  in `python-binding-publish-status-fetch` with
+  `repo-ack-authentication-failed: selected Provider ACK was absent, duplicated,
+  or untrusted (matching=0, observed=0)`. Five-host cleanup passed.
+- **Root cause:** Unresolved. The run records no matching authenticated ACK for
+  the consumer STATUS operation; it does not identify whether the selected
+  Repo's ACK was absent/late or whether a response arrived under a different
+  Provider/request binding. The same consumer had completed an authorized fetch
+  earlier in the run, so this failure does not establish an ACL denial.
+- **Fix:** None selected; the diagnostic trace was not enabled for the Python
+  child and no request-selection or ACK-acceptance behavior changed.
+- **Next:** Capture the consumer STATUS request's expected provider set and
+  received ACK provider/request IDs with child-scoped diagnostics, then rerun
+  the exact candidate before considering any timeout or protocol change.
+- **Lesson:** A successful fetch in one process does not prove the next
+  independent authenticated STATUS closure succeeds for the same consumer.
+
+### 2026-10-01 — Spec192 VM-21 C++ DI model CAPABILITY closure contained only Repo A
+
+- **Symptom:** Exact candidate `4302e71c…1eb14957` passed explicit archive
+  with both durable Repo receipts and passed the Python binding publish/status/
+  fetch round trip. In `vm21-run23-targeted-traces`, the following C++ DI model
+  publication failed with `repo-selected-target-stale`: its 30-second
+  authenticated CAPABILITY closure contained Repo A only. The client trace
+  matched Repo A's ACK; it recorded no ACK matched to this request from Repo B.
+  The five-host manifest records `minindn_cleanup=PASS`.
+- **Root cause:** The provider did receive the CAPABILITY Interest and emit its
+  ACK. In the Repo B `wustl.pcap`, its outbound ACK Data for this request was
+  captured at `1790856171.729368`; the center `memphis.pcap` received it at
+  `1790856171.729386` and sent it out the Repo A (`ucla`) link at
+  `1790856171.730887`. The application `neu.pcap` received Repo A's ACK but no
+  Repo B ACK for this request, matching the client's single-candidate closure.
+  This narrows the gap to the SVS/NFD delivery path after Repo B publication;
+  it does not yet identify why the ACK was routed to the Repo A link.
+- **Diagnostic boundary:** `ndn-dissect` stopped on the pcap with
+  `Illegal TLV-TYPE 0 at offset 2703`; the packet observations above came from
+  `tshark`'s UDP payload field and visible NDN names, not from that decoder.
+- **Fix:** None selected. No production selection, ACK-authentication, retry,
+  or timeout behavior changed.
+- **Next:** Preserve the packet-level finding and capture focused SVS/NFD state
+  on the app and center nodes, especially the Repo B producer sequence fetch
+  and its outgoing face. Do not change production ACK acceptance semantics
+  until the forwarding or subscriber defect is identified.
+- **Lesson:** A Repo's ACK publish event does not establish delivery to the
+  requesting user; trace the publication through the center's selected egress
+  and the user's SVS callback.
+
+### 2026-10-01 — Spec192 VM-21 explicit archive client aborted before provider trace
+
+- **Symptom:** Exact candidate `4302e71c…1eb14957`, rerun as
+  `vm21-run24-provider-trace` with `ServiceProvider=TRACE` scoped to Repo B,
+  stopped before the targeted DI model request. `explicit-archive-process`
+  exited `-6` with `*** stack smashing detected ***: terminated`. The manifest
+  records `minindn_cleanup=PASS` and the exact candidate hash.
+- **Root cause:** Unresolved. The client log contains only the stack-smashing
+  termination; no stack trace or request context was captured. The Repo B
+  provider trace therefore did not reach the failing CAPABILITY closure.
+- **Fix:** None selected. Do not infer that the diagnostic environment caused
+  this unrelated archive-client abort, and do not change protocol behavior.
+- **Next:** Check for retained core evidence, then retry the scoped provider
+  trace only if the crash provides no reproducible source-level diagnosis.
+- **Lesson:** A MiniNDN rerun can fail in an earlier stage before the scoped
+  diagnostic is exercised; retain its exact failure and cleanup result without
+  attributing it to the intended target.
+
+### 2026-10-01 — Spec192 VM-21 Repo B trace retry repeated the archive abort
+
+- **Symptom:** A second fresh exact-candidate run,
+  `vm21-run25-provider-trace-core`, with the same Repo B-only provider trace
+  again aborted `explicit-archive-process` with signal `-6` and
+  `*** stack smashing detected ***: terminated`. Cleanup passed and the exact
+  candidate hash remained `4302e71c…1eb14957`. No core appeared in the run
+  evidence or Apport crash directory, despite raising the runner's core limit.
+- **Root cause:** Unresolved. The repeated abort occurs before the diagnostic
+  CAPABILITY request; it does not establish that Repo B logging caused the
+  stack corruption or identify its source.
+- **Fix:** None selected. Stop using provider TRACE for now; the diagnostic
+  changes the experiment's observability and may perturb scheduling.
+- **Next:** Use the already captured Repo B NFD packet trace from run23 to
+  inspect whether the request and ACK were present, without changing the
+  application/server logging environment. Reconsider another traced run only
+  if packet evidence requires it.
+- **Lesson:** Repeating a diagnostic that dies before its target yields no new
+  evidence about that target; use passive packet evidence first.
+
+### 2026-10-01 — Spec192 VM-21 passive-FIB attempt aborted during archive
+
+- **Symptom:** Exact candidate `4302e71c…1eb14957`, rerun as
+  `vm21-run26-fib-snapshot` with no Repo server trace, failed before the
+  requested FIB snapshot point. The explicit archive client exited `-6` with
+  `*** stack smashing detected ***: terminated` after its
+  `begin-collaboration-returned` STATUS checkpoint. Cleanup passed. The
+  center/app/Repo FIB snapshots were not taken.
+- **Root cause:** Unresolved. This is the third recent explicit-archive client
+  abort, but the run23 archive passed and earlier aborts occurred at differing
+  STATUS points. No core was retained.
+- **Fix:** None selected. Do not interpret this as a failure of the Repo B
+  ACK route or change runtime behavior based on an earlier-stage crash.
+- **Next:** Capture a backtrace or isolate this intermittent client abort
+  before another full MiniNDN attempt; the FIB diagnostic did not run.
+- **Lesson:** A fresh-run source hash can be exact while a transient earlier
+  client abort prevents the later diagnostic and invalidates the whole VM-21
+  attempt.
+
+### 2026-10-01 — Spec192 VM-21 gdbserver wrapper hid Mininet's launcher
+
+- **Symptom:** Exact-candidate `vm21-run27-gdb-fib` reached the archive-client
+  launch but failed before starting that child with
+  `FileNotFoundError: [Errno 2] No such file or directory: 'mnexec'`. Cleanup
+  passed; no GDB session, route snapshot, or client result was produced.
+- **Root cause:** The diagnostic wrapper replaced `PATH` before Mininet
+  resolved its `mnexec` launcher, rather than restricting `PATH` only for the
+  child process after namespace entry.
+- **Fix:** Retain the ordinary launch `PATH` and have the existing spawn helper
+  apply the empty-PATH environment to the gdbserver child.
+- **Next:** Retry the debugger wrapper with `gdbserver` recognized as the
+  standalone diagnostic executable; this attempt provides no VM-21 evidence.
+- **Lesson:** The no-Python PATH boundary applies to the child, while Mininet
+  itself still needs its launcher on the host PATH.
+
+### 2026-10-01 — Spec192 VM-21 archive client stack overflowed in stale OpenABE DRBG
+
+- **Symptom:** `vm21-run28-gdbserver-fib` caught the explicit archive client's
+  `SIGABRT` and `stack smashing detected`. GDB located the canary failure in
+  `oabe::block_cipher_df`, called by `ctr_drbg_reseed` during ABE KEM key
+  generation. The MiniNDN manifest retained the exact candidate hash and
+  `minindn_cleanup=PASS`; the archive receipt was not produced.
+- **Root cause:** The loaded `/usr/local/lib/libopenabe.so` was built from the
+  pinned dependency snapshot whose `AesEvpBlockEncrypt` disables EVP padding
+  before `EVP_EncryptInit_ex`. On this OpenSSL 1.1.1 runtime, initialization
+  resets that setting; `EVP_EncryptFinal_ex` then emitted a second AES block,
+  and `memcpy` copied it into a block-sized DRBG buffer. The current OpenABE
+  source already sets padding after initialization, but that fix was absent
+  from the library used by the run.
+- **Fix:** Built and ran the OpenABE install workflow with its current fixed
+  source into `/tmp/ndnsf-spec192-openabe-20261001` (`--jobs=2`). The installer
+  and its built-in tests exited successfully. `/usr/local` was left untouched;
+  an `ldd` check confirms the Spec192 client resolves OpenABE and both RELIC
+  libraries from the isolated prefix when `LD_LIBRARY_PATH` selects it.
+- **Next:** Rerun VM-21 with that explicit runtime path and capture the center,
+  app, and Repo FIB tables before the DI model publication. Keep the unchanged
+  Spec192 source fingerprint and record the alternate runtime closure.
+- **Lesson:** Matching SONAMEs and successful `ldd` resolution do not establish
+  that a native crypto library contains the source fix expected by the current
+  project; verify the loaded build against its source and the active OpenSSL.
+
+### 2026-10-01 — Spec192 VM-21 authorized DI request timed out after publication
+
+- **Symptom:** Exact candidate `4302e71c…1eb14957` with the isolated fixed
+  OpenABE runtime passed archive, Python binding, cross-language fetch, and the
+  C++ DI model/input/output persistent commits in
+  `vm21-run29-fixed-openabe-fib`. The fresh authorized DI provider started, but
+  its request peer timed out after 60 seconds; no provider artifact-materialized
+  event or final MiniNDN manifest was produced.
+- **Root cause:** Not established. The request-ID-bearing group Interest is
+  present in the captured network path, but the provider emitted no inference
+  response and the Repo servers recorded no fetch from the fresh DI provider.
+  This run did not enable per-peer ServiceUser tracing for the final DI request,
+  so the failure boundary between request delivery and provider dispatch is
+  still unknown.
+- **Fix:** None selected. Preserve the completed archive and three persistent
+  publication receipts. The next run should enable ServiceUser tracing for the
+  authorized DI requester/provider and capture their FIB tables after provider
+  startup, before changing request or authorization behavior.
+- **Next:** Repeat VM-21 with those final-stage diagnostics and the same exact
+  source and isolated OpenABE runtime.
+- **Lesson:** A successful publication receipt does not prove that a fresh DI
+  provider can receive an inference request and resolve its artifact bindings;
+  instrument the service request boundary independently.
+
+### 2026-10-01 — Spec192 VM-21 trace wrapper rejected comma-joined NDN_LOG filters
+
+- **Symptom:** `vm21-run30-fixed-openabe-di-trace` passed archive, the Python
+  binding round trips, and C++ DI model/input/output publication, then failed
+  while starting the authorized DI provider. Its log reported
+  `unrecognized log level 'TRACE,ndnsf_service_framework.ServiceProvider=TRACE'`;
+  no authorized request was sent.
+- **Root cause:** The transient trace wrapper constructed a comma-joined
+  `NDN_LOG` filter string. ndn-cxx parsed the suffix as one log-level value.
+  The repository's MiniNDN guidance already documents a single supported
+  wildcard filter (`ndn_service_framework.*=TRACE`) and warns against
+  propagating application filters to NFD.
+- **Fix:** None applied to source. Retry with the documented single wildcard
+  only in the spawned DI application environment, preserving the existing
+  MiniNDN/NFD environment.
+- **Next:** Repeat VM-21 against the unchanged source and isolated fixed OpenABE
+  runtime; retain per-peer trace and post-start FIB snapshots.
+- **Lesson:** Diagnostic environment changes must follow the existing
+  application logger syntax and remain scoped to the target child process.
+
+### 2026-10-01 — Spec192 VM-21 no-Python client fetch timed out on large response
+
+- **Symptom:** `vm21-run31-fixed-openabe-di-trace-wildcard` passed the explicit
+  archive, Python-to-C++ fetch, native receipt query, and Python publication,
+  then the independent no-Python C++ client timed out while fetching that
+  publication. The run stopped before DI publication and the authorized DI
+  request. The request was
+  `20261001T132826.594827-6ae147be9b78c363`.
+- **Root cause:** Not established. PCAP shows the consumer received the
+  `FETCH_RANGE` response and then requested the referenced
+  `NDNSF/LARGE-RESPONSE` base and segments from Repo A's provider prefix; no
+  matching segment Data appears in the captures. Repo A logged two
+  `FETCH_RANGE` handler entries. This localizes the evidence to large-response
+  delivery but does not distinguish a provider IMS miss from a later response
+  delivery failure.
+- **Fix:** None selected. The run used the exact Spec192 source and isolated
+  fixed OpenABE runtime; its no-Python client timed out before the DI gate.
+- **Next:** Repeat VM-21 with the supported per-child
+  `ndn_service_framework.ServiceProvider=TRACE` filter on Repo A and
+  `ndn_service_framework.ServiceUser=TRACE` on the C++ consumer, then inspect
+  the IMS hit/miss and large-response fetch callback for the matching request.
+- **Lesson:** A Repo handler-entry event and a delivered response reference do
+  not prove that the referenced segmented response reached the consumer.
