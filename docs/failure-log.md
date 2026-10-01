@@ -17904,3 +17904,26 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** A fail-closed fresh-discovery guard is not itself proof of a
   stale service; capture the compared candidate identities before attributing
   the failure to placement or provider availability.
+
+### 2026-10-01 — Spec192 VM-21 Python STATUS ACK set rejected during traced publish
+
+- **Symptom:** `vm21-run35-capability-target-trace` failed in the Python
+  binding's STATUS request before the DI artifacts or authorized Provider
+  stage. `spec192_binding_client.py` reported
+  `repo-ack-authentication-failed` with `matching=0, observed=0`. MiniNDN
+  cleanup passed and all five packet captures were nonempty; the source
+  candidate remained `4302e71c140f691ed2c55565c7210a1afa9299f83e82f9425089254f1eb14957`.
+- **Root cause:** Not established. The selected-request trace records several
+  ACKs without a pending request and one decoded ACK rejected because its
+  Provider was not in the requested set; the candidate set then closed empty.
+  The trace does not identify the rejected Provider, so it cannot show whether
+  that ACK was stale or whether the requested Repo failed to answer.
+- **Fix:** No source or protocol change. The diagnostic flag was applied to
+  every spawned process; the next attempt should scope it to C++ DI publication
+  children so the earlier Python-binding stage remains comparable with run34.
+- **Next:** Repeat VM-21 with selected-versus-discovered identity diagnostics
+  only on `cpp-publish-di-*`, retaining the narrowed SVSPubSub trace and FIB
+  snapshots. Inspect both Repo logs for the matching STATUS request ID.
+- **Lesson:** A rejected ACK from an unrequested Provider is not a valid
+  candidate; capture the request's exact provider set and correlate the
+  matching STATUS Interest before changing ACK validation.
