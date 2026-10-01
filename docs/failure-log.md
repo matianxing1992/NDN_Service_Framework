@@ -17973,3 +17973,22 @@ containing selector has not yet run. See the next review/build/run record in
   exact ACK names. Keep the Repo hosts on `ServiceProvider=TRACE` only.
 - **Lesson:** A Provider's completed SVS publication does not prove the
   matching ACK reached the requester's selection callback.
+
+### 2026-10-01 — Spec192 VM-21 explicit archive again lacked Repo B receipt
+
+- **Symptom:** `vm21-run38-di-model-client-svs-trace` failed at the first
+  explicit archive. Its receipt again recorded Repo A `COMMITTED` and Repo B
+  `FAILED` with `repo-target-outcome-unknown`; it did not reach the traced DI
+  model request. MiniNDN cleanup passed and all five packet captures were
+  nonempty.
+- **Root cause:** Not established. This repeats run36's receipt boundary, but
+  the selected-request diagnostic was not active for the archive client: the
+  harness labels that child `explicit-archive-process`, so the wrapper's
+  `cpp-*` label match did not set the flag. This run adds no selected-versus-
+  discovered target evidence.
+- **Fix:** No source or protocol change.
+- **Next:** Repeat with the selected-request diagnostic explicitly enabled for
+  `explicit-archive-process` as well as C++ DI publication children. Keep the
+  client-only SVSPubSub trace reserved for the DI model request.
+- **Lesson:** Instrumentation wrappers must match the harness's actual child
+  labels; matching binary-role prefixes can silently miss the failing process.
