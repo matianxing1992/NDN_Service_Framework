@@ -17927,3 +17927,26 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** A rejected ACK from an unrequested Provider is not a valid
   candidate; capture the request's exact provider set and correlate the
   matching STATUS Interest before changing ACK validation.
+
+### 2026-10-01 — Spec192 VM-21 archive receipt lacked the Repo B commit
+
+- **Symptom:** `vm21-run36-di-publication-trace` stopped at the first explicit
+  archive because its receipt did not record successful commits at both
+  selected C++ Repos. The receipt records Repo A as `COMMITTED` and Repo B as
+  `FAILED` with `repo-target-outcome-unknown`; the run did not reach Python or
+  DI qualification. MiniNDN cleanup passed and all five packet captures were
+  nonempty.
+- **Root cause:** Not established. Repo A's provider issued cross-repository
+  `STORE_RANGE` and `COMMIT_RANGES` requests to Repo B, but the receipt did not
+  establish Repo B's commit. This run did not enable selected-request tracing
+  on the C++ archive client, so its exact selection and request/ACK correlation
+  are unavailable.
+- **Fix:** No source or protocol change. Keep the Python-binding processes on
+  the run34 environment, which passed their earlier stage, and enable
+  `NDNSF_SPEC192_SELECTED_REQUEST_TRACE` on C++ clients only.
+- **Next:** Repeat VM-21 with selected-request diagnostics on every spawned C++
+  Repo client, including explicit archive, while retaining the narrowed
+  DI-Provider SVSPubSub trace and post-start FIB/face snapshots.
+- **Lesson:** A seed-side receipt or cross-repo request does not prove the
+  selected replica committed; qualify each independent Repo receipt and
+  correlate the replica response.
