@@ -18075,3 +18075,24 @@ containing selector has not yet run. See the next review/build/run record in
   correlate Repo A sequence 69 from mapping acquisition through ACK delivery.
 - **Lesson:** The selected-target validation is correctly failing closed when
   the requester authenticates only one of the two selected capability ACKs.
+
+### 2026-10-01 — Spec192 VM-21 run43 DI provider prefix authorization
+
+- **Symptom:** `vm21-run43-model-input-svs-trace` passed the two-Repo archive,
+  Python/C++ interoperation, Python publication, and C++ DI model, input, and
+  output object publications. Their receipts were `COMMITTED` with Repo A and
+  Repo B selected. The authorized DI request then collected zero ACKs and
+  timed out without publishing Selection. The DI provider log reports NFD
+  authorization rejection for its `/example/repo/provider/spec192-di` service,
+  CK, and NDNSF prefixes.
+- **Root cause:** Not established. The visible failure is at provider prefix
+  registration before it can serve `/Spec192/DI/Infer`; this run does not
+  identify which NFD/NDNSF authorization rule rejected the identity or prefix.
+- **Fix:** No source or authorization-policy change. The MiniNDN runner exited
+  with failure after cleanup; all five packet captures were nonempty.
+- **Next:** Trace the DI provider identity, trust material, and prefix
+  registration authorization setup in the run fixture and controller policy.
+  Keep this distinct from Repo ACK delivery; all three DI artifact receipts
+  committed before this provider-registration failure.
+- **Lesson:** Successful Repo artifact publication does not establish that a
+  separate DI service provider is authorized to register or serve its prefix.
