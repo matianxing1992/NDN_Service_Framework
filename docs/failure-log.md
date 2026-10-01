@@ -18013,3 +18013,26 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** Provider-side STATUS ACKs plus an empty client ACK set localize a
   delivery/selection gap, but a request-ID match is needed to identify the
   failing exchange.
+
+### 2026-10-01 — Spec192 VM-21 capability discovery missed Repo A ACK delivery
+
+- **Symptom:** `vm21-run40-python-status-ack-svs-trace` passed explicit
+  two-Repo archive, Python/C++ interoperation, and the DI model commit. The DI
+  input publish failed with `repo-selected-target-stale`. Its exact fresh
+  capability request was
+  `20261001T151052.832885-12d363f1ca0b7b9e`: discovery returned one candidate,
+  Repo B, while the selected target set also required Repo A.
+- **Root cause:** Not established. Both providers logged `ACK_PUBLISHED` and
+  `SVS_PUBLISH_DONE` for that exact CAPABILITY request (Repo A sequence 93,
+  Repo B sequence 67). The requester logged `ACK_MATCHED_PENDING_CALL` only
+  for Repo B and closed the set with one candidate. Thus Repo A's publication
+  did not reach or match the requester; the remaining SVSPubSub fetch boundary
+  is unobserved. The selected-target guard correctly failed closed.
+- **Fix:** No source or protocol change. MiniNDN cleanup passed and all five
+  packet captures were nonempty.
+- **Next:** Repeat with SVSPubSub TRACE enabled only on
+  `cpp-publish-di-input` to determine whether the requester dispatched a
+  mapping/publication fetch for Repo A sequence 93 and how it completed.
+- **Lesson:** A completed provider ACK publication is not enough for
+  authenticated capability discovery; the requester must match each selected
+  Repo's ACK before accepting its target set.
