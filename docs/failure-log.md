@@ -17881,3 +17881,26 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** Broad TRACE instrumentation can change a timing-sensitive
   distributed run; add high-volume protocol logging only to the process needed
   to identify the next failure boundary.
+
+### 2026-10-01 — Spec192 VM-21 output publish rejected a stale selected Repo target
+
+- **Symptom:** `vm21-run34-openabe-targeted-svspubsub-trace` passed the explicit
+  archive, Python/C++ interoperation, and committed the C++ DI model and input
+  artifacts. The output artifact publish then failed with
+  `repo-selected-target-stale: a selected Repo/Provider tuple is absent from
+  fresh authenticated discovery`, before the authorized DI Provider started.
+  MiniNDN cleanup passed and all five packet captures were nonempty.
+- **Root cause:** The C++ Repo API deliberately validates every selected
+  Repo/Provider tuple against fresh authenticated capability discovery before
+  accepting the publish intent. The failure log identifies that guard, but this
+  run did not enable its `NDNSF_SPEC192_SELECTED_REQUEST_TRACE` diagnostic, so
+  the missing tuple and observed candidate set are unknown.
+- **Fix:** No source or protocol change. Run33's broad Repo-host SVSPubSub TRACE
+  was removed; the DI model and input commits passed in this narrowed run.
+- **Next:** Repeat with `NDNSF_SPEC192_SELECTED_REQUEST_TRACE=1` on the C++ DI
+  publish children to capture the selected and discovered Repo/Provider tuples.
+  Keep SVSPubSub TRACE scoped to the DI Provider and retain post-start FIB/face
+  snapshots.
+- **Lesson:** A fail-closed fresh-discovery guard is not itself proof of a
+  stale service; capture the compared candidate identities before attributing
+  the failure to placement or provider availability.
