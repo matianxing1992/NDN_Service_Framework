@@ -17992,3 +17992,24 @@ containing selector has not yet run. See the next review/build/run record in
   client-only SVSPubSub trace reserved for the DI model request.
 - **Lesson:** Instrumentation wrappers must match the harness's actual child
   labels; matching binary-role prefixes can silently miss the failing process.
+
+### 2026-10-01 — Spec192 VM-21 Python STATUS ACK closure failed after archive
+
+- **Symptom:** `vm21-run39-explicit-archive-and-di-trace` passed the explicit
+  two-Repo archive, then failed in Python binding publication with
+  `repo-ack-authentication-failed` (`matching=0, observed=0`) during STATUS.
+  It did not reach the DI stage. MiniNDN cleanup passed and all five captures
+  were nonempty.
+- **Root cause:** Not established. Both Repo logs contain paired
+  `ACK_PUBLISHED status=true` events for STATUS requests from
+  `/example/repo/consumer`, but the Python child log does not include its
+  request ID, so the exact failed request cannot be tied to those ACKs. Run37
+  separately correlated both provider ACKs to a C++ STATUS request whose user
+  candidate set still closed empty.
+- **Fix:** No source or protocol change.
+- **Next:** Enable ServiceUser and SVSPubSub TRACE only on
+  `python-binding-publish-status-fetch` and retain its selected-request trace,
+  so the failing Python STATUS request and ACK fetches can be correlated.
+- **Lesson:** Provider-side STATUS ACKs plus an empty client ACK set localize a
+  delivery/selection gap, but a request-ID match is needed to identify the
+  failing exchange.
