@@ -18055,3 +18055,23 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** The failing Python STATUS boundary recurs without the broad
   selected-request flag; it needs its own targeted trace before behavior is
   changed.
+
+### 2026-10-01 — Spec192 VM-21 model capability ACK again missed Repo A
+
+- **Symptom:** `vm21-run42-python-and-input-svs-trace` passed archive,
+  Python/C++ interoperation, and Python publication, then the C++ DI model
+  publish failed `repo-selected-target-stale`. Fresh discovery returned only
+  Repo B for selected request
+  `20261001T152559.048980-209a1bfd671c20c6`.
+- **Root cause:** Not established. Repo A published a successful CAPABILITY
+  ACK and completed SVS publication at sequence 69; Repo B did the same at
+  sequence 48. The requester matched Repo B only and closed with one candidate.
+  This repeats run40's publication-to-requester gap; this run did not enable
+  SVSPubSub TRACE on the C++ model client, so Repo A's mapping/publication
+  fetch path remains unobserved.
+- **Fix:** No source or protocol change. MiniNDN cleanup passed and all five
+  packet captures were nonempty.
+- **Next:** Repeat with SVSPubSub TRACE enabled on `cpp-publish-di-model` and
+  correlate Repo A sequence 69 from mapping acquisition through ACK delivery.
+- **Lesson:** The selected-target validation is correctly failing closed when
+  the requester authenticates only one of the two selected capability ACKs.
