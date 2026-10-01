@@ -17832,3 +17832,27 @@ containing selector has not yet run. See the next review/build/run record in
   the IMS hit/miss and large-response fetch callback for the matching request.
 - **Lesson:** A Repo handler-entry event and a delivered response reference do
   not prove that the referenced segmented response reached the consumer.
+
+### 2026-10-01 — Spec192 VM-21 DI group update was not dispatched to Provider
+
+- **Symptom:** `vm21-run32-fixed-openabe-di-large-response-trace` passed the
+  archive, cross-language fetch, native receipt query, and all three DI
+  artifact commits. Its authorized DI request
+  `20261001T135412.469695-fae3dbb787659c6a` timed out after 60 seconds with
+  zero ACKs. No provider artifact fetch or materialization event occurred.
+- **Root cause:** Not established. The Provider log validated a signed
+  `/example/repo/group/v=3` Data packet from the Consumer but recorded no
+  `REQUEST_RECEIVED`, `OnRequest`, or `ACK_PUBLISHED` event for the DI request.
+  The requester's trace recorded `REQUEST_PUBLISHED`, `ackCount=0`, and no
+  selection publication. Post-start FIB snapshots show the Consumer route for
+  `/example/repo/group` and the Provider's registered service prefix; the
+  Provider log also shows the matching V2 request-subscription regex registered
+  before the request. These facts do not establish that SVS delivered the
+  request Data to that subscription callback.
+- **Fix:** None selected. No protocol or authorization behavior was changed.
+- **Next:** Trace the pinned SVSPubSub fetch and regex-subscription callback
+  path for the Consumer's exact request Data name. Require Provider dispatch
+  and ACK evidence before altering collaboration selection or permissions.
+- **Lesson:** Accepting the signed group sync Data and registering the service
+  regex do not prove that the matching request publication reached the
+  Provider's request handler.
