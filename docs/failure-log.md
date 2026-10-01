@@ -17950,3 +17950,26 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** A seed-side receipt or cross-repo request does not prove the
   selected replica committed; qualify each independent Repo receipt and
   correlate the replica response.
+
+### 2026-10-01 — Spec192 VM-21 STATUS ACKs were published but not selected
+
+- **Symptom:** `vm21-run37-cpp-selected-target-trace` passed the two-Repo
+  archive receipt and Python/C++ interoperation, then the C++ DI model publish
+  failed during its STATUS request
+  `20261001T145114.998711-d9f0f0a63ed4d2f6` with
+  `repo-ack-authentication-failed` and zero selected candidates. MiniNDN cleanup
+  passed; all five UDP captures were nonempty.
+- **Root cause:** Not established. Both Repo providers logged
+  `ACK_PUBLISHED status=true` and `SVS_PUBLISH_DONE` for that exact request ID,
+  while the requester closed its ACK set with `candidateCount=0`. This places
+  the evidence boundary after provider publication and before ACK candidate
+  selection; it does not prove whether the requester fetched the ACK Data or
+  rejected it during subscription delivery.
+- **Fix:** No source or protocol change. Selected-request diagnostics remained
+  scoped to C++ children and Repo `ServiceProvider` traces; SVSPubSub TRACE was
+  not enabled on the requester.
+- **Next:** Repeat with `ndn_svs.SVSPubSub=TRACE` only on the C++ DI model
+  publisher/requester, and correlate mapping/publication fetch events for the
+  exact ACK names. Keep the Repo hosts on `ServiceProvider=TRACE` only.
+- **Lesson:** A Provider's completed SVS publication does not prove the
+  matching ACK reached the requester's selection callback.
