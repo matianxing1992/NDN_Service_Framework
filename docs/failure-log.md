@@ -17856,3 +17856,28 @@ containing selector has not yet run. See the next review/build/run record in
 - **Lesson:** Accepting the signed group sync Data and registering the service
   regex do not prove that the matching request publication reached the
   Provider's request handler.
+
+### 2026-10-01 — Spec192 VM-21 DI model publication timed out under broad SVS tracing
+
+- **Symptom:** `vm21-run33-fixed-openabe-svs-trace` passed the explicit archive,
+  Python-to-C++ fetch, native receipt query, Python publication, and independent
+  no-Python C++ fetch of the Python-published artifact. The first C++ DI artifact
+  publish (`cpp-publish-di-model`) then exited with
+  `repo-request-timeout: Provider request timed out`, before the DI Provider
+  started or the authorized inference request ran. The exact candidate was
+  `4302e71c140f691ed2c55565c7210a1afa9299f83e82f9425089254f1eb14957`.
+- **Root cause:** Not established. MiniNDN cleanup passed and all five UDP
+  captures were nonempty. The diagnostic wrapper enabled both Repo
+  `ServiceProvider` and `ndn_svs.SVSPubSub` TRACE logging on every C++ Repo
+  service; each Repo log grew to roughly 1.5–2 MB with over 1,100 publication
+  fetch events. That added logging load is a possible confound, not a confirmed
+  cause of the request timeout.
+- **Fix:** No source or protocol change. Keep the previously successful
+  `ServiceProvider`/requester tracing on the Repo path, and restrict
+  `SVSPubSub` TRACE to the DI Provider process being investigated.
+- **Next:** Repeat the exact candidate and isolated OpenABE runtime with the
+  narrower trace, preserve the post-provider FIB/face snapshots, and require
+  the DI artifact commits before evaluating the authorized request dispatch.
+- **Lesson:** Broad TRACE instrumentation can change a timing-sensitive
+  distributed run; add high-volume protocol logging only to the process needed
+  to identify the next failure boundary.
