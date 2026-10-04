@@ -437,6 +437,24 @@ run(int argc, char** argv)
   RuntimeConfig runtimeConfig;
   runtimeConfig.nativeConfigPath = configPath.string();
   std::string fixedPlacementStrategyId;
+  std::string requestPlacementStrategyId;
+  const auto placementScoreMode = request.get<std::string>(
+    "placement_score_mode", "preparation-and-network");
+  if (const auto placement = request.get_optional<std::string>("placement_strategy")) {
+    if (placement->empty())
+      throw std::invalid_argument("request.placement_strategy must not be empty");
+    if (config.get_child_optional("fixed_placement"))
+      throw std::invalid_argument(
+        "request.placement_strategy cannot be combined with fixed_placement");
+    requestPlacementStrategyId = *placement;
+  }
+  if (placementScoreMode != "preparation-and-network" &&
+      placementScoreMode != "network-only")
+    throw std::invalid_argument("request.placement_score_mode is unsupported");
+  if (placementScoreMode != "preparation-and-network" &&
+      requestPlacementStrategyId != "native-observation-aware-v4")
+    throw std::invalid_argument(
+      "request.placement_score_mode requires native-observation-aware-v4");
   if (const auto fixedPlacement = config.get_child_optional("fixed_placement")) {
     const auto roleProviders = fixedPlacement->get_child_optional("role_providers");
     if (!roleProviders || roleProviders->empty())
@@ -517,6 +535,12 @@ run(int argc, char** argv)
   PrepareOptions prepareOptions;
   prepareOptions.timeout = runtimeConfig.preparationJobTimeout;
   auto runtime = Runtime::open(std::move(runtimeConfig));
+  std::shared_ptr<const PlacementStrategy> requestPlacementStrategy;
+  if (!requestPlacementStrategyId.empty()) {
+    requestPlacementStrategy = runtime->placementStrategy(requestPlacementStrategyId);
+    std::cout << "NATIVE_REQUEST_PLACEMENT strategy="
+              << requestPlacementStrategyId << std::endl;
+  }
   auto user = runtime->user();
   const auto prepared = user.prepare("default", prepareOptions);
 
@@ -527,7 +551,10 @@ run(int argc, char** argv)
     request.get<std::uint64_t>("ack_timeout_ms", options.ackTimeout.count()));
   options.applicationRequestId = request.get<std::string>("application_request_id", {});
   options.providerNames = providerNames(request);
-  if (!fixedPlacementStrategyId.empty()) {
+  if (requestPlacementStrategy) {
+    options.placement = std::move(requestPlacementStrategy);
+  }
+  else if (!fixedPlacementStrategyId.empty()) {
     options.placement = runtime->placementStrategy(fixedPlacementStrategyId);
     std::cout << "NATIVE_FIXED_PLACEMENT strategy=" << fixedPlacementStrategyId << std::endl;
   }

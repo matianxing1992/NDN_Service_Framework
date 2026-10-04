@@ -118,6 +118,10 @@ namespace tlv {
         CertificateValidFromType = 0xF843,
         CertificateValidUntilType = 0xF844,
         KeyEnvelopeAlgorithmType = 0xF845,
+        PeerNetworkProbeType = 0xF846,
+        PeerNetworkProbeResponseType = 0xF847,
+        PeerNetworkGoodputProbeType = 0xF848,
+        PeerNetworkGoodputProbeResponseType = 0xF849,
     };
 
     // Selection strategies.
@@ -205,6 +209,14 @@ class SecureStatusSnapshot : public DeploymentControlMessage
 { public: SecureStatusSnapshot(); };
 class RequestCapabilities : public DeploymentControlMessage
 { public: RequestCapabilities(); };
+class PeerNetworkProbe : public DeploymentControlMessage
+{ public: PeerNetworkProbe(); };
+class PeerNetworkProbeResponse : public DeploymentControlMessage
+{ public: PeerNetworkProbeResponse(); };
+class PeerNetworkGoodputProbe : public DeploymentControlMessage
+{ public: PeerNetworkGoodputProbe(); };
+class PeerNetworkGoodputProbeResponse : public DeploymentControlMessage
+{ public: PeerNetworkGoodputProbeResponse(); };
 class EncryptedRequestInput : public DeploymentControlMessage
 { public: EncryptedRequestInput(); };
 class SelectionInputKeyOffer : public DeploymentControlMessage
@@ -404,6 +416,7 @@ public:
     void setProviderEncryptionCertificate(
       const EncryptionCertificateAdvertisement& advertisement);
     void setProviderCapabilityOffer(const ProviderCapabilityOffer& offer);
+    void clearProviderCapabilityOffer();
     void setSelectionInputKeyOffer(const SelectionInputKeyOffer& offer);
     void setReservationLease(const ReservationLease& lease);
     bool hasProviderCapabilityOffer() const;

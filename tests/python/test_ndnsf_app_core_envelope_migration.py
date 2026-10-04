@@ -85,6 +85,31 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         self.assertEqual(hint.service_payload["freeBytes"], 1024)
         self.assertEqual(hint.service_payload_schema, "ndnsf-repo-capability-v2")
 
+        scoped_capability = repo._ack(
+            b"", "/NDNSF/DistributedRepo/Object/v1/STATUS")
+        self.assertTrue(scoped_capability.status)
+        self.assertEqual(scoped_capability.message, "repo-ready")
+
+        scoped_store = repo._ack(
+            b"", "/NDNSF/DistributedRepo/Object/v1/INSERT")
+        self.assertTrue(scoped_store.status)
+        self.assertEqual(scoped_store.message, "repo-ready")
+        self.assertIn("providerCapabilityHint",
+                      parse_ack_metadata(scoped_store.payload))
+
+        malformed = repo._ack(
+            b"not-json", "/NDNSF/DistributedRepo/Object/v1/STATUS")
+        self.assertFalse(malformed.status)
+        self.assertEqual(malformed.payload, b"")
+        self.assertEqual(malformed.message, "repo-bad-request")
+
+        missing_manifest = repo._ack(
+            b'{"operation":"MANIFEST","objectName":"/missing"}',
+            "/NDNSF/DistributedRepo/Object/v1/MANIFEST")
+        self.assertFalse(missing_manifest.status)
+        self.assertEqual(missing_manifest.payload, b"")
+        self.assertEqual(missing_manifest.message, "repo-manifest-miss")
+
     def test_network_repo_client_parses_core_capability_hint_from_ack(self) -> None:
         repo = RepoNodeApp.__new__(RepoNodeApp)
         repo.repo_node = "/repo/A"

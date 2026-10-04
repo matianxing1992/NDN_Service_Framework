@@ -16,6 +16,29 @@ REQUESTER = ROOT / "examples/DI_NativeRequester.cpp"
 
 
 class Spec182NativeBindingsTest(unittest.TestCase):
+    def test_spec196_request_policy_is_bounded_and_explicit(self):
+        sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
+        from ndnsf_distributed_inference.app_sdk.client import _native_request_policy
+
+        strategy, providers = _native_request_policy({
+            "placement_strategy": "native-observation-aware-v4",
+            "provider_names": ["/provider/a", "/provider/b"],
+        })
+        self.assertEqual(strategy, "native-observation-aware-v4")
+        self.assertEqual(providers, ("/provider/a", "/provider/b"))
+        for request in (
+                {"placement_strategy": "unknown"},
+                {"placement_strategy": "native-observation-aware-v4"},
+                {"provider_names": "/provider/a"},
+                {"placement_strategy": "native-observation-aware-v4",
+                 "provider_names": ["/provider/a"]},
+                {"provider_names": ["provider/a"]},
+                {"provider_names": ["/provider/a", "/provider/a"]},
+                {"provider_names": [f"/provider/{index}" for index in range(17)]}):
+            with self.subTest(request=request):
+                with self.assertRaises(ValueError):
+                    _native_request_policy(request)
+
     def test_binding_is_a_single_native_translation_unit_entry(self):
         source = BINDINGS.read_text(encoding="utf-8")
         module = MODULE.read_text(encoding="utf-8")
@@ -41,7 +64,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         for field in (
                 "model_name", "content_digest", "adapter_id", "payload",
                 "transport_mode", "timeout_ms", "ack_timeout_ms",
-                "application_request_id"):
+                "application_request_id", "provider_names"):
             self.assertIn(f'"{field}"', source)
 
     def test_native_generation_stream_and_conversation_options_are_typed(self):
@@ -89,6 +112,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
 
         options = _ndnsf.NativeRequestOptions()
         options.application_request_id = "wire-request"
+        options.provider_names = ["/provider/a", "/provider/b"]
         options.generation = generation
         options.stream = stream
         options.conversation = continuation
@@ -96,6 +120,10 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         self.assertEqual(options.stream.stream_epoch, 1)
         self.assertEqual(options.conversation.mode, "APPEND_DELTA")
         self.assertEqual(options.application_request_id, "wire-request")
+        self.assertEqual(options.provider_names, ["/provider/a", "/provider/b"])
+
+        placement = _ndnsf.NativeObservationAwarePlacementV4()
+        self.assertIsInstance(placement, _ndnsf.NativePlacementStrategy)
 
     def test_native_stream_key_grant_uses_wire_bytes_and_none(self):
         sys.path.insert(0, str(ROOT / "pythonWrapper"))
@@ -178,7 +206,7 @@ class Spec182NativeBindingsTest(unittest.TestCase):
         # requiring the retired hand-built runtime-parser path.
         self.assertIn("Runtime::open", source)
         self.assertIn("user.prepare", source)
-        self.assertIn("prepared.request", source)
+        self.assertIn("user.request(prepared", source)
         self.assertNotIn("NativeRequestRuntime runtime;", source)
         self.assertIn("options.applicationRequestId", source)
 

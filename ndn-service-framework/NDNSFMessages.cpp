@@ -297,6 +297,10 @@ ExecutionActivateMessage::ExecutionActivateMessage() : DeploymentControlMessage(
 SecureStatusQuery::SecureStatusQuery() : DeploymentControlMessage(tlv::SecureStatusQueryType) {}
 SecureStatusSnapshot::SecureStatusSnapshot() : DeploymentControlMessage(tlv::SecureStatusSnapshotType) {}
 RequestCapabilities::RequestCapabilities() : DeploymentControlMessage(tlv::RequestCapabilitiesType) {}
+PeerNetworkProbe::PeerNetworkProbe() : DeploymentControlMessage(tlv::PeerNetworkProbeType) {}
+PeerNetworkProbeResponse::PeerNetworkProbeResponse() : DeploymentControlMessage(tlv::PeerNetworkProbeResponseType) {}
+PeerNetworkGoodputProbe::PeerNetworkGoodputProbe() : DeploymentControlMessage(tlv::PeerNetworkGoodputProbeType) {}
+PeerNetworkGoodputProbeResponse::PeerNetworkGoodputProbeResponse() : DeploymentControlMessage(tlv::PeerNetworkGoodputProbeResponseType) {}
 EncryptedRequestInput::EncryptedRequestInput() : DeploymentControlMessage(tlv::EncryptedRequestInputType) {}
 SelectionInputKeyOffer::SelectionInputKeyOffer() : DeploymentControlMessage(tlv::SelectionInputKeyOfferType) {}
 SelectionInputKeyGrant::SelectionInputKeyGrant() : DeploymentControlMessage(tlv::SelectionInputKeyGrantType) {}
@@ -1147,6 +1151,11 @@ void RequestAckMessage::setProviderEncryptionCertificate(
 
 void RequestAckMessage::setProviderCapabilityOffer(const ProviderCapabilityOffer& offer) {
     providerCapabilityOffer_ = offer;
+    m_wire.reset();
+}
+
+void RequestAckMessage::clearProviderCapabilityOffer() {
+    providerCapabilityOffer_.reset();
     m_wire.reset();
 }
 bool RequestAckMessage::hasProviderCapabilityOffer() const { return providerCapabilityOffer_.has_value(); }

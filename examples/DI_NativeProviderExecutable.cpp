@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
@@ -51,6 +52,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1528,6 +1530,8 @@ main(int argc, char** argv)
     runnerReuseCache->setAuthority(protectedResidentAuthority);
     auto protectedPlaintextCache = std::make_shared<NativeProtectedPlaintextCache>(
       options.artifactCacheDir, 8);
+    auto persistentRecipeResidencyIndex =
+      std::make_shared<NativePersistentRecipeResidencyIndex>(options.artifactCacheDir);
     ProviderArtifactCacheConfig artifactCacheConfig;
     // This is logical admission accounting for the signed assembly limits,
     // not a request to retain another model-sized buffer in the template
@@ -1637,6 +1641,14 @@ main(int argc, char** argv)
         nativeOfferConfig->bootEpoch = providerBootId;
       }
       logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_READY");
+      // Independent targeted registration: model permissions do not grant
+      // access to this handler. Declared after provider so it closes first.
+      auto networkProbeRegistration = provider->addScopedTargetedService(
+        ndn::Name(ndn_service_framework::NETWORK_PROBE_SERVICE),
+        ndnsf::di::makeNativePlacementMeasurementTargetedHandler(*provider));
+      logRuntimeEvidence(
+        std::string("NDNSF_DI_NETWORK_PROBE_REGISTERED service=") +
+        ndn_service_framework::NETWORK_PROBE_SERVICE);
       provider->setUseTokens(!options.disableTokens);
       provider->setHandlerThreads(options.handlerThreads);
       provider->setAckThreads(options.ackThreads);
@@ -1694,27 +1706,37 @@ main(int argc, char** argv)
       ndnsf::di::NativeServiceDefinition nativeService;
       nativeService.serviceName = options.serviceName;
       nativeService.allowedRoles = allowedRoles;
-      nativeService.ackHandler =
+      const std::weak_ptr<ndn_service_framework::ServiceProvider> weakProvider = provider;
+      auto makeBaseAckDecision =
         [rolesText = joinRoles(allowedRoles),
          allowedRoles,
          provisioningState,
-         provider,
+         weakProvider,
          serviceName = ndn::Name(options.serviceName),
          providerName = ndn::Name(options.providerName),
          nativeOfferConfig,
          enableAdmissionLease = options.enableAdmissionLease,
          admissionLeaseTtlMs = options.admissionLeaseTtlMs](
           const ndn_service_framework::RequestMessage& request) {
+          const auto provider = weakProvider.lock();
+          if (!provider) {
+            ndn_service_framework::ServiceProvider::AckDecision unavailable;
+            unavailable.status = false;
+            unavailable.message = "Provider is shutting down";
+            return unavailable;
+          }
           auto decision = provisioningState->makeAckDecision(rolesText,
                                                              providerName,
                                                              serviceName);
           bool issuedV3Offer = false;
           if (decision.status && nativeOfferConfig) {
             const auto requestPayload = request.getPayload();
+            const auto nowMs = static_cast<std::uint64_t>(
+              std::max<long long>(0, epochMs()));
             const auto offer = issueNativeProviderOfferV3(
               std::vector<std::uint8_t>(requestPayload.begin(), requestPayload.end()),
               *nativeOfferConfig,
-              static_cast<std::uint64_t>(std::max<long long>(0, epochMs())));
+              nowMs);
             if (offer) {
               issuedV3Offer = true;
               decision.status = offer->status;
@@ -1788,6 +1810,49 @@ main(int argc, char** argv)
           }
           return decision;
         };
+      if (nativeOfferConfig) {
+        NativeProviderOfferV4Config v4Config;
+        v4Config.provider = nativeOfferConfig->provider;
+        v4Config.service = nativeOfferConfig->service;
+        v4Config.bootEpoch = nativeOfferConfig->bootEpoch;
+        v4Config.signerKeyId = nativeOfferConfig->signerKeyId;
+        v4Config.signDigest = nativeOfferConfig->signDigest;
+        nativeService.asyncAckHandler = makeNativeProviderObservationAckHandlerV4(
+          makeBaseAckDecision, std::move(v4Config),
+          [telemetryCollector] { return telemetryCollector->snapshot(); },
+          [weakArtifactCache = std::weak_ptr<ProviderArtifactCache>(artifactCache),
+           weakRunnerCache = std::weak_ptr<NativeProviderRunnerReuseCache>(runnerReuseCache),
+           weakSessionCache = std::weak_ptr<OnnxRuntimeSessionCache>(sessionCache),
+           weakPlaintextCache = std::weak_ptr<NativeProtectedPlaintextCache>(
+             protectedPlaintextCache),
+           weakPersistentRecipeIndex =
+             std::weak_ptr<NativePersistentRecipeResidencyIndex>(
+               persistentRecipeResidencyIndex)](
+              const std::vector<NativeJson>& candidateArtifacts,
+              const std::string& processEpoch,
+              const std::uint64_t capturedAtMs,
+              const std::uint64_t expiresAtMs) {
+            const auto artifactCache = weakArtifactCache.lock();
+            const auto runnerCache = weakRunnerCache.lock();
+            const auto sessionCache = weakSessionCache.lock();
+            const auto plaintextCache = weakPlaintextCache.lock();
+            const auto persistentIndex = weakPersistentRecipeIndex.lock();
+            return queryNativeProviderResidencyOwnersV4(
+              candidateArtifacts, processEpoch, capturedAtMs, expiresAtMs,
+              artifactCache.get(), runnerCache.get(), sessionCache.get(),
+              plaintextCache.get(), persistentIndex.get());
+          });
+      }
+      else {
+        nativeService.asyncAckHandler =
+          [makeBaseAckDecision](
+            const ndn_service_framework::ServiceProvider::AckRequestContext&,
+            const ndn_service_framework::RequestMessage& request,
+            ndn_service_framework::ServiceProvider::AsyncAckCompletion complete) {
+            if (complete)
+              complete(makeBaseAckDecision(request));
+          };
+      }
       // Observation seam invoked by host->serve once the native runtime is
       // assembled, before its collaboration registration is installed: bind
       // the runtime capacity/evidence snapshot to readiness and telemetry,
@@ -1920,6 +1985,7 @@ main(int argc, char** argv)
          factory,
          artifactCache,
          protectedPlaintextCache,
+         persistentRecipeResidencyIndex,
          runnerReuseCache,
          protectedResidentAuthority,
          providerCert,
@@ -2080,6 +2146,7 @@ main(int argc, char** argv)
                providerStartedAtMs,
                protectedResidentAuthority,
                protectedPlaintextCache,
+               persistentRecipeResidencyIndex,
                artifactCache,
                &keyChain] (
                 ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
@@ -2092,6 +2159,8 @@ main(int argc, char** argv)
                 else {
                   NativeCanonicalOnnxAssemblerOptions assemblyOptions;
                   assemblyOptions.cacheDir = assemblyCacheDir;
+                  assemblyOptions.persistentRecipeResidencyIndex =
+                    persistentRecipeResidencyIndex;
                   assemblyOptions.cacheCompatibilitySourceDir = cacheCompatibilitySourceDir;
                   assemblyOptions.providerIdentity = assemblyProviderIdentity;
                   assemblyOptions.assemblyTimeoutMs = static_cast<std::uint64_t>(
@@ -2321,6 +2390,23 @@ main(int argc, char** argv)
                     std::make_shared<ProtectedResidentAuthority::Use>(
                       std::move(use));
                 }
+                auto residencyDeviceSet = projection.assembly.deviceSet;
+                std::sort(residencyDeviceSet.begin(), residencyDeviceSet.end());
+                const auto residencyRole = projection.assembly.role.empty()
+                  ? projection.assembly.selectedRole : projection.assembly.role;
+                NativeProviderResidencyIdentityV4 residencyIdentity{
+                  projection.assembly.artifactDigest,
+                  projection.assembly.modelManifestDigest,
+                  projection.assembly.graphDigest,
+                  residencyRole,
+                  projection.assembly.rank,
+                  projection.assembly.backend,
+                  projection.assembly.protectionEpoch,
+                  std::move(residencyDeviceSet)};
+                spec.residencyIdentity = residencyIdentity.isValid()
+                  ? std::optional<NativeProviderResidencyIdentityV4>(
+                      std::move(residencyIdentity))
+                  : std::nullopt;
                 logProviderPreparationProgress(projection, "FACTORY_DONE", "runner-spec");
                 return spec;
               };
@@ -2339,80 +2425,9 @@ main(int argc, char** argv)
             config.kvStateStore->setProviderBootId(providerBootId);
             config.stageServiceTimeObserver = stageServiceTimeObserver;
             config.executionEvidenceObserver = executionEvidenceObserver;
-            const bool requiresGroupCapability = std::any_of(
-              plan.dependencies.begin(), plan.dependencies.end(),
-              [] (const NativeDependencySpec& dependency) {
-                return dependency.useNdnsfDataV1;
-              });
-            config.groupCoordinatorFactory =
-              [requiresGroupCapability,
-               localProvider = options.providerName,
-               providerCertName = providerCert.getName(),
-               expectedPlanDigest = config.planDigest,
-               &keyChain] (
-                  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
-                  const std::map<std::string, std::string>& fields) {
-                const auto field = fields.find("groupCapabilityV1");
-                if (field == fields.end()) {
-                  if (requiresGroupCapability) {
-                    throw std::runtime_error(
-                      "NDNSF_DATA_V1 assignment is missing groupCapabilityV1");
-                  }
-                  return std::shared_ptr<ProviderGroupCoordinator>{};
-                }
-                const auto decodedWire =
-                  ndn_service_framework::selectionGatedUnhex(field->second);
-                auto capability = ProviderGroupCoordinator::decodeCapability(
-                  ProviderGroupBytes(decodedWire.begin(), decodedWire.end()));
-                const auto requestPlan = fields.find("executionPlanDigest");
-                const auto authenticatedPlanDigest =
-                  requestPlan == fields.end() ? expectedPlanDigest : requestPlan->second;
-                if (capability.requestId != ctx.sessionId() ||
-                    capability.planDigest != authenticatedPlanDigest) {
-                  throw std::runtime_error(
-                    "NDNSF_DATA_V1 capability request/plan binding mismatch");
-                }
-                const auto localMember = std::find_if(
-                  capability.orderedMembers.begin(),
-                  capability.orderedMembers.end(),
-                  [&localProvider] (const GroupMemberV1& member) {
-                    return member.provider == localProvider;
-                  });
-                if (localMember == capability.orderedMembers.end() ||
-                    localMember->endpointPrefix.empty()) {
-                  throw std::runtime_error(
-                    "NDNSF_DATA_V1 capability omits the local Provider endpoint");
-                }
-                ProviderGroupCoordinatorOptions groupOptions;
-                groupOptions.localProvider = localProvider;
-                groupOptions.unwrapEpochKey =
-                  [&keyChain, providerCertName, localProvider] (
-                      const std::string& providerName,
-                      const ProviderGroupBytes& wrapped) {
-                    if (providerName != localProvider) {
-                      throw std::runtime_error(
-                        "NDNSF_DATA_V1 wrapped key targets another Provider");
-                    }
-                    const auto plaintext =
-                      ndn_service_framework::unwrapSelectionGatedInputKey(
-                        ndn::Buffer(wrapped.data(), wrapped.size()),
-                        providerCertName,
-                        keyChain);
-                    return ProviderGroupBytes(plaintext.begin(), plaintext.end());
-                  };
-                auto coordinator = std::make_shared<ProviderGroupCoordinator>(
-                  std::move(groupOptions));
-                // Empty plaintext key forces RSA unwrap of exactly the local
-                // Provider's wrapped epoch key.  The default inner
-                // authenticator is request-scoped HMAC-SHA256.
-                coordinator->installCapability(std::move(capability), {}, true);
-                return coordinator;
-              };
-            // The callback only reads immutable CollaborationContext identity
-            // and assignment data.  Let its TPM unwrap overlap protected-grant
-            // acquisition; NativeProviderHandler joins it before binding
-            // validation and any assembly/runner execution.
-            config.overlapGroupCoordinatorFactory = true;
+            installNativeProviderGroupCoordinatorFactory(
+              config, options.providerName, providerCert.getName().toUri(),
+              &keyChain);
             // spec182 CD-014: the host injects its shared lease table; the
             // executable only declares that the service wants one.
             if (options.requireExecutionLease) {
@@ -2562,6 +2577,7 @@ main(int argc, char** argv)
       }
       if (provisionFailed->load(std::memory_order_acquire)) {
         provider->stopNdnsdPeriodicPublish();
+        networkProbeRegistration.close();
         face.shutdown();
         if (installThread.joinable())
           installThread.join();
@@ -2622,6 +2638,7 @@ main(int argc, char** argv)
         logRuntimeEvidence("NDNSF_DI_NATIVE_PROVIDER_SHUTDOWN_REQUESTED");
       }
       provider->stopNdnsdPeriodicPublish();
+      networkProbeRegistration.close();
       face.shutdown();
       if (installThread.joinable())
         installThread.join();

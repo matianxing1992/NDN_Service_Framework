@@ -39,6 +39,104 @@ def test_jobs_environment_and_override():
     assert shell(DEFINITIONS + '\nprintf "%s" "$JOBS"', "--jobs", "3", env=env).stdout == "3"
 
 
+def test_python_wheel_staging_excludes_runtime_and_build_artifacts(tmp_path):
+    assert os.geteuid() != 0, "run this permission oracle without root"
+    source = tmp_path / "source"
+    stage = tmp_path / "stage"
+    packages = ["pythonWrapper", "NDNSF-DistributedRepo/pythonWrapper"] + [
+        "NDNSF-DistributedInference/packaging/python/" + name
+        for name in ("core", "sdk", "planner", "app", "ops", "compat")
+    ] + ["extra/nested/package"]
+    retained = [
+        "config.hpp", "ndn-service-framework/NetworkProbeRate.hpp",
+        "NDNSF-DistributedRepo/include/repo.hpp",
+        "NDNSF-DistributedRepo/src/repo.cpp",
+        "NDNSF-DistributedInference/cpp/probe.cpp",
+        "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility/manifest.json",
+        "pythonWrapper/ndnsf/py.typed", "pythonWrapper/src/ndnsf/_ndnsf.cpp",
+        "extra/nested/package/assets/weights.bin",
+    ]
+    excluded = [
+        "build/integration-tests", "build-system-j2/object.o", "build-spec197/object.o",
+        "pythonWrapper/build/object.o", "pythonWrapper/ndnsf/__pycache__/cache.pyc",
+        ".git/HEAD", "pythonWrapper/nested/.git/HEAD", "pythonWrapper/ndnsf.egg-info/PKG-INFO",
+        "docs/report.pdf", "specs/tasks.md", "results/private/output.json",
+        ".scratch/run/model.onnx", ".index-store/index.db", ".agent-rules/skill.md",
+        ".feature/feature.json", "models/weights.bin", "dependencies/SDK.hpp",
+        "pythonWrapper/ndnsf/_ndnsf.so", "pythonWrapper/ndnsf/_ndnsf.so.1",
+        "NDNSF-DistributedRepo/librepo.a", "NDNSF-DistributedRepo/object.o",
+        "pythonWrapper/ndnsf/cache.pyo",
+        "unrequested-model.onnx", "other-experiment/weights.bin",
+        "extra/unrequested/weights.bin",
+    ]
+    for name in packages:
+        retained.extend((name + "/setup.py", name + "/package_source.py"))
+    for name in retained + excluded:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name)
+    restricted = source / "results"
+    restricted.chmod(0)
+    try:
+        env = dict(os.environ, NDNSF_TEST_ROOT=str(source), NDNSF_TEST_STAGE=str(stage))
+        result = shell(DEFINITIONS + '''
+ROOT="$NDNSF_TEST_ROOT"
+stage_python_wheel_sources "$NDNSF_TEST_STAGE" ''' + " ".join(
+            '"$ROOT/' + name + '"' for name in packages
+        ) + '''
+printf '%s\\n' "${PYTHON_WHEEL_INPUTS[@]}"
+''', env=env)
+        assert result.returncode == 0, result.stderr
+        copied = stage / "repository"
+        assert result.stdout.splitlines() == [str(copied / name) for name in packages]
+        for name in retained:
+            assert (copied / name).read_text() == name
+        for name in excluded:
+            assert not (copied / name).exists(), name
+    finally:
+        restricted.chmod(0o700)
+
+
+def test_python_wheel_staging_preserves_external_package_source(tmp_path):
+    source = tmp_path / "outside"
+    source.mkdir()
+    (source / "pyproject.toml").write_text("[build-system]\n")
+    (source / "package.py").write_text("# external source\n")
+    (source / "build").mkdir()
+    (source / "build" / "object.o").write_text("generated")
+    stage = tmp_path / "stage"
+    env = dict(os.environ, NDNSF_TEST_ROOT=str(tmp_path / "repo"),
+               NDNSF_TEST_STAGE=str(stage), NDNSF_TEST_EXTERNAL=str(source))
+    result = shell(DEFINITIONS + '''
+ROOT="$NDNSF_TEST_ROOT"
+stage_python_wheel_sources "$NDNSF_TEST_STAGE" "$NDNSF_TEST_EXTERNAL"
+printf '%s\\n' "${PYTHON_WHEEL_INPUTS[@]}"
+''', env=env)
+    assert result.returncode == 0, result.stderr
+    copied = stage / "external" / "0" / "outside"
+    assert result.stdout.strip() == str(copied)
+    assert (copied / "package.py").read_text() == "# external source\n"
+    assert not (copied / "build").exists()
+
+
+@pytest.mark.parametrize("version, succeeds", [("20.04", True), ("26.04", False)])
+def test_missing_host_helper_uses_only_established_boost_profile(tmp_path, version, succeeds):
+    env = dict(os.environ, NDNSF_TEST_ROOT=str(tmp_path), NDNSF_TEST_HOST=version)
+    result = shell(DEFINITIONS + '''
+ROOT="$NDNSF_TEST_ROOT"
+HOST_UBUNTU_VERSION="$NDNSF_TEST_HOST"
+select_global_boost
+printf '%s\t%s\t%s\t%s' "$BOOST_INCLUDE_DIR" "$BOOST_LIBRARY_DIR" "$BOOST_VERSION_NUMBER" "$BOOST_VERSION_STRING"
+''', env=env)
+    if succeeds:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/usr/include\t/usr/lib/x86_64-linux-gnu\t107100\t1.71.0"
+    else:
+        assert result.returncode != 0
+        assert "Missing scripts/host_profile.py for Ubuntu 26.04" in result.stderr
+        assert result.stdout == ""
+
+
 def test_qwen_profile_plan_is_offline_and_enables_installed_examples():
     result = shell(SCRIPT.read_text(), "--with-qwen-minindn", "--plan")
     assert result.returncode == 0, result.stderr

@@ -27,6 +27,22 @@ providerRunnerReuseNowMs()
       std::chrono::system_clock::now().time_since_epoch()).count()));
 }
 
+bool
+isCandidateArtifactIdentity(const NativeJson& value)
+{
+  if (!value.is_object() || value.size() != 7)
+    return false;
+  for (const auto* field : {"artifact_digest", "model_manifest_digest", "graph_digest",
+                            "role", "backend", "protection_epoch"}) {
+    if (!value.contains(field) || !value.at(field).is_string() ||
+        value.at(field).get<std::string>().empty())
+      return false;
+  }
+  const auto& rank = value.at("rank");
+  return rank.is_number_unsigned() ||
+    (rank.is_number_integer() && rank.get<std::int64_t>() >= 0);
+}
+
 std::string
 runnerReuseKey(const NativeSelectionProjectionV3& projection,
                const std::string& providerIdentity,
@@ -66,7 +82,7 @@ runnerReuseKey(const NativeSelectionProjectionV3& projection,
     }
   };
   const auto& role = projection.assembly;
-  canonical << "ndnsf-di-live-runner-v1";
+  canonical << "ndnsf-di-live-runner-v2";
   frame(projection.provider.empty() ? providerIdentity : projection.provider);
   frame(providerBootId);
   frame(projection.canonicalArtifactName);
@@ -97,6 +113,18 @@ runnerReuseKey(const NativeSelectionProjectionV3& projection,
     frameUint(index);
   frameTensors(role.expectedInputs);
   frameTensors(role.expectedOutputs);
+  // A live runner stores output scopes and passthrough tensor names in its
+  // NativeModelRunnerSpec. Reusing it across a different request group would
+  // publish under the previous Selection's scope. Derive these fields through
+  // the same authenticated projection used by assembly, while keeping request
+  // and attempt identity out of the key when the runner binding is unchanged.
+  frame(projection.dataflow.terminalResponseOwner ? "terminal-output" : "role-output");
+  const auto roleSpec = roleSpecFromSelectionProjectionV3(projection, {});
+  frameUint(roleSpec.outputs.size());
+  for (const auto& output : roleSpec.outputs) {
+    frame(output.scope);
+    frameStrings(output.bundleTensorNames);
+  }
   frame(role.materializedRole ? "true" : "false");
   frame(role.precision);
   frame(role.quantization);
@@ -234,6 +262,7 @@ struct NativeProviderRunnerReuseCache::State
     std::shared_ptr<NativeModelRunner> runner;
     std::string protectedIdentity;
     std::shared_ptr<const void> residentLease;
+    std::optional<NativeProviderResidencyIdentityV4> residencyIdentity;
     std::uint64_t lastUse = 0;
   };
 
@@ -308,6 +337,21 @@ NativeProviderRunnerReuseCache::publish(
     protectedIdentityKey = use.identity();
     residentLease = std::make_shared<ProtectedResidentAuthority::Use>(std::move(use));
   }
+  auto deviceSet = projection.assembly.deviceSet;
+  std::sort(deviceSet.begin(), deviceSet.end());
+  NativeProviderResidencyIdentityV4 placementIdentity{
+    projection.assembly.artifactDigest,
+    projection.assembly.modelManifestDigest,
+    projection.assembly.graphDigest,
+    projection.assembly.role.empty() ? projection.assembly.selectedRole
+                                     : projection.assembly.role,
+    projection.assembly.rank,
+    projection.assembly.backend,
+    projection.assembly.protectionEpoch,
+    std::move(deviceSet)};
+  std::optional<NativeProviderResidencyIdentityV4> storedIdentity;
+  if (placementIdentity.isValid())
+    storedIdentity = std::move(placementIdentity);
   std::lock_guard<std::mutex> lock(m_state->mutex);
   if (m_state->entries.count(key) != 0)
     return;
@@ -321,13 +365,64 @@ NativeProviderRunnerReuseCache::publish(
   }
   m_state->entries.emplace(key, State::Entry{
     runner, std::move(protectedIdentityKey), std::move(residentLease),
-    ++m_state->sequence});
+    std::move(storedIdentity), ++m_state->sequence});
   logRuntimeEvidence(
     std::string("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_PUBLISHED") +
     " requestId=" + projection.requestId +
     " provider=" + (projection.provider.empty() ? providerIdentity : projection.provider) +
     " role=" + projection.assembly.selectedRole + " keyDigest=" + keyDigest +
     " detail=live-runner");
+}
+
+NativeProviderResidencyOwnerResultV4
+NativeProviderRunnerReuseCache::queryPlacementResidencyV4(
+  const std::vector<NativeJson>& candidateArtifacts,
+  const std::string& processEpoch,
+  const std::uint64_t capturedAtMs,
+  const std::uint64_t expiresAtMs) const
+{
+  NativeProviderResidencyOwnerResultV4 result{
+    NativeProviderResidencyOwnerV4::RunnerReuseCache, false, {}};
+  if (candidateArtifacts.empty() ||
+      candidateArtifacts.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS ||
+      processEpoch.empty() || capturedAtMs == 0 || expiresAtMs <= capturedAtMs ||
+      !std::all_of(candidateArtifacts.begin(), candidateArtifacts.end(),
+                   isCandidateArtifactIdentity))
+    return result;
+
+  const auto state = m_state;
+  if (!state)
+    return result;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (state->entries.size() > state->maxEntries)
+    return result;
+  result.complete = true;
+  for (const auto& item : state->entries) {
+    const auto& entry = item.second;
+    if (!entry.runner || !entry.residencyIdentity) {
+      result.complete = false;
+      result.rows.clear();
+      return result;
+    }
+    const auto matches = std::any_of(candidateArtifacts.begin(),
+      candidateArtifacts.end(), [&entry] (const NativeJson& candidate) {
+        return entry.residencyIdentity->matchesCandidateArtifact(candidate);
+      });
+    if (!matches)
+      continue;
+    const auto runtimeGeneration = processEpoch + ":" +
+      std::to_string(entry.runner->cacheIdentity());
+    result.rows.push_back(entry.residencyIdentity->makeRow(
+      "EXACT_LOADED", processEpoch, capturedAtMs, expiresAtMs,
+      std::uint64_t{0}, 0.0, 0.0, runtimeGeneration));
+  }
+  std::sort(result.rows.begin(), result.rows.end(), [] (
+    const NativeJson& left, const NativeJson& right) {
+    return nativeCanonicalJson(left) < nativeCanonicalJson(right);
+  });
+  result.rows.erase(std::unique(result.rows.begin(), result.rows.end()),
+                    result.rows.end());
+  return result;
 }
 
 void

@@ -15,6 +15,8 @@ struct NativePreparedPlanningCache
 {
   NativeStrategyIdentity splitter;
   std::vector<NativePreparedPlanningCandidate> candidates;
+  /** Operator-pinned source profiles; usable only for their exact initial input. */
+  NativeJson requestTransferProfiles = NativeJson::array();
 };
 
 /** Loaded from operator-pinned model metadata and owned source bytes. This

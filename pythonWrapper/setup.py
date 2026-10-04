@@ -342,6 +342,19 @@ def build_extension() -> Extension:
         if not runtime_rpath:
             extra_link_args.append(f"-Wl,-rpath,{nac_prefix / 'lib'}")
 
+    # setuptools only tracks extension source timestamps by default. The
+    # binding uses public Core/DI C++ types, so header-only API changes must
+    # invalidate its cached object files as well.
+    native_api_headers = [
+        str(header)
+        for header_root in (
+            ROOT / "ndn-service-framework",
+            ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di",
+        )
+        for pattern in ("*.h", "*.hpp")
+        for header in sorted(header_root.glob(pattern))
+    ]
+
     return Extension(
         "ndnsf._ndnsf",
         # All DI implementation symbols, including NativeGrantVerifier, come
@@ -351,6 +364,7 @@ def build_extension() -> Extension:
             "src/ndnsf/_ndnsf.cpp",
             "src/ndnsf/di_bindings.cpp",
         ],
+        depends=native_api_headers,
         include_dirs=[
             *nac_includes,
             *svs_includes,

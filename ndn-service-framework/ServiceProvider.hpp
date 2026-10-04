@@ -22,6 +22,8 @@
 
 #include <functional>
 #include <exception>
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -115,6 +117,15 @@ namespace ndn_service_framework{
                 bool suppressAck = false;
                 std::string message;
                 ndn::Buffer payload;
+                // Opaque, DI-namespaced fields merged into the existing
+                // ProviderCapabilityOffer TLV by Core. Generic capability
+                // fields and the ACK payload remain independently owned.
+                std::map<std::string, std::string> providerCapabilityFields;
+                // Already-signed, progressively smaller DI field sets. Core
+                // tries these in order and always adds the generic-only offer
+                // as the final fallback when publishing an ACK.
+                std::vector<std::map<std::string, std::string>>
+                    providerCapabilityFieldFallbacks;
                 std::optional<SelectionInputKeyOffer> selectionInputKeyOffer;
                 std::optional<ReservationLease> reservationLease;
                 // Provider-owned local retention horizon for pending
@@ -145,6 +156,18 @@ namespace ndn_service_framework{
                 uint64_t freeGpuMemoryMb = 0;
                 std::vector<PeerNetworkMetric> peerMetrics;
             };
+
+            struct PeerProbeCollection
+            {
+                std::vector<NetworkTelemetrySnapshot> observations;
+                size_t requestedTargetCount = 0;
+                size_t omittedTargetCount = 0;
+                size_t requestedGoodputEdgeCount = 0;
+                size_t omittedGoodputEdgeCount = 0;
+            };
+
+            using PeerProbeCollectionCallback =
+                std::function<void(PeerProbeCollection)>;
 
             struct GenericAdmissionLease
             {
@@ -283,6 +306,26 @@ namespace ndn_service_framework{
             using AckStrategyHandler =
                 std::function<AckDecision(const RequestMessage&)>;
 
+            struct AckRequestContext
+            {
+                ndn::Name requesterIdentity;
+                ndn::Name serviceName;
+                ndn::Name requestId;
+                std::chrono::steady_clock::time_point deadline;
+                uint64_t registrationGeneration = 0;
+                std::shared_ptr<std::atomic<bool>> cancelled;
+
+                bool isCancelled() const noexcept
+                {
+                    return !cancelled || cancelled->load(std::memory_order_relaxed);
+                }
+            };
+
+            using AsyncAckCompletion = std::function<void(AckDecision)>;
+            using AsyncAckStrategyHandler = std::function<void(
+                const AckRequestContext&, const RequestMessage&,
+                AsyncAckCompletion)>;
+
             using GenericAdmissionLeaseValidator =
                 std::function<GenericLeaseValidationResult(
                     const GenericAdmissionLeaseValidationRequest&)>;
@@ -299,6 +342,18 @@ namespace ndn_service_framework{
                                               const ndn::Name& serviceName,
                                               const ndn::Name& requestId,
                                               const RequestMessage& requestMessage)>;
+
+            using AsyncTargetedCompletion = std::function<void(ResponseMessage)>;
+            /** A TargetedOnly handler that starts asynchronous work and
+             * completes through Core's normal response finalizer. The
+             * completion may be called from any thread and is one-shot. */
+            using AsyncTargetedRequestHandler = std::function<void(
+                const ndn::Name& requesterIdentity,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const RequestMessage& requestMessage,
+                AsyncTargetedCompletion completion)>;
 
             using StreamingHandler =
                 std::function<void(const ndn::Name& requesterIdentity,
@@ -844,8 +899,11 @@ namespace ndn_service_framework{
              * permission for the requested service.  This is a runtime
              * readiness query, not an authorization bypass; request handling
              * still performs its own permission check.
-             */
+            */
             bool hasProviderPermissionForService(const ndn::Name& serviceName) const;
+            /** Return whether NAC-ABE public parameters and the Provider DKEY
+             * are installed so protected incoming requests can be decrypted. */
+            bool isRequestDecryptionReady();
             size_t getCurrentPolicyEpoch() const;
             size_t getCurrentPolicyEpoch(const ndn::Name& serviceName) const;
             static bool handlePermissionResponseData(const ndn::Data& data,
@@ -866,6 +924,7 @@ namespace ndn_service_framework{
             void setAckThreads(size_t n);
             size_t getAckThreads() const;
             size_t getAckQueueDepth() const;
+            const ndn::Name& getIdentity() const noexcept { return identity; }
             void setUseTokens(bool enabled);
             bool getUseTokens() const;
             HybridCryptoCounters& getHybridCryptoCounters();
@@ -938,6 +997,11 @@ namespace ndn_service_framework{
                                                  AckStrategyHandler ackHandler,
                                                  RequestHandler requestHandler,
                                                  ServiceMode mode);
+            /** Register an async TargetedOnly handler with the same scoped
+             * generation and close semantics as addScopedService. */
+            ServiceRegistration addScopedTargetedService(
+                const ndn::Name& serviceName,
+                AsyncTargetedRequestHandler requestHandler);
 
             /**
              * Scoped variant of addCollaborationHandler with the same
@@ -948,6 +1012,32 @@ namespace ndn_service_framework{
                 std::vector<CollaborationRole> allowedRoles,
                 AckStrategyHandler ackHandler,
                 CollaborationHandler handler);
+            ServiceRegistration addScopedAsyncCollaborationHandler(
+                const ndn::Name& serviceName,
+                std::vector<CollaborationRole> allowedRoles,
+                AsyncAckStrategyHandler ackHandler,
+                CollaborationHandler handler);
+            /** Bind an async targeted handler to the same scoped
+             * collaboration service and permission/lifecycle generation. */
+            ServiceRegistration addScopedAsyncCollaborationHandler(
+                const ndn::Name& serviceName,
+                std::vector<CollaborationRole> allowedRoles,
+                AsyncAckStrategyHandler ackHandler,
+                CollaborationHandler handler,
+                AsyncTargetedRequestHandler targetedHandler);
+            ServiceRegistration addScopedCollaborationHandler(
+                const ndn::Name& serviceName,
+                std::vector<CollaborationRole> allowedRoles,
+                AckStrategyHandler ackHandler,
+                AsyncAckStrategyHandler asyncAckHandler,
+                CollaborationHandler handler);
+            ServiceRegistration addScopedCollaborationHandler(
+                const ndn::Name& serviceName,
+                std::vector<CollaborationRole> allowedRoles,
+                AckStrategyHandler ackHandler,
+                AsyncAckStrategyHandler asyncAckHandler,
+                CollaborationHandler handler,
+                AsyncTargetedRequestHandler targetedHandler);
 
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -1265,6 +1355,60 @@ namespace ndn_service_framework{
             void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason);
 
             void onInterest(const ndn::InterestFilter &, const ndn::Interest &interest);
+            class PeerProbeInterestSigner;
+            void signPeerProbeInterest(ndn::Interest& interest);
+            bool handlePeerNetworkProbeInterest(const ndn::Interest& interest);
+            bool allowPeerNetworkProbe(const ndn::Name& requesterIdentity);
+            struct PeerProbeReadinessState
+            {
+                explicit PeerProbeReadinessState(
+                    std::function<void(bool)> callback)
+                  : callback(std::move(callback))
+                {
+                }
+
+                void complete(bool ready)
+                {
+                    bool expected = false;
+                    if (!completed.compare_exchange_strong(expected, true))
+                        return;
+                    auto callbackCopy = std::move(callback);
+                    if (callbackCopy)
+                        callbackCopy(ready);
+                }
+
+                std::atomic<bool> completed{false};
+                std::atomic<bool> validationFailureLogged{false};
+                std::function<void(bool)> callback;
+            };
+            void waitForPeerProbeScopeAuthorization(
+                const ndn::Name& targetProvider,
+                const std::string& requestScopeDigest,
+                bool requireRtt,
+                bool requireGoodput,
+                std::chrono::steady_clock::time_point deadline,
+                std::shared_ptr<std::atomic<bool>> cancelled,
+                std::function<void(bool)> callback);
+            void pollPeerProbeScopeAuthorization(
+                const ndn::Name& targetProvider,
+                const std::string& requestScopeDigest,
+                bool requireRtt,
+                bool requireGoodput,
+                std::chrono::steady_clock::time_point deadline,
+                std::shared_ptr<std::atomic<bool>> cancelled,
+                std::shared_ptr<PeerProbeReadinessState> state);
+            void probePeerRtt(
+                const ndn::Name& targetProvider,
+                const std::string& requestScopeDigest,
+                std::chrono::steady_clock::time_point deadline,
+                std::shared_ptr<std::atomic<bool>> cancelled,
+                std::function<void(std::optional<NetworkTelemetrySnapshot>)> callback);
+            void probePeerGoodput(
+                const ndn::Name& sourceProvider,
+                const std::string& requestScopeDigest,
+                std::chrono::steady_clock::time_point deadline,
+                std::shared_ptr<std::atomic<bool>> cancelled,
+                std::function<void(std::optional<NetworkTelemetrySnapshot>)> callback);
             bool handleExecutionActivateInterest(const ndn::Interest& interest);
             void publishProviderReady(const ndn::Name& requesterIdentity,
                                       const ProviderReadyMessage& ready,
@@ -1278,6 +1422,28 @@ namespace ndn_service_framework{
                 return std::to_string(m_processStartedAtUs);
             }
 
+            /** Probe only caller-authorized request candidates. Provider names
+             * must come from an authenticated request; results are scoped by
+             * its opaque digest and bounded by deadline. */
+            bool authorizeCandidatePeerObservationScope(
+                const std::string& requestScopeDigest,
+                const std::vector<ndn::Name>& candidateProviders,
+                const std::vector<NetworkTelemetryDataEdge>& authorizedRttPairs,
+                const std::vector<NetworkTelemetryDataEdge>& authorizedGoodputEdges,
+                std::chrono::steady_clock::time_point expiresAt);
+            void collectCandidatePeerObservations(
+                const std::vector<ndn::Name>& authorizedCandidateProviders,
+                const std::vector<NetworkTelemetryDataEdge>& authorizedRttPairs,
+                const std::vector<NetworkTelemetryDataEdge>& authorizedGoodputEdges,
+                const std::string& requestScopeDigest,
+                std::chrono::steady_clock::time_point deadline,
+                std::shared_ptr<std::atomic<bool>> cancelled,
+                PeerProbeCollectionCallback callback,
+                /** Skip the readiness polling handshake only when the caller
+                 * has already targeted every peer to authorize this scope.
+                 * Each peer still validates every signed probe Interest. */
+                bool skipRemoteAuthorizationReadiness = false);
+
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
             void PublishRequestAckMessageV2(const ndn::Name& requesterIdentity,
@@ -1289,7 +1455,8 @@ namespace ndn_service_framework{
                                             const std::string& userToken = "",
                                             const std::string& providerToken = "",
                                             const RequestMessage* sourceRequest = nullptr,
-                                            const AckDecision* ackDecision = nullptr);
+                                            const AckDecision* ackDecision = nullptr,
+                                            bool deferExternalCallbacks = false);
     
             void onServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
             void handleServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData& subscription,
@@ -1298,12 +1465,30 @@ namespace ndn_service_framework{
                                             const ndn::Name& serviceName,
                                             const ndn::Name& requestId);
 
-            void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
+            void PublishMessage(const ndn::Name& messageName,
+                                const ndn::Name& messageNameWithoutPrefix,
+                                AbstractMessage& message,
+                                bool deferLocalPublication = false);
             void publishHybridMessage(const ndn::Name& messageName,
                                       const ndn::Name& messageNameWithoutPrefix,
                                       AbstractMessage& message);
+            void publishHybridMessageCandidates(
+                const ndn::Name& messageName,
+                std::vector<ndn::Buffer> plaintextCandidates,
+                bool deferLocalPublication = false);
             void publishHybridEncodedMessage(const ndn::Name& messageName,
                                              ndn::Buffer plaintext);
+            void publishHybridEncodedMessageCandidates(
+                const ndn::Name& messageName,
+                std::vector<ndn::Buffer> plaintextCandidates);
+            bool isHybridAckPacketWithinLimit(
+                const ndn::Name& messageName,
+                const HybridMessageEnvelope& envelope,
+                std::size_t ciphertextBytes);
+            std::optional<std::size_t> firstHybridAckCandidateWithinLimit(
+                const ndn::Name& messageName,
+                const HybridMessageEnvelope& envelope,
+                const std::vector<ndn::Buffer>& plaintextCandidates);
             bool decryptHybridMessage(const ndn::Name& messageName,
                                       const ndn::Block& envelopeBlock,
                                       std::function<void(const ndn::Buffer&)> onSuccess,
@@ -1362,6 +1547,33 @@ namespace ndn_service_framework{
                 ndn::Name serviceName;
                 uint64_t generation = 0;
                 std::atomic<bool> closed{false};
+                std::mutex ackCancellationMutex;
+                std::vector<std::weak_ptr<std::atomic<bool>>> ackCancellations;
+
+                void trackAckCancellation(
+                    const std::shared_ptr<std::atomic<bool>>& cancellation)
+                {
+                    std::lock_guard<std::mutex> lock(ackCancellationMutex);
+                    if (closed.load(std::memory_order_relaxed)) {
+                        cancellation->store(true, std::memory_order_relaxed);
+                        return;
+                    }
+                    ackCancellations.erase(
+                        std::remove_if(ackCancellations.begin(), ackCancellations.end(),
+                          [] (const auto& entry) { return entry.expired(); }),
+                        ackCancellations.end());
+                    ackCancellations.push_back(cancellation);
+                }
+
+                void cancelPendingAcks() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(ackCancellationMutex);
+                    for (const auto& entry : ackCancellations) {
+                        if (const auto cancellation = entry.lock())
+                            cancellation->store(true, std::memory_order_relaxed);
+                    }
+                    ackCancellations.clear();
+                }
             };
 
             struct RegistrationControl
@@ -1369,7 +1581,25 @@ namespace ndn_service_framework{
                 // Serializes ownership hand-off between the Face event thread
                 // (registration and cleanup) and the Provider destructor.
                 std::mutex mutex;
+                std::condition_variable drained;
                 ServiceProvider* owner = nullptr;
+                std::size_t activeOwnerCalls = 0;
+
+                ServiceProvider* acquireOwner() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    if (owner == nullptr)
+                        return nullptr;
+                    ++activeOwnerCalls;
+                    return owner;
+                }
+
+                void releaseOwner() noexcept
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    if (activeOwnerCalls > 0 && --activeOwnerCalls == 0)
+                        drained.notify_all();
+                }
             };
 
         public:
@@ -1406,6 +1636,7 @@ namespace ndn_service_framework{
                 AckStrategyHandler ackHandler;
                 RequestHandler requestHandler;
                 RequestHandler targetedRequestHandler;
+                AsyncTargetedRequestHandler asyncTargetedRequestHandler;
                 StreamingHandler streamingHandler;
                 ServiceMode mode = ServiceMode::Normal;
                 bool selectionStatusQueryable = false;
@@ -1421,6 +1652,7 @@ namespace ndn_service_framework{
             struct RegisteredCollaborationService
             {
                 AckStrategyHandler ackHandler;
+                AsyncAckStrategyHandler asyncAckHandler;
                 CollaborationHandler handler;
                 std::vector<CollaborationRole> allowedRoles;
                 // Same ownership rules as RegisteredService::registrationState.
@@ -1443,6 +1675,7 @@ namespace ndn_service_framework{
             // content (scoped state, legacy handlers, stream sentinels, the
             // collaboration shell flag, or admission-lease settings).
             static bool serviceEntryBusy(const RegisteredService& entry);
+            static bool hasTargetedRequestHandler(const RegisteredService& entry);
             // Removes every map entry that parks a closed registration state
             // and appends the retired handler owners to the out-vectors, so
             // callers destroy them only after the control lock is released.
@@ -1553,7 +1786,8 @@ namespace ndn_service_framework{
                 const ndn::Name& serviceName,
                 ProviderRequestLifecycleState state,
                 const std::string& suppressionReason = "",
-                const std::string& finalStatus = "");
+                const std::string& finalStatus = "",
+                bool deferExternalCallback = false);
 
             /** Attach streamed provider state to an existing pending request. */
             std::shared_ptr<StreamInvocationLifecycle>
@@ -1585,6 +1819,13 @@ namespace ndn_service_framework{
                 RequestMessage requestMessage,
                 AckStrategyHandler ackHandler,
                 std::shared_ptr<RegistrationState> registrationState = nullptr);
+            bool dispatchAsyncAckDecision(
+                const ndn::Name& requesterIdentity,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage,
+                AsyncAckStrategyHandler ackHandler,
+                std::shared_ptr<RegistrationState> registrationState = nullptr);
             // registrationState (spec182): the scoped registration the
             // pending acceptance was bound to; when it closed or was
             // superseded before the decision finished, the positive decision
@@ -1614,7 +1855,9 @@ namespace ndn_service_framework{
                 const ndn::Name& requesterIdentity,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
-                RequestMessage requestMessage);
+                RequestMessage requestMessage,
+                std::string selectionDigest = {},
+                bool consumeProviderToken = true);
             bool consumeTargetedProviderToken(const ndn::Name& requesterIdentity,
                                               const ndn::Name& serviceName,
                                               const RequestMessage& requestMessage,
@@ -1890,6 +2133,78 @@ namespace ndn_service_framework{
             bool m_isLocalMock = false;
             //ndn::nacabe::Producer nacProducer;
             NetworkTelemetryStore m_networkTelemetry;
+            struct PeerProbeCallbackState
+            {
+                explicit PeerProbeCallbackState(ServiceProvider* provider)
+                  : owner(provider)
+                {
+                }
+
+                std::mutex mutex;
+                std::condition_variable drained;
+                ServiceProvider* owner = nullptr;
+                size_t activeCallbacks = 0;
+                size_t pendingValidations = 0;
+            };
+            class PeerProbeCallbackLease
+            {
+            public:
+                explicit PeerProbeCallbackLease(
+                    std::weak_ptr<PeerProbeCallbackState> state);
+                ~PeerProbeCallbackLease();
+                PeerProbeCallbackLease(const PeerProbeCallbackLease&) = delete;
+                PeerProbeCallbackLease& operator=(
+                    const PeerProbeCallbackLease&) = delete;
+
+                explicit operator bool() const { return m_owner != nullptr; }
+                ServiceProvider* get() const { return m_owner; }
+
+            private:
+                std::shared_ptr<PeerProbeCallbackState> m_state;
+                ServiceProvider* m_owner = nullptr;
+                bool m_acquired = false;
+            };
+            class PeerProbeValidationPermit
+            {
+            public:
+                explicit PeerProbeValidationPermit(
+                    std::shared_ptr<PeerProbeCallbackState> state);
+                ~PeerProbeValidationPermit();
+                PeerProbeValidationPermit(const PeerProbeValidationPermit&) = delete;
+                PeerProbeValidationPermit& operator=(
+                    const PeerProbeValidationPermit&) = delete;
+
+                explicit operator bool() const { return m_reserved.load(); }
+                void release();
+
+            private:
+                std::shared_ptr<PeerProbeCallbackState> m_state;
+                std::atomic<bool> m_reserved{false};
+            };
+            std::shared_ptr<PeerProbeCallbackState> m_peerProbeCallbackState =
+                std::make_shared<PeerProbeCallbackState>(this);
+            // Private fixture observer; configured before collection, used on Face IO.
+            // It observes the real validator rather than replacing authentication.
+            std::function<void(const char*, size_t, size_t)> m_peerGoodputStageObserver;
+            mutable std::mutex m_peerProbeInterestSignerMutex;
+            std::shared_ptr<PeerProbeInterestSigner> m_peerProbeInterestSigner;
+            struct PeerProbeRateWindow
+            {
+                std::chrono::steady_clock::time_point started;
+                std::chrono::steady_clock::time_point lastUsed;
+                size_t accepted = 0;
+            };
+            mutable std::mutex m_peerProbeRateMutex;
+            std::map<std::string, PeerProbeRateWindow> m_peerProbeRateWindows;
+            struct SourceGoodputTrain;
+            // Face-thread-only map; callbacks hold weak references to each
+            // bounded train and obtain a PeerProbeCallbackLease before use.
+            std::map<std::string, std::shared_ptr<SourceGoodputTrain>> m_sourceGoodputTrains;
+            void queuePeerGoodputTrain(const ndn::Interest& interest,
+                                      const ndn::Name& observer,
+                                      const std::string& scope,
+                                      const std::string& runNonce,
+                                      size_t segment);
             ndn::nacabe::CacheProducer nacProducer;
             // LocalMock may sign with a fixture-owned in-memory KeyChain.
             // NAC-ABE Producer stores its KeyChain by reference, so changing

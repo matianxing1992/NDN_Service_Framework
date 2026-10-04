@@ -1017,10 +1017,11 @@ stage_python_wheel_sources() {
   local stage_root="$1"
   shift
   local repository_copy="$stage_root/repository"
-  local package relative staged
+  local package relative staged relative_parent
   local repository_snapshot_needed=0
   local package_index=0
   local -a staged_packages=()
+  local -a source_includes=()
 
   for package in "$@"; do
     case "$package" in
@@ -1029,14 +1030,45 @@ stage_python_wheel_sources() {
   done
   if (( repository_snapshot_needed )); then
     mkdir -p -- "$repository_copy"
+    # Preserve the shared source layout needed by the wrappers and split DI
+    # packages. Ancestors permit traversal without copying unrelated trees.
+    source_includes=(
+      --include='/*.h' --include='/*.hpp' --include='/README*' --include='/LICENSE*'
+      --include='/pyproject.toml' --include='/setup.cfg' --include='/wscript'
+      --include='/ndn-service-framework/***'
+      --include='/NDNSF-DistributedRepo/'
+      --include='/NDNSF-DistributedRepo/include/***'
+      --include='/NDNSF-DistributedRepo/src/***'
+      --include='/NDNSF-DistributedInference/'
+      --include='/NDNSF-DistributedInference/cpp/***'
+      --include='/NDNSF-DistributedInference/ndnsf_distributed_inference/***'
+    )
+    for package in "$@"; do
+      case "$package" in
+        "$ROOT"/*)
+          relative="${package#"$ROOT"/}"
+          source_includes+=("--include=/$relative/***")
+          relative_parent="$relative"
+          while [[ "$relative_parent" == */* ]]; do
+            relative_parent="${relative_parent%/*}"
+            source_includes+=("--include=/$relative_parent/")
+          done
+          ;;
+      esac
+    done
     # Setuptools' PEP 517 wheel builds write build/lib into the source tree.
-    # Snapshot the working tree outside the checkout so local edits are kept,
-    # while generated build/cache directories and Git metadata stay out of the
-    # wheel inputs.
+    # Keep cross-directory package sources and local edits, while excluding
+    # generated binaries and unrelated runtime/document trees. Unanchored
+    # directory patterns cover both repository-root and nested build output.
     rsync -a \
-      --exclude='/.git/' --exclude='/**/.git/' \
-      --exclude='/**/build/' --exclude='/**/__pycache__/' \
-      --exclude='/**/*.egg-info/' \
+      --exclude='.git/' --exclude='build/' --exclude='/build*/' \
+      --exclude='__pycache__/' --exclude='*.egg-info/' \
+      --exclude='/docs/' --exclude='/specs/' --exclude='/results/' \
+      --exclude='.[!.]*/' \
+      --exclude='/models/' --exclude='/dependencies/' \
+      --exclude='*.o' --exclude='*.a' --exclude='*.so' --exclude='*.so.*' \
+      --exclude='*.pyc' --exclude='*.pyo' \
+      "${source_includes[@]}" --exclude='*' \
       "$ROOT/" "$repository_copy/"
   fi
 
@@ -1240,7 +1272,16 @@ has_global_boost() {
 
 select_global_boost() {
   local selection
-  selection="$("$PYTHON_BIN" "$ROOT/scripts/host_profile.py" "$HOST_UBUNTU_VERSION")" || return 1
+  if [[ -f "$ROOT/scripts/host_profile.py" ]]; then
+    selection="$("$PYTHON_BIN" "$ROOT/scripts/host_profile.py" "$HOST_UBUNTU_VERSION")" || return 1
+  elif [[ "$HOST_UBUNTU_VERSION" == 20.04 ]]; then
+    # Restore the established host profile when the optional helper is absent.
+    # require_global_boost still verifies the installed headers and libraries.
+    selection=$'/usr/include\t/usr/lib/x86_64-linux-gnu\t107100\t1.71.0'
+  else
+    echo "Missing scripts/host_profile.py for Ubuntu $HOST_UBUNTU_VERSION" >&2
+    return 1
+  fi
   IFS=$'\t' read -r BOOST_INCLUDE_DIR BOOST_LIBRARY_DIR BOOST_VERSION_NUMBER BOOST_VERSION_STRING <<< "$selection"
 }
 

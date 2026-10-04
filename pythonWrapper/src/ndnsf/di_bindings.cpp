@@ -22,6 +22,7 @@
 #include "ndn-service-framework/OperationRuntime.hpp"
 
 #include <ndn-cxx/encoding/block.hpp>
+#include <ndn-cxx/name.hpp>
 #include <pybind11/functional.h>
 #include <pybind11/detail/type_caster_base.h>
 #include <pybind11/stl.h>
@@ -32,6 +33,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <set>
 
 namespace py = pybind11;
 namespace di = ndnsf::di;
@@ -592,6 +594,32 @@ bindDistributedInference(py::module_& module)
     .def_readwrite("task_name", &di::NativeRequestOptions::taskName)
     .def_readwrite("output_mode", &di::NativeRequestOptions::outputMode)
     .def_readwrite("application_request_id", &di::NativeRequestOptions::applicationRequestId)
+    .def_property("provider_names",
+      [] (const di::NativeRequestOptions& options) {
+        std::vector<std::string> result;
+        result.reserve(options.providerNames.size());
+        for (const auto& provider : options.providerNames)
+          result.push_back(provider.toUri());
+        return result;
+      },
+      [] (di::NativeRequestOptions& options,
+          const std::vector<std::string>& values) {
+        if (values.size() > 16)
+          throw std::invalid_argument(
+            "native request provider roster exceeds 16 names");
+        std::vector<ndn::Name> names;
+        std::set<std::string> seen;
+        names.reserve(values.size());
+        for (const auto& value : values) {
+          const ndn::Name name(value);
+          const auto canonical = name.toUri();
+          if (name.empty() || canonical != value || !seen.insert(canonical).second)
+            throw std::invalid_argument(
+              "native request provider names must be unique canonical NDN names");
+          names.push_back(name);
+        }
+        options.providerNames = std::move(names);
+      })
     .def_readwrite("generation", &di::NativeRequestOptions::generation)
     .def_readwrite("stream", &di::NativeRequestOptions::stream)
     .def_readwrite("conversation", &di::NativeRequestOptions::conversation);
@@ -787,6 +815,14 @@ bindDistributedInference(py::module_& module)
              std::shared_ptr<di::NativePreSplitFirstPlacement>>(
     module, "NativePreSplitFirstPlacement")
     .def(py::init<>());
+
+  py::class_<di::NativeObservationAwarePlacementV4, di::NativePlacementStrategy,
+             std::shared_ptr<di::NativeObservationAwarePlacementV4>>(
+    module, "NativeObservationAwarePlacementV4")
+    .def(py::init<std::size_t, std::size_t, std::string>(),
+         py::arg("beam_width") = 32,
+         py::arg("max_assignment_states") = 4096,
+         py::arg("score_mode") = "preparation-and-network");
 
   py::class_<di::NativeInferenceHandle,
              std::shared_ptr<di::NativeInferenceHandle>>(module, "NativeInferenceHandle")

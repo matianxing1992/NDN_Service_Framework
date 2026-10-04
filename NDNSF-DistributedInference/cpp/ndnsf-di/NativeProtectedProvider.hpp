@@ -2,6 +2,13 @@
 #define NDNSF_DI_NATIVE_PROTECTED_PROVIDER_HPP
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include <functional>
+#include <map>
+#include <string>
+namespace ndn {
+namespace security {
+class KeyChain;
+}
+}
 namespace ndnsf::di {
 struct NativeProviderHandlerConfig;
 struct NativeProtectedGrantConfig;
@@ -28,5 +35,8 @@ std::string nativeProtectedFencingToken(
   const NativeSelectionProjectionV3& projection, const std::string& providerBootId,
   const std::map<std::string, std::string>& assignmentFields);
 void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config);
+void installNativeProviderGroupCoordinatorFactory(
+  NativeProviderHandlerConfig& config, const std::string& localProvider,
+  const std::string& providerCertificateName, ndn::security::KeyChain* keyChain);
 }
 #endif

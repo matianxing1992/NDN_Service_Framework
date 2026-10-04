@@ -10,34 +10,32 @@ import ctypes
 import math
 import os
 from pathlib import Path
-import shutil
 import signal
 import subprocess
 import time
 
 
 DEFAULT_LIMITS = {
-    "minAvailableBytes": 1536 * 1024 * 1024,
-    "minSwapFreeBytes": 512 * 1024 * 1024,
-    "minDiskFreeBytes": 4 * 1024 * 1024 * 1024,
-    "maxOwnedSwapBytes": 256 * 1024 * 1024,
-    # Kept as a compatibility alias for historical profiles/receipts.  New
-    # callers should use maxOwnedSwapBytes; global swap I/O is diagnostic only.
-    "maxSwapIoBytes": 256 * 1024 * 1024,
     "timeoutSeconds": 3600,
     "stopGraceSeconds": 10,
+}
+
+# Older profiles include host-capacity thresholds. Ignore them: they are not
+# experiment outcomes and must not prevent a requested MiniNDN run from starting.
+LEGACY_IGNORED_LIMITS = {
+    "minAvailableBytes", "minDiskFreeBytes", "minSwapFreeBytes",
+    "maxOwnedSwapBytes", "maxSwapIoBytes",
 }
 
 
 def validate_limits(value=None):
     if value is not None and not isinstance(value, dict):
         raise ValueError("RESOURCE_LIMITS_INVALID")
-    if value is not None and set(value) - set(DEFAULT_LIMITS):
+    if value is not None and set(value) - set(DEFAULT_LIMITS) - LEGACY_IGNORED_LIMITS:
         raise ValueError("RESOURCE_LIMITS_UNKNOWN_FIELD")
-    provided = value or {}
-    limits = {**DEFAULT_LIMITS, **provided}
-    if "maxSwapIoBytes" in provided and "maxOwnedSwapBytes" not in provided:
-        limits["maxOwnedSwapBytes"] = provided["maxSwapIoBytes"]
+    limits = {**DEFAULT_LIMITS,
+              **{key: item for key, item in (value or {}).items()
+                 if key in DEFAULT_LIMITS}}
     for key, number in limits.items():
         if (isinstance(number, bool) or not isinstance(number, (int, float)) or
                 number > 2**63 - 1 or not math.isfinite(number) or number <= 0):
@@ -50,24 +48,18 @@ def validate_limits(value=None):
 
 
 def host_sample(directory):
-    memory = {}
-    for line in Path("/proc/meminfo").read_text().splitlines():
-        key, value = line.split(":", 1)
-        memory[key] = int(value.split()[0]) * 1024
-    vm = dict(line.split() for line in Path("/proc/vmstat").read_text().splitlines())
-    return {
-        "availableBytes": memory["MemAvailable"],
-        "swapFreeBytes": memory["SwapFree"],
-        "swapUsedBytes": memory["SwapTotal"] - memory["SwapFree"],
-        "swapIoBytes": (int(vm["pswpin"]) + int(vm["pswpout"])) * os.sysconf("SC_PAGE_SIZE"),
-        "diskFreeBytes": shutil.disk_usage(directory).free,
-    }
+    # Kept as a compatibility hook for existing callers/tests. Host RAM, swap,
+    # and disk capacity are not experiment stop conditions.
+    return {}
 
 
 def process_table():
     """PID/starttime protects retained observations against ordinary PID reuse."""
     result = {}
-    for path in Path("/proc").glob("[0-9]*/stat"):
+    for process_directory in Path("/proc").iterdir():
+        if not process_directory.name.isdigit():
+            continue
+        path = process_directory / "stat"
         try:
             # comm may contain spaces and ')'; fields after its last ')' are stable.
             fields = path.read_text().rsplit(")", 1)[1].split()
@@ -80,28 +72,6 @@ def process_table():
         except (FileNotFoundError, ProcessLookupError, PermissionError):
             continue
     return result
-
-
-def owned_swap_bytes(rows):
-    """Return swap-resident bytes for the processes owned by this supervisor.
-
-    ``/proc/vmstat`` is host-global: an unrelated editor, indexer, or desktop
-    process can fault its own swapped pages while the native workload is
-    running.  Use the owned process set for the stop decision and retain the
-    global counter as diagnostic evidence.  A process can disappear between
-    the table and status reads, which is normal during cleanup and contributes
-    zero rather than turning a completed run into a monitor failure.
-    """
-    total = 0
-    for row in rows:
-        try:
-            for line in Path(f"/proc/{row['pid']}/status").read_text().splitlines():
-                if line.startswith("VmSwap:"):
-                    total += int(line.split()[1]) * 1024
-                    break
-        except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError):
-            continue
-    return total
 
 
 def owned_processes(root_pid, known):
@@ -280,67 +250,34 @@ def _run_guarded(command, *, cwd, stdout, sample_path, limits):
     boundary = None
     residue = []
     started = time.monotonic()
-    baseline_swap = None
-    baseline_owned_swap = None
     returncode = None
     # Refuse to overwrite prior run evidence.
     with sample_path.open("x", encoding="utf-8", buffering=1) as output:
         def sample(phase):
-            nonlocal baseline_swap, baseline_owned_swap
             value = host_sample(sample_path.parent)
-            if baseline_swap is None:
-                baseline_swap = value["swapIoBytes"]
             rows = owned_processes(proc.pid, known) if proc else []
-            owned_swap = owned_swap_bytes(rows)
-            if baseline_owned_swap is None:
-                baseline_owned_swap = owned_swap
             record = {"phase": phase, "monotonicSeconds": time.monotonic(),
-                      **value, "swapIoDeltaBytes": max(0, value["swapIoBytes"] - baseline_swap),
-                      "ownedSwapBytes": owned_swap,
-                      "ownedSwapDeltaBytes": max(0, owned_swap - baseline_owned_swap),
+                      **value,
                       "processes": rows, "rssBytes": sum(row["rssBytes"] for row in rows),
                       "nativeCounters": None}
             output.write(json.dumps(record, sort_keys=True) + "\n")
-            if value["availableBytes"] < limits["minAvailableBytes"]:
-                return "MemAvailable"
-            if value["diskFreeBytes"] < limits["minDiskFreeBytes"]:
-                return "diskFree"
-            # The global swap counter remains in every sample for diagnosis,
-            # but it is not a workload stop condition.  Otherwise unrelated
-            # swapped-out host processes can abort a valid native run.
-            if value["swapFreeBytes"] < limits["minSwapFreeBytes"]:
-                return "SwapFree"
-            # Owned swap is retained as workload-local diagnostic evidence, but
-            # it is not a standalone stop condition.  A bounded amount of
-            # paging can occur while a large ONNX worker starts even when the
-            # host still has safe MemAvailable and SwapFree.  Stopping on this
-            # counter alone used to abort a valid startup and then signal the
-            # nested MiniNDN supervisor, obscuring cleanup as KeyboardInterrupt.
-            # The available-memory, swap-free, disk, and deadline gates above
-            # remain the hard safety boundaries.
             return None
 
         try:
-            metric = sample("admission")
-            if metric:
-                boundary = "RESOURCE_BOUNDARY:" + metric
-            else:
-                proc = subprocess.Popen(command, cwd=cwd, stdout=stdout,
-                                        stderr=subprocess.STDOUT, start_new_session=True)
-                while True:
-                    metric = sample("running")
-                    if metric:
-                        boundary = "RESOURCE_BOUNDARY:" + metric
-                        break
-                    returncode = proc.poll()
-                    if returncode is not None:
-                        if _alive(owned_processes(proc.pid, known)):
-                            boundary = "CHILD_PROCESS_LEAK"
-                        break
-                    if time.monotonic() - started >= limits["timeoutSeconds"]:
-                        boundary = "DEADLINE_BOUNDARY"
-                        break
-                    time.sleep(min(1.0, limits["timeoutSeconds"]))
+            sample("admission")
+            proc = subprocess.Popen(command, cwd=cwd, stdout=stdout,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+            while True:
+                sample("running")
+                returncode = proc.poll()
+                if returncode is not None:
+                    if _alive(owned_processes(proc.pid, known)):
+                        boundary = "CHILD_PROCESS_LEAK"
+                    break
+                if time.monotonic() - started >= limits["timeoutSeconds"]:
+                    boundary = "DEADLINE_BOUNDARY"
+                    break
+                time.sleep(min(1.0, limits["timeoutSeconds"]))
         except KeyboardInterrupt:
             boundary = "CANCELLED"
         except (OSError, ValueError, KeyError, IndexError) as exc:

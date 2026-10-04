@@ -218,14 +218,45 @@ class AppSdkCompatibilityTest(unittest.TestCase):
         client = PublicInferenceClient.__new__(PublicInferenceClient)
         client._core = core
         self.assertIs(client.native_client, core.native_client)
-        self.assertEqual(client.configure_native_requester("runtime", "admission"), "native")
+        request_catalog = object()
+        self.assertEqual(client.configure_native_requester(
+            "runtime", "admission", request_catalog=request_catalog), "native")
         self.assertEqual(client.request_native(
             model="model", input="input", split_strategy="split",
             placement_strategy="placement", options="options"), "handle")
-        core.configure_native_requester.assert_called_once_with("runtime", "admission")
+        core.configure_native_requester.assert_called_once_with(
+            "runtime", "admission", request_catalog=request_catalog)
         core.request_native.assert_called_once_with(
             model="model", input="input", split_strategy="split",
             placement_strategy="placement", options="options")
+
+    def test_core_native_requester_keeps_request_catalog_identity(self):
+        from ndnsf_distributed_inference.app_sdk.client import APPClient as CoreAPPClient
+
+        preparation_catalog = object()
+        model = object()
+        splitter = object()
+        request_catalog = SimpleNamespace(model_ref=model, splitter=splitter)
+        service_user = SimpleNamespace(
+            native_preparation=mock.Mock(return_value="preparation"),
+            native_inference_client_configured=mock.Mock(return_value="native"),
+        )
+        core = CoreAPPClient.__new__(CoreAPPClient)
+        core._network_client = SimpleNamespace(service_user=service_user)
+        runtime = SimpleNamespace(
+            catalog=preparation_catalog,
+            contract=SimpleNamespace(service_name="/AI/YOLO/2x2Inference"),
+        )
+
+        self.assertEqual(core.configure_native_requester(
+            runtime, "admission", request_catalog=request_catalog), "native")
+        service_user.native_preparation.assert_called_once_with(
+            preparation_catalog, "/AI/YOLO/2x2Inference")
+        self.assertIs(core._native_catalog, request_catalog)
+        self.assertIs(core._native_model, model)
+        self.assertIs(core._native_splitter, splitter)
+        with self.assertRaisesRegex(TypeError, "requires its loaded request catalog"):
+            core.configure_native_requester(runtime, "admission")
 
     def test_public_inference_client_forwards_native_reference_route(self):
         core = SimpleNamespace(request_native_reference=mock.Mock(return_value="handle"))
@@ -315,7 +346,7 @@ class AppSdkCompatibilityTest(unittest.TestCase):
             native_input = args[1]
             self.assertEqual(native_input.transport_mode, "repo")
             self.assertEqual(native_input.payload, [])
-            self.assertEqual(native_input.options, b"cfg")
+            self.assertEqual(native_input.options, list(b"cfg"))
             self.assertEqual(
                 native_input.repository_reference,
                 json.dumps(reference.to_dict(), sort_keys=True,
@@ -334,9 +365,11 @@ class AppSdkCompatibilityTest(unittest.TestCase):
 
         self.assertEqual(
             client.configure_native_requester(
-                "runtime", "admission", conversations), "native")
+                "runtime", "admission", conversations,
+                request_catalog="request-catalog"), "native")
         core.configure_native_requester.assert_called_once_with(
-            "runtime", "admission", conversations)
+            "runtime", "admission", conversations,
+            request_catalog="request-catalog")
 
     def test_inference_client_is_exported_from_public_app_sdk(self):
         self.assertIs(InferenceClient, PublicInferenceClient)
@@ -458,8 +491,8 @@ class AppSdkCompatibilityTest(unittest.TestCase):
         native_input = native.request.call_args.args[1]
         native_options = native.request.call_args.args[4]
         self.assertEqual(native_input.task_name, "object-detection")
-        self.assertEqual(native_input.payload, b"encoded-input")
-        self.assertEqual(native_input.options, b"{}")
+        self.assertEqual(native_input.payload, list(b"encoded-input"))
+        self.assertEqual(native_input.options, list(b"{}"))
         self.assertEqual(native_options.timeout_ms, 4000)
         self.assertEqual(native_options.ack_timeout_ms, 2000)
         self.assertEqual(native_options.application_request_id, "compat-request")

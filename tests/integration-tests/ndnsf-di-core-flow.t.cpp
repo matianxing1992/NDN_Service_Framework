@@ -17,6 +17,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -36,6 +40,7 @@
 #include <array>
 #include <chrono>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -7391,6 +7396,244 @@ r4B6SignDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& digest)
   return std::string(reinterpret_cast<const char*>(encoded.data()), 88);
 }
 
+enum class Spec196ProbeResponseFault
+{
+  None,
+  ReplayedNonce,
+  StaleObservation,
+  WrongRequestIdentity,
+  WrongRequesterIdentity,
+  WrongAttempt,
+  WrongObserverIdentity,
+  WrongObserverBoot,
+  WrongTargetBoot,
+  WrongScope,
+  WrongDirectedEdge,
+  DuplicateDataName,
+  PartialGoodputTrain,
+  OversizedResponse,
+};
+
+bool
+rewriteSpec196ProbeResponse(ndn_service_framework::ResponseMessage& response,
+                            Spec196ProbeResponseFault fault)
+{
+  if (fault == Spec196ProbeResponseFault::None)
+    return false;
+
+  const auto bytes = response.getPayload();
+  auto value = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+  if (!value.is_object() || !value.contains("observations") ||
+      !value.at("observations").is_array())
+    return false;
+  auto& observations = value["observations"];
+  auto rtt = std::find_if(observations.begin(), observations.end(), [](const auto& row) {
+    return row.is_object() && row.value("kind", std::string{}) == "active_probe_rtt";
+  });
+  if (rtt == observations.end())
+    return false;
+
+  switch (fault) {
+    case Spec196ProbeResponseFault::ReplayedNonce:
+      value["intent_nonce"] = "replayed-probe-nonce-0123456789";
+      break;
+    case Spec196ProbeResponseFault::StaleObservation:
+      (*rtt)["observed_at_ms"] = std::uint64_t{1};
+      break;
+    case Spec196ProbeResponseFault::WrongRequestIdentity:
+      value["request_id"] = "/foreign/request";
+      break;
+    case Spec196ProbeResponseFault::WrongRequesterIdentity:
+      value["requester_identity"] = "/foreign/requester";
+      break;
+    case Spec196ProbeResponseFault::WrongAttempt:
+      value["attempt"] = std::uint64_t{99};
+      break;
+    case Spec196ProbeResponseFault::WrongObserverIdentity:
+      (*rtt)["observer"] = "/foreign/observer";
+      break;
+    case Spec196ProbeResponseFault::WrongObserverBoot:
+      value["observer_boot_epoch"] = "foreign-observer-boot";
+      break;
+    case Spec196ProbeResponseFault::WrongTargetBoot:
+      (*rtt)["peer_boot_epoch"] = "foreign-target-boot";
+      break;
+    case Spec196ProbeResponseFault::WrongScope:
+      value["scope_digest"] = nativePlanningDigest("foreign-probe-scope");
+      break;
+    case Spec196ProbeResponseFault::WrongDirectedEdge:
+      (*rtt)["target"] = value.at("observer_provider");
+      (*rtt)["peer_boot_epoch"] = value.at("observer_boot_epoch");
+      break;
+    case Spec196ProbeResponseFault::DuplicateDataName:
+    case Spec196ProbeResponseFault::PartialGoodputTrain: {
+      const auto target = rtt->at("target");
+      const auto observer = value.at("observer_provider");
+      const auto dataName = rtt->value("data_name", std::string{});
+      const auto observedAt = rtt->at("observed_at_ms");
+      const auto expiresAt = rtt->at("expires_at_ms");
+      const auto peerBoot = rtt->at("peer_boot_epoch");
+      observations.erase(std::remove_if(observations.begin(), observations.end(),
+        [](const auto& row) {
+          return row.is_object() && row.value("kind", std::string{}) ==
+            "active_probe_goodput";
+        }), observations.end());
+      const bool duplicateName = fault == Spec196ProbeResponseFault::DuplicateDataName;
+      observations.push_back(NativeJson{
+        {"observer", observer}, {"target", target},
+        {"kind", "active_probe_goodput"}, {"value", 0.25},
+        {"observed_at_ms", observedAt}, {"expires_at_ms", expiresAt},
+        {"peer_boot_epoch", peerBoot},
+        {"data_name", duplicateName ? dataName : dataName + "/partial-goodput"},
+        {"train_complete", duplicateName}, {"probe_profile_validated", true},
+        {"target_signature_validated", true}, {"received_segments", std::uint64_t{4}},
+        {"sent_segments", std::uint64_t{4}},
+        {"profile_digest", nativePlanningDigest("spec196-probe-profile")},
+        {"payload_bytes", std::uint64_t{8192}}, {"wire_bytes", std::uint64_t{8448}},
+        {"elapsed_ms", 8.192}});
+      if (!duplicateName)
+        observations.back()["received_segments"] = std::uint64_t{3};
+      value["omitted_goodput_count"] = std::uint64_t{0};
+      break;
+    }
+    case Spec196ProbeResponseFault::OversizedResponse:
+      value["padding"] = std::string(5000, 'x');
+      break;
+    case Spec196ProbeResponseFault::None:
+      return false;
+  }
+
+  const auto encoded = nativeCanonicalJson(value);
+  ndn::Buffer rewritten(encoded.begin(), encoded.end());
+  response.setPayload(rewritten, rewritten.size());
+  return true;
+}
+
+struct Spec196ProbePlacementTrace
+{
+  std::atomic<unsigned> probeIntents{0};
+  std::atomic<unsigned> finalPlans{0};
+  std::mutex mutex;
+  std::map<std::string, std::string> baselineProviders;
+  std::map<std::string, std::string> finalProviders;
+  std::string snapshotFallbackReason;
+  std::size_t snapshotRows = 0;
+  std::string firstSnapshotKind;
+  bool finalSawAuthenticatedRtt = false;
+};
+
+class Spec196ProbeFeedbackPlacement final : public NativePlacementStrategy
+{
+public:
+  explicit Spec196ProbeFeedbackPlacement(
+    std::shared_ptr<Spec196ProbePlacementTrace> trace, bool requestGoodput = false)
+    : m_trace(std::move(trace)), m_requestGoodput(requestGoodput)
+  {}
+
+  NativeStrategyIdentity identity() const override
+  {
+    return {"spec196-probe-feedback-fixture", "1",
+            nativePlanningDigest("spec196-probe-feedback-fixture")};
+  }
+
+  NativeRolePlacementProposalV3 proposeRoles(
+    const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const std::vector<NativeAdmittedOfferV3>& offers,
+    std::uint64_t nowMs) const override
+  {
+    if (!context.placementProbeRoundCompleted) {
+      if (context.candidateProviders.size() != 2 || context.allowedRttPairs.empty())
+        throw std::invalid_argument("Spec196 fixture requires two allowed Providers");
+      const auto& observer = context.candidateProviders.front();
+      const auto& target = context.candidateProviders.back();
+      const auto allowed = std::find_if(context.allowedRttPairs.begin(),
+        context.allowedRttPairs.end(), [&observer, &target] (const auto& pair) {
+          return pair.is_object() && pair.value("src_provider", std::string{}) == observer &&
+                 pair.value("dst_provider", std::string{}) == target;
+        });
+      if (allowed == context.allowedRttPairs.end())
+        throw std::invalid_argument("Spec196 fixture RTT edge is not allowlisted");
+
+      NativePlacementProbeIntentV1 intent;
+      NativePlacementProbeObserverV1 request;
+      request.observerProvider = observer;
+      request.rttPairs.push_back({observer, target});
+      if (m_requestGoodput)
+        request.goodputEdges.push_back({target, observer});
+      intent.observers.push_back(std::move(request));
+      NativeRolePlacementProposalV3 deferred{
+        context, ackClosedDigest, identity(), {}, {}, {}, std::nullopt, std::nullopt};
+      deferred.placementProbeIntent = std::move(intent);
+      const auto baseline = NativePreSplitFirstPlacement(identity()).proposeRoles(
+        context, ackClosedDigest, roles, offers, nowMs);
+      {
+        std::lock_guard<std::mutex> lock(m_trace->mutex);
+        m_trace->baselineProviders = baseline.providerByRole;
+      }
+      ++m_trace->probeIntents;
+      return deferred;
+    }
+
+    bool sawAuthenticatedRtt = false;
+    std::string selectedProbeTarget;
+    const auto snapshotRows = context.placementObservationSnapshot.is_object() &&
+        context.placementObservationSnapshot.contains("eligible_link_observations") &&
+        context.placementObservationSnapshot.at("eligible_link_observations").is_array()
+      ? context.placementObservationSnapshot.at("eligible_link_observations").size() : 0;
+    std::string firstSnapshotKind;
+    if (snapshotRows != 0) {
+      const auto& first = context.placementObservationSnapshot.at(
+        "eligible_link_observations").front();
+      if (first.is_object() && first.contains("row") && first.at("row").is_object())
+        firstSnapshotKind = first.at("row").value("kind", std::string{});
+    }
+    if (context.placementObservationSnapshot.is_object() &&
+        context.placementObservationSnapshot.contains("eligible_link_observations") &&
+        context.placementObservationSnapshot.at("eligible_link_observations").is_array()) {
+      for (const auto& item : context.placementObservationSnapshot.at(
+             "eligible_link_observations")) {
+        if (!item.is_object() || !item.contains("row") || !item.at("row").is_object())
+          continue;
+        const auto& row = item.at("row");
+        if (row.value("kind", std::string{}) == "ACTIVE_PROBE_RTT" &&
+            row.value("src_peer", std::string{}) == context.candidateProviders.front() &&
+            row.value("dst_peer", std::string{}) == context.candidateProviders.back() &&
+            row.contains("rtt_ms") && row.at("rtt_ms").is_number() &&
+            std::isfinite(row.at("rtt_ms").get<double>()) &&
+            row.at("rtt_ms").get<double>() > 0) {
+          sawAuthenticatedRtt = true;
+          selectedProbeTarget = row.at("dst_peer").get<std::string>();
+          break;
+        }
+      }
+    }
+    auto candidates = offers;
+    if (sawAuthenticatedRtt) {
+      candidates.erase(std::remove_if(candidates.begin(), candidates.end(),
+        [&selectedProbeTarget] (const auto& offer) {
+          return offer.observation().provider != selectedProbeTarget;
+        }), candidates.end());
+    }
+    auto final = NativePreSplitFirstPlacement(identity()).proposeRoles(
+      context, ackClosedDigest, roles, candidates, nowMs);
+    {
+      std::lock_guard<std::mutex> lock(m_trace->mutex);
+      m_trace->finalSawAuthenticatedRtt = sawAuthenticatedRtt;
+      m_trace->snapshotFallbackReason = context.placementObservationFallbackReason;
+      m_trace->snapshotRows = snapshotRows;
+      m_trace->firstSnapshotKind = firstSnapshotKind;
+      m_trace->finalProviders = final.providerByRole;
+    }
+    ++m_trace->finalPlans;
+    return final;
+  }
+
+private:
+  std::shared_ptr<Spec196ProbePlacementTrace> m_trace;
+  bool m_requestGoodput;
+};
+
 void
 runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool alternateProvider = false,
@@ -7400,7 +7643,11 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
                                     bool nativeConfigQwen = false,
                                     bool dynamicConversationPlacement = false,
                                     bool exerciseFinalizeRace = false,
-                                    bool failConversationCommit = false)
+                                    bool failConversationCommit = false,
+                                    bool spec196TargetedPlacement = false,
+                                    bool spec196RejectProbeResponse = false,
+                                    Spec196ProbeResponseFault spec196ProbeResponseFault =
+                                      Spec196ProbeResponseFault::None)
 {
   using namespace ndn_service_framework;
   test::BootstrapProfile profile;
@@ -7413,6 +7660,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   profile.attributeAuthority = ndn::Name("/spec182/r4-b6/aa");
   profile.serviceName = ndn::Name("/Spec182/R4B6/Conversation");
   profile.providerCount = alternateProvider ? 2 : 1;
+  if (spec196TargetedPlacement) {
+    profile.userAdditionalServices = {ndn::Name(NETWORK_PROBE_SERVICE)};
+    profile.providerAdditionalServices = {ndn::Name(NETWORK_PROBE_SERVICE)};
+  }
   test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
 
@@ -7426,6 +7677,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   const auto alternateProviderName = alternateProvider ?
     environment.provider(1).getName().toUri() : std::string{};
   const std::string role = "/LLM/Pipeline/Stage/0";
+  const std::string roleB = role + "/successor";
   const std::string protectionEpoch = "protected-r4-b6";
   const std::string policyDigest = nativePlanningDigest("r4-b6-policy");
   const std::string graphDigest = nativePlanningDigest("r4-b6-graph");
@@ -7434,6 +7686,7 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   const std::string manifestDigest = nativePlanningDigest("r4-b6-manifest");
   const std::string recipeDigest = nativePlanningDigest("r4-b6-recipe");
   const std::string artifactDigest = nativePlanningDigest("r4-b6-artifact");
+  const std::string artifactDigestB = nativePlanningDigest("r4-b6-artifact-successor");
   const std::string artifactProfileDigest = nativePlanningDigest("r4-b6-profile");
   const std::string tokenizerDigest = nativePlanningDigest("r4-b6-tokenizer");
   const std::string roleMapDigest = nativePlanningDigest(
@@ -7447,6 +7700,14 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   graph.graphDigest = graphDigest;
   graph.nodes = {{"node", "Identity", 0}};
   graph.topologicalOrder = {"node"};
+  if (spec196TargetedPlacement) {
+    graph.nodes.push_back({"node-successor", "Identity", 1});
+    graph.topologicalOrder.push_back("node-successor");
+    graph.edges.push_back({"activation-tensor", "node", {"node-successor"},
+      NativeTensorContract{"activation-tensor", "float32",
+        {std::int64_t{1}}, std::uint64_t{1024}}});
+    graph.legalCutEdges.push_back("activation-tensor");
+  }
   graph.modelInputs = {
     {"input_ids", "int64", {std::int64_t(1), std::int64_t(1)}, std::nullopt},
     {"attention_kv_in", "float32", {std::int64_t(1)}, std::nullopt},
@@ -7498,6 +7759,11 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   preparedRole.maxAssembledBytes = 8192;
   preparedRole.maxNodes = 16;
 
+  auto preparedRoleB = preparedRole;
+  preparedRoleB.role = preparedRoleB.selectedRole = roleB;
+  preparedRoleB.artifactDigest = artifactDigestB;
+  preparedRoleB.nodeIndices = {1};
+
   NativeSplitCandidate candidate;
   candidate.source = "PRE_SPLIT";
   candidate.splitter = {"r4-b6-fixture", "1", nativePlanningDigest("r4-b6-split")};
@@ -7515,6 +7781,22 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   candidate.inputIngressRole = role;
   candidate.resultEgressRole = role;
   candidate.candidateDigest = candidate.computedDigest();
+  if (spec196TargetedPlacement) {
+    candidate.executionPlan.roles.push_back(roleB);
+    candidate.executionPlan.dependencies.emplace_back(
+      std::vector<std::string>{role}, std::vector<std::string>{roleB},
+      "spec196-test", "/spec196/test", "activation", 1, 1024,
+      std::vector<std::string>{"activation-tensor"});
+    candidate.fragmentsByRole[roleB] = nativePlanningDigest("r4-b6-fragment-successor");
+    candidate.artifactsByRole[roleB] = {artifactDigestB};
+    candidate.requirementsByRole[roleB] = { {"onnxruntime-cpu"}, 0, 0, 0, 0, 0, 1.0 };
+    candidate.tensorDegreesByRole[roleB] = 1;
+    candidate.rankArtifactDigestsByRole[roleB] = {artifactDigestB};
+    candidate.nodeRoles["node-successor"] = roleB;
+    candidate.crossPartitionTensors = {"activation-tensor"};
+    candidate.resultEgressRole = roleB;
+    candidate.candidateDigest = candidate.computedDigest();
+  }
   candidate.validate(graph);
 
   auto registry = std::make_shared<NativeAdapterRegistry>();
@@ -7524,6 +7806,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   NativeArtifactBinding binding;
   binding.artifactNameByRole[role] = "/r4-b6/catalog/artifact";
   binding.artifactDigestByRole[role] = artifactDigest;
+  if (spec196TargetedPlacement) {
+    binding.artifactNameByRole[roleB] = "/r4-b6/catalog/artifact-successor";
+    binding.artifactDigestByRole[roleB] = artifactDigestB;
+  }
   binding.manifestDigest = manifestDigest;
   binding.recipeDigest = recipeDigest;
   const std::vector<std::uint8_t> catalogRootPayload = {
@@ -7535,11 +7821,16 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   BOOST_REQUIRE_MESSAGE(catalogPublished.success,
                         catalogPublished.errorMessage);
   binding.sourceByRole[role] = catalogPublished.encryptedDataName.toUri();
+  if (spec196TargetedPlacement)
+    binding.sourceByRole[roleB] = catalogPublished.encryptedDataName.toUri();
   auto preparation = std::make_shared<NativeRequestPreparation>(
     registry,
     [inspected] (const auto&, const auto&) { return inspected; },
     [binding] (const auto&, const auto&, const auto&, const auto&) { return binding; },
-    [preparedRole] (const auto&, const auto&, const auto&) {
+    [preparedRole, preparedRoleB, spec196TargetedPlacement] (
+        const auto&, const auto&, const auto&) {
+      if (spec196TargetedPlacement)
+        return std::vector<NativeSelectionRoleV3>{preparedRole, preparedRoleB};
       return std::vector<NativeSelectionRoleV3>{preparedRole};
     });
 
@@ -7645,6 +7936,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   offerConfig.bootEpoch = providerName + ":" + environment.provider().getProviderBootEpoch();
   offerConfig.signerKeyId = offerKeyId;
   offerConfig.acceptedRoles = {role};
+  if (spec196TargetedPlacement)
+    offerConfig.acceptedRoles.push_back(roleB);
   offerConfig.backends = {"onnxruntime-cpu"};
   offerConfig.signDigest = [offerKey] (const std::string& value) {
     return r4B6SignDigest(offerKey, value);
@@ -7727,6 +8020,13 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   auto conversationAttempts = std::make_shared<std::atomic<unsigned>>(0);
   auto repositoryReferenceObserved = std::make_shared<std::atomic<bool>>(false);
   auto observedRequestWireSize = std::make_shared<std::atomic<std::size_t>>(0);
+  auto targetedHandlerCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto targetedFaultMutations = std::make_shared<std::atomic<unsigned>>(0);
+  auto v4OfferCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto selectedProviderMutex = std::make_shared<std::mutex>();
+  auto executedProviderByRole =
+    std::make_shared<std::map<std::string, std::string>>();
+  std::vector<ServiceProvider::ServiceRegistration> providerRegistrations;
   const auto expectedReferenceDataName = catalogPublished.encryptedDataName.toUri();
   const auto expectedReferenceManifestDigest = catalogPublished.manifestDigest;
   NativeProviderOfferV3Config alternateOfferConfig;
@@ -7740,10 +8040,12 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     ServiceProvider& provider, const NativeProviderOfferV3Config& localOfferConfig,
     bool failFirst) {
     const auto localProviderBootId = localOfferConfig.provider + "-boot";
-    provider.addCollaborationHandler(
-    ndn::Name(serviceName),
-    [localOfferConfig, ackCalls, repositoryReferenceObserved, observedRequestWireSize,
-     expectedReferenceDataName, expectedReferenceManifestDigest] (const RequestMessage& request) {
+    const auto localProviderBootEpoch = provider.getProviderBootEpoch();
+    auto ackHandler = [localOfferConfig, ackCalls, repositoryReferenceObserved,
+       observedRequestWireSize, expectedReferenceDataName,
+       expectedReferenceManifestDigest, spec196TargetedPlacement, v4OfferCalls,
+       localProviderBootEpoch]
+      (const RequestMessage& request) {
       ackCalls->fetch_add(1, std::memory_order_relaxed);
       const auto payload = request.getPayload();
       observedRequestWireSize->store(payload.size(), std::memory_order_relaxed);
@@ -7770,10 +8072,26 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
         }
       }
       ServiceProvider::AckDecision decision;
+      if (spec196TargetedPlacement && !payload.empty()) {
+        try {
+          const auto probe = nativeParseJson(std::string(payload.begin(), payload.end()));
+          if (probe.value("schema", std::string{}) ==
+                "ndnsf-di-placement-probe-request-v1") {
+            decision.status = true;
+            decision.message = "ready";
+            return decision;
+          }
+        }
+        catch (const std::exception&) {
+          // Fall through to the regular V3 request admission below.
+        }
+      }
+      const auto nowMs = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
       const auto issued = issueNativeProviderOfferV3(
         std::vector<std::uint8_t>(payload.begin(), payload.end()), localOfferConfig,
-        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count()));
+        nowMs);
       if (!issued || !issued->status) {
         decision.message = issued ? issued->message : "DI_V3_REQUEST_NOT_SELECTED";
         return decision;
@@ -7782,14 +8100,52 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       decision.message = issued->message;
       decision.payload = ndn::Buffer(issued->payload.begin(), issued->payload.end());
       decision.pendingStateTtlMs = issued->pendingStateTtlMs;
+      if (spec196TargetedPlacement) {
+        NativeProviderOfferV4Config config;
+        config.provider = localOfferConfig.provider;
+        config.service = localOfferConfig.service;
+        config.bootEpoch = localProviderBootEpoch;
+        config.signerKeyId = localOfferConfig.signerKeyId;
+        config.signDigest = localOfferConfig.signDigest;
+        NativeProviderTelemetrySnapshot telemetry;
+        telemetry.sampledAtMs = static_cast<std::int64_t>(nowMs);
+        telemetry.sequence = 1;
+        telemetry.capacity.workerCount = 1;
+        telemetry.capacity.readyQueueCapacity = 1;
+        const auto observed = issueNativeProviderOfferV4(
+          std::vector<std::uint8_t>(payload.begin(), payload.end()), config,
+          telemetry, nowMs);
+        if (observed) {
+          v4OfferCalls->fetch_add(1, std::memory_order_relaxed);
+          decision.providerCapabilityFields[NATIVE_PROVIDER_OFFER_V4_FIELD] =
+            observed->capabilityFieldValue;
+          for (const auto& fallback : observed->fallbackCapabilityFieldValues) {
+            decision.providerCapabilityFieldFallbacks.push_back({
+              {NATIVE_PROVIDER_OFFER_V4_FIELD, fallback}});
+          }
+          decision.providerCapabilityFieldFallbacks.emplace_back();
+          if (observed->pendingStateTtlMs != 0) {
+            decision.pendingStateTtlMs = decision.pendingStateTtlMs == 0
+              ? observed->pendingStateTtlMs
+              : std::min(decision.pendingStateTtlMs,
+                         observed->pendingStateTtlMs);
+          }
+        }
+      }
       return decision;
-    },
-    [model, policyDigest, protectionEpoch, role, serviceName, localProviderBootId, collaborationCalls,
+    };
+    auto collaborationHandler = [model, policyDigest, protectionEpoch, role,
+     serviceName, localProviderBootId, localOfferConfig, collaborationCalls,
      conversationAttempts, failFirst, repositoryInput, unaryRequest, conversationRequest,
-     failConversationCommit,
-     expectedReferenceDataName, repositoryPlaintext] (
+     failConversationCommit, roleB, spec196TargetedPlacement,
+     expectedReferenceDataName, repositoryPlaintext, executedProviderByRole,
+     selectedProviderMutex] (
       ServiceProvider::CollaborationContext& ctx, const RequestMessage& request) {
       try {
+        {
+          std::lock_guard<std::mutex> lock(*selectedProviderMutex);
+          (*executedProviderByRole)[ctx.role()] = localOfferConfig.provider;
+        }
         collaborationCalls->fetch_add(1, std::memory_order_relaxed);
         conversationAttempts->fetch_add(1, std::memory_order_relaxed);
         if (repositoryInput) {
@@ -7810,6 +8166,8 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
             throw std::runtime_error("R4-B6 repository reference fetch mismatch");
         }
         if (unaryRequest) {
+          if (spec196TargetedPlacement && ctx.role() != roleB)
+            return;
           const std::string responseText = "native-unary-response";
           const ndn::Buffer responsePayload(
             reinterpret_cast<const uint8_t*>(responseText.data()), responseText.size());
@@ -7969,12 +8327,76 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
       catch (const std::exception& error) {
         ctx.fail(std::string("R4-B6 handler failure: ") + error.what());
       }
-    });
+    };
+    if (spec196TargetedPlacement) {
+      auto measurementHandler = makeNativePlacementMeasurementTargetedHandler(provider);
+      ServiceProvider::AsyncTargetedRequestHandler targetedHandler =
+        [measurementHandler = std::move(measurementHandler), targetedHandlerCalls,
+         targetedFaultMutations, spec196RejectProbeResponse, spec196ProbeResponseFault]
+        (const ndn::Name& requester, const ndn::Name& providerName,
+         const ndn::Name& requestedService, const ndn::Name& requestId,
+         const RequestMessage& request,
+         ServiceProvider::AsyncTargetedCompletion complete) mutable {
+          targetedHandlerCalls->fetch_add(1, std::memory_order_relaxed);
+          bool isMeasureRequest = false;
+          try {
+            const auto payload = request.getPayload();
+            const auto probe = nativeParseJson(std::string(payload.begin(), payload.end()));
+            isMeasureRequest = probe.value("schema", std::string{}) ==
+                  "ndnsf-di-placement-probe-request-v1" &&
+                probe.value("action", std::string{}) == "measure";
+          }
+          catch (const std::exception&) {
+            // Malformed fixture input follows the production handler below.
+          }
+          if (spec196RejectProbeResponse) {
+            if (isMeasureRequest) {
+              ResponseMessage unavailable;
+              unavailable.setStatus(false);
+              unavailable.setErrorInfo("Spec196 fixture rejected measurement");
+              complete(std::move(unavailable));
+              return;
+            }
+          }
+          auto mutateCompletion = [complete = std::move(complete), isMeasureRequest,
+                                   spec196ProbeResponseFault, targetedFaultMutations]
+            (ResponseMessage response) mutable {
+              if (isMeasureRequest && response.getStatus() &&
+                  spec196ProbeResponseFault != Spec196ProbeResponseFault::None) {
+                try {
+                  if (rewriteSpec196ProbeResponse(response, spec196ProbeResponseFault))
+                    targetedFaultMutations->fetch_add(1, std::memory_order_relaxed);
+                }
+                catch (const std::exception&) {
+                  // The assertion after the request reports a fault not injected.
+                }
+              }
+              complete(std::move(response));
+            };
+          measurementHandler(requester, providerName, requestedService, requestId,
+                             request, std::move(mutateCompletion));
+        };
+      providerRegistrations.push_back(provider.addScopedCollaborationHandler(
+        ndn::Name(serviceName), {}, ackHandler,
+        ServiceProvider::AsyncAckStrategyHandler{}, collaborationHandler));
+      providerRegistrations.push_back(provider.addScopedTargetedService(
+        ndn::Name(NETWORK_PROBE_SERVICE), std::move(targetedHandler)));
+    }
+    else {
+      provider.addCollaborationHandler(ndn::Name(serviceName), ackHandler,
+                                       collaborationHandler);
+    }
   };
   installProviderHandler(environment.provider(), offerConfig,
                          exerciseReplacement);
   if (alternateProvider)
     installProviderHandler(environment.provider(1), alternateOfferConfig, false);
+
+  if (spec196TargetedPlacement) {
+    environment.user().setUseTokens(true);
+    for (std::size_t index = 0; index < environment.providerCount(); ++index)
+      environment.provider(index).setUseTokens(true);
+  }
 
   environment.enableProductionIngressForTest();
   for (std::size_t index = 0; index < environment.providerCount(); ++index) {
@@ -8026,6 +8448,13 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     runtime.grants = grants;
     runtime.noProgressMs = 5000;
     runtime.maxSegments = 64;
+    if (spec196TargetedPlacement) {
+      auto planningCache = std::make_shared<NativePreparedPlanningCache>();
+      planningCache->splitter = candidate.splitter;
+      planningCache->candidates.push_back({candidate,
+        {preparedRole, preparedRoleB}});
+      runtime.planningCache = std::move(planningCache);
+    }
   }
 
   NativeModelRef modelRef;
@@ -8053,6 +8482,10 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   options.taskName = "task";
   options.timeoutMs = 20000;
   options.ackTimeoutMs = 3000;
+  if (spec196TargetedPlacement) {
+    options.providerNames = {ndn::Name(providerName), ndn::Name(alternateProviderName)};
+    std::sort(options.providerNames.begin(), options.providerNames.end());
+  }
   if (!unaryRequest) {
     options.stream = StreamRequestOptions{};
     options.stream->generationId.fill(0x11);
@@ -8104,7 +8537,17 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
   };
   std::shared_ptr<const NativeModelSplitStrategy> splitter = configuredSplitter ?
     configuredSplitter : std::make_shared<R4B6Splitter>(candidate);
-  auto placement = std::make_shared<NativePreSplitFirstPlacement>();
+  auto probeTrace = spec196TargetedPlacement
+    ? std::make_shared<Spec196ProbePlacementTrace>() : nullptr;
+  std::shared_ptr<const NativePlacementStrategy> placement;
+  if (spec196TargetedPlacement) {
+    const bool requestGoodput =
+      spec196ProbeResponseFault == Spec196ProbeResponseFault::DuplicateDataName ||
+      spec196ProbeResponseFault == Spec196ProbeResponseFault::PartialGoodputTrain;
+    placement = std::make_shared<Spec196ProbeFeedbackPlacement>(probeTrace, requestGoodput);
+  }
+  else
+    placement = std::make_shared<NativePreSplitFirstPlacement>();
   auto first = client.request(modelRef, application,
                               splitter, placement, options);
   std::thread finalizeCanceller;
@@ -8145,6 +8588,56 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
     const auto result = first.result(std::chrono::milliseconds(0));
     BOOST_CHECK_EQUAL(std::string(result.payload.begin(), result.payload.end()),
                       "native-unary-response");
+    if (spec196TargetedPlacement) {
+      BOOST_CHECK_EQUAL(v4OfferCalls->load(), 2U);
+      BOOST_CHECK_EQUAL(targetedHandlerCalls->load(), 2U);
+      const bool expectedProbeAccepted = !spec196RejectProbeResponse &&
+        spec196ProbeResponseFault == Spec196ProbeResponseFault::None;
+      BOOST_CHECK_EQUAL(targetedFaultMutations->load(),
+        spec196ProbeResponseFault == Spec196ProbeResponseFault::None ? 0U : 1U);
+      BOOST_CHECK_EQUAL(probeTrace->probeIntents.load(), 1U);
+      BOOST_CHECK_EQUAL(probeTrace->finalPlans.load(), 1U);
+      std::map<std::string, std::string> baselineProviders;
+      std::map<std::string, std::string> finalProviders;
+      std::map<std::string, std::string> executedProviders;
+      std::string snapshotFallbackReason;
+      std::string firstSnapshotKind;
+      std::size_t snapshotRows = 0;
+      bool sawAuthenticatedRtt = false;
+      {
+        std::lock_guard<std::mutex> lock(probeTrace->mutex);
+        baselineProviders = probeTrace->baselineProviders;
+        finalProviders = probeTrace->finalProviders;
+        sawAuthenticatedRtt = probeTrace->finalSawAuthenticatedRtt;
+        snapshotFallbackReason = probeTrace->snapshotFallbackReason;
+        snapshotRows = probeTrace->snapshotRows;
+        firstSnapshotKind = probeTrace->firstSnapshotKind;
+      }
+      BOOST_TEST_MESSAGE("Spec196 client final placement baselineRoles="
+        << baselineProviders.size() << " finalRoles=" << finalProviders.size()
+        << " rows=" << snapshotRows
+        << " kind=" << firstSnapshotKind << " fallback=" << snapshotFallbackReason);
+      BOOST_CHECK_EQUAL(sawAuthenticatedRtt, expectedProbeAccepted);
+      BOOST_REQUIRE(!baselineProviders.empty());
+      BOOST_REQUIRE_EQUAL(finalProviders.size(), baselineProviders.size());
+      if (!expectedProbeAccepted) {
+        BOOST_CHECK(finalProviders == baselineProviders);
+        BOOST_CHECK_EQUAL(snapshotRows, 0U);
+      }
+      else {
+        const auto expectedProbeTarget = options.providerNames.back().toUri();
+        BOOST_CHECK(finalProviders != baselineProviders);
+        BOOST_CHECK(std::all_of(finalProviders.begin(), finalProviders.end(),
+          [&expectedProbeTarget] (const auto& assignment) {
+            return assignment.second == expectedProbeTarget;
+          }));
+      }
+      {
+        std::lock_guard<std::mutex> lock(*selectedProviderMutex);
+        executedProviders = *executedProviderByRole;
+      }
+      BOOST_CHECK(executedProviders == finalProviders);
+    }
     // The closure runner consumes this marker as an independent business
     // oracle. Emit it only after the unary native result assertion succeeds.
     std::cout << "SPEC182_NATIVE_DI_REQUEST_RESULT_OK\n" << std::flush;
@@ -8342,6 +8835,90 @@ BOOST_AUTO_TEST_CASE(Spec182R4B6RealProviderRepositoryReference)
 BOOST_AUTO_TEST_CASE(Spec182R10B31RealProviderUnaryRequest)
 {
   runR4B6RealProviderConversationCase(false, false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientJoinsCoreProbeIntoFinalPlacement)
+{
+  runR4B6RealProviderConversationCase(
+    false, true, false, true, false, false, false, false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackWhenCoreProbeIsUnavailable)
+{
+  runR4B6RealProviderConversationCase(
+    false, true, false, true, false, false, false, false, false, true, true);
+}
+
+void
+runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault fault)
+{
+  runR4B6RealProviderConversationCase(
+    false, true, false, true, false, false, false, false, false, true, false, fault);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnReplayedProbeNonce)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::ReplayedNonce);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnStaleProbeObservation)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::StaleObservation);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnWrongProbeRequestIdentity)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::WrongRequestIdentity);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnWrongProbeRequesterIdentity)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::WrongRequesterIdentity);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnWrongProbeAttempt)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::WrongAttempt);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnWrongProbeObserverIdentity)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::WrongObserverIdentity);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnWrongProbeObserverBoot)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::WrongObserverBoot);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnWrongProbeTargetBoot)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::WrongTargetBoot);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnWrongProbeScope)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::WrongScope);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnWrongDirectedProbeEdge)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::WrongDirectedEdge);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnDuplicateProbeDataName)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::DuplicateDataName);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnPartialGoodputTrain)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::PartialGoodputTrain);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NativeClientFallsBackOnOversizedProbeResponse)
+{
+  runSpec196NativeClientRejectsProbeFault(Spec196ProbeResponseFault::OversizedResponse);
 }
 
 BOOST_AUTO_TEST_CASE(Spec182R10B33RealProviderUnaryRepositoryReferenceRequest)
@@ -11141,6 +11718,193 @@ BOOST_AUTO_TEST_CASE(Spec175DiWriterExposesCursorAndOneTerminal)
   BOOST_CHECK(responseFinished);
   BOOST_CHECK(!core->publish(event, cursor));
   BOOST_CHECK(!core->finish(ndn::Buffer(), StreamFinishReason::ApplicationComplete));
+}
+
+BOOST_AUTO_TEST_CASE(Spec196CoreTargetedResponseMergesIntoPlacementSnapshot)
+{
+  using namespace ndn_service_framework;
+  test::BootstrapProfile profile;
+  profile.providerCount = 2;
+  profile.userAdditionalServices = {ndn::Name(NETWORK_PROBE_SERVICE)};
+  profile.providerAdditionalServices = {ndn::Name(NETWORK_PROBE_SERVICE)};
+  test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE_MESSAGE(environment.status() == test::EnvironmentStatus::Ready,
+                        environment.failureReason());
+  environment.pumpUntilReady();
+  environment.enableProductionIngressForTest();
+  environment.pumpUntilReady();
+
+  const auto service = environment.profile().serviceName;
+  std::vector<ServiceProvider::ServiceRegistration> registrations;
+  for (std::size_t i = 0; i < environment.providerCount(); ++i) {
+    auto& provider = environment.provider(i);
+    auto measurementHandler = makeNativePlacementMeasurementTargetedHandler(provider);
+    registrations.push_back(provider.addScopedTargetedService(
+      ndn::Name(NETWORK_PROBE_SERVICE),
+      [measurementHandler = std::move(measurementHandler)] (
+        const ndn::Name& requester, const ndn::Name& providerName,
+        const ndn::Name& serviceName, const ndn::Name& requestId,
+        const RequestMessage& request,
+        ServiceProvider::AsyncTargetedCompletion complete) mutable {
+        measurementHandler(requester, providerName, serviceName, requestId,
+                           request, std::move(complete));
+      }));
+    provider.setUseTokens(true);
+  }
+  environment.user().setUseTokens(true);
+
+  std::vector<ndn::Name> roster{
+    environment.provider(0).getName(), environment.provider(1).getName()};
+  std::sort(roster.begin(), roster.end());
+  const auto observer = roster.front();
+  const auto target = roster.back();
+  const auto rosterUris = [&] {
+    NativeJson values = NativeJson::array();
+    for (const auto& provider : roster) values.push_back(provider.toUri());
+    return values;
+  }();
+  const auto requester = environment.user().getName();
+  const auto nowMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto deadlineMs = nowMs + 8000;
+  const std::string requestId = "/spec196/targeted-core-flow/request/one";
+  const std::uint64_t attempt = 1;
+  const auto nonce = nativePlanningDigest("spec196-core-flow-probe").substr(7, 32);
+  const auto rosterDigest = nativePlanningDigest(nativeCanonicalJson(rosterUris));
+  const auto observerUri = observer.toUri();
+  const auto targetUri = target.toUri();
+  const auto serviceUri = service.toUri();
+  const NativeJson rttPairs = NativeJson::array({NativeJson{
+    {"src_provider", observerUri}, {"dst_provider", targetUri}}});
+  const NativeJson scope{
+    {"schema", "ndnsf-di-placement-probe-scope-v1"},
+    {"request_id", requestId}, {"attempt", attempt},
+    {"requester_identity", requester.toUri()},
+    {"observer_provider", observerUri}, {"service", serviceUri},
+    {"provider_roster", rosterUris}, {"roster_digest", rosterDigest},
+    {"rtt_pairs", rttPairs}, {"goodput_edges", NativeJson::array()},
+    {"deadline_ms", deadlineMs}, {"intent_nonce", nonce}};
+  const auto scopeDigest = nativePlanningDigest(nativeCanonicalJson(scope));
+  const auto makeRequest = [&] (const std::string& action,
+                                const ndn::Name& destination) {
+    auto payload = scope;
+    payload["action"] = action;
+    payload["schema"] = "ndnsf-di-placement-probe-request-v1";
+    payload["measurement_kinds"] = NativeJson::array({"active_probe_rtt"});
+    payload["scope_digest"] = scopeDigest;
+    const auto wire = nativeCanonicalJson(payload);
+    ndn::Buffer bytes(reinterpret_cast<const std::uint8_t*>(wire.data()), wire.size());
+    RequestMessage request;
+    request.setTargetProvider(destination);
+    request.setPayload(bytes, bytes.size());
+    return request;
+  };
+
+  std::optional<ResponseMessage> authorizationResponse;
+  bool authorizationTimedOut = false;
+  const auto authorizationId = environment.user().RequestServiceTargeted(
+    target, ndn::Name(NETWORK_PROBE_SERVICE), makeRequest("authorize", target), 4000,
+    [&] (const ndn::Name&) { authorizationTimedOut = true; },
+    [&] (const ResponseMessage& response) { authorizationResponse = response; });
+  BOOST_REQUIRE(!authorizationId.empty());
+  environment.pumpUntil([&] {
+    return authorizationResponse.has_value() || authorizationTimedOut;
+  });
+  BOOST_REQUIRE_MESSAGE(authorizationResponse,
+                        "Core targeted scope authorization timed out");
+  BOOST_REQUIRE_MESSAGE(authorizationResponse->getStatus(),
+                        authorizationResponse->getErrorInfo());
+
+  auto measurementRequest = makeRequest("measure", observer);
+  measurementRequest.setTokens({{"targeted.refill", "1"}});
+  std::optional<ResponseMessage> measurementResponse;
+  bool measurementTimedOut = false;
+  const auto measurementId = environment.user().RequestServiceTargeted(
+    observer, ndn::Name(NETWORK_PROBE_SERVICE), std::move(measurementRequest), 6000,
+    [&] (const ndn::Name&) { measurementTimedOut = true; },
+    [&] (const ResponseMessage& response) { measurementResponse = response; });
+  BOOST_REQUIRE(!measurementId.empty());
+  environment.pumpUntil([&] {
+    return measurementResponse.has_value() || measurementTimedOut;
+  });
+  BOOST_REQUIRE_MESSAGE(measurementResponse,
+                        "Core targeted measurement response timed out");
+  BOOST_REQUIRE_MESSAGE(measurementResponse->getStatus(),
+                        measurementResponse->getErrorInfo());
+  const auto responsePayload = measurementResponse->getPayload();
+  const auto response = nativeParseJson(std::string(
+    reinterpret_cast<const char*>(responsePayload.data()), responsePayload.size()));
+  BOOST_CHECK_EQUAL(response.at("schema").get<std::string>(),
+                    "ndnsf-di-placement-probe-response-v1");
+  BOOST_CHECK_EQUAL(response.at("observer_provider").get<std::string>(), observerUri);
+  BOOST_CHECK_EQUAL(response.at("scope_digest").get<std::string>(), scopeDigest);
+  BOOST_CHECK_EQUAL(response.at("requested_rtt_count").get<std::size_t>(), 1U);
+  BOOST_REQUIRE_EQUAL(response.at("observations").size(), 1U);
+  const auto& measuredRtt = response.at("observations").front();
+  BOOST_CHECK_EQUAL(measuredRtt.at("observer").get<std::string>(), observerUri);
+  BOOST_CHECK_EQUAL(measuredRtt.at("target").get<std::string>(), targetUri);
+  BOOST_CHECK_EQUAL(measuredRtt.at("kind").get<std::string>(), "active_probe_rtt");
+  BOOST_CHECK_GT(measuredRtt.at("value").get<double>(), 0.0);
+  BOOST_CHECK(measuredRtt.at("target_signature_validated").get<bool>());
+  BOOST_CHECK(!measuredRtt.at("data_name").get<std::string>().empty());
+  BOOST_CHECK_EQUAL(measuredRtt.size(), 9U);
+  BOOST_CHECK(!measuredRtt.contains("probe_rtt_ms"));
+  BOOST_CHECK(!measuredRtt.contains("probe_profile_validated"));
+  BOOST_CHECK(!measuredRtt.contains("payload_bytes"));
+  BOOST_CHECK_LE(responsePayload.size(), 4096U);
+  BOOST_CHECK_EQUAL(response.at("observations").size() +
+                      response.at("omitted_rtt_count").get<std::size_t>(), 1U);
+
+  NativeOfferBindingContext context;
+  context.requestId = requestId;
+  context.attempt = attempt;
+  context.requesterIdentity = requester.toUri();
+  context.serviceName = serviceUri;
+  context.deadlineMs = deadlineMs;
+  for (const auto& provider : roster) context.candidateProviders.push_back(provider.toUri());
+  context.allowedRttPairs.push_back(NativeJson{
+    {"src_provider", observerUri}, {"dst_provider", targetUri}});
+  NativePlacementProbeObserverV1 probeObserver;
+  probeObserver.observerProvider = observerUri;
+  probeObserver.rttPairs.push_back({observerUri, targetUri});
+  NativePlacementProbeRoundV1 round;
+  round.intent.observers.push_back(probeObserver);
+  round.intentNonceByObserver.emplace(observerUri, nonce);
+  round.responseByObserver.emplace(observerUri, response);
+  const auto providerBoot = [&] (const ndn::Name& name) {
+    for (std::size_t i = 0; i < environment.providerCount(); ++i) {
+      if (environment.provider(i).getName() == name)
+        return environment.provider(i).getProviderBootEpoch();
+    }
+    return std::string{};
+  };
+  const auto mergeNowMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  NativeJson initialValue{
+    {"eligible_link_observations", NativeJson::array()},
+    {"provider_offers", NativeJson::array({
+      NativeJson{{"provider", observerUri}, {"boot_epoch", providerBoot(observer)}},
+      NativeJson{{"provider", targetUri}, {"boot_epoch", providerBoot(target)}}})}};
+  NativePlacementObservationSnapshotV4 initialSnapshot{
+    initialValue, nativePlanningDigest(nativeCanonicalJson(initialValue)),
+    mergeNowMs, deadlineMs};
+  const auto merged = mergeNativePlacementProbeRoundV1(
+    initialSnapshot, round, context, mergeNowMs);
+  BOOST_CHECK_NE(merged.digest, initialSnapshot.digest);
+  BOOST_CHECK_EQUAL(merged.value.at("targeted_probe_round_completed_at_ms")
+                      .get<std::uint64_t>(), mergeNowMs);
+  BOOST_REQUIRE_EQUAL(merged.value.at("eligible_link_observations").size(), 1U);
+  const auto& scoredRow = merged.value.at("eligible_link_observations").front();
+  BOOST_CHECK_EQUAL(scoredRow.at("reported_by").get<std::string>(), observerUri);
+  BOOST_CHECK_EQUAL(scoredRow.at("row").at("src_peer").get<std::string>(), observerUri);
+  BOOST_CHECK_EQUAL(scoredRow.at("row").at("dst_peer").get<std::string>(), targetUri);
+  BOOST_CHECK_EQUAL(scoredRow.at("row").at("kind").get<std::string>(),
+                    "ACTIVE_PROBE_RTT");
+  BOOST_CHECK_EQUAL(scoredRow.at("row").at("rtt_ms").get<double>(),
+                    measuredRtt.at("value").get<double>());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

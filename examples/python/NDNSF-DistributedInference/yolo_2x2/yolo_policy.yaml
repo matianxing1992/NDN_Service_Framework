@@ -122,10 +122,27 @@ services:
         output:
           dtype: float32
 
+  - name: /NDNSF/Network/Probe/v1
+    model: /NDNSF/Network/Probe/v1
+    users:
+      - /NDNSF-DistributeInference/example/user
+    providers:
+      - identity: /NDNSF-DistributeInference/example/provider
+        roles: []
+      - identity: /NDNSF-DistributeInference/example/provider/A
+        roles: []
+      - identity: /NDNSF-DistributeInference/example/provider/B
+        roles: []
+      - identity: /NDNSF-DistributeInference/example/provider/C
+        roles: []
+    roles: []
+    dependencies: []
+
   - name: /NDNSF/DistributedRepo/Object/v1/INSERT
     model: /NDNSF/DistributedRepo/Object/v1/INSERT
-    users: &repo_users
+    users:
       - /NDNSF-DistributeInference/example/user
+      - /NDNSF-DistributeInference/example/controller
     providers: &repo_providers
       - identity: /NDNSF-DistributeInference/example/provider/D
         roles: []
@@ -133,7 +150,8 @@ services:
     dependencies: []
   - name: /NDNSF/DistributedRepo/Object/v1/MANIFEST
     model: /NDNSF/DistributedRepo/Object/v1/MANIFEST
-    users: *repo_users
+    users: &repo_users
+      - /NDNSF-DistributeInference/example/user
     providers: *repo_providers
     roles: []
     dependencies: []
@@ -151,7 +169,9 @@ services:
     dependencies: []
   - name: /NDNSF/DistributedRepo/Object/v1/STATUS
     model: /NDNSF/DistributedRepo/Object/v1/STATUS
-    users: *repo_users
+    users:
+      - /NDNSF-DistributeInference/example/user
+      - /NDNSF-DistributeInference/example/controller
     providers: *repo_providers
     roles: []
     dependencies: []

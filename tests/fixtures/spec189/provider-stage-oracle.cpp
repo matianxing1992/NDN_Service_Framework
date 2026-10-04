@@ -56,6 +56,13 @@ int main()
     const auto interleaved = sequence({"GRANT_VERIFIED", "EXECUTION_ENTERED", "begin",
       "ASSEMBLY_STARTED", "RUNNER_READY", "complete", "EXECUTION_COMPLETED", "TERMINAL"});
     check(interleaved, "", true);
+    check(sequence({"GRANT_VERIFIED", "EXECUTION_ENTERED", "RUNNER_REUSE_HIT",
+                    "begin", "complete", "EXECUTION_COMPLETED"}), "");
+    check(sequence({"GRANT_VERIFIED", "EXECUTION_ENTERED", "EXECUTION_COMPLETED"}),
+          "missing-preparation");
+    check(sequence({"GRANT_VERIFIED", "EXECUTION_ENTERED", "RUNNER_REUSE_HIT",
+                    "ASSEMBLY_STARTED", "RUNNER_READY", "EXECUTION_COMPLETED"}),
+          "preparation-and-reuse-mixed");
     check(sequence({"GRANT_VERIFIED", "EXECUTION_ENTERED", "ASSEMBLY_STARTED", "begin",
       "complete", "RUNNER_READY", "EXECUTION_COMPLETED", "TERMINAL"}), "", true);
     check(sequence({"GRANT_VERIFIED", "EXECUTION_ENTERED", "begin", "complete",
@@ -92,6 +99,15 @@ int main()
     const auto parsed = markers("NDNSF_DI_PROVIDER_STAGE stage=RUNNER_READY preparationId=9\n");
     if (parsed.size() != 1 || parsed.front().preparationId != "9")
       throw std::runtime_error("preparation identity parser");
+    const auto reused = markers("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_HIT "
+      "status=observed requestId=request attemptEpoch=1 provider=provider role=role "
+      "planDigest=plan detail=live-runner\n");
+    if (reused.size() != 1 || reused.front().stage != "RUNNER_REUSE_HIT" ||
+        reused.front().status != "observed" ||
+        reused.front().requestId != "request" ||
+        reused.front().attemptEpoch != "1" ||
+        reused.front().planDigest != "plan")
+      throw std::runtime_error("live runner reuse parser");
     std::cout << "Spec189 Provider stage oracle: " << cases << " cases passed\n";
     return 0;
   }

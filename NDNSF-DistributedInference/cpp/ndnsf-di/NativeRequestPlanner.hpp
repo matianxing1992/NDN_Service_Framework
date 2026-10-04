@@ -4,6 +4,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace ndnsf::di {
 
@@ -56,7 +60,68 @@ struct NativePlannedRequest
   ndn_service_framework::CollaborationPlan corePlan;
   std::string terminalProvider;
   std::optional<NativeGrantLease> grantLease;
+  /** Set on the first pass to suspend planning before artifact publication. */
+  std::optional<NativePlacementProbeIntentV1> placementProbeIntent;
 };
+
+/** The exact first-pass intent plus responses received before the attempt deadline. */
+struct NativePlacementProbeRoundV1
+{
+  NativePlacementProbeIntentV1 intent;
+  std::map<std::string, std::string> intentNonceByObserver;
+  std::map<std::string, NativeJson> responseByObserver;
+};
+
+struct NativePlacementObservationSnapshotV4
+{
+  NativeJson value;
+  std::string digest;
+  std::uint64_t capturedAtMs = 0;
+  std::uint64_t expiresAtMs = 0;
+};
+
+/** Complete source-bound bundle payload estimate for one exact initial input.
+ * Missing/foreign members, static dimension conflicts and overflow stay unknown.
+ * This is planning metadata, never an execution or encrypted-wire byte limit. */
+std::optional<std::uint64_t> estimateNativeRequestTransferBytesV1(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const std::string& inputDigest, const NativeDependencySpec& dependency,
+  const std::vector<NativeSelectionRoleV3>& roles);
+
+/** Merge one bounded targeted round without mutating the ACK-frozen source snapshot. */
+NativePlacementObservationSnapshotV4 mergeNativePlacementProbeRoundV1(
+  const NativePlacementObservationSnapshotV4& snapshot,
+  const NativePlacementProbeRoundV1& round,
+  const NativeOfferBindingContext& context,
+  std::uint64_t nowMs);
+
+/** Freeze one exact, authenticated V4 roster and only those link rows whose
+ * endpoint boots and observer topology still match the signed provider offers. */
+NativePlacementObservationSnapshotV4 buildNativePlacementObservationSnapshotV4(
+  const NativeOfferBindingContext& context,
+  const std::string& ackClosedDigest,
+  const std::vector<NativeAdmittedOfferV4>& offers,
+  const std::vector<NativeJson>& requesterProviderSamples,
+  const NativePreparedPlanningCache& planningCache,
+  std::size_t maxCandidates,
+  std::uint64_t nowMs,
+  const NativeGraphSnapshot* modelGraph = nullptr,
+  const NativeJson* requestTransferProfile = nullptr);
+
+/** Select the optional V4 observation profile atomically from one complete
+ * authenticated ACK roster. Any missing, duplicate, stale, or invalid offer
+ * returns nullopt so the caller retains the V3 path. */
+std::optional<NativePlacementObservationSnapshotV4>
+trySelectNativePlacementObservationSnapshotV4(
+  const NativeOfferBindingContext& context,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeOfferAdmission& admission,
+  const NativePreparedPlanningCache& planningCache,
+  std::size_t maxCandidates,
+  std::uint64_t nowMs,
+  const NativeGraphSnapshot* modelGraph = nullptr,
+  std::string* unavailableReason = nullptr,
+  const NativeJson* requestTransferProfile = nullptr);
 
 /** Worker-only ACK-closed planning. No plan is committed here; the operation
  * owner rechecks cancellation/deadline before posting the returned Core plan. */
@@ -68,7 +133,8 @@ NativePlannedRequest planNativeRequest(
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
   std::shared_ptr<const std::atomic<bool>> cancelled,
-  const NativeConversationTurn* conversationTurn = nullptr);
+  const NativeConversationTurn* conversationTurn = nullptr,
+  const NativePlacementProbeRoundV1* placementProbeRound = nullptr);
 
 /** Cooperative strategy entry used by the prepared Runtime. */
 NativePlannedRequest planNativeRequestCooperative(
@@ -80,6 +146,7 @@ NativePlannedRequest planNativeRequestCooperative(
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
   std::shared_ptr<const std::atomic<bool>> cancelled,
-  const NativeConversationTurn* conversationTurn = nullptr);
+  const NativeConversationTurn* conversationTurn = nullptr,
+  const NativePlacementProbeRoundV1* placementProbeRound = nullptr);
 
 } // namespace ndnsf::di

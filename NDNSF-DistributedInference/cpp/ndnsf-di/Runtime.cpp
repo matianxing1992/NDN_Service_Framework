@@ -2130,6 +2130,10 @@ std::shared_ptr<Runtime> Runtime::open(RuntimeConfig config)
   state->placementRegistry = std::make_shared<NativePlacementStrategyRegistry>();
   state->placementRegistry->registerStrategy(
     "native-pre-split-first", std::make_shared<NativePreSplitFirstPlacement>());
+  state->placementRegistry->registerStrategy(
+    "native-observation-aware-v4", std::make_shared<NativeObservationAwarePlacementV4>(
+      32, 4096, nativeParseJson(primary.canonicalJson).at("request").value(
+        "placement_score_mode", std::string("preparation-and-network"))));
   if (config.fixedPlacementStrategy) {
     const auto strategyIdentity = config.fixedPlacementStrategy->identity();
     strategyIdentity.validate();

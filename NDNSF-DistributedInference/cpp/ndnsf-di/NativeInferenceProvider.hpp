@@ -34,12 +34,24 @@ struct NativeServiceDefinition
   // collaboration ACK by default; the Core admission/permission gates stay
   // authoritative either way.
   ndn_service_framework::ServiceProvider::AckStrategyHandler ackHandler;
+  // Async variant for request-scoped telemetry or other bounded ACK work.
+  // Core supplies authenticated outer identity, registration generation,
+  // cancellation, and a non-extendable local deadline.
+  ndn_service_framework::ServiceProvider::AsyncAckStrategyHandler asyncAckHandler;
   // Optional observation seam invoked once after the native runtime is
   // assembled and before its collaboration registration is installed. The
   // caller may capture runtime capacity/evidence snapshots for readiness or
   // telemetry; it must not mutate the runtime or replace its handler.
   std::function<void(const NativeProviderCollaborationRuntime&)> runtimeObserver;
 };
+
+/** Build the bounded async handler for the independent network probe service.
+ * The caller owns a Core scoped targeted registration and keeps provider alive
+ * until that registration and its callbacks have drained. Probe permission is
+ * independent of the inference service carried in the request scope. */
+ndn_service_framework::ServiceProvider::AsyncTargetedRequestHandler
+makeNativePlacementMeasurementTargetedHandler(
+  ndn_service_framework::ServiceProvider& provider);
 
 // Move-only per-service registration handle. close() is idempotent: it first
 // raises the target's draining fence (the fixed lease entry rejects new

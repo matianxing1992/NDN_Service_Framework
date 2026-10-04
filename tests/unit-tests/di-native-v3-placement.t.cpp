@@ -1,7 +1,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "ndn-service-framework/NetworkProbeRate.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
@@ -10,6 +12,7 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 #include <boost/test/unit_test.hpp>
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <cstdlib>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
@@ -120,6 +123,266 @@ struct Input
     }
   }
 };
+
+void makeInterRoleProbeInput(Input& input)
+{
+  auto roles = std::vector<NativeSelectionRoleV3>{input.roles[0], input.roles[1]};
+  const auto roleA = roles[0].selectedRole;
+  const auto roleB = roleA + "/successor";
+  roles[0].role = roles[0].selectedRole = roleA;
+  roles[1].role = roles[1].selectedRole = roleB;
+  roles[0].rank = 0;
+  roles[1].rank = 0;
+  roles[0].nodeIndices = {0};
+  roles[1].nodeIndices = {1};
+
+  NativeGraphSnapshot graph;
+  graph.graphDigest = input.inspected.graph.graphDigest;
+  graph.nodes = {{"node-0", "Identity", 0}, {"node-1", "Identity", 1}};
+  graph.topologicalOrder = {"node-0", "node-1"};
+  graph.edges = {{"activation-tensor", "node-0", {"node-1"},
+    NativeTensorContract{"activation-tensor", "float32", {std::int64_t{1}},
+                         std::uint64_t{1024}}}};
+  graph.legalCutEdges = {"activation-tensor"};
+  input.inspected.graph = graph;
+  input.roles = roles;
+
+  auto& candidate = input.split;
+  candidate.model = input.inspected.descriptor;
+  candidate.graphDigest = graph.graphDigest;
+  candidate.executionPlan.roles = {roleA, roleB};
+  candidate.executionPlan.dependencies.clear();
+  candidate.executionPlan.dependencies.emplace_back(
+    std::vector<std::string>{roleA}, std::vector<std::string>{roleB},
+    "spec196-test", "/spec196/test", "activation", 1, 1024,
+    std::vector<std::string>{"activation-tensor"});
+  candidate.nodeRoles = {{"node-0", roleA}, {"node-1", roleB}};
+  candidate.fragmentsByRole.clear();
+  candidate.artifactsByRole.clear();
+  candidate.requirementsByRole.clear();
+  candidate.crossPartitionTensors = {"activation-tensor"};
+  candidate.tensorDegreesByRole.clear();
+  candidate.rankArtifactDigestsByRole.clear();
+  candidate.hybridPlan.reset();
+  candidate.inputIngressRole = roleA;
+  candidate.resultEgressRole = roleB;
+  for (const auto& role : roles) {
+    candidate.fragmentsByRole[role.selectedRole] =
+      nativePlanningDigest("spec196-fragment-" + role.selectedRole);
+    candidate.artifactsByRole[role.selectedRole] = {role.artifactDigest};
+    candidate.requirementsByRole[role.selectedRole] =
+      {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0};
+    candidate.tensorDegreesByRole[role.selectedRole] = 1;
+    candidate.rankArtifactDigestsByRole[role.selectedRole] = {role.artifactDigest};
+  }
+  candidate.candidateDigest = candidate.computedDigest();
+}
+
+std::string resignOfferAcceptingRole(
+  const std::string& wire, const std::string& addedRole)
+{
+  auto offer = nativeParseJson(wire);
+  auto acceptedRoles = offer.at("accepted_roles").get<std::vector<std::string>>();
+  if (std::find(acceptedRoles.begin(), acceptedRoles.end(), addedRole) == acceptedRoles.end())
+    acceptedRoles.push_back(addedRole);
+  offer["accepted_roles"] = std::move(acceptedRoles);
+  offer["signature"] = "pending";
+  const auto digest = decodeNativeProviderOfferV3(nativeCanonicalJson(offer)).offerDigest;
+
+  std::array<unsigned char, 32> seed{};
+  for (std::size_t i = 0; i < seed.size(); ++i)
+    seed[i] = static_cast<unsigned char>(i);
+  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> signingKey(
+    EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, seed.data(), seed.size()),
+    EVP_PKEY_free);
+  std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> signing(
+    EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  std::array<unsigned char, 64> signature{};
+  std::size_t signatureLength = signature.size();
+  std::array<unsigned char, 89> encoded{};
+  if (!signingKey || !signing ||
+      EVP_DigestSignInit(signing.get(), nullptr, nullptr, nullptr, signingKey.get()) != 1 ||
+      EVP_DigestSign(signing.get(), signature.data(), &signatureLength,
+        reinterpret_cast<const unsigned char*>(digest.data()), digest.size()) != 1 ||
+      signatureLength != signature.size() ||
+      EVP_EncodeBlock(encoded.data(), signature.data(), static_cast<int>(signatureLength)) != 88)
+    throw std::runtime_error("could not sign modified V3 placement fixture");
+  offer["signature"] = std::string(reinterpret_cast<const char*>(encoded.data()), 88);
+  return nativeCanonicalJson(offer);
+}
+
+NativeJson makeV4PlacementSnapshot(
+  Input& input, const std::vector<NativeSelectionRoleV3>& roles,
+  NativeJson estimatedBytes, const bool includeDataFetch)
+{
+  constexpr std::uint64_t capturedAtMs = 190;
+  constexpr std::uint64_t payloadBytes = 1'000'000;
+  const auto expiresAtMs = input.context.deadlineMs;
+  input.context.requesterIdentity = "/requester";
+
+  NativeJson providerOffers = NativeJson::array();
+  NativeJson requesterSamples = NativeJson::array();
+  NativeJson providerRoster = NativeJson::array();
+  for (const auto& admitted : input.offers) {
+    const auto& offer = admitted.observation();
+    NativeJson residency = NativeJson::array();
+    auto devices = offer.devices;
+    if (devices.empty() && std::any_of(offer.backends.begin(), offer.backends.end(),
+        [] (const auto& backend) {
+          return backend.size() >= 4 &&
+            backend.compare(backend.size() - 4, 4, "-cpu") == 0;
+        }))
+      devices.push_back("cpu");
+    for (const auto& role : roles) {
+      for (const auto& device : devices) {
+        if (!role.deviceSet.empty() &&
+            std::find(role.deviceSet.begin(), role.deviceSet.end(), device) == role.deviceSet.end())
+          continue;
+        auto backend = role.backend;
+        const auto suffix = device == "cpu" ? "-cpu" : "-cuda";
+        if (std::find(offer.backends.begin(), offer.backends.end(), backend + suffix) !=
+            offer.backends.end())
+          backend += suffix;
+        NativeJson deviceSet = device == "cpu" ? NativeJson::array() :
+          NativeJson::array({device});
+        residency.push_back(NativeJson{
+          {"artifact_digest", role.artifactDigest}, {"role", role.role},
+          {"rank", role.rank}, {"model_manifest_digest", role.modelManifestDigest},
+          {"graph_digest", role.graphDigest}, {"backend", backend},
+          {"device_set", std::move(deviceSet)}, {"protection_epoch", role.protectionEpoch},
+          {"state", "EXACT_LOADED"}, {"process_epoch", offer.bootEpoch},
+          {"captured_at_ms", capturedAtMs}, {"expires_at_ms", expiresAtMs},
+          {"runtime_generation", "fixture-runtime"},
+          {"missing_verified_bytes", std::uint64_t{0}},
+          {"estimated_assembly_ms", nullptr}, {"estimated_load_ms", nullptr}});
+      }
+    }
+    providerOffers.push_back(NativeJson{
+      {"provider", offer.provider}, {"boot_epoch", offer.bootEpoch},
+      {"captured_at_ms", capturedAtMs}, {"expires_at_ms", expiresAtMs},
+      {"offer_digest", offer.offerDigest}, {"signer_identity", offer.provider},
+      {"signer_key_locator", offer.provider + "/KEY/fixture/issuer/v=1"},
+      {"ack_wire_digest", "sha256:" + std::string(64, '1')},
+      {"values", NativeJson{{"capacity_state", "OBSERVED"},
+        {"capacity", NativeJson{{"worker_count", std::uint64_t{1}},
+          {"active_worker_count", std::uint64_t{0}},
+          {"ready_queue_depth", std::uint64_t{0}},
+          {"ready_queue_capacity", std::uint64_t{0}},
+          {"waiting_for_input_count", std::uint64_t{0}},
+          {"dependency_wait_worker_count", std::uint64_t{0}},
+          {"dependency_wait_queued_count", std::uint64_t{0}},
+          {"dependency_wait_active_count", std::uint64_t{0}}, {"stopping", false}}},
+        {"queue_depth", std::uint64_t{0}}, {"estimated_wait_ms", 0.0},
+        {"residency_state", "OBSERVED"},
+        {"residency", std::move(residency)}}}});
+    providerRoster.push_back(offer.provider);
+    const auto rttMs = offer.provider == "/provider/a" ? 10.0 : 3.0;
+    requesterSamples.push_back(NativeJson{
+      {"provider", offer.provider},
+      {"sample", NativeJson{{"provider", offer.provider}, {"service", offer.service},
+        {"kind", "ACK_RTT"}, {"rtt_ms", rttMs},
+        {"observed_at_ms", capturedAtMs}, {"peer_boot_epoch", offer.bootEpoch}}}});
+  }
+
+  NativeJson preparedRoles = NativeJson::array();
+  for (const auto& role : roles)
+    preparedRoles.push_back(nativeAssemblyJson(role));
+  NativeJson dependencies = NativeJson::array();
+  if (roles.size() > 1) {
+    const bool bytesKnown = !estimatedBytes.is_null();
+    const auto roleKey = [] (const NativeSelectionRoleV3& role) {
+      return role.role + "#" + std::to_string(role.rank);
+    };
+    dependencies.push_back(NativeJson{
+      {"producer_role", roleKey(roles.front())},
+      {"consumer_role", roleKey(roles.back())}, {"tensors", {"hidden"}},
+      {"estimated_bytes", estimatedBytes},
+      {"estimated_bytes_source", bytesKnown
+        ? NativeJson("graph-tensor-contract") : NativeJson(nullptr)},
+      {"expected_segments", std::uint64_t{1}}, {"operation_kind", "ACTIVATION"}});
+  }
+  NativeJson links = NativeJson::array();
+  if (includeDataFetch) {
+    const auto sourceDigest = nativePlanningDigest("fixture-v4-data-fetch");
+    NativeJson row{
+      {"src_peer", "/provider/a"}, {"dst_peer", "/provider/b"},
+      {"kind", "DATA_FETCH"}, {"direction_semantics", "PAYLOAD_SOURCE_TO_RECEIVER"},
+      {"observer_peer", "/provider/b"}, {"captured_at_ms", capturedAtMs},
+      {"expires_at_ms", expiresAtMs}, {"sample_count", std::uint64_t{1}},
+      {"payload_bytes", payloadBytes}, {"elapsed_ms", 1000.0},
+      {"goodput_mbps", 8.0}, {"source_digest", sourceDigest}};
+    // Keep the business download diagnostic alongside a separate dedicated
+    // sample. Scoring must select the latter even with DATA_FETCH present.
+    auto probe = row;
+    probe["kind"] = "ACTIVE_PROBE_GOODPUT";
+    probe["probe_complete"] = true;
+    probe["probe_segments_sent"] = std::uint64_t{16};
+    probe["probe_signature_valid"] = true;
+    probe["probe_profile_digest"] = ndn_service_framework::NETWORK_PROBE_TRAIN_PROFILE_DIGEST;
+    probe["probe_source_timing_validated"] = true;
+    probe["probe_source_send_gaps_ms"] = NativeJson(std::vector<double>(14, 0.01));
+    probe["probe_data_arrival_gaps_ms"] = NativeJson(std::vector<double>(15, 4.096));
+    probe["probe_rate_status"] = "MEASURED_GOODPUT";
+    probe["probe_rate_reason"] = "MEASURED_WARMED_PACKET_TRAIN";
+    probe["probe_train_goodput_mbps"] = 8.0;
+    probe["source_digest"] = nativePlanningDigest("fixture-v4-dedicated-train");
+    links.push_back(NativeJson{{"src_peer", "/provider/a"},
+      {"dst_peer", "/provider/b"}, {"row", std::move(probe)}});
+    links.push_back(NativeJson{{"src_peer", "/provider/a"},
+      {"dst_peer", "/provider/b"}, {"row", std::move(row)}});
+  }
+
+  return NativeJson{
+    {"schema", "ndnsf-placement-observation-snapshot-v4"},
+    {"request_id", input.context.requestId}, {"attempt", input.context.attempt},
+    {"requester_identity", input.context.requesterIdentity},
+    {"service", input.context.serviceName}, {"model_digest", input.context.modelDigest},
+    {"graph_digest", input.context.graphDigest}, {"ack_closed_digest", input.ackDigest},
+    {"provider_roster", std::move(providerRoster)},
+    {"prepared_role_graph", NativeJson::array({NativeJson{
+      {"candidate_digest", input.split.candidateDigest},
+      {"graph_digest", input.split.graphDigest}, {"node_roles", input.split.nodeRoles},
+      {"stage_order", input.split.executionPlan.roles}, {"roles", std::move(preparedRoles)},
+      {"dependencies", std::move(dependencies)}}})},
+    {"provider_offers", std::move(providerOffers)},
+    {"requester_provider_samples", std::move(requesterSamples)},
+    {"eligible_link_observations", std::move(links)},
+    {"captured_at_ms", capturedAtMs}, {"expires_at_ms", expiresAtMs}};
+}
+
+NativePlacementPlanCore sealV4Proposal(
+  const Input& input, const NativeRolePlacementProposalV3& proposal)
+{
+  const auto& context = proposal.context;
+  NativeExecutionPlan execution = input.split.executionPlan;
+  execution.serviceName = context.serviceName;
+  execution.modelName = input.inspected.descriptor.modelName;
+  execution.roles.clear();
+  NativePlanSealingInputs sealing;
+  sealing.requesterIdentity = context.requesterIdentity;
+  sealing.protectionEpoch = input.roles.front().protectionEpoch;
+  sealing.expiresAtMs = context.deadlineMs;
+  sealing.placementObservationSnapshotDigest =
+    context.placementObservationSnapshotDigest;
+  auto& artifacts = sealing.artifacts;
+  artifacts.requestId = context.requestId;
+  artifacts.attempt = context.attempt;
+  artifacts.modelDigest = input.inspected.descriptor.contentDigest;
+  artifacts.graphDigest = context.graphDigest;
+  artifacts.canonicalGraphDigest = input.inspected.canonicalGraphDigest;
+  artifacts.manifestDigest = input.inspected.modelManifestDigest;
+  artifacts.recipeDigest = input.roles.front().recipeDigest;
+  for (const auto& role : proposal.roles) {
+    execution.roles.push_back(role.selectedRole);
+    artifacts.sourceByRole[role.selectedRole] = "/catalog/source";
+    artifacts.artifactDigestByRole[role.selectedRole] = role.artifactDigest;
+  }
+  for (std::size_t i = 0; i < input.roles.size(); ++i)
+    sealing.assemblyByRole.emplace(std::to_string(i), input.roles[i]);
+  return NativePlanSealer::sealCore(input.inspected, input.split, proposal,
+    execution, input.offers, input.ackDigest, sealing);
+}
+
 std::map<std::string, ndn::security::Certificate> groupCertificates(Input& input, ndn::security::KeyChain& keyChain)
 {
   std::map<std::string, ndn::security::Certificate> certificates;
@@ -963,30 +1226,62 @@ BOOST_AUTO_TEST_CASE(RequestPlannerAcquiresIndependentRoleGrantsConcurrently)
   BOOST_CHECK_GE(peakIssues.load(), 2U);
 }
 
-void runPublicClientScenario(int scenario)
+void runPublicClientScenario(int scenario, bool spoofTargetedSigner,
+                             bool timeoutTargetedMeasurement = false,
+                             bool cancelAfterTargetedMeasurement = false,
+                             bool spoofMeasurementSigner = false,
+                             bool verifyLateBootstrapRelease = false)
 {
   using namespace ndn_service_framework;
   class User final : public test::LocalServiceUser {
   public:
     using test::LocalServiceUser::LocalServiceUser;
-    // NativeInferenceClient dispatches request work on a detached executor.
-    // Keep the externally supplied Face alive with the ServiceUser so a late
-    // worker release cannot race the Face's scheduler/reactor destruction.
-    std::shared_ptr<ndn::DummyClientFace> faceOwner;
     std::map<std::string, SelectionInputKeyOffer> groupKeys;
-    void offer(const ndn::Name& id, const std::string& wire) {
+    std::map<std::string, std::string> providerBootEpochs;
+    void seedAckTelemetry(const std::string& provider, const std::string& bootEpoch)
+    {
+      NetworkTelemetryKey key;
+      key.providerName = ndn::Name(provider);
+      key.serviceName = ndn::Name("/service");
+      key.kind = NetworkTelemetrySampleKind::AckRtt;
+      NetworkTelemetrySample sample;
+      sample.kind = NetworkTelemetrySampleKind::AckRtt;
+      sample.rttMs = 5.0;
+      sample.elapsedMs = 5.0;
+      sample.peerBootEpoch = bootEpoch;
+      m_networkTelemetry.update(key, sample);
+    }
+    void offer(const ndn::Name& id, const std::string& wire,
+               const std::string& v4Capability = {}, bool closeAckWindow = true) {
       auto& call = m_pendingCalls.at(id);
       RequestAckMessage ack;
       ack.setStatus(true); ack.setUserToken(call.requestMessage.getUserToken());
       ack.setProviderToken("provider-token");
       ndn::Buffer bytes(wire.begin(), wire.end()); ack.setPayload(bytes, bytes.size());
+      if (!v4Capability.empty()) {
+        ProviderCapabilityOffer capabilities;
+        capabilities.setField(NATIVE_PROVIDER_OFFER_V4_FIELD, v4Capability);
+        ack.setProviderCapabilityOffer(capabilities);
+      }
       const auto decoded = decodeNativeProviderOfferV3(wire);
+      providerBootEpochs[decoded.provider] = decoded.bootEpoch;
+      seedAckTelemetry(decoded.provider, v4Capability.empty() ? decoded.bootEpoch :
+                       "stale-boot-for-" + decoded.provider);
       if (groupKeys.count(decoded.provider)) ack.setSelectionInputKeyOffer(groupKeys.at(decoded.provider));
       // This supplies the Core authentication boundary as a local fixture.
       // Offer admission still verifies the actual Ed25519 signature below.
       call.requestAcks.push_back({ndn::Name(decoded.provider), call.serviceName, id, ack,
-        {decoded.provider, decoded.provider + "/KEY/fixture/issuer/v=1", nativePlanningDigest(wire), true}});
+        {decoded.provider, decoded.provider + "/KEY/fixture/issuer/v=1", nativePlanningDigest(wire), true},
+        v4Capability.empty() ? std::nullopt : std::optional<double>{5.0},
+        v4Capability.empty() ? 0 : static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count())});
       call.providerTokens[decoded.provider] = "provider-token";
+      if (closeAckWindow)
+        closeOffers(id);
+    }
+    void closeOffers(const ndn::Name& id) {
+      auto& call = m_pendingCalls.at(id);
       call.ackWindowExpired = true;
       closeDeferredCollaborationAcks(id, call);
     }
@@ -994,12 +1289,34 @@ void runPublicClientScenario(int scenario)
       const auto it = m_pendingCalls.find(id);
       return it != m_pendingCalls.end() && it->second.collaborationPlanCommitted;
     }
+    ndn::Name terminalResponseProvider(const ndn::Name& id) const {
+      const auto it = m_pendingCalls.find(id);
+      if (it == m_pendingCalls.end()) return {};
+      for (const auto& role : it->second.collaborationPlan.roles) {
+        if (!role.terminalResponseOwner) continue;
+        const auto participant = std::find_if(
+          it->second.collaborationCommittedParticipants.begin(),
+          it->second.collaborationCommittedParticipants.end(),
+          [&role](const auto& value) { return value.role == role.role; });
+        if (participant != it->second.collaborationCommittedParticipants.end())
+          return ndn::Name(participant->provider);
+      }
+      return {};
+    }
     ResponseHandler responseCallback(const ndn::Name& id) { return m_pendingCalls.at(id).responseHandler; }
     TimeoutHandler timeoutCallback(const ndn::Name& id) { return m_pendingCalls.at(id).timeoutHandler; }
     auto streamCallbacks(const ndn::Name& id) { return m_streamStates.at(id); }
     std::vector<ndn::Name> pendingIds() const {
       std::vector<ndn::Name> result;
       for (const auto& pair : m_pendingCalls) result.push_back(pair.first);
+      return result;
+    }
+    std::vector<std::pair<ndn::Name, ndn::Name>> pendingTargetedCalls() const {
+      std::vector<std::pair<ndn::Name, ndn::Name>> result;
+      for (const auto& pair : m_pendingCalls) {
+        const auto provider = pair.second.requestMessage.getTargetProvider();
+        if (!provider.empty()) result.emplace_back(pair.first, provider);
+      }
       return result;
     }
     std::string requestWire(const ndn::Name& id) {
@@ -1048,7 +1365,14 @@ void runPublicClientScenario(int scenario)
   const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
     [](const auto& value) { return value.at("name") == "cpu"; });
   BOOST_REQUIRE(sample != f.at("seal_cases").end());
-  auto ownedInput = std::make_shared<Input>(f, *sample);
+  auto probeSample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
+    [](const auto& value) { return value.at("name") == "rank_cover"; });
+  if (scenario == 16)
+  BOOST_REQUIRE(probeSample != f.at("seal_cases").end());
+  auto ownedInput = std::make_shared<Input>(f,
+    scenario == 16 ? *probeSample : *sample);
+  if (scenario == 16)
+    makeInterRoleProbeInput(*ownedInput);
   const auto& input = *ownedInput;
   class Splitter final : public NativeModelSplitStrategy {
   public:
@@ -1058,22 +1382,174 @@ void runPublicClientScenario(int scenario)
       const NativeCandidateBudget&) const override { return {value}; }
     NativeSplitCandidate value;
   };
-  ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
-  auto faceOwner = std::make_shared<ndn::DummyClientFace>(keyChain);
-  auto& face = *faceOwner;
+  class ProbeOncePlacement final : public NativePlacementStrategy {
+  public:
+    explicit ProbeOncePlacement(bool invalidIntent, bool useAllowedRttPair = false,
+                                bool useObservationAwareStrategy = false)
+      : invalidIntent(invalidIntent), useAllowedRttPair(useAllowedRttPair),
+        useObservationAwareStrategy(useObservationAwareStrategy)
+    {}
+    NativeStrategyIdentity identity() const override
+    {
+      return useObservationAwareStrategy ? observationAware.identity() : baseline.identity();
+    }
+    NativeRolePlacementProposalV3 proposeRoles(
+      const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+      const std::vector<NativeSelectionRoleV3>& roles,
+      const std::vector<NativeAdmittedOfferV3>& offers,
+      std::uint64_t nowMs) const override
+    {
+      ++calls;
+      auto result = useObservationAwareStrategy ?
+        observationAware.proposeRoles(context, ackClosedDigest, roles, offers, nowMs) :
+        baseline.proposeRoles(context, ackClosedDigest, roles, offers, nowMs);
+      if (!context.placementProbeRoundCompleted) {
+        firstSnapshotDigest = context.placementObservationSnapshotDigest;
+        if (result.placementProbeIntent &&
+            !result.placementProbeIntent->observers.empty()) {
+          const auto& probeObserver = result.placementProbeIntent->observers.front();
+          requestedObserver = probeObserver.observerProvider;
+          if (!probeObserver.rttPairs.empty())
+            requestedRttTarget = probeObserver.rttPairs.front().destinationProvider;
+        }
+        NativePlacementProbeObserverV1 observer;
+        if (useObservationAwareStrategy) {
+          // Scenario 16 exercises the production V4 strategy's own bounded
+          // intent and scoring path through NativeInferenceClient.
+        }
+        else if (invalidIntent) {
+          observer.observerProvider = "/provider/b";
+          observer.goodputEdges.push_back({"/provider/a", "/provider/b"});
+        }
+        else if (useAllowedRttPair && !context.allowedRttPairs.empty()) {
+          const auto& pair = context.allowedRttPairs.front();
+          observer.observerProvider = pair.at("src_provider").get<std::string>();
+          requestedRttTarget = pair.at("dst_provider").get<std::string>();
+          requestedObserver = observer.observerProvider;
+          observer.rttPairs.push_back(
+            {observer.observerProvider, requestedRttTarget});
+        }
+        else {
+          observer.observerProvider = "/provider/b";
+          requestedRttTarget = "/provider/a";
+          requestedObserver = observer.observerProvider;
+          observer.rttPairs.push_back({"/provider/b", "/provider/a"});
+        }
+        if (!useObservationAwareStrategy) {
+          NativePlacementProbeIntentV1 intent;
+          intent.observers.push_back(std::move(observer));
+          result.roles.clear();
+          result.providerByRole.clear();
+          result.offerDigestByProvider.clear();
+          result.placementProbeIntent = std::move(intent);
+        }
+      }
+      else {
+        finalSnapshotDigest = context.placementObservationSnapshotDigest;
+        if (context.placementObservationSnapshot.is_object())
+          finalRequesterSamples = context.placementObservationSnapshot.value(
+            "requester_provider_samples", NativeJson::array());
+        if (context.placementObservationSnapshot.is_object() &&
+            context.placementObservationSnapshot.contains("provider_offers")) {
+          finalProviderBoots = NativeJson::array();
+          for (const auto& offer :
+               context.placementObservationSnapshot.at("provider_offers")) {
+            finalProviderBoots.push_back({
+              {"provider", offer.value("provider", std::string{})},
+              {"boot_epoch", offer.value("boot_epoch", std::string{})}});
+          }
+        }
+        if (result.placementDecisionV4)
+          finalDecision = *result.placementDecisionV4;
+        sawProbeRound.store(true);
+      }
+      return result;
+    }
+    std::size_t callCount() const { return calls.load(); }
+    bool sawTargetedRound() const { return sawProbeRound.load(); }
+    const std::string& initialSnapshotDigest() const { return firstSnapshotDigest; }
+    const std::string& mergedSnapshotDigest() const { return finalSnapshotDigest; }
+    const std::string& rttTarget() const { return requestedRttTarget; }
+    const std::string& observer() const { return requestedObserver; }
+    const NativeJson& decision() const { return finalDecision; }
+    const NativeJson& requesterSamples() const { return finalRequesterSamples; }
+    const NativeJson& providerBoots() const { return finalProviderBoots; }
+  private:
+    NativePreSplitFirstPlacement baseline;
+    NativeObservationAwarePlacementV4 observationAware;
+    bool invalidIntent = false;
+    bool useAllowedRttPair = false;
+    bool useObservationAwareStrategy = false;
+    mutable std::atomic<std::size_t> calls{0};
+    mutable std::atomic<bool> sawProbeRound{false};
+    mutable std::string firstSnapshotDigest;
+    mutable std::string finalSnapshotDigest;
+    mutable std::string requestedRttTarget;
+    mutable std::string requestedObserver;
+    mutable NativeJson finalDecision;
+    mutable NativeJson finalRequesterSamples;
+    mutable NativeJson finalProviderBoots;
+  };
+  struct BootstrapOwners {
+    // Reverse member destruction keeps KeyChain alive through Face teardown.
+    ndn::security::KeyChain keyChain{"pib-memory:", "tpm-memory:"};
+    ndn::DummyClientFace face{keyChain};
+  };
+  auto owners = std::make_shared<BootstrapOwners>();
+  const std::weak_ptr<BootstrapOwners> weakOwners = owners;
+  auto& keyChain = owners->keyChain;
+  auto& face = owners->face;
   const auto requesterCert = test::makeRsaIdentity(keyChain, ndn::Name("/requester"));
   const auto authorityCert = test::makeRsaIdentity(keyChain, ndn::Name("/authority"));
-  auto user = std::make_shared<User>(face, ndn::Name("/client"),
-    requesterCert, authorityCert, "examples/trust-any.conf");
-  user->faceOwner = std::move(faceOwner);
+  // A derived member dies before the ServiceUser base destructor. Keep both
+  // external bootstrap resources in the control-block deleter instead: they
+  // survive delete (including base teardown), even on a late worker release.
+  auto user = std::shared_ptr<User>(new User(face, ndn::Name("/client"),
+    requesterCert, authorityCert, "examples/trust-any.conf"),
+    [owners](User* value) mutable {
+      delete value;
+      // Weak User references may retain its control block after delete.
+      // Release the bootstrap resources now, rather than forming a cycle
+      // through Face callbacks that keep those weak references.
+      owners.reset();
+    });
+  owners.reset();
+  BOOST_REQUIRE(!weakOwners.expired());
+  if (scenario == 16) {
+    user->setRequestPublisher([] (const auto&, const auto&, const auto&,
+                                 const auto&, const auto&, std::size_t) {});
+  }
   // Every public-client scenario reaches Core plan commit and therefore needs
   // the same existing REQUEST-LARGE wrapped-key and policy state. Without
   // this test-only bootstrap the production path correctly tries NAC-ABE
   // wrapping, but the LocalMock fixture has no Controller/AA to answer it.
   user->prepareHybridSendKeyForTest(ndn::Name("/service"), "REQUEST-LARGE");
-  user->applyPermissionResponse(test::makePermissionResponse(
-    ndn::Name("/requester"), tlv::UserPermission,
-    ndn::Name("/provider/a"), ndn::Name("/service")));
+  if (scenario == 14 || scenario == 15 || scenario == 16) {
+    PermissionResponse permissions;
+    permissions.setTargetIdentity("/requester");
+    permissions.setPermissionKind(tlv::UserPermission);
+    permissions.setPolicyEpoch(1);
+    std::vector<ndn::Name> authorizedServices{ndn::Name("/service")};
+    if (scenario == 16)
+      authorizedServices.emplace_back(NETWORK_PROBE_SERVICE);
+    for (const auto& service : authorizedServices) {
+      for (const auto* provider : {"/provider/a", "/provider/b"}) {
+        PermissionEntry entry;
+        entry.setProviderName(provider);
+        entry.setServiceName(service.toUri());
+        entry.setToken("");
+        entry.setTtl(0);
+        entry.setVersion(1);
+        permissions.addEntry(entry);
+      }
+    }
+    user->applyPermissionResponse(permissions);
+  }
+  else {
+    user->applyPermissionResponse(test::makePermissionResponse(
+      ndn::Name("/requester"), tlv::UserPermission,
+      ndn::Name("/provider/a"), ndn::Name("/service")));
+  }
   // This fixture needs the requester key for protected signing, but it does
   // not need the asynchronous NAC consumer/producer bootstrap.  The latter
   // belongs to full integration fixtures and leaves cross-scenario work on
@@ -1103,7 +1579,7 @@ void runPublicClientScenario(int scenario)
       [] (const std::vector<ndn::svs::MissingDataInfo>&) {}, svsOptions, security);
     user->attachLocalMockPubSubForTest(std::move(pubSub));
   }
-  if (scenario >= 3) {
+  if ((scenario >= 3 && scenario <= 13) || scenario == 15 || scenario == 16) {
     for (const auto& provider : {std::string("/provider/a"), std::string("/provider/b")}) {
       const auto cert = keyChain.createIdentity(ndn::Name(provider), ndn::RsaKeyParams(2048))
         .getDefaultKey().getDefaultCertificate();
@@ -1146,7 +1622,8 @@ void runPublicClientScenario(int scenario)
   issuer.authorityPrivateKey = key('a'); issuer.requesterPublicKey = key('b');
   issuer.allowedModelManifests = {binding.manifestDigest};
   issuer.recipientPublicKeys = {{"/provider/a", key('c')}};
-  if (scenario >= 3) issuer.recipientPublicKeys.emplace("/provider/b", key('d'));
+  if ((scenario >= 3 && scenario <= 13) || scenario == 14 || scenario == 15 || scenario == 16)
+    issuer.recipientPublicKeys.emplace("/provider/b", key('d'));
   issuer.contentKey = [](const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
   std::string authorityPublic(32, '\0'); std::size_t size = authorityPublic.size();
   BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuer.authorityPrivateKey.get(),
@@ -1154,12 +1631,14 @@ void runPublicClientScenario(int scenario)
   NativeRequestRuntime runtime;
   runtime.contract = {"/service", "task", input.inspected.descriptor.adapterId,
     input.inspected.descriptor.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
-  if (scenario >= 3) {
+  if (scenario >= 3 && scenario <= 13) {
     runtime.contract.generationMode = "TOKEN_STREAMING";
     runtime.contract.tokenizerDigest = nativePlanningDigest("tokenizer");
   }
   runtime.requesterIdentity = "/requester"; runtime.protectionEpoch = issuer.protectionEpoch;
   runtime.security = {nativePlanningDigest("policy"), true}; runtime.budget.maxPolicyMs = 1000;
+  if (scenario == 16)
+    runtime.inputLayoutDigest = nativePlanningDigest("spec196-application-input-layout");
   runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>("/requester", key('b'), "/authority", authorityPublic,
     std::make_shared<NativeArtifactGrantIssuer>(issuer),
     [](const auto& name, const auto&, const auto&) { return name; });
@@ -1175,11 +1654,31 @@ void runPublicClientScenario(int scenario)
     }
     return done();
   };
+  auto splitter = std::make_shared<Splitter>(input.split);
+  if (scenario == 14 || scenario == 15 || scenario == 16) {
+    // Model the prepare-time cache consumed by V4 request encoding. Production
+    // NativeRequestCatalog::load creates this cache before client construction.
+    auto planningCache = std::make_shared<NativePreparedPlanningCache>();
+    planningCache->splitter = splitter->identity();
+    planningCache->candidates.push_back({input.split, input.roles});
+    runtime.planningCache = std::move(planningCache);
+  }
   {
     NativeInferenceClient client(user, registry, runtime, conversations, preparation, admission);
     NativeRequestOptions requestOptions;
+    std::shared_ptr<ProbeOncePlacement> probePlacement;
+    std::shared_ptr<const NativePlacementStrategy> placement;
+    if (scenario == 14 || scenario == 15 || scenario == 16) {
+      probePlacement = std::make_shared<ProbeOncePlacement>(
+        scenario == 14, scenario == 16, scenario == 16);
+      placement = probePlacement;
+      requestOptions.providerNames = {ndn::Name("/provider/a"), ndn::Name("/provider/b")};
+    }
+    else {
+      placement = std::make_shared<NativePreSplitFirstPlacement>();
+    }
     std::atomic<unsigned> accepted{0};
-    if (scenario >= 3) {
+    if (scenario >= 3 && scenario <= 13) {
       const auto values = nativeCanonicalJson(NativeJson{{"useCache", true}, {"outputMode", "TOKEN_STREAMING"},
         {"maxNewTokens", 4}, {"eosTokenIds", {2}}, {"tokenizerDigest", nativePlanningDigest("tokenizer")},
         {"tokenInputName", "x"}, {"stateInputNames", {"x"}}, {"stateOutputNames", {"y"}}});
@@ -1209,12 +1708,11 @@ void runPublicClientScenario(int scenario)
         if (scenario == 7) throw std::runtime_error("application callback fixture failure");
       };
     }
-    auto handle = client.request(model, application, std::make_shared<Splitter>(input.split),
-      std::make_shared<NativePreSplitFirstPlacement>(), requestOptions);
+    auto handle = client.request(model, application, splitter, placement, requestOptions);
     std::shared_ptr<std::vector<NativeInferenceEvent>> observedEvents;
     std::shared_ptr<std::promise<void>> observedTerminal;
     std::future<void> observedDone;
-    if (scenario >= 3) {
+    if (scenario >= 3 && scenario <= 13) {
       observedEvents = std::make_shared<std::vector<NativeInferenceEvent>>();
       observedTerminal = std::make_shared<std::promise<void>>();
       observedDone = observedTerminal->get_future();
@@ -1232,6 +1730,14 @@ void runPublicClientScenario(int scenario)
     auto offer = nativeParseJson(sample->at("offers").front().get<std::string>());
     offer["request_id"] = attemptId.toUri(); offer["provider"] = provider; offer["attempt"] = attempt;
     offer["topology"]["provider"] = provider;
+    if (scenario == 16) {
+      auto acceptedRoles = offer.at("accepted_roles").get<std::vector<std::string>>();
+      acceptedRoles.push_back(input.roles[1].selectedRole);
+      std::sort(acceptedRoles.begin(), acceptedRoles.end());
+      acceptedRoles.erase(std::unique(acceptedRoles.begin(), acceptedRoles.end()),
+                          acceptedRoles.end());
+      offer["accepted_roles"] = std::move(acceptedRoles);
+    }
     const auto unsignedWire = nativeCanonicalJson(offer);
     const auto digest = decodeNativeProviderOfferV3(unsignedWire).offerDigest;
     std::array<unsigned char, 32> seed{};
@@ -1246,9 +1752,314 @@ void runPublicClientScenario(int scenario)
     std::array<unsigned char, 89> encoded{};
     BOOST_REQUIRE_EQUAL(EVP_EncodeBlock(encoded.data(), signature.data(), length), 88);
     offer["signature"] = std::string(reinterpret_cast<char*>(encoded.data()), 88);
-    user->postToIo([&, attemptId, wire = nativeCanonicalJson(offer)] { user->offer(attemptId, wire); });
+    const auto wire = nativeCanonicalJson(offer);
+    std::string v4Capability;
+    if (scenario == 16) {
+      const auto requestWire = user->requestWire(attemptId);
+      const std::vector<std::uint8_t> requestPayload(requestWire.begin(), requestWire.end());
+      NativeProviderOfferV4Config config;
+      config.provider = provider;
+      config.service = "/service";
+      config.bootEpoch = offer.at("boot_epoch").get<std::string>();
+      config.signerKeyId = f.at("key_id").get<std::string>();
+      config.signDigest = [&signingKey](const std::string& value) {
+        std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(
+          EVP_MD_CTX_new(), EVP_MD_CTX_free);
+        if (!context || EVP_DigestSignInit(context.get(), nullptr, nullptr, nullptr,
+                                            signingKey.get()) != 1)
+          throw std::runtime_error("V4 fixture signer initialization failed");
+        std::array<unsigned char, 64> signature{};
+        std::size_t signatureLength = signature.size();
+        std::array<unsigned char, 89> encodedSignature{};
+        if (EVP_DigestSign(context.get(), signature.data(), &signatureLength,
+              reinterpret_cast<const unsigned char*>(value.data()), value.size()) != 1 ||
+            signatureLength != signature.size() ||
+            EVP_EncodeBlock(encodedSignature.data(), signature.data(),
+                            static_cast<int>(signatureLength)) != 88)
+          throw std::runtime_error("V4 fixture signing failed");
+        return std::string(reinterpret_cast<const char*>(encodedSignature.data()), 88);
+      };
+      NativeProviderTelemetrySnapshot telemetry;
+      const auto nowMs = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+      NativeProviderResidencySnapshotV4 residency;
+      residency.known = true;
+      const auto requestEnvelope = nativeParseJson(requestWire);
+      for (const auto& artifact : requestEnvelope.at("candidate_artifacts")) {
+        auto row = artifact;
+        auto backend = artifact.at("backend").get<std::string>();
+        const bool hasCpuSuffix = backend.size() >= 4 &&
+          backend.compare(backend.size() - 4, 4, "-cpu") == 0;
+        const bool hasCudaSuffix = backend.size() >= 5 &&
+          backend.compare(backend.size() - 5, 5, "-cuda") == 0;
+        if (!hasCpuSuffix && !hasCudaSuffix)
+          backend += "-cpu";
+        row["backend"] = std::move(backend);
+        row["device_set"] = NativeJson::array();
+        row["state"] = "EXACT_LOADED";
+        row["process_epoch"] = config.bootEpoch;
+        row["captured_at_ms"] = nowMs;
+        row["expires_at_ms"] = nowMs + 4000;
+        row["missing_verified_bytes"] = std::uint64_t{0};
+        row["estimated_assembly_ms"] = nullptr;
+        row["estimated_load_ms"] = nullptr;
+        row["runtime_generation"] = "spec196-fixture-loaded";
+        residency.rows.push_back(std::move(row));
+      }
+      const auto issued = issueNativeProviderOfferV4(
+        requestPayload, config, telemetry, nowMs, {}, residency);
+      BOOST_REQUIRE_MESSAGE(issued, "could not issue the V4 placement fixture offer");
+      v4Capability = issued->capabilityFieldValue;
+    }
+    const bool closeAckWindow = scenario != 16;
+    user->postToIo([&, attemptId, wire, v4Capability, closeAckWindow] {
+      user->offer(attemptId, wire, v4Capability, closeAckWindow);
+    });
     };
     submitOffer(id, "/provider/a", 1);
+    if (scenario == 14 || scenario == 15 || scenario == 16) {
+      submitOffer(id, "/provider/b", 1);
+    }
+    if (scenario == 16) {
+      user->postToIo([user, id] { user->closeOffers(id); });
+    }
+    if (scenario == 14) {
+      BOOST_REQUIRE(pumpUntil([&] {
+        return handle.status() != NativeRequestStatus::Pending;
+      }));
+      std::string failure;
+      try { (void)handle.result(std::chrono::milliseconds(0)); }
+      catch (const NativeDiError& error) { failure = error.what(); }
+      BOOST_CHECK_MESSAGE(
+        failure.find("placement probe intent has an invalid directed edge") !=
+          std::string::npos, failure);
+      BOOST_CHECK(user->pendingTargetedCalls().empty());
+      BOOST_CHECK(!user->committed(id));
+      return;
+    }
+    if (scenario == 15) {
+      BOOST_REQUIRE(pumpUntil([&] {
+        return handle.status() != NativeRequestStatus::Pending;
+      }));
+      std::string failure;
+      try { (void)handle.result(std::chrono::milliseconds(0)); }
+      catch (const NativeDiError& error) { failure = error.what(); }
+      BOOST_CHECK_MESSAGE(
+        failure.find("placement probe intent has an invalid directed edge") !=
+          std::string::npos, failure);
+      BOOST_CHECK(user->pendingTargetedCalls().empty());
+      BOOST_CHECK(!user->committed(id));
+      return;
+    }
+    if (scenario == 16) {
+      std::set<std::string> handledTargetedCalls;
+      std::vector<std::pair<std::string, std::string>> targetedActions;
+      const auto answerTargetedCalls = [&] (bool deferMeasurement = false) {
+        for (const auto& pending : user->pendingTargetedCalls()) {
+          const auto& targetedId = pending.first;
+          const auto& target = pending.second;
+          const auto idText = targetedId.toUri();
+          if (!handledTargetedCalls.insert(idText).second)
+            continue;
+          const auto request = nativeParseJson(user->requestWire(targetedId));
+          const auto action = request.at("action").get<std::string>();
+          targetedActions.emplace_back(action, target.toUri());
+          NativeJson payload;
+          if (action == "authorize") {
+            payload = NativeJson{
+              {"schema", "ndnsf-di-placement-probe-scope-ack-v1"},
+              {"provider", target.toUri()},
+              {"observer_provider", request.at("observer_provider")},
+              {"scope_digest", request.at("scope_digest")},
+              {"status", "authorized"}};
+          }
+          else {
+            BOOST_REQUIRE_EQUAL(action, "measure");
+            if (deferMeasurement)
+              continue;
+            if (timeoutTargetedMeasurement) {
+              const auto timeout = user->timeoutCallback(targetedId);
+              timeout(targetedId);
+              ResponseMessage lateUnavailable;
+              lateUnavailable.setStatus(false);
+              lateUnavailable.setErrorInfo("late fixture response after timeout");
+              user->deliver(targetedId, target, lateUnavailable);
+              continue;
+            }
+            const auto completedAtMs = static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+            payload = NativeJson{
+              {"schema", "ndnsf-di-placement-probe-response-v1"},
+              {"request_id", request.at("request_id")},
+              {"attempt", request.at("attempt")},
+              {"requester_identity", request.at("requester_identity")},
+              {"observer_provider", request.at("observer_provider")},
+              {"service", request.at("service")},
+              {"observer_boot_epoch", user->providerBootEpochs.at(target.toUri())},
+              {"scope_digest", request.at("scope_digest")},
+              {"intent_nonce", request.at("intent_nonce")},
+              {"deadline_ms", request.at("deadline_ms")},
+              {"completed_at_ms", completedAtMs},
+              {"requested_rtt_count", request.at("rtt_pairs").size()},
+              {"requested_goodput_count", request.at("goodput_edges").size()},
+              {"omitted_rtt_count", 0}, {"omitted_goodput_count", 0},
+              {"observations", NativeJson::array()}};
+            const auto expiresAtMs = std::min(
+              request.at("deadline_ms").get<std::uint64_t>(),
+              completedAtMs + std::uint64_t{5000});
+            for (const auto& pair : request.at("rtt_pairs")) {
+              const auto observer = pair.at("src_provider").get<std::string>();
+              const auto targetProvider = pair.at("dst_provider").get<std::string>();
+              payload["observations"].push_back(NativeJson{
+                {"observer", observer}, {"target", targetProvider},
+                {"kind", "active_probe_rtt"}, {"value", 40.0},
+                {"observed_at_ms", completedAtMs}, {"expires_at_ms", expiresAtMs},
+                {"peer_boot_epoch", user->providerBootEpochs.at(targetProvider)},
+                {"target_signature_validated", true},
+                {"data_name", targetProvider + "/NDNSF-DI/probe/rtt/" +
+                  std::to_string(completedAtMs)}});
+            }
+            for (const auto& edge : request.at("goodput_edges")) {
+              const auto source = edge.at("src_provider").get<std::string>();
+              const auto destination = edge.at("dst_provider").get<std::string>();
+              payload["observations"].push_back(NativeJson{
+                {"observer", destination}, {"target", source},
+                {"kind", "active_probe_goodput"}, {"value", 8.0},
+                {"observed_at_ms", completedAtMs}, {"expires_at_ms", expiresAtMs},
+                {"peer_boot_epoch", user->providerBootEpochs.at(source)},
+                {"target_signature_validated", true},
+                {"probe_profile_validated", true}, {"train_complete", true},
+                {"sent_segments", std::uint64_t{16}},
+                {"received_segments", std::uint64_t{16}},
+                {"payload_bytes", std::uint64_t{69000}}, {"elapsed_ms", 69.0},
+                {"profile_digest", ndn_service_framework::NETWORK_PROBE_TRAIN_PROFILE_DIGEST},
+                {"probe_source_send_gaps_ms", NativeJson(std::vector<double>(14, 0.01))},
+                {"probe_source_timing_validated", true},
+                {"probe_train_goodput_mbps", 8.0},
+                {"probe_rate_status", "MEASURED_GOODPUT"},
+                {"probe_rate_reason", "MEASURED_WARMED_PACKET_TRAIN"},
+                {"probe_rtt_ms", NativeJson(std::vector<double>(16, 1.3))},
+                {"probe_interest_gaps_ms", NativeJson(std::vector<double>(15, 0.01))},
+                {"probe_data_arrival_gaps_ms", NativeJson(std::vector<double>(15, 4.096))},
+                {"probe_data_wire_bytes", NativeJson(std::vector<std::uint64_t>(16, 4400))},
+                {"data_name", source + "/NDNSF-DI/probe/goodput/" +
+                  std::to_string(completedAtMs)}});
+            }
+          }
+          const auto responseWire = nativeCanonicalJson(payload);
+          ndn::Buffer responsePayload(responseWire.begin(), responseWire.end());
+          ResponseMessage response;
+          response.setStatus(true);
+          response.setUserToken("bootstrap-user-token");
+          response.setTokens({{"targeted.0.provider", "provider-token-0"},
+                               {"targeted.0.user", "user-token-0"},
+                               {"targeted.count", "1"}});
+          response.setPayload(responsePayload, responsePayload.size());
+      const auto signerProvider =
+        (spoofTargetedSigner && action == "authorize") ||
+        (spoofMeasurementSigner && action == "measure") ?
+        (target.toUri() == "/provider/a" ? "/provider/b" : "/provider/a") :
+        target.toUri();
+      response.setAuthenticatedTransportEvidence(
+        target.toUri() + "/response",
+        signerProvider + "/KEY/fixture/issuer/v=1",
+        nativePlanningDigest(responseWire));
+          user->deliver(targetedId, target, response);
+        }
+      };
+      if (cancelAfterTargetedMeasurement) {
+        const auto findMeasurement = [&] ()
+          -> std::optional<std::pair<ndn::Name, ndn::Name>> {
+          for (const auto& pending : user->pendingTargetedCalls()) {
+            const auto request = nativeParseJson(user->requestWire(pending.first));
+            if (request.value("action", std::string{}) == "measure")
+              return pending;
+          }
+          return std::nullopt;
+        };
+        BOOST_REQUIRE(pumpUntil([&] {
+          answerTargetedCalls(true);
+          return findMeasurement().has_value();
+        }));
+        const auto pending = *findMeasurement();
+        handle.cancel();
+        BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
+        const auto lateTimeout = user->timeoutCallback(pending.first);
+        lateTimeout(pending.first);
+        ResponseMessage lateUnavailable;
+        lateUnavailable.setStatus(false);
+        lateUnavailable.setErrorInfo("fixture completion after cancellation");
+        user->deliver(pending.first, pending.second, lateUnavailable);
+        BOOST_REQUIRE(pumpUntil([&] {
+          return !user->hasPendingCall(pending.first);
+        }));
+        client.close();
+        face.getIoContext().restart();
+        face.getIoContext().poll();
+        BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
+        BOOST_CHECK(!user->committed(id));
+        BOOST_CHECK_EQUAL(probePlacement->callCount(), 1U);
+        return;
+      }
+      BOOST_REQUIRE(pumpUntil([&] {
+        answerTargetedCalls();
+        return user->committed(id) ||
+          handle.status() != NativeRequestStatus::Pending;
+      }));
+      if (handle.status() != NativeRequestStatus::Pending)
+        handle.result(std::chrono::milliseconds(0));
+      BOOST_REQUIRE(user->committed(id));
+      const auto actionSummary = [&] {
+        NativeJson values = NativeJson::array();
+        for (const auto& action : targetedActions)
+          values.push_back({{"action", action.first}, {"target", action.second}});
+        return nativeCanonicalJson(values);
+      }();
+      BOOST_CHECK_MESSAGE(targetedActions.size() == (spoofTargetedSigner ? 1U : 2U),
+                          "targeted calls=" + actionSummary);
+      if (!spoofTargetedSigner && targetedActions.size() == 2) {
+        BOOST_CHECK_EQUAL(targetedActions[0].first, "authorize");
+        BOOST_CHECK_EQUAL(targetedActions[0].second, probePlacement->rttTarget());
+        BOOST_CHECK_EQUAL(targetedActions[1].first, "measure");
+        BOOST_CHECK_EQUAL(targetedActions[1].second, probePlacement->observer());
+      }
+      else if (spoofTargetedSigner && targetedActions.size() == 1) {
+        BOOST_CHECK_EQUAL(targetedActions[0].first, "authorize");
+        BOOST_CHECK_EQUAL(targetedActions[0].second, probePlacement->rttTarget());
+      }
+      BOOST_CHECK_EQUAL(probePlacement->callCount(), 2U);
+      BOOST_CHECK(probePlacement->sawTargetedRound());
+      BOOST_CHECK_MESSAGE(!probePlacement->initialSnapshotDigest().empty(),
+                          "initial V4 snapshot was unavailable");
+      BOOST_CHECK_MESSAGE(!probePlacement->mergedSnapshotDigest().empty(),
+                          "merged V4 snapshot was unavailable");
+      BOOST_CHECK_MESSAGE(probePlacement->initialSnapshotDigest() !=
+                            probePlacement->mergedSnapshotDigest(),
+                          "targeted round did not change the snapshot digest");
+      if (!spoofTargetedSigner) {
+        BOOST_REQUIRE(probePlacement->decision().is_object());
+        if (timeoutTargetedMeasurement || spoofMeasurementSigner) {
+          BOOST_CHECK_EQUAL(probePlacement->decision().at("status")
+                              .get<std::string>(), "BASELINE_FALLBACK");
+          BOOST_CHECK(probePlacement->decision().at("edge_costs").empty());
+        }
+        else {
+          BOOST_CHECK_MESSAGE(
+            probePlacement->decision().at("status").get<std::string>() == "SCORED",
+            "V4 placement decision=" + probePlacement->decision().dump() +
+              " requester samples=" + probePlacement->requesterSamples().dump() +
+              " provider boots=" + probePlacement->providerBoots().dump());
+          if (probePlacement->decision().at("status").get<std::string>() == "SCORED") {
+            BOOST_REQUIRE_EQUAL(probePlacement->decision().at("edge_costs").size(), 1U);
+            BOOST_CHECK_EQUAL(probePlacement->decision().at("edge_costs")[0]
+                                .at("rate_method").get<std::string>(),
+                              "ACTIVE_PROBE_GOODPUT");
+          }
+        }
+      }
+    }
     BOOST_REQUIRE(pumpUntil([&] { return user->committed(id) || handle.status() != NativeRequestStatus::Pending; }));
     if (handle.status() != NativeRequestStatus::Pending) handle.result(std::chrono::milliseconds(0));
     BOOST_REQUIRE(user->committed(id));
@@ -1338,7 +2149,7 @@ void runPublicClientScenario(int scenario)
       seedRecord(ndn::Name("/ndnsf-di/conversation/commit").append(role),
                  ndn::Buffer(ack.begin(), ack.end()));
     }
-    if (scenario >= 3) {
+    if (scenario >= 3 && scenario <= 13) {
       const auto callbacks = user->streamCallbacks(id);
       const auto tokenEvent = [&](std::int64_t token, std::size_t epoch, const std::string& prefix,
                                   const std::string& delta, const std::string& hint) {
@@ -1449,15 +2260,24 @@ void runPublicClientScenario(int scenario)
     }
     auto lateResponse = user->responseCallback(id);
     auto lateTimeout = user->timeoutCallback(id);
+    ndn::Name responseProvider("/provider/a");
+    if (scenario == 16) {
+      responseProvider = user->terminalResponseProvider(id);
+      BOOST_REQUIRE(!responseProvider.empty());
+    }
     ResponseMessage response; response.setStatus(true);
     ndn::Buffer payload{42, 43}; response.setPayload(payload, payload.size());
-    response.setAuthenticatedTransportEvidence(scenario == 1 ? "/foreign/response" : "/provider/a/response",
-      "/provider/a/KEY/fixture/issuer/v=1", nativePlanningDigest("response-wire"));
+    response.setAuthenticatedTransportEvidence(
+      scenario == 1 ? "/foreign/response" : responseProvider.toUri() + "/response",
+      responseProvider.toUri() + "/KEY/fixture/issuer/v=1",
+      nativePlanningDigest("response-wire"));
     if (scenario == 2) handle.cancel();
-    else user->postToIo([&, response] { user->deliver(id, ndn::Name("/provider/a"), response); });
+    else user->postToIo([&, responseProvider, response] {
+      user->deliver(id, responseProvider, response);
+    });
     BOOST_REQUIRE(pumpUntil([&] { return handle.status() != NativeRequestStatus::Pending && !user->hasPendingCall(id); }));
     const auto terminal = handle.status();
-    if (scenario == 0) {
+    if (scenario == 0 || scenario == 14 || scenario == 15 || scenario == 16) {
       BOOST_CHECK(terminal == NativeRequestStatus::Succeeded);
       const auto result = handle.result(std::chrono::milliseconds(0));
       BOOST_CHECK(result.payload == std::vector<std::uint8_t>({42, 43}));
@@ -1475,6 +2295,44 @@ void runPublicClientScenario(int scenario)
     BOOST_CHECK(handle.status() == terminal);
     BOOST_CHECK(!user->hasPendingCall(id));
   }
+  if (verifyLateBootstrapRelease) {
+    // Exercise the actual fixture User/base teardown on a late worker,
+    // with no outer owner keeping either bootstrap resource alive.
+    // Client close can finish before its final queued Face callback releases
+    // the User. Drain that actual work within the existing fixture budget.
+    BOOST_REQUIRE(pumpUntil([&] { return user.use_count() == 1; }));
+    const std::weak_ptr<User> weakUser = user;
+    std::promise<void> parked;
+    std::promise<void> release;
+    auto parkedSignal = parked.get_future();
+    auto releaseSignal = release.get_future();
+    std::thread worker([held = std::move(user), signal = std::move(releaseSignal),
+                        &parked]() mutable {
+      parked.set_value();
+      signal.wait();
+      held.reset();
+    });
+    const auto ready = parkedSignal.wait_for(std::chrono::seconds(2));
+    const bool userAlive = !weakUser.expired();
+    const bool ownersAlive = !weakOwners.expired();
+    release.set_value();
+    worker.join();
+    BOOST_REQUIRE(ready == std::future_status::ready);
+    BOOST_CHECK(userAlive);
+    BOOST_CHECK(ownersAlive);
+    BOOST_CHECK(weakUser.expired());
+    BOOST_CHECK(weakOwners.expired());
+  }
+}
+
+void runPublicClientScenario(int scenario)
+{
+  runPublicClientScenario(scenario, false);
+}
+
+BOOST_AUTO_TEST_CASE(Spec197PublicClientBootstrapOwnersSurviveLateRelease)
+{
+  runPublicClientScenario(16, false, false, false, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbacks)
@@ -1485,6 +2343,41 @@ BOOST_AUTO_TEST_CASE(PublicClientCommitsSignedOfferAndIgnoresLateTerminalCallbac
 BOOST_AUTO_TEST_CASE(PublicClientConversationCommitsSeededReceiptAndCheckpoint)
 {
   runPublicClientScenario(13);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196PublicClientRejectsUnscopedProbeBeforeDispatch)
+{
+  runPublicClientScenario(14);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196PublicClientRejectsUnallowlistedRttBeforeDispatch)
+{
+  runPublicClientScenario(15);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196PublicClientDispatchesTargetedProbeAndPlansMergedSnapshot)
+{
+  runPublicClientScenario(16);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196PublicClientRejectsTargetedAuthorizationFromWrongSigner)
+{
+  runPublicClientScenario(16, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196PublicClientFallsBackAfterTargetedMeasurementTimeout)
+{
+  runPublicClientScenario(16, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196PublicClientIgnoresTargetedCompletionAfterCancellation)
+{
+  runPublicClientScenario(16, false, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196PublicClientFallsBackOnWrongMeasurementSigner)
+{
+  runPublicClientScenario(16, false, false, false, true);
 }
 
 BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
@@ -1576,6 +2469,132 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
       const auto core = seal(proposal);
       BOOST_CHECK_EQUAL(core.coreDigest, sample.at("core_digest").get<std::string>());
       if (sample.at("name") == "cpu") {
+        auto snapshotProposal = proposal;
+        auto snapshotInputs = inputs;
+        const auto expiry = input.context.deadlineMs;
+        BOOST_REQUIRE_GT(expiry, now);
+        const auto snapshotExpiry = now + (expiry - now) / 2;
+        BOOST_REQUIRE_GT(snapshotExpiry, now);
+        BOOST_REQUIRE_LT(snapshotExpiry, expiry);
+        auto& snapshotContext = snapshotProposal.context;
+        snapshotContext.requesterIdentity = "/spec182/requester";
+        for (const auto& offer : input.offers)
+          snapshotContext.candidateProviders.push_back(offer.observation().provider);
+        std::sort(snapshotContext.candidateProviders.begin(),
+                  snapshotContext.candidateProviders.end());
+        snapshotContext.candidateProviders.erase(std::unique(
+          snapshotContext.candidateProviders.begin(),
+          snapshotContext.candidateProviders.end()), snapshotContext.candidateProviders.end());
+        snapshotContext.candidateSetDigest = nativePlanningDigest(nativeCanonicalJson(
+          NativeJson(snapshotContext.candidateProviders)));
+        for (const auto& role : input.roles) {
+          snapshotContext.candidateArtifacts.push_back(NativeJson{
+            {"artifact_digest", role.artifactDigest},
+            {"model_manifest_digest", role.modelManifestDigest},
+            {"graph_digest", role.graphDigest}, {"role", role.role},
+            {"rank", role.rank}, {"backend", role.backend},
+            {"protection_epoch", role.protectionEpoch}});
+        }
+        std::sort(snapshotContext.candidateArtifacts.begin(),
+          snapshotContext.candidateArtifacts.end(), [](const auto& left, const auto& right) {
+            return nativeCanonicalJson(left) < nativeCanonicalJson(right);
+          });
+        snapshotContext.candidateArtifactSetDigest = nativePlanningDigest(
+          nativeCanonicalJson(NativeJson(snapshotContext.candidateArtifacts)));
+        snapshotContext.probeScopeDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+          {"schema", "ndnsf-di-placement-probe-scope-v1"},
+          {"request_id", snapshotContext.requestId},
+          {"attempt", snapshotContext.attempt},
+          {"requester_identity", snapshotContext.requesterIdentity},
+          {"deadline_ms", snapshotContext.deadlineMs},
+          {"service", snapshotContext.serviceName},
+          {"model_identity_hash", snapshotContext.modelDigest},
+          {"graph_digest", snapshotContext.graphDigest},
+          {"candidate_set_digest", snapshotContext.candidateSetDigest},
+          {"candidate_artifact_set_digest", snapshotContext.candidateArtifactSetDigest},
+          {"rtt_pairs", snapshotContext.allowedRttPairs},
+          {"goodput_edges", snapshotContext.allowedGoodputEdges}}));
+        NativeJson preparedRoles = NativeJson::array();
+        for (const auto& role : input.roles)
+          preparedRoles.push_back(nativeAssemblyJson(role));
+        NativeJson providerOffers = NativeJson::array();
+        for (const auto& offer : input.offers) {
+          const auto provider = offer.observation().provider;
+          providerOffers.push_back(NativeJson{
+            {"provider", provider}, {"signer_identity", provider},
+            {"signer_key_locator", provider + "/KEY/fixture/issuer/v=1"},
+            {"offer_digest", offer.observation().offerDigest},
+            {"ack_wire_digest", nativePlanningDigest("fixture-ack-" + provider)}});
+        }
+        std::sort(providerOffers.begin(), providerOffers.end(), [](const auto& left, const auto& right) {
+          return left.at("provider").template get<std::string>() <
+            right.at("provider").template get<std::string>();
+        });
+        NativeJson requesterSamples = NativeJson::array();
+        for (const auto& provider : snapshotContext.candidateProviders)
+          requesterSamples.push_back(NativeJson{{"provider", provider}, {"sample", nullptr}});
+        snapshotProposal.context.placementObservationSnapshot = NativeJson{
+          {"schema", "ndnsf-placement-observation-snapshot-v4"},
+          {"request_id", snapshotContext.requestId},
+          {"attempt", snapshotContext.attempt},
+          {"requester_identity", snapshotContext.requesterIdentity},
+          {"service", snapshotContext.serviceName},
+          {"model_digest", snapshotContext.modelDigest},
+          {"graph_digest", snapshotContext.graphDigest},
+          {"ack_closed_digest", proposal.ackClosedDigest},
+          {"candidate_set_digest", snapshotContext.candidateSetDigest},
+          {"candidate_artifact_set_digest", snapshotContext.candidateArtifactSetDigest},
+          {"probe_scope_digest", snapshotContext.probeScopeDigest},
+          {"candidate_artifacts", snapshotContext.candidateArtifacts},
+          {"provider_roster", snapshotContext.candidateProviders},
+          {"rtt_pairs", snapshotContext.allowedRttPairs},
+          {"goodput_edges", snapshotContext.allowedGoodputEdges},
+          {"prepared_role_graph", NativeJson::array({NativeJson{
+            {"candidate_digest", input.split.candidateDigest},
+            {"graph_digest", input.split.graphDigest},
+            {"node_roles", input.split.nodeRoles}, {"roles", preparedRoles},
+            {"dependencies", NativeJson::array()}}})},
+          {"requester_provider_samples", requesterSamples},
+          {"provider_offers", providerOffers},
+          {"eligible_link_observations", NativeJson::array()},
+          {"ineligible_link_observation_count", 0},
+          {"plan_deadline_ms", snapshotContext.deadlineMs},
+          {"captured_at_ms", now}, {"expires_at_ms", snapshotExpiry}};
+        snapshotProposal.context.placementObservationSnapshotDigest =
+          nativePlanningDigest(nativeCanonicalJson(
+            snapshotProposal.context.placementObservationSnapshot));
+        snapshotInputs.placementObservationSnapshotDigest =
+          snapshotProposal.context.placementObservationSnapshotDigest;
+        const auto snapshotCore = NativePlanSealer::sealCore(input.inspected,
+          input.split, snapshotProposal, execution, input.offers,
+          input.ackDigest, snapshotInputs);
+        BOOST_CHECK_EQUAL(snapshotCore.expiresAtMs, expiry);
+        BOOST_CHECK_EQUAL(snapshotCore.placementObservationSnapshotDigest,
+          snapshotInputs.placementObservationSnapshotDigest);
+        BOOST_CHECK(snapshotCore.coreDigest != core.coreDigest);
+        auto tamperedSnapshot = snapshotProposal;
+        tamperedSnapshot.context.placementObservationSnapshot["expires_at_ms"] = expiry - 1;
+        BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split,
+          tamperedSnapshot, execution, input.offers, input.ackDigest,
+          snapshotInputs), std::invalid_argument);
+        auto mismatchedExpiry = snapshotInputs;
+        mismatchedExpiry.expiresAtMs = expiry + 1;
+        BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split,
+          snapshotProposal, execution, input.offers, input.ackDigest,
+          mismatchedExpiry), std::invalid_argument);
+
+        auto expiredSnapshotProposal = snapshotProposal;
+        expiredSnapshotProposal.context.placementObservationSnapshot["expires_at_ms"] = now;
+        expiredSnapshotProposal.context.placementObservationSnapshotDigest =
+          nativePlanningDigest(nativeCanonicalJson(
+            expiredSnapshotProposal.context.placementObservationSnapshot));
+        auto expiredSnapshotInputs = snapshotInputs;
+        expiredSnapshotInputs.placementObservationSnapshotDigest =
+          expiredSnapshotProposal.context.placementObservationSnapshotDigest;
+        BOOST_CHECK_THROW(NativePlanSealer::sealCore(input.inspected, input.split,
+          expiredSnapshotProposal, execution, input.offers, input.ackDigest,
+          expiredSnapshotInputs), std::invalid_argument);
+
         const auto key = [](char value) {
           const std::string seed(32, value);
           return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
@@ -1839,5 +2858,1004 @@ BOOST_AUTO_TEST_CASE(RejectForeignSnapshotAndIncompleteRankCover)
   input.roles.pop_back();
   input.offers.push_back(input.offers[0]);
   BOOST_CHECK_THROW(strategy.proposeRoles(input.context, input.ackDigest, input.roles, input.offers, 200), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(Spec194ChirpOnlyReportsConservativeBoundWhenGapsDoNotExpand)
+{
+  const std::array<double, 3> sendGaps{8.0, 4.0, 2.0};
+  const std::array<std::uint64_t, 4> wireBytes{4096, 4096, 4096, 4096};
+  const auto clear = estimateNativeChirpBandwidthV4(
+    sendGaps, sendGaps, wireBytes, true, true);
+  BOOST_CHECK_EQUAL(clear.status, "LOWER_BOUND_ONLY");
+  BOOST_CHECK_EQUAL(clear.reason, "NO_OBSERVED_GAP_EXPANSION");
+  BOOST_REQUIRE(clear.lowerMbps);
+  BOOST_CHECK_CLOSE(*clear.lowerMbps, 16.384, 1e-9);
+  BOOST_CHECK(!clear.upperMbps);
+
+  const auto expanded = estimateNativeChirpBandwidthV4(
+    sendGaps, std::array<double, 3>{8.0, 5.2, 2.0}, wireBytes, true, true);
+  BOOST_CHECK_EQUAL(expanded.status, "UNKNOWN");
+  BOOST_CHECK_EQUAL(expanded.reason, "PROVIDER_DELAY_AMBIGUOUS");
+  BOOST_CHECK(!expanded.lowerMbps);
+  BOOST_CHECK(!expanded.upperMbps);
+
+  const auto invalid = estimateNativeChirpBandwidthV4(
+    sendGaps, sendGaps, wireBytes, true, false);
+  BOOST_CHECK_EQUAL(invalid.reason, "INCOMPLETE_OR_INVALID_SIGNATURE");
+  BOOST_CHECK(!invalid.lowerMbps);
+}
+
+BOOST_AUTO_TEST_CASE(Spec194V4FallbackKeepsACompleteValidatedBaselineAssignment)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[0]);
+  const NativeObservationAwarePlacementV4 strategy;
+  const auto proposal = strategy.proposeRoles(
+    input.context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_CHECK_EQUAL(proposal.strategy.name, "native-observation-aware-v4");
+  BOOST_REQUIRE(proposal.placementDecisionV4);
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("fallback_reason").get<std::string>(),
+                    "SNAPSHOT_UNAVAILABLE");
+  BOOST_CHECK(proposal.placementDecisionV4->at("snapshot_digest").is_null());
+  BOOST_REQUIRE_EQUAL(proposal.roles.size(), input.roles.size());
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(
+    proposal, input.roles, input.offers, 200));
+
+  auto tampered = proposal;
+  tampered.placementDecisionV4->at("selected_assignments")[0]["provider"] = "/provider/foreign";
+  BOOST_CHECK_THROW(validateNativeRolePlacement(
+    tampered, input.roles, input.offers, 200), std::invalid_argument);
+  BOOST_CHECK_EQUAL(strategy.identity().configurationDigest,
+                    NativeObservationAwarePlacementV4().identity().configurationDigest);
+  BOOST_CHECK_NE(strategy.identity().configurationDigest,
+                 NativeObservationAwarePlacementV4(16, 2048).identity().configurationDigest);
+}
+
+BOOST_AUTO_TEST_CASE(Spec194V4FallbackUsesFreshAuthenticatedNonNetworkOfferFacts)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[0]);
+  const NativeObservationAwarePlacementV4 strategy;
+  const auto proposalFor = [&](NativeJson snapshot) {
+    input.context.placementObservationSnapshot = std::move(snapshot);
+    input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+      nativeCanonicalJson(input.context.placementObservationSnapshot));
+    return strategy.proposeRoles(
+      input.context, input.ackDigest, input.roles, input.offers, 200);
+  };
+  const auto forceBaseline = [&](NativeJson& snapshot) {
+    snapshot["prepared_role_graph"] = NativeJson::array();
+  };
+  const auto setKnownEmpty = [&](NativeJson& snapshot) {
+    for (auto& offer : snapshot["provider_offers"]) {
+      offer["values"]["residency_state"] = "KNOWN_EMPTY";
+      offer["values"]["residency"] = NativeJson::array();
+    }
+  };
+  const auto setQueueDepth = [](NativeJson& offer, std::uint64_t depth) {
+    auto& values = offer["values"];
+    values["capacity_state"] = "OBSERVED";
+    values["capacity"]["ready_queue_depth"] = depth;
+    values["capacity"]["ready_queue_capacity"] = depth;
+    values["queue_depth"] = depth;
+  };
+
+  auto residencySnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(residencySnapshot);
+  residencySnapshot["provider_offers"][0]["values"]["residency_state"] = "KNOWN_EMPTY";
+  residencySnapshot["provider_offers"][0]["values"]["residency"] = NativeJson::array();
+  const auto residencyProposal = proposalFor(residencySnapshot);
+  BOOST_REQUIRE(residencyProposal.placementDecisionV4);
+  BOOST_CHECK_EQUAL(residencyProposal.placementDecisionV4->at("fallback_reason").get<std::string>(),
+                    "PREPARED_ROLE_GRAPH_MISSING");
+  BOOST_CHECK_EQUAL(residencyProposal.providerByRole.begin()->second, "/provider/b");
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(
+    residencyProposal, input.roles, input.offers, 200));
+
+  auto knownMissSnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(knownMissSnapshot);
+  for (auto& offer : knownMissSnapshot["provider_offers"]) {
+    const bool preferred = offer.at("provider") == "/provider/b";
+    for (auto& row : offer["values"]["residency"]) {
+      row["state"] = "KNOWN_MISS";
+      row["runtime_generation"] = nullptr;
+      row["estimated_assembly_ms"] = preferred ? 1.0 : 50.0;
+      row["estimated_load_ms"] = preferred ? 1.0 : 50.0;
+    }
+  }
+  const auto knownMissProposal = proposalFor(knownMissSnapshot);
+  BOOST_CHECK_EQUAL(knownMissProposal.providerByRole.begin()->second, "/provider/b");
+
+  auto queueSnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(queueSnapshot);
+  setKnownEmpty(queueSnapshot);
+  setQueueDepth(queueSnapshot["provider_offers"][0], 20);
+  setQueueDepth(queueSnapshot["provider_offers"][1], 0);
+  const auto queueProposal = proposalFor(queueSnapshot);
+  BOOST_CHECK_EQUAL(queueProposal.providerByRole.begin()->second, "/provider/b");
+
+  auto waitSnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(waitSnapshot);
+  setKnownEmpty(waitSnapshot);
+  for (auto& offer : waitSnapshot["provider_offers"]) {
+    offer["values"]["capacity_state"] = "UNKNOWN";
+    offer["values"]["capacity"] = nullptr;
+    offer["values"]["queue_depth"] = nullptr;
+    offer["values"]["estimated_wait_ms"] =
+      offer.at("provider") == "/provider/a" ? 20.0 : 1.0;
+  }
+  const auto waitProposal = proposalFor(waitSnapshot);
+  BOOST_CHECK_EQUAL(waitProposal.providerByRole.begin()->second, "/provider/b");
+
+  auto unknownResidencySnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(unknownResidencySnapshot);
+  for (auto& offer : unknownResidencySnapshot["provider_offers"]) {
+    if (offer.at("provider") == "/provider/a") {
+      offer["values"]["residency_state"] = "UNKNOWN";
+      offer["values"]["residency"] = nullptr;
+      continue;
+    }
+    for (auto& row : offer["values"]["residency"]) {
+      row["state"] = "KNOWN_MISS";
+      row["runtime_generation"] = nullptr;
+      row["estimated_assembly_ms"] = 50.0;
+      row["estimated_load_ms"] = 50.0;
+    }
+  }
+  const auto unknownResidencyProposal = proposalFor(unknownResidencySnapshot);
+  BOOST_CHECK_EQUAL(unknownResidencyProposal.providerByRole.begin()->second, "/provider/b");
+
+  auto unknownQueueSnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(unknownQueueSnapshot);
+  setKnownEmpty(unknownQueueSnapshot);
+  unknownQueueSnapshot["provider_offers"][0]["values"]["capacity_state"] = "UNKNOWN";
+  unknownQueueSnapshot["provider_offers"][0]["values"]["capacity"] = nullptr;
+  unknownQueueSnapshot["provider_offers"][0]["values"]["queue_depth"] = nullptr;
+  setQueueDepth(unknownQueueSnapshot["provider_offers"][1], 5);
+  const auto unknownQueueProposal = proposalFor(unknownQueueSnapshot);
+  BOOST_CHECK_EQUAL(unknownQueueProposal.providerByRole.begin()->second, "/provider/b");
+
+  auto unknownWaitSnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(unknownWaitSnapshot);
+  setKnownEmpty(unknownWaitSnapshot);
+  for (auto& offer : unknownWaitSnapshot["provider_offers"]) {
+    offer["values"]["capacity_state"] = "UNKNOWN";
+    offer["values"]["capacity"] = nullptr;
+    offer["values"]["queue_depth"] = nullptr;
+    offer["values"]["estimated_wait_ms"] = nullptr;
+    if (offer.at("provider") == "/provider/b")
+      offer["values"]["estimated_wait_ms"] = 5.0;
+  }
+  const auto unknownWaitProposal = proposalFor(unknownWaitSnapshot);
+  BOOST_CHECK_EQUAL(unknownWaitProposal.providerByRole.begin()->second, "/provider/b");
+
+  auto allUnknownSnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(allUnknownSnapshot);
+  for (auto& offer : allUnknownSnapshot["provider_offers"]) {
+    offer["values"]["residency_state"] = "UNKNOWN";
+    offer["values"]["residency"] = nullptr;
+    offer["values"]["capacity_state"] = "UNKNOWN";
+    offer["values"]["capacity"] = nullptr;
+    offer["values"]["queue_depth"] = nullptr;
+    offer["values"]["estimated_wait_ms"] = nullptr;
+  }
+  const auto unknownProposal = proposalFor(allUnknownSnapshot);
+  BOOST_CHECK_EQUAL(unknownProposal.providerByRole.begin()->second, "/provider/a");
+
+  auto unauthenticatedSnapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(nullptr), false);
+  forceBaseline(unauthenticatedSnapshot);
+  unauthenticatedSnapshot["provider_offers"][0]["values"]["residency_state"] = "KNOWN_EMPTY";
+  unauthenticatedSnapshot["provider_offers"][0]["values"]["residency"] = NativeJson::array();
+  unauthenticatedSnapshot["provider_offers"][1]["signer_identity"] = "/provider/attacker";
+  const auto unauthenticatedProposal = proposalFor(unauthenticatedSnapshot);
+  BOOST_CHECK_EQUAL(unauthenticatedProposal.providerByRole.begin()->second, "/provider/a");
+}
+
+BOOST_AUTO_TEST_CASE(Spec194V4RanksCompleteAssignmentsByObservedControlPath)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[0]);
+  auto context = input.context;
+  context.requesterIdentity = "/requester";
+  NativeJson providerOffers = NativeJson::array();
+  NativeJson requesterSamples = NativeJson::array();
+  for (const auto& admitted : input.offers) {
+    const auto& offer = admitted.observation();
+    const auto& role = input.roles.front();
+    auto backend = role.backend;
+    const auto& suffix = offer.devices.empty() ? "-cpu" : "-cuda";
+    if (std::find(offer.backends.begin(), offer.backends.end(), backend + suffix) !=
+        offer.backends.end())
+      backend += suffix;
+    constexpr double waitMs = 0.0;
+    providerOffers.push_back(NativeJson{
+      {"provider", offer.provider}, {"boot_epoch", offer.bootEpoch},
+      {"captured_at_ms", std::uint64_t{190}},
+      {"expires_at_ms", context.deadlineMs},
+      {"offer_digest", offer.offerDigest}, {"signer_identity", offer.provider},
+      {"signer_key_locator", offer.provider + "/KEY/fixture/issuer/v=1"},
+      {"ack_wire_digest", "sha256:" + std::string(64, '1')},
+      {"values", NativeJson{
+        {"queue_depth", std::uint64_t{0}}, {"estimated_wait_ms", waitMs},
+        {"residency_state", "OBSERVED"},
+        {"residency", NativeJson::array({NativeJson{
+          {"artifact_digest", role.artifactDigest}, {"role", role.role},
+          {"rank", role.rank}, {"model_manifest_digest", role.modelManifestDigest},
+          {"graph_digest", role.graphDigest}, {"backend", backend},
+          {"device_set", role.deviceSet}, {"protection_epoch", role.protectionEpoch},
+          {"state", "EXACT_LOADED"}, {"process_epoch", offer.bootEpoch},
+          {"captured_at_ms", std::uint64_t{190}},
+          {"expires_at_ms", context.deadlineMs},
+          {"runtime_generation", "fixture-runtime"},
+          {"missing_verified_bytes", std::uint64_t{0}},
+          {"estimated_assembly_ms", nullptr}, {"estimated_load_ms", nullptr}}})}}}});
+    const auto rttMs = offer.provider == "/provider/a" ? 10.0 : 3.0;
+    requesterSamples.push_back(NativeJson{
+      {"provider", offer.provider},
+      {"sample", NativeJson{{"provider", offer.provider}, {"service", offer.service},
+        {"kind", "ACK_RTT"}, {"rtt_ms", rttMs}, {"observed_at_ms", std::uint64_t{190}},
+        {"peer_boot_epoch", offer.bootEpoch}}}});
+  }
+  NativeJson preparedRoles = NativeJson::array();
+  for (const auto& role : input.roles)
+    preparedRoles.push_back(nativeAssemblyJson(role));
+  context.placementObservationSnapshot = NativeJson{
+    {"schema", "ndnsf-placement-observation-snapshot-v4"},
+    {"request_id", context.requestId}, {"attempt", context.attempt},
+    {"requester_identity", context.requesterIdentity}, {"service", context.serviceName},
+    {"model_digest", context.modelDigest}, {"graph_digest", context.graphDigest},
+    {"ack_closed_digest", input.ackDigest}, {"provider_roster", {"/provider/a", "/provider/b"}},
+    {"prepared_role_graph", NativeJson::array({NativeJson{
+      {"candidate_digest", input.split.candidateDigest},
+      {"graph_digest", input.split.graphDigest}, {"node_roles", input.split.nodeRoles},
+      {"stage_order", input.split.executionPlan.roles}, {"roles", preparedRoles},
+      {"dependencies", NativeJson::array()}}})},
+    {"provider_offers", providerOffers}, {"requester_provider_samples", requesterSamples},
+    {"eligible_link_observations", NativeJson::array()},
+    {"captured_at_ms", std::uint64_t{190}}, {"expires_at_ms", context.deadlineMs}};
+  context.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(context.placementObservationSnapshot));
+
+  const auto proposal = NativeObservationAwarePlacementV4().proposeRoles(
+    context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE(proposal.placementDecisionV4);
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("status").get<std::string>(), "SCORED");
+  BOOST_CHECK_EQUAL(proposal.providerByRole.begin()->second, "/provider/b");
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("control_path_ms").get<double>(), 3.0);
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("data_flow_critical_path_ms").get<double>(), 0.0);
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("score_ms").get<double>(), 3.0);
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, input.roles, input.offers, 200));
+
+  Input sealInput(f, f.at("seal_cases")[0]);
+  auto fallbackContext = sealInput.context;
+  fallbackContext.requesterIdentity = "/requester";
+  const auto fallbackProposal = NativeObservationAwarePlacementV4().proposeRoles(
+    fallbackContext, sealInput.ackDigest, sealInput.roles, sealInput.offers, 200);
+  BOOST_REQUIRE(fallbackProposal.placementDecisionV4);
+  BOOST_CHECK_EQUAL(fallbackProposal.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  const auto sealedWithDecision = sealV4Proposal(sealInput, fallbackProposal);
+  auto withoutDecision = fallbackProposal;
+  withoutDecision.placementDecisionV4.reset();
+  const auto sealedWithoutDecision = sealV4Proposal(sealInput, withoutDecision);
+  BOOST_CHECK_NE(sealedWithDecision.coreDigest, sealedWithoutDecision.coreDigest);
+
+  const auto repeated = NativeObservationAwarePlacementV4().proposeRoles(
+    context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_CHECK_EQUAL(nativeCanonicalJson(*proposal.placementDecisionV4),
+                    nativeCanonicalJson(*repeated.placementDecisionV4));
+
+  auto tiedContext = context;
+  for (auto& peerSample : tiedContext.placementObservationSnapshot["requester_provider_samples"])
+    peerSample["sample"]["rtt_ms"] = 5.0;
+  tiedContext.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(tiedContext.placementObservationSnapshot));
+  const auto tied = NativeObservationAwarePlacementV4().proposeRoles(
+    tiedContext, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE(tied.placementDecisionV4);
+  BOOST_CHECK_EQUAL(tied.placementDecisionV4->at("score_ms").get<double>(), 5.0);
+  BOOST_CHECK_EQUAL(tied.providerByRole.begin()->second, "/provider/a");
+
+  const auto bounded = NativeObservationAwarePlacementV4(32, 2).proposeRoles(
+    context, input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE(bounded.placementDecisionV4);
+  BOOST_CHECK_EQUAL(bounded.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(bounded.placementDecisionV4->at("fallback_reason").get<std::string>(),
+                    "MAX_ASSIGNMENT_STATES");
+  BOOST_CHECK_EQUAL(bounded.roles.size(), input.roles.size());
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(bounded, input.roles, input.offers, 200));
+
+  const ExtensionControl exhaustedPolicy{
+    std::chrono::steady_clock::now() - std::chrono::milliseconds(1), [] { return false; }};
+  const auto timedOut = NativeObservationAwarePlacementV4().proposeRoles(
+    context, input.ackDigest, input.roles, input.offers, 200, exhaustedPolicy);
+  BOOST_REQUIRE(timedOut.placementDecisionV4);
+  BOOST_CHECK_EQUAL(timedOut.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(timedOut.placementDecisionV4->at("fallback_reason").get<std::string>(),
+                    "POLICY_BUDGET_EXHAUSTED");
+  BOOST_CHECK_EQUAL(timedOut.roles.size(), input.roles.size());
+
+  auto requestDeadlineContext = context;
+  requestDeadlineContext.deadlineMs = 201;
+  requestDeadlineContext.placementObservationSnapshot["expires_at_ms"] = 201;
+  requestDeadlineContext.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(requestDeadlineContext.placementObservationSnapshot));
+  const ExtensionControl requestDeadline{
+    std::chrono::steady_clock::now() + std::chrono::milliseconds(1), [] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      return false;
+    }};
+  BOOST_CHECK_EXCEPTION(
+    NativeObservationAwarePlacementV4().proposeRoles(
+      requestDeadlineContext, input.ackDigest, input.roles, input.offers, 200,
+      requestDeadline),
+    std::runtime_error,
+    [] (const std::runtime_error& error) {
+      return std::string(error.what()) == "native placement request deadline exceeded";
+    });
+}
+
+BOOST_AUTO_TEST_CASE(Spec194V4PricesDirectedTransferAndKeepsUnknownInputsUnavailable)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  const NativeObservationAwarePlacementV4 strategy;
+  const auto estimatedBytes = NativeJson(std::uint64_t{1'000'000});
+  const auto baseSnapshot = makeV4PlacementSnapshot(
+    input, input.roles, estimatedBytes, true);
+  const auto decide = [&] (NativeJson snapshot) {
+    input.context.placementObservationSnapshot = std::move(snapshot);
+    input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+      nativeCanonicalJson(input.context.placementObservationSnapshot));
+    return strategy.proposeRoles(input.context, input.ackDigest, input.roles,
+                                 input.offers, 200);
+  };
+
+  const auto scored = decide(baseSnapshot);
+  BOOST_REQUIRE(scored.placementDecisionV4);
+  BOOST_CHECK_EQUAL(scored.placementDecisionV4->at("status").get<std::string>(), "SCORED");
+  const auto producerKey = input.roles.front().role + "#" +
+    std::to_string(input.roles.front().rank);
+  const auto consumerKey = input.roles.back().role + "#"+
+    std::to_string(input.roles.back().rank);
+  BOOST_CHECK_EQUAL(scored.providerByRole.at(producerKey), "/provider/a");
+  BOOST_CHECK_EQUAL(scored.providerByRole.at(consumerKey), "/provider/b");
+  BOOST_CHECK_EQUAL(scored.placementDecisionV4->at("control_path_ms").get<double>(), 10.0);
+  BOOST_CHECK_EQUAL(scored.placementDecisionV4->at("data_flow_critical_path_ms").get<double>(), 1000.0);
+  BOOST_CHECK_EQUAL(scored.placementDecisionV4->at("score_ms").get<double>(), 1010.0);
+  BOOST_REQUIRE_EQUAL(scored.placementDecisionV4->at("edge_costs").size(), 1U);
+  BOOST_CHECK_EQUAL(scored.placementDecisionV4->at("edge_costs")[0]
+    .at("rate_method").get<std::string>(), "ACTIVE_PROBE_GOODPUT");
+  BOOST_CHECK_EQUAL(scored.placementDecisionV4->at("edge_costs")[0]
+    .at("transfer_ms").get<double>(), 1000.0);
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(
+    scored, input.roles, input.offers, 200));
+
+  auto stageEndpointSnapshot = baseSnapshot;
+  stageEndpointSnapshot["prepared_role_graph"][0]["dependencies"][0]["producer_role"] =
+    input.roles.front().role;
+  stageEndpointSnapshot["prepared_role_graph"][0]["dependencies"][0]["consumer_role"] =
+    input.roles.back().role;
+  const auto sameStageEdge = decide(std::move(stageEndpointSnapshot));
+  BOOST_REQUIRE(sameStageEdge.placementDecisionV4);
+  BOOST_CHECK_EQUAL(sameStageEdge.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(sameStageEdge.placementDecisionV4->at("fallback_reason").get<std::string>(),
+                    "ROLE_DAG_NOT_TOPOLOGICAL");
+
+  auto reversedRankEdgeSnapshot = baseSnapshot;
+  reversedRankEdgeSnapshot["prepared_role_graph"][0]["dependencies"][0]["producer_role"] =
+    consumerKey;
+  reversedRankEdgeSnapshot["prepared_role_graph"][0]["dependencies"][0]["consumer_role"] =
+    producerKey;
+  const auto reversedRankEdge = decide(std::move(reversedRankEdgeSnapshot));
+  BOOST_REQUIRE(reversedRankEdge.placementDecisionV4);
+  BOOST_CHECK_EQUAL(reversedRankEdge.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(reversedRankEdge.placementDecisionV4->at("fallback_reason").get<std::string>(),
+                    "ROLE_DAG_NOT_TOPOLOGICAL");
+
+  auto activeProbeSnapshot = baseSnapshot;
+  auto& activeRow = activeProbeSnapshot["eligible_link_observations"][0]["row"];
+  activeRow["kind"] = "ACTIVE_PROBE_GOODPUT";
+  activeRow["payload_bytes"] = std::uint64_t{8192};
+  activeRow["elapsed_ms"] = 8.192;
+  activeRow["probe_complete"] = true;
+  activeRow["probe_segments_sent"] = std::uint64_t{16};
+  activeRow["probe_profile_digest"] = ndn_service_framework::NETWORK_PROBE_TRAIN_PROFILE_DIGEST;
+  activeRow["probe_signature_valid"] = true;
+  activeRow["probe_interest_gaps_ms"] = NativeJson(std::vector<double>(15, 0.01));
+  activeRow["probe_data_arrival_gaps_ms"] = NativeJson(std::vector<double>(15, 4.096));
+  activeRow["probe_data_wire_bytes"] = NativeJson::array(
+    {std::uint64_t{4096}, std::uint64_t{4096}, std::uint64_t{4096}, std::uint64_t{4096}});
+  const auto activeScored = decide(std::move(activeProbeSnapshot));
+  BOOST_REQUIRE(activeScored.placementDecisionV4);
+  BOOST_CHECK_EQUAL(activeScored.placementDecisionV4->at("status").get<std::string>(), "SCORED");
+  BOOST_CHECK_EQUAL(activeScored.placementDecisionV4->at("edge_costs")[0]
+    .at("rate_method").get<std::string>(), "ACTIVE_PROBE_GOODPUT");
+  BOOST_CHECK_EQUAL(activeScored.placementDecisionV4->at("score_ms").get<double>(), 1010.0);
+
+  auto invalidSignatureSnapshot = baseSnapshot;
+  auto& invalidSignatureRow =
+    invalidSignatureSnapshot["eligible_link_observations"][0]["row"];
+  invalidSignatureRow["kind"] = "ACTIVE_PROBE_GOODPUT";
+  invalidSignatureRow["payload_bytes"] = std::uint64_t{8192};
+  invalidSignatureRow["elapsed_ms"] = 8.192;
+  invalidSignatureRow["probe_complete"] = true;
+  invalidSignatureRow["probe_segments_sent"] = std::uint64_t{4};
+  invalidSignatureRow["probe_profile_digest"] =
+    nativePlanningDigest("fixture-v4-probe-profile");
+  invalidSignatureRow["probe_signature_valid"] = false;
+  invalidSignatureRow["probe_interest_gaps_ms"] = NativeJson(std::vector<double>(15, 0.01));
+  invalidSignatureRow["probe_data_arrival_gaps_ms"] = NativeJson(std::vector<double>(15, 0.01));
+  invalidSignatureRow["probe_data_wire_bytes"] = NativeJson::array(
+    {std::uint64_t{4096}, std::uint64_t{4096}, std::uint64_t{4096}, std::uint64_t{4096}});
+  const auto invalidSignatureScored = decide(std::move(invalidSignatureSnapshot));
+  BOOST_REQUIRE(invalidSignatureScored.placementDecisionV4);
+  BOOST_CHECK_EQUAL(invalidSignatureScored.placementDecisionV4->at("status")
+                      .get<std::string>(), "BASELINE_FALLBACK");
+
+  auto unknownBytesSnapshot = baseSnapshot;
+  unknownBytesSnapshot["prepared_role_graph"][0]["dependencies"][0]["estimated_bytes"] = nullptr;
+  unknownBytesSnapshot["prepared_role_graph"][0]["dependencies"][0]["estimated_bytes_source"] = nullptr;
+  const auto unknownBytes = decide(std::move(unknownBytesSnapshot));
+  BOOST_REQUIRE(unknownBytes.placementDecisionV4);
+  BOOST_CHECK_EQUAL(unknownBytes.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(unknownBytes.placementDecisionV4->at("fallback_reason").get<std::string>(),
+                    "TRANSFER_BYTES_UNKNOWN");
+  BOOST_CHECK_EQUAL(unknownBytes.roles.size(), input.roles.size());
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(
+    unknownBytes, input.roles, input.offers, 200));
+
+  auto unknownRateSnapshot = baseSnapshot;
+  unknownRateSnapshot["eligible_link_observations"] = NativeJson::array();
+  const auto unknownRate = decide(std::move(unknownRateSnapshot));
+  BOOST_REQUIRE(unknownRate.placementDecisionV4);
+  BOOST_CHECK_EQUAL(unknownRate.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(unknownRate.placementDecisionV4->at("fallback_reason").get<std::string>(),
+                    "TRANSFER_RATE_UNKNOWN");
+  BOOST_CHECK_EQUAL(unknownRate.roles.size(), input.roles.size());
+}
+
+BOOST_AUTO_TEST_CASE(Spec196NetworkOnlyScoresColdCacheWithoutInventingPreparation)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  const NativeObservationAwarePlacementV4 network(32, 4096, "network-only");
+  const NativeObservationAwarePlacementV4 combined;
+  BOOST_CHECK_NE(network.identity().configurationDigest,
+                 combined.identity().configurationDigest);
+  BOOST_CHECK_THROW(NativeObservationAwarePlacementV4(32, 4096, "unknown"),
+                    std::invalid_argument);
+  auto snapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(std::uint64_t{1'000'000}), true);
+  for (auto& offer : snapshot["provider_offers"]) {
+    offer["values"]["residency_state"] = "KNOWN_EMPTY";
+    offer["values"]["residency"] = NativeJson::array();
+    offer["values"]["estimated_wait_ms"] = 1000.0;
+  }
+  const auto decide = [&](const NativeObservationAwarePlacementV4& policy,
+                          const NativeJson& facts) {
+    input.context.placementObservationSnapshot = facts;
+    input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+      nativeCanonicalJson(facts));
+    return policy.proposeRoles(input.context, input.ackDigest, input.roles,
+                               input.offers, 200);
+  };
+  const auto scored = decide(network, snapshot);
+  BOOST_REQUIRE(scored.placementDecisionV4);
+  const auto& decision = *scored.placementDecisionV4;
+  BOOST_CHECK_EQUAL(decision.at("status").get<std::string>(), "SCORED");
+  BOOST_CHECK_EQUAL(decision.at("score_mode").get<std::string>(), "network-only");
+  BOOST_CHECK(!decision.at("score_is_end_to_end_latency").get<bool>());
+  BOOST_CHECK_EQUAL(decision.at("score_ms").get<double>(), 1010.0);
+  BOOST_CHECK_EQUAL(decision.at("data_flow_critical_path_ms").get<double>(), 1000.0);
+  for (const auto& assignment : decision.at("selected_assignments")) {
+    BOOST_CHECK(assignment.at("preparation_ms").is_null());
+    BOOST_CHECK_EQUAL(assignment.at("queue_wait_ms").get<double>(), 1000.0);
+  }
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(
+    scored, input.roles, input.offers, 200));
+  const auto fallback = decide(combined, snapshot);
+  BOOST_REQUIRE(fallback.placementDecisionV4);
+  BOOST_CHECK_EQUAL(fallback.placementDecisionV4->at("fallback_reason")
+                    .get<std::string>(), "PREPARATION_COST_UNKNOWN");
+
+  auto known = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(std::uint64_t{1'000'000}), true);
+  for (auto& offer : known["provider_offers"]) {
+    offer["values"]["estimated_wait_ms"] = 1000.0;
+    for (auto& row : offer["values"]["residency"]) {
+      row["state"] = "KNOWN_MISS";
+      row["estimated_assembly_ms"] = 10.0;
+      row["estimated_load_ms"] = 20.0;
+    }
+  }
+  const auto knownNetwork = decide(network, known);
+  const auto knownCombined = decide(combined, known);
+  BOOST_REQUIRE(knownNetwork.placementDecisionV4);
+  BOOST_REQUIRE(knownCombined.placementDecisionV4);
+  BOOST_CHECK_EQUAL(knownNetwork.placementDecisionV4->at("score_ms").get<double>(), 1010.0);
+  BOOST_CHECK_EQUAL(knownCombined.placementDecisionV4->at("score_ms").get<double>(), 3070.0);
+
+  input.context.placementProbeRoundCompleted = true;
+  auto unavailable = snapshot;
+  unavailable["eligible_link_observations"] = NativeJson::array();
+  const auto missingRate = decide(network, unavailable);
+  BOOST_REQUIRE(missingRate.placementDecisionV4);
+  BOOST_CHECK_EQUAL(missingRate.placementDecisionV4->at("fallback_reason")
+                    .get<std::string>(), "TRANSFER_RATE_UNKNOWN");
+  unavailable = snapshot;
+  unavailable["prepared_role_graph"][0]["dependencies"][0]["estimated_bytes"] = nullptr;
+  const auto missingBytes = decide(network, unavailable);
+  BOOST_REQUIRE(missingBytes.placementDecisionV4);
+  BOOST_CHECK_EQUAL(missingBytes.placementDecisionV4->at("fallback_reason")
+                    .get<std::string>(), "TRANSFER_BYTES_UNKNOWN");
+}
+
+BOOST_AUTO_TEST_CASE(Spec197DecisionReportsTrainGoodputWithoutCapacityBounds)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  auto snapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(std::uint64_t{1'000'000}), true);
+  // Force the existing stale-snapshot exit to inspect the same production
+  // diagnostic builder without depending on assignment search choices.
+  snapshot["expires_at_ms"] = std::uint64_t{199};
+  const auto inspect = [&] {
+    input.context.placementObservationSnapshot = snapshot;
+    input.context.placementObservationSnapshotDigest =
+      nativePlanningDigest(nativeCanonicalJson(snapshot));
+    const auto proposal = NativeObservationAwarePlacementV4(32, 4096, "network-only")
+      .proposeRoles(input.context, input.ackDigest, input.roles, input.offers, 200);
+    BOOST_REQUIRE(proposal.placementDecisionV4);
+    const auto& decision = *proposal.placementDecisionV4;
+    BOOST_CHECK(!decision.contains("chirp_estimates"));
+    BOOST_REQUIRE_EQUAL(decision.at("probe_train_estimates").size(), 1U);
+    return decision.at("probe_train_estimates")[0];
+  };
+  auto estimate = inspect();
+  BOOST_CHECK_EQUAL(estimate.at("status").get<std::string>(), "MEASURED_GOODPUT");
+  BOOST_CHECK_CLOSE(estimate.at("goodput_mbps").get<double>(), 8.0, 0.0001);
+  BOOST_CHECK_EQUAL(estimate.at("capacity_status").get<std::string>(), "UNKNOWN");
+  BOOST_CHECK(!estimate.contains("lower_mbps"));
+  BOOST_CHECK(!estimate.contains("upper_mbps"));
+  auto& row = snapshot["eligible_link_observations"][0]["row"];
+  row["probe_data_arrival_gaps_ms"] = NativeJson(std::vector<double>(15, 0.04));
+  row["probe_rate_status"] = "UNKNOWN";
+  row["probe_rate_reason"] = "CLOCK_RESOLUTION";
+  row["probe_train_goodput_mbps"] = nullptr;
+  estimate = inspect();
+  BOOST_CHECK_EQUAL(estimate.at("status").get<std::string>(), "UNKNOWN");
+  BOOST_CHECK_EQUAL(estimate.at("reason").get<std::string>(), "CLOCK_RESOLUTION");
+  BOOST_CHECK(estimate.at("goodput_mbps").is_null());
+  BOOST_CHECK_EQUAL(estimate.at("capacity_status").get<std::string>(), "UNKNOWN");
+  row["probe_profile_digest"] = "legacy-profile";
+  estimate = inspect();
+  BOOST_CHECK_EQUAL(estimate.at("status").get<std::string>(), "UNKNOWN");
+  BOOST_CHECK_EQUAL(estimate.at("reason").get<std::string>(), "PROBE_PROFILE_INVALID");
+}
+
+BOOST_AUTO_TEST_CASE(Spec197DataFetchCannotScoreOrSuppressDedicatedProbe)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  input.context.candidateProviders = {"/provider/a", "/provider/b"};
+  input.context.allowedGoodputEdges = {
+    NativeJson{{"src_provider", "/provider/a"}, {"dst_provider", "/provider/b"}},
+    NativeJson{{"src_provider", "/provider/b"}, {"dst_provider", "/provider/a"}}};
+  input.context.allowedRttPairs = input.context.allowedGoodputEdges;
+  auto snapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(std::uint64_t{1'000'000}), true);
+  BOOST_REQUIRE_EQUAL(snapshot["eligible_link_observations"].size(), 2U);
+  snapshot["eligible_link_observations"].erase(
+    snapshot["eligible_link_observations"].begin());
+  BOOST_CHECK_EQUAL(snapshot["eligible_link_observations"][0]["row"]
+    .at("kind").get<std::string>(), "DATA_FETCH");
+  for (const bool cold : {true, false}) {
+    auto cacheSnapshot = snapshot;
+    for (auto& offer : cacheSnapshot["provider_offers"]) {
+      if (cold) {
+        offer["values"]["residency_state"] = "KNOWN_EMPTY";
+        offer["values"]["residency"] = NativeJson::array();
+      }
+      else {
+        BOOST_REQUIRE_EQUAL(offer["values"]["residency_state"].get<std::string>(),
+                            "OBSERVED");
+        BOOST_REQUIRE(!offer["values"]["residency"].empty());
+        for (const auto& entry : offer["values"]["residency"])
+          BOOST_CHECK_EQUAL(entry.at("state").get<std::string>(), "EXACT_LOADED");
+      }
+    }
+    input.context.placementObservationSnapshot = cacheSnapshot;
+    input.context.placementObservationSnapshotDigest =
+      nativePlanningDigest(nativeCanonicalJson(cacheSnapshot));
+    const auto proposal = NativeObservationAwarePlacementV4(32, 4096, "network-only")
+      .proposeRoles(input.context, input.ackDigest, input.roles, input.offers, 200);
+    BOOST_REQUIRE(proposal.placementProbeIntent);
+    BOOST_REQUIRE_EQUAL(proposal.placementProbeIntent->observers.size(), 1U);
+    BOOST_CHECK_EQUAL(proposal.placementProbeIntent->observers.front().goodputEdges.size(), 1U);
+    BOOST_CHECK(!proposal.placementDecisionV4 ||
+      proposal.placementDecisionV4->at("status") != "SCORED");
+  }
+}
+
+BOOST_AUTO_TEST_CASE(Spec196PlacementRequestsOnlyItsMissingDirectedGoodputEdges)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  input.context.candidateProviders = {"/provider/a", "/provider/b"};
+  input.context.allowedGoodputEdges = {
+    NativeJson{{"src_provider", "/provider/a"},
+               {"dst_provider", "/provider/b"}},
+    NativeJson{{"src_provider", "/provider/b"},
+               {"dst_provider", "/provider/a"}}};
+  input.context.allowedRttPairs = {
+    NativeJson{{"src_provider", "/provider/a"},
+               {"dst_provider", "/provider/b"}},
+    NativeJson{{"src_provider", "/provider/b"},
+               {"dst_provider", "/provider/a"}}};
+  const NativeObservationAwarePlacementV4 strategy(32, 4096, "network-only");
+  auto snapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(std::uint64_t{1'000'000}), false);
+  for (auto& offer : snapshot["provider_offers"]) {
+    offer["values"]["residency_state"] = "KNOWN_EMPTY";
+    offer["values"]["residency"] = NativeJson::array();
+  }
+  snapshot["prepared_role_graph"][0]["dependencies"][0]["estimated_bytes"] =
+    std::uint64_t{1000};
+  input.context.placementObservationSnapshot = snapshot;
+  input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(snapshot));
+
+  const auto firstPass = strategy.proposeRoles(input.context, input.ackDigest,
+    input.roles, input.offers, 200);
+  BOOST_REQUIRE(firstPass.placementProbeIntent);
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(
+    firstPass, input.roles, input.offers, 200));
+  auto assignedProbe = firstPass;
+  assignedProbe.providerByRole.emplace("/LLM/Pipeline/Stage/0", "/provider/a");
+  BOOST_CHECK_THROW(validateNativeRolePlacement(
+    assignedProbe, input.roles, input.offers, 200), std::invalid_argument);
+  BOOST_REQUIRE_EQUAL(firstPass.placementProbeIntent->observers.size(), 1U);
+  const auto& requested = firstPass.placementProbeIntent->observers.front();
+  BOOST_REQUIRE_EQUAL(requested.rttPairs.size(), 1U);
+  BOOST_CHECK_EQUAL(requested.rttPairs.front().sourceProvider,
+                    requested.observerProvider);
+  BOOST_CHECK_EQUAL(requested.rttPairs.front().destinationProvider,
+                    requested.goodputEdges.front().sourceProvider);
+  BOOST_REQUIRE_EQUAL(requested.goodputEdges.size(), 1U);
+  BOOST_CHECK_EQUAL(requested.observerProvider,
+                    requested.goodputEdges.front().destinationProvider);
+  BOOST_CHECK_NE(requested.goodputEdges.front().sourceProvider,
+                 requested.goodputEdges.front().destinationProvider);
+
+  const auto& edge = requested.goodputEdges.front();
+  const auto rosterDigest = nativePlanningDigest(
+    nativeCanonicalJson(NativeJson(input.context.candidateProviders)));
+  const std::string nonce = "spec196-test-probe-nonce-0001";
+  NativeJson scope{
+    {"schema", "ndnsf-di-placement-probe-scope-v1"},
+    {"request_id", input.context.requestId}, {"attempt", input.context.attempt},
+    {"requester_identity", input.context.requesterIdentity},
+    {"observer_provider", requested.observerProvider},
+    {"service", input.context.serviceName},
+    {"provider_roster", input.context.candidateProviders},
+    {"roster_digest", rosterDigest},
+    {"rtt_pairs", NativeJson::array({NativeJson{
+      {"src_provider", requested.rttPairs.front().sourceProvider},
+      {"dst_provider", requested.rttPairs.front().destinationProvider}}})},
+    {"goodput_edges", NativeJson::array({NativeJson{
+      {"src_provider", edge.sourceProvider}, {"dst_provider", edge.destinationProvider}}})},
+    {"deadline_ms", input.context.deadlineMs}, {"intent_nonce", nonce}};
+  const auto scopeDigest = nativePlanningDigest(nativeCanonicalJson(scope));
+  const auto bootFor = [&snapshot](const std::string& provider) {
+    for (const auto& offer : snapshot["provider_offers"])
+      if (offer.at("provider").get<std::string>() == provider)
+        return offer.at("boot_epoch").get<std::string>();
+    return std::string{};
+  };
+  NativePlacementProbeRoundV1 round;
+  round.intent = *firstPass.placementProbeIntent;
+  round.intentNonceByObserver.emplace(requested.observerProvider, nonce);
+  round.responseByObserver.emplace(requested.observerProvider, NativeJson{
+    {"schema", "ndnsf-di-placement-probe-response-v1"},
+    {"request_id", input.context.requestId}, {"attempt", input.context.attempt},
+    {"requester_identity", input.context.requesterIdentity},
+    {"observer_provider", requested.observerProvider},
+    {"service", input.context.serviceName},
+    {"observer_boot_epoch", bootFor(requested.observerProvider)},
+    {"scope_digest", scopeDigest}, {"intent_nonce", nonce},
+    {"deadline_ms", input.context.deadlineMs}, {"completed_at_ms", std::uint64_t{200}},
+    {"requested_rtt_count", std::uint64_t{1}},
+    {"requested_goodput_count", std::uint64_t{1}},
+    {"omitted_rtt_count", std::uint64_t{0}},
+    {"omitted_goodput_count", std::uint64_t{0}},
+    {"observations", NativeJson::array({
+      NativeJson{{"observer", requested.observerProvider},
+        {"target", edge.sourceProvider}, {"kind", "active_probe_rtt"},
+        {"value", 100.0}, {"observed_at_ms", std::uint64_t{200}},
+        {"expires_at_ms", std::uint64_t{900}},
+        {"peer_boot_epoch", bootFor(edge.sourceProvider)},
+        {"target_signature_validated", true},
+        {"data_name", "/provider/a/NDNSF-DI/probe/unique-rtt-data"}},
+      NativeJson{{"observer", requested.observerProvider},
+        {"target", edge.sourceProvider}, {"kind", "active_probe_goodput"},
+        {"value", 8.0}, {"observed_at_ms", std::uint64_t{200}},
+        {"expires_at_ms", std::uint64_t{900}},
+        {"peer_boot_epoch", bootFor(edge.sourceProvider)},
+        {"data_name", "/provider/a/NDNSF-DI/probe/unique-goodput-data"},
+        {"train_complete", true}, {"target_signature_validated", true},
+        {"probe_profile_validated", true},
+        {"sent_segments", std::uint64_t{16}},
+        {"received_segments", std::uint64_t{16}},
+        {"payload_bytes", std::uint64_t{69000}}, {"elapsed_ms", 69.0},
+        {"profile_digest", ndn_service_framework::NETWORK_PROBE_TRAIN_PROFILE_DIGEST},
+        {"probe_source_timing_validated", true},
+        {"probe_source_send_gaps_ms", NativeJson(std::vector<double>(14, 0.01))},
+        {"probe_train_goodput_mbps", 8.0},
+        {"probe_rate_status", "MEASURED_GOODPUT"},
+        {"probe_rate_reason", "MEASURED_WARMED_PACKET_TRAIN"},
+        {"probe_rtt_ms", NativeJson(std::vector<double>(16, 1.3))},
+        {"probe_interest_gaps_ms", NativeJson(std::vector<double>(15, 0.01))},
+        {"probe_data_arrival_gaps_ms", NativeJson(std::vector<double>(15, 4.096))},
+        {"probe_data_wire_bytes", NativeJson(std::vector<std::uint64_t>(16, 4400))}}})}});
+  const NativePlacementObservationSnapshotV4 typedSnapshot{
+    snapshot, nativePlanningDigest(nativeCanonicalJson(snapshot)),
+    snapshot.at("captured_at_ms").get<std::uint64_t>(),
+    snapshot.at("expires_at_ms").get<std::uint64_t>()};
+  auto merged = mergeNativePlacementProbeRoundV1(
+    typedSnapshot, round, input.context, 200);
+  auto verifiedContext = input.context;
+  verifiedContext.placementProbeRoundCompleted = true;
+  verifiedContext.placementObservationSnapshot = merged.value;
+  verifiedContext.placementObservationSnapshotDigest = merged.digest;
+  const auto verifiedPlan = strategy.proposeRoles(verifiedContext,
+    input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE(verifiedPlan.placementDecisionV4);
+  BOOST_CHECK_EQUAL(verifiedPlan.placementDecisionV4->at("status")
+    .get<std::string>(), "SCORED");
+  BOOST_REQUIRE_EQUAL(verifiedPlan.placementDecisionV4->at("edge_costs").size(), 1U);
+  BOOST_CHECK_EQUAL(verifiedPlan.placementDecisionV4->at("edge_costs")[0]
+    .at("rate_method").get<std::string>(), "ACTIVE_PROBE_GOODPUT");
+  const auto rejectForgedMetadata = [&] (const char* field, NativeJson value) {
+    auto forged = round;
+    forged.responseByObserver.at(requested.observerProvider)["observations"][1][field] =
+      std::move(value);
+    BOOST_CHECK_MESSAGE(mergeNativePlacementProbeRoundV1(
+      typedSnapshot, forged, input.context, 200).value.at("eligible_link_observations").empty(),
+      "forged field=" << field);
+  };
+  rejectForgedMetadata("probe_train_goodput_mbps", 16.0);
+  rejectForgedMetadata("probe_rate_status", "UNKNOWN");
+  rejectForgedMetadata("probe_rate_reason", "UNBOUND_RATE");
+  rejectForgedMetadata("probe_source_send_gaps_ms", NativeJson::array({-1.0, 0.01}));
+  rejectForgedMetadata("probe_source_send_gaps_ms", NativeJson::array({500.001, 0.01}));
+  rejectForgedMetadata("probe_source_send_gaps_ms", NativeJson::array({0.01}));
+  auto invalidGoodputProfile = round;
+  invalidGoodputProfile.responseByObserver.at(requested.observerProvider)
+    ["observations"][1]["probe_profile_validated"] = false;
+  auto& invalidMetadata = invalidGoodputProfile.responseByObserver.at(requested.observerProvider)
+    ["observations"][1];
+  invalidMetadata["probe_train_goodput_mbps"] = nullptr;
+  invalidMetadata["probe_rate_status"] = "UNKNOWN";
+  invalidMetadata["probe_rate_reason"] = "SOURCE_TIMING_UNVERIFIED";
+  const auto partial = mergeNativePlacementProbeRoundV1(
+    typedSnapshot, invalidGoodputProfile, input.context, 200);
+  BOOST_REQUIRE_EQUAL(partial.value.at("eligible_link_observations").size(), 2U);
+  BOOST_CHECK_EQUAL(partial.value.at("eligible_link_observations")[0]
+                      .at("row").at("kind").get<std::string>(),
+                    "ACTIVE_PROBE_RTT");
+  BOOST_CHECK_EQUAL(partial.value.at("eligible_link_observations")[0]
+                      .at("row").at("rtt_ms").get<double>(), 100.0);
+  const auto& measuredRow = partial.value.at("eligible_link_observations")[1].at("row");
+  BOOST_CHECK_EQUAL(measuredRow.at("kind").get<std::string>(), "ACTIVE_PROBE_GOODPUT");
+  BOOST_CHECK(measuredRow.at("probe_signature_valid").get<bool>());
+  BOOST_CHECK(!measuredRow.at("probe_profile_validated").get<bool>());
+  auto sampledContext = input.context;
+  sampledContext.placementProbeRoundCompleted = true;
+  sampledContext.placementObservationSnapshot = partial.value;
+  sampledContext.placementObservationSnapshotDigest = partial.digest;
+  const auto sampledPlan = strategy.proposeRoles(sampledContext,
+    input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE(sampledPlan.placementDecisionV4);
+  BOOST_CHECK_EQUAL(sampledPlan.placementDecisionV4->at("status")
+                      .get<std::string>(), "BASELINE_FALLBACK");
+  auto unauthenticatedGoodput = invalidGoodputProfile;
+  unauthenticatedGoodput.responseByObserver.at(requested.observerProvider)
+    ["observations"][1]["target_signature_validated"] = false;
+  BOOST_CHECK(mergeNativePlacementProbeRoundV1(typedSnapshot, unauthenticatedGoodput,
+    input.context, 200).value.at("eligible_link_observations").empty());
+  auto truncatedGoodput = invalidGoodputProfile;
+  truncatedGoodput.responseByObserver.at(requested.observerProvider)
+    ["observations"][1]["received_segments"] = std::uint64_t{3};
+  BOOST_CHECK(mergeNativePlacementProbeRoundV1(typedSnapshot, truncatedGoodput,
+    input.context, 200).value.at("eligible_link_observations").empty());
+  auto underreportedRound = round;
+  underreportedRound.responseByObserver.at(requested.observerProvider)
+    ["observations"] = NativeJson::array();
+  const auto underreported = mergeNativePlacementProbeRoundV1(
+    typedSnapshot, underreportedRound, input.context, 200);
+  BOOST_CHECK(underreported.value.at("eligible_link_observations").empty());
+  auto unauthenticatedRtt = round;
+  unauthenticatedRtt.responseByObserver.at(requested.observerProvider)
+    ["observations"][0]["target_signature_validated"] = false;
+  const auto rejectedRtt = mergeNativePlacementProbeRoundV1(
+    typedSnapshot, unauthenticatedRtt, input.context, 200);
+  BOOST_CHECK(rejectedRtt.value.at("eligible_link_observations").empty());
+  auto unavailableContext = input.context;
+  unavailableContext.placementProbeRoundCompleted = true;
+  unavailableContext.placementObservationSnapshot = rejectedRtt.value;
+  unavailableContext.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(rejectedRtt.value));
+  const auto unavailablePlan = strategy.proposeRoles(unavailableContext,
+    input.ackDigest, input.roles, input.offers, 200);
+  BOOST_REQUIRE(unavailablePlan.placementDecisionV4);
+  BOOST_CHECK_EQUAL(unavailablePlan.placementDecisionV4->at("status")
+                      .get<std::string>(), "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(unavailablePlan.placementDecisionV4->at("edge_costs").size(), 0U);
+  input.context.placementProbeRoundCompleted = true;
+  input.context.placementObservationSnapshot = merged.value;
+  input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(merged.value));
+  const auto finalPass = strategy.proposeRoles(input.context, input.ackDigest,
+    input.roles, input.offers, 200);
+  BOOST_CHECK(!finalPass.placementProbeIntent);
+  BOOST_REQUIRE(finalPass.placementDecisionV4);
+  BOOST_CHECK_EQUAL(finalPass.placementDecisionV4->at("status").get<std::string>(), "SCORED");
+  BOOST_REQUIRE_EQUAL(finalPass.placementDecisionV4->at("edge_costs").size(), 1U);
+  BOOST_CHECK_EQUAL(finalPass.placementDecisionV4->at("edge_costs")[0]
+                      .at("rate_method").get<std::string>(), "ACTIVE_PROBE_GOODPUT");
+  BOOST_CHECK_EQUAL(finalPass.placementDecisionV4->at("edge_costs")[0]
+                      .at("round_trip_ms").get<double>(), 100.0);
+  BOOST_CHECK_EQUAL(finalPass.placementDecisionV4->at("edge_costs")[0]
+                      .at("transfer_ms").get<double>(), 100.0);
+}
+
+BOOST_AUTO_TEST_CASE(Spec196ProbesCandidateLinkWhenTransferSizeIsUnknown)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  input.context.candidateProviders = {"/provider/a", "/provider/b"};
+  input.context.allowedGoodputEdges = {
+    NativeJson{{"src_provider", "/provider/a"},
+               {"dst_provider", "/provider/b"}},
+    NativeJson{{"src_provider", "/provider/b"},
+               {"dst_provider", "/provider/a"}}};
+  const NativeObservationAwarePlacementV4 strategy;
+  auto snapshot = makeV4PlacementSnapshot(
+    input, input.roles, NativeJson(std::uint64_t{1'000'000}), false);
+  auto& dependency = snapshot["prepared_role_graph"][0]["dependencies"][0];
+  dependency["estimated_bytes"] = nullptr;
+  dependency["estimated_bytes_source"] = nullptr;
+  input.context.placementObservationSnapshot = snapshot;
+  input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(snapshot));
+
+  const auto firstPass = strategy.proposeRoles(input.context, input.ackDigest,
+    input.roles, input.offers, 200);
+  BOOST_REQUIRE(firstPass.placementProbeIntent);
+  BOOST_REQUIRE_EQUAL(firstPass.placementProbeIntent->observers.size(), 1U);
+  BOOST_REQUIRE_EQUAL(firstPass.placementProbeIntent->observers.front()
+                        .goodputEdges.size(), 1U);
+
+  input.context.placementProbeRoundCompleted = true;
+  const auto finalPass = strategy.proposeRoles(input.context, input.ackDigest,
+    input.roles, input.offers, 200);
+  BOOST_CHECK(!finalPass.placementProbeIntent);
+  BOOST_REQUIRE(finalPass.placementDecisionV4);
+  BOOST_CHECK_EQUAL(finalPass.placementDecisionV4->at("status").get<std::string>(),
+                    "BASELINE_FALLBACK");
+  BOOST_CHECK_EQUAL(finalPass.placementDecisionV4->at("fallback_reason")
+                      .get<std::string>(), "TRANSFER_BYTES_UNKNOWN");
+}
+
+BOOST_AUTO_TEST_CASE(Spec194V4ExpandsStageDependenciesAcrossRanks)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  const auto producerStage = input.roles.front().role;
+  const std::string consumerStage = "/LLM/Pipeline/Stage/1";
+  NativeOfferAdmission admission(f.at("policy").dump(),
+    {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}},
+    f.at("candidate"));
+  input.offers.clear();
+  for (auto& ack : input.acks) {
+    const auto originalPayload = ack.ack.getPayload();
+    const std::string originalWire(originalPayload.begin(), originalPayload.end());
+    const auto wire = resignOfferAcceptingRole(originalWire, consumerStage);
+    ndn::Buffer payload(wire.begin(), wire.end());
+    ack.ack.setPayload(payload, payload.size());
+    ack.authenticationEvidence.wireDigest = nativePlanningDigest(wire);
+    input.offers.push_back(admission.verify(ack, input.context, 200));
+  }
+
+  auto roles = input.roles;
+  for (auto role : input.roles) {
+    role.role = consumerStage;
+    role.selectedRole = consumerStage;
+    roles.push_back(std::move(role));
+  }
+  auto snapshot = makeV4PlacementSnapshot(
+    input, roles, NativeJson(std::uint64_t{1'000'000}), true);
+  auto& candidateGraph = snapshot["prepared_role_graph"][0];
+  candidateGraph["stage_order"] = NativeJson::array({producerStage, consumerStage});
+  candidateGraph["node_roles"] = NativeJson{
+    {"producer-node", producerStage}, {"consumer-node", consumerStage}};
+  candidateGraph["dependencies"] = NativeJson::array({NativeJson{
+    {"producer_role", producerStage}, {"consumer_role", consumerStage},
+    {"tensors", {"hidden"}}, {"estimated_bytes", std::uint64_t{1'000'000}},
+    {"estimated_bytes_source", "graph-tensor-contract"},
+    {"expected_segments", std::uint64_t{1}}, {"operation_kind", "ACTIVATION"}}});
+  input.context.placementObservationSnapshot = snapshot;
+  input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(snapshot));
+  for (const auto& role : roles) {
+    input.context.preferredProvidersByRole[role.role + "#" +
+      std::to_string(role.rank)] = role.role == producerStage ?
+        "/provider/a" : "/provider/b";
+  }
+
+  const auto proposal = NativeObservationAwarePlacementV4().proposeRoles(
+    input.context, input.ackDigest, roles, input.offers, 200);
+  BOOST_REQUIRE(proposal.placementDecisionV4);
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("status").get<std::string>(), "SCORED");
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at(producerStage + "#0"), "/provider/a");
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at(producerStage + "#1"), "/provider/a");
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at(consumerStage + "#0"), "/provider/b");
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at(consumerStage + "#1"), "/provider/b");
+  BOOST_REQUIRE_EQUAL(proposal.placementDecisionV4->at("edge_costs").size(), 4U);
+  for (const auto& edgeCost : proposal.placementDecisionV4->at("edge_costs")) {
+    BOOST_CHECK_EQUAL(edgeCost.at("rate_method").get<std::string>(), "ACTIVE_PROBE_GOODPUT");
+    BOOST_CHECK_EQUAL(edgeCost.at("transfer_ms").get<double>(), 1000.0);
+  }
+  BOOST_CHECK_EQUAL(
+    proposal.placementDecisionV4->at("data_flow_critical_path_ms").get<double>(), 1000.0);
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("score_ms").get<double>(), 1010.0);
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, roles, input.offers, 200));
+}
+
+BOOST_AUTO_TEST_CASE(Spec194V4HonorsPreferredProviderAndDeviceReservations)
+{
+  const auto f = oracle();
+  Input input(f, f.at("cases")[11]);
+  auto roles = input.roles;
+  for (auto& role : roles)
+    role.requiredDeviceMemoryMb = 3072;
+  const auto snapshot = makeV4PlacementSnapshot(
+    input, roles, NativeJson(std::uint64_t{1'000'000}), true);
+  input.context.placementObservationSnapshot = snapshot;
+  input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+    nativeCanonicalJson(snapshot));
+  for (const auto& role : roles)
+    input.context.preferredProvidersByRole[
+      role.role + "#" + std::to_string(role.rank)] = "/provider/a";
+
+  const auto proposal = NativeObservationAwarePlacementV4().proposeRoles(
+    input.context, input.ackDigest, roles, input.offers, 200);
+  BOOST_REQUIRE(proposal.placementDecisionV4);
+  BOOST_CHECK_EQUAL(proposal.placementDecisionV4->at("status").get<std::string>(), "SCORED");
+  BOOST_REQUIRE_EQUAL(proposal.roles.size(), 2U);
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at(roles.front().role + "#0"), "/provider/a");
+  BOOST_CHECK_EQUAL(proposal.providerByRole.at(roles.back().role + "#1"), "/provider/a");
+  BOOST_REQUIRE_EQUAL(proposal.roles[0].deviceSet.size(), 1U);
+  BOOST_REQUIRE_EQUAL(proposal.roles[1].deviceSet.size(), 1U);
+  BOOST_CHECK_NE(proposal.roles[0].deviceSet.front(), proposal.roles[1].deviceSet.front());
+  BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, roles, input.offers, 200));
 }
 BOOST_AUTO_TEST_SUITE_END()

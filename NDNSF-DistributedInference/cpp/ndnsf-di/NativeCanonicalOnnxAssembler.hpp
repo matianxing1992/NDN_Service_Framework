@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderResidencyV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
@@ -17,8 +18,29 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace ndnsf::di {
+
+/** Bounded identity index for persistent recipe-addressed ONNX artifacts. */
+class NativePersistentRecipeResidencyIndex
+{
+public:
+  explicit NativePersistentRecipeResidencyIndex(std::filesystem::path cacheRoot);
+
+  bool beginUpdate() noexcept;
+  bool record(const NativeProviderResidencyIdentityV4& identity,
+              const std::filesystem::path& directory) noexcept;
+  NativeProviderResidencyOwnerResultV4 queryPlacementResidencyV4(
+    const std::vector<NativeJson>& candidateArtifacts,
+    const std::string& processEpoch,
+    std::uint64_t capturedAtMs,
+    std::uint64_t expiresAtMs) const;
+
+private:
+  struct State;
+  std::shared_ptr<State> m_state;
+};
 
 /**
  * Options for the production post-Selection ONNX assembly bridge.
@@ -59,6 +81,7 @@ struct NativeCanonicalOnnxAssemblerOptions
   // still happens for every request; this cache only avoids repeating the
   // already-authenticated decrypt/copy after an exact descriptor hit.
   std::shared_ptr<class NativeProtectedPlaintextCache> protectedPlaintextCache;
+  std::shared_ptr<NativePersistentRecipeResidencyIndex> persistentRecipeResidencyIndex;
 };
 
 /** Exact identity for one decrypted protected assembled model. */
@@ -131,7 +154,14 @@ public:
   Lease acquire(const NativeProtectedPlaintextCacheKey& key,
                 const NativeRequestControl& control,
                 std::uint64_t maxPlaintextBytes,
-                Build build);
+                Build build,
+                std::optional<NativeProviderResidencyIdentityV4> residencyIdentity =
+                  std::nullopt);
+  NativeProviderResidencyOwnerResultV4 queryPlacementResidencyV4(
+    const std::vector<NativeJson>& candidateArtifacts,
+    const std::string& processEpoch,
+    std::uint64_t capturedAtMs,
+    std::uint64_t expiresAtMs) const;
   void invalidate(const NativeProtectedPlaintextCacheKey& key) noexcept;
   void stop() noexcept;
 

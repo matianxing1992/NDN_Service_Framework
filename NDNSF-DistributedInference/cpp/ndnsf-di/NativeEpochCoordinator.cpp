@@ -1094,7 +1094,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     throw std::invalid_argument("only the terminal role may publish token events");
   }
 
-  if (config.prepareRunner) {
+  if (config.prepareRunner && !config.conversationStateBinding) {
     // Selection/grant/runtime validation is complete before this point. Queue
     // exactly one preparation on the bounded Provider worker while epoch-zero
     // dependency fetches wait. Every epoch consumes the same shared future;

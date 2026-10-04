@@ -191,10 +191,16 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   // is not sufficient: without these policies the Authority receives DKEY
   // Interests but has no private key to issue for either identity.
   const auto serviceUri = m_profile.serviceName.toUri();
+  std::string userAbePolicy = "/PERMISSION" + serviceUri;
+  for (const auto& service : m_profile.userAdditionalServices)
+    userAbePolicy += " OR /PERMISSION" + service.toUri();
+  std::string providerAbePolicy = "/SERVICE" + serviceUri;
+  for (const auto& service : m_profile.providerAdditionalServices)
+    providerAbePolicy += " OR /SERVICE" + service.toUri();
   m_attributeAuthority->addNewPolicy(
-      userCert, "/PERMISSION" + serviceUri);
+      userCert, userAbePolicy);
   m_attributeAuthority->addNewPolicy(
-      providerCert, "/SERVICE" + serviceUri);
+      providerCert, providerAbePolicy);
   // AttributeAuthority installs the PUBLIC-PARAMS Interest filter from the
   // asynchronous registerPrefix success callback. Complete that registration
   // before constructing any User/Provider NAC-ABE Producer; otherwise their
@@ -255,8 +261,14 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
 
   const auto providerCount = std::max<size_t>(1, m_profile.providerCount);
   for (size_t index = 1; index < providerCount; ++index) {
+    auto* providerIo = &m_providerIo;
+    if (m_profile.providerFacesUseIndependentIoContexts) {
+      m_extraProviderIoContexts.push_back(
+          std::make_unique<boost::asio::io_context>());
+      providerIo = m_extraProviderIoContexts.back().get();
+    }
     auto face = std::make_unique<ndn::DummyClientFace>(
-        m_providerIo, *m_keyChain, faceOptions);
+        *providerIo, *m_keyChain, faceOptions);
     const auto identity = indexedName(m_profile.providerIdentity, index);
     const auto certificate = makeIdentity(*m_keyChain, identity);
     m_extraProviderSecurityOptions.push_back(
@@ -277,7 +289,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
               }
             }));
     m_attributeAuthority->addNewPolicy(
-        certificate, "/SERVICE" + serviceUri);
+        certificate, providerAbePolicy);
     m_extraProviders.push_back(std::make_unique<ServiceProvider>(
         ServiceProvider::LocalMockTag{}, *face, m_profile.groupPrefix,
         certificate, aaCert, m_profile.trustSchemaPath));
@@ -413,7 +425,7 @@ NdnsfIntegrationEnvironment::enableProductionIngressForTest()
       return false;
     }
     for (size_t index = 0; index < providerCount(); ++index) {
-      if (!provider(index).isNacConsumerReadyForTest() ||
+      if (!provider(index).isRequestDecryptionReady() ||
           !provider(index).isNacProducerReadyForTest()) {
         return false;
       }
@@ -439,9 +451,23 @@ NdnsfIntegrationEnvironment::installPermissions()
     userEntry.setTtl(0);
     userEntry.setVersion(1);
     userPermissions.addEntry(userEntry);
+    for (const auto& service : m_profile.userAdditionalServices) {
+      auto additional = userEntry;
+      additional.setServiceName(service.toUri());
+      userPermissions.addEntry(additional);
+    }
     auto providerPermissions = makePermissionResponse(
         providerName, tlv::ProviderPermission, providerName,
         m_profile.serviceName);
+    for (const auto& service : m_profile.providerAdditionalServices) {
+      PermissionEntry additional;
+      additional.setProviderName(providerName.toUri());
+      additional.setServiceName(service.toUri());
+      additional.setToken("");
+      additional.setTtl(0);
+      additional.setVersion(1);
+      providerPermissions.addEntry(additional);
+    }
     for (const auto& role : m_profile.providerRoles) {
       PermissionEntry roleEntry;
       roleEntry.setProviderName(providerName.toUri());
@@ -545,7 +571,7 @@ NdnsfIntegrationEnvironment::bootstrap()
         return false;
       }
       for (size_t index = 0; index < providerCount(); ++index) {
-        if (!provider(index).isNacConsumerReadyForTest() ||
+        if (!provider(index).isRequestDecryptionReady() ||
             !provider(index).isNacProducerReadyForTest()) {
           return false;
         }
@@ -571,7 +597,7 @@ NdnsfIntegrationEnvironment::bootstrap()
           "User NAC-ABE producer public-parameter bootstrap was not completed");
     }
     for (size_t index = 0; index < providerCount(); ++index) {
-      if (!provider(index).isNacConsumerReadyForTest()) {
+      if (!provider(index).isRequestDecryptionReady()) {
         throw std::runtime_error(
             "Provider NAC-ABE DKEY bootstrap was not completed");
       }

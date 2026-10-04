@@ -1,10 +1,14 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include <openssl/evp.h>
+#include <ndn-cxx/name.hpp>
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <set>
 
 namespace ndnsf::di {
 namespace {
@@ -128,11 +132,110 @@ NativeGenerationExecutionContractV1 nativeGenerationFromOptions(
   return result;
 }
 
+std::optional<NativeCandidateArtifactInventoryV4>
+buildNativeCandidateArtifactInventoryV4(
+  const NativePreparedPlanningCache& planningCache, std::size_t maxCandidates)
+{
+  if (maxCandidates == 0 || planningCache.candidates.empty())
+    return std::nullopt;
+  const auto count = std::min(planningCache.candidates.size(), maxCandidates);
+  std::vector<NativeJson> identities;
+  for (std::size_t i = 0; i < count; ++i) {
+    for (const auto& role : planningCache.candidates[i].roles) {
+      if (role.role.empty() || role.backend.empty() || role.protectionEpoch.empty() ||
+          !digest(role.artifactDigest) || !digest(role.modelManifestDigest) ||
+          !digest(role.graphDigest))
+        return std::nullopt;
+      identities.push_back(NativeJson{{"artifact_digest", role.artifactDigest},
+        {"model_manifest_digest", role.modelManifestDigest},
+        {"graph_digest", role.graphDigest}, {"role", role.role},
+        {"rank", role.rank}, {"backend", role.backend},
+        {"protection_epoch", role.protectionEpoch}});
+    }
+  }
+  if (identities.empty())
+    return std::nullopt;
+  std::sort(identities.begin(), identities.end(), [] (const NativeJson& left,
+                                                       const NativeJson& right) {
+    return nativeCanonicalJson(left) < nativeCanonicalJson(right);
+  });
+  identities.erase(std::unique(identities.begin(), identities.end()), identities.end());
+  if (identities.empty() ||
+      identities.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS)
+    return std::nullopt;
+  NativeCandidateArtifactInventoryV4 result;
+  result.identities = std::move(identities);
+  result.digest = nativePlanningDigest(nativeCanonicalJson(NativeJson(result.identities)));
+  return result;
+}
+
+std::optional<NativePlacementProbeAllowlistV4>
+buildNativePlacementProbeAllowlistV4(
+  const NativePreparedPlanningCache& planningCache,
+  std::size_t maxCandidates,
+  const std::vector<std::string>& candidateProviders)
+{
+  constexpr std::size_t MAX_PROBE_PAIRS = 16;
+  if (maxCandidates == 0 || planningCache.candidates.empty() ||
+      candidateProviders.empty() || candidateProviders.size() > 16)
+    return std::nullopt;
+
+  auto roster = candidateProviders;
+  for (const auto& provider : roster) {
+    const ndn::Name name(provider);
+    if (name.empty() || name.toUri() != provider)
+      return std::nullopt;
+  }
+  std::sort(roster.begin(), roster.end());
+  if (std::adjacent_find(roster.begin(), roster.end()) != roster.end())
+    return std::nullopt;
+
+  const auto count = std::min(planningCache.candidates.size(), maxCandidates);
+  bool hasInterRoleDependency = false;
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto& candidate = planningCache.candidates[i].candidate;
+    const std::set<std::string> roles(candidate.executionPlan.roles.begin(),
+                                      candidate.executionPlan.roles.end());
+    if (roles.empty() || roles.size() != candidate.executionPlan.roles.size())
+      return std::nullopt;
+    for (const auto& dependency : candidate.executionPlan.dependencies) {
+      if (dependency.producers.empty() || dependency.consumers.empty())
+        return std::nullopt;
+      for (const auto& producer : dependency.producers) {
+        if (roles.count(producer) == 0) return std::nullopt;
+        for (const auto& consumer : dependency.consumers) {
+          if (roles.count(consumer) == 0) return std::nullopt;
+          hasInterRoleDependency = hasInterRoleDependency || producer != consumer;
+        }
+      }
+    }
+  }
+
+  NativePlacementProbeAllowlistV4 result;
+  if (!hasInterRoleDependency || roster.size() < 2)
+    return result;
+  for (const auto& source : roster) {
+    for (const auto& destination : roster) {
+      if (source == destination) continue;
+      if (result.rttPairs.size() == MAX_PROBE_PAIRS)
+        return result;
+      NativePlacementProbePairV4 pair{source, destination};
+      result.rttPairs.push_back(pair);
+      result.goodputEdges.push_back(pair);
+    }
+  }
+  return result;
+}
+
 NativeEncodedRequest encodeNativeRequestEnvelope(
   const NativeModelDescriptor& model, const NativeApplicationInput& input,
   const NativeRequestContract& contract, const std::string& requestId,
   std::uint64_t attempt, std::uint64_t deadlineMs,
-  const std::optional<NativeGenerationRecovery>& recovery)
+  const std::optional<NativeGenerationRecovery>& recovery,
+  const std::vector<std::string>& candidateProviders,
+  const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
+  const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
+  std::string requesterIdentity)
 {
   model.validate();
   if (model.artifactReference) {
@@ -211,6 +314,113 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
       {"adapter_composition_digest", contract.adapterCompositionDigest},
       {"task_descriptor_digest", contract.taskDescriptorDigest},
       {"generation_mode", contract.generationMode}, {"placement_profile", "DI_PLACEMENT_V3"}}}};
+  if (!recovery && candidateArtifactInventory && probeAllowlist &&
+      !candidateProviders.empty() &&
+      candidateProviders.size() <= 16) {
+    const ndn::Name requesterName(requesterIdentity);
+    if (requesterIdentity.empty() || requesterName.empty() ||
+        requesterName.toUri() != requesterIdentity)
+      throw std::invalid_argument("DI V4 requester identity is not canonical");
+    auto roster = candidateProviders;
+    for (const auto& provider : roster) {
+      const ndn::Name name(provider);
+      if (name.empty() || name.toUri() != provider)
+        throw std::invalid_argument("DI placement roster contains a non-canonical Provider name");
+    }
+    std::sort(roster.begin(), roster.end());
+    if (std::adjacent_find(roster.begin(), roster.end()) != roster.end())
+      throw std::invalid_argument("DI placement roster contains a duplicate Provider");
+    const auto rosterJson = NativeJson(roster);
+    const auto& identities = candidateArtifactInventory->identities;
+    if (identities.empty() ||
+        identities.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS ||
+        nativePlanningDigest(nativeCanonicalJson(NativeJson(identities))) !=
+          candidateArtifactInventory->digest)
+      throw std::invalid_argument("DI V4 candidate artifact inventory is incomplete or mismatched");
+    for (std::size_t i = 0; i < identities.size(); ++i) {
+      const auto& identity = identities[i];
+      const bool rankValid = identity.is_object() && identity.contains("rank") &&
+        (identity.at("rank").is_number_unsigned() ||
+         (identity.at("rank").is_number_integer() &&
+          identity.at("rank").get<std::int64_t>() >= 0));
+      if (!identity.is_object() || identity.size() != 7 ||
+          !identity.contains("artifact_digest") ||
+          !identity.contains("model_manifest_digest") ||
+          !identity.contains("graph_digest") || !identity.contains("role") ||
+          !identity.contains("rank") || !identity.contains("backend") ||
+          !identity.contains("protection_epoch") || !rankValid ||
+          !identity.at("artifact_digest").is_string() ||
+          !identity.at("model_manifest_digest").is_string() ||
+          !identity.at("graph_digest").is_string() ||
+          !identity.at("role").is_string() ||
+          !identity.at("backend").is_string() ||
+          !identity.at("protection_epoch").is_string() ||
+          !digest(identity.at("artifact_digest").get<std::string>()) ||
+          !digest(identity.at("model_manifest_digest").get<std::string>()) ||
+          !digest(identity.at("graph_digest").get<std::string>()) ||
+          identity.at("role").get<std::string>().empty() ||
+          identity.at("backend").get<std::string>().empty() ||
+          identity.at("protection_epoch").get<std::string>().empty() ||
+          (i != 0 && nativeCanonicalJson(identities[i - 1]) >=
+                     nativeCanonicalJson(identity)))
+        throw std::invalid_argument("DI V4 candidate artifact inventory is not canonical");
+    }
+    auto toJsonPairs = [&roster] (const std::vector<NativePlacementProbePairV4>& pairs) {
+      NativeJson values = NativeJson::array();
+      std::set<std::pair<std::string, std::string>> unique;
+      std::optional<std::pair<std::string, std::string>> previous;
+      for (const auto& pair : pairs) {
+        const ndn::Name source(pair.sourceProvider);
+        const ndn::Name destination(pair.destinationProvider);
+        const auto current = std::make_pair(pair.sourceProvider,
+                                            pair.destinationProvider);
+        if (source.empty() || destination.empty() ||
+            source.toUri() != pair.sourceProvider ||
+            destination.toUri() != pair.destinationProvider ||
+            pair.sourceProvider == pair.destinationProvider ||
+            !std::binary_search(roster.begin(), roster.end(), pair.sourceProvider) ||
+            !std::binary_search(roster.begin(), roster.end(), pair.destinationProvider) ||
+            !unique.emplace(pair.sourceProvider, pair.destinationProvider).second ||
+            (previous && !(*previous < current)))
+          throw std::invalid_argument("DI V4 probe pair scope is invalid");
+        previous = current;
+        values.push_back(NativeJson{{"src_provider", pair.sourceProvider},
+                                    {"dst_provider", pair.destinationProvider}});
+      }
+      if (values.size() > 16)
+        throw std::invalid_argument("DI V4 probe pair scope exceeds its bound");
+      return values;
+    };
+    const auto rttPairs = toJsonPairs(probeAllowlist->rttPairs);
+    const auto goodputEdges = toJsonPairs(probeAllowlist->goodputEdges);
+    const auto candidateSetDigest = hash(rosterJson);
+    const auto probeScopeDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+      {"schema", "ndnsf-di-placement-probe-scope-v1"},
+      {"request_id", requestId}, {"attempt", attempt},
+      {"requester_identity", requesterIdentity}, {"deadline_ms", deadlineMs},
+      {"service", contract.serviceName}, {"model_identity_hash", result.modelIntentDigest},
+      {"graph_digest", model.graphDigest}, {"candidate_set_digest", candidateSetDigest},
+      {"candidate_artifact_set_digest", candidateArtifactInventory->digest},
+      {"rtt_pairs", rttPairs}, {"goodput_edges", goodputEdges}}));
+    envelope["task"]["placement_profile"] = "DI_PLACEMENT_V4";
+    envelope["graph_digest"] = model.graphDigest;
+    envelope["candidate_providers"] = rosterJson;
+    envelope["candidate_set_digest"] = candidateSetDigest;
+    envelope["candidate_artifacts"] = identities;
+    envelope["candidate_artifact_set_digest"] = candidateArtifactInventory->digest;
+    envelope["rtt_pairs"] = rttPairs;
+    envelope["goodput_edges"] = goodputEdges;
+    envelope["probe_scope_digest"] = probeScopeDigest;
+    envelope["requester_identity"] = requesterIdentity;
+    result.candidateArtifacts = identities;
+    result.candidateProviders = roster;
+    result.candidateSetDigest = candidateSetDigest;
+    result.candidateArtifactSetDigest = candidateArtifactInventory->digest;
+    result.allowedRttPairs = rttPairs;
+    result.allowedGoodputEdges = goodputEdges;
+    result.probeScopeDigest = probeScopeDigest;
+    result.requesterIdentity = requesterIdentity;
+  }
   if (model.artifactReference)
     envelope["model_reference"] = nativeParseJson(model.artifactReference->canonicalJson());
   if (recovery) {

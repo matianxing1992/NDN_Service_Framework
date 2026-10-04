@@ -1,6 +1,7 @@
 """External OS/host supervision only; these tests make no native DI PASS claim."""
 import importlib.util
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -17,10 +18,7 @@ spec.loader.exec_module(guard)
 
 
 def limits(**updates):
-    return {"minAvailableBytes": 1, "minSwapFreeBytes": 1,
-            "minDiskFreeBytes": 1, "maxOwnedSwapBytes": 2**60,
-            "maxSwapIoBytes": 2**60, "timeoutSeconds": 3,
-            "stopGraceSeconds": 0.1, **updates}
+    return {"timeoutSeconds": 3, "stopGraceSeconds": 0.1, **updates}
 
 
 def run(tmp_path, code, **overrides):
@@ -33,17 +31,49 @@ def run(tmp_path, code, **overrides):
 @pytest.mark.parametrize("value", [True, 0, -1, float("nan"), float("inf"), 2**1000])
 def test_invalid_limits(value):
     with pytest.raises(ValueError):
-        guard.validate_limits({"minAvailableBytes": value})
+        guard.validate_limits({"timeoutSeconds": value})
 
 
-def test_preflight_rejects_without_starting_child(tmp_path):
-    result = run(tmp_path, "open('started', 'w').close()", minAvailableBytes=2**62)
-    assert result["boundary"] == "RESOURCE_BOUNDARY:MemAvailable"
-    assert result["returncode"] is None
-    assert not (tmp_path / "started").exists()
+def test_process_scan_tolerates_pid_exit_without_nested_proc_glob(monkeypatch):
+    stat = Path(f"/proc/{os.getpid()}/stat").read_text()
+    directories = [Path("/proc/100"), Path("/proc/200"), Path("/proc/self")]
+    original_iterdir = Path.iterdir
+    original_read = Path.read_text
+
+    def iterate(path):
+        if path == Path("/proc"):
+            return iter(directories)
+        return original_iterdir(path)
+
+    def read(path, *args, **kwargs):
+        if path == Path("/proc/100/stat"):
+            raise ProcessLookupError("process exited during observation")
+        if path == Path("/proc/200/stat"):
+            return stat
+        return original_read(path, *args, **kwargs)
+
+    def reject_nested_glob(path, pattern):
+        raise ProcessLookupError("nested /proc traversal raced with exit")
+
+    monkeypatch.setattr(Path, "iterdir", iterate)
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(Path, "glob", reject_nested_glob)
+    table = guard.process_table()
+    assert list(table) == [200]
+    assert table[200]["pid"] == 200
+    assert table[200]["start"] > 0
 
 
-def test_normal_child_and_actual_host_samples(tmp_path):
+def test_host_capacity_thresholds_do_not_prevent_workload_start(tmp_path):
+    result = run(tmp_path, "open('started', 'w').close()",
+                 minAvailableBytes=2**62, minDiskFreeBytes=2**62,
+                 minSwapFreeBytes=2**62)
+    assert result["boundary"] is None
+    assert result["returncode"] == 0
+    assert (tmp_path / "started").exists()
+
+
+def test_normal_child_records_owned_process_lifecycle_only(tmp_path):
     original_handler = signal.getsignal(signal.SIGTERM)
     result = run(tmp_path, "print('ok')")
     assert result["returncode"] == 0
@@ -53,74 +83,40 @@ def test_normal_child_and_actual_host_samples(tmp_path):
     records = [json.loads(line) for line in (tmp_path / "samples.jsonl").read_text().splitlines()]
     assert records[0]["phase"] == "admission"
     assert records[-1]["phase"] == "drained"
-    assert all(row["availableBytes"] > 0 and row["diskFreeBytes"] > 0 for row in records)
-    assert all("swapIoDeltaBytes" in row and "ownedSwapDeltaBytes" in row and
-               "swapFreeBytes" in row for row in records)
+    assert all("availableBytes" not in row and "diskFreeBytes" not in row and
+               "swapFreeBytes" not in row for row in records)
     assert all(row["nativeCounters"] is None for row in records)
 
 
-def test_unowned_global_swap_activity_does_not_stop_workload(tmp_path, monkeypatch):
-    original = guard.host_sample
+def test_host_capacity_sample_does_not_read_proc_or_disk(tmp_path, monkeypatch):
+    original = Path.read_text
 
-    def noisy_host(path):
-        sample = original(path)
-        sample["swapIoBytes"] += 16 * 1024 * 1024
-        return sample
+    def deny_host_capacity(path, *args, **kwargs):
+        if str(path) in {"/proc/meminfo", "/proc/pressure/memory", "/proc/vmstat"}:
+            raise AssertionError("host capacity must not be inspected")
+        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(guard, "host_sample", noisy_host)
-    monkeypatch.setattr(guard, "owned_swap_bytes", lambda rows: 0)
-    result = run(tmp_path, "print('ok')", maxOwnedSwapBytes=1)
+    monkeypatch.setattr(Path, "read_text", deny_host_capacity)
+    sample = guard.host_sample(tmp_path)
+    assert sample == {}
+
+
+def test_legacy_swap_limits_are_ignored_without_reading_swap(tmp_path, monkeypatch):
+    original = Path.read_text
+
+    def reject_swap_reads(path, *args, **kwargs):
+        path_text = str(path)
+        if path_text == "/proc/vmstat" or (
+                path_text.startswith("/proc/") and path_text.endswith("/status")):
+            raise AssertionError("experiment supervisor must not read swap state")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_swap_reads)
+    result = run(tmp_path, "open('started', 'w').close()",
+                 minSwapFreeBytes=1, maxOwnedSwapBytes=1, maxSwapIoBytes=1)
     assert result["boundary"] is None
     assert result["returncode"] == 0
-
-
-def test_owned_swap_growth_is_diagnostic_only(tmp_path, monkeypatch):
-    calls = 0
-
-    def owned_swap(rows):
-        nonlocal calls
-        calls += 1
-        return 0 if calls < 3 else 2
-
-    monkeypatch.setattr(guard, "owned_swap_bytes", owned_swap)
-    result = run(tmp_path, "import time; time.sleep(60)",
-                 maxOwnedSwapBytes=1, timeoutSeconds=0.3)
-    assert result["boundary"] == "DEADLINE_BOUNDARY"
-    assert result["cleanup"] == "PASS"
-
-
-def test_swap_free_floor_stops_workload(tmp_path, monkeypatch):
-    original = guard.host_sample
-
-    def depleted_swap(path):
-        sample = original(path)
-        sample["swapFreeBytes"] = 0
-        return sample
-
-    monkeypatch.setattr(guard, "host_sample", depleted_swap)
-    result = run(tmp_path, "open('started', 'w').close()", minSwapFreeBytes=1)
-    assert result["boundary"] == "RESOURCE_BOUNDARY:SwapFree"
-    assert not (tmp_path / "started").exists()
-
-
-def test_runtime_resource_stop_reaps_real_child(tmp_path, monkeypatch):
-    original = guard.host_sample
-    calls = 0
-
-    def depleted(path):
-        nonlocal calls
-        calls += 1
-        sample = original(path)
-        if calls >= 3:
-            sample["availableBytes"] = 0
-        return sample
-
-    monkeypatch.setattr(guard, "host_sample", depleted)
-    result = run(tmp_path, "import time; time.sleep(60)")
-    assert result["boundary"] == "RESOURCE_BOUNDARY:MemAvailable"
-    assert result["returncode"] is not None
-    assert result["cleanup"] == "PASS"
-    assert result["remainingProcesses"] == []
+    assert (tmp_path / "started").exists()
 
 
 def test_deadline_kills_signal_resistant_child(tmp_path):
@@ -140,24 +136,6 @@ def test_parent_exit_does_not_hide_live_descendant(tmp_path):
                  "time.sleep(0.1)")
     assert result["returncode"] == 0
     assert result["boundary"] == "CHILD_PROCESS_LEAK"
-    assert result["cleanup"] == "PASS"
-
-
-def test_sampling_error_stops_child_instead_of_allowing_run(tmp_path, monkeypatch):
-    original = guard.host_sample
-    calls = 0
-
-    def broken(path):
-        nonlocal calls
-        calls += 1
-        if calls > 1:
-            raise OSError("probe failed")
-        return original(path)
-
-    monkeypatch.setattr(guard, "host_sample", broken)
-    result = run(tmp_path, "import time; time.sleep(60)")
-    assert result["boundary"] == "RESOURCE_MONITOR_ERROR:OSError"
-    assert result["returncode"] is not None
     assert result["cleanup"] == "PASS"
 
 
@@ -191,10 +169,12 @@ def test_double_fork_setsid_cannot_escape_or_poison_unrelated_child(tmp_path):
         unrelated.wait(timeout=3)
 
 
-def test_disk_floor_prevents_workload(tmp_path):
-    result = run(tmp_path, "open('started','w').close()", minDiskFreeBytes=2**62)
-    assert result["boundary"] == "RESOURCE_BOUNDARY:diskFree"
-    assert not (tmp_path / "started").exists()
+def test_memory_and_disk_floors_are_ignored_in_legacy_profiles(tmp_path):
+    result = run(tmp_path, "open('started','w').close()",
+                 minAvailableBytes=2**62, minDiskFreeBytes=2**62)
+    assert result["boundary"] is None
+    assert result["returncode"] == 0
+    assert (tmp_path / "started").exists()
 
 
 def test_broken_process_sampler_emergency_reaps_workload(tmp_path, monkeypatch):
@@ -238,7 +218,7 @@ def test_supervisor_sigterm_cancels_and_drains(tmp_path):
             proc.wait(timeout=5)
 
 
-def test_direct_cli_admission_precedes_model_or_root_checks(tmp_path):
+def test_direct_cli_ignores_host_capacity_and_reports_actual_input_failure(tmp_path):
     completed = subprocess.run(
         [sys.executable, str(ROOT / "Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py"),
          "--stage-manifest", str(tmp_path / "missing-model.json"),
@@ -248,8 +228,8 @@ def test_direct_cli_admission_precedes_model_or_root_checks(tmp_path):
         text=True, capture_output=True, timeout=10)
     assert completed.returncode == 1, completed.stderr
     receipt = json.loads((tmp_path / "run/supervisor.json").read_text())
-    assert receipt["boundary"] == "RESOURCE_BOUNDARY:MemAvailable"
-    assert receipt["returncode"] is None
+    assert receipt["boundary"] is None
+    assert receipt["returncode"] not in (None, 0)
     assert not (tmp_path / "run/requester").exists()
     assert not (tmp_path / "run/run-record.json").exists()
     assert (tmp_path / "run").stat().st_mode & 0o777 == 0o700

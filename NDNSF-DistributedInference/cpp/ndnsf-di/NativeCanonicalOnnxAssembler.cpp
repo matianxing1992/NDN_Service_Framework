@@ -673,6 +673,23 @@ bindNativeRunnerOutputScopes(const NativeSelectionProjectionV3& projection,
       roleSpec.outputs[index].scope;
 }
 
+NativeProviderResidencyIdentityV4
+placementResidencyIdentity(const NativeSelectionProjectionV3& projection)
+{
+  auto deviceSet = projection.assembly.deviceSet;
+  std::sort(deviceSet.begin(), deviceSet.end());
+  return NativeProviderResidencyIdentityV4{
+    projection.assembly.artifactDigest,
+    projection.assembly.modelManifestDigest,
+    projection.assembly.graphDigest,
+    projection.assembly.role.empty() ? projection.assembly.selectedRole
+                                     : projection.assembly.role,
+    projection.assembly.rank,
+    projection.assembly.backend,
+    projection.assembly.protectionEpoch,
+    std::move(deviceSet)};
+}
+
 } // namespace
 
 namespace {
@@ -691,6 +708,332 @@ eraseProtectedPlaintextCacheDirectory(const std::filesystem::path& directory) no
 
 } // namespace
 
+struct NativePersistentRecipeResidencyIndex::State
+{
+  std::filesystem::path cacheRoot;
+  std::filesystem::path indexRoot;
+  mutable std::mutex mutex;
+  bool complete = false;
+  std::size_t pendingUpdates = 0;
+};
+
+namespace {
+
+constexpr std::size_t MaxPersistentResidencyEntries = 16;
+constexpr std::uint64_t MaxPersistentResidencyIndexBytes = 64 * 1024;
+constexpr const char* PersistentResidencySchema =
+  "ndnsf-di-persistent-residency-index-v1";
+constexpr const char* PersistentResidencyMarker =
+  "ndnsf-di-persistent-residency-complete-v1";
+
+std::filesystem::path
+persistentResidencyIndexPath(const std::filesystem::path& indexRoot,
+                             const NativeJson& candidate)
+{
+  const auto encoded = nativeCanonicalJson(candidate);
+  const auto digest = sha256Hex(std::vector<std::uint8_t>(encoded.begin(), encoded.end()));
+  return indexRoot / (digest.substr(7) + ".json");
+}
+
+bool
+validResidencyCandidate(const NativeJson& candidate)
+{
+  if (!candidate.is_object() || candidate.size() != 7)
+    return false;
+  for (const auto* field : {"artifact_digest", "model_manifest_digest", "graph_digest",
+                            "role", "backend", "protection_epoch"}) {
+    if (!candidate.contains(field) || !candidate.at(field).is_string() ||
+        candidate.at(field).get<std::string>().empty())
+      return false;
+  }
+  if (!candidate.contains("rank") || !candidate.at("rank").is_number_unsigned())
+    return false;
+  return true;
+}
+
+std::string
+jsonString(const NativeJson& value, const char* field)
+{
+  if (!value.is_object() || !value.contains(field) || !value.at(field).is_string())
+    return {};
+  return value.at(field).get<std::string>();
+}
+
+} // namespace
+
+NativePersistentRecipeResidencyIndex::NativePersistentRecipeResidencyIndex(
+  std::filesystem::path cacheRoot)
+  : m_state(std::make_shared<State>())
+{
+  if (cacheRoot.empty())
+    return;
+  try {
+    m_state->cacheRoot = std::filesystem::absolute(cacheRoot).lexically_normal();
+    m_state->indexRoot = m_state->cacheRoot / ".placement-residency-v1";
+    const auto marker = m_state->indexRoot / "owner.complete";
+    std::error_code error;
+    if (std::filesystem::is_regular_file(marker, error) && !error) {
+      const auto bytes = readFile(marker, 128);
+      const std::string value(bytes.begin(), bytes.end());
+      m_state->complete = value == PersistentResidencyMarker;
+      return;
+    }
+    const bool hasLegacyCache =
+      std::filesystem::exists(m_state->cacheRoot / "assembled", error) ||
+      std::filesystem::exists(m_state->cacheRoot / "protected", error);
+    if (error || hasLegacyCache)
+      return;
+    std::filesystem::create_directories(m_state->indexRoot);
+    const std::string markerValue = PersistentResidencyMarker;
+    writeFileAtomic(marker, std::vector<std::uint8_t>(markerValue.begin(), markerValue.end()));
+    m_state->complete = true;
+  }
+  catch (...) {
+    m_state->complete = false;
+  }
+}
+
+bool
+NativePersistentRecipeResidencyIndex::beginUpdate() noexcept
+{
+  std::lock_guard<std::mutex> lock(m_state->mutex);
+  if (!m_state->complete)
+    return false;
+  try {
+    const std::string markerValue = "ndnsf-di-persistent-residency-incomplete-v1";
+    writeFileAtomic(m_state->indexRoot / "owner.complete",
+      std::vector<std::uint8_t>(markerValue.begin(), markerValue.end()));
+    ++m_state->pendingUpdates;
+    return true;
+  }
+  catch (...) {
+    m_state->complete = false;
+    return false;
+  }
+}
+
+bool
+NativePersistentRecipeResidencyIndex::record(
+  const NativeProviderResidencyIdentityV4& identity,
+  const std::filesystem::path& directory) noexcept
+{
+  std::lock_guard<std::mutex> lock(m_state->mutex);
+  if (!m_state->complete || m_state->pendingUpdates == 0 || !identity.isValid()) {
+    m_state->complete = false;
+    return false;
+  }
+  try {
+    requireAssemblyDirectoryUnderCacheRoot(m_state->cacheRoot, directory);
+    const auto relative = std::filesystem::relative(directory, m_state->cacheRoot);
+    if (relative.empty() || relative.is_absolute() ||
+        relative.lexically_normal() != relative ||
+        std::any_of(relative.begin(), relative.end(), [] (const auto& component) {
+          return component == "..";
+        })) {
+      m_state->complete = false;
+      return false;
+    }
+    const auto manifest = nativeParseJson([&] {
+      const auto bytes = readFile(directory / "manifest.json", MaxAssemblyMetadataBytes);
+      return std::string(bytes.begin(), bytes.end());
+    }());
+    if (jsonString(manifest, "artifactDigest") != identity.artifactDigest ||
+        jsonString(manifest, "modelManifestDigest") != identity.modelManifestDigest ||
+        jsonString(manifest, "graphDigest") != identity.graphDigest ||
+        jsonString(manifest, "role") != identity.role ||
+        !manifest.contains("rank") || manifest.at("rank") != identity.rank ||
+        jsonString(manifest, "recipeDigest").empty()) {
+      m_state->complete = false;
+      return false;
+    }
+
+    const auto candidate = identity.candidateArtifact();
+    const auto indexPath = persistentResidencyIndexPath(m_state->indexRoot, candidate);
+    NativeJson index = NativeJson{{"schema", PersistentResidencySchema},
+      {"candidate_artifact", candidate}, {"entries", NativeJson::array()}};
+    std::error_code error;
+    if (std::filesystem::exists(indexPath, error)) {
+      if (error) {
+        m_state->complete = false;
+        return false;
+      }
+      const auto bytes = readFile(indexPath, MaxPersistentResidencyIndexBytes);
+      index = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+      if (!index.is_object() || jsonString(index, "schema") != PersistentResidencySchema ||
+          !index.contains("candidate_artifact") ||
+          index.at("candidate_artifact") != candidate ||
+          !index.contains("entries") || !index.at("entries").is_array() ||
+          index.at("entries").size() > MaxPersistentResidencyEntries) {
+        m_state->complete = false;
+        return false;
+      }
+    }
+    auto& entries = index["entries"];
+    const auto relativeText = relative.generic_string();
+    const auto existing = std::find_if(entries.begin(), entries.end(),
+      [&relativeText, &identity] (const NativeJson& item) {
+        return jsonString(item, "directory") == relativeText &&
+          item.contains("device_set") && item.at("device_set") == identity.deviceSet;
+      });
+    if (existing == entries.end()) {
+      if (entries.size() >= MaxPersistentResidencyEntries) {
+        m_state->complete = false;
+        return false;
+      }
+      entries.push_back(NativeJson{{"directory", relativeText},
+        {"device_set", identity.deviceSet},
+        {"recipe_digest", jsonString(manifest, "recipeDigest")}});
+    }
+    const auto serialized = nativeCanonicalJson(index);
+    if (serialized.size() > MaxPersistentResidencyIndexBytes) {
+      m_state->complete = false;
+      return false;
+    }
+    const std::vector<std::uint8_t> bytes(serialized.begin(), serialized.end());
+    std::filesystem::create_directories(m_state->indexRoot);
+    writeFileAtomic(indexPath, bytes);
+    --m_state->pendingUpdates;
+    if (m_state->pendingUpdates == 0) {
+      const std::string markerValue = PersistentResidencyMarker;
+      writeFileAtomic(m_state->indexRoot / "owner.complete",
+        std::vector<std::uint8_t>(markerValue.begin(), markerValue.end()));
+    }
+    return true;
+  }
+  catch (...) {
+    m_state->complete = false;
+    return false;
+  }
+}
+
+NativeProviderResidencyOwnerResultV4
+NativePersistentRecipeResidencyIndex::queryPlacementResidencyV4(
+  const std::vector<NativeJson>& candidateArtifacts,
+  const std::string& processEpoch,
+  const std::uint64_t capturedAtMs,
+  const std::uint64_t expiresAtMs) const
+{
+  NativeProviderResidencyOwnerResultV4 result{
+    NativeProviderResidencyOwnerV4::PersistentRecipeCache, false, {}};
+  if (candidateArtifacts.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS ||
+      processEpoch.empty() || expiresAtMs <= capturedAtMs ||
+      !std::all_of(candidateArtifacts.begin(), candidateArtifacts.end(),
+                   validResidencyCandidate))
+    return result;
+  std::lock_guard<std::mutex> lock(m_state->mutex);
+  if (!m_state->complete || m_state->pendingUpdates != 0)
+    return result;
+  result.complete = true;
+  for (const auto& candidate : candidateArtifacts) {
+    const auto indexPath = persistentResidencyIndexPath(m_state->indexRoot, candidate);
+    std::error_code error;
+    if (!std::filesystem::exists(indexPath, error)) {
+      if (error) {
+        result.complete = false;
+        result.rows.clear();
+        return result;
+      }
+      continue;
+    }
+    try {
+      const auto bytes = readFile(indexPath, MaxPersistentResidencyIndexBytes);
+      const auto index = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+      if (!index.is_object() || jsonString(index, "schema") != PersistentResidencySchema ||
+          !index.contains("candidate_artifact") ||
+          index.at("candidate_artifact") != candidate ||
+          !index.contains("entries") || !index.at("entries").is_array() ||
+          index.at("entries").size() > MaxPersistentResidencyEntries) {
+        result.complete = false;
+        result.rows.clear();
+        return result;
+      }
+      for (const auto& item : index.at("entries")) {
+        if (!item.is_object() || !item.contains("directory") ||
+            !item.at("directory").is_string() || !item.contains("device_set") ||
+            !item.at("device_set").is_array() ||
+            !item.contains("recipe_digest") || !item.at("recipe_digest").is_string()) {
+          result.complete = false;
+          result.rows.clear();
+          return result;
+        }
+        const std::filesystem::path relative(item.at("directory").get<std::string>());
+        if (relative.empty() || relative.is_absolute() ||
+            relative.lexically_normal() != relative ||
+            std::any_of(relative.begin(), relative.end(), [] (const auto& component) {
+              return component == "..";
+            })) {
+          result.complete = false;
+          result.rows.clear();
+          return result;
+        }
+        const auto directory = m_state->cacheRoot / relative;
+        requireAssemblyDirectoryUnderCacheRoot(m_state->cacheRoot, directory);
+        const auto manifestPath = directory / "manifest.json";
+        if (!std::filesystem::is_regular_file(manifestPath))
+          continue;
+        const auto manifestBytes = readFile(manifestPath, MaxAssemblyMetadataBytes);
+        const auto manifest = nativeParseJson(
+          std::string(manifestBytes.begin(), manifestBytes.end()));
+        if (jsonString(manifest, "artifactDigest") !=
+              candidate.at("artifact_digest").get<std::string>() ||
+            jsonString(manifest, "modelManifestDigest") !=
+              candidate.at("model_manifest_digest").get<std::string>() ||
+            jsonString(manifest, "graphDigest") !=
+              candidate.at("graph_digest").get<std::string>() ||
+            jsonString(manifest, "role") != candidate.at("role").get<std::string>() ||
+            !manifest.contains("rank") || manifest.at("rank") != candidate.at("rank") ||
+            jsonString(manifest, "recipeDigest") !=
+              item.at("recipe_digest").get<std::string>()) {
+          result.complete = false;
+          result.rows.clear();
+          return result;
+        }
+        auto modelPath = directory / "model.onnx";
+        std::error_code modelError;
+        if (!std::filesystem::is_regular_file(modelPath, modelError) || modelError) {
+          modelPath = directory / "model.onnx.cipher";
+          if (!std::filesystem::is_regular_file(modelPath, modelError) || modelError ||
+              !std::filesystem::is_regular_file(directory / "manifest.signature"))
+            continue;
+        }
+        requireAssemblyDirectoryUnderCacheRoot(m_state->cacheRoot, modelPath);
+        NativeProviderResidencyIdentityV4 identity{
+          candidate.at("artifact_digest").get<std::string>(),
+          candidate.at("model_manifest_digest").get<std::string>(),
+          candidate.at("graph_digest").get<std::string>(),
+          candidate.at("role").get<std::string>(),
+          candidate.at("rank").get<std::uint64_t>(),
+          candidate.at("backend").get<std::string>(),
+          candidate.at("protection_epoch").get<std::string>(),
+          item.at("device_set").get<std::vector<std::string>>()};
+        if (!identity.isValid()) {
+          result.complete = false;
+          result.rows.clear();
+          return result;
+        }
+        const auto relativeText = relative.generic_string();
+        const auto generationDigest = sha256Hex(
+          std::vector<std::uint8_t>(relativeText.begin(), relativeText.end()));
+        auto row = identity.makeRow(
+          "ASSEMBLED", processEpoch, capturedAtMs, expiresAtMs,
+          std::uint64_t{0}, 0.0, 0.0, processEpoch + ":" + generationDigest);
+        if (std::find(result.rows.begin(), result.rows.end(), row) == result.rows.end())
+          result.rows.push_back(std::move(row));
+      }
+    }
+    catch (...) {
+      result.complete = false;
+      result.rows.clear();
+      return result;
+    }
+  }
+  std::sort(result.rows.begin(), result.rows.end(), [] (const NativeJson& left,
+                                                        const NativeJson& right) {
+    return nativeCanonicalJson(left) < nativeCanonicalJson(right);
+  });
+  return result;
+}
+
 struct NativeProtectedPlaintextCache::Shared
 {
   struct Entry
@@ -703,6 +1046,8 @@ struct NativeProtectedPlaintextCache::Shared
     bool building = false;
     bool ready = false;
     bool invalidated = false;
+    std::vector<NativeProviderResidencyIdentityV4> residencyIdentities;
+    bool residencyIdentitiesComplete = true;
   };
 
   std::filesystem::path cacheDir;
@@ -793,7 +1138,8 @@ NativeProtectedPlaintextCache::acquire(
   const NativeProtectedPlaintextCacheKey& key,
   const NativeRequestControl& control,
   const std::uint64_t maxPlaintextBytes,
-  Build build)
+  Build build,
+  std::optional<NativeProviderResidencyIdentityV4> residencyIdentity)
 {
   if (maxPlaintextBytes == 0 || !build)
     throw std::invalid_argument("protected plaintext cache build is invalid");
@@ -804,6 +1150,24 @@ NativeProtectedPlaintextCache::acquire(
   const auto directory = m_shared->cacheDir / ".staging" /
     (std::string("protected-plaintext-") + keyDigest.substr(7));
   const auto plaintextPath = directory / "model.onnx";
+  const auto rememberIdentity = [&residencyIdentity] (Shared::Entry& entry) {
+    if (!residencyIdentity || !residencyIdentity->isValid()) {
+      entry.residencyIdentitiesComplete = false;
+      return;
+    }
+    const auto duplicate = std::any_of(entry.residencyIdentities.begin(),
+      entry.residencyIdentities.end(), [&residencyIdentity] (const auto& existing) {
+        return existing.candidateArtifact() == residencyIdentity->candidateArtifact() &&
+          existing.deviceSet == residencyIdentity->deviceSet;
+      });
+    if (duplicate)
+      return;
+    if (entry.residencyIdentities.size() >= MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS) {
+      entry.residencyIdentitiesComplete = false;
+      return;
+    }
+    entry.residencyIdentities.push_back(*residencyIdentity);
+  };
 
   for (;;) {
     std::shared_ptr<Shared::Entry> entry;
@@ -834,6 +1198,7 @@ NativeProtectedPlaintextCache::acquire(
         const auto size = std::filesystem::file_size(entry->plaintextPath, error);
         if (entry->ready && !error && size != 0 && size <= maxPlaintextBytes &&
             std::filesystem::is_regular_file(entry->plaintextPath, error) && !error) {
+          rememberIdentity(*entry);
           ++entry->leases;
           entry->lastUse = ++m_shared->useSequence;
           hit = true;
@@ -869,6 +1234,7 @@ NativeProtectedPlaintextCache::acquire(
         entry->leases = 1;
         entry->lastUse = ++m_shared->useSequence;
         entry->building = true;
+        rememberIdentity(*entry);
         m_shared->entries.emplace(keyText, entry);
         creator = true;
       }
@@ -950,6 +1316,65 @@ NativeProtectedPlaintextCache::acquire(
     return Lease(plaintextPath, existing,
                  std::make_shared<Release>(m_shared, keyText));
   }
+}
+
+NativeProviderResidencyOwnerResultV4
+NativeProtectedPlaintextCache::queryPlacementResidencyV4(
+  const std::vector<NativeJson>& candidateArtifacts,
+  const std::string& processEpoch,
+  const std::uint64_t capturedAtMs,
+  const std::uint64_t expiresAtMs) const
+{
+  NativeProviderResidencyOwnerResultV4 result{
+    NativeProviderResidencyOwnerV4::ProtectedPlaintextCache, false, {}};
+  if (candidateArtifacts.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS ||
+      processEpoch.empty() || expiresAtMs <= capturedAtMs)
+    return result;
+  for (const auto& candidate : candidateArtifacts) {
+    if (!candidate.is_object() || candidate.size() != 7)
+      return result;
+  }
+
+  const auto shared = m_shared;
+  std::lock_guard<std::mutex> lock(shared->mutex);
+  if (shared->stopped)
+    return result;
+  result.complete = true;
+  for (const auto& item : shared->entries) {
+    const auto& entry = *item.second;
+    if (entry.building || !entry.ready || entry.invalidated)
+      continue;
+    if (!entry.residencyIdentitiesComplete || entry.residencyIdentities.empty()) {
+      result.complete = false;
+      result.rows.clear();
+      return result;
+    }
+    std::error_code error;
+    const auto size = std::filesystem::file_size(entry.plaintextPath, error);
+    if (error || size == 0 ||
+        !std::filesystem::is_regular_file(entry.plaintextPath, error) || error)
+      continue;
+    for (const auto& identity : entry.residencyIdentities) {
+      const bool matches = std::any_of(candidateArtifacts.begin(), candidateArtifacts.end(),
+        [&identity] (const NativeJson& candidate) {
+          return identity.matchesCandidateArtifact(candidate);
+        });
+      if (!matches)
+        continue;
+      const auto privateGeneration = sha256Hex(
+        std::vector<std::uint8_t>(entry.key.begin(), entry.key.end()));
+      auto row = identity.makeRow(
+        "ASSEMBLED", processEpoch, capturedAtMs, expiresAtMs,
+        std::uint64_t{0}, 0.0, 0.0, processEpoch + ":" + privateGeneration);
+      if (std::find(result.rows.begin(), result.rows.end(), row) == result.rows.end())
+        result.rows.push_back(std::move(row));
+    }
+  }
+  std::sort(result.rows.begin(), result.rows.end(), [] (const NativeJson& left,
+                                                        const NativeJson& right) {
+    return nativeCanonicalJson(left) < nativeCanonicalJson(right);
+  });
+  return result;
 }
 
 void
@@ -1380,6 +1805,10 @@ materializeNativeCanonicalOnnxCacheHit(
     options.roleAssemblySpecDigest,
     sha256Hex(std::vector<std::uint8_t>(profile.begin(), profile.end())),
     "MODEL_PROTO", keyReference->digest()};
+  auto residencyIdentity = placementResidencyIdentity(projection);
+  std::optional<NativeProviderResidencyIdentityV4> residencyIdentityOption;
+  if (residencyIdentity.isValid())
+    residencyIdentityOption = std::move(residencyIdentity);
   auto lease = options.protectedPlaintextCache->acquire(
     cacheKey, control, projection.assembly.maxAssembledBytes,
     [&options, &control, ciphertextPath, context,
@@ -1396,7 +1825,7 @@ materializeNativeCanonicalOnnxCacheHit(
           throw std::runtime_error("DI_PROVIDER_ARTIFACT_CIPHERTEXT_DIGEST_MISMATCH");
       });
       control.requireActive();
-    });
+    }, std::move(residencyIdentityOption));
   spec.path = lease.path().string();
   spec.metadata["protectedPlaintextCacheKey"] = cacheKey.canonicalKey();
   if (options.reportProgress)
@@ -2446,6 +2875,7 @@ prepareNativeCanonicalOnnxRole(
     std::filesystem::path finalModel;
     std::filesystem::path encryptedArtifactPath;
     std::string encryptedArtifactDigest;
+    bool residencyIndexUpdateStarted = false;
     {
     logAssemblyProgressLine(projection, "CACHE_FINALIZATION_BEGIN", 0.92,
                             static_cast<std::uint64_t>(modelBytes.size()),
@@ -2463,6 +2893,9 @@ prepareNativeCanonicalOnnxRole(
          : protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
                                       protectedKeyReferenceDigest));
     requireAssemblyDirectoryUnderCacheRoot(options.cacheDir, finalDir);
+    if (options.persistentRecipeResidencyIndex)
+      residencyIndexUpdateStarted =
+        options.persistentRecipeResidencyIndex->beginUpdate();
     const bool finalDirWasAbsent = !std::filesystem::exists(finalDir);
     std::filesystem::create_directories(finalDir);
     if (finalDirWasAbsent) {
@@ -2564,6 +2997,9 @@ prepareNativeCanonicalOnnxRole(
     if (!std::filesystem::exists(finalSignature)) {
       writeFileAtomic(finalSignature, signatureBytes);
     }
+    if (residencyIndexUpdateStarted)
+      options.persistentRecipeResidencyIndex->record(
+        placementResidencyIdentity(projection), finalDir);
     logAssemblyProgressLine(projection, "CACHE_FINALIZATION_DONE", 0.98,
                             static_cast<std::uint64_t>(modelBytes.size()),
                             "artifact-files");

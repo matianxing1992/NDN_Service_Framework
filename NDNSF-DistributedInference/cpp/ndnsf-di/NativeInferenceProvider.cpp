@@ -1,10 +1,16 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 
 #include <ndn-cxx/name.hpp>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <limits>
+#include <set>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace ndnsf::di {
@@ -46,6 +52,278 @@ struct NativeServiceRegistration::State
 };
 
 namespace {
+
+constexpr std::size_t MAX_PLACEMENT_PROBE_REQUEST_BYTES = 4096;
+constexpr std::size_t MAX_PLACEMENT_PROBE_RESPONSE_BYTES = NATIVE_PLACEMENT_PROBE_RESPONSE_MAX_BYTES;
+constexpr std::size_t MAX_PLACEMENT_PROBE_ROSTER = 17;
+constexpr std::size_t MAX_PLACEMENT_PROBE_EDGES = 16;
+constexpr std::size_t MAX_PLACEMENT_PROBE_RESPONSE_ROWS = 16;
+constexpr std::uint64_t MAX_PLACEMENT_PROBE_BUDGET_MS = 5000;
+constexpr std::uint64_t MAX_PLACEMENT_PROBE_SAMPLE_AGE_MS = 5000;
+
+bool
+isCanonicalProviderName(const std::string& value)
+{
+  if (value.empty() || value.front() != '/') {
+    return false;
+  }
+  try {
+    const ndn::Name name(value);
+    return !name.empty() && name.toUri() == value;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
+bool
+isSha256Digest(const std::string& value)
+{
+  return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
+    std::all_of(value.begin() + 7, value.end(), [] (char ch) {
+      return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+    });
+}
+
+std::uint64_t
+readPlacementProbeUint(const NativeJson& value, const char* field)
+{
+  if (!value.is_object() || !value.contains(field)) {
+    throw std::invalid_argument("missing placement probe integer");
+  }
+  const auto& item = value.at(field);
+  if (item.is_number_unsigned()) {
+    return item.get<std::uint64_t>();
+  }
+  if (!item.is_number_integer() || item.get<std::int64_t>() < 0) {
+    throw std::invalid_argument("invalid placement probe integer");
+  }
+  return static_cast<std::uint64_t>(item.get<std::int64_t>());
+}
+
+std::string
+readPlacementProbeString(const NativeJson& value, const char* field)
+{
+  if (!value.is_object() || !value.contains(field) ||
+      !value.at(field).is_string()) {
+    throw std::invalid_argument("missing placement probe string");
+  }
+  return value.at(field).get<std::string>();
+}
+
+void
+requirePlacementProbeKeys(const NativeJson& value,
+                          std::initializer_list<const char*> expected)
+{
+  if (!value.is_object() || value.size() != expected.size()) {
+    throw std::invalid_argument("placement probe request has wrong fields");
+  }
+  for (const auto* field : expected) {
+    if (!value.contains(field)) {
+      throw std::invalid_argument("placement probe request is incomplete");
+    }
+  }
+}
+
+using PlacementProbePair = std::pair<std::string, std::string>;
+
+std::vector<PlacementProbePair>
+readPlacementProbePairs(const NativeJson& value, const char* field,
+                        const std::string& localProvider,
+                        const std::set<std::string>& roster,
+                        bool rttPairs)
+{
+  if (!value.is_object() || !value.contains(field) ||
+      !value.at(field).is_array() || value.at(field).size() >
+        MAX_PLACEMENT_PROBE_EDGES) {
+    throw std::invalid_argument("placement probe edge list exceeds bounds");
+  }
+  std::vector<PlacementProbePair> pairs;
+  pairs.reserve(value.at(field).size());
+  for (const auto& item : value.at(field)) {
+    if (!item.is_object() || item.size() != 2 ||
+        !item.contains("src_provider") || !item.contains("dst_provider") ||
+        !item.at("src_provider").is_string() ||
+        !item.at("dst_provider").is_string()) {
+      throw std::invalid_argument("placement probe edge is malformed");
+    }
+    const auto source = item.at("src_provider").get<std::string>();
+    const auto destination = item.at("dst_provider").get<std::string>();
+    if (!isCanonicalProviderName(source) ||
+        !isCanonicalProviderName(destination) || source == destination ||
+        !roster.count(source) || !roster.count(destination) ||
+        (rttPairs ? source != localProvider : destination != localProvider)) {
+      throw std::invalid_argument("placement probe edge is outside its scope");
+    }
+    const PlacementProbePair pair{source, destination};
+    if (!pairs.empty() && !(pairs.back() < pair)) {
+      throw std::invalid_argument("placement probe edges are not canonical");
+    }
+    pairs.push_back(pair);
+  }
+  return pairs;
+}
+
+NativeJson
+placementProbePairsJson(const std::vector<PlacementProbePair>& pairs)
+{
+  NativeJson result = NativeJson::array();
+  for (const auto& pair : pairs) {
+    result.push_back(NativeJson{{"src_provider", pair.first},
+                                {"dst_provider", pair.second}});
+  }
+  return result;
+}
+
+NativeJson
+placementProbeScopeIdentity(const std::string& requestId,
+                            std::uint64_t attempt,
+                            const std::string& requester,
+                            const std::string& observer,
+                            const std::string& service,
+                            const std::vector<std::string>& roster,
+                            const std::string& rosterDigest,
+                            const std::vector<PlacementProbePair>& rttPairs,
+                            const std::vector<PlacementProbePair>& goodputEdges,
+                            std::uint64_t deadlineMs,
+                            const std::string& intentNonce)
+{
+  return NativeJson{
+    {"schema", "ndnsf-di-placement-probe-scope-v1"},
+    {"request_id", requestId}, {"attempt", attempt},
+    {"requester_identity", requester}, {"observer_provider", observer},
+    {"service", service}, {"provider_roster", roster},
+    {"roster_digest", rosterDigest},
+    {"rtt_pairs", placementProbePairsJson(rttPairs)},
+    {"goodput_edges", placementProbePairsJson(goodputEdges)},
+    {"deadline_ms", deadlineMs}, {"intent_nonce", intentNonce}};
+}
+
+NativeJson
+placementProbeObservationJson(
+  const ndn_service_framework::NetworkTelemetrySnapshot& sample,
+  std::uint64_t deadlineMs)
+{
+  const auto observedAt = sample.lastUpdatedMs;
+  const auto sampleExpiry = observedAt >
+      std::numeric_limits<std::uint64_t>::max() - MAX_PLACEMENT_PROBE_SAMPLE_AGE_MS
+    ? std::numeric_limits<std::uint64_t>::max()
+    : observedAt + MAX_PLACEMENT_PROBE_SAMPLE_AGE_MS;
+  const auto expiresAt = std::min(deadlineMs, sampleExpiry);
+  const bool isRtt = sample.kind ==
+    ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt;
+  const double value = isRtt ? sample.rttMs : sample.goodputMbps;
+  if ((!isRtt && sample.kind !=
+         ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeGoodput) ||
+      !std::isfinite(value) || value < 0 || observedAt == 0 || expiresAt < observedAt) {
+    throw std::invalid_argument("placement probe sample is not encodable");
+  }
+  // RTT has no packet-train measurements. Keep its authenticated identity and
+  // freshness, without spending the bounded response on empty goodput fields.
+  if (isRtt) {
+    return NativeJson{
+      {"observer", sample.providerName.toUri()},
+      {"target", sample.peerName.toUri()}, {"kind", "active_probe_rtt"},
+      {"value", value}, {"observed_at_ms", observedAt},
+      {"expires_at_ms", expiresAt}, {"peer_boot_epoch", sample.peerBootEpoch},
+      {"data_name", sample.dataName.toUri()},
+      {"target_signature_validated", sample.targetSignatureValidated}};
+  }
+  NativeJson probeRtt = NativeJson::array();
+  for (const auto value : sample.probeRttMs)
+    probeRtt.push_back(value);
+  NativeJson interestGaps = NativeJson::array();
+  for (const auto value : sample.probeInterestGapsMs)
+    interestGaps.push_back(value);
+  NativeJson dataArrivalGaps = NativeJson::array();
+  for (const auto value : sample.probeDataArrivalGapsMs)
+    dataArrivalGaps.push_back(value);
+  NativeJson probeWireBytes = NativeJson::array();
+  for (const auto value : sample.probeDataWireBytes)
+    probeWireBytes.push_back(value);
+  NativeJson result{
+    {"observer", sample.providerName.toUri()},
+    {"target", sample.peerName.toUri()},
+    {"kind", isRtt ? "active_probe_rtt" : "active_probe_goodput"},
+    {"value", value}, {"observed_at_ms", observedAt},
+    {"expires_at_ms", expiresAt},
+    {"payload_bytes", sample.payloadBytes}, {"wire_bytes", sample.wireBytes},
+    {"elapsed_ms", sample.elapsedMs},
+    {"peer_boot_epoch", sample.peerBootEpoch},
+    {"data_name", sample.dataName.toUri()},
+    {"train_complete", sample.probeComplete},
+    {"target_signature_validated", sample.targetSignatureValidated},
+    {"probe_profile_validated", sample.probeSignatureValid},
+    {"received_segments", sample.receivedSegments},
+    {"sent_segments", sample.probeSegmentsSent},
+    {"probe_rtt_ms", std::move(probeRtt)},
+    {"probe_interest_gaps_ms", std::move(interestGaps)},
+    {"probe_data_arrival_gaps_ms", std::move(dataArrivalGaps)},
+    {"probe_data_wire_bytes", std::move(probeWireBytes)},
+    {"profile_digest", sample.probeProfileDigest}};
+  result.update(nativeProbeTrainRateMetadataV4(sample));
+  return result;
+}
+
+void
+dropPlacementProbeRow(ndnsf::di::ServiceProvider::PeerProbeCollection& collection,
+                      const ndn_service_framework::NetworkTelemetrySnapshot& row)
+{
+  if (row.kind == ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt) {
+    ++collection.omittedTargetCount;
+  }
+  else if (row.kind ==
+           ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeGoodput) {
+    ++collection.omittedGoodputEdgeCount;
+  }
+}
+
+bool
+isUsablePlacementProbeRow(
+  const ndn_service_framework::NetworkTelemetrySnapshot& sample)
+{
+  if (sample.kind == ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt) {
+    return sample.targetSignatureValidated && std::isfinite(sample.rttMs) &&
+           sample.rttMs > 0;
+  }
+  if (sample.kind ==
+      ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeGoodput) {
+    return sample.probeComplete && sample.targetSignatureValidated &&
+           sample.probeSegmentsSent == ndn_service_framework::NETWORK_PROBE_WARMED_SEGMENTS &&
+           sample.receivedSegments == ndn_service_framework::NETWORK_PROBE_WARMED_SEGMENTS && sample.payloadBytes > 0 &&
+           !sample.probeProfileDigest.empty() && std::isfinite(sample.goodputMbps) &&
+           sample.goodputMbps > 0 && std::isfinite(sample.elapsedMs) &&
+           sample.elapsedMs > 0;
+  }
+  return false;
+}
+
+NativeJson
+placementProbeResponseJson(
+  const std::string& requestId, std::uint64_t attempt,
+  const std::string& requester, const std::string& observer,
+  const std::string& service, const std::string& observerBootEpoch,
+  const std::string& scopeDigest, const std::string& intentNonce,
+  std::uint64_t deadlineMs, std::uint64_t completedAtMs,
+  const ndnsf::di::ServiceProvider::PeerProbeCollection& collection)
+{
+  NativeJson observations = NativeJson::array();
+  for (const auto& sample : collection.observations) {
+    observations.push_back(placementProbeObservationJson(sample, deadlineMs));
+  }
+  return NativeJson{
+    {"schema", "ndnsf-di-placement-probe-response-v1"},
+    {"request_id", requestId}, {"attempt", attempt},
+    {"requester_identity", requester}, {"observer_provider", observer},
+    {"service", service}, {"observer_boot_epoch", observerBootEpoch},
+    {"scope_digest", scopeDigest}, {"intent_nonce", intentNonce},
+    {"deadline_ms", deadlineMs}, {"completed_at_ms", completedAtMs},
+    {"requested_rtt_count", collection.requestedTargetCount},
+    {"omitted_rtt_count", collection.omittedTargetCount},
+    {"requested_goodput_count", collection.requestedGoodputEdgeCount},
+    {"omitted_goodput_count", collection.omittedGoodputEdgeCount},
+    {"observations", std::move(observations)}};
+}
 
 uint64_t
 hostEpochMs()
@@ -170,6 +448,305 @@ makeLeaseRouter(const std::shared_ptr<HostState>& host)
 }
 
 } // namespace
+
+ServiceProvider::AsyncTargetedRequestHandler
+makeNativePlacementMeasurementTargetedHandler(ServiceProvider& provider)
+{
+  return [&provider](const ndn::Name& requesterIdentity,
+                     const ndn::Name& providerName,
+                     const ndn::Name& serviceName,
+                     const ndn::Name&,
+                     const ndn_service_framework::RequestMessage& request,
+                     ServiceProvider::AsyncTargetedCompletion complete) {
+    if (!complete) {
+      return;
+    }
+    const auto fail = [&complete](const std::string& reason) {
+      ndn_service_framework::ResponseMessage response;
+      response.setStatus(false);
+      response.setErrorInfo(reason);
+      complete(std::move(response));
+    };
+    try {
+      if (providerName.empty() || provider.getName() != providerName ||
+          request.getTargetProvider() != providerName) {
+        fail("placement probe target identity mismatch");
+        return;
+      }
+      const auto payload = request.getPayload();
+      if (payload.empty() || payload.size() > MAX_PLACEMENT_PROBE_REQUEST_BYTES) {
+        fail("placement probe request exceeds the byte limit");
+        return;
+      }
+      const std::string wire(reinterpret_cast<const char*>(payload.data()),
+                             payload.size());
+      const auto decoded = nativeParseJson(wire);
+      requirePlacementProbeKeys(decoded, {
+        "action", "schema", "request_id", "attempt", "requester_identity",
+        "observer_provider", "service", "provider_roster", "roster_digest",
+        "rtt_pairs", "goodput_edges", "measurement_kinds", "deadline_ms",
+        "intent_nonce", "scope_digest"});
+      const auto action = readPlacementProbeString(decoded, "action");
+      if (action != "authorize" && action != "measure") {
+        throw std::invalid_argument("unsupported placement probe action");
+      }
+      if (readPlacementProbeString(decoded, "schema") !=
+          "ndnsf-di-placement-probe-request-v1") {
+        throw std::invalid_argument("unsupported placement probe request schema");
+      }
+
+      const auto requestId = readPlacementProbeString(decoded, "request_id");
+      const auto requester = readPlacementProbeString(decoded, "requester_identity");
+      const auto observer = readPlacementProbeString(decoded, "observer_provider");
+      const auto service = readPlacementProbeString(decoded, "service");
+      const auto rosterDigest = readPlacementProbeString(decoded, "roster_digest");
+      const auto intentNonce = readPlacementProbeString(decoded, "intent_nonce");
+      const auto scopeDigest = readPlacementProbeString(decoded, "scope_digest");
+      const auto attempt = readPlacementProbeUint(decoded, "attempt");
+      const auto deadlineMs = readPlacementProbeUint(decoded, "deadline_ms");
+      if (!isCanonicalProviderName(requestId) ||
+          !isCanonicalProviderName(requester) || requester != requesterIdentity.toUri() ||
+          (action == "measure" && observer != providerName.toUri()) ||
+          (action == "authorize" && observer == providerName.toUri()) ||
+          serviceName != ndn::Name(ndn_service_framework::NETWORK_PROBE_SERVICE) ||
+          !isCanonicalProviderName(service) ||
+          attempt == 0 || intentNonce.size() < 16 || intentNonce.size() > 128 ||
+          !isSha256Digest(rosterDigest) || !isSha256Digest(scopeDigest) ||
+          !decoded.at("provider_roster").is_array() ||
+          decoded.at("provider_roster").size() < 2 ||
+          decoded.at("provider_roster").size() > MAX_PLACEMENT_PROBE_ROSTER) {
+        throw std::invalid_argument("placement probe request binding is invalid");
+      }
+
+      std::vector<std::string> roster;
+      roster.reserve(decoded.at("provider_roster").size());
+      std::set<std::string> rosterSet;
+      std::string previousProvider;
+      for (const auto& entry : decoded.at("provider_roster")) {
+        if (!entry.is_string()) {
+          throw std::invalid_argument("placement probe roster is malformed");
+        }
+        const auto name = entry.get<std::string>();
+        if (!isCanonicalProviderName(name) ||
+            (!previousProvider.empty() && previousProvider >= name)) {
+          throw std::invalid_argument("placement probe roster is not canonical");
+        }
+        previousProvider = name;
+        roster.push_back(name);
+        rosterSet.insert(name);
+      }
+      if (!rosterSet.count(observer) ||
+          !rosterSet.count(providerName.toUri()) ||
+          nativePlanningDigest(nativeCanonicalJson(decoded.at("provider_roster"))) !=
+            rosterDigest) {
+        throw std::invalid_argument("placement probe roster digest mismatch");
+      }
+
+      const auto rttPairs = readPlacementProbePairs(
+        decoded, "rtt_pairs", observer, rosterSet, true);
+      const auto goodputEdges = readPlacementProbePairs(
+        decoded, "goodput_edges", observer, rosterSet, false);
+      if (rttPairs.empty() && goodputEdges.empty()) {
+        throw std::invalid_argument("placement probe request has no authorized edges");
+      }
+      const auto& kinds = decoded.at("measurement_kinds");
+      std::vector<std::string> expectedKinds;
+      if (!goodputEdges.empty()) expectedKinds.emplace_back("active_probe_goodput");
+      if (!rttPairs.empty()) expectedKinds.emplace_back("active_probe_rtt");
+      if (!kinds.is_array() || kinds.size() != expectedKinds.size()) {
+        throw std::invalid_argument("placement probe measurement kinds mismatch");
+      }
+      for (std::size_t i = 0; i < expectedKinds.size(); ++i) {
+        if (!kinds[i].is_string() || kinds[i].get<std::string>() != expectedKinds[i]) {
+          throw std::invalid_argument("placement probe measurement kinds mismatch");
+        }
+      }
+
+      const auto expectedScope = placementProbeScopeIdentity(
+        requestId, attempt, requester, observer, service, roster, rosterDigest,
+        rttPairs, goodputEdges, deadlineMs, intentNonce);
+      if (nativePlanningDigest(nativeCanonicalJson(expectedScope)) != scopeDigest) {
+        throw std::invalid_argument("placement probe scope digest mismatch");
+      }
+
+      if (action == "authorize") {
+        const auto localProvider = providerName.toUri();
+        const bool isRttTarget = std::any_of(
+          rttPairs.begin(), rttPairs.end(), [&localProvider](const auto& pair) {
+            return pair.second == localProvider;
+          });
+        const bool isGoodputTarget = std::any_of(
+          goodputEdges.begin(), goodputEdges.end(),
+          [&localProvider](const auto& edge) {
+            return edge.first == localProvider;
+          });
+        if (!isRttTarget && !isGoodputTarget) {
+          throw std::invalid_argument(
+            "placement probe authorization target is outside requested edges");
+        }
+      }
+
+      const auto wallNow = std::chrono::system_clock::now();
+      const auto wallEpoch = wallNow.time_since_epoch();
+      const auto wholeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        wallEpoch);
+      const auto nowMs = static_cast<std::uint64_t>(
+        std::max<std::int64_t>(0, wholeMs.count()));
+      if (deadlineMs <= nowMs) {
+        fail("placement probe deadline expired");
+        return;
+      }
+      auto remaining = std::chrono::milliseconds(std::min<std::uint64_t>(
+        deadlineMs - nowMs, MAX_PLACEMENT_PROBE_BUDGET_MS));
+      if (deadlineMs - nowMs <= MAX_PLACEMENT_PROBE_BUDGET_MS) {
+        remaining -= std::chrono::duration_cast<std::chrono::milliseconds>(
+          wallEpoch - wholeMs);
+      }
+      if (remaining <= std::chrono::milliseconds::zero()) {
+        fail("placement probe deadline expired");
+        return;
+      }
+      const auto collectionStart = std::chrono::steady_clock::now();
+      const auto probeDeadline = collectionStart + remaining;
+      const auto authorizeScope = [&] {
+        return provider.authorizeCandidatePeerObservationScope(
+            scopeDigest, [&] {
+              std::vector<ndn::Name> names;
+              names.reserve(roster.size());
+              for (const auto& name : roster) names.emplace_back(name);
+              return names;
+            }(), [&] {
+              std::vector<ndn_service_framework::NetworkTelemetryDataEdge> edges;
+              edges.reserve(rttPairs.size());
+              for (const auto& pair : rttPairs) {
+                edges.push_back({ndn::Name(pair.first), ndn::Name(pair.second)});
+              }
+              return edges;
+            }(), [&] {
+              std::vector<ndn_service_framework::NetworkTelemetryDataEdge> edges;
+              edges.reserve(goodputEdges.size());
+              for (const auto& edge : goodputEdges) {
+                edges.push_back({ndn::Name(edge.first), ndn::Name(edge.second)});
+              }
+              return edges;
+            }(), probeDeadline);
+      };
+      if (!authorizeScope()) {
+        fail("placement probe scope rejected");
+        return;
+      }
+
+      if (action == "authorize") {
+        const auto authorizationWire = nativeCanonicalJson(NativeJson{
+          {"schema", "ndnsf-di-placement-probe-scope-ack-v1"},
+          {"provider", providerName.toUri()},
+          {"observer_provider", observer},
+          {"scope_digest", scopeDigest},
+          {"status", "authorized"}});
+        if (authorizationWire.empty() || authorizationWire.size() > 512) {
+          fail("placement probe scope acknowledgement exceeds the byte limit");
+          return;
+        }
+        ndnsf::di::logRuntimeEvidence(
+          "NDNSF_DI_PROVIDER_PEER_PROBE_SCOPE_AUTHORIZED provider=" +
+          providerName.toUri() + " observer=" + observer +
+          " scope=" + scopeDigest);
+        ndn_service_framework::ResponseMessage response;
+        response.setStatus(true);
+        ndn::Buffer responsePayload(
+          reinterpret_cast<const std::uint8_t*>(authorizationWire.data()),
+          authorizationWire.size());
+        response.setPayload(responsePayload, responsePayload.size());
+        complete(std::move(response));
+        return;
+      }
+
+      const auto providerBootEpoch = provider.getProviderBootEpoch();
+      provider.collectCandidatePeerObservations(
+        [&] {
+          std::vector<ndn::Name> names;
+          names.reserve(roster.size());
+          for (const auto& name : roster) names.emplace_back(name);
+          return names;
+        }(), [&] {
+          std::vector<ndn_service_framework::NetworkTelemetryDataEdge> edges;
+          edges.reserve(rttPairs.size());
+          for (const auto& pair : rttPairs) {
+            edges.push_back({ndn::Name(pair.first), ndn::Name(pair.second)});
+          }
+          return edges;
+        }(), [&] {
+          std::vector<ndn_service_framework::NetworkTelemetryDataEdge> edges;
+          edges.reserve(goodputEdges.size());
+          for (const auto& edge : goodputEdges) {
+            edges.push_back({ndn::Name(edge.first), ndn::Name(edge.second)});
+          }
+          return edges;
+        }(), scopeDigest, probeDeadline, {},
+        [requestId, requester, observer, service, attempt, providerBootEpoch,
+         scopeDigest, intentNonce, deadlineMs, complete = std::move(complete)]
+        (ServiceProvider::PeerProbeCollection collection) mutable {
+          ndn_service_framework::ResponseMessage response;
+          try {
+            const auto completedAtMs = hostEpochMs();
+            if (completedAtMs >= deadlineMs) {
+              response.setStatus(false);
+              response.setErrorInfo("placement probe deadline expired");
+              complete(std::move(response));
+              return;
+            }
+            for (auto it = collection.observations.begin();
+                 it != collection.observations.end();) {
+              if (!isUsablePlacementProbeRow(*it)) {
+                dropPlacementProbeRow(collection, *it);
+                it = collection.observations.erase(it);
+              }
+              else {
+                ++it;
+              }
+            }
+            while (collection.observations.size() >
+                   MAX_PLACEMENT_PROBE_RESPONSE_ROWS) {
+              const auto dropped = collection.observations.back();
+              dropPlacementProbeRow(collection, dropped);
+              collection.observations.pop_back();
+            }
+            auto encoded = nativeCanonicalJson(placementProbeResponseJson(
+              requestId, attempt, requester, observer, service, providerBootEpoch,
+              scopeDigest, intentNonce, deadlineMs, completedAtMs, collection));
+            while (encoded.size() > MAX_PLACEMENT_PROBE_RESPONSE_BYTES &&
+                   !collection.observations.empty()) {
+              const auto dropped = collection.observations.back();
+              dropPlacementProbeRow(collection, dropped);
+              collection.observations.pop_back();
+              encoded = nativeCanonicalJson(placementProbeResponseJson(
+                requestId, attempt, requester, observer, service, providerBootEpoch,
+                scopeDigest, intentNonce, deadlineMs, completedAtMs, collection));
+            }
+            if (encoded.size() > MAX_PLACEMENT_PROBE_RESPONSE_BYTES) {
+              response.setStatus(false);
+              response.setErrorInfo("placement probe response exceeds the byte limit");
+            }
+            else {
+              ndn::Buffer responseBytes(
+                reinterpret_cast<const std::uint8_t*>(encoded.data()),
+                encoded.size());
+              response.setStatus(true);
+              response.setPayload(responseBytes, responseBytes.size());
+            }
+          }
+          catch (const std::exception&) {
+            response.setStatus(false);
+            response.setErrorInfo("placement probe result could not be encoded");
+          }
+          complete(std::move(response));
+        }, true);
+    }
+    catch (const std::exception&) {
+      fail("invalid placement probe request");
+    }
+  };
+}
 
 NativeServiceRegistration::NativeServiceRegistration(std::shared_ptr<State> state)
   : m_state(std::move(state))
@@ -397,14 +974,22 @@ NativeInferenceProvider::serve(const NativeServiceDefinition& service,
         }
         handler(ctx, request);
       };
+    if (service.asyncAckHandler && service.ackHandler) {
+      throw std::invalid_argument(
+        "native service must select either synchronous or asynchronous ACK handling");
+    }
     const auto ackHandler = service.ackHandler
       ? service.ackHandler
       : acceptingAckHandler("native provider ready");
-
     core = std::make_shared<ServiceProvider::ServiceRegistration>(
-      m_provider->addScopedCollaborationHandler(
-        ndn::Name(service.serviceName), service.allowedRoles,
-        ackHandler, guardedHandler));
+      service.asyncAckHandler
+        ? m_provider->addScopedAsyncCollaborationHandler(
+            ndn::Name(service.serviceName), service.allowedRoles,
+            service.asyncAckHandler, guardedHandler)
+        : m_provider->addScopedCollaborationHandler(
+            ndn::Name(service.serviceName), service.allowedRoles,
+            ackHandler, ServiceProvider::AsyncAckStrategyHandler{},
+            guardedHandler));
     auto target = std::make_shared<Target>();
     target->core = core;
     target->draining = draining;

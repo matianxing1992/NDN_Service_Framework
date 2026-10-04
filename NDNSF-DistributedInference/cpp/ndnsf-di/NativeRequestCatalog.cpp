@@ -326,8 +326,21 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   }
   if (preparedCandidates.empty())
     throw std::runtime_error("DI_NATIVE_PREPARATION_NO_PLANNING_CANDIDATE");
+  auto transferProfiles = root.value("request_transfer_profiles", NativeJson::array());
+  if (!transferProfiles.is_array() || transferProfiles.size() > 8)
+    throw std::invalid_argument("invalid request transfer profile collection");
+  for (const auto& profile : transferProfiles) {
+    if (!profile.is_object() ||
+        profile.value("schema", std::string{}) != "ndnsf-di-request-transfer-profile-v1" ||
+        profile.value("source_digest", std::string{}) != result.model.canonicalSourceDigest ||
+        !profile.value("initial_context", false) ||
+        !profile.contains("dependencies") || !profile.at("dependencies").is_array() ||
+        profile.at("dependencies").size() > 64)
+      throw std::invalid_argument("request transfer profile differs from pinned source");
+  }
   result.planningCache = std::make_shared<const NativePreparedPlanningCache>(
-    NativePreparedPlanningCache{result.cooperativeSplitter->identity(), std::move(preparedCandidates)});
+    NativePreparedPlanningCache{result.cooperativeSplitter->identity(), std::move(preparedCandidates),
+      std::move(transferProfiles)});
   control.requireActive();
   return result;
 }

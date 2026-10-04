@@ -3,10 +3,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGroupProjectionBuilder.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
+#include "ndn-service-framework/NetworkProbeRate.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <future>
 #include <initializer_list>
@@ -16,6 +19,8 @@
 
 namespace ndnsf::di {
 namespace {
+constexpr std::uint64_t MAX_REQUESTER_SAMPLE_AGE_MS = 5000;
+
 bool isDigestValue(const std::string& value)
 {
   return value.size() == 71 && value.compare(0, 7, "sha256:") == 0 &&
@@ -24,12 +29,594 @@ bool isDigestValue(const std::string& value)
     });
 }
 
+std::pair<NativeJson, std::string> dependencyByteEstimate(
+  const NativeDependencySpec& dependency, const NativeGraphSnapshot* modelGraph)
+{
+  if (dependency.expectedBytes != 0)
+    return {NativeJson(dependency.expectedBytes), "execution-plan"};
+  if (!modelGraph || dependency.tensors.empty())
+    return {NativeJson(nullptr), {}};
+
+  std::uint64_t total = 0;
+  for (const auto& tensorName : dependency.tensors) {
+    const NativeGraphEdge* match = nullptr;
+    for (const auto& edge : modelGraph->edges) {
+      if (edge.tensor.name != tensorName)
+        continue;
+      if (match)
+        return {NativeJson(nullptr), {}};
+      match = &edge;
+    }
+    if (!match || !match->tensor.estimatedBytes)
+      return {NativeJson(nullptr), {}};
+    match->tensor.validate();
+    if (*match->tensor.estimatedBytes >
+        std::numeric_limits<std::uint64_t>::max() - total)
+      return {NativeJson(nullptr), {}};
+    total += *match->tensor.estimatedBytes;
+  }
+  return {NativeJson(total), "graph-tensor-contract"};
+}
+
+std::string placementProbeScopeDigest(const NativeOfferBindingContext& context)
+{
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-placement-probe-scope-v1"},
+    {"request_id", context.requestId}, {"attempt", context.attempt},
+    {"requester_identity", context.requesterIdentity},
+    {"deadline_ms", context.deadlineMs},
+    {"service", context.serviceName}, {"model_identity_hash", context.modelDigest},
+    {"graph_digest", context.graphDigest},
+    {"candidate_set_digest", context.candidateSetDigest},
+    {"candidate_artifact_set_digest", context.candidateArtifactSetDigest},
+    {"rtt_pairs", context.allowedRttPairs},
+    {"goodput_edges", context.allowedGoodputEdges}}));
+}
+
 bool sameStrategyIdentity(const NativeStrategyIdentity& left,
                           const NativeStrategyIdentity& right)
 {
   return left.name == right.name && left.version == right.version &&
     left.configurationDigest == right.configurationDigest &&
     left.deterministic == right.deterministic;
+}
+
+bool sameOfferBindingContext(const NativeOfferBindingContext& left,
+                             const NativeOfferBindingContext& right)
+{
+  return left.requestId == right.requestId && left.attempt == right.attempt &&
+    left.serviceName == right.serviceName && left.modelDigest == right.modelDigest &&
+    left.graphDigest == right.graphDigest && left.deadlineMs == right.deadlineMs &&
+    left.preferredProvidersByRole == right.preferredProvidersByRole &&
+    left.candidateSetDigest == right.candidateSetDigest &&
+    left.candidateArtifactSetDigest == right.candidateArtifactSetDigest &&
+    left.requesterIdentity == right.requesterIdentity &&
+    left.candidateArtifacts == right.candidateArtifacts &&
+    left.candidateProviders == right.candidateProviders &&
+    left.probeScopeDigest == right.probeScopeDigest &&
+    left.allowedRttPairs == right.allowedRttPairs &&
+    left.allowedGoodputEdges == right.allowedGoodputEdges &&
+    left.placementObservationSnapshot == right.placementObservationSnapshot &&
+    left.placementObservationSnapshotDigest == right.placementObservationSnapshotDigest &&
+    left.placementObservationFallbackReason == right.placementObservationFallbackReason &&
+    left.placementProbeRoundCompleted == right.placementProbeRoundCompleted;
+}
+
+NativeJson placementProbePairsJson(
+  const std::vector<NativePlacementProbeEdgeV1>& edges)
+{
+  NativeJson result = NativeJson::array();
+  for (const auto& edge : edges)
+    result.push_back({{"src_provider", edge.sourceProvider},
+                      {"dst_provider", edge.destinationProvider}});
+  return result;
+}
+
+void validatePlacementProbeIntent(const NativePlacementProbeIntentV1& intent,
+                                  const NativeOfferBindingContext& context)
+{
+  if (intent.observers.empty() || intent.observers.size() > 16 ||
+      context.candidateProviders.empty() || context.candidateProviders.size() > 16 ||
+      !std::is_sorted(context.candidateProviders.begin(), context.candidateProviders.end()) ||
+      std::adjacent_find(context.candidateProviders.begin(), context.candidateProviders.end()) !=
+        context.candidateProviders.end())
+    throw std::invalid_argument("placement probe intent has an empty/oversized observer set or invalid roster (providers=" +
+      std::to_string(context.candidateProviders.size()) + ", observers=" +
+      std::to_string(intent.observers.size()) + ")");
+
+  std::set<std::string> providers(context.candidateProviders.begin(),
+                                  context.candidateProviders.end());
+  std::set<std::pair<std::string, std::string>> allowedGoodputEdges;
+  std::set<std::pair<std::string, std::string>> allowedRttPairs;
+  for (const auto& pair : context.allowedRttPairs) {
+    if (pair.is_object() && pair.contains("src_provider") &&
+        pair.at("src_provider").is_string() && pair.contains("dst_provider") &&
+        pair.at("dst_provider").is_string()) {
+      allowedRttPairs.emplace(pair.at("src_provider").get<std::string>(),
+                              pair.at("dst_provider").get<std::string>());
+    }
+  }
+  for (const auto& edge : context.allowedGoodputEdges) {
+    if (edge.is_object() && edge.contains("src_provider") &&
+        edge.at("src_provider").is_string() && edge.contains("dst_provider") &&
+        edge.at("dst_provider").is_string()) {
+      allowedGoodputEdges.emplace(edge.at("src_provider").get<std::string>(),
+                                  edge.at("dst_provider").get<std::string>());
+    }
+  }
+  std::set<std::string> observers;
+  std::size_t totalEdges = 0;
+  std::string previousObserver;
+  for (const auto& observer : intent.observers) {
+    if (observer.observerProvider.empty() ||
+        (!previousObserver.empty() && previousObserver >= observer.observerProvider) ||
+        !providers.count(observer.observerProvider) ||
+        !observers.insert(observer.observerProvider).second ||
+        observer.rttPairs.size() > 16 || observer.goodputEdges.size() > 16 ||
+        (observer.rttPairs.empty() && observer.goodputEdges.empty()))
+      throw std::invalid_argument("placement probe intent has an invalid observer");
+    previousObserver = observer.observerProvider;
+    const auto validateEdges = [&](const auto& edges, bool rtt) {
+      std::pair<std::string, std::string> previous;
+      bool first = true;
+      for (const auto& edge : edges) {
+        const auto current = std::make_pair(edge.sourceProvider, edge.destinationProvider);
+        if (edge.sourceProvider.empty() || edge.destinationProvider.empty() ||
+            edge.sourceProvider == edge.destinationProvider ||
+            !providers.count(edge.sourceProvider) ||
+            !providers.count(edge.destinationProvider) ||
+            (rtt ? edge.sourceProvider != observer.observerProvider :
+                   edge.destinationProvider != observer.observerProvider) ||
+            (rtt && allowedRttPairs.count(current) == 0) ||
+            (!rtt && allowedGoodputEdges.count(current) == 0) ||
+            (!first && previous >= current) || ++totalEdges > 16)
+          throw std::invalid_argument("placement probe intent has an invalid directed edge");
+        previous = current;
+        first = false;
+      }
+    };
+    validateEdges(observer.rttPairs, true);
+    validateEdges(observer.goodputEdges, false);
+  }
+}
+
+NativeJson targetedProbeScopeJson(
+  const NativeOfferBindingContext& context,
+  const NativePlacementProbeObserverV1& observer,
+  const std::string& rosterDigest, const std::string& nonce)
+{
+  return NativeJson{
+    {"schema", "ndnsf-di-placement-probe-scope-v1"},
+    {"request_id", context.requestId}, {"attempt", context.attempt},
+    {"requester_identity", context.requesterIdentity},
+    {"observer_provider", observer.observerProvider},
+    {"service", context.serviceName},
+    {"provider_roster", context.candidateProviders},
+    {"roster_digest", rosterDigest},
+    {"rtt_pairs", placementProbePairsJson(observer.rttPairs)},
+    {"goodput_edges", placementProbePairsJson(observer.goodputEdges)},
+    {"deadline_ms", context.deadlineMs}, {"intent_nonce", nonce}};
+}
+
+void mergeTargetedPlacementProbeRound(
+  NativePlacementObservationSnapshotV4& snapshot,
+  const NativePlacementProbeRoundV1& round,
+  const NativeOfferBindingContext& context,
+  const std::uint64_t nowMs)
+{
+  validatePlacementProbeIntent(round.intent, context);
+  if (round.intentNonceByObserver.size() != round.intent.observers.size())
+    throw std::invalid_argument("placement probe nonce set does not match its intent");
+  for (const auto& response : round.responseByObserver) {
+    if (round.intentNonceByObserver.count(response.first) == 0)
+      throw std::invalid_argument("placement probe response observer was not requested");
+  }
+  if (!snapshot.value.is_object() ||
+      !snapshot.value.contains("eligible_link_observations") ||
+      !snapshot.value.at("eligible_link_observations").is_array() ||
+      !snapshot.value.contains("provider_offers") ||
+      !snapshot.value.at("provider_offers").is_array())
+    throw std::invalid_argument("placement probe snapshot is incomplete");
+
+  const auto rosterDigest = nativePlanningDigest(
+    nativeCanonicalJson(NativeJson(context.candidateProviders)));
+  const auto hasPositiveNumberArray = [] (const NativeJson& object,
+                                          const char* field,
+                                          const std::size_t size) {
+    if (!object.contains(field) || !object.at(field).is_array() ||
+        object.at(field).size() != size)
+      return false;
+    return std::all_of(object.at(field).begin(), object.at(field).end(),
+      [] (const NativeJson& value) {
+        return value.is_number() && std::isfinite(value.get<double>()) &&
+               value.get<double>() > 0.0;
+      });
+  };
+  const auto hasPositiveUnsignedArray = [] (const NativeJson& object,
+                                            const char* field,
+                                            const std::size_t size) {
+    if (!object.contains(field) || !object.at(field).is_array() ||
+        object.at(field).size() != size)
+      return false;
+    return std::all_of(object.at(field).begin(), object.at(field).end(),
+      [] (const NativeJson& value) {
+        return value.is_number_unsigned() &&
+               value.get<std::uint64_t>() > 0;
+      });
+  };
+  std::map<std::string, const NativeJson*> offerByProvider;
+  for (const auto& offer : snapshot.value.at("provider_offers")) {
+    if (offer.is_object() && offer.contains("provider") &&
+        offer.at("provider").is_string())
+      offerByProvider.emplace(offer.at("provider").get<std::string>(), &offer);
+  }
+  if (offerByProvider.size() != context.candidateProviders.size())
+    throw std::invalid_argument("placement probe snapshot provider roster mismatch");
+
+  std::set<std::string> dataNames;
+  auto& eligible = snapshot.value["eligible_link_observations"];
+  for (const auto& requested : round.intent.observers) {
+    const auto nonce = round.intentNonceByObserver.find(requested.observerProvider);
+    if (nonce == round.intentNonceByObserver.end() || nonce->second.size() < 16 ||
+        nonce->second.size() > 128)
+      throw std::invalid_argument("placement probe intent nonce is invalid");
+    const auto logRejectedResponse = [&] (std::string reason) noexcept {
+      try {
+        std::replace(reason.begin(), reason.end(), ' ', '_');
+        logRuntimeEvidence("NDNSF_DI_NATIVE_PLACEMENT_PROBE_MERGE_UNAVAILABLE requestId=" +
+          context.requestId + " observer=" + requested.observerProvider +
+          " reason=" + reason);
+      }
+      catch (...) {
+        // Merge diagnostics must never alter the safe fallback behavior.
+      }
+    };
+    const auto responseIt = round.responseByObserver.find(requested.observerProvider);
+    if (responseIt == round.responseByObserver.end()) {
+      logRejectedResponse("response_missing");
+      continue; // Timeout, rejection, or malformed wire: retain unknown link data.
+    }
+
+    try {
+      const auto& response = responseIt->second;
+      const auto encoded = nativeCanonicalJson(response);
+      const auto scope = targetedProbeScopeJson(context, requested, rosterDigest, nonce->second);
+      const auto scopeDigest = nativePlanningDigest(nativeCanonicalJson(scope));
+      const auto& observerOffer = *offerByProvider.at(requested.observerProvider);
+      const auto observerBoot = observerOffer.at("boot_epoch").get<std::string>();
+      if (encoded.size() > NATIVE_PLACEMENT_PROBE_RESPONSE_MAX_BYTES || !response.is_object() ||
+          response.value("schema", std::string{}) != "ndnsf-di-placement-probe-response-v1" ||
+          response.value("request_id", std::string{}) != context.requestId ||
+          response.value("attempt", std::uint64_t{0}) != context.attempt ||
+          response.value("requester_identity", std::string{}) != context.requesterIdentity ||
+          response.value("observer_provider", std::string{}) != requested.observerProvider ||
+          response.value("service", std::string{}) != context.serviceName ||
+          response.value("observer_boot_epoch", std::string{}) != observerBoot ||
+          response.value("scope_digest", std::string{}) != scopeDigest ||
+          response.value("intent_nonce", std::string{}) != nonce->second ||
+          response.value("deadline_ms", std::uint64_t{0}) != context.deadlineMs ||
+          !response.contains("completed_at_ms") ||
+          !response.at("completed_at_ms").is_number_unsigned() ||
+          response.at("completed_at_ms").get<std::uint64_t>() > nowMs ||
+          response.at("completed_at_ms").get<std::uint64_t>() >= context.deadlineMs ||
+          !response.contains("observations") || !response.at("observations").is_array() ||
+          response.at("observations").size() > 16 ||
+          response.value("requested_rtt_count", std::uint64_t{0}) != requested.rttPairs.size() ||
+          response.value("requested_goodput_count", std::uint64_t{0}) != requested.goodputEdges.size() ||
+          response.value("omitted_rtt_count", std::uint64_t{0}) > requested.rttPairs.size() ||
+          response.value("omitted_goodput_count", std::uint64_t{0}) > requested.goodputEdges.size() ||
+          response.at("observations").size() >
+            requested.rttPairs.size() + requested.goodputEdges.size())
+      {
+        logRejectedResponse("response_envelope_scope_or_freshness_rejected");
+        continue;
+      }
+
+      std::set<std::pair<std::string, std::string>> requestedGoodput;
+      for (const auto& edge : requested.goodputEdges)
+        requestedGoodput.emplace(edge.sourceProvider, edge.destinationProvider);
+      std::set<std::pair<std::string, std::string>> seenGoodput;
+      std::set<std::pair<std::string, std::string>> requestedRtt;
+      for (const auto& edge : requested.rttPairs)
+        requestedRtt.emplace(edge.sourceProvider, edge.destinationProvider);
+      std::set<std::pair<std::string, std::string>> seenRtt;
+      std::vector<NativeJson> acceptedRows;
+      std::uint64_t rowExpiry = snapshot.expiresAtMs;
+      for (const auto& observation : response.at("observations")) {
+        if (!observation.is_object() ||
+            observation.value("observer", std::string{}) != requested.observerProvider ||
+            !observation.contains("target") || !observation.at("target").is_string() ||
+            !observation.contains("kind") || !observation.at("kind").is_string() ||
+            !observation.contains("observed_at_ms") ||
+            !observation.at("observed_at_ms").is_number_unsigned() ||
+            !observation.contains("expires_at_ms") ||
+            !observation.at("expires_at_ms").is_number_unsigned())
+          throw std::invalid_argument("targeted placement observation identity is malformed");
+        const auto target = observation.at("target").get<std::string>();
+        const auto captured = observation.at("observed_at_ms").get<std::uint64_t>();
+        const auto expires = observation.at("expires_at_ms").get<std::uint64_t>();
+        if (captured == 0 || captured > nowMs || nowMs - captured > 5000 ||
+            expires <= nowMs || expires <= captured || expires > context.deadlineMs)
+          throw std::invalid_argument("targeted placement observation is stale");
+        const auto targetOffer = offerByProvider.find(target);
+        if (targetOffer == offerByProvider.end() ||
+            !targetOffer->second->contains("boot_epoch") ||
+            !observation.contains("peer_boot_epoch") ||
+            observation.at("peer_boot_epoch") != targetOffer->second->at("boot_epoch"))
+          throw std::invalid_argument("targeted placement peer boot does not match its offer");
+        const auto dataName = observation.value("data_name", std::string{});
+        if (dataName.empty() || dataName.size() > 512 || !dataNames.insert(dataName).second)
+          throw std::invalid_argument("targeted placement Data name is missing or reused");
+
+        const auto kind = observation.at("kind").get<std::string>();
+        if (kind == "active_probe_goodput") {
+          // Total payload/elapsed remains diagnostic. Only the dedicated
+          // burst timing metadata can supply a placement rate.
+          const bool profileValidated = observation.value("probe_profile_validated", false);
+          const auto edge = std::make_pair(target, requested.observerProvider);
+          if (!requestedGoodput.count(edge) || !seenGoodput.insert(edge).second)
+            throw std::invalid_argument("targeted_goodput_edge_does_not_match_intent");
+          if (!observation.value("train_complete", false) ||
+              !observation.value("target_signature_validated", false) ||
+              observation.value("sent_segments", std::uint64_t{0}) != ndn_service_framework::NETWORK_PROBE_WARMED_SEGMENTS ||
+              observation.value("received_segments", std::uint64_t{0}) != ndn_service_framework::NETWORK_PROBE_WARMED_SEGMENTS)
+            throw std::invalid_argument("targeted_goodput_train_or_signature_invalid");
+          if (!observation.contains("value") || !observation.at("value").is_number() ||
+              !std::isfinite(observation.at("value").get<double>()) ||
+              observation.at("value").get<double>() <= 0 ||
+              !observation.contains("payload_bytes") ||
+              !observation.at("payload_bytes").is_number_unsigned() ||
+              observation.at("payload_bytes").get<std::uint64_t>() == 0 ||
+              !observation.contains("elapsed_ms") ||
+              !observation.at("elapsed_ms").is_number() ||
+              !std::isfinite(observation.at("elapsed_ms").get<double>()) ||
+              observation.at("elapsed_ms").get<double>() <= 0)
+            throw std::invalid_argument("targeted_goodput_rate_or_payload_invalid");
+          if (!observation.contains("profile_digest") ||
+              !observation.at("profile_digest").is_string())
+            throw std::invalid_argument("targeted_goodput_profile_digest_invalid");
+          constexpr auto segments = ndn_service_framework::NETWORK_PROBE_WARMED_SEGMENTS;
+          if (!hasPositiveNumberArray(observation, "probe_rtt_ms", segments) ||
+              !hasPositiveNumberArray(observation, "probe_interest_gaps_ms", segments - 1) ||
+              !hasPositiveNumberArray(observation, "probe_data_arrival_gaps_ms", segments - 1) ||
+              !hasPositiveUnsignedArray(observation, "probe_data_wire_bytes", segments)) {
+            const auto describeArray = [&] (const char* field, std::size_t expected,
+                                            bool unsignedValues) {
+              if (!observation.contains(field))
+                return std::string("missing");
+              if (!observation.at(field).is_array())
+                return std::string("not_array");
+              const auto size = observation.at(field).size();
+              const auto valid = unsignedValues
+                ? hasPositiveUnsignedArray(observation, field, expected)
+                : hasPositiveNumberArray(observation, field, expected);
+              return std::to_string(size) + (valid ? "_valid" : "_invalid");
+            };
+            throw std::invalid_argument(
+              "targeted_goodput_chirp_samples_invalid_rtt=" +
+              describeArray("probe_rtt_ms", segments, false) + "_interest=" +
+              describeArray("probe_interest_gaps_ms", segments - 1, false) + "_arrival=" +
+              describeArray("probe_data_arrival_gaps_ms", segments - 1, false) + "_wire=" +
+              describeArray("probe_data_wire_bytes", segments, true));
+          }
+
+          NativeJson row{
+            {"kind", "ACTIVE_PROBE_GOODPUT"},
+            {"src_peer", target}, {"dst_peer", requested.observerProvider},
+            {"src_boot_epoch", targetOffer->second->at("boot_epoch")},
+            {"dst_boot_epoch", observerBoot},
+            {"captured_at_ms", captured}, {"expires_at_ms", expires},
+            {"goodput_mbps", observation.at("value")},
+            {"payload_bytes", observation.at("payload_bytes")},
+            {"elapsed_ms", observation.at("elapsed_ms")},
+            {"probe_complete", true}, {"probe_segments_sent", segments},
+            {"probe_signature_valid", true},
+            {"probe_profile_validated", profileValidated},
+            {"probe_rtt_ms", observation.at("probe_rtt_ms")},
+            {"probe_interest_gaps_ms", observation.at("probe_interest_gaps_ms")},
+            {"probe_data_arrival_gaps_ms",
+             observation.at("probe_data_arrival_gaps_ms")},
+            {"probe_data_wire_bytes", observation.at("probe_data_wire_bytes")},
+            {"probe_profile_digest", observation.at("profile_digest")}};
+          if (observation.at("profile_digest") ==
+              ndn_service_framework::NETWORK_PROBE_TRAIN_PROFILE_DIGEST) {
+            const auto& source = observation.at("probe_source_send_gaps_ms");
+            if (!source.is_array() || source.size() != segments - 2 ||
+                !observation.at("probe_source_timing_validated").is_boolean())
+              throw std::invalid_argument("targeted_goodput_source_timing_shape_invalid");
+            ndn_service_framework::NetworkTelemetrySnapshot timing;
+            timing.kind = ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeGoodput;
+            timing.probeComplete = true;
+            timing.probeSegmentsSent = timing.receivedSegments = segments;
+            timing.targetSignatureValidated = true;
+            timing.probeSignatureValid = profileValidated;
+            timing.probeProfileDigest = observation.at("profile_digest").get<std::string>();
+            timing.probeSourceTimingValidated =
+              observation.at("probe_source_timing_validated").get<bool>();
+            for (std::size_t i = 0; i < segments - 2; ++i) {
+              if (!source[i].is_number() || !std::isfinite(source[i].get<double>()) ||
+                  source[i].get<double>() < 0 || source[i].get<double>() > 500)
+                throw std::invalid_argument("targeted_goodput_source_timing_invalid");
+              timing.probeSourceSendGapsMs[i] = source[i].get<double>();
+            }
+            for (std::size_t i = 0; i < segments - 1; ++i)
+              timing.probeDataArrivalGapsMs[i] =
+                observation.at("probe_data_arrival_gaps_ms")[i].get<double>();
+            const auto metadata = nativeProbeTrainRateMetadataV4(timing);
+            for (auto field = metadata.begin(); field != metadata.end(); ++field) {
+              if (!observation.contains(field.key()) || observation.at(field.key()) != field.value())
+                throw std::invalid_argument("targeted_goodput_train_metadata_inconsistent");
+              row[field.key()] = field.value();
+            }
+          }
+          row["source_digest"] = nativePlanningDigest(nativeCanonicalJson(observation));
+          acceptedRows.push_back({{"reported_by", requested.observerProvider},
+                                  {"row", std::move(row)}});
+        }
+        else if (kind == "active_probe_rtt") {
+          const auto edge = std::make_pair(requested.observerProvider, target);
+          if (!requestedRtt.count(edge) || !seenRtt.insert(edge).second ||
+              !observation.value("target_signature_validated", false) ||
+              !observation.contains("value") || !observation.at("value").is_number() ||
+              !std::isfinite(observation.at("value").get<double>()) ||
+              observation.at("value").get<double>() <= 0)
+            throw std::invalid_argument("targeted RTT observation does not match its intent");
+
+          NativeJson row{
+            {"src_peer", requested.observerProvider}, {"dst_peer", target},
+            {"direction_semantics", "REQUESTER_RESPONDER_ROUND_TRIP"},
+            {"kind", "ACTIVE_PROBE_RTT"},
+            {"observer_peer", requested.observerProvider},
+            {"observer_boot_epoch", observerBoot},
+            {"src_boot_epoch", observerBoot},
+            {"dst_boot_epoch", targetOffer->second->at("boot_epoch")},
+            {"topology_digest", nullptr},
+            {"captured_at_ms", captured}, {"expires_at_ms", expires},
+            {"sample_count", std::uint64_t{1}},
+            {"rtt_ms", observation.at("value")},
+            {"first_byte_ms", nullptr}, {"elapsed_ms", nullptr},
+            {"payload_bytes", nullptr}, {"wire_bytes", nullptr},
+            {"encoded_bytes", nullptr}, {"received_segments", nullptr},
+            {"probe_profile_digest", nullptr}, {"probe_segments_sent", nullptr},
+            {"probe_complete", nullptr}, {"probe_signature_valid", nullptr},
+            {"probe_rtt_ms", nullptr}, {"probe_interest_gaps_ms", nullptr},
+            {"probe_data_arrival_gaps_ms", nullptr},
+            {"probe_data_wire_bytes", nullptr},
+            {"timeout_count", std::uint64_t{0}}, {"nack_count", std::uint64_t{0}},
+            {"goodput_mbps", nullptr}};
+          row["source_digest"] = nativePlanningDigest(
+            nativeCanonicalJson(row));
+          acceptedRows.push_back({{"reported_by", requested.observerProvider},
+                                  {"row", std::move(row)}});
+        }
+        else {
+          throw std::invalid_argument("targeted placement observation kind is unsupported");
+        }
+        rowExpiry = std::min(rowExpiry, expires);
+      }
+      const auto omittedRtt = response.value("omitted_rtt_count", std::uint64_t{0});
+      const auto omittedGoodput =
+        response.value("omitted_goodput_count", std::uint64_t{0});
+      // Missing rows are unavailable for their own kind. Keep independently
+      // validated rows from the other kind; missing values never create cost.
+      if (seenRtt.size() + omittedRtt > requested.rttPairs.size() ||
+          seenGoodput.size() + omittedGoodput > requested.goodputEdges.size())
+        continue;
+      for (const auto& row : acceptedRows)
+        eligible.push_back(row);
+      snapshot.expiresAtMs = rowExpiry;
+    }
+    catch (const std::exception& error) {
+      logRejectedResponse(error.what());
+      // Optional measurement failures do not prevent the safe existing placement fallback.
+      continue;
+    }
+  }
+  snapshot.value["targeted_probe_round_completed_at_ms"] = nowMs;
+  snapshot.value["targeted_probe_intent_digest"] =
+    nativePlanningDigest(nativeCanonicalJson(NativeJson{
+      {"observers", [&] {
+        NativeJson rows = NativeJson::array();
+        for (const auto& observer : round.intent.observers) {
+          rows.push_back({{"observer", observer.observerProvider},
+            {"rtt_pairs", placementProbePairsJson(observer.rttPairs)},
+            {"goodput_edges", placementProbePairsJson(observer.goodputEdges)}});
+        }
+        return rows;
+      }()}}));
+  snapshot.value["expires_at_ms"] = snapshot.expiresAtMs;
+  snapshot.digest = nativePlanningDigest(nativeCanonicalJson(snapshot.value));
+}
+
+NativeJson snapshotAckTelemetry(
+  const ndn_service_framework::AckSelectionCandidate& ack, std::uint64_t nowMs,
+  const std::string& providerBootEpoch)
+{
+  NativeJson result{{"provider", ack.providerName.toUri()}, {"sample", nullptr}};
+  if (ack.ackRttMs) {
+    if (!std::isfinite(*ack.ackRttMs) || *ack.ackRttMs <= 0.0 ||
+        ack.ackObservedAtMs == 0 || ack.ackObservedAtMs > nowMs ||
+        nowMs - ack.ackObservedAtMs > MAX_REQUESTER_SAMPLE_AGE_MS ||
+        providerBootEpoch.empty())
+      return result;
+    result["sample"] = NativeJson{
+      {"provider", ack.providerName.toUri()},
+      {"service", ack.serviceName.toUri()},
+      {"kind", "ACK_RTT"},
+      {"rtt_ms", *ack.ackRttMs},
+      {"elapsed_ms", *ack.ackRttMs},
+      {"observed_at_ms", ack.ackObservedAtMs},
+      {"peer_boot_epoch", providerBootEpoch},
+      {"sample_count", std::uint64_t{1}},
+      {"confidence", 1.0}};
+    return result;
+  }
+  if (!ack.telemetry)
+    return result;
+  const auto& sample = *ack.telemetry;
+  if (sample.providerName != ack.providerName || sample.serviceName != ack.serviceName ||
+      sample.stale || sample.lastUpdatedMs == 0 || sample.lastUpdatedMs > nowMs ||
+      nowMs - sample.lastUpdatedMs > 5000)
+    return result;
+
+  NativeJson probeRtt = NativeJson::array();
+  for (const auto value : sample.probeRttMs) {
+    if (!std::isfinite(value) || value < 0) return result;
+    probeRtt.push_back(value);
+  }
+  NativeJson interestGaps = NativeJson::array();
+  for (const auto value : sample.probeInterestGapsMs) {
+    if (!std::isfinite(value) || value < 0) return result;
+    interestGaps.push_back(value);
+  }
+  NativeJson dataGaps = NativeJson::array();
+  for (const auto value : sample.probeDataArrivalGapsMs) {
+    if (!std::isfinite(value) || value < 0) return result;
+    dataGaps.push_back(value);
+  }
+  NativeJson probeWireBytes = NativeJson::array();
+  for (const auto value : sample.probeDataWireBytes)
+    probeWireBytes.push_back(value);
+  if (!std::isfinite(sample.rttMs) || sample.rttMs < 0 ||
+      !std::isfinite(sample.firstByteMs) || sample.firstByteMs < 0 ||
+      !std::isfinite(sample.elapsedMs) || sample.elapsedMs < 0 ||
+      !std::isfinite(sample.goodputMbps) || sample.goodputMbps < 0 ||
+      !std::isfinite(sample.confidence) || sample.confidence < 0 ||
+      sample.confidence > 1)
+    return result;
+  result["sample"] = NativeJson{
+    {"provider", sample.providerName.toUri()},
+    {"service", sample.serviceName.toUri()},
+    {"peer", sample.peerName.toUri()},
+    {"edge", sample.edgeName},
+    {"kind", sample.kind ==
+        ndn_service_framework::NetworkTelemetrySampleKind::AckRtt ?
+          "ACK_RTT" : ndn_service_framework::toString(sample.kind)},
+    {"rtt_ms", sample.rttMs},
+    {"first_byte_ms", sample.firstByteMs},
+    {"elapsed_ms", sample.elapsedMs},
+    {"encoded_bytes", sample.encodedBytes},
+    {"payload_bytes", sample.payloadBytes},
+    {"wire_bytes", sample.wireBytes},
+    {"goodput_mbps", sample.goodputMbps},
+    {"received_segments", sample.receivedSegments},
+    {"probe_segments_sent", sample.probeSegmentsSent},
+    {"probe_rtt_ms", std::move(probeRtt)},
+    {"probe_interest_gaps_ms", std::move(interestGaps)},
+    {"probe_data_arrival_gaps_ms", std::move(dataGaps)},
+    {"probe_data_wire_bytes", std::move(probeWireBytes)},
+    {"probe_profile_digest", sample.probeProfileDigest},
+    {"probe_complete", sample.probeComplete},
+    {"probe_signature_valid", sample.probeSignatureValid},
+    {"timeout_count", sample.timeoutCount},
+    {"nack_count", sample.nackCount},
+    {"sample_count", sample.sampleCount},
+    {"observed_at_ms", sample.lastUpdatedMs},
+    {"confidence", sample.confidence},
+    {"peer_boot_epoch", sample.peerBootEpoch},
+    {"data_name", sample.dataName.toUri()}};
+  result["sample"].update(nativeProbeTrainRateMetadataV4(sample));
+  return result;
 }
 
 void expandStateContractsFromCatalog(NativeSplitCandidate& candidate,
@@ -134,6 +721,119 @@ logPlanPhase(const std::string& requestId, const char* phase,
   }
   catch (...) {
     // Timing is diagnostic only and must never change planning behavior.
+  }
+}
+
+void
+logPlacementObservationSnapshot(const std::string& requestId,
+                                const NativeJson& snapshot,
+                                const std::string& digest,
+                                std::uint64_t checkedAtMs,
+                                const std::string& unavailableReason) noexcept
+{
+  const auto* enabled = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+  if (enabled == nullptr || *enabled == '\0' || *enabled == '0')
+    return;
+  try {
+    std::ostringstream record;
+    record << "NDNSF_DI_NATIVE_PLACEMENT_OBSERVATION_SNAPSHOT requestId=" << requestId
+           << " status=" << (digest.empty() ? "unavailable" : "accepted")
+           << " snapshotDigest=" << (digest.empty() ? "none" : digest);
+    if (digest.empty() && !unavailableReason.empty())
+      record << " fallbackReason=" << unavailableReason;
+    if (!digest.empty() && snapshot.is_object()) {
+      const auto capturedAtMs = snapshot.value("captured_at_ms", std::uint64_t{0});
+      const auto expiresAtMs = snapshot.value("expires_at_ms", std::uint64_t{0});
+      std::size_t offerCount = 0;
+      auto providerOfferProviders = NativeJson::array();
+      if (snapshot.contains("provider_offers") && snapshot["provider_offers"].is_array()) {
+        offerCount = snapshot["provider_offers"].size();
+        for (const auto& offer : snapshot["provider_offers"]) {
+          if (offer.is_object() && offer.contains("provider") &&
+              offer["provider"].is_string())
+            providerOfferProviders.push_back(offer["provider"]);
+        }
+      }
+      auto activeProbeRttRows = NativeJson::array();
+      auto activeProbeGoodputRows = NativeJson::array();
+      std::size_t rttCount = 0;
+      std::size_t goodputCount = 0;
+      if (snapshot.contains("eligible_link_observations") &&
+          snapshot["eligible_link_observations"].is_array()) {
+        for (const auto& observation : snapshot["eligible_link_observations"]) {
+          if (!observation.is_object() || !observation.contains("row") ||
+              !observation["row"].is_object())
+            continue;
+          const auto kind = observation["row"].value("kind", std::string{});
+          if (kind == "ACTIVE_PROBE_RTT") {
+            ++rttCount;
+            activeProbeRttRows.push_back(NativeJson{
+              {"reported_by", observation.value("reported_by", std::string{})},
+              {"src_provider", observation["row"].value("src_peer", std::string{})},
+              {"dst_provider", observation["row"].value("dst_peer", std::string{})}});
+          }
+          else if (kind == "ACTIVE_PROBE_GOODPUT") {
+            ++goodputCount;
+            const auto& row = observation["row"];
+            activeProbeGoodputRows.push_back(NativeJson{
+              {"reported_by", observation.value("reported_by", std::string{})},
+              {"src_provider", row.value("src_peer", std::string{})},
+              {"dst_provider", row.value("dst_peer", std::string{})},
+              {"sample_digest", row.value("source_digest", std::string{})},
+              {"probe_complete", row.value("probe_complete", false)},
+              {"probe_segments_sent", row.value("probe_segments_sent",
+                                                  std::uint64_t{0})},
+              {"probe_signature_valid", row.value("probe_signature_valid", false)},
+              {"probe_source_send_gaps_ms", row.value(
+                "probe_source_send_gaps_ms", NativeJson::array())},
+              {"probe_source_timing_validated", row.value("probe_source_timing_validated", false)},
+              {"probe_train_goodput_mbps", row.value("probe_train_goodput_mbps", NativeJson(nullptr))},
+              {"probe_rate_status", row.value("probe_rate_status", NativeJson("UNKNOWN"))},
+              {"probe_rate_reason", row.value("probe_rate_reason", NativeJson("SOURCE_TIMING_UNVERIFIED"))},
+              {"probe_interest_gaps_ms", row.value(
+                "probe_interest_gaps_ms", NativeJson::array())},
+              {"probe_data_arrival_gaps_ms", row.value(
+                "probe_data_arrival_gaps_ms", NativeJson::array())},
+              {"probe_data_wire_bytes", row.value(
+                "probe_data_wire_bytes", NativeJson::array())}});
+          }
+        }
+      }
+      const auto ineligibleCount = snapshot.value(
+        "ineligible_link_observation_count", std::uint64_t{0});
+      const auto boundedJsonSummary = [](const NativeJson& value,
+                                         const std::size_t maxItems) {
+        return value.is_array() && value.size() <= maxItems
+          ? value.dump() : std::string("truncated");
+      };
+      record << " capturedAtMs=" << capturedAtMs
+             << " ageMs=" << (capturedAtMs <= checkedAtMs ? checkedAtMs - capturedAtMs : 0)
+             << " expiresAtMs=" << expiresAtMs
+             << " expiresInMs=" << (expiresAtMs > checkedAtMs ? expiresAtMs - checkedAtMs : 0)
+             << " providerOffers=" << offerCount
+             << " providerRoster="
+             << boundedJsonSummary(snapshot.value("provider_roster", NativeJson::array()), 32)
+             << " providerOfferProviders="
+             << boundedJsonSummary(providerOfferProviders, 32)
+             << " rttPairs="
+             << boundedJsonSummary(snapshot.value("rtt_pairs", NativeJson::array()), 16)
+             << " goodputEdges="
+             << boundedJsonSummary(snapshot.value("goodput_edges", NativeJson::array()), 16)
+             << " activeProbeRtt=" << rttCount
+             << " activeProbeRttRows=" << boundedJsonSummary(activeProbeRttRows, 16)
+             << " activeProbeGoodput=" << goodputCount
+             << " activeProbeGoodputRows=" << boundedJsonSummary(activeProbeGoodputRows, 16)
+             << " ineligibleLinkObservations=" << ineligibleCount;
+      if (snapshot.contains("request_transfer_profile")) {
+        const auto profile = nativeCanonicalJson(snapshot.at("request_transfer_profile"));
+        record << " requestTransferProfileDigest=" << nativePlanningDigest(profile)
+               << " requestTransferProfileJson=" << profile;
+      }
+    }
+    logRuntimeEvidence(record.str());
+  }
+  catch (...) {
+    // Snapshot diagnostics must never change placement behavior.
   }
 }
 
@@ -254,8 +954,26 @@ void bindConversationProjections(
   // Attempt 1 must use the parent's immutable placement. A replacement may
   // switch to an alternate Provider; the coordinator binds that new map after
   // planning while retaining the old map for the parent CAS.
-  if (turn.attempt == 1 && !unboundInitialPlan && roleMapDigest != turn.parent.planRoleMapDigest)
+  if (turn.attempt == 1 && !unboundInitialPlan &&
+      roleMapDigest != turn.parent.planRoleMapDigest) {
+    try {
+      std::ostringstream diagnostic;
+      diagnostic << "DEBUG-SPEC194-R16 CONVERSATION_ROLE_MAP_MISMATCH requestId="
+                 << turn.requestId
+                 << " parentDigest=" << turn.parent.planRoleMapDigest
+                 << " actualDigest=" << roleMapDigest << " roleMap=";
+      bool first = true;
+      for (const auto& [role, provider] : providersByRole) {
+        diagnostic << (first ? "" : ",") << role << "=" << provider;
+        first = false;
+      }
+      logRuntimeEvidence(diagnostic.str());
+    }
+    catch (...) {
+      // The diagnostic must never change conversation binding behavior.
+    }
     throw std::invalid_argument("conversation turn plan-role map mismatch");
+  }
 
   ConversationTurnBindingV1 binding;
   binding.conversationId = turn.parent.conversationId;
@@ -444,7 +1162,8 @@ NativePlannedRequest planNativeRequestImpl(
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
   std::shared_ptr<const std::atomic<bool>> cancelled,
-  const NativeConversationTurn* conversationTurn)
+  const NativeConversationTurn* conversationTurn,
+  const NativePlacementProbeRoundV1* placementProbeRound)
 {
   control.requireActive();
   runtime.budget.validate();
@@ -454,26 +1173,122 @@ NativePlannedRequest planNativeRequestImpl(
     throw std::invalid_argument("native strategy ports are incomplete");
   if (closure.requestId != ndn::Name(control.requestId) || closure.digest.empty() ||
       wireDeadlineMs <= epochMs() || !runtime.grants || !runtime.security.requireProtectedArtifacts ||
-      runtime.requesterIdentity.empty() || runtime.protectionEpoch.empty())
+      runtime.requesterIdentity.empty() ||
+      (!encoded.probeScopeDigest.empty() &&
+       runtime.requesterIdentity != encoded.requesterIdentity) ||
+      runtime.protectionEpoch.empty())
     throw std::invalid_argument("native request runtime/ACK binding is incomplete");
-  NativeOfferBindingContext context{control.requestId, control.attempt, runtime.contract.serviceName,
-    encoded.modelIntentDigest, model.graph.graphDigest, wireDeadlineMs};
+  NativeOfferBindingContext context;
+  context.requestId = control.requestId;
+  context.attempt = control.attempt;
+  context.serviceName = runtime.contract.serviceName;
+  context.modelDigest = encoded.modelIntentDigest;
+  context.graphDigest = model.graph.graphDigest;
+  context.deadlineMs = wireDeadlineMs;
+  context.candidateArtifacts = encoded.candidateArtifacts;
+  context.candidateArtifactSetDigest = encoded.candidateArtifactSetDigest;
+  context.candidateProviders = encoded.candidateProviders;
+  context.candidateSetDigest = encoded.candidateSetDigest;
+  context.probeScopeDigest = encoded.probeScopeDigest;
+  context.requesterIdentity = encoded.requesterIdentity;
+  context.allowedRttPairs = encoded.allowedRttPairs;
+  context.allowedGoodputEdges = encoded.allowedGoodputEdges;
+  context.placementProbeRoundCompleted = placementProbeRound != nullptr;
   if (conversationTurn && conversationTurn->attempt == 1 &&
       conversationTurn->parent.parentContextEpoch > 0)
     context.preferredProvidersByRole = conversationTurn->providersByRole;
   std::vector<NativeAdmittedOfferV3> offers;
   auto phaseStarted = std::chrono::steady_clock::now();
   for (const auto& ack : closure.candidates) {
-    if (encoded.recovery && ack.providerName.toUri() == encoded.recovery->failedProvider) continue;
+    if (!ack.ack.getStatus() ||
+        (encoded.recovery && ack.providerName.toUri() == encoded.recovery->failedProvider))
+      continue;
     offers.push_back(admission.verify(ack, context, epochMs()));
+  }
+  // V4 is a whole-request profile. A missing, duplicate, stale, or invalid
+  // Provider offer drops the complete observation set and leaves the request
+  // on its existing V3 admission path.
+  std::string snapshotUnavailableReason;
+  std::optional<NativePlacementObservationSnapshotV4> placementSnapshot;
+  NativeJson requestTransferProfile;
+  if (runtime.planningCache && options.generation && options.generation->enabled &&
+      (!conversationTurn || conversationTurn->parent.parentContextEpoch == 0)) {
+    for (const auto& profile : runtime.planningCache->requestTransferProfiles) {
+      if (profile.value("input_digest", std::string{}) == encoded.logicalInputDigest &&
+          profile.value("source_digest", std::string{}) == model.canonicalSourceDigest) {
+        requestTransferProfile = profile;
+        requestTransferProfile["request_contract_digest"] = encoded.requestContractDigest;
+        break;
+      }
+    }
+  }
+  if (!encoded.recovery && runtime.planningCache &&
+      sameStrategyIdentity(runtime.planningCache->splitter, ports.splitterIdentity)) {
+    placementSnapshot = trySelectNativePlacementObservationSnapshotV4(
+      context, closure, admission, *runtime.planningCache,
+      runtime.budget.maxCandidates, epochMs(), &model.graph,
+      &snapshotUnavailableReason,
+      requestTransferProfile.is_null() ? nullptr : &requestTransferProfile);
+    if (placementSnapshot) {
+      context.placementObservationSnapshot = placementSnapshot->value;
+      context.placementObservationSnapshotDigest = placementSnapshot->digest;
+    }
+  }
+  else if (encoded.recovery) {
+    snapshotUnavailableReason = "RECOVERY_REQUEST";
+  }
+  else if (!runtime.planningCache) {
+    snapshotUnavailableReason = "PREPARED_PLANNING_CACHE_UNAVAILABLE";
+  }
+  else {
+    snapshotUnavailableReason = "SPLITTER_CACHE_IDENTITY_MISMATCH";
   }
   logPlanPhase(control.requestId, "admission_verify", phaseStarted);
   if (offers.empty()) throw std::runtime_error("DI_NATIVE_NO_ADMITTED_PROVIDER");
   const auto policyStart = std::chrono::steady_clock::now();
   const auto budgetDeadline = policyStart +
     std::chrono::milliseconds(runtime.budget.maxPolicyMs);
-  const auto strategyDeadline = control.deadline == std::chrono::steady_clock::time_point{} ?
+  auto strategyDeadline = control.deadline == std::chrono::steady_clock::time_point{} ?
     budgetDeadline : std::min(control.deadline, budgetDeadline);
+  const auto snapshotCheckedAtMs = epochMs();
+  if (!context.placementObservationSnapshotDigest.empty()) {
+    const auto nowMs = snapshotCheckedAtMs;
+    const auto snapshotExpiry = context.placementObservationSnapshot.value(
+      "expires_at_ms", std::uint64_t{0});
+    if (snapshotExpiry > context.deadlineMs)
+      throw std::runtime_error("DI_NATIVE_OBSERVATION_SNAPSHOT_EXPIRED");
+    if (snapshotExpiry <= nowMs) {
+      context.placementObservationSnapshot = nullptr;
+      context.placementObservationSnapshotDigest.clear();
+      context.placementObservationFallbackReason = "SNAPSHOT_STALE";
+      snapshotUnavailableReason = "SNAPSHOT_STALE";
+    }
+    else {
+      const auto snapshotDeadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(snapshotExpiry - nowMs);
+      strategyDeadline = std::min(strategyDeadline, snapshotDeadline);
+    }
+  }
+  if (placementProbeRound) {
+    validatePlacementProbeIntent(placementProbeRound->intent, context);
+      if (placementSnapshot && !context.placementObservationSnapshotDigest.empty()) {
+      *placementSnapshot = mergeNativePlacementProbeRoundV1(
+        *placementSnapshot, *placementProbeRound, context, snapshotCheckedAtMs);
+      context.placementObservationSnapshot = placementSnapshot->value;
+      context.placementObservationSnapshotDigest = placementSnapshot->digest;
+      if (placementSnapshot->expiresAtMs <= snapshotCheckedAtMs) {
+        context.placementObservationSnapshot = nullptr;
+        context.placementObservationSnapshotDigest.clear();
+        context.placementObservationFallbackReason = "TARGETED_PROBE_SNAPSHOT_STALE";
+        snapshotUnavailableReason = "TARGETED_PROBE_SNAPSHOT_STALE";
+      }
+      else {
+        const auto targetedDeadline = std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(placementSnapshot->expiresAtMs - snapshotCheckedAtMs);
+        strategyDeadline = std::min(strategyDeadline, targetedDeadline);
+      }
+    }
+  }
   const ExtensionControl extensionControl{strategyDeadline, control.cancelled};
   extensionControl.requireActive();
   bool usingPreparedPlanningCache = false;
@@ -538,12 +1353,40 @@ NativePlannedRequest planNativeRequestImpl(
       continue;
     }
     policyUsed += std::chrono::steady_clock::now() - placementStart;
-    if (policyUsed > policyLimit) throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
+    const bool policyBudgetFallback = proposal.placementDecisionV4 &&
+      proposal.placementDecisionV4->value("fallback_reason", std::string{}) ==
+        "POLICY_BUDGET_EXHAUSTED";
+    if (policyUsed > policyLimit &&
+        !(proposal.placementDecisionV4 &&
+          proposal.placementDecisionV4->value("status", std::string{}) ==
+            "BASELINE_FALLBACK"))
+      throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
     if (!sameStrategyIdentity(proposal.strategy, ports.placementIdentity))
       throw std::invalid_argument("native placement returned a foreign strategy identity");
-    extensionControl.requireActive();
+    if (!sameOfferBindingContext(proposal.context, context))
+      throw std::invalid_argument("native placement modified the admitted request snapshot");
+    if (policyBudgetFallback) control.requireActive();
+    else extensionControl.requireActive();
     validateNativeRolePlacement(proposal, roles, offers, epochMs());
     logPlanPhase(control.requestId, "placement_and_role_validation", placementStart);
+    if (proposal.placementProbeIntent) {
+      if (placementProbeRound || context.placementProbeRoundCompleted)
+        throw std::invalid_argument("placement strategy requested a second probe round");
+      validatePlacementProbeIntent(*proposal.placementProbeIntent, context);
+      NativePlannedRequest deferred;
+      deferred.placementProbeIntent = proposal.placementProbeIntent;
+      return deferred; // No artifacts, grants, or plan publication before targeted facts arrive.
+    }
+    logPlacementObservationSnapshot(control.requestId,
+      context.placementObservationSnapshot,
+      context.placementObservationSnapshotDigest, snapshotCheckedAtMs,
+      snapshotUnavailableReason);
+    if (proposal.placementDecisionV4) {
+      logRuntimeEvidence(
+        "NDNSF_DI_NATIVE_PLACEMENT_DECISION requestId=" + control.requestId +
+        " strategy=" + proposal.strategy.name +
+        " decisionJson=" + nativeCanonicalJson(*proposal.placementDecisionV4));
+    }
     NativeExecutionPlan execution = candidate.executionPlan;
     execution.serviceName = runtime.contract.serviceName;
     execution.modelName = model.descriptor.modelName;
@@ -651,15 +1494,21 @@ NativePlannedRequest planNativeRequestImpl(
       execution.dependencies.push_back(std::move(feedback));
       execution.streamingOperationStride = transferCount + 1;
     }
-    extensionControl.requireActive();
+    if (policyBudgetFallback) control.requireActive();
+    else extensionControl.requireActive();
     NativePlanSealingInputs sealing;
     phaseStarted = std::chrono::steady_clock::now();
     sealing.artifacts = preparation.ensureArtifacts(model, candidate, proposal, control);
     logPlanPhase(control.requestId, "artifact_binding", phaseStarted);
     sealing.requesterIdentity = runtime.requesterIdentity;
     sealing.protectionEpoch = runtime.protectionEpoch;
-    sealing.expiresAtMs = wireDeadlineMs;
+    // Observation expiry bounds the placement decision. Once that decision is
+    // sealed while the snapshot is fresh, the selected request keeps the
+    // original wire deadline for its execution and dataflow leases.
+    sealing.expiresAtMs = context.deadlineMs;
     sealing.requestContractDigest = encoded.requestContractDigest;
+    sealing.placementObservationSnapshotDigest =
+      context.placementObservationSnapshotDigest;
     if (options.generation) {
       sealing.generationContract = *options.generation;
       sealing.generationContract.streamingOperationStride = execution.streamingOperationStride;
@@ -670,7 +1519,8 @@ NativePlannedRequest planNativeRequestImpl(
     // certified role identities in the final Core.
     for (const auto& role : roles)
       sealing.assemblyByRole.emplace(role.selectedRole, role);
-    extensionControl.requireActive();
+    if (policyBudgetFallback) control.requireActive();
+    else extensionControl.requireActive();
     phaseStarted = std::chrono::steady_clock::now();
     auto core = NativePlanSealer::sealCore(model, candidate, proposal, execution, offers, closure.digest, sealing);
     logPlanPhase(control.requestId, "plan_seal_core", phaseStarted);
@@ -679,10 +1529,10 @@ NativePlannedRequest planNativeRequestImpl(
     bool reusedGrantLease = false;
     if (conversationTurn) {
       auto wanted = makeGrantLeaseScope(core, *conversationTurn, runtime.security);
-      if (wanted.expiresAtMs <= wireDeadlineMs)
+      if (wanted.expiresAtMs <= sealing.expiresAtMs)
         throw std::runtime_error("DI_NATIVE_CONVERSATION_RETENTION_SHORTER_THAN_REQUEST");
       if (conversationTurn->grantLease && grantLeaseCovers(
-            *conversationTurn->grantLease, wanted, wireDeadlineMs, core)) {
+            *conversationTurn->grantLease, wanted, core.expiresAtMs, core)) {
         grantLease = *conversationTurn->grantLease;
         grantLeaseScope = grantLease->scope;
         reusedGrantLease = true;
@@ -694,7 +1544,8 @@ NativePlannedRequest planNativeRequestImpl(
       }
     }
     std::vector<NativeGrantBinding> grants;
-    NativeGrantControl grantControl{std::chrono::system_clock::time_point(std::chrono::milliseconds(wireDeadlineMs)), cancelled};
+    NativeGrantControl grantControl{std::chrono::system_clock::time_point(
+      std::chrono::milliseconds(core.expiresAtMs)), cancelled};
     phaseStarted = std::chrono::steady_clock::now();
     if (reusedGrantLease) {
       grants = grantLease->grants;
@@ -817,6 +1668,506 @@ NativePlannedRequest planNativeRequestImpl(
 
 } // namespace
 
+std::optional<std::uint64_t> estimateNativeRequestTransferBytesV1(
+  const NativeJson& profile, const std::string& sourceDigest,
+  const std::string& inputDigest, const NativeDependencySpec& dependency,
+  const std::vector<NativeSelectionRoleV3>& roles)
+{
+  try {
+    if (profile.value("schema", std::string{}) != "ndnsf-di-request-transfer-profile-v1" ||
+        !profile.value("initial_context", false) || !isDigestValue(sourceDigest) ||
+        !isDigestValue(inputDigest) || profile.at("source_digest") != sourceDigest ||
+        profile.at("input_digest") != inputDigest || dependency.producers.size() != 1 ||
+        dependency.consumers.size() != 1 || dependency.tensors.size() != 1 ||
+        !dependency.redistributions.empty() || dependency.operationKind != "ACTIVATION")
+      return std::nullopt;
+    const NativeSelectionRoleV3* producer = nullptr;
+    const NativeSelectionRoleV3* consumer = nullptr;
+    for (const auto& role : roles) {
+      if (role.selectedRole == dependency.producers.front()) {
+        if (producer) return std::nullopt;
+        producer = &role;
+      }
+      if (role.selectedRole == dependency.consumers.front()) {
+        if (consumer) return std::nullopt;
+        consumer = &role;
+      }
+    }
+    if (!producer || !consumer) return std::nullopt;
+    // Match the production projection's shared output/input bundle rule.
+    std::map<std::string, NativeAssemblyTensorContractV3> shared;
+    const auto append = [&](const auto& tensor) {
+      const auto match = std::find_if(consumer->expectedInputs.begin(),
+        consumer->expectedInputs.end(), [&](const auto& input) {
+          return tensor.name == input.name && tensor.dtype == input.dtype &&
+            tensor.shape == input.shape;
+        });
+      if (match != consumer->expectedInputs.end()) shared.emplace(tensor.name, tensor);
+    };
+    for (const auto& tensor : producer->expectedOutputs) append(tensor);
+    for (const auto& tensor : producer->expectedInputs) append(tensor);
+    if (shared.empty() || shared.size() > 128) return std::nullopt;
+    const NativeJson* selected = nullptr;
+    for (const auto& row : profile.at("dependencies")) {
+      if (row.at("producer_role") == dependency.producers.front() &&
+          row.at("consumer_role") == dependency.consumers.front()) {
+        if (selected) return std::nullopt;
+        selected = &row;
+      }
+    }
+    if (!selected || !selected->at("tensors").is_array() ||
+        selected->at("tensors").size() != shared.size()) return std::nullopt;
+    const std::map<std::string, std::uint64_t> widths{
+      {"float32", 4}, {"float16", 2}, {"int64", 8}, {"bool", 1}, {"uint8", 1}};
+    std::set<std::string> seen;
+    std::uint64_t total = 0;
+    for (const auto& tensor : selected->at("tensors")) {
+      const auto name = tensor.at("name").get<std::string>();
+      const auto found = shared.find(name);
+      const auto dtype = tensor.at("dtype").get<std::string>();
+      if (found == shared.end() || !seen.insert(name).second ||
+          dtype != found->second.dtype || !widths.count(dtype) ||
+          !tensor.at("shape").is_array() ||
+          tensor.at("shape").size() != found->second.shape.size()) return std::nullopt;
+      std::uint64_t bytes = widths.at(dtype);
+      for (std::size_t i = 0; i < found->second.shape.size(); ++i) {
+        const auto& dimension = tensor.at("shape")[i];
+        if (!dimension.is_number_integer()) return std::nullopt;
+        const auto size = dimension.get<std::int64_t>();
+        if (size <= 0 || (std::holds_alternative<std::int64_t>(found->second.shape[i]) &&
+            std::get<std::int64_t>(found->second.shape[i]) != size) ||
+            static_cast<std::uint64_t>(size) > std::numeric_limits<std::uint64_t>::max() / bytes)
+          return std::nullopt;
+        bytes *= static_cast<std::uint64_t>(size);
+      }
+      if (bytes > std::numeric_limits<std::uint64_t>::max() - total) return std::nullopt;
+      total += bytes;
+    }
+    return total;
+  }
+  catch (const std::exception&) { return std::nullopt; }
+}
+
+NativePlacementObservationSnapshotV4
+mergeNativePlacementProbeRoundV1(
+  const NativePlacementObservationSnapshotV4& original,
+  const NativePlacementProbeRoundV1& round,
+  const NativeOfferBindingContext& context,
+  const std::uint64_t nowMs)
+{
+  auto result = original;
+  mergeTargetedPlacementProbeRound(result, round, context, nowMs);
+  return result;
+}
+
+NativePlacementObservationSnapshotV4
+buildNativePlacementObservationSnapshotV4(
+  const NativeOfferBindingContext& context,
+  const std::string& ackClosedDigest,
+  const std::vector<NativeAdmittedOfferV4>& offers,
+  const std::vector<NativeJson>& requesterProviderSamples,
+  const NativePreparedPlanningCache& planningCache,
+  std::size_t maxCandidates,
+  std::uint64_t nowMs,
+  const NativeGraphSnapshot* modelGraph,
+  const NativeJson* requestTransferProfile)
+{
+  constexpr std::uint64_t MAX_PROVIDER_OBSERVATION_AGE_MS = 5000;
+  if (context.requestId.empty() || context.attempt == 0 ||
+      context.requesterIdentity.empty() ||
+      ndn::Name(context.requesterIdentity).toUri() != context.requesterIdentity ||
+      context.serviceName.empty() ||
+      !isDigestValue(context.modelDigest) || !isDigestValue(context.graphDigest) ||
+      !isDigestValue(ackClosedDigest) || context.deadlineMs <= nowMs ||
+      !isDigestValue(context.candidateSetDigest) ||
+      !isDigestValue(context.candidateArtifactSetDigest) ||
+      !isDigestValue(context.probeScopeDigest) ||
+      context.probeScopeDigest != placementProbeScopeDigest(context) ||
+      context.candidateProviders.empty() || context.candidateProviders.size() > 16 ||
+      !std::is_sorted(context.candidateProviders.begin(), context.candidateProviders.end()) ||
+      std::adjacent_find(context.candidateProviders.begin(), context.candidateProviders.end()) !=
+        context.candidateProviders.end() ||
+      offers.size() != context.candidateProviders.size() ||
+      requesterProviderSamples.size() != context.candidateProviders.size())
+    throw std::invalid_argument("incomplete V4 observation snapshot input");
+  if (modelGraph && modelGraph->graphDigest != context.graphDigest)
+    throw std::invalid_argument("V4 tensor byte source has a foreign graph digest");
+
+  const auto preparedInventory = buildNativeCandidateArtifactInventoryV4(
+    planningCache, maxCandidates);
+  if (!preparedInventory || preparedInventory->digest !=
+        context.candidateArtifactSetDigest ||
+      nativeCanonicalJson(NativeJson(preparedInventory->identities)) !=
+        nativeCanonicalJson(NativeJson(context.candidateArtifacts)))
+    throw std::invalid_argument("V4 prepared graph differs from the advertised inventory");
+
+  NativeJson candidateArtifacts = NativeJson::array();
+  for (const auto& identity : context.candidateArtifacts)
+    candidateArtifacts.push_back(identity);
+  if (candidateArtifacts.empty() ||
+      candidateArtifacts.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS ||
+      nativePlanningDigest(nativeCanonicalJson(candidateArtifacts)) !=
+        context.candidateArtifactSetDigest ||
+      nativePlanningDigest(nativeCanonicalJson(NativeJson(context.candidateProviders))) !=
+        context.candidateSetDigest)
+    throw std::invalid_argument("V4 observation snapshot candidate binding is invalid");
+
+  std::vector<const NativeAdmittedOfferV4*> orderedOffers;
+  orderedOffers.reserve(offers.size());
+  for (const auto& offer : offers) orderedOffers.push_back(&offer);
+  std::sort(orderedOffers.begin(), orderedOffers.end(), [](const auto* left, const auto* right) {
+    return left->observation().provider < right->observation().provider;
+  });
+  std::map<std::string, std::string> bootByProvider;
+  std::map<std::string, std::string> topologyByProvider;
+  std::uint64_t expiresAtMs = context.deadlineMs;
+  NativeJson providerOfferValues = NativeJson::array();
+  for (std::size_t i = 0; i < orderedOffers.size(); ++i) {
+    const auto& admitted = *orderedOffers[i];
+    const auto& offer = admitted.observation();
+    if (offer.provider != context.candidateProviders[i] ||
+        offer.requestId != context.requestId || offer.attempt != context.attempt ||
+        offer.service != context.serviceName || offer.modelDigest != context.modelDigest ||
+        offer.graphDigest != context.graphDigest ||
+        offer.candidateSetDigest != context.candidateSetDigest ||
+        offer.candidateArtifactSetDigest != context.candidateArtifactSetDigest ||
+        offer.probeScopeDigest != context.probeScopeDigest ||
+        admitted.signerIdentity() != offer.provider ||
+        admitted.signerKeyLocator().empty() || !isDigestValue(admitted.ackWireDigest()) ||
+        offer.bootEpoch.empty() || offer.capturedAtMs == 0 || offer.capturedAtMs > nowMs ||
+        nowMs - offer.capturedAtMs > MAX_PROVIDER_OBSERVATION_AGE_MS ||
+        offer.expiresAtMs <= nowMs || offer.expiresAtMs > context.deadlineMs ||
+        offer.capturedAtMs > std::numeric_limits<std::uint64_t>::max() -
+          MAX_PROVIDER_OBSERVATION_AGE_MS ||
+        !bootByProvider.emplace(offer.provider, offer.bootEpoch).second)
+      throw std::invalid_argument("V4 observation snapshot offer binding is invalid");
+    expiresAtMs = std::min(expiresAtMs, offer.expiresAtMs);
+    expiresAtMs = std::min(expiresAtMs,
+      offer.capturedAtMs + MAX_PROVIDER_OBSERVATION_AGE_MS);
+    const auto& resources = offer.values.at("resources");
+    if (resources.is_object()) {
+      if (resources.contains("topology_digest") &&
+          resources.at("topology_digest").is_string())
+        topologyByProvider.emplace(offer.provider,
+          resources.at("topology_digest").get<std::string>());
+      const auto measuredAt = resources.value("measured_at_ms", std::uint64_t{0});
+      if (measuredAt == 0 || measuredAt > nowMs || measuredAt >
+            std::numeric_limits<std::uint64_t>::max() - MAX_PROVIDER_OBSERVATION_AGE_MS)
+        throw std::invalid_argument("V4 provider resource sample time is invalid");
+      expiresAtMs = std::min(expiresAtMs,
+        measuredAt + MAX_PROVIDER_OBSERVATION_AGE_MS);
+    }
+    const auto& residency = offer.values.at("residency");
+    if (residency.is_array()) {
+      for (const auto& row : residency) {
+        const auto rowExpiry = row.at("expires_at_ms").get<std::uint64_t>();
+        const auto rowCapturedAt = row.at("captured_at_ms").get<std::uint64_t>();
+        if (rowCapturedAt == 0 || rowCapturedAt > nowMs ||
+            rowCapturedAt > std::numeric_limits<std::uint64_t>::max() -
+              MAX_PROVIDER_OBSERVATION_AGE_MS)
+          throw std::invalid_argument("V4 residency sample time is invalid");
+        expiresAtMs = std::min(expiresAtMs, rowExpiry);
+        expiresAtMs = std::min(expiresAtMs,
+          rowCapturedAt + MAX_PROVIDER_OBSERVATION_AGE_MS);
+      }
+    }
+    providerOfferValues.push_back(NativeJson{
+      {"provider", offer.provider},
+      {"boot_epoch", offer.bootEpoch},
+      {"captured_at_ms", offer.capturedAtMs},
+      {"expires_at_ms", offer.expiresAtMs},
+      {"offer_digest", offer.offerDigest},
+      {"signer_key_id", offer.signerKeyId},
+      {"signer_identity", admitted.signerIdentity()},
+      {"signer_key_locator", admitted.signerKeyLocator()},
+      {"ack_wire_digest", admitted.ackWireDigest()},
+      {"values", offer.values}});
+  }
+
+  std::vector<NativeJson> orderedSamples = requesterProviderSamples;
+  std::sort(orderedSamples.begin(), orderedSamples.end(), [](const auto& left, const auto& right) {
+    return left.value("provider", std::string{}) < right.value("provider", std::string{});
+  });
+  NativeJson requesterSamples = NativeJson::array();
+  for (std::size_t i = 0; i < orderedSamples.size(); ++i) {
+    const auto& sample = orderedSamples[i];
+    if (!sample.is_object() || sample.value("provider", std::string{}) !=
+          context.candidateProviders[i] || !sample.contains("sample"))
+      throw std::invalid_argument("requester telemetry snapshot roster mismatch");
+    if (!sample.at("sample").is_null()) {
+      const auto& value = sample.at("sample");
+      if (!value.is_object() || !value.contains("observed_at_ms") ||
+          !value.at("observed_at_ms").is_number_unsigned() ||
+          !value.contains("provider") || !value.at("provider").is_string() ||
+          value.at("provider").get<std::string>() != context.candidateProviders[i] ||
+          !value.contains("service") || !value.at("service").is_string() ||
+          value.at("service").get<std::string>() != context.serviceName)
+        throw std::invalid_argument("requester telemetry snapshot time is invalid");
+      const auto observedAt = value.at("observed_at_ms").get<std::uint64_t>();
+      if (observedAt == 0 || observedAt > nowMs ||
+          nowMs - observedAt > MAX_REQUESTER_SAMPLE_AGE_MS ||
+          observedAt > std::numeric_limits<std::uint64_t>::max() -
+            MAX_REQUESTER_SAMPLE_AGE_MS)
+        throw std::invalid_argument("requester telemetry snapshot is stale");
+      expiresAtMs = std::min(expiresAtMs, observedAt + MAX_REQUESTER_SAMPLE_AGE_MS);
+    }
+    requesterSamples.push_back(sample);
+  }
+
+  auto eligibleLinkObservations = NativeJson::array();
+  std::size_t ineligibleLinkObservationCount = 0;
+  for (const auto* admitted : orderedOffers) {
+    const auto& offer = admitted->observation();
+    const auto& rows = offer.values.at("link_observations");
+    for (const auto& row : rows) {
+      const auto src = row.at("src_peer").get<std::string>();
+      const auto dst = row.at("dst_peer").get<std::string>();
+      const auto srcBoot = row.at("src_boot_epoch");
+      const auto dstBoot = row.at("dst_boot_epoch");
+      const auto topology = row.at("topology_digest");
+      const auto ownTopology = topologyByProvider.find(offer.provider);
+      const bool endpointBootsMatch = srcBoot.is_string() && dstBoot.is_string() &&
+        bootByProvider.count(src) && bootByProvider.count(dst) &&
+        srcBoot.get<std::string>() == bootByProvider.at(src) &&
+        dstBoot.get<std::string>() == bootByProvider.at(dst);
+      const bool topologyMatches = topology.is_string() &&
+        isDigestValue(topology.get<std::string>()) && ownTopology != topologyByProvider.end() &&
+        ownTopology->second == topology.get<std::string>();
+      if (!endpointBootsMatch || !topologyMatches) {
+        ++ineligibleLinkObservationCount;
+        continue;
+      }
+      const auto rowCapturedAt = row.at("captured_at_ms").get<std::uint64_t>();
+      if (rowCapturedAt == 0 || rowCapturedAt > nowMs ||
+          rowCapturedAt > std::numeric_limits<std::uint64_t>::max() -
+            MAX_PROVIDER_OBSERVATION_AGE_MS)
+        throw std::invalid_argument("V4 link sample time is invalid");
+      eligibleLinkObservations.push_back(NativeJson{
+        {"reported_by", offer.provider}, {"row", row}});
+      expiresAtMs = std::min(expiresAtMs,
+        row.at("expires_at_ms").get<std::uint64_t>());
+      expiresAtMs = std::min(expiresAtMs,
+        rowCapturedAt + MAX_PROVIDER_OBSERVATION_AGE_MS);
+    }
+  }
+
+  const auto preparedCandidateCount = std::min(
+    planningCache.candidates.size(), maxCandidates);
+  NativeJson preparedRoleGraph = NativeJson::array();
+  for (std::size_t i = 0; i < preparedCandidateCount; ++i) {
+    const auto& prepared = planningCache.candidates[i];
+    const auto& candidate = prepared.candidate;
+    if (!isDigestValue(candidate.candidateDigest) ||
+        !isDigestValue(candidate.graphDigest))
+      throw std::invalid_argument("V4 prepared candidate graph identity is invalid");
+    NativeJson roles = NativeJson::array();
+    for (const auto& role : prepared.roles)
+      roles.push_back(nativeAssemblyJson(role));
+    NativeJson dependencyEdges = NativeJson::array();
+    for (const auto& dependency : candidate.executionPlan.dependencies) {
+      auto byteEstimate = dependencyByteEstimate(dependency, modelGraph);
+      if (byteEstimate.first.is_null() && requestTransferProfile) {
+        const auto bytes = estimateNativeRequestTransferBytesV1(
+          *requestTransferProfile,
+          requestTransferProfile->value("source_digest", std::string{}),
+          requestTransferProfile->value("input_digest", std::string{}),
+          dependency, prepared.roles);
+        if (bytes)
+          byteEstimate = {NativeJson(*bytes), "request-bound-bundle-payload"};
+      }
+      for (const auto& producer : dependency.producers) {
+        for (const auto& consumer : dependency.consumers) {
+          dependencyEdges.push_back(NativeJson{
+            {"producer_role", producer}, {"consumer_role", consumer},
+            {"tensors", dependency.tensors},
+            {"estimated_bytes", byteEstimate.first},
+            {"estimated_bytes_source", byteEstimate.second.empty()
+              ? NativeJson(nullptr) : NativeJson(byteEstimate.second)},
+            {"expected_segments", dependency.expectedSegments},
+            {"operation_kind", dependency.operationKind}});
+        }
+      }
+    }
+    preparedRoleGraph.push_back(NativeJson{
+      {"candidate_digest", candidate.candidateDigest},
+      {"graph_digest", candidate.graphDigest},
+      {"node_roles", candidate.nodeRoles},
+      {"stage_order", candidate.executionPlan.roles},
+      {"roles", std::move(roles)},
+      {"dependencies", std::move(dependencyEdges)}});
+  }
+  if (expiresAtMs <= nowMs)
+    throw std::invalid_argument("V4 observation snapshot is already expired");
+
+  NativePlacementObservationSnapshotV4 result;
+  result.capturedAtMs = nowMs;
+  result.expiresAtMs = expiresAtMs;
+  result.value = NativeJson{
+    {"schema", "ndnsf-placement-observation-snapshot-v4"},
+    {"request_id", context.requestId},
+    {"attempt", context.attempt},
+    {"requester_identity", context.requesterIdentity},
+    {"service", context.serviceName},
+    {"model_digest", context.modelDigest},
+    {"graph_digest", context.graphDigest},
+    {"ack_closed_digest", ackClosedDigest},
+    {"candidate_set_digest", context.candidateSetDigest},
+    {"candidate_artifact_set_digest", context.candidateArtifactSetDigest},
+    {"probe_scope_digest", context.probeScopeDigest},
+    {"candidate_artifacts", std::move(candidateArtifacts)},
+    {"provider_roster", context.candidateProviders},
+    {"rtt_pairs", context.allowedRttPairs},
+    {"goodput_edges", context.allowedGoodputEdges},
+    {"prepared_role_graph", std::move(preparedRoleGraph)},
+    {"requester_provider_samples", std::move(requesterSamples)},
+    {"provider_offers", std::move(providerOfferValues)},
+    {"eligible_link_observations", std::move(eligibleLinkObservations)},
+    {"ineligible_link_observation_count", ineligibleLinkObservationCount},
+    {"plan_deadline_ms", context.deadlineMs},
+    {"captured_at_ms", result.capturedAtMs},
+    {"expires_at_ms", result.expiresAtMs}};
+  if (requestTransferProfile) {
+    if (!isDigestValue(requestTransferProfile->value("request_contract_digest", std::string{})))
+      throw std::invalid_argument("request transfer profile lacks request binding");
+    result.value["request_transfer_profile"] = *requestTransferProfile;
+  }
+  result.digest = nativePlanningDigest(nativeCanonicalJson(result.value));
+  return result;
+}
+
+std::optional<NativePlacementObservationSnapshotV4>
+trySelectNativePlacementObservationSnapshotV4(
+  const NativeOfferBindingContext& context,
+  const ndn_service_framework::CollaborationAckClosure& closure,
+  const NativeOfferAdmission& admission,
+  const NativePreparedPlanningCache& planningCache,
+  const std::size_t maxCandidates,
+  const std::uint64_t nowMs,
+  const NativeGraphSnapshot* modelGraph,
+  std::string* unavailableReason,
+  const NativeJson* requestTransferProfile)
+{
+  if (unavailableReason)
+    unavailableReason->clear();
+  const auto reject = [unavailableReason] (const char* reason)
+      -> std::optional<NativePlacementObservationSnapshotV4> {
+    if (unavailableReason)
+      *unavailableReason = reason;
+    return std::nullopt;
+  };
+
+  const bool closureDigestPresent = !closure.digest.empty();
+  const bool closureRequestMatches =
+    closure.requestId == ndn::Name(context.requestId);
+  const bool candidateArtifactSetDigestPresent =
+    !context.candidateArtifactSetDigest.empty();
+  const bool probeScopeDigestPresent = !context.probeScopeDigest.empty();
+  const bool candidateProvidersNonEmpty = !context.candidateProviders.empty();
+  const bool candidateProvidersWithinLimit =
+    context.candidateProviders.size() <= 16;
+  const bool candidateProvidersSorted = std::is_sorted(
+    context.candidateProviders.begin(), context.candidateProviders.end());
+  const bool candidateProvidersUnique = std::adjacent_find(
+    context.candidateProviders.begin(), context.candidateProviders.end()) ==
+      context.candidateProviders.end();
+  const bool ackCandidateCountMatches =
+    closure.candidates.size() == context.candidateProviders.size();
+  if (!closureDigestPresent || !closureRequestMatches ||
+      !candidateArtifactSetDigestPresent || !probeScopeDigestPresent ||
+      !candidateProvidersNonEmpty || !candidateProvidersWithinLimit ||
+      !candidateProvidersSorted || !candidateProvidersUnique ||
+      !ackCandidateCountMatches) {
+    try {
+      std::ostringstream diagnostic;
+      diagnostic << "DEBUG-SPEC194-R16 ACK_CLOSURE_INVALID requestId="
+                 << context.requestId
+                 << " closureDigestPresent=" << closureDigestPresent
+                 << " closureRequestMatches=" << closureRequestMatches
+                 << " candidateArtifactSetDigestPresent="
+                 << candidateArtifactSetDigestPresent
+                 << " probeScopeDigestPresent=" << probeScopeDigestPresent
+                 << " candidateProvidersNonEmpty=" << candidateProvidersNonEmpty
+                 << " candidateProvidersWithinLimit="
+                 << candidateProvidersWithinLimit
+                 << " candidateProvidersSorted=" << candidateProvidersSorted
+                 << " candidateProvidersUnique=" << candidateProvidersUnique
+                 << " ackCandidateCount=" << closure.candidates.size()
+                 << " candidateProviderCount="
+                 << context.candidateProviders.size()
+                 << " ackCandidateCountMatches=" << ackCandidateCountMatches;
+      logRuntimeEvidence(diagnostic.str());
+    }
+    catch (...) {
+      // The diagnostic must never change V4-to-V3 fallback behavior.
+    }
+    return reject("ACK_CLOSURE_INVALID");
+  }
+
+  std::vector<std::string> ackProviders;
+  ackProviders.reserve(closure.candidates.size());
+  for (const auto& ack : closure.candidates) {
+    ackProviders.push_back(ack.providerName.toUri());
+  }
+  std::sort(ackProviders.begin(), ackProviders.end());
+  if (ackProviders != context.candidateProviders ||
+      std::adjacent_find(ackProviders.begin(), ackProviders.end()) !=
+        ackProviders.end()) {
+    return reject("ACK_PROVIDER_ROSTER_MISMATCH");
+  }
+
+  std::vector<NativeAdmittedOfferV4> verifiedOffers;
+  try {
+    verifiedOffers.reserve(closure.candidates.size());
+    for (const auto& ack : closure.candidates) {
+      if (!ack.ack.hasProviderCapabilityOffer() ||
+          !ack.ack.getProviderCapabilityOffer().hasField(
+            NATIVE_PROVIDER_OFFER_V4_FIELD))
+        return reject("PROVIDER_V4_OFFER_MISSING");
+      verifiedOffers.push_back(admission.verifyV4(ack, context, nowMs));
+    }
+  }
+  catch (const std::exception&) {
+    return reject("PROVIDER_V4_OFFER_REJECTED");
+  }
+
+  std::vector<NativeJson> requesterSamples;
+  try {
+    std::map<std::string, std::string> providerBootByName;
+    for (const auto& admitted : verifiedOffers) {
+      const auto& offer = admitted.observation();
+      providerBootByName.emplace(offer.provider, offer.bootEpoch);
+    }
+    std::vector<const ndn_service_framework::AckSelectionCandidate*> orderedAcks;
+    orderedAcks.reserve(closure.candidates.size());
+    for (const auto& ack : closure.candidates) {
+      orderedAcks.push_back(&ack);
+    }
+    std::sort(orderedAcks.begin(), orderedAcks.end(),
+      [] (const auto* left, const auto* right) {
+        return left->providerName.toUri() < right->providerName.toUri();
+      });
+    requesterSamples.reserve(orderedAcks.size());
+    for (const auto* ack : orderedAcks) {
+      const auto boot = providerBootByName.find(ack->providerName.toUri());
+      if (boot == providerBootByName.end())
+        return reject("REQUESTER_ACK_PROVIDER_BOOT_MISSING");
+      requesterSamples.push_back(snapshotAckTelemetry(*ack, nowMs, boot->second));
+    }
+  }
+  catch (const std::exception&) {
+    return reject("REQUESTER_ACK_TELEMETRY_INVALID");
+  }
+
+  try {
+    return buildNativePlacementObservationSnapshotV4(
+      context, closure.digest, verifiedOffers, requesterSamples,
+      planningCache, maxCandidates, nowMs, modelGraph, requestTransferProfile);
+  }
+  catch (const std::exception&) {
+    return reject("V4_SNAPSHOT_BUILD_REJECTED");
+  }
+}
+
 NativePlannedRequest planNativeRequest(
   const NativeRequestRuntime& runtime, const NativeRequestOptions& options,
   const NativeInspectedModel& model, const NativeEncodedRequest& encoded,
@@ -825,7 +2176,8 @@ NativePlannedRequest planNativeRequest(
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
   std::shared_ptr<const std::atomic<bool>> cancelled,
-  const NativeConversationTurn* conversationTurn)
+  const NativeConversationTurn* conversationTurn,
+  const NativePlacementProbeRoundV1* placementProbeRound)
 {
   NativeStrategyPorts ports;
   ports.splitterIdentity = splitter.identity();
@@ -852,7 +2204,8 @@ NativePlannedRequest planNativeRequest(
   };
   return planNativeRequestImpl(runtime, options, model, encoded, ports, preparation,
                                admission, closure, control, wireDeadlineMs,
-                               std::move(cancelled), conversationTurn);
+                               std::move(cancelled), conversationTurn,
+                               placementProbeRound);
 }
 
 NativePlannedRequest planNativeRequestCooperative(
@@ -864,7 +2217,8 @@ NativePlannedRequest planNativeRequestCooperative(
   const ndn_service_framework::CollaborationAckClosure& closure,
   const NativeRequestControl& control, std::uint64_t wireDeadlineMs,
   std::shared_ptr<const std::atomic<bool>> cancelled,
-  const NativeConversationTurn* conversationTurn)
+  const NativeConversationTurn* conversationTurn,
+  const NativePlacementProbeRoundV1* placementProbeRound)
 {
   NativeStrategyPorts ports;
   ports.splitterIdentity = splitter.identity();
@@ -886,6 +2240,7 @@ NativePlannedRequest planNativeRequestCooperative(
   };
   return planNativeRequestImpl(runtime, options, model, encoded, ports, preparation,
                                admission, closure, control, wireDeadlineMs,
-                               std::move(cancelled), conversationTurn);
+                               std::move(cancelled), conversationTurn,
+                               placementProbeRound);
 }
 } // namespace ndnsf::di

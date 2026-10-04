@@ -4,8 +4,11 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
@@ -17,6 +20,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Conversation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
@@ -41,10 +45,12 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <functional>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -62,6 +68,82 @@ namespace {
 
 using namespace ndnsf::di;
 using ndn_service_framework::test::ScopedEnvironmentValue;
+
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+std::vector<std::uint8_t>
+spec194Float32Input(float first, float second, float third)
+{
+  static_assert(sizeof(float) == 4, "Spec194 oracle requires 32-bit float");
+  const std::array<float, 3> values{first, second, third};
+  std::vector<std::uint8_t> payload(sizeof(values));
+  std::memcpy(payload.data(), values.data(), payload.size());
+  return payload;
+}
+
+struct Spec194PlacementCapture
+{
+  std::mutex mutex;
+  bool called = false;
+  std::string inputSnapshotDigest;
+  std::string proposalSnapshotDigest;
+  std::string decisionSnapshotDigest;
+  std::string decisionStatus;
+  std::string proposalStrategy;
+};
+
+class Spec194RecordingV4Placement final : public CooperativePlacementStrategy
+{
+public:
+  explicit Spec194RecordingV4Placement(
+    std::shared_ptr<Spec194PlacementCapture> capture)
+    : m_capture(std::move(capture))
+    , m_delegate(std::make_shared<NativeObservationAwarePlacementV4>())
+  {}
+
+  NativeStrategyIdentity identity() const override
+  {
+    const auto delegate = m_delegate->identity();
+    NativeStrategyIdentity result{
+      "spec194-recording-observation-aware-v4", delegate.version,
+      nativePlanningDigest(nativeCanonicalJson(NativeJson{
+        {"delegate_name", delegate.name},
+        {"delegate_configuration_digest", delegate.configurationDigest},
+        {"recorder", "snapshot-binding-v1"}})), delegate.deterministic};
+    result.validate();
+    return result;
+  }
+
+  NativeRolePlacementProposalV3 proposeRoles(
+    const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
+    const std::vector<NativeSelectionRoleV3>& roles,
+    const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
+    const ExtensionControl& control) const override
+  {
+    auto proposal = m_delegate->proposeRoles(
+      context, ackClosedDigest, roles, offers, nowMs, control);
+    proposal.strategy = identity();
+    std::lock_guard<std::mutex> lock(m_capture->mutex);
+    m_capture->called = true;
+    m_capture->inputSnapshotDigest = context.placementObservationSnapshotDigest;
+    m_capture->proposalSnapshotDigest =
+      proposal.context.placementObservationSnapshotDigest;
+    m_capture->proposalStrategy = proposal.strategy.name;
+    if (proposal.placementDecisionV4) {
+      const auto& decision = *proposal.placementDecisionV4;
+      const auto snapshot = decision.find("snapshot_digest");
+      if (snapshot != decision.end() && snapshot->is_string())
+        m_capture->decisionSnapshotDigest = snapshot->get<std::string>();
+      if (decision.contains("status") && decision.at("status").is_string())
+        m_capture->decisionStatus = decision.at("status").get<std::string>();
+    }
+    return proposal;
+  }
+
+private:
+  std::shared_ptr<Spec194PlacementCapture> m_capture;
+  std::shared_ptr<const NativeObservationAwarePlacementV4> m_delegate;
+};
+#endif
 
 // The C-04 qualification contract gives each native case a 60-second bound.
 // Use that same bound for normal and sanitizer selectors: the Runtime drain
@@ -620,7 +702,8 @@ std::string signDigest(const std::shared_ptr<EVP_PKEY>& key, const std::string& 
 class RuntimeFixture
 {
 public:
-  explicit RuntimeFixture(bool streaming = false, bool qwenStreaming = false)
+  explicit RuntimeFixture(bool streaming = false, bool qwenStreaming = false,
+                          std::size_t maxPayloadBytes = 32)
     : root(std::filesystem::temp_directory_path() /
            ("spec185-prepared-request-" + std::to_string(::getpid()) + "-" +
             std::to_string(++sequence)))
@@ -769,7 +852,7 @@ public:
       catalog["recipe"]["max_nodes"] = 100;
       catalog["publication"] = {{"artifact_root", "/fixture/artifacts"}};
       catalog["input_format"] = "OPAQUE";
-      catalog["max_payload_bytes"] = 32;
+      catalog["max_payload_bytes"] = maxPayloadBytes;
       const NativeJson component = {
         {"candidate_id", "semantic-v1"}, {"priority", 1},
         {"roles", {"Front", "Branch", "Merge"}},
@@ -1058,16 +1141,22 @@ bool waitForInProcessDrainNotification(
 
 ProviderConfig
 preparedProviderConfig(const std::string& serviceName,
-                       const std::vector<std::string>& roles)
+                       const std::vector<std::string>& roles,
+                       const std::filesystem::path& artifactCacheDir = {},
+                       std::size_t workerCount = 1)
 {
   std::vector<std::string> values{
     "provider", "--provider", "/provider", "--group", "/group",
     "--controller", "/controller", "--trust-schema",
     std::filesystem::absolute("examples/trust-any.conf").string(),
-    "--service", serviceName, "--workers", "1"};
+    "--service", serviceName, "--workers", std::to_string(workerCount)};
   for (const auto& role : roles) {
     values.push_back("--role");
     values.push_back(role);
+  }
+  if (!artifactCacheDir.empty()) {
+    values.push_back("--artifact-cache-dir");
+    values.push_back(artifactCacheDir.string());
   }
   std::vector<const char*> argv;
   argv.reserve(values.size());
@@ -1076,6 +1165,7 @@ preparedProviderConfig(const std::string& serviceName,
   return ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
 }
 
+#if !defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
 ExecutionEvidence
 makeResidentServedProviderEvidence(const NativeModelRunnerSpec& spec)
 {
@@ -1122,10 +1212,10 @@ public:
   {
     m_runs->fetch_add(1, std::memory_order_relaxed);
     const std::string response = "spec185-provider-response";
+    const std::vector<std::uint8_t> responseBytes(response.begin(), response.end());
     return {{"final-response", TensorBundle{
       "final-response",
-      std::vector<std::uint8_t>(response.begin(), response.end()),
-      1, response.size()}}};
+      responseBytes, 1, responseBytes.size()}}};
   }
 
   const std::optional<ExecutionEvidence>&
@@ -1145,6 +1235,74 @@ private:
   std::optional<ExecutionEvidence> m_evidence;
   std::shared_ptr<std::atomic<unsigned>> m_runs;
 };
+#endif
+
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+void
+writeSpec194OrtTrace(const std::string& record)
+{
+  static std::mutex mutex;
+  std::lock_guard<std::mutex> lock(mutex);
+  std::cerr << record << '\n';
+}
+
+class CountingServedProviderOnnxRunner final : public NativeModelRunner
+{
+public:
+  CountingServedProviderOnnxRunner(
+    std::shared_ptr<NativeModelRunner> runner,
+    std::shared_ptr<std::atomic<unsigned>> runs,
+    std::string role)
+    : m_runner(std::move(runner))
+    , m_runs(std::move(runs))
+    , m_role(std::move(role))
+  {}
+
+  std::map<std::string, TensorBundle>
+  run(const RoleExecutionContext& ctx) final
+  {
+    m_runs->fetch_add(1, std::memory_order_relaxed);
+    const bool trace = std::getenv("SPEC194_ORT_TRACE") != nullptr;
+    if (trace)
+      writeSpec194OrtTrace("[SPEC194-ORT] begin role=" + m_role);
+    auto outputs = m_runner->run(ctx);
+    if (trace) {
+      std::ostringstream record;
+      record << "[SPEC194-ORT] end role=" << m_role << " outputs=";
+      bool first = true;
+      for (const auto& output : outputs) {
+        record << (first ? "" : ",") << output.first;
+        first = false;
+      }
+      writeSpec194OrtTrace(record.str());
+    }
+    return outputs;
+  }
+
+  const std::optional<ExecutionEvidence>&
+  executionEvidence() const final
+  {
+    return m_runner->executionEvidence();
+  }
+
+  std::optional<ExecutionEvidence>
+  executionEvidenceSnapshot() const final
+  {
+    return m_runner->executionEvidenceSnapshot();
+  }
+
+  std::optional<NativeRuntimeMetrics>
+  runtimeMetricsSnapshot() const final
+  {
+    return m_runner->runtimeMetricsSnapshot();
+  }
+
+private:
+  std::shared_ptr<NativeModelRunner> m_runner;
+  std::shared_ptr<std::atomic<unsigned>> m_runs;
+  std::string m_role;
+};
+#endif
 
 std::shared_ptr<NativeModelRunnerFactory>
 makeResidentServedProviderRunnerFactory(
@@ -1156,21 +1314,42 @@ makeResidentServedProviderRunnerFactory(
   public:
     Factory(std::shared_ptr<OnnxRuntimeSessionCache> cache,
             std::shared_ptr<std::atomic<unsigned>> runs)
-      : m_cache(std::move(cache)), m_runs(std::move(runs))
+      : m_cache(std::move(cache))
+      , m_runs(std::move(runs))
     {
     }
 
     std::shared_ptr<NativeModelRunner>
     create(const NativeModelRunnerSpec& spec) const final
     {
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+      auto runner = std::make_shared<OnnxRuntimeModelRunner>(spec, m_cache);
+      return std::make_shared<CountingServedProviderOnnxRunner>(
+        std::move(runner), m_runs, spec.role);
+#else
+      // Compatibility cases inject a compact preparation spec with short
+      // aliases instead of Provider's production evidence bindings.
+      auto servedSpec = spec;
+      const auto addAlias = [&servedSpec] (const char* alias, const char* source) {
+        if (servedSpec.metadata.count(alias) != 0)
+          return;
+        const auto found = servedSpec.metadata.find(source);
+        if (found != servedSpec.metadata.end())
+          servedSpec.metadata.emplace(alias, found->second);
+      };
+      addAlias("provider", "evidence.providerName");
+      addAlias("boot", "evidence.providerBootId");
+      addAlias("plan", "evidence.planDigest");
+      addAlias("artifact", "artifactDigest");
       const auto identity = std::string("spec190-resident:") + spec.role + ":" +
-        spec.backend + ":" + spec.metadata.at("artifact") + ":" +
-        spec.metadata.at("recipeDigest");
+        servedSpec.backend + ":" + servedSpec.metadata.at("artifact") + ":" +
+        servedSpec.metadata.at("recipeDigest");
       auto lease = m_cache->acquire(identity, [] {
         return std::make_shared<std::uint8_t>(0);
       });
       return std::make_shared<ResidentServedProviderRunner>(
-        std::move(lease), makeResidentServedProviderEvidence(spec), m_runs);
+        std::move(lease), makeResidentServedProviderEvidence(servedSpec), m_runs);
+#endif
     }
 
   private:
@@ -1273,7 +1452,9 @@ struct Spec185PreparedModelTestAccess
 
 } // namespace ndnsf::di
 
-#if defined(SPEC188_YOLO_SELECTOR)
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+BOOST_AUTO_TEST_SUITE(Spec194PlacementComposition)
+#elif defined(SPEC188_YOLO_SELECTOR)
 BOOST_AUTO_TEST_SUITE(Spec188YoloRepeat)
 #elif defined(SPEC187_YOLO_SELECTOR)
 BOOST_AUTO_TEST_SUITE(Spec187YoloMiniNdn)
@@ -1585,6 +1766,7 @@ BOOST_AUTO_TEST_CASE(NativeRequesterThroughMiniNdn)
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(60000);
   options.ackTimeout = std::chrono::milliseconds(1500);
+  options.placement = runtime->placementStrategy("native-observation-aware-v4");
   const auto handle = prepared.request(Input::inlineBytes(spec187ReadInput(inputPath)), options);
   const auto result = handle.result(options.timeout);
 #if defined(SPEC188_YOLO_SELECTOR)
@@ -2295,13 +2477,107 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   BOOST_CHECK(drainObservation->get());
 }
 
+#if defined(SPEC189_REQUEST_SELECTOR) || defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+struct LocalRepoOwnerFixture
+{
+  std::filesystem::path root;
+  std::string objectName;
+  std::shared_ptr<ndnsf_distributed_repo::RepoCore> repo;
+  std::shared_ptr<const ndnsf_distributed_repo::RepoSourceProvider> concreteProvider;
+  std::shared_ptr<const ndnsf::di::RepositorySourceProvider> sourceProvider;
+
+  LocalRepoOwnerFixture() = default;
+  LocalRepoOwnerFixture(const LocalRepoOwnerFixture&) = delete;
+  LocalRepoOwnerFixture& operator=(const LocalRepoOwnerFixture&) = delete;
+  LocalRepoOwnerFixture(LocalRepoOwnerFixture&& other) noexcept
+    : root(std::move(other.root)), objectName(std::move(other.objectName)),
+      repo(std::move(other.repo)), concreteProvider(std::move(other.concreteProvider)),
+      sourceProvider(std::move(other.sourceProvider))
+  {
+    other.root.clear();
+  }
+  LocalRepoOwnerFixture& operator=(LocalRepoOwnerFixture&&) = delete;
+
+  ~LocalRepoOwnerFixture()
+  {
+    sourceProvider.reset();
+    concreteProvider.reset();
+    repo.reset();
+    std::error_code error;
+    if (!root.empty()) {
+      std::filesystem::remove_all(root, error);
+      BOOST_CHECK_MESSAGE(!error,
+                          "local Repo fixture root cleanup failed: " + error.message());
+      error.clear();
+      std::filesystem::remove(root.string() + ".authority.lock", error);
+      BOOST_CHECK_MESSAGE(!error,
+                          "local Repo fixture lock cleanup failed: " + error.message());
+    }
+  }
+};
+
+LocalRepoOwnerFixture
+makeLocalRepoOwner(const RuntimeFixture& fixture,
+                   const std::filesystem::path& fixedRoot = {})
+{
+  const auto config = nativeParseJson(readTextFile(fixture.configPath));
+  const auto& source = config.at("catalog").at("source");
+  const auto sourceName = source.at("data_name").get<std::string>();
+  const auto sourceFile = source.value("file", std::string{});
+  if (sourceName.empty() || sourceFile.empty())
+    throw std::runtime_error("local Repo fixture source identity is incomplete");
+  const auto sourcePath = (fixture.configPath.parent_path() / sourceFile).lexically_normal();
+  if (!std::filesystem::is_regular_file(sourcePath))
+    throw std::runtime_error("local Repo fixture source fallback is unavailable: " +
+                             sourcePath.string());
+
+  LocalRepoOwnerFixture owner;
+  owner.root = fixedRoot.empty() ? fixture.root / ("repo-source-" + std::to_string(::getpid()))
+                                 : fixedRoot;
+  std::filesystem::create_directories(owner.root);
+  std::error_code permissionsError;
+  std::filesystem::permissions(owner.root, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace,
+                               permissionsError);
+  if (permissionsError)
+    throw std::runtime_error("local Repo fixture permissions failed: " +
+                             permissionsError.message());
+  owner.objectName = sourceName;
+  ndnsf_distributed_repo::StorageCapability capability;
+  capability.repoNode = "/ndnsf/local-repo";
+  capability.freeBytes = 64U * 1024U * 1024U;
+  capability.repoMode = "persistent";
+  auto store = ndnsf_distributed_repo::makeFilesystemRepoStore(
+    owner.root.string(), 16U * 1024U * 1024U, 1U * 1024U * 1024U,
+    "ndnsf-local");
+  owner.repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
+    std::move(capability), std::move(store));
+  owner.concreteProvider = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
+    owner.repo);
+  owner.sourceProvider = owner.concreteProvider;
+  return owner;
+}
+#endif
+
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+BOOST_AUTO_TEST_CASE(FullPathV4PlacementCompletesThroughServedProvider)
+#else
 BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
+#endif
 {
   // This is the production-chain counterpart to the Core collaboration
-  // fixture above.  The ACK strategy only supplies the authenticated V3 offer;
-  // the selected request is handled by Provider::serve and its native
-  // assembly/runner pipeline.
-  RuntimeFixture fixture(false, true);
+  // fixture above. Use the maintained compact ONNX oracle so the selector does
+  // not depend on an ignored, locally supplied Qwen model file. The selected
+  // request still traverses Provider::serve and its native assembly/runner
+  // pipeline; Spec194 also binds the signed V4 offer to the placement proposal.
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  // The terminal float32 TensorBundle includes codec metadata beyond its
+  // twelve-byte tensor payload; keep this larger cap local to the Spec194
+  // production-runner selector.
+  RuntimeFixture fixture(false, false, 4096);
+#else
+  RuntimeFixture fixture;
+#endif
   ndn_service_framework::test::BootstrapProfile profile;
   profile.groupPrefix = ndn::Name("/group");
   profile.syncPrefix = ndn::Name("/ndnsf/spec185/served-provider/sync");
@@ -2311,12 +2587,20 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   profile.providerIdentity = ndn::Name("/provider");
   profile.attributeAuthority = ndn::Name("/aa");
   profile.serviceName = ndn::Name("/Inference");
-  profile.providerRoles = {"/LLM/Pipeline/Stage/0"};
+  profile.providerRoles = {"/Front", "/Branch", "/Merge"};
   profile.deferBridgeDelivery = true;
   profile.providerFacesHaveDedicatedIoWorkers = true;
   auto environment = std::make_shared<
     ndn_service_framework::test::NdnsfIntegrationEnvironment>(profile);
   environment->bootstrap();
+
+  // This selector places all three dependent roles on one Provider. Give each
+  // role a ServiceProvider handler thread and a NativeProviderHandler worker,
+  // so a consumer readiness wait cannot queue its local producer behind itself.
+  const auto providerRoleWorkerCount = profile.providerRoles.size();
+  environment->provider().setHandlerThreads(providerRoleWorkerCount);
+  BOOST_REQUIRE_EQUAL(environment->provider().getHandlerThreads(),
+                      providerRoleWorkerCount);
 
   const auto serviceName = environment->profile().serviceName.toUri();
   const auto requesterName = environment->user().getName().toUri();
@@ -2363,10 +2647,36 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   auto environmentUser = std::shared_ptr<ndn_service_framework::ServiceUser>(
     &environment->user(), [] (ndn_service_framework::ServiceUser*) {});
 
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  auto placementCapture = std::make_shared<Spec194PlacementCapture>();
+  auto repoOwner = makeLocalRepoOwner(fixture);
+  auto encryptedRangeStore = std::make_shared<
+    ndnsf_distributed_repo::RepoEncryptedLargeDataStore>(repoOwner.repo);
+  auto runtimeConfiguration = runtimeConfig(fixture);
+  runtimeConfiguration.repositorySourceProvider = repoOwner.sourceProvider;
+  runtimeConfiguration.encryptedRangeStore = encryptedRangeStore;
+  runtimeConfiguration.fixedPlacementStrategy =
+    std::make_shared<Spec194RecordingV4Placement>(placementCapture);
+  auto runtime = Runtime::open(std::move(runtimeConfiguration));
+#else
   auto runtime = Runtime::open(runtimeConfig(fixture));
+#endif
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
     runtime, environmentUser, earlyGrants, admission);
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  environmentUser->setEncryptedLargeDataRangeStore(encryptedRangeStore);
+#endif
   auto prepared = prepareWithInProcessPump(runtime, *environment);
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  const auto repoStats = repoOwner.concreteProvider->stats();
+  BOOST_CHECK_GT(repoStats.lookups, 0U);
+  BOOST_CHECK_GT(repoStats.missIngests, 0U);
+  const auto encryptedRepoObjects = repoOwner.repo->list();
+  BOOST_CHECK(std::any_of(encryptedRepoObjects.begin(), encryptedRepoObjects.end(),
+    [] (const auto& manifest) {
+      return manifest.objectType == "encrypted-large-data-envelope";
+    }));
+#endif
   const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
   const auto model = package->catalog.model.descriptor;
   const auto candidates = package->catalog.splitter->enumerate(
@@ -2374,9 +2684,13 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
   const auto roles = candidates.front().executionPlan.roles;
   BOOST_REQUIRE(!roles.empty());
-  BOOST_REQUIRE(std::all_of(roles.begin(), roles.end(), [] (const std::string& role) {
-    return !role.empty() && role.front() == '/';
-  }));
+  const auto& providerRoleNames = profile.providerRoles;
+  BOOST_REQUIRE_EQUAL(providerRoleNames.size(), roles.size());
+  for (std::size_t i = 0; i < roles.size(); ++i) {
+    ndn::Name expectedProviderRole;
+    expectedProviderRole.append(roles[i]);
+    BOOST_REQUIRE_EQUAL(providerRoleNames[i], expectedProviderRole.toUri());
+  }
 
   const auto providerBootId = environment->provider().getProviderBootEpoch();
   NativeProviderOfferV3Config offerConfig;
@@ -2390,6 +2704,14 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   offerConfig.signDigest = [offerKey] (const std::string& value) {
     return signDigest(offerKey, value);
   };
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  NativeProviderOfferV4Config offerV4Config;
+  offerV4Config.provider = providerName;
+  offerV4Config.service = serviceName;
+  offerV4Config.bootEpoch = offerConfig.bootEpoch;
+  offerV4Config.signerKeyId = offerKeyId;
+  offerV4Config.signDigest = offerConfig.signDigest;
+#endif
   const auto requesterKey = deterministicEd25519Key(0x41);
   const auto authorityKey = deterministicEd25519Key(0x51);
   const auto recipientKey = deterministicEd25519Key(0x61);
@@ -2452,10 +2774,21 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto authorityIdentity = environment->keyChain().getPib().getIdentity(
     environment->profile().attributeAuthority);
   const auto authorityCertificate = authorityIdentity.getDefaultKey().getDefaultCertificate();
-  const auto providerConfig = preparedProviderConfig(serviceName, roles);
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  const auto providerConfig = preparedProviderConfig(
+    serviceName, providerRoleNames,
+    std::filesystem::absolute(fixture.root / "served-provider-artifacts"),
+    providerRoleWorkerCount);
+#else
+  const auto providerConfig = preparedProviderConfig(serviceName, providerRoleNames);
+#endif
   auto runs = std::make_shared<std::atomic<unsigned>>(0);
   auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  NativeProviderHandlerConfig::RunnerPreparationFactory preparation;
+#else
   auto preparation = makePreparedServedProviderPreparation();
+#endif
   const auto credentialsRoot = fixture.root / "served-provider-protected-credentials";
   std::filesystem::create_directories(credentialsRoot / "trust");
   const auto authorityPem = publicKeyPem(authorityKey);
@@ -2605,30 +2938,78 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   // probe exercises the same Face-backed fetcher rather than a moved-from
   // lambda with empty captures.
   auto protectedGrantFetcherProbe = protectedGrantFetcher;
-  auto ackHandler = [offerConfig] (const ndn_service_framework::RequestMessage& request) {
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  auto ackHandlerInvocations = std::make_shared<std::atomic<unsigned>>(0);
+#endif
+  auto ackHandler =
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+    [offerConfig, offerV4Config, ackHandlerInvocations]
+#else
+    [offerConfig]
+#endif
+    (const ndn_service_framework::RequestMessage& request) {
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+    ackHandlerInvocations->fetch_add(1, std::memory_order_relaxed);
+#endif
     const auto payload = request.getPayload();
+    const auto nowMs = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
     const auto issued = issueNativeProviderOfferV3(
       std::vector<std::uint8_t>(payload.begin(), payload.end()), offerConfig,
-      static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count()));
+      nowMs);
     ndn_service_framework::ServiceProvider::AckDecision decision;
     if (!issued || !issued->status) {
       decision.message = issued ? issued->message : "DI_NATIVE_REQUEST_NOT_V3";
       return decision;
     }
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+    NativeProviderTelemetrySnapshot telemetry;
+    telemetry.sampledAtMs = static_cast<std::int64_t>(nowMs);
+    telemetry.sequence = 1;
+    telemetry.capacity.workerCount = 1;
+    telemetry.capacity.readyQueueCapacity = 1;
+    const auto observation = issueNativeProviderOfferV4(
+      std::vector<std::uint8_t>(payload.begin(), payload.end()), offerV4Config,
+      telemetry, nowMs);
+    if (!observation) {
+      decision.message = "SPEC194_V4_OFFER_UNAVAILABLE";
+      return decision;
+    }
+    decision.providerCapabilityFields[NATIVE_PROVIDER_OFFER_V4_FIELD] =
+      observation->capabilityFieldValue;
+    for (const auto& fallback : observation->fallbackCapabilityFieldValues) {
+      decision.providerCapabilityFieldFallbacks.push_back({
+        {NATIVE_PROVIDER_OFFER_V4_FIELD, fallback}});
+    }
+    decision.providerCapabilityFieldFallbacks.emplace_back();
+#endif
     decision.status = true;
     decision.message = issued->message;
     decision.payload = ndn::Buffer(issued->payload.begin(), issued->payload.end());
     decision.pendingStateTtlMs = issued->pendingStateTtlMs;
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+    if (observation->pendingStateTtlMs != 0) {
+      decision.pendingStateTtlMs = decision.pendingStateTtlMs == 0
+        ? observation->pendingStateTtlMs
+        : std::min(decision.pendingStateTtlMs,
+                   observation->pendingStateTtlMs);
+    }
+#endif
     return decision;
   };
   auto facade = Provider::fromServiceProviderForTest(
     environment->providerFace(), environment->provider(), environment->keyChain(),
     providerCertificate, authorityCertificate, providerConfig,
-    makeResidentServedProviderRunnerFactory(sessionCache, runs), std::move(preparation),
+    makeResidentServedProviderRunnerFactory(sessionCache, runs),
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+    {},
+#else
+    std::move(preparation),
+#endif
     {}, std::move(ackHandler), std::move(protectedGrantFetcher));
   environment->enableProductionIngressForTest();
-  auto served = facade.serve({serviceName, roles});
+  auto served = facade.serve({serviceName, providerRoleNames});
   BOOST_REQUIRE(served.valid());
   environment->provider().markHybridResponseKeyWrappedForTest(serviceName);
   const auto ackKey = environment->provider().prepareHybridSendKeyForTest(serviceName, "ACK");
@@ -2648,31 +3029,115 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
 
   RequestOptions options;
   options.timeout = std::chrono::seconds(10);
+  const auto requestResultTimeout = std::chrono::seconds(10);
   options.ackTimeout = std::chrono::seconds(5);
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  options.providerNames = {providerName};
+  options.placement = runtime->placementStrategy(
+    "spec194-recording-observation-aware-v4");
+#endif
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  auto handle = prepared.request(
+    Input::inlineBytes(spec194Float32Input(1.0F, 2.0F, 3.0F)), options);
+#else
   auto handle = prepared.request(Input::inlineBytes({0x01, 0x02, 0x03}), options);
-  auto observation = startConversationResultObservation(handle, std::chrono::seconds(10));
-  pumpUntilConversationResultReady(*environment, observation, std::chrono::seconds(10));
+#endif
+  auto observation = startConversationResultObservation(handle, requestResultTimeout);
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  const auto result = [&] {
+    try {
+      pumpUntilConversationResultReady(*environment, observation, requestResultTimeout);
+      return observation->get();
+    }
+    catch (const std::exception& error) {
+      bool placementCalled = false;
+      {
+        std::lock_guard<std::mutex> lock(placementCapture->mutex);
+        placementCalled = placementCapture->called;
+      }
+      const auto providerProgress = facade.counters();
+      std::ostringstream progress;
+      progress << "[SPEC194-PROGRESS-a1b2] result_wait_error=" << error.what()
+               << " ack_handler_calls=" << ackHandlerInvocations->load(std::memory_order_relaxed)
+               << " placement_called=" << placementCalled
+               << " grant_fetch_dispatches=" << grantFetchDispatches->load(std::memory_order_relaxed)
+               << " grant_data_fetches=" << grantDataFetches->load(std::memory_order_relaxed)
+               << " exact_grant_fetches=" << exactGrantFetches->load(std::memory_order_relaxed)
+               << " provider_source_fetches=" << providerProgress.sourceFetches
+               << " provider_assemblies=" << providerProgress.assemblies
+               << " provider_runners_created=" << providerProgress.runnersCreated
+               << " runner_calls=" << runs->load(std::memory_order_relaxed);
+      std::cerr << progress.str() << '\n';
+      BOOST_TEST_MESSAGE(progress.str());
+      throw;
+    }
+  }();
+#else
+  pumpUntilConversationResultReady(*environment, observation, requestResultTimeout);
   const auto result = observation->get();
+#endif
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  BOOST_CHECK(!result.payload.empty());
+#else
   BOOST_CHECK_EQUAL(std::string(result.payload.begin(), result.payload.end()),
                     "spec185-provider-response");
+#endif
   BOOST_CHECK_EQUAL(result.modelDigest, model.intentDigest());
   BOOST_CHECK(!result.planDigest.empty());
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), roles.size());
+#else
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
+#endif
   BOOST_CHECK(exactGrantFetches->load(std::memory_order_relaxed) > 0U);
   BOOST_CHECK(grantDataFetches->load(std::memory_order_relaxed) > 0U);
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  {
+    std::lock_guard<std::mutex> lock(placementCapture->mutex);
+    BOOST_CHECK(placementCapture->called);
+    BOOST_CHECK(!placementCapture->inputSnapshotDigest.empty());
+    BOOST_CHECK_EQUAL(placementCapture->proposalSnapshotDigest,
+                      placementCapture->inputSnapshotDigest);
+    BOOST_CHECK_EQUAL(placementCapture->decisionSnapshotDigest,
+                      placementCapture->inputSnapshotDigest);
+    BOOST_CHECK(!placementCapture->decisionStatus.empty());
+    BOOST_CHECK_EQUAL(placementCapture->proposalStrategy,
+                      "spec194-recording-observation-aware-v4");
+  }
+#endif
+  const auto firstRequestRunnerCalls = runs->load(std::memory_order_relaxed);
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  auto secondHandle = prepared.request(
+    Input::inlineBytes(spec194Float32Input(4.0F, 5.0F, 6.0F)), options);
+#else
   auto secondHandle = prepared.request(Input::inlineBytes({0x04, 0x05, 0x06}), options);
+#endif
   auto secondObservation = startConversationResultObservation(
-    secondHandle, std::chrono::seconds(10));
-  pumpUntilConversationResultReady(*environment, secondObservation, std::chrono::seconds(10));
+    secondHandle, requestResultTimeout);
+  pumpUntilConversationResultReady(*environment, secondObservation, requestResultTimeout);
   const auto secondResult = secondObservation->get();
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  BOOST_CHECK(!secondResult.payload.empty());
+#else
   BOOST_CHECK_EQUAL(std::string(secondResult.payload.begin(), secondResult.payload.end()),
                     "spec185-provider-response");
+#endif
   BOOST_CHECK_EQUAL(secondResult.modelDigest, model.intentDigest());
   BOOST_CHECK(!secondResult.planDigest.empty());
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed),
+                    firstRequestRunnerCalls + roles.size());
+#else
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 2U);
+#endif
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  // T011 covers Provider's live-runner cache. The independent ONNX session
+  // cache may be ineligible for this protected or profiled runner spec.
+#else
   const auto residentCounters = sessionCache->counters();
   BOOST_CHECK_EQUAL(residentCounters.loads, 1U);
   BOOST_CHECK_EQUAL(residentCounters.hits, 1U);
+#endif
   const auto dataFetchesBeforeMissing = grantDataFetches->load(std::memory_order_relaxed);
   const auto exactFetchesBeforeMissing = exactGrantFetches->load(std::memory_order_relaxed);
   BOOST_CHECK_EXCEPTION(
@@ -2707,7 +3172,12 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   revokedStatus.addRevocation(revokedUser);
   BOOST_REQUIRE(environment->user().installControllerStatus(revokedStatus));
 
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  auto revokedHandle = prepared.request(
+    Input::inlineBytes(spec194Float32Input(7.0F, 8.0F, 9.0F)), options);
+#else
   auto revokedHandle = prepared.request(Input::inlineBytes({0x07, 0x08, 0x09}), options);
+#endif
   auto revokedObservation = startConversationResultObservation(
     revokedHandle, std::chrono::seconds(5));
   pumpUntilConversationResultReady(*environment, revokedObservation,
@@ -2722,9 +3192,15 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK(revokedFailed);
   BOOST_CHECK(revokedHandle.status() == RequestStatus::Failed ||
               revokedHandle.status() == RequestStatus::Cancelled);
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed),
+                    firstRequestRunnerCalls + roles.size());
+#endif
+#if !defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   const auto afterRevokeCounters = sessionCache->counters();
   BOOST_CHECK_EQUAL(afterRevokeCounters.loads, 1U);
   BOOST_CHECK_EQUAL(afterRevokeCounters.hits, 1U);
+#endif
 
   bool userReadyAfterRevocation = false;
   environment->pumpUntilWithAttributeAuthority([&] {
@@ -2733,8 +3209,19 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   });
   BOOST_CHECK(userReadyAfterRevocation);
   const auto counters = facade.counters();
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  BOOST_CHECK_GT(counters.assemblies, 0U);
+  BOOST_CHECK_GT(counters.sourceFetches, 0U);
+#else
   BOOST_CHECK_GE(counters.assemblies, 2U);
+#endif
+#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
+  // The two intermediate output groups are request-scoped and must rebuild;
+  // the terminal runner's fixed final-response binding remains reusable.
+  BOOST_CHECK_EQUAL(counters.runnersCreated, 2U * roles.size() - 1U);
+#else
   BOOST_CHECK_EQUAL(counters.runnersCreated, 2U);
+#endif
 
   runtime->close();
   BOOST_REQUIRE(drainWithInProcessPump(binding, runtime, testDrainTimeout()));
@@ -3469,92 +3956,12 @@ BOOST_AUTO_TEST_CASE(PreparedRequestValidatesProtectedReferenceMetadata)
 }
 
 #if defined(SPEC189_REQUEST_SELECTOR)
-struct Spec189RepoOwnerFixture
-{
-  std::filesystem::path root;
-  std::string objectName;
-  std::shared_ptr<ndnsf_distributed_repo::RepoCore> repo;
-  std::shared_ptr<const ndnsf_distributed_repo::RepoSourceProvider> concreteProvider;
-  std::shared_ptr<const ndnsf::di::RepositorySourceProvider> sourceProvider;
-
-  Spec189RepoOwnerFixture() = default;
-  Spec189RepoOwnerFixture(const Spec189RepoOwnerFixture&) = delete;
-  Spec189RepoOwnerFixture& operator=(const Spec189RepoOwnerFixture&) = delete;
-  Spec189RepoOwnerFixture(Spec189RepoOwnerFixture&& other) noexcept
-    : root(std::move(other.root)), objectName(std::move(other.objectName)),
-      repo(std::move(other.repo)), concreteProvider(std::move(other.concreteProvider)),
-      sourceProvider(std::move(other.sourceProvider))
-  {
-    other.root.clear();
-  }
-  Spec189RepoOwnerFixture& operator=(Spec189RepoOwnerFixture&&) = delete;
-
-  ~Spec189RepoOwnerFixture()
-  {
-    sourceProvider.reset();
-    concreteProvider.reset();
-    repo.reset();
-    std::error_code error;
-    if (!root.empty()) {
-      std::filesystem::remove_all(root, error);
-      BOOST_CHECK_MESSAGE(!error,
-                          "Spec189 Repo fixture root cleanup failed: " + error.message());
-      error.clear();
-      std::filesystem::remove(root.string() + ".authority.lock", error);
-      BOOST_CHECK_MESSAGE(!error,
-                          "Spec189 Repo fixture lock cleanup failed: " + error.message());
-    }
-  }
-};
-
-Spec189RepoOwnerFixture
-makeSpec189RepoOwner(const RuntimeFixture& fixture,
-                     const std::filesystem::path& fixedRoot = {})
-{
-  const auto config = nativeParseJson(readTextFile(fixture.configPath));
-  const auto& source = config.at("catalog").at("source");
-  const auto sourceName = source.at("data_name").get<std::string>();
-  const auto sourceFile = source.value("file", std::string{});
-  if (sourceName.empty() || sourceFile.empty())
-    throw std::runtime_error("Spec189 fixture source identity is incomplete");
-  const auto sourcePath = (fixture.configPath.parent_path() / sourceFile).lexically_normal();
-  if (!std::filesystem::is_regular_file(sourcePath))
-    throw std::runtime_error("Spec189 fixture source fallback is unavailable: " +
-                             sourcePath.string());
-
-  Spec189RepoOwnerFixture owner;
-  owner.root = fixedRoot.empty() ? fixture.root / ("repo-source-" + std::to_string(::getpid()))
-                                 : fixedRoot;
-  std::filesystem::create_directories(owner.root);
-  std::error_code permissionsError;
-  std::filesystem::permissions(owner.root, std::filesystem::perms::owner_all,
-                               std::filesystem::perm_options::replace,
-                               permissionsError);
-  if (permissionsError)
-    throw std::runtime_error("Spec189 Repo fixture permissions failed: " +
-                             permissionsError.message());
-  owner.objectName = sourceName;
-  ndnsf_distributed_repo::StorageCapability capability;
-  capability.repoNode = "/spec189/local-repo";
-  capability.freeBytes = 64U * 1024U * 1024U;
-  capability.repoMode = "persistent";
-  auto store = ndnsf_distributed_repo::makeFilesystemRepoStore(
-    owner.root.string(), 16U * 1024U * 1024U, 1U * 1024U * 1024U,
-    "spec189-local");
-  owner.repo = std::make_shared<ndnsf_distributed_repo::RepoCore>(
-    std::move(capability), std::move(store));
-  owner.concreteProvider = std::make_shared<ndnsf_distributed_repo::RepoSourceProvider>(
-    owner.repo);
-  owner.sourceProvider = owner.concreteProvider;
-  return owner;
-}
-
 BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
 {
   RuntimeFixture fixture;
   InProcessRuntimeBinding binding;
   auto config = runtimeConfig(fixture);
-  auto repoOwner = makeSpec189RepoOwner(fixture);
+  auto repoOwner = makeLocalRepoOwner(fixture);
   config.repositorySourceProvider = repoOwner.sourceProvider;
   config.repositoryArtifactPublisher = repoOwner.concreteProvider;
   auto runtime = Runtime::open(std::move(config));
@@ -3623,7 +4030,7 @@ BOOST_AUTO_TEST_CASE(Spec189PreparedHandleAllocatesReferenceOnlyRequests)
 BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossRuntimeRestart)
 {
   RuntimeFixture fixture;
-  auto owner = makeSpec189RepoOwner(fixture);
+  auto owner = makeLocalRepoOwner(fixture);
   const auto root = owner.root;
 
   {
@@ -3651,7 +4058,7 @@ BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossRuntimeRestart)
   owner.concreteProvider.reset();
   owner.repo.reset();
   owner.root.clear();
-  auto restartedOwner = makeSpec189RepoOwner(fixture);
+  auto restartedOwner = makeLocalRepoOwner(fixture);
   BOOST_CHECK_EQUAL(restartedOwner.root, root);
 
   {
@@ -3691,7 +4098,7 @@ BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossProcessRestartChi
   Spec190ProcessStats result;
   try {
     RuntimeFixture fixture;
-    auto childOwner = makeSpec189RepoOwner(fixture, rootValue);
+    auto childOwner = makeLocalRepoOwner(fixture, rootValue);
     {
       InProcessRuntimeBinding binding;
       auto config = runtimeConfig(fixture);
@@ -3737,7 +4144,7 @@ BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossProcessRestartChi
 BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossProcessRestart)
 {
   RuntimeFixture fixture;
-  auto owner = makeSpec189RepoOwner(fixture);
+  auto owner = makeLocalRepoOwner(fixture);
   const auto root = owner.root;
 
   {
@@ -3803,7 +4210,7 @@ BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossProcessRestart)
   BOOST_CHECK_EQUAL(childStats.missIngests, 0U);
   BOOST_CHECK_EQUAL(childStats.publicationCalls, 0U);
 
-  auto restartedOwner = makeSpec189RepoOwner(fixture, root);
+  auto restartedOwner = makeLocalRepoOwner(fixture, root);
   BOOST_CHECK_EQUAL(restartedOwner.root, root);
   BOOST_CHECK(restartedOwner.repo->has(restartedOwner.objectName));
 }

@@ -54,6 +54,51 @@ class RequestRecoveryError(RuntimeError):
     """Typed fail-closed request recovery error."""
 
 
+def _native_request_policy(request: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
+    """Read the user-pinned native placement strategy and bounded roster."""
+    strategy = str(request.get("placement_strategy", "native-pre-split-first")).strip()
+    if strategy not in {"native-pre-split-first", "native-observation-aware-v4"}:
+        raise ValueError("native requester request.placement_strategy is unsupported")
+    raw_names = request.get("provider_names", ())
+    if not isinstance(raw_names, (list, tuple)):
+        raise ValueError("native requester request.provider_names must be an array")
+    names = []
+    for value in raw_names:
+        if not isinstance(value, str):
+            raise ValueError("native requester provider names must be strings")
+        name = value.strip()
+        if (not name.startswith("/") or name == "/" or name.endswith("/") or
+                "//" in name or any(char.isspace() or char == "\x00" for char in name)):
+            raise ValueError("native requester provider names must be absolute NDN names")
+        names.append(name)
+    if len(names) > 16 or len(names) != len(set(names)):
+        raise ValueError("native requester provider roster is duplicate or exceeds 16 names")
+    if strategy == "native-observation-aware-v4" and len(names) < 2:
+        raise ValueError(
+            "native observation-aware placement requires 2-16 providers")
+    return strategy, tuple(names)
+
+
+def _native_placement_instance(strategy: str, score_mode: str = "preparation-and-network"):
+    from ndnsf import _ndnsf
+
+    constructors = {
+        "native-pre-split-first": _ndnsf.NativePreSplitFirstPlacement,
+        "native-observation-aware-v4": _ndnsf.NativeObservationAwarePlacementV4,
+    }
+    if (not isinstance(score_mode, str) or
+            score_mode not in {"network-only", "preparation-and-network"}):
+        raise ValueError("native requester request.placement_score_mode is unsupported")
+    if strategy == "native-observation-aware-v4":
+        return constructors[strategy](score_mode=score_mode)
+    if score_mode != "preparation-and-network":
+        raise ValueError("placement_score_mode requires native-observation-aware-v4")
+    try:
+        return constructors[strategy]()
+    except KeyError as exc:
+        raise ValueError("native requester placement strategy is unsupported") from exc
+
+
 class NativeRequestHandle:
     """Thin compatibility handle over the C++ native inference handle.
 
@@ -269,6 +314,8 @@ class APPClient:
         self._native_runtime = None
         self._native_model = None
         self._native_splitter = None
+        self._native_placement_strategy = None
+        self._native_provider_names: tuple[str, ...] = ()
         self._native_conversations = None
         # The tokenizer identity is operator-pinned in the native requester
         # configuration.  Keep it separate from the model descriptor's
@@ -518,28 +565,37 @@ class APPClient:
         """Return the configured native requester, if one was injected."""
         return self._native_client
 
-    def configure_native_requester(self, runtime, admission, conversations=None):
+    def configure_native_requester(self, runtime, admission, conversations=None, *,
+                                   request_catalog=None):
         """Bind the existing Core user to a complete native DI runtime.
 
         Catalog inspection, artifact publication, offer admission and grant
         ownership stay in C++; this method only composes already native-owned
         objects and stores the resulting requester lifetime.
         """
+        if request_catalog is None:
+            raise TypeError("native requester requires its loaded request catalog")
+        model = getattr(request_catalog, "model_ref", None)
+        splitter = getattr(request_catalog, "splitter", None)
+        if model is None or splitter is None:
+            raise TypeError("native request catalog lacks model reference or splitter")
         if self._network_client is None:
             raise RuntimeError("native requester requires a network client")
-        catalog = getattr(runtime, "catalog", None)
+        preparation_catalog = getattr(runtime, "catalog", None)
         contract = getattr(runtime, "contract", None)
-        if catalog is None or contract is None:
+        if preparation_catalog is None or contract is None:
             raise TypeError("native runtime must include catalog and contract")
         service_user = self._network_client.service_user
         preparation = service_user.native_preparation(
-            catalog, contract.service_name)
+            preparation_catalog, contract.service_name)
         self._native_client = service_user.native_inference_client_configured(
             runtime, preparation, admission, conversations)
-        self._native_catalog = catalog
+        self._native_catalog = request_catalog
         self._native_runtime = runtime
-        self._native_model = getattr(catalog, "model_ref", None)
-        self._native_splitter = getattr(catalog, "splitter", None)
+        self._native_model = model
+        self._native_splitter = splitter
+        self._native_placement_strategy = None
+        self._native_provider_names = ()
         self._native_conversations = conversations
         return self._native_client
 
@@ -597,6 +653,10 @@ class APPClient:
             if generation_mode == "TOKEN_STREAMING" and not tokenizer_digest:
                 raise ValueError(
                     "native requester request.tokenizer_digest is required for TOKEN_STREAMING")
+            placement_strategy_id, provider_names = _native_request_policy(request)
+            placement_strategy = _native_placement_instance(
+                placement_strategy_id,
+                request.get("placement_score_mode", "preparation-and-network"))
             catalog_config = dict(root["catalog"])
             source_config = dict(catalog_config["source"])
             model_path = self._native_config_path(
@@ -709,9 +769,22 @@ class APPClient:
                     str(config_path.parent))
         except (KeyError, TypeError, OSError) as exc:
             raise ValueError("native requester configuration is incomplete") from exc
-        result = self.configure_native_requester(runtime, admission, conversations)
+        result = self.configure_native_requester(
+            runtime, admission, conversations, request_catalog=catalog)
+        self._native_placement_strategy = placement_strategy
+        self._native_provider_names = provider_names
         self._native_tokenizer_digest = tokenizer_digest
         return result
+
+    def _apply_native_request_defaults(self, options) -> None:
+        configured = tuple(getattr(self, "_native_provider_names", ()))
+        if not configured:
+            return
+        supplied = tuple(getattr(options, "provider_names", ()))
+        if supplied and supplied != configured:
+            raise ValueError(
+                "native request provider_names differ from the pinned requester roster")
+        options.provider_names = list(configured)
 
     def request_native(self, *, model, input, split_strategy,
                        placement_strategy, options):
@@ -752,17 +825,20 @@ class APPClient:
             task_name or getattr(self._native_runtime.contract, "task_name", ""))
         native_input.input_schema_digest = self._native_model.adapter.input_schema_digest
         native_input.options_schema_digest = self._native_model.adapter.options_schema_digest
-        native_input.payload = bytes(payload)
+        native_input.payload = list(bytes(payload))
         if application_options is not None:
             if not isinstance(application_options, (bytes, bytearray, memoryview)):
                 raise TypeError("native application options must be bytes-like")
-            native_input.options = bytes(application_options)
+            native_input.options = list(bytes(application_options))
         options.task_name = native_input.task_name
+        self._apply_native_request_defaults(options)
         handle = self.request_native(
             model=self._native_model,
             input=native_input,
             split_strategy=self._native_splitter,
-            placement_strategy=_ndnsf.NativePreSplitFirstPlacement(),
+            placement_strategy=(
+                getattr(self, "_native_placement_strategy", None) or
+                _ndnsf.NativePreSplitFirstPlacement()),
             options=options,
         )
         if on_event is not None:
@@ -819,13 +895,16 @@ class APPClient:
         if application_options is not None:
             if not isinstance(application_options, (bytes, bytearray, memoryview)):
                 raise TypeError("native application options must be bytes-like")
-            native_input.options = bytes(application_options)
+            native_input.options = list(bytes(application_options))
         options.task_name = native_input.task_name
+        self._apply_native_request_defaults(options)
         handle = self.request_native(
             model=self._native_model,
             input=native_input,
             split_strategy=self._native_splitter,
-            placement_strategy=_ndnsf.NativePreSplitFirstPlacement(),
+            placement_strategy=(
+                getattr(self, "_native_placement_strategy", None) or
+                _ndnsf.NativePreSplitFirstPlacement()),
             options=options,
         )
         if on_event is not None:
@@ -2427,12 +2506,14 @@ class InferenceClient:
         """Return the explicitly configured native requester, if any."""
         return self._core.native_client
 
-    def configure_native_requester(self, runtime, admission, conversations=None):
+    def configure_native_requester(self, runtime, admission, conversations=None, *,
+                                   request_catalog=None):
         """Configure the native requester through the canonical core owner."""
         if conversations is None:
-            return self._core.configure_native_requester(runtime, admission)
+            return self._core.configure_native_requester(
+                runtime, admission, request_catalog=request_catalog)
         return self._core.configure_native_requester(
-            runtime, admission, conversations)
+            runtime, admission, conversations, request_catalog=request_catalog)
 
     def request_native(self, *, model, input, split_strategy,
                        placement_strategy, options):

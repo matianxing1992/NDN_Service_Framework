@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderResidencyV4.hpp"
 
 #include <cstdint>
 #include <cstddef>
@@ -31,6 +32,9 @@ struct NativeModelRunnerSpec
   // opaque ORT session, but this lease is acquired per request and never
   // carries a ProtectedRuntime or content key into the cache.
   std::shared_ptr<const void> protectedResidentUse;
+  // Exact request-independent placement identity retained by cache owners.
+  // It contains no path, grant, request id, plaintext, or model bytes.
+  std::optional<NativeProviderResidencyIdentityV4> residencyIdentity;
 };
 
 /**

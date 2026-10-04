@@ -299,6 +299,14 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path='${BINDIR}')
 
+    bld.program(name='DI_NetworkProbeCalibration',
+                target='DI_NetworkProbeCalibration',
+                source=['DI_NetworkProbeCalibration.cpp'],
+                includes=['..', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path='${BINDIR}')
+
     # Spec185 B6 public C++ callers. These examples include only the
     # installed-style ndnsf-di umbrellas; native lifecycle ownership remains
     # in the distributed-inference library.
@@ -430,6 +438,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedGrantTransport.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.cpp',
         'NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp',
     ])
@@ -478,6 +487,7 @@ def build(bld):
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/InvocationStream.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
+                            'ndn-service-framework/NetworkProbeRate.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
@@ -507,6 +517,7 @@ def build(bld):
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/InvocationStream.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
+                            'ndn-service-framework/NetworkProbeRate.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
@@ -539,6 +550,7 @@ def build(bld):
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
+                            'ndn-service-framework/NetworkProbeRate.cpp',
                             'ndn-service-framework/Stream.cpp',
                             'ndn-service-framework/InvocationStream.cpp',
                             'ndn-service-framework/StreamFacade.cpp',
@@ -630,6 +642,7 @@ def build(bld):
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
+                            'ndn-service-framework/NetworkProbeRate.cpp',
                             'ndn-service-framework/Stream.cpp',
                             'ndn-service-framework/InvocationStream.cpp',
                             'ndn-service-framework/StreamFacade.cpp',
@@ -679,6 +692,7 @@ def build(bld):
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
+                            'ndn-service-framework/NetworkProbeRate.cpp',
                             'ndn-service-framework/Stream.cpp',
                             'ndn-service-framework/InvocationStream.cpp',
                             'ndn-service-framework/StreamFacade.cpp',

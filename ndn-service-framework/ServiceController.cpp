@@ -1035,19 +1035,30 @@ void ServiceController::addAttributesForUsersAccordingToServicePolicy()
     std::string abePolicy = boost::algorithm::join(attributeList, " OR ");
 
     try {
-      auto cert = m_keyChain.getPib()
-                    .getIdentity(identity)
-                    .getDefaultKey()
-                    .getDefaultCertificate();
-      m_aa.addNewPolicy(cert, abePolicy);
-      NDN_LOG_INFO("Add ABE policy: " << abePolicy
-                << " for identity (cert): " << identity);
+      const auto pibIdentity = m_keyChain.getPib().getIdentity(identity);
+      size_t registeredCertificates = 0;
+      // NAC-ABE DKEYs are encrypted to the Provider's RSA encryption key.
+      // Register every certificate for this identity so split signing and
+      // encryption keys are both resolvable by the Attribute Authority.
+      for (const auto& key : pibIdentity.getKeys()) {
+        for (const auto& cert : key.getCertificates()) {
+          m_aa.addNewPolicy(cert, abePolicy);
+          ++registeredCertificates;
+        }
+      }
+      if (registeredCertificates != 0) {
+        NDN_LOG_INFO("Add ABE policy: " << abePolicy
+                  << " for identity (certificates=" << registeredCertificates
+                  << "): " << identity);
+        continue;
+      }
     }
     catch (const std::exception&) {
-      m_aa.addNewPolicy(ndn::Name(identity), abePolicy);
-      NDN_LOG_INFO("Add ABE policy (fallback): " << abePolicy
-                << " for identity: " << identity);
+      // Preserve the identity-only policy fallback below.
     }
+    m_aa.addNewPolicy(ndn::Name(identity), abePolicy);
+    NDN_LOG_INFO("Add ABE policy (fallback): " << abePolicy
+              << " for identity: " << identity);
   }
 }
 

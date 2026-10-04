@@ -32,6 +32,85 @@ namespace {
 
 std::atomic<std::uint64_t> NEXT_REQUEST_ID{1};
 
+std::vector<std::string>
+candidateProviderUris(const std::vector<ndn::Name>& providers)
+{
+  std::vector<std::string> result;
+  result.reserve(providers.size());
+  for (const auto& provider : providers) {
+    if (provider.empty())
+      throw std::invalid_argument("native candidate Provider name must not be empty");
+    result.push_back(provider.toUri());
+  }
+  return result;
+}
+
+bool
+hasAuthenticatedResponseSigner(
+  const ndn_service_framework::ResponseMessage& response,
+  const std::string& expectedProvider) noexcept
+{
+  if (response.getDataName().empty() || response.getSignerCertificate().empty() ||
+      response.getWireDigest().empty())
+    return false;
+  try {
+    return ndn::security::extractIdentityFromCertName(
+      ndn::Name(response.getSignerCertificate())).toUri() == expectedProvider;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
+void
+validateNativePlacementRoster(const NativeRequestOptions& options,
+                              const NativeStrategyIdentity& placement)
+{
+  if (options.providerNames.size() > 16)
+    throw NativeDiError("INVALID_REQUEST", "local", "placement",
+                        "native provider roster exceeds 16 names");
+  auto providers = candidateProviderUris(options.providerNames);
+  std::sort(providers.begin(), providers.end());
+  if (std::adjacent_find(providers.begin(), providers.end()) != providers.end())
+    throw NativeDiError("INVALID_REQUEST", "local", "placement",
+                        "native provider roster contains duplicate names");
+  if (placement.name == "native-observation-aware-v4" && providers.size() < 2)
+    throw NativeDiError("INVALID_REQUEST", "local", "placement",
+                        "observation-aware placement requires 2-16 providers");
+}
+
+std::optional<NativeCandidateArtifactInventoryV4>
+candidateArtifactInventoryFor(const NativeRequestRuntime* runtime,
+                              const NativeStrategyIdentity& splitter)
+{
+  if (runtime == nullptr || !runtime->planningCache)
+    return std::nullopt;
+  const auto& prepared = runtime->planningCache->splitter;
+  if (prepared.name != splitter.name || prepared.version != splitter.version ||
+      prepared.configurationDigest != splitter.configurationDigest ||
+      prepared.deterministic != splitter.deterministic)
+    return std::nullopt;
+  return buildNativeCandidateArtifactInventoryV4(
+    *runtime->planningCache, runtime->budget.maxCandidates);
+}
+
+std::optional<NativePlacementProbeAllowlistV4>
+candidateProbeAllowlistFor(const NativeRequestRuntime* runtime,
+                           const NativeStrategyIdentity& splitter,
+                           const std::vector<ndn::Name>& providers)
+{
+  if (runtime == nullptr || !runtime->planningCache)
+    return std::nullopt;
+  const auto& prepared = runtime->planningCache->splitter;
+  if (prepared.name != splitter.name || prepared.version != splitter.version ||
+      prepared.configurationDigest != splitter.configurationDigest ||
+      prepared.deterministic != splitter.deterministic)
+    return std::nullopt;
+  return buildNativePlacementProbeAllowlistV4(
+    *runtime->planningCache, runtime->budget.maxCandidates,
+    candidateProviderUris(providers));
+}
+
 std::string
 processRequestOwnerScope()
 {
@@ -728,7 +807,7 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       catch (const NativeDiError& error) { failOperation(operation, error); }
       catch (const std::exception& error) {
         failOperation(operation, NativeDiError("NATIVE_REQUEST_STAGE_FAILED", "runtime", boundary,
-          std::string("native request stage failed: ") + error.what(),
+          std::string("native request stage failed at ") + boundary + ": " + error.what(),
           operation->requestId, operation->attempt));
       }
       catch (...) {
@@ -741,6 +820,458 @@ void enqueueOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& o
     if (!operation->cancelled->load()) failOperation(operation, NativeDiError(
       "NATIVE_REQUEST_DISPATCH_FAILED", "local", boundary, "request worker is unavailable",
       operation->requestId, operation->attempt));
+  }
+}
+
+void dispatchPlacementProbeIntent(
+  const std::shared_ptr<NativeInferenceHandle::Operation>& operation,
+  const NativePlacementProbeIntentV1& intent,
+  std::function<void(NativePlacementProbeRoundV1)> onComplete)
+{
+  struct FanIn
+  {
+    std::mutex mutex;
+    NativePlacementProbeRoundV1 round;
+    std::size_t remaining = 0;
+    std::function<void(NativePlacementProbeRoundV1)> complete;
+  };
+  auto fanIn = std::make_shared<FanIn>();
+  fanIn->round.intent = intent;
+  fanIn->remaining = intent.observers.size();
+  fanIn->complete = std::move(onComplete);
+  if (intent.observers.empty()) {
+    auto complete = std::move(fanIn->complete);
+    if (complete) complete(std::move(fanIn->round));
+    return;
+  }
+
+  const auto sourceAttempt = operation->attempt;
+  const auto user = operation->user;
+  const auto runtime = operation->runtime;
+  const auto encoded = operation->encodedRequest;
+  if (!runtime || !encoded) {
+    auto complete = std::move(fanIn->complete);
+    if (complete) complete(std::move(fanIn->round));
+    return;
+  }
+  const auto service = runtime->contract.serviceName;
+  const auto requester = runtime->requesterIdentity;
+  const auto requestId = operation->coreRequestId;
+  const auto deadlineMs = operation->wireDeadlineMs;
+  const auto roster = encoded->candidateProviders;
+  const auto rosterDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson(roster)));
+
+  // Core owns the Interest request ID and generates one fresh targeted Interest
+  // per selected observer. The payload nonce additionally binds each result to
+  // the exact attempt-scoped measurement request.
+  for (const auto& requested : intent.observers) {
+    const auto observer = requested.observerProvider;
+    const auto nonce = processRequestOwnerScope();
+    fanIn->round.intentNonceByObserver.emplace(observer, nonce);
+  }
+
+  try {
+    user->postToIo([operation, user, runtime, encoded, intent, fanIn,
+                    sourceAttempt, service, requester, requestId, deadlineMs,
+                    roster, rosterDigest] {
+      for (const auto& requested : intent.observers) {
+        const auto observer = requested.observerProvider;
+        const auto nonce = fanIn->round.intentNonceByObserver.at(observer);
+        auto completeOne = [fanIn, observer,
+                            once = std::make_shared<std::atomic<bool>>(false)]
+          (std::optional<NativeJson> response) mutable {
+          if (once->exchange(true)) return;
+          std::function<void(NativePlacementProbeRoundV1)> complete;
+          std::optional<NativePlacementProbeRoundV1> round;
+          {
+            std::lock_guard<std::mutex> lock(fanIn->mutex);
+            if (response)
+              fanIn->round.responseByObserver[observer] = std::move(*response);
+            if (--fanIn->remaining == 0) {
+              complete = std::move(fanIn->complete);
+              round = std::move(fanIn->round);
+            }
+          }
+          if (complete && round) complete(std::move(*round));
+        };
+
+        try {
+          {
+            std::lock_guard<std::mutex> lock(operation->mutex);
+            if (operation->cancelled->load() || operation->phase == DiRequestPhase::Terminal ||
+                operation->attempt != sourceAttempt) {
+              completeOne(std::nullopt);
+              continue;
+            }
+          }
+          const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            operation->deadline - std::chrono::steady_clock::now()).count();
+          if (remaining <= 0) {
+            completeOne(std::nullopt);
+            continue;
+          }
+
+          NativeJson rttPairs = NativeJson::array();
+          for (const auto& edge : requested.rttPairs)
+            rttPairs.push_back({{"src_provider", edge.sourceProvider},
+                                {"dst_provider", edge.destinationProvider}});
+          NativeJson goodputEdges = NativeJson::array();
+          for (const auto& edge : requested.goodputEdges)
+            goodputEdges.push_back({{"src_provider", edge.sourceProvider},
+                                    {"dst_provider", edge.destinationProvider}});
+          const auto scope = NativeJson{
+            {"schema", "ndnsf-di-placement-probe-scope-v1"},
+            {"request_id", requestId}, {"attempt", sourceAttempt},
+            {"requester_identity", requester}, {"observer_provider", observer},
+            {"service", service}, {"provider_roster", roster},
+            {"roster_digest", rosterDigest}, {"rtt_pairs", rttPairs},
+            {"goodput_edges", goodputEdges}, {"deadline_ms", deadlineMs},
+            {"intent_nonce", nonce}};
+          const auto scopeDigest = nativePlanningDigest(nativeCanonicalJson(scope));
+          NativeJson kinds = NativeJson::array();
+          if (!requested.goodputEdges.empty()) kinds.push_back("active_probe_goodput");
+          if (!requested.rttPairs.empty()) kinds.push_back("active_probe_rtt");
+          NativeJson probeRequest{
+            {"action", "measure"},
+            {"schema", "ndnsf-di-placement-probe-request-v1"},
+            {"request_id", requestId}, {"attempt", sourceAttempt},
+            {"requester_identity", requester}, {"observer_provider", observer},
+            {"service", service}, {"provider_roster", roster},
+            {"roster_digest", rosterDigest}, {"rtt_pairs", rttPairs},
+            {"goodput_edges", goodputEdges}, {"measurement_kinds", kinds},
+            {"deadline_ms", deadlineMs}, {"intent_nonce", nonce},
+            {"scope_digest", scopeDigest}};
+          const auto wire = nativeCanonicalJson(probeRequest);
+          if (wire.empty() || wire.size() > 4096) {
+            completeOne(std::nullopt);
+            continue;
+          }
+          std::vector<std::string> authorizationTargets;
+          for (const auto& edge : requested.rttPairs) {
+            if (edge.sourceProvider == observer &&
+                edge.destinationProvider != observer) {
+              authorizationTargets.push_back(edge.destinationProvider);
+            }
+          }
+          for (const auto& edge : requested.goodputEdges) {
+            if (edge.destinationProvider == observer &&
+                edge.sourceProvider != observer) {
+              authorizationTargets.push_back(edge.sourceProvider);
+            }
+          }
+          std::sort(authorizationTargets.begin(), authorizationTargets.end());
+          authorizationTargets.erase(
+            std::unique(authorizationTargets.begin(), authorizationTargets.end()),
+            authorizationTargets.end());
+          if (authorizationTargets.size() > roster.size() ||
+              std::any_of(authorizationTargets.begin(), authorizationTargets.end(),
+                [&roster](const auto& target) {
+                  return !std::binary_search(roster.begin(), roster.end(), target);
+                })) {
+            completeOne(std::nullopt);
+            continue;
+          }
+
+          auto sendMeasurement =
+            [operation, user, service, observer, requestId, sourceAttempt,
+             scopeDigest, nonce, probeRequest, completeOne]() mutable {
+              {
+                std::lock_guard<std::mutex> lock(operation->mutex);
+                if (operation->cancelled->load() ||
+                    operation->phase == DiRequestPhase::Terminal ||
+                    operation->attempt != sourceAttempt) {
+                  completeOne(std::nullopt);
+                  return;
+                }
+              }
+              const auto remaining = std::chrono::duration_cast<
+                std::chrono::milliseconds>(operation->deadline -
+                  std::chrono::steady_clock::now()).count();
+              if (remaining <= 0) {
+                completeOne(std::nullopt);
+                return;
+              }
+              auto measure = probeRequest;
+              measure["action"] = "measure";
+              const auto measureWire = nativeCanonicalJson(measure);
+              if (measureWire.empty() || measureWire.size() > 4096) {
+                completeOne(std::nullopt);
+                return;
+              }
+              ndn::Buffer payload(
+                reinterpret_cast<const std::uint8_t*>(measureWire.data()),
+                measureWire.size());
+              ndn_service_framework::RequestMessage request;
+              request.setTargetProvider(ndn::Name(observer));
+              request.setPayload(payload, payload.size());
+              request.setTokens({{"targeted.refill", "1"}});
+              const auto timeoutMs = static_cast<int>(std::max<std::int64_t>(1,
+                std::min<std::int64_t>(remaining, 5000)));
+              std::ostringstream dispatchRecord;
+              dispatchRecord << "NDNSF_DI_NATIVE_PLACEMENT_PROBE_DISPATCH"
+                             << " requestId=" << requestId
+                             << " attempt=" << sourceAttempt
+                             << " observer=" << observer
+                             << " rttCount=" << measure.at("rtt_pairs").size()
+                             << " goodputEdgeCount="
+                             << measure.at("goodput_edges").size()
+                             << " rttPairs=" << measure.at("rtt_pairs").dump()
+                             << " goodputEdges=" << measure.at("goodput_edges").dump()
+                             << " payloadBytes=" << measureWire.size()
+                             << " invocation=NDNSF_Targeted";
+              logRuntimeEvidence(dispatchRecord.str());
+              const auto requestName = user->RequestServiceTargeted(
+                ndn::Name(observer),
+                ndn::Name(ndn_service_framework::NETWORK_PROBE_SERVICE),
+                std::move(request), timeoutMs,
+                [completeOne, requestId, observer](const ndn::Name&) mutable {
+                  logRuntimeEvidence(
+                    "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                    requestId + " observer=" + observer + " status=timeout");
+                  completeOne(std::nullopt);
+                },
+                [completeOne, requestId, observer, sourceAttempt, scopeDigest,
+                 nonce](const ndn_service_framework::ResponseMessage& response) mutable {
+                  if (!response.getStatus()) {
+                    logRuntimeEvidence(
+                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      requestId + " observer=" + observer + " status=rejected");
+                    completeOne(std::nullopt);
+                    return;
+                  }
+                  if (!hasAuthenticatedResponseSigner(response, observer)) {
+                    logRuntimeEvidence(
+                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      requestId + " observer=" + observer +
+                      " status=authenticated_signer_mismatch");
+                    completeOne(std::nullopt);
+                    return;
+                  }
+                  const auto bytes = response.getPayload();
+                  if (bytes.empty() || bytes.size() > NATIVE_PLACEMENT_PROBE_RESPONSE_MAX_BYTES) {
+                    logRuntimeEvidence(
+                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      requestId + " observer=" + observer +
+                      " status=invalid_payload payloadBytes=" +
+                      std::to_string(bytes.size()));
+                    completeOne(std::nullopt);
+                    return;
+                  }
+                  try {
+                    const std::string text(
+                      reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                    auto parsed = nativeParseJson(text);
+                    if (parsed.at("schema").get<std::string>() !=
+                          "ndnsf-di-placement-probe-response-v1" ||
+                        parsed.at("request_id").get<std::string>() != requestId ||
+                        parsed.at("attempt").get<std::uint64_t>() != sourceAttempt ||
+                        parsed.at("observer_provider").get<std::string>() != observer ||
+                        parsed.at("scope_digest").get<std::string>() != scopeDigest ||
+                        parsed.at("intent_nonce").get<std::string>() != nonce) {
+                      throw std::invalid_argument(
+                        "placement probe response binding mismatch");
+                    }
+                    logRuntimeEvidence(
+                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      requestId + " observer=" + observer +
+                      " status=accepted payloadBytes=" +
+                      std::to_string(bytes.size()));
+                    completeOne(std::move(parsed));
+                  }
+                  catch (const std::exception&) {
+                    logRuntimeEvidence(
+                      "NDNSF_DI_NATIVE_PLACEMENT_PROBE_RESPONSE requestId=" +
+                      requestId + " observer=" + observer +
+                      " status=invalid_response_binding payloadBytes=" +
+                      std::to_string(bytes.size()));
+                    completeOne(std::nullopt);
+                  }
+                });
+              if (requestName.empty()) {
+                logRuntimeEvidence(
+                  "NDNSF_DI_NATIVE_PLACEMENT_PROBE_REQUEST requestId=" +
+                  requestId + " observer=" + observer + " status=not_started");
+                completeOne(std::nullopt);
+              }
+              else {
+                logRuntimeEvidence(
+                  "NDNSF_DI_NATIVE_PLACEMENT_PROBE_REQUEST requestId=" +
+                  requestId + " observer=" + observer + " status=started");
+              }
+            };
+
+          if (authorizationTargets.empty()) {
+            sendMeasurement();
+            continue;
+          }
+
+          struct GrantFanIn
+          {
+            std::mutex mutex;
+            std::size_t remaining = 0;
+            bool failed = false;
+            bool measurementStarted = false;
+          };
+          auto grants = std::make_shared<GrantFanIn>();
+          grants->remaining = authorizationTargets.size();
+          auto settleGrant =
+            [grants, user, requestId, observer, scopeDigest, completeOne,
+             sendMeasurement](const std::string& target, bool accepted) mutable {
+              bool startMeasurement = false;
+              bool reportFailure = false;
+              {
+                std::lock_guard<std::mutex> lock(grants->mutex);
+                if (!accepted && !grants->failed) {
+                  grants->failed = true;
+                  reportFailure = true;
+                }
+                if (grants->remaining > 0) --grants->remaining;
+                if (grants->remaining == 0 && !grants->failed &&
+                    !grants->measurementStarted) {
+                  grants->measurementStarted = true;
+                  startMeasurement = true;
+                }
+              }
+              logRuntimeEvidence(
+                std::string("NDNSF_DI_NATIVE_PLACEMENT_PROBE_GRANT requestId=") +
+                requestId + " observer=" + observer + " target=" + target +
+                " scope=" + scopeDigest +
+                (accepted ? " status=accepted" : " status=rejected"));
+              if (reportFailure) completeOne(std::nullopt);
+              if (startMeasurement) {
+                user->postToIo([sendMeasurement]() mutable { sendMeasurement(); });
+              }
+            };
+          for (const auto& target : authorizationTargets) {
+            auto authorization = probeRequest;
+            authorization["action"] = "authorize";
+            const auto authorizationWire = nativeCanonicalJson(authorization);
+            if (authorizationWire.empty() || authorizationWire.size() > 4096) {
+              settleGrant(target, false);
+              continue;
+            }
+            bool operationIsStale = false;
+            {
+              std::lock_guard<std::mutex> lock(operation->mutex);
+              operationIsStale = operation->cancelled->load() ||
+                operation->phase == DiRequestPhase::Terminal ||
+                operation->attempt != sourceAttempt;
+            }
+            if (operationIsStale) {
+              settleGrant(target, false);
+              continue;
+            }
+            const auto grantRemaining = std::chrono::duration_cast<
+              std::chrono::milliseconds>(operation->deadline -
+                std::chrono::steady_clock::now()).count();
+            if (grantRemaining <= 0) {
+              settleGrant(target, false);
+              continue;
+            }
+            ndn::Buffer grantPayload(
+              reinterpret_cast<const std::uint8_t*>(authorizationWire.data()),
+              authorizationWire.size());
+            ndn_service_framework::RequestMessage grantRequest;
+            grantRequest.setTargetProvider(ndn::Name(target));
+            grantRequest.setPayload(grantPayload, grantPayload.size());
+            grantRequest.setTokens({{"targeted.refill", "1"}});
+            const auto timeoutMs = static_cast<int>(std::max<std::int64_t>(1,
+              std::min<std::int64_t>(grantRemaining, 5000)));
+            const auto grantOnce = std::make_shared<std::atomic<bool>>(false);
+            auto finishGrant =
+              [settleGrant, grantOnce, target, observer, requestId, scopeDigest]
+              (std::optional<ndn_service_framework::ResponseMessage> response) mutable {
+                if (grantOnce->exchange(true)) return;
+                bool accepted = false;
+                std::string diagnosis = "transport=timeout";
+                if (response) {
+                  diagnosis = response->getStatus()
+                    ? "transport=accepted" : "transport=rejected";
+                  if (!response->getStatus() && !response->getErrorInfo().empty()) {
+                    diagnosis += " error=" + response->getErrorInfo();
+                  }
+                }
+                if (response && response->getStatus()) {
+                  const bool signerMatches =
+                    hasAuthenticatedResponseSigner(*response, target);
+                  const auto bytes = response->getPayload();
+                  diagnosis += " payloadBytes=" + std::to_string(bytes.size());
+                  diagnosis += " signerMatches=" + std::to_string(signerMatches);
+                  if (signerMatches && !bytes.empty() && bytes.size() <= 512) {
+                    try {
+                      const std::string text(
+                        reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                      const auto parsed = nativeParseJson(text);
+                      const bool schemaMatches =
+                        parsed.at("schema").get<std::string>() ==
+                        "ndnsf-di-placement-probe-scope-ack-v1";
+                      const bool providerMatches =
+                        parsed.at("provider").get<std::string>() == target;
+                      const bool observerMatches =
+                        parsed.at("observer_provider").get<std::string>() == observer;
+                      const bool scopeMatches =
+                        parsed.at("scope_digest").get<std::string>() == scopeDigest;
+                      const bool statusMatches =
+                        parsed.at("status").get<std::string>() == "authorized";
+                      accepted = schemaMatches && providerMatches &&
+                        observerMatches && scopeMatches && statusMatches;
+                      diagnosis += " schemaMatches=" +
+                        std::to_string(schemaMatches) + " providerMatches=" +
+                        std::to_string(providerMatches) + " observerMatches=" +
+                        std::to_string(observerMatches) + " scopeMatches=" +
+                        std::to_string(scopeMatches) + " statusMatches=" +
+                        std::to_string(statusMatches);
+                    }
+                    catch (const std::exception&) {
+                      diagnosis += " payload=invalid_json_or_fields";
+                    }
+                  }
+                  else {
+                    diagnosis += " payload=empty_or_oversize";
+                  }
+                }
+                logRuntimeEvidence(
+                  "NDNSF_DI_NATIVE_PLACEMENT_PROBE_GRANT_ACK requestId=" +
+                  requestId + " observer=" + observer + " target=" + target +
+                  " " + diagnosis);
+                settleGrant(target, accepted);
+              };
+            logRuntimeEvidence(
+              "NDNSF_DI_NATIVE_PLACEMENT_PROBE_GRANT_DISPATCH requestId=" +
+              requestId + " observer=" + observer + " target=" + target +
+              " scope=" + scopeDigest + " invocation=NDNSF_Targeted");
+            const auto grantName = user->RequestServiceTargeted(
+              ndn::Name(target),
+              ndn::Name(ndn_service_framework::NETWORK_PROBE_SERVICE),
+              std::move(grantRequest),
+              timeoutMs,
+              [finishGrant](const ndn::Name&) mutable { finishGrant(std::nullopt); },
+              [finishGrant](const ndn_service_framework::ResponseMessage& response) mutable {
+                finishGrant(response);
+              });
+            if (grantName.empty()) finishGrant(std::nullopt);
+          }
+        }
+        catch (const std::exception&) {
+          completeOne(std::nullopt);
+        }
+      }
+    });
+  }
+  catch (const std::exception&) {
+    for (std::size_t i = 0; i < intent.observers.size(); ++i) {
+      std::function<void(NativePlacementProbeRoundV1)> complete;
+      std::optional<NativePlacementProbeRoundV1> round;
+      {
+        std::lock_guard<std::mutex> lock(fanIn->mutex);
+        if (fanIn->remaining > 0) --fanIn->remaining;
+        if (fanIn->remaining == 0) {
+          complete = std::move(fanIn->complete);
+          round = std::move(fanIn->round);
+        }
+      }
+      if (complete && round) complete(std::move(*round));
+    }
   }
 }
 
@@ -1179,8 +1710,16 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
     input.taskName = operation->preparedInput->taskName;
     for (const auto& scope : operation->planned->corePlan.keyScopes) oldScopes.push_back(scope.name);
   }
+  const auto providers = candidateProviderUris(operation->options.providerNames);
+  const auto inventory = candidateArtifactInventoryFor(
+    operation->runtime.get(), operation->strategies.splitterIdentity);
+  const auto probeAllowlist = candidateProbeAllowlistFor(
+    operation->runtime.get(), operation->strategies.splitterIdentity,
+    operation->options.providerNames);
   auto encoded = encodeNativeRequestEnvelope(operation->model, input, *operation->requestContract,
-    recovery.recoveryRequestId, 2, operation->wireDeadlineMs, recovery);
+    recovery.recoveryRequestId, 2, operation->wireDeadlineMs, recovery,
+    providers, inventory, probeAllowlist,
+    operation->runtime ? operation->runtime->requesterIdentity : std::string{});
   if (oldConversationTurn && conversations) {
     try {
       replacementConversationTurn = conversations->replaceAttempt(
@@ -1322,7 +1861,16 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         };
       }
       const auto ackClosed = [operation, sourceAttempt, coreRequestId](const ndn_service_framework::CollaborationAckClosure& closure) {
-        enqueueOperation(operation, [operation, sourceAttempt, coreRequestId, closure] {
+        auto resume = std::make_shared<std::function<void(
+          std::shared_ptr<NativePlacementProbeRoundV1>)>>();
+        const std::weak_ptr<std::function<void(
+          std::shared_ptr<NativePlacementProbeRoundV1>)>> weakResume = resume;
+        *resume = [operation, sourceAttempt, coreRequestId, closure, weakResume](
+            std::shared_ptr<NativePlacementProbeRoundV1> probeRound) {
+          const auto continuation = weakResume.lock();
+          if (!continuation) return;
+          enqueueOperation(operation, [operation, sourceAttempt, coreRequestId,
+                                       closure, probeRound, continuation] {
           std::shared_ptr<const NativeRequestRuntime> runtime;
           NativeRequestOptions coreOptions;
           std::shared_ptr<const NativeInspectedModel> inspected;
@@ -1336,11 +1884,18 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           std::shared_ptr<const NativeOfferAdmission> admission;
           std::shared_ptr<NativeConversationCoordinator> conversations;
           std::optional<NativeConversationTurn> conversationTurn;
+          bool firstPlanningEntry = false;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
-            if (operation->cancelled->load() || operation->attempt != sourceAttempt ||
-                operation->phase != DiRequestPhase::Requesting) return;
-            operation->phase = DiRequestPhase::Planning;
+            if (operation->cancelled->load() || operation->attempt != sourceAttempt)
+              return;
+            if (operation->phase == DiRequestPhase::Requesting) {
+              operation->phase = DiRequestPhase::Planning;
+              firstPlanningEntry = true;
+            }
+            else if (operation->phase != DiRequestPhase::Planning) {
+              return;
+            }
             runtime = operation->runtime;
             coreOptions = operation->coreOptions;
             if (operation->inspected) inspected = std::make_shared<NativeInspectedModel>(*operation->inspected);
@@ -1355,7 +1910,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             conversations = operation->conversations;
             conversationTurn = operation->conversationTurn;
           }
-          {
+          if (firstPlanningEntry) {
             std::ostringstream record;
             record << "NDNSF_DI_NATIVE_ACK_CLOSED"
                    << " requestId=" << operation->requestId
@@ -1398,13 +1953,25 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             ? planNativeRequestCooperative(*runtime, coreOptions, *inspected, encoded,
                 *cooperativeSplitter, *cooperativePlacement, *preparation, *admission,
                 closure, control, operation->wireDeadlineMs, operation->cancelled,
-                conversationTurn ? &*conversationTurn : nullptr)
+                conversationTurn ? &*conversationTurn : nullptr, probeRound.get())
             : planNativeRequest(*runtime, coreOptions, *inspected, encoded,
                 *legacySplitter, *legacyPlacement, *preparation, *admission,
                 closure, control, operation->wireDeadlineMs, operation->cancelled,
-                conversationTurn ? &*conversationTurn : nullptr);
+                conversationTurn ? &*conversationTurn : nullptr, probeRound.get());
           logRuntimePhase("di-cli", "planEnd", operation->requestId,
                           std::to_string(sourceAttempt), planPhaseFields);
+          if (planned.placementProbeIntent) {
+            if (probeRound)
+              throw NativeDiError("NATIVE_PLACEMENT_PROBE_REPEATED", "planning",
+                "targeted-probe", "placement requested a second probe round",
+                operation->requestId, sourceAttempt);
+            dispatchPlacementProbeIntent(operation, *planned.placementProbeIntent,
+              [continuation](NativePlacementProbeRoundV1 round) {
+                (*continuation)(std::make_shared<NativePlacementProbeRoundV1>(
+                  std::move(round)));
+              });
+            return;
+          }
           std::optional<NativeConversationTurn> plannedConversationTurn = conversationTurn;
           if (plannedConversationTurn && conversations) {
             if (plannedConversationTurn->attempt == 2) {
@@ -1425,6 +1992,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           }
           const auto corePlan = planned.corePlan;
           const auto sealedPlanDigest = planned.sealed.planDigest;
+          const auto manifestDigest = planned.sealed.core.artifacts.manifestDigest;
+          const auto manifestJson = planned.sealed.core.artifacts.canonicalManifestJson;
           bool published = false;
           {
             std::lock_guard<std::mutex> lock(operation->mutex);
@@ -1453,7 +2022,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
           }
           operation->user->postToIo([operation, sourceAttempt, coreRequestId,
                                     digest = closure.digest, plan = corePlan,
-                                    sealedPlanDigest] {
+                                    sealedPlanDigest, manifestDigest, manifestJson] {
             try {
               {
                 std::lock_guard<std::mutex> lock(operation->mutex);
@@ -1472,6 +2041,9 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
                        << " epochMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::system_clock::now().time_since_epoch()).count()
                        << " planDigest=" << sealedPlanDigest;
+                if (!manifestJson.empty())
+                  record << " manifestDigest=" << manifestDigest
+                         << " manifestJson=" << manifestJson;
                 logRuntimeEvidence(record.str());
               }
               std::lock_guard<std::mutex> lock(operation->mutex);
@@ -1494,7 +2066,9 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
               "NATIVE_REQUEST_COMMIT_FAILED", "runtime", "commit", "Core plan commit failed",
               operation->requestId, sourceAttempt), sourceAttempt); }
           });
-        }, "ACK_CLOSED");
+          }, "ACK_CLOSED");
+        };
+        (*resume)(nullptr);
       };
       const auto response = [operation](const ndn_service_framework::ResponseMessage& message) {
         // Core's stream completion callback owns final acceptance; an ordinary
@@ -1538,6 +2112,14 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       };
       ndn_service_framework::RequestCapabilities capabilities;
       capabilities.setField("NDNSF_DATA_V1", "required");
+      if (!operation->options.providerNames.empty() &&
+          operation->options.providerNames.size() <= 16 &&
+          operation->encodedRequest &&
+          !operation->encodedRequest->candidateArtifacts.empty() &&
+          !operation->encodedRequest->candidateArtifactSetDigest.empty() &&
+          !operation->encodedRequest->recovery) {
+        capabilities.setField("DI_PLACEMENT_V4", "optional");
+      }
       const auto streamEvent = [operation, sourceAttempt](const ndn::Buffer& bytes) {
         bool overflow = false;
         {
@@ -1761,7 +2343,14 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
     try {
       encoded = encodeNativeRequestEnvelope(operation->model, input,
         *operation->requestContract, operation->coreRequestId, operation->attempt,
-        operation->wireDeadlineMs, operation->recovery);
+        operation->wireDeadlineMs, operation->recovery,
+        candidateProviderUris(operation->options.providerNames),
+        candidateArtifactInventoryFor(operation->runtime.get(),
+                                      operation->strategies.splitterIdentity),
+        candidateProbeAllowlistFor(operation->runtime.get(),
+                                   operation->strategies.splitterIdentity,
+                                   operation->options.providerNames),
+        operation->runtime ? operation->runtime->requesterIdentity : std::string{});
     }
     catch (const std::exception& error) {
       std::string detail = "native request contract encoding failed";
@@ -2229,6 +2818,7 @@ NativeInferenceHandle NativeInferenceClient::requestImpl(
   std::shared_ptr<const CooperativePlacementStrategy> cooperativePlacement,
   const NativeRequestOptions& options)
 {
+  validateNativePlacementRoster(options, strategies.placementIdentity);
   std::shared_ptr<NativeInferenceHandle::Operation> operation;
   {
     std::lock_guard<std::mutex> lock(m_mutex);

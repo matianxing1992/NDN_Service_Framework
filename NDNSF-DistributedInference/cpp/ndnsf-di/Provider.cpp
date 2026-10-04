@@ -462,7 +462,7 @@ providerRunnerReuseKey(const NativeSelectionProjectionV3& projection,
     }
   };
   const auto& role = projection.assembly;
-  canonical << "ndnsf-di-live-runner-v1";
+  canonical << "ndnsf-di-live-runner-v2";
   frame(projection.provider.empty() ? providerIdentity : projection.provider);
   frame(providerBootId);
   frame(projection.canonicalArtifactName);
@@ -494,6 +494,16 @@ providerRunnerReuseKey(const NativeSelectionProjectionV3& projection,
     frameUint(index);
   frameTensors(role.expectedInputs);
   frameTensors(role.expectedOutputs);
+  // The served Provider cache is separate from the standalone executable's
+  // cache. A live runner also captures this Selection's output scopes and
+  // bundle tensor names, so reuse is safe only when that binding is unchanged.
+  frame(projection.dataflow.terminalResponseOwner ? "terminal-output" : "role-output");
+  const auto roleSpec = roleSpecFromSelectionProjectionV3(projection, {});
+  frameUint(roleSpec.outputs.size());
+  for (const auto& output : roleSpec.outputs) {
+    frame(output.scope);
+    frameStrings(output.bundleTensorNames);
+  }
   frame(role.materializedRole ? "true" : "false");
   frame(role.precision);
   frame(role.quantization);
@@ -2106,6 +2116,8 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
   const auto protectedResidentAuthority = m_state->protectedResidentAuthority;
   auto* keyChain = m_state->keyChain != nullptr
     ? m_state->keyChain.get() : m_state->borrowedKeyChain;
+  installNativeProviderGroupCoordinatorFactory(
+    nativeConfig, providerIdentity, providerCert.getName().toUri(), keyChain);
   nativeConfig.runnerReuseLookup =
     [runnerReuseCache, providerIdentity, providerBootId] (
       const NativeSelectionProjectionV3& projection,

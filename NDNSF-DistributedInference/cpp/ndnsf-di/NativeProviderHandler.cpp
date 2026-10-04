@@ -2633,8 +2633,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 logRuntimeEvidence(
                   std::string("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_HIT") +
                   " requestId=" + projection.requestId +
+                  " attemptEpoch=" + stageAttemptEpoch +
                   " provider=" + ctx.localProvider().toUri() +
-                  " role=" + role + " detail=live-runner");
+                  " role=" + role + " planDigest=" + projection.planDigest +
+                  " detail=live-runner");
                 if (executionGuard) executionGuard();
                 const auto evidence = runner->executionEvidenceSnapshot();
                 if (!evidence) {
@@ -2991,11 +2993,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           return;
         }
       }
-      const bool localFullPlan = nativeProviderShouldExecuteLocalPlan(
-        executionPlan,
-        assignment,
-        roleSpec,
-        ctx.localProvider().toUri());
+      const bool needsRoleScopedPreparation =
+        !authenticatedGeneration.enabled && selectionProjection && prepareRunner &&
+        executionPlan.roles.size() > 1;
+      const bool localFullPlan = !needsRoleScopedPreparation &&
+        nativeProviderShouldExecuteLocalPlan(
+          executionPlan,
+          assignment,
+          roleSpec,
+          ctx.localProvider().toUri());
       if (authenticatedGeneration.enabled && localFullPlan &&
           executionPlan.roles.size() == 1) {
         // A one-role generation has a self TOKEN_FEEDBACK edge. Keep that

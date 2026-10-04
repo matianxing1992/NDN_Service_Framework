@@ -1,7 +1,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include <ndn-cxx/name.hpp>
+#include <ndn-cxx/security/key-chain.hpp>
 #include <openssl/sha.h>
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <stdexcept>
@@ -77,6 +80,83 @@ std::string nativeProtectedFencingToken(
   return digest("NDNSF-DI/protected-attempt-fence/v1\n" + providerBootId + "\n" +
     projection.provider + "\n" + projection.requestId + "\n" +
     std::to_string(projection.attempt) + "\n" + projection.planDigest);
+}
+
+void installNativeProviderGroupCoordinatorFactory(
+  NativeProviderHandlerConfig& config, const std::string& localProvider,
+  const std::string& providerCertificateName, ndn::KeyChain* keyChain)
+{
+  const bool requiresGroupCapability = std::any_of(
+    config.plan.dependencies.begin(), config.plan.dependencies.end(),
+    [] (const NativeDependencySpec& dependency) {
+      return dependency.useNdnsfDataV1;
+    });
+  config.groupCoordinatorFactory =
+    [requiresGroupCapability, localProvider,
+     providerCertName = ndn::Name(providerCertificateName),
+     expectedPlanDigest = config.planDigest, keyChain] (
+        ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+        const std::map<std::string, std::string>& fields) {
+      const auto field = fields.find("groupCapabilityV1");
+      if (field == fields.end()) {
+        if (requiresGroupCapability) {
+          throw std::runtime_error(
+            "NDNSF_DATA_V1 assignment is missing groupCapabilityV1");
+        }
+        return std::shared_ptr<ProviderGroupCoordinator>{};
+      }
+      const auto decodedWire =
+        ndn_service_framework::selectionGatedUnhex(field->second);
+      auto capability = ProviderGroupCoordinator::decodeCapability(
+        ProviderGroupBytes(decodedWire.begin(), decodedWire.end()));
+      const auto requestPlan = fields.find("executionPlanDigest");
+      const auto authenticatedPlanDigest = requestPlan == fields.end()
+        ? expectedPlanDigest : requestPlan->second;
+      if (capability.requestId != ctx.sessionId() ||
+          capability.planDigest != authenticatedPlanDigest) {
+        throw std::runtime_error(
+          "NDNSF_DATA_V1 capability request/plan binding mismatch");
+      }
+      const auto localMember = std::find_if(
+        capability.orderedMembers.begin(), capability.orderedMembers.end(),
+        [&localProvider] (const GroupMemberV1& member) {
+          return member.provider == localProvider;
+        });
+      if (localMember == capability.orderedMembers.end() ||
+          localMember->endpointPrefix.empty()) {
+        throw std::runtime_error(
+          "NDNSF_DATA_V1 capability omits the local Provider endpoint");
+      }
+      ProviderGroupCoordinatorOptions groupOptions;
+      groupOptions.localProvider = localProvider;
+      groupOptions.unwrapEpochKey =
+        [keyChain, providerCertName, localProvider] (
+            const std::string& providerName,
+            const ProviderGroupBytes& wrapped) {
+          if (providerName != localProvider) {
+            throw std::runtime_error(
+              "NDNSF_DATA_V1 wrapped key targets another Provider");
+          }
+          if (keyChain == nullptr) {
+            throw std::runtime_error(
+              "NDNSF_DATA_V1 Provider has no key chain for epoch key unwrap");
+          }
+          const auto plaintext =
+            ndn_service_framework::unwrapSelectionGatedInputKey(
+              ndn::Buffer(wrapped.data(), wrapped.size()),
+              providerCertName, *keyChain);
+          return ProviderGroupBytes(plaintext.begin(), plaintext.end());
+        };
+      auto coordinator = std::make_shared<ProviderGroupCoordinator>(
+        std::move(groupOptions));
+      // Empty plaintext key forces RSA unwrap of exactly the local Provider's
+      // wrapped epoch key; the default inner authenticator is request-scoped.
+      coordinator->installCapability(std::move(capability), {}, true);
+      return coordinator;
+    };
+  // The coordinator's local key unwrap may overlap protected-grant acquisition.
+  // NativeProviderHandler joins it before binding validation or execution.
+  config.overlapGroupCoordinatorFactory = true;
 }
 
 void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)

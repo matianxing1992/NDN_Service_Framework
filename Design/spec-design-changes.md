@@ -220,9 +220,9 @@
 - **Status**: `PARTIAL`；真实 r16 仍在资源边界停止，不能视为 T003 或两 Provider 验收通过。
 - **Delta**: LocalExperiment 作为唯一 host resource supervisor；Native MiniNDN runner 接收
   `--direct-start` 后直接创建 MiniNDN，消除内层重复 supervisor。`ownedSwap` 继续写入 raw
-  resource samples 作为诊断，不再单独触发停止；`MemAvailable`、`SwapFree`、磁盘和 deadline
-  仍是硬门。该调整只改变实验编排/资源观测，不放宽 grant、ACK、Selection、Repo、assembly、
-  ORT、terminal 或 cleanup 契约。
+  resource samples 作为诊断，不再单独触发停止；`MemAvailable`、磁盘和 deadline 是硬门，
+  `SwapFree`、PSI 与 swap I/O 始终只作诊断。该调整只改变实验编排/资源观测，
+  不放宽 grant、ACK、Selection、Repo、assembly、ORT、terminal 或 cleanup 契约。
 - **Static boundary**: C++ `assembleInProcess` file-backed worker 使用
   `loadRuntimeSession=false`；Provider 父进程在 worker 完成后创建 authoritative ORT session，
   因此不新增 worker/runner 重叠层或 adapter。定向 Python 回归 `61 passed`；真实 r16 原始证据

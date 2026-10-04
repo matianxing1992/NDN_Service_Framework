@@ -1389,13 +1389,28 @@ NativeProviderRuntime::executeRoleAsyncImpl(
      {"providerBootId", role.candidateDecodeStateIdentity ?
                           role.candidateDecodeStateIdentity->providerBootId : "none"},
      {"attemptEpoch", std::to_string(role.attemptEpoch)}});
+  const bool stateful = !role.stateInputNames.empty() ||
+                        !role.stateOutputNames.empty();
   auto runner = std::move(preparedRunner);
+  if (!runner && stateful && role.inferenceEpoch > 0 &&
+      role.candidateDecodeStateIdentity) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto sessionRunner = m_sessionRunners.find(sessionRunnerKey(
+      sessionId, role.role,
+      role.candidateDecodeStateIdentity->attemptEpoch));
+    if (sessionRunner != m_sessionRunners.end()) {
+      runner = sessionRunner->second;
+    }
+  }
+  if (runner) {
+    // A resumed conversation may have restored the original adapter runner.
+    // Keep that exact runner for every later decode epoch in this attempt.
+    prepareRunner = {};
+  }
   if (!runner && !prepareRunner) {
     runner = findRunner(role.role);
   }
   const auto runnerSpec = findRunnerSpec(role.role);
-  const bool stateful = !role.stateInputNames.empty() ||
-                        !role.stateOutputNames.empty();
   std::optional<KvStateBinding> stateBinding;
   std::optional<KvStateBinding> predecessorBinding;
   std::optional<ConversationStateBinding> conversationBinding;
@@ -1448,8 +1463,9 @@ NativeProviderRuntime::executeRoleAsyncImpl(
         throw std::runtime_error("PROVIDER_CONVERSATION_STATE_MISSING");
       }
       conversationBinding = std::move(requested);
-      if (const auto adapterState = m_conversationStateStore.adapterHandle(
-            *conversationBinding, role.conversationStateLookupNowMs)) {
+      const auto adapterState = m_conversationStateStore.adapterHandle(
+        *conversationBinding, role.conversationStateLookupNowMs);
+      if (adapterState) {
         // A committed adapter entry owns the exact runner that created its
         // state.  Rebind that runner before restore; invoking the
         // post-Selection preparation callback here would assemble a second
@@ -1463,6 +1479,20 @@ NativeProviderRuntime::executeRoleAsyncImpl(
           m_conversationStateStore.unpin(*conversationBinding);
           conversationBinding.reset();
           throw std::runtime_error("PROVIDER_CONVERSATION_STATE_MISSING");
+        }
+        if (role.generationLineage) {
+          std::ostringstream reuseRecord;
+          reuseRecord << "NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_HIT"
+                      << " status=observed requestId="
+                      << role.candidateDecodeStateIdentity->requestId
+                      << " attemptEpoch="
+                      << role.candidateDecodeStateIdentity->attemptEpoch
+                      << " provider="
+                      << role.candidateDecodeStateIdentity->providerIdentity
+                      << " role=" << role.role
+                      << " planDigest=" << role.generationLineage->planDigest
+                      << " detail=live-runner";
+          logRuntimeEvidence(reuseRecord.str());
         }
         prepareRunner = {};
       }
@@ -1483,6 +1513,7 @@ NativeProviderRuntime::executeRoleAsyncImpl(
       record << "NDNSF_DI_CONVERSATION_KV_RESTORED"
              << " requestId=" << role.candidateDecodeStateIdentity->requestId
              << " role=" << role.role
+             << " statePath=" << (adapterState ? "adapter" : "tensor-bundle")
              << " parentContextEpoch=" << conversationBinding->contextEpoch
              << " prefixTokenCount=" << conversationBinding->identity.prefixTokenCount;
       logRuntimeEvidence(record.str());
@@ -1564,7 +1595,11 @@ NativeProviderRuntime::executeRoleAsyncImpl(
         if (executionGuard) executionGuard();
         if (result.runner) {
           std::lock_guard<std::mutex> lock(m_mutex);
-          m_sessionRunners[sessionRunnerKey(stateSessionId, role.role)] =
+          const auto attemptEpoch = role.candidateDecodeStateIdentity
+            ? role.candidateDecodeStateIdentity->attemptEpoch
+            : role.attemptEpoch;
+          m_sessionRunners[sessionRunnerKey(
+            stateSessionId, role.role, attemptEpoch)] =
             result.runner;
         }
         TensorBundle state;
@@ -1703,7 +1738,8 @@ NativeProviderRuntime::stageDecodeStatePromotion(
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     const auto sessionRunner = m_sessionRunners.find(
-      sessionRunnerKey(sessionId, role.role));
+      sessionRunnerKey(sessionId, role.role,
+                       role.candidateDecodeStateIdentity->attemptEpoch));
     if (sessionRunner != m_sessionRunners.end()) {
       runner = sessionRunner->second;
     }
@@ -1714,7 +1750,10 @@ NativeProviderRuntime::stageDecodeStatePromotion(
       }
     }
   }
-  if (runner && runner->supportsConversationStateTransfer()) {
+  const bool supportsAdapterConversationState =
+    runner && runner->supportsConversationStateTransfer();
+  const char* promotionStatePath = "tensor-bundle";
+  if (supportsAdapterConversationState) {
     const auto conversationKey = conversationPromotionKey(promotionBinding);
     const auto adapterState = runner->promoteSessionStateToConversation(
       sessionId, conversationKey);
@@ -1727,6 +1766,7 @@ NativeProviderRuntime::stageDecodeStatePromotion(
       }
       return false;
     }
+    promotionStatePath = "adapter";
   }
   else {
     auto state = m_decodeStateStore.lookup(sourceBinding);
@@ -1756,6 +1796,14 @@ NativeProviderRuntime::stageDecodeStatePromotion(
       return false;
     }
   }
+  std::ostringstream record;
+  record << "NDNSF_DI_CONVERSATION_STATE event=promotion-staged"
+         << " requestId=" << promotionBinding.identity.requestId
+         << " role=" << role.role
+         << " statePath=" << promotionStatePath
+         << " runnerAvailable=" << (runner ? "true" : "false")
+         << " adapterTransfer=" << (supportsAdapterConversationState ? "true" : "false");
+  logRuntimeEvidence(record.str());
   return true;
 }
 
@@ -1796,7 +1844,8 @@ NativeProviderRuntime::commitStagedDecodeStatePromotion(
     std::lock_guard<std::mutex> lock(m_mutex);
     m_stagedConversationPromotions.erase(key);
     m_sessionRunners.erase(sessionRunnerKey(
-      staged.sessionId, staged.role.role));
+      staged.sessionId, staged.role.role,
+      staged.role.candidateDecodeStateIdentity->attemptEpoch));
   }
   m_conversationStateStore.noteRequestLocalRelease();
   return true;
@@ -1843,7 +1892,8 @@ NativeProviderRuntime::commitStagedDecodeStatePromotion(
     std::lock_guard<std::mutex> lock(m_mutex);
     m_stagedConversationPromotions.erase(key);
     m_sessionRunners.erase(sessionRunnerKey(
-      staged.sessionId, staged.role.role));
+      staged.sessionId, staged.role.role,
+      staged.role.candidateDecodeStateIdentity->attemptEpoch));
   }
   m_conversationStateStore.noteRequestLocalRelease();
   return true;
@@ -1899,9 +1949,11 @@ NativeProviderRuntime::conversationPromotionKey(
 
 std::string
 NativeProviderRuntime::sessionRunnerKey(const std::string& sessionId,
-                                        const std::string& role)
+                                        const std::string& role,
+                                        std::uint64_t attemptEpoch)
 {
-  return sessionId + '\x1f' + role;
+  return sessionId + '\x1f' + role + '\x1f' +
+         std::to_string(attemptEpoch);
 }
 
 bool
@@ -1992,22 +2044,35 @@ bool
 NativeProviderRuntime::releaseDecodeState(const std::string& sessionId,
                                           const std::string& role)
 {
-  std::shared_ptr<NativeModelRunner> runner;
+  std::vector<std::shared_ptr<NativeModelRunner>> runners;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
-    const auto found = m_runners.find(role);
-    if (found != m_runners.end()) {
-      runner = found->second;
+    const auto prefix = sessionId + '\x1f' + role + '\x1f';
+    for (auto found = m_sessionRunners.begin();
+         found != m_sessionRunners.end();) {
+      if (found->first.compare(0, prefix.size(), prefix) == 0) {
+        const auto duplicate = std::find_if(
+          runners.begin(), runners.end(), [&] (const auto& runner) {
+            return runner.get() == found->second.get();
+          });
+        if (duplicate == runners.end()) {
+          runners.push_back(found->second);
+        }
+        found = m_sessionRunners.erase(found);
+      }
+      else {
+        ++found;
+      }
     }
-    const auto sessionFound = m_sessionRunners.find(
-      sessionRunnerKey(sessionId, role));
-    if (sessionFound != m_sessionRunners.end()) {
-      runner = sessionFound->second;
-      m_sessionRunners.erase(sessionFound);
+    if (runners.empty()) {
+      const auto found = m_runners.find(role);
+      if (found != m_runners.end()) {
+        runners.push_back(found->second);
+      }
     }
   }
   const auto erased = m_decodeStateStore.erase(sessionId, role);
-  if (runner) {
+  for (const auto& runner : runners) {
     runner->releaseSessionState(sessionId);
   }
   return erased;

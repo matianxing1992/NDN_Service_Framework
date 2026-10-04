@@ -46,8 +46,14 @@ struct BootstrapProfile
   ndn::Name providerIdentity{ "/test/provider/spec170" };
   ndn::Name attributeAuthority{ "/test/aa/spec170" };
   ndn::Name serviceName{ "/ObjectDetection/YOLOv8" };
+  // Additional independent service permissions; empty preserves existing tests.
+  std::vector<ndn::Name> userAdditionalServices;
+  std::vector<ndn::Name> providerAdditionalServices;
   std::string trustSchemaPath{ "examples/trust-any.conf" };
   size_t providerCount = 1;
+  // Give each additional Provider Face its own event loop when a test needs
+  // to model the process boundary between MiniNDN Provider nodes.
+  bool providerFacesUseIndependentIoContexts = false;
   // Queue bridge delivery for fixtures whose sanitizer path cannot tolerate
   // synchronous DummyFace receive() re-entry. The default preserves the
   // historical inline bridge used by existing experiment selectors.
@@ -228,6 +234,7 @@ private:
   ndn::svs::SVSPubSubOptions m_svsOptions;
   std::unique_ptr<ndn::svs::SVSPubSub> m_userPubSub;
   std::unique_ptr<ndn::svs::SVSPubSub> m_providerPubSub;
+  std::vector<std::unique_ptr<boost::asio::io_context>> m_extraProviderIoContexts;
   std::vector<std::unique_ptr<ndn::DummyClientFace>> m_extraProviderFaces;
   std::vector<std::unique_ptr<ndn::svs::SVSPubSub>> m_extraProviderPubSubs;
   std::vector<std::unique_ptr<ServiceProvider>> m_extraProviders;

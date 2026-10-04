@@ -17,6 +17,7 @@ namespace {
 
 constexpr const char* REQUEST_SCHEMA = "ndnsf-di-request-envelope-v2";
 constexpr const char* PLACEMENT_PROFILE = "DI_PLACEMENT_V3";
+constexpr const char* PLACEMENT_PROFILE_V4 = "DI_PLACEMENT_V4";
 constexpr const char* UNBOUND_GRAPH_DIGEST =
   "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -193,7 +194,9 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
     ? task->get<std::string>("placement_profile",
                              task->get<std::string>("placementProfile", ""))
     : std::string{};
-  if (placement != PLACEMENT_PROFILE && taskPlacement != PLACEMENT_PROFILE) {
+  // A V4 opt-in still needs the unchanged V3 offer for whole-request fallback.
+  if (placement != PLACEMENT_PROFILE && placement != PLACEMENT_PROFILE_V4 &&
+      taskPlacement != PLACEMENT_PROFILE && taskPlacement != PLACEMENT_PROFILE_V4) {
     return std::nullopt;
   }
 

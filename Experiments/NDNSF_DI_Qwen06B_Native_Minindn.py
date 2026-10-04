@@ -390,8 +390,10 @@ def qwen_runtime_budgets(source_bytes: int, initializer_bytes: int,
             "Qwen startup budgets must be finite and within the supported bounds")
     total = source_bytes + initializer_bytes
     if total >= LARGE_MODEL_THRESHOLD_BYTES:
+        # Keep one large-object request alive long enough for the measured
+        # asymmetric artifact pull and the Provider-side assembly that follows.
         bootstrap_ms, timeout_ms, no_progress_ms, policy_ms = (
-            600000, 900000, 180000, 60000)
+            600000, 1200000, 180000, 60000)
         base_service_ms = 1200000
     else:
         bootstrap_ms, timeout_ms, no_progress_ms, policy_ms = (
@@ -871,26 +873,8 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
     eos_token_ids = manifest_eos_token_ids(model_manifest)
     state_pairs = canonical_qwen_state_successor_pairs(stages)
     roles = [str(stage["role"]) for stage in stages]
-    dependencies = []
-    for index in range(len(roles) - 1):
-        dependencies.append({
-            "producers": [roles[index]], "consumers": [roles[index + 1]],
-            "keyScope": f"pipeline-stage-{index}-to-{index + 1}",
-            "topicPrefix": TOPIC_PREFIX,
-            "objectNameTemplate": (
-                f"{{producerProvider}}{TOPIC_PREFIX}/{{sessionId}}/"
-                "{producerRole}/{consumerRole}/{sequence}"),
-            "expectedSegments": 0, "expectedBytes": 0, "required": True,
-            "segmentNaming": {"mode": "ndn-segment-component",
-                               "staticSegmentCount": 0, "dynamicFallback": True},
-            "tensors": ["hidden_states", "attention_mask", "position_ids"],
-        })
-    artifacts = []
+    prepared_names = []
     for index, stage in enumerate(stages):
-        cache_inputs = [canonical_qwen_state_name(name)
-                        for name in stage.get("cacheInputs", [])]
-        cache_outputs = [canonical_qwen_state_name(name)
-                         for name in stage.get("cacheOutputs", [])]
         input_names = [canonical_qwen_state_name(name)
                        if name.startswith(("past_", "present_")) else name
                        for name in stage["inputNames"]]
@@ -903,6 +887,59 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
         if index < len(stages) - 1 and "hidden_states_out" in output_names:
             output_names[output_names.index("hidden_states_out")] = (
                 f"{STATE_PREFIX}_s{index}_hidden_states_out")
+        prepared_names.append({"inputNames": input_names,
+                               "outputNames": output_names})
+
+    dependencies = []
+    boundaries = []
+    for index in range(len(roles) - 1):
+        producer_outputs = prepared_names[index]["outputNames"]
+        producer_inputs = set(prepared_names[index]["inputNames"])
+        consumer_input_names = prepared_names[index + 1]["inputNames"]
+        consumer_inputs = set(consumer_input_names)
+        boundary_tensors = [
+            name for name in producer_outputs
+            if name in consumer_inputs and
+            not name.startswith(("past_key_values.", "past_", "present."))
+        ]
+        # These token-level inputs are carried through the pipeline when both
+        # adjacent stages consume them, even if the ONNX output names do not
+        # repeat them at the stage boundary.
+        for name in ("attention_mask", "position_ids"):
+            if (name in producer_inputs and name in consumer_inputs and
+                    name not in boundary_tensors):
+                boundary_tensors.append(name)
+        if boundary_tensors:
+            consumer_scope_names = boundary_tensors
+        else:
+            # Keep the historical exporter contract for manifests whose stage
+            # boundary uses semantic aliases instead of identical ONNX names.
+            boundary_tensors = ["hidden_states", "attention_mask", "position_ids"]
+            consumer_scope_names = [
+                f"{STATE_PREFIX}_s{index}_hidden_states_out",
+                "attention_mask", "position_ids"]
+        boundaries.append((boundary_tensors, consumer_scope_names))
+        dependencies.append({
+            "producers": [roles[index]], "consumers": [roles[index + 1]],
+            "keyScope": f"pipeline-stage-{index}-to-{index + 1}",
+            "topicPrefix": TOPIC_PREFIX,
+            "objectNameTemplate": (
+                f"{{producerProvider}}{TOPIC_PREFIX}/{{sessionId}}/"
+                "{producerRole}/{consumerRole}/{sequence}"),
+            "expectedSegments": 0, "expectedBytes": 0, "required": True,
+            "segmentNaming": {"mode": "ndn-segment-component",
+                               "staticSegmentCount": 0, "dynamicFallback": True},
+            "tensors": boundary_tensors,
+        })
+    artifacts = []
+    for index, stage in enumerate(stages):
+        cache_inputs = [canonical_qwen_state_name(name)
+                        for name in stage.get("cacheInputs", [])]
+        cache_outputs = [canonical_qwen_state_name(name)
+                         for name in stage.get("cacheOutputs", [])]
+        input_names = prepared_names[index]["inputNames"]
+        output_names = prepared_names[index]["outputNames"]
+        outgoing_tensors = boundaries[index][0] if index < len(boundaries) else []
         metadata = {
             "inputNames": ",".join(input_names),
             "outputNames": ",".join(output_names),
@@ -912,7 +949,8 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
             "deviceId": "cpu0",
             "dtype": str(model_manifest.get("dtype", "float32")),
             "quantization": quantization,
-            "passthroughTensors": "attention_mask,position_ids",
+            "passthroughTensors": ",".join(
+                name for name in outgoing_tensors if name in input_names),
             "kvTensorMap": ",".join(
                 f"{a}={b}" for a, b in state_pairs
                 if a in cache_inputs and b in cache_outputs),
@@ -931,8 +969,7 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
             "tokenizerDigest": tokenizer_digest,
         }
         if index > 0:
-            for name in (f"{STATE_PREFIX}_s{index - 1}_hidden_states_out",
-                         "attention_mask", "position_ids"):
+            for name in boundaries[index - 1][1]:
                 metadata[f"inputScope.{name}"] = f"pipeline-stage-{index - 1}-to-{index}"
         artifacts.append({
             "role": stage["role"], "path": stage["path"],
@@ -975,19 +1012,29 @@ def stage_plan_and_manifest(output: Path, model_manifest: dict, stages: list[dic
     return plan_path, manifest_path
 
 
-def policy_text(provider_names: list[str]) -> str:
-    entries = "".join(
-        " provider-policy\n {\n  for %s\n  allow { %s\n  %s/ROLE/LLM/Pipeline/Stage/%d }\n }\n"
-        % (name, SERVICE, SERVICE, index)
-        for index, name in enumerate(provider_names))
+def policy_text(provider_names: list[str], stage_roles: list[str],
+                provider_role_mode: str) -> str:
+    if provider_role_mode not in {"stage", "all"}:
+        raise ValueError("invalid provider role mode")
+    entries = []
+    for index, name in enumerate(provider_names):
+        roles = stage_roles if provider_role_mode == "all" else [stage_roles[index]]
+        grants = [SERVICE, "/NDNSF/Network/Probe/v1",
+                  *(SERVICE + "/ROLE" + role for role in roles)]
+        entries.append(
+            " provider-policy\n {\n  for %s\n  allow { %s }\n }\n"
+            % (name, "\n  ".join(grants)))
     return (f"name {CONTROLLER}/NDNSF/ControllerPolicy/v1\n\n"
             "provider-policies\n{\n provider-policy\n {\n  for " + AUTHORITY
-            + "\n  allow { /HELLO }\n }\n" + entries + "}\n\n"
+            + "\n  allow { /HELLO }\n }\n" + "".join(entries) + "}\n\n"
             "user-policies\n{\n user-policy\n {\n  for " + USER
-            + "\n  allow { " + SERVICE + "\n  /HELLO }\n }\n}\n")
+            + "\n  allow { " + SERVICE
+            + "\n  /NDNSF/Network/Probe/v1\n  /HELLO }\n }\n}\n")
 
 
-def env_for(home: Path, node: str) -> dict[str, str]:
+def env_for(home: Path, node: str, *,
+            require_snapshot_evidence: bool = False,
+            requester_publication_root: Path | None = None) -> dict[str, str]:
     env = {"HOME": str(home), "NDN_CLIENT_CONF": str(home / ".ndn/client.conf"),
            "NDN_CLIENT_PIB": "pib-sqlite3:" + str(home / "pib"),
            "NDN_CLIENT_TPM": "tpm-file:" + str(home / "tpm"),
@@ -1003,11 +1050,12 @@ def env_for(home: Path, node: str) -> dict[str, str]:
         "NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC", "")
     if protected_dataflow_diagnostic:
         env["NDNSF_DI_PROTECTED_DATAFLOW_DIAGNOSTIC"] = protected_dataflow_diagnostic
-    # Native planner timing includes the grant lease acquire/hit boundary.
-    # Keep it enabled with phase timing so a normal run can prove reuse rather
-    # than relying only on a focused unit test; an explicit host value still
-    # permits a diagnostic caller to disable it.
+    # Native planner timing includes the grant lease acquire/hit boundary and
+    # the V4 snapshot freshness record. A qualification run must not let a
+    # host override suppress that record; other diagnostic runs may opt out.
     env["NDNSF_DI_RUNTIME_TIMING"] = os.environ.get("NDNSF_DI_RUNTIME_TIMING", "1")
+    if require_snapshot_evidence:
+        env["NDNSF_DI_RUNTIME_TIMING"] = "1"
     dependency_trace = os.environ.get("NDNSF_DI_DEPENDENCY_OBJECT_TRACE", "")
     if dependency_trace:
         env["NDNSF_DI_DEPENDENCY_OBJECT_TRACE"] = dependency_trace
@@ -1030,6 +1078,8 @@ def env_for(home: Path, node: str) -> dict[str, str]:
     # evidence table.  Keep timing collection enabled for every normal run;
     # an explicit host value still permits a diagnostic caller to disable it.
     env["NDNSF_PHASE_TIMING"] = os.environ.get("NDNSF_PHASE_TIMING", "1")
+    if requester_publication_root is not None:
+        env["NDNSF_REQUEST_LARGE_DATA_DIR"] = str(requester_publication_root.resolve())
     return env
 
 
@@ -1430,14 +1480,126 @@ def _round_fields(line: str, marker: str) -> dict | None:
     return fields
 
 
+def provider_role_argument(stage_role: str, role_mode: str) -> str:
+    if role_mode == "all":
+        return "all"
+    if role_mode == "stage" and stage_role:
+        return stage_role
+    raise ValueError("invalid provider role mode")
+
+
+def _wait_for_flexible_provider_round_barrier(request_text: str, provider_offsets: dict,
+                                               placement: dict, expected_roles: list[str],
+                                               tail_role: str, deadline: float) -> dict:
+    if (set(provider_offsets) != set(placement) or not placement or not expected_roles or
+            len(set(expected_roles)) != len(expected_roles) or tail_role not in expected_roles):
+        raise RuntimeError("Provider barrier invalid flexible placement")
+    success, committed = [], []
+    for line in request_text.splitlines(keepends=True):
+        if not line.endswith("\n"):
+            continue
+        for marker, records in (("NATIVE_REQUEST_SUCCEEDED", success),
+                                ("NDNSF_DI_NATIVE_SELECTION_COMMITTED", committed)):
+            fields = _round_fields(line, marker)
+            if fields is not None:
+                records.append(fields)
+    if len(success) != 1 or len(committed) != 1:
+        raise RuntimeError("Provider barrier missing/conflicting requester identity")
+    selected = committed[0]
+    identity = {key: selected.get(key, "")
+                for key in ("requestId", "planDigest", "attemptEpoch")}
+    if (not all(identity.values()) or not identity["attemptEpoch"].isdigit() or
+            int(identity["attemptEpoch"]) <= 0 or
+            success[0].get("request") != identity["requestId"] or
+            success[0].get("plan") != identity["planDigest"]):
+        raise RuntimeError("Provider barrier requester/Selection identity mismatch")
+    expected = set(expected_roles)
+    while True:
+        logs = {}
+        for path, (device, inode, offset, partial) in provider_offsets.items():
+            with path.open("rb") as stream:
+                stat = os.fstat(stream.fileno())
+                if (stat.st_dev, stat.st_ino) != (device, inode) or stat.st_size < offset:
+                    raise RuntimeError("Provider barrier log replaced/truncated")
+                stream.seek(offset)
+                raw = stream.read()
+            if partial:
+                raw = raw.partition(b"\n")[2]
+            logs[path] = raw[:raw.rfind(b"\n") + 1].decode("utf-8", errors="strict").splitlines()
+        for lines in logs.values():
+            for line in lines:
+                if ("NDNSF_DI_NATIVE_FAILURE " in line or
+                        ("NDNSF_DI_PROVIDER_STAGE " in line and
+                         "status=failed" in line.split())):
+                    raise RuntimeError("Provider barrier terminal failure: " + line)
+
+        assigned = {}
+        completed = {}
+        terminal_roles = set()
+        providers_by_path = {path: pair[0] for path, pair in placement.items()}
+        for path, lines in logs.items():
+            provider = providers_by_path[path]
+            for line in lines:
+                selection = _round_fields(line, "NDNSF_DI_NATIVE_SELECTION_ACCEPTED")
+                stage = _round_fields(line, "NDNSF_DI_PROVIDER_STAGE")
+                if selection is None and (stage is None or
+                                          stage.get("stage") not in
+                                          ("EXECUTION_COMPLETED", "TERMINAL")):
+                    continue
+                fields = selection if selection is not None else stage
+                if fields.get("requestId") != identity["requestId"]:
+                    continue
+                if (any(fields.get(key) != value for key, value in identity.items()) or
+                        fields.get("provider") != provider or
+                        fields.get("role") not in expected):
+                    raise RuntimeError("Provider barrier conflicting Provider identity: " + line)
+                role = fields["role"]
+                if selection is not None:
+                    if role in assigned:
+                        raise RuntimeError("Provider barrier duplicate Selection role")
+                    assigned[role] = {"provider": provider, "path": path}
+                    continue
+                if role not in assigned or assigned[role]["path"] != path:
+                    raise RuntimeError("Provider barrier completion before Selection")
+                status = fields.get("status")
+                if fields["stage"] == "EXECUTION_COMPLETED":
+                    if role in completed or status not in ("observed", "stopped"):
+                        raise RuntimeError("Provider barrier conflicting completion")
+                    if role == tail_role and status != "observed":
+                        raise RuntimeError("Provider barrier tail stopped")
+                    completed[role] = status
+                else:
+                    if (role != tail_role or completed.get(role) != "observed" or
+                            role in terminal_roles or status != "observed"):
+                        raise RuntimeError("Provider barrier conflicting/out-of-order terminal")
+                    terminal_roles.add(role)
+        if (set(assigned) == expected and set(completed) == expected and
+                tail_role in terminal_roles):
+            roles = {role: {"provider": assigned[role]["provider"],
+                            "completionStatus": completed[role],
+                            "terminalObserved": role in terminal_roles}
+                     for role in expected_roles}
+            return {"observation": "finalization-only", **identity, "roles": roles}
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Provider barrier timeout waiting for Provider round finalization")
+        time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+
+
 def wait_for_provider_round_barrier(request_text: str, provider_offsets: dict,
                                     placement: dict, tail_role: str,
-                                    deadline: float) -> dict:
+                                    deadline: float, *,
+                                    allow_role_reassignment: bool = False,
+                                    expected_roles: list[str] | None = None) -> dict:
     """Observe finalization only; stopped is NOT a behavior/qualification PASS.
 
     placement maps each log to its expected (provider, role). The caller owns
     requester exit/checkpoint validation and the unchanged C++ oracle.
     """
+    if allow_role_reassignment:
+        if expected_roles is None:
+            raise RuntimeError("Provider barrier expected roles are required")
+        return _wait_for_flexible_provider_round_barrier(
+            request_text, provider_offsets, placement, expected_roles, tail_role, deadline)
     if (set(provider_offsets) != set(placement) or not placement or
             len({pair[1] for pair in placement.values()}) != len(placement) or
             sum(pair[1] == tail_role for pair in placement.values()) != 1):
@@ -1566,6 +1728,15 @@ def main(argv=None, *, _supervised=False) -> int:
     parser.add_argument("--tokenizer-sha256", default=None)
     parser.add_argument("--stage-nodes", default="ucla,arizona",
                         help="execution nodes in stage order; defaults to the two-provider Qwen profile")
+    parser.add_argument("--probe-validation-bandwidth-mbps", type=int, choices=(1, 4, 10),
+                        help="Opt-in controlled links with MTU HTB burst for probe scoring validation")
+    parser.add_argument("--placement-strategy",
+                        choices=("fixed", "native-pre-split-first",
+                                 "native-observation-aware-v4"),
+                        default="fixed",
+                        help="fixed role map for legacy runs, or a registered production strategy")
+    parser.add_argument("--provider-role-mode", choices=("stage", "all"), default="stage",
+                        help="limit Providers to their stage role or let each serve all manifest roles")
     parser.add_argument("--controller-node", default="memphis")
     parser.add_argument("--user-node", default="neu")
     parser.add_argument("--build", type=Path, default=ROOT / "build-spec184-b5-candidate-r4")
@@ -2014,6 +2185,19 @@ def main(argv=None, *, _supervised=False) -> int:
     all_state_outputs = [canonical_qwen_state_name(name)
                          for stage in stages
                          for name in stage.get("cacheOutputs", [])]
+    input_ids = (parse_csv_ints(args.input_token_ids)
+                 if args.input_token_ids else list(DEFAULT_QWEN_INPUT_TOKEN_IDS))
+    input_payload = tensor_bundle(input_ids)
+    transfer_profile = None
+    if MODEL_FAMILY == "qwen":
+        from native_qwen_transfer_profile import initial_transfer_profile
+        try:
+            transfer_profile = initial_transfer_profile(
+                source_path, source_digest, node_mapping, stages, ranges,
+                input_payload, len(input_ids))
+        except (ValueError, KeyError, TypeError, ImportError) as error:
+            print(f"SPEC196_TRANSFER_PROFILE_UNKNOWN reason={type(error).__name__}:{error}",
+                  flush=True)
     catalog = {
         "schema": "ndnsf-di-native-request-catalog-v1", "model": model_descriptor,
         "source": {"data_name": f"/catalog/{MODEL_FAMILY}/source", "digest": source_digest,
@@ -2054,19 +2238,18 @@ def main(argv=None, *, _supervised=False) -> int:
         "node_mapping": node_mapping,
         "state_inputs": state_inputs,
         "state_outputs": state_outputs,
+        **({"request_transfer_profiles": [transfer_profile]} if transfer_profile else {}),
     }
     requester_dir = run_root / "requester"
     catalog_path = requester_dir / "catalog.json"
     catalog_path.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n")
-    input_ids = (parse_csv_ints(args.input_token_ids)
-                 if args.input_token_ids else list(DEFAULT_QWEN_INPUT_TOKEN_IDS))
-    (requester_dir / "input.bin").write_bytes(tensor_bundle(input_ids))
+    (requester_dir / "input.bin").write_bytes(input_payload)
     delta_ids = (parse_csv_ints(args.delta_token_ids)
                  if args.delta_token_ids else list(DEFAULT_QWEN_DELTA_TOKEN_IDS))
     (requester_dir / "delta.bin").write_bytes(tensor_bundle(delta_ids))
     policy = run_root / "policy.conf"
-    policy.write_text(policy_text(provider_names))
-    (run_root / "trust-schema.conf").write_text((ROOT / "examples/trust-schema.conf").read_text())
+    policy.write_text(policy_text(
+        provider_names, [stage["role"] for stage in stages], args.provider_role_mode))
     authority_dir = run_root / "authority"; authority_dir.mkdir()
     provider_dirs = []
     for index in range(len(stages)):
@@ -2109,6 +2292,9 @@ def main(argv=None, *, _supervised=False) -> int:
         subprocess.run(prefix + f" cert-dump -i {shlex.quote(identity)} > {shlex.quote(str(cert))}",
                        shell=True, check=True)
         certs[identity] = cert
+    from native_probe_validation_links import render_anchored_probe_validation_schema
+    anchored_schema = render_anchored_probe_validation_schema(APP_ROOT, certs.values())
+    (run_root / "trust-schema.conf").write_text(anchored_schema)
     for node, home in homes.items():
         shutil.copytree(bootstrap_home / "pib", home / "pib", dirs_exist_ok=True)
         shutil.copytree(bootstrap_home / "tpm", home / "tpm", dirs_exist_ok=True)
@@ -2226,7 +2412,7 @@ def main(argv=None, *, _supervised=False) -> int:
                 artifact["materialization"] = "post-selection-canonical-assembly"
         (directory / "manifest.json").write_text(
             json.dumps(provider_manifest, indent=2, sort_keys=True) + "\n")
-        (directory / "trust-schema.conf").write_text((ROOT / "examples/trust-schema.conf").read_text())
+        (directory / "trust-schema.conf").write_text(anchored_schema)
         (directory / "authority-public.pem").write_bytes(auth_public.read_bytes())
         (directory / "trust-root-registry-v1.json").write_text(
             json.dumps(authority_registry, indent=2, sort_keys=True) + "\n")
@@ -2293,34 +2479,38 @@ def main(argv=None, *, _supervised=False) -> int:
                      "max_reentries": 1, "no_progress_ms": runtime_budgets["no_progress_ms"],
                      "timeout_ms": runtime_budgets["timeout_ms"],
                      "ack_timeout_ms": runtime_budgets["ack_timeout_ms"],
-                     "options_file": "options.json"},
-        # Keep the two-node Qwen experiment deterministic: each published
-        # pipeline stage is bound to its corresponding Provider.  The native
-        # requester still resolves this through Runtime's registered custom
-        # strategy, so the generic strategy remains available to other users.
-        "fixed_placement": {"role_providers": {
-            stage["role"]: provider_names[index]
-            for index, stage in enumerate(stages)}},
+                     "options_file": "options.json",
+                     **({"placement_strategy": args.placement_strategy}
+                        if args.placement_strategy != "fixed" else {}),
+                     **({"placement_score_mode": "network-only"}
+                        if args.placement_strategy == "native-observation-aware-v4" else {})},
+        # Preserve the existing deterministic profile by default.  A/B runs
+        # can instead select either registered production strategy per request.
+        **({"fixed_placement": {"role_providers": {
+                stage["role"]: provider_names[index]
+                for index, stage in enumerate(stages)}}}
+           if args.placement_strategy == "fixed" else {}),
         "conversation": {"schema": "ndnsf-di-native-conversation-v1",
-                          "journal": {"state_root": "conversation-state", "identity": f"{MODEL_FAMILY}-user",
-                                      "keys": [{"id": "active", "file": "conversation.key"}],
-                                      "quota_bytes": NATIVE_CONVERSATION_JOURNAL_MAX_BYTES},
-                          "owner": {"requester_identity": USER, "service_name": SERVICE,
-                                    "security_domain_digest": digest_text(f"{MODEL_FAMILY}-security")},
-                          "turn": {"conversation_id": f"{MODEL_FAMILY}-minindn-conversation",
-                                   "parent_context_epoch": 0, "service_name": SERVICE,
-                                   "plan_role_map_digest": role_map_digest,
-                                   "retention_deadline_ms": int(time.time() * 1000) + runtime_budgets["retention_ms"],
-                                   "mode": "FULL_CONTEXT", "generation_id": "0123456789abcdef0123456789abcdef",
-                                   "canonical_token_ids": input_ids,
-                                   "expected_roles": [stage["role"] for stage in stages]},
+                           "journal": {"state_root": "conversation-state", "identity": f"{MODEL_FAMILY}-user",
+                                       "keys": [{"id": "active", "file": "conversation.key"}],
+                                       "quota_bytes": NATIVE_CONVERSATION_JOURNAL_MAX_BYTES},
+                           "owner": {"requester_identity": USER, "service_name": SERVICE,
+                                     "security_domain_digest": digest_text(f"{MODEL_FAMILY}-security")},
+                           "turn": {"conversation_id": f"{MODEL_FAMILY}-minindn-conversation",
+                                    "parent_context_epoch": 0, "service_name": SERVICE,
+                                    **({"plan_role_map_digest": role_map_digest,
+                                        "expected_roles": [stage["role"] for stage in stages]}
+                                       if args.placement_strategy == "fixed" else {}),
+                                    "retention_deadline_ms": int(time.time() * 1000) + runtime_budgets["retention_ms"],
+                                    "mode": "FULL_CONTEXT", "generation_id": "0123456789abcdef0123456789abcdef",
+                                    "canonical_token_ids": input_ids},
                           "checkpoint_output_file": "conversation-state.json"},
     }
     (requester_dir / "requester-private.pem").write_bytes(req_private.read_bytes())
     (requester_dir / "authority-public.pem").write_bytes(auth_public.read_bytes())
     (requester_dir / "conversation.key").write_bytes(os.urandom(32))
     (requester_dir / "conversation.key").chmod(0o600)
-    (requester_dir / "trust-schema.conf").write_text((ROOT / "examples/trust-schema.conf").read_text())
+    (requester_dir / "trust-schema.conf").write_text(anchored_schema)
     (requester_dir / "options.json").write_text(json.dumps({
         "useCache": True, "outputMode": "TOKEN_STREAMING",
         "generationId": "0123456789abcdef0123456789abcdef",
@@ -2413,6 +2603,10 @@ def main(argv=None, *, _supervised=False) -> int:
             rh.addOrigin([ndn.net[node]], [provider, provider + "/KEY"])
         rh.addOrigin([ndn.net[args.user_node], *[ndn.net[node] for node in stage_nodes]], [GROUP])
         rh.calculateRoutes()
+        if args.probe_validation_bandwidth_mbps is not None:
+            from native_probe_validation_links import configure_probe_validation_links
+            configure_probe_validation_links(ndn, run_root / "probe-validation-links",
+                args.probe_validation_bandwidth_mbps, dict(zip(stage_nodes, provider_names)))
         time.sleep(max(0.0, args.routing_wait_s))
         for node in ndn.net.hosts:
             Nfdc.setStrategy(node, APP_ROOT, Nfdc.STRATEGY_MULTICAST)
@@ -2461,6 +2655,8 @@ def main(argv=None, *, _supervised=False) -> int:
         wait_for_marker(authority_proc, authority_log, ("NATIVE_GRANT_AUTHORITY_READY",), args.startup_timeout_s)
         for index, node in enumerate(stage_nodes):
             provider = provider_names[index]; directory = provider_dirs[index]
+            provider_roles = provider_role_argument(
+                stages[index]["role"], args.provider_role_mode)
             env = env_for(homes[node], node)
             env.update({"SPEC181_GRANT_AUTHORITY_PUBLIC_KEY": str(directory / "authority-public.pem"),
                         "SPEC181_PROVIDER_RECIPIENT_KEY_MAP": str(directory / "recipient-key-map.json"),
@@ -2468,7 +2664,7 @@ def main(argv=None, *, _supervised=False) -> int:
             command = (f"{shlex.quote(str(provider_binary))} --plan {shlex.quote(str(directory / 'plan.json'))} "
                        f"--manifest {shlex.quote(str(directory / 'manifest.json'))} --service {shlex.quote(SERVICE)} "
                        f"--provider {shlex.quote(provider)} --group {shlex.quote(GROUP)} --controller {shlex.quote(CONTROLLER)} "
-                       f"--trust-schema {shlex.quote(str(directory / 'trust-schema.conf'))} --roles {shlex.quote(stages[index]['role'])} "
+                       f"--trust-schema {shlex.quote(str(directory / 'trust-schema.conf'))} --roles {shlex.quote(provider_roles)} "
                        f"--serve --run-for-ms {runtime_budgets['provider_run_ms']} --artifact-cache-dir "
                        f"{shlex.quote(str(artifact_cache_root / provider_cache_namespace(provider)))} "
                        f"--repo-fetch-timeout-ms {runtime_budgets['timeout_ms']} "
@@ -2481,7 +2677,11 @@ def main(argv=None, *, _supervised=False) -> int:
             proc, log = start(node, f"provider-{index}", command, env)
             provider_logs.append(log)
             wait_for_marker(proc, log, ("NDNSF_DI_NATIVE_PROVIDER_READY", "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"), args.startup_timeout_s)
-        requester_env = env_for(homes[args.user_node], args.user_node)
+        requester_env = env_for(
+            homes[args.user_node], args.user_node,
+            requester_publication_root=run_root / "requester-publications",
+            require_snapshot_evidence=(
+                args.placement_strategy == "native-observation-aware-v4"))
         # Large canonical objects require an explicit, finite requester-side
         # IMS reservation.  Providers do not publish the canonical source and
         # retain the historical default, so this opt-in cannot enlarge every
@@ -2550,7 +2750,9 @@ def main(argv=None, *, _supervised=False) -> int:
             turn_texts = split_native_turn_logs(first_text, 1)
             (run_root / "requester-0.log").write_text(turn_texts[0])
             process_barrier = wait_for_provider_round_barrier(
-                turn_texts[0], provider_offsets, placement, tail_role, round_deadline)
+                turn_texts[0], provider_offsets, placement, tail_role, round_deadline,
+                allow_role_reassignment=args.provider_role_mode == "all",
+                expected_roles=[stage["role"] for stage in stages])
             first_provider_delta = provider_log_delta(provider_offsets)
             requester_measurement = phase_timing_summary(first_text)
             provider_measurement = {
@@ -2686,8 +2888,13 @@ def main(argv=None, *, _supervised=False) -> int:
             turn_texts = split_native_turn_logs(first_text, args.rounds)
             for round_index, turn_text in enumerate(turn_texts):
                 (run_root / f"requester-{round_index}.log").write_text(turn_text)
-            process_barrier = wait_for_provider_round_barrier(
-                turn_texts[-1], provider_offsets, placement, tail_role, round_deadline)
+            process_barriers = [
+                wait_for_provider_round_barrier(
+                    turn_text, provider_offsets, placement, tail_role, round_deadline,
+                    allow_role_reassignment=args.provider_role_mode == "all",
+                    expected_roles=[stage["role"] for stage in stages])
+                for turn_text in turn_texts
+            ]
             provider_delta = provider_log_delta(provider_offsets)
             requester_measurement = phase_timing_summary(first_text)
             provider_measurement = {
@@ -2703,8 +2910,7 @@ def main(argv=None, *, _supervised=False) -> int:
                                       "requestId": turn_request_id,
                                       "log": str(run_root / f"requester-{round_index}.log"),
                                       "output": str(output_path),
-                                      "providerFinalization": process_barrier if round_index == args.rounds - 1 else {
-                                          "observation": "covered-by-final-process-barrier"},
+                                       "providerFinalization": process_barriers[round_index],
                                       "phaseTiming": phase_timing_summary(
                                           turn_texts[round_index], turn_request_id),
                                       **output_summary})
@@ -2736,6 +2942,7 @@ def main(argv=None, *, _supervised=False) -> int:
                   "stageManifestDigest": manifest_digest, "tokenizerDigest": tokenizer_digest,
                   "topology": str(args.topology.expanduser().resolve()), "stageNodes": stage_nodes,
                   "largeDataImsLimit": large_data_ims,
+                  "largeDataDirectory": requester_env["NDNSF_REQUEST_LARGE_DATA_DIR"],
                   "runtimeBudgets": runtime_budgets,
                   "rounds": round_records,
                   "requesterPhaseTiming": requester_measurement,

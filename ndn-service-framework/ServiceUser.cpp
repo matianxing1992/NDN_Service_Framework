@@ -8808,6 +8808,17 @@ namespace ndn_service_framework
         requestMessage.setTargetProvider(provider);
         requestMessage.setStrategy(ndn_service_framework::tlv::FirstResponding);
 
+        if (forceRefill) {
+            NDN_LOG_WARN("NDNSF_DI_TARGETED_REQUEST_MODE requestId="
+                         << requestId.toUri()
+                         << " provider=" << provider.toUri()
+                         << " requestMode="
+                         << static_cast<unsigned int>(requestMessage.getRequestMode())
+                         << " forceRefill=" << forceRefill
+                         << " cachedToken=" << hasCachedTargetedToken
+                         << " refillOwner=" << refillOwner);
+        }
+
         PendingCall pendingCall;
         pendingCall.providers = {provider};
         pendingCall.serviceName = serviceName;
@@ -10856,18 +10867,25 @@ namespace ndn_service_framework
                 ackMessage.getProviderToken();
             const uint64_t ackStartUs = pendingCall->second.publishedAtUs != 0 ?
                 pendingCall->second.publishedAtUs : pendingCall->second.createdAtUs;
+            std::optional<double> measuredAckRttMs;
+            uint64_t ackObservedAtMs = 0;
             if (ackStartUs != 0 && ackReceiveUs >= ackStartUs) {
+                measuredAckRttMs =
+                    static_cast<double>(ackReceiveUs - ackStartUs) / 1000.0;
+                ackObservedAtMs = ackReceiveUs / 1000;
                 m_networkTelemetry.updateAckRtt(
                     parsedV2->providerName,
                     parsedV2->serviceName,
-                    static_cast<double>(ackReceiveUs - ackStartUs) / 1000.0);
+                    *measuredAckRttMs);
             }
             pendingCall->second.requestAcks.push_back(
                 StoredAck{parsedV2->providerName,
                           parsedV2->serviceName,
                           parsedV2->requestId,
                           ackMessage,
-                          std::move(authenticationEvidence)});
+                          std::move(authenticationEvidence),
+                          measuredAckRttMs,
+                          ackObservedAtMs});
             if (collectResponseRetryCandidate && ackMessage.getStatus()) {
                 addUniqueName(pendingCall->second.successfulAckProviders,
                               parsedV2->providerName);
@@ -11163,6 +11181,8 @@ namespace ndn_service_framework
             m_networkTelemetry.getServicePath(storedAck.providerName,
                                               storedAck.serviceName);
         candidate.authenticationEvidence = storedAck.authenticationEvidence;
+        candidate.ackRttMs = storedAck.ackRttMs;
+        candidate.ackObservedAtMs = storedAck.ackObservedAtMs;
         return candidate;
     }
 

@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -77,6 +78,17 @@ struct ProviderArtifactCacheCounters
   std::uint64_t coldBuilds = 0;
   std::uint64_t templateHits = 0;
   std::uint64_t activeLeases = 0;
+};
+
+/** Exact, read-only result for this cache owner's V4 candidate query.
+ * `complete` covers only ProviderArtifactCache; callers must combine the
+ * results from every owner in their advertised residency scope before
+ * reporting KNOWN_EMPTY.
+ */
+struct ProviderArtifactResidencyQueryV4
+{
+  bool complete = false;
+  std::vector<NativeJson> rows;
 };
 
 /** Move-only lease for one authenticated request's immutable artifact.
@@ -161,6 +173,15 @@ public:
     const NativeSelectionProjectionV3& projection,
     const NativeRequestControl& control,
     BuildWithRunner build);
+
+  /** Query this cache's bounded in-memory index without acquiring a lease,
+   * reading artifact files, touching LRU state, or changing counters.
+   */
+  ProviderArtifactResidencyQueryV4 queryPlacementResidencyV4(
+    const std::vector<NativeJson>& candidateArtifacts,
+    const std::string& processEpoch,
+    std::uint64_t capturedAtMs,
+    std::uint64_t expiresAtMs) const;
 
   // Mark an immutable entry unusable after a failed path/digest/authentication
   // check.  Active leases defer removal until their final release.

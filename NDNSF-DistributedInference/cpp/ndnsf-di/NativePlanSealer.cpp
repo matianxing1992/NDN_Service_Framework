@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
 #include <algorithm>
@@ -25,6 +26,21 @@ bool isDigest(const std::string& value)
     });
 }
 
+std::string calculateProbeScopeDigest(const NativeOfferBindingContext& context)
+{
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-placement-probe-scope-v1"},
+    {"request_id", context.requestId}, {"attempt", context.attempt},
+    {"requester_identity", context.requesterIdentity},
+    {"deadline_ms", context.deadlineMs},
+    {"service", context.serviceName}, {"model_identity_hash", context.modelDigest},
+    {"graph_digest", context.graphDigest},
+    {"candidate_set_digest", context.candidateSetDigest},
+    {"candidate_artifact_set_digest", context.candidateArtifactSetDigest},
+    {"rtt_pairs", context.allowedRttPairs},
+    {"goodput_edges", context.allowedGoodputEdges}}));
+}
+
 std::string canonicalCore(const NativePlacementPlanCore& core)
 {
   auto roles = NativeJson::array();
@@ -36,14 +52,50 @@ std::string canonicalCore(const NativePlacementPlanCore& core)
   const auto strategy = nativePlanningDigest(nativeCanonicalJson(NativeJson{
     {"name", core.strategy.name}, {"version", core.strategy.version},
     {"state", core.strategy.configurationDigest}}));
-  return nativeCanonicalJson(NativeJson{
+  auto value = NativeJson{
     {"request_id", core.requestId}, {"attempt", core.attempt},
     {"model_digest", core.modelDigest}, {"graph_digest", core.graphDigest},
     {"roles", roles}, {"provider_by_role", core.assignment.providerByRole},
     {"dependencies", nativeDependenciesJson(core.executionPlan.dependencies)},
     {"ack_closed_digest", core.ackClosedDigest}, {"strategy_digest", strategy},
     {"candidate_digest", core.candidateDigest}, {"request_contract_digest", core.requestContractDigest},
-    {"generation_contract", core.generationContract.enabled ? nativeGenerationJson(core.generationContract) : NativeJson(nullptr)}});
+    {"generation_contract", core.generationContract.enabled ? nativeGenerationJson(core.generationContract) : NativeJson(nullptr)}};
+  if (!core.placementObservationSnapshotDigest.empty()) {
+    value["placement_observation_snapshot_digest"] = core.placementObservationSnapshotDigest;
+  }
+  if (core.placementDecisionV4)
+    value["placement_decision_v4"] = *core.placementDecisionV4;
+  return nativeCanonicalJson(value);
+}
+
+void validatePlacementDecisionV4(const NativeJson& decision,
+                                 const std::string& snapshotDigest)
+{
+  if (!decision.is_object() ||
+      decision.value("schema", std::string{}) != "ndnsf-placement-decision-v4" ||
+      decision.value("policy_version", std::string{}) != "role-dag-beam-v1" ||
+      !decision.contains("snapshot_digest") ||
+      !decision.contains("status") || !decision.at("status").is_string() ||
+      !decision.contains("fallback_reason") ||
+      !decision.at("fallback_reason").is_string())
+    throw std::invalid_argument("V4 placement decision identity is incomplete");
+  const auto& boundSnapshot = decision.at("snapshot_digest");
+  if (snapshotDigest.empty()) {
+    if (!boundSnapshot.is_null() ||
+        decision.at("status").get<std::string>() != "BASELINE_FALLBACK")
+      throw std::invalid_argument("V4 baseline decision has a foreign snapshot binding");
+  }
+  else if (!boundSnapshot.is_string() ||
+           boundSnapshot.get<std::string>() != snapshotDigest ||
+           !isDigest(boundSnapshot.get<std::string>())) {
+    throw std::invalid_argument("V4 placement decision snapshot digest differs from core");
+  }
+  const auto status = decision.at("status").get<std::string>();
+  const auto reason = decision.at("fallback_reason").get<std::string>();
+  if ((status == "SCORED" && !reason.empty()) ||
+      (status == "BASELINE_FALLBACK" && reason.empty()) ||
+      (status != "SCORED" && status != "BASELINE_FALLBACK"))
+    throw std::invalid_argument("V4 placement decision status/reason is inconsistent");
 }
 
 std::string canonicalSealed(const NativeSealedPlan& sealed)
@@ -84,10 +136,15 @@ void NativePlacementPlanCore::validate() const
   if (requestId.empty() || attempt == 0 || !isDigest(modelDigest) ||
       !isDigest(graphDigest) || !isDigest(ackClosedDigest) ||
       !isDigest(candidateDigest) || executionPlan.roles.empty() ||
+      (!placementObservationSnapshotDigest.empty() &&
+       !isDigest(placementObservationSnapshotDigest)) ||
       !isDigest(coreDigest)) {
     throw std::invalid_argument("native placement plan core identity is incomplete");
   }
   strategy.validate();
+  if (placementDecisionV4)
+    validatePlacementDecisionV4(*placementDecisionV4,
+                                placementObservationSnapshotDigest);
   std::set<std::string> roles(executionPlan.roles.begin(), executionPlan.roles.end());
   if (roles.size() != executionPlan.roles.size() ||
       assignment.providerByRole.size() != roles.size() ||
@@ -273,6 +330,100 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   return core;
 }
 
+void NativePlanSealer::validateObservationSnapshotBinding(
+  const NativeOfferBindingContext& context,
+  const NativePlanSealingInputs& inputs,
+  const std::string& ackClosedDigest,
+  std::uint64_t nowMs)
+{
+  const auto& snapshot = context.placementObservationSnapshot;
+  if (context.placementObservationSnapshotDigest.empty()) {
+    if (!inputs.placementObservationSnapshotDigest.empty() || !snapshot.is_null())
+      throw std::invalid_argument("unbound placement observation snapshot");
+    return;
+  }
+  if (context.requestId.empty() || context.attempt == 0 ||
+      context.requesterIdentity.empty() || context.serviceName.empty() ||
+      !isDigest(context.modelDigest) || !isDigest(context.graphDigest) ||
+      !isDigest(ackClosedDigest) || !isDigest(context.candidateSetDigest) ||
+      !isDigest(context.candidateArtifactSetDigest) ||
+      !isDigest(context.probeScopeDigest) ||
+      context.probeScopeDigest != calculateProbeScopeDigest(context) ||
+      context.candidateProviders.empty() ||
+      context.candidateProviders.size() > 16 ||
+      !std::is_sorted(context.candidateProviders.begin(), context.candidateProviders.end()) ||
+      std::adjacent_find(context.candidateProviders.begin(), context.candidateProviders.end()) !=
+        context.candidateProviders.end() || context.candidateArtifacts.empty() ||
+      context.candidateArtifacts.size() > MAX_NATIVE_PLACEMENT_CANDIDATE_ARTIFACTS)
+    throw std::invalid_argument("placement observation request scope is incomplete");
+  const auto matches = [&] (const char* key, const std::string& value) {
+    return snapshot.contains(key) && snapshot.at(key).is_string() &&
+      snapshot.at(key).get<std::string>() == value;
+  };
+  if (!snapshot.is_object() || !isDigest(context.placementObservationSnapshotDigest) ||
+      inputs.placementObservationSnapshotDigest !=
+        context.placementObservationSnapshotDigest ||
+      nativePlanningDigest(nativeCanonicalJson(snapshot)) !=
+        context.placementObservationSnapshotDigest ||
+      !matches("schema", "ndnsf-placement-observation-snapshot-v4") ||
+      !matches("request_id", context.requestId) ||
+      !matches("requester_identity", context.requesterIdentity) ||
+      !matches("service", context.serviceName) ||
+      !matches("model_digest", context.modelDigest) ||
+      !matches("graph_digest", context.graphDigest) ||
+      !matches("ack_closed_digest", ackClosedDigest) ||
+      !matches("candidate_set_digest", context.candidateSetDigest) ||
+      !matches("candidate_artifact_set_digest", context.candidateArtifactSetDigest) ||
+      !matches("probe_scope_digest", context.probeScopeDigest) ||
+      !snapshot.contains("attempt") || !snapshot.at("attempt").is_number_unsigned() ||
+      snapshot.at("attempt").get<std::uint64_t>() != context.attempt ||
+      !snapshot.contains("provider_roster") ||
+      snapshot.at("provider_roster") != NativeJson(context.candidateProviders) ||
+      !snapshot.contains("rtt_pairs") ||
+      snapshot.at("rtt_pairs") != NativeJson(context.allowedRttPairs) ||
+      !snapshot.contains("goodput_edges") ||
+      snapshot.at("goodput_edges") != NativeJson(context.allowedGoodputEdges) ||
+      !snapshot.contains("candidate_artifacts") ||
+      nativeCanonicalJson(snapshot.at("candidate_artifacts")) !=
+        nativeCanonicalJson(NativeJson(context.candidateArtifacts)) ||
+      !snapshot.contains("prepared_role_graph") ||
+      !snapshot.at("prepared_role_graph").is_array() ||
+      snapshot.at("prepared_role_graph").empty() ||
+      !snapshot.contains("provider_offers") ||
+      !snapshot.at("provider_offers").is_array() ||
+      snapshot.at("provider_offers").size() != context.candidateProviders.size() ||
+      !snapshot.contains("requester_provider_samples") ||
+      !snapshot.at("requester_provider_samples").is_array() ||
+      snapshot.at("requester_provider_samples").size() !=
+        context.candidateProviders.size() ||
+      !snapshot.contains("plan_deadline_ms") ||
+      !snapshot.at("plan_deadline_ms").is_number_unsigned() ||
+      snapshot.at("plan_deadline_ms").get<std::uint64_t>() != context.deadlineMs ||
+      !snapshot.contains("captured_at_ms") ||
+      !snapshot.at("captured_at_ms").is_number_unsigned() ||
+      snapshot.at("captured_at_ms").get<std::uint64_t>() > nowMs ||
+      !snapshot.contains("expires_at_ms") ||
+      !snapshot.at("expires_at_ms").is_number_unsigned() ||
+      snapshot.at("expires_at_ms").get<std::uint64_t>() <= nowMs ||
+      snapshot.at("expires_at_ms").get<std::uint64_t>() > context.deadlineMs ||
+      inputs.expiresAtMs <= snapshot.at("captured_at_ms").get<std::uint64_t>() ||
+      inputs.expiresAtMs > context.deadlineMs || inputs.expiresAtMs <= nowMs)
+    throw std::invalid_argument("placement observation snapshot binding is invalid");
+
+  const auto& providerOffers = snapshot.at("provider_offers");
+  for (std::size_t i = 0; i < context.candidateProviders.size(); ++i) {
+    const auto& offer = providerOffers[i];
+    if (!offer.is_object() || offer.value("provider", std::string{}) !=
+          context.candidateProviders[i] ||
+        offer.value("signer_identity", std::string{}) !=
+          context.candidateProviders[i] ||
+        !isDigest(offer.value("offer_digest", std::string{})) ||
+        !isDigest(offer.value("ack_wire_digest", std::string{})) ||
+        offer.value("signer_key_locator", std::string{}).empty())
+      throw std::invalid_argument("placement observation provider roster binding is invalid");
+  }
+}
+
 
 NativePlacementPlanCore NativePlanSealer::sealCore(
   const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
@@ -297,11 +448,14 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   for (const auto& role : proposal.roles) selectedOrder.push_back(role.selectedRole);
   if (executionPlan.roles != selectedOrder)
     throw std::invalid_argument("execution role order differs from the V3 proposal");
+  validateObservationSnapshotBinding(context, inputs, proposal.ackClosedDigest,
+    static_cast<std::uint64_t>(now));
   if (proposal.ackClosedDigest != expectedAckClosedDigest || !isDigest(expectedAckClosedDigest) ||
       context.requestId != inputs.artifacts.requestId || context.attempt != inputs.artifacts.attempt ||
       context.modelDigest != model.descriptor.intentDigest() || context.graphDigest != model.graph.graphDigest ||
       inputs.artifacts.modelDigest != model.descriptor.contentDigest ||
-      context.deadlineMs != inputs.expiresAtMs || executionPlan.serviceName != context.serviceName ||
+      (inputs.placementObservationSnapshotDigest.empty() &&
+       inputs.expiresAtMs != context.deadlineMs) || executionPlan.serviceName != context.serviceName ||
       executionPlan.modelName != model.descriptor.modelName ||
       inputs.artifacts.canonicalGraphDigest != model.canonicalGraphDigest || !isDigest(candidate.candidateDigest))
     throw std::invalid_argument("V3 sealing inputs differ from the request or inspected model");
@@ -317,6 +471,8 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.requesterIdentity = inputs.requesterIdentity; core.protectionEpoch = inputs.protectionEpoch;
   core.expiresAtMs = inputs.expiresAtMs; core.requestContractDigest = inputs.requestContractDigest;
   core.generationContract = inputs.generationContract;
+  core.placementObservationSnapshotDigest = inputs.placementObservationSnapshotDigest;
+  core.placementDecisionV4 = proposal.placementDecisionV4;
   for (const auto& role : published.roles) {
     if (!core.assemblyByRole.emplace(role.selectedRole, role).second)
       throw std::invalid_argument("duplicate selected V3 execution role");

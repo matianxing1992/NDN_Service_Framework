@@ -29,6 +29,9 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <thread>
 
 namespace ndn_service_framework::test {
@@ -222,6 +225,308 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCloseBeforeAckFinish)
   BOOST_CHECK(!provider.hasPendingRequestForTokenTest(
     requesterName, serviceName, requestId));
   BOOST_CHECK_EQUAL(requestHandlerCalls.load(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(Spec194AsyncAckCarriesOuterIdentityAndCancelsOnRegistrationClose)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec194-async-ack",
+                                   "tpm-memory:spec194-async-ack");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/spec194/user/alice");
+  const ndn::Name providerName("/spec194/provider/async-ack");
+  const ndn::Name serviceName("/Inference/Spec194AsyncAck");
+  const ndn::Name requestId("/request/spec194-async-ack");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-async-ack"));
+  RegistrationCollabProvider provider(face, ndn::Name("/spec194/group"),
+                                      providerCert, aaCert,
+                                      "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName, tlv::ProviderPermission,
+                           providerName, serviceName));
+  provider.setAckThreads(1);
+
+  std::mutex completionMutex;
+  std::optional<ServiceProvider::AckRequestContext> observedContext;
+  ServiceProvider::AsyncAckCompletion retainedCompletion;
+  auto handle = provider.addScopedAsyncCollaborationHandler(
+    serviceName, std::vector<CollaborationRole>{},
+    ServiceProvider::AsyncAckStrategyHandler(
+      [&] (const ServiceProvider::AckRequestContext& context,
+           const RequestMessage&, ServiceProvider::AsyncAckCompletion complete) {
+        std::lock_guard<std::mutex> lock(completionMutex);
+        observedContext = context;
+        retainedCompletion = std::move(complete);
+      }),
+    ServiceProvider::CollaborationHandler(
+      [] (ServiceProvider::CollaborationContext&, const RequestMessage&) {}));
+
+  injectRequest(provider, requesterName, serviceName, requestId,
+                makeRequestWire("spec194-async-ack"));
+  BOOST_REQUIRE(waitUntil([&] {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    return observedContext.has_value() && static_cast<bool>(retainedCompletion);
+  }, std::chrono::seconds(2)));
+
+  ServiceProvider::AckRequestContext context;
+  ServiceProvider::AsyncAckCompletion complete;
+  {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    context = *observedContext;
+    complete = retainedCompletion;
+  }
+  BOOST_CHECK(context.requesterIdentity == requesterName);
+  BOOST_CHECK(context.serviceName == serviceName);
+  BOOST_CHECK(context.requestId == requestId);
+  BOOST_CHECK_EQUAL(context.registrationGeneration, handle.generation());
+  BOOST_CHECK(context.deadline > std::chrono::steady_clock::now());
+  BOOST_CHECK(!context.isCancelled());
+
+  handle.close();
+  BOOST_CHECK(context.isCancelled());
+  ServiceProvider::AckDecision accepted;
+  accepted.status = true;
+  accepted.message = "late async completion";
+  complete(accepted);
+  complete(accepted);
+  pumpFace(face, ndn::time::milliseconds(50));
+  BOOST_CHECK(!provider.hasPendingRequestForTokenTest(
+    requesterName, serviceName, requestId));
+}
+
+BOOST_AUTO_TEST_CASE(Spec194AsyncAckDeadlineCompletesAndCancelsRetainedHandler)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec194-async-ack-deadline",
+                                   "tpm-memory:spec194-async-ack-deadline");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/spec194/user/deadline");
+  const ndn::Name providerName("/spec194/provider/async-ack-deadline");
+  const ndn::Name serviceName("/Inference/Spec194AsyncAckDeadline");
+  const ndn::Name requestId("/request/spec194-async-ack-deadline");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-async-ack-deadline"));
+  RegistrationCollabProvider provider(face, ndn::Name("/spec194/group"),
+                                      providerCert, aaCert,
+                                      "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName, tlv::ProviderPermission,
+                           providerName, serviceName));
+  provider.setAckThreads(1);
+
+  std::mutex completionMutex;
+  std::optional<ServiceProvider::AckRequestContext> observedContext;
+  ServiceProvider::AsyncAckCompletion retainedCompletion;
+  auto handle = provider.addScopedAsyncCollaborationHandler(
+    serviceName, std::vector<CollaborationRole>{},
+    ServiceProvider::AsyncAckStrategyHandler(
+      [&] (const ServiceProvider::AckRequestContext& context,
+           const RequestMessage&, ServiceProvider::AsyncAckCompletion complete) {
+        std::lock_guard<std::mutex> lock(completionMutex);
+        observedContext = context;
+        retainedCompletion = std::move(complete);
+      }),
+    ServiceProvider::CollaborationHandler(
+      [] (ServiceProvider::CollaborationContext&, const RequestMessage&) {}));
+
+  injectRequest(provider, requesterName, serviceName, requestId,
+                makeRequestWire("spec194-async-ack-deadline"));
+  BOOST_REQUIRE(waitUntil([&] {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    return observedContext.has_value() && static_cast<bool>(retainedCompletion);
+  }, std::chrono::seconds(2)));
+
+  ServiceProvider::AckRequestContext context;
+  ServiceProvider::AsyncAckCompletion complete;
+  {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    context = *observedContext;
+    complete = retainedCompletion;
+  }
+  BOOST_CHECK(!context.isCancelled());
+  const auto latestExpected = context.deadline + std::chrono::milliseconds(100);
+  while (!context.isCancelled() &&
+         std::chrono::steady_clock::now() < latestExpected) {
+    pumpFace(face, ndn::time::milliseconds(20));
+  }
+  const auto completedAt = std::chrono::steady_clock::now();
+  BOOST_CHECK(context.isCancelled());
+  BOOST_CHECK(completedAt >= context.deadline);
+  BOOST_CHECK(completedAt <= latestExpected);
+  complete(ServiceProvider::AckDecision{});
+  pumpFace(face, ndn::time::milliseconds(50));
+  BOOST_CHECK(!provider.hasPendingRequestForTokenTest(
+    requesterName, serviceName, requestId));
+}
+
+BOOST_AUTO_TEST_CASE(Spec194AsyncAckCompletionAfterProviderDestructionIsSafe)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec194-async-ack-destroyed",
+                                   "tpm-memory:spec194-async-ack-destroyed");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/spec194/user/destroyed");
+  const ndn::Name providerName("/spec194/provider/async-ack-destroyed");
+  const ndn::Name serviceName("/Inference/Spec194AsyncAckDestroyed");
+  const ndn::Name requestId("/request/spec194-async-ack-destroyed");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-async-ack-destroyed"));
+  ServiceProvider::AsyncAckCompletion retainedCompletion;
+  {
+    RegistrationCollabProvider provider(face, ndn::Name("/spec194/group"),
+                                        providerCert, aaCert,
+                                        "examples/trust-any.conf");
+    provider.applyPermissionResponse(
+      makePermissionResponse(providerName, tlv::ProviderPermission,
+                             providerName, serviceName));
+    provider.setAckThreads(1);
+
+    std::mutex completionMutex;
+    bool handlerEntered = false;
+    auto handle = provider.addScopedAsyncCollaborationHandler(
+      serviceName, std::vector<CollaborationRole>{},
+      ServiceProvider::AsyncAckStrategyHandler(
+        [&] (const ServiceProvider::AckRequestContext&,
+             const RequestMessage&, ServiceProvider::AsyncAckCompletion complete) {
+          std::lock_guard<std::mutex> lock(completionMutex);
+          handlerEntered = true;
+          retainedCompletion = std::move(complete);
+        }),
+      ServiceProvider::CollaborationHandler(
+        [] (ServiceProvider::CollaborationContext&, const RequestMessage&) {}));
+
+    injectRequest(provider, requesterName, serviceName, requestId,
+                  makeRequestWire("spec194-async-ack-destroyed"));
+    BOOST_REQUIRE(waitUntil([&] {
+      std::lock_guard<std::mutex> lock(completionMutex);
+      return handlerEntered && static_cast<bool>(retainedCompletion);
+    }, std::chrono::seconds(2)));
+  }
+
+  BOOST_REQUIRE(static_cast<bool>(retainedCompletion));
+  ServiceProvider::AckDecision late;
+  late.status = true;
+  late.message = "completion after provider destruction";
+  retainedCompletion(std::move(late));
+  pumpFace(face, ndn::time::milliseconds(50));
+  BOOST_CHECK(true);
+}
+
+BOOST_AUTO_TEST_CASE(Spec194AsyncAckLateSuccessAfterFaceDeadlineIsNegative)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec194-async-ack-late",
+                                   "tpm-memory:spec194-async-ack-late");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/spec194/user/late");
+  const ndn::Name providerName("/spec194/provider/async-ack-late");
+  const ndn::Name serviceName("/Inference/Spec194AsyncAckLate");
+  const ndn::Name requestId("/request/spec194-async-ack-late");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-async-ack-late"));
+  RegistrationCollabProvider provider(face, ndn::Name("/spec194/group"),
+                                      providerCert, aaCert,
+                                      "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName, tlv::ProviderPermission,
+                           providerName, serviceName));
+  provider.setAckThreads(1);
+
+  std::mutex completionMutex;
+  std::optional<ServiceProvider::AckRequestContext> observedContext;
+  ServiceProvider::AsyncAckCompletion retainedCompletion;
+  auto handle = provider.addScopedAsyncCollaborationHandler(
+    serviceName, std::vector<CollaborationRole>{},
+    ServiceProvider::AsyncAckStrategyHandler(
+      [&] (const ServiceProvider::AckRequestContext& context,
+           const RequestMessage&, ServiceProvider::AsyncAckCompletion complete) {
+        std::lock_guard<std::mutex> lock(completionMutex);
+        observedContext = context;
+        retainedCompletion = std::move(complete);
+      }),
+    ServiceProvider::CollaborationHandler(
+      [] (ServiceProvider::CollaborationContext&, const RequestMessage&) {}));
+
+  std::optional<RequestAckMessage> observedAck;
+  provider.setLocalPublicationHandler(
+    [&] (const ndn::Name&, const ndn::Buffer& wire) {
+      auto [ok, block] = ndn::Block::fromBuffer(
+        ndn::span<const std::uint8_t>(wire.data(), wire.size()));
+      if (ok) {
+        RequestAckMessage ack;
+        if (ack.WireDecode(block))
+          observedAck = std::move(ack);
+      }
+    });
+  injectRequest(provider, requesterName, serviceName, requestId,
+                makeRequestWire("spec194-async-ack-late"));
+  BOOST_REQUIRE(waitUntil([&] {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    return observedContext.has_value() && static_cast<bool>(retainedCompletion);
+  }, std::chrono::seconds(2)));
+
+  ServiceProvider::AckRequestContext context;
+  ServiceProvider::AsyncAckCompletion complete;
+  {
+    std::lock_guard<std::mutex> lock(completionMutex);
+    context = *observedContext;
+    complete = retainedCompletion;
+  }
+  std::this_thread::sleep_until(context.deadline + std::chrono::milliseconds(20));
+  ServiceProvider::AckDecision lateSuccess;
+  lateSuccess.status = true;
+  lateSuccess.message = "late success must be rejected";
+  complete(std::move(lateSuccess));
+
+  pumpFace(face, ndn::time::milliseconds(50));
+  BOOST_REQUIRE(observedAck);
+  BOOST_CHECK(!observedAck->getStatus());
+  BOOST_CHECK(context.isCancelled());
+}
+
+BOOST_AUTO_TEST_CASE(Spec194AsyncAckLocalPublicationCanDestroyProvider)
+{
+  ndn::security::KeyChain keyChain("pib-memory:spec194-async-ack-local-destroy",
+                                   "tpm-memory:spec194-async-ack-local-destroy");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/spec194/user/local-destroy");
+  const ndn::Name providerName("/spec194/provider/async-ack-local-destroy");
+  const ndn::Name serviceName("/Inference/Spec194AsyncAckLocalDestroy");
+  const ndn::Name requestId("/request/spec194-async-ack-local-destroy");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(
+    keyChain, ndn::Name("/spec194/aa-async-ack-local-destroy"));
+  auto provider = std::make_unique<RegistrationCollabProvider>(
+    face, ndn::Name("/spec194/group"), providerCert, aaCert,
+    "examples/trust-any.conf");
+  provider->applyPermissionResponse(
+    makePermissionResponse(providerName, tlv::ProviderPermission,
+                           providerName, serviceName));
+  provider->setAckThreads(1);
+  auto handle = provider->addScopedAsyncCollaborationHandler(
+    serviceName, std::vector<CollaborationRole>{},
+    ServiceProvider::AsyncAckStrategyHandler(
+      [] (const ServiceProvider::AckRequestContext&,
+          const RequestMessage&, ServiceProvider::AsyncAckCompletion complete) {
+        ServiceProvider::AckDecision decision;
+        decision.status = true;
+        decision.message = "accept before local publication";
+        complete(std::move(decision));
+      }),
+    ServiceProvider::CollaborationHandler(
+      [] (ServiceProvider::CollaborationContext&, const RequestMessage&) {}));
+
+  std::atomic<bool> publicationEntered{false};
+  provider->setLocalPublicationHandler(
+    [&] (const ndn::Name&, const ndn::Buffer&) {
+      publicationEntered.store(true, std::memory_order_release);
+      provider.reset();
+    });
+  injectRequest(*provider, requesterName, serviceName, requestId,
+                makeRequestWire("spec194-async-ack-local-destroy"));
+
+  BOOST_REQUIRE(waitUntil([&] {
+    pumpFace(face, ndn::time::milliseconds(10));
+    return publicationEntered.load(std::memory_order_acquire);
+  }, std::chrono::seconds(2)));
+  BOOST_CHECK(!provider);
 }
 
 // Selector 2 (selection 换代窗口, worker 面): 真实 accept 把 R1 绑定到

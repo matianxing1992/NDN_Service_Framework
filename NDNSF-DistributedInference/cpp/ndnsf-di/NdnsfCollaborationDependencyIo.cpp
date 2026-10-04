@@ -22,7 +22,11 @@ using CollaborationTransferMetrics =
 bool
 isCanonicalYoloMergeInput(const DependencyEdge& edge)
 {
-  return edge.consumerRole == "Merge" && edge.tensors.size() == 1 &&
+  auto consumerRole = edge.consumerRole;
+  while (!consumerRole.empty() && consumerRole.front() == '/') {
+    consumerRole.erase(consumerRole.begin());
+  }
+  return consumerRole == "Merge" && edge.tensors.size() == 1 &&
     edge.tensors.front().rfind("/model/model.23/one2one_", 0) == 0;
 }
 
@@ -38,7 +42,28 @@ validateCanonicalYoloMergeInput(const DependencyEdge& edge,
       "YOLO_MERGE_DEPENDENCY_NOT_ENCODED: " + edge.tensors.front());
   }
   const auto tensors = decodeTensorBundle(bundle.payload);
-  if (tensors.size() != 1 || tensors.front().name != edge.tensors.front()) {
+  auto expectedNames = edge.bundleTensorNames.empty() ?
+    edge.tensors : edge.bundleTensorNames;
+  auto actualNames = std::vector<std::string>{};
+  actualNames.reserve(tensors.size());
+  for (const auto& tensor : tensors) {
+    actualNames.push_back(tensor.name);
+  }
+  std::sort(expectedNames.begin(), expectedNames.end());
+  std::sort(actualNames.begin(), actualNames.end());
+  auto endpointNames = edge.tensors;
+  std::sort(endpointNames.begin(), endpointNames.end());
+  if (std::adjacent_find(expectedNames.begin(), expectedNames.end()) !=
+        expectedNames.end() ||
+      std::adjacent_find(endpointNames.begin(), endpointNames.end()) !=
+        endpointNames.end() ||
+      !std::all_of(expectedNames.begin(), expectedNames.end(), [] (const auto& name) {
+        return name.rfind("/model/model.23/one2one_", 0) == 0;
+      }) ||
+      !std::all_of(endpointNames.begin(), endpointNames.end(), [&] (const auto& name) {
+        return std::binary_search(expectedNames.begin(), expectedNames.end(), name);
+      }) ||
+      actualNames != expectedNames) {
     throw std::runtime_error(
       "YOLO_MERGE_DEPENDENCY_TENSOR_SELECTION_MISMATCH: " + edge.tensors.front());
   }

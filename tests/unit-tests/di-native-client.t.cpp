@@ -201,6 +201,70 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
   BOOST_CHECK(wire.at("model").at("source_revision").is_null());
   BOOST_CHECK_EQUAL(encoded.requestContractDigest,
     nativePlanningDigest(encoded.wire.data(), encoded.wire.size()));
+  BOOST_CHECK(!wire.contains("candidate_artifacts"));
+  BOOST_CHECK(!wire.contains("candidate_providers"));
+  const auto rosterOnly = encodeNativeRequestEnvelope(model, input, contract,
+    "/request/1", 1, 10000, std::nullopt, {"/provider/1"});
+  BOOST_CHECK(rosterOnly.wire == encoded.wire);
+  NativeCandidateArtifactInventoryV4 inventory;
+  inventory.identities = NativeJson::array({NativeJson{
+    {"artifact_digest", nativePlanningDigest("request-artifact")},
+    {"model_manifest_digest", nativePlanningDigest("request-manifest")},
+    {"graph_digest", nativePlanningDigest("canonical-request-graph")},
+    {"role", "encoder"}, {"rank", 0},
+    {"backend", "onnxruntime"}, {"protection_epoch", "epoch-1"}}});
+  inventory.digest = nativePlanningDigest(nativeCanonicalJson(NativeJson(inventory.identities)));
+  NativePlacementProbeAllowlistV4 probeAllowlist;
+  const auto v4Encoded = encodeNativeRequestEnvelope(model, input, contract,
+    "/request/v4", 1, 10000, std::nullopt, {"/provider/1"}, inventory,
+    probeAllowlist, "/requester/1");
+  const auto v4Wire = NativeJson::parse(v4Encoded.wire);
+  BOOST_CHECK_EQUAL(v4Wire.at("task").at("placement_profile").get<std::string>(),
+                    "DI_PLACEMENT_V4");
+  BOOST_CHECK_EQUAL(v4Wire.at("candidate_artifacts").size(), 1U);
+  BOOST_CHECK_EQUAL(v4Wire.at("candidate_artifact_set_digest").get<std::string>(),
+                    inventory.digest);
+  BOOST_CHECK_EQUAL(v4Encoded.candidateArtifacts.size(), 1U);
+  BOOST_CHECK_EQUAL(v4Encoded.candidateArtifactSetDigest, inventory.digest);
+  BOOST_CHECK(v4Wire.at("rtt_pairs").empty());
+  BOOST_CHECK(v4Wire.at("goodput_edges").empty());
+  BOOST_CHECK_EQUAL(v4Wire.at("probe_scope_digest").get<std::string>(),
+                    v4Encoded.probeScopeDigest);
+  BOOST_CHECK_EQUAL(v4Wire.at("requester_identity").get<std::string>(), "/requester/1");
+  const auto otherRequester = encodeNativeRequestEnvelope(model, input, contract,
+    "/request/v4", 1, 10000, std::nullopt, {"/provider/1"}, inventory,
+    probeAllowlist, "/requester/2");
+  BOOST_CHECK_NE(otherRequester.probeScopeDigest, v4Encoded.probeScopeDigest);
+  const auto laterDeadline = encodeNativeRequestEnvelope(model, input, contract,
+    "/request/v4", 1, 10001, std::nullopt, {"/provider/1"}, inventory,
+    probeAllowlist, "/requester/1");
+  BOOST_CHECK_NE(laterDeadline.probeScopeDigest, v4Encoded.probeScopeDigest);
+  NativeGenerationRecovery recovery;
+  recovery.generationId = std::string(32, 'a');
+  recovery.originalRequestId = "/request/1";
+  recovery.recoveryRequestId = "/request/recovery";
+  recovery.originalInputManifestDigest = encoded.inputManifestDigest;
+  recovery.priorPlanDigest = nativePlanningDigest("prior-plan");
+  recovery.failedProvider = "/provider/1";
+  recovery.committedTokenIds = {1, 2};
+  const auto recoveryEncoded = encodeNativeRequestEnvelope(
+    model, input, contract, recovery.recoveryRequestId, 2, 10000,
+    recovery, {"/provider/1"}, inventory, probeAllowlist);
+  const auto recoveryWire = NativeJson::parse(recoveryEncoded.wire);
+  BOOST_CHECK_EQUAL(recoveryWire.at("task").at("placement_profile").get<std::string>(),
+                    "DI_PLACEMENT_V3");
+  BOOST_CHECK(!recoveryWire.contains("candidate_artifacts"));
+  BOOST_CHECK(recoveryEncoded.candidateArtifacts.empty());
+  BOOST_CHECK(recoveryEncoded.allowedRttPairs.empty());
+  BOOST_CHECK(recoveryEncoded.allowedGoodputEdges.empty());
+  BOOST_CHECK(recoveryEncoded.probeScopeDigest.empty());
+  BOOST_REQUIRE(recoveryEncoded.recovery);
+  auto mismatchedInventory = inventory;
+  mismatchedInventory.digest = nativePlanningDigest("foreign-inventory");
+  BOOST_CHECK_THROW(encodeNativeRequestEnvelope(model, input, contract,
+    "/request/v4", 1, 10000, std::nullopt, {"/provider/1"},
+    mismatchedInventory, probeAllowlist, "/requester/1"),
+    std::invalid_argument);
   NativeProviderOfferV3Config provider;
   provider.provider = "/provider/1"; provider.service = contract.serviceName;
   provider.bootEpoch = "boot-1"; provider.signerKeyId = nativePlanningDigest("key-1");
@@ -693,6 +757,35 @@ BOOST_AUTO_TEST_CASE(InvalidDeadlinesAndNegativeWaitAreRejectedWithoutSubmission
   BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(-1)), NativeDiError,
                         [](const NativeDiError& e) { return e.code() == "INVALID_WAIT_TIMEOUT"; });
   BOOST_CHECK(handle.status() == NativeRequestStatus::Pending);
+}
+
+BOOST_AUTO_TEST_CASE(PlacementRosterBoundsAreRejectedBeforeSubmission)
+{
+  auto client = NativeClientTestAccess::create(port(), user, adapters);
+  NativeApplicationInput input;
+  input.payload = {1};
+  const auto submit = [&](NativeRequestOptions options,
+                          std::shared_ptr<const NativePlacementStrategy> placement) {
+    return client->request(model, input, std::make_shared<ClientTestSplit>(),
+                           std::move(placement), options);
+  };
+
+  NativeRequestOptions options;
+  options.providerNames = {ndn::Name("/provider/a")};
+  BOOST_CHECK_EXCEPTION(
+    submit(options, std::make_shared<NativeObservationAwarePlacementV4>()),
+    NativeDiError,
+    [](const NativeDiError& error) { return error.code() == "INVALID_REQUEST"; });
+
+  options.providerNames.clear();
+  for (int index = 0; index < 17; ++index)
+    options.providerNames.emplace_back("/provider/" + std::to_string(index));
+  BOOST_CHECK_EXCEPTION(
+    submit(options, std::make_shared<NativePreSplitFirstPlacement>()),
+    NativeDiError,
+    [](const NativeDiError& error) { return error.code() == "INVALID_REQUEST"; });
+  BOOST_CHECK(work.empty());
+  BOOST_CHECK(timers.empty());
 }
 
 BOOST_AUTO_TEST_CASE(DispatchExceptionIsContainedAndRemovesTimer)

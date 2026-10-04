@@ -495,7 +495,8 @@ private:
 
   static std::string
   sessionRunnerKey(const std::string& sessionId,
-                   const std::string& role);
+                   const std::string& role,
+                   std::uint64_t attemptEpoch);
 
   mutable std::mutex m_mutex;
   std::map<std::string, std::shared_ptr<NativeModelRunner>> m_runners;

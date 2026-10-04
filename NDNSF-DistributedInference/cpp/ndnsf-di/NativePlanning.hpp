@@ -2,8 +2,10 @@
 #define NDNSF_DI_NATIVE_PLANNING_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -15,10 +17,37 @@
 
 namespace ndnsf::di {
 
+// Independent targeted probe response budget. Requests and V4 offers retain
+// their own smaller limits; Core encrypts and segments large responses.
+inline constexpr std::size_t NATIVE_PLACEMENT_PROBE_RESPONSE_MAX_BYTES = 8192;
+
 class NativeAdmittedOfferV3;
+class NativeObservationAwarePlacementV4;
 struct NativeOfferBindingContext;
 struct NativeSelectionRoleV3;
 struct NativeRolePlacementProposalV3;
+
+/** One provider-to-provider direction a placement policy wants measured. */
+struct NativePlacementProbeEdgeV1
+{
+  std::string sourceProvider;
+  std::string destinationProvider;
+};
+
+/** Exact, request-scoped measurements requested from one observer Provider. */
+struct NativePlacementProbeObserverV1
+{
+  std::string observerProvider;
+  std::vector<NativePlacementProbeEdgeV1> rttPairs;
+  std::vector<NativePlacementProbeEdgeV1> goodputEdges;
+};
+
+/** Bounded first-pass placement intent. The requester adds fresh nonce and
+ * wire bindings; strategies choose only the observers, edges, and kinds. */
+struct NativePlacementProbeIntentV1
+{
+  std::vector<NativePlacementProbeObserverV1> observers;
+};
 
 struct NativeStrategyIdentity
 {
@@ -383,11 +412,13 @@ public:
     const ExtensionControl& control) const override;
 
 private:
+  friend class NativeObservationAwarePlacementV4;
   NativeRolePlacementProposalV3 proposeRolesImpl(
     const NativeOfferBindingContext& context, const std::string& ackClosedDigest,
     const std::vector<NativeSelectionRoleV3>& roles,
     const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs,
-    const ExtensionControl* control) const;
+    const ExtensionControl* control,
+    const NativeJson* v4ProviderOffers = nullptr) const;
 
   NativeStrategyIdentity m_identity;
 };

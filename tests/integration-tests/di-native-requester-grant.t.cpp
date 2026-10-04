@@ -96,6 +96,115 @@ expectProviderConsumable(const ndn::Data& data, const std::string& publicationId
 
 BOOST_AUTO_TEST_SUITE(Spec182GrantClientFlow)
 
+BOOST_AUTO_TEST_CASE(AsyncTargetedOnlyCompletesOnceAndFencesClosedRegistration)
+{
+  NdnsfIntegrationEnvironment environment;
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.user().setUseTokens(false);
+  environment.provider().setUseTokens(false);
+  environment.provider().setHandlerThreads(0);
+  BOOST_CHECK_EQUAL(environment.provider().getHandlerThreads(), 0U);
+
+  using Completion =
+    ::ndn_service_framework::ServiceProvider::AsyncTargetedCompletion;
+  std::optional<Completion> deferredCompletion;
+  bool handlerStarted = false;
+  const auto serviceName = environment.profile().serviceName;
+  auto registration = environment.provider().addScopedTargetedService(
+    serviceName,
+    [&] (const ndn::Name& requester, const ndn::Name& provider,
+         const ndn::Name& service, const ndn::Name& requestId,
+         const ndn_service_framework::RequestMessage& request,
+         Completion completion) {
+      BOOST_CHECK_EQUAL(requester, environment.profile().userIdentity);
+      BOOST_CHECK_EQUAL(provider, environment.profile().providerIdentity);
+      BOOST_CHECK_EQUAL(service, serviceName);
+      BOOST_CHECK(!requestId.empty());
+      BOOST_CHECK_EQUAL(request.getTargetProvider(), provider);
+      handlerStarted = true;
+      deferredCompletion = std::move(completion);
+    });
+  environment.enableProductionIngressForTest();
+
+  ndn_service_framework::RequestMessage request;
+  const std::string requestText = "async-targeted-test";
+  ndn::Buffer payload(reinterpret_cast<const uint8_t*>(requestText.data()),
+                      requestText.size());
+  request.setPayload(payload, payload.size());
+  ndn_service_framework::ResponseMessage received;
+  size_t responseCount = 0;
+  bool timedOut = false;
+  const auto requestId = environment.user().RequestServiceTargeted(
+    environment.provider().getName(), serviceName, request, 3000,
+    [&] (const ndn::Name&) { timedOut = true; },
+    [&] (const ndn_service_framework::ResponseMessage& response) {
+      received = response;
+      ++responseCount;
+    });
+  BOOST_REQUIRE(!requestId.empty());
+
+  environment.pumpUntil([&] { return handlerStarted; });
+  BOOST_REQUIRE(deferredCompletion.has_value());
+  registration.close();
+
+  ::ndn_service_framework::ResponseMessage lateSuccess;
+  lateSuccess.setStatus(true);
+  const std::string responseText = "late-success";
+  ndn::Buffer responsePayload(
+    reinterpret_cast<const uint8_t*>(responseText.data()), responseText.size());
+  lateSuccess.setPayload(responsePayload, responsePayload.size());
+  (*deferredCompletion)(lateSuccess);
+  (*deferredCompletion)(lateSuccess);
+
+  environment.pumpUntil([&] { return responseCount != 0 || timedOut; });
+  BOOST_CHECK(!timedOut);
+  BOOST_CHECK_EQUAL(responseCount, 1U);
+  BOOST_CHECK(!received.getStatus());
+  BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0U);
+
+  BOOST_REQUIRE(!environment.provider().hasService(serviceName));
+  handlerStarted = false;
+  deferredCompletion.reset();
+  auto successorRegistration = environment.provider().addScopedTargetedService(
+    serviceName,
+    [&] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+         const ndn::Name&, const ndn_service_framework::RequestMessage&,
+         Completion completion) {
+      handlerStarted = true;
+      deferredCompletion = std::move(completion);
+    });
+  ::ndn_service_framework::RequestMessage successorRequest;
+  successorRequest.setPayload(payload, payload.size());
+  const auto successorRequestId = environment.user().RequestServiceTargeted(
+    environment.provider().getName(), serviceName, successorRequest, 3000,
+    [&] (const ndn::Name&) { timedOut = true; },
+    [&] (const ::ndn_service_framework::ResponseMessage& response) {
+      received = response;
+      ++responseCount;
+    });
+  BOOST_REQUIRE(!successorRequestId.empty());
+  environment.pumpUntil([&] { return handlerStarted; });
+  BOOST_REQUIRE(deferredCompletion.has_value());
+
+  ::ndn_service_framework::ResponseMessage success;
+  success.setStatus(true);
+  const std::string successText = "targeted-success";
+  ndn::Buffer successPayload(
+    reinterpret_cast<const uint8_t*>(successText.data()), successText.size());
+  success.setPayload(successPayload, successPayload.size());
+  (*deferredCompletion)(success);
+  (*deferredCompletion)(lateSuccess);
+  environment.pumpUntil([&] { return responseCount == 2 || timedOut; });
+  BOOST_CHECK(!timedOut);
+  BOOST_CHECK_EQUAL(responseCount, 2U);
+  BOOST_CHECK(received.getStatus());
+  const auto returnedPayload = received.getPayload();
+  BOOST_CHECK_EQUAL(std::string(reinterpret_cast<const char*>(returnedPayload.data()),
+                                returnedPayload.size()), successText);
+  BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(RequesterAcquirePublishesSignedExactNameDataConsumedByProviderFetch)
 {
   // Two endpoints over the fixture transport: the requester (ServiceUser)

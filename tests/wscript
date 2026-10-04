@@ -79,6 +79,7 @@ def build(bld):
         'ndn-service-framework/RequestConfidentiality.cpp',
         'ndn-service-framework/ExecutionLease.cpp',
         'ndn-service-framework/NetworkTelemetry.cpp',
+        'ndn-service-framework/NetworkProbeRate.cpp',
         'ndn-service-framework/TimelineTrace.cpp',
         'ndn-service-framework/GenericSelectionTxnStore.cpp',
         'ndn-service-framework/ControllerVersion.cpp',
@@ -523,6 +524,18 @@ def build(bld):
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Exercise the same calibration functions used by the installed tool;
+    # exclude only its runtime entry point and retain the Core estimator.
+    bld.program(target='../spec197-probe-calibration', name='spec197-probe-calibration',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec197-probe-calibration.t.cpp'),
+                        bld.path.parent.find_node('examples/DI_NetworkProbeCalibration.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use,
+                defines=['HAVE_TESTS', 'NDNSF_PROBE_CALIBRATION_NO_MAIN'],
+                cxxflags=['-fPIC', '-O0', '-g0'], linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec189 output-contract regression: keep the passthrough-aware runner
     # preparation assertion independently runnable when the aggregate unit
     # target is blocked by unrelated dirty-tree tests.
@@ -646,6 +659,25 @@ def build(bld):
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Small production-estimator oracle; avoids compiling unrelated suites.
+    bld.program(target='../spec197-network-rate', name='spec197-network-rate',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/network-probe-rate.t.cpp'),
+                        bld.path.parent.find_node('ndn-service-framework/NetworkProbeRate.cpp')],
+                includes=framework_includes, use=framework_use,
+                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec194 T001 native two-provider RTT and dedicated goodput probe oracle.
+    bld.program(target='../spec194-peer-probe', name='spec194-peer-probe',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec194-peer-probe.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec185 B0C DI delegation selector.  Link the production
     # NativeInferenceClient and the complete DI source closure.  The target
     # includes the Core-only fail-closed checks plus real Provider-backed ACK,
@@ -677,6 +709,23 @@ def build(bld):
                 includes=framework_includes,
                 use='ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec194 T008 full-path V4 composition oracle.  It shares the maintained
+    # served-Provider fixture but has a distinct binary, suite, and test case;
+    # the runner selects only FullPathV4PlacementCompletesThroughServedProvider.
+    bld.program(target='../spec194-placement-composition',
+                name='spec194-placement-composition',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndn-service-framework ndnsf-distributed-repo ' + framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
+                         'SPEC194_PLACEMENT_COMPOSITION_SELECTOR'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
@@ -832,6 +881,61 @@ def build(bld):
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec194 T002's independent V4 issuer/decoder/admission oracle.  Keep the
+    # selector small and link the same production shared-library boundary.
+    bld.program(target='../spec194-v4-offer',
+                name='spec194-v4-offer',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/spec194-v4-offer.t.cpp')],
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST OPENSSL PROTOBUF NAC-ABE NDNSD DL',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Keep the conversation restore runner-lifetime regression independently runnable.
+    bld.program(target='../spec194-conversation-session-runner',
+                name='spec194-conversation-session-runner',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/spec194-conversation-session-runner.t.cpp')],
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST OPENSSL PROTOBUF NAC-ABE NDNSD DL',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Compile the Core ACK lifetime selectors without rebuilding the full
+    # unit-test translation unit set.
+    bld.program(target='../spec194-async-ack-lifecycle',
+                name='spec194-async-ack-lifecycle',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/di-native-provider-host.t.cpp')],
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST OPENSSL PROTOBUF NAC-ABE NDNSD DL',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Keep the Core request-scope probe authorization oracle independently
+    # runnable without rebuilding the full unit-test translation unit set.
+    bld.program(target='../spec194-network-telemetry',
+                name='spec194-network-telemetry',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/network-telemetry.t.cpp')],
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST OPENSSL PROTOBUF NAC-ABE NDNSD DL',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     bld.program(target='../unit-tests',
                 name='unit-tests',
                 source=([bld.path.find_node('main.cpp')] +
@@ -853,6 +957,7 @@ def build(bld):
                             'ndn-service-framework/RequestConfidentiality.cpp',
                             'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
+                            'ndn-service-framework/NetworkProbeRate.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/GenericSelectionTxnStore.cpp',
                             'ndn-service-framework/ControllerVersion.cpp',

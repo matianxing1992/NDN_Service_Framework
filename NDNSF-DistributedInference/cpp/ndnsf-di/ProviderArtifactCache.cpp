@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <limits>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -41,6 +43,52 @@ void requireControlActive(const NativeRequestControl& control)
   control.requireActive();
   if (control.cancelled && control.cancelled())
     throw cacheError("DI_PROVIDER_ARTIFACT_CANCELLED", "request was cancelled");
+}
+
+std::optional<NativeJson>
+placementIdentity(const NativeSelectionProjectionV3& projection)
+{
+  const auto& role = projection.assembly;
+  const auto roleName = role.role.empty() ? role.selectedRole : role.role;
+  if (role.artifactDigest.empty() || role.modelManifestDigest.empty() ||
+      role.graphDigest.empty() || roleName.empty() || role.backend.empty() ||
+      role.protectionEpoch.empty())
+    return std::nullopt;
+  return NativeJson{{"artifact_digest", role.artifactDigest},
+    {"model_manifest_digest", role.modelManifestDigest},
+    {"graph_digest", role.graphDigest}, {"role", roleName},
+    {"rank", role.rank}, {"backend", role.backend},
+    {"protection_epoch", role.protectionEpoch}};
+}
+
+bool isCandidateArtifactIdentity(const NativeJson& value)
+{
+  if (!value.is_object() || value.size() != 7)
+    return false;
+  for (const auto* field : {"artifact_digest", "model_manifest_digest", "graph_digest",
+                            "role", "backend", "protection_epoch"}) {
+    if (!value.contains(field) || !value.at(field).is_string() ||
+        value.at(field).get<std::string>().empty())
+      return false;
+  }
+  const auto& rank = value.at("rank");
+  return rank.is_number_unsigned() ||
+    (rank.is_number_integer() && rank.get<std::int64_t>() >= 0);
+}
+
+bool candidateMatchesResidency(const NativeJson& candidate,
+                               const NativeJson& residency)
+{
+  for (const auto* field : {"artifact_digest", "model_manifest_digest", "graph_digest",
+                            "role", "rank", "protection_epoch"}) {
+    if (candidate.at(field) != residency.at(field))
+      return false;
+  }
+  const auto requestedBackend = candidate.at("backend").get<std::string>();
+  const auto residentBackend = residency.at("backend").get<std::string>();
+  return requestedBackend == residentBackend ||
+    residentBackend == requestedBackend + "-cpu" ||
+    residentBackend == requestedBackend + "-cuda";
 }
 
 } // namespace
@@ -114,6 +162,9 @@ struct ProviderArtifactCache::Shared
     std::string key;
     std::shared_ptr<const PreparedProviderArtifact> artifact;
     std::shared_ptr<const NativeModelRunnerSpec> runnerSpec;
+    NativeJson placementIdentity;
+    std::vector<std::string> placementDeviceSet;
+    bool hasPlacementIdentity = false;
     std::function<void()> cleanup;
     bool invalidated = false;
     std::uint64_t chargedBytes = 0;
@@ -276,6 +327,7 @@ std::uint64_t runnerTemplateBytes(const NativeModelRunnerSpec& spec)
 
 void publish(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
              const std::string& key,
+             const NativeSelectionProjectionV3& projection,
              const ProviderArtifactCache::BuildResult& result,
              std::uint64_t ownReservation)
 {
@@ -308,6 +360,17 @@ void publish(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
   ProviderArtifactCache::Shared::Entry entry;
   entry.key = key;
   entry.artifact = result.artifact;
+  if (const auto identity = placementIdentity(projection)) {
+    auto deviceSet = projection.assembly.deviceSet;
+    std::sort(deviceSet.begin(), deviceSet.end());
+    if (std::none_of(deviceSet.begin(), deviceSet.end(),
+                     [] (const std::string& device) { return device.empty(); }) &&
+        std::adjacent_find(deviceSet.begin(), deviceSet.end()) == deviceSet.end()) {
+      entry.placementIdentity = *identity;
+      entry.placementDeviceSet = std::move(deviceSet);
+      entry.hasPlacementIdentity = true;
+    }
+  }
   if (result.runnerSpec) {
     auto metadataOnly = std::make_shared<NativeModelRunnerSpec>(*result.runnerSpec);
     metadataOnly->path.clear();
@@ -616,7 +679,7 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
     std::unique_lock<std::mutex> lock(shared->mutex);
     if (shared->stopped || job->cancelled)
       throw cacheError("DI_PROVIDER_ARTIFACT_CANCELLED", "cache job was cancelled");
-    publish(shared, cacheKey, result, job->reservedBytes);
+    publish(shared, cacheKey, projection, result, job->reservedBytes);
     result.cleanup = {};
     if (shared->reservedBytes >= job->reservedBytes)
       shared->reservedBytes -= job->reservedBytes;
@@ -669,6 +732,82 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
     drainDeferredCleanups(shared);
     throw;
   }
+}
+
+ProviderArtifactResidencyQueryV4
+ProviderArtifactCache::queryPlacementResidencyV4(
+  const std::vector<NativeJson>& candidateArtifacts,
+  const std::string& processEpoch,
+  const std::uint64_t capturedAtMs,
+  const std::uint64_t expiresAtMs) const
+{
+  ProviderArtifactResidencyQueryV4 result;
+  if (candidateArtifacts.empty() || candidateArtifacts.size() > 32 ||
+      processEpoch.empty() || capturedAtMs == 0 || expiresAtMs <= capturedAtMs)
+    return result;
+
+  std::set<std::string> candidateKeys;
+  for (const auto& candidate : candidateArtifacts) {
+    if (!isCandidateArtifactIdentity(candidate) ||
+        !candidateKeys.insert(nativeCanonicalJson(candidate)).second)
+      return result;
+  }
+
+  const auto shared = m_shared;
+  if (!shared)
+    return result;
+  std::lock_guard<std::mutex> lock(shared->mutex);
+  if (shared->stopped ||
+      shared->entries.size() > shared->config.maxArtifactEntries)
+    return result;
+
+  // Every entry must carry the placement identity captured when it was
+  // published. A missing identity makes a negative answer incomplete.
+  result.complete = true;
+  for (const auto& item : shared->entries) {
+    const auto& entry = item.second;
+    if (entry.invalidated)
+      continue;
+    if (!entry.hasPlacementIdentity || !entry.artifact) {
+      result.complete = false;
+      continue;
+    }
+
+    bool matches = false;
+    for (const auto& candidate : candidateArtifacts) {
+      if (candidateMatchesResidency(candidate, entry.placementIdentity)) {
+        matches = true;
+        break;
+      }
+    }
+    if (!matches)
+      continue;
+    if (entry.artifact->formatVersion !=
+        "ndnsf-di-native-assembled-artifact-v1") {
+      result.complete = false;
+      continue;
+    }
+
+    NativeJson row = entry.placementIdentity;
+    row["device_set"] = entry.placementDeviceSet;
+    row["state"] = "ASSEMBLED";
+    row["process_epoch"] = processEpoch;
+    row["captured_at_ms"] = capturedAtMs;
+    row["expires_at_ms"] = expiresAtMs;
+    row["missing_verified_bytes"] = std::uint64_t{0};
+    row["estimated_assembly_ms"] = 0.0;
+    row["estimated_load_ms"] = nullptr;
+    row["runtime_generation"] = nullptr;
+    result.rows.push_back(std::move(row));
+  }
+
+  std::sort(result.rows.begin(), result.rows.end(), [] (const NativeJson& left,
+                                                         const NativeJson& right) {
+    return nativeCanonicalJson(left) < nativeCanonicalJson(right);
+  });
+  result.rows.erase(std::unique(result.rows.begin(), result.rows.end()),
+                    result.rows.end());
+  return result;
 }
 
 void ProviderArtifactCache::invalidate(const ProviderArtifactKey& key) noexcept

@@ -3,21 +3,24 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderResidencyV4.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ndnsf::di {
 
 /**
  * Provider-process cache for a fully constructed model runner.
  *
- * The cache key contains only the immutable model/role/backend/IO/KV
- * contract.  The caller still performs the current authorization,
- * Selection, placement and generation checks before lookup.  Protected
- * entries hold only a residency lease; request runtimes and content keys are
- * never retained by the cache.
+ * The cache key contains the immutable model/role/backend/IO/KV contract and
+ * the runner-bound output scopes and bundle tensor names. The caller still
+ * performs current authorization, Selection, placement and generation checks
+ * before lookup. Protected entries hold only a residency lease; request
+ * runtimes and content keys are never retained by the cache.
  */
 class NativeProviderRunnerReuseCache final
 {
@@ -36,6 +39,12 @@ public:
           const std::string& providerBootId,
           const std::shared_ptr<ProtectedRuntime>& protectedRuntime,
           const std::shared_ptr<NativeModelRunner>& runner);
+
+  NativeProviderResidencyOwnerResultV4 queryPlacementResidencyV4(
+    const std::vector<NativeJson>& candidateArtifacts,
+    const std::string& processEpoch,
+    std::uint64_t capturedAtMs,
+    std::uint64_t expiresAtMs) const;
 
   void
   setAuthority(const std::shared_ptr<ProtectedResidentAuthority>& authority) noexcept;

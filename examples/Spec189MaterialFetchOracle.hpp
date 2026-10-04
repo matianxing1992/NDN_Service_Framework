@@ -76,12 +76,21 @@ markers(const std::string& text)
   std::size_t lineNumber = 0;
   while (std::getline(lines, line)) {
     ++lineNumber;
-    if (line.find("NDNSF_DI_PROVIDER_STAGE") == std::string::npos) {
+    const bool providerStage =
+      line.find("NDNSF_DI_PROVIDER_STAGE") != std::string::npos;
+    const bool runnerReuse =
+      line.find("NDNSF_DI_PROVIDER_PREPARATION phase=RUNNER_REUSE_HIT") !=
+      std::string::npos;
+    if (!providerStage && !runnerReuse) {
       continue;
     }
     Marker marker;
-    marker.stage = field(line, "stage");
+    marker.stage = runnerReuse ? "RUNNER_REUSE_HIT" : field(line, "stage");
     marker.status = field(line, "status");
+    if (runnerReuse && marker.status.empty() &&
+        field(line, "detail") == "live-runner") {
+      marker.status = "observed";
+    }
     marker.requestId = field(line, "requestId");
     marker.attemptEpoch = field(line, "attemptEpoch");
     marker.provider = field(line, "provider");

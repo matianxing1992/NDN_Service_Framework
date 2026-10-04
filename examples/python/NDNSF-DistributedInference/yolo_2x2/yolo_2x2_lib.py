@@ -933,7 +933,7 @@ def yolo_inference_service(deployment) -> str:
         services = getattr(deployment.deployment, "services", None)
     for service in services or ():
         name = getattr(service, "name", "")
-        if name and str(name) != REPO_SERVICE:
+        if name and str(name) not in {REPO_SERVICE, "/NDNSF/Network/Probe/v1"}:
             return str(name)
     return SERVICE
 

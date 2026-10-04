@@ -1,9 +1,13 @@
 #include <ServiceProvider.hpp>
+#include "NetworkProbeRate.hpp"
 
 #include <boost/asio/post.hpp>
+#include <boost/asio/steady_timer.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -20,6 +24,7 @@
 
 #include <ndn-cxx/security/validation-error.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/interest-signer.hpp>
 #include <ndn-cxx/security/transform/public-key.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
@@ -30,6 +35,13 @@
 namespace ndn_service_framework
 {
     NDN_LOG_INIT(ndn_service_framework.ServiceProvider);
+
+    struct ServiceProvider::SourceGoodputTrain
+    {
+        std::array<std::optional<ndn::Interest>, NETWORK_PROBE_WARMED_SEGMENTS> interests;
+        std::shared_ptr<boost::asio::steady_timer> timer;
+        std::chrono::steady_clock::time_point deadline;
+    };
 
     namespace
     {
@@ -569,11 +581,67 @@ namespace ndn_service_framework
             size_t receivedSegments = 0;
             size_t validatedSegments = 0;
             size_t receivedWireBytes = 0;
+            size_t validatedContentBytes = 0;
+            size_t validatedWireBytes = 0;
             size_t interestCount = 0;
             size_t retryCount = 0;
             size_t nacks = 0;
             size_t timeouts = 0;
         };
+
+        constexpr size_t ACTIVE_GOODPUT_SEGMENT_COUNT = NETWORK_PROBE_WARMED_SEGMENTS;
+        constexpr size_t ACTIVE_GOODPUT_CONTENT_BYTES = NETWORK_PROBE_WARMED_PAYLOAD_BYTES;
+        constexpr size_t ACTIVE_GOODPUT_MAX_CONTENT_BYTES = NETWORK_PROBE_WARMED_MAX_CONTENT_BYTES;
+        constexpr size_t ACTIVE_GOODPUT_MAX_INTEREST_WIRE_BYTES = 2048;
+        constexpr size_t ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES = 6144;
+        constexpr auto ACTIVE_GOODPUT_DEADLINE = std::chrono::milliseconds(500);
+        constexpr auto ACTIVE_GOODPUT_COLLECTOR_DEADLINE = std::chrono::milliseconds(1000);
+        constexpr auto ACTIVE_PEER_PROBE_SCOPE_POLL_INTERVAL =
+            std::chrono::milliseconds(40);
+        constexpr char ACTIVE_PEER_PROBE_REPLY_COMPONENT[] = "reply";
+        constexpr const char* ACTIVE_GOODPUT_PROFILE_DIGEST =
+            NETWORK_PROBE_TRAIN_PROFILE_DIGEST;
+
+        std::string
+        makeActiveGoodputPayload(const std::string& runNonce, size_t segment)
+        {
+            std::uint64_t state = 1469598103934665603ULL;
+            for (const unsigned char c : runNonce) {
+                state = (state ^ c) * 1099511628211ULL;
+            }
+            state ^= static_cast<std::uint64_t>(segment) + 0x9e3779b97f4a7c15ULL;
+            if (state == 0) {
+                state = 1;
+            }
+            std::string payload(ACTIVE_GOODPUT_CONTENT_BYTES, '\0');
+            for (auto& byte : payload) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                byte = static_cast<char>((state >> 24) & 0xff);
+            }
+            return payload;
+        }
+
+        bool
+        decodePeerProbeMessage(ndn::Block container,
+                               uint32_t containerType,
+                               DeploymentControlMessage& message)
+        {
+            if (!container.isValid() || container.type() != containerType) {
+                return false;
+            }
+            try {
+                container.parse();
+                if (container.elements().size() != 1) {
+                    return false;
+                }
+                return message.WireDecode(container.elements().front());
+            }
+            catch (const std::exception&) {
+                return false;
+            }
+        }
 
         double
         elapsedMsSince(const std::chrono::steady_clock::time_point& start,
@@ -591,6 +659,25 @@ namespace ndn_service_framework
             }
             return std::chrono::duration_cast<std::chrono::milliseconds>(
                 timePoint.time_since_epoch()).count();
+        }
+
+        std::string
+        currentProbeTimestampComponent()
+        {
+            return std::to_string(epochMs(std::chrono::system_clock::now()));
+        }
+
+        bool
+        isProbeTimestampComponent(const ndn::Name& name, size_t componentIndex)
+        {
+            if (componentIndex >= name.size()) {
+                return false;
+            }
+            const auto value = name[componentIndex].toUri();
+            return !value.empty() && value.size() <= 20 &&
+                   std::all_of(value.begin(), value.end(), [] (unsigned char c) {
+                       return std::isdigit(c);
+                   });
         }
 
         int
@@ -1309,8 +1396,7 @@ namespace ndn_service_framework
         interest.setCanBePrefix(false);
         interest.setInterestLifetime(ndn::time::milliseconds(500));
         interest.setApplicationParameters(ready.WireEncode());
-        (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain)
-            .sign(interest, m_signingInfo);
+        signPeerProbeInterest(interest);
         m_face.expressInterest(
             interest,
             [this, requesterIdentity, ready, statusHandle](const ndn::Interest&,
@@ -1382,6 +1468,2069 @@ namespace ndn_service_framework
                 NDN_LOG_WARN("ExecutionActivate signature validation failed: " << error);
             });
         return true;
+    }
+
+    bool ServiceProvider::authorizeCandidatePeerObservationScope(
+        const std::string& requestScopeDigest,
+        const std::vector<ndn::Name>& candidateProviders,
+        const std::vector<NetworkTelemetryDataEdge>& authorizedRttPairs,
+        const std::vector<NetworkTelemetryDataEdge>& authorizedGoodputEdges,
+        std::chrono::steady_clock::time_point expiresAt)
+    {
+        std::shared_ptr<std::atomic<bool>> registrationCancelled;
+        {
+            std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+            const auto entry = m_services.find(ndn::Name(NETWORK_PROBE_SERVICE));
+            if (entry != m_services.end() && entry->second.registrationState) {
+                auto registration = entry->second.registrationState;
+                if (registration->closed.load(std::memory_order_relaxed))
+                    return false;
+                registrationCancelled = std::make_shared<std::atomic<bool>>(false);
+                registration->trackAckCancellation(registrationCancelled);
+            }
+        }
+        const bool accepted = m_networkTelemetry.authorizeActiveProbeRequest(
+            requestScopeDigest, candidateProviders, authorizedRttPairs,
+            authorizedGoodputEdges, expiresAt, std::move(registrationCancelled));
+        return accepted;
+    }
+
+    void ServiceProvider::collectCandidatePeerObservations(
+        const std::vector<ndn::Name>& authorizedCandidateProviders,
+        const std::vector<NetworkTelemetryDataEdge>& authorizedRttPairs,
+        const std::vector<NetworkTelemetryDataEdge>& authorizedGoodputEdges,
+        const std::string& requestScopeDigest,
+        std::chrono::steady_clock::time_point deadline,
+        std::shared_ptr<std::atomic<bool>> cancelled,
+        PeerProbeCollectionCallback callback,
+        bool skipRemoteAuthorizationReadiness)
+    {
+        if (!callback) {
+            return;
+        }
+        const auto isCancelled = [cancelled] {
+            return cancelled && cancelled->load(std::memory_order_relaxed);
+        };
+
+        constexpr size_t MAX_ACTIVE_PROBE_TARGETS = 16;
+        constexpr size_t MAX_ACTIVE_GOODPUT_EDGES = 16;
+        constexpr size_t MAX_AUTHORIZED_CANDIDATES = 17;
+        if (authorizedCandidateProviders.size() > MAX_AUTHORIZED_CANDIDATES ||
+            authorizedRttPairs.size() > MAX_ACTIVE_PROBE_TARGETS ||
+            authorizedGoodputEdges.size() > MAX_ACTIVE_GOODPUT_EDGES) {
+            PeerProbeCollection rejected;
+            rejected.requestedTargetCount = std::count_if(
+                authorizedRttPairs.begin(), authorizedRttPairs.end(),
+                [this] (const NetworkTelemetryDataEdge& pair) {
+                    return pair.srcProvider == identity;
+                });
+            rejected.omittedTargetCount = rejected.requestedTargetCount;
+            rejected.requestedGoodputEdgeCount = std::count_if(
+                authorizedGoodputEdges.begin(), authorizedGoodputEdges.end(),
+                [this] (const NetworkTelemetryDataEdge& edge) {
+                    return edge.dstProvider == identity;
+                });
+            rejected.omittedGoodputEdgeCount = rejected.requestedGoodputEdgeCount;
+            callback(std::move(rejected));
+            return;
+        }
+        PeerProbeCollection initial;
+        if (isCancelled()) {
+            m_networkTelemetry.closeActiveProbeCollection(requestScopeDigest);
+            initial.requestedTargetCount = authorizedRttPairs.size();
+            initial.omittedTargetCount = initial.requestedTargetCount;
+            initial.requestedGoodputEdgeCount = authorizedGoodputEdges.size();
+            initial.omittedGoodputEdgeCount = initial.requestedGoodputEdgeCount;
+            callback(std::move(initial));
+            return;
+        }
+        std::vector<ndn::Name> targets;
+        std::set<NetworkTelemetryDataEdge> seenRttPairs;
+        for (const auto& pair : authorizedRttPairs) {
+            if (pair.srcProvider != identity) continue;
+            ++initial.requestedTargetCount;
+            if (isCancelled()) {
+                m_networkTelemetry.closeActiveProbeCollection(requestScopeDigest);
+                ++initial.omittedTargetCount;
+                continue;
+            }
+            if (pair.dstProvider.empty() || pair.dstProvider == identity ||
+                !seenRttPairs.insert(pair).second ||
+                std::find(authorizedCandidateProviders.begin(),
+                          authorizedCandidateProviders.end(), pair.srcProvider) ==
+                  authorizedCandidateProviders.end() ||
+                std::find(authorizedCandidateProviders.begin(),
+                          authorizedCandidateProviders.end(), pair.dstProvider) ==
+                  authorizedCandidateProviders.end() ||
+                !m_networkTelemetry.claimActiveProbeRttPair(
+                    requestScopeDigest, pair.srcProvider, pair.dstProvider)) {
+                ++initial.omittedTargetCount;
+                continue;
+            }
+            targets.push_back(pair.dstProvider);
+        }
+        std::sort(targets.begin(), targets.end());
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+        if (requestScopeDigest.empty() || requestScopeDigest.size() > 128) {
+            initial.omittedGoodputEdgeCount = std::count_if(
+                authorizedGoodputEdges.begin(), authorizedGoodputEdges.end(),
+                [this] (const NetworkTelemetryDataEdge& edge) {
+                    return edge.dstProvider == identity;
+                });
+            initial.requestedGoodputEdgeCount = initial.omittedGoodputEdgeCount;
+            callback(std::move(initial));
+            return;
+        }
+        if (targets.size() > MAX_ACTIVE_PROBE_TARGETS) {
+            initial.omittedTargetCount += targets.size() - MAX_ACTIVE_PROBE_TARGETS;
+            targets.resize(MAX_ACTIVE_PROBE_TARGETS);
+        }
+
+        std::vector<ndn::Name> goodputSources;
+        std::set<NetworkTelemetryDataEdge> seenGoodputEdges;
+        for (const auto& edge : authorizedGoodputEdges) {
+            if (edge.dstProvider != identity) {
+                continue;
+            }
+            ++initial.requestedGoodputEdgeCount;
+            if (isCancelled()) {
+                m_networkTelemetry.closeActiveProbeCollection(requestScopeDigest);
+                ++initial.omittedGoodputEdgeCount;
+                continue;
+            }
+            if (!seenGoodputEdges.insert(edge).second ||
+                !m_networkTelemetry.claimActiveProbeGoodputEdge(
+                    requestScopeDigest, edge.srcProvider, edge.dstProvider)) {
+                ++initial.omittedGoodputEdgeCount;
+                continue;
+            }
+            if (goodputSources.size() >= MAX_ACTIVE_GOODPUT_EDGES) {
+                ++initial.omittedGoodputEdgeCount;
+                continue;
+            }
+            goodputSources.push_back(edge.srcProvider);
+        }
+        std::sort(goodputSources.begin(), goodputSources.end());
+        goodputSources.erase(
+            std::unique(goodputSources.begin(), goodputSources.end()),
+            goodputSources.end());
+
+        if (targets.empty() && goodputSources.empty()) {
+            callback(std::move(initial));
+            return;
+        }
+
+        struct BatchState
+        {
+            std::mutex mutex;
+            PeerProbeCollection result;
+            size_t remaining = 0;
+            PeerProbeCollectionCallback callback;
+            std::shared_ptr<std::atomic<bool>> cancelled;
+        };
+        auto state = std::make_shared<BatchState>();
+        state->result = std::move(initial);
+        state->remaining = targets.size() + goodputSources.size();
+        state->callback = std::move(callback);
+        state->cancelled = cancelled;
+
+        auto finishOne = std::make_shared<std::function<void(
+            ndn_service_framework::NetworkTelemetrySampleKind,
+            std::optional<NetworkTelemetrySnapshot>)>>();
+        *finishOne = [state](ndn_service_framework::NetworkTelemetrySampleKind expectedKind,
+                             std::optional<NetworkTelemetrySnapshot> sample) {
+            PeerProbeCollection completed;
+            PeerProbeCollectionCallback callback;
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                const bool cancelled = state->cancelled &&
+                  state->cancelled->load(std::memory_order_relaxed);
+                if (cancelled) {
+                    state->result.observations.clear();
+                    state->result.omittedTargetCount =
+                      state->result.requestedTargetCount;
+                    state->result.omittedGoodputEdgeCount =
+                      state->result.requestedGoodputEdgeCount;
+                }
+                else if (sample && sample->kind == expectedKind) {
+                    state->result.observations.push_back(std::move(*sample));
+                }
+                else if (expectedKind ==
+                         ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt) {
+                    ++state->result.omittedTargetCount;
+                }
+                else if (expectedKind ==
+                         ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeGoodput) {
+                    ++state->result.omittedGoodputEdgeCount;
+                }
+                if (state->remaining > 0) {
+                    --state->remaining;
+                }
+                if (state->remaining == 0) {
+                    completed = std::move(state->result);
+                    callback = std::move(state->callback);
+                }
+            }
+            if (callback) {
+                std::sort(completed.observations.begin(),
+                          completed.observations.end(),
+                          [] (const NetworkTelemetrySnapshot& lhs,
+                              const NetworkTelemetrySnapshot& rhs) {
+                          return std::tie(lhs.kind, lhs.peerName) <
+                                 std::tie(rhs.kind, rhs.peerName);
+                          });
+                callback(std::move(completed));
+            }
+        };
+
+        std::map<ndn::Name, std::pair<bool, bool>> readinessRequirements;
+        for (const auto& target : targets) {
+            readinessRequirements[target].first = true;
+        }
+        for (const auto& source : goodputSources) {
+            readinessRequirements[source].second = true;
+        }
+        const auto callbackState =
+            std::weak_ptr<PeerProbeCallbackState>(m_peerProbeCallbackState);
+        const auto observerProvider = identity;
+        for (const auto& item : readinessRequirements) {
+            const auto& target = item.first;
+            const bool requireRtt = item.second.first;
+            const bool requireGoodput = item.second.second;
+            const auto runMeasurements =
+                [callbackState, observerProvider, target, requestScopeDigest, deadline,
+                 cancelled, requireRtt, requireGoodput, finishOne](bool ready) {
+                    NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_READINESS"
+                                 << " observerProvider=" << observerProvider.toUri()
+                                 << " targetProvider=" << target.toUri()
+                                 << " requestScope=" << requestScopeDigest
+                                 << " status=" << (ready ? "ready" : "unavailable")
+                                 << " requireRtt=" << requireRtt
+                                 << " requireGoodput=" << requireGoodput);
+                    const auto finishUnavailable = [finishOne, requireRtt,
+                                                    requireGoodput] {
+                        if (requireRtt) {
+                            (*finishOne)(
+                              ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt,
+                              std::nullopt);
+                        }
+                        if (requireGoodput) {
+                            (*finishOne)(
+                              ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeGoodput,
+                              std::nullopt);
+                        }
+                    };
+                    if (!ready) {
+                        finishUnavailable();
+                        return;
+                    }
+                    PeerProbeCallbackLease lease(callbackState);
+                    if (!lease) {
+                        finishUnavailable();
+                        return;
+                    }
+                    auto* const provider = lease.get();
+                    if (requireRtt) {
+                        provider->probePeerRtt(
+                            target, requestScopeDigest, deadline, cancelled,
+                            [finishOne, observerProvider, target, requestScopeDigest]
+                            (std::optional<NetworkTelemetrySnapshot> sample) {
+                                NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_RESULT"
+                                             << " observerProvider="
+                                             << observerProvider.toUri()
+                                             << " targetProvider=" << target.toUri()
+                                             << " requestScope=" << requestScopeDigest
+                                             << " kind=rtt status="
+                                             << (sample ? "sampled" : "unavailable"));
+                                (*finishOne)(
+                                  ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeRtt,
+                                  std::move(sample));
+                            });
+                    }
+                    if (requireGoodput) {
+                        provider->probePeerGoodput(
+                            target, requestScopeDigest, deadline, cancelled,
+                            [finishOne, observerProvider, target, requestScopeDigest]
+                            (std::optional<NetworkTelemetrySnapshot> sample) {
+                                NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_RESULT"
+                                             << " observerProvider="
+                                             << observerProvider.toUri()
+                                             << " targetProvider=" << target.toUri()
+                                             << " requestScope=" << requestScopeDigest
+                                             << " kind=goodput status="
+                                             << (sample ? "sampled" : "unavailable"));
+                                (*finishOne)(
+                                  ndn_service_framework::NetworkTelemetrySampleKind::ActiveProbeGoodput,
+                                  std::move(sample));
+                            });
+                    }
+                };
+            if (skipRemoteAuthorizationReadiness) {
+                NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_READINESS"
+                             << " observerProvider=" << observerProvider.toUri()
+                             << " targetProvider=" << target.toUri()
+                             << " requestScope=" << requestScopeDigest
+                             << " status=targeted_scope_grant_confirmed"
+                             << " requireRtt=" << requireRtt
+                             << " requireGoodput=" << requireGoodput);
+                runMeasurements(true);
+            }
+            else {
+                waitForPeerProbeScopeAuthorization(
+                    target, requestScopeDigest, requireRtt, requireGoodput,
+                    deadline, cancelled, runMeasurements);
+            }
+        }
+    }
+
+    void ServiceProvider::waitForPeerProbeScopeAuthorization(
+        const ndn::Name& targetProvider,
+        const std::string& requestScopeDigest,
+        bool requireRtt,
+        bool requireGoodput,
+        std::chrono::steady_clock::time_point deadline,
+        std::shared_ptr<std::atomic<bool>> cancelled,
+        std::function<void(bool)> callback)
+    {
+        if (!callback) {
+            return;
+        }
+        auto state = std::make_shared<PeerProbeReadinessState>(
+            std::move(callback));
+        auto deadlineTimer = std::make_shared<boost::asio::steady_timer>(
+            m_face.getIoContext());
+        deadlineTimer->expires_at(deadline);
+        deadlineTimer->async_wait(
+            [deadlineTimer, state](const boost::system::error_code& error) {
+                if (!error) {
+                    state->complete(false);
+                }
+            });
+        pollPeerProbeScopeAuthorization(
+            targetProvider, requestScopeDigest, requireRtt, requireGoodput,
+            deadline, std::move(cancelled), std::move(state));
+    }
+
+    void ServiceProvider::pollPeerProbeScopeAuthorization(
+        const ndn::Name& targetProvider,
+        const std::string& requestScopeDigest,
+        bool requireRtt,
+        bool requireGoodput,
+        std::chrono::steady_clock::time_point deadline,
+        std::shared_ptr<std::atomic<bool>> cancelled,
+        std::shared_ptr<PeerProbeReadinessState> state)
+    {
+        const auto isCancelled = [cancelled] {
+            return cancelled && cancelled->load(std::memory_order_relaxed);
+        };
+        if (!state || state->completed.load(std::memory_order_relaxed)) {
+            return;
+        }
+        if (targetProvider.empty() || targetProvider == identity ||
+            requestScopeDigest.empty() || requestScopeDigest.size() > 128 ||
+            (!requireRtt && !requireGoodput) || isCancelled() ||
+            std::chrono::steady_clock::now() >= deadline) {
+            state->complete(false);
+            return;
+        }
+
+        const auto remaining = ndn::time::milliseconds(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count());
+        const auto interestLifetime = std::min(
+            remaining,
+            ndn::time::milliseconds(
+                ACTIVE_PEER_PROBE_SCOPE_POLL_INTERVAL.count()));
+        if (interestLifetime <= ndn::time::milliseconds::zero()) {
+            state->complete(false);
+            return;
+        }
+
+        const auto nonce = std::to_string(ndn::random::generateSecureWord64());
+        PeerNetworkProbe readiness;
+        readiness.setField("observerProvider", identity.toUri());
+        readiness.setField("targetProvider", targetProvider.toUri());
+        readiness.setField("requestScopeDigest", requestScopeDigest);
+        readiness.setField("nonce", nonce);
+        readiness.setField("requireRtt", requireRtt ? "1" : "0");
+        readiness.setField("requireGoodput", requireGoodput ? "1" : "0");
+
+        ndn::Name readinessName = targetProvider;
+        readinessName.append("NDNSF").append("PEER-PROBE-READY")
+          .append(currentProbeTimestampComponent()).append(nonce);
+        ndn::Interest interest(readinessName);
+        interest.setCanBePrefix(true);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(interestLifetime);
+        ndn::Name expectedDataName;
+        try {
+            interest.setApplicationParameters(readiness.WireEncode());
+            signPeerProbeInterest(interest);
+            expectedDataName = interest.getName();
+            expectedDataName.append(ACTIVE_PEER_PROBE_REPLY_COMPONENT);
+            if (interest.wireEncode().size() >
+                ACTIVE_GOODPUT_MAX_INTEREST_WIRE_BYTES) {
+                state->complete(false);
+                return;
+            }
+        }
+        catch (const std::exception&) {
+            state->complete(false);
+            return;
+        }
+
+        const auto observerProvider = identity;
+        const auto callbackState =
+            std::weak_ptr<PeerProbeCallbackState>(m_peerProbeCallbackState);
+        auto* const ioContext = &m_face.getIoContext();
+        const auto retry = [callbackState, ioContext, state, targetProvider,
+                            requestScopeDigest, requireRtt, requireGoodput,
+                            deadline, cancelled] {
+            if (state->completed.load(std::memory_order_relaxed)) {
+                return;
+            }
+            if ((cancelled && cancelled->load(std::memory_order_relaxed)) ||
+                std::chrono::steady_clock::now() >= deadline) {
+                state->complete(false);
+                return;
+            }
+            auto retryTimer = std::make_shared<boost::asio::steady_timer>(
+                *ioContext);
+            retryTimer->expires_after(std::chrono::milliseconds(5));
+            retryTimer->async_wait(
+                [retryTimer, callbackState, state, targetProvider,
+                 requestScopeDigest, requireRtt, requireGoodput, deadline,
+                 cancelled](const boost::system::error_code& error) {
+                    if (error || state->completed.load(
+                                     std::memory_order_relaxed)) {
+                        return;
+                    }
+                    PeerProbeCallbackLease lease(callbackState);
+                    if (!lease) {
+                        state->complete(false);
+                        return;
+                    }
+                    lease.get()->pollPeerProbeScopeAuthorization(
+                        targetProvider, requestScopeDigest, requireRtt,
+                        requireGoodput, deadline, cancelled, state);
+                });
+        };
+
+        try {
+            if (isCancelled() || std::chrono::steady_clock::now() >= deadline) {
+                state->complete(false);
+                return;
+            }
+            m_face.expressInterest(
+                interest,
+                [callbackState, observerProvider, targetProvider,
+                 requestScopeDigest, nonce, expectedDataName, deadline,
+                 cancelled, state, retry]
+                (const ndn::Interest&, const ndn::Data& data) {
+                    PeerProbeCallbackLease lease(callbackState);
+                    if (!lease) {
+                        state->complete(false);
+                        return;
+                    }
+                    auto* const provider = lease.get();
+                    if (std::chrono::steady_clock::now() >= deadline ||
+                        (cancelled && cancelled->load(
+                            std::memory_order_relaxed))) {
+                        state->complete(false);
+                        return;
+                    }
+                    provider->nac_validator.validate(
+                        data,
+                        [callbackState, observerProvider, targetProvider,
+                         requestScopeDigest, nonce, expectedDataName, deadline,
+                         cancelled, state, retry]
+                        (const ndn::Data& validated) {
+                            PeerProbeCallbackLease validationLease(callbackState);
+                            if (!validationLease) {
+                                state->complete(false);
+                                return;
+                            }
+                            auto* const provider = validationLease.get();
+                            if (std::chrono::steady_clock::now() >= deadline ||
+                                (cancelled && cancelled->load(
+                                    std::memory_order_relaxed))) {
+                                state->complete(false);
+                                return;
+                            }
+                            bool ready = false;
+                            std::string rejection = "name_mismatch";
+                            const auto& signatureInfo =
+                                validated.getSignatureInfo();
+                            if (validated.getName() == expectedDataName) {
+                                rejection = "data_oversize";
+                                if (validated.wireEncode().size() <=
+                                    ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES) {
+                                    rejection = "signer_missing";
+                                    if (signatureInfo.hasKeyLocator() &&
+                                        signatureInfo.getKeyLocator().getType() ==
+                                            ndn::tlv::Name) {
+                                        rejection = "wrong_signer";
+                                        if (ndn::security::extractIdentityFromCertName(
+                                                signatureInfo.getKeyLocator().getName()) ==
+                                            targetProvider) {
+                                            rejection = "response_binding";
+                                            PeerNetworkProbeResponse response;
+                                            ready = decodePeerProbeMessage(
+                                                validated.getContent(), ndn::tlv::Content,
+                                                response) &&
+                                              response.getVersion() ==
+                                                DeploymentControlMessage::VERSION &&
+                                              response.getFields().size() == 5 &&
+                                              response.hasField("observerProvider") &&
+                                              response.hasField("targetProvider") &&
+                                              response.hasField("requestScopeDigest") &&
+                                              response.hasField("nonce") &&
+                                              response.hasField("targetBootEpoch") &&
+                                              response.getField("observerProvider") ==
+                                                observerProvider.toUri() &&
+                                              response.getField("targetProvider") ==
+                                                targetProvider.toUri() &&
+                                              response.getField("requestScopeDigest") ==
+                                                requestScopeDigest &&
+                                              response.getField("nonce") == nonce &&
+                                              !response.getField("targetBootEpoch").empty() &&
+                                              response.getField("targetBootEpoch").size() <= 128;
+                                            if (ready) rejection.clear();
+                                        }
+                                    }
+                                }
+                            }
+                            NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_READINESS_DATA"
+                                         << " observerProvider=" << observerProvider.toUri()
+                                         << " targetProvider=" << targetProvider.toUri()
+                                         << " requestScope=" << requestScopeDigest
+                                         << " status=" << (ready ? "accepted" : "rejected")
+                                         << (ready ? "" : " reason=" + rejection));
+                            if (ready) {
+                                state->complete(true);
+                            }
+                            else {
+                                retry();
+                            }
+                        },
+                        [state, retry, observerProvider, targetProvider,
+                         requestScopeDigest]
+                        (const ndn::Data&,
+                         const ndn::security::ValidationError& error) {
+                            if (!state->validationFailureLogged.exchange(
+                                    true, std::memory_order_relaxed)) {
+                                NDN_LOG_WARN(
+                                    "NDNSF_DI_PROVIDER_PEER_PROBE_READINESS_VALIDATION"
+                                    << " observerProvider=" << observerProvider.toUri()
+                                    << " targetProvider=" << targetProvider.toUri()
+                                    << " requestScope=" << requestScopeDigest
+                                    << " status=rejected error=" << error);
+                            }
+                            if (!state->completed.load(
+                                    std::memory_order_relaxed)) {
+                                retry();
+                            }
+                        });
+                },
+                [state, retry](const ndn::Interest&, const ndn::lp::Nack&) {
+                    if (!state->completed.load(std::memory_order_relaxed)) {
+                        retry();
+                    }
+                },
+                [state, retry](const ndn::Interest&) {
+                    if (!state->completed.load(std::memory_order_relaxed)) {
+                        retry();
+                    }
+                });
+        }
+        catch (const std::exception&) {
+            retry();
+        }
+    }
+
+    void ServiceProvider::probePeerRtt(
+        const ndn::Name& targetProvider,
+        const std::string& requestScopeDigest,
+        std::chrono::steady_clock::time_point deadline,
+        std::shared_ptr<std::atomic<bool>> cancelled,
+        std::function<void(std::optional<NetworkTelemetrySnapshot>)> callback)
+    {
+        struct CompletionState
+        {
+            std::mutex mutex;
+            std::function<void(std::optional<NetworkTelemetrySnapshot>)> callback;
+            bool completed = false;
+        };
+        auto completion = std::make_shared<CompletionState>();
+        completion->callback = std::move(callback);
+        auto finish = [completion, cancelled](
+            std::optional<NetworkTelemetrySnapshot> sample) {
+            std::function<void(std::optional<NetworkTelemetrySnapshot>)> callback;
+            {
+                std::lock_guard<std::mutex> lock(completion->mutex);
+                if (completion->completed) {
+                    return;
+                }
+                completion->completed = true;
+                callback = std::move(completion->callback);
+            }
+            if (callback) {
+                if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+                    sample.reset();
+                }
+                callback(std::move(sample));
+            }
+        };
+        if (targetProvider.empty() || targetProvider == identity ||
+            requestScopeDigest.empty() || requestScopeDigest.size() > 128 ||
+            std::chrono::steady_clock::now() >= deadline ||
+            (cancelled && cancelled->load(std::memory_order_relaxed)) ||
+            !m_networkTelemetry.isActiveProbeCollectionOpen(requestScopeDigest)) {
+            if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+                m_networkTelemetry.closeActiveProbeCollection(requestScopeDigest);
+            }
+            finish(std::nullopt);
+            return;
+        }
+
+        constexpr auto MAX_ACTIVE_PROBE_RTT = std::chrono::milliseconds(250);
+        deadline = std::min(deadline,
+                            std::chrono::steady_clock::now() + MAX_ACTIVE_PROBE_RTT);
+        const auto remaining = ndn::time::milliseconds(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count());
+        if (remaining <= ndn::time::milliseconds::zero()) {
+            finish(std::nullopt);
+            return;
+        }
+
+        const auto nonce = std::to_string(ndn::random::generateSecureWord64());
+        PeerNetworkProbe probe;
+        probe.setField("observerProvider", identity.toUri());
+        probe.setField("targetProvider", targetProvider.toUri());
+        probe.setField("requestScopeDigest", requestScopeDigest);
+        probe.setField("nonce", nonce);
+
+        ndn::Name probeName = targetProvider;
+        probeName.append("NDNSF").append("PEER-PROBE")
+          .append(currentProbeTimestampComponent()).append(nonce);
+        ndn::Interest interest(probeName);
+        interest.setCanBePrefix(true);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(remaining);
+        ndn::Name expectedDataName;
+        std::chrono::steady_clock::time_point probeStarted;
+        size_t interestWireBytes = 0;
+        try {
+            interest.setApplicationParameters(probe.WireEncode());
+            signPeerProbeInterest(interest);
+            expectedDataName = interest.getName();
+            expectedDataName.append(ACTIVE_PEER_PROBE_REPLY_COMPONENT);
+            interestWireBytes = interest.wireEncode().size();
+        }
+        catch (const std::exception&) {
+            finish(std::nullopt);
+            return;
+        }
+        if (interestWireBytes > ACTIVE_GOODPUT_MAX_INTEREST_WIRE_BYTES) {
+            finish(std::nullopt);
+            return;
+        }
+        const auto observerProvider = identity;
+        const auto callbackState =
+            std::weak_ptr<PeerProbeCallbackState>(m_peerProbeCallbackState);
+        auto* const ioContext = &m_face.getIoContext();
+        const auto postFinish = [ioContext, finish, deadline, cancelled,
+                                 callbackState, requestScopeDigest]
+            (std::optional<NetworkTelemetrySnapshot> sample) {
+            boost::asio::post(*ioContext,
+                [finish, deadline, cancelled, callbackState, requestScopeDigest,
+                 sample = std::move(sample)]() mutable {
+                        const bool isCancelled = cancelled &&
+                          cancelled->load(std::memory_order_relaxed);
+                        if (isCancelled) {
+                            PeerProbeCallbackLease lease(callbackState);
+                            if (lease) {
+                                lease.get()->m_networkTelemetry.closeActiveProbeCollection(
+                                  requestScopeDigest);
+                            }
+                        }
+                        if (isCancelled || std::chrono::steady_clock::now() >= deadline) {
+                            finish(std::nullopt);
+                        }
+                        else {
+                            finish(std::move(sample));
+                        }
+                    });
+            };
+        auto deadlineTimer =
+            std::make_shared<boost::asio::steady_timer>(*ioContext);
+        deadlineTimer->expires_at(deadline);
+        deadlineTimer->async_wait(
+            [deadlineTimer, finish](const boost::system::error_code& error) {
+                if (!error) {
+                    finish(std::nullopt);
+                }
+            });
+
+        try {
+            if (std::chrono::steady_clock::now() >= deadline ||
+                (cancelled && cancelled->load(std::memory_order_relaxed)) ||
+                !m_networkTelemetry.isActiveProbeCollectionOpen(requestScopeDigest)) {
+                if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+                    m_networkTelemetry.closeActiveProbeCollection(requestScopeDigest);
+                }
+                finish(std::nullopt);
+                return;
+            }
+            probeStarted = std::chrono::steady_clock::now();
+            m_face.expressInterest(
+                interest,
+                [callbackState, observerProvider, targetProvider, cancelled,
+                 requestScopeDigest, nonce, expectedDataName, probeStarted,
+                 deadline, postFinish](const ndn::Interest&,
+                                       const ndn::Data& data) {
+                    PeerProbeCallbackLease lease(callbackState);
+                    if (!lease) {
+                        return;
+                    }
+                    if (std::chrono::steady_clock::now() >= deadline ||
+                        (cancelled && cancelled->load(std::memory_order_relaxed))) {
+                        postFinish(std::nullopt);
+                        return;
+                    }
+                    auto* const provider = lease.get();
+                    const auto dataReceivedAt = std::chrono::steady_clock::now();
+                    provider->nac_validator.validate(
+                        data,
+                        [callbackState, observerProvider, targetProvider, cancelled,
+                         requestScopeDigest, nonce, expectedDataName,
+                         probeStarted, deadline, dataReceivedAt,
+                         postFinish](const ndn::Data& validated) {
+                            PeerProbeCallbackLease validationLease(callbackState);
+                            if (!validationLease) {
+                                return;
+                            }
+                            auto* const provider = validationLease.get();
+                            const auto validationCompletedAt =
+                                std::chrono::steady_clock::now();
+                            std::optional<NetworkTelemetrySnapshot> sample;
+                            const auto& signatureInfo = validated.getSignatureInfo();
+                            if (validated.getName() == expectedDataName &&
+                                validated.wireEncode().size() <=
+                                    ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES &&
+                                signatureInfo.hasKeyLocator() &&
+                                signatureInfo.getKeyLocator().getType() == ndn::tlv::Name &&
+                                ndn::security::extractIdentityFromCertName(
+                                    signatureInfo.getKeyLocator().getName()) == targetProvider) {
+                                PeerNetworkProbeResponse response;
+                                const bool responseDecoded =
+                                    decodePeerProbeMessage(
+                                        validated.getContent(), ndn::tlv::Content, response);
+                                if (responseDecoded &&
+                                    response.getVersion() == DeploymentControlMessage::VERSION &&
+                                    response.getFields().size() == 5 &&
+                                    response.hasField("observerProvider") &&
+                                    response.hasField("targetProvider") &&
+                                    response.hasField("requestScopeDigest") &&
+                                    response.hasField("nonce") &&
+                                    response.hasField("targetBootEpoch") &&
+                                    response.getField("observerProvider") == observerProvider.toUri() &&
+                                    response.getField("targetProvider") == targetProvider.toUri() &&
+                                    response.getField("requestScopeDigest") == requestScopeDigest &&
+                                    response.getField("nonce") == nonce &&
+                                    !response.getField("targetBootEpoch").empty() &&
+                                    response.getField("targetBootEpoch").size() <= 128) {
+                                    const auto elapsed =
+                                        std::chrono::duration<double, std::milli>(
+                                            dataReceivedAt - probeStarted).count();
+                                    if (std::isfinite(elapsed) && elapsed > 0.0 &&
+                                        dataReceivedAt < deadline &&
+                                        validationCompletedAt < deadline &&
+                                        !(cancelled && cancelled->load(
+                                            std::memory_order_relaxed)) &&
+                                        provider->m_networkTelemetry
+                                          .isActiveProbeCollectionOpen(requestScopeDigest) &&
+                                        provider->m_networkTelemetry.isActiveProbeAuthorized(
+                                            requestScopeDigest, observerProvider,
+                                            targetProvider)) {
+                                        provider->m_networkTelemetry.updateActiveProbe(
+                                            observerProvider, targetProvider,
+                                            requestScopeDigest,
+                                            response.getField("targetBootEpoch"),
+                                            validated.getName(), elapsed);
+                                        sample = provider->m_networkTelemetry.getActiveProbe(
+                                            observerProvider, targetProvider,
+                                            requestScopeDigest);
+                                    }
+                                }
+                            }
+                            postFinish(std::move(sample));
+                        },
+                        [postFinish](const ndn::Data&,
+                                     const ndn::security::ValidationError&) {
+                            postFinish(std::nullopt);
+                        });
+                },
+                [postFinish](const ndn::Interest&,
+                                                                 const ndn::lp::Nack&) {
+                    postFinish(std::nullopt);
+                },
+                [postFinish](const ndn::Interest&) {
+                    postFinish(std::nullopt);
+                });
+        }
+        catch (const std::exception&) {
+            finish(std::nullopt);
+        }
+    }
+
+    void ServiceProvider::queuePeerGoodputTrain(
+        const ndn::Interest& interest, const ndn::Name& observer,
+        const std::string& scope, const std::string& runNonce, size_t segment)
+    {
+        const auto scopeDeadline = m_networkTelemetry.activeProbeScopeDeadline(scope);
+        if (!scopeDeadline || segment >= ACTIVE_GOODPUT_SEGMENT_COUNT)
+            return;
+        const auto key = observer.toUri() + "\n" + scope + "\n" + runNonce;
+        auto found = m_sourceGoodputTrains.find(key);
+        if (found == m_sourceGoodputTrains.end()) {
+            if (m_sourceGoodputTrains.size() >= 32)
+                return;
+            auto train = std::make_shared<SourceGoodputTrain>();
+            train->deadline = std::min(*scopeDeadline,
+                std::chrono::steady_clock::now() + ACTIVE_GOODPUT_DEADLINE);
+            train->timer = std::make_shared<boost::asio::steady_timer>(m_face.getIoContext());
+            train->timer->expires_at(train->deadline);
+            found = m_sourceGoodputTrains.emplace(key, train).first;
+            train->timer->async_wait(
+                [callbackState = std::weak_ptr<PeerProbeCallbackState>(m_peerProbeCallbackState),
+                 weakTrain = std::weak_ptr<SourceGoodputTrain>(train), key]
+                (const boost::system::error_code& error) {
+                    if (error)
+                        return;
+                    PeerProbeCallbackLease lease(callbackState);
+                    auto train = weakTrain.lock();
+                    if (!lease || !train)
+                        return;
+                    auto* provider = lease.get();
+                    const auto current = provider->m_sourceGoodputTrains.find(key);
+                    if (current != provider->m_sourceGoodputTrains.end() &&
+                        current->second == train)
+                        provider->m_sourceGoodputTrains.erase(current);
+                });
+        }
+        auto train = found->second;
+        const auto stillAuthorized = [&] {
+            return std::chrono::steady_clock::now() < train->deadline &&
+                m_networkTelemetry.isActiveProbeGoodputAuthorized(scope, identity, observer);
+        };
+        if (!stillAuthorized()) {
+            m_sourceGoodputTrains.erase(found);
+            return;
+        }
+        if (train->interests[segment])
+            return;
+        train->interests[segment] = interest;
+        if (std::any_of(train->interests.begin(), train->interests.end(),
+                        [] (const auto& entry) { return !entry.has_value(); }))
+            return;
+
+        // Only the local variable now owns this completed train. Cancelling
+        // its weak timer and erasing the map cannot form a self-reference.
+        boost::system::error_code ignored;
+        train->timer->cancel(ignored);
+        m_sourceGoodputTrains.erase(found);
+        std::array<std::chrono::steady_clock::time_point, ACTIVE_GOODPUT_SEGMENT_COUNT - 1> sentAt;
+        const auto buildData = [&] (size_t index) {
+            PeerNetworkGoodputProbeResponse response;
+            response.setField("observerProvider", observer.toUri());
+            response.setField("targetProvider", identity.toUri());
+            response.setField("requestScopeDigest", scope);
+            response.setField("runNonce", runNonce);
+            response.setField("segment", std::to_string(index));
+            response.setField("segmentCount", std::to_string(ACTIVE_GOODPUT_SEGMENT_COUNT));
+            response.setField("targetBootEpoch", getProviderBootEpoch());
+            response.setField("payload", makeActiveGoodputPayload(runNonce, index));
+            response.setField("probeProfileDigest", ACTIVE_GOODPUT_PROFILE_DIGEST);
+            if (index == ACTIVE_GOODPUT_SEGMENT_COUNT - 1) {
+                for (size_t gap = 0; gap < ACTIVE_GOODPUT_SEGMENT_COUNT - 2; ++gap) {
+                    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        sentAt[gap + 1] - sentAt[gap]).count();
+                    if (ns < 0 || ns > 500000000)
+                        throw std::runtime_error("source probe timing exceeds profile");
+                    response.setField("sourceSendGap" + std::to_string(gap) + "Ns",
+                                      std::to_string(ns));
+                }
+            }
+            const auto content = response.WireEncode();
+            if (content.value_size() > ACTIVE_GOODPUT_MAX_CONTENT_BYTES)
+                throw std::runtime_error("source probe content exceeds budget");
+            auto name = train->interests[index]->getName();
+            name.append(ACTIVE_PEER_PROBE_REPLY_COMPONENT);
+            ndn::Data data(name);
+            data.setFreshnessPeriod(ndn::time::milliseconds::zero());
+            data.setContent(content);
+            (m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain).sign(data, m_signingInfo);
+            if (data.wireEncode().size() > ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES)
+                throw std::runtime_error("source probe Data exceeds budget");
+            return data;
+        };
+        std::array<ndn::Data, ACTIVE_GOODPUT_SEGMENT_COUNT - 1> burst;
+        for (size_t index = 0; index < burst.size(); ++index) {
+            if (!stillAuthorized())
+                return;
+            burst[index] = buildData(index);
+        }
+        for (size_t index = 0; index < burst.size(); ++index) {
+            if (!stillAuthorized())
+                return;
+            sentAt[index] = std::chrono::steady_clock::now();
+            m_face.put(burst[index]);
+        }
+        if (!stillAuthorized())
+            return;
+        auto report = buildData(ACTIVE_GOODPUT_SEGMENT_COUNT - 1);
+        if (!stillAuthorized())
+            return;
+        m_face.put(report);
+        NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_RESPONSE provider=" << identity.toUri()
+                     << " observerProvider=" << observer.toUri()
+                     << " kind=goodput status=sent profile=" << ACTIVE_GOODPUT_PROFILE_DIGEST);
+    }
+
+    void ServiceProvider::probePeerGoodput(
+        const ndn::Name& sourceProvider,
+        const std::string& requestScopeDigest,
+        std::chrono::steady_clock::time_point deadline,
+        std::shared_ptr<std::atomic<bool>> cancelled,
+        std::function<void(std::optional<NetworkTelemetrySnapshot>)> callback)
+    {
+        if (!callback) {
+            return;
+        }
+        const auto started = std::chrono::steady_clock::now();
+        const auto goodputCap =
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                ACTIVE_GOODPUT_COLLECTOR_DEADLINE);
+        deadline = std::min(deadline, started + goodputCap);
+        const auto stageObserver = m_peerGoodputStageObserver;
+        struct TrainState
+        {
+            std::mutex mutex;
+            std::function<void(std::optional<NetworkTelemetrySnapshot>)> callback;
+            std::array<std::shared_ptr<const ndn::Data>, ACTIVE_GOODPUT_SEGMENT_COUNT> capturedData{};
+            size_t captureRemaining = ACTIVE_GOODPUT_SEGMENT_COUNT;
+            bool validationStarted = false;
+            std::array<bool, ACTIVE_GOODPUT_SEGMENT_COUNT> received{};
+            std::array<std::chrono::steady_clock::time_point,
+                       ACTIVE_GOODPUT_SEGMENT_COUNT> interestSentAt{};
+            std::array<std::chrono::steady_clock::time_point,
+                       ACTIVE_GOODPUT_SEGMENT_COUNT> dataReceivedAt{};
+            std::array<size_t, ACTIVE_GOODPUT_SEGMENT_COUNT> dataWireBytes{};
+            NetworkProbeSourceGaps sourceSendGapsMs{};
+            bool sourceTimingValidated = false;
+            size_t remaining = ACTIVE_GOODPUT_SEGMENT_COUNT;
+            size_t payloadBytes = 0;
+            size_t wireBytes = 0;
+            std::chrono::steady_clock::time_point started;
+            std::string peerBootEpoch;
+            ndn::Name dataName;
+            bool failed = false;
+            bool completed = false;
+        };
+
+        auto state = std::make_shared<TrainState>();
+        state->callback = std::move(callback);
+        auto finish = [state,
+                       callbackState = std::weak_ptr<PeerProbeCallbackState>(
+                           m_peerProbeCallbackState),
+                       observerProvider = identity, sourceProvider,
+                       requestScopeDigest, deadline, cancelled, stageObserver](bool failed) {
+            std::function<void(std::optional<NetworkTelemetrySnapshot>)> callback;
+            bool publish = false;
+            NetworkProbeSourceGaps sourceSendGapsMs{};
+            bool sourceTimingValidated = false;
+            size_t payloadBytes = 0;
+            size_t wireBytes = 0;
+            std::chrono::steady_clock::time_point firstData;
+            std::chrono::steady_clock::time_point lastData;
+            std::chrono::steady_clock::time_point firstInterest;
+            std::array<double, ACTIVE_GOODPUT_SEGMENT_COUNT> probeRttMs{};
+            std::array<double, ACTIVE_GOODPUT_SEGMENT_COUNT - 1> interestGapsMs{};
+            std::array<double, ACTIVE_GOODPUT_SEGMENT_COUNT - 1> dataArrivalGapsMs{};
+            std::array<size_t, ACTIVE_GOODPUT_SEGMENT_COUNT> dataWireSizes{};
+            bool probeSignatureValid = false;
+            size_t capturedCount = 0;
+            std::string peerBootEpoch;
+            ndn::Name dataName;
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (state->completed) {
+                    return;
+                }
+                state->failed = state->failed || failed;
+                if (!state->failed && state->remaining != 0 &&
+                    std::chrono::steady_clock::now() < deadline) {
+                    return;
+                }
+                state->completed = true;
+                callback = std::move(state->callback);
+                capturedCount = ACTIVE_GOODPUT_SEGMENT_COUNT - state->captureRemaining;
+                state->capturedData.fill(nullptr);
+                sourceSendGapsMs = state->sourceSendGapsMs;
+                sourceTimingValidated = state->sourceTimingValidated;
+                publish = !state->failed && state->remaining == 0 &&
+                          std::chrono::steady_clock::now() < deadline &&
+                          !state->dataName.empty() &&
+                          !(cancelled && cancelled->load(
+                              std::memory_order_relaxed));
+                if (publish) {
+                    payloadBytes = state->payloadBytes;
+                    wireBytes = state->wireBytes;
+                    firstData = *std::min_element(state->dataReceivedAt.begin(),
+                                                  state->dataReceivedAt.end());
+                    lastData = *std::max_element(state->dataReceivedAt.begin(),
+                                                 state->dataReceivedAt.end());
+                    firstInterest = state->started;
+                    peerBootEpoch = state->peerBootEpoch;
+                    dataName = state->dataName;
+                    probeSignatureValid = true;
+                    for (size_t i = 0; i < ACTIVE_GOODPUT_SEGMENT_COUNT; ++i) {
+                        const auto rtt = state->dataReceivedAt[i] -
+                                         state->interestSentAt[i];
+                        probeRttMs[i] = std::chrono::duration<double, std::milli>(rtt).count();
+                        dataWireSizes[i] = state->dataWireBytes[i];
+                        if (state->interestSentAt[i] ==
+                                std::chrono::steady_clock::time_point{} ||
+                            state->dataReceivedAt[i] ==
+                                std::chrono::steady_clock::time_point{} ||
+                            !std::isfinite(probeRttMs[i]) || probeRttMs[i] <= 0.0 ||
+                            dataWireSizes[i] == 0) {
+                            probeSignatureValid = false;
+                        }
+                    }
+                    for (size_t i = 0; i + 1 < ACTIVE_GOODPUT_SEGMENT_COUNT; ++i) {
+                        interestGapsMs[i] = std::chrono::duration<double, std::milli>(
+                            state->interestSentAt[i + 1] - state->interestSentAt[i]).count();
+                        dataArrivalGapsMs[i] = std::chrono::duration<double, std::milli>(
+                            state->dataReceivedAt[i + 1] - state->dataReceivedAt[i]).count();
+                        if (!std::isfinite(interestGapsMs[i]) || interestGapsMs[i] <= 0.0 ||
+                            !std::isfinite(dataArrivalGapsMs[i]) ||
+                            dataArrivalGapsMs[i] <= 0.0) {
+                            probeSignatureValid = false;
+                        }
+                    }
+                }
+            }
+
+            std::optional<NetworkTelemetrySnapshot> sample;
+            if (publish) {
+                const auto gapsText = [] (const auto& values) {
+                    std::ostringstream text;
+                    for (size_t i = 0; i < values.size(); ++i) {
+                        if (i != 0) text << ',';
+                        text << values[i];
+                    }
+                    return text.str();
+                };
+                NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_GOODPUT_TRAIN"
+                             << " observerProvider=" << observerProvider.toUri()
+                             << " sourceProvider=" << sourceProvider.toUri()
+                             << " requestScope=" << requestScopeDigest
+                             << " profileValidated=" << probeSignatureValid
+                             << " interestGapsMs=" << gapsText(interestGapsMs)
+                             << " dataArrivalGapsMs=" << gapsText(dataArrivalGapsMs));
+            }
+            if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+                PeerProbeCallbackLease lease(callbackState);
+                if (lease) {
+                    lease.get()->m_networkTelemetry.closeActiveProbeCollection(
+                        requestScopeDigest);
+                }
+            }
+            if (publish && firstInterest != std::chrono::steady_clock::time_point{} &&
+                firstData != std::chrono::steady_clock::time_point{} &&
+                lastData >= firstData) {
+                PeerProbeCallbackLease lease(callbackState);
+                if (lease && std::chrono::steady_clock::now() < deadline) {
+                    auto* const provider = lease.get();
+                    if (provider->m_networkTelemetry.isActiveProbeGoodputAuthorized(
+                            requestScopeDigest, sourceProvider, observerProvider)) {
+                        const auto elapsed = std::chrono::duration<double, std::milli>(
+                            lastData - firstInterest).count();
+                        const auto firstByte = std::chrono::duration<double, std::milli>(
+                            firstData - firstInterest).count();
+                        if (std::isfinite(firstByte) && firstByte >= 0.0 &&
+                            std::isfinite(elapsed) && elapsed > 0.0 &&
+                            firstByte <= elapsed) {
+                            provider->m_networkTelemetry.updateActiveProbeGoodput(
+                                observerProvider, sourceProvider, requestScopeDigest,
+                                peerBootEpoch, dataName, payloadBytes,
+                                wireBytes, ACTIVE_GOODPUT_SEGMENT_COUNT, firstByte,
+                                elapsed,
+                                ACTIVE_GOODPUT_PROFILE_DIGEST,
+                                probeSignatureValid, probeRttMs, interestGapsMs,
+                                dataArrivalGapsMs, dataWireSizes,
+                                sourceSendGapsMs, sourceTimingValidated);
+                            sample = provider->m_networkTelemetry.getActiveProbeGoodput(
+                                observerProvider, sourceProvider, requestScopeDigest);
+                        }
+                    }
+                }
+            }
+            if (stageObserver) {
+                try {
+                    stageObserver("terminal", capturedCount, 0);
+                }
+                catch (...) {
+                    // An observing fixture must never suppress the actual completion.
+                }
+            }
+            if (callback) {
+                callback(std::move(sample));
+            }
+        };
+
+        if (!state->callback || sourceProvider.empty() || sourceProvider == identity ||
+            requestScopeDigest.empty() || requestScopeDigest.size() > 128 ||
+            !m_networkTelemetry.isActiveProbeGoodputAuthorized(
+                requestScopeDigest, sourceProvider, identity) ||
+            !m_networkTelemetry.isActiveProbeCollectionOpen(requestScopeDigest) ||
+            (cancelled && cancelled->load(std::memory_order_relaxed)) ||
+            std::chrono::steady_clock::now() >= deadline) {
+            if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+                m_networkTelemetry.closeActiveProbeCollection(requestScopeDigest);
+            }
+            finish(true);
+            return;
+        }
+
+        auto* const ioContext = &m_face.getIoContext();
+        auto deadlineTimer = std::make_shared<boost::asio::steady_timer>(*ioContext);
+        deadlineTimer->expires_at(deadline);
+        deadlineTimer->async_wait(
+            [deadlineTimer, finish](const boost::system::error_code& error) {
+                if (!error) {
+                    finish(true);
+                }
+            });
+
+        const auto runNonce = std::to_string(ndn::random::generateSecureWord64());
+        const auto callbackState =
+            std::weak_ptr<PeerProbeCallbackState>(m_peerProbeCallbackState);
+        struct PreparedGoodputSegment
+        {
+            ndn::Interest interest;
+            ndn::Name expectedDataName;
+            size_t wireBytes = 0;
+        };
+        auto preparedSegments = std::make_shared<std::array<
+            PreparedGoodputSegment, ACTIVE_GOODPUT_SEGMENT_COUNT>>();
+        try {
+            for (size_t segment = 0;
+                 segment < ACTIVE_GOODPUT_SEGMENT_COUNT; ++segment) {
+                PeerNetworkGoodputProbe probe;
+                probe.setField("observerProvider", identity.toUri());
+                probe.setField("targetProvider", sourceProvider.toUri());
+                probe.setField("requestScopeDigest", requestScopeDigest);
+                probe.setField("runNonce", runNonce);
+                probe.setField("segment", std::to_string(segment));
+                probe.setField("segmentCount",
+                               std::to_string(ACTIVE_GOODPUT_SEGMENT_COUNT));
+                probe.setField("contentBytes",
+                               std::to_string(ACTIVE_GOODPUT_CONTENT_BYTES));
+
+                ndn::Name probeName = sourceProvider;
+                probeName.append("NDNSF").append("PEER-GOODPUT")
+                  .append(currentProbeTimestampComponent()).append(runNonce)
+                  .appendSegment(segment);
+                auto& prepared = (*preparedSegments)[segment];
+                prepared.interest = ndn::Interest(probeName);
+                prepared.interest.setCanBePrefix(true);
+                prepared.interest.setMustBeFresh(true);
+                prepared.interest.setApplicationParameters(probe.WireEncode());
+                signPeerProbeInterest(prepared.interest);
+                prepared.expectedDataName = prepared.interest.getName();
+                prepared.expectedDataName.append(ACTIVE_PEER_PROBE_REPLY_COMPONENT);
+            }
+        }
+        catch (const std::exception&) {
+            finish(true);
+            return;
+        }
+        const auto remainingMs = std::chrono::duration_cast<
+            std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+        const auto safeLifetime = ndn::time::milliseconds(
+            remainingMs.count());
+        if (safeLifetime <= ndn::time::milliseconds::zero()) {
+            finish(true);
+            return;
+        }
+        for (auto& prepared : *preparedSegments) {
+            // InterestLifetime is hop-by-hop metadata; set the same bounded
+            // lifetime after signing so no segment can
+            // outlive the shared collection deadline.
+            prepared.interest.setInterestLifetime(safeLifetime);
+            prepared.wireBytes = prepared.interest.wireEncode().size();
+            if (prepared.wireBytes > ACTIVE_GOODPUT_MAX_INTEREST_WIRE_BYTES) {
+                finish(true);
+                return;
+            }
+        }
+
+        auto sendSegment = [state, finish, callbackState,
+                            observerProvider = identity, sourceProvider,
+                            requestScopeDigest, runNonce, preparedSegments,
+                            deadline, cancelled, stageObserver](const auto& sendSegment,
+                                                size_t segment) {
+            try {
+            PeerProbeCallbackLease sendLease(callbackState);
+            if (!sendLease) {
+                finish(true);
+                return;
+            }
+            auto* const sender = sendLease.get();
+            if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+                sender->m_networkTelemetry.closeActiveProbeCollection(
+                    requestScopeDigest);
+                finish(true);
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (state->completed || segment >= ACTIVE_GOODPUT_SEGMENT_COUNT) {
+                    return;
+                }
+            }
+            if (std::chrono::steady_clock::now() >= deadline ||
+                !sender->m_networkTelemetry.isActiveProbeCollectionOpen(
+                    requestScopeDigest) ||
+                !sender->m_networkTelemetry.isActiveProbeGoodputAuthorized(
+                    requestScopeDigest, sourceProvider, observerProvider)) {
+                finish(true);
+                return;
+            }
+            const auto remaining = ndn::time::milliseconds(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now()).count());
+            if (remaining <= ndn::time::milliseconds::zero()) {
+                finish(true);
+                return;
+            }
+            const auto& prepared = (*preparedSegments)[segment];
+            const auto interest = prepared.interest;
+            const auto expectedDataName = prepared.expectedDataName;
+            const auto interestWireBytes = prepared.wireBytes;
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->wireBytes += interestWireBytes;
+            }
+            try {
+                const auto sentAt = std::chrono::steady_clock::now();
+                if (sentAt >= deadline ||
+                    (cancelled && cancelled->load(std::memory_order_relaxed)) ||
+                    !sender->m_networkTelemetry.isActiveProbeCollectionOpen(
+                        requestScopeDigest)) {
+                    if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+                        sender->m_networkTelemetry.closeActiveProbeCollection(
+                            requestScopeDigest);
+                    }
+                    finish(true);
+                    return;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    if (state->completed) {
+                        return;
+                    }
+                    state->interestSentAt[segment] = sentAt;
+                    if (segment == 0) {
+                        state->started = sentAt;
+                    }
+                }
+                sender->m_face.expressInterest(
+                    interest,
+                    [callbackState, state, finish, observerProvider, cancelled,
+                     sourceProvider, requestScopeDigest, runNonce, segment,
+                     expectedDataName, preparedSegments, deadline, stageObserver]
+                    (const ndn::Interest&, const ndn::Data& data) {
+                        try {
+                        PeerProbeCallbackLease lease(callbackState);
+                        if (!lease) {
+                            return;
+                        }
+                        if (std::chrono::steady_clock::now() >= deadline ||
+                            (cancelled && cancelled->load(
+                                std::memory_order_relaxed))) {
+                            finish(true);
+                            return;
+                        }
+                        const auto dataReceivedAt = std::chrono::steady_clock::now();
+                        auto* const provider = lease.get();
+                        const auto dataWireBytes = data.wireEncode().size();
+                        if (data.getName() != expectedDataName ||
+                            data.getContent().value_size() > ACTIVE_GOODPUT_MAX_CONTENT_BYTES ||
+                            dataWireBytes > ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES ||
+                            !provider->m_networkTelemetry.isActiveProbeGoodputAuthorized(
+                                requestScopeDigest, sourceProvider, observerProvider)) {
+                            finish(true);
+                            return;
+                        }
+                        bool captureFailed = false;
+                        bool startValidation = false;
+                        size_t capturedCount = 0;
+                        {
+                            std::lock_guard<std::mutex> lock(state->mutex);
+                            if (state->completed || state->validationStarted ||
+                                state->capturedData[segment])
+                                return;
+                            constexpr size_t trainWireCap = ACTIVE_GOODPUT_SEGMENT_COUNT *
+                                (ACTIVE_GOODPUT_MAX_INTEREST_WIRE_BYTES +
+                                 ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES);
+                            captureFailed = state->wireBytes > trainWireCap ||
+                                dataWireBytes > trainWireCap - state->wireBytes;
+                            if (!captureFailed) {
+                                state->capturedData[segment] = std::make_shared<ndn::Data>(data);
+                                state->dataReceivedAt[segment] = dataReceivedAt;
+                                state->dataWireBytes[segment] = dataWireBytes;
+                                state->wireBytes += dataWireBytes;
+                                --state->captureRemaining;
+                                startValidation = state->captureRemaining == 0;
+                                state->validationStarted = startValidation;
+                                capturedCount = ACTIVE_GOODPUT_SEGMENT_COUNT - state->captureRemaining;
+                            }
+                        }
+                        if (captureFailed) {
+                            finish(true);
+                            return;
+                        }
+                        if (stageObserver)
+                            stageObserver("capture", capturedCount, capturedCount);
+                        if (!startValidation)
+                            return;
+                        // Collect every arrival before any train signature validation or
+                        // payload parsing can delay the following packet's callback.
+                        for (size_t segment = 0; segment < ACTIVE_GOODPUT_SEGMENT_COUNT; ++segment) {
+                            std::shared_ptr<const ndn::Data> capturedData;
+                            std::chrono::steady_clock::time_point dataReceivedAt;
+                            size_t retainedCount = 0;
+                            {
+                                std::lock_guard<std::mutex> lock(state->mutex);
+                                if (state->completed)
+                                    return;
+                                capturedData = state->capturedData[segment];
+                                dataReceivedAt = state->dataReceivedAt[segment];
+                                retainedCount = std::count_if(state->capturedData.begin(),
+                                    state->capturedData.end(), [] (const auto& packet) {
+                                        return static_cast<bool>(packet);
+                                    });
+                            }
+                            if (!capturedData || std::chrono::steady_clock::now() >= deadline ||
+                                (cancelled && cancelled->load(std::memory_order_relaxed)) ||
+                                !provider->m_networkTelemetry.isActiveProbeGoodputAuthorized(
+                                    requestScopeDigest, sourceProvider, observerProvider)) {
+                                finish(true);
+                                return;
+                            }
+                            if (stageObserver)
+                                stageObserver("validation-entry", capturedCount, retainedCount);
+                            if (std::chrono::steady_clock::now() >= deadline ||
+                                (cancelled && cancelled->load(std::memory_order_relaxed))) {
+                                finish(true);
+                                return;
+                            }
+                            const auto expectedDataName = (*preparedSegments)[segment].expectedDataName;
+                        provider->nac_validator.validate(
+                            *capturedData,
+                            [callbackState, state, finish, observerProvider,
+                             cancelled,
+                             sourceProvider, requestScopeDigest, runNonce, segment,
+                             expectedDataName, dataReceivedAt, deadline, stageObserver]
+                            (const ndn::Data& validated) {
+                                try {
+                                PeerProbeCallbackLease validationLease(callbackState);
+                                if (!validationLease) {
+                                    return;
+                                }
+                                auto* const provider = validationLease.get();
+                                size_t capturedCount = 0;
+                                size_t retainedCount = 0;
+                                {
+                                    std::lock_guard<std::mutex> lock(state->mutex);
+                                    if (state->completed)
+                                        return;
+                                    capturedCount = ACTIVE_GOODPUT_SEGMENT_COUNT - state->captureRemaining;
+                                    retainedCount = std::count_if(state->capturedData.begin(),
+                                        state->capturedData.end(), [] (const auto& packet) {
+                                            return static_cast<bool>(packet);
+                                        });
+                                }
+                                if (stageObserver)
+                                    stageObserver("validation-complete", capturedCount, retainedCount);
+                                bool accepted = false;
+                                NetworkProbeSourceGaps sourceSendGapsMs{};
+                                bool sourceTimingValidated = false;
+                                std::string targetBootEpoch;
+                                const auto& signatureInfo = validated.getSignatureInfo();
+                                    if (validated.getName() == expectedDataName &&
+                                        !(cancelled && cancelled->load(
+                                            std::memory_order_relaxed)) &&
+                                        provider->m_networkTelemetry
+                                          .isActiveProbeCollectionOpen(requestScopeDigest) &&
+                                        validated.getContent().value_size() <=
+                                        ACTIVE_GOODPUT_MAX_CONTENT_BYTES &&
+                                    validated.wireEncode().size() <=
+                                        ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES &&
+                                    signatureInfo.hasKeyLocator() &&
+                                    signatureInfo.getKeyLocator().getType() == ndn::tlv::Name &&
+                                    ndn::security::extractIdentityFromCertName(
+                                        signatureInfo.getKeyLocator().getName()) ==
+                                        sourceProvider) {
+                                    PeerNetworkGoodputProbeResponse response;
+                                    const bool responseDecoded =
+                                        decodePeerProbeMessage(
+                                            validated.getContent(), ndn::tlv::Content, response);
+                                    if (responseDecoded &&
+                                        response.getVersion() ==
+                                            DeploymentControlMessage::VERSION &&
+                                        response.getFields().size() ==
+                                            (segment == ACTIVE_GOODPUT_SEGMENT_COUNT - 1 ?
+                                              9 + ACTIVE_GOODPUT_SEGMENT_COUNT - 2 : 9) &&
+                                        response.hasField("probeProfileDigest") &&
+                                        response.getField("probeProfileDigest") ==
+                                            ACTIVE_GOODPUT_PROFILE_DIGEST &&
+                                        response.hasField("observerProvider") &&
+                                        response.hasField("targetProvider") &&
+                                        response.hasField("requestScopeDigest") &&
+                                        response.hasField("runNonce") &&
+                                        response.hasField("segment") &&
+                                        response.hasField("segmentCount") &&
+                                        response.hasField("targetBootEpoch") &&
+                                        response.hasField("payload") &&
+                                        response.getField("observerProvider") ==
+                                            observerProvider.toUri() &&
+                                        response.getField("targetProvider") ==
+                                            sourceProvider.toUri() &&
+                                        response.getField("requestScopeDigest") ==
+                                            requestScopeDigest &&
+                                        response.getField("runNonce") == runNonce &&
+                                        response.getField("segment") ==
+                                            std::to_string(segment) &&
+                                        response.getField("segmentCount") ==
+                                            std::to_string(ACTIVE_GOODPUT_SEGMENT_COUNT) &&
+                                        response.getField("payload") ==
+                                            makeActiveGoodputPayload(runNonce, segment) &&
+                                        !response.getField("targetBootEpoch").empty() &&
+                                        response.getField("targetBootEpoch").size() <= 128 &&
+                                        provider->m_networkTelemetry.isActiveProbeGoodputAuthorized(
+                                            requestScopeDigest, sourceProvider,
+                                            observerProvider) &&
+                                        dataReceivedAt < deadline &&
+                                        std::chrono::steady_clock::now() < deadline) {
+                                        targetBootEpoch =
+                                            response.getField("targetBootEpoch");
+                                        accepted = true;
+                                        if (segment == ACTIVE_GOODPUT_SEGMENT_COUNT - 1) {
+                                            sourceTimingValidated = true;
+                                            for (size_t gap = 0; gap < ACTIVE_GOODPUT_SEGMENT_COUNT - 2; ++gap) {
+                                                const auto field = "sourceSendGap" +
+                                                    std::to_string(gap) + "Ns";
+                                                if (!response.hasField(field)) {
+                                                    sourceTimingValidated = false;
+                                                    break;
+                                                }
+                                                const auto& text = response.getField(field);
+                                                uint64_t nanoseconds = 0;
+                                                const auto parsed = std::from_chars(
+                                                    text.data(), text.data() + text.size(), nanoseconds);
+                                                if (text.empty() || text.size() > 9 ||
+                                                    !std::all_of(text.begin(), text.end(),
+                                                        [] (unsigned char c) { return std::isdigit(c); }) ||
+                                                    parsed.ec != std::errc() ||
+                                                    parsed.ptr != text.data() + text.size() ||
+                                                    nanoseconds > 500000000) {
+                                                    sourceTimingValidated = false;
+                                                    break;
+                                                }
+                                                sourceSendGapsMs[gap] =
+                                                    static_cast<double>(nanoseconds) / 1000000.0;
+                                            }
+                                            accepted = sourceTimingValidated;
+                                        }
+                                    }
+                                }
+
+                                if (!accepted) {
+                                    finish(true);
+                                    return;
+                                }
+                                {
+                                    std::lock_guard<std::mutex> lock(state->mutex);
+                                    if (state->completed || state->received[segment]) {
+                                        return;
+                                    }
+                                    state->received[segment] = true;
+                                    if (segment == ACTIVE_GOODPUT_SEGMENT_COUNT - 1) {
+                                        state->sourceSendGapsMs = sourceSendGapsMs;
+                                        state->sourceTimingValidated = sourceTimingValidated;
+                                    }
+                                    state->dataReceivedAt[segment] = dataReceivedAt;
+                                    state->dataWireBytes[segment] =
+                                        validated.wireEncode().size();
+                                    if (segment == 0) {
+                                        // Segment zero's exact signed Data name
+                                        // is the unique identity for this packet train.
+                                        state->dataName = validated.getName();
+                                    }
+                                    state->payloadBytes +=
+                                        validated.getContent().value_size();
+                                    if (state->peerBootEpoch.empty()) {
+                                        state->peerBootEpoch = std::move(targetBootEpoch);
+                                    }
+                                    else if (state->peerBootEpoch != targetBootEpoch) {
+                                        state->failed = true;
+                                    }
+                                    if (state->remaining > 0) {
+                                        --state->remaining;
+                                    }
+                                }
+                                finish(false);
+                                }
+                                catch (const std::exception&) {
+                                    finish(true);
+                                }
+                                catch (...) {
+                                    finish(true);
+                                }
+                            },
+                            [finish](const ndn::Data&,
+                                     const ndn::security::ValidationError&) {
+                                finish(true);
+                            });
+                        }
+                        }
+                        catch (const std::exception&) {
+                            finish(true);
+                        }
+                        catch (...) {
+                            finish(true);
+                        }
+                    },
+                    [finish](
+                        const ndn::Interest&, const ndn::lp::Nack&) {
+                        finish(true);
+                    },
+                    [finish](
+                        const ndn::Interest&) {
+                        finish(true);
+                    });
+                if (segment + 1 < ACTIVE_GOODPUT_SEGMENT_COUNT) {
+                    // All train Interests are signed before collection
+                    // starts. Face::expressInterest posts its actual send;
+                    // queue the next admission behind that send so a cancel
+                    // callback can stop the remaining segments. No timed
+                    // pacing or response wait is introduced.
+                    boost::asio::post(sender->m_face.getIoContext(),
+                        [sendSegment, nextSegment = segment + 1] {
+                            sendSegment(sendSegment, nextSegment);
+                        });
+                }
+            }
+            catch (const std::exception&) {
+                finish(true);
+            }
+            catch (...) {
+                finish(true);
+            }
+            }
+            catch (const std::exception&) {
+                finish(true);
+            }
+            catch (...) {
+                finish(true);
+            }
+        };
+
+        sendSegment(sendSegment, 0);
+    }
+
+    bool ServiceProvider::handlePeerNetworkProbeInterest(
+        const ndn::Interest& interest)
+    {
+        ndn::Name rttPrefix = identity;
+        rttPrefix.append("NDNSF").append("PEER-PROBE");
+        ndn::Name goodputPrefix = identity;
+        goodputPrefix.append("NDNSF").append("PEER-GOODPUT");
+        ndn::Name readinessPrefix = identity;
+        readinessPrefix.append("NDNSF").append("PEER-PROBE-READY");
+        const bool isGoodput = goodputPrefix.isPrefixOf(interest.getName());
+        const bool isRtt = rttPrefix.isPrefixOf(interest.getName());
+        const bool isReadiness = readinessPrefix.isPrefixOf(interest.getName());
+        if (!isGoodput && !isRtt && !isReadiness) {
+            return false;
+        }
+        NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_INTEREST"
+                     << " provider=" << identity.toUri()
+                     << " kind=" << (isReadiness ? "readiness" :
+                                      isGoodput ? "goodput" : "rtt")
+                     << " name=" << interest.getName().toUri());
+        const auto& params = interest.getApplicationParameters();
+        if (!interest.getMustBeFresh() || !params.isValid() || params.size() > 1024 ||
+            interest.wireEncode().size() > ACTIVE_GOODPUT_MAX_INTEREST_WIRE_BYTES) {
+            return true;
+        }
+        const auto receivedAt = std::chrono::steady_clock::now();
+        const auto maxProbeTime = isGoodput ? ACTIVE_GOODPUT_DEADLINE :
+                                  std::chrono::milliseconds(250);
+        const auto probeCap =
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                maxProbeTime);
+        const auto requestLifetime =
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::milliseconds(interest.getInterestLifetime().count()));
+        const auto responderDeadline = receivedAt +
+                                       std::min(probeCap, requestLifetime);
+        auto validationPermit = std::make_shared<PeerProbeValidationPermit>(
+            m_peerProbeCallbackState);
+        if (!*validationPermit) {
+            NDN_LOG_DEBUG("Drop peer probe: pending validation bound reached");
+            return true;
+        }
+
+        try {
+            nac_validator.validate(
+                interest,
+                [callbackState = std::weak_ptr<PeerProbeCallbackState>(
+                     m_peerProbeCallbackState), responderDeadline,
+                 validationPermit, isGoodput, isReadiness,
+                 goodputPrefix, rttPrefix, readinessPrefix]
+                (const ndn::Interest& validated) {
+                validationPermit->release();
+                try {
+                PeerProbeCallbackLease lease(callbackState);
+                if (!lease) {
+                    return;
+                }
+                if (std::chrono::steady_clock::now() >= responderDeadline) {
+                    return;
+                }
+                auto* const provider = lease.get();
+                const auto signatureInfo = validated.getSignatureInfo();
+                if (!signatureInfo || !signatureInfo->hasKeyLocator() ||
+                    signatureInfo->getKeyLocator().getType() != ndn::tlv::Name) {
+                    return;
+                }
+                const auto requesterIdentity =
+                    ndn::security::extractIdentityFromCertName(
+                        signatureInfo->getKeyLocator().getName());
+                if (requesterIdentity.empty() || requesterIdentity == provider->identity) {
+                    return;
+                }
+
+                if (isReadiness) {
+                    if (!validated.getMustBeFresh() ||
+                        !validated.getCanBePrefix() ||
+                        validated.getName().size() != readinessPrefix.size() + 3 ||
+                        !isProbeTimestampComponent(validated.getName(),
+                                                   readinessPrefix.size())) {
+                        return;
+                    }
+                    PeerNetworkProbe readiness;
+                    if (!decodePeerProbeMessage(
+                            validated.getApplicationParameters(),
+                            ndn::tlv::ApplicationParameters, readiness) ||
+                        readiness.getVersion() != DeploymentControlMessage::VERSION ||
+                        readiness.getFields().size() != 6 ||
+                        !readiness.hasField("observerProvider") ||
+                        !readiness.hasField("targetProvider") ||
+                        !readiness.hasField("requestScopeDigest") ||
+                        !readiness.hasField("nonce") ||
+                        !readiness.hasField("requireRtt") ||
+                        !readiness.hasField("requireGoodput")) {
+                        return;
+                    }
+                    const auto& scope = readiness.getField("requestScopeDigest");
+                    const auto& nonce = readiness.getField("nonce");
+                    const auto& rttText = readiness.getField("requireRtt");
+                    const auto& goodputText = readiness.getField("requireGoodput");
+                    const bool requireRtt = rttText == "1";
+                    const bool requireGoodput = goodputText == "1";
+                    if (readiness.getField("targetProvider") !=
+                            provider->identity.toUri() ||
+                        readiness.getField("observerProvider") !=
+                            requesterIdentity.toUri() ||
+                        scope.empty() || scope.size() > 128 ||
+                        nonce.empty() || nonce.size() > 20 ||
+                        !std::all_of(nonce.begin(), nonce.end(),
+                                     [] (unsigned char c) {
+                                         return std::isdigit(c);
+                                     }) ||
+                        validated.getName()[readinessPrefix.size() + 1].toUri() !=
+                            nonce ||
+                        (rttText != "0" && rttText != "1") ||
+                        (goodputText != "0" && goodputText != "1") ||
+                        (!requireRtt && !requireGoodput)) {
+                        return;
+                    }
+                    const bool rttAuthorized = !requireRtt ||
+                        provider->m_networkTelemetry.isActiveProbeAuthorized(
+                            scope, requesterIdentity, provider->identity);
+                    const bool goodputAuthorized = !requireGoodput ||
+                        provider->m_networkTelemetry.isActiveProbeGoodputAuthorized(
+                            scope, provider->identity, requesterIdentity);
+                    const bool scopeAuthorized = rttAuthorized && goodputAuthorized;
+                    const bool rateAllowed = scopeAuthorized &&
+                        provider->allowPeerNetworkProbe(requesterIdentity);
+                    if (!scopeAuthorized || !rateAllowed) {
+                        NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_REJECT"
+                                     << " provider=" << provider->identity.toUri()
+                                     << " observerProvider=" << requesterIdentity.toUri()
+                                     << " requestScope=" << scope
+                                     << " kind=readiness scopeAuthorized="
+                                     << scopeAuthorized
+                                     << " rttAuthorized=" << rttAuthorized
+                                     << " goodputAuthorized=" << goodputAuthorized
+                                     << " rateAllowed=" << rateAllowed);
+                        return;
+                    }
+
+                    PeerNetworkProbeResponse response;
+                    response.setField("observerProvider", requesterIdentity.toUri());
+                    response.setField("targetProvider", provider->identity.toUri());
+                    response.setField("requestScopeDigest", scope);
+                    response.setField("nonce", nonce);
+                    response.setField("targetBootEpoch", provider->getProviderBootEpoch());
+                    auto responseDataName = validated.getName();
+                    responseDataName.append(ACTIVE_PEER_PROBE_REPLY_COMPONENT);
+                    ndn::Data data(responseDataName);
+                    data.setFreshnessPeriod(ndn::time::milliseconds::zero());
+                    data.setContent(response.WireEncode());
+                    (provider->m_testSigningKeyChain ?
+                        *provider->m_testSigningKeyChain : provider->m_keyChain)
+                        .sign(data, provider->m_signingInfo);
+                    if (data.wireEncode().size() >
+                        ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES) {
+                        return;
+                    }
+                    provider->m_face.put(data);
+                    NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_RESPONSE"
+                                 << " provider=" << provider->identity.toUri()
+                                 << " observerProvider=" << requesterIdentity.toUri()
+                                 << " kind=readiness status=sent");
+                    return;
+                }
+
+                if (isGoodput) {
+                    if (!validated.getMustBeFresh() || !validated.getCanBePrefix() ||
+                        validated.getName().size() != goodputPrefix.size() + 4 ||
+                        !isProbeTimestampComponent(validated.getName(),
+                                                   goodputPrefix.size())) {
+                        return;
+                    }
+                    PeerNetworkGoodputProbe probe;
+                    if (!decodePeerProbeMessage(
+                            validated.getApplicationParameters(),
+                            ndn::tlv::ApplicationParameters, probe) ||
+                        probe.getVersion() != DeploymentControlMessage::VERSION ||
+                        probe.getFields().size() != 7 ||
+                        !probe.hasField("observerProvider") ||
+                        !probe.hasField("targetProvider") ||
+                        !probe.hasField("requestScopeDigest") ||
+                        !probe.hasField("runNonce") ||
+                        !probe.hasField("segment") ||
+                        !probe.hasField("segmentCount") ||
+                        !probe.hasField("contentBytes")) {
+                        return;
+                    }
+                    const auto& scope = probe.getField("requestScopeDigest");
+                    const auto& runNonce = probe.getField("runNonce");
+                    const auto& segmentText = probe.getField("segment");
+                    size_t segment = 0;
+                    const auto parsedSegment = std::from_chars(
+                        segmentText.data(), segmentText.data() + segmentText.size(), segment);
+                    const bool segmentShapeValid =
+                        parsedSegment.ec == std::errc() &&
+                        parsedSegment.ptr == segmentText.data() + segmentText.size() &&
+                        segment < ACTIVE_GOODPUT_SEGMENT_COUNT &&
+                        !runNonce.empty() && runNonce.size() <= 20 &&
+                        std::all_of(runNonce.begin(), runNonce.end(),
+                                    [] (unsigned char c) { return std::isdigit(c); }) &&
+                        validated.getName()[goodputPrefix.size() + 1].toUri() == runNonce &&
+                        validated.getName()[goodputPrefix.size() + 2].isSegment() &&
+                        validated.getName()[goodputPrefix.size() + 2].toSegment() == segment &&
+                        probe.getField("segmentCount") ==
+                            std::to_string(ACTIVE_GOODPUT_SEGMENT_COUNT) &&
+                        probe.getField("contentBytes") ==
+                            std::to_string(ACTIVE_GOODPUT_CONTENT_BYTES) &&
+                        probe.getField("targetProvider") == provider->identity.toUri() &&
+                        probe.getField("observerProvider") == requesterIdentity.toUri() &&
+                        !scope.empty() && scope.size() <= 128;
+                    if (!segmentShapeValid) {
+                        return;
+                    }
+                    const bool edgeAuthorized =
+                        provider->m_networkTelemetry.isActiveProbeGoodputAuthorized(
+                            scope, provider->identity, requesterIdentity);
+                    const bool rateAllowed =
+                        provider->allowPeerNetworkProbe(requesterIdentity);
+                    if (!edgeAuthorized || !rateAllowed) {
+                        NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_REJECT"
+                                     << " provider=" << provider->identity.toUri()
+                                     << " observerProvider=" << requesterIdentity.toUri()
+                                     << " kind=goodput edgeAuthorized=" << edgeAuthorized
+                                     << " rateAllowed=" << rateAllowed);
+                        return;
+                    }
+                    const bool newSegmentAccepted =
+                        provider->m_networkTelemetry.acceptActiveProbeGoodputSegment(
+                            scope, provider->identity, requesterIdentity, runNonce,
+                            segment, ACTIVE_GOODPUT_SEGMENT_COUNT);
+                    if (!newSegmentAccepted) {
+                        return;
+                    }
+
+                    provider->queuePeerGoodputTrain(
+                        validated, requesterIdentity, scope, runNonce, segment);
+                    return;
+                }
+
+                PeerNetworkProbe probe;
+                if (!validated.getMustBeFresh() || !validated.getCanBePrefix() ||
+                    validated.getName().size() != rttPrefix.size() + 3 ||
+                    !isProbeTimestampComponent(validated.getName(), rttPrefix.size())) {
+                    return;
+                }
+                if (!decodePeerProbeMessage(
+                        validated.getApplicationParameters(),
+                        ndn::tlv::ApplicationParameters, probe) ||
+                    probe.getVersion() != DeploymentControlMessage::VERSION ||
+                    probe.getFields().size() != 4 ||
+                    !probe.hasField("observerProvider") ||
+                    !probe.hasField("targetProvider") ||
+                    !probe.hasField("requestScopeDigest") ||
+                    !probe.hasField("nonce")) {
+                    return;
+                }
+                const auto& scope = probe.getField("requestScopeDigest");
+                const auto& nonce = probe.getField("nonce");
+                if (probe.getField("targetProvider") != provider->identity.toUri() ||
+                    scope.empty() || scope.size() > 128 ||
+                    nonce.empty() || nonce.size() > 20 ||
+                    validated.getName()[rttPrefix.size() + 1].toUri() != nonce) {
+                    return;
+                }
+                if (probe.getField("observerProvider") != requesterIdentity.toUri()) {
+                    return;
+                }
+                const bool probeAuthorized =
+                    provider->m_networkTelemetry.isActiveProbeAuthorized(
+                        scope, requesterIdentity, provider->identity);
+                const bool rateAllowed =
+                    provider->allowPeerNetworkProbe(requesterIdentity);
+                const bool claimAccepted = probeAuthorized && rateAllowed &&
+                    provider->m_networkTelemetry.claimActiveProbeRttPair(
+                        scope, requesterIdentity, provider->identity);
+                if (!probeAuthorized || !rateAllowed || !claimAccepted) {
+                    NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_REJECT"
+                                 << " provider=" << provider->identity.toUri()
+                                 << " observerProvider=" << requesterIdentity.toUri()
+                                 << " kind=rtt probeAuthorized=" << probeAuthorized
+                                 << " rateAllowed=" << rateAllowed
+                                 << " claimAccepted=" << claimAccepted);
+                    return;
+                }
+
+                PeerNetworkProbeResponse response;
+                response.setField("observerProvider", requesterIdentity.toUri());
+                response.setField("targetProvider", provider->identity.toUri());
+                response.setField("requestScopeDigest", scope);
+                response.setField("nonce", nonce);
+                response.setField("targetBootEpoch", provider->getProviderBootEpoch());
+                auto responseDataName = validated.getName();
+                responseDataName.append(ACTIVE_PEER_PROBE_REPLY_COMPONENT);
+                ndn::Data data(responseDataName);
+                data.setFreshnessPeriod(ndn::time::milliseconds::zero());
+                data.setContent(response.WireEncode());
+                (provider->m_testSigningKeyChain ?
+                    *provider->m_testSigningKeyChain : provider->m_keyChain)
+                    .sign(data, provider->m_signingInfo);
+                if (data.wireEncode().size() > ACTIVE_GOODPUT_MAX_DATA_WIRE_BYTES) {
+                    return;
+                }
+                provider->m_face.put(data);
+                NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_RESPONSE"
+                             << " provider=" << provider->identity.toUri()
+                             << " observerProvider=" << requesterIdentity.toUri()
+                             << " kind=rtt status=sent");
+                }
+                catch (const std::exception& error) {
+                    NDN_LOG_DEBUG("Drop peer network probe response after callback exception: "
+                                  << error.what());
+                }
+                catch (...) {
+                    NDN_LOG_DEBUG("Drop peer network probe response after unknown callback exception");
+                }
+                },
+                [validationPermit](const ndn::Interest&,
+                                   const ndn::security::ValidationError& error) {
+                    validationPermit->release();
+                    NDN_LOG_WARN("NDNSF_DI_PROVIDER_PEER_PROBE_REJECT"
+                                 << " kind=unauthenticated error=" << error);
+                });
+        }
+        catch (const std::exception&) {
+            validationPermit->release();
+        }
+        return true;
+    }
+
+    bool ServiceProvider::allowPeerNetworkProbe(
+        const ndn::Name& requesterIdentity)
+    {
+        constexpr size_t MAX_RATE_WINDOWS = 256;
+        constexpr size_t MAX_PROBES_PER_WINDOW = 128;
+        constexpr auto WINDOW = std::chrono::seconds(1);
+        constexpr auto RETENTION = std::chrono::minutes(5);
+        if (requesterIdentity.empty()) {
+            return false;
+        }
+        const auto key = requesterIdentity.toUri();
+        const auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(m_peerProbeRateMutex);
+        for (auto it = m_peerProbeRateWindows.begin();
+             it != m_peerProbeRateWindows.end();) {
+            if (now - it->second.lastUsed > RETENTION) {
+                it = m_peerProbeRateWindows.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+        auto it = m_peerProbeRateWindows.find(key);
+        if (it == m_peerProbeRateWindows.end()) {
+            if (m_peerProbeRateWindows.size() >= MAX_RATE_WINDOWS) {
+                const auto oldest = std::min_element(
+                    m_peerProbeRateWindows.begin(), m_peerProbeRateWindows.end(),
+                    [] (const auto& lhs, const auto& rhs) {
+                        return lhs.second.lastUsed < rhs.second.lastUsed;
+                    });
+                if (oldest != m_peerProbeRateWindows.end()) {
+                    m_peerProbeRateWindows.erase(oldest);
+                }
+            }
+            it = m_peerProbeRateWindows.emplace(
+                key, PeerProbeRateWindow{now, now, 0}).first;
+        }
+        auto& window = it->second;
+        if (now - window.started >= WINDOW) {
+            window.started = now;
+            window.accepted = 0;
+        }
+        window.lastUsed = now;
+        if (window.accepted >= MAX_PROBES_PER_WINDOW) {
+            return false;
+        }
+        ++window.accepted;
+        return true;
+    }
+
+    ServiceProvider::PeerProbeCallbackLease::PeerProbeCallbackLease(
+        std::weak_ptr<PeerProbeCallbackState> state)
+      : m_state(state.lock())
+    {
+        if (!m_state) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        if (m_state->owner == nullptr) {
+            return;
+        }
+        m_owner = m_state->owner;
+        ++m_state->activeCallbacks;
+        m_acquired = true;
+    }
+
+    ServiceProvider::PeerProbeCallbackLease::~PeerProbeCallbackLease()
+    {
+        if (!m_state || !m_acquired) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        if (m_state->activeCallbacks > 0 && --m_state->activeCallbacks == 0) {
+            m_state->drained.notify_all();
+        }
+    }
+
+    ServiceProvider::PeerProbeValidationPermit::PeerProbeValidationPermit(
+        std::shared_ptr<PeerProbeCallbackState> state)
+      : m_state(std::move(state))
+    {
+        if (!m_state) {
+            return;
+        }
+        constexpr size_t MAX_PENDING_VALIDATIONS = 128;
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        if (m_state->owner != nullptr &&
+            m_state->pendingValidations < MAX_PENDING_VALIDATIONS) {
+            ++m_state->pendingValidations;
+            m_reserved.store(true);
+        }
+    }
+
+    ServiceProvider::PeerProbeValidationPermit::~PeerProbeValidationPermit()
+    {
+        release();
+    }
+
+    void
+    ServiceProvider::PeerProbeValidationPermit::release()
+    {
+        if (!m_state || !m_reserved.exchange(false)) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(m_state->mutex);
+        if (m_state->pendingValidations > 0) {
+            --m_state->pendingValidations;
+        }
+    }
+
+    class ServiceProvider::PeerProbeInterestSigner
+    {
+    public:
+        void sign(ndn::KeyChain& keyChain,
+                  ndn::Interest& interest,
+                  const ndn::security::SigningInfo& signingInfo)
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_signer || m_keyChain != &keyChain) {
+                m_keyChain = &keyChain;
+                m_signer = std::make_unique<ndn::security::InterestSigner>(keyChain);
+            }
+            m_signer->makeSignedInterest(interest, signingInfo);
+        }
+
+    private:
+        std::mutex m_mutex;
+        ndn::KeyChain* m_keyChain = nullptr;
+        std::unique_ptr<ndn::security::InterestSigner> m_signer;
+    };
+
+    void
+    ServiceProvider::signPeerProbeInterest(ndn::Interest& interest)
+    {
+        std::shared_ptr<PeerProbeInterestSigner> signer;
+        {
+            std::lock_guard<std::mutex> lock(m_peerProbeInterestSignerMutex);
+            if (!m_peerProbeInterestSigner) {
+                m_peerProbeInterestSigner =
+                    std::make_shared<PeerProbeInterestSigner>();
+            }
+            signer = m_peerProbeInterestSigner;
+        }
+        auto& keyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+        signer->sign(keyChain, interest, m_signingInfo);
     }
 
     ServiceProvider::ServiceProvider(ndn::Face& face,
@@ -1462,6 +3611,8 @@ namespace ndn_service_framework
                   << " dkPrefix="
                   << ndn::Name(attrAuthorityCertificate.getIdentity()).append("DKEY").toUri());
 
+        m_signingInfo = ndn::security::signingByCertificate(signingCert);
+
         // Serve NDNSF and ck messages using IMS
         const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
         const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
@@ -1479,7 +3630,8 @@ namespace ndn_service_framework
             *holder = m_face.setInterestFilter(
                 prefix,
                 std::bind(&ServiceProvider::onInterest, this, _1, _2),
-                std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+                std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2),
+                m_signingInfo);
         };
         NDN_LOG_INFO("[ServiceProvider] registered service content prefix="
                   << ndnsfFilter.toUri());
@@ -1489,8 +3641,6 @@ namespace ndn_service_framework
         registerContentFilter(applicationDataFilter);
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider="
                      << identity.toUri());
-
-        m_signingInfo = ndn::security::signingByCertificate(signingCert);
 
         ndn::svs::SecurityOptions secOpts(m_keyChain);
         secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
@@ -1763,10 +3913,14 @@ namespace ndn_service_framework
             throw std::logic_error(
                 "LocalMock data ingress must be installed before PubSub attachment");
         }
+        if (!m_contentRegistrations.empty()) {
+            return;
+        }
         // LocalMock uses the real production onInterest/IMS path for exact
         // streamed-event retries.  Keep the same content filters that the
-        // normal constructor installs; the SVS attachment alone only covers
-        // publication notifications and cannot answer an exact Interest.
+        // normal constructor installs only when they are not already present;
+        // the SVS attachment alone only covers publication notifications and
+        // cannot answer an exact Interest.
         const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
         const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
         const ndn::Name diDataFilter =
@@ -1778,7 +3932,8 @@ namespace ndn_service_framework
             *holder = m_face.setInterestFilter(
                 prefix,
                 std::bind(&ServiceProvider::onInterest, this, _1, _2),
-                std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+                std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2),
+                m_signingInfo);
         };
         registerContentFilter(ndnsfFilter);
         registerContentFilter(ckFilter);
@@ -1940,6 +4095,18 @@ namespace ndn_service_framework
 
     ServiceProvider::~ServiceProvider()
     {
+        // Peer probe callbacks capture only a weak lifetime state. Nulling the
+        // owner prevents late callbacks from entering; this barrier waits for
+        // any callback already inside Provider code to leave before members
+        // are destroyed. The externally owned Face outlives this object.
+        if (m_peerProbeCallbackState) {
+            std::unique_lock<std::mutex> lock(m_peerProbeCallbackState->mutex);
+            m_peerProbeCallbackState->owner = nullptr;
+            m_peerProbeCallbackState->drained.wait(
+                lock, [this] {
+                    return m_peerProbeCallbackState->activeCallbacks == 0;
+                });
+        }
         // spec182: sever scoped-registration ownership first.  Under the
         // registration control lock the owner is cleared so a posted cleanup
         // closure can no longer reach this provider, and every owned state is
@@ -1948,9 +4115,13 @@ namespace ndn_service_framework
         // destroyed under the lock, and the pool shutdowns below drain work
         // that can no longer publish through a live registration.
         {
-            const std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+            std::unique_lock<std::mutex> lock(m_registrationControl->mutex);
             m_registrationControl->owner = nullptr;
             closeAllRegistrationStates();
+            m_registrationControl->drained.wait(
+                lock, [this] {
+                    return m_registrationControl->activeOwnerCalls == 0;
+                });
         }
         m_fetchStopping->store(true);
         m_fetchPool.shutdown();
@@ -3011,8 +5182,8 @@ namespace ndn_service_framework
             }
         }
         m_collaborationServices[serviceName] =
-            {std::move(ackHandler), std::move(handler), std::move(allowedRoles),
-             nullptr};
+            {std::move(ackHandler), nullptr, std::move(handler),
+             std::move(allowedRoles), nullptr};
         // Collaboration work is long-running by design. Registration therefore
         // enables the existing signed SELECTION-STATUS path by default.
         m_services[serviceName].selectionStatusQueryable = true;
@@ -3095,6 +5266,7 @@ namespace ndn_service_framework
         // Closing becomes observable by any dispatch thread the moment the
         // atomic flips; only the Core-entry cleanup below is Face-bound.
         state->closed.store(true);
+        state->cancelPendingAcks();
         auto control = m_control.lock();
         if (control == nullptr) {
             return; // provider is gone; its destructor already closed the state
@@ -3186,11 +5358,13 @@ namespace ndn_service_framework
         for (auto& item : m_services) {
             if (item.second.registrationState != nullptr) {
                 item.second.registrationState->closed.store(true);
+                item.second.registrationState->cancelPendingAcks();
             }
         }
         for (auto& item : m_collaborationServices) {
             if (item.second.registrationState != nullptr) {
                 item.second.registrationState->closed.store(true);
+                item.second.registrationState->cancelPendingAcks();
             }
         }
     }
@@ -3268,9 +5442,17 @@ namespace ndn_service_framework
     {
         return entry.registrationState != nullptr || entry.ackHandler ||
                entry.requestHandler || entry.targetedRequestHandler ||
+               entry.asyncTargetedRequestHandler ||
                entry.streamingHandler || entry.selectionStatusQueryable ||
                entry.genericAdmissionLeaseRequired ||
                entry.genericAdmissionLeaseValidator != nullptr;
+    }
+
+    bool
+    ServiceProvider::hasTargetedRequestHandler(const RegisteredService& entry)
+    {
+        return static_cast<bool>(entry.targetedRequestHandler) ||
+               static_cast<bool>(entry.asyncTargetedRequestHandler);
     }
 
     ServiceProvider::ServiceRegistration
@@ -3344,11 +5526,112 @@ namespace ndn_service_framework
     }
 
     ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedTargetedService(
+        const ndn::Name& serviceName,
+        AsyncTargetedRequestHandler requestHandler)
+    {
+        if (!requestHandler) {
+            throw std::invalid_argument(
+                "scoped targeted service requires an async request handler");
+        }
+        if (m_registrationControl == nullptr) {
+            throw std::logic_error(
+                "scoped service registration requires a constructed provider");
+        }
+        std::vector<RegisteredService> retiredServices;
+        std::vector<RegisteredCollaborationService> retiredCollaborations;
+        std::shared_ptr<RegistrationState> state;
+        {
+            std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+            drainClosedRegistrations(retiredServices, retiredCollaborations);
+            const auto it = m_services.find(serviceName);
+            if ((it != m_services.end() && serviceEntryBusy(it->second)) ||
+                m_collaborationServices.find(serviceName) !=
+                    m_collaborationServices.end()) {
+                throw std::logic_error(
+                    "scoped service name is already registered: " +
+                    serviceName.toUri());
+            }
+            state = std::make_shared<RegistrationState>(
+                serviceName, allocateRegistrationGeneration());
+            auto& service = m_services[serviceName];
+            service.asyncTargetedRequestHandler = std::move(requestHandler);
+            service.mode = ServiceMode::Targeted;
+            service.registrationState = state;
+            const auto serviceUri = serviceName.toUri();
+            if (std::find(m_serviceNames.begin(), m_serviceNames.end(),
+                          serviceUri) == m_serviceNames.end()) {
+                m_serviceNames.push_back(serviceUri);
+            }
+            registerRequestSubscription(serviceName);
+            NDN_LOG_WARN("[ServiceProvider] registered scoped async targeted service prefix="
+                         << serviceUri
+                         << " generation=" << state->generation);
+        }
+        return ServiceRegistration(std::move(state), m_registrationControl);
+    }
+
+    ServiceProvider::ServiceRegistration
     ServiceProvider::addScopedCollaborationHandler(
         const ndn::Name& serviceName,
         std::vector<CollaborationRole> allowedRoles,
         AckStrategyHandler ackHandler,
         CollaborationHandler handler)
+    {
+        return addScopedCollaborationHandler(
+            serviceName, std::move(allowedRoles), std::move(ackHandler),
+            AsyncAckStrategyHandler{}, std::move(handler));
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedAsyncCollaborationHandler(
+        const ndn::Name& serviceName,
+        std::vector<CollaborationRole> allowedRoles,
+        AsyncAckStrategyHandler ackHandler,
+        CollaborationHandler handler)
+    {
+        return addScopedCollaborationHandler(
+            serviceName, std::move(allowedRoles), AckStrategyHandler{},
+            std::move(ackHandler), std::move(handler),
+            AsyncTargetedRequestHandler{});
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedAsyncCollaborationHandler(
+        const ndn::Name& serviceName,
+        std::vector<CollaborationRole> allowedRoles,
+        AsyncAckStrategyHandler ackHandler,
+        CollaborationHandler handler,
+        AsyncTargetedRequestHandler targetedHandler)
+    {
+        return addScopedCollaborationHandler(
+            serviceName, std::move(allowedRoles), AckStrategyHandler{},
+            std::move(ackHandler), std::move(handler),
+            std::move(targetedHandler));
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedCollaborationHandler(
+        const ndn::Name& serviceName,
+        std::vector<CollaborationRole> allowedRoles,
+        AckStrategyHandler ackHandler,
+        AsyncAckStrategyHandler asyncAckHandler,
+        CollaborationHandler handler)
+    {
+        return addScopedCollaborationHandler(
+            serviceName, std::move(allowedRoles), std::move(ackHandler),
+            std::move(asyncAckHandler), std::move(handler),
+            AsyncTargetedRequestHandler{});
+    }
+
+    ServiceProvider::ServiceRegistration
+    ServiceProvider::addScopedCollaborationHandler(
+        const ndn::Name& serviceName,
+        std::vector<CollaborationRole> allowedRoles,
+        AckStrategyHandler ackHandler,
+        AsyncAckStrategyHandler asyncAckHandler,
+        CollaborationHandler handler,
+        AsyncTargetedRequestHandler targetedHandler)
     {
         if (m_registrationControl == nullptr) {
             throw std::logic_error(
@@ -3373,6 +5656,7 @@ namespace ndn_service_framework
                 serviceName, allocateRegistrationGeneration());
             RegisteredCollaborationService record;
             record.ackHandler = std::move(ackHandler);
+            record.asyncAckHandler = std::move(asyncAckHandler);
             record.handler = std::move(handler);
             record.allowedRoles = std::move(allowedRoles);
             record.registrationState = state;
@@ -3383,6 +5667,7 @@ namespace ndn_service_framework
             auto& shell = m_services[serviceName];
             shell.registrationState = state;
             shell.selectionStatusQueryable = true;
+            shell.asyncTargetedRequestHandler = std::move(targetedHandler);
             const auto serviceUri = serviceName.toUri();
             if (std::find(m_serviceNames.begin(), m_serviceNames.end(),
                           serviceUri) == m_serviceNames.end()) {
@@ -4432,7 +6717,8 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         ProviderRequestLifecycleState state,
         const std::string& suppressionReason,
-        const std::string& finalStatus)
+        const std::string& finalStatus,
+        bool deferExternalCallback)
     {
         const auto nowUs = nowMicroseconds();
         auto& status = m_providerRequestLifecycleStatuses[requestId];
@@ -4497,7 +6783,31 @@ namespace ndn_service_framework
                   << " finalStatus="
                   << (status.finalStatus.empty() ? "-" : status.finalStatus));
         if (m_providerRequestLifecycleCallback) {
-            m_providerRequestLifecycleCallback(status);
+            if (deferExternalCallback) {
+                auto callback = m_providerRequestLifecycleCallback;
+                try {
+                    boost::asio::post(m_face.getIoContext(),
+                        [callback = std::move(callback), status]() mutable {
+                            try {
+                                callback(status);
+                            }
+                            catch (const std::exception& error) {
+                                NDN_LOG_ERROR("Provider lifecycle callback failed: "
+                                              << error.what());
+                            }
+                            catch (...) {
+                                NDN_LOG_ERROR("Provider lifecycle callback failed");
+                            }
+                        });
+                }
+                catch (const std::exception& error) {
+                    NDN_LOG_ERROR("Could not queue Provider lifecycle callback: "
+                                  << error.what());
+                }
+            }
+            else {
+                m_providerRequestLifecycleCallback(status);
+            }
         }
         logControlTiming("provider",
                          providerRequestLifecycleStateToString(state),
@@ -4951,6 +7261,138 @@ namespace ndn_service_framework
         return true;
     }
 
+    bool ServiceProvider::dispatchAsyncAckDecision(
+        const ndn::Name& requesterIdentity,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        RequestMessage requestMessage,
+        AsyncAckStrategyHandler ackHandler,
+        std::shared_ptr<RegistrationState> registrationState)
+    {
+        if (!ackHandler)
+            return false;
+
+        struct CompletionState
+        {
+            std::atomic<bool> completed{false};
+            std::shared_ptr<std::atomic<bool>> cancelled =
+                std::make_shared<std::atomic<bool>>(false);
+        };
+        constexpr auto ACK_CONTEXT_BUDGET = std::chrono::milliseconds(750);
+        auto state = std::make_shared<CompletionState>();
+        const auto deadline = std::chrono::steady_clock::now() + ACK_CONTEXT_BUDGET;
+        if (registrationState) {
+            registrationState->trackAckCancellation(state->cancelled);
+        }
+        AckRequestContext context{requesterIdentity, serviceName, requestId,
+                                  deadline,
+                                  registrationState ? registrationState->generation : 0,
+                                  state->cancelled};
+        const std::weak_ptr<RegistrationControl> weakControl =
+            m_registrationControl;
+        auto& ioContext = m_face.getIoContext();
+        auto complete = [state, weakControl, deadline, requesterIdentity,
+                         serviceName, requestId, requestMessage,
+                         registrationState](AckDecision decision) mutable {
+            if (state->completed.exchange(true, std::memory_order_acq_rel))
+                return;
+            if (std::chrono::steady_clock::now() >= deadline) {
+                decision.status = false;
+                decision.message = "ACK request deadline expired";
+            }
+            state->cancelled->store(true, std::memory_order_relaxed);
+            if (decision.message.empty()) {
+                decision.message = decision.status ? "Permission Granted"
+                                                   : "Permission Denied";
+            }
+            const auto control = weakControl.lock();
+            if (!control)
+                return;
+            auto* const owner = control->acquireOwner();
+            if (owner == nullptr)
+                return;
+            const auto releaseOwner = [control](RegistrationControl*) {
+                control->releaseOwner();
+            };
+            std::unique_ptr<RegistrationControl, decltype(releaseOwner)>
+                ownerLease(control.get(), releaseOwner);
+            auto& ioContext = owner->m_face.getIoContext();
+            boost::asio::post(ioContext,
+                [weakControl, deadline, requesterIdentity, serviceName, requestId,
+                 requestMessage, decision = std::move(decision),
+                 registrationState]() mutable {
+                    const auto control = weakControl.lock();
+                    if (!control)
+                        return;
+                    auto* const owner = control->acquireOwner();
+                    if (owner == nullptr)
+                        return;
+                    const auto releaseOwner = [control](RegistrationControl*) {
+                        control->releaseOwner();
+                    };
+                    std::unique_ptr<RegistrationControl, decltype(releaseOwner)>
+                        ownerLease(control.get(), releaseOwner);
+                    if (std::chrono::steady_clock::now() >= deadline &&
+                        decision.status) {
+                        decision.status = false;
+                        decision.message = "ACK request deadline expired";
+                    }
+                    owner->finishAckDecisionOnEventLoop(
+                        requesterIdentity, serviceName, requestId,
+                        std::move(requestMessage), std::move(decision),
+                        registrationState);
+                });
+        };
+
+        auto deadlineTimer = std::make_shared<boost::asio::steady_timer>(ioContext);
+        deadlineTimer->expires_at(deadline);
+        deadlineTimer->async_wait(
+            [complete, deadlineTimer](const boost::system::error_code& error) mutable {
+                if (error)
+                    return;
+                AckDecision expired;
+                expired.status = false;
+                expired.message = "ACK request deadline expired";
+                complete(std::move(expired));
+            });
+
+        const bool queued = m_ackPool.post(
+            [ackHandler = std::move(ackHandler), context,
+             requestMessage = std::move(requestMessage), complete,
+             registrationState]() mutable {
+                if (context.isCancelled() ||
+                    (registrationState && registrationState->closed.load())) {
+                    AckDecision closed;
+                    closed.status = false;
+                    closed.message = "Service registration closed before ACK completed";
+                    complete(std::move(closed));
+                    return;
+                }
+                try {
+                    ackHandler(context, requestMessage, complete);
+                }
+                catch (const std::exception& error) {
+                    AckDecision failed;
+                    failed.status = false;
+                    failed.message = std::string("Async ACK handler failed: ") + error.what();
+                    complete(std::move(failed));
+                }
+                catch (...) {
+                    AckDecision failed;
+                    failed.status = false;
+                    failed.message = "Async ACK handler failed";
+                    complete(std::move(failed));
+                }
+            });
+        if (!queued) {
+            AckDecision overloaded;
+            overloaded.status = false;
+            overloaded.message = "ACK handler queue full";
+            complete(std::move(overloaded));
+        }
+        return true;
+    }
+
     void ServiceProvider::finishAckDecisionOnEventLoop(
         const ndn::Name& requesterIdentity,
         const ndn::Name& serviceName,
@@ -4984,7 +7426,8 @@ namespace ndn_service_framework
             updateProviderRequestLifecycleState(
                 requestId, serviceName,
                 ProviderRequestLifecycleState::ACK_SUPPRESSED_OVERLOAD,
-                decision.message.empty() ? "ACK suppressed" : decision.message);
+                decision.message.empty() ? "ACK suppressed" : decision.message,
+                "", true);
             return;
         }
         const bool requiresReservation =
@@ -5064,7 +7507,8 @@ namespace ndn_service_framework
                                    m_useTokens ? requestMessage.getUserToken() : "",
                                    providerToken,
                                    &requestMessage,
-                                   &decision);
+                                   &decision,
+                                   true);
     }
 
     bool ServiceProvider::consumeTargetedProviderToken(
@@ -5168,7 +7612,9 @@ namespace ndn_service_framework
         const ndn::Name& requesterIdentity,
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
-        RequestMessage requestMessage)
+        RequestMessage requestMessage,
+        std::string selectionDigest,
+        const bool consumeProviderToken)
     {
         const auto targetProvider = requestMessage.getTargetProvider();
         if (targetProvider.empty()) {
@@ -5189,7 +7635,8 @@ namespace ndn_service_framework
         }
 
         auto service = m_services.find(serviceName);
-        if (service == m_services.end() || !service->second.targetedRequestHandler) {
+        if (service == m_services.end() ||
+            !hasTargetedRequestHandler(service->second)) {
             publishExecutionFailureOnEventLoop(requesterIdentity,
                                                identity,
                                                serviceName,
@@ -5198,18 +7645,29 @@ namespace ndn_service_framework
                                                "Targeted service has no handler");
             return true;
         }
-        std::string tokenError;
-        if (!consumeTargetedProviderToken(requesterIdentity,
-                                          serviceName,
-                                          requestMessage,
-                                          tokenError)) {
-            publishExecutionFailureOnEventLoop(requesterIdentity,
-                                               identity,
-                                               serviceName,
-                                               requestId,
-                                               requestMessage,
-                                               tokenError);
-            return true;
+        NDN_LOG_WARN("NDNSF_TARGETED_REQUEST_DISPATCH provider="
+                     << identity.toUri()
+                     << " requester=" << requesterIdentity.toUri()
+                     << " service=" << serviceName.toUri()
+                     << " requestId=" << requestId.toUri()
+                     << " requestMode="
+                     << static_cast<unsigned int>(requestMessage.getRequestMode())
+                     << " consumeProviderToken=" << consumeProviderToken);
+        if (consumeProviderToken) {
+            std::string tokenError;
+            if (!consumeTargetedProviderToken(requesterIdentity,
+                                              serviceName,
+                                              requestMessage,
+                                              tokenError)) {
+                publishExecutionFailureOnEventLoop(requesterIdentity,
+                                                   identity,
+                                                   serviceName,
+                                                   requestId,
+                                                   requestMessage,
+                                                   tokenError,
+                                                   selectionDigest);
+                return true;
+            }
         }
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=TARGETED_REQUEST_ACCEPTED timestamp_us="
@@ -5232,12 +7690,91 @@ namespace ndn_service_framework
                                                "Service registration closed before execution");
             return true;
         }
+        if (service->second.asyncTargetedRequestHandler) {
+            const ndn::Name pendingKey = ndn::Name(requesterIdentity)
+                                             .append(serviceName).append(requestId);
+            const std::string fenceError =
+                registrationState
+                    ? fencePendingRegistrationExecution(pendingKey,
+                                                        registrationState)
+                    : std::string();
+            if (!fenceError.empty()) {
+                publishExecutionFailureOnEventLoop(requesterIdentity,
+                                                   identity,
+                                                   serviceName,
+                                                   requestId,
+                                                   requestMessage,
+                                                   fenceError);
+                return true;
+            }
+
+            auto completionState = std::make_shared<std::atomic<bool>>(false);
+            const std::weak_ptr<RegistrationControl> weakControl =
+                m_registrationControl;
+            auto completion = [completionState, weakControl,
+                               requesterIdentity, serviceName, requestId,
+                               requestMessage, selectionDigest,
+                               registrationState](
+                                  ResponseMessage response) mutable {
+                if (completionState->exchange(true, std::memory_order_acq_rel))
+                    return;
+                const auto control = weakControl.lock();
+                if (!control)
+                    return;
+                auto* const owner = control->acquireOwner();
+                if (owner == nullptr)
+                    return;
+                const auto releaseOwner = [](RegistrationControl* value) {
+                    value->releaseOwner();
+                };
+                std::unique_ptr<RegistrationControl, decltype(releaseOwner)>
+                    ownerLease(control.get(), releaseOwner);
+                boost::asio::post(owner->m_face.getIoContext(),
+                    [weakControl, requesterIdentity, serviceName, requestId,
+                     requestMessage, response = std::move(response),
+                     selectionDigest, registrationState]() mutable {
+                        const auto control = weakControl.lock();
+                        if (!control)
+                            return;
+                        auto* const owner = control->acquireOwner();
+                        if (owner == nullptr)
+                            return;
+                        const auto releaseOwner = [](RegistrationControl* value) {
+                            value->releaseOwner();
+                        };
+                        std::unique_ptr<RegistrationControl,
+                                        decltype(releaseOwner)>
+                            ownerLease(control.get(), releaseOwner);
+                        owner->finishRequestExecutionOnEventLoop(
+                            requesterIdentity, owner->identity, serviceName,
+                            requestId, requestMessage, std::move(response),
+                            selectionDigest,
+                            registrationState);
+                    });
+            };
+            try {
+                service->second.asyncTargetedRequestHandler(
+                    requesterIdentity, identity, serviceName, requestId,
+                    requestMessage, completion);
+            }
+            catch (const std::exception& e) {
+                ResponseMessage response = makeErrorResponse(
+                    std::string("Targeted async request handler failed: ") +
+                    e.what());
+                completion(std::move(response));
+            }
+            catch (...) {
+                completion(makeErrorResponse(
+                    "Targeted async request handler failed"));
+            }
+            return true;
+        }
         if (!dispatchRequestExecutionAsync(requesterIdentity,
                                            identity,
                                            serviceName,
                                            requestId,
                                            requestMessage,
-                                           "",
+                                           selectionDigest,
                                            &registrationState)) {
             const ndn::Name pendingKey = ndn::Name(requesterIdentity)
                                              .append(serviceName).append(requestId);
@@ -5274,7 +7811,7 @@ namespace ndn_service_framework
                                               requestId,
                                               requestMessage,
                                               std::move(response),
-                                              "",
+                                              selectionDigest,
                                               registrationState);
         }
         return true;
@@ -5289,10 +7826,6 @@ namespace ndn_service_framework
         std::string selectionDigest,
         std::shared_ptr<RegistrationState>* registrationStateOut)
     {
-        if (m_handlerPool.getThreadCount() == 0) {
-            return false;
-        }
-
         auto service = m_services.find(serviceName);
         if (service == m_services.end()) {
             return false;
@@ -5300,6 +7833,32 @@ namespace ndn_service_framework
         const bool targetedMode =
             requestMessage.getRequestMode() == tlv::TargetedRequest ||
             requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest;
+        if (targetedMode) {
+            NDN_LOG_WARN("NDNSF_PROVIDER_TARGETED_ROUTE_CHECK provider="
+                         << identity.toUri()
+                         << " requester=" << requesterName.toUri()
+                         << " service=" << serviceName.toUri()
+                         << " requestId=" << requestId.toUri()
+                         << " requestMode="
+                         << static_cast<unsigned int>(requestMessage.getRequestMode())
+                         << " asyncHandler="
+                         << static_cast<bool>(service->second.asyncTargetedRequestHandler)
+                         << " syncHandler="
+                         << static_cast<bool>(service->second.targetedRequestHandler));
+        }
+        if (targetedMode && service->second.asyncTargetedRequestHandler) {
+            if (registrationStateOut) {
+                *registrationStateOut = service->second.registrationState;
+            }
+            const bool consumeProviderToken =
+                requestMessage.getRequestMode() == tlv::TargetedRequest;
+            return finishTargetedRequestOnEventLoop(
+                requesterName, serviceName, requestId, std::move(requestMessage),
+                std::move(selectionDigest), consumeProviderToken);
+        }
+        if (m_handlerPool.getThreadCount() == 0) {
+            return false;
+        }
         const bool streamedMode = requestMessage.hasStreamRequestOptions() &&
                                   static_cast<bool>(service->second.streamingHandler);
         auto requestHandler =
@@ -5598,15 +8157,34 @@ namespace ndn_service_framework
                 selectionDigest);
             return true;
         }
+        // DI keeps the model's opaque role key in the assignment. Native
+        // Provider registrations express that same role as one NDN name
+        // component (e.g. "Front" -> "/Front"). Preserve exact legacy
+        // registrations first, then try the component URI for NDN allow-lists.
+        auto permissionRole = assignment.role;
         if (!service->second.allowedRoles.empty() &&
             std::find(service->second.allowedRoles.begin(),
                       service->second.allowedRoles.end(),
-                      assignment.role) == service->second.allowedRoles.end()) {
+                      permissionRole) == service->second.allowedRoles.end()) {
+            if (!assignment.role.empty()) {
+                ndn::Name providerRoleName;
+                providerRoleName.append(assignment.role);
+                permissionRole = providerRoleName.toUri();
+            }
+        }
+        if (!service->second.allowedRoles.empty() &&
+            std::find(service->second.allowedRoles.begin(),
+                      service->second.allowedRoles.end(),
+                      permissionRole) == service->second.allowedRoles.end()) {
             NDN_LOG_WARN("Reject collaboration assignment for "
                          << serviceName.toUri()
                          << ": role " << assignment.role
                          << " is not registered on provider "
-                         << identity.toUri());
+                         << identity.toUri()
+                         << " requestId=" << requestId.toUri()
+                         << " requestMode="
+                         << static_cast<unsigned int>(
+                              requestMessage.getRequestMode()));
             publishExecutionFailureOnEventLoop(
                 requesterName,
                 providerName,
@@ -5619,7 +8197,7 @@ namespace ndn_service_framework
         }
         if (!service->second.allowedRoles.empty() &&
             !hasProviderCollaborationRolePermission(identity, serviceName,
-                                                    assignment.role, m_authorizations)) {
+                                                    permissionRole, m_authorizations)) {
             NDN_LOG_WARN("Reject collaboration assignment for "
                          << serviceName.toUri()
                          << ": role " << assignment.role
@@ -6004,7 +8582,7 @@ namespace ndn_service_framework
         auto registeredService = m_services.find(serviceName);
         if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest &&
             registeredService != m_services.end() &&
-            registeredService->second.targetedRequestHandler) {
+            hasTargetedRequestHandler(registeredService->second)) {
             attachTargetedTokenBatch(requesterName, serviceName, requestMessage, response);
         }
         const ndn::Name pendingKey = ndn::Name(requesterName)
@@ -6327,6 +8905,25 @@ namespace ndn_service_framework
                                         requestId, readyRequest,
                                         "request-scoped confidentiality requires a unary service handler",
                                         selectionDigest);
+                                    return;
+                                }
+                                const auto readyRequestMode =
+                                    readyRequest.getRequestMode();
+                                if (readyRequestMode == tlv::TargetedRequest ||
+                                    readyRequestMode ==
+                                        tlv::TargetedBootstrapRequest) {
+                                    NDN_LOG_WARN(
+                                        "NDNSF_PROVIDER_DECRYPTED_TARGETED_ROUTE provider="
+                                        << providerName.toUri()
+                                        << " requester=" << requesterName.toUri()
+                                        << " service=" << serviceName.toUri()
+                                        << " requestId=" << requestId.toUri()
+                                        << " requestMode="
+                                        << static_cast<unsigned int>(readyRequestMode));
+                                    finishTargetedRequestOnEventLoop(
+                                        requesterName, serviceName, requestId,
+                                        std::move(readyRequest), selectionDigest,
+                                        readyRequestMode == tlv::TargetedRequest);
                                     return;
                                 }
                                 if (readyRequest.hasStreamRequestOptions()) {
@@ -8406,6 +11003,10 @@ namespace ndn_service_framework
                             const auto acceptedAt = std::chrono::steady_clock::now();
                             fetchStats->lastSegmentValidated = acceptedAt;
                             ++fetchStats->validatedSegments;
+                            fetchStats->validatedContentBytes +=
+                                data.getContent().value_size();
+                            fetchStats->validatedWireBytes +=
+                                data.wireEncode().size();
                             if (fetchTimingEnabled) {
                                 const auto issuedAt = i < state->interestIssued.size() ?
                                     state->interestIssued[i] :
@@ -8647,6 +11248,14 @@ namespace ndn_service_framework
                 [fetchStats] { ++fetchStats->nacks; });
             fetcher->afterSegmentTimedOut.connect(
                 [fetchStats] { ++fetchStats->timeouts; });
+            fetcher->afterSegmentValidated.connect(
+                [fetchStats](const ndn::Data& data) {
+                    fetchStats->lastSegmentValidated = std::chrono::steady_clock::now();
+                    ++fetchStats->validatedSegments;
+                    fetchStats->validatedContentBytes +=
+                        data.getContent().value_size();
+                    fetchStats->validatedWireBytes += data.wireEncode().size();
+                });
             if (fetchTimingEnabled) {
                 auto segmentReceivedAt = std::make_shared<
                     std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
@@ -8692,8 +11301,6 @@ namespace ndn_service_framework
                     [fetchStats, transportValidator, fetchStart, requestId, keyScope, dataName,
                      segmentReceivedAt](const ndn::Data& data) {
                         const auto now = std::chrono::steady_clock::now();
-                        fetchStats->lastSegmentValidated = now;
-                        ++fetchStats->validatedSegments;
                         const auto segmentName = data.getName().toUri();
                         const auto receivedIt = segmentReceivedAt->find(segmentName);
                         const double dataToValidatedMs =
@@ -8836,14 +11443,15 @@ namespace ndn_service_framework
             elapsedMs,
             firstSegmentMs,
             encoded->size(),
-            fetchStats->receivedWireBytes,
-            fetchStats->receivedSegments,
+            fetchStats->validatedContentBytes,
+            fetchStats->validatedWireBytes,
+            fetchStats->validatedSegments,
             fetchStats->timeouts,
             fetchStats->nacks);
         if (metrics != nullptr) {
             metrics->actualDataName = dataName.toUri();
-            metrics->transportPayloadBytes = encoded->size();
-            metrics->wireBytes = fetchStats->receivedWireBytes;
+            metrics->transportPayloadBytes = fetchStats->validatedContentBytes;
+            metrics->wireBytes = fetchStats->validatedWireBytes;
             // SegmentFetcher does not expose a separate metadata accounting
             // boundary here; leave it unknown instead of reporting zero.
             metrics->localCopyBytes = encoded->size();
@@ -8856,7 +11464,7 @@ namespace ndn_service_framework
             const auto snapshot =
                 m_networkTelemetry.getDependencyEdge(identity, producerProvider, keyScope);
             const double goodputMbps =
-                networkTelemetryGoodputMbps(fetchStats->receivedWireBytes, elapsedMs);
+                networkTelemetryGoodputMbps(fetchStats->validatedContentBytes, elapsedMs);
             NDN_LOG_WARN("NDNSF_NETWORK_TELEMETRY"
                          << " event=large_data_fetch"
                          << " sample_kind="
@@ -10037,6 +12645,8 @@ namespace ndn_service_framework
                                          parsedV2->serviceName.toUri());
             }
             auto service = m_services.find(parsedV2->serviceName);
+            const auto collabService =
+                m_collaborationServices.find(parsedV2->serviceName);
             if (requestMessage.getRequestMode() == tlv::TargetedRequest) {
                 if (requestMessage.getTargetProvider().empty()) {
                     return makeErrorResponse("Targeted request missing target provider for " +
@@ -10047,7 +12657,7 @@ namespace ndn_service_framework
                                              requestMessage.getTargetProvider().toUri());
                 }
                 if (service == m_services.end() ||
-                    !service->second.targetedRequestHandler) {
+                    !hasTargetedRequestHandler(service->second)) {
                     return makeErrorResponse("Service is not registered for targeted mode for " +
                                              parsedV2->serviceName.toUri());
                 }
@@ -10070,14 +12680,15 @@ namespace ndn_service_framework
                                              requestMessage.getTargetProvider().toUri());
                 }
                 if (service == m_services.end() ||
-                    !service->second.targetedRequestHandler) {
+                    !hasTargetedRequestHandler(service->second)) {
                     return makeErrorResponse("Service is not registered for targeted mode for " +
                                              parsedV2->serviceName.toUri());
                 }
             }
             else if (service != m_services.end() &&
+                     collabService == m_collaborationServices.end() &&
                      !service->second.requestHandler &&
-                     service->second.targetedRequestHandler) {
+                     hasTargetedRequestHandler(service->second)) {
                 return makeErrorResponse("Service is targeted-only for " +
                                          parsedV2->serviceName.toUri());
             }
@@ -10360,16 +12971,113 @@ namespace ndn_service_framework
                                                AbstractMessage& message)
     {
         const auto plaintextBlock = message.WireEncode();
-        auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
+        std::vector<ndn::Buffer> candidates;
+        candidates.emplace_back(plaintextBlock.begin(), plaintextBlock.end());
+        publishHybridMessageCandidates(messageName, std::move(candidates));
+    }
+
+    void ServiceProvider::publishHybridMessageCandidates(
+        const ndn::Name& messageName,
+        std::vector<ndn::Buffer> plaintextCandidates,
+        bool deferLocalPublication)
+    {
+        if (plaintextCandidates.empty())
+            return;
+        if (m_svsps == nullptr && m_localPublicationHandler) {
+            auto handler = m_localPublicationHandler;
+            auto wire = std::move(plaintextCandidates.front());
+            if (deferLocalPublication) {
+                boost::asio::post(m_face.getIoContext(),
+                    [handler = std::move(handler), messageName,
+                     wire = std::move(wire)]() mutable {
+                        try {
+                            handler(messageName, wire);
+                        }
+                        catch (const std::exception& error) {
+                            NDN_LOG_ERROR("Local publication callback failed: "
+                                          << error.what());
+                        }
+                        catch (...) {
+                            NDN_LOG_ERROR("Local publication callback failed");
+                        }
+                    });
+            }
+            else {
+                handler(messageName, wire);
+            }
+            return;
+        }
         boost::asio::post(m_face.getIoContext(),
-            [this, messageName, plaintext = std::move(plaintext)]() mutable {
-                publishHybridEncodedMessage(messageName, std::move(plaintext));
+            [this, messageName,
+             plaintextCandidates = std::move(plaintextCandidates)]() mutable {
+                publishHybridEncodedMessageCandidates(
+                    messageName, std::move(plaintextCandidates));
             });
+    }
+
+    bool ServiceProvider::isHybridAckPacketWithinLimit(
+        const ndn::Name& messageName,
+        const HybridMessageEnvelope& envelope,
+        std::size_t ciphertextBytes)
+    {
+        if (m_svsps == nullptr)
+            return true;
+
+        auto previewEnvelope = envelope;
+        previewEnvelope.setNonce(ndn::Buffer(12));
+        previewEnvelope.setCipherText(ndn::Buffer(ciphertextBytes));
+        previewEnvelope.setAuthTag(ndn::Buffer(16));
+
+        auto& activeKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
+        ndn::Data inner(messageName);
+        inner.setContent(previewEnvelope.WireEncode());
+        inner.setFreshnessPeriod(ndn::time::milliseconds::max());
+        activeKeyChain.sign(inner, m_signingInfo);
+
+        auto& sync = m_svsps->getSVSync();
+        auto& core = sync.getCore();
+        // Use the longest possible sequence component so the preview remains
+        // an upper bound even if another publication advances the local SVS
+        // sequence before this ACK is committed.
+        const auto outerName = sync.getDataName(
+            core.getNodeId(), core.getBootstrapTime(),
+            std::numeric_limits<ndn::svs::SeqNo>::max());
+        ndn::Data outer(outerName);
+        outer.setContent(inner.wireEncode());
+        outer.setFreshnessPeriod(ndn::time::milliseconds::max());
+        outer.setContentType(ndn::tlv::Data);
+        activeKeyChain.sign(outer, m_signingInfo);
+        return outer.wireEncode().size() <= ndn::MAX_NDN_PACKET_SIZE;
+    }
+
+    std::optional<std::size_t>
+    ServiceProvider::firstHybridAckCandidateWithinLimit(
+        const ndn::Name& messageName,
+        const HybridMessageEnvelope& envelope,
+        const std::vector<ndn::Buffer>& plaintextCandidates)
+    {
+        for (std::size_t i = 0; i < plaintextCandidates.size(); ++i) {
+            if (isHybridAckPacketWithinLimit(
+                    messageName, envelope, plaintextCandidates[i].size()))
+                return i;
+        }
+        return std::nullopt;
     }
 
     void ServiceProvider::publishHybridEncodedMessage(const ndn::Name& messageName,
                                                       ndn::Buffer plaintext)
     {
+        std::vector<ndn::Buffer> candidates;
+        candidates.push_back(std::move(plaintext));
+        publishHybridEncodedMessageCandidates(messageName, std::move(candidates));
+    }
+
+    void ServiceProvider::publishHybridEncodedMessageCandidates(
+        const ndn::Name& messageName,
+        std::vector<ndn::Buffer> plaintextCandidates)
+    {
+        if (plaintextCandidates.empty())
+            return;
         ndn::Name serviceName;
         ndn::Name requestId;
         ndn::Name senderPrefix = identity;
@@ -10468,10 +13176,31 @@ namespace ndn_service_framework
                               {"messageType", messageType}});
         }
 
+        if (messageType == "ACK" && plaintextCandidates.size() > 1 &&
+            parseRequestAckNameV2(messageName)) {
+            const auto fitting = firstHybridAckCandidateWithinLimit(
+                messageName, envelope, plaintextCandidates);
+            const auto selected = fitting.value_or(plaintextCandidates.size() - 1);
+            if (!fitting) {
+                NDN_LOG_WARN("ACK V4 and generic-only previews exceed packet limit; "
+                             "publishing generic-only ACK through normal SVS fallback"
+                             << " requestId=" << requestId.toUri());
+            }
+            if (selected != 0)
+                std::rotate(plaintextCandidates.begin(),
+                            plaintextCandidates.begin() + selected,
+                            plaintextCandidates.begin() + selected + 1);
+            NDN_LOG_DEBUG("ACK capability offer variant selected"
+                          << " requestId=" << requestId.toUri()
+                          << " fallbackIndex=" << selected
+                          << " candidateCount=" << plaintextCandidates.size());
+        }
+        const auto selectedPlaintextBytes = plaintextCandidates.front().size();
+
         auto encryptAndPost = [this, messageName, requestId, serviceName, messageType,
                                keyId = key.keyId, epochId = key.epochId,
                                keyBytes = key.key, ad = std::move(ad),
-                               plaintext = std::move(plaintext),
+                               plaintext = std::move(plaintextCandidates.front()),
                                envelope = std::move(envelope)]() mutable {
             const auto aesStartUs = timelineSteadyMicroseconds();
             ndn::Buffer buffer;
@@ -10625,7 +13354,7 @@ namespace ndn_service_framework
         // request can make progress; only an oversized response uses the
         // independent fetch pool to avoid blocking the Face event loop.
         const auto inlineLimit = responseLargeDataThresholdBytes();
-        if (inlineLimit > 0 && plaintext.size() > inlineLimit &&
+        if (inlineLimit > 0 && selectedPlaintextBytes > inlineLimit &&
             m_fetchPool.getThreadCount() != 0 &&
             m_fetchPool.post(encryptAndPost)) {
             return;
@@ -10866,15 +13595,38 @@ namespace ndn_service_framework
             });
     }
 
-    void ServiceProvider::PublishMessage(const ndn::Name &messageName, const ndn::Name &messageNameWithoutPrefix,AbstractMessage &message)
+    void ServiceProvider::PublishMessage(
+        const ndn::Name& messageName,
+        const ndn::Name& messageNameWithoutPrefix,
+        AbstractMessage& message,
+        bool deferLocalPublication)
     {
         // log message
         NDN_LOG_DEBUG("PublishMessage: " << messageName.toUri());
 
         if (m_svsps == nullptr && m_localPublicationHandler) {
             const auto wireBlock = message.WireEncode();
-            const ndn::Buffer wire(wireBlock.data(), wireBlock.size());
-            m_localPublicationHandler(messageName, wire);
+            ndn::Buffer wire(wireBlock.data(), wireBlock.size());
+            auto handler = m_localPublicationHandler;
+            if (deferLocalPublication) {
+                boost::asio::post(m_face.getIoContext(),
+                    [handler = std::move(handler), messageName,
+                     wire = std::move(wire)]() mutable {
+                        try {
+                            handler(messageName, wire);
+                        }
+                        catch (const std::exception& error) {
+                            NDN_LOG_ERROR("Local publication callback failed: "
+                                          << error.what());
+                        }
+                        catch (...) {
+                            NDN_LOG_ERROR("Local publication callback failed");
+                        }
+                    });
+            }
+            else {
+                handler(messageName, wire);
+            }
             return;
         }
 
@@ -11620,7 +14372,7 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         }
         if (service != m_services.end() &&
             requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest) {
-            if (!service->second.targetedRequestHandler) {
+            if (!hasTargetedRequestHandler(service->second)) {
                 AckDecision decision;
                 decision.status = false;
                 decision.message = "Service is not registered for targeted mode";
@@ -11641,8 +14393,9 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
             }
         }
         else if (service != m_services.end() &&
+                 collabService == m_collaborationServices.end() &&
                  !service->second.requestHandler &&
-                 service->second.targetedRequestHandler) {
+                 hasTargetedRequestHandler(service->second)) {
             AckDecision decision;
             decision.status = false;
             decision.message = "Service is targeted-only";
@@ -11655,12 +14408,32 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         }
         AckDecision decision = makeDefaultAckDecision();
         AckStrategyHandler ackHandler;
+        AsyncAckStrategyHandler asyncAckHandler;
         if (service != m_services.end() && service->second.ackHandler) {
             ackHandler = service->second.ackHandler;
         }
         else if (collabService != m_collaborationServices.end() &&
                  collabService->second.ackHandler) {
             ackHandler = collabService->second.ackHandler;
+        }
+        if (collabService != m_collaborationServices.end() &&
+            collabService->second.asyncAckHandler) {
+            asyncAckHandler = collabService->second.asyncAckHandler;
+        }
+        if (asyncAckHandler) {
+            if (dispatchAsyncAckDecision(requesterIdentity, serviceName, requestId,
+                                         requestMessage,
+                                         std::move(asyncAckHandler),
+                                         ackRegistrationState)) {
+                return;
+            }
+            decision.status = false;
+            decision.message = "Async ACK handler unavailable";
+            finishAckDecisionOnEventLoop(requesterIdentity, serviceName, requestId,
+                                         std::move(requestMessage),
+                                         std::move(decision),
+                                         ackRegistrationState);
+            return;
         }
         if (ackHandler) {
             if (m_timelineTrace) {
@@ -12521,8 +15294,20 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         // log error
         NDN_LOG_ERROR("Prefix registration failed for prefix " << prefix.toUri() << " reason: " << reason);
     }
-    void ServiceProvider::onInterest(const ndn::InterestFilter &, const ndn::Interest &interest)
+    void ServiceProvider::onInterest(const ndn::InterestFilter& filter,
+                                     const ndn::Interest& interest)
     {
+        if (handlePeerNetworkProbeInterest(interest)) {
+            return;
+        }
+        if (filter.getPrefix() == identity &&
+            interest.getName().size() > identity.size()) {
+            const auto& firstChild = interest.getName()[identity.size()].toUri();
+            if (firstChild == "NDNSF" || firstChild == "CK" ||
+                firstChild == "NDNSF-DI") {
+                return;
+            }
+        }
         const auto streamEvent = parseInvocationEventName(interest.getName());
         if (streamEvent && std::getenv("SPEC175_TRACE") != nullptr) {
             NDN_LOG_INFO("SPEC175_TRACE stream-exact-interest name="
@@ -12962,7 +15747,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                      const std::string& userToken,
                                                      const std::string& providerToken,
                                                      const RequestMessage* sourceRequest,
-                                                     const AckDecision* ackDecision)
+                                                     const AckDecision* ackDecision,
+                                                     bool deferExternalCallbacks)
     {
         NDN_LOG_DEBUG("PublishRequestAckMessageV2: " << requesterIdentity.toUri()
                      << serviceName.toUri() << requestId.toUri());
@@ -12979,7 +15765,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                   << " status=" << status);
         updateProviderRequestLifecycleState(
             requestId, serviceName,
-            ProviderRequestLifecycleState::ACK_PUBLISHED);
+            ProviderRequestLifecycleState::ACK_PUBLISHED,
+            "", "", deferExternalCallbacks);
 
         RequestAckMessage requestAckMessage;
         requestAckMessage.setStatus(status);
@@ -13010,6 +15797,64 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                            sourceRequest->getDeploymentIntent().computeDigest());
             offer.setField("observedAtUs", std::to_string(nowMicroseconds()));
             requestAckMessage.setProviderCapabilityOffer(offer);
+        }
+        std::optional<ProviderCapabilityOffer> baseCapabilityOffer;
+        if (requestAckMessage.hasProviderCapabilityOffer())
+            baseCapabilityOffer = requestAckMessage.getProviderCapabilityOffer();
+        std::vector<ProviderCapabilityOffer> diCapabilityOfferFallbacks;
+        if (status && ackDecision != nullptr &&
+            !ackDecision->providerCapabilityFields.empty()) {
+            auto offer = baseCapabilityOffer
+                ? *baseCapabilityOffer
+                : ProviderCapabilityOffer{};
+            const auto mergeFields = [] (ProviderCapabilityOffer& target,
+                                         const std::map<std::string, std::string>& fields) {
+                if (target.getFields().size() + fields.size() >
+                    DeploymentControlMessage::MAX_FIELDS)
+                    return false;
+                for (const auto& field : fields) {
+                    if (field.first.rfind("ndnsf.di.", 0) != 0 ||
+                        target.hasField(field.first) ||
+                        field.first.size() > DeploymentControlMessage::MAX_FIELD_NAME ||
+                        field.second.size() > DeploymentControlMessage::MAX_FIELD_VALUE)
+                        return false;
+                }
+                try {
+                    for (const auto& field : fields)
+                        target.setField(field.first, field.second);
+                    return true;
+                }
+                catch (const std::exception&) {
+                    return false;
+                }
+            };
+            bool validExtension = mergeFields(offer, ackDecision->providerCapabilityFields);
+            std::vector<ProviderCapabilityOffer> fallbacks;
+            if (validExtension) {
+                fallbacks.reserve(ackDecision->providerCapabilityFieldFallbacks.size());
+                for (const auto& fields : ackDecision->providerCapabilityFieldFallbacks) {
+                    auto fallback = baseCapabilityOffer.value_or(ProviderCapabilityOffer{});
+                    if (!mergeFields(fallback, fields)) {
+                        validExtension = false;
+                        break;
+                    }
+                    fallbacks.push_back(std::move(fallback));
+                }
+            }
+            if (validExtension) {
+                requestAckMessage.setProviderCapabilityOffer(offer);
+                diCapabilityOfferFallbacks = std::move(fallbacks);
+                // The generic-only offer is always the last candidate. A
+                // packet preview in the hybrid publisher selects the first
+                // fully signed candidate that fits the NDN packet limit.
+                diCapabilityOfferFallbacks.push_back(
+                    baseCapabilityOffer.value_or(ProviderCapabilityOffer{}));
+            }
+            if (!validExtension) {
+                NDN_LOG_WARN("omitting invalid or colliding DI ProviderCapabilityOffer extension"
+                             << " provider=" << identity.toUri()
+                             << " requestId=" << requestId.toUri());
+            }
         }
         if (status && ackDecision != nullptr) {
             if (ackDecision->selectionInputKeyOffer)
@@ -13072,7 +15917,29 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             makeRequestAckNameWithoutPrefixV2(requesterIdentity,
                                               serviceName,
                                               requestId);
-        PublishMessage(name, nameWithoutPrefix, requestAckMessage);
+        if (!diCapabilityOfferFallbacks.empty() && m_svsps != nullptr) {
+            std::vector<ndn::Buffer> plaintextCandidates;
+            plaintextCandidates.reserve(diCapabilityOfferFallbacks.size() + 1);
+            auto serializeAck = [&] (const RequestAckMessage& candidate) {
+                const auto block = candidate.WireEncode();
+                plaintextCandidates.emplace_back(block.begin(), block.end());
+            };
+            serializeAck(requestAckMessage);
+            for (const auto& fallback : diCapabilityOfferFallbacks) {
+                RequestAckMessage candidate(requestAckMessage);
+                if (fallback.getFields().empty() && !baseCapabilityOffer)
+                    candidate.clearProviderCapabilityOffer();
+                else
+                    candidate.setProviderCapabilityOffer(fallback);
+                serializeAck(candidate);
+            }
+            publishHybridMessageCandidates(
+                name, std::move(plaintextCandidates), deferExternalCallbacks);
+        }
+        else {
+            PublishMessage(name, nameWithoutPrefix, requestAckMessage,
+                           deferExternalCallbacks);
+        }
         prefetchSelectionMessageV2(requesterIdentity, serviceName, requestId);
     }
 
@@ -13810,6 +16677,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     bool ServiceProvider::hasProviderPermissionForService(const ndn::Name& serviceName) const
     {
         return hasProviderPermission(identity, serviceName, m_authorizations);
+    }
+
+    bool ServiceProvider::isRequestDecryptionReady()
+    {
+        return activeNacConsumer().readyForDecryption();
     }
 
     size_t ServiceProvider::getCurrentPolicyEpoch() const
@@ -15895,6 +18767,26 @@ opaque_selection_committed:
                                            "handler queued");
             m_selectedOutstandingRequests.fetch_add(1, std::memory_order_relaxed);
             RequestMessage requestCopy = selectedRequest;
+            const auto requestMode = requestCopy.getRequestMode();
+            if (requestMode == tlv::TargetedRequest ||
+                requestMode == tlv::TargetedBootstrapRequest) {
+                NDN_LOG_WARN("NDNSF_PROVIDER_SELECTION_TARGETED_ROUTE provider="
+                             << identity.toUri()
+                             << " requester=" << requesterName.toUri()
+                             << " service=" << serviceName.toUri()
+                             << " requestId=" << requestId.toUri()
+                             << " requestMode="
+                             << static_cast<unsigned int>(requestMode)
+                             << " asyncHandler="
+                             << static_cast<bool>(m_services.find(serviceName) !=
+                                                  m_services.end() &&
+                               m_services.find(serviceName)->second.asyncTargetedRequestHandler));
+                finishTargetedRequestOnEventLoop(
+                    requesterName, serviceName, requestId,
+                    std::move(requestCopy), selectionDigest,
+                    requestMode == tlv::TargetedRequest);
+                continue;
+            }
             if (collabService != m_collaborationServices.end()) {
                 // A V3 assignment set contains one sealed JSON projection per
                 // local role. Dispatch those envelopes separately; legacy

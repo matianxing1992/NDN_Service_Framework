@@ -67,12 +67,16 @@ namespace ndn_service_framework{
 
     struct AckSelectionCandidate
     {
-        ndn::Name providerName;
-        ndn::Name serviceName;
-        ndn::Name requestId;
-        ndn_service_framework::RequestAckMessage ack;
-        std::optional<ndn_service_framework::NetworkTelemetrySnapshot> telemetry;
-        AckAuthenticationEvidence authenticationEvidence{};
+      ndn::Name providerName;
+      ndn::Name serviceName;
+      ndn::Name requestId;
+      ndn_service_framework::RequestAckMessage ack;
+      std::optional<ndn_service_framework::NetworkTelemetrySnapshot> telemetry;
+      AckAuthenticationEvidence authenticationEvidence{};
+      // Request-scoped arrival measurement for this authenticated ACK. Native
+      // placement binds it to the provider boot carried by the same ACK offer.
+      std::optional<double> ackRttMs;
+      std::uint64_t ackObservedAtMs = 0;
     };
 
     using ProviderId = ndn::Name;
@@ -1429,6 +1433,8 @@ namespace ndn_service_framework{
                 ndn::Name requestId;
                 ndn_service_framework::RequestAckMessage message;
                 AckAuthenticationEvidence authenticationEvidence{};
+                std::optional<double> ackRttMs;
+                uint64_t ackObservedAtMs = 0;
             };
 
             struct PendingCall;

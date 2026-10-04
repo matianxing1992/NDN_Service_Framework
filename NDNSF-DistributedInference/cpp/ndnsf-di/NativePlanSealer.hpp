@@ -1,6 +1,7 @@
 #ifndef NDNSF_DI_NATIVE_PLAN_SEALER_HPP
 #define NDNSF_DI_NATIVE_PLAN_SEALER_HPP
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantTypes.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
@@ -8,6 +9,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,6 +46,11 @@ struct NativePlacementPlanCore
   std::map<std::string, NativeSelectionRoleV3> assemblyByRole;
   std::string requestContractDigest;
   NativeGenerationExecutionContractV1 generationContract;
+  // Optional V4 observation snapshot binding. Empty preserves the V3 core
+  // canonical bytes exactly.
+  std::string placementObservationSnapshotDigest;
+  /** Optional V4 policy result, canonically bound only for V4 placement. */
+  std::optional<NativeJson> placementDecisionV4;
 
   void validate() const;
 };
@@ -60,6 +67,7 @@ struct NativePlanSealingInputs
   std::map<std::string, NativeSelectionRoleV3> assemblyByRole;
   std::string requestContractDigest;
   NativeGenerationExecutionContractV1 generationContract;
+  std::string placementObservationSnapshotDigest;
 };
 
 /** Execution-owner contracts, bound after the plan digest is finalized. */
@@ -105,6 +113,14 @@ struct NativeSealedPlan
 class NativePlanSealer final
 {
 public:
+  /** Recheck the request scope, digest, and freshness of the exact V4
+   * observation input immediately before the plan core is sealed. */
+  static void validateObservationSnapshotBinding(
+    const NativeOfferBindingContext& context,
+    const NativePlanSealingInputs& inputs,
+    const std::string& ackClosedDigest,
+    std::uint64_t nowMs);
+
   static NativePlacementPlanCore sealCore(
     const NativePlanningSnapshot& snapshot,
     const NativePlacementProposal& proposal,

@@ -53,6 +53,17 @@ def test_native_environment_collects_phase_timing_by_default(monkeypatch, tmp_pa
     assert module.env_for(tmp_path, "ucla")["NDNSF_PHASE_TIMING"] == "1"
 
 
+def test_requester_publications_use_explicit_run_storage(monkeypatch, tmp_path):
+    module = load_native_module()
+    monkeypatch.setenv("NDNSF_REQUEST_LARGE_DATA_DIR", "/unowned/host-storage")
+    publication_root = tmp_path / "run/requester-publications"
+    requester = module.env_for(tmp_path / "user", "neu",
+                               requester_publication_root=publication_root)
+    provider = module.env_for(tmp_path / "provider", "ucla")
+    assert requester["NDNSF_REQUEST_LARGE_DATA_DIR"] == str(publication_root.resolve())
+    assert "NDNSF_REQUEST_LARGE_DATA_DIR" not in provider
+
+
 def test_native_environment_honors_explicit_phase_timing_override(monkeypatch, tmp_path):
     module = load_native_module()
     monkeypatch.setenv("NDNSF_PHASE_TIMING", "0")
@@ -178,6 +189,15 @@ def test_generated_command_preserves_installed_paths_and_digests(tmp_path: Path)
     assert command[command.index("--max-new-tokens") + 1] == "1025"
     assert "--require-multi-token" in command
     assert "--direct-start" in command
+    assert "--encrypted-repository-path" not in command
+    args.encrypted_repository_path = tmp_path / "external" / ".." / "ciphertext"
+    external_command = module.command_for(args, profile, tmp_path / "run", candidate)
+    option = "--encrypted-repository-path"
+    assert external_command.count(option) == 1
+    index = external_command.index(option)
+    assert external_command[index + 1] == str((tmp_path / "ciphertext").resolve())
+    assert external_command[:index] + external_command[index + 2:] == command
+    assert module.canonical_digest(external_command) != module.canonical_digest(command)
 
 
 def test_qwen_token_budget_contract_is_1025():

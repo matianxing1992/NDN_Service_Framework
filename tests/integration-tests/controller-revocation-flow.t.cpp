@@ -72,6 +72,23 @@ struct ServiceControllerTestAccess
     }
   }
 
+  static ndn::security::Certificate
+  addAlternateSigningCertificate(ServiceController& controller,
+                                 const ndn::Name& identity)
+  {
+    const auto pibIdentity = controller.m_keyChain.getPib().getIdentity(identity);
+    const auto signingKey = controller.m_keyChain.createKey(
+        pibIdentity, ndn::EcKeyParams());
+    controller.m_keyChain.setDefaultKey(pibIdentity, signingKey);
+    return signingKey.getDefaultCertificate();
+  }
+
+  static void
+  refreshAbeIdentityPolicies(ServiceController& controller)
+  {
+    controller.addAttributesForUsersAccordingToServicePolicy();
+  }
+
   static void
   policyStatusInterest(ServiceController& controller,
                        const ndn::Interest& interest)
@@ -2948,6 +2965,14 @@ BOOST_AUTO_TEST_CASE(LiveControllerStatusRefreshRejectsRevokedRenewal)
       serviceController, userName);
   const auto providerCert = ServiceControllerTestAccess::ensureInternalIdentity(
       serviceController, providerName);
+  // The runtime Provider consumes NAC-ABE DKEYs with its RSA encryption
+  // certificate while the Controller's default key is now EC signing. Re-run
+  // policy registration to prove the Attribute Authority caches both certs.
+  const auto providerSigningCert =
+      ServiceControllerTestAccess::addAlternateSigningCertificate(
+          serviceController, providerName);
+  BOOST_REQUIRE(providerSigningCert.getKeyName() != providerCert.getKeyName());
+  ServiceControllerTestAccess::refreshAbeIdentityPolicies(serviceController);
 
   ndn::KeyChain runtimeKeys;
   ndn::DummyClientFace runtimeFace(runtimeKeys);

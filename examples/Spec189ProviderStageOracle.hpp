@@ -26,8 +26,8 @@ validateProviderStages(const std::vector<Marker>& observed,
     const auto& stage = marker.stage;
     if (stage != "GRANT_VERIFIED" && stage != "EXECUTION_ENTERED" &&
         stage != "DEPENDENCY_FETCH" && stage != "ASSEMBLY_STARTED" &&
-        stage != "RUNNER_READY" && stage != "EXECUTION_COMPLETED" &&
-        stage != "TERMINAL")
+        stage != "RUNNER_READY" && stage != "RUNNER_REUSE_HIT" &&
+        stage != "EXECUTION_COMPLETED" && stage != "TERMINAL")
       continue;
     if (marker.provider != expectedProvider || marker.role != selection.role ||
         marker.requestId != selection.requestId ||
@@ -81,7 +81,15 @@ validateProviderStages(const std::vector<Marker>& observed,
   const auto completed = required("EXECUTION_COMPLETED");
   if (!(grant < entered && entered < completed))
     fail("EXECUTION_COMPLETED", "invalid-runner-causality");
-  if (preparations.empty()) fail("RUNNER_READY", "missing-preparation");
+  const auto reuse = once.find("RUNNER_REUSE_HIT");
+  if (preparations.empty()) {
+    if (reuse == once.end()) fail("RUNNER_READY", "missing-preparation");
+    if (!(grant < entered && entered < reuse->second && reuse->second < completed))
+      fail("RUNNER_READY", "invalid-runner-causality");
+  }
+  else if (reuse != once.end()) {
+    fail("RUNNER_READY", "preparation-and-reuse-mixed");
+  }
   for (const auto& [id, pair] : preparations) {
     if (pair.second == 0) fail("RUNNER_READY", "incomplete-preparation");
     if (!(entered < pair.first && pair.first < pair.second && pair.second < completed))

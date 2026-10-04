@@ -233,11 +233,15 @@ main(int argc, char** argv)
       throw std::invalid_argument("invalid permission_bootstrap_ms");
     const auto permissionDeadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(permissionBootstrapMs);
-    while (!interrupted && !provider.hasProviderPermissionForService(ndn::Name(service)) &&
+    while (!interrupted &&
+           (!provider.hasProviderPermissionForService(ndn::Name(service)) ||
+            !provider.isRequestDecryptionReady()) &&
            std::chrono::steady_clock::now() < permissionDeadline)
       face.processEvents(ndn::time::milliseconds(20));
     if (!provider.hasProviderPermissionForService(ndn::Name(service)))
       throw std::runtime_error("authority ProviderPermission was not installed before deadline");
+    if (!provider.isRequestDecryptionReady())
+      throw std::runtime_error("authority NAC-ABE request decryption was not ready before deadline");
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
     std::cout << "NATIVE_GRANT_AUTHORITY_PERMISSION_READY service=" << service << std::endl;
