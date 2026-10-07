@@ -18096,3 +18096,17 @@ containing selector has not yet run. See the next review/build/run record in
   committed before this provider-registration failure.
 - **Lesson:** Successful Repo artifact publication does not establish that a
   separate DI service provider is authorized to register or serve its prefix.
+
+### 2026-10-07 CDT — Spec193 O17 server authorization diagnostic stopped at storage admission
+
+- **Symptom:** `specs/193-distributedrepo-multinode-api-campaign/evidence/o17-server-auth-diag-001` passed preflight under lock `82aed5df0c785584f89136a76b7c5d6c17d85769dfe0ec1681d090c9bf325449`, but the native original Data seed exited 2 with `repo node has insufficient free space for Data packet`. The authorization probe never ran. Run status FAIL; MiniNDN cleanup PASS.
+- **Root cause:** The immediate boundary is `RepoCore::putDataPacket` rejecting wire larger than advertised available quota. Root filesystem had only 131567616 available bytes after cleanup; the fixture initializes capacity from filesystem available bytes. Disk pressure is suspected, but seed-time free-byte measurements are missing, so the exact resource attribution remains unproven.
+- **Fix / changed gate:** Preserve the failed run and native quota enforcement. Recover only disposable Go compiler cache via `/usr/local/go/bin/go clean -cache` (about 251 MiB), leaving repository source, models and evidence intact. Post-recovery root availability is 376 MiB. Check resources before a fresh bounded run; if admission still fails, instrument the actual native quota instead of increasing timeouts or disabling admission.
+- **Lesson:** A preflight/cleanup PASS cannot turn a pre-probe storage failure into authorization evidence. Record resource floors and the first executed native boundary before interpreting a security negative.
+
+### 2026-10-07 CDT — Spec193 raw metadata auth probe used a multi-component request ID
+
+- **Symptom:** `o17-server-auth-diag-002` completed native seeding and published both metadata requests, but the strict oracle found no correctly bound service/request audit. Both Repos validated the signed publications, then rejected an unregistered service name before decryption. Run FAIL; cleanup PASS; no authorization conclusion.
+- **Root cause:** The probe passed a multi-component request ID to `makeRequestNameV2`. Production `parseRequestNameV2` assigns only the final component to requestId, so preceding ID components became part of serviceName. This targeted a nonexistent metadata endpoint rather than the two registered services.
+- **Fix / changed gate:** Use one ASCII request-ID component derived from the run-specific Data name and operation SHA-256. Before publishing, require a production make/parse round trip that preserves requester, exact service and request ID. The independent Python oracle derives the same bounded identifier with hashlib, then checks the actual publication audit. Re-review this wire boundary and rebuild the native driver before a fresh run.
+- **Lesson:** Distinct request IDs still must follow the protocol name grammar. A signed publication and a server refusal alone cannot prove the intended authorization gate executed.
