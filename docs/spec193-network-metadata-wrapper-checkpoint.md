@@ -1,0 +1,9 @@
+# Spec193 N07 physical-state checkpoint
+
+2026-10-07 13:10 CDT, Experimental. Extended NW_ARTIFACT `specs/193-distributedrepo-multinode-api-campaign/evidence/nw-metadata-diag-001/002/run-manifest.json` passed twice under lock `3c03c5541fbdf8501ec0cad326d0063a8f5e395d057918c1a83944fed6e08fa7` on five NFD hosts. Each run has 23 real requests with four-stage inner/outer signatures and identical inner digest maps at caller/Repo A, three zero-exit native children without Python mapping, five nonempty captures and cleanup PASS.
+
+A remains running; B is restored before metadata phases. Move only the digest-matched, deduplicated payload to a run-local backup. New native public RECEIPT/LOCATION calls return exactly the original bytes; the independent physical oracle confirms all metadata tables, manifests and remaining files unchanged. Public verify_content AVAILABILITY reports REACHABLE/PARTIAL/NOT_CHECKED. Restore in finally, then a new client reports PRESENT/VERIFIED and fetches exact source bytes. Complete inventory returns to the baseline. Twenty-one B ACK host/name observations are verified; B receives no final Selection/Response, executes no handler and changes no storage.
+
+Native build PASS29.920s, Python/whitespace PASS. No failed run in this batch. Design and five-lane review: `contracts/network-wrapper-campaign.md`, `evidence/nw-metadata-review-20261007/review.md`. Product source unchanged; focused unit/integration evidence reused. Context Mode active health and CodeGraph passed; canonical Spec Kit registry/design owns resumable state, ARS statistical workflow is not applicable.
+
+N07 now has local evidence. T005 still needs N08/N10; then P01–P06, A19/A21/large-range gaps and T007 complete same-candidate regression/matrix twice. Source remains in the preexisting uncommitted composition; this checkpoint does not establish clean-checkout reproduction. No push or Tiger qualification.
