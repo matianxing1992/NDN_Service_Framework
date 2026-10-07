@@ -1,0 +1,13 @@
+# Spec193 P01/P02 first runtime checkpoint
+
+2026-10-07 15:12 CDT, Experimental. P01/P02 are PARTIAL pending matching replay002; T006/T007 remain open. New focused P01_P02 reuses the existing native and real Python binding peers. No product/native source changed for this batch.
+
+`specs/193-distributedrepo-multinode-api-campaign/evidence/p01-p02-diag-001/run-manifest.json` PASS, cleanup PASS. Six peers exited0; the three native peers were inspected without Python mapping. Five captures contain17 independently verified public Request/ACK/Selection/Response chains, with STORE/FETCH_RANGE/STATUS at both USER and CONSUMER. Root-issued caller/Repo certificates and both signature layers match named principals; each chain's signed bytes agree at caller/selected Repo. Legitimate two-Provider discovery remains allowed.
+
+C++ USER on Neu published521B to ALL A/B; a new Python CONSUMER on Arizona fetched the handle/source digest, and a separate Python USER queried identical aggregate receipt JSON. Python CONSUMER on Arizona published a distinct534B payload to ALL A/B; a new native USER on Neu fetched the handle without requesting submitter-only receipt access, and a separate native CONSUMER queried the same Python receipt. Full reference/handle/aggregate equality, both COMMITTED Repo identities, replica reference/digest/size/provider/operation bindings, durable payload/manifest hashes and read-only inventories were verified independently. Python report JSON is parsed and checked against actual files/state, rather than accepted from a PASS marker.
+
+Lock `534d0347eda1eb0fafa9abaf364643f859db1d944858d16bb47928e091c75a37`, source `0d5f5f556437051ecdefbba8a32ce585881f30d30d142f7408598fd2862bd35b`. Matching `p01-p02-diag-002` replay is live after successful preflight, tool session57085, at this checkpoint. Continue observing that same handle/output; do not restart based on an observation timeout. Do not count the replay as PASS before final manifest/children/cleanup checks. Source composition remains uncommitted and clean-checkout reproduction is not claimed.
+
+Python compilation PASS. Context Mode active health and canonical Spec Kit design/review applied; CodeGraph source context/index is refreshed. The Spec registry owns resumable state, and ARS statistical workflow is not applicable to these correctness checks. Design/review: `contracts/cross-language-campaign.md`, `evidence/p01-p02-review-20261007/review.md`.
+
+Next: finish same-lock replay and close only P01/P02 local rows; then fresh actual DI Provider authorization plus warm-cache rejection (P03/P04), explicit legacy import and retired Python/facade rejection (P05/P06). T002–T004 gaps and T007 full sealed matrix twice remain. No push or Tiger qualification.
