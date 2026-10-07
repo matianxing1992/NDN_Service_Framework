@@ -18180,3 +18180,10 @@ containing selector has not yet run. See the next review/build/run record in
 - **Root cause / boundary:** Default ndn-cxx logging is disabled; signed response arrival plus timeout does not prove decrypted wire decode refusal. The original fixture assumed ERROR output was automatic.
 - **Fix / changed gate:** Enable only ServiceUser ERROR through the existing ndn-cxx logging API in this fault client, retain the strict decode-error assertion and leave NDN_LOG/TRACE/TIMELINE disabled. Rebuild/re-review and run fresh; any decryption-stage error still fails the required decode gate.
 - **Lesson:** Required negative evidence needs an explicit observation channel. Do not infer parsing refusal from a timeout or signed encrypted packet alone.
+
+### 2026-10-07 CDT — Spec193 cross-profile regression reused an incompatible candidate lock
+
+- **Symptom:** NW_NEGATIVE attempt `nw-wrong-signer-negative-regression-001` exited1 with `PreflightError: CANDIDATE_MISMATCH` before creating its output directory or starting MiniNDN. The command passed `nw-wrong-signer-diag-001/preflight-candidate-lock.json` to a Persistent-server scenario.
+- **Root cause:** That lock declares `object_protocol_server: true`; NW_NEGATIVE needs the Persistent profile. A common source composition does not make different binary/profile closures interchangeable.
+- **Fix / changed gate:** Run fresh002 with its own Persistent preflight lock, retain both profile lock hashes, and independently compare common source/client/oracle hashes. Do not claim one lock across the two profiles. The object malformed regression continues to use its matching object lock.
+- **Lesson:** Check role/profile fields before replaying a lock. Final T007 needs an explicitly sealed matrix composition covering both server profiles, not a bypass of candidate mismatch.
