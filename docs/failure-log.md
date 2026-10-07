@@ -18159,3 +18159,17 @@ containing selector has not yet run. See the next review/build/run record in
 - **Root cause:** The fixture guessed that status=false responses carry no payload. Production RepoNode::makeError copies the error text into both errorInfo and payload.
 - **Fix / changed gate:** Require status=false, exact service-specific errorInfo and identical error payload bytes, with independent payload hash and per-call physical snapshots. Re-review/rebuild and use fresh candidates; product refusal logic is unchanged.
 - **Lesson:** Negative response payloads can carry diagnostic bytes. Zero successful content and zero mutation are different invariants from an empty transport payload.
+
+### 2026-10-07 CDT — Spec193 timeout oracle treated SQLite SHM control changes as durable mutation
+
+- **Symptom:** `nw-negative-diag-001/002` completed unauthorized rejection and a ~6008ms timeout, then failed full storage equality. Both runs FAIL, cleanup PASS; 002 preserved before-stop/after-stop/after-timeout snapshots.
+- **Root cause:** The collector includes SQLite SHM physical hashes. The forensic control showed only A's SHM changed during service stop, before the request; database/WAL bytes, every table digest, manifests and payloads were identical. After stop→after timeout was entirely unchanged.
+- **Fix / changed gate:** Retain all raw snapshots, compare every field except SHM control bytes at this explicit shutdown boundary. Live positive/unauthorized comparisons remain fully strict. Re-review the ownership plane and use fresh runtime evidence; no product storage behavior changed.
+- **Lesson:** Shared-memory control state is not a committed Repo mutation. Separate shutdown and request boundaries while preserving full durable row/file evidence.
+
+### 2026-10-07 CDT — Spec193 timeout publication had no live SVS subscriber to fetch its wire
+
+- **Symptom:** Offline independent validation of `nw-negative-diag-001` passed positive23 and unauthorized1 signature chains, but timeout lacked a signed Request body in the caller capture despite a nonempty native ID and timeout callback.
+- **Root cause:** Both Repo services were stopped; SVS stored the publication but no live matching subscriber fetched its signed Data. Local publication state alone did not prove network wire emission.
+- **Fix / changed gate:** Use public requestReceipt with explicit owner A, stop A only, and leave B subscribed but unselected. Require the actual signed Request in captures, no eligible A ACK or final Selection/Response, and validate any B broadcast ACK. Rebuild/re-review and run fresh; zero mutation and timeout-only outcome remain mandatory.
+- **Lesson:** A published name or callback does not establish captured request wire. Keep a nonexecuting subscriber when qualification requires retrieval evidence for an unavailable owner.
