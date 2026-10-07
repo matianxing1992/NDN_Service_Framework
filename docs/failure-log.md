@@ -18138,3 +18138,17 @@ containing selector has not yet run. See the next review/build/run record in
 - **Root cause:** CAPABILITY's final response is `StorageCapability`, while `supportsReplicaReceipts` belongs to the authenticated capability ACK. The oracle mixed those serializers. Separately tcpdump reported 659 received versus 646 captured packets on Neu with zero kernel drops: buffered capture shutdown omitted the final protocol tail.
 - **Fix / changed gate:** Check response-owned `repoNode` and `failureDomain`, retaining separate signed ACK validation. Enable tcpdump immediate mode alongside packet-buffered output so short final requests are delivered to the capture process before shutdown. Do not weaken four-stage signature assertions. A fresh run must prove all 21 Request/ACK/Selection/Response chains and complete cleanup.
 - **Lesson:** ACK and Response schemas have different owners. Successful application callbacks do not guarantee complete capture evidence; libpcap delivery buffering is distinct from file flush and kernel drops.
+
+### 2026-10-07 CDT — Spec193 artifact wrapper status used replica-target query as submitter
+
+- **Symptom:** `nw-artifact-diag-001`, lock `62f5058db0ec769961ef6367539ffcdc7b9701aa7d3ec0c421f6799d66ccabea`, registered the publish intent and completed STORE, then received `repo-publish-operation-unauthorized: target is not authorized for accepted status`. Run FAIL, cleanup PASS.
+- **Root cause:** The native fixture populated PublishOperationStatusRequest.target while querying as the original USER submitter. That optional field selects replica-target authorization; production queryPublishOperationStatus omits it for submitter queries.
+- **Fix / changed gate:** Omit the target field, preserving explicit Provider A service selection, operation-ID/reference binding and terminal aggregate receipt assertions. Re-review and rebuild the fixture, then use a fresh candidate/output to prove authorized STATUS and receipt/current-state queries.
+- **Lesson:** A request's target field can select a different authorization role. Copy the public owner's protocol semantics rather than adding apparently redundant identity metadata.
+
+### 2026-10-07 CDT — Spec193 artifact wrapper used an invalid availability probe enum
+
+- **Symptom:** `nw-artifact-diag-002`, lock `3406e5949548407c6bafe96726c9e12405823b20f353ef7aac0357219b729a3f`, completed intent, STORE, terminal STATUS, LOCATION and aggregate RECEIPT, then locally rejected AVAILABILITY with `artifact-invalid-receipt: availability request version or probe kind is invalid`. Run FAIL, cleanup PASS; no AVAILABILITY request was emitted.
+- **Root cause:** The fixture guessed `content`; the real RepoAvailabilityProbeRequest serializer accepts only `metadata` and `verify_content`.
+- **Fix / changed gate:** Use `verify_content`, retain PRESENT/VERIFIED and full reference/location assertions, rebuild the native fixture and run fresh evidence. Product validators remain unchanged.
+- **Lesson:** Read the exact serializer enum before drafting a wire fixture. A local validation error is not evidence of a remote authorization or integrity failure.

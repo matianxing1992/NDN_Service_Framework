@@ -1,0 +1,11 @@
+# Spec193 artifact wrapper checkpoint
+
+2026-10-07 12:58 CDT, Experimental. N03 has local positive evidence; N07 remains partial and T005/T007 remain open.
+
+NW_ARTIFACT `specs/193-distributedrepo-multinode-api-campaign/evidence/nw-artifact-diag-003/004/run-manifest.json` passed twice on five NFD hosts under the same candidate lock `4abc2092a9b8ca3b921331cd6e73036787bd8b3e6700e2bc7723bbda7bf4eb8d`. Each run has 16 real requests with independently verified Request/ACK/Selection/Response inner/outer signatures and identical inner wire digests at Neu/UCLA. Native child exits zero without Python mapping; all five captures and bounded cleanup pass.
+
+The driver registers real submitter intents, calls full artifact STORE and tail-first range STORE/COMMIT wrappers, polls authenticated submitter STATUS to COMMITTED, and invokes public LOCATION, aggregate RECEIPT, verify_content AVAILABILITY and direct FETCH_RANGE for each distinct reference. Independent checks bind source, reference, operation, Repo/Provider, location fence and payload; physical A inventory has exactly two artifact manifests, two persistent receipts/locations/publish operations/aggregate receipts, one deduplicated source payload and no staging. B stays unchanged. No journal/backend shortcut or product change.
+
+Final native build PASS 28.583 seconds; Python compilation and whitespace PASS. Five-lane pre-runtime review is `evidence/nw-artifact-review-20261007/review.md`, design is `contracts/network-wrapper-campaign.md`. Failed 001 (submitter status included replica target) and 002 (invalid probe enum) are preserved and recorded in failure-log.md; saved responses also corrected artifact/reference JSON ownership in the independent oracle.
+
+Next: prove physical-loss historical/current distinction for N07, then N08/N10, P01–P06, A19/A21/large-range gaps, and full current-candidate regression/matrix twice. Positive current availability does not close that negative distinction. Context Mode active health, CodeGraph and canonical Spec Kit review/design gates were used; existing Spec registry owns resumable state, ARS statistical workflow is not applicable. Source remains in the preexisting uncommitted Spec192/193 composition; this narrow checkpoint does not claim clean-checkout reproduction. No push or Tiger qualification.
