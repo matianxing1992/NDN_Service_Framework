@@ -18194,3 +18194,17 @@ containing selector has not yet run. See the next review/build/run record in
 - **Root cause:** The new CLI was not in NO_PYTHON_CPP_BINARIES. Its already-empty no-Python child PATH was consequently reused as Mininet's launch PATH, bypassing the existing separation that resolves mnexec before clearing the child's PATH.
 - **Fix / changed gate:** Add ndnsf-repo-import to the existing native classification; preserve the empty child PATH and no-Python mapping assertion, but use the normal launch PATH until namespace entry. Run a fresh candidate/output rather than reusing001.
 - **Lesson:** Every newly introduced native experiment binary needs the same launch/child boundary. An executable lookup failure is not an importer or privilege-policy failure.
+
+### 2026-10-07 CDT — Spec193 DI model cache oracle used auxiliary naming
+
+- **Symptom:** P03/P04 diag001 failed at `P03 cache files or read-only Repo inventory mismatch`; cleanup PASS. All three actual authorized native fetches and the APPClient result matched source digests/sizes; the cold unauthorized reader was rejected before creating its destination.
+- **Root cause:** The campaign expected `spec193-model-<digest>/model.bin`, but the existing APP facade uses the configured model artifact name `/Spec192/DI/model` as its cache name. The actual model directory was `Spec192-DI-model-<digest>`; input/output retained their auxiliary cache hints. The combined assertion short-circuited before checking the Repo inventory, so this failed run does not prove its final inventory invariant or warm-cache denial.
+- **Fix / changed gate:** Correct only the campaign's model cache expectation and separate cache/inventory errors. Keep the product facade unchanged. Freeze a fresh candidate and run cold denial, authorized reads and warm denial twice with the corrected exact byte/path oracle; preserve diag001 as failed evidence.
+- **Lesson:** Model and auxiliary artifact cache names follow their existing owners. Verify actual plan projection before asserting a uniform naming convention.
+
+### 2026-10-07 CDT — Spec193 local tooling exhausted filesystem space
+
+- **Symptom:** CodeGraph sync failed with `cannot rollback - no transaction is active`; Context Mode could not create a sandbox (`ENOSPC`), and a shell here-document could not create its temporary file. The completed MiniNDN failure had already written its manifest and cleanup PASS.
+- **Root cause:** The root filesystem had no user-available space. The SQLite error alone does not establish database corruption; index health requires a successful retry after space recovery.
+- **Fix / changed gate:** Retain experiment evidence, models and source. Use package-maintenance commands to prune old pnpm metadata, purge pip download cache and clear regenerable Puppeteer browser downloads. A raw `rm -rf` cache command was automatically rejected; the package-manager route completed. Retry CodeGraph and Context Mode health after recovery. No active cargo or downloaded browser process was found.
+- **Lesson:** Check disk headroom before index refresh and full-matrix qualification. Package caches are recoverable; deleting run evidence or changing filesystem reserve policy is not a storage repair.
