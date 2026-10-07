@@ -18208,3 +18208,17 @@ containing selector has not yet run. See the next review/build/run record in
 - **Root cause:** The root filesystem had no user-available space. The SQLite error alone does not establish database corruption; index health requires a successful retry after space recovery.
 - **Fix / changed gate:** Retain experiment evidence, models and source. Use package-maintenance commands to prune old pnpm metadata, purge pip download cache and clear regenerable Puppeteer browser downloads. A raw `rm -rf` cache command was automatically rejected; the package-manager route completed. Retry CodeGraph and Context Mode health after recovery. No active cargo or downloaded browser process was found.
 - **Lesson:** Check disk headroom before index refresh and full-matrix qualification. Package caches are recoverable; deleting run evidence or changing filesystem reserve policy is not a storage repair.
+
+### 2026-10-07 CDT — Spec193 large-range timeout proposal failed static review
+
+- **Symptom:** Read-only five-lane review BLOCKed the A06_LARGE proposal before build or runtime. A new single-publish-only timeout option was validated after early modes could write durable state; its contract incorrectly claimed repeated RPCs consumed one shared600s budget.
+- **Root cause:** The proposal inferred native semantics from fixture configuration without following `ArtifactRepositoryApi::publishFile`'s source-size-derived begin deadline. Thirty ranges plus commit already obtain35 request windows and a23760000ms default begin ceiling; increasing per-RPC timeout would enlarge that ceiling unnecessarily.
+- **Fix / changed gate:** Remove the entire introduced CPP option/delta, prove byte equality with the review baseline, and retain only the131123B runner variant with a3600s bounded-success cap. Timeout is FAIL, not recovery coverage. Require full selected-target commit, durable payload/receipt, authenticated writes, independent consumer digest and cleanup before local closure; re-review the corrected snapshot before running.
+- **Lesson:** Separate per-RPC, synchronous begin, post-accept status-wait and harness deadlines using the real owner implementation. More runtime alone is not a passing oracle.
+
+### 2026-10-07 CDT — Spec193 Context Mode lost verified real-session capture
+
+- **Symptom:** Project and active health checks returned `NO_REAL_SESSION_EVENTS: no post-restart current-project user-prompt exists`; the authority indexing helper exited5 after the T006 checkpoint.
+- **Root cause:** The semantic guard found no qualifying real user-prompt event for the current host/session. The observations do not establish why host capture stopped; an on-disk installation check or manual hook fixture cannot prove host dispatch.
+- **Fix / changed gate:** Preserve the failure and use the repository pointer, Spec193 tasks/contracts/evidence and current CodeGraph source as authority. Do not fabricate acceptance markers, purge stores or infer checkpoint completion from auto-memory. Restoring capture requires the documented full-client restart and real user-prompt acceptance gate; no restart was performed during the active campaign.
+- **Lesson:** Successful sandbox processing is distinct from verified retrieval/capture authority. A failed semantic layer must remain explicitly failed until its real-host acceptance passes.
