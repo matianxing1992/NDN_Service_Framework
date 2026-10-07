@@ -1,0 +1,11 @@
+# Spec193 N10 Persistent service boundary checkpoint
+
+2026-10-07 13:24 CDT, Experimental. NW_REJECT `specs/193-distributedrepo-multinode-api-campaign/evidence/nw-reject-diag-002/003/run-manifest.json` passed twice on five NFD hosts under lock `6b21d2abdd6a2b21414916cd84dd3f468d39f823629686530064d6d0044fd267`. Two production Persistent Providers stay online. Seven separate native processes explicitly select A for legacy STORE, STORE_RANGE, COMMIT_RANGES, ABORT_RANGES, INSERT, STORE_MANIFEST and DELETE.
+
+Every request has status=false and exact service-specific diagnostic bytes in errorInfo and payload. Immediately after each, both complete DB/table, manifest and file snapshots equal the initial state. Seven authenticated A handler events match operation order. The independent oracle verifies all seven four-stage inner/outer signature chains, matching inner wire digests at caller/A, and 21 B ACK host/name observations. B has no final Selection/Response, handler or mutation. Seven zero-exit native clients without Python mapping, five captures and cleanup PASS per run.
+
+`nw-reject-positive-regression-001` uses the identical candidate lock for extended NW_ARTIFACT: PASS/cleanup PASS, 23 signed calls and three zero-exit native children. This checks the changed reply/report and default strict awaiter positive path, including physical loss/restoration. Native build PASS27.686s; Python/whitespace PASS. First diagnostic 001 failed an incorrect empty-error-payload assumption; the actual makeError serializer was inspected and exact error bytes are now required. Failure preserved and logged.
+
+Design/review: `contracts/network-wrapper-campaign.md`, `evidence/nw-reject-review-20261007/review.md`. Product source unchanged. Context Mode active health, CodeGraph and canonical Spec Kit gates used; unaffected product unit/integration evidence reused. Existing Spec registry owns resumable state; ARS statistical workflow is not applicable. Source remains in the preexisting uncommitted composition; this narrow checkpoint does not establish clean-checkout reproduction.
+
+N10 has local evidence. N08 remains open, followed by P01–P06, A19/A21/large-range gaps and T007 full current-candidate regression and matrix twice. No push or Tiger qualification.

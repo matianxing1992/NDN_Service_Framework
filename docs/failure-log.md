@@ -18152,3 +18152,10 @@ containing selector has not yet run. See the next review/build/run record in
 - **Root cause:** The fixture guessed `content`; the real RepoAvailabilityProbeRequest serializer accepts only `metadata` and `verify_content`.
 - **Fix / changed gate:** Use `verify_content`, retain PRESENT/VERIFIED and full reference/location assertions, rebuild the native fixture and run fresh evidence. Product validators remain unchanged.
 - **Lesson:** Read the exact serializer enum before drafting a wire fixture. A local validation error is not evidence of a remote authorization or integrity failure.
+
+### 2026-10-07 CDT — Spec193 Persistent rejection fixture expected an empty error payload
+
+- **Symptom:** `nw-reject-diag-001`, lock `fc96a63d4aa571162f3d94166be618a3130843ec6808c5d4af1baef7cdc08359`, received the exact STORE error then failed its payload assertion. Run FAIL, cleanup PASS; the remaining six operations were not executed.
+- **Root cause:** The fixture guessed that status=false responses carry no payload. Production RepoNode::makeError copies the error text into both errorInfo and payload.
+- **Fix / changed gate:** Require status=false, exact service-specific errorInfo and identical error payload bytes, with independent payload hash and per-call physical snapshots. Re-review/rebuild and use fresh candidates; product refusal logic is unchanged.
+- **Lesson:** Negative response payloads can carry diagnostic bytes. Zero successful content and zero mutation are different invariants from an empty transport payload.
