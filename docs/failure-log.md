@@ -18187,3 +18187,10 @@ containing selector has not yet run. See the next review/build/run record in
 - **Root cause:** That lock declares `object_protocol_server: true`; NW_NEGATIVE needs the Persistent profile. A common source composition does not make different binary/profile closures interchangeable.
 - **Fix / changed gate:** Run fresh002 with its own Persistent preflight lock, retain both profile lock hashes, and independently compare common source/client/oracle hashes. Do not claim one lock across the two profiles. The object malformed regression continues to use its matching object lock.
 - **Lesson:** Check role/profile fields before replaying a lock. Final T007 needs an explicitly sealed matrix composition covering both server profiles, not a bypass of candidate mismatch.
+
+### 2026-10-07 CDT — Spec193 production importer absent from native launch classification
+
+- **Symptom:** P05 diag001 failed before the importer started with `FileNotFoundError: mnexec`; cleanup PASS. Its legacy source was seeded, but no native import result existed.
+- **Root cause:** The new CLI was not in NO_PYTHON_CPP_BINARIES. Its already-empty no-Python child PATH was consequently reused as Mininet's launch PATH, bypassing the existing separation that resolves mnexec before clearing the child's PATH.
+- **Fix / changed gate:** Add ndnsf-repo-import to the existing native classification; preserve the empty child PATH and no-Python mapping assertion, but use the normal launch PATH until namespace entry. Run a fresh candidate/output rather than reusing001.
+- **Lesson:** Every newly introduced native experiment binary needs the same launch/child boundary. An executable lookup failure is not an importer or privilege-policy failure.
