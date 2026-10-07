@@ -1,0 +1,13 @@
+# Spec193 N08 malformed response checkpoint
+
+2026-10-07 14:36 CDT, Experimental. N08 remains PARTIAL because wrong-signer evidence is still open; T005/T007 are open.
+
+NW_MALFORMED `specs/193-distributedrepo-multinode-api-campaign/evidence/nw-malformed-diag-002/003/run-manifest.json` passed twice on five NFD hosts under the identical lock `4e2b1e31d65c7362fb8411b4828318af5007d2e57e74ae7280fe2bc1b4e0dd6b`. Each includes21 positive object/catalog request chains and one malformed-response chain, independently verifying Request/ACK/Selection/Response inner/outer signatures and caller/A inner digest agreement. Three native children exited0 without Python mapping; five captures and cleanup PASS per run.
+
+The test-only A STATUS handler receives legitimate selection, publishes one encrypted/signed ff plaintext through the production publishHybridEncodedMessage method, then holds its ordinary return. The real public receipt wrapper records `ResponseMessage decode failed: Insufficient data during TLV parsing`, produces no application response or success, and ends with the six-second timeout. The runner stops the fault process before its delayed ordinary return. Complete storage snapshots and ordinary Repo handler events remain equal to the positive baseline; B publishes no final response and performs no handler/write.
+
+First run001 remains FAIL with cleanup PASS: logging was disabled, so signed arrival and timeout could not prove decode refusal. The client now explicitly enables only ServiceUser ERROR through ndn-cxx's logging API. NDN_LOG, TRACE and TIMELINE remain disabled; this observation is declared rather than inferred. No product source changed for this lane. Native fixture/client build PASS32.478s, subsequent client build PASS29.105s, Python/whitespace checks PASS. Design/review: `contracts/network-wrapper-campaign.md`, `evidence/nw-malformed-review-20261007/review.md`.
+
+Context Mode and CodeGraph verify repository authority/source; canonical Spec Kit design/review gates apply. The Spec registry owns resumable state; ARS statistical workflow is not applicable to these correctness checks. Source remains in the preexisting uncommitted composition, and clean-checkout reproduction is not yet claimed. This narrow checkpoint records evidence without incorporating unrelated in-flight work.
+
+Next: isolate a trusted but wrong Provider signer after legitimate A ACK/Selection and prove the consumer rejects that identity without success. Then P01–P06, A19/A21/large-range gaps, reconciliation of the source candidate, affected tests and the full same-candidate matrix twice. No push or Tiger qualification.

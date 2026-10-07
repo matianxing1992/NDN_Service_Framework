@@ -18173,3 +18173,10 @@ containing selector has not yet run. See the next review/build/run record in
 - **Root cause:** Both Repo services were stopped; SVS stored the publication but no live matching subscriber fetched its signed Data. Local publication state alone did not prove network wire emission.
 - **Fix / changed gate:** Use public requestReceipt with explicit owner A, stop A only, and leave B subscribed but unselected. Require the actual signed Request in captures, no eligible A ACK or final Selection/Response, and validate any B broadcast ACK. Rebuild/re-review and run fresh; zero mutation and timeout-only outcome remain mandatory.
 - **Lesson:** A published name or callback does not establish captured request wire. Keep a nonexecuting subscriber when qualification requires retrieval evidence for an unavailable owner.
+
+### 2026-10-07 CDT — Spec193 malformed-response fixture had no enabled decoder error logger
+
+- **Symptom:** `nw-malformed-diag-001` selected A, recorded the ff publication and reached timeout-only native PASS, but the mandatory decoder-refusal assertion failed because the client log contained no ResponseMessage error. Run FAIL, cleanup PASS. Offline packet oracle verified the complete four-stage wire signatures at caller/A.
+- **Root cause / boundary:** Default ndn-cxx logging is disabled; signed response arrival plus timeout does not prove decrypted wire decode refusal. The original fixture assumed ERROR output was automatic.
+- **Fix / changed gate:** Enable only ServiceUser ERROR through the existing ndn-cxx logging API in this fault client, retain the strict decode-error assertion and leave NDN_LOG/TRACE/TIMELINE disabled. Rebuild/re-review and run fresh; any decryption-stage error still fails the required decode gate.
+- **Lesson:** Required negative evidence needs an explicit observation channel. Do not infer parsing refusal from a timeout or signed encrypted packet alone.
