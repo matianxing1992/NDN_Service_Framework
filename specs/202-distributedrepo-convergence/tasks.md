@@ -2,7 +2,7 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [gap-audit.md](gap-audit.md), [validation-matrix.md](validation-matrix.md)
 **Branch**: `Repo`
-**Progress Timestamp**: 2026-10-08 12:24 -05:00
+**Progress Timestamp**: 2026-10-08 15:52 -05:00
 **Execution mode**: IMPLEMENTATION_AUTHORIZED；用户已要求在Repo完成全部任务。旧Spec192/193保持停止；本registry记录当前实施与分层验证。
 
 ## Logical Batches
@@ -25,11 +25,11 @@
 | T002 | PARTIAL | T001 | Normal In-App完整两次、修复fixture后独立Persistent完整两次exit0；首次失败保留。最终ASAN/UBSAN仍待运行，见destination-batch。 | 2026-10-08 15:32 -05:00 |
 | T003 | PARTIAL | T001 | 删除错误pending预改写、已有finalizer保持attempt ledger；actualBSTORE/Csourcefailure/latepublication与exception-safe stop、完整recovery selector closing两次exit0，ASAN pending。 | 2026-10-08 15:32 -05:00 |
 | T004 | PARTIAL | T001 | 两replaybarriers+G004verifiedbytes/provenance转换+oldstage早期inventory fence；完整unit两次与5case integrationexit0；ASAN及当前CLI/network pending。 | 2026-10-08 15:32 -05:00 |
-| T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例PASS；OriginalData完整nativeunit/build进行中，当前7个O17子场景待T009/T010。 | 2026-10-08 15:32 -05:00 |
+| T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
-| T007 | NOT_STARTED | T001,T003 | NOT_RUN：DB007公开object/local/network/parser边界收口；不凭旧case PASS省略入口。 | 2026-10-08 12:24 -05:00 |
-| T008 | NOT_STARTED | T001,T002,T004,T005 | NOT_RUN：DB007Python/DI/parity/import/retired完整currentsource验证。 | 2026-10-08 12:24 -05:00 |
-| T009 | NOT_STARTED | T002–T008 | NOT_RUN：overlay/source/binary/profile冻结、全部affected suites/dynamic与freshconvergence。 | 2026-10-08 12:24 -05:00 |
+| T007 | IN_PROGRESS | T001,T003 | 当前surface/真实local与network/profile边界按api-inventory和surface-batch核对；current native完整suite及网络仍待运行，不继承旧PASS。 | 2026-10-08 15:52 -05:00 |
+| T008 | IN_PROGRESS | T001,T002,T004,T005 | binding strong owner/析构/GIL与DI适配source核对；两个模块重建、Python/CLI/parity/currentnetwork尚未闭合。 | 2026-10-08 15:52 -05:00 |
+| T009 | PARTIAL | T002–T008 | preflight active202/clean-source/缺失与staged删除fence v2静态PASS，12mutation tests PASS；build receipt、全consumers、动态与freshconvergence仍待收口。 | 2026-10-08 15:52 -05:00 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Detailed Execution Progress
@@ -53,7 +53,7 @@
 
 2026-10-08 15:36 -05:00 — Repo分支，全部任务继续实施。T001 DONE；G001–G003及新增G004已localizedrepair，T002/T003 normal完整closing两次通过，T004完整unit两次/integration5case通过；均待最终ASAN/UBSAN。T005/T006 packet/native入口已接线，13offline+6OriginalData nativeunit通过；当前网络7个O17子场景及A21仍未资格验证。T007/T008完整surface/parity，T009 source/binding/runtime/dynamic/convergence与T010统一双轮仍未完成。产品readiness BLOCK，旧PASS仍仅历史。Context Mode健康曾通过但authority检索为空，仓库为authority；文档更新后索引必须刷新。CodeGraph已同步当前source。
 
-## Batch Quality Record
+## Historical Planning Batch Quality Record (2026-10-08 12:24)
 
 **Batch growth decision**: 一批只写Spec202可审查文档与旧Spec停止/指针同步，不修改产品、harness或测试源码。
 **Scope**: 当前baseline/ideal/gaps/contracts/task/validation/supersession；read-onlycode review沿用canonicalreview-agent。

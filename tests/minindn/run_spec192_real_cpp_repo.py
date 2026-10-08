@@ -210,31 +210,7 @@ def read_log(path: Path) -> str:
 
 
 def source_candidate() -> Tuple[str, List[str]]:
-    tracked = subprocess.check_output(
-        ["git", "diff", "--name-only", "-z", "HEAD"], cwd=str(REPO)
-    ).decode().split("\0")
-    untracked = subprocess.check_output(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=str(REPO)
-    ).decode().split("\0")
-    tracked_names = {name for name in tracked if name}
-    candidates = sorted({name for name in tracked + untracked if name and
-                         name.startswith(REPO_PREFIXES) and
-                         name not in CANDIDATE_EVIDENCE_EXCLUDES and
-                         not (set(Path(name).parts) & CANDIDATE_GENERATED_PATH_COMPONENTS) and
-                         Path(name).suffix.lower() not in CANDIDATE_GENERATED_SUFFIXES and
-                         ((REPO / name).is_file() or name in tracked_names)})
-    state = hashlib.sha256()
-    for name in candidates:
-        state.update(name.encode("utf-8"))
-        state.update(b"\0")
-        path = REPO / name
-        if path.is_file():
-            state.update(b"file\0")
-            state.update(hashlib.sha256(path.read_bytes()).digest())
-        else:
-            state.update(b"deleted\0")
-        state.update(b"\n")
-    return state.hexdigest(), candidates
+    return spec193_preflight.source_candidate(REPO)
 
 
 def validate_di_publish_child_timeout() -> None:
@@ -7923,11 +7899,11 @@ def main() -> int:
         if args.durable_repo_root is None:
             raise RuntimeError("persistence campaign requires --durable-repo-root")
         args.durable_repo_root = args.durable_repo_root.resolve()
-        evidence_root = (REPO / "specs/193-distributedrepo-multinode-api-campaign/evidence").resolve()
+        evidence_root = (REPO / "specs/202-distributedrepo-convergence/evidence").resolve()
         try:
             relative_root = args.durable_repo_root.relative_to(evidence_root)
         except ValueError as error:
-            raise RuntimeError("durable Repo root must be inside Spec193 evidence") from error
+            raise RuntimeError("durable Repo root must be inside Spec202 evidence") from error
         if len(relative_root.parts) < 2 or args.durable_repo_root == args.output_dir.resolve():
             raise RuntimeError("durable Repo root must be a separate evidence cohort directory")
         if args.campaign_case in ("PERSIST_SEED", "PERSIST_ARTIFACT_SEED") and args.durable_repo_root.exists():
@@ -7973,7 +7949,14 @@ def main() -> int:
     # Clear ambient logging there; validated opt-ins set TRACE only on targets.
     os.environ.pop("NDN_LOG", None)
     args.output_dir = args.output_dir.resolve()
-    candidate_sha, candidate_files = source_candidate()
+    try:
+        candidate_sha, candidate_files = source_candidate()
+    except spec193_preflight.PreflightError as error:
+        if args.preflight_only:
+            print(json.dumps({"status": "REJECT", "failure_class": error.failure_class,
+                              "detail": str(error)}, sort_keys=True))
+            return 2
+        raise
     preflight = None
     if args.campaign_case:
         acl_services = None
