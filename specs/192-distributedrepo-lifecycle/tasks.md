@@ -1,5 +1,7 @@
 # Tasks: NDNSF-DistributedRepo Lifecycle, Receipts, and Reuse
 
+> **Execution status: SUPERSEDED_STOPPED** — 2026-10-08 用户停止本 Spec 独立推进；活动计划为 [Spec202](../202-distributedrepo-convergence/spec.md)。以下任务状态/checkbox/证据保持历史，不表示当前候选已完整合格；不继续本 Spec 实现或实验。停止前原始文档已保存于 Spec202 的 predecessor-documents-before-stop.zip。
+
 **Input**: Design documents from `/specs/192-distributedrepo-lifecycle/`
 **Execution mode**: STRICT_SERIAL — each task must reach `DONE` with its own scoped acceptance before the next task begins; no parallel implementation is authorized because tasks share the Repo API, artifact catalog/receipt schema, production registration, or binding surface.
 **Prerequisites**: [plan.md](plan.md), [spec.md](spec.md), [research.md](research.md), [data-model.md](data-model.md), [contracts/](contracts/).
