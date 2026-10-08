@@ -1,6 +1,6 @@
 # Feature Specification: DistributedRepo Contract and Implementation Convergence
 
-**Feature Branch**: `Experimental`
+**Feature Branch**: `Repo`
 **Created**: 2026-10-08
 **Status**: Draft
 **Progress Timestamp**: 2026-10-08 12:24 -05:00

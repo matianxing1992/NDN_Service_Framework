@@ -71,4 +71,6 @@
 
 ## Operating Authority
 
+2026-10-08后续用户决定：本机Repo工作由`Experimental`转到保留分支`Repo`。新分支从`e6ff3409`建立；switch前后HEAD/status/diff/staged及本地规划文档hash相同，原未提交实现、fixture与证据留在同一工作树，未自动提交源码。`Experimental`保留原checkpoint，旧历史candidate不会因分支名变化被重新标PASS。Spec202的当前branch字段为Repo；本审计原baseline仍是0957f675+当时overlay。
+
 `.specify/feature.json`与AGENTS managedplan指向202；ContextMode按canonicalsharedguide重新index/health，CodeGraph仍核对实际source。spec192/193名称的generic source/test入口可由202维护，不能机械复制或另建Tiger-only目录。新产品实施只在明确实施202授权后启动，本轮完成静态规划即可。

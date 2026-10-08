@@ -1,0 +1,83 @@
+# Development Branch and Spec Lifecycle Policy
+
+## English
+
+`main` is the stable integration branch. `Experimental` is the active
+integration branch for validated experimental NDNSF work. A Spec branch is a
+temporary implementation workspace unless Tianxing explicitly asks to retain
+it.
+
+`Repo` is the retained development branch for this machine's DistributedRepo
+work, explicitly selected by Tianxing on 2026-10-08. It starts at the local
+`Experimental` checkpoint `e6ff3409` and carries the existing uncommitted
+Repo-related source, bindings, DI integration, tests, planning and evidence
+in the same worktree. Spec202 proceeds on `Repo`; Spec192/193 remain stopped.
+`Experimental` retains that checkpoint. Further integration or publication
+requires an explicit decision; changing branches does not qualify the source
+or commit the pending implementation. TigerCluster and UAV work retain their
+existing branch and directory ownership rules.
+
+`UAV-Experimental` is a retained application integration branch explicitly
+authorized by Tianxing. New `NDNSF-UAV-APP` features, including Spec 176, MUST
+be specified, implemented, tested, and evidenced on `UAV-Experimental`. If a
+short-lived UAV Spec branch is useful, it merges back into `UAV-Experimental`,
+not directly into `Experimental` or `main`. At deliberate synchronization
+points, `UAV-Experimental` may incorporate validated NDNSF changes from
+`Experimental`; incomplete UAV application work does not flow in the opposite
+direction. Promotion from `UAV-Experimental` requires an explicit decision by
+Tianxing after application validation.
+
+The required lifecycle is:
+
+1. Create a temporary branch for a Spec or bounded task when isolation is
+   useful.
+2. Keep implementation, tests, documentation, and evidence in that branch
+   until the task is complete.
+3. Before closing the task, merge the completed branch into `Experimental`.
+4. After `Experimental` validation, merge the validated integration state into
+   `main`.
+5. Do not infer that a branch was merged from its name; verify ancestry and the
+   resulting tree. Preserve `main`, `Experimental`, `UAV-Experimental`, and
+   other branches explicitly requested by Tianxing. Other temporary branches
+   may be removed only after their useful commits and evidence are preserved.
+
+Never use `git add -A` in the shared worktree to close a Spec. Generated files,
+unrelated dirty edits, and untracked evidence must be reviewed and assigned to
+the correct branch before committing. A merge is incomplete if the Spec's
+implementation is present but its required tests, contracts, or evidence have
+been left only in an untracked worktree.
+
+## 中文
+
+`main` 是稳定集成分支，`Experimental` 是经过验证的 NDNSF 实验工作的主集成
+分支。Spec 分支默认只是临时工作区，只有 Tianxing 明确要求保留时才作为长期
+分支保留。
+
+`Repo` 是本机 DistributedRepo 开发的保留分支，Tianxing 于 2026-10-08
+明确指定。它从本地 `Experimental` 的 `e6ff3409` 检查点建立，同一工作树
+中的 Repo 源码、绑定、DI 集成、测试、规划与证据继续保留。Spec202 在
+`Repo` 推进，Spec192/193 继续停止；`Experimental` 保留原检查点。后续
+集成或发布须有明确决定；切换分支不表示源码已合格，也不自动提交待审实现。
+TigerCluster 与 UAV 工作继续遵循各自分支和目录归属。
+
+`UAV-Experimental` 是 Tianxing 明确授权保留的 UAV 应用集成分支。新的
+`NDNSF-UAV-APP` 功能（包括 Spec 176）必须在 `UAV-Experimental` 上完成规格、
+实现、测试和证据整理。若为了隔离而创建临时 UAV Spec 分支，该分支应合并回
+`UAV-Experimental`，不能直接合并到 `Experimental` 或 `main`。在明确的同步
+节点，`UAV-Experimental` 可以吸收 `Experimental` 中已经验证的 NDNSF 改动；
+未完成的 UAV 应用工作不能反向进入 NDNSF 集成主线。只有在应用验证完成且
+Tianxing 明确决定后，才可以把 `UAV-Experimental` 的内容晋升到其他集成分支。
+
+规定的生命周期是：
+
+1. 需要隔离时，为一个 Spec 或边界清晰的任务创建临时分支。
+2. 在该分支中完成实现、测试、文档和证据。
+3. 任务完成前，将完整分支合并到 `Experimental`。
+4. `Experimental` 验证通过后，再将验证后的集成状态合并到 `main`。
+5. 不能根据分支名称推断是否已经合并，必须检查 ancestry 和合并后的文件树。
+   只保留 `main`、`Experimental`、`UAV-Experimental` 以及 Tianxing 明确要求
+   保留的其他分支；其他临时分支只有在提交和证据已保存后才可以清理。
+
+共享工作树中禁止用 `git add -A` 结束 Spec。生成文件、无关脏改动和未跟踪证据
+必须先审查并归属到正确分支。若 Spec 的实现已经合并，但所需测试、契约或证据
+仍只存在于未跟踪工作树，则该 Spec 不能视为完成合并。

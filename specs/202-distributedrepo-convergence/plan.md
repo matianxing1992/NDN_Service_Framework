@@ -1,6 +1,6 @@
 # Implementation Plan: DistributedRepo Contract and Implementation Convergence
 
-**Branch**: `Experimental` | **Date**: 2026-10-08 | **Spec**: [spec.md](spec.md)
+**Branch**: `Repo` | **Date**: 2026-10-08 | **Spec**: [spec.md](spec.md)
 **Progress Timestamp**: 2026-10-08 12:24 -05:00
 **Status**: PLANNING_ONLY; product readiness BLOCK
 

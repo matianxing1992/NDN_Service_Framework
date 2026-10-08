@@ -1,7 +1,7 @@
 # Tasks: DistributedRepo Contract and Implementation Convergence
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [gap-audit.md](gap-audit.md), [validation-matrix.md](validation-matrix.md)
-**Branch**: `Experimental`
+**Branch**: `Repo`
 **Progress Timestamp**: 2026-10-08 12:24 -05:00
 **Execution mode**: PLANNING_ONLY；本轮只写设计/静态审计，未实施下列产品任务。旧Spec192/193停止推进。
 
