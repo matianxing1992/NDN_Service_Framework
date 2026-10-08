@@ -1,0 +1,157 @@
+# Current API and Source Ownership Inventory
+
+**Baseline**: Repo `2fcfb415` + preserved dirty overlay；STATIC_ONLY inventory，不证明旧artifact等于当前source。
+
+## Exact Header Declarations and Overloads
+
+下表按当前三个主要公开header逐声明登记，保留同名overload；mode构造/值类型validate与wire codec的normal/negative由native suites覆盖。具体59case定义见validation-matrix；每个request及local项必须结合其同名operation/profile核对，不能将local调用作为network证明。
+
+| Public declaration | Definition TU | Build owner/output | Acceptance |
+| --- | --- | --- | --- |
+| `ArtifactRepositoryApi::makeInApp(InAppRepoConfig config)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A01–04 |
+| `ArtifactRepositoryApi::makePersistent(ndn_service_framework::ServiceUser& serviceUser, PersistentRepoClientConfig config = {})` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A04–05 |
+| `ArtifactRepositoryApi::publishFile(const std::string& sourcePath, const ArtifactReference& reference)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A01–12/A14 |
+| `ArtifactRepositoryApi::publishFile(const std::string& sourcePath, const ArtifactReference& reference, const SelectedRepoSet& selected, int timeoutMs)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A01–12/A14 |
+| `ArtifactRepositoryApi::beginPublishFile(const std::string& sourcePath, const ArtifactReference& reference, const SelectedRepoSet& selected, const std::string& idempotencyKey, int timeoutMs)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A10–12 |
+| `ArtifactRepositoryApi::beginArchive(const ArtifactRepositoryApi& inAppSource, const ArtifactHandle& handle, const SelectedRepoSet& selected, const std::string& idempotencyKey, int timeoutMs)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A13 |
+| `ArtifactRepositoryApi::getPublishStatus(const PublishOperationHandle& handle, int timeoutMs = 0)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A10–12 |
+| `ArtifactRepositoryApi::discoverRepoCandidates(const ArtifactCapabilityRequirements& requirements, int timeoutMs)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A05/A09 |
+| `ArtifactRepositoryApi::archive(const ArtifactRepositoryApi& inAppSource, const ArtifactHandle& handle, const SelectedRepoSet& selected, int timeoutMs)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A13 |
+| `ArtifactRepositoryApi::fetchFile(const ArtifactReference& reference, const std::string& destinationPath)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A02–03/A15–22/R01–05 |
+| `ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle, const std::string& destinationPath, int timeoutMs)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A02–03/A15–22/R01–05 |
+| `ArtifactRepositoryApi::lookupLocalCommit(const ArtifactReference& reference)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A01–03 |
+| `ArtifactRepositoryApi::getReceipt(const std::string& receiptId, std::optional<ArtifactHandle> handle = std::nullopt, int timeoutMs = 0)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A16 |
+| `ArtifactRepositoryApi::checkAvailability(const ArtifactHandle& handle, const std::string& probeKind = "metadata", int timeoutMs = 0, uint64_t maxAgeMs = 0)` | `ArtifactRepositoryApi.cpp` | Repo archive；对应native consumer；Python extension独立编译 | A17–20/A22 |
+| `RepoClient::fetchOriginalDataPacket(ndn_service_framework::ServiceUser& user, const ndn::Name& dataName, const std::string& expectedWireSha256, const std::vector<OriginalDataReplica>& replicas, const std::function<bool(const ndn::Data&)>& verifyProducerSignature, int timeoutMs)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O17 |
+| `RepoClient::put(RepoNode& node, const std::string& objectName, const std::vector<uint8_t>& payload, StoreOptions options = {})` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01 |
+| `RepoClient::get(const RepoNode& node, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01 |
+| `RepoClient::putRange(RepoNode& node, const RepoObjectManifest& manifest, RepoByteRange range, const std::vector<uint8_t>& bytes)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02 |
+| `RepoClient::commitRanges(RepoNode& node, const RepoObjectManifest& manifest)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02 |
+| `RepoClient::abortRanges(RepoNode& node, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O03 |
+| `RepoClient::getRange(const RepoNode& node, const std::string& objectName, RepoByteRange range)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02 |
+| `RepoClient::getManifest(const RepoNode& node, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01 |
+| `RepoClient::list(const RepoNode& node)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01 |
+| `RepoClient::remove(RepoNode& node, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O04–05 |
+| `RepoClient::putDataPacket(RepoNode& node, const std::vector<uint8_t>& wire)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O08–09 |
+| `RepoClient::getDataPacket(const RepoNode& node, const std::string& dataName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O08–09 |
+| `RepoClient::getDataPackets(const RepoNode& node, const RepoObjectManifest& manifest)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O08–09 |
+| `RepoClient::insert(RepoNode& node, const RepoDataReference& reference)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O10–12 |
+| `RepoClient::insertPayload(RepoNode& node, const std::string& objectName, const std::vector<uint8_t>& payload, ndn::KeyChain& keyChain, const ndn::security::SigningInfo& signingInfo, StoreOptions options = {}, size_t maxSegmentPayload = 6000)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O10–12 |
+| `RepoClient::status(const RepoNode& node, const std::string& operationId)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O10–12 |
+| `RepoClient::catalogStatus(const RepoNode& node)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13–15/L03/N09 |
+| `RepoClient::cacheStatus(const RepoNode& node)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13/L03/N09 |
+| `RepoClient::catalogSnapshot(const RepoNode& node)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13–15/L03/N09 |
+| `RepoClient::catalogDelta(const RepoNode& node, uint64_t sinceEpoch)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13–15/L03/N09 |
+| `RepoClient::catalogLookup(const RepoNode& node, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13–15/L03/N09 |
+| `RepoClient::putSegmented(RepoNode& node, const std::string& objectName, const std::vector<uint8_t>& payload, StoreOptions options = {}, size_t maxSegmentPayload = 6000)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O06–07 |
+| `RepoClient::getSegmented(const RepoNode& node, const RepoObjectManifest& manifest)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O06–07 |
+| `RepoClient::getObject(const RepoNode& node, const RepoObjectManifest& manifest)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/O06–07 |
+| `RepoClient::localPut(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& objectName, const std::vector<uint8_t>& payload, StoreOptions options = {})` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01 |
+| `RepoClient::localGet(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01 |
+| `RepoClient::localPutRange(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const RepoObjectManifest& manifest, RepoByteRange range, const std::vector<uint8_t>& bytes)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L02 |
+| `RepoClient::localCommitRanges(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const RepoObjectManifest& manifest)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L02 |
+| `RepoClient::localAbortRanges(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L02 |
+| `RepoClient::localGetRange(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& objectName, RepoByteRange range)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L02 |
+| `RepoClient::localGetManifest(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01 |
+| `RepoClient::localList(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01 |
+| `RepoClient::localRemove(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01 |
+| `RepoClient::localInsert(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const RepoDataReference& reference)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L03 |
+| `RepoClient::localStatus(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& operationId)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L03 |
+| `RepoClient::localCatalogStatus(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L03 |
+| `RepoClient::localCacheStatus(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L03 |
+| `RepoClient::localCatalogSnapshot(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L03 |
+| `RepoClient::localCatalogDelta(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, uint64_t sinceEpoch)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L03 |
+| `RepoClient::localCatalogLookup(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& objectName)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L03 |
+| `RepoClient::localPutSegmented(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const std::string& objectName, const std::vector<uint8_t>& payload, StoreOptions options = {}, size_t maxSegmentPayload = 6000)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L04 |
+| `RepoClient::localGetSegmented(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const RepoObjectManifest& manifest)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L04 |
+| `RepoClient::localGetObject(ndn_service_framework::LocalServiceRegistry& registry, const ndn::Name& repoServicePrefix, const RepoObjectManifest& manifest)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L04 |
+| `RepoClient::makeManifest(std::string objectName, std::string objectType, const std::vector<uint8_t>& payload, uint32_t replicationFactor, std::vector<std::string> replicaNodes, std::string policyEpoch)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/O06–07/N01（native value construction） |
+| `RepoClient::makeRequest(const std::vector<uint8_t>& payload)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N01（native request construction） |
+| `RepoClient::requestCapability(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N01/N08 |
+| `RepoClient::requestCacheStatus(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N01/N08 |
+| `RepoClient::requestStore(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const RepoObjectManifest& manifest, const std::vector<uint8_t>& payload, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N02/N08/N10 |
+| `RepoClient::requestStoreRange(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const RepoObjectManifest& manifest, RepoByteRange range, const std::vector<uint8_t>& bytes, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N02/N08/N10 |
+| `RepoClient::requestArtifactStoreRange(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const ArtifactRangeWriteRequest& request, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N03/N08 |
+| `RepoClient::requestArtifactStore(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const ArtifactStoreRequest& request, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N03/N08 |
+| `RepoClient::requestSelectedService(ndn_service_framework::ServiceUser& user, const ndn::Name& providerIdentity, const ndn::Name& serviceName, const std::vector<uint8_t>& payload, int ackCollectionTimeMs, int timeoutMs, std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted = {})` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N01–10/N08（对应operation/profile） |
+| `RepoClient::requestCommitRanges(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const RepoObjectManifest& manifest, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N02/N08/N10 |
+| `RepoClient::requestArtifactCommitRanges(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const ArtifactRangeCommitRequest& request, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N03/N08 |
+| `RepoClient::requestAbortRanges(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const std::string& objectName, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N02/N08/N10 |
+| `RepoClient::requestInsert(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const RepoDataReference& reference, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N06/N08/N10 |
+| `RepoClient::requestFetch(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const std::string& objectName, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N04/N08 |
+| `RepoClient::requestFetchRange(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const std::string& objectName, RepoByteRange range, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N04/N08 |
+| `RepoClient::requestManifest(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const std::string& objectName, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N04/N08 |
+| `RepoClient::requestInventory(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N04/N08 |
+| `RepoClient::requestDelete(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const std::string& objectName, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N05/N08 |
+| `RepoClient::requestStatus(ndn_service_framework::ServiceUser& user, const ndn::Name& repoServicePrefix, const std::string& operationId, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N05/N08 |
+| `RepoClient::requestLocation(ndn_service_framework::ServiceUser& user, const ndn::Name& provider, const ndn::Name& repoServicePrefix, const ArtifactLocationRequest& request, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N07/N08 |
+| `RepoClient::requestReceipt(ndn_service_framework::ServiceUser& user, const ndn::Name& provider, const ndn::Name& repoServicePrefix, const RepoReceiptLookupRequest& request, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N07/N08 |
+| `RepoClient::requestAvailability(ndn_service_framework::ServiceUser& user, const ndn::Name& provider, const ndn::Name& repoServicePrefix, const RepoAvailabilityProbeRequest& request, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N07/N08 |
+| `RepoClient::requestFetchRange(ndn_service_framework::ServiceUser& user, const ndn::Name& provider, const ndn::Name& repoServicePrefix, const std::string& objectName, RepoByteRange range, int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout, ndn_service_framework::ServiceUser::ResponseHandler onResponse)` | `RepoClient.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N04/N08 |
+| `RepoNode::RepoNode(ndn::Name servicePrefix, StorageCapability capability, std::shared_ptr<RepoStoreBackend> store, std::string repoNode = {}, std::string providerIdentity = {}, std::string artifactMetadataPath = {}, ArtifactLimits artifactLimits = {}, uint64_t availabilityFreshnessMs = 5000)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
+| `RepoNode::RepoNode()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
+| `RepoNode::servicePrefix()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
+| `RepoNode::core()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
+| `RepoNode::core()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
+| `RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& registry)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | L01–04/nativeownership |
+| `RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N01–10（注册集合）；A04 |
+| `RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider, std::shared_ptr<ndn_service_framework::ServiceUser> publisherUser, int ackCollectionTimeMs = 250, int requestTimeoutMs = 5000)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | N01–10（注册集合）；A04 |
+| `RepoNode::registerOriginalDataServing(ndn::Face& face)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O17 |
+| `RepoNode::put(const std::string& objectName, const std::vector<uint8_t>& payload, const std::string& objectType = "object", uint32_t replicationFactor = 1, const std::string& policyEpoch = "", std::vector<std::string> replicaNodes = {})` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02（component与network分别证明） |
+| `RepoNode::putManifest(const RepoObjectManifest& manifest)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02–04/N10 |
+| `RepoNode::get(const std::string& objectName)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02–04/N10 |
+| `RepoNode::putRange(const RepoObjectManifest& manifest, RepoByteRange range, const std::vector<uint8_t>& bytes)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02–03/N02–04/N10 |
+| `RepoNode::commitRanges(const RepoObjectManifest& manifest)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02–03/N02–04/N10 |
+| `RepoNode::abortRanges(const std::string& objectName)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02–03/N02–04/N10 |
+| `RepoNode::getRange(const std::string& objectName, RepoByteRange range)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02–03/N02–04/N10 |
+| `RepoNode::getManifest(const std::string& objectName)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02–04/N10 |
+| `RepoNode::list()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02–04/N10 |
+| `RepoNode::remove(const std::string& objectName)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O04–05/N05/N10 |
+| `RepoNode::putDataPacket(const std::string& dataName, const std::vector<uint8_t>& wire)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O08–09/O17 |
+| `RepoNode::importLegacyDataPacketReceipt(const std::string& dataName)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O17 |
+| `RepoNode::getDataPacket(const std::string& dataName)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O08–09/O17 |
+| `RepoNode::hasDataPacket(const std::string& dataName)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O08–09/O17 |
+| `RepoNode::setDataReferenceFetcher(DataReferenceFetcher fetcher)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O10–12/N06/N10 |
+| `RepoNode::insertWirePackets(const RepoDataReference& reference, const std::vector<std::vector<uint8_t>>& wirePackets)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O08–09/O17 |
+| `RepoNode::handleStore(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02/N03/N10（matching profile） |
+| `RepoNode::handleStoreRange(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02–03/N02–04/N10 |
+| `RepoNode::handleCommitRanges(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02–03/N02–04/N10 |
+| `RepoNode::handleAbortRanges(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02–03/N02–04/N10 |
+| `RepoNode::handleInsert(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O10–12/N06/N10 |
+| `RepoNode::handleStoreManifest(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02–04/N10 |
+| `RepoNode::handleFetch(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02–04/N10 |
+| `RepoNode::handleFetchRange(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O02–03/N02–04/N10 |
+| `RepoNode::handleManifest(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02–04/N10 |
+| `RepoNode::handleDataReceipt(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O17 |
+| `RepoNode::handleDataLocation(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O17 |
+| `RepoNode::handleInventory()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O01/N02–04/N10 |
+| `RepoNode::handleCapability()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13/N01 |
+| `RepoNode::cacheStatus()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13/N01 |
+| `RepoNode::handleCacheStatus()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13/N01 |
+| `RepoNode::handleCatalogStatus()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13–15/N09 |
+| `RepoNode::handleCatalogSnapshot()` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13–15/N09 |
+| `RepoNode::handleCatalogDelta(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13–15/N09 |
+| `RepoNode::handleCatalogLookup(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O13–15/N09 |
+| `RepoNode::handleDelete(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O04–05/N05/N10 |
+| `RepoNode::handleStatus(const std::vector<uint8_t>& request)` | `RepoNode.cpp` | Repo archive；对应native consumer；Python extension独立编译 | O12/N05/N07/A10–12/A16–22 |
+
+## Build and Consumer Definition Map
+
+- Repo `wscript`生产静态target `ndnsf-distributed-repo`：ArtifactRepositoryApi/ArtifactTypes/ArtifactManifest/ArtifactTransfer、RepoClient/Core/Node/Protocol/Types/StoreBackend、FilesystemArtifactStore/FilesystemRepoStoreBackend、LegacyRepoImporter/PersistentRepoServerConfig。输出 `build/NDNSF-DistributedRepo/libndnsf-distributed-repo.a`；actual位置以Waf task输出为准。
+- Server `build/NDNSF-DistributedRepo/DistributedRepoServer`；explicit importer `build/NDNSF-DistributedRepo/ndnsf-repo-import`由LegacyRepoImport.cpp+上述archive定义；不得以Python server替代。
+- Native consumers：`build/spec192-repo-client`、`spec193-object-repo-server`、`spec192-repo-inapp-api`、`spec192-repo-persistent-api`、`spec192-repo-persistent-service`、`spec192-repo-legacy-import-unit/integration`，source/registration在tests/wscript；final artifact SHA及loaded transitive libraries由T009重建封存。
+- Python `py_repoclient._py_repoclient`：setup.py独立编译其Repo TU清单+_py_repoclient.cpp/artifact_repository_bindings.cpp，不链接Waf Repo archive；Core shared library另外加载。API/Node改变后必须重建extension。当前native API/Core/backend不引用LegacyRepoImporter，module无该未定义symbol；production import独立CLI，不为清单形式一致无理由添加TU。
+- Core nativePython `pythonWrapper/src/ndnsf/_ndnsf.cpp`与service.py投影：ServiceUser/Provider/Core identity与grant由Core shared runtime；P01–02证明native lifetime/delegation。
+- DI contracts/facades/repo_reference、repo_artifact_resolver.py：显式generic/native identity与冷暖授权；P03–04及nativeDI conformance。Python仅编排/绑定，不拥有Repo持久状态。
+- LegacyRepoImporter::import+CLI对应P05/R07和native import suites；retired facade rejection对应P06。
+
+## Dirty Overlay Ownership and Release Boundary
+
+当前未提交Repo headers/native/SQLite/filesystem、thinbinding、Core signer/admission、DI adapter、example/experiment caller、unit/integration/Python/MiniNDN harness均沿既有owner保留；见baseline owner分类。build、dependencies、keys、models、pcap/results不属于待提交源码。历史Spec192 tasks/failure-log保持原证据，新的状态只更新202。
+
+CodeGraph/源码复核已确认G001–003及实际调用链，source closure新增重点为Python独立TU；全affected suite与artifact重建属于T009而非本baseline文档PASS。公开local/object/request分层、OriginalData fetch入口、两个requestFetchRange overload与Node注册/handler均有inventory；进一步真实边界证明由T005–T008/T009/T010关闭。静态coverage风险不伪称已观察到产品故障。
+
+DB002前置：调用者在fetch期间独占destination namespace，不支持跨API/process同时修改同目的路径；保留leaf symlink本身的namespace（不follow它），拒绝目录/其他特殊leaf，parent leaf symlink受既有O_NOFOLLOW directory barrier限制。owner原operation lock保留；不为未声明并发增加跨process锁。
+DB003：native worker join/drain先于publisher User/Face/scheduler析构，fault fixture须bounded释放handler；count是worker attempt，emission用独立handler/pcap。
+DB004：锁前/锁后verified replay都重新执行parent barrier，post-rename目标不删除，source inventory/identity/source unchanged继续验证。
+Public模式：当前native路径显式BeginCollaborationWithProviders/CommitCollaborationPlan；旧Targeted compat按版本化reject/明确隔离，不虚构新native mode switch。

@@ -1,6 +1,6 @@
 # Architecture and API Contract
 
-**Design status**: READY_FOR_IMPLEMENTATION for DB002–004; CONDITIONAL for baseline/whole-surface convergence until DB001 closes. 本契约不授权本轮编码。
+**Design status**: DB001 static baseline已关闭；DB002–004 READY_FOR_IMPLEMENTATION，用户已于2026-10-08授权在Repo实施全部任务。产品convergence仍BLOCK，重建/完整证据由T009/T010关闭。
 
 ## Owners and Public Call Paths
 
@@ -23,6 +23,8 @@
 读取dirty overlay作为实际源码；复核源/consumer/definition TU/target/output，逐入口映射原59 case。严格parser、旧manifest/catalog permissive解析属于需要负例检查的范围，不在未证明违约时重写codec。任何新语义发现先修契约，再执行受影响任务。保留原Spec产品目标与全部未完成资格，不移除失败或未覆盖入口。公开artifact控制mode默认仍为Collaboration，调用者显式选择才用Targeted；任何lower-level Targeted默认差异必须由C++明确隔离或修复，并以默认/显式两种调用的实际path验证。保留ArtifactReference与ArtifactPublishResult.reference兼容，破坏性变更须versioned migration，不靠Python隐藏差异。
 
 ## DB002 - Destination Commit Transaction
+
+**Path preconditions**: 调用者在本次fetch期间独占destination namespace；不同API/process同时修改同一路径不受支持。保留leaf symlink本身，不follow它；目录和其他special leaf在覆盖前拒绝。parent leaf symlink受既有O_NOFOLLOW目录屏障限制；不新增跨process锁或悄悄扩展路径支持。
 
 **Files / symbols**: `NDNSF-DistributedRepo/src/ArtifactRepositoryApi.cpp` 的两个`fetchFile`及其anonymous-namespace destination-install helper（planned）；既有`fsyncDirectory`/`RepoRequestTimeoutError`；`tests/unit-tests/distributed-repo-inapp-artifact-api.t.cpp`、`tests/integration-tests/spec192-persistent-artifact-api.t.cpp`、`tests/wscript`。public signature与wire不变。
 

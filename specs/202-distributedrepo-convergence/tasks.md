@@ -3,7 +3,7 @@
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [gap-audit.md](gap-audit.md), [validation-matrix.md](validation-matrix.md)
 **Branch**: `Repo`
 **Progress Timestamp**: 2026-10-08 12:24 -05:00
-**Execution mode**: PLANNING_ONLY；本轮只写设计/静态审计，未实施下列产品任务。旧Spec192/193停止推进。
+**Execution mode**: IMPLEMENTATION_AUTHORIZED；用户已要求在Repo完成全部任务。旧Spec192/193保持停止；本registry记录当前实施与分层验证。
 
 ## Logical Batches
 
@@ -21,7 +21,7 @@
 
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
-| T001 | PARTIAL | user scope | 静态G001–010已记录gap-audit；baseline HEAD/三owner hash已核对。逐入口/全部overlay/实际target closure仍未完成，见DB001。 | 2026-10-08 12:24 -05:00 |
+| T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
 | T002 | NOT_STARTED | T001 | NOT_RUN：仅DB002设计；G001两个nativefetch entry尚未修复/测试。 | 2026-10-08 12:24 -05:00 |
 | T003 | NOT_STARTED | T001 | NOT_RUN：仅DB003设计；G002worker分支尚未修复。 | 2026-10-08 12:24 -05:00 |
 | T004 | NOT_STARTED | T001 | NOT_RUN：仅DB004设计；G003postpublish/replay sync未修复。 | 2026-10-08 12:24 -05:00 |
@@ -36,8 +36,8 @@
 
 | Substep | Parent | Concrete outcome / path | State | Scoped evidence | Blocker / next action | Reuse / rerun trigger |
 | --- | --- | --- | --- | --- | --- | --- |
-| T001.a | T001 | gap-audit.md当前source findings | PARTIAL | CodeGraph/实际hash与read-onlyreview，STATIC_ONLY | 逐公开入口/overlay继续审计 | source或acceptedcontract变更重审 |
-| T001.b | T001 | api inventory、TU/target/source闭合 | NOT_STARTED | NOT_RUN；旧inventory仅input | 对照当前header/binding/source注册 | 新入口/构建source变化 |
+| T001.a | T001 | gap-audit.md当前source findings | VERIFIED_STATIC | CodeGraph/actualsource、Core admission overlay、只读release PASS | 产品缺陷由T002–04修复 | source或acceptedcontract变更重审 |
+| T001.b | T001 | api inventory、TU/target/source baseline | VERIFIED_STATIC | api-inventory.md；150-input complete ZIP SHA b756347c…；原116-files archive明确PARTIAL | finalrebuiltartifact/loadeddeps由T009验证，不计旧binary PASS | 新入口/构建source变化 |
 | T002.a | T002 | API.cpp两fetch的commit/rollback | NOT_STARTED | NOT_RUN；DB002 | red→局部repair→focusednative回归 | destination/deadline/cleanup语义变化 |
 | T003.a | T003 | Node.cppsourcefailure target状态 | NOT_STARTED | NOT_RUN；DB003 | 真实Btimeout/Csourcefailureregression | ledger/worker/recovery变化 |
 | T004.a | T004 | Importer两existing目标分支durability | NOT_STARTED | NOT_RUN；DB004 | actualpostrenameparent-sync故障/重放 | importer/manifest/sourceprofile变化 |
@@ -70,7 +70,7 @@
 
 ## Phase 1: Setup and Baseline
 
-- [ ] T001 固定实际baseline和ideal边界：在`gap-audit.md`、`traceability.md`、`validation-matrix.md`对照当前Repo/Core/pybind/DI headers与`tests/wscript`，列全部入口→定义TU→target/output→case，按owner审阅dirty overlay/非源码artifact，关闭设计矛盾与未明前置。**Design binding**: DB001；status CONDITIONAL，完整API/source闭合后才放行对应repair。Risk high；不以旧checkbox替代审查。
+- [x] T001 固定实际baseline和ideal边界：api-inventory.md逐header/overload→TU/target/output→case，按owner登记dirty overlay和非源码artifact，明确DB002–004路径/worker/import前置；150-input完整snapshot保留实际source。**Design binding**: DB001 STATIC_BASELINE_CLOSED，focused repair release PASS；final rebuilt source/runtime closure留T009，不以旧binary或checkbox替代qualification。
 
 ## Phase 2: User Story 2 - Safe Consumer Commit
 

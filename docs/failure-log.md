@@ -18230,3 +18230,10 @@ containing selector has not yet run. See the next review/build/run record in
 - **Fix / changed gate:** Product fixes remain NOT_RUN. Spec192/193 are SUPERSEDED_STOPPED; Spec202 DB002–004 and T002–004 own localized native repairs with actual API/worker/import regressions. Preserve prior evidence; require final-candidate affected/dynamic gates and two full network qualification rounds separately. Planning review corrected native/network gate mixing and predecessor requirement mappings.
 - **Tool boundary:** Canonical Context Mode indexing restored active authority health, but project health still reports NO_REAL_SESSION_EVENTS and MCP retrieval is empty. Repository docs/source/terminal manifests remain authority; no full-client restart or real-host capture acceptance was performed.
 - **Lesson:** Static planning can close while product readiness remains BLOCK. Preserve attempted outcomes, distinguish publish visibility from durability acknowledgment, and verify return-time destination semantics with post-rename faults before qualification.
+
+### 2026-10-08 CDT — Spec202 baseline inventory and fixture closure
+
+- **Symptom:** Baseline review found the old inventory lacked the named Original Data fetch entry and draft maps used broad case placeholders; the first source archive omitted untracked owned files, and the next omitted SQL fixture inputs.
+- **Root cause:** Header/overload and registered-source closure cannot be inferred from historical case PASS or tracked dirty paths alone; extension compilation is independent of the Waf Repo archive.
+- **Fix / changed gate:** Enumerate current declarations and exact case mappings, retain the earlier archives as PARTIAL, and freeze a 150-input source+fixture manifest/ZIP before repairs. Resolve actual server/importer/archive output paths. Native Python consumers must be rebuilt after Repo TU changes; no unresolved importer helper dependency was found in the module.
+- **Lesson:** Review source and external fixture closure separately from final rebuilt artifact qualification; preserve initial incomplete snapshots rather than silently relabeling them complete.
