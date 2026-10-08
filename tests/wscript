@@ -292,6 +292,16 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    bld.program(target='../spec193-original-data-receipt',
+                name='spec193-original-data-receipt',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/spec193-original-data-receipt.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec190 T004 stable per-node Repo owner/restart selector.  This stays a
     # small native storage proof: three new processes reopen one fixed root,
     # while the active-owner and corrupt-sidecar negatives remain fail-closed.
@@ -332,21 +342,22 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    # Spec192 T002/T003 C++ Persistent Repo service, receipt, and location
-    # selectors. They inspect the production RepoNode handlers without starting
+    # Spec192 T002/T004 C++ Persistent Repo service, receipt, migration, and location
+    # selectors. They inspect production RepoNode handlers without starting
     # an NFD/network runtime.
     bld.program(target='../spec192-repo-persistent-service',
                 name='spec192-repo-persistent-service',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-persistent-service.t.cpp'),
-                        bld.path.find_node('unit-tests/distributed-repo-artifact-receipt.t.cpp')],
+                        bld.path.find_node('unit-tests/distributed-repo-artifact-receipt.t.cpp'),
+                        bld.path.find_node('unit-tests/distributed-repo-filesystem-artifact-store.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    # Spec192 T003 drives the public Persistent API through authenticated
+    # Spec192 T003/T004 drives the public Persistent API through authenticated
     # in-process ServiceUser/Provider transport and independent disk/SQLite oracles.
     bld.program(target='../spec192-repo-persistent-api',
                 name='spec192-repo-persistent-api',
@@ -355,6 +366,29 @@ def build(bld):
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Spec192 T007 offline legacy import: the unit target validates source
+    # profile gating and native artifact/Repo storage; the integration target
+    # exercises full source snapshot, WAL, provenance, and retry behavior.
+    bld.program(target='../spec192-repo-legacy-import-unit',
+                name='spec192-repo-legacy-import-unit',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/distributed-repo-legacy-import.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    bld.program(target='../spec192-repo-legacy-import-integration',
+                name='spec192-repo-legacy-import-integration',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/spec192-legacy-repo-import.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
@@ -922,6 +956,7 @@ def build(bld):
                             'NDNSF-DistributedRepo/src/ArtifactRepositoryApi.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactTransfer.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactTypes.cpp',
+                            'NDNSF-DistributedRepo/src/LegacyRepoImporter.cpp',
                             'NDNSF-DistributedRepo/src/PersistentRepoServerConfig.cpp',
                             'NDNSF-DistributedRepo/src/backends/FilesystemArtifactStore.cpp',
                             'NDNSF-DistributedRepo/src/backends/FilesystemRepoStoreBackend.cpp',
@@ -1011,6 +1046,32 @@ def build(bld):
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Spec192's independent native client is launched as a separate process
+    # by the MiniNDN harness.  It links only the C++ Repo/framework surface so
+    # the VM-22 client path has no Python binding/runtime dependency.
+    bld.program(target='../spec192-repo-client',
+                name='spec192-repo-client',
+                source=[bld.path.find_node('standalone/spec192-repo-client.cpp')],
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedRepo/include',
+                          '../dependencies/ndn-cxx-8296fc9462c7ef9635b7c45468c067fd39514e31'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Separate test process for the original RepoNode object protocol.
+    bld.program(target='../spec193-object-repo-server',
+                name='spec193-object-repo-server',
+                source=[bld.path.find_node('standalone/spec193-object-repo-server.cpp')],
+                includes=['..', '../ndn-service-framework',
+                          '../NDNSF-DistributedRepo/include',
+                          '../dependencies/ndn-cxx-8296fc9462c7ef9635b7c45468c067fd39514e31'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # C++ primary process probe for Spec182's independent artifact authority.
     # The surrounding launcher may create a private NFD/Controller runtime,
     # but this binary owns the signed request, Core targeted transport and
@@ -1021,3 +1082,9 @@ def build(bld):
                 includes=['..', '../ndn-service-framework'],
                 use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Faults are scoped to a test-owned destination and never enter production targets.
+    for name in ('unit-tests', 'spec192-repo-inapp-api',
+                 'spec192-repo-persistent-api', 'spec192-repo-legacy-import-unit'):
+        bld.get_tgen_by_name(name).linkflags += [
+            '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink']

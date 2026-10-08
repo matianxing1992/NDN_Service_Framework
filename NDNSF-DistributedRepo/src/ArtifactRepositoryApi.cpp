@@ -8,18 +8,23 @@
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fcntl.h>
 #include <functional>
+#include <exception>
 #include <iomanip>
 #include <limits>
 #include <mutex>
@@ -28,6 +33,9 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
+#include <tuple>
+#include <type_traits>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -40,6 +48,13 @@ namespace fs = std::filesystem;
 constexpr uint64_t LOCAL_GENERATION = 1;
 constexpr size_t COPY_CHUNK_BYTES = 1024 * 1024;
 constexpr uint64_t MAX_STORE_RANGE_BYTES = 16 * 1024 * 1024;
+
+bool
+spec192DiscoveryTraceEnabled()
+{
+  const char* value = std::getenv("NDNSF_SPEC192_SELECTED_REQUEST_TRACE");
+  return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
 
 [[noreturn]] void
 throwSystem(const std::string& code, const std::string& action,
@@ -116,7 +131,8 @@ validateConfig(const InAppRepoConfig& config)
       config.limits.maxChunkBytes == 0 ||
       config.limits.maxChunkBytes > hardLimits.maxChunkBytes ||
       config.limits.maxNameBytes == 0 ||
-      config.limits.maxNameBytes > hardLimits.maxNameBytes) {
+      config.limits.maxNameBytes > hardLimits.maxNameBytes ||
+      config.availabilityFreshnessMs == 0) {
     throw std::invalid_argument(
       "repo-inapp-invalid-limits: configured artifact, chunk, and name limits must fit hard limits");
   }
@@ -410,10 +426,120 @@ fsyncDirectory(const fs::path& directory)
   }
 }
 
+class RepoRequestTimeoutError final : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
+
+class DestinationRecoveryError : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
+
+void
+commitFetchedFile(const fs::path& temporary, const fs::path& destination,
+                  std::chrono::steady_clock::time_point deadline)
+{
+  const auto parent = destination.parent_path();
+  const fs::path backup = temporary.string() + ".previous";
+  bool preserved = false;
+  bool installed = false;
+  const auto checkDeadline = [&] {
+    if (deadline != std::chrono::steady_clock::time_point::max() &&
+        std::chrono::steady_clock::now() >= deadline) {
+      throw RepoRequestTimeoutError(
+        "repo-artifact-fetch-deadline-exceeded: destination transaction exceeded operation deadline");
+    }
+  };
+  try {
+    struct stat previous {};
+    if (::lstat(destination.c_str(), &previous) == 0) {
+      if (!S_ISREG(previous.st_mode) && !S_ISLNK(previous.st_mode)) {
+        throw std::invalid_argument(
+          "repo-artifact-destination-invalid: destination must be a file or leaf symlink");
+      }
+      // link preserves the leaf inode, including a symlink itself, without overwriting a backup.
+      if (::link(destination.c_str(), backup.c_str()) != 0) {
+        throwSystem("repo-artifact-destination-preserve-failed", "link", destination.string());
+      }
+      preserved = true;
+    }
+    else if (errno != ENOENT) {
+      throwSystem("repo-artifact-destination-inspect-failed", "lstat", destination.string());
+    }
+    fsyncDirectory(parent);
+    checkDeadline();
+    if (::rename(temporary.c_str(), destination.c_str()) != 0) {
+      throwSystem("repo-artifact-destination-commit-failed", "rename", destination.string());
+    }
+    installed = true;
+    fsyncDirectory(parent);
+    checkDeadline();
+  }
+  catch (...) {
+    const auto original = std::current_exception();
+    std::string initialFailure;
+    try { std::rethrow_exception(original); }
+    catch (const std::exception& error) { initialFailure = error.what(); }
+    catch (...) { initialFailure = "unknown destination failure"; }
+    if (installed) {
+      try {
+        if (preserved) {
+          if (::rename(backup.c_str(), destination.c_str()) != 0) {
+            throwSystem("repo-artifact-destination-restore-failed", "rename", backup.string());
+          }
+          preserved = false;
+        }
+        else if (::unlink(destination.c_str()) != 0) {
+          throwSystem("repo-artifact-destination-restore-failed", "unlink", destination.string());
+        }
+        fsyncDirectory(parent);
+      }
+      catch (const std::exception& recovery) {
+        throw DestinationRecoveryError(
+          "repo-artifact-destination-recovery-required: destination=" + destination.string() +
+          "; backup=" + backup.string() + "; " + recovery.what() +
+          "; initial=" + initialFailure);
+      }
+    }
+    if (preserved && ::unlink(backup.c_str()) != 0) {
+      throw DestinationRecoveryError(
+        "repo-artifact-destination-recovery-required: destination=" + destination.string() +
+        "; backup=" + backup.string() + "; backup cleanup: " + std::strerror(errno) +
+        "; initial=" + initialFailure);
+    }
+    std::rethrow_exception(original);
+  }
+  // The verified destination has already been accepted. Cleanup cannot revoke success.
+  if (preserved && ::unlink(backup.c_str()) == 0) {
+    try { fsyncDirectory(parent); }
+    catch (...) {}
+  }
+}
+
 std::string
 makeReceiptId(uint64_t localCommitId)
 {
   return "in-app-local-" + std::to_string(localCommitId);
+}
+
+std::optional<uint64_t>
+parseLocalReceiptId(const std::string& receiptId)
+{
+  constexpr char PREFIX[] = "in-app-local-";
+  if (receiptId.compare(0, sizeof(PREFIX) - 1, PREFIX) != 0) {
+    return std::nullopt;
+  }
+  const auto digits = receiptId.substr(sizeof(PREFIX) - 1);
+  if (digits.empty() || digits.front() == '0') return std::nullopt;
+  uint64_t id = 0;
+  const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), id);
+  if (parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size() || id == 0) {
+    return std::nullopt;
+  }
+  return id;
 }
 
 std::vector<SelectedRepoTarget>
@@ -487,6 +613,101 @@ remainingTimeoutMs(std::chrono::steady_clock::time_point deadline)
     throw std::runtime_error("repo-operation-timeout: operation deadline expired");
   }
   return static_cast<int>(remaining);
+}
+
+int
+boundedRequestTimeoutMs(std::chrono::steady_clock::time_point deadline,
+                         int configuredTimeoutMs)
+{
+  return std::min(configuredTimeoutMs, remainingTimeoutMs(deadline));
+}
+
+std::unique_lock<std::mutex>
+lockOperationUntil(std::mutex& operationMutex,
+                   std::chrono::steady_clock::time_point deadline,
+                   const char* operation)
+{
+  std::unique_lock<std::mutex> operationGuard(
+    operationMutex, std::defer_lock);
+  if (deadline == std::chrono::steady_clock::time_point::max()) {
+    operationGuard.lock();
+    return operationGuard;
+  }
+  while (!operationGuard.try_lock()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      throw std::runtime_error(
+        std::string("repo-operation-timeout: deadline expired waiting for ") +
+        operation);
+    }
+    std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(
+      deadline - now, std::chrono::milliseconds(1)));
+  }
+  if (std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error(
+      std::string("repo-operation-timeout: deadline expired acquiring ") +
+      operation);
+  }
+  return operationGuard;
+}
+
+int64_t
+statusRecoveryReserveTimeoutMs(const PersistentRepoClientConfig& config)
+{
+  const auto requestAndAckWindowMs =
+    static_cast<int64_t>(config.requestTimeoutMs) +
+    static_cast<int64_t>(config.ackCollectionTimeMs);
+  const auto twoAckWindowsMs =
+    2LL * static_cast<int64_t>(config.ackCollectionTimeMs);
+  return std::max<int64_t>(
+    {60'000, requestAndAckWindowMs, twoAckWindowsMs});
+}
+
+uint64_t
+elapsedMilliseconds(std::chrono::steady_clock::time_point startedAt)
+{
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - startedAt).count();
+  return elapsed <= 0 ? 0 : static_cast<uint64_t>(elapsed);
+}
+
+std::string
+fetchFailureClass(const std::exception& error)
+{
+  if (dynamic_cast<const DestinationRecoveryError*>(&error) != nullptr) return "local-io";
+  const std::string message(error.what());
+  if (message.find("timeout") != std::string::npos ||
+      message.find("deadline") != std::string::npos) {
+    return "timeout";
+  }
+  if (message.find("authorization") != std::string::npos ||
+      message.find("authenticat") != std::string::npos ||
+      message.find("unauthor") != std::string::npos ||
+      message.find("permission") != std::string::npos ||
+      message.find("not-authorized") != std::string::npos ||
+      message.find("denied") != std::string::npos ||
+      message.find("forbidden") != std::string::npos) {
+    return "authorization";
+  }
+  if (message.find("provider-mismatch") != std::string::npos ||
+      message.find("signer") != std::string::npos) {
+    return "identity";
+  }
+  if (message.find("location") != std::string::npos) {
+    return "location";
+  }
+  if (message.find("digest") != std::string::npos ||
+      message.find("range") != std::string::npos ||
+      message.find("manifest") != std::string::npos ||
+      message.find("corrupt") != std::string::npos) {
+    return "integrity";
+  }
+  if (message.find("destination") != std::string::npos ||
+      message.find("write") != std::string::npos ||
+      message.find("sync") != std::string::npos) {
+    return "local-io";
+  }
+  return "request-failed";
 }
 
 std::vector<uint8_t>
@@ -805,50 +1026,302 @@ struct CallbackResult
   std::mutex mutex;
   std::condition_variable condition;
   bool done = false;
+  bool timedOut = false;
+  bool providerMismatch = false;
   std::string error;
   std::vector<uint8_t> payload;
 };
 
+struct FaceRequestStartResult
+{
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool done = false;
+  bool starting = false;
+  bool abandoned = false;
+  ndn::Name requestId;
+  std::exception_ptr error;
+};
+
+class RepoRequestStartError final : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
+
+class RepoResponseProviderMismatchError final : public std::runtime_error
+{
+public:
+  using std::runtime_error::runtime_error;
+};
+
 void
 completeWithError(const std::shared_ptr<CallbackResult>& result,
-                  const std::string& error)
+                  const std::string& error,
+                  bool timedOut = false,
+                  bool providerMismatch = false,
+                  std::chrono::steady_clock::time_point deadline =
+                    std::chrono::steady_clock::time_point::max(),
+                  const std::string& deadlineError = {})
 {
   {
     std::lock_guard<std::mutex> guard(result->mutex);
     if (result->done) return;
     result->done = true;
-    result->error = error;
+    const bool expired = deadline != std::chrono::steady_clock::time_point::max() &&
+                         std::chrono::steady_clock::now() >= deadline;
+    result->timedOut = timedOut || (expired && !deadlineError.empty());
+    result->providerMismatch = providerMismatch && !result->timedOut;
+    result->error = expired && !deadlineError.empty() ? deadlineError : error;
   }
   result->condition.notify_all();
 }
 
 template<typename StartRequest>
 std::vector<uint8_t>
-waitForSignedResponse(StartRequest&& start)
+waitForSignedResponse(ndn_service_framework::ServiceUser& serviceUser,
+                      const ndn::Name& expectedProvider,
+                      StartRequest&& start,
+                      std::chrono::steady_clock::time_point waitDeadline =
+                        std::chrono::steady_clock::time_point::max())
 {
+  if (serviceUser.isOnIoThread()) {
+    throw RepoRequestStartError(
+      "repo-request-on-io-thread: synchronous Persistent requests cannot run on the Face I/O thread");
+  }
   auto result = std::make_shared<CallbackResult>();
-  const auto requestId = start(
-    [result] (const ndn::Name&) {
-      completeWithError(result, "repo-request-timeout: Provider request timed out");
-    },
-    [result] (const ndn_service_framework::ResponseMessage& response) {
-      const auto payload = response.getPayload();
-      {
-        std::lock_guard<std::mutex> guard(result->mutex);
-        if (result->done) return;
-        if (!response.getStatus()) result->error = response.getErrorInfo();
-        else result->payload.assign(payload.begin(), payload.end());
-        result->done = true;
+  auto startState = std::make_shared<FaceRequestStartResult>();
+  auto startRequest = std::make_shared<std::decay_t<StartRequest>>(
+    std::forward<StartRequest>(start));
+  const auto expectedProviderIdentity = expectedProvider.toUri();
+  const auto startOnFace = [&serviceUser, result, startState, startRequest,
+                            expectedProviderIdentity, waitDeadline] {
+    bool expiredBeforeStart = false;
+    {
+      std::lock_guard<std::mutex> guard(startState->mutex);
+      if (startState->abandoned || startState->done) return;
+      if (waitDeadline != std::chrono::steady_clock::time_point::max() &&
+          std::chrono::steady_clock::now() >= waitDeadline) {
+        startState->error = std::make_exception_ptr(RepoRequestTimeoutError(
+          "repo-request-timeout: Provider request deadline expired before Face startup"));
+        startState->abandoned = true;
+        startState->done = true;
+        expiredBeforeStart = true;
       }
-      result->condition.notify_all();
-    });
+      else {
+        startState->starting = true;
+      }
+    }
+    if (expiredBeforeStart) {
+      startState->condition.notify_all();
+      return;
+    }
+    try {
+      const auto requestId = (*startRequest)(
+        [result] (const ndn::Name&) {
+          completeWithError(result,
+            "repo-request-timeout: Provider request timed out", true);
+        },
+        [result, expectedProviderIdentity, waitDeadline] (
+            const ndn_service_framework::ResponseMessage& response) {
+          const bool providerMatches =
+            response.getProviderIdentity() == expectedProviderIdentity;
+          const auto responseError = response.getStatus()
+            ? std::string() : response.getErrorInfo();
+          std::vector<uint8_t> payload;
+          if (providerMatches && response.getStatus()) {
+            const auto responsePayload = response.getPayload();
+            payload.assign(responsePayload.begin(), responsePayload.end());
+          }
+          {
+            std::lock_guard<std::mutex> guard(result->mutex);
+            if (result->done) return;
+            if (waitDeadline != std::chrono::steady_clock::time_point::max() &&
+                std::chrono::steady_clock::now() >= waitDeadline) {
+              result->timedOut = true;
+              result->error =
+                "repo-request-timeout: Provider response callback was not delivered before the request deadline";
+            }
+            else if (!providerMatches) {
+              result->providerMismatch = true;
+              result->error =
+                "repo-response-provider-mismatch: authenticated response Provider differs from requested Provider";
+            }
+            else if (!response.getStatus()) {
+              result->error = responseError;
+            }
+            else {
+              result->payload = std::move(payload);
+            }
+            result->done = true;
+          }
+          result->condition.notify_all();
+        });
+      bool cancelLateRequest = false;
+      {
+        std::lock_guard<std::mutex> guard(startState->mutex);
+        startState->requestId = requestId;
+        if (requestId.empty()) {
+          const bool deadlineExpired =
+            waitDeadline != std::chrono::steady_clock::time_point::max() &&
+            std::chrono::steady_clock::now() >= waitDeadline;
+          if (startState->abandoned || deadlineExpired) {
+            startState->abandoned = true;
+            startState->error = std::make_exception_ptr(RepoRequestTimeoutError(
+              "repo-request-timeout: Provider request deadline expired during Face startup"));
+          }
+          else {
+            startState->error = std::make_exception_ptr(RepoRequestStartError(
+              "repo-request-start-failed: Core rejected Provider request"));
+          }
+        }
+        else if (startState->abandoned ||
+                 (waitDeadline != std::chrono::steady_clock::time_point::max() &&
+                  std::chrono::steady_clock::now() >= waitDeadline)) {
+          startState->abandoned = true;
+          cancelLateRequest = true;
+        }
+        startState->starting = false;
+        startState->done = true;
+      }
+      if (cancelLateRequest) {
+        try {
+          serviceUser.CancelCollaboration(requestId);
+        }
+        catch (...) {
+          // The caller has already reached its absolute deadline.
+        }
+      }
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> guard(startState->mutex);
+      const bool deadlineExpired =
+        waitDeadline != std::chrono::steady_clock::time_point::max() &&
+        std::chrono::steady_clock::now() >= waitDeadline;
+      if (startState->abandoned || deadlineExpired) {
+        startState->abandoned = true;
+        startState->error = std::make_exception_ptr(RepoRequestTimeoutError(
+          "repo-request-timeout: Provider request deadline expired during Face startup"));
+      }
+      else {
+        startState->error = std::current_exception();
+      }
+      startState->starting = false;
+      startState->done = true;
+    }
+    startState->condition.notify_all();
+  };
+  try {
+    serviceUser.postToIo(startOnFace);
+  }
+  catch (const std::exception& error) {
+    if (waitDeadline != std::chrono::steady_clock::time_point::max() &&
+        std::chrono::steady_clock::now() >= waitDeadline) {
+      throw RepoRequestTimeoutError(
+        "repo-request-timeout: Provider request deadline expired while queuing Face startup");
+    }
+    throw RepoRequestStartError(
+      "repo-request-start-failed: could not queue Provider request on Face: " +
+      std::string(error.what()));
+  }
+  catch (...) {
+    if (waitDeadline != std::chrono::steady_clock::time_point::max() &&
+        std::chrono::steady_clock::now() >= waitDeadline) {
+      throw RepoRequestTimeoutError(
+        "repo-request-timeout: Provider request deadline expired while queuing Face startup");
+    }
+    throw RepoRequestStartError(
+      "repo-request-start-failed: Provider request could not be queued on Face");
+  }
+
+  ndn::Name requestId;
+  std::exception_ptr startError;
+  bool startTimedOut = false;
+  {
+    std::unique_lock<std::mutex> lock(startState->mutex);
+    const auto startIsDone = [&] { return startState->done; };
+    const bool startCompleted =
+      waitDeadline == std::chrono::steady_clock::time_point::max()
+        ? (startState->condition.wait(lock, startIsDone), true)
+        : startState->condition.wait_until(lock, waitDeadline, startIsDone);
+    if (!startCompleted) {
+      startState->abandoned = true;
+      startTimedOut = true;
+    }
+    requestId = startState->requestId;
+    startError = startState->error;
+  }
+  const auto cancelRequest = [&serviceUser] (const ndn::Name& id) {
+    if (id.empty()) return;
+    try {
+      serviceUser.postToIo([&serviceUser, id] {
+        try {
+          serviceUser.CancelCollaboration(id);
+        }
+        catch (...) {
+          // Cancellation is best-effort after the caller's absolute deadline.
+        }
+      });
+    }
+    catch (...) {
+      // Preserve the bounded caller result if Face shutdown already began.
+    }
+  };
+  if (startTimedOut) {
+    cancelRequest(requestId);
+    throw RepoRequestTimeoutError(
+      "repo-request-timeout: Provider request did not start before its deadline");
+  }
+  if (startError) {
+    try {
+      std::rethrow_exception(startError);
+    }
+    catch (const RepoRequestStartError&) {
+      throw;
+    }
+    catch (const RepoRequestTimeoutError&) {
+      throw;
+    }
+    catch (const std::exception& error) {
+      throw RepoRequestStartError(
+        "repo-request-start-failed: " + std::string(error.what()));
+    }
+    catch (...) {
+      throw RepoRequestStartError(
+        "repo-request-start-failed: Provider request could not be started");
+    }
+  }
   if (requestId.empty()) {
-    throw std::runtime_error("repo-request-start-failed: Core rejected Provider request");
+    throw RepoRequestStartError(
+      "repo-request-start-failed: Core rejected Provider request");
   }
   std::unique_lock<std::mutex> lock(result->mutex);
-  result->condition.wait(lock, [&] { return result->done; });
-  if (!result->error.empty()) throw std::runtime_error(result->error);
-  return std::move(result->payload);
+  const auto isDone = [&] { return result->done; };
+  const bool completed = waitDeadline == std::chrono::steady_clock::time_point::max()
+    ? (result->condition.wait(lock, isDone), true)
+    : result->condition.wait_until(lock, waitDeadline, isDone);
+  if (!completed) {
+    // Core's timeout callback is normally delivered by the caller's Face
+    // event loop. Settle the wrapper independently so a stalled or lost
+    // callback cannot outlive the operation/request deadline.
+    result->done = true;
+    result->timedOut = true;
+    result->error = "repo-request-timeout: Provider response callback was not delivered before the request deadline";
+  }
+  const bool timedOut = result->timedOut;
+  const bool providerMismatch = result->providerMismatch;
+  const std::string error = result->error;
+  auto payload = std::move(result->payload);
+  lock.unlock();
+  if (timedOut) cancelRequest(requestId);
+  if (!error.empty()) {
+    if (providerMismatch) {
+      throw RepoResponseProviderMismatchError(error);
+    }
+    if (timedOut) throw RepoRequestTimeoutError(error);
+    throw std::runtime_error(error);
+  }
+  return payload;
 }
 
 std::vector<uint8_t>
@@ -860,11 +1333,103 @@ runSelectedRepoRequest(ndn_service_framework::ServiceUser& serviceUser,
                        int timeoutMs)
 {
   if (timeoutMs <= config.ackCollectionTimeMs) {
-    throw std::invalid_argument("repo-request-timeout-invalid: selected request timeout must exceed ACK window");
+    throw RepoRequestTimeoutError(
+      "repo-request-timeout: remaining deadline cannot exceed the selected request ACK window");
   }
   return RepoClient::requestSelectedService(
     serviceUser, target.providerIdentity, serviceName, requestBytes,
     config.ackCollectionTimeMs, timeoutMs);
+}
+
+SelectedRepoTarget
+fromArtifactTarget(const RepoArtifactTarget& target);
+
+PublishOperationStatus
+queryPublishOperationStatus(
+  ndn_service_framework::ServiceUser& serviceUser,
+  const PersistentRepoClientConfig& config,
+  const PublishOperationHandle& handle, int timeoutMs)
+{
+  handle.validate(config.limits);
+  if (timeoutMs <= config.ackCollectionTimeMs) {
+    throw std::invalid_argument(
+      "repo-request-timeout-invalid: status timeout must exceed ACK window");
+  }
+  const auto seedTarget = fromArtifactTarget(handle.seed);
+  const PublishOperationStatusRequest query{1, handle.operationId};
+  const auto response = runSelectedRepoRequest(
+    serviceUser, seedTarget,
+    makeRepoServiceName(seedTarget.servicePrefix, "STATUS"),
+    toBytes(query.toJson()), config, timeoutMs);
+  const std::string wire(response.begin(), response.end());
+  auto status = PublishOperationStatus::fromJson(wire, config.limits);
+  if (status.operationId != handle.operationId ||
+      status.seed != handle.seed) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt,
+      "publish status response does not bind the requested operation handle");
+  }
+  return status;
+}
+
+bool
+isPublishOperationNotFound(const std::exception& error)
+{
+  return std::string(error.what()).find(
+    "repo-publish-operation-not-found:") != std::string::npos;
+}
+
+void
+validateAcceptedPublishStatus(const PublishOperationStatus& status,
+                              const PublishOperationIntent& intent,
+                              const std::string& operationId,
+                              const ArtifactLimits& limits)
+{
+  status.validate(limits);
+  bool matchesIntent = status.operationId == operationId &&
+    status.reference == intent.reference &&
+    status.generation == intent.generation &&
+    status.seed == intent.seed &&
+    status.consistency == intent.consistency &&
+    status.targets.size() == intent.targets.size();
+  for (size_t index = 0; matchesIntent && index < intent.targets.size(); ++index) {
+    const auto& actual = status.targets[index].target;
+    const auto& expected = intent.targets[index];
+    matchesIntent = actual.repoNode == expected.repoNode &&
+      actual.providerIdentity == expected.providerIdentity &&
+      actual.servicePrefix == expected.servicePrefix;
+  }
+  if (!matchesIntent) {
+    throw std::runtime_error(
+      "repo-publish-idempotency-conflict: existing operation uses another canonical request");
+  }
+
+  const auto seedStatus = std::find_if(
+    status.targets.begin(), status.targets.end(), [&intent] (const auto& target) {
+      return target.target.repoNode == intent.seed.repoNode &&
+        target.target.providerIdentity == intent.seed.providerIdentity &&
+        target.target.servicePrefix == intent.seed.servicePrefix;
+    });
+  if (seedStatus == status.targets.end() || seedStatus->state != "COMMITTED" ||
+      !seedStatus->receipt) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt,
+      "accepted publish status is missing its durable seed receipt");
+  }
+  const auto& receipt = *seedStatus->receipt;
+  receipt.validate(limits);
+  if (receipt.repoNode != intent.seed.repoNode ||
+      receipt.providerIdentity != intent.seed.providerIdentity ||
+      receipt.operationId != operationId ||
+      receipt.reference != intent.reference ||
+      receipt.generation != intent.generation ||
+      receipt.persistedBytes != intent.reference.sizeBytes ||
+      receipt.routeState != "ROUTABLE" ||
+      receipt.forwardingHint != intent.seed.servicePrefix) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt,
+      "accepted publish status seed receipt differs from the canonical request");
+  }
 }
 
 RepoCandidateSet
@@ -877,7 +1442,14 @@ discoverCandidates(ndn_service_framework::ServiceUser& serviceUser,
   if (timeoutMs <= config.ackCollectionTimeMs) {
     throw std::invalid_argument("repo-request-timeout-invalid: discovery timeout must exceed ACK window");
   }
+  if (serviceUser.isOnIoThread()) {
+    throw std::logic_error(
+      "repo-discovery-on-io-thread: blocking discovery cannot run on the Face I/O thread");
+  }
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
   auto result = std::make_shared<CallbackResult>();
+  auto start = std::make_shared<FaceRequestStartResult>();
   auto candidates = std::make_shared<RepoCandidateSet>();
   const auto service = makeRepoServiceName(config.servicePrefix, "CAPABILITY");
   ndn::Buffer emptyPayload;
@@ -885,70 +1457,424 @@ discoverCandidates(ndn_service_framework::ServiceUser& serviceUser,
       ? std::nullopt : std::optional<ArtifactCapabilityRequirements>(*requirements);
   const std::optional<ArtifactReference> storageCopy = storageReference == nullptr
       ? std::nullopt : std::optional<ArtifactReference>(*storageReference);
-  const auto requestId = serviceUser.BeginCollaborationWithProviders(
-    service, emptyPayload, config.ackCollectionTimeMs, timeoutMs,
-    [&serviceUser, result, candidates, service, config, requiredCopy, storageCopy]
-    (const ndn_service_framework::CollaborationAckClosure& closure) {
-      try {
-        candidates->observedAtMs = nowMilliseconds();
-        std::set<std::string> seenProviders;
-        for (const auto& candidate : closure.candidates) {
-          const auto provider = candidate.providerName.toUri();
-          if (!candidate.ack.getStatus() ||
-              candidate.serviceName != service ||
-              !candidate.authenticationEvidence.trustSchemaValidated ||
-              candidate.authenticationEvidence.signerIdentity.empty() ||
-              candidate.authenticationEvidence.signerIdentity != provider ||
-              !seenProviders.insert(provider).second) {
-            continue;
-          }
+  const auto ackCollectionTimeMs = config.ackCollectionTimeMs;
+  const auto providerScope = config.providerScope;
+  const auto traceDiscovery = spec192DiscoveryTraceEnabled();
+  const auto deadlineError =
+    std::string("repo-discovery-timeout: capability discovery deadline expired before ACK closure");
+  const auto startOnFace = [&serviceUser, start, result, candidates, service,
+                            config, requiredCopy, storageCopy, emptyPayload,
+                            ackCollectionTimeMs, providerScope, deadline,
+                            deadlineError, traceDiscovery] {
+    int invocationTimeoutMs = 0;
+    {
+      std::lock_guard<std::mutex> guard(start->mutex);
+      if (start->abandoned || start->done) return;
+      const auto remainingTimeoutMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now()).count();
+      if (remainingTimeoutMs <= ackCollectionTimeMs) {
+        start->error = std::make_exception_ptr(std::runtime_error(
+          "repo-discovery-timeout: capability discovery deadline expired before request start"));
+        start->done = true;
+      }
+      else {
+        invocationTimeoutMs = static_cast<int>(remainingTimeoutMs);
+        start->starting = true;
+      }
+    }
+    if (invocationTimeoutMs == 0) {
+      start->condition.notify_all();
+      return;
+    }
+    try {
+      const auto requestId = serviceUser.BeginCollaborationWithProviders(
+        service, emptyPayload, ackCollectionTimeMs, invocationTimeoutMs,
+        [&serviceUser, result, candidates, service, config, requiredCopy, storageCopy,
+         deadline, deadlineError, traceDiscovery]
+        (const ndn_service_framework::CollaborationAckClosure& closure) {
           try {
-            const auto payload = candidate.ack.getPayload();
-            const std::string wire(payload.begin(), payload.end());
-            auto capability = ArtifactCapabilityAck::fromJson(wire, config.limits).capability;
-            if (requiredCopy) {
-              capability.requireSupport(*requiredCopy, config.limits);
+            candidates->observedAtMs = nowMilliseconds();
+            candidates->requestId = closure.requestId;
+            if (traceDiscovery) {
+              const auto request = closure.requestId.toUri();
+              std::fprintf(stderr,
+                "[SPEC192_CAPABILITY] closure request=%s raw-candidates=%zu\n",
+                request.c_str(), closure.candidates.size());
             }
-            else {
-              if (!storageCopy || capability.signatureAlgorithms.empty() ||
-                  !capability.supports(*storageCopy, capability.signatureAlgorithms.front()) ||
-                  !capability.supportsResume || !capability.supportsReplicaReceipts) {
+            std::set<std::string> seenProviders;
+            for (const auto& candidate : closure.candidates) {
+              const auto provider = candidate.providerName.toUri();
+              const bool ackStatus = candidate.ack.getStatus();
+              const bool serviceMatches = candidate.serviceName == service;
+              const bool trustValidated =
+                candidate.authenticationEvidence.trustSchemaValidated;
+              const auto& signer = candidate.authenticationEvidence.signerIdentity;
+              const bool signerMatches = !signer.empty() && signer == provider;
+              const auto& ackWireDigest = candidate.authenticationEvidence.wireDigest;
+              const auto& signerKeyLocator = candidate.authenticationEvidence.signerKeyLocator;
+              const bool hasPacketProvenance =
+                !ackWireDigest.empty() && !signerKeyLocator.empty();
+              const bool duplicateProvider = seenProviders.find(provider) != seenProviders.end();
+              if (!ackStatus || !serviceMatches || !trustValidated ||
+                  !signerMatches || !hasPacketProvenance || duplicateProvider) {
+                if (traceDiscovery) {
+                  const auto candidateService = candidate.serviceName.toUri();
+                  std::fprintf(stderr,
+                    "[SPEC192_CAPABILITY] provider=%s reject=ack-filter status=%d service=%s service-match=%d trust=%d signer=%s signer-match=%d duplicate=%d\n",
+                    provider.c_str(), ackStatus ? 1 : 0, candidateService.c_str(),
+                    serviceMatches ? 1 : 0, trustValidated ? 1 : 0,
+                    signer.c_str(), signerMatches ? 1 : 0,
+                    duplicateProvider ? 1 : 0);
+                }
+                continue;
+              }
+              seenProviders.insert(provider);
+              try {
+                const auto payload = candidate.ack.getPayload();
+                const std::string wire(payload.begin(), payload.end());
+                auto capability = ArtifactCapabilityAck::fromJson(wire, config.limits).capability;
+                if (requiredCopy) {
+                  capability.requireSupport(*requiredCopy, config.limits);
+                }
+                else {
+                  if (!storageCopy || capability.signatureAlgorithms.empty() ||
+                      !capability.supports(*storageCopy, capability.signatureAlgorithms.front()) ||
+                      !capability.supportsResume || !capability.supportsReplicaReceipts) {
+                    if (traceDiscovery) {
+                      std::fprintf(stderr,
+                        "[SPEC192_CAPABILITY] provider=%s reject=storage-capability repo=%s signatures=%zu resume=%d receipts=%d has-reference=%d\n",
+                        provider.c_str(), capability.repoNode.c_str(),
+                        capability.signatureAlgorithms.size(),
+                        capability.supportsResume ? 1 : 0,
+                        capability.supportsReplicaReceipts ? 1 : 0,
+                        storageCopy ? 1 : 0);
+                    }
+                    continue;
+                  }
+                }
+                if (traceDiscovery) {
+                  std::fprintf(stderr,
+                    "[SPEC192_CAPABILITY] provider=%s accept repo=%s\n",
+                    provider.c_str(), capability.repoNode.c_str());
+                }
+                candidates->candidates.push_back(RepoCandidate{
+                  capability.repoNode, candidate.providerName, config.servicePrefix,
+                  std::move(capability), candidates->observedAtMs,
+                  ackWireDigest, signerKeyLocator});
+              }
+              catch (const std::exception& error) {
+                if (traceDiscovery) {
+                  std::fprintf(stderr,
+                    "[SPEC192_CAPABILITY] provider=%s reject=capability-parse detail=%s\n",
+                    provider.c_str(), error.what());
+                }
                 continue;
               }
             }
-            candidates->candidates.push_back(RepoCandidate{
-              capability.repoNode, candidate.providerName, config.servicePrefix,
-              std::move(capability), candidates->observedAtMs});
+            serviceUser.CancelCollaboration(closure.requestId);
+            {
+              std::lock_guard<std::mutex> guard(result->mutex);
+              if (std::chrono::steady_clock::now() >= deadline) {
+                result->timedOut = true;
+                result->error = deadlineError;
+              }
+              result->done = true;
+            }
+            result->condition.notify_all();
           }
-          catch (const std::exception&) {
-            continue;
+          catch (const std::exception& error) {
+            serviceUser.CancelCollaboration(closure.requestId);
+            completeWithError(result, error.what(), false, false, deadline,
+                              deadlineError);
+          }
+        },
+        [result, deadline, deadlineError] (
+            const ndn_service_framework::ResponseMessage&) {
+          completeWithError(result,
+            "repo-discovery-invalid: capability discovery unexpectedly received a final response",
+            false, false, deadline, deadlineError);
+        },
+        [result] (const ndn::Name&) {
+          completeWithError(result, "repo-discovery-timeout: capability ACK window timed out");
+        },
+        ndn::Name(), {}, ndn_service_framework::RequestCapabilities(),
+        std::nullopt, {}, {}, {}, providerScope);
+      bool cancelLateRequest = false;
+      {
+        std::lock_guard<std::mutex> guard(start->mutex);
+        start->requestId = requestId;
+        if (!requestId.empty() &&
+            (start->abandoned ||
+             std::chrono::steady_clock::now() >= deadline)) {
+          start->abandoned = true;
+          cancelLateRequest = true;
+        }
+        if (requestId.empty()) {
+          const bool deadlineExpired =
+            std::chrono::steady_clock::now() >= deadline;
+          if (start->abandoned || deadlineExpired) {
+            start->abandoned = true;
+            start->error = std::make_exception_ptr(std::runtime_error(
+              "repo-discovery-timeout: capability discovery deadline expired during Face startup"));
+          }
+          else {
+            start->error = std::make_exception_ptr(std::runtime_error(
+              "repo-discovery-start-failed: Core rejected discovery request"));
           }
         }
-        serviceUser.CancelCollaboration(closure.requestId);
-        {
-          std::lock_guard<std::mutex> guard(result->mutex);
-          result->done = true;
+        start->starting = false;
+        start->done = true;
+      }
+      if (cancelLateRequest) {
+        try {
+          serviceUser.CancelCollaboration(requestId);
         }
-        result->condition.notify_all();
+        catch (...) {
+          // The caller has already reached its deadline.
+        }
       }
-      catch (const std::exception& error) {
-        serviceUser.CancelCollaboration(closure.requestId);
-        completeWithError(result, error.what());
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> guard(start->mutex);
+      if (start->abandoned || std::chrono::steady_clock::now() >= deadline) {
+        start->abandoned = true;
+        start->error = std::make_exception_ptr(std::runtime_error(
+          "repo-discovery-timeout: capability discovery deadline expired during Face startup"));
       }
-    },
-    [result] (const ndn_service_framework::ResponseMessage&) {
-      completeWithError(result, "repo-discovery-invalid: capability discovery unexpectedly received a final response");
-    },
-    [result] (const ndn::Name&) {
-      completeWithError(result, "repo-discovery-timeout: capability ACK window timed out");
-    },
-    ndn::Name(), {}, ndn_service_framework::RequestCapabilities(),
-    std::nullopt, {}, {}, {}, config.providerScope);
-  if (requestId.empty()) throw std::runtime_error("repo-discovery-start-failed: Core rejected discovery request");
+      else {
+        start->error = std::current_exception();
+      }
+      start->starting = false;
+      start->done = true;
+    }
+    start->condition.notify_all();
+  };
+  try {
+    serviceUser.postToIo(startOnFace);
+  }
+  catch (const std::exception& error) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      throw std::runtime_error(
+        "repo-discovery-timeout: capability discovery deadline expired while queuing Face startup");
+    }
+    throw std::runtime_error(
+      "repo-discovery-start-failed: could not queue discovery on Face: " +
+      std::string(error.what()));
+  }
+  catch (...) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      throw std::runtime_error(
+        "repo-discovery-timeout: capability discovery deadline expired while queuing Face startup");
+    }
+    throw std::runtime_error(
+      "repo-discovery-start-failed: capability discovery could not be queued on Face");
+  }
+
+  ndn::Name requestId;
+  std::exception_ptr startError;
+  bool startTimedOut = false;
+  {
+    std::unique_lock<std::mutex> lock(start->mutex);
+    if (!start->condition.wait_until(lock, deadline, [&] { return start->done; })) {
+      start->abandoned = true;
+      startTimedOut = true;
+    }
+    requestId = start->requestId;
+    startError = start->error;
+  }
+  const auto cancelRequest = [&serviceUser] (const ndn::Name& id) {
+    if (id.empty()) return;
+    try {
+      serviceUser.postToIo([&serviceUser, id] {
+        try {
+          serviceUser.CancelCollaboration(id);
+        }
+        catch (...) {
+          // Cancellation is best-effort after the caller's absolute deadline.
+        }
+      });
+    }
+    catch (...) {
+      // The caller still receives its deadline even if cancellation cannot queue.
+    }
+  };
+  if (startTimedOut) {
+    cancelRequest(requestId);
+    throw std::runtime_error(
+      "repo-discovery-timeout: capability discovery deadline expired before request start");
+  }
+  if (startError) std::rethrow_exception(startError);
+  if (requestId.empty()) {
+    throw std::runtime_error("repo-discovery-start-failed: Core rejected discovery request");
+  }
   std::unique_lock<std::mutex> lock(result->mutex);
-  result->condition.wait(lock, [&] { return result->done; });
+  if (!result->condition.wait_until(lock, deadline, [&] { return result->done; })) {
+    lock.unlock();
+    cancelRequest(requestId);
+    throw std::runtime_error(
+      "repo-discovery-timeout: capability discovery deadline expired before ACK closure");
+  }
   if (!result->error.empty()) throw std::runtime_error(result->error);
   return std::move(*candidates);
+}
+
+std::string
+makeFreshPublishIdempotencyKey()
+{
+  std::array<uint8_t, 32> bytes{};
+  if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) {
+    throw std::runtime_error(
+      "repo-publish-key-generation-failed: cryptographic random source failed");
+  }
+  static constexpr char HEX[] = "0123456789abcdef";
+  std::string key;
+  key.reserve(bytes.size() * 2);
+  for (const auto byte : bytes) {
+    key.push_back(HEX[byte >> 4]);
+    key.push_back(HEX[byte & 0x0f]);
+  }
+  return key;
+}
+
+RepoArtifactTarget
+toArtifactTarget(const SelectedRepoTarget& target)
+{
+  return RepoArtifactTarget{target.repoNode, target.providerIdentity.toUri(),
+                            target.servicePrefix.toUri()};
+}
+
+SelectedRepoTarget
+fromArtifactTarget(const RepoArtifactTarget& target)
+{
+  return SelectedRepoTarget{target.repoNode, ndn::Name(target.providerIdentity),
+                            ndn::Name(target.servicePrefix)};
+}
+
+bool
+isTerminalPublishStatus(const PublishOperationStatus& status)
+{
+  return status.state == "COMMITTED" || status.state == "PARTIAL" ||
+         status.state == "FAILED";
+}
+
+ArtifactPublishResult
+makePublishResult(const PublishOperationHandle& operationHandle,
+                  const PublishOperationStatus& status,
+                  const ArtifactLimits& limits)
+{
+  operationHandle.validate(limits);
+  status.validate(limits);
+  if (operationHandle.operationId != status.operationId ||
+      operationHandle.seed != status.seed) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt,
+      "publish status does not bind the supplied operation handle");
+  }
+
+  ArtifactPublishResult result;
+  result.reference = status.reference;
+  result.operationId = status.operationId;
+  result.requestedReplicas = static_cast<uint32_t>(status.targets.size());
+  result.operationHandle = operationHandle;
+  result.operationStatus = status;
+
+  ArtifactCommitReceipt receipt;
+  receipt.operationId = status.operationId;
+  receipt.reference = status.reference;
+  receipt.generation = status.generation;
+  receipt.lifecycleMode = "PERSISTENT";
+  receipt.requestedReplicas = static_cast<uint32_t>(status.targets.size());
+  receipt.requiredAcks = requiredWriteAcks(receipt.requestedReplicas,
+    parseRepoWriteConsistency(status.consistency));
+  receipt.writeConsistency = status.consistency;
+  receipt.state = status.state;
+  receipt.completedAtMs = status.updatedAtMs;
+
+  ArtifactHandle artifactHandle;
+  artifactHandle.reference = status.reference;
+  artifactHandle.seedRepoId = status.seed.repoNode;
+  artifactHandle.writeConsistency = status.consistency;
+  artifactHandle.lifecycleMode = "PERSISTENT";
+  for (const auto& target : status.targets) {
+    artifactHandle.selectedTargets.push_back(fromArtifactTarget(target.target));
+
+    ArtifactReplicaResult replicaResult;
+    replicaResult.repoNode = target.target.repoNode;
+    replicaResult.providerIdentity = target.target.providerIdentity;
+
+    ArtifactReplicaCommit replica;
+    replica.repoNode = target.target.repoNode;
+    replica.providerIdentity = target.target.providerIdentity;
+    replica.operationId = status.operationId;
+    replica.reference = status.reference;
+    replica.completedAtMs = status.updatedAtMs;
+    if (target.receipt) {
+      const auto& commit = *target.receipt;
+      replica.state = "COMMITTED";
+      replica.receiptId = commit.receiptId;
+      replica.generation = commit.generation;
+      replica.contentDigest = status.reference.contentDigest;
+      replica.persistedBytes = commit.persistedBytes;
+      replica.completedAtMs = commit.completedAtMs;
+      replica.locationVersion = commit.locationVersion;
+      replica.routeState = commit.routeState;
+      replica.forwardingHint = commit.forwardingHint;
+      replicaResult.state = "COMMITTED";
+      replicaResult.receiptId = commit.receiptId;
+      ++receipt.achievedReplicas;
+      ++result.achievedReplicas;
+    }
+    else if (target.state == "NOT_ATTEMPTED") {
+      replica.state = "SKIPPED";
+      replica.routeState = "UNKNOWN";
+      replicaResult.state = "SKIPPED";
+    }
+    else if (target.state == "FAILED" || target.state == "UNKNOWN") {
+      replica.state = "FAILED";
+      replica.routeState = "UNKNOWN";
+      replica.failureReason = target.failureCode.empty()
+        ? "repo-target-outcome-unknown" : target.failureCode;
+      replicaResult.state = "FAILED";
+      replicaResult.errorCode = replica.failureReason;
+    }
+    else {
+      replica.state = target.state;
+      replica.routeState = "UNKNOWN";
+      replicaResult.state = target.state;
+    }
+    receipt.replicaCommits.push_back(replica);
+    result.replicas.push_back(std::move(replicaResult));
+    artifactHandle.replicaCommits.push_back(std::move(replica));
+  }
+
+  if (isTerminalPublishStatus(status)) {
+    receipt.placementState = receipt.achievedReplicas >= receipt.requiredAcks
+      ? "SATISFIED" : receipt.achievedReplicas > 0 ? "PARTIAL" : "UNSATISFIED";
+    receipt.receiptId = makeArtifactCommitReceiptId(receipt);
+    if (receipt.receiptId != status.receiptId) {
+      throw ArtifactValidationError(
+        artifact_error::InvalidReceipt,
+        "terminal publish status does not bind the reconstructed aggregate receipt");
+    }
+    artifactHandle.commitReceiptIds.push_back(receipt.receiptId);
+    for (const auto& replica : receipt.replicaCommits) {
+      if (replica.state == "COMMITTED") {
+        artifactHandle.commitReceiptIds.push_back(replica.receiptId);
+      }
+    }
+    artifactHandle.validate(limits);
+    receipt.validate(limits);
+    result.handle = std::move(artifactHandle);
+    result.receipt = std::move(receipt);
+  }
+  else if (!status.receiptId.empty()) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt,
+      "nonterminal publish status cannot carry a receipt ID");
+  }
+  result.validate(limits);
+  return result;
 }
 
 } // namespace
@@ -1244,10 +2170,12 @@ ArtifactCommitReceipt::validate(const ArtifactLimits& limits) const
     }
     const std::string expectedPlacement = achievedReplicas >= requiredAcks
       ? "SATISFIED" : achievedReplicas > 0 ? "PARTIAL" : "UNSATISFIED";
-    if (placementState != expectedPlacement ||
-        (placementState == "SATISFIED" && state != "COMMITTED") ||
-        (placementState == "PARTIAL" && state != "PARTIAL") ||
-        (placementState == "UNSATISFIED" && state != "FAILED" && state != "ABORTED")) {
+    const bool terminalStateMatchesPlacement =
+      (state == "COMMITTED" && placementState == "SATISFIED") ||
+      (state == "PARTIAL" && placementState == "PARTIAL") ||
+      state == "FAILED" || state == "ABORTED";
+    if (placementState != expectedPlacement || !terminalStateMatchesPlacement ||
+        (state == "PARTIAL" && achievedReplicas == 0)) {
       throw ArtifactValidationError(
         artifact_error::InvalidReceipt, "Persistent placement and terminal state disagree");
     }
@@ -1351,12 +2279,17 @@ ArtifactPublishResult::validate(const ArtifactLimits& limits) const
   for (const auto& replica : replicas) {
     validateName(replica.repoNode, limits, "result.replica.repoNode");
     validateName(replica.providerIdentity, limits, "result.replica.providerIdentity");
+    const bool pendingReplica = replica.state == "QUEUED" ||
+      replica.state == "IN_FLIGHT" || replica.state == "STAGED";
     if (!resultRepos.insert(replica.repoNode).second ||
         !resultProviders.insert(replica.providerIdentity).second ||
         (replica.state != "COMMITTED" && replica.state != "FAILED" &&
-         replica.state != "SKIPPED") ||
-        (replica.state == "FAILED" && replica.errorCode.empty()) ||
-        (replica.state != "FAILED" && !replica.errorCode.empty())) {
+         replica.state != "SKIPPED" && replica.state != "UNKNOWN" &&
+         !pendingReplica) ||
+        ((replica.state == "FAILED" || replica.state == "UNKNOWN") &&
+         replica.errorCode.empty()) ||
+        ((replica.state != "FAILED" && replica.state != "UNKNOWN") &&
+         !replica.errorCode.empty()) || (pendingReplica && !operationStatus)) {
       throw ArtifactValidationError(
         artifact_error::InvalidReceipt, "publish result contains a duplicate or invalid replica state");
     }
@@ -1373,6 +2306,52 @@ ArtifactPublishResult::validate(const ArtifactLimits& limits) const
   if (reportedCommitted != achievedReplicas) {
     throw ArtifactValidationError(
       artifact_error::InvalidReceipt, "publish result achieved count differs from committed entries");
+  }
+  if (operationHandle.has_value() != operationStatus.has_value()) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt,
+      "publish result must carry both operation handle and operation status");
+  }
+  if (operationHandle) {
+    operationHandle->validate(limits);
+    operationStatus->validate(limits);
+    const bool terminal = isTerminalPublishStatus(*operationStatus);
+    if (operationHandle->operationId != operationId ||
+        operationStatus->operationId != operationId ||
+        operationStatus->reference != reference ||
+        operationHandle->seed != operationStatus->seed ||
+        operationStatus->targets.size() != requestedReplicas ||
+        terminal != handle.has_value() ||
+        (terminal && operationStatus->receiptId != receipt->receiptId)) {
+      throw ArtifactValidationError(
+        artifact_error::InvalidReceipt,
+        "publish result operation binding or terminal projection is invalid");
+    }
+    for (size_t index = 0; index < operationStatus->targets.size(); ++index) {
+      const auto& target = operationStatus->targets[index];
+      const auto& resultReplica = replicas[index];
+      const std::string expectedState = target.receipt ? "COMMITTED" :
+        target.state == "NOT_ATTEMPTED" ? "SKIPPED" :
+        (target.state == "FAILED" || target.state == "UNKNOWN") ? "FAILED" :
+        target.state;
+      const auto expectedReceiptId = target.receipt
+        ? target.receipt->receiptId : std::string();
+      const auto expectedError =
+        (target.state == "FAILED" || target.state == "UNKNOWN")
+          ? (target.failureCode.empty()
+               ? std::string("repo-target-outcome-unknown")
+               : target.failureCode)
+          : std::string();
+      if (resultReplica.repoNode != target.target.repoNode ||
+          resultReplica.providerIdentity != target.target.providerIdentity ||
+          resultReplica.state != expectedState ||
+          resultReplica.receiptId != expectedReceiptId ||
+          resultReplica.errorCode != expectedError) {
+        throw ArtifactValidationError(
+          artifact_error::InvalidReceipt,
+          "publish result target rows differ from authenticated operation status");
+      }
+    }
   }
   if (handle) {
     handle->validate(limits);
@@ -1438,8 +2417,9 @@ struct ArtifactRepositoryApi::Impl
       : rootPath(prepareRoot(config))
       , ownerId(std::move(config.ownerId))
       , limits(std::move(config.limits))
+      , availabilityFreshnessMs(config.availabilityFreshnessMs)
       , ownership((rootPath / "metadata.sqlite3").string(), ownerId)
-      , metadataStore((rootPath / "metadata.sqlite3").string(), true, 14, true)
+      , metadataStore((rootPath / "metadata.sqlite3").string(), true, 15, true)
       , payloadStore(rootPath.string(), MAX_STORE_RANGE_BYTES,
                      metadataStore.artifactWritesEnabled())
     {
@@ -1448,6 +2428,7 @@ struct ArtifactRepositoryApi::Impl
     fs::path rootPath;
     std::string ownerId;
     ArtifactLimits limits;
+    uint64_t availabilityFreshnessMs;
     BackendOwnershipLease ownership;
     SqliteArtifactMetadataStore metadataStore;
     FilesystemArtifactPayloadStore payloadStore;
@@ -1465,8 +2446,14 @@ struct ArtifactRepositoryApi::Impl
   {
     if (persistentConfig->servicePrefix.empty() ||
         persistentConfig->ackCollectionTimeMs <= 0 ||
-        persistentConfig->requestTimeoutMs <= persistentConfig->ackCollectionTimeMs) {
-      throw std::invalid_argument("repo-persistent-client-config-invalid: deadlines or service prefix invalid");
+        persistentConfig->requestTimeoutMs <= persistentConfig->ackCollectionTimeMs ||
+        persistentConfig->operationWaitTimeoutMs <= 0 ||
+        persistentConfig->fetchFailureCooldownMs < 0 ||
+        persistentConfig->fetchFailureCooldownMs > 60000 ||
+        persistentConfig->maxFetchHealthEntries == 0 ||
+        persistentConfig->maxFetchHealthEntries > 65536) {
+      throw std::invalid_argument(
+        "repo-persistent-client-config-invalid: deadlines, health limits, or service prefix invalid");
     }
     const ArtifactLimits hardLimits;
     const auto& limits = persistentConfig->limits;
@@ -1504,6 +2491,33 @@ struct ArtifactRepositoryApi::Impl
   std::unique_ptr<InAppOwner> inApp;
   ndn_service_framework::ServiceUser* serviceUser = nullptr;
   std::optional<PersistentRepoClientConfig> persistentConfig;
+
+  struct FetchHealthKey
+  {
+    std::string artifactObjectName;
+    std::string providerIdentity;
+
+    bool operator<(const FetchHealthKey& other) const noexcept
+    {
+      return std::tie(artifactObjectName, providerIdentity) <
+             std::tie(other.artifactObjectName, other.providerIdentity);
+    }
+  };
+
+  struct FetchHealth
+  {
+    uint64_t locationVersion = 0;
+    std::string operationId;
+    std::string receiptId;
+    double latencyEwmaMs = 0.0;
+    uint64_t latencyLocationVersion = 0;
+    uint32_t consecutiveFailures = 0;
+    uint64_t failureLocationVersion = 0;
+    std::chrono::steady_clock::time_point cooldownUntil{};
+    std::chrono::steady_clock::time_point lastUpdated{};
+  };
+
+  std::map<FetchHealthKey, FetchHealth> fetchHealth;
   mutable std::mutex operationMutex;
 };
 
@@ -1531,6 +2545,19 @@ ArtifactRepositoryApi::~ArtifactRepositoryApi() = default;
 ArtifactRepositoryApi::ArtifactRepositoryApi(ArtifactRepositoryApi&&) noexcept = default;
 ArtifactRepositoryApi&
 ArtifactRepositoryApi::operator=(ArtifactRepositoryApi&&) noexcept = default;
+
+ArtifactFetchError::ArtifactFetchError(std::string message,
+                                       ArtifactFetchResult result)
+  : std::runtime_error(std::move(message))
+  , m_result(std::move(result))
+{
+}
+
+const ArtifactFetchResult&
+ArtifactFetchError::result() const noexcept
+{
+  return m_result;
+}
 
 RepoCandidateSet
 ArtifactRepositoryApi::discoverRepoCandidates(
@@ -1615,11 +2642,12 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
   return makePublishResult(localCommit, existing.has_value(), resumed, elapsed);
 }
 
-ArtifactPublishResult
-ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
-                                   const ArtifactReference& reference,
-                                   const SelectedRepoSet& selected,
-                                   int timeoutMs)
+PublishOperationHandle
+ArtifactRepositoryApi::beginPublishFileImpl(
+  const std::string& sourcePath, const ArtifactReference& reference,
+  const SelectedRepoSet& selected, const std::string& idempotencyKey,
+  std::chrono::steady_clock::time_point deadline,
+  PublishOperationStatus* acceptedStatus)
 {
   if (!m_impl) {
     throw std::logic_error("repo-persistent-api-moved-from: API has no active owner");
@@ -1627,13 +2655,92 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
   if (m_impl->serviceUser == nullptr || !m_impl->persistentConfig) {
     throw std::logic_error("repo-artifact-lifecycle-mismatch: Persistent publish overload is Persistent only");
   }
-  std::lock_guard<std::mutex> operationGuard(m_impl->operationMutex);
   const auto& config = *m_impl->persistentConfig;
-  if (timeoutMs <= config.ackCollectionTimeMs) {
-    throw std::invalid_argument("repo-request-timeout-invalid: publish timeout must exceed ACK window");
+  std::unique_lock<std::mutex> operationGuard(
+    m_impl->operationMutex, std::defer_lock);
+  while (!operationGuard.try_lock()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      throw std::runtime_error(
+        "repo-operation-timeout: begin deadline expired waiting for API operation");
+    }
+    std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(
+      deadline - now, std::chrono::milliseconds(1)));
+  }
+  if (std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error(
+      "repo-operation-timeout: begin deadline expired acquiring API operation");
   }
   selected.validate(config.servicePrefix, config.limits);
   reference.validate(config.limits);
+  const auto remaining = [&deadline] { return remainingTimeoutMs(deadline); };
+  const auto remainingRequestTimeout = [&] {
+    return boundedRequestTimeoutMs(deadline, config.requestTimeoutMs);
+  };
+  // A seed STORE/COMMIT response can be lost after the seed crosses the
+  // acceptance barrier. Keep enough begin budget for one configured STATUS
+  // request plus an ACK margin; never extend the deadline for recovery.
+  const auto statusRecoveryReserveMs = statusRecoveryReserveTimeoutMs(config);
+  const auto remainingForSeedWrite = [&] {
+    const int timeout = remaining();
+    if (timeout <= statusRecoveryReserveMs + config.ackCollectionTimeMs) {
+      throw std::runtime_error(
+        "repo-operation-timeout: insufficient begin budget for seed write and status recovery");
+    }
+    return static_cast<int>(std::min<int64_t>(
+      config.requestTimeoutMs,
+      static_cast<int64_t>(timeout) - statusRecoveryReserveMs));
+  };
+  const auto orderedTargets = canonicalSelectedTargets(selected);
+  const auto seedTarget = std::find_if(
+    orderedTargets.begin(), orderedTargets.end(),
+    [&selected] (const auto& target) {
+      return target.repoNode == selected.seedRepoId;
+    });
+  if (seedTarget == orderedTargets.end()) {
+    throw std::logic_error("repo-selected-seed-invalid: validated seed was not found");
+  }
+
+  PublishOperationIntent intent;
+  intent.idempotencyKeyDigest = digestPublishIdempotencyKey(idempotencyKey);
+  intent.reference = reference;
+  intent.generation = 1;
+  intent.seed = toArtifactTarget(*seedTarget);
+  intent.consistency = toString(selected.consistency);
+  for (const auto& target : orderedTargets) {
+    intent.targets.push_back(toArtifactTarget(target));
+  }
+  intent.requestDigest = makePublishRequestDigest(
+    intent.reference, intent.generation, intent.seed,
+    intent.consistency, intent.targets);
+  intent.validate(config.limits);
+  const auto operationId = makePublishOperationId(
+    m_impl->serviceUser->getName().toUri(), intent.seed,
+    intent.idempotencyKeyDigest);
+  PublishOperationHandle handle;
+  handle.operationId = operationId;
+  handle.seed = intent.seed;
+  handle.validate(config.limits);
+
+  // Resolve an already accepted operation before requiring every selected
+  // replica to appear in current discovery. A retry after a lost return value
+  // must be able to recover the seed-owned operation even when a replica is
+  // now unavailable.
+  try {
+    auto previous = queryPublishOperationStatus(
+      *m_impl->serviceUser, config, handle, remainingRequestTimeout());
+    validateAcceptedPublishStatus(previous, intent, operationId, config.limits);
+    if (acceptedStatus != nullptr) {
+      *acceptedStatus = std::move(previous);
+    }
+    return handle;
+  }
+  catch (const std::exception& error) {
+    if (!isPublishOperationNotFound(error)) {
+      throw;
+    }
+  }
+
   if (sourcePath.empty()) {
     throw std::invalid_argument("repo-artifact-source-invalid: source path is required");
   }
@@ -1651,299 +2758,421 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
       "repo-artifact-source-digest-mismatch: source does not match ArtifactReference");
   }
 
-  const auto started = std::chrono::steady_clock::now();
-  const auto deadline = started + std::chrono::milliseconds(timeoutMs);
-  const auto rangeCleanupReserveMs = std::min(250, std::max(50, timeoutMs / 10));
-  const auto rangeWorkDeadline = deadline -
-    std::chrono::milliseconds(rangeCleanupReserveMs);
-  const auto orderedTargets = canonicalSelectedTargets(selected);
-  const auto operationId = makePersistentOperationId(reference, selected, orderedTargets);
   const auto candidates = discoverCandidates(
     *m_impl->serviceUser, config, nullptr, &reference,
-    remainingTimeoutMs(deadline));
-
-  for (const auto& target : selected.targets) {
-    const auto found = std::find_if(candidates.candidates.begin(), candidates.candidates.end(),
+    remainingRequestTimeout());
+  for (const auto& target : orderedTargets) {
+    const auto found = std::find_if(
+      candidates.candidates.begin(), candidates.candidates.end(),
       [&target] (const auto& candidate) {
         return candidate.repoNode == target.repoNode &&
                candidate.providerIdentity == target.providerIdentity &&
                candidate.servicePrefix == target.servicePrefix;
       });
     if (found == candidates.candidates.end()) {
+      if (spec192DiscoveryTraceEnabled()) {
+        const auto provider = target.providerIdentity.toUri();
+        const auto servicePrefix = target.servicePrefix.toUri();
+        std::fprintf(stderr,
+          "[SPEC192_CAPABILITY] selected-missing repo=%s provider=%s service=%s discovered=%zu\n",
+          target.repoNode.c_str(), provider.c_str(), servicePrefix.c_str(),
+          candidates.candidates.size());
+        for (const auto& candidate : candidates.candidates) {
+          const auto observedProvider = candidate.providerIdentity.toUri();
+          std::fprintf(stderr,
+            "[SPEC192_CAPABILITY] selected-observed repo=%s provider=%s service=%s\n",
+            candidate.repoNode.c_str(), observedProvider.c_str(),
+            candidate.servicePrefix.toUri().c_str());
+        }
+      }
       throw std::runtime_error(
         "repo-selected-target-stale: a selected Repo/Provider tuple is absent from fresh authenticated discovery");
     }
   }
 
-  const auto required = requiredWriteAcks(
-    static_cast<uint32_t>(orderedTargets.size()), selected.consistency);
-  const auto seed = std::find_if(orderedTargets.begin(), orderedTargets.end(),
-    [&selected] (const auto& target) { return target.repoNode == selected.seedRepoId; });
-  if (seed == orderedTargets.end()) {
-    throw std::logic_error("repo-selected-seed-invalid: validated seed was not found");
-  }
-  const size_t seedIndex = static_cast<size_t>(std::distance(orderedTargets.begin(), seed));
-  std::vector<size_t> attemptOrder;
-  attemptOrder.reserve(orderedTargets.size());
-  attemptOrder.push_back(seedIndex);
-  for (size_t index = 0; index < orderedTargets.size(); ++index) {
-    if (index != seedIndex) attemptOrder.push_back(index);
+  const auto intentResponse = runSelectedRepoRequest(
+    *m_impl->serviceUser, *seedTarget,
+    makeRepoServiceName(seedTarget->servicePrefix, "STORE"),
+    toBytes(intent.toJson()), config, remainingRequestTimeout());
+  const std::string acceptedOperationId(intentResponse.begin(),
+                                        intentResponse.end());
+  if (acceptedOperationId != operationId) {
+    throw std::runtime_error(
+      "repo-publish-intent-binding-failed: selected seed returned another operation ID");
   }
 
-  std::vector<std::optional<ArtifactReplicaCommit>> commits(orderedTargets.size());
-  std::vector<std::optional<ArtifactReplicaResult>> replicaResults(orderedTargets.size());
-  uint32_t achieved = 0;
-  bool seedCommitted = false;
   const auto chunkBytes = std::min<uint64_t>(
-    {COPY_CHUNK_BYTES, MAX_STORE_RANGE_BYTES, config.limits.maxChunkBytes});
+    {COPY_CHUNK_BYTES, MAX_STORE_RANGE_BYTES,
+     config.limits.maxChunkBytes,
+     std::max<uint64_t>(1, config.limits.maxPacketPayloadBytes / 2)});
   if (chunkBytes == 0) {
-    throw std::invalid_argument("repo-artifact-chunk-limit-invalid: range size must be positive");
+    throw std::invalid_argument(
+      "repo-artifact-chunk-limit-invalid: range size must be positive");
   }
 
-  for (const size_t index : attemptOrder) {
-    const auto& target = orderedTargets[index];
-    ArtifactReplicaCommit replica;
-    replica.repoNode = target.repoNode;
-    replica.providerIdentity = target.providerIdentity.toUri();
-    replica.operationId = operationId;
-    replica.reference = reference;
-    replica.completedAtMs = nowMilliseconds();
-    replica.routeState = "UNKNOWN";
-
-    if (achieved >= required) {
-      replica.state = "SKIPPED";
-      ArtifactReplicaResult result;
-      result.repoNode = target.repoNode;
-      result.providerIdentity = target.providerIdentity.toUri();
-      result.state = replica.state;
-      commits[index] = std::move(replica);
-      replicaResults[index] = std::move(result);
-      continue;
+  bool rangeTransferStarted = false;
+  std::vector<uint8_t> response;
+  RepoArtifactCommitReceipt seedReceipt;
+  try {
+    if (reference.sizeBytes <= chunkBytes) {
+      ArtifactStoreRequest write;
+      write.operationId = operationId;
+      write.generation = intent.generation;
+      write.reference = reference;
+      write.bytes = readFileRange(sourceFd.get(), sourcePath, 0,
+                                  reference.sizeBytes);
+      response = runSelectedRepoRequest(
+        *m_impl->serviceUser, *seedTarget,
+        makeRepoServiceName(seedTarget->servicePrefix, "STORE"),
+        write.toWire(config.limits), config, remainingForSeedWrite());
     }
-
-    bool rangeTransferStarted = false;
-    try {
-      std::vector<uint8_t> response;
-      if (reference.sizeBytes <= chunkBytes) {
-        ArtifactStoreRequest write;
+    else {
+      uint64_t offset = 0;
+      while (offset < reference.sizeBytes) {
+        const auto length = std::min<uint64_t>(
+          chunkBytes, reference.sizeBytes - offset);
+        ArtifactRangeWriteRequest write;
         write.operationId = operationId;
-        write.generation = 1;
+        write.generation = intent.generation;
         write.reference = reference;
-        write.bytes = readFileRange(sourceFd.get(), sourcePath, 0, reference.sizeBytes);
-        response = runSelectedRepoRequest(
-          *m_impl->serviceUser, target,
-          makeRepoServiceName(target.servicePrefix, "STORE"), write.toWire(config.limits),
-          config, remainingTimeoutMs(deadline));
-      }
-      else {
-        uint64_t offset = 0;
-        while (offset < reference.sizeBytes) {
-          const auto length = std::min<uint64_t>(chunkBytes, reference.sizeBytes - offset);
-          ArtifactRangeWriteRequest write;
-          write.operationId = operationId;
-          write.generation = 1;
-          write.reference = reference;
-          write.offsetBytes = offset;
-          write.lengthBytes = length;
-          write.bytes = readFileRange(sourceFd.get(), sourcePath, offset, length);
-          const int rangeTimeoutMs = remainingTimeoutMs(rangeWorkDeadline);
-          if (rangeTimeoutMs <= config.ackCollectionTimeMs) {
-            throw std::runtime_error("repo-request-timeout-invalid: range work deadline exhausted");
-          }
-          rangeTransferStarted = true;
-          (void)runSelectedRepoRequest(
-            *m_impl->serviceUser, target,
-            makeRepoServiceName(target.servicePrefix, "STORE_RANGE"), write.toWire(config.limits),
-            config, rangeTimeoutMs);
-          offset += length;
+        write.offsetBytes = offset;
+        write.lengthBytes = length;
+        write.bytes = readFileRange(sourceFd.get(), sourcePath, offset, length);
+        rangeTransferStarted = true;
+        const auto stageResponse = runSelectedRepoRequest(
+          *m_impl->serviceUser, *seedTarget,
+          makeRepoServiceName(seedTarget->servicePrefix, "STORE_RANGE"),
+          write.toWire(config.limits), config, remainingForSeedWrite());
+        if (std::string(stageResponse.begin(), stageResponse.end()) != "staged") {
+          throw std::runtime_error(
+            "repo-artifact-range-stage-invalid: selected seed returned an unexpected stage response");
         }
-        ArtifactRangeCommitRequest commitRequest;
-        commitRequest.operationId = operationId;
-        commitRequest.generation = 1;
-        commitRequest.reference = reference;
-        response = runSelectedRepoRequest(
-          *m_impl->serviceUser, target,
-          makeRepoServiceName(target.servicePrefix, "COMMIT_RANGES"),
-          commitRequest.toWire(config.limits), config,
-          remainingTimeoutMs(rangeWorkDeadline));
+        offset += length;
       }
-      const std::string wire(response.begin(), response.end());
-      const auto location = ArtifactLocationRecord::fromJson(wire, config.limits);
-      location.validate(nowMilliseconds(), config.limits);
-      if (location.repoNode != target.repoNode ||
-          location.providerIdentity != target.providerIdentity.toUri() ||
-          location.operationId != operationId || location.reference != reference ||
-          location.generation != 1 || location.receiptId.empty() ||
-          location.locationVersion == 0 || location.routeState != "ROUTABLE" ||
-          location.forwardingHint != target.servicePrefix.toUri()) {
-        throw std::runtime_error(
-          "repo-artifact-receipt-binding-failed: commit response does not match selected target and reference");
-      }
-      replica.receiptId = location.receiptId;
-      replica.generation = location.generation;
-      replica.contentDigest = reference.contentDigest;
-      replica.persistedBytes = reference.sizeBytes;
-      replica.completedAtMs = location.committedAtMs;
-      replica.locationVersion = location.locationVersion;
-      replica.routeState = location.routeState;
-      replica.state = "COMMITTED";
-      replica.forwardingHint = location.forwardingHint;
-      ++achieved;
-      if (index == seedIndex) seedCommitted = true;
+      ArtifactRangeCommitRequest commit;
+      commit.operationId = operationId;
+      commit.generation = intent.generation;
+      commit.reference = reference;
+      response = runSelectedRepoRequest(
+        *m_impl->serviceUser, *seedTarget,
+        makeRepoServiceName(seedTarget->servicePrefix, "COMMIT_RANGES"),
+        commit.toWire(config.limits), config, remainingForSeedWrite());
+    }
 
-      ArtifactReplicaResult result;
-      result.repoNode = target.repoNode;
-      result.providerIdentity = target.providerIdentity.toUri();
-      result.state = replica.state;
-      result.receiptId = replica.receiptId;
-      commits[index] = std::move(replica);
-      replicaResults[index] = std::move(result);
+    const std::string receiptWire(response.begin(), response.end());
+    seedReceipt = RepoArtifactCommitReceipt::fromJson(receiptWire, config.limits);
+    seedReceipt.validate(config.limits);
+    if (seedReceipt.repoNode != seedTarget->repoNode ||
+        seedReceipt.providerIdentity != seedTarget->providerIdentity.toUri() ||
+        seedReceipt.operationId != operationId ||
+        seedReceipt.reference != reference ||
+        seedReceipt.generation != intent.generation ||
+        seedReceipt.persistedBytes != reference.sizeBytes ||
+        seedReceipt.routeState != "ROUTABLE" ||
+        seedReceipt.forwardingHint != seedTarget->servicePrefix.toUri()) {
+      throw std::runtime_error(
+        "repo-artifact-seed-receipt-binding-failed: seed receipt differs from the accepted intent");
     }
-    catch (const std::exception&) {
-      if (rangeTransferStarted) {
-        try {
-          const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now()).count();
-          if (remaining > 1) {
-            ArtifactRangeAbortRequest abort;
-            abort.operationId = operationId;
-            abort.generation = 1;
-            abort.reference = reference;
-            const auto abortBytes = abort.toWire(config.limits);
-            const int timeout = static_cast<int>(std::min<int64_t>(
-              remaining, std::numeric_limits<int>::max()));
-            const int ackWindow = std::max(1, std::min(
-              config.ackCollectionTimeMs, std::max(1, timeout / 4)));
-            if (timeout > ackWindow) {
-              const auto abortResponse = RepoClient::requestSelectedService(
-                *m_impl->serviceUser, target.providerIdentity,
-                makeRepoServiceName(target.servicePrefix, "ABORT_RANGES"),
-                abortBytes, ackWindow, timeout);
-              if (std::string(abortResponse.begin(), abortResponse.end()) != "aborted") {
-                throw std::runtime_error("repo-artifact-range-abort-failed: unexpected response");
-              }
-            }
-          }
-        }
-        catch (const std::exception&) {
-          // The selected Repo also removes unreferenced range staging at its
-          // next startup. Keep the publish failure bounded by the original
-          // operation deadline if an owner-checked abort cannot be delivered.
-        }
+  }
+  catch (...) {
+    const auto seedWriteFailure = std::current_exception();
+    // A failed/lost response is ambiguous: the seed may have committed its
+    // receipt and ACCEPTED transition before the response was lost. Confirm
+    // that durable barrier through the authenticated seed status service
+    // before deciding whether the operation has no accepted handle.
+    try {
+      auto accepted = queryPublishOperationStatus(
+        *m_impl->serviceUser, config, handle, remainingRequestTimeout());
+      validateAcceptedPublishStatus(accepted, intent, operationId, config.limits);
+      if (acceptedStatus != nullptr) {
+        *acceptedStatus = std::move(accepted);
       }
-      replica.state = "FAILED";
-      replica.failureReason = "repo-replica-store-failed";
-      ArtifactReplicaResult result;
-      result.repoNode = target.repoNode;
-      result.providerIdentity = target.providerIdentity.toUri();
-      result.state = replica.state;
-      result.errorCode = replica.failureReason;
-      commits[index] = std::move(replica);
-      replicaResults[index] = std::move(result);
-      if (index == seedIndex) {
-        for (const auto rest : attemptOrder) {
-          if (commits[rest]) continue;
-          const auto& skippedTarget = orderedTargets[rest];
-          ArtifactReplicaCommit skipped;
-          skipped.repoNode = skippedTarget.repoNode;
-          skipped.providerIdentity = skippedTarget.providerIdentity.toUri();
-          skipped.operationId = operationId;
-          skipped.reference = reference;
-          skipped.completedAtMs = nowMilliseconds();
-          skipped.routeState = "UNKNOWN";
-          skipped.state = "SKIPPED";
-          commits[rest] = std::move(skipped);
-          ArtifactReplicaResult skippedResult;
-          skippedResult.repoNode = skippedTarget.repoNode;
-          skippedResult.providerIdentity = skippedTarget.providerIdentity.toUri();
-          skippedResult.state = "SKIPPED";
-          replicaResults[rest] = std::move(skippedResult);
-        }
-        ArtifactPublishResult failed;
-        failed.reference = reference;
-        failed.operationId = operationId;
-        failed.requestedReplicas = static_cast<uint32_t>(orderedTargets.size());
-        failed.achievedReplicas = 0;
-        for (auto& item : replicaResults) failed.replicas.push_back(std::move(*item));
-        const auto ended = std::chrono::steady_clock::now();
-        failed.totalDurationMs = std::chrono::duration<double, std::milli>(ended - started).count();
-        failed.validate(config.limits);
-        return failed;
+      return handle;
+    }
+    catch (const std::exception& statusError) {
+      const std::string message = statusError.what();
+      if (message.find("repo-publish-idempotency-conflict:") != std::string::npos) {
+        throw;
+      }
+      // A missing status means the seed did not cross the acceptance barrier.
+      // Other status-query failures cannot prove acceptance, so preserve the
+      // original STORE/COMMIT failure for the caller.
+    }
+    catch (...) {
+      // Preserve the original seed-write failure when status cannot be read.
+    }
+
+    if (rangeTransferStarted) {
+      try {
+        ArtifactRangeAbortRequest abort;
+        abort.operationId = operationId;
+        abort.generation = intent.generation;
+        abort.reference = reference;
+        (void)runSelectedRepoRequest(
+          *m_impl->serviceUser, *seedTarget,
+          makeRepoServiceName(seedTarget->servicePrefix, "ABORT_RANGES"),
+          abort.toWire(config.limits), config, remainingRequestTimeout());
+      }
+      catch (...) {
+        // The Repo's range reservation reaper remains the bounded cleanup path.
       }
     }
+    std::rethrow_exception(seedWriteFailure);
   }
 
-  if (!seedCommitted) {
-    throw std::runtime_error("repo-seed-commit-missing: selected seed did not commit");
+  PublishOperationStatus accepted;
+  accepted.operationId = operationId;
+  accepted.reference = reference;
+  accepted.generation = intent.generation;
+  accepted.seed = intent.seed;
+  accepted.consistency = intent.consistency;
+  accepted.state = "ACCEPTED";
+  accepted.updatedAtMs = seedReceipt.completedAtMs;
+  for (const auto& target : intent.targets) {
+    PublishOperationTargetStatus targetStatus;
+    targetStatus.target = target;
+    targetStatus.state = target == intent.seed ? "COMMITTED" : "QUEUED";
+    targetStatus.attemptCount = target == intent.seed ? 1 : 0;
+    targetStatus.updatedAtMs = seedReceipt.completedAtMs;
+    if (target == intent.seed) {
+      targetStatus.receipt = seedReceipt;
+    }
+    accepted.targets.push_back(std::move(targetStatus));
   }
-  uint64_t receiptCompletedAtMs = nowMilliseconds();
-  if (achieved >= required) {
-    // A satisfied replay returns the same immutable result from Repo-local
-    // commit facts, so use their stable commit time for skipped/failed target
-    // rows and the aggregate receipt timestamp.
-    receiptCompletedAtMs = 0;
-    for (const auto& item : commits) {
-      if (item->state == "COMMITTED") {
-        receiptCompletedAtMs = std::max(receiptCompletedAtMs,
-                                        item->completedAtMs);
-      }
-    }
-    if (receiptCompletedAtMs == 0) {
-      throw std::logic_error("repo-committed-time-missing: satisfied result has no commit time");
-    }
-    for (auto& item : commits) {
-      if (item->state != "COMMITTED") {
-        item->completedAtMs = receiptCompletedAtMs;
-      }
-    }
+  accepted.validate(config.limits);
+  if (acceptedStatus != nullptr) {
+    *acceptedStatus = std::move(accepted);
   }
-  ArtifactCommitReceipt receipt;
-  receipt.operationId = operationId;
-  receipt.reference = reference;
-  receipt.generation = 1;
-  receipt.lifecycleMode = "PERSISTENT";
-  receipt.requestedReplicas = static_cast<uint32_t>(orderedTargets.size());
-  receipt.requiredAcks = required;
-  receipt.achievedReplicas = achieved;
-  receipt.writeConsistency = toString(selected.consistency);
-  receipt.placementState = achieved >= required ? "SATISFIED" : "PARTIAL";
-  receipt.state = achieved >= required ? "COMMITTED" : "PARTIAL";
-  receipt.completedAtMs = receiptCompletedAtMs;
+  return handle;
+}
 
-  ArtifactHandle handle;
-  handle.reference = reference;
-  handle.lifecycleMode = "PERSISTENT";
-  handle.seedRepoId = selected.seedRepoId;
-  handle.writeConsistency = receipt.writeConsistency;
-  handle.selectedTargets = orderedTargets;
-  for (size_t index = 0; index < commits.size(); ++index) {
-    receipt.replicaCommits.push_back(*commits[index]);
+PublishOperationHandle
+ArtifactRepositoryApi::beginPublishFile(
+  const std::string& sourcePath, const ArtifactReference& reference,
+  const SelectedRepoSet& selected, const std::string& idempotencyKey,
+  int timeoutMs)
+{
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+  if (!m_impl) {
+    throw std::logic_error("repo-persistent-api-moved-from: API has no active owner");
   }
-  receipt.receiptId = makePersistentReceiptId(receipt);
-  handle.commitReceiptIds.push_back(receipt.receiptId);
-  for (size_t index = 0; index < commits.size(); ++index) {
-    handle.replicaCommits.push_back(*commits[index]);
-    if (commits[index]->state == "COMMITTED") {
-      handle.commitReceiptIds.push_back(commits[index]->receiptId);
-    }
+  if (m_impl->serviceUser == nullptr || !m_impl->persistentConfig) {
+    throw std::logic_error("repo-artifact-lifecycle-mismatch: Persistent publish overload is Persistent only");
   }
+  if (timeoutMs <= m_impl->persistentConfig->ackCollectionTimeMs) {
+    throw std::invalid_argument("repo-request-timeout-invalid: begin timeout must exceed ACK window");
+  }
+  return beginPublishFileImpl(sourcePath, reference, selected, idempotencyKey,
+                             deadline, nullptr);
+}
+
+PublishOperationHandle
+ArtifactRepositoryApi::beginArchive(
+  const ArtifactRepositoryApi& inAppSource, const ArtifactHandle& handle,
+  const SelectedRepoSet& selected, const std::string& idempotencyKey,
+  int timeoutMs)
+{
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+  if (!m_impl || m_impl->serviceUser == nullptr ||
+      !m_impl->persistentConfig) {
+    throw std::logic_error(
+      "repo-artifact-lifecycle-mismatch: archive destination must be Persistent");
+  }
+  if (timeoutMs <= m_impl->persistentConfig->ackCollectionTimeMs) {
+    throw std::invalid_argument("repo-request-timeout-invalid: begin timeout must exceed ACK window");
+  }
+  if (!inAppSource.m_impl || !inAppSource.m_impl->inApp) {
+    throw std::logic_error(
+      "repo-artifact-lifecycle-mismatch: archive source must be In-App");
+  }
+  handle.validate(inAppSource.m_impl->inApp->limits);
+  if (handle.lifecycleMode != "IN_APP" || handle.commitReceiptIds.size() != 1) {
+    throw std::invalid_argument(
+      "repo-artifact-archive-source-invalid: archive requires one In-App receipt");
+  }
+  const auto localCommit = inAppSource.lookupLocalCommitUntil(
+    handle.reference, deadline);
+  if (std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error(
+      "repo-operation-timeout: begin deadline expired verifying In-App archive source");
+  }
+  if (!localCommit ||
+      handle.commitReceiptIds.front() != makeReceiptId(localCommit->localCommitId)) {
+    throw std::runtime_error(
+      "repo-artifact-archive-source-stale: saved handle does not match a durable In-App commit");
+  }
+
+  PrivateTemporaryDirectory temporaryDirectory;
+  const auto temporaryPayload = temporaryDirectory.path() / "verified-source.bin";
+  inAppSource.fetchFileUntil(handle.reference, temporaryPayload.string(), deadline);
+  if (std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error(
+      "repo-operation-timeout: begin deadline expired materializing In-App archive source");
+  }
+  return beginPublishFileImpl(temporaryPayload.string(), handle.reference,
+                              selected, idempotencyKey, deadline, nullptr);
+}
+
+PublishOperationStatus
+ArtifactRepositoryApi::getPublishStatus(
+  const PublishOperationHandle& handle, int timeoutMs) const
+{
+  if (!m_impl) {
+    throw std::logic_error("repo-persistent-api-moved-from: API has no active owner");
+  }
+  if (m_impl->serviceUser == nullptr || !m_impl->persistentConfig) {
+    throw std::logic_error(
+      "repo-artifact-lifecycle-mismatch: publish status is Persistent only");
+  }
+  const auto& config = *m_impl->persistentConfig;
+  if (timeoutMs < 0) {
+    throw std::invalid_argument(
+      "repo-request-timeout-invalid: status timeout cannot be negative");
+  }
+  const int requestTimeout = timeoutMs == 0 ? config.requestTimeoutMs : timeoutMs;
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(requestTimeout);
+  return getPublishStatusUntil(handle, deadline, requestTimeout);
+}
+
+PublishOperationStatus
+ArtifactRepositoryApi::getPublishStatusUntil(
+  const PublishOperationHandle& handle,
+  std::chrono::steady_clock::time_point deadline,
+  int requestTimeoutMs) const
+{
+  if (!m_impl) {
+    throw std::logic_error("repo-persistent-api-moved-from: API has no active owner");
+  }
+  if (m_impl->serviceUser == nullptr || !m_impl->persistentConfig) {
+    throw std::logic_error(
+      "repo-artifact-lifecycle-mismatch: publish status is Persistent only");
+  }
+  const auto& config = *m_impl->persistentConfig;
   handle.validate(config.limits);
-  receipt.validate(config.limits);
+  std::unique_lock<std::mutex> operationGuard(
+    m_impl->operationMutex, std::defer_lock);
+  while (!operationGuard.try_lock()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      throw std::runtime_error(
+        "repo-operation-timeout: status deadline expired waiting for API operation");
+    }
+    std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(
+      deadline - now, std::chrono::milliseconds(1)));
+  }
+  if (std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error(
+      "repo-operation-timeout: status deadline expired acquiring API operation");
+  }
+  const int statusTimeoutMs = boundedRequestTimeoutMs(deadline, requestTimeoutMs);
+  if (requestTimeoutMs > config.ackCollectionTimeMs &&
+      statusTimeoutMs <= config.ackCollectionTimeMs) {
+    throw std::runtime_error(
+      "repo-operation-timeout: status deadline leaves insufficient ACK window after API lock wait");
+  }
+  return queryPublishOperationStatus(
+    *m_impl->serviceUser, config, handle, statusTimeoutMs);
+}
 
-  ArtifactPublishResult published;
-  published.reference = reference;
-  published.operationId = operationId;
-  published.requestedReplicas = receipt.requestedReplicas;
-  published.achievedReplicas = achieved;
-  published.deduplicated = false;
-  published.resumed = false;
-  const auto ended = std::chrono::steady_clock::now();
-  published.totalDurationMs = std::chrono::duration<double, std::milli>(ended - started).count();
-  for (auto& item : replicaResults) published.replicas.push_back(std::move(*item));
-  published.handle = std::move(handle);
-  published.receipt = std::move(receipt);
-  published.validate(config.limits);
-  return published;
+ArtifactPublishResult
+ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
+                                   const ArtifactReference& reference,
+                                   const SelectedRepoSet& selected,
+                                   int timeoutMs)
+{
+  if (!m_impl) {
+    throw std::logic_error("repo-persistent-api-moved-from: API has no active owner");
+  }
+  if (m_impl->serviceUser == nullptr || !m_impl->persistentConfig) {
+    throw std::logic_error("repo-artifact-lifecycle-mismatch: Persistent publish overload is Persistent only");
+  }
+  const auto started = std::chrono::steady_clock::now();
+  const auto& config = *m_impl->persistentConfig;
+  if (timeoutMs < 0) {
+    throw std::invalid_argument(
+      "repo-request-timeout-invalid: publish wait budget cannot be negative");
+  }
+  const int waitBudget = timeoutMs == 0
+    ? config.operationWaitTimeoutMs : timeoutMs;
+  reference.validate(config.limits);
+  const int64_t ackWindowMs = config.ackCollectionTimeMs;
+  const int64_t requestWindowMs =
+    static_cast<int64_t>(config.requestTimeoutMs) + ackWindowMs;
+  const int64_t statusRecoveryReserveMs =
+    statusRecoveryReserveTimeoutMs(config);
+  const auto chunkBytes = std::min<uint64_t>(
+    {COPY_CHUNK_BYTES, MAX_STORE_RANGE_BYTES,
+     config.limits.maxChunkBytes,
+     std::max<uint64_t>(1, config.limits.maxPacketPayloadBytes / 2)});
+  uint64_t seedWriteRequests = 1;
+  if (reference.sizeBytes > chunkBytes) {
+    const uint64_t rangeChunks = reference.sizeBytes / chunkBytes +
+      (reference.sizeBytes % chunkBytes != 0 ? 1 : 0);
+    seedWriteRequests = rangeChunks + 1; // STORE_RANGE chunks plus COMMIT_RANGES
+  }
+  // The synchronous timeout is only the post-accept status-wait budget. Give
+  // the shared begin path its own bounded window for STATUS, discovery,
+  // PUBLISH_INTENT, the seed write(s), and status recovery. One extra request
+  // window covers local source verification and orchestration overhead.
+  constexpr uint64_t PRE_SEED_REQUESTS = 3; // STATUS, discovery, PUBLISH_INTENT
+  constexpr uint64_t LOCAL_WORK_MARGIN_WINDOWS = 1;
+  const uint64_t requestWindows =
+    PRE_SEED_REQUESTS + seedWriteRequests + LOCAL_WORK_MARGIN_WINDOWS;
+  const int64_t maxBeginTimeoutMs = std::numeric_limits<int>::max();
+  if (requestWindows == 0 || requestWindowMs <= 0 ||
+      statusRecoveryReserveMs >= maxBeginTimeoutMs ||
+      requestWindows > static_cast<uint64_t>(
+        (maxBeginTimeoutMs - statusRecoveryReserveMs) / requestWindowMs)) {
+    throw std::invalid_argument(
+      "repo-request-timeout-invalid: synchronous begin budget exceeds supported range");
+  }
+  const int beginTimeout = static_cast<int>(
+    static_cast<int64_t>(requestWindows) * requestWindowMs +
+    statusRecoveryReserveMs);
+  PublishOperationStatus status;
+  const auto beginDeadline = std::chrono::steady_clock::now() +
+    std::chrono::milliseconds(beginTimeout);
+  const auto handle = beginPublishFileImpl(
+    sourcePath, reference, selected, makeFreshPublishIdempotencyKey(),
+    beginDeadline, &status);
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(waitBudget);
+  while (!isTerminalPublishStatus(status)) {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now()).count();
+    if (remaining <= config.ackCollectionTimeMs) break;
+    try {
+      status = getPublishStatusUntil(handle, deadline, config.requestTimeoutMs);
+    }
+    catch (const std::exception& error) {
+      const std::string message = error.what();
+      const bool unavailable =
+        message.find("repo-request-timeout:") == 0 ||
+        message.find("repo-request-start-failed:") == 0 ||
+        message.find("repo-operation-timeout:") == 0;
+      if (!unavailable) throw;
+      // Seed acceptance is durable. A status timeout leaves a reconnectable
+      // handle and the last authenticated nonterminal status available.
+      break;
+    }
+    if (!isTerminalPublishStatus(status)) {
+      const auto afterQuery = std::chrono::steady_clock::now();
+      if (afterQuery < deadline) {
+        std::this_thread::sleep_for(std::min(
+          std::chrono::milliseconds(50),
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - afterQuery)));
+      }
+    }
+  }
+  auto result = makePublishResult(handle, status, config.limits);
+  result.totalDurationMs = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - started).count();
+  result.validate(config.limits);
+  return result;
 }
 
 ArtifactPublishResult
@@ -1977,13 +3206,23 @@ void
 ArtifactRepositoryApi::fetchFile(const ArtifactReference& reference,
                                  const std::string& destinationPath) const
 {
+  fetchFileUntil(reference, destinationPath,
+                 std::chrono::steady_clock::time_point::max());
+}
+
+void
+ArtifactRepositoryApi::fetchFileUntil(
+  const ArtifactReference& reference, const std::string& destinationPath,
+  std::chrono::steady_clock::time_point deadline) const
+{
   if (!m_impl) {
     throw std::logic_error("repo-inapp-api-moved-from: API has no active owner");
   }
   if (!m_impl->inApp) {
     throw std::logic_error("repo-artifact-lifecycle-mismatch: fetchFile(reference) is In-App only");
   }
-  std::lock_guard<std::mutex> operationGuard(m_impl->operationMutex);
+  auto operationGuard = lockOperationUntil(
+    m_impl->operationMutex, deadline, "In-App fetch operation");
   auto& owner = *m_impl->inApp;
   reference.validate(owner.limits);
   if (destinationPath.empty()) {
@@ -1999,6 +3238,11 @@ ArtifactRepositoryApi::fetchFile(const ArtifactReference& reference,
   if (!owner.payloadStore.isCommitted(payloadRef, LOCAL_GENERATION)) {
     throw std::runtime_error(
       "repo-artifact-payload-missing: committed local payload is unavailable");
+  }
+  if (deadline != std::chrono::steady_clock::time_point::max() &&
+      std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error(
+      "repo-operation-timeout: fetch deadline expired before In-App materialization");
   }
 
   const fs::path destination = fs::absolute(destinationPath).lexically_normal();
@@ -2098,12 +3342,8 @@ ArtifactRepositoryApi::fetchFile(const ArtifactReference& reference,
     if (::close(rawFd) != 0) {
       throwSystem("repo-artifact-destination-close-failed", "close", temporary.string());
     }
-    if (::rename(temporary.c_str(), destination.c_str()) != 0) {
-      throwSystem("repo-artifact-destination-commit-failed", "rename",
-                  destination.string());
-    }
+    commitFetchedFile(temporary, destination, deadline);
     renamed = true;
-    fsyncDirectory(parent);
   }
   catch (...) {
     if (temporaryFd.get() >= 0) {
@@ -2117,7 +3357,7 @@ ArtifactRepositoryApi::fetchFile(const ArtifactReference& reference,
   }
 }
 
-void
+ArtifactFetchResult
 ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
                                  const std::string& destinationPath,
                                  int timeoutMs) const
@@ -2128,51 +3368,161 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
   if (m_impl->serviceUser == nullptr || !m_impl->persistentConfig) {
     throw std::logic_error("repo-artifact-lifecycle-mismatch: handle fetch is Persistent only");
   }
-  std::lock_guard<std::mutex> operationGuard(m_impl->operationMutex);
+  if (destinationPath.empty() || timeoutMs <= 0) {
+    throw std::invalid_argument("repo-artifact-fetch-arguments-invalid: destination and timeout are required");
+  }
+  const auto operationStartedAt = std::chrono::steady_clock::now();
+  const auto deadline = operationStartedAt + std::chrono::milliseconds(timeoutMs);
+  ArtifactFetchResult result;
+  result.reference = handle.reference;
+  std::unique_lock<std::mutex> operationGuard(
+    m_impl->operationMutex, std::defer_lock);
+  while (!operationGuard.try_lock()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      result.totalElapsedMs = elapsedMilliseconds(operationStartedAt);
+      throw ArtifactFetchError(
+        "repo-artifact-fetch-deadline-exceeded: deadline expired waiting for API operation",
+        std::move(result));
+    }
+    std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(
+      deadline - now, std::chrono::milliseconds(1)));
+  }
+  if (std::chrono::steady_clock::now() >= deadline) {
+    result.totalElapsedMs = elapsedMilliseconds(operationStartedAt);
+    throw ArtifactFetchError(
+      "repo-artifact-fetch-deadline-exceeded: deadline expired acquiring API operation",
+      std::move(result));
+  }
   const auto& config = *m_impl->persistentConfig;
   handle.validate(config.limits);
   if (handle.lifecycleMode != "PERSISTENT") {
     throw std::invalid_argument("repo-artifact-lifecycle-mismatch: Persistent handle is required");
   }
-  if (destinationPath.empty() || timeoutMs <= 0) {
-    throw std::invalid_argument("repo-artifact-fetch-arguments-invalid: destination and timeout are required");
+  fs::path destination;
+  try {
+    destination = fs::absolute(destinationPath).lexically_normal();
   }
-  const auto destination = fs::absolute(destinationPath).lexically_normal();
+  catch (const fs::filesystem_error& error) {
+    result.totalElapsedMs = elapsedMilliseconds(operationStartedAt);
+    throw ArtifactFetchError(
+      "repo-artifact-destination-prepare-failed: " + std::string(error.what()),
+      std::move(result));
+  }
   if (destination.filename().empty()) {
     throw std::invalid_argument("repo-artifact-destination-invalid: destination must name a file");
   }
-  auto parent = destination.parent_path();
-  if (parent.empty()) parent = fs::current_path();
-  std::error_code directoryError;
-  fs::create_directories(parent, directoryError);
-  if (directoryError || !fs::is_directory(parent)) {
-    throw std::runtime_error("repo-artifact-destination-directory-failed: " +
-      (directoryError ? directoryError.message() : parent.string()));
+  fs::path parent;
+  try {
+    parent = destination.parent_path();
+    if (parent.empty()) parent = fs::current_path();
+    std::error_code directoryError;
+    fs::create_directories(parent, directoryError);
+    std::error_code typeError;
+    const bool parentIsDirectory = fs::is_directory(parent, typeError);
+    if (directoryError || typeError || !parentIsDirectory) {
+      result.totalElapsedMs = elapsedMilliseconds(operationStartedAt);
+      const auto detail = directoryError ? directoryError.message()
+        : (typeError ? typeError.message() : parent.string());
+      throw ArtifactFetchError(
+        "repo-artifact-destination-directory-failed: " + detail,
+        std::move(result));
+    }
+  }
+  catch (const fs::filesystem_error& error) {
+    result.totalElapsedMs = elapsedMilliseconds(operationStartedAt);
+    throw ArtifactFetchError(
+      "repo-artifact-destination-prepare-failed: " + std::string(error.what()),
+      std::move(result));
+  }
+  if (std::chrono::steady_clock::now() >= deadline) {
+    result.totalElapsedMs = elapsedMilliseconds(operationStartedAt);
+    throw ArtifactFetchError(
+      "repo-artifact-fetch-deadline-exceeded: deadline expired preparing destination",
+      std::move(result));
   }
 
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(timeoutMs);
   struct FetchCandidate
   {
     const SelectedRepoTarget* target = nullptr;
     const ArtifactReplicaCommit* replica = nullptr;
+    size_t originalOrder = 0;
+    bool wasCoolingDown = false;
   };
   std::vector<FetchCandidate> locations;
-  for (const auto& target : handle.selectedTargets) {
+  for (size_t order = 0; order < handle.selectedTargets.size(); ++order) {
+    const auto& target = handle.selectedTargets[order];
     const auto replica = std::find_if(handle.replicaCommits.begin(), handle.replicaCommits.end(),
       [&target] (const auto& item) {
         return item.repoNode == target.repoNode &&
                item.providerIdentity == target.providerIdentity.toUri();
       });
     if (replica != handle.replicaCommits.end() && replica->state == "COMMITTED") {
-      locations.push_back(FetchCandidate{&target, &*replica});
+      locations.push_back(FetchCandidate{&target, &*replica, order});
     }
   }
-  std::stable_partition(locations.begin(), locations.end(), [&handle] (const auto& candidate) {
-    return candidate.target->repoNode == handle.seedRepoId;
+
+  const auto artifactObjectName = artifactStorageObjectName(handle.reference);
+  auto healthKeyFor = [&artifactObjectName] (const SelectedRepoTarget& target) {
+    return Impl::FetchHealthKey{artifactObjectName, target.providerIdentity.toUri()};
+  };
+  const auto rankingTime = std::chrono::steady_clock::now();
+  for (auto& candidate : locations) {
+    const auto health = m_impl->fetchHealth.find(healthKeyFor(*candidate.target));
+    const auto relevantVersion = health == m_impl->fetchHealth.end()
+      ? candidate.replica->locationVersion
+      : std::max(candidate.replica->locationVersion,
+                 health->second.locationVersion);
+    candidate.wasCoolingDown = health != m_impl->fetchHealth.end() &&
+      health->second.failureLocationVersion == relevantVersion &&
+      health->second.cooldownUntil > rankingTime;
+  }
+  std::stable_sort(locations.begin(), locations.end(), [&] (const auto& lhs, const auto& rhs) {
+    const auto lhsHealth = m_impl->fetchHealth.find(healthKeyFor(*lhs.target));
+    const auto rhsHealth = m_impl->fetchHealth.find(healthKeyFor(*rhs.target));
+    if (lhs.wasCoolingDown != rhs.wasCoolingDown) return !lhs.wasCoolingDown;
+    const auto lhsVersion = lhsHealth == m_impl->fetchHealth.end()
+      ? lhs.replica->locationVersion
+      : std::max(lhs.replica->locationVersion, lhsHealth->second.locationVersion);
+    const auto rhsVersion = rhsHealth == m_impl->fetchHealth.end()
+      ? rhs.replica->locationVersion
+      : std::max(rhs.replica->locationVersion, rhsHealth->second.locationVersion);
+    const uint32_t lhsFailures = lhsHealth != m_impl->fetchHealth.end() &&
+      lhsHealth->second.failureLocationVersion == lhsVersion
+      ? lhsHealth->second.consecutiveFailures : 0;
+    const uint32_t rhsFailures = rhsHealth != m_impl->fetchHealth.end() &&
+      rhsHealth->second.failureLocationVersion == rhsVersion
+      ? rhsHealth->second.consecutiveFailures : 0;
+    if (lhsFailures != rhsFailures) return lhsFailures < rhsFailures;
+    const double lhsLatency = lhsHealth != m_impl->fetchHealth.end() &&
+      lhsHealth->second.latencyLocationVersion == lhsVersion
+      ? lhsHealth->second.latencyEwmaMs : 0.0;
+    const double rhsLatency = rhsHealth != m_impl->fetchHealth.end() &&
+      rhsHealth->second.latencyLocationVersion == rhsVersion
+      ? rhsHealth->second.latencyEwmaMs : 0.0;
+    if (lhsLatency != rhsLatency) return lhsLatency < rhsLatency;
+    const bool lhsSeed = lhs.target->repoNode == handle.seedRepoId;
+    const bool rhsSeed = rhs.target->repoNode == handle.seedRepoId;
+    if (lhsSeed != rhsSeed) return lhsSeed;
+    return lhs.originalOrder < rhs.originalOrder;
   });
+
+  auto getOrCreateHealth = [&] (const Impl::FetchHealthKey& key) -> Impl::FetchHealth& {
+    auto found = m_impl->fetchHealth.find(key);
+    if (found != m_impl->fetchHealth.end()) return found->second;
+    if (m_impl->fetchHealth.size() >= config.maxFetchHealthEntries) {
+      const auto oldest = std::min_element(m_impl->fetchHealth.begin(),
+        m_impl->fetchHealth.end(), [] (const auto& lhs, const auto& rhs) {
+          return lhs.second.lastUpdated < rhs.second.lastUpdated;
+        });
+      if (oldest != m_impl->fetchHealth.end()) m_impl->fetchHealth.erase(oldest);
+    }
+    return m_impl->fetchHealth.emplace(key, Impl::FetchHealth{}).first->second;
+  };
+
   std::string lastError = "repo-artifact-location-unavailable: no committed selected replica";
   static std::atomic<uint64_t> sequence{0};
+  std::set<std::string> visitedProviderIdentities;
   const auto chunkBytes = std::min<uint64_t>(
     {COPY_CHUNK_BYTES, MAX_STORE_RANGE_BYTES, config.limits.maxChunkBytes});
   if (chunkBytes == 0) {
@@ -2183,36 +3533,94 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
     if (std::chrono::steady_clock::now() >= deadline) break;
     const auto& target = *candidate.target;
     const auto& replica = *candidate.replica;
+    const auto providerIdentity = target.providerIdentity.toUri();
+    if (!visitedProviderIdentities.insert(providerIdentity).second) continue;
+    ArtifactFetchAttempt attempt;
+    attempt.repoNode = target.repoNode;
+    attempt.providerIdentity = providerIdentity;
+    attempt.wasCoolingDownAtSelection = candidate.wasCoolingDown;
+    const auto attemptStartedAt = std::chrono::steady_clock::now();
+    const auto healthKey = healthKeyFor(target);
     try {
+      attempt.requestTimeoutBudgetMs = static_cast<uint64_t>(
+        boundedRequestTimeoutMs(deadline, config.requestTimeoutMs));
       ArtifactLocationRequest locationRequest;
       locationRequest.reference = handle.reference;
-      const auto locationWire = waitForSignedResponse(
-        [&] (auto onTimeout, auto onResponse) {
+      const auto locationWaitDeadline = std::min(deadline,
+        std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(config.requestTimeoutMs));
+      const auto locationWire = waitForSignedResponse(*m_impl->serviceUser,
+        target.providerIdentity,
+        [serviceUser = m_impl->serviceUser,
+         providerIdentity = target.providerIdentity,
+         servicePrefix = target.servicePrefix, locationRequest, deadline,
+         requestTimeoutMs = config.requestTimeoutMs]
+        (auto onTimeout, auto onResponse) {
+          const auto requestTimeout = boundedRequestTimeoutMs(
+            deadline, requestTimeoutMs);
           return RepoClient::requestLocation(
-            *m_impl->serviceUser, target.providerIdentity, target.servicePrefix,
-            locationRequest, remainingTimeoutMs(deadline),
+            *serviceUser, providerIdentity, servicePrefix,
+            locationRequest, requestTimeout,
             std::move(onTimeout), std::move(onResponse));
-        });
+        }, locationWaitDeadline);
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw RepoRequestTimeoutError(
+          "repo-artifact-fetch-deadline-exceeded: LOCATION response arrived after the operation deadline");
+      }
       const std::string locationJson(locationWire.begin(), locationWire.end());
       const auto location = ArtifactLocationRecord::fromJson(locationJson, config.limits);
       location.validate(nowMilliseconds(), config.limits);
       // Core validates the signed Response KeyLocator against its Provider name
       // before this callback; this owner binds the signed Repo record to the handle.
+      // The handle keeps its historical commit receipt. LOCATION is mutable
+      // current routing evidence, so only an equal-version record must match
+      // that receipt snapshot; a strictly newer signed record may name a later
+      // operation's receipt for the same immutable artifact.
+      const bool matchesHistoricalLocation =
+        location.locationVersion == replica.locationVersion &&
+        location.operationId == replica.operationId &&
+        location.receiptId == replica.receiptId &&
+        location.committedAtMs == replica.completedAtMs &&
+        location.routeState == replica.routeState &&
+        location.forwardingHint == replica.forwardingHint;
+      const bool isNewerCurrentLocation =
+        location.locationVersion > replica.locationVersion;
       if (location.repoNode != target.repoNode ||
           location.providerIdentity != target.providerIdentity.toUri() ||
-          location.operationId != replica.operationId ||
-          location.receiptId != replica.receiptId ||
           location.reference != handle.reference ||
           location.generation != replica.generation ||
-          location.committedAtMs != replica.completedAtMs ||
-          location.locationVersion != replica.locationVersion ||
+          (!matchesHistoricalLocation && !isNewerCurrentLocation) ||
           location.routeState != "ROUTABLE" ||
-          location.routeState != replica.routeState ||
-          location.forwardingHint != replica.forwardingHint ||
           location.forwardingHint != target.servicePrefix.toUri()) {
         throw std::runtime_error(
           "repo-artifact-location-binding-failed: current signed location differs from the selected commit receipt");
       }
+
+      auto& health = getOrCreateHealth(healthKey);
+      if (health.locationVersion != 0 &&
+          location.locationVersion < health.locationVersion) {
+        throw std::runtime_error(
+          "repo-artifact-location-rollback: signed location version moved backwards");
+      }
+      if (health.locationVersion == location.locationVersion &&
+          health.locationVersion != 0 &&
+          (health.operationId != location.operationId ||
+           health.receiptId != location.receiptId)) {
+        throw std::runtime_error(
+          "repo-artifact-location-conflict: equal location version changed receipt tuple");
+      }
+      if (location.locationVersion > health.locationVersion) {
+        health.locationVersion = location.locationVersion;
+        health.operationId = location.operationId;
+        health.receiptId = location.receiptId;
+        health.consecutiveFailures = 0;
+        health.failureLocationVersion = 0;
+        health.latencyEwmaMs = 0.0;
+        health.latencyLocationVersion = 0;
+        health.cooldownUntil = {};
+      }
+      attempt.locationVersion = location.locationVersion;
+      health.lastUpdated = std::chrono::steady_clock::now();
 
       fs::path temporary;
       FileDescriptor temporaryFd;
@@ -2244,13 +3652,30 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
         while (offset < handle.reference.sizeBytes) {
           const auto length = std::min<uint64_t>(chunkBytes,
             handle.reference.sizeBytes - offset);
-          const auto bytes = waitForSignedResponse(
-            [&] (auto onTimeout, auto onResponse) {
+          const auto rangeWaitDeadline = std::min(deadline,
+            std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(config.requestTimeoutMs));
+          const auto bytes = waitForSignedResponse(*m_impl->serviceUser,
+            target.providerIdentity,
+            [serviceUser = m_impl->serviceUser,
+             providerIdentity = target.providerIdentity,
+             servicePrefix = target.servicePrefix, artifactObjectName,
+             offset, length, deadline,
+             requestTimeoutMs = config.requestTimeoutMs]
+            (auto onTimeout, auto onResponse) {
+              const auto requestTimeout = boundedRequestTimeoutMs(
+                deadline, requestTimeoutMs);
               return RepoClient::requestFetchRange(
-                *m_impl->serviceUser, target.providerIdentity, target.servicePrefix,
-                artifactStorageObjectName(handle.reference), RepoByteRange{offset, length},
-                remainingTimeoutMs(deadline), std::move(onTimeout), std::move(onResponse));
-            });
+                *serviceUser, providerIdentity, servicePrefix,
+                artifactObjectName, RepoByteRange{offset, length}, requestTimeout,
+                std::move(onTimeout), std::move(onResponse));
+            }, rangeWaitDeadline);
+          if (std::chrono::steady_clock::now() >= deadline) {
+            throw RepoRequestTimeoutError(
+              "repo-artifact-fetch-deadline-exceeded: range response arrived after the operation deadline");
+          }
+          attempt.bytesTransferred += bytes.size();
+          result.bytesTransferred += bytes.size();
           if (bytes.size() != length ||
               EVP_DigestUpdate(digest.get(), bytes.data(), bytes.size()) != 1) {
             throw std::runtime_error(
@@ -2260,10 +3685,18 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
                          bytes.data(), bytes.size());
           offset += length;
         }
+        if (std::chrono::steady_clock::now() >= deadline) {
+          throw RepoRequestTimeoutError(
+            "repo-artifact-fetch-deadline-exceeded: deadline expired before digest verification");
+        }
         const auto payloadRef = payloadReference(handle.reference);
         if (finishDigest(digest.get()) != payloadRef.contentDigest) {
           throw std::runtime_error(
             "repo-artifact-digest-mismatch: fetched bytes failed full verification");
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+          throw RepoRequestTimeoutError(
+            "repo-artifact-fetch-deadline-exceeded: deadline expired before destination sync");
         }
         if (::fsync(temporaryFd.get()) != 0) {
           throwSystem("repo-artifact-destination-sync-failed", "fsync", temporary.string());
@@ -2272,11 +3705,12 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
         if (::close(rawFd) != 0) {
           throwSystem("repo-artifact-destination-close-failed", "close", temporary.string());
         }
-        if (::rename(temporary.c_str(), destination.c_str()) != 0) {
-          throwSystem("repo-artifact-destination-commit-failed", "rename", destination.string());
+        if (std::chrono::steady_clock::now() >= deadline) {
+          throw RepoRequestTimeoutError(
+            "repo-artifact-fetch-deadline-exceeded: deadline expired before destination commit");
         }
+        commitFetchedFile(temporary, destination, deadline);
         renamed = true;
-        fsyncDirectory(parent);
       }
       catch (...) {
         if (temporaryFd.get() >= 0) {
@@ -2286,25 +3720,643 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
         if (!renamed) ::unlink(temporary.c_str());
         throw;
       }
-      return;
+      const auto completedAt = std::chrono::steady_clock::now();
+      auto& completionHealth = getOrCreateHealth(healthKey);
+      const double latencyMs = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+          completedAt - attemptStartedAt).count()) / 1000.0;
+      completionHealth.latencyEwmaMs =
+        completionHealth.latencyLocationVersion != attempt.locationVersion
+        ? latencyMs : (completionHealth.latencyEwmaMs <= 0.0
+          ? latencyMs : 0.8 * completionHealth.latencyEwmaMs + 0.2 * latencyMs);
+      completionHealth.latencyLocationVersion = attempt.locationVersion;
+      if (completionHealth.failureLocationVersion == attempt.locationVersion &&
+          completionHealth.consecutiveFailures > 0) {
+        --completionHealth.consecutiveFailures;
+      }
+      else if (completionHealth.failureLocationVersion != attempt.locationVersion) {
+        completionHealth.consecutiveFailures = 0;
+        completionHealth.failureLocationVersion = 0;
+      }
+      completionHealth.cooldownUntil = {};
+      completionHealth.lastUpdated = completedAt;
+      attempt.bytesVerified = handle.reference.sizeBytes;
+      result.bytesVerified = handle.reference.sizeBytes;
+      attempt.outcome = "SUCCEEDED";
+      attempt.elapsedMs = elapsedMilliseconds(attemptStartedAt);
+      result.repoNode = target.repoNode;
+      result.providerIdentity = providerIdentity;
+      result.totalElapsedMs = elapsedMilliseconds(operationStartedAt);
+      result.attempts.push_back(std::move(attempt));
+      return result;
     }
     catch (const std::exception& error) {
       lastError = error.what();
+      attempt.outcome = "FAILED";
+      attempt.failureClass = fetchFailureClass(error);
+      attempt.elapsedMs = elapsedMilliseconds(attemptStartedAt);
+      if (attempt.failureClass != "local-io") {
+        auto& health = getOrCreateHealth(healthKey);
+        const auto failureVersion = attempt.locationVersion != 0
+          ? attempt.locationVersion : replica.locationVersion;
+        const bool staleUnvalidatedFailure = attempt.locationVersion == 0 &&
+          health.locationVersion > failureVersion;
+        if (!staleUnvalidatedFailure) {
+          if (health.failureLocationVersion != failureVersion) {
+            health.consecutiveFailures = 0;
+            health.failureLocationVersion = failureVersion;
+          }
+          health.consecutiveFailures = std::min<uint32_t>(
+            health.consecutiveFailures + 1, 16);
+          health.cooldownUntil = config.fetchFailureCooldownMs == 0
+            ? std::chrono::steady_clock::time_point{}
+            : std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(config.fetchFailureCooldownMs);
+          health.lastUpdated = std::chrono::steady_clock::now();
+        }
+      }
+      result.attempts.push_back(std::move(attempt));
+      if (dynamic_cast<const DestinationRecoveryError*>(&error) != nullptr) break;
     }
   }
-  throw std::runtime_error(lastError);
+  result.totalElapsedMs = elapsedMilliseconds(operationStartedAt);
+  throw ArtifactFetchError(lastError, std::move(result));
 }
 
 std::optional<ArtifactLocalCommitRecord>
 ArtifactRepositoryApi::lookupLocalCommit(const ArtifactReference& reference) const
 {
+  return lookupLocalCommitUntil(
+    reference, std::chrono::steady_clock::time_point::max());
+}
+
+std::optional<ArtifactLocalCommitRecord>
+ArtifactRepositoryApi::lookupLocalCommitUntil(
+  const ArtifactReference& reference,
+  std::chrono::steady_clock::time_point deadline) const
+{
   if (!m_impl) {
     throw std::logic_error("repo-inapp-api-moved-from: API has no active owner");
   }
   if (!m_impl->inApp) return std::nullopt;
-  std::lock_guard<std::mutex> operationGuard(m_impl->operationMutex);
+  auto operationGuard = lockOperationUntil(
+    m_impl->operationMutex, deadline, "In-App lookup operation");
   reference.validate(m_impl->inApp->limits);
   return m_impl->inApp->metadataStore.lookupLocalCommit(reference);
+}
+
+ArtifactCommitReceipt
+ArtifactRepositoryApi::getReceipt(
+  const std::string& receiptId, std::optional<ArtifactHandle> handle,
+  int timeoutMs) const
+{
+  if (!m_impl) {
+    throw std::logic_error("repo-artifact-api-moved-from: API has no active owner");
+  }
+  if (timeoutMs < 0) {
+    throw std::invalid_argument("repo-receipt-timeout-invalid: timeout must be nonnegative");
+  }
+  std::lock_guard<std::mutex> operationGuard(m_impl->operationMutex);
+  validateIdentifier(receiptId, 256, "receiptId", artifact_error::InvalidReceipt);
+
+  if (m_impl->inApp) {
+    const auto id = parseLocalReceiptId(receiptId);
+    if (!id) {
+      throw std::out_of_range("repo-receipt-not-found: invalid In-App receipt ID");
+    }
+    if (handle) {
+      handle->validate(m_impl->inApp->limits);
+      if (handle->lifecycleMode != "IN_APP" ||
+          handle->commitReceiptIds.empty() ||
+          handle->commitReceiptIds.front() != receiptId) {
+        throw ArtifactValidationError(
+          artifact_error::InvalidReceipt, "In-App receipt ID is not present in the supplied handle");
+      }
+    }
+    const auto record = m_impl->inApp->metadataStore.lookupLocalCommit(*id);
+    if (!record || makeReceiptId(record->localCommitId) != receiptId ||
+        (handle && handle->reference != record->reference)) {
+      throw std::out_of_range("repo-receipt-not-found: no matching immutable local receipt");
+    }
+    const auto result = makePublishResult(*record, false, false, 0);
+    if (!result.receipt) {
+      throw ArtifactValidationError(
+        artifact_error::InvalidReceipt, "local commit did not reconstruct its immutable receipt");
+    }
+    return *result.receipt;
+  }
+
+  if (!m_impl->serviceUser || !m_impl->persistentConfig || !handle) {
+    throw std::invalid_argument(
+      "repo-receipt-handle-required: Persistent receipt lookup requires its ArtifactHandle");
+  }
+  const auto& config = *m_impl->persistentConfig;
+  handle->validate(config.limits);
+  if (handle->lifecycleMode != "PERSISTENT" ||
+      handle->commitReceiptIds.empty() ||
+      handle->commitReceiptIds.front() != receiptId ||
+      handle->seedRepoId.empty()) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt, "Persistent receipt ID or seed does not match the supplied handle");
+  }
+  const auto seed = std::find_if(handle->selectedTargets.begin(),
+    handle->selectedTargets.end(), [&handle] (const auto& target) {
+      return target.repoNode == handle->seedRepoId;
+    });
+  if (seed == handle->selectedTargets.end()) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt, "Persistent handle does not select its declared seed Repo");
+  }
+  const int effectiveTimeout = timeoutMs == 0 ? config.requestTimeoutMs : timeoutMs;
+  if (effectiveTimeout <= config.ackCollectionTimeMs) {
+    throw std::invalid_argument(
+      "repo-receipt-timeout-invalid: timeout must exceed the ACK collection window");
+  }
+  RepoReceiptLookupRequest query;
+  query.receiptId = receiptId;
+  query.repoNode = seed->repoNode;
+  query.providerIdentity = seed->providerIdentity.toUri();
+  query.reference = handle->reference;
+  const auto receiptWaitDeadline = std::chrono::steady_clock::now() +
+    std::chrono::milliseconds(effectiveTimeout);
+  const auto payload = waitForSignedResponse(*m_impl->serviceUser,
+    seed->providerIdentity,
+    [serviceUser = m_impl->serviceUser,
+     providerIdentity = seed->providerIdentity,
+     servicePrefix = seed->servicePrefix, query, effectiveTimeout]
+    (auto onTimeout, auto onResponse) {
+      return RepoClient::requestReceipt(*serviceUser,
+        providerIdentity, servicePrefix, query, effectiveTimeout,
+        std::move(onTimeout), std::move(onResponse));
+    }, receiptWaitDeadline);
+  const std::string wire(payload.begin(), payload.end());
+  auto receipt = ArtifactCommitReceipt::fromJson(wire, config.limits);
+  const auto seedReplica = std::find_if(receipt.replicaCommits.begin(),
+    receipt.replicaCommits.end(), [&seed] (const auto& replica) {
+      return replica.repoNode == seed->repoNode &&
+             replica.providerIdentity == seed->providerIdentity.toUri();
+    });
+  if (receipt.receiptId != receiptId || receipt.lifecycleMode != "PERSISTENT" ||
+      receipt.reference != handle->reference || seedReplica == receipt.replicaCommits.end() ||
+      seedReplica->state != "COMMITTED" ||
+      seedReplica->operationId != receipt.operationId) {
+    throw ArtifactValidationError(
+      artifact_error::InvalidReceipt, "authenticated seed response does not bind the requested receipt");
+  }
+  return receipt;
+}
+
+AvailabilityReport
+ArtifactRepositoryApi::checkAvailability(const ArtifactHandle& handle,
+                                        const std::string& probeKind,
+                                        int timeoutMs,
+                                        uint64_t maxAgeMs) const
+{
+  (void)maxAgeMs; // T005 intentionally performs a fresh probe on every call.
+  if (!m_impl) {
+    throw std::logic_error("repo-artifact-api-moved-from: API has no active owner");
+  }
+  if (timeoutMs < 0 ||
+      (probeKind != "metadata" && probeKind != "verify_content")) {
+    throw std::invalid_argument(
+      "repo-availability-arguments-invalid: probe kind or timeout is invalid");
+  }
+  const auto& limits = m_impl->inApp ? m_impl->inApp->limits
+                                     : m_impl->persistentConfig->limits;
+  if (handle.lifecycleMode == "IN_APP") {
+    if (!m_impl->inApp) {
+      throw std::logic_error("repo-artifact-lifecycle-mismatch: In-App handle requires In-App API");
+    }
+    handle.validate(limits);
+    std::lock_guard<std::mutex> operationGuard(m_impl->operationMutex);
+    auto& owner = *m_impl->inApp;
+    const auto now = nowMilliseconds();
+    AvailabilityLocationReport location;
+    location.locationKind = "IN_APP";
+    location.generation = LOCAL_GENERATION;
+    location.probeKind = probeKind;
+    location.observedAtMs = now;
+    location.validUntilMs = now > std::numeric_limits<uint64_t>::max() -
+        owner.availabilityFreshnessMs
+      ? std::numeric_limits<uint64_t>::max()
+      : now + owner.availabilityFreshnessMs;
+    std::error_code rootError;
+    const auto rootStatus = fs::symlink_status(owner.rootPath, rootError);
+    const bool rootUsable = !rootError && !fs::is_symlink(rootStatus) &&
+      fs::is_directory(rootStatus) &&
+      (rootStatus.permissions() & (fs::perms::owner_read | fs::perms::owner_exec)) ==
+        (fs::perms::owner_read | fs::perms::owner_exec) &&
+      ::access(owner.rootPath.c_str(), R_OK | X_OK) == 0;
+    if (!rootUsable) {
+      location.reachability = "UNREACHABLE";
+      location.objectPresence = "UNKNOWN";
+      location.validUntilMs = now;
+      location.reason = "In-App durable root is missing or inaccessible";
+    }
+    else {
+      location.reachability = "REACHABLE";
+      try {
+        const auto id = handle.commitReceiptIds.empty()
+          ? std::optional<uint64_t>{} : parseLocalReceiptId(handle.commitReceiptIds.front());
+        const auto record = id ? owner.metadataStore.lookupLocalCommit(*id)
+                               : std::optional<ArtifactLocalCommitRecord>{};
+        if (!record || record->reference != handle.reference ||
+            makeReceiptId(record->localCommitId) != handle.commitReceiptIds.front()) {
+          location.objectPresence = "ABSENT";
+        }
+        else {
+          const auto payloadRef = payloadReference(handle.reference);
+          const auto payload = owner.payloadStore.inspectCommitted(payloadRef);
+          if (!payload.exists || !payload.regularFile ||
+              payload.sizeBytes != handle.reference.sizeBytes) {
+            location.objectPresence = "PARTIAL";
+          }
+          else {
+            location.objectPresence = "PRESENT";
+            if (probeKind == "verify_content") {
+              try {
+                verifyCommittedPayload(handle.reference, owner.payloadStore);
+                location.integrity = "VERIFIED";
+              }
+              catch (const std::exception& error) {
+                if (std::string(error.what()).find("repo-artifact-committed-corrupt:") == 0) {
+                  location.integrity = "FAILED";
+                  location.reason = "full payload digest does not match the immutable reference";
+                }
+                else {
+                  location.reason = "full payload verifier could not complete reliably";
+                }
+              }
+              catch (...) {
+                location.reason = "full payload verifier could not complete reliably";
+              }
+            }
+          }
+        }
+      }
+      catch (...) {
+        location.objectPresence = "UNKNOWN";
+        location.integrity = "NOT_CHECKED";
+        location.reason = "In-App durable metadata or payload could not be observed reliably";
+      }
+    }
+    AvailabilityReport report;
+    report.reference = handle.reference;
+    report.probeKind = probeKind;
+    report.locations.push_back(std::move(location));
+    report.validate(limits);
+    return report;
+  }
+
+  if (!m_impl->serviceUser || !m_impl->persistentConfig ||
+      handle.lifecycleMode != "PERSISTENT") {
+    throw std::logic_error("repo-artifact-lifecycle-mismatch: Persistent handle requires Persistent API");
+  }
+  const auto& config = *m_impl->persistentConfig;
+  const int effectiveTimeout = timeoutMs == 0 ? config.requestTimeoutMs : timeoutMs;
+  if (effectiveTimeout <= config.ackCollectionTimeMs) {
+    throw std::invalid_argument(
+      "repo-availability-timeout-invalid: timeout must exceed the ACK collection window");
+  }
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(effectiveTimeout);
+  handle.validate(config.limits);
+  AvailabilityReport report;
+  report.reference = handle.reference;
+  report.probeKind = probeKind;
+  report.locations.reserve(handle.replicaCommits.size());
+
+  const auto appendOperationLockTimeoutLocations = [&] {
+    for (const auto& replica : handle.replicaCommits) {
+      AvailabilityLocationReport result;
+      result.locationKind = "PERSISTENT";
+      result.repoNode = replica.repoNode;
+      result.providerIdentity = replica.providerIdentity;
+      result.generation = replica.generation;
+      result.reachability = "UNKNOWN";
+      result.objectPresence = "UNKNOWN";
+      result.integrity = "NOT_CHECKED";
+      result.observedAtMs = nowMilliseconds();
+      result.validUntilMs = result.observedAtMs;
+      result.probeKind = probeKind;
+      result.reason = "operation deadline expired waiting for API operation lock";
+      report.locations.push_back(std::move(result));
+    }
+  };
+
+  std::unique_lock<std::mutex> operationGuard(
+    m_impl->operationMutex, std::defer_lock);
+  while (!operationGuard.try_lock()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      appendOperationLockTimeoutLocations();
+      report.validate(config.limits);
+      return report;
+    }
+    std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(
+      deadline - now, std::chrono::milliseconds(1)));
+  }
+  if (std::chrono::steady_clock::now() >= deadline) {
+    appendOperationLockTimeoutLocations();
+    report.validate(config.limits);
+    return report;
+  }
+
+  for (const auto& replicaValue : handle.replicaCommits) {
+    const auto targetIt = std::find_if(handle.selectedTargets.begin(),
+      handle.selectedTargets.end(), [&replicaValue] (const auto& target) {
+        return replicaValue.repoNode == target.repoNode &&
+               replicaValue.providerIdentity == target.providerIdentity.toUri();
+      });
+    if (targetIt == handle.selectedTargets.end()) {
+      throw ArtifactValidationError(
+        artifact_error::InvalidReceipt, "handle replica has no selected Repo target");
+    }
+    const auto& target = *targetIt;
+    const auto* replica = &replicaValue;
+    AvailabilityLocationReport result;
+    result.locationKind = "PERSISTENT";
+    result.repoNode = target.repoNode;
+    result.providerIdentity = target.providerIdentity.toUri();
+    result.probeKind = probeKind;
+    result.observedAtMs = nowMilliseconds();
+    result.validUntilMs = result.observedAtMs;
+    result.reason = "no committed location receipt is recorded in the handle";
+    if (replica != nullptr) {
+      result.generation = replica->generation;
+    }
+    if (replica == nullptr || replica->state != "COMMITTED" ||
+        replica->receiptId.empty() || replica->operationId.empty() ||
+        replica->generation == 0 || replica->locationVersion == 0) {
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      result.reason = "operation deadline expired before this location probe began";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+
+    ArtifactLocationRequest locationRequest;
+    locationRequest.reference = handle.reference;
+    std::vector<uint8_t> locationWire;
+    int locationTimeoutMs = 0;
+    try {
+      locationTimeoutMs = remainingTimeoutMs(deadline);
+    }
+    catch (const std::exception&) {
+      result.reason = "operation deadline expired before LOCATION request began";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    if (locationTimeoutMs <= config.ackCollectionTimeMs) {
+      result.reason = "operation deadline leaves no valid LOCATION request window";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    try {
+      const auto locationWaitDeadline = std::min(deadline,
+        std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(locationTimeoutMs));
+      locationWire = waitForSignedResponse(*m_impl->serviceUser,
+        target.providerIdentity,
+        [serviceUser = m_impl->serviceUser,
+         providerIdentity = target.providerIdentity,
+         servicePrefix = target.servicePrefix, locationRequest,
+         locationTimeoutMs]
+        (auto onTimeout, auto onResponse) {
+          return RepoClient::requestLocation(*serviceUser,
+            providerIdentity, servicePrefix, locationRequest,
+            locationTimeoutMs, std::move(onTimeout), std::move(onResponse));
+        }, locationWaitDeadline);
+    }
+    catch (const RepoRequestTimeoutError&) {
+      result.reachability = "UNREACHABLE";
+      result.objectPresence = "UNKNOWN";
+      result.reason = "expected Provider did not return LOCATION before the deadline";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    catch (const RepoRequestStartError&) {
+      result.reachability = "UNKNOWN";
+      result.objectPresence = "UNKNOWN";
+      result.reason = "LOCATION request could not be started";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    catch (const RepoResponseProviderMismatchError&) {
+      result.reachability = "UNKNOWN";
+      result.objectPresence = "UNKNOWN";
+      result.integrity = "NOT_CHECKED";
+      result.reason = "authenticated LOCATION response Provider differs from selected target";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    catch (const std::exception&) {
+      result.reachability = "REACHABLE";
+      result.objectPresence = "UNKNOWN";
+      result.reason = "authenticated Provider rejected the LOCATION request";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+
+    result.reachability = "REACHABLE";
+    result.reason = "signed current LOCATION could not be validated";
+    ArtifactLocationRecord location;
+    try {
+      const std::string locationJson(locationWire.begin(), locationWire.end());
+      location = ArtifactLocationRecord::fromJson(locationJson, config.limits);
+      location.validate(nowMilliseconds(), config.limits);
+    }
+    catch (const std::exception&) {
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    const bool historicalMatches =
+      location.locationVersion == replica->locationVersion &&
+      location.operationId == replica->operationId &&
+      location.receiptId == replica->receiptId &&
+      location.committedAtMs == replica->completedAtMs &&
+      location.routeState == replica->routeState &&
+      location.forwardingHint == replica->forwardingHint;
+    const bool newerCurrent = location.locationVersion > replica->locationVersion;
+    if (location.repoNode != target.repoNode ||
+        location.providerIdentity != target.providerIdentity.toUri() ||
+        location.reference != handle.reference ||
+        location.generation != replica->generation ||
+        (!historicalMatches && !newerCurrent) ||
+        location.routeState != "ROUTABLE" ||
+        location.forwardingHint != target.servicePrefix.toUri()) {
+      result.reason = "signed LOCATION is stale or does not bind this handle replica";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    const Impl::FetchHealthKey healthKey{
+      artifactStorageObjectName(handle.reference), target.providerIdentity.toUri()};
+    auto healthIt = m_impl->fetchHealth.find(healthKey);
+    if (healthIt != m_impl->fetchHealth.end()) {
+      auto& health = healthIt->second;
+      if (health.locationVersion != 0 &&
+          location.locationVersion < health.locationVersion) {
+        result.reason = "signed LOCATION version moved backwards from the latest validated probe";
+        report.locations.push_back(std::move(result));
+        continue;
+      }
+      if (health.locationVersion == location.locationVersion &&
+          health.locationVersion != 0 &&
+          (health.operationId != location.operationId ||
+           health.receiptId != location.receiptId)) {
+        result.reason = "equal signed LOCATION version conflicts with the latest receipt tuple";
+        report.locations.push_back(std::move(result));
+        continue;
+      }
+      if (location.locationVersion > health.locationVersion) {
+        health.locationVersion = location.locationVersion;
+        health.operationId = location.operationId;
+        health.receiptId = location.receiptId;
+        health.consecutiveFailures = 0;
+        health.failureLocationVersion = 0;
+        health.latencyEwmaMs = 0.0;
+        health.latencyLocationVersion = 0;
+        health.cooldownUntil = {};
+        health.lastUpdated = std::chrono::steady_clock::now();
+      }
+    }
+    result.operationId = location.operationId;
+    result.receiptId = location.receiptId;
+    result.locationVersion = location.locationVersion;
+
+    int availabilityTimeoutMs = 0;
+    try {
+      availabilityTimeoutMs = remainingTimeoutMs(deadline);
+    }
+    catch (const std::exception&) {
+      result.reason = "operation deadline expired before AVAILABILITY request began";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    if (availabilityTimeoutMs <= config.ackCollectionTimeMs) {
+      result.reason = "operation deadline leaves no valid AVAILABILITY request window";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    RepoAvailabilityProbeRequest probe;
+    probe.reference = handle.reference;
+    probe.probeKind = probeKind;
+    probe.expectedLocation = ArtifactExpectedLocation{
+      location.repoNode, location.providerIdentity, location.operationId,
+      location.receiptId, location.generation, location.locationVersion};
+    std::vector<uint8_t> probeWire;
+    try {
+      const auto probeWaitDeadline = std::min(deadline,
+        std::chrono::steady_clock::now() +
+          std::chrono::milliseconds(availabilityTimeoutMs));
+      probeWire = waitForSignedResponse(*m_impl->serviceUser,
+        target.providerIdentity,
+        [serviceUser = m_impl->serviceUser,
+         providerIdentity = target.providerIdentity,
+         servicePrefix = target.servicePrefix, probe,
+         availabilityTimeoutMs]
+        (auto onTimeout, auto onResponse) {
+          return RepoClient::requestAvailability(*serviceUser,
+            providerIdentity, servicePrefix, probe,
+            availabilityTimeoutMs, std::move(onTimeout), std::move(onResponse));
+        }, probeWaitDeadline);
+    }
+    catch (const RepoRequestTimeoutError&) {
+      result.reachability = "REACHABLE";
+      result.reason = "expected Provider did not return AVAILABILITY before the deadline";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    catch (const RepoRequestStartError&) {
+      result.reachability = "REACHABLE";
+      result.objectPresence = "UNKNOWN";
+      result.integrity = "NOT_CHECKED";
+      result.reason = "AVAILABILITY request could not start after signed LOCATION";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    catch (const RepoResponseProviderMismatchError&) {
+      result.reachability = "REACHABLE";
+      result.objectPresence = "UNKNOWN";
+      result.integrity = "NOT_CHECKED";
+      result.reason = "authenticated AVAILABILITY response Provider differs from selected target";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    catch (const std::exception&) {
+      result.reachability = "REACHABLE";
+      result.reason = "authenticated Provider rejected the AVAILABILITY request";
+      report.locations.push_back(std::move(result));
+      continue;
+    }
+    try {
+      const std::string responseJson(probeWire.begin(), probeWire.end());
+      const auto response = RepoAvailabilityProbeResponse::fromJson(
+        responseJson, config.limits);
+      auto observed = response.report;
+      const bool echoedTuple =
+        response.expectedLocation.repoNode == location.repoNode &&
+        response.expectedLocation.providerIdentity == location.providerIdentity &&
+        response.expectedLocation.operationId == location.operationId &&
+        response.expectedLocation.receiptId == location.receiptId &&
+        response.expectedLocation.generation == location.generation &&
+        response.expectedLocation.locationVersion == location.locationVersion;
+      const bool noCurrentTuple = observed.operationId.empty() &&
+        observed.receiptId.empty() && observed.locationVersion == 0;
+      const bool currentTupleMatches = noCurrentTuple ||
+        (observed.operationId == location.operationId &&
+         observed.receiptId == location.receiptId &&
+         observed.locationVersion == location.locationVersion);
+      if (response.reference != handle.reference || !echoedTuple ||
+          observed.locationKind != "PERSISTENT" ||
+          observed.repoNode != target.repoNode ||
+          observed.providerIdentity != target.providerIdentity.toUri() ||
+          observed.generation != location.generation ||
+          !currentTupleMatches ||
+          (noCurrentTuple && observed.objectPresence != "UNKNOWN") ||
+          observed.probeKind != probeKind || observed.reachability != "REACHABLE" ||
+          observed.validUntilMs > location.expiresAtMs) {
+        result.reason = "signed AVAILABILITY response does not bind the current location tuple";
+        report.locations.push_back(std::move(result));
+      }
+      else {
+        if (observed.reachability == "REACHABLE" &&
+            observed.objectPresence == "PRESENT") {
+          healthIt = m_impl->fetchHealth.find(healthKey);
+          if (healthIt != m_impl->fetchHealth.end() &&
+              healthIt->second.locationVersion == location.locationVersion &&
+              healthIt->second.operationId == location.operationId &&
+              healthIt->second.receiptId == location.receiptId) {
+            healthIt->second.cooldownUntil = {};
+            if (healthIt->second.failureLocationVersion == location.locationVersion &&
+                healthIt->second.consecutiveFailures > 0) {
+              --healthIt->second.consecutiveFailures;
+            }
+            else if (healthIt->second.failureLocationVersion != location.locationVersion) {
+              healthIt->second.consecutiveFailures = 0;
+              healthIt->second.failureLocationVersion = 0;
+            }
+            healthIt->second.lastUpdated = std::chrono::steady_clock::now();
+          }
+        }
+        report.locations.push_back(std::move(observed));
+      }
+    }
+    catch (const std::exception&) {
+      result.reason = "signed AVAILABILITY response is malformed or inconsistent";
+      report.locations.push_back(std::move(result));
+    }
+  }
+  report.validate(config.limits);
+  return report;
+}
+
+std::string
+makeArtifactCommitReceiptId(const ArtifactCommitReceipt& receipt)
+{
+  return makePersistentReceiptId(receipt);
 }
 
 } // namespace ndnsf_distributed_repo

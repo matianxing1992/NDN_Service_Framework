@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/spec202-syscall-fault.hpp"
 
 #include <sqlite3.h>
 
@@ -465,6 +466,114 @@ BOOST_AUTO_TEST_CASE(PostCommitDamagePreservesHistoryAndNeverReplacesDestination
   BOOST_CHECK(sameReference(afterDeletion->reference, reference));
 }
 
+BOOST_AUTO_TEST_CASE(FailedDestinationSyncRestoresNamespace)
+{
+  TemporaryDirectory temporary("destination-sync");
+  const auto source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_BYTES);
+  auto repository = ArtifactRepositoryApi::makeInApp(makeConfig(temporary.path() / "repo"));
+  const auto reference = fixtureReference();
+  repository.publishFile(source.string(), reference);
+  for (bool existing : {false, true}) {
+    const auto directory = temporary.path() / (existing ? "existing" : "absent");
+    fs::create_directory(directory);
+    const auto destination = directory / "output.bin";
+    struct stat before {};
+    if (existing) {
+      writeFile(destination, "old-output");
+      BOOST_REQUIRE_EQUAL(::lstat(destination.c_str(), &before), 0);
+    }
+    {
+      spec202_test::ScopedFault fault(destination, spec202_test::Fault::SyncError);
+      BOOST_CHECK_THROW(repository.fetchFile(reference, destination.string()), std::runtime_error);
+      BOOST_CHECK_EQUAL(fault.hits(), 1U);
+    }
+    if (existing) {
+      struct stat after {};
+      BOOST_REQUIRE_EQUAL(::lstat(destination.c_str(), &after), 0);
+      BOOST_CHECK_EQUAL(after.st_ino, before.st_ino);
+      BOOST_CHECK_EQUAL(readFile(destination), "old-output");
+    }
+    else BOOST_CHECK(!fs::exists(destination));
+    BOOST_CHECK_EQUAL(std::distance(fs::directory_iterator(directory), fs::directory_iterator()),
+                      existing ? 1 : 0);
+    repository.fetchFile(reference, destination.string());
+    BOOST_CHECK_EQUAL(readFile(destination), FIXTURE_BYTES);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(DestinationRecoveryAndAcceptedCleanupAreExplicit)
+{
+  TemporaryDirectory temporary("destination-recovery");
+  const auto source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_BYTES);
+  auto repository = ArtifactRepositoryApi::makeInApp(makeConfig(temporary.path() / "repo"));
+  const auto reference = fixtureReference();
+  repository.publishFile(source.string(), reference);
+  for (auto mode : {spec202_test::Fault::RollbackRename, spec202_test::Fault::RollbackSync,
+                    spec202_test::Fault::CleanupUnlink, spec202_test::Fault::PreparationCleanup}) {
+    const auto directory = temporary.path() / std::to_string(static_cast<int>(mode));
+    fs::create_directory(directory);
+    const auto destination = directory / "output.bin";
+    writeFile(destination, "old-output");
+    spec202_test::ScopedFault fault(destination, mode);
+    std::string diagnostic;
+    if (mode == spec202_test::Fault::CleanupUnlink) {
+      BOOST_CHECK_NO_THROW(repository.fetchFile(reference, destination.string()));
+      BOOST_CHECK_EQUAL(readFile(destination), FIXTURE_BYTES);
+      BOOST_CHECK_EQUAL(fault.hits(), 1U);
+    }
+    else {
+      BOOST_CHECK_EXCEPTION(repository.fetchFile(reference, destination.string()),
+        std::runtime_error, [&] (const auto& error) {
+          diagnostic = error.what();
+          return diagnostic.find("repo-artifact-destination-recovery-required") == 0;
+        });
+      BOOST_CHECK_EQUAL(fault.hits(), 2U);
+    }
+    bool foundOld = false;
+    for (const auto& entry : fs::directory_iterator(directory)) {
+      if (entry.is_regular_file() && readFile(entry.path()) == "old-output") {
+        foundOld = true;
+        if (mode != spec202_test::Fault::CleanupUnlink)
+          BOOST_CHECK(diagnostic.find(entry.path().string()) != std::string::npos);
+      }
+    }
+    BOOST_CHECK(foundOld);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(DestinationLeafSymlinkIsPreservedWithoutFollowingIt)
+{
+  TemporaryDirectory temporary("destination-symlink");
+  const auto source = temporary.path() / "source.bin";
+  const auto target = temporary.path() / "link-target.bin";
+  const auto destination = temporary.path() / "output.bin";
+  writeFile(source, FIXTURE_BYTES);
+  writeFile(target, "external-old-bytes");
+  fs::create_symlink(target, destination);
+  struct stat before {};
+  BOOST_REQUIRE_EQUAL(::lstat(destination.c_str(), &before), 0);
+  auto api = ArtifactRepositoryApi::makeInApp(makeConfig(temporary.path() / "repo"));
+  const auto reference = fixtureReference();
+  api.publishFile(source.string(), reference);
+  {
+    spec202_test::ScopedFault fault(destination, spec202_test::Fault::SyncError);
+    BOOST_CHECK_THROW(api.fetchFile(reference, destination.string()), std::runtime_error);
+    BOOST_CHECK_EQUAL(fault.hits(), 1U);
+  }
+  struct stat after {};
+  BOOST_REQUIRE_EQUAL(::lstat(destination.c_str(), &after), 0);
+  BOOST_CHECK(S_ISLNK(after.st_mode));
+  BOOST_CHECK_EQUAL(after.st_ino, before.st_ino);
+  BOOST_CHECK(fs::read_symlink(destination) == target);
+  BOOST_CHECK_EQUAL(readFile(target), "external-old-bytes");
+  api.fetchFile(reference, destination.string());
+  BOOST_CHECK(!fs::is_symlink(destination));
+  BOOST_CHECK_EQUAL(readFile(destination), FIXTURE_BYTES);
+  BOOST_CHECK_EQUAL(readFile(target), "external-old-bytes");
+}
+
 BOOST_AUTO_TEST_CASE(MismatchedSourceBytesDoNotCreateACommit)
 {
   TemporaryDirectory temporary("source-mismatch");
@@ -492,7 +601,7 @@ BOOST_AUTO_TEST_CASE(FutureSchemaAllowsReadOnlyReuseWithoutPublishingOrMutation)
     BOOST_REQUIRE(repository.publishFile(source.string(), reference).receipt);
   }
   executeSql(root / "metadata.sqlite3",
-             "UPDATE repo_meta SET value='15' WHERE key='schema_generation'");
+             "UPDATE repo_meta SET value='16' WHERE key='schema_generation'");
   const auto before = snapshotDatabaseAndSidecars(root / "metadata.sqlite3");
 
   {

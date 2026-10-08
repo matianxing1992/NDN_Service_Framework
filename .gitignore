@@ -6,6 +6,7 @@
 # Waf build system
 /build/
 /build-uav-static/
+/build-spec202-asan/
 .local-boost171/
 .waf-*-*/
 .waf3-*-*/

@@ -22,11 +22,11 @@
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
-| T002 | NOT_STARTED | T001 | NOT_RUN：仅DB002设计；G001两个nativefetch entry尚未修复/测试。 | 2026-10-08 12:24 -05:00 |
+| T002 | PARTIAL | T001 | v3 readonlyPASS/buildPASS；In-App完整closing两次exit0，Persistent第一次exit0、第二次运行中；独立asan-ubsan构建中，dynamic尚未闭合。见destination-batch.md。 | 2026-10-08 14:15 -05:00 |
 | T003 | NOT_STARTED | T001 | NOT_RUN：仅DB003设计；G002worker分支尚未修复。 | 2026-10-08 12:24 -05:00 |
 | T004 | NOT_STARTED | T001 | NOT_RUN：仅DB004设计；G003postpublish/replay sync未修复。 | 2026-10-08 12:24 -05:00 |
 | T005 | NOT_STARTED | T001,T002,T003 | NOT_RUN：DB005，A19文档跨plane纠正和O17当前完整收口待实施。 | 2026-10-08 12:24 -05:00 |
-| T006 | NOT_STARTED | T001 | NOT_RUN：DB006 signedSync方案已有静态历史分析，未接入当前oracle/harness。 | 2026-10-08 12:24 -05:00 |
+| T006 | PARTIAL | T001 | oracle/phase offsets/finalverification及offline反例已实现；初审3P2已修复，v2完整快照只读复审中，尚未运行offline/currentnetwork。 | 2026-10-08 14:15 -05:00 |
 | T007 | NOT_STARTED | T001,T003 | NOT_RUN：DB007公开object/local/network/parser边界收口；不凭旧case PASS省略入口。 | 2026-10-08 12:24 -05:00 |
 | T008 | NOT_STARTED | T001,T002,T004,T005 | NOT_RUN：DB007Python/DI/parity/import/retired完整currentsource验证。 | 2026-10-08 12:24 -05:00 |
 | T009 | NOT_STARTED | T002–T008 | NOT_RUN：overlay/source/binary/profile冻结、全部affected suites/dynamic与freshconvergence。 | 2026-10-08 12:24 -05:00 |
@@ -38,11 +38,11 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | T001.a | T001 | gap-audit.md当前source findings | VERIFIED_STATIC | CodeGraph/actualsource、Core admission overlay、只读release PASS | 产品缺陷由T002–04修复 | source或acceptedcontract变更重审 |
 | T001.b | T001 | api inventory、TU/target/source baseline | VERIFIED_STATIC | api-inventory.md；150-input complete ZIP SHA b756347c…；原116-files archive明确PARTIAL | finalrebuiltartifact/loadeddeps由T009验证，不计旧binary PASS | 新入口/构建source变化 |
-| T002.a | T002 | API.cpp两fetch的commit/rollback | NOT_STARTED | NOT_RUN；DB002 | red→局部repair→focusednative回归 | destination/deadline/cleanup语义变化 |
+| T002.a | T002 | API.cpp两fetch的commit/rollback | IMPLEMENTED | 实际red+fixedsnapshot v2静态PASS；postrename rollback、fatalcleanup、acceptedcleanup和leafsymlink | closing native与asan-ubsan，不将静态PASS算DONE | destination/deadline/cleanup语义变化 |
 | T003.a | T003 | Node.cppsourcefailure target状态 | NOT_STARTED | NOT_RUN；DB003 | 真实Btimeout/Csourcefailureregression | ledger/worker/recovery变化 |
 | T004.a | T004 | Importer两existing目标分支durability | NOT_STARTED | NOT_RUN；DB004 | actualpostrenameparent-sync故障/重放 | importer/manifest/sourceprofile变化 |
 | T005.a | T005 | artifact/segments/offline与OriginalData平面 | NOT_STARTED | NOT_RUN；DB005 | 源码符合 accepted contract再验证 | metadata/auth/hint/oracle变化 |
-| T006.a | T006 | signedSync+native attempt对照 | NOT_STARTED | NOT_RUN；DB006 | parser接线/冲突拒绝/两capture比对 | oracle、SVS协议/调用顺序变化 |
+| T006.a | T006 | signedSync+native attempt对照 | IMPLEMENTED | v2 snapshot 60be34cc…；真实session producer、distinctRequest、expectedC/B/A、签名/链/跨capture反例 | readonly复审后offline验证；当前network仍T009/T010 | oracle、SVS协议/调用顺序变化 |
 | T007.a | T007 | publicobject/local/network/codec覆盖 | NOT_STARTED | NOT_RUN；DB007 | 入口/负例/registration当前核对 | codec/API/profile变化 |
 | T008.a | T008 | binding/DI/compat/import实际caller | NOT_STARTED | NOT_RUN；DB007 | currentPython模块/sourcehash与真实生产结果 | native静态库/pybind/DI变化 |
 | T009.a | T009 | source/runtime/profile sealed family | NOT_STARTED | NOT_RUN；candidate合同 | 合法owner source收口及全部affectedconsumers | 任一behaviorplane变化 |
@@ -51,7 +51,7 @@
 
 ## Current Checkpoint
 
-2026-10-08 12:24 -05:00 — 用户停止Spec192/193，Spec202承接。当前产品readiness BLOCK：G001/G002 HIGH，G003 MEDIUM，source/qualification及oracle gaps明确；本轮仅STATIC_ONLY+文档。旧A06_LARGE首轮manifest PASS/cleanup PASS仅历史diagnostic，未启动第二轮。所有产品修复/完整验证NOT_RUN；T001已有局部静态发现，不因此勾选。
+2026-10-08 14:15 -05:00 — Repo分支，用户已授权全部Spec202实施。T001 DONE；T002 localizedrepair通过静态/build和当前normalclosing第一轮，In-App第二轮通过，Persistent第二轮及独立asan-ubsan构建进行中。T006 oracle/接线/反例已实现，初审控制问题修复后等待v2复审。G002/G003尚未修复；产品readiness和finalqualification仍BLOCK。旧A06_LARGE仅历史diagnostic；未运行新的资格round，不继承旧PASS。Context Mode健康检查已通过，但authority检索为空，继续使用仓库文档/source作为authority。
 
 ## Batch Quality Record
 
