@@ -1087,4 +1087,5 @@ def build(bld):
     for name in ('unit-tests', 'spec192-repo-inapp-api',
                  'spec192-repo-persistent-api', 'spec192-repo-legacy-import-unit'):
         bld.get_tgen_by_name(name).linkflags += [
-            '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink']
+            '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink',
+            '-Wl,--wrap=flock']

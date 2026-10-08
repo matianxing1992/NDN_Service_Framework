@@ -50,3 +50,7 @@ Persistent closing-2 exit201：quorumreceipt achieved1/required2与预期成功�
 Changed gate：在late thread声明后复用已有ScopedThreadJoin，使任何异常先join后销毁thread/environment；增加两个receiptJSON诊断，核对actualterminal/targetfailure而非仅计数。definition-map发现并删除草稿重复helper，实际仅一处定义。只读live delta against49e05dba五lane/lifecycle PASS。最初lifecycle build在release前误启动，主动SIGINT(exit68)，保留build-lifecycle.log；复审后build-lifecycle-reviewed.log exit0。Persistent-independent-1现在单独运行，无并发build。
 
 ASAN-j4因memory/swap压力主动SIGINT exit68，保留build-asan.log；未视作代码或sanitizer PASS。恢复使用-j1并避免同时CPU-intensive integration。最终R01–R07仍须在完成native修复后的相同instrumented source family验证，未关闭动态门。
+
+Independent closing-1/2完整Persistent selector均exit0（lifecycle-reviewed binary，无并发build），两个quorumreceipt均COMMITTED/achieved2/required2；后续destination/late-response断言均通过。此前closing-2 exit201仍保留，观察到负载相关性不证明其具体根因。normal-closing-artifacts.json保存B3/B4 relink前当前In-App/Persistent/Core/Repo/SVS摘要；此为boundednormal证据，不是最终family。T002 normal closing门已闭合，仍PARTIAL待最终instrumented ASAN/UBSAN gate。
+
+**Serial dynamic profile update**: 先前O1/g0+j4 configure/build日志保留为interrupted attempt；最终instrumented profile改为-O0 -g1、单-j1，保持address+undefined/framepointer/pinnedSVS/source与全部回归，不抑制报告。降低optimization以限制巨大Core TU构建资源，lineinfo用于诊断；不是性能比较。独立normal/native gates全部结束后才开始serialbuild；动态运行不与build并发。Persistent动态预算900s、worker900s、importunit180s/integration180s、In-App120s，各1次，必要失败先fix/review再freshlog重跑。

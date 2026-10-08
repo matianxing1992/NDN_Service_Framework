@@ -59,6 +59,8 @@ closing regression使用真实三Provider/三个filesystem stores和恢复worker
 
 observer在发布前抛错时的unexposed INCOMPLETE guarantee不扩大到所有发布后错误。使用真实生产importer的post-publish one-shot directory-sync fault、重复fault及success replay，断言callback/屏障命中、source DB/WAL/SHM/CAS摘要与目标inventory保持，fresh reopen正常；不把这些测试说成power-loss证明。
 
+当前Repo-profile integration暴露materialization差距：完整重建的object bytes不能仍携带native store的metadata-only判别字段。转换后native object packetNames清空、segmentCount1；原ndn-segmented-data标签转换为已有generic object标签。原packetNames/packetSha256与sourceManifestSha256留在import item provenance，独立ndn-data-wire entries保持完整签名wire；不修改source/profile/schema或store的metadata-only安全判别。旧候选在此错误上留下的INCOMPLETE staging若inventory不同，继续fail closed，不静默改写旧stage；保留证据并使用显式新importId/destination。正确同候选interruption/replay仍须通过integration。
+
 ## DB005 - Metadata, Availability and Original Data
 
 artifact完整八字段和LOCATION期望receipt/version必须严格echo。artifact`checkAvailability`处理artifact-v2-bytes；传统segmented缺段用传统manifest/FETCH与独立存储，offline另用reachability，保持history/current分离。

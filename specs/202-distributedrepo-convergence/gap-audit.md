@@ -57,3 +57,9 @@ G001/G002 是当前可由源码演示的错误；G003 是 durable recovery 缺�
 `a06-large-diag-001` manifest PASS、minindn_cleanup PASS，锁`278aca45017462ca66c9e9da32dc95d80f6b4d2ea8cf5f47d03dbdbf80fb6269`；仅一轮131123B功能诊断，不是完整双轮或T007资格。本轮只读取终态manifest，没有重跑/改原证据。旧各批次的有限children、storage/packet oracles应按原run单独引用。
 
 静态推断不能证明断电耐久性、任意I/O错误恢复、负载性能或Tiger表现。当前产品readiness BLOCK；新Spec文档可审阅并按依赖实施，不能把文档结构PASS作为产品完成。
+
+## Implementation Findings - 2026-10-08
+
+**G004 HIGH / owner T004**: 完整legacy Repo-profile integration实际exit201。importer已重建并commit objectpayload，但复制sourceManifest.packetNames/segmented标签；FilesystemRepoStoreBackend::isMetadataOnly因这些字段禁止getRange，导致verifyRepoPayload和resume失败。转换应把verified完整bytes的native字段与原packet provenance分开；原signedData另存wire不变。source/profile/manifest schema不改；旧错误INCOMPLETE stage inventory不同继续拒绝，不暗改它。闭合要求现有interruption/resume+newsegmented-kind完整integration/nativebyte+wire/来源claims与动态门，不以artifact-only unitPASS消去此缺陷。
+
+**Fixture control gaps**: Persistent重复门的late response thread异常路径缺join；recoveryteardown漏DATA_RECEIPT/DATA_LOCATION保留旧RepoNode owner；新source-loss fixture异常路径需detach/resetworker时Faces仍pumped。均保留首失败/静态BLOCK及对应changedgate，不冒充产品native defect red。

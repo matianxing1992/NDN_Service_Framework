@@ -22,10 +22,10 @@
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
-| T002 | PARTIAL | T001 | In-App完整closing两次exit0、Persistent第一次exit0但第二次exit201(quorum部分结果+fixture线程异常收尾)。lifecycle修复复审中；ASAN构建因内存/swap压力主动暂停，后续-j1独立运行，dynamic未闭合。 | 2026-10-08 14:27 -05:00 |
-| T003 | NOT_STARTED | T001 | NOT_RUN：仅DB003设计；G002worker分支尚未修复。 | 2026-10-08 12:24 -05:00 |
-| T004 | NOT_STARTED | T001 | NOT_RUN：仅DB004设计；G003postpublish/replay sync未修复。 | 2026-10-08 12:24 -05:00 |
-| T005 | NOT_STARTED | T001,T002,T003 | NOT_RUN：DB005，A19文档跨plane纠正和O17当前完整收口待实施。 | 2026-10-08 12:24 -05:00 |
+| T002 | PARTIAL | T001 | Normal In-App完整两次、修复fixture后独立Persistent完整两次exit0；首次失败保留。最终ASAN/UBSAN仍待运行，见destination-batch。 | 2026-10-08 15:32 -05:00 |
+| T003 | PARTIAL | T001 | 删除错误pending预改写、已有finalizer保持attempt ledger；actualBSTORE/Csourcefailure/latepublication与exception-safe stop、完整recovery selector closing两次exit0，ASAN pending。 | 2026-10-08 15:32 -05:00 |
+| T004 | PARTIAL | T001 | 两replaybarriers+G004verifiedbytes/provenance转换+oldstage早期inventory fence；完整unit两次与5case integrationexit0；ASAN及当前CLI/network pending。 | 2026-10-08 15:32 -05:00 |
+| T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例PASS；OriginalData完整nativeunit/build进行中，当前7个O17子场景待T009/T010。 | 2026-10-08 15:32 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | NOT_STARTED | T001,T003 | NOT_RUN：DB007公开object/local/network/parser边界收口；不凭旧case PASS省略入口。 | 2026-10-08 12:24 -05:00 |
 | T008 | NOT_STARTED | T001,T002,T004,T005 | NOT_RUN：DB007Python/DI/parity/import/retired完整currentsource验证。 | 2026-10-08 12:24 -05:00 |
@@ -39,9 +39,9 @@
 | T001.a | T001 | gap-audit.md当前source findings | VERIFIED_STATIC | CodeGraph/actualsource、Core admission overlay、只读release PASS | 产品缺陷由T002–04修复 | source或acceptedcontract变更重审 |
 | T001.b | T001 | api inventory、TU/target/source baseline | VERIFIED_STATIC | api-inventory.md；150-input complete ZIP SHA b756347c…；原116-files archive明确PARTIAL | finalrebuiltartifact/loadeddeps由T009验证，不计旧binary PASS | 新入口/构建source变化 |
 | T002.a | T002 | API.cpp两fetch的commit/rollback | IMPLEMENTED | 实际red+fixedsnapshot v2静态PASS；postrename rollback、fatalcleanup、acceptedcleanup和leafsymlink | closing native与asan-ubsan，不将静态PASS算DONE | destination/deadline/cleanup语义变化 |
-| T003.a | T003 | Node.cppsourcefailure target状态 | NOT_STARTED | NOT_RUN；DB003 | 真实Btimeout/Csourcefailureregression | ledger/worker/recovery变化 |
-| T004.a | T004 | Importer两existing目标分支durability | NOT_STARTED | NOT_RUN；DB004 | actualpostrenameparent-sync故障/重放 | importer/manifest/sourceprofile变化 |
-| T005.a | T005 | artifact/segments/offline与OriginalData平面 | NOT_STARTED | NOT_RUN；DB005 | 源码符合 accepted contract再验证 | metadata/auth/hint/oracle变化 |
+| T003.a | T003 | Node.cppsourcefailure target状态 | VERIFIED_NORMAL | red2四预期失败→fixed recovery完整两次exit0；worker-batch.md | 最终dynamic/source family | ledger/worker/recovery变化 |
+| T004.a | T004 | Importer两existing目标分支durability | VERIFIED_NORMAL | barrierred+G004integrationred→完整unit两次/integration5case exit0；import-batch.md | 最终ASAN/CLI/原packet当前profile | importer/manifest/sourceprofile变化 |
+| T005.a | T005 | artifact/segments/offline与OriginalData平面 | IMPLEMENTED | v4静态PASS、13offline testsPASS；metadata-batch.md | nativeunit与最终网络当前candidate | metadata/auth/hint/oracle变化 |
 | T006.a | T006 | signedSync+native attempt对照 | IMPLEMENTED | v2 snapshot 60be34cc…；真实session producer、distinctRequest、expectedC/B/A、签名/链/跨capture反例 | readonly复审后offline验证；当前network仍T009/T010 | oracle、SVS协议/调用顺序变化 |
 | T007.a | T007 | publicobject/local/network/codec覆盖 | NOT_STARTED | NOT_RUN；DB007 | 入口/负例/registration当前核对 | codec/API/profile变化 |
 | T008.a | T008 | binding/DI/compat/import实际caller | NOT_STARTED | NOT_RUN；DB007 | currentPython模块/sourcehash与真实生产结果 | native静态库/pybind/DI变化 |
@@ -51,7 +51,7 @@
 
 ## Current Checkpoint
 
-2026-10-08 14:15 -05:00 — Repo分支，用户已授权全部Spec202实施。T001 DONE；T002 localizedrepair通过静态/build和当前normalclosing第一轮，In-App第二轮通过，Persistent第二轮及独立asan-ubsan构建进行中。T006 oracle/接线/反例已实现，初审控制问题修复后等待v2复审。G002/G003尚未修复；产品readiness和finalqualification仍BLOCK。旧A06_LARGE仅历史diagnostic；未运行新的资格round，不继承旧PASS。Context Mode健康检查已通过，但authority检索为空，继续使用仓库文档/source作为authority。
+2026-10-08 15:36 -05:00 — Repo分支，全部任务继续实施。T001 DONE；G001–G003及新增G004已localizedrepair，T002/T003 normal完整closing两次通过，T004完整unit两次/integration5case通过；均待最终ASAN/UBSAN。T005/T006 packet/native入口已接线，13offline+6OriginalData nativeunit通过；当前网络7个O17子场景及A21仍未资格验证。T007/T008完整surface/parity，T009 source/binding/runtime/dynamic/convergence与T010统一双轮仍未完成。产品readiness BLOCK，旧PASS仍仅历史。Context Mode健康曾通过但authority检索为空，仓库为authority；文档更新后索引必须刷新。CodeGraph已同步当前source。
 
 ## Batch Quality Record
 

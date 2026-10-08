@@ -21,11 +21,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <exception>
 #include <future>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -266,6 +268,7 @@ releaseRepoNodeServiceHandlersForRestart(
     "STORE_MANIFEST", "FETCH", "FETCH_RANGE", "MANIFEST", "INVENTORY",
     "CAPABILITY", "CACHE_STATUS", "STATUS", "CATALOG_STATUS",
     "CATALOG_SNAPSHOT", "CATALOG_DELTA", "CATALOG_LOOKUP", "DELETE",
+    "DATA_RECEIPT", "DATA_LOCATION",
   };
   for (const auto& operation : operations) {
     provider.addService(repo::makeRepoServiceName(servicePrefix, operation),
@@ -1820,6 +1823,186 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     return std::chrono::steady_clock::now() >= lateResponseDrainDeadline;
   });
   replicaNode->registerServices(environment.provider(1), publisherUsers[1], 1500, 8000);
+
+  // Recover a real accepted operation; B has emitted STORE before C loses its source.
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  runWithFacePump(environment, [&] { recoverySeedNode.reset(); return true; });
+  auto sourceLossSeed = std::make_shared<repo::RepoNode>(
+    servicePrefix, seedCapability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-seed"),
+    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+  sourceLossSeed->registerServices(environment.provider(0));
+  unselectedNode->registerServices(environment.provider(2));
+  const std::vector<uint8_t> lossBytes{0x6c, 0x6f, 0x73};
+  const auto lossReference = makeReference("spec202-source-loss", lossBytes);
+  const auto lossSource = temporary.path() / "source-loss.bin";
+  writeFile(lossSource, lossBytes);
+  repo::SelectedRepoSet lossPlacement;
+  lossPlacement.targets = {{seedRepo, seedProvider, servicePrefix},
+                           {replicaRepo, replicaProvider, servicePrefix},
+                           {unselectedRepo, unselectedProvider, servicePrefix}};
+  lossPlacement.seedRepoId = seedRepo;
+  lossPlacement.consistency = repo::RepoWriteConsistency::All;
+  const auto lossHandle = runWithFacePump(environment, [&] {
+    return persistent.beginPublishFile(lossSource.string(), lossReference,
+      lossPlacement, "spec202-source-loss-key", 120000);
+  });
+  BOOST_REQUIRE_EQUAL(persistentReceiptRows(
+    seedDatabase, seedRepo, seedProvider.toUri(), lossReference), 1);
+  const auto lossAccepted = runWithFacePump(environment, [&] {
+    return persistent.getPublishStatus(lossHandle, 8000);
+  });
+  const auto acceptedSeed = std::find_if(lossAccepted.targets.begin(), lossAccepted.targets.end(),
+    [&seed] (const auto& target) { return target.target == seed; });
+  BOOST_REQUIRE(acceptedSeed != lossAccepted.targets.end());
+  BOOST_REQUIRE(acceptedSeed->receipt);
+  const auto acceptedSeedReceipt = acceptedSeed->receipt->toJson();
+
+  struct HeldResponse
+  {
+    std::mutex mutex;
+    std::condition_variable wake;
+    bool entered = false;
+    bool released = false;
+    bool done = false;
+    ndn::Name requestId;
+  };
+  auto held = std::make_shared<HeldResponse>();
+  struct ReleaseAndDrain
+  {
+    std::shared_ptr<HeldResponse> state;
+    std::function<void()> stopWorker;
+    ~ReleaseAndDrain()
+    {
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->released = true;
+      state->wake.notify_all();
+      state->wake.wait_for(lock, 12s, [&] { return !state->entered || state->done; });
+      lock.unlock();
+      try { stopWorker(); }
+      catch (...) { BOOST_ERROR("source-loss seed cleanup failed while pumping Faces"); }
+    }
+  } releaseAndDrain{held, [&] {
+    releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+    runWithFacePump(environment, [&] { sourceLossSeed.reset(); return true; });
+  }};
+  auto bStoreCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto cStoreCalls = std::make_shared<std::atomic<unsigned>>(0);
+  auto sourceRemoved = std::make_shared<std::atomic<bool>>(false);
+  const auto lossPayload = committedPayloadPath(seedObjects, lossReference);
+  const auto lossAck = [] (const ndn_service_framework::RequestMessage&) {
+    ndn_service_framework::ServiceProvider::AckDecision decision;
+    decision.status = true;
+    decision.message = "repo-ready";
+    return decision;
+  };
+  environment.provider(1).addService(storeService, lossAck,
+    [held, bStoreCalls, sourceRemoved, lossPayload] (
+      const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name& requestId,
+      const ndn_service_framework::RequestMessage&) {
+      bStoreCalls->fetch_add(1);
+      std::error_code error;
+      sourceRemoved->store(fs::remove(lossPayload, error) && !error);
+      {
+        std::unique_lock<std::mutex> lock(held->mutex);
+        held->requestId = requestId;
+        held->entered = true;
+        held->wake.notify_all();
+        held->wake.wait_for(lock, 10s, [&] { return held->released; });
+        held->done = true;
+        held->wake.notify_all();
+      }
+      ndn_service_framework::ResponseMessage response;
+      response.setStatus(false);
+      response.setErrorInfo("spec202-delayed-B-store-response");
+      return response;
+    });
+  auto lateBObserved = std::make_shared<std::atomic<unsigned>>(0);
+  auto& lossObserver = environment.userPubSub();
+  const auto lossSubscription = lossObserver.subscribeToProducer(
+    ndn::Name(environment.profile().providerNode).append("p1"),
+    [held, lateBObserved, replicaProvider, storeService,
+     requester = publisherUsers[0]->getName()] (
+      const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+      const auto response = ndn_service_framework::parseResponseNameV2(publication.name);
+      std::lock_guard<std::mutex> lock(held->mutex);
+      if (response && response->providerName == replicaProvider &&
+          response->requesterName == requester && response->serviceName == storeService &&
+          response->requestId == held->requestId) lateBObserved->fetch_add(1);
+    }, false);
+  ProducerSubscriptionGuard lossSubscriptionGuard(lossObserver, lossSubscription);
+  environment.provider(2).addService(storeService, lossAck,
+    [cStoreCalls] (const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                  const ndn::Name&, const ndn_service_framework::RequestMessage&) {
+      cStoreCalls->fetch_add(1);
+      ndn_service_framework::ResponseMessage response;
+      response.setStatus(false);
+      response.setErrorInfo("spec202-C-store-must-not-be-emitted");
+      return response;
+    });
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  sourceLossSeed.reset();
+  sourceLossSeed = std::make_shared<repo::RepoNode>(
+    servicePrefix, seedCapability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-recovered"),
+    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+  sourceLossSeed->registerServices(environment.provider(0), publisherUsers[0], 1500, 8000);
+  const auto lossStatus = waitForTerminalPublish(environment, persistent, lossHandle);
+  BOOST_CHECK_EQUAL(lossStatus.state, "FAILED");
+  BOOST_CHECK(sourceRemoved->load());
+  BOOST_CHECK_EQUAL(bStoreCalls->load(), 1U);
+  BOOST_CHECK_EQUAL(cStoreCalls->load(), 0U);
+  for (const auto& target : lossStatus.targets) {
+    if (target.target == seed) {
+      BOOST_CHECK_EQUAL(target.state, "COMMITTED");
+      BOOST_REQUIRE(target.receipt);
+      BOOST_CHECK_EQUAL(target.receipt->toJson(), acceptedSeedReceipt);
+    }
+    else if (target.target == replica) {
+      BOOST_CHECK_EQUAL(target.state, "UNKNOWN");
+      BOOST_CHECK_EQUAL(target.failureCode, "repo-target-outcome-unknown");
+      BOOST_CHECK_EQUAL(target.attemptCount, 1U);
+      BOOST_CHECK(!target.receipt);
+    }
+    else {
+      BOOST_CHECK(target.target == unselected);
+      BOOST_CHECK_EQUAL(target.state, "FAILED");
+      BOOST_CHECK_EQUAL(target.failureCode, "repo-seed-source-invalid");
+      BOOST_CHECK_EQUAL(target.attemptCount, 1U);
+      BOOST_CHECK(!target.receipt);
+    }
+  }
+  BOOST_CHECK_EQUAL(persistentReceiptRows(
+    replicaDatabase, replicaRepo, replicaProvider.toUri(), lossReference), 0);
+  BOOST_CHECK_EQUAL(persistentReceiptRows(
+    unselectedDatabase, unselectedRepo, unselectedProvider.toUri(), lossReference), 0);
+  BOOST_CHECK_EQUAL(persistentReceiptRows(
+    seedDatabase, seedRepo, seedProvider.toUri(), lossReference), 1);
+  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, 15);
+  const auto lossAggregate = lossCatalog.lookupAggregateReceipt(lossStatus.receiptId);
+  BOOST_REQUIRE(lossAggregate);
+  const auto aggregate = repo::ArtifactCommitReceipt::fromJson(*lossAggregate);
+  const auto failedB = std::find_if(aggregate.replicaCommits.begin(), aggregate.replicaCommits.end(),
+    [&replicaRepo] (const auto& target) { return target.repoNode == replicaRepo; });
+  BOOST_REQUIRE(failedB != aggregate.replicaCommits.end());
+  BOOST_CHECK_EQUAL(failedB->state, "FAILED");
+  BOOST_CHECK_EQUAL(failedB->failureReason, "repo-target-outcome-unknown");
+  {
+    std::lock_guard<std::mutex> lock(held->mutex);
+    held->released = true;
+    held->wake.notify_all();
+  }
+  environment.pumpUntilWithAttributeAuthority([&] {
+    return lateBObserved->load() != 0;
+  });
+  BOOST_CHECK_EQUAL(lateBObserved->load(), 1U);
+  const auto lossReread = runWithFacePump(environment, [&] {
+    return persistent.getPublishStatus(lossHandle, 8000);
+  });
+  BOOST_CHECK_EQUAL(lossReread.toJson(), lossStatus.toJson());
+  BOOST_CHECK(lossCatalog.lookupAggregateReceipt(lossStatus.receiptId) == lossAggregate);
 }
 
 BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
