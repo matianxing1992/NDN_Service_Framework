@@ -197,6 +197,129 @@ def verify_a21_sync_attempts(output: Path, service_prefix: str, user: str,
             "native_provider_order": providers, "logical_offline_attempts": 3}
 
 
+def _denial_signed_packets(path: Path, publisher_prefixes: list):
+    """Conservative absence collector: unsupported transport is inconclusive."""
+    output = subprocess.check_output(
+        ["tshark", "-2", "-o", "ip.defragment:TRUE", "-r", str(path),
+         "-T", "fields", "-e", "frame.number", "-e", "data.data",
+         "-e", "ip.reassembled.data", "-e", "ip.flags.mf", "-e", "ip.frag_offset",
+         "-e", "ip.reassembled_in", "-e", "tcp.len"], stderr=subprocess.DEVNULL).decode()
+    producer_prefixes = [Name.from_str(prefix) for prefix in publisher_prefixes]
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 7 or not fields[0].isdigit():
+            raise RuntimeError("INCONCLUSIVE metadata denial: malformed capture fields")
+        _, raw, reassembled, more, offset, completed_in, tcp_length = fields
+        if tcp_length and int(tcp_length) > 0:
+            raise RuntimeError("INCONCLUSIVE metadata denial: TCP payload is unsupported")
+        fragmented = more == "1" or (offset and int(offset) > 0)
+        if fragmented and not reassembled:
+            if completed_in:
+                continue  # Two-pass IP dissection identifies the complete datagram's frame.
+            raise RuntimeError("INCONCLUSIVE metadata denial: incomplete IP datagram")
+        payloads = [item for item in raw.split(",") if item]
+        if reassembled:
+            datagram = bytes.fromhex(reassembled.replace(":", ""))
+            if len(datagram) < 8 or struct.unpack("!H", datagram[4:6])[0] != len(datagram):
+                raise RuntimeError("INCONCLUSIVE metadata denial: invalid reassembled UDP datagram")
+            payloads = [datagram[8:].hex()]
+        for payload in dict.fromkeys(payloads):
+            try:
+                wire = bytes.fromhex(payload.replace(":", ""))
+                kind, body, _, end = _tlv(wire)
+                if kind not in (5, 6, 100):
+                    continue
+                if end != len(wire):
+                    raise ValueError("trailing network bytes")
+                if kind == 100:
+                    lp_fields = list(_fields(bytes(body)))
+                    fragments = [value for kind, value, _ in lp_fields if kind == 80]
+                    if not fragments:
+                        continue  # LP control packet without network payload.
+                    counts = [value for kind, value, _ in lp_fields if kind == 83]
+                    indexes = [value for kind, value, _ in lp_fields if kind == 82]
+                    if (len(fragments) != 1 or len(counts) > 1 or len(indexes) > 1 or
+                            any(len(value) not in (1, 2, 4, 8) for value in counts + indexes) or
+                            (counts and int.from_bytes(counts[0], "big") != 1) or
+                            (indexes and int.from_bytes(indexes[0], "big") != 0)):
+                        raise RuntimeError("INCONCLUSIVE metadata denial: multi-fragment LP packet")
+                    wire = fragments[0]
+                    kind, _, _, end = _tlv(wire)
+                    if end != len(wire):
+                        raise ValueError("trailing LP payload")
+                if kind != 6:
+                    continue
+                outer_name, _, content, outer_signature = parse_data(wire)
+                outer_uri = Name.to_str(outer_name)
+                if "/NDNSF/" in outer_uri:
+                    inner_wire, inner_name, inner_signature = wire, outer_name, outer_signature
+                elif content and parse_tl_num(content)[0] == 6:
+                    inner_wire = bytes(content)
+                    inner_name, _, _, inner_signature = parse_data(inner_wire)
+                else:
+                    if any(len(outer_name) > len(prefix) and outer_name[:len(prefix)] == prefix
+                           for prefix in producer_prefixes):
+                        raise RuntimeError("INCONCLUSIVE metadata denial: unsupported SVS inner content")
+                    continue
+                yield {"outer_wire": wire, "outer_name": outer_uri,
+                       "outer_signature": outer_signature, "inner_wire": inner_wire,
+                       "inner_name": Name.to_str(inner_name), "inner_signature": inner_signature}
+            except (ValueError, IndexError, TypeError) as error:
+                raise RuntimeError("INCONCLUSIVE metadata denial: malformed NDN publication") from error
+
+
+def verify_metadata_denial(output: Path, service_prefix: str, user: str,
+                           data_name: str, providers: dict) -> dict:
+    """Bind ungranted metadata probes to signed wire on caller and both servers."""
+    root_name, root_key, root_signature, root_digest = _certificate(output / "identity/root.cert")
+    root_locator = Name.to_str(root_signature.signature_info.key_locator.name)
+    if not root_name.startswith(root_locator + "/"):
+        raise RuntimeError("metadata denial root certificate is not self-issued")
+    _verify_signature(root_signature, root_key, root_locator, "metadata denial root")
+    certificate, key, signature, certificate_digest = _certificate(output / "identity/neu.cert")
+    if not certificate.startswith(user + "/KEY/"):
+        raise RuntimeError("metadata denial caller identity mismatch")
+    _verify_signature(signature, root_key, root_name, "metadata denial caller")
+    expected = {}
+    forbidden = set()
+    for operation in ("DATA_RECEIPT", "DATA_LOCATION"):
+        request_id = "/spec193-server-auth-" + hashlib.sha256(
+            (data_name + operation).encode()).hexdigest()[:32]
+        service = service_prefix + "/" + operation
+        expected[user + "/NDNSF/REQUEST" + service + request_id] = request_id
+        for provider in providers.values():
+            for message in ("ACK", "RESPONSE"):
+                forbidden.add(provider + "/NDNSF/" + message + "/" +
+                              quote(user, safe="") + service + request_id)
+    captures = {}
+    for host in ("neu", *providers):
+        requests = {}
+        for packet in _denial_signed_packets(
+                output / "pcap" / (host + ".pcap"),
+                [user + "/user", *[provider + "/provider" for provider in providers.values()]]):
+            name = packet["inner_name"]
+            if name in forbidden:
+                raise RuntimeError("ungranted metadata probe received ACK/Response: " + host)
+            if name not in expected:
+                continue
+            if not packet["outer_name"].startswith(user + "/"):
+                raise RuntimeError("metadata denial publication namespace mismatch")
+            _verify_signature(packet["outer_signature"], key, certificate, "metadata denial outer")
+            _verify_signature(packet["inner_signature"], key, certificate, "metadata denial inner")
+            digest = _digest(packet["inner_wire"])
+            if name in requests and requests[name] != digest:
+                raise RuntimeError("conflicting signed metadata denial request")
+            requests[name] = digest
+        if set(requests) != set(expected):
+            raise RuntimeError("metadata denial capture lacks both signed requests: " + host)
+        captures[host] = requests
+    if any(requests != captures["neu"] for requests in captures.values()):
+        raise RuntimeError("metadata denial requests differ across captures")
+    return {"status": "PASS", "root_certificate_sha256": root_digest,
+            "caller_certificate_sha256": certificate_digest,
+            "signed_requests": captures, "ack_or_response_count": 0}
+
+
 def _tlv(wire: bytes, offset: int = 0):
     field_type, size = parse_tl_num(wire, offset)
     value_start = offset + size

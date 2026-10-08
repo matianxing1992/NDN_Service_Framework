@@ -3872,19 +3872,20 @@ def run_spec193_original_data_route(ndn, output: Path,
             for operation in ("DATA_RECEIPT", "DATA_LOCATION"):
                 request_id = "/spec193-server-auth-" + hashlib.sha256(
                     (data_name + operation).encode("utf-8")).hexdigest()[:32]
+                expected_provider = (REPO_A_PROVIDER if server["repo_node"] == REPO_A_ID
+                                     else REPO_B_PROVIDER)
                 matched = [line for line in new_log.splitlines()
-                           if "NDNSF_PUBLICATION_AUDIT role=provider type=REQUEST" in line
-                           and "validated=true" in line and "packetPresent=true" in line
-                           and " requestId=" + request_id + " " in line
-                           and " serviceName=" + SERVICE_PREFIX + "/" + operation + " " in line
-                           and " requesterName=" + USER + " " in line]
-                if not matched:
-                    raise RuntimeError("O17 server did not validate unauthorized " + operation)
+                           if line.startswith("SPEC202_METADATA_AUTH_EVENT ")
+                           and " requestId=" + request_id + " " in line]
+                if (len(matched) != 1 or
+                        " serviceName=" + SERVICE_PREFIX + "/" + operation + " " not in matched[0] or
+                        " provider=" + expected_provider + " " not in matched[0] or
+                        not matched[0].endswith(" state=REQUEST_OBSERVED")):
+                    raise RuntimeError("O17 server did not decode and reject unauthorized " + operation)
                 server_auth_evidence.append({"repo_node": server["repo_node"],
                                              "operation": operation, "request_id": request_id,
-                                             "validated_publications": matched})
-            if new_log.count("OnRequestDecryptionSuccessCallbackV2: Missing UserToken") != 2:
-                raise RuntimeError("O17 server did not reject both decoded tokenless queries")
+                                             "decoded_request_events": matched,
+                                             "admission_or_execution_events": 0})
             if repo_database_state(server["repo_dir"]) != auth_state_before[server["repo_node"]]:
                 raise RuntimeError("O17 denied raw queries changed Repo storage")
         if repo_request_events(processes, {REPO_A_ID, REPO_B_ID}) != auth_requests_before:
@@ -7910,12 +7911,9 @@ def main() -> int:
             args.campaign_case != "O17_ROUTE":
         parser.error("O17 fault options require --campaign-case O17_ROUTE")
     if args.o17_server_auth:
-        required_labels = {"cpp-repo-ucla-o17-original-seed", "cpp-repo-wustl-o17-original-seed"}
-        if not required_labels.issubset(traced_provider_labels()):
-            parser.error("O17 server authorization diagnostic requires explicit provider trace labels")
         if (args.o17_failover or args.o17_corrupt_location or args.o17_drop_original_data or
                 args.o17_import_legacy or args.o17_cache_hit):
-            parser.error("O17 server authorization diagnostic requires the unfaulted route case")
+            parser.error("O17 server authorization requires the unfaulted route case")
     if sum((args.o17_failover, args.o17_corrupt_location,
             args.o17_drop_original_data, args.o17_import_legacy,
             args.o17_cache_hit)) > 1:
@@ -8646,6 +8644,11 @@ def main() -> int:
                 failed_provider=REPO_A_PROVIDER if args.o17_drop_original_data else None,
                 active_logs=scenario["active_repo_logs"],
                 expect_single_serve=args.o17_cache_hit)
+            if args.o17_server_auth:
+                from spec193_packet_oracle import verify_metadata_denial
+                scenario["server_auth_packet_oracle"] = verify_metadata_denial(
+                    args.output_dir, SERVICE_PREFIX, USER, scenario["data_name"],
+                    {REPO_A_HOST: REPO_A_PROVIDER, REPO_B_HOST: REPO_B_PROVIDER})
         elif args.campaign_case in ("OBJECT_BASELINE", "PERSIST_SEED"):
             from spec193_packet_oracle import verify_object_capability
             scenario["signed_packet_oracle"] = verify_object_capability(

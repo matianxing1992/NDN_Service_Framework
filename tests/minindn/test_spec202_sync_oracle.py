@@ -1,6 +1,7 @@
 """Offline signature and mapping negatives; no MiniNDN or production behavior simulation."""
 
 import struct
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ from ndn.encoding import InterestParam, MetaInfo, Name, make_data, make_interest
 from ndn.security.signer import Sha256WithRsaSigner
 
 from spec193_packet_oracle import (_mapping_entries, _sync_interest_mappings, _sync_publications,
-                                  _tlv, verify_a21_sync_attempts)
+                                  _tlv, verify_a21_sync_attempts, verify_metadata_denial)
 
 
 def tlv(kind, value):
@@ -186,6 +187,74 @@ class SyncMappingOracleTests(unittest.TestCase):
             (directory / "identity/root.cert").unlink()
             with self.assertRaises(FileNotFoundError):
                 self.verify(directory, packets)
+
+    def test_metadata_denial_signed_requests_and_fail_closed_negatives(self):
+        from urllib.parse import quote
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            self.public_certificates(directory)
+            (directory / "identity/arizona.cert").rename(directory / "identity/neu.cert")
+            data_name = "/test/original"
+            providers = {"ucla": "/test/A", "wustl": "/test/B"}
+            ids = ["/spec193-server-auth-" + hashlib.sha256(
+                (data_name + operation).encode()).hexdigest()[:32]
+                   for operation in ("DATA_RECEIPT", "DATA_LOCATION")]
+            def packet(name, seq, corrupt_inner=False):
+                inner = bytearray(make_data(name, MetaInfo(), b"encrypted-probe", signer=self.signer))
+                if corrupt_inner:
+                    inner[-1] ^= 1
+                return bytes(make_data(self.producer + "/seq=" + str(seq), MetaInfo(),
+                                       bytes(inner), signer=self.signer))
+            packets = [packet(self.user + "/NDNSF/REQUEST/Repo/" + operation + request_id, seq)
+                       for seq, (operation, request_id) in enumerate(
+                           zip(("DATA_RECEIPT", "DATA_LOCATION"), ids), 1)]
+            def dump(values):
+                return "".join(str(i) + "\t" + wire.hex() + "\t\t0\t0\t\t\n"
+                               for i, wire in enumerate(values, 1)).encode()
+            def verify(captures, transport_outputs=None):
+                with patch("spec193_packet_oracle._first_frame_at_or_after", return_value=1), \
+                        patch("spec193_packet_oracle.subprocess.check_output",
+                              side_effect=transport_outputs or [dump(values) for values in captures]):
+                    return verify_metadata_denial(directory, "/Repo", self.user, data_name, providers)
+            self.assertEqual(verify([packets] * 3)["ack_or_response_count"], 0)
+            with self.assertRaisesRegex(RuntimeError, "lacks both"):
+                verify([packets, packets, packets[:1]])
+            ack = packet("/test/A/NDNSF/ACK/" + quote(self.user, safe="") +
+                         "/Repo/DATA_RECEIPT" + ids[0], 3)
+            with self.assertRaisesRegex(RuntimeError, "ACK/Response"):
+                verify([packets, packets + [ack], packets])
+            wrapped_ack = tlv(100, tlv(80, ack))
+            with self.assertRaisesRegex(RuntimeError, "ACK/Response"):
+                verify([packets, packets + [wrapped_ack], packets])
+            fragmented_ack = tlv(100, tlv(81, b"\x01") + tlv(82, b"\x00") +
+                                 tlv(83, b"\x02") + tlv(80, ack[:len(ack) // 2]))
+            with self.assertRaisesRegex(RuntimeError, "INCONCLUSIVE.*multi-fragment"):
+                verify([packets, packets + [fragmented_ack], packets])
+            with self.assertRaisesRegex(RuntimeError, "INCONCLUSIVE.*malformed"):
+                verify([packets, packets + [ack[:-1]], packets])
+            malformed_inner = bytearray(make_data(
+                "/test/A/NDNSF/ACK/" + quote(self.user, safe="") +
+                "/Repo/DATA_RECEIPT" + ids[0], MetaInfo(), b"reply", signer=self.signer))
+            malformed_inner[0] = 7
+            malformed_publication = bytes(make_data(
+                "/test/A/provider/700/seq=2", MetaInfo(), bytes(malformed_inner), signer=self.signer))
+            with self.assertRaisesRegex(RuntimeError, "INCONCLUSIVE.*SVS inner"):
+                verify([packets, packets + [malformed_publication], packets])
+            udp = struct.pack("!HHHH", 6363, 6363, len(ack) + 8, 0) + ack
+            reassembled = dump(packets) + ("3\t\t" + udp.hex() + "\t0\t1\t\t\n").encode()
+            with self.assertRaisesRegex(RuntimeError, "ACK/Response"):
+                verify([], [dump(packets), reassembled, dump(packets)])
+            incomplete_ip = dump(packets) + (
+                "3\t" + ack[:20].hex() + "\t\t1\t0\t\t\n").encode()
+            with self.assertRaisesRegex(RuntimeError, "INCONCLUSIVE.*incomplete IP"):
+                verify([], [dump(packets), incomplete_ip, dump(packets)])
+            tcp = dump(packets) + ("3\t" + ack.hex() + "\t\t0\t0\t\t10\n").encode()
+            with self.assertRaisesRegex(RuntimeError, "INCONCLUSIVE.*TCP"):
+                verify([], [dump(packets), tcp, dump(packets)])
+            corrupt = packet(self.user + "/NDNSF/REQUEST/Repo/DATA_RECEIPT" + ids[0],
+                             1, corrupt_inner=True)
+            with self.assertRaises(InvalidSignature):
+                verify([[corrupt, packets[1]], packets, packets])
 
     def test_missing_caller_corrupt_chain_and_cross_capture_disagreement(self):
         import base64
