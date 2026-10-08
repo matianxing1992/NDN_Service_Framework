@@ -42,3 +42,11 @@ Normal v3 build PASS（1m5.315s）；完整In-App closing-1/2各exit0，完整Pe
 隔离ASAN/UBSAN configure首次被全局SDK stale receipt拒绝：安装SVS摘要5d024f1e…，receipt期待90d1dacc…；本任务runtime pinned source/build overlay仍d87ae04f…。既有installer的exact兼容probe确认五依赖均可重用，随后deps-only/no-system-packages canonical installer跳过全部依赖，仅刷新收据；没有更改SVS source或library。相同configure重试PASS，单独build-spec202-asan树，-j4构建中；原build/和Waf lock保持独立。
 
 动态编译配置：WAFLOCK=.lock-waf_spec202_asan_build，CXXFLAGS=-O1 -g0，--with-sanitizer=address,undefined，--with-tests --with-examples，显式pinned ndn-svs source/build；cache确认Core/Repo消费者asan/ubsan+framepointer以及pinnedSVS include/libpath/rpath。外部已安装依赖未instrument，不抑制其报告；运行前记录实际binary/source/dependency身份，不用configure PASS声称动态PASS。SDK初始probe曾误用NAC minimum0.1.0（实际pkg0.1），保留日志并按installer exact0.1重试PASS。
+
+## Repeated Gate Failure / Changed Gate
+
+Persistent closing-2 exit201：quorumreceipt achieved1/required2与预期成功不符，随后fallbackfetch抛错时joinable lateLocationThread析构触发SIGABRT。正常API可返回合法PARTIAL，不把上述不足当quorum成功。原因仍待独立复现；并发ASAN build时memory8.5/9.9GiB、swap7.9/8GiB是观察到的负载，不是已证明根因。
+
+Changed gate：在late thread声明后复用已有ScopedThreadJoin，使任何异常先join后销毁thread/environment；增加两个receiptJSON诊断，核对actualterminal/targetfailure而非仅计数。definition-map发现并删除草稿重复helper，实际仅一处定义。只读live delta against49e05dba五lane/lifecycle PASS。最初lifecycle build在release前误启动，主动SIGINT(exit68)，保留build-lifecycle.log；复审后build-lifecycle-reviewed.log exit0。Persistent-independent-1现在单独运行，无并发build。
+
+ASAN-j4因memory/swap压力主动SIGINT exit68，保留build-asan.log；未视作代码或sanitizer PASS。恢复使用-j1并避免同时CPU-intensive integration。最终R01–R07仍须在完成native修复后的相同instrumented source family验证，未关闭动态门。

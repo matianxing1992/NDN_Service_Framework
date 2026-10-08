@@ -2225,6 +2225,8 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   BOOST_REQUIRE(permutedQuorumResult.receipt);
   BOOST_REQUIRE(quorumResult.handle);
   BOOST_REQUIRE(permutedQuorumResult.handle);
+  BOOST_TEST_MESSAGE("Spec202 quorum receipt=" << quorumResult.receipt->toJson());
+  BOOST_TEST_MESSAGE("Spec202 permuted quorum receipt=" << permutedQuorumResult.receipt->toJson());
   BOOST_CHECK_NE(quorumResult.operationId, permutedQuorumResult.operationId);
   BOOST_CHECK_NE(quorumResult.receipt->receiptId,
                  permutedQuorumResult.receipt->receiptId);
@@ -2648,6 +2650,7 @@ BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
   BOOST_CHECK_EQUAL(duplicateFetchInterests.load(std::memory_order_acquire), 0U);
 
   std::thread lateLocationThread;
+  ScopedThreadJoin lateLocationJoin(lateLocationThread);
   auto fallbackApi = repo::ArtifactRepositoryApi::makePersistent(
     environment.user(), fetchConfig);
   const auto fallbackPath = temporary.path() / "fetch-timeout-fallback.bin";

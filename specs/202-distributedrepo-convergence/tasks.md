@@ -22,11 +22,11 @@
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
-| T002 | PARTIAL | T001 | v3 readonlyPASS/buildPASS；In-App完整closing两次exit0，Persistent第一次exit0、第二次运行中；独立asan-ubsan构建中，dynamic尚未闭合。见destination-batch.md。 | 2026-10-08 14:15 -05:00 |
+| T002 | PARTIAL | T001 | In-App完整closing两次exit0、Persistent第一次exit0但第二次exit201(quorum部分结果+fixture线程异常收尾)。lifecycle修复复审中；ASAN构建因内存/swap压力主动暂停，后续-j1独立运行，dynamic未闭合。 | 2026-10-08 14:27 -05:00 |
 | T003 | NOT_STARTED | T001 | NOT_RUN：仅DB003设计；G002worker分支尚未修复。 | 2026-10-08 12:24 -05:00 |
 | T004 | NOT_STARTED | T001 | NOT_RUN：仅DB004设计；G003postpublish/replay sync未修复。 | 2026-10-08 12:24 -05:00 |
 | T005 | NOT_STARTED | T001,T002,T003 | NOT_RUN：DB005，A19文档跨plane纠正和O17当前完整收口待实施。 | 2026-10-08 12:24 -05:00 |
-| T006 | PARTIAL | T001 | oracle/phase offsets/finalverification及offline反例已实现；初审3P2已修复，v2完整快照只读复审中，尚未运行offline/currentnetwork。 | 2026-10-08 14:15 -05:00 |
+| T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | NOT_STARTED | T001,T003 | NOT_RUN：DB007公开object/local/network/parser边界收口；不凭旧case PASS省略入口。 | 2026-10-08 12:24 -05:00 |
 | T008 | NOT_STARTED | T001,T002,T004,T005 | NOT_RUN：DB007Python/DI/parity/import/retired完整currentsource验证。 | 2026-10-08 12:24 -05:00 |
 | T009 | NOT_STARTED | T002–T008 | NOT_RUN：overlay/source/binary/profile冻结、全部affected suites/dynamic与freshconvergence。 | 2026-10-08 12:24 -05:00 |

@@ -1,14 +1,14 @@
 # Implementation Plan: DistributedRepo Contract and Implementation Convergence
 
 **Branch**: `Repo` | **Date**: 2026-10-08 | **Spec**: [spec.md](spec.md)
-**Progress Timestamp**: 2026-10-08 12:24 -05:00
-**Status**: PLANNING_ONLY; product readiness BLOCK
+**Progress Timestamp**: 2026-10-08 14:27 -05:00
+**Status**: IMPLEMENTATION_IN_PROGRESS; product readiness BLOCK
 
 ## Summary
 
 停止Spec192/193独立推进，将其产品目标、未完资格、三个实际缺陷与两处派生契约/oracle问题纳入Spec202。主路径已经native化；实现策略是修复现有owner、消除设计/代码/证据差异并完成统一资格，不重写Repo或添加隐式replication。
 
-本轮仅审计/文档；新任务的product实施与validation均NOT_RUN。详细差距唯一记录为[gap-audit.md](gap-audit.md)，规则在[contracts/architecture-and-api.md](contracts/architecture-and-api.md)与[candidate-and-validation.md](contracts/candidate-and-validation.md)，避免逐任务复制契约。
+用户已授权在Repo完成全部任务。T001静态baseline已闭合，T002 localizedrepair及T006 oracle已实施、运行局部验证；当前重复Persistent与动态门尚未闭合，T003–T005/T007–T010仍待完成。具体状态以tasks.md与各batch记录为准。详细差距唯一记录为[gap-audit.md](gap-audit.md)，规则在[contracts/architecture-and-api.md](contracts/architecture-and-api.md)与[candidate-and-validation.md](contracts/candidate-and-validation.md)，避免逐任务复制契约。
 
 ## Technical Context
 
