@@ -420,5 +420,30 @@ class PreflightMutationTests(unittest.TestCase):
         self.assertFalse(target.exists())
 
 
+class BuildSourceClosureTests(unittest.TestCase):
+    def test_build_entry_inputs_cannot_change_or_disappear(self):
+        before, names = preflight.source_candidate(ROOT)
+        actual_hash = preflight.sha256
+        actual_file = Path.is_file
+        for name in ("scripts/configure_dependencies.py", "examples/wscript",
+                     "examples/trust-any.conf",
+                     "pythonWrapper/pyproject.toml", "pythonWrapper/README.md",
+                     "NDNSF-DistributedRepo/pythonWrapper/pyproject.toml",
+                     "NDNSF-DistributedRepo/pythonWrapper/README.md",
+                     "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/py.typed"):
+            with self.subTest(name=name):
+                self.assertIn(name, names)
+                with mock.patch.object(preflight, "sha256", side_effect=lambda path:
+                        "00" * 32 if path == ROOT / name else actual_hash(path)):
+                    changed, same_names = preflight.source_candidate(ROOT)
+                self.assertEqual(names, same_names)
+                self.assertNotEqual(before, changed)
+                with mock.patch.object(Path, "is_file", lambda path:
+                        False if path == ROOT / name else actual_file(path)):
+                    with self.assertRaises(preflight.PreflightError) as caught:
+                        preflight.source_candidate(ROOT)
+                self.assertEqual(caught.exception.failure_class, "MISSING_SOURCE")
+
+
 if __name__ == "__main__":
     unittest.main()
