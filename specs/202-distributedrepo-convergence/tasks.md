@@ -19,12 +19,12 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK3完整native七suite及87-case surface/local conformance PASS；公开inventory保留，current network/profile资格待T010，不继承旧PASS。 | 2026-10-08 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK3两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk3/sdk3-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK3旧normal九组PASS；fresh ASAN build/import两suite PASS，conformance首漏223572/242。SQLite构造失败RAII/seed-only签名fixture修复后两focused及完整87/1494无抑制PASS；source5bf42de5需新normal receipt/全dynamic/closing，旧network计划未释放。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | SQLite/seed-only fixture两focused及完整87/1494无抑制PASS；source5bf42de5的SDK4 fresh normal编译中。689-entry/677-source静态delta与串行validation command审查PASS，sdk4-normal-validation.json记录等待同一builder→九组normal→七whole ASAN；最终closure/network仍未释放。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-SDK3完整动态门首漏已保留并停止，两个独立泄漏已修复；现source5bf42de5/677文件，两focused及完整conformance ASAN/UBSAN exit0。下一步新normal build/receipt→全部normal/dynamic→current-byte closing→新source两轮network；旧SDK3计划/receipt不能继承，尚未启动network。进度只维护本表，原始证据见dynamic-20261008-sdk3，失败经过只在failure-log。
+SDK4 fresh build与已审查串行validation实际运行中，原始状态在candidate-build-20261008-sdk4/sdk4-normal-validation.json；当前WAITING_BUILD，后续九组normal/七whole native dynamic按首失败停止。source5bf42de5的689-entry snapshot含五/六/七host fixture，静态delta PASS。旧SDK3首漏/修复原始日志保留；旧receipt/网络计划不继承。下一步current-byte normal/dynamic closure→closing release→两轮network，尚未启动network。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
