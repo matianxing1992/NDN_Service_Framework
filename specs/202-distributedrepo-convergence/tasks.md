@@ -19,12 +19,12 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK4完整native七suite及87-case surface/local conformance PASS；公开inventory保留，current network/profile资格待T010，不继承旧PASS。 | 2026-10-08 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK4两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk4/sdk4-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK4最终Persistent dynamic exit201，旧资格不可继承。冻结source0e111078的SDK5 normal/j2与独立Og ASAN/UBSAN/j1构建均运行中，configure exit0；见dynamic-20261009-og/construction.json。新候选九normal/七dynamic及network均未关闭。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | SDK5 source0e111078六步normal构建PASS：167实际dep、18产物及import实际Core/DI/SVS/OpenABE hash已核对，receipt3ddca0aa；见dynamic-20261009-og/construction.json。Og ASAN/UBSAN仍在构建，执行器待实际成功确认；新候选九normal/七dynamic及network未关闭。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-SDK4全九组normal及六whole ASAN/UBSAN PASS，最后Persistent exit201（24业务断言失败，无sanitizer诊断）；未启动network。ACK coverage修复重跑仍red；临时pump计时及deferred bridge实验未解决，均撤去。新source0e111078（677文件）在独立build-spec202-asan-20261009-og以Og/ASAN/UBSAN/j1构建，configure exit0，原始状态在evidence/dynamic-20261009-og/construction.json。下一步核对编译/加载闭包并同预算recovery→完整normal/dynamic/closing→两轮network（59ID/每轮68场景/六profile）；不继承旧资格。
+SDK5 normal候选构建封存通过，详情见T009；插桩构建仍运行。已审核sdk5-validation.py等待两项构建和实际ASAN成功确认，尚无test记录。下一步新候选九normal/七whole dynamic及加载闭包→closing→两轮network（59ID/每轮68场景/六profile）；旧Persistent reds和失败的夹具实验保留，不继承旧资格。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
