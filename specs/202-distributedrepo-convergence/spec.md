@@ -2,15 +2,24 @@
 
 **Feature Branch**: `Repo`
 **Created**: 2026-10-08
-**Status**: Draft
-**Progress Timestamp**: 2026-10-08 12:24 -05:00
+**Status**: Implementation authorized; qualification incomplete
+**Updated**: 2026-10-08
 **Input**: 用户要求静态审计当前 Repo 与理想 Repo 的差距，纳入刚发现的缺陷，停止 Spec192/193，建立 Spec202 写清需求、设计、修复与验收。
 
 ## Scope Boundary
 
 本 Spec 是新的唯一推进入口。Spec192/193 停止新增实现和实验，保留源码、原始证据、失败与历史 checkbox；停止不代表它们完成或被回滚。目标取自两者已接受的产品意图与当前架构，不添加自动 placement、erasure coding、DI 领域状态或新 Python 状态机。详见 [gap-audit.md](gap-audit.md) 和 [supersession.md](supersession.md)。
 
-本轮交付仅为静态审计和可执行设计文档；产品修复、构建、测试及网络资格均未授权为本轮执行范围。后续实施由 [tasks.md](tasks.md) 控制。基础是 `0957f675b230e89278f2fab96e30023353e5958e` 加当前未提交 overlay；HEAD 单独不能复现实际源码。
+用户已授权在Repo完成全部任务；交付物是满足本Spec的实现、真实回归与完整资格，不是文档集。当前执行状态只在[tasks.md](tasks.md)维护；原始baseline与历史审核记录保留，HEAD单独不能代表未提交overlay。
+
+## Implementation and Documentation Budget
+
+- 优先完成代码、实际回归和验收；不为改善行数比例增加无需求代码，也不把新增文档数量算作任务成果。
+- 普通修复只更新tasks.md对应一行；接口、重要状态、ownership、安全或迁移发生变化才修改已有contract的相关段落。已有设计足够时直接编码，不另写实现方案。
+- 停止新增batch卡、重复审查报告、交接文件和进度镜像。已有专项文档保留为历史引用，不逐轮续写；后续唯一状态入口是tasks.md。
+- 审查、构建和测试保持真实执行。命令/哈希/结果用既有evidence目录的日志或JSON保存；tasks只链接结果。非平凡失败在已有failure-log记录一次，其他文件引用它，不复制事故经过。
+- 纯过程说明通常不超过10行/行为任务；超出须有独有的契约或操作价值。验证矩阵、API清单和必要复现说明不按代码行数机械删减，但各事实只维护一处。
+- 本约束优先于会产生重复表格/新文件的流程模板；完整59case、所有子场景、两轮资格和必要动态门不减少。没有实际证据不得DONE。
 
 ## User Scenarios & Testing
 
@@ -149,4 +158,4 @@ Python 为 C++ 薄绑定，保留借用 owner 的寿命并释放 GIL 执行阻�
 - “理想 Repo”采用 Spec192/193 接受的可复用、native-owned 产品目标；不推断额外部署或性能目标。
 - 不承诺任意 OS/磁盘永久故障下能恢复 namespace；显式 recovery failure 保留材料，不声称 power-loss 已验证。
 - 本机 Ubuntu20.04、system Boost1.71、固定 Experimental 依赖；不得为了检查门构造 Boost1.74 prefix。
-- 本轮仅静态/文档。GSD 不另建状态机，采用本 Spec registry；ARS 统计/文献门不适用；Tiger/SIF、模型 benchmark、push 和产品实施不在本轮。
+- 当前授权覆盖实现与本机功能资格；GSD复用tasks registry，不另建状态机。ARS统计/文献门不适用；Tiger/SIF、模型benchmark与push不在范围内。

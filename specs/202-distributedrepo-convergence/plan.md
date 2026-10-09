@@ -1,82 +1,38 @@
-# Implementation Plan: DistributedRepo Contract and Implementation Convergence
+# Implementation Plan: DistributedRepo Convergence
 
-**Branch**: `Repo` | **Date**: 2026-10-08 | **Spec**: [spec.md](spec.md)
-**Progress Timestamp**: 2026-10-08 14:27 -05:00
-**Status**: IMPLEMENTATION_IN_PROGRESS; product readiness BLOCK
+**Branch**: `Repo` | **Updated**: 2026-10-08 | **Spec**: [spec.md](spec.md)
+**Status**: IMPLEMENTATION_IN_PROGRESS; qualification incomplete
 
-## Summary
+实现现有native Repo的已接受目标，修复实际缺陷，完成全部资格。Spec192/193保持停止。当前状态唯一维护在[tasks.md](tasks.md)，差距在[gap-audit.md](gap-audit.md)；不在本计划复制实时任务状态。
 
-停止Spec192/193独立推进，将其产品目标、未完资格、三个实际缺陷与两处派生契约/oracle问题纳入Spec202。主路径已经native化；实现策略是修复现有owner、消除设计/代码/证据差异并完成统一资格，不重写Repo或添加隐式replication。
+## Owners and Constraints
 
-用户已授权在Repo完成全部任务。T001静态baseline已闭合，T002 localizedrepair及T006 oracle已实施、运行局部验证；当前重复Persistent与动态门尚未闭合，T003–T005/T007–T010仍待完成。具体状态以tasks.md与各batch记录为准。详细差距唯一记录为[gap-audit.md](gap-audit.md)，规则在[contracts/architecture-and-api.md](contracts/architecture-and-api.md)与[candidate-and-validation.md](contracts/candidate-and-validation.md)，避免逐任务复制契约。
-
-## Technical Context
-
-**Language/Version**: C++17、Python3薄绑定/外部编排；当前Waf/native targets。
-**Primary Dependencies**: ndn-cxx、固定Experimental ndn-svs/system Boost1.71、NDNSF Core/NAC、SQLite、OpenSSL、pybind。
-**Storage**: 现有filesystem payload/manifest、native SQLite journal/receipt/location；不新增schema for本轮三个局部修复。
-**Testing**: 真实native API/worker/import fixtures，C++ unit/生产integration，Python conformance/parity，风险匹配dynamic，MiniNDN signed packet/storage oracle。
-**Target Platform**: 本机Ubuntu20.04；system Boost1.71，build≤j4、单tree；无Tiger/SIF/模型benchmark。
-**Project Type**: 现有native library/service与bindings；配置profile明确分离。
-**Constraints**: 两种mode/native ownership不变；Core授权边界不变；post-sync deadline不移除；结果与failed destination语义明确；旧原始证据不修改。
-**Scale/Scope**: 59稳定case及全部子场景，five/six/seven独立NFD hosts，two完整rounds。
-**Open checks**: T001 inventory/source closure、legacy parser兼容边界、destination特殊类型/同路径并发前置；对应任务编码前检查，不隐式作已实现假设。
-
-## Constitution Check
-
-| Principle | Design decision / gate |
+| Owner | Work |
 | --- | --- |
-| native ownership/security | DB001/DB007；Framework负责Core grant，Repo只验证已有identity，不创建第二Python状态机 |
-| CodeGraph/source authority | 本轮当前Source hash和调用路径已核对；T001逐入口补齐，旧checkbox不覆盖新缺陷 |
-| cohesive tasks | 10个行为task；red/patch/focused regression/evidence属于同一任务，动态门按batch冻结 |
-| immutable promotion | DB candidate合同、变更失效矩阵、profile组合、mutation closure，先convergence后昂贵运行 |
-| design-code convergence | unresolved G001/G002使product BLOCK；本轮未启动formalvalidation |
-| language/state | 中文叙述、English structural IDs/status；Spec202 registry，GSD不另建权威 |
-| environment separation | 本机功能资格，无统计/ARS研究主张，无Tiger操作，无push |
+| Native Repo | API/store/worker/importer及其真实C++回归；保持publicABI/schema及mode边界 |
+| Core | 现有grant/request/response安全事实；不为fixture修改授权或SVS时间 |
+| Binding/DI | native typed projection、strong owner、真实跨语言/授权复用；无Python业务状态机 |
+| Build/runtime | 真实源码、SDK headers/library、产物和profile闭包；实际加载哈希及mutation拒绝 |
+| Harness/oracle | 共享192/193文件名保留；独立storage/wire/consumer/cleanup证据 |
 
-## Pre-Qualification Design-Code Convergence
+本机Ubuntu20.04、C++17、system Boost1.71；单build tree、最多j4，当前资源敏感构建用j1/j2。无Tiger/SIF、模型benchmark或push。保留用户overlay及原始失败证据，不以HEAD或旧binary声称当前候选可复现。
 
-T001固定实际baseline/API与需求，T002–T008完成适用repair/conformance后，T009重新对source/runtime/config/oracle做五lane组合审查。未解决semantic/security/wiring/evidence HIGH保持BLOCK；允许focused red/repair，禁止在BLOCK下启动完整验收suite或MiniNDN资格。任何行为影响变化按invalidation matrix重审受影响范围。
+## Execution Order
 
-## Logical Batch Quality Plan
+1. T001：固定现状、入口与owner，复用现有API清单和验证矩阵。
+2. T002–T004：localized destination/ledger/import修复，真实red→patch→closing；不扩展公共接口。
+3. T005–T008：核对metadata/object/oracle/binding/DI；已正确实现直接跑conformance，发现违约才修正确owner。
+4. T009：收口真实source/build/SDK/profile，重建受影响consumer，完成native/Python/CLI及适用dynamic，fresh convergence关闭controlling gaps。
+5. T010：同一冻结common-source与声明profile完成59case全部子场景两轮、cross-run持久性和必要复现说明。
 
-| Batch | Members / shared boundary | Static/closing oracle | Dynamic / exit |
-| --- | --- | --- | --- |
-| B1 | T001现状/目标/入口清单 | definition TU/target/source ownership和59case双向映射 | none/docs；baseline captured |
-| B2 | T002 consumer destination事务 | 两public fetch、真实postrename faults/old inode/absence/recovery/stopretry | asan-ubsan；闭合destination安全 |
-| B3 | T003 server publication ledger | 真实B请求→timeout→C source read failure、immutable receipts | asan-ubsan；concurrency ownership变化才加tsan |
-| B4 | T004 importer publication recovery | postpublish parent-sync failure/replay，同源inventory/no-replace | asan-ubsan；closing retrydurability |
-| B5 | T005–T008已有surface/metadata/oracle/binding | 各入口保留各自contract与独立closing evidence；无共同出口不强行合批 | 每适用子batch风险确定；signed Python oracle可none |
-| B6 | T009最终source/runtime/tests/convergence | exactsource/artifact/loadeddeps/wholeaffectedsuite，fresh convergence | 所有适用dynamic rows结果明确 |
-| B7 | T010完整matrix two rounds | 全case/subscenario、storage/wire/children/cleanup及reproduction | qualification；单轮/局部不升级 |
+## Review and Validation
 
-**Batch growth decision**: 本次只形成cohesive文档集与旧Spec停止记录；不吸收任何product patch/build/run。后续成员稳定出口即进入批末验证，不为少build继续吸收无关职责。
-每批遵循canonical work-unit/static-review/batch-quality references；source审查记录actualqueries、reviewer path/SHA、完整delta、symbol definition map、artifactoutputhash、首失败/Changed gate、四类retrospective。尚未执行的build/dynamic/runtime为NOT_RUN。
+详细行为只由[architecture-and-api](contracts/architecture-and-api.md)维护；候选、动态和失效规则只由[candidate-and-validation](contracts/candidate-and-validation.md)维护。static review先于受影响运行；未解决HIGH允许focused诊断/修复，禁止完整资格。静态PASS不替代行为或动态PASS；未观测项不计完成。
 
-## Project Structure
+执行Spec的[文档预算](spec.md#implementation-and-documentation-budget)：不新增batch/report/state文件；已有contract覆盖时直接实现。审查五lane在固定快照执行，结果及必要dynamic参数放既有evidence JSON/log，tasks只维护一行状态与链接，不复制模板和retrospective。既有batch文档是历史参考，不再形成并行状态入口。
 
-### Documentation (this feature)
+## Rollback and Completion
 
-`spec.md, gap-audit.md, plan.md, research.md, data-model.md, tasks.md, validation-matrix.md, traceability.md, supersession.md, quickstart.md, checklists/requirements.md, contracts/architecture-and-api.md, contracts/candidate-and-validation.md, review.md`。
+按owner显式路径checkpoint，禁止broad staging；不自动push。恢复失败保留可定位材料；import重试不删除已完整发布目标；不丢用户source或原始证据。无需求不新增ABI/schema、全局事务、Python catalog或隐式replication。
 
-### Source Code (repository root)
-
-- Repo owner：`NDNSF-DistributedRepo/src/ArtifactRepositoryApi.cpp`、`RepoNode.cpp`、`LegacyRepoImporter.cpp`；既有types/protocol/stores和headers。
-- Runtime/security：`ndn-service-framework/ServiceUser.*`及Core；只修实际违约owner，不为fixture改变授权/时间。
-- Thin binding/DI：Repo pythonWrapper、`pythonWrapper/src/ndnsf/_ndnsf.cpp`、DI native/adapter；没有第二PythonDB。
-- Regression：既有API/worker/import C++ fixtures及`tests/wscript`；test-only syscalls seam不成为生产环境开关。
-- Network/oracle：`tests/minindn/spec193_packet_oracle.py`、`run_spec192_real_cpp_repo.py`、`spec193_preflight.py`；文件名带192/193不代表恢复旧Spec推进，也不为改名造成churn。
-
-## Phases and Migration
-
-1. B1先统一baseline/intent、检查特殊路径与parser compat；对未提交source按owner审阅，禁止broad staging build目录。
-2. B2–B4依次修复两个HIGH与MEDIUM，各自本任务保留首次red和closingnativeoracle；publicABI/schema不改变。
-3. B5关闭A19文档跨plane要求、A21 signed mapping oracle与完整OriginalData/object/Python/DI适用边界；existing已正确source不无故重写。
-4. B6稳定共同source与每profile runtime composition；rebuild所有受影响static消费者包括nativePython模块，核对实际加载hash；完成所有受影响测试/dynamic和finalaudit。
-5. B7同最终candidate完整two-roundmatrix/cross-run persistence，failed/unknowncase保留，最后完成公开文档与reproduction。
-
-**Rollback**: 修复按现有owner显式commit可回退；不改schema无需数据降级。destination异常保留恢复材料；import retry不删除完整target。rollback不得丢弃先前用户source/历史证据。旧Spec停用记录保留，Spec202 pointer是唯一活动计划。
-
-## Complexity Tracking
-
-没有批准新publicAPI、全局事务框架、Python catalog、默认replication、observer或统计benchmark。局部destination rollback helper必须仅服务两个nativefetch entry；若实现要求新增ABI/schema或并发机制，先记录实际原因/替代方案并修订contract、审查再编码。
+完成条件唯一见Spec成功标准及validation-matrix；行政文档、局部PASS或单轮成功均不能关闭任务。

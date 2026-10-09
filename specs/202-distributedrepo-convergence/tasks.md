@@ -2,67 +2,27 @@
 
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [gap-audit.md](gap-audit.md), [validation-matrix.md](validation-matrix.md)
 **Branch**: `Repo`
-**Progress Timestamp**: 2026-10-08 15:52 -05:00
+**Updated**: 2026-10-08
 **Execution mode**: IMPLEMENTATION_AUTHORIZED；用户已要求在Repo完成全部任务。旧Spec192/193保持停止；本registry记录当前实施与分层验证。
-
-## Logical Batches
-
-| Batch | Outcome | Tasks | Exit |
-| --- | --- | --- | --- |
-| B1 | 当前source/ideal/API baseline | T001 | 完整entry/source/target/traceability，未知范围明确 |
-| B2 | failed fetch destination安全 | T002 | 两nativeAPI真实故障回归及静态门 |
-| B3 | source loss后真实target ledger | T003 | 真实worker顺序和immutable aggregate |
-| B4 | legacy publish恢复耐久性 | T004 | 两replay分支barrier及source/no-replace |
-| B5 | metadata/object/oracle/binding全部适用边界 | T005–T008 | 各行为独立closing证据，稳定后停止增长 |
-| B6 | currentcandidate完整convergence/source/suites | T009 | freshaudit+所有affected/dynamic/closure通过 |
-| B7 | 完整多节点two-roundqualification | T010 | matrix全项+子场景+reproduction PASS |
 
 ## Execution Progress
 
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
-| T002 | PARTIAL | T001 | Normal In-App完整两次、修复fixture后独立Persistent完整两次exit0；首次失败保留。最终ASAN/UBSAN仍待运行，见destination-batch。 | 2026-10-08 15:32 -05:00 |
-| T003 | PARTIAL | T001 | 删除错误pending预改写、已有finalizer保持attempt ledger；actualBSTORE/Csourcefailure/latepublication与exception-safe stop、完整recovery selector closing两次exit0，ASAN pending。 | 2026-10-08 15:32 -05:00 |
-| T004 | PARTIAL | T001 | 两replaybarriers+G004verifiedbytes/provenance转换+oldstage早期inventory fence；完整unit两次与5case integrationexit0；ASAN及当前CLI/network pending。 | 2026-10-08 15:32 -05:00 |
+| T002 | PARTIAL | T001 | Normal两入口closing通过；ASAN In-App exit0，Persistent exit1/19业务失败及OpenABE泄漏；evidence/t002-closing-review-20261008/asan-results.json。 | 2026-10-08 |
+| T003 | PARTIAL | T001 | 修复及完整recovery normal两次exit0；ASAN worker在前序门失败后NOT_RUN，等待SDK闭包。 | 2026-10-08 |
+| T004 | PARTIAL | T001 | Native repair normal及原5case ASAN integration/unit通过；新增真实CLI parity静态PASS、尚未构建；network pending。 | 2026-10-08 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前surface/真实local与network/profile边界按api-inventory和surface-batch核对；current native完整suite及网络仍待运行，不继承旧PASS。 | 2026-10-08 15:52 -05:00 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | binding strong owner/析构/GIL与DI适配source核对；两个模块重建、Python/CLI/parity/currentnetwork尚未闭合。 | 2026-10-08 15:52 -05:00 |
-| T009 | PARTIAL | T002–T008 | preflight active202/clean-source/缺失与staged删除fence v2静态PASS，12mutation tests PASS；build receipt、全consumers、动态与freshconvergence仍待收口。 | 2026-10-08 15:52 -05:00 |
+| T009 | PARTIAL | T002–T008 | 输入fence 12mutation PASS；build receipt/CLI/conformance v2静态PASS未构建；SDK policy probe exit1/leak2112bytes20allocations，headers闭包待修。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
-
-## Detailed Execution Progress
-
-| Substep | Parent | Concrete outcome / path | State | Scoped evidence | Blocker / next action | Reuse / rerun trigger |
-| --- | --- | --- | --- | --- | --- | --- |
-| T001.a | T001 | gap-audit.md当前source findings | VERIFIED_STATIC | CodeGraph/actualsource、Core admission overlay、只读release PASS | 产品缺陷由T002–04修复 | source或acceptedcontract变更重审 |
-| T001.b | T001 | api inventory、TU/target/source baseline | VERIFIED_STATIC | api-inventory.md；150-input complete ZIP SHA b756347c…；原116-files archive明确PARTIAL | finalrebuiltartifact/loadeddeps由T009验证，不计旧binary PASS | 新入口/构建source变化 |
-| T002.a | T002 | API.cpp两fetch的commit/rollback | IMPLEMENTED | 实际red+fixedsnapshot v2静态PASS；postrename rollback、fatalcleanup、acceptedcleanup和leafsymlink | closing native与asan-ubsan，不将静态PASS算DONE | destination/deadline/cleanup语义变化 |
-| T003.a | T003 | Node.cppsourcefailure target状态 | VERIFIED_NORMAL | red2四预期失败→fixed recovery完整两次exit0；worker-batch.md | 最终dynamic/source family | ledger/worker/recovery变化 |
-| T004.a | T004 | Importer两existing目标分支durability | VERIFIED_NORMAL | barrierred+G004integrationred→完整unit两次/integration5case exit0；import-batch.md | 最终ASAN/CLI/原packet当前profile | importer/manifest/sourceprofile变化 |
-| T005.a | T005 | artifact/segments/offline与OriginalData平面 | IMPLEMENTED | v4静态PASS、13offline testsPASS；metadata-batch.md | nativeunit与最终网络当前candidate | metadata/auth/hint/oracle变化 |
-| T006.a | T006 | signedSync+native attempt对照 | IMPLEMENTED | v2 snapshot 60be34cc…；真实session producer、distinctRequest、expectedC/B/A、签名/链/跨capture反例 | readonly复审后offline验证；当前network仍T009/T010 | oracle、SVS协议/调用顺序变化 |
-| T007.a | T007 | publicobject/local/network/codec覆盖 | NOT_STARTED | NOT_RUN；DB007 | 入口/负例/registration当前核对 | codec/API/profile变化 |
-| T008.a | T008 | binding/DI/compat/import实际caller | NOT_STARTED | NOT_RUN；DB007 | currentPython模块/sourcehash与真实生产结果 | native静态库/pybind/DI变化 |
-| T009.a | T009 | source/runtime/profile sealed family | NOT_STARTED | NOT_RUN；candidate合同 | 合法owner source收口及全部affectedconsumers | 任一behaviorplane变化 |
-| T009.b | T009 | suite/dynamic+freshaudit | NOT_STARTED | NOT_RUN | 先静态组合门，再对应测试/动态，不忽略外部ABI报告 | 对应changeinvalidation矩阵 |
-| T010.a | T010 | finalfullmatrix/cross-run双轮 | NOT_STARTED | NOT_RUN | T009 PASS前禁止执行资格 | family/profile/validation变化 |
 
 ## Current Checkpoint
 
-2026-10-08 15:36 -05:00 — Repo分支，全部任务继续实施。T001 DONE；G001–G003及新增G004已localizedrepair，T002/T003 normal完整closing两次通过，T004完整unit两次/integration5case通过；均待最终ASAN/UBSAN。T005/T006 packet/native入口已接线，13offline+6OriginalData nativeunit通过；当前网络7个O17子场景及A21仍未资格验证。T007/T008完整surface/parity，T009 source/binding/runtime/dynamic/convergence与T010统一双轮仍未完成。产品readiness BLOCK，旧PASS仍仅历史。Context Mode健康曾通过但authority检索为空，仓库为authority；文档更新后索引必须刷新。CodeGraph已同步当前source。
-
-## Historical Planning Batch Quality Record (2026-10-08 12:24)
-
-**Batch growth decision**: 一批只写Spec202可审查文档与旧Spec停止/指针同步，不修改产品、harness或测试源码。
-**Scope**: 当前baseline/ideal/gaps/contracts/task/validation/supersession；read-onlycode review沿用canonicalreview-agent。
-**Coverage matrix**: gap-audit.md记录五laneactualfiles/queries及未观测范围；review.md记录本轮doc一致性复审。
-**Changed gate**: 以实际source派生begin预算、post-rename失败边界、attemptCount和signedSyncmetadata替代旧不正确推断。
-**Static**: 当前产品BLOCK；文档review/structure待review.md结果。
-**Compile/link, runtime/test, dynamic**: NOT_RUN（本轮未授权执行）。
-**Batch Retrospective**: static发现三产品缺陷/跨plane文档和oracle误判；compile/link未观测；runtime/test只读取旧manifest；unobserved为fullcurrentqualification/powerloss。
-**Closing decision**: 文档稳定后CLOSED_FOR_PLANNING；产品实现OPEN_FOR_NEXT_BATCH，需明确实施授权和各Design binding前置，无自动开始编码。
+下一步先处理T009未抑制的OpenABE policy/clone泄漏和SVS headers/library闭包；Persistent ASAN首失败保留，不能启动完整资格。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
 
 ## Design binding
 
