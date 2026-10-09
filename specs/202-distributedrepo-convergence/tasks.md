@@ -12,19 +12,19 @@
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
-| T002 | PARTIAL | T001 | SDK4 normal两入口及ASAN In-App PASS，完整Persistent dynamic运行中；旧首失败保留在t002-closing-review-20261008/asan-results.json，不继承旧PASS或抑制泄漏。 | 2026-10-08 |
-| T003 | PARTIAL | T001 | SDK4完整recovery所在Persistent normal suite PASS；该whole suite ASAN/UBSAN运行中，worker动态closing尚未结束。 | 2026-10-08 |
+| T002 | PARTIAL | T001 | SDK4 normal两入口及ASAN In-App PASS；完整Persistent dynamic exit201，无sanitizer诊断但业务断言失败。当前RepoClient修复后须重封候选，不继承旧PASS。 | 2026-10-09 |
+| T003 | PARTIAL | T001 | SDK4完整Persistent normal PASS、ASAN业务回归失败；固定Provider的认证ACK coverage局部修复推进recovery，重跑仍失败，closing未完成。原始日志在dynamic-20261008-sdk4。 | 2026-10-09 |
 | T004 | PARTIAL | T001 | SDK4完整import unit4/integration6含真实CLI parity normal及无抑制ASAN/UBSAN PASS；当前network资格仍待T010。 | 2026-10-08 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK4完整native七suite及87-case surface/local conformance PASS；公开inventory保留，current network/profile资格待T010，不继承旧PASS。 | 2026-10-08 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK4两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk4/sdk4-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK4六步build/binding/import/167dep/18artifact闭包及全部九组normal PASS，含native七suite/Python117/入场锁回放oracle35；receipt16bf7ff6/source5bf42de5。六whole ASAN/UBSAN PASS，完整Persistent dynamic运行中；最终closure/closing/network未释放。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | SDK4九组normal和六whole ASAN/UBSAN PASS，但最后Persistent exit201；见dynamic-20261008-sdk4/dynamic-validation.json。RepoClient新修复使旧source5bf42de5/receipt16bf7ff6失效，须新候选全门；network未释放。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-SDK4全部normal九组PASS，含35入场/真实锁回放/oracle（678.14s）；原始状态为candidate-build-20261008-sdk4/sdk4-normal-validation.json。dynamic-20261008-sdk4已有六whole suite无抑制PASS，最后完整Persistent运行中，保留actual runtime maps；source5bf42de5/receipt16bf7ff6不变。下一步最后dynamic及实际加载闭包核验→closing release→完整两轮network（59ID/全部68场景每轮/六profile）；尚未启动network。
+SDK4全九组normal及六whole ASAN/UBSAN PASS，最后Persistent exit201（24业务断言失败，无sanitizer诊断）；未启动network。固定Provider认证ACK提前收齐的局部修复已编译，同预算两次recovery重跑分别184/185和229/232断言通过，仍不能关闭。下一步定位剩余owner请求→新候选完整normal/dynamic/closing→两轮network（59ID/每轮全部68场景/六profile）；不继承旧候选资格。日志均在dynamic-20261008-sdk4。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
