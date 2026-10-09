@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK8完整98-case surface/local conformance及1655断言normal PASS；公开inventory保留，current完整dynamic/network/profile资格尚未关闭。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK8两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk8/sdk8-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | main126cf0b7/680 +SVS1687dc9：全局SDK normal/ASAN92/697 PASS（5bdfed41/7eb8298f）；fresh SDK8六步PASS，receipt fd910bda、168实际编译依赖记录及runtime一致。全部9 normal PASS（7 whole C++、Python117、admission/oracle37）；dynamic前6/7 PASS，各actual maps绑定7eb8298f及ASAN/UBSAN，最后完整Persistent由executor14296运行中。见candidate-build-20261009-sdk8/sdk8-{normal,dynamic}-validation.json。全部原预算/oracle保留；完整dynamic/封存复现/closing及两轮network仍待关闭。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | main126cf0b7/680 +SVS1687dc9：全局SDK normal/ASAN92/697 PASS（5bdfed41/7eb8298f）；fresh SDK8六步PASS、receipt fd910bda及168实际编译依赖记录。全部9 normal PASS（7 whole C++、Python117、admission/oracle37）+全部7 dynamic PASS，actual maps绑定选定SDK及ASAN/UBSAN；完整Persistent dynamic5/877、211.295s，无sanitizer诊断。source/log/artifact哈希终检一致；normal bde88a04、dynamic bdc4b641。见candidate-build-20261009-sdk8/sdk8-{normal,dynamic}-validation.json。全部原预算/oracle保留；封存复现/closing及两轮network仍待关闭。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
