@@ -24,7 +24,7 @@
 
 ## Current Checkpoint
 
-SDK4全九组normal及六whole ASAN/UBSAN PASS，最后Persistent exit201（24业务断言失败，无sanitizer诊断）；未启动network。固定Provider认证ACK提前收齐的局部修复已编译，同预算两次recovery重跑分别184/185和229/232断言通过，仍不能关闭。下一步定位剩余owner请求→新候选完整normal/dynamic/closing→两轮network（59ID/每轮全部68场景/六profile）；不继承旧候选资格。日志均在dynamic-20261008-sdk4。
+SDK4全九组normal及六whole ASAN/UBSAN PASS，最后Persistent exit201（24业务断言失败，无sanitizer诊断）；未启动network。ACK coverage修复重跑仍red；临时pump计时及deferred bridge实验未解决，均撤去。新source0e111078（677文件）在独立build-spec202-asan-20261009-og以Og/ASAN/UBSAN/j1构建，configure exit0，原始状态在evidence/dynamic-20261009-og/construction.json。下一步核对编译/加载闭包并同预算recovery→完整normal/dynamic/closing→两轮network（59ID/每轮68场景/六profile）；不继承旧资格。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
