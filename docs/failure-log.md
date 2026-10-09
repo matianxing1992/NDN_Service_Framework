@@ -18293,3 +18293,9 @@ containing selector has not yet run. See the next review/build/run record in
 - **Symptom / cause:** SDK2's retired Python persistence/session tests still expected removed state owners. First repaired cohort had two test fixture errors: absent wire fields normalize to empty mappings, and a rejection test omitted required SHA-256 and targeted the encoder instead of the decoder.
 - **Fix / gate:** Replace retired state emulation with actual versioned rejection and real SQLite/WAL/payload/sidecar preservation; retain live codec/scheduler/Core tests. Correct the wire fixtures; all 117 tests across the same 33-file cohort PASS, plus three source admission and four acceptance projection tests PASS; read-only review PASS.
 - **Evidence / limits:** `specs/202-distributedrepo-convergence/evidence/python-retirement-20261008/python-cohort-{1,2}.json` preserve red/green runs. Boundary tests do not qualify native persistence; fresh seal, full dynamic and both complete network rounds remain open.
+
+### 2026-10-08 CDT — Spec202 outer supervisor budget mismatch
+
+- **Symptom / cause:** Read-only review blocked the draft outer executor: a uniform 1800-second cap was shorter than A06_LARGE's declared 3600-second publish plus 300-second fetch and the three 4200-second DI publishes in P03/P04 and baseline loops.
+- **Fix / gate:** Use reviewed scenario-specific supervisor caps with setup/oracle/cleanup allowance; existing child/operation deadlines stay unchanged. Preserve SIGINT cleanup, first-red stopping and all trace-variable scrubbing. Executor release review PASS; current pending-dynamic admission rejects before output/network creation.
+- **Evidence / lesson:** `specs/202-distributedrepo-convergence/evidence/candidate-build-20261008-sdk3/executor-review.json`; supervisors must cover sequential and repeated child budgets. This is executor readiness, not dynamic or network qualification.

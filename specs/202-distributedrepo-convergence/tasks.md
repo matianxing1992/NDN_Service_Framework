@@ -24,7 +24,7 @@
 
 ## Current Checkpoint
 
-SDK3全部normal门green，原始结果为candidate-build-20261008-sdk3/sdk3-normal-validation.json；677-source/receipt不变。fresh ASAN/UBSAN在独立目录j1编译，profile release/配置PASS；dynamic-20261008-sdk3记录真实compiler命令、runtime maps和未抑制结果。network-execution-plan.json覆盖59稳定ID、全部62 runner入口/68场景每轮、六profile与两类cross-run，静态coverage PASS/未执行。下一步完整native dynamic→closing审查→两轮网络资格；保留首失败，仅维护本表与原始evidence。
+SDK3全部normal门green，677-source/receipt不变。fresh ASAN/UBSAN独立目录j1编译，profile release/配置PASS；dynamic-20261008-sdk3保留compiler命令/runtime maps/未抑制结果。network-execution-plan.json及network-execute.py覆盖59稳定ID/68场景每轮/六profile/cross-run；执行器审查PASS，外层预算失配已修复，pending-dynamic真实拒绝零副作用。下一步完整dynamic→hash-bound closing release→两轮网络资格；尚未启动network，仅维护本表和原始evidence。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
