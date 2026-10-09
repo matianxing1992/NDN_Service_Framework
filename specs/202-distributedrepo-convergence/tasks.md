@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK9完整98-case surface/local conformance及1655断言normal PASS；公开inventory保留，current完整dynamic/network/profile资格尚未关闭。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK9两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk9/sdk9-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source e94324e3/688；SDK9六步、9 normal及7 dynamic PASS。证据：[SDK9](evidence/candidate-build-20261009-sdk9/)内receipt、sdk9-{normal,dynamic}-validation.json。sealed-reproduction-v3.json FAIL：未选中Waf注册源缺失；原全局库/receipt已恢复核验。下一步补齐archive scaffold，独立复现v4→closing；旧失败保留，network尚未资格。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | source e94324e3/688；SDK9六步、9 normal及7 dynamic PASS。[SDK9](evidence/candidate-build-20261009-sdk9/)：v3注册FAIL且原全局库/receipt恢复核验；v4封存870条目及bootstrap-review-v4.json STATIC_PASS，独立六步复现运行中（91884），随后whole normal→恢复核验→closing。原始失败保留，failure-log仅新增必要诊断；network待两轮完整资格。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
