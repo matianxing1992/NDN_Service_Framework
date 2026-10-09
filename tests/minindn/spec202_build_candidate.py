@@ -29,7 +29,7 @@ def sdk_inputs(source, build):
     config = build / "config.hpp"
     if not config.is_file():
         config = source / "ndn-svs/config.hpp"
-    paths = [build / "libndn-svs.so", config,
+    paths = [build / "libndn-svs.so", config, source / "wscript",
              Path("/usr/local/share/ndnsf/global-dependency-identity.json")]
     for directory in (source / "ndn-svs", Path("/usr/local/include/ndn-cxx"),
                       Path("/usr/local/include/nac-abe"),
@@ -37,7 +37,8 @@ def sdk_inputs(source, build):
         if not directory.is_dir():
             raise RuntimeError("missing declared SDK headers: " + str(directory))
         paths.extend(path for path in directory.rglob("*")
-                     if path.is_file() and path.suffix in (".h", ".hpp"))
+                     if path.is_file() and (path.suffix in (".h", ".hpp") or
+                         (directory == source / "ndn-svs" and path.suffix == ".cpp")))
     for tool in ("c++", "ld", "ar", "pkg-config"):
         executable = shutil.which(tool)
         if not executable:

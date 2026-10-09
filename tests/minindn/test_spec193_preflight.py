@@ -125,6 +125,29 @@ class PreflightMutationTests(unittest.TestCase):
                 self.assertEqual(caught.exception.failure_class, "MISSING_SOURCE")
         self.assertFalse(self.output.exists())
 
+    def test_svs_implementation_changes_invalidate_sdk_inventory(self):
+        from spec202_build_candidate import sdk_inputs
+        source = Path("/usr/local/src/spec192-ndn-svs-9f2d8a4")
+        build = source / "build"
+        before = sdk_inputs(source, build)
+        actual_hash = preflight.sha256
+        actual_file = Path.is_file
+        for path in (source / "ndn-svs/svspubsub.cpp", source / "wscript"):
+            with self.subTest(path=path):
+                self.assertIn(str(path), before)
+                with mock.patch.object(preflight, "sha256", side_effect=lambda candidate:
+                        "00" * 32 if candidate == path else actual_hash(candidate)):
+                    self.assertNotEqual(before, sdk_inputs(source, build))
+                with mock.patch.object(Path, "is_file", lambda candidate:
+                        False if candidate == path else actual_file(candidate)):
+                    if path.suffix == ".cpp":
+                        self.assertNotEqual(before, sdk_inputs(source, build))
+                    else:
+                        with self.assertRaises(preflight.PreflightError) as caught:
+                            sdk_inputs(source, build)
+                        self.assertEqual(caught.exception.failure_class, "MISSING_BUILD_INPUT")
+        self.assertFalse(self.output.exists())
+
     def test_missing_source_is_rejected_before_output(self):
         self.reject("MISSING_SOURCE", source_files=["missing-native-input.cpp"])
         actual = Path.is_file
