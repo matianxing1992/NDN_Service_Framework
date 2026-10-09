@@ -8,6 +8,8 @@ candidate family固定source（包括需要的overlay）、native executables/sh
 
 source closure执行门必须拒绝缺文件、source/artifact mismatch、dependency加载偏离、profile错配、Python模块缺失及不合适sudo env，mutation rejection发生于创建network/运行目录等昂贵副作用之前。不得只比源码git SHA或相信LD_LIBRARY_PATH变量；实际loaded libs路径与SHA进入manifest。
 
+显式SDK source/build pair必须在每个实际consumer的编译include顺序中优先于共同global prefix，以实际compiler dependency证明使用的headers，不能只查Waf单个变量。OpenABE解析/deep-clone产生的policy独占其子树；root销毁必须释放全部descendants。SDK lifetime修复不改变publicABI、有效policy/crypto语义或通用ZObject计数约定；保留原SDK工作树，在隔离源中修复、审查及重建，并重做受影响动态门。
+
 ## Change Invalidation Matrix
 
 | Change plane | Earliest required gate | Invalidated evidence |

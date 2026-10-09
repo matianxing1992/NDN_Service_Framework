@@ -860,6 +860,14 @@ int main() {
         conf.check(features='cxx cxxprogram', fragment=fragment, use=use,
                    mandatory=True, msg='Checking ' + label + ' compile/link closure')
 
+    # Common SDK prefixes must not shadow the explicitly paired SVS headers,
+    # including when NAC-ABE precedes NDN_SVS in a consumer's use list.
+    if svs_source_tree:
+        for key in list(conf.env.keys()):
+            if key == 'INCLUDES' or key.startswith('INCLUDES_'):
+                conf.env[key] = svs_includes + [
+                    path for path in list(conf.env[key] or []) if path not in svs_includes]
+
     conf.define_cond('HAVE_TESTS', conf.env.WITH_TESTS)
     conf.define_cond('HAVE_ONNXRUNTIME_CPP', conf.env.HAVE_ONNXRUNTIME_CPP)
     conf.define_cond('HAVE_GSTREAMER', conf.env.HAVE_GSTREAMER)

@@ -17,12 +17,12 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前surface/真实local与network/profile边界按api-inventory和surface-batch核对；current native完整suite及网络仍待运行，不继承旧PASS。 | 2026-10-08 15:52 -05:00 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | binding strong owner/析构/GIL与DI适配source核对；两个模块重建、Python/CLI/parity/currentnetwork尚未闭合。 | 2026-10-08 15:52 -05:00 |
-| T009 | PARTIAL | T002–T008 | 输入fence 12mutation PASS；build receipt/CLI/conformance v2静态PASS未构建；SDK policy probe exit1/leak2112bytes20allocations，headers闭包待修。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | 输入fence 12mutation PASS；receipt/CLI/conformance及compiler-dependency静态PASS未构建；独立SDK policy修复probe exit0、46base/106ABE PASS，安装与完整dynamic复验待执行。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-下一步先处理T009未抑制的OpenABE policy/clone泄漏和SVS headers/library闭包；Persistent ASAN首失败保留，不能启动完整资格。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
+下一步安装已隔离验证的OpenABE局部修复，完成实际compiler-selected SVS闭包构建并重跑完整dynamic门；Persistent ASAN首失败保留，不能启动完整资格。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
 
 ## Design binding
 
