@@ -839,6 +839,7 @@ BOOST_AUTO_TEST_CASE(OperationOwnedArtifactWithoutReceiptStoreIsHidden)
 BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
 {
   TempRoot temporary;
+  constexpr int recoveryAckMs = 5000;
   const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
   repo::ArtifactLimits artifactLimits;
   artifactLimits.maxChunkBytes = 4;
@@ -905,7 +906,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     std::make_shared<repo::FilesystemRepoStoreBackend>(
       replicaObjects.string(), 1024 * 1024, 4096, "spec192-recovery-replica"),
     replicaRepo, replicaProvider.toUri(), replicaDatabase.string(), artifactLimits);
-  replicaNode->registerServices(environment.provider(1), publisherUsers[1], 1500, 8000);
+  replicaNode->registerServices(environment.provider(1), publisherUsers[1], recoveryAckMs, 20000);
   repo::StorageCapability unselectedCapability = seedCapability;
   unselectedCapability.repoNode = unselectedRepo;
   auto unselectedNode = std::make_shared<repo::RepoNode>(
@@ -914,7 +915,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       unselectedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-unselected"),
     unselectedRepo, unselectedProvider.toUri(), unselectedDatabase.string(), artifactLimits);
   unselectedNode->registerServices(
-    environment.provider(2), publisherUsers[2], 1500, 8000);
+    environment.provider(2), publisherUsers[2], recoveryAckMs, 20000);
   BOOST_REQUIRE(unselectedNode);
   auto seedNode = std::make_shared<repo::RepoNode>(
     servicePrefix, seedCapability,
@@ -1647,7 +1648,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
   BOOST_TEST_MESSAGE("Spec192 recovery: registering replacement seed RepoNode");
   recoveredSeedNode->registerServices(
-    environment.provider(0), publisherUsers[0], 1500, 8000);
+    environment.provider(0), publisherUsers[0], recoveryAckMs, 20000);
   BOOST_TEST_MESSAGE("Spec192 recovery: replacement seed RepoNode registered");
 
   repo::PersistentRepoClientConfig clientConfig;
@@ -1657,10 +1658,10 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   clientConfig.limits = artifactLimits;
   auto persistent = repo::ArtifactRepositoryApi::makePersistent(
     environment.user(), clientConfig);
-  // Isolate the wider TSan ACK window to recovery and reconciliation status
-  // checks. The bounded timeout scenario keeps the fixture's original 1 s API.
+  // Instrumented transport gets a bounded admission/status window. The timeout
+  // case retains its separate 500 ms post-accept wait and original server budgets.
   auto recoveryStatusConfig = clientConfig;
-  recoveryStatusConfig.ackCollectionTimeMs = 3000;
+  recoveryStatusConfig.ackCollectionTimeMs = recoveryAckMs;
   auto recoveryStatusApi = repo::ArtifactRepositoryApi::makePersistent(
     environment.user(), recoveryStatusConfig);
   repo::PublishOperationHandle handle;
@@ -1816,7 +1817,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
     seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
   recoveredSeedNode->registerServices(
-    environment.provider(0), publisherUsers[0], 1500, 8000);
+    environment.provider(0), publisherUsers[0], recoveryAckMs, 20000);
   repo::PublishOperationHandle exhaustedReplayHandle;
   exhaustedReplayHandle.operationId = exhaustedReplayOperationId;
   exhaustedReplayHandle.seed = seed;
@@ -1845,7 +1846,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
     seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
   recoverySeedNode->registerServices(
-    environment.provider(0), publisherUsers[0], 1500, 8000);
+    environment.provider(0), publisherUsers[0], recoveryAckMs, 20000);
 
   // Provider 2's registered replica handlers remain available to the injected
   // response-fault wrapper below.
@@ -1913,7 +1914,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   reconciliationPlacement.seedRepoId = seedRepo;
   reconciliationPlacement.consistency = repo::RepoWriteConsistency::All;
   const auto reconciliationHandle = runWithFacePump(environment, [&] {
-    return persistent.beginPublishFile(
+    return recoveryStatusApi.beginPublishFile(
       reconciliationSource.string(), reconciliationReference,
       reconciliationPlacement, "spec192-committed-store-error-key", 120000);
   });
@@ -1943,6 +1944,67 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(fs::exists(committedPayloadPath(
     replicaObjects, reconciliationReference)));
 
+  // Reopen all owners with the original budgets before timeout/source-loss.
+  const auto replicaLocationBeforeReopen = currentLocationRecord(
+    replicaDatabase, reference, replicaRepo, replicaProvider.toUri());
+  const auto replayLocationBeforeReopen = currentLocationRecord(
+    replicaDatabase, exhaustedReplayReference, replicaRepo, replicaProvider.toUri());
+  const auto seedLocationBeforeReopen = currentLocationRecord(
+    seedDatabase, reference, seedRepo, seedProvider.toUri());
+  std::weak_ptr<repo::RepoNode> previousSeed = recoverySeedNode;
+  std::weak_ptr<repo::RepoNode> previousReplica = replicaNode;
+  std::weak_ptr<repo::RepoNode> previousUnselected = unselectedNode;
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(0), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(2), servicePrefix);
+  BOOST_REQUIRE(runWithFacePump(environment, [&] {
+    recoverySeedNode.reset();
+    replicaNode.reset();
+    unselectedNode.reset();
+    return true;
+  }));
+  environment.pumpUntilWithAttributeAuthority([&] {
+    return previousSeed.expired() && previousReplica.expired() && previousUnselected.expired();
+  });
+  BOOST_REQUIRE(previousSeed.expired());
+  BOOST_REQUIRE(previousReplica.expired());
+  BOOST_REQUIRE(previousUnselected.expired());
+  replicaNode = std::make_shared<repo::RepoNode>(
+    servicePrefix, replicaCapability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      replicaObjects.string(), 1024 * 1024, 4096, "spec192-recovery-replica"),
+    replicaRepo, replicaProvider.toUri(), replicaDatabase.string(), artifactLimits);
+  replicaNode->registerServices(environment.provider(1), publisherUsers[1], 1500, 8000);
+  replicaNode->registerServices(environment.provider(2));
+  unselectedNode = std::make_shared<repo::RepoNode>(
+    servicePrefix, unselectedCapability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      unselectedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-unselected"),
+    unselectedRepo, unselectedProvider.toUri(), unselectedDatabase.string(), artifactLimits);
+  recoverySeedNode = std::make_shared<repo::RepoNode>(
+    servicePrefix, seedCapability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      seedObjects.string(), 1024 * 1024, 4096, "spec192-recovery-seed"),
+    seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
+  recoverySeedNode->registerServices(
+    environment.provider(0), publisherUsers[0], 1500, 8000);
+  const auto seedLocationAfterReopen = currentLocationRecord(
+    seedDatabase, reference, seedRepo, seedProvider.toUri());
+  BOOST_CHECK_EQUAL(seedLocationAfterReopen.receiptId, seedLocationBeforeReopen.receiptId);
+  BOOST_CHECK_EQUAL(seedLocationAfterReopen.locationVersion, seedLocationBeforeReopen.locationVersion);
+  const auto replicaLocationAfterReopen = currentLocationRecord(
+    replicaDatabase, reference, replicaRepo, replicaProvider.toUri());
+  const auto replayLocationAfterReopen = currentLocationRecord(
+    replicaDatabase, exhaustedReplayReference, replicaRepo, replicaProvider.toUri());
+  BOOST_CHECK_EQUAL(replicaLocationAfterReopen.receiptId, replicaLocationBeforeReopen.receiptId);
+  BOOST_CHECK_EQUAL(replicaLocationAfterReopen.locationVersion, replicaLocationBeforeReopen.locationVersion);
+  BOOST_CHECK_EQUAL(replayLocationAfterReopen.receiptId, replayLocationBeforeReopen.receiptId);
+  BOOST_CHECK_EQUAL(replayLocationAfterReopen.locationVersion, replayLocationBeforeReopen.locationVersion);
+  BOOST_CHECK_EQUAL(persistentReceiptRows(
+    replicaDatabase, replicaRepo, replicaProvider.toUri(), reference), 1);
+  BOOST_CHECK_EQUAL(persistentReceiptRows(
+    replicaDatabase, replicaRepo, replicaProvider.toUri(), exhaustedReplayReference), 1);
+
   environment.provider(1).addService(
     storeService, std::move(readyAck),
     std::move(delayedStore));
@@ -1962,7 +2024,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   timeoutPlacement.consistency = repo::RepoWriteConsistency::All;
   const auto timeoutStart = std::chrono::steady_clock::now();
   const auto timeoutResult = runWithFacePump(environment, [&] {
-    return persistent.publishFile(
+    return recoveryStatusApi.publishFile(
       timeoutSource.string(), timeoutReference, timeoutPlacement, 500);
   });
   BOOST_REQUIRE(timeoutResult.operationHandle);
@@ -1973,12 +2035,12 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(!timeoutResult.receipt);
   const auto timeoutHandle = *timeoutResult.operationHandle;
   const auto reconnectedTimeoutStatus = runWithFacePump(environment, [&] {
-    return persistent.getPublishStatus(timeoutHandle, 8000);
+    return recoveryStatusApi.getPublishStatus(timeoutHandle, 8000);
   });
   BOOST_CHECK_EQUAL(reconnectedTimeoutStatus.operationId,
                     timeoutHandle.operationId);
   const auto timeoutStatus = waitForTerminalPublish(
-    environment, persistent, timeoutHandle);
+    environment, recoveryStatusApi, timeoutHandle);
   BOOST_CHECK(std::chrono::steady_clock::now() - timeoutStart < 20s);
   BOOST_CHECK_EQUAL(timeoutStatus.state, "PARTIAL");
   const auto unknownTarget = std::find_if(
@@ -2013,7 +2075,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
       seedObjects.string(), 1024 * 1024, 4096, "spec202-source-loss-seed"),
     seedRepo, seedProvider.toUri(), seedDatabase.string(), artifactLimits);
   sourceLossSeed->registerServices(environment.provider(0));
-  unselectedNode->registerServices(environment.provider(2));
+  unselectedNode->registerServices(environment.provider(2), publisherUsers[2], 1500, 8000);
   const std::vector<uint8_t> lossBytes{0x6c, 0x6f, 0x73};
   const auto lossReference = makeReference("spec202-source-loss", lossBytes);
   const auto lossSource = temporary.path() / "source-loss.bin";
