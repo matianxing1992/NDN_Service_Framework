@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK9完整98-case surface/local conformance及1655断言normal/dynamic PASS，证据见T009；公开inventory保留，network/profile资格尚未关闭。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK9两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk9/sdk9-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source d75cf28e/688，early seed58/58；[SDK11](evidence/candidate-build-20261009-sdk11/)封存1092项/hash/mode PASS，DB001–007 design-code STATIC_PASS、R01–07 native覆盖核对。normal六步94378已过configure/native build/install/base binding，Repo binding live；fresh ASAN v2 33996 live，v1误O0失败保留。9normal+7dynamic58006、sealed六步+9normal18529等待前置。旧PASS不继承；runtime closing/network未完成。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | source d75cf28e/688，early seed58/58；[SDK11](evidence/candidate-build-20261009-sdk11/)封存1092项/hash/mode PASS，DB001–007 static/R01–07覆盖核对PASS。normal fresh六步94378 exit0，receipt ce2207fd、全部产物hash/168 compiler records核对PASS；fresh ASAN v2 33996 live，v1误O0失败保留。9normal+7dynamic58006、sealed六步+9normal18529等待ASAN构建。旧PASS不继承；runtime closing/network未完成。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
