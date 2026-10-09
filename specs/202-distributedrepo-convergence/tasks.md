@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK4完整native七suite及87-case surface/local conformance PASS；公开inventory保留，current network/profile资格待T010，不继承旧PASS。 | 2026-10-08 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK4两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk4/sdk4-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK4九组normal和六whole ASAN/UBSAN PASS，但最后Persistent exit201；见dynamic-20261008-sdk4/dynamic-validation.json。RepoClient新修复使旧source5bf42de5/receipt16bf7ff6失效，须新候选全门；network未释放。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | SDK4最终Persistent dynamic exit201，旧资格不可继承。冻结source0e111078的SDK5 normal/j2与独立Og ASAN/UBSAN/j1构建均运行中，configure exit0；见dynamic-20261009-og/construction.json。新候选九normal/七dynamic及network均未关闭。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
