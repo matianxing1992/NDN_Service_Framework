@@ -16,6 +16,8 @@
 
 现有 public signatures 保持：`fetchFile(const ArtifactReference&, const std::string&) const`、`fetchFile(const ArtifactHandle&, const std::string&, int) const`、`RepoNode::runPublishOperationPass(...)`（private worker实现）、`importLegacyRepo(config, observer)`。实现阶段先核对当前header精确签名；本Spec无新增 public RPC、public wire字段或新的Repo类型。
 
+Core ACK入场：pending call的显式非空Provider集合不含ACK name中的Provider时，在解密与`ackDecryptsInFlight`登记前拒绝；保留解密后的候选集合检查，空集合discovery不变。此早过滤仅拒绝输入，不构成认证；Core保留ACK provenance，由caller的eligibility/coverage检查trust与signer binding。`Spec190AckWindow`完整套件加入既有Repo conformance门，覆盖未选ACK零解密/零in-flight、有效选中ACK、错误signer不能覆盖认证候选，以及discovery。原ACK/请求期限、SVS timing和wire不变。
+
 ## DB001 - Baseline and Scope Convergence
 
 **Files**: `gap-audit.md`、`supersession.md`、`validation-matrix.md`、现有公开headers/pybind/facade、`tests/wscript`和Repo `wscript`。

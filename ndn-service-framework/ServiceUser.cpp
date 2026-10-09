@@ -12966,6 +12966,15 @@ namespace ndn_service_framework
                 return;
             }
 
+            // An explicit candidate set cannot admit this named Provider.
+            // Retain the authenticated post-decode check for requested names.
+            if (!pendingCall->second.providers.empty() &&
+                !containsName(pendingCall->second.providers, ackV2->providerName)) {
+                traceSpec192StatusAck(ackV2->serviceName,
+                                     "ack-unrequested-provider-skipped-pre-decrypt");
+                return;
+            }
+
             const bool collectAckCandidates =
                 shouldTrackAckDecrypt(pendingCall->second);
             if (collectAckCandidates) {
