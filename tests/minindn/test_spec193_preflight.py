@@ -1,5 +1,6 @@
 """Mutation probes for Spec202's shared no-side-effect MiniNDN admission gate."""
 
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -213,6 +214,52 @@ class PreflightMutationTests(unittest.TestCase):
             replay = self.check(lock_path=lock)
         self.assertNotEqual(state["source_revision"], replay["source_revision"])
         self.assertEqual(state["candidate_lock_sha256"], replay["candidate_lock_sha256"])
+        self.assertFalse(self.output.exists())
+
+    def test_progress_replay_preserves_lock_but_acceptance_change_rejects(self):
+        state = self.check()
+        lock = self.scratch / "progress-replay-lock.json"
+        lock.write_text(json.dumps(state))
+        feature = ROOT / "specs/202-distributedrepo-convergence"
+        tasks = feature / "tasks.md"
+        matrix = feature / "validation-matrix.md"
+        originals = {path: path.read_text() for path in (tasks, matrix)}
+        changed = {
+            tasks: originals[tasks].replace("| T009 | PARTIAL |", "| T009 | DONE |")
+                .replace("- [ ] T010", "- [x] T010"),
+            matrix: originals[matrix].replace("**Status**: NOT_RUN", "**Status**: PASS")
+                .replace(" | NOT_RUN | NOT_RUN |", " | PASS | FAIL |"),
+        }
+        for path in changed:
+            self.assertNotEqual(originals[path], changed[path])
+        actual_read = Path.read_text
+        actual_hash = preflight.sha256
+
+        def read(path, *args, **kwargs):
+            return changed[path] if path in changed else actual_read(path, *args, **kwargs)
+
+        def digest(path):
+            return hashlib.sha256(changed[path].encode()).hexdigest() \
+                if path in changed else actual_hash(path)
+
+        with mock.patch.object(Path, "read_text", read), \
+                mock.patch.object(preflight, "sha256", digest):
+            replay = self.check(lock_path=lock)
+            self.assertEqual(state["candidate_lock_sha256"], replay["candidate_lock_sha256"])
+            self.assertEqual(state["files"], replay["files"])
+            for path in changed:
+                name = str(path.relative_to(ROOT))
+                self.assertNotEqual(state["progress_provenance"][name],
+                                    replay["progress_provenance"][name])
+            old = "59case及网络子场景两轮"
+            self.assertIn(old, changed[tasks])
+            changed[tasks] = changed[tasks].replace(old, "59case及网络子场景一轮")
+            self.reject("CANDIDATE_MISMATCH", lock_path=lock)
+            changed[tasks] = originals[tasks]
+            old = "完整 SHA-256"
+            self.assertIn(old, changed[matrix])
+            changed[matrix] = changed[matrix].replace(old, "部分 SHA-256")
+            self.reject("CANDIDATE_MISMATCH", lock_path=lock)
         self.assertFalse(self.output.exists())
 
     def test_deleted_tracked_source_is_rejected(self):

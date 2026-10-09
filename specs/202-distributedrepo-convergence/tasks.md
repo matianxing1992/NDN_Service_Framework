@@ -24,7 +24,7 @@
 
 ## Current Checkpoint
 
-下一步补整锁progress-only replay负例，再fresh seal和完整dynamic/convergence。SDK2 normal及117项Python边界回归green，全部首失败保留；尚不能启动完整资格。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
+整锁progress-only replay/acceptance负例已编码并通过只读静态审查，待SDK3 fresh receipt运行。SDK3 native/binding重建进行中；687-input snapshot组合convergence静态PASS，matrix旧batchcard说明已纠正。下一步当前候选unit/integration/Python、完整dynamic，再两轮网络资格；SDK2及全部首失败保留。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding

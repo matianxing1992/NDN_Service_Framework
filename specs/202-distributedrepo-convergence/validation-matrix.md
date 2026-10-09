@@ -98,4 +98,4 @@ R01–07是独立故障等价类，不把每种参数拆成顶层任务。native
 
 每行关闭前填freshrun路径、common-source hash、profilelock、effectiveflags、signed/storage/consumeroracle、finitechild与expectedserviceexit、每hostpcap/loadedlibs/cleanup。round1/round2必须同source+同declaredprofile，不继承旧PASS字符串。单case可在隔离拓扑内连续但状态可复位；无法复位fresh重建。任何缺oracle/异常exit/cleanup或unknown保持OPEN/NOT_RUN。
 
-动态矩阵与nativeclosingregression的selector、source/toolchainhash、输出、预算和未抑制分类在batchcard中记录；本轮没有执行任何regression、dynamic或newnetwork。
+动态与native回归的selector、source/toolchainhash、输出、预算和未抑制分类保存在既有evidence日志/JSON中；当前执行进度由tasks.md唯一维护，本表仅记录完整资格的逐项证据。
