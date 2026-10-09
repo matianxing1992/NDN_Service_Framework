@@ -29,7 +29,7 @@
 
 详细行为只由[architecture-and-api](contracts/architecture-and-api.md)维护；候选、动态和失效规则只由[candidate-and-validation](contracts/candidate-and-validation.md)维护。static review先于受影响运行；未解决HIGH允许focused诊断/修复，禁止完整资格。静态PASS不替代行为或动态PASS；未观测项不计完成。
 
-执行Spec的[文档预算](spec.md#implementation-and-documentation-budget)：不新增batch/report/state文件；已有contract覆盖时直接实现。审查五lane在固定快照执行，结果及必要dynamic参数放既有evidence JSON/log，tasks只维护一行状态与链接，不复制模板和retrospective。既有batch文档是历史参考，不再形成并行状态入口。
+执行Spec的[文档预算](spec.md#implementation-and-documentation-budget)，checkpoint检查新增文件、净增行数与重复状态。已有contract覆盖时直接实现；固定快照的五lane审查及dynamic结果写既有evidence JSON/log，tasks只链接，不另建报告或状态入口。
 
 ## Rollback and Completion
 
