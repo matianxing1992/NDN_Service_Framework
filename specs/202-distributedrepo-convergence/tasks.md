@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK5完整87-case surface/local conformance及1494断言normal PASS；公开inventory保留，current完整native/dynamic/network/profile资格尚未关闭，不继承旧PASS。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK5两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk5/sdk5-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | main126cf0b7/680 +SVS1687dc9：独立SDK normal/ASAN92/697、完整Persistent normal/ASAN5/877 PASS，全部原预算/oracle保留。SDK7因/home global-root guard拒绝，无receipt；全局SDK normal/ASAN92/697 PASS（5bdfed41/7eb8298f）。fresh SDK8 configure/native-build/native-install PASS，binding运行中49692；独立ASAN configure PASS/build28726各j2。9 normal+7 dynamic顺序executor14296等待fresh build，首红停、实际maps/hash绑定。见candidate-build-20261009-sdk8/sdk8-validation.py及owner-probe-budget-20261009/global-sdk-gates.json；完整回归/封存/两轮network仍待关闭。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | main126cf0b7/680 +SVS1687dc9：独立SDK normal/ASAN92/697、完整Persistent normal/ASAN5/877 PASS，全部原预算/oracle保留。SDK7因/home global-root guard拒绝，无receipt；全局SDK normal/ASAN92/697 PASS（5bdfed41/7eb8298f）。fresh SDK8六步全部PASS，receipt fd910bda、168实际编译依赖记录及runtime 5bdfed41一致；独立ASAN build28726各j2。9 normal+7 dynamic顺序executor14296等待ASAN build，首红停、实际maps/hash绑定。见candidate-build-20261009-sdk8/sdk8-validation.py及owner-probe-budget-20261009/global-sdk-gates.json；完整回归/封存/两轮network仍待关闭。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
