@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前SDK11完整surface/local conformance98case normal1655/dynamic v3 1657断言PASS，DB007 STATIC_PASS，公开inventory保留。见T009；独立复现与network/profile资格待关闭，旧SDK9结果仅历史。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 当前SDK11两binding fresh重建/import、33-file Python117PASS及全部7 native dynamic v3 PASS。见T009；不宣称Python instrumentation，sealed复现与crosslanguage/DI network待资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source d75cf28e/688；[SDK11](evidence/candidate-build-20261009-sdk11/)封存/static/两构建闭包PASS，receipt ce2207fd。normal完整9组PASS(native183/4039、Python117、admission41)；dynamic v3完整7组PASS(183/4041)，真实SDK/ASAN/UBSAN maps与日志hash、no sanitizer diagnostics核对PASS。v2 lateR06 ACK red保留、原因未确证，单独/pair/whole诊断PASS；JSON已原子发布。sealed v3 77573 BUILD_RUNNING；完整复现/restore/integrity/closing及136网络运行待完成。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | source d75cf28e/688；[SDK11](evidence/candidate-build-20261009-sdk11/)封存/static/两构建闭包PASS，receipt ce2207fd；normal9组PASS(native183/4039、Python117、admission41)，dynamic v3全7组183/4041及实际SDK/ASAN/UBSAN maps PASS。v2 lateR06 ACK red保留、原因未确证。sealed v3 77573 native/basebinding完成、Repobinding进行；完整复现/restore/integrity/closing待完成。network observer/auditor scoped review、2真实进程probe及7合成检查PASS；136网络仍NOT_RUN。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
