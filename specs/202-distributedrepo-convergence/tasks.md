@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK9完整98-case surface/local conformance及1655断言normal/dynamic PASS，证据见T009；公开inventory保留，network/profile资格尚未关闭。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK9两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk9/sdk9-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source281e03c8/688：[SDK10](evidence/candidate-build-20261009-sdk10/)3 focused及scope复审PASS，1092-entry封存/解包一致；ASAN construction BUILD_PASS（旧native产物/配置不变，新actual-input闭包）。main六步98970运行中，9+7 executor32022等待该builder；sealed v1等待当前9+7 PASS后执行。SDK9仅历史，network未启动；下一步完整runtime→真实复现/恢复→closing。failure-log保留闭包修复诊断。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | source281e03c8/688：[SDK10](evidence/candidate-build-20261009-sdk10/)3 focused/scope复审、1092-entry封存及ASAN construction PASS。main configure/native build(18m43.582s)/install PASS，bindings由98970继续；9+7 executor32022等待六步receipt，sealed v1等待9+7 PASS。SDK9仅历史，network未启动；下一步当前runtime→独立复现/恢复→closing。failure-log保留闭包诊断。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
