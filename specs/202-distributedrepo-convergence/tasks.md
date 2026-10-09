@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK9完整98-case surface/local conformance及1655断言normal/dynamic PASS，证据见T009；公开inventory保留，network/profile资格尚未关闭。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK9两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk9/sdk9-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source d75cf28e/688：T003 early seed修复58/58 focused PASS、scope STATIC_PASS。[SDK11](evidence/candidate-build-20261009-sdk11/)fresh六步构建94378已启动；SDK10 receipt aee9272b仅pre-repair，旧队列已停止，失败/红绿记录保留。下一步完成consumer及ASAN重建→完整normal/dynamic→独立复现→closing；network未启动。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | source d75cf28e/688，early seed58/58；[SDK11](evidence/candidate-build-20261009-sdk11/)封存1092项/解包hash及mode PASS。normal构建94378、fresh ASAN v2 33996 live；v1误继承O0已停exit2，v2实际Og/双san核对及scope复审PASS。9normal+7dynamic队列58006、sealed六步+9normal复现18529等待前置。旧receipt不继承；closing/network未开始。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
