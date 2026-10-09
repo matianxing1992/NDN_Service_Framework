@@ -12,19 +12,19 @@
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
-| T002 | PARTIAL | T001 | SDK4 normal两入口及ASAN In-App PASS；完整Persistent dynamic exit201，无sanitizer诊断但业务断言失败。当前RepoClient修复后须重封候选，不继承旧PASS。 | 2026-10-09 |
-| T003 | PARTIAL | T001 | SDK4完整Persistent normal PASS、ASAN业务回归失败；固定Provider的认证ACK coverage局部修复推进recovery，重跑仍失败，closing未完成。原始日志在dynamic-20261008-sdk4。 | 2026-10-09 |
+| T002 | PARTIAL | T001 | SDK5两入口所在In-App28及完整Persistent4 normal PASS；新候选dynamic尚未执行，旧SDK4 dynamic red保留，不继承旧PASS。 | 2026-10-09 |
+| T003 | PARTIAL | T001 | SDK5完整Persistent四case/845断言normal PASS（207.83s），含真实recovery/worker；新候选dynamic closing仍待，旧reds保留在dynamic-20261008-sdk4。 | 2026-10-09 |
 | T004 | PARTIAL | T001 | SDK5完整import unit4/integration6含真实CLI parity normal PASS（49/145断言）；见candidate-build-20261009-sdk5/sdk5-normal-validation.json。当前dynamic及network仍待完整资格。 | 2026-10-09 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK5完整87-case surface/local conformance及1494断言normal PASS；公开inventory保留，current完整native/dynamic/network/profile资格尚未关闭，不继承旧PASS。 | 2026-10-09 |
-| T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK4两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk4/sdk4-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK5 source0e111078两构建闭包PASS：normal六步/167dep/18产物/receipt3ddca0aa；混合优化ASAN/UBSAN exit0/151dep/14产物。新候选前六normal PASS，完整Persistent运行中；见sdk5-normal-validation.json及dynamic-20261009-og/construction.json。九normal/七dynamic/network尚未关闭。 | 2026-10-09 |
+| T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK5两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk5/sdk5-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | SDK5 source0e111078两构建闭包PASS：normal六步/167dep/18产物/receipt3ddca0aa；混合优化ASAN/UBSAN exit0/151dep/14产物。完整七native及Python117 normal PASS，第九入场锁回放/oracle运行中；见sdk5-normal-validation.json及construction.json。七dynamic/network尚未关闭。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-SDK5两构建已封存，已审核执行器正在跑新候选完整Persistent normal（前六套件PASS，详情见表及candidate-build-20261009-sdk5/sdk5-normal-validation.json）。下一步Python/入场锁回放→七whole dynamic及实际加载闭包→closing→两轮network（59ID/每轮68场景/六profile）；旧reds保留，不继承旧资格。ASAN配置为生产组件Og、九测试/独立TU保留O0，详见construction.json。
+SDK5八组normal已通过，已审核执行器正在跑最后入场锁回放/oracle；详情见表及candidate-build-20261009-sdk5/sdk5-normal-validation.json。下一步七whole dynamic及实际加载闭包→closing→两轮network（59ID/每轮68场景/六profile）；旧reds保留，不继承旧资格。ASAN配置为生产组件Og、九测试/独立TU保留O0，详见construction.json。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
