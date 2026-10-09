@@ -1,7 +1,7 @@
 # Validation Matrix: DistributedRepo Convergence
 
 <!-- SPEC202 QUALIFICATION STATUS START -->
-**Status**: NOT_RUN for current Spec202 qualification.
+**Status**: IN_PROGRESS; SDK11 source d75cf28e, two-round v2 matrix, 1/136 runner+closure records qualified; final matrix/oracle audit pending.
 <!-- SPEC202 QUALIFICATION STATUS END -->
 **Source definitions**: [Spec193 stable cases](../193-distributedrepo-multinode-api-campaign/coverage-matrix.md#stable-cases)作为保留的historical input；原59 case描述/oracle完整继承。历史candidate PASS不填入当前round。parent owner见traceability，最终T010统一资格。
 
@@ -13,7 +13,7 @@
 | A02 | In-App 大文件跨 chunk、应用进程重启后 reopen | 新进程 PID、chunk 清单、完整 SHA-256 | T001/T009/T010 | NOT_RUN | NOT_RUN |
 | A03 | In-App 已提交 payload 删除/损坏后 fetch | 历史 local receipt 不变、目的文件不变、无成功返回 | T001/T009/T010 | NOT_RUN | NOT_RUN |
 | A04 | In-App 非法 reference/路径及 Persistent 非法配置 | 零新本地/远端状态、零注册 handler | T001/T009/T010 | NOT_RUN | NOT_RUN |
-| A05 | 真实 Provider capability discovery，不选择不写入 | 三个认证签名 identity、ACK/抓包、零新 receipt | T001/T009/T010 | NOT_RUN | NOT_RUN |
+| A05 | 真实 Provider capability discovery，不选择不写入 | 三个认证签名 identity、ACK/抓包、零新 receipt | T001/T009/T010 | [RUNNER/CLOSURE PASS; final audit pending](evidence/campaign-sdk11-d75cf28e-two-rounds-v2/round-1/runs/A05/run-manifest.json) | NOT_RUN |
 | A06 | 单目标 foreground publish 和 fetch | seed SQLite/文件/receipt、独立消费者 digest | T001/T009/T010 | NOT_RUN | NOT_RUN |
 | A07 | 三目标 `ALL` 发布；仅选定集合写入 | 三个不同 principal 的 receipt/文件，未选节点零写 | T001/T009/T010 | NOT_RUN | NOT_RUN |
 | A08 | `ONE`/`QUORUM` 部分可用与失败目标 | required/achieved、每 Repo 状态及不可变收据匹配 | T001/T003/T009/T010 | NOT_RUN | NOT_RUN |
