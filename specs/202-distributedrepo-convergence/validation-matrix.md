@@ -73,13 +73,13 @@
 
 | ID | Production entry / parameter classes | Required oracle | Task | Status |
 | --- | --- | --- | --- | --- |
-| R01 | Persistent fetch postrename EIO,existing/absent | actualhook、oldinode/bytes/absence、zeroverified、normalresidue0、healthyfollowup | T002 | NOT_RUN |
-| R02 | Persistent fetch directorysync crossesdeadline,existing/absent | actualpostrenamehook/原有post-sync检查、return-time恢复和attemptfailure | T002 | NOT_RUN |
-| R03 | In-App fetch postrename EIO,existing/absent | publicnativeAPI异常、oldinode/bytes/absence、normalresidue0 | T002 | NOT_RUN |
-| R04 | rollback namespace/sync failure | explicitfatalrecovery、定位材料、禁止下一Provider覆盖；不谎称已恢复 | T002 | NOT_RUN |
-| R05 | acceptedcommit backupcleanup failure | 成功仍成功、完整verifiedbytes、residue可诊断/维护 | T002 | NOT_RUN |
-| R06 | 3targetALL：Btimeout→Csourcefailure；reopen后seed missing/corrupt | late：BUNKNOWN/count1/nonSKIPPED、CFAILED/noSTORE、late-responseimmutable；early：BUNKNOWN/count1、CNOT_ATTEMPTED/count0/zeroSTORE；seedreceipt1/terminalaggregate不变 | T003 | NOT_RUN |
-| R07 | import parentfsync failure afterpublish/replay | actualbarrierhit、tworeturnbranch/successreplay/repeatedfault、source+inventory/no-replace | T004 | NOT_RUN |
+| R01 | Persistent fetch postrename EIO,existing/absent | actualhook、oldinode/bytes/absence、zeroverified、normalresidue0、healthyfollowup | T002 | PASS native/dynamic/sealed d75cf28e |
+| R02 | Persistent fetch directorysync crossesdeadline,existing/absent | actualpostrenamehook/原有post-sync检查、return-time恢复和attemptfailure | T002 | PASS native/dynamic/sealed d75cf28e |
+| R03 | In-App fetch postrename EIO,existing/absent | publicnativeAPI异常、oldinode/bytes/absence、normalresidue0 | T002 | PASS native/dynamic/sealed d75cf28e |
+| R04 | rollback namespace/sync failure | explicitfatalrecovery、定位材料、禁止下一Provider覆盖；不谎称已恢复 | T002 | PASS native/dynamic/sealed d75cf28e |
+| R05 | acceptedcommit backupcleanup failure | 成功仍成功、完整verifiedbytes、residue可诊断/维护 | T002 | PASS native/dynamic/sealed d75cf28e |
+| R06 | 3targetALL：Btimeout→Csourcefailure；reopen后seed missing/corrupt | late：BUNKNOWN/count1/nonSKIPPED、CFAILED/noSTORE、late-responseimmutable；early：BUNKNOWN/count1、CNOT_ATTEMPTED/count0/zeroSTORE；seedreceipt1/terminalaggregate不变 | T003 | PASS native/dynamic/sealed d75cf28e |
+| R07 | import parentfsync failure afterpublish/replay | actualbarrierhit、tworeturnbranch/successreplay/repeatedfault、source+inventory/no-replace | T004 | PASS native/dynamic/sealed d75cf28e |
 
 R01–07是独立故障等价类，不把每种参数拆成顶层任务。native unit/integration先关闭bugplane；formalnetworkmatrix在T009convergence后执行。
 

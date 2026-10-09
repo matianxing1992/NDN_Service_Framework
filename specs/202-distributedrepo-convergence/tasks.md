@@ -12,15 +12,15 @@
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
-| T002 | PARTIAL | T001 | destination恢复修复已落地；当前SDK11完整In-App28/491、Persistent API6/935 normal及dynamic v3 PASS，DB002 STATIC_PASS。见T009；R01–R05 closing与独立复现待完成，旧SDK9结果仅历史。 | 2026-10-09 |
-| T003 | PARTIAL | T001 | early seed red→7-line删除→58/58 focused green；当前SDK11 Persistent API整套6/935 normal及dynamic v3 PASS，早期reopen/missing/corrupt与晚期Btimeout/Csourcefailure均实际执行。UNKNOWN/count1、NOT_ATTEMPTED/count0、seed/aggregate/zeroSTORE/reread保留，DB003 STATIC_PASS。v2 lateR06 ACK red及未确证原因保留于T009；closing/复现待完成。 | 2026-10-09 |
-| T004 | PARTIAL | T001 | import durability修复已落地；当前SDK11完整import unit4/49、integration6/145含真实CLI normal及dynamic v3 PASS，DB004 STATIC_PASS。见T009；R07 closing、独立复现与network待资格，旧SDK9结果不继承。 | 2026-10-09 |
+| T002 | DONE | T001 | source d75cf28e；R01–R05真实destination/postrename/deadline/rollbackfatal/acceptedcleanup回归，完整In-App28/491、Persistent API6/935 normal/dynamic及独立复现PASS；closing-review零controlling gap，R01–05关闭；network由T010验收。 | 2026-10-09 |
+| T003 | DONE | T001 | source d75cf28e；R06 early58/58与late302/302均完整normal/dynamic/独立复现PASS；UNKNOWN/count1、NOT_ATTEMPTED/count0/zeroSTORE、seedreceipt/aggregate/reread保留。closing-review允许关闭；首个v2空ACK red原因未确证且保留，不宣称可靠性保证。 | 2026-10-09 |
+| T004 | DONE | T001 | source d75cf28e；R07两replay分支parentfsync屏障/故障/重复故障/成功重放、source/inventory/no-replace真实native CLI覆盖。完整unit4/49/integration6/145 normal/dynamic及独立复现PASS；closing-review允许关闭，P05网络留T010。 | 2026-10-09 |
 | T005 | PARTIAL | T001,T002,T003 | DB005 STATIC_PASS；当前SDK11 OriginalData native6/79 normal PASS，untraced existingCore lifecycle/签名wire oracle v4及13offline反例保留。当前7个O17网络子场景仍待T009/T010，native PASS不替代network。 | 2026-10-09 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前SDK11完整surface/local conformance98case normal1655/dynamic v3 1657断言PASS，DB007 STATIC_PASS，公开inventory保留。见T009；独立复现与network/profile资格待关闭，旧SDK9结果仅历史。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 当前SDK11两binding fresh重建/import、33-file Python117PASS及全部7 native dynamic v3 PASS。见T009；不宣称Python instrumentation，sealed复现与crosslanguage/DI network待资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source d75cf28e/688；[SDK11](evidence/candidate-build-20261009-sdk11/)，receipt ce2207fd；normal9/dynamic v3全7组PASS，lateR06 v2 red原因未确证。sealed v3/v4原生7组PASS、Python support漏件FAIL，均原库恢复；v3补充包1102项/81094cea，10个support逐组hash/mode绑定，完整Python预检117PASS。v5/7892复用独立构建、fresh原生7/Python117已PASS，最后41项admission运行中；最终restore/integrity/closing待完成。A05 noSelection独立Data/签名Sync audit scoped review PASS；136网络NOT_RUN。 | 2026-10-09 |
-| T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
+| T009 | PARTIAL | T002–T008 | source d75cf28e/688；[SDK11](evidence/candidate-build-20261009-sdk11/)，receipt ce2207fd；normal9/dynamic7 PASS，sealed v5完整9组PASS(native183、Python117、admission41/798s)，原库恢复与INTEGRITY_PASS，10support/hash/mode封存1102项/81094cea。closing-review零controlling gap、可发布网络candidate；旧ACK/support/ENOSPC red保留。T002–004/R01–07关闭；T005–008网络资格及完整136-run/matrix audit待完成。 | 2026-10-09 |
+| T010 | IN_PROGRESS | T009 | 冻结d75cf28e/688与声明six profiles；两轮68场景/59ID共136次执行准备完成，release绑定normal/dynamic/sealed/restore/integrity/closing及harness hashes；新run逐actor maps/pcap/finite exits/cleanup/storage/consumer/wire/cross-run验收，未出完整PASS前保持OPEN。 | 2026-10-09 |
 
 ## Current Checkpoint
 
@@ -37,15 +37,15 @@
 
 ## Phase 2: User Story 2 - Safe Consumer Commit
 
-- [ ] T002 [US2] 修复`ArtifactRepositoryApi.cpp`两种fetch的destination commit/rollback；同一任务增加真实nativepostrename EIO/late-sync、旧文件/absence、rollbackfailure-stopretry和acceptedcleanupfailure回归，注册`tests/wscript`focused selectors并保留首次red/closing结果。**Design binding**: DB002 READY_FOR_IMPLEMENTATION afterT001路径前置核对；public签名不变，helper内部ownedpaths/FD/accept-state；默认asan-ubsan，不放宽post-syncdeadline。Closing oracle为真实旧inode/bytes/absence及zeroverified/恢复材料，不仅错误文本。
+- [x] T002 [US2] 修复`ArtifactRepositoryApi.cpp`两种fetch的destination commit/rollback；同一任务增加真实nativepostrename EIO/late-sync、旧文件/absence、rollbackfailure-stopretry和acceptedcleanupfailure回归，注册`tests/wscript`focused selectors并保留首次red/closing结果。**Design binding**: DB002 READY_FOR_IMPLEMENTATION afterT001路径前置核对；public签名不变，helper内部ownedpaths/FD/accept-state；默认asan-ubsan，不放宽post-syncdeadline。Closing oracle为真实旧inode/bytes/absence及zeroverified/恢复材料，不仅错误文本。
 
 ## Phase 3: User Story 1 - Honest Publication
 
-- [ ] T003 [US1] 修复`RepoNode.cpp::runPublishOperationPass` sourcefailure对pendingtarget的attempt区分；三Provider fixture覆盖B请求→timeout→C源读取失败及reopen后早期seed missing/corrupt，验证UNKNOWN/count1、未尝试目标/zeroSTORE与terminalaggregate/seedreceipt不变；focused回归和证据同任务。**Design binding**: DB003 READY_FOR_IMPLEMENTATION afterT001；无schema/wire变化，重要字段state/attemptCount/failureCode/receipt保留nativeowner；asan-ubsan，新增并发ownership才tsan。
+- [x] T003 [US1] 修复`RepoNode.cpp::runPublishOperationPass` sourcefailure对pendingtarget的attempt区分；三Provider fixture覆盖B请求→timeout→C源读取失败及reopen后早期seed missing/corrupt，验证UNKNOWN/count1、未尝试目标/zeroSTORE与terminalaggregate/seedreceipt不变；focused回归和证据同任务。**Design binding**: DB003 READY_FOR_IMPLEMENTATION afterT001；无schema/wire变化，重要字段state/attemptCount/failureCode/receipt保留nativeowner；asan-ubsan，新增并发ownership才tsan。
 
 ## Phase 4: User Story 4 - Recover Durable Import
 
-- [ ] T004 [US4] 在`LegacyRepoImporter.cpp`两条verifieddestinationreplay分支补parentdurability屏障，保持no-replace/source/config/inventory验证；用真实nativeimporterpostpublishsync失败、再次失败和successreplay回归明确ambiguouspublication，保留完整target和source。**Design binding**: DB004 READY_FOR_IMPLEMENTATION afterT001；影响nativelegacyintegration/unit与productionCLI sourceclosure，无新增schema/ABI；closing为实际屏障hit/sourcehash/idempotency，不宣称powerloss。
+- [x] T004 [US4] 在`LegacyRepoImporter.cpp`两条verifieddestinationreplay分支补parentdurability屏障，保持no-replace/source/config/inventory验证；用真实nativeimporterpostpublishsync失败、再次失败和successreplay回归明确ambiguouspublication，保留完整target和source。**Design binding**: DB004 READY_FOR_IMPLEMENTATION afterT001；影响nativelegacyintegration/unit与productionCLI sourceclosure，无新增schema/ABI；closing为实际屏障hit/sourcehash/idempotency，不宣称powerloss。
 
 ## Phase 5: User Story 3 - Correct Metadata and Original Data
 
