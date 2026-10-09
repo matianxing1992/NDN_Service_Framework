@@ -14,17 +14,17 @@
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
 | T002 | PARTIAL | T001 | Normal两入口closing通过；ASAN In-App exit0，Persistent exit1/19业务失败及OpenABE泄漏；evidence/t002-closing-review-20261008/asan-results.json。 | 2026-10-08 |
 | T003 | PARTIAL | T001 | 修复及完整recovery normal两次exit0；ASAN worker在前序门失败后NOT_RUN，等待SDK闭包。 | 2026-10-08 |
-| T004 | PARTIAL | T001 | SDK2完整import unit4/integration6含真实CLI parity PASS；旧5case ASAN通过，新增case动态及network pending。 | 2026-10-08 |
+| T004 | PARTIAL | T001 | SDK3完整import unit4/integration6含真实CLI parity PASS；旧5case ASAN通过，新增case动态及network pending。 | 2026-10-08 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前surface/真实local与network/profile边界按api-inventory和surface-batch核对；current native完整suite及网络仍待运行，不继承旧PASS。 | 2026-10-08 15:52 -05:00 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 两个binding重建/import/library PASS；退休测试按真实拒绝/源码保全边界收口，33-file cohort117PASS；evidence/python-retirement-20261008/python-cohort-2.json。currentnetwork仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK2全build/import/167dep、完整native及16mutation PASS；progress projection4、真实ACK4、退休migration保全2、新fence3 PASS。当前新harness使旧receipt失效；剩余整锁replay负例、fresh seal/ASAN/convergence/network。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | SDK3六步build/import/167dep闭包PASS，receipt60536314/source2f39a0a6；normal六suite及offline17 PASS，evidence/candidate-build-20261008-sdk3。完整Persistent/Python/入场回放正在按序执行；ASAN及两轮network仍待关闭。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-整锁progress-only replay/acceptance负例已编码并通过只读静态审查，待SDK3 fresh receipt运行。SDK3 native/binding重建进行中；687-input snapshot组合convergence静态PASS，matrix旧batchcard说明已纠正。下一步当前候选unit/integration/Python、完整dynamic，再两轮网络资格；SDK2及全部首失败保留。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
+SDK3重建闭包完成；当前whole Persistent→33-file Python→完整入场/新锁回放按序执行，原始结果写sdk3-normal-validation.json。677-source固定，687-input snapshot静态PASS；待上述门green后重建并运行完整ASAN，再closing审查和两轮网络资格。SDK2及全部首失败保留；只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
