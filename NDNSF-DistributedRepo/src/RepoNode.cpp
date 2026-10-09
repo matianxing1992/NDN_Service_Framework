@@ -1610,12 +1610,15 @@ RepoNode::validatePersistentWriteIdentity(const ArtifactReference& reference,
         "repo-publish-replica-owner-unverified: target Provider ServiceUser is unavailable");
     }
 
-    const int timeoutMs = std::min(configuredTimeoutMs, 2000);
-    const int ackCollectionMs = std::min(configuredAckMs, timeoutMs - 1);
-    if (ackCollectionMs <= 0 || timeoutMs <= ackCollectionMs) {
+    if (configuredAckMs <= 0 || configuredTimeoutMs <= 1) {
       throw std::runtime_error(
         "repo-publish-replica-owner-unverified: target Provider query deadline is invalid");
     }
+    const int ackCollectionMs = std::min(configuredAckMs, configuredTimeoutMs - 1);
+    // Preserve the configured ACK window plus a bounded response allowance,
+    // without exceeding the configured request ceiling or overflowing int.
+    const int timeoutMs = ackCollectionMs +
+      std::min(2000, configuredTimeoutMs - ackCollectionMs);
     PublishOperationStatusRequest query;
     query.operationId = operationId;
     query.target = localTarget;

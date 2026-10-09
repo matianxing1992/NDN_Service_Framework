@@ -49,6 +49,8 @@
 
 pending且attemptCount0 → `NOT_ATTEMPTED`；pending且attemptCount>0 → `UNKNOWN`并保留`repo-target-outcome-unknown`、attemptCount、逻辑Repo/Provider binding，不伪造receipt。当前发现seed源错误的C保持`FAILED/repo-seed-source-invalid`。existing aggregate编码UNKNOWN为failed/unknown，不是SKIPPED；seed receipt与terminal immutable transaction不变。
 
+Replica owner STATUS私有预算：配置正值校验后，ACK=`min(configuredAck, configuredTimeout−1)`，总期限=`ACK + min(2000ms, configuredTimeout−ACK)`；同一个selected-request绝对deadline覆盖调度/ACK/Selection/响应，不重置、不超过配置上限。此变更增加私有probe的原2s上限；不承诺enclosing STORE仍有足够时间，不改变超时/UNKNOWN、认证、exact target binding、最后receipt重验证或cache仅在成功验证后插入的规则。shutdown可能等待这个有界probe，不能声称旧2s teardown上限。
+
 closing regression使用真实三Provider/三个filesystem stores和恢复worker：B STORE请求明确观测，在B handler移除seed committed payload并bounded hold response；B超时后C materialization发现源失败。RAII release/drain B handler后再析构外部Face/scheduler；C零STORE，seed receipt1/B-C0，terminal重读及迟到响应不改变aggregate。不能用直接编辑SQLite模拟worker已经走过此路径。
 
 ## DB004 - Legacy Publication Durability Recovery

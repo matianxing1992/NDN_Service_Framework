@@ -859,7 +859,20 @@ RepoClient::requestSelectedService(
     [result] (const ndn::Name&) {
       completeSelectedRequest(result, "repo-request-timeout: Provider request timed out");
     },
-    ndn::Name(), {}, ndn_service_framework::RequestCapabilities(),
+    ndn::Name(),
+    [providerIdentity, serviceName] (
+      const std::vector<ndn_service_framework::AckCandidate>& candidates) {
+      // The fixed Provider set is covered by one authenticated ACK. Core
+      // still freezes ACK_CLOSED; the callback above rechecks eligibility.
+      return std::count_if(candidates.begin(), candidates.end(),
+        [&providerIdentity, &serviceName] (const auto& candidate) {
+          return candidate.providerName == providerIdentity &&
+                 candidate.serviceName == serviceName && candidate.ack.getStatus() &&
+                 candidate.authenticationEvidence.trustSchemaValidated &&
+                 candidate.authenticationEvidence.signerIdentity ==
+                   providerIdentity.toUri();
+        }) == 1;
+    }, ndn_service_framework::RequestCapabilities(),
     std::nullopt, {}, {}, {}, providers);
   if (requestId.empty()) {
     throw std::runtime_error("repo-request-start-failed: Core rejected selected Provider request");

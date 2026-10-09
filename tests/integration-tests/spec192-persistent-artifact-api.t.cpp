@@ -595,6 +595,186 @@ makeRepoPublisherUser(NdnsfIntegrationEnvironment& environment, size_t index,
 
 BOOST_AUTO_TEST_SUITE(DistributedRepoPersistentArtifactApi)
 
+BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
+{
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  const std::vector<std::string> operations{"STATUS", "STORE"};
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec202/owner-budget/group";
+  profile.syncPrefix = "/ndnsf/spec202/owner-budget/sync";
+  profile.userNode = "/ndnsf/spec202/owner-budget/user";
+  profile.providerNode = "/ndnsf/spec202/owner-budget/provider";
+  profile.userIdentity = "/test/user/spec202/owner-budget";
+  profile.providerIdentity = "/test/provider/spec202/owner-budget";
+  profile.attributeAuthority = "/test/aa/spec202/owner-budget";
+  profile.providerCount = 2;
+  profile.providerCanActAsUser = true;
+  profile.serviceName = repoService(servicePrefix, "STATUS");
+  profile.additionalServices.push_back(repoService(servicePrefix, "STORE"));
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto publisher = makeRepoPublisherUser(environment, 1, servicePrefix, operations);
+  const repo::RepoArtifactTarget owner{
+    "/logical/spec202/owner-budget-seed", environment.provider(0).getName().toUri(),
+    servicePrefix.toUri()};
+  const repo::RepoArtifactTarget target{
+    "/logical/spec202/owner-budget-target", environment.provider(1).getName().toUri(),
+    servicePrefix.toUri()};
+  auto objects = temporary.path() / "objects";
+  auto database = temporary.path() / "artifact-v2.sqlite";
+  repo::StorageCapability capability;
+  capability.repoNode = target.repoNode;
+  capability.repoMode = "persistent";
+  capability.freeBytes = 1024 * 1024;
+  auto node = std::make_shared<repo::RepoNode>(
+    servicePrefix, capability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      objects.string(), 1024 * 1024, 4096, "spec202-owner-budget"),
+    target.repoNode, target.providerIdentity, database.string());
+  node->registerServices(environment.provider(1), publisher, 5000, 10000);
+  const auto seedDatabase = temporary.path() / "seed.sqlite";
+  auto seedCapability = capability;
+  seedCapability.repoNode = owner.repoNode;
+  auto seedNode = std::make_shared<repo::RepoNode>(
+    servicePrefix, seedCapability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      (temporary.path() / "seed-objects").string(), 1024 * 1024, 4096,
+      "spec202-owner-budget-seed"),
+    owner.repoNode, owner.providerIdentity, seedDatabase.string());
+  seedNode->registerServices(environment.provider(0));
+  struct OwnerState {
+    std::mutex mutex;
+    repo::PublishOperationStatus status;
+    std::atomic<unsigned> calls{0};
+    std::atomic<unsigned> completed{0};
+  };
+  auto ownerState = std::make_shared<OwnerState>();
+  repo::PublishOperationStatus status;
+  const auto readyAck = [] (const ndn_service_framework::RequestMessage&) {
+    ndn_service_framework::ServiceProvider::AckDecision ack;
+    ack.status = true;
+    ack.pendingStateTtlMs = 10000;
+    return ack;
+  };
+  // A controlled owner supplies selected-target STATUS over the real encrypted,
+  // authenticated transport. Delay execution, never the ACK or Face pump.
+  environment.provider(0).addService(repoService(servicePrefix, "STATUS"), readyAck,
+    [ownerState, target] (const ndn::Name& requester, const ndn::Name&, const ndn::Name&,
+         const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      ownerState->calls.fetch_add(1);
+      repo::PublishOperationStatus snapshot;
+      {
+        std::lock_guard<std::mutex> guard(ownerState->mutex);
+        snapshot = ownerState->status;
+      }
+      const auto payload = request.getPayload();
+      const auto query = repo::PublishOperationStatusRequest::fromJson(
+        std::string(payload.begin(), payload.end()));
+      if (requester.toUri() != target.providerIdentity ||
+          query.operationId != snapshot.operationId || !query.target ||
+          !(*query.target == target)) {
+        ndn_service_framework::ResponseMessage denied;
+        denied.setStatus(false);
+        denied.setErrorInfo("spec202-owner-budget-binding-denied");
+        ownerState->completed.fetch_add(1);
+        return denied;
+      }
+      std::this_thread::sleep_for(2100ms);
+      const auto wire = snapshot.toJson();
+      ownerState->completed.fetch_add(1);
+      return makeSyntheticResponse(ndn::Buffer(
+        reinterpret_cast<const uint8_t*>(wire.data()), wire.size()));
+    });
+  environment.enableProductionIngressForTest();
+  const std::vector<uint8_t> bytes{0x62, 0x75, 0x64, 0x67};
+  const auto attempt = [&] (const std::string& suffix) {
+    repo::ArtifactStoreRequest write;
+    write.reference = makeReference("owner-budget-" + suffix, bytes);
+    write.operationId = repo::makePublishOperationId(
+      environment.user().getName().toUri(), owner,
+      repo::digestPublishIdempotencyKey("owner-budget-" + suffix));
+    write.generation = 1;
+    write.bytes = bytes;
+    repo::PublishOperationIntent intent;
+    intent.idempotencyKeyDigest = repo::digestPublishIdempotencyKey("owner-budget-" + suffix);
+    intent.reference = write.reference;
+    intent.generation = 1;
+    intent.seed = owner;
+    intent.consistency = "ALL";
+    intent.targets = {owner, target};
+    intent.requestDigest = repo::makePublishRequestDigest(
+      intent.reference, 1, owner, "ALL", intent.targets);
+    auto accepted = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
+      repoService(servicePrefix, "STORE"), repo::toBytes(intent.toJson()), "owner-intent-" + suffix);
+    BOOST_REQUIRE_MESSAGE(accepted.getStatus(), accepted.getErrorInfo());
+    auto committedSeed = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
+      repoService(servicePrefix, "STORE"), write.toWire(), "owner-seed-store-" + suffix);
+    BOOST_REQUIRE_MESSAGE(committedSeed.getStatus(), committedSeed.getErrorInfo());
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    seedCatalog.updatePublishOperationTarget(write.operationId,
+      {target, "IN_FLIGHT", 1, 1, std::nullopt, {}}, 1);
+    auto acceptedOperation = seedCatalog.lookupPublishOperation(
+      write.operationId, environment.user().getName().toUri());
+    BOOST_REQUIRE(acceptedOperation);
+    status = acceptedOperation->status;
+    status.validate();
+    {
+      std::lock_guard<std::mutex> guard(ownerState->mutex);
+      ownerState->status = status;
+    }
+    write.operationOwner = owner;
+    auto response = runWithFacePump(environment, [&] {
+      return dispatchRepoRequest(environment.provider(1), ndn::Name(owner.providerIdentity),
+        repoService(servicePrefix, "STORE"), write.toWire(), "owner-budget-" + suffix);
+    });
+    return std::make_pair(write, response);
+  };
+  const auto successful = attempt("delayed-response");
+  BOOST_REQUIRE_MESSAGE(successful.second.getStatus(), successful.second.getErrorInfo());
+  BOOST_CHECK_GE(ownerState->calls.load(), 2U); // Admission and final receipt revalidation.
+  BOOST_CHECK(node->core().has(repo::artifactStorageObjectName(successful.first.reference)));
+  BOOST_CHECK_EQUAL(persistentReceiptRows(database, target.repoNode,
+    target.providerIdentity, successful.first.reference), 1);
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  node.reset();
+  objects = temporary.path() / "timeout-objects";
+  database = temporary.path() / "timeout-artifact-v2.sqlite";
+  node = std::make_shared<repo::RepoNode>(
+    servicePrefix, capability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      objects.string(), 1024 * 1024, 4096, "spec202-owner-budget-timeout"),
+    target.repoNode, target.providerIdentity, database.string());
+  node->registerServices(environment.provider(1), publisher, 1500, 1800);
+  const auto timedOut = attempt("configured-ceiling");
+  BOOST_CHECK_MESSAGE(!timedOut.second.getStatus(), "late owner response accepted");
+  BOOST_CHECK(!node->core().has(repo::artifactStorageObjectName(timedOut.first.reference)));
+  BOOST_CHECK_EQUAL(persistentReceiptRows(database, target.repoNode,
+    target.providerIdentity, timedOut.first.reference), 0);
+  // The timed-out proof must not authorize a retry from the binding cache.
+  environment.pumpUntilWithAttributeAuthority([&] {
+    return ownerState->completed.load() == ownerState->calls.load();
+  });
+  BOOST_REQUIRE_EQUAL(ownerState->completed.load(), ownerState->calls.load());
+  const auto beforeRetry = ownerState->calls.load();
+  auto retry = runWithFacePump(environment, [&] {
+    return dispatchRepoRequest(environment.provider(1), ndn::Name(owner.providerIdentity),
+      repoService(servicePrefix, "STORE"), timedOut.first.toWire(), "owner-budget-retry");
+  });
+  BOOST_CHECK(!retry.getStatus());
+  BOOST_CHECK_GT(ownerState->calls.load(), beforeRetry);
+  BOOST_CHECK(!node->core().has(repo::artifactStorageObjectName(timedOut.first.reference)));
+  BOOST_CHECK_EQUAL(persistentReceiptRows(database, target.repoNode,
+    target.providerIdentity, timedOut.first.reference), 0);
+  environment.pumpUntilWithAttributeAuthority([&] {
+    return ownerState->completed.load() == ownerState->calls.load();
+  });
+  BOOST_REQUIRE_EQUAL(ownerState->completed.load(), ownerState->calls.load());
+  releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  node.reset();
+}
+
 BOOST_AUTO_TEST_CASE(OperationOwnedArtifactWithoutReceiptStoreIsHidden)
 {
   TempRoot temporary;
