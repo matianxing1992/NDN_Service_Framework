@@ -17,9 +17,9 @@
 | T004 | PARTIAL | T001 | SDK5完整import unit4/integration6含真实CLI parity normal/dynamic PASS（49/145断言）；实际CLI加载闭包已核对。当前network仍待完整资格。 | 2026-10-09 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
-| T007 | IN_PROGRESS | T001,T003 | SDK5完整87-case surface/local conformance及1494断言normal PASS；公开inventory保留，current完整native/dynamic/network/profile资格尚未关闭，不继承旧PASS。 | 2026-10-09 |
-| T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK5两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk5/sdk5-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | main126cf0b7/680 +SVS1687dc9：全局SDK normal/ASAN92/697 PASS（5bdfed41/7eb8298f）；fresh SDK8六步PASS，receipt fd910bda、168实际编译依赖记录及runtime一致；独立ASAN全target构建exit0。顺序executor14296运行中：normal前6组PASS且各actual maps绑定5bdfed41，完整Persistent进行中；9 normal+7 dynamic/封存/两轮network仍待关闭。见candidate-build-20261009-sdk8/sdk8-normal-validation.json及owner-probe-budget-20261009/global-sdk-gates.json。全部原预算/oracle保留；SDK7拒绝及先前独立Persistent gates保留原证据。 | 2026-10-09 |
+| T007 | IN_PROGRESS | T001,T003 | SDK8完整98-case surface/local conformance及1655断言normal PASS；公开inventory保留，current完整dynamic/network/profile资格尚未关闭。 | 2026-10-09 |
+| T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK8两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk8/sdk8-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | main126cf0b7/680 +SVS1687dc9：全局SDK normal/ASAN92/697 PASS（5bdfed41/7eb8298f）；fresh SDK8六步PASS，receipt fd910bda、168实际编译依赖记录及runtime一致；独立ASAN全target构建exit0。顺序executor14296运行中：normal全部7个C++ suite及Python117 PASS（8/9），各native actual maps绑定5bdfed41，admission/oracle进行中；全部7 dynamic/封存/两轮network仍待关闭。见candidate-build-20261009-sdk8/sdk8-normal-validation.json。全部原预算/oracle保留；SDK7拒绝及先前独立gates保留原证据。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
