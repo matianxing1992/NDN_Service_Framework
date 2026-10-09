@@ -17,14 +17,14 @@
 | T004 | PARTIAL | T001 | SDK3完整import unit4/integration6含真实CLI parity PASS；旧5case ASAN通过，新增case动态及network pending。 | 2026-10-08 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
-| T007 | IN_PROGRESS | T001,T003 | 当前surface/真实local与network/profile边界按api-inventory和surface-batch核对；current native完整suite及网络仍待运行，不继承旧PASS。 | 2026-10-08 15:52 -05:00 |
-| T008 | IN_PROGRESS | T001,T002,T004,T005 | 两个binding重建/import/library PASS；退休测试按真实拒绝/源码保全边界收口，33-file cohort117PASS；evidence/python-retirement-20261008/python-cohort-2.json。currentnetwork仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK3六步build/import/167dep闭包PASS，receipt60536314/source2f39a0a6；normal六suite及offline17 PASS，evidence/candidate-build-20261008-sdk3。完整Persistent/Python/入场回放正在按序执行；ASAN及两轮network仍待关闭。 | 2026-10-08 |
+| T007 | IN_PROGRESS | T001,T003 | SDK3完整native七suite及87-case surface/local conformance PASS；公开inventory保留，current network/profile资格待T010，不继承旧PASS。 | 2026-10-08 |
+| T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK3两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk3/sdk3-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | SDK3六步build/import/167dep闭包及九组normal门全部PASS，含七native suite、Python117、入场/真实新锁回放/oracle35；receipt60536314/source2f39a0a6。fresh ASAN配置PASS/编译中；dynamic及两轮network待关闭。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-SDK3重建闭包完成；当前whole Persistent→33-file Python→完整入场/新锁回放按序执行，原始结果写sdk3-normal-validation.json。677-source固定，687-input snapshot静态PASS；待上述门green后重建并运行完整ASAN，再closing审查和两轮网络资格。SDK2及全部首失败保留；只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
+SDK3全部normal门green，原始结果为candidate-build-20261008-sdk3/sdk3-normal-validation.json；677-source/receipt不变。fresh ASAN/UBSAN在独立目录j1编译，profile只读release PASS，配置PASS；dynamic-20261008-sdk3记录真实compiler命令、runtime maps和未抑制结果。下一步完整native dynamic→closing审查→两轮网络资格；保留首失败，仅维护本表与原始evidence。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
