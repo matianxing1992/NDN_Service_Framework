@@ -19,7 +19,7 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前SDK11完整surface/local conformance98case normal1655/dynamic v3 1657断言PASS，DB007 STATIC_PASS，公开inventory保留。见T009；独立复现与network/profile资格待关闭，旧SDK9结果仅历史。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | 当前SDK11两binding fresh重建/import、33-file Python117PASS及全部7 native dynamic v3 PASS。见T009；不宣称Python instrumentation，sealed复现与crosslanguage/DI network待资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source d75cf28e/688；[SDK11](evidence/candidate-build-20261009-sdk11/)，receipt ce2207fd；normal9/dynamic7/sealed v5完整9组PASS，原库恢复/INTEGRITY/closing PASS，10support封存1102项/81094cea；T002–004/R01–07关闭。网络v1 A05场景/cleanup/签名Data+Sync noSelection PASS，但aux证书helper误纳入maps资格→FAIL_STOPPED保留；严格localPIB exception复审PASS/release v1保存。fresh v2/75028全136-run已启动；T005–008/matrix oracle audit仍待完成。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | source d75cf28e/688；[SDK11](evidence/candidate-build-20261009-sdk11/)，receipt ce2207fd；normal9/dynamic7/sealed v5完整9组PASS，restore/INTEGRITY/closing PASS；T002–004/R01–07关闭。网络v1 aux误分类FAIL保留；v2/75028已FAIL_STOPPED：round1 A05独立验收PASS，ARTIFACT_BASELINE的vm20-same-key-changed-request-rejected native子进程SIGSEGV(-11)，cleanup PASS，根因未确认。先定位/修复并补真实回归，再按失效矩阵更新候选与完整资格；T005–010保持OPEN。 | 2026-10-09 |
 | T010 | IN_PROGRESS | T009 | 冻结d75cf28e/688与声明six profiles；两轮68场景/59ID共136次执行准备完成，release绑定normal/dynamic/sealed/restore/integrity/closing及harness hashes；新run逐actor maps/pcap/finite exits/cleanup/storage/consumer/wire/cross-run验收，未出完整PASS前保持OPEN。 | 2026-10-09 |
 
 ## Current Checkpoint

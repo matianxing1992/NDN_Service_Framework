@@ -1,7 +1,7 @@
 # Validation Matrix: DistributedRepo Convergence
 
 <!-- SPEC202 QUALIFICATION STATUS START -->
-**Status**: IN_PROGRESS; SDK11 source d75cf28e, two-round v2 matrix, 1/136 runner+closure records qualified; final matrix/oracle audit pending.
+**Status**: IN_PROGRESS; SDK11 source d75cf28e, two-round v2 attempt FAIL_STOPPED. Round1 A05 qualified (1/136); ARTIFACT_BASELINE stopped on vm20-same-key-changed-request-rejected SIGSEGV (-11), cleanup PASS. Root cause and final matrix/oracle audit pending; this failed attempt cannot qualify the complete matrix.
 <!-- SPEC202 QUALIFICATION STATUS END -->
 **Source definitions**: [Spec193 stable cases](../193-distributedrepo-multinode-api-campaign/coverage-matrix.md#stable-cases)作为保留的historical input；原59 case描述/oracle完整继承。历史candidate PASS不填入当前round。parent owner见traceability，最终T010统一资格。
 
