@@ -328,6 +328,18 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    bld.program(target='../spec202-repo-conformance',
+                name='spec202-repo-conformance',
+                source=[bld.path.parent.find_node('tests/main.cpp')] +
+                       bld.path.ant_glob(['unit-tests/distributed-repo-*.t.cpp',
+                                          'unit-tests/spec193-original-data-receipt.t.cpp']),
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '
+                    'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     # Spec192 T001 native In-App API and durable local catalog selector.  It
     # links the production Repo library and keeps broad regression suites out
     # of this focused lifecycle gate.
@@ -1084,7 +1096,7 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Faults are scoped to a test-owned destination and never enter production targets.
-    for name in ('unit-tests', 'spec192-repo-inapp-api',
+    for name in ('unit-tests', 'spec202-repo-conformance', 'spec192-repo-inapp-api',
                  'spec192-repo-persistent-api', 'spec192-repo-legacy-import-unit'):
         bld.get_tgen_by_name(name).linkflags += [
             '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink',

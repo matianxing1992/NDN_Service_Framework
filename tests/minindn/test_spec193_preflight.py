@@ -105,6 +105,101 @@ class PreflightMutationTests(unittest.TestCase):
         self.reject("SOURCE_CANDIDATE_MISMATCH", source_sha="stale-source")
         self.reject("SOURCE_CANDIDATE_MISMATCH", source_files=[])
 
+    def test_missing_build_receipt_is_rejected(self):
+        actual = Path.is_file
+
+        def missing(path):
+            return False if path.name == "spec202-source-build-receipt.json" else actual(path)
+
+        with mock.patch.object(Path, "is_file", missing):
+            self.reject("MISSING_BUILD_RECEIPT")
+
+    def test_actual_pinned_svs_config_path_is_in_sdk_inventory(self):
+        from spec202_build_candidate import sdk_inputs
+        source = Path("/usr/local/src/spec192-ndn-svs-9f2d8a4")
+        build = source / "build"
+        inputs = sdk_inputs(source, build)
+        self.assertIn(str(build / "config.hpp"), inputs)
+        self.assertNotIn(str(build / "ndn-svs/config.hpp"), inputs)
+        actual = Path.is_file
+
+        def missing(path):
+            if path in (build / "config.hpp", source / "ndn-svs/config.hpp"):
+                return False
+            return actual(path)
+
+        with mock.patch.object(Path, "is_file", missing):
+            with self.assertRaises(preflight.PreflightError) as caught:
+                sdk_inputs(source, build)
+        self.assertEqual(caught.exception.failure_class, "MISSING_BUILD_INPUT")
+        self.assertFalse(self.output.exists())
+
+    def test_build_receipt_mutations_fail_before_output(self):
+        path = ROOT / "build/spec202-source-build-receipt.json"
+        original = json.loads(path.read_text())
+        actual = Path.read_text
+        for label, expected in (("source", "STALE_BUILD_RECEIPT"),
+                                ("artifact", "STALE_BUILD_RECEIPT"),
+                                ("sdk", "STALE_BUILD_RECEIPT"),
+                                ("targets", "INVALID_BUILD_RECEIPT"),
+                                ("fresh-output", "INVALID_BUILD_RECEIPT"),
+                                ("log", "STALE_BUILD_RECEIPT"),
+                                ("binding-force", "INVALID_BUILD_RECEIPT"),
+                                ("binding-owner", "INVALID_BUILD_RECEIPT"),
+                                ("install-target", "INVALID_BUILD_RECEIPT"),
+                                ("runtime-interpreter", "INVALID_BUILD_RECEIPT"),
+                                ("runtime-path", "INVALID_BUILD_RECEIPT"),
+                                ("compiler-dependencies", "STALE_BUILD_RECEIPT")):
+            with self.subTest(label=label):
+                changed = json.loads(json.dumps(original))
+                if label == "source":
+                    changed["source_before"] = "wrong"
+                elif label == "artifact":
+                    changed["artifacts"][str(ROOT / "build/spec192-repo-client")] = "wrong"
+                elif label == "sdk":
+                    changed["external_inputs"].pop(next(iter(changed["external_inputs"])))
+                elif label == "targets":
+                    changed["steps"][1]["argv"] = ["waf", "build", "--targets=DistributedRepoServer"]
+                elif label == "fresh-output":
+                    changed["fresh_outputs"].pop(next(iter(changed["fresh_outputs"])))
+                elif label == "binding-force":
+                    changed["steps"][4]["argv"].remove("--force")
+                elif label == "binding-owner":
+                    changed["steps"][3]["cwd"] = "/tmp/other-wrapper"
+                elif label == "install-target":
+                    changed["steps"][2]["argv"][-1] = "--targets=other-library"
+                elif label == "runtime-interpreter":
+                    changed["steps"][5]["argv"][0] = "/tmp/other-python"
+                elif label == "runtime-path":
+                    changed["steps"][5]["environment"]["PYTHONPATH"] = "/tmp/other-wrapper"
+                elif label == "compiler-dependencies":
+                    changed["compiler_dependencies"].pop(next(iter(changed["compiler_dependencies"])))
+                else:
+                    changed["steps"][0]["log_sha256"] = "wrong"
+
+                def mutated(file, *args, **kwargs):
+                    return json.dumps(changed) if file == path else actual(file, *args, **kwargs)
+
+                with mock.patch.object(Path, "read_text", mutated):
+                    self.reject(expected)
+
+    def test_progress_only_git_checkpoint_preserves_candidate_identity(self):
+        state = self.check()
+        lock = self.scratch / "unchanged-composition-lock.json"
+        lock.write_text(json.dumps(state))
+        actual = preflight.subprocess.check_output
+
+        def new_revision(command, **kwargs):
+            if command == ["git", "rev-parse", "HEAD"]:
+                return "f" * 40 + "\n"
+            return actual(command, **kwargs)
+
+        with mock.patch.object(preflight.subprocess, "check_output", new_revision):
+            replay = self.check(lock_path=lock)
+        self.assertNotEqual(state["source_revision"], replay["source_revision"])
+        self.assertEqual(state["candidate_lock_sha256"], replay["candidate_lock_sha256"])
+        self.assertFalse(self.output.exists())
+
     def test_deleted_tracked_source_is_rejected(self):
         actual = preflight.subprocess.check_output
         for name, registration in (

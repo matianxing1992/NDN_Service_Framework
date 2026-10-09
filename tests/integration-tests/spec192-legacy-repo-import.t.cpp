@@ -13,12 +13,18 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -387,9 +393,95 @@ verifyRepoObject(const fs::path& root, const std::string& importId,
   return {objectManifest, packetManifest};
 }
 
+int
+runImporterChild(const fs::path& log, std::vector<std::string> arguments)
+{
+  const auto binary = fs::read_symlink("/proc/self/exe").parent_path() /
+    "NDNSF-DistributedRepo/ndnsf-repo-import";
+  arguments.insert(arguments.begin(), binary.string());
+  std::vector<char*> argv;
+  for (auto& value : arguments) argv.push_back(value.data());
+  argv.push_back(nullptr);
+  const int fd = ::open(log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) throw std::runtime_error("spec202-cli-log-open-failed");
+  const auto child = ::fork();
+  if (child == 0) {
+    if (::dup2(fd, STDOUT_FILENO) < 0 || ::dup2(fd, STDERR_FILENO) < 0) ::_exit(126);
+    ::close(fd);
+    ::execv(argv.front(), argv.data());
+    ::_exit(127);
+  }
+  ::close(fd);
+  if (child < 0) throw std::runtime_error("spec202-cli-fork-failed");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  int status = 0;
+  for (;;) {
+    const auto waited = ::waitpid(child, &status, WNOHANG);
+    if (waited == child) {
+      return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    }
+    if (waited < 0 && errno == EINTR) continue;
+    if (waited < 0 || std::chrono::steady_clock::now() >= deadline) {
+      ::kill(child, SIGKILL);
+      while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+      throw std::runtime_error("spec202-cli-wait-failed: " + log.string());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec192LegacyRepoImportIntegration)
+
+BOOST_AUTO_TEST_CASE(productionCliMatchesNativeImportAndReplayWithoutSourceMutation)
+{
+  TemporaryDirectory temporary;
+  const auto sourcePath = temporary.path() / "legacy.sqlite3";
+  const auto payloadRoot = temporary.path() / "source-payloads";
+  fs::create_directories(payloadRoot);
+  Database sourceDb(sourcePath);
+  const auto source = seedRepoFixture(sourceDb.get(), "ndn-segmented-data");
+  const auto sourceHashes = sourceBundleHashes(sourcePath);
+  LegacyRepoImportConfig config;
+  config.sourceDatabase = sourcePath;
+  config.sourcePayloadRoot = payloadRoot;
+  config.destinationRoot = temporary.path() / "library-target";
+  config.importId = "spec202-cli-parity";
+  config.maxRangeBytes = 1024;
+  const auto direct = LegacyRepoImporter::import(config);
+  config.destinationRoot = temporary.path() / "cli-target";
+  const std::vector<std::string> arguments{
+    "--source-db", sourcePath.string(), "--source-payload-root", payloadRoot.string(),
+    "--destination", config.destinationRoot.string(), "--import-id", config.importId,
+    "--max-range-bytes", "1024",
+  };
+  const auto log = temporary.path() / "cli.log";
+  BOOST_REQUIRE_EQUAL(runImporterChild(log, arguments), 0);
+  const auto replay = LegacyRepoImporter::import(config);
+  BOOST_CHECK_EQUAL(readFile(log), replay.toJson() + "\n");
+  BOOST_CHECK_EQUAL(replay.state, "COMMITTED");
+  BOOST_CHECK_EQUAL(replay.destinationInventoryDigest, direct.destinationInventoryDigest);
+  BOOST_CHECK_EQUAL(replay.sourceSnapshotDigest, direct.sourceSnapshotDigest);
+  BOOST_CHECK_EQUAL(replay.sourcePayloadInventoryDigest, direct.sourcePayloadInventoryDigest);
+  BOOST_REQUIRE_EQUAL(replay.items.size(), direct.items.size());
+  for (size_t index = 0; index < replay.items.size(); ++index) {
+    BOOST_CHECK_EQUAL(replay.items[index].sourceManifestSha256, direct.items[index].sourceManifestSha256);
+    BOOST_CHECK(replay.items[index].packetNames == direct.items[index].packetNames);
+    BOOST_CHECK(replay.items[index].packetSha256 == direct.items[index].packetSha256);
+  }
+  (void)verifyRepoObject(config.destinationRoot, config.importId, source);
+  const auto manifestBefore = readFile(config.destinationRoot / "LegacyImportManifest.json");
+  BOOST_REQUIRE_EQUAL(runImporterChild(log, arguments), 0);
+  BOOST_CHECK_EQUAL(readFile(log), replay.toJson() + "\n");
+  BOOST_CHECK_EQUAL(readFile(config.destinationRoot / "LegacyImportManifest.json"), manifestBefore);
+  auto invalid = arguments;
+  invalid[5] = (temporary.path() / "invalid-target").string();
+  invalid.back() = "-1";
+  BOOST_CHECK_EQUAL(runImporterChild(log, invalid), 2);
+  BOOST_CHECK(!fs::exists(temporary.path() / "invalid-target"));
+  BOOST_CHECK(sourceBundleHashes(sourcePath) == sourceHashes);
+}
 
 BOOST_AUTO_TEST_CASE(importsSegmentedLegacyObjectAsVerifiedBytesWithPacketProvenance)
 {

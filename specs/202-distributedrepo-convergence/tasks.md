@@ -12,17 +12,17 @@
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
 | T002 | PARTIAL | T001 | Normal两入口closing通过；ASAN In-App exit0，Persistent exit1/19业务失败及OpenABE泄漏；evidence/t002-closing-review-20261008/asan-results.json。 | 2026-10-08 |
 | T003 | PARTIAL | T001 | 修复及完整recovery normal两次exit0；ASAN worker在前序门失败后NOT_RUN，等待SDK闭包。 | 2026-10-08 |
-| T004 | PARTIAL | T001 | Native repair normal及原5case ASAN integration/unit通过；新增真实CLI parity静态PASS、尚未构建；network pending。 | 2026-10-08 |
+| T004 | PARTIAL | T001 | SDK2完整import unit4/integration6含真实CLI parity PASS；旧5case ASAN通过，新增case动态及network pending。 | 2026-10-08 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | 当前surface/真实local与network/profile边界按api-inventory和surface-batch核对；current native完整suite及网络仍待运行，不继承旧PASS。 | 2026-10-08 15:52 -05:00 |
-| T008 | IN_PROGRESS | T001,T002,T004,T005 | binding strong owner/析构/GIL与DI适配source核对；两个模块重建、Python/CLI/parity/currentnetwork尚未闭合。 | 2026-10-08 15:52 -05:00 |
-| T009 | PARTIAL | T002–T008 | 输入fence 12mutation PASS；receipt/CLI/conformance及compiler-dependency静态PASS未构建；独立SDK policy修复probe exit0、46base/106ABE PASS，安装与完整dynamic复验待执行。 | 2026-10-08 |
+| T008 | IN_PROGRESS | T001,T002,T004,T005 | 两个binding重建/import/library PASS；Python扩展cohort94PASS/39退休失配fail/2collectionerror，待修复旧测试与currentnetwork。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | SDK安装及closure PASS；SDK2全native/binding/167compiler-dep receipt、完整native含87conformance及16mutation PASS。剩余：progress-only lock错误失效、Python旧测试/source-fence、ASAN完整复验、fresh convergence及network。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-下一步安装已隔离验证的OpenABE局部修复，完成实际compiler-selected SVS闭包构建并重跑完整dynamic门；Persistent ASAN首失败保留，不能启动完整资格。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
+下一步修复progress-only lock失效与退休Python测试/source-fence，再跑完整Python/dynamic门；SDK2 normal green及全部首失败保留，不能启动完整资格。按[Spec文档预算](spec.md#implementation-and-documentation-budget)只维护本表、必要contract与原始evidence，不续写batch卡或重复进度。
 
 ## Design binding
 

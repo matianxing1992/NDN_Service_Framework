@@ -31,14 +31,16 @@ DESIGN_FILES = (
 # Inventory clean files too: committing an input must not remove it from a lock.
 SOURCE_DIRECTORIES = (
     "ndn-service-framework", "NDNSF-DistributedRepo",
-    "NDNSF-DistributedInference", "pythonWrapper", ".waf-tools",
+    "NDNSF-DistributedInference", "ndnsf-di", "pythonWrapper", ".waf-tools",
     "examples/python/NDNSF-DistributedRepo", "tests/fixtures",
 )
-SOURCE_SUFFIXES = {".cpp", ".hpp", ".h", ".proto", ".py", ".yaml", ".sql", ".conf"}
+SOURCE_SUFFIXES = {".cpp", ".hpp", ".h", ".proto", ".py", ".yaml", ".sql", ".conf", ".json"}
 SOURCE_EXCLUDED_PARTS = {"build", "dist", "__pycache__", ".pytest_cache", "evidence", "results"}
 SOURCE_REQUIRED = (
     "waf", "wscript", "tests/wscript", "tests/main.cpp",
     "NDNSF-DistributedRepo/wscript",
+    "libndn-service-framework.pc.in",
+    "NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in",
     "NDNSF-DistributedRepo/src/LegacyRepoImporter.cpp",
     "NDNSF-DistributedRepo/src/ArtifactRepositoryApi.cpp",
     "NDNSF-DistributedRepo/src/RepoClient.cpp",
@@ -48,6 +50,7 @@ SOURCE_REQUIRED = (
     "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py",
     "tests/standalone/spec192-repo-client.cpp",
     "tests/standalone/spec193-object-repo-server.cpp",
+    "tests/standalone/spec202-openabe-policy-lifecycle.cpp",
     "tests/fixtures/spec202-syscall-fault.hpp",
     "tests/fixtures/spec202-import-lock.hpp",
     "tests/minindn/run_spec192_real_cpp_repo.py",
@@ -56,6 +59,7 @@ SOURCE_REQUIRED = (
     "tests/minindn/spec192_binding_client.py",
     "tests/minindn/spec192_di_peer.py",
     "tests/minindn/spec193_retired_python_peer.py",
+    "tests/minindn/spec202_build_candidate.py",
     "tests/integration-tests/ndnsf-integration-fixture.cpp",
     "tests/integration-tests/ndnsf-integration-fixture.hpp",
 )
@@ -65,6 +69,69 @@ SOURCE_PATTERNS = (
     "tests/python/test_spec192*.py", "tests/minindn/spec193*.conf",
     "tests/minindn/test_spec*preflight.py", "tests/minindn/test_spec202*.py",
 )
+BUILD_TARGETS = (
+    "ndn-service-framework", "ndnsf-distributed-inference",
+    "DistributedRepoServer", "ndnsf-repo-import", "spec192-repo-client",
+    "spec193-object-repo-server", "spec202-repo-conformance",
+    "spec192-repo-inapp-api", "spec192-repo-persistent-service",
+    "spec192-repo-persistent-api", "spec192-repo-legacy-import-unit",
+    "spec192-repo-legacy-import-integration", "spec193-original-data-receipt",
+)
+BUILD_OUTPUTS = (
+    "libndn-service-framework.so", "libndnsf-distributed-inference.so",
+    "NDNSF-DistributedRepo/libndnsf-distributed-repo.a",
+    "NDNSF-DistributedRepo/DistributedRepoServer",
+    "NDNSF-DistributedRepo/ndnsf-repo-import", *BUILD_TARGETS[4:],
+)
+PYTHON_IMPORT_PROBE = """import json,pathlib
+import ndnsf._ndnsf, py_repoclient._py_repoclient
+paths=set()
+for line in pathlib.Path('/proc/self/maps').read_text().splitlines():
+    fields=line.split()
+    if len(fields)>=6 and fields[-1].startswith('/') and '.so' in fields[-1]:
+        paths.add(str(pathlib.Path(fields[-1]).resolve()))
+print(json.dumps(sorted(paths)))
+"""
+
+
+def candidate_build_commands(root, fresh, source, build, python):
+    """Canonical commands shared by the rebuild owner and receipt admission."""
+    return [
+        ("configure", [str(root / "waf"), "configure", "--out=" + fresh.name,
+                       "--with-tests", "--with-examples",
+                       "--ndn-svs-source-tree=" + str(source),
+                       "--ndn-svs-build-tree=" + str(build)], root),
+        ("native-build", [str(root / "waf"), "build", "-j2",
+                          "--targets=" + ",".join(BUILD_TARGETS)], root),
+        ("native-install", ["sudo", "-n", "/usr/bin/env",
+                            "WAFLOCK=.lock-waf_" + fresh.name,
+                            "NDNSF_SKIP_DEV_PIP_INSTALL=1", str(root / "waf"),
+                            "install", "-j2",
+                            "--targets=ndn-service-framework,ndnsf-distributed-inference"], root),
+        ("base-binding", [python, "setup.py", "build_ext", "--inplace", "--force",
+                          "--parallel=2", "--build-temp=" + str(fresh / "python-base")], root / "pythonWrapper"),
+        ("repo-binding", [python, "setup.py", "build_ext", "--inplace", "--force",
+                          "--parallel=2", "--build-temp=" + str(fresh / "python-repo")], root / "NDNSF-DistributedRepo/pythonWrapper"),
+        ("runtime-import", [python, "-c", PYTHON_IMPORT_PROBE], root),
+    ]
+
+
+def candidate_build_environment(root, fresh, source, build, bindings=False):
+    values = {"WAFLOCK": ".lock-waf_" + fresh.name, "CFLAGS": "-O0 -g0 -MD",
+              "CXXFLAGS": "-O0 -g0 -MD", "CC": "/usr/bin/gcc", "CXX": "/usr/bin/g++"}
+    if bindings:
+        values.update(
+            NDNSF_LIBRARY_DIR="/usr/local/lib",
+            NDNSF_GLOBAL_NATIVE_DIGESTS=json.dumps({
+                name: sha256(Path("/usr/local/lib") / name) for name in (
+                    "libndn-service-framework.so", "libndnsf-distributed-inference.so")}),
+            NDNSF_NDN_SVS_SOURCE_TREE=str(source), NDNSF_NDN_SVS_BUILD_TREE=str(build),
+            LD_LIBRARY_PATH=":".join((str(build), str(root / "build"),
+                                      "/usr/local/lib", "/opt/gstreamer-1.20/lib")),
+            PYTHONPATH=":".join((str(root / "pythonWrapper"),
+                                 str(root / "NDNSF-DistributedRepo/pythonWrapper"),
+                                 str(root / "NDNSF-DistributedInference"))))
+    return values
 
 
 def participates_in_source(name):
@@ -179,6 +246,93 @@ def resolved_libraries(binary):
     return libraries
 
 
+def verify_build_receipt(root, source_sha, source_files, binaries, files):
+    """Validate an actual rebuild receipt; this admission check never creates one."""
+    path = require_file(root / "build/spec202-source-build-receipt.json", "BUILD_RECEIPT")
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        if (receipt["spec"] != "202" or receipt["source_before"] != source_sha or
+                receipt["source_after"] != source_sha or receipt["source_files"] != source_files):
+            raise PreflightError("STALE_BUILD_RECEIPT", "source changed since rebuild")
+        steps = receipt["steps"]
+        if [step["step"] for step in steps] != [
+                "configure", "native-build", "native-install", "base-binding",
+                "repo-binding", "runtime-import"]:
+            raise ValueError("incomplete successful build steps")
+        for step in steps:
+            if step["exit_status"] != 0 or not step["argv"]:
+                raise ValueError("failed or missing build command")
+            log = require_file(Path(step["log"]), "BUILD_LOG")
+            if sha256(log) != step["log_sha256"]:
+                raise PreflightError("STALE_BUILD_RECEIPT", "build log changed: " + str(log))
+        configuration = receipt["configuration"]
+        if len(configuration) != 2:
+            raise ValueError("configuration must bind cache and generated header")
+        cache = next(Path(name) for name in configuration if name.endswith("/c4che/_cache.py"))
+        fresh = cache.parent.parent
+        if (fresh.parent != root or not fresh.name.startswith("build-spec202-candidate") or
+                set(configuration) != {str(fresh / "config.hpp"), str(cache)}):
+            raise ValueError("unrecognized fresh build configuration")
+        if "--out=" + fresh.name not in steps[0]["argv"]:
+            raise ValueError("configure output does not match fresh configuration")
+        if "--targets=" + ",".join(BUILD_TARGETS) not in steps[1]["argv"]:
+            raise ValueError("native build does not cover all participating targets")
+        source_options = [item.split("=", 1)[1] for item in steps[0]["argv"]
+                          if item.startswith("--ndn-svs-source-tree=")]
+        build_options = [item.split("=", 1)[1] for item in steps[0]["argv"]
+                         if item.startswith("--ndn-svs-build-tree=")]
+        if len(source_options) != 1 or len(build_options) != 1:
+            raise ValueError("missing declared native SVS SDK pair")
+        sdk_source, sdk_build = Path(source_options[0]), Path(build_options[0])
+        commands = candidate_build_commands(root, fresh, sdk_source, sdk_build, sys.executable)
+        for index, (label, command, cwd) in enumerate(commands):
+            step = steps[index]
+            if step["argv"] != command or step["cwd"] != str(cwd):
+                raise ValueError("noncanonical build command/owner: " + label)
+            expected_environment = candidate_build_environment(
+                root, fresh, sdk_source, sdk_build, bindings=index >= 3)
+            if step["environment"] != expected_environment:
+                raise ValueError("noncanonical build/runtime environment: " + label)
+        from spec202_build_candidate import sdk_inputs, compiler_dependencies
+        if receipt["external_inputs"] != sdk_inputs(sdk_source, sdk_build):
+            raise PreflightError("STALE_BUILD_RECEIPT", "external SDK inventory changed")
+        if receipt["compiler_dependencies"] != compiler_dependencies(fresh, sdk_source, sdk_build):
+            raise PreflightError("STALE_BUILD_RECEIPT", "compiler dependency proof changed")
+        expected_fresh = {str(fresh / name) for name in BUILD_OUTPUTS}
+        if set(receipt["fresh_outputs"]) != expected_fresh:
+            raise ValueError("incomplete fresh native outputs")
+        expected_artifacts = {str(root / "build" / name) for name in BUILD_OUTPUTS}
+        expected_artifacts.update(str(binary) for binary in binaries)
+        expected_artifacts.update("/usr/local/lib/" + name for name in (
+            "libndn-service-framework.so", "libndnsf-distributed-inference.so"))
+        if not expected_artifacts.issubset(receipt["artifacts"]):
+            raise ValueError("incomplete native/binding artifact inventory")
+        for category in ("fresh_outputs", "artifacts", "configuration", "external_inputs", "runtime"):
+            inputs = receipt[category]
+            if not isinstance(inputs, dict) or not inputs:
+                raise ValueError("empty input category: " + category)
+            for name, expected in inputs.items():
+                actual = sha256(require_file(Path(name), "BUILD_INPUT"))
+                if actual != expected:
+                    raise PreflightError("STALE_BUILD_RECEIPT", category + " changed: " + name)
+                files[name] = actual
+        for name in BUILD_OUTPUTS:
+            if receipt["fresh_outputs"][str(fresh / name)] != receipt["artifacts"][str(root / "build" / name)]:
+                raise ValueError("harness output differs from fresh output: " + name)
+        for binary in binaries:
+            if sha256(binary) != receipt["artifacts"][str(binary)]:
+                raise PreflightError("STALE_BUILD_RECEIPT", "runtime artifact changed")
+            for library, digest in resolved_libraries(binary).items():
+                if receipt["runtime"].get(library) != digest:
+                    raise PreflightError("STALE_BUILD_RECEIPT", "loaded dependency changed: " + library)
+    except PreflightError:
+        raise
+    except (ValueError, KeyError, TypeError, StopIteration, RuntimeError,
+            OSError, subprocess.CalledProcessError) as error:
+        raise PreflightError("INVALID_BUILD_RECEIPT", str(error)) from error
+    files[str(path)] = sha256(path)
+
+
 def verify_runtime_policy(path, service_prefix, operations, repo_users,
                           repo_providers, metadata_denied_user=None):
     import yaml
@@ -284,6 +438,7 @@ def check(root, output, topology, source_sha, source_files, roles,
     for binary in binaries:
         files[str(binary)] = sha256(binary)
         files.update(resolved_libraries(binary))
+    verify_build_receipt(root, source_sha, source_files, binaries, files)
     files[str(topology)] = sha256(topology)
     template = require_file(root / "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml",
                             "POLICY_TEMPLATE")
@@ -322,11 +477,13 @@ def check(root, output, topology, source_sha, source_files, roles,
         "repo_users": list(repo_users), "repo_providers": list(repo_providers),
         "files": dict(sorted(files.items())),
     }
-    encoded = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    identity = {key: value for key, value in state.items() if key != "source_revision"}
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     state["candidate_lock_sha256"] = hashlib.sha256(encoded).hexdigest()
     if lock_path is not None:
         locked = json.loads(require_file(lock_path, "CANDIDATE_LOCK")
                             .read_text(encoding="utf-8"))
-        if locked != state:
+        if {key: value for key, value in locked.items() if key != "source_revision"} != \
+                {key: value for key, value in state.items() if key != "source_revision"}:
             raise PreflightError("CANDIDATE_MISMATCH", str(lock_path))
     return state
