@@ -12,14 +12,14 @@
 | Task | Status | Depends on | Evidence / Remaining | Updated |
 | --- | --- | --- | --- | --- |
 | T001 | DONE | user scope | api-inventory逐header/overload→TU/target/output/case；owner overlay分类、DB002–004前置及只读release PASS。150-input完整snapshot/manifest保存；实际rebuild/runtime资格明确归T009。 | 2026-10-08 13:12 -05:00 |
-| T002 | PARTIAL | T001 | SDK5 In-App28 normal/dynamic PASS；完整Persistent normal PASS、dynamic exit201。owner查询预算回归待修，不继承旧PASS。 | 2026-10-09 |
-| T003 | PARTIAL | T001 | SDK5完整Persistent四case/845断言normal PASS（207.83s）；whole dynamic 23/486业务断言失败（254.25s），无sanitizer诊断。owner查询预算回归待修。 | 2026-10-09 |
-| T004 | PARTIAL | T001 | SDK5完整import unit4/integration6含真实CLI parity normal/dynamic PASS（49/145断言）；实际CLI加载闭包已核对。当前network仍待完整资格。 | 2026-10-09 |
+| T002 | PARTIAL | T001 | destination恢复修复已落地；SDK9完整In-App28/Persistent5 normal及dynamic PASS，旧SDK5失败仅历史。证据见T009 SDK9 normal/dynamic JSON；R01–R05逐项closing核对及最终复现待关闭。 | 2026-10-09 |
+| T003 | PARTIAL | T001 | attempted ledger及owner probe预算修复已落地；SDK9完整Persistent5/877断言normal/dynamic PASS。旧SDK5业务失败已被当前回归替代；R06逐项closing及最终network资格待关闭，证据见T009。 | 2026-10-09 |
+| T004 | PARTIAL | T001 | import durability修复已落地；SDK9完整import unit4/49及integration6/145含真实CLI normal/dynamic PASS。证据见T009；R07逐项closing、独立复现及当前network仍待资格。 | 2026-10-09 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
-| T007 | IN_PROGRESS | T001,T003 | SDK9完整98-case surface/local conformance及1655断言normal PASS；公开inventory保留，current完整dynamic/network/profile资格尚未关闭。 | 2026-10-09 |
+| T007 | IN_PROGRESS | T001,T003 | SDK9完整98-case surface/local conformance及1655断言normal/dynamic PASS，证据见T009；公开inventory保留，network/profile资格尚未关闭。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK9两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk9/sdk9-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | source e94324e3/688；SDK9六步、9 normal及7 dynamic PASS。[SDK9](evidence/candidate-build-20261009-sdk9/)：v3注册FAIL且原全局库/receipt恢复核验；v4封存870条目及bootstrap-review-v4.json STATIC_PASS，独立六步复现运行中（91884），随后whole normal→恢复核验→closing。原始失败保留，failure-log仅新增必要诊断；network待两轮完整资格。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | source e94324e3/688；SDK9六步、9 normal及7 dynamic PASS。[SDK9](evidence/candidate-build-20261009-sdk9/)：v4封存/静态PASS，但独立native build FAIL：spec192-repo-client缺ndn-cxx私有pib-sqlite3.hpp。见sealed-reproduction-v4.json及build日志；下一步核对实际compiler依赖与SDK闭包，修复真实复现后closing。network未启动，旧失败保留。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
