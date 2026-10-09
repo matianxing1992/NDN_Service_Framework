@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGETS = preflight.BUILD_TARGETS
 NATIVE_OUTPUTS = preflight.BUILD_OUTPUTS
 INSTALLED_LIBRARIES = ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
+LOCAL_NDN_CXX_HEADERS = "dependencies/ndn-cxx-8296fc9462c7ef9635b7c45468c067fd39514e31/ndn-cxx"
 
 
 def hashes(paths):
@@ -30,8 +31,10 @@ def sdk_inputs(source, build):
     if not config.is_file():
         config = source / "ndn-svs/config.hpp"
     paths = [build / "libndn-svs.so", config, source / "wscript",
-             Path("/usr/local/share/ndnsf/global-dependency-identity.json")]
-    for directory in (source / "ndn-svs", Path("/usr/local/include/ndn-cxx"),
+             Path("/usr/local/share/ndnsf/global-dependency-identity.json"),
+             ROOT / LOCAL_NDN_CXX_HEADERS / "security/pib/impl/pib-sqlite3.hpp"]
+    for directory in (source / "ndn-svs", ROOT / LOCAL_NDN_CXX_HEADERS,
+                      Path("/usr/local/include/ndn-cxx"),
                       Path("/usr/local/include/nac-abe"),
                       Path("/usr/local/include/ndnsd"), Path("/usr/local/include/openabe")):
         if not directory.is_dir():
@@ -52,8 +55,9 @@ def sdk_inputs(source, build):
 
 
 def compiler_dependencies(fresh, source, build):
-    """Bind actual GCC dependency outputs, rejecting foreign SVS headers."""
+    """Bind actual selected headers as well as GCC's dependency path lists."""
     records = {}
+    input_hashes = {}
     selected = set()
     objects = sorted(fresh.rglob("*.o"))
     if not objects:
@@ -62,19 +66,28 @@ def compiler_dependencies(fresh, source, build):
         dep = preflight.require_file(obj.with_suffix(".d"), "COMPILER_DEPENDENCY")
         text = dep.read_text().replace("\\\n", " ")
         dependencies = shlex.split(text.split(":", 1)[1])
-        owner = (ROOT / "pythonWrapper" if fresh / "python-base" in obj.parents
+        target = Path(text.split(":", 1)[0].strip())
+        parents = set(obj.parents) | set(target.parents)
+        owner = (ROOT / "pythonWrapper" if fresh / "python-base" in parents
                  else ROOT / "NDNSF-DistributedRepo/pythonWrapper"
-                 if fresh / "python-repo" in obj.parents else fresh)
+                 if fresh / "python-repo" in parents else fresh)
         svs = []
+        inputs = []
         for name in dependencies:
             path = (owner / name).resolve()
+            inputs.append(path)
             if "ndn-svs" not in path.parts:
                 continue
             if not (source in path.parents or build in path.parents):
                 raise RuntimeError("compiler selected foreign SVS header: " + str(path))
             svs.append(path)
             selected.add(path)
-        records[str(dep)] = {"sha256": preflight.sha256(dep), "svs_headers": hashes(svs)}
+        for path in set(inputs):
+            if str(path) not in input_hashes:
+                input_hashes.update(hashes([path]))
+        records[str(dep)] = {"sha256": preflight.sha256(dep),
+                             "svs_headers": {str(path): input_hashes[str(path)] for path in sorted(set(svs))},
+                             "inputs": {str(path): input_hashes[str(path)] for path in sorted(set(inputs))}}
     if not selected:
         raise RuntimeError("no compiled object proves the declared SVS headers")
     return records

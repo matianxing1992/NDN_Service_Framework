@@ -174,6 +174,76 @@ class PreflightMutationTests(unittest.TestCase):
         with mock.patch.object(Path, "is_file", missing):
             self.reject("MISSING_BUILD_RECEIPT")
 
+    def test_compiler_header_content_changes_invalidate_dependencies(self):
+        from spec202_build_candidate import compiler_dependencies
+        fresh = Path(self.temp.name) / "fresh"
+        sdk = Path(self.temp.name) / "sdk"
+        fresh.mkdir()
+        (sdk / "ndn-svs").mkdir(parents=True)
+        svs_header = sdk / "ndn-svs/example.hpp"
+        external_header = Path(self.temp.name) / "external.hpp"
+        for path in (svs_header, external_header):
+            path.write_text("original\n")
+        (fresh / "example.o").write_bytes(b"")
+        dep = fresh / "example.d"
+        dep.write_text("example.o: " + str(svs_header) + " " + str(external_header) + "\n")
+        before = compiler_dependencies(fresh, sdk, sdk / "build")
+        self.assertIn(str(external_header), before[str(dep)]["inputs"])
+        external_header.write_text("changed\n")
+        after = compiler_dependencies(fresh, sdk, sdk / "build")
+        self.assertEqual(before[str(dep)]["sha256"], after[str(dep)]["sha256"])
+        self.assertNotEqual(before, after)
+        external_header.unlink()
+        with self.assertRaises(preflight.PreflightError):
+            compiler_dependencies(fresh, sdk, sdk / "build")
+        self.assertFalse(self.output.exists())
+
+    def test_repo_binding_parent_objects_keep_compiler_working_directory(self):
+        import spec202_build_candidate as builder
+        root = Path(self.temp.name)
+        fresh = root / "fresh"
+        (fresh / "src").mkdir(parents=True)
+        (root / "NDNSF-DistributedRepo/pythonWrapper").mkdir(parents=True)
+        source = root / "NDNSF-DistributedRepo/src/example.cpp"
+        source.parent.mkdir()
+        source.write_text("original\n")
+        sdk = root / "sdk"
+        (sdk / "ndn-svs").mkdir(parents=True)
+        header = sdk / "ndn-svs/example.hpp"
+        header.write_text("original\n")
+        (fresh / "src/example.o").write_bytes(b"")
+        dep = fresh / "src/example.d"
+        dep.write_text(str(fresh / "python-repo/../src/example.o") +
+                       ": ../src/example.cpp " + str(header) + "\n")
+        with mock.patch.object(builder, "ROOT", root):
+            result = builder.compiler_dependencies(fresh, sdk, sdk / "build")
+        self.assertIn(str(source), result[str(dep)]["inputs"])
+        self.assertFalse(self.output.exists())
+
+    def test_local_ndn_cxx_headers_are_bound_before_output(self):
+        from spec202_build_candidate import sdk_inputs, LOCAL_NDN_CXX_HEADERS
+        source = Path("/usr/local/src/spec202-ndn-svs-literal-1687dc9")
+        build = source / "build"
+        before = sdk_inputs(source, build)
+        actual_hash = preflight.sha256
+        actual_file = Path.is_file
+        for relative in ("security/pib/impl/pib-sqlite3.hpp", "data.hpp"):
+            path = ROOT / LOCAL_NDN_CXX_HEADERS / relative
+            with self.subTest(path=path):
+                self.assertIn(str(path), before)
+                with mock.patch.object(preflight, "sha256", side_effect=lambda candidate:
+                        "00" * 32 if candidate == path else actual_hash(candidate)):
+                    self.assertNotEqual(before, sdk_inputs(source, build))
+                with mock.patch.object(Path, "is_file", lambda candidate:
+                        False if candidate == path else actual_file(candidate)):
+                    if relative == "data.hpp":
+                        self.assertNotEqual(before, sdk_inputs(source, build))
+                    else:
+                        with self.assertRaises(preflight.PreflightError) as caught:
+                            sdk_inputs(source, build)
+                        self.assertEqual(caught.exception.failure_class, "MISSING_BUILD_INPUT")
+                self.assertFalse(self.output.exists())
+
     def test_actual_pinned_svs_config_path_is_in_sdk_inventory(self):
         from spec202_build_candidate import sdk_inputs
         source = Path("/usr/local/src/spec192-ndn-svs-9f2d8a4")
