@@ -17,14 +17,14 @@
 | T004 | PARTIAL | T001 | SDK3完整import unit4/integration6含真实CLI parity PASS；旧5case ASAN通过，新增case动态及network pending。 | 2026-10-08 |
 | T005 | PARTIAL | T001,T002,T003 | untraced existingCore lifecycle/签名wire oracle v4静态PASS，13offline反例与6OriginalData nativeunit全部PASS；生产及test native targets重建PASS，当前7个O17子场景待T009/T010。 | 2026-10-08 15:52 -05:00 |
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
-| T007 | IN_PROGRESS | T001,T003 | SDK3完整native七suite及87-case surface/local conformance PASS；公开inventory保留，current network/profile资格待T010，不继承旧PASS。 | 2026-10-08 |
-| T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK3两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk3/sdk3-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK4六步build/binding/import/167dep/18artifact闭包PASS，receipt16bf7ff6/source5bf42de5；九组normal的前六组PASS，完整Persistent/剩余normal进行中，七whole ASAN随后。689-entry静态及新source网络执行器delta审查PASS；最终dynamic/closing/network未释放。 | 2026-10-08 |
+| T007 | IN_PROGRESS | T001,T003 | SDK4完整native七suite及87-case surface/local conformance PASS；公开inventory保留，current network/profile资格待T010，不继承旧PASS。 | 2026-10-08 |
+| T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK4两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk4/sdk4-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | SDK4六步build/binding/import/167dep/18artifact闭包PASS，receipt16bf7ff6/source5bf42de5；七完整native及Python117 PASS，最后入场/锁回放/oracle35运行中，七whole ASAN随后。689-entry静态及新source网络执行器delta审查PASS；最终dynamic/closing/network未释放。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-SDK4构建六步全部exit0，source前后5bf42de5不变，实际import加载pinned SVS/Core/DI/OpenABE已登记；当前normal前六组PASS，完整Persistent运行中，状态在candidate-build-20261008-sdk4/sdk4-normal-validation.json。新receipt16bf7ff6绑定完整68场景/轮、59ID/六profile/两轮网络计划；执行器delta PASS且pending gate实际拒绝零output/network。下一步剩余normal→七whole native dynamic→closing release→两轮network；保留旧SDK3首漏，尚未启动network。
+SDK4七whole native/Python117全部exit0（完整Persistent596.44s），source5bf42de5/receipt16bf7ff6不变。最后35入场/真实锁回放/oracle运行中，状态在candidate-build-20261008-sdk4/sdk4-normal-validation.json；随后按原预算执行七whole native ASAN/UBSAN。新网络执行器已审查，仍等待全部门与closing release；完整68场景/轮、59ID/六profile/两轮范围不减，尚未启动network。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
