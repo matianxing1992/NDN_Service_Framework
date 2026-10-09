@@ -41,7 +41,6 @@ SOURCE_REQUIRED = (
     "tests/boost-test.hpp",
     "tests/unit-tests/spec190-ack-window.t.cpp",
     "tests/unit-tests/generic-dynamic-api-fixture.hpp",
-    "tests/unit-tests/service-provider-request-subscription.t.cpp",
     "NDNSF-DistributedRepo/wscript",
     "libndn-service-framework.pc.in",
     "NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in",

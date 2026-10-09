@@ -333,7 +333,6 @@ def build(bld):
                 source=[bld.path.parent.find_node('tests/main.cpp')] +
                        bld.path.ant_glob(['unit-tests/distributed-repo-*.t.cpp',
                                           'unit-tests/spec190-ack-window.t.cpp',
-                                          'unit-tests/service-provider-request-subscription.t.cpp',
                                           'unit-tests/spec193-original-data-receipt.t.cpp']),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '

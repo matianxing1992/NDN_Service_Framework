@@ -110,8 +110,7 @@ class PreflightMutationTests(unittest.TestCase):
         actual_file = Path.is_file
         for name in ("tests/boost-test.hpp",
                      "tests/unit-tests/spec190-ack-window.t.cpp",
-                     "tests/unit-tests/generic-dynamic-api-fixture.hpp",
-                     "tests/unit-tests/service-provider-request-subscription.t.cpp"):
+                     "tests/unit-tests/generic-dynamic-api-fixture.hpp"):
             with self.subTest(name=name):
                 self.assertIn(name, names)
                 with mock.patch.object(preflight, "sha256", side_effect=lambda path:

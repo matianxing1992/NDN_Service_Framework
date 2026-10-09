@@ -1,5 +1,4 @@
 #include <ServiceProvider.hpp>
-#include "detail/RequestSubscriptionRegex.hpp"
 
 #include <boost/asio/post.hpp>
 
@@ -16100,7 +16099,11 @@ opaque_selection_committed:
         if (serviceName.empty() || !m_svsps) {
             return;
         }
-        const std::string regex = detail::requestSubscriptionRegex(serviceName);
+        ndn::Name regexServiceName(serviceName);
+        const std::string regex =
+            "^(<>*)<NDNSF><REQUEST>" +
+            ndn_service_framework::NameToRegexString(regexServiceName) +
+            "(<>*)$";
         // V2 requests are published as:
         //   /<requester>/NDNSF/REQUEST/<serviceName...>/<requestId>
         NDN_LOG_WARN("[ServiceProvider] SVS request subscription regex="
