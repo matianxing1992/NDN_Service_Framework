@@ -19,12 +19,12 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK3完整native七suite及87-case surface/local conformance PASS；公开inventory保留，current network/profile资格待T010，不继承旧PASS。 | 2026-10-08 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK3两个binding重建/import/library及33-file cohort117PASS，evidence/candidate-build-20261008-sdk3/sdk3-normal-validation.json；current crosslanguage/DI network仍待完整资格。 | 2026-10-08 |
-| T009 | PARTIAL | T002–T008 | SDK3六步build/import/167dep闭包及九组normal门全部PASS，含七native suite、Python117、入场/真实新锁回放/oracle35；receipt60536314/source2f39a0a6。fresh ASAN配置PASS/编译中；dynamic及两轮network待关闭。 | 2026-10-08 |
+| T009 | PARTIAL | T002–T008 | SDK3旧normal九组PASS；fresh ASAN build/import两suite PASS，conformance首漏223572/242。SQLite构造失败RAII/seed-only签名fixture修复后两focused及完整87/1494无抑制PASS；source5bf42de5需新normal receipt/全dynamic/closing，旧network计划未释放。 | 2026-10-08 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-SDK3全部normal门green，677-source/receipt不变。fresh ASAN/UBSAN独立目录j1编译，profile release/配置PASS；dynamic-20261008-sdk3保留compiler命令/runtime maps/未抑制结果。network-execution-plan.json及network-execute.py覆盖59稳定ID/68场景每轮/六profile/cross-run；执行器审查PASS，外层预算失配已修复，pending-dynamic真实拒绝零副作用。下一步完整dynamic→hash-bound closing release→两轮网络资格；尚未启动network，仅维护本表和原始evidence。
+SDK3完整动态门首漏已保留并停止，两个独立泄漏已修复；现source5bf42de5/677文件，两focused及完整conformance ASAN/UBSAN exit0。下一步新normal build/receipt→全部normal/dynamic→current-byte closing→新source两轮network；旧SDK3计划/receipt不能继承，尚未启动network。进度只维护本表，原始证据见dynamic-20261008-sdk3，失败经过只在failure-log。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding

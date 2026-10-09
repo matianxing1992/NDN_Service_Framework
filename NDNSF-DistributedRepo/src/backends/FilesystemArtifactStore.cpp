@@ -941,7 +941,8 @@ struct SqliteArtifactMetadataStore::Impl
           "repo-schema-unsupported-profile: future schema lacks compatible local catalog");
       }
       if (immutableReadOnlyProfile) {
-        database = preflight.release();
+        databaseOwner = std::move(preflight);
+        database = databaseOwner.get();
       }
       else {
         preflight.reset();
@@ -1017,17 +1018,16 @@ struct SqliteArtifactMetadataStore::Impl
   openDatabase(const std::string& path, int flags)
   {
     sqlite3* result = nullptr;
-    if (sqlite3_open_v2(path.c_str(), &result,
-                        flags | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK) {
+    const int status = sqlite3_open_v2(path.c_str(), &result,
+                                     flags | SQLITE_OPEN_FULLMUTEX, nullptr);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> opened(result, sqlite3_close);
+    if (status != SQLITE_OK) {
       const std::string detail =
-        result == nullptr ? "unknown" : sqlite3_errmsg(result);
-      if (result != nullptr) {
-        sqlite3_close(result);
-      }
+        opened == nullptr ? "unknown" : sqlite3_errmsg(opened.get());
       throw std::runtime_error("repo-metadata-open-failed: " + detail);
     }
-    sqlite3_busy_timeout(result, 5000);
-    return result;
+    sqlite3_busy_timeout(opened.get(), 5000);
+    return opened.release();
   }
 
   static std::string
@@ -1057,7 +1057,8 @@ struct SqliteArtifactMetadataStore::Impl
   void
   openExistingDatabase(int flags)
   {
-    database = openDatabase(databasePath, flags);
+    databaseOwner.reset(openDatabase(databasePath, flags));
+    database = databaseOwner.get();
   }
 
   static bool
@@ -1437,14 +1438,9 @@ struct SqliteArtifactMetadataStore::Impl
     catalogAvailable = true;
   }
 
-  ~Impl()
-  {
-    if (database != nullptr) {
-      sqlite3_close(database);
-    }
-  }
-
   std::string databasePath;
+  // Member ownership also closes the connection when construction throws.
+  std::unique_ptr<sqlite3, decltype(&sqlite3_close)> databaseOwner{nullptr, sqlite3_close};
   sqlite3* database = nullptr;
   mutable std::mutex mutex;
   ArtifactBackendMigrationDiagnostics migration;
