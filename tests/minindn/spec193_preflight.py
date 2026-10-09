@@ -38,6 +38,10 @@ SOURCE_SUFFIXES = {".cpp", ".hpp", ".h", ".proto", ".py", ".yaml", ".sql", ".con
 SOURCE_EXCLUDED_PARTS = {"build", "dist", "__pycache__", ".pytest_cache", "evidence", "results"}
 SOURCE_REQUIRED = (
     "waf", "wscript", "tests/wscript", "tests/main.cpp",
+    "tests/boost-test.hpp",
+    "tests/unit-tests/spec190-ack-window.t.cpp",
+    "tests/unit-tests/generic-dynamic-api-fixture.hpp",
+    "tests/unit-tests/service-provider-request-subscription.t.cpp",
     "NDNSF-DistributedRepo/wscript",
     "libndn-service-framework.pc.in",
     "NDNSF-DistributedInference/ndnsf-distributed-inference.pc.in",

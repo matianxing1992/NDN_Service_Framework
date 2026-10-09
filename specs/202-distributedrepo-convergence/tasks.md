@@ -19,12 +19,12 @@
 | T006 | PARTIAL | T001 | oracle接线/反例v2+delta复审PASS；12offline tests PASS，旧两capture reanalysis单列；source登记/当前network仍T009/T010，不能继承旧PASS。 | 2026-10-08 14:27 -05:00 |
 | T007 | IN_PROGRESS | T001,T003 | SDK5完整87-case surface/local conformance及1494断言normal PASS；公开inventory保留，current完整native/dynamic/network/profile资格尚未关闭，不继承旧PASS。 | 2026-10-09 |
 | T008 | IN_PROGRESS | T001,T002,T004,T005 | SDK5两个binding重建/import/library及33-file cohort117PASS；见candidate-build-20261009-sdk5/sdk5-normal-validation.json。current crosslanguage/DI network仍待完整资格。 | 2026-10-09 |
-| T009 | PARTIAL | T002–T008 | SDK6及Core ACK回归历史PASS不资格当前sourcec57a2ee9。instrumented recovery正阶段/同存储重开receipt断言已通过；完整隔离ASAN仍exit201（271/274）：原<20s、STORE调用2次（实际1）及后续ACK失败，无sanitizer诊断。见evidence/owner-probe-budget-20261009/reopen-recovery-budget-diagnostic.json；停止递增预算，定位transport/pump。network未启动。 | 2026-10-09 |
+| T009 | PARTIAL | T002–T008 | source4cea4f20（682 inputs）：逐服务REQUEST订阅仅移除未使用捕获；normal完整conformance99/29956 PASS，新增Core资格输入mutation/deletion PASS。ASAN构建/完整Persistent仍待验证；此前recovery271/274业务红，否定预算与所有oracle保留。原始日志见evidence/owner-probe-budget-20261009/uncaptured-*.log；旧SDK6 receipt已失效，network未启动。 | 2026-10-09 |
 | T010 | NOT_STARTED | T009 | NOT_RUN：59case全部子场景/新回归，同source-family两轮完整资格与cross-run/reproduction。 | 2026-10-08 12:24 -05:00 |
 
 ## Current Checkpoint
 
-当前sourcec57a2ee9不继承SDK6资格。成功fixture阶段采用有界5000/20000配置，同存储重开后恢复否定场景1500/8000；500ms post-accept wait、2s延迟、<20s、UNKNOWN/次数/receipt断言全部保留，完整隔离case仍失败。下一步定位transport/pump并完成完整Persistent→重新封存/完整normal与dynamic→closing→两轮network（59ID/每轮68场景/六profile）；普通/ASAN均保留完整Spec190套件。
+当前状态与阻塞只维护于上表T009；关闭顺序保持完整Persistent→重新封存/完整normal与dynamic→closing→两轮network（59ID/每轮68场景/六profile）。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding

@@ -104,6 +104,28 @@ class PreflightMutationTests(unittest.TestCase):
                 self.assertNotEqual(before, changed)
         self.assertFalse(self.output.exists())
 
+    def test_core_conformance_inputs_cannot_change_or_disappear(self):
+        before, names = preflight.source_candidate(ROOT)
+        actual_hash = preflight.sha256
+        actual_file = Path.is_file
+        for name in ("tests/boost-test.hpp",
+                     "tests/unit-tests/spec190-ack-window.t.cpp",
+                     "tests/unit-tests/generic-dynamic-api-fixture.hpp",
+                     "tests/unit-tests/service-provider-request-subscription.t.cpp"):
+            with self.subTest(name=name):
+                self.assertIn(name, names)
+                with mock.patch.object(preflight, "sha256", side_effect=lambda path:
+                        "00" * 32 if path == ROOT / name else actual_hash(path)):
+                    changed, same_names = preflight.source_candidate(ROOT)
+                self.assertEqual(names, same_names)
+                self.assertNotEqual(before, changed)
+                with mock.patch.object(Path, "is_file", lambda path:
+                        False if path == ROOT / name else actual_file(path)):
+                    with self.assertRaises(preflight.PreflightError) as caught:
+                        preflight.source_candidate(ROOT)
+                self.assertEqual(caught.exception.failure_class, "MISSING_SOURCE")
+        self.assertFalse(self.output.exists())
+
     def test_missing_source_is_rejected_before_output(self):
         self.reject("MISSING_SOURCE", source_files=["missing-native-input.cpp"])
         actual = Path.is_file
