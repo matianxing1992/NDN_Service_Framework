@@ -24,7 +24,7 @@
 
 ## Current Checkpoint
 
-SDK5九组normal及六组whole dynamic通过，最后Persistent dynamic业务回归仍红；Og未解决超时。owner查询预算局部修复：普通/ASAN有效red均exit201，修复后新回归两边20/20 PASS，复审PASS；见owner-probe-budget-20261009/diagnostic.json。完整Persistent两边运行中；SDK6新source289a1968重建已启动。下一步完整normal/dynamic→closing→两轮network（59ID/每轮68场景/六profile），不继承SDK5资格。ASAN生产组件Og、九测试/独立TU保留O0。
+SDK5九组normal及六组whole dynamic通过，最后Persistent dynamic业务回归仍红；Og未解决超时。owner预算局部修复两边20/20 PASS、复审PASS；完整Persistent normal五case/865断言PASS，ASAN仍exit201/16业务断言失败（347/363通过，无sanitizer诊断），见owner-probe-budget-20261009/diagnostic.json。SDK6 source289a1968重建中；下一步构建结束后隔离诊断outer STORE/两次inner STATUS期限→完整normal/dynamic→closing→两轮network（59ID/每轮68场景/六profile），不继承旧资格。
 <!-- SPEC202 PROGRESS END -->
 
 ## Design binding
